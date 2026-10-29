@@ -122,8 +122,20 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
         .open(lock_path(path))
         .ok()?;
     lock.lock_shared().ok()?;
-    let bytes = std::fs::read(path).ok()?;
-    let value = serde_json::from_slice(&bytes).ok();
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "Cannot read persisted coding data; original file retained");
+            return None;
+        }
+    };
+    let value = match serde_json::from_slice(&bytes) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "Cannot decode persisted coding data; original file retained");
+            None
+        }
+    };
     let _ = lock.unlock();
     value
 }

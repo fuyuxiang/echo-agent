@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
 import ts from "typescript";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,6 +20,7 @@ function createService() {
     "@theia/core/shared/inversify": { injectable: () => (target: unknown) => target },
     "@theia/filesystem/lib/browser/file-service": {
       FileService: class {
+        modifiedSince() { return false; }
         async update(_resource: unknown, changes: Array<{ text: string }>) {
           disk.content = changes[0].text;
           return { size: disk.content.length };
@@ -29,6 +31,9 @@ function createService() {
         }
       },
     },
+    "@theia/filesystem/lib/common/files": {ETAG_DISABLED:"",etag:(stat:{mtime:number;size:number}) => `${stat.mtime}:${stat.size}`,
+      FileOperationError:class extends Error {},FileOperationResult:{FILE_MODIFIED_SINCE:3},hasReadWriteCapability:()=>true},
+    "./echo-editor-protocol": {textHash:async (text:string) => createHash("sha256").update(text).digest("hex")},
     "./echo-host-bridge": { echoHostBridge: { enabled: true, request } },
   };
   const load = (id: string) => {
@@ -43,7 +48,7 @@ function createService() {
   return new Service();
 }
 
-const resource = { path: { fsPath: () => "/project/source.ts" } };
+const resource = { path: { fsPath: () => "/project/source.ts" },toString:() => "file:///project/source.ts" };
 
 describe("EchoFileService mutation gate", () => {
   beforeEach(() => {

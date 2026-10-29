@@ -2433,7 +2433,7 @@ async fn execute_automation_run(
 
     match result {
         Ok(Ok((session_id, completion))) => {
-            crate::bridge::handle_prompt_complete(&app, completion);
+            crate::bridge::handle_prompt_complete(&app, completion).await;
             release_full_access_session(&app, &tx, &session_id).await;
         }
         Ok(Err(error)) => {

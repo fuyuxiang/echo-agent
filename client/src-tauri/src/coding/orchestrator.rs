@@ -229,7 +229,7 @@ fn schedule_next_node(task: &mut CodingTask) -> Result<String, String> {
 /// Decide where a task goes once verification finished.
 pub fn decide_after_verification(
     records: &[VerificationRecord],
-    changed_file_count: usize,
+    _changed_file_count: usize,
 ) -> PhaseDecision {
     let effective = latest_per_command(records);
     if effective
@@ -257,17 +257,6 @@ pub fn decide_after_verification(
             next_phase: TaskPhase::Diagnosing,
             reason: format!("以下验证未通过：{commands}"),
             blocker: None,
-        };
-    }
-
-    if changed_file_count == 0 {
-        return PhaseDecision {
-            next_phase: TaskPhase::Blocked,
-            reason: "验证通过但没有代码变更".into(),
-            blocker: Some(
-                "本轮没有产生任何代码变更，无法作为已完成的开发任务交付。请确认需求是否已被实现。"
-                    .into(),
-            ),
         };
     }
 
@@ -356,17 +345,24 @@ pub enum OrchestratorEvent {
     /// A valid structured plan was emitted by the runtime.
     PlanSynchronized,
     /// Creating or starting the bound Agent session failed.
-    StartFailed { reason: String },
+    StartFailed {
+        reason: String,
+    },
     /// The user asked the bound Agent to make another change after a terminal
     /// or review phase. Re-open the same task before any file can be written.
-    FollowupStarted { requirement: String },
+    FollowupStarted {
+        requirement: String,
+    },
     /// The user paused or stopped an in-flight Agent turn. The workspace is
     /// synchronized before this event, but the round is not considered done.
-    ImplementationInterrupted { interruption: TaskInterruption },
+    ImplementationInterrupted {
+        interruption: TaskInterruption,
+    },
     /// Continue an interrupted round without discarding its execution graph.
     InterruptedTaskResumed,
     /// The Agent finished writing code for this round.
     ImplementationFinished,
+    ReadonlyFinished,
     /// The user explicitly re-runs checks from a settled phase.
     VerificationStarted,
     /// A verification batch finished; recompute from records on disk.
@@ -402,6 +398,7 @@ fn apply_unlocked(
         OrchestratorEvent::ImplementationInterrupted { .. } => "implementation_interrupted",
         OrchestratorEvent::InterruptedTaskResumed => "interrupted_task_resumed",
         OrchestratorEvent::ImplementationFinished => "implementation_finished",
+        OrchestratorEvent::ReadonlyFinished => "readonly_finished",
         OrchestratorEvent::VerificationStarted => "verification_started",
         OrchestratorEvent::VerificationFinished => "verification_finished",
     };
@@ -473,9 +470,6 @@ fn apply_unlocked(
                 TaskPhase::Paused | TaskPhase::Stopped | TaskPhase::Delivered | TaskPhase::Blocked
             ) {
                 return Err("只有已暂停、已停止、已完成或已阻塞的任务可以继续开发".into());
-            }
-            if changeset::load(root, task_id).committed_hash.is_some() {
-                return Err("该任务已提交到 Git；请新建任务继续开发，避免交付记录失真".into());
             }
             let requirement = requirement.trim();
             if requirement.is_empty() {
@@ -565,9 +559,6 @@ fn apply_unlocked(
             if !matches!(task.phase, TaskPhase::Paused | TaskPhase::Stopped) {
                 return Err("只有已暂停或已停止的任务可以原地继续".into());
             }
-            if changeset::load(root, task_id).committed_hash.is_some() {
-                return Err("该任务已提交到 Git；请新建任务继续开发，避免交付记录失真".into());
-            }
             if !tdd::can_resume(root, &task) {
                 return Err("请先运行并记录失败的红灯测试，或说明不适用原因".into());
             }
@@ -594,6 +585,19 @@ fn apply_unlocked(
                     TaskPhase::Discovering
                 },
                 reason: "已恢复任务，Agent 将从中断位置继续执行".into(),
+                blocker: None,
+            }
+        }
+        OrchestratorEvent::ReadonlyFinished => {
+            if !matches!(
+                task.phase,
+                TaskPhase::Discovering | TaskPhase::Implementing | TaskPhase::Repairing
+            ) {
+                return Err("当前阶段不能结束只读轮次".into());
+            }
+            PhaseDecision {
+                next_phase: TaskPhase::Delivered,
+                reason: "本轮只读分析或计划已完成；已有修改保留，未自动运行工程命令".into(),
                 blocker: None,
             }
         }
@@ -702,6 +706,32 @@ fn apply_unlocked(
                 PhaseDecision {
                     next_phase: TaskPhase::Delivered,
                     reason: "代码解释已完成，本次只读分析未修改工程文件".into(),
+                    blocker: None,
+                }
+            } else if !task.strict_workflow {
+                diagnostics::save_snapshot(root, task_id, &[])?;
+                for node in &mut task.task_nodes {
+                    node.status = TaskNodeStatus::Success;
+                    node.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                }
+                PhaseDecision {
+                    next_phase: if changed_file_count > 0
+                        && verification::project_config(root)
+                            .checks
+                            .iter()
+                            .any(|check| check.auto_run)
+                    {
+                        TaskPhase::Verifying
+                    } else {
+                        TaskPhase::Delivered
+                    },
+                    reason: if changed_file_count == 0 {
+                        "本轮已完成，未产生文件修改".into()
+                    } else {
+                        format!(
+                            "本轮已完成，保留 {changed_file_count} 个文件变更；检查结果单独记录"
+                        )
+                    },
                     blocker: None,
                 }
             } else if tdd::should_pause_for_red(root, &task, &change_set) {
@@ -850,7 +880,6 @@ fn apply_unlocked(
                             ),
                         }
                     } else {
-                        verification::clear_records(root, task_id)?;
                         diagnostics::save_snapshot(root, task_id, &[])?;
                         PhaseDecision {
                             next_phase: TaskPhase::Verifying,
@@ -878,7 +907,6 @@ fn apply_unlocked(
                 } else {
                     // Test/lint/build passes are content-bound evidence. Never let
                     // a new implementation round inherit an earlier green batch.
-                    verification::clear_records(root, task_id)?;
                     diagnostics::save_snapshot(root, task_id, &[])?;
                     if task.plan_revision.is_none() {
                         for node in &mut task.task_nodes {
@@ -905,14 +933,10 @@ fn apply_unlocked(
             ) {
                 return Err("只有验证中、已暂停、已停止、已完成或已阻塞的任务可以启动验证".into());
             }
-            if changeset::load(root, task_id).committed_hash.is_some() {
-                return Err("该任务已提交到 Git，交付证据已封存".into());
-            }
             // Validate and bind the batch before clearing prior evidence. If
             // there are no current changes, starting verification must not
             // destroy the last useful report as a side effect.
             changeset::mark_verification_started(root, task_id)?;
-            verification::clear_records(root, task_id)?;
             diagnostics::save_snapshot(root, task_id, &[])?;
             for criterion in &mut task.acceptance_criteria {
                 criterion.satisfied = false;
@@ -928,11 +952,11 @@ fn apply_unlocked(
             if task.phase != TaskPhase::Verifying {
                 return Err("只有验证阶段可以报告验证完成".into());
             }
-            let records = verification::list_records(root, task_id);
+            let records = verification::current_records(root, task_id, &change_set);
             let has_current_failure = records
                 .iter()
                 .any(|record| record.status != VerificationStatus::Passed);
-            if !has_current_failure {
+            if task.strict_workflow && !has_current_failure {
                 let mut missing = missing_detected_commands(root, &records);
                 missing.extend(missing_planned_commands(&task, &records));
                 missing.sort();
@@ -955,13 +979,23 @@ fn apply_unlocked(
                 .unwrap_or_default();
 
             let verdict = decide_after_verification(&records, changed_file_count);
-            if verdict.next_phase == TaskPhase::Delivered {
+            if verdict.next_phase == TaskPhase::Delivered && !records.is_empty() {
                 // Bind all green verification evidence to the exact file
                 // revision that produced it. A later external edit clears this
                 // marker during native change-set synchronization.
                 changeset::mark_verified_revision(root, task_id)?;
             }
-            if verdict.next_phase != TaskPhase::Diagnosing {
+            if !task.strict_workflow {
+                PhaseDecision {
+                    next_phase: TaskPhase::Delivered,
+                    reason: if verdict.next_phase == TaskPhase::Delivered {
+                        verdict.reason
+                    } else {
+                        format!("本轮检查已结束：{}；可继续修改或重跑检查", verdict.reason)
+                    },
+                    blocker: None,
+                }
+            } else if verdict.next_phase != TaskPhase::Diagnosing {
                 verdict
             } else {
                 // Failing verification: decide whether to repair again, and open
@@ -997,7 +1031,7 @@ fn apply_unlocked(
             node.completed_at
                 .get_or_insert_with(|| chrono::Utc::now().to_rfc3339());
         }
-        let verification_records = verification::list_records(root, task_id);
+        let verification_records = verification::current_records(root, task_id, &change_set);
         bind_acceptance_evidence(&mut task, &change_set, &verification_records);
     } else if decision.next_phase == TaskPhase::Blocked {
         // A terminal task must never retain a node that claims to be running.
@@ -1234,13 +1268,23 @@ pub async fn coding_orchestrator_report_implementation(
     access: State<'_, FilesystemAccess>,
     root: String,
     task_id: String,
+    run_id: Option<String>,
 ) -> Result<CodingTask, String> {
     let root = access.require_workspace(&root)?;
+    let readonly = run_id
+        .as_deref()
+        .map(|run| changeset::checkpoint_run_is_readonly(&root, &task_id, run))
+        .transpose()?
+        .unwrap_or(false);
     apply_and_emit(
         app,
         root,
         task_id,
-        OrchestratorEvent::ImplementationFinished,
+        if readonly {
+            OrchestratorEvent::ReadonlyFinished
+        } else {
+            OrchestratorEvent::ImplementationFinished
+        },
     )
     .await
 }
@@ -1331,18 +1375,14 @@ mod tests_v2 {
     }
 
     #[test]
-    fn failed_or_zero_change_batches_cannot_deliver() {
+    fn failed_checks_remain_failures_and_unchanged_runs_can_finish() {
         assert_eq!(
             decide_after_verification(&[record("pnpm test", 1)], 2).next_phase,
             TaskPhase::Diagnosing
         );
         let unchanged = decide_after_verification(&[record("pnpm test", 0)], 0);
-        assert_eq!(unchanged.next_phase, TaskPhase::Blocked);
-        assert!(unchanged
-            .blocker
-            .as_deref()
-            .unwrap()
-            .contains("没有产生任何代码变更"));
+        assert_eq!(unchanged.next_phase, TaskPhase::Delivered);
+        assert!(unchanged.blocker.is_none());
     }
 
     #[test]
@@ -1449,8 +1489,8 @@ mod tests_v2 {
         )
         .unwrap();
 
-        assert_eq!(decision.next_phase, TaskPhase::Blocked);
-        assert_eq!(decision.reason, "实现阶段结束但没有代码变更");
+        assert_eq!(decision.next_phase, TaskPhase::Delivered);
+        assert_eq!(decision.reason, "本轮已完成，未产生文件修改");
     }
 
     #[test]
@@ -1480,7 +1520,7 @@ mod tests_v2 {
         )
         .unwrap();
 
-        assert_eq!(decision.next_phase, TaskPhase::Verifying);
+        assert_eq!(decision.next_phase, TaskPhase::Delivered);
         assert!(!decision.reason.contains("注释生成包含可执行逻辑变更"));
     }
 
@@ -1667,7 +1707,7 @@ mod tests_v2 {
         )
         .unwrap();
 
-        assert_eq!(decision.next_phase, TaskPhase::Verifying);
+        assert_eq!(decision.next_phase, TaskPhase::Delivered);
         assert!(diagnostics::load_snapshot(dir.path(), &task.id).is_empty());
     }
 
@@ -1699,6 +1739,9 @@ mod tests_v2 {
     fn structured_plan_automatically_schedules_unfinished_nodes() {
         let dir = tempfile::tempdir().unwrap();
         let task = task::create_task(dir.path(), "task", "implement it").unwrap();
+        let mut task = task;
+        task.strict_workflow = true;
+        task::save(dir.path(), &task).unwrap();
         changeset::capture_filesystem_baseline(dir.path(), &task.id).unwrap();
         apply(
             dir.path(),
@@ -1795,6 +1838,9 @@ mod tests_v2 {
     fn actual_writes_force_replan_before_verification_and_can_recover() {
         let dir = tempfile::tempdir().unwrap();
         let task = task::create_task(dir.path(), "task", "implement it").unwrap();
+        let mut task = task;
+        task.strict_workflow = true;
+        task::save(dir.path(), &task).unwrap();
         changeset::capture_filesystem_baseline(dir.path(), &task.id).unwrap();
         apply(
             dir.path(),
@@ -2117,6 +2163,9 @@ mod tests_v2 {
         coding_task.task_nodes[0].status = TaskNodeStatus::Running;
         coding_task.task_nodes[0].verification_commands = vec!["pnpm test".into()];
         task::save(root, &coding_task).unwrap();
+        let mut coding_task = coding_task;
+        coding_task.strict_workflow = true;
+        task::save(root, &coding_task).unwrap();
         changeset::capture_filesystem_baseline(root, &coding_task.id).unwrap();
         std::fs::create_dir_all(root.join("tests")).unwrap();
         std::fs::write(
@@ -2162,5 +2211,25 @@ mod tests_v2 {
         )
         .unwrap();
         assert_eq!(resumed.phase, TaskPhase::Implementing);
+    }
+    #[test]
+    fn readonly_completion_does_not_run_checks_for_accumulated_agent_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "before").unwrap();
+        let task = task::create_task(root, "Plan", "给模块添加代码注释").unwrap();
+        changeset::capture_filesystem_baseline(root, &task.id).unwrap();
+        apply(root, &task.id, OrchestratorEvent::RequirementSubmitted).unwrap();
+        std::fs::write(root.join("source.ts"), "earlier agent changes").unwrap();
+        changeset::sync_from_filesystem(root, &task.id).unwrap();
+        store::write_json(&store::workspace_dir(root).join("verification-config.json"),
+            &serde_json::json!({"checks":[{"id":"check","kind":"test","command":"touch effect","label":"check","cwd":".","env":{},"autoRun":true}]})).unwrap();
+        let (_, decision) = apply(root, &task.id, OrchestratorEvent::ReadonlyFinished).unwrap();
+        assert_eq!(decision.next_phase, TaskPhase::Delivered);
+        assert!(!root.join("effect").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "earlier agent changes"
+        );
     }
 }

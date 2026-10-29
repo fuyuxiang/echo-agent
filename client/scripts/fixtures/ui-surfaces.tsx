@@ -711,10 +711,9 @@ function Fixture() {
         onRename={() => {}}
         onDelete={() => {}}
       />
-    </div><TheiaAgentComposer workspaceRoot={cwd} task={null} sessionId={null}
+    </div><div className="echo-theia-agent__content" /><TheiaAgentComposer workspaceRoot={cwd} task={null} sessionId={null}
       models={[{ id:"review/model", label:"评审模型", providerId:"review", providerKind:"custom" }]}
       modelId="review/model" contextPaths={[]} apiReady starting={false} sending={false} streaming={false}
-      suggestedPrompt="检查代码工作台的主操作按钮"
       onModelChange={() => {}} onStart={() => {}} onSend={() => {}} onRemoveContext={() => {}} onDraftContextPaths={() => {}} />
     </aside>
     </div></div>;

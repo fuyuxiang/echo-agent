@@ -21,10 +21,11 @@ impl MvpAgent {
             return;
         };
         let agent_ref = LocalRef::new(self);
-        let limits = echo_agent_tools::implementations::echo_agent_build::task::admission::SubagentLimits {
-            max_concurrent: self.cfg.borrow().subagents_max_concurrent,
-            behavior: self.cfg.borrow().subagents_limit_behavior,
-        };
+        let limits =
+            echo_agent_tools::implementations::echo_agent_build::task::admission::SubagentLimits {
+                max_concurrent: self.cfg.borrow().subagents_max_concurrent,
+                behavior: self.cfg.borrow().subagents_limit_behavior,
+            };
         crate::agent::subagent::spawn_subagent_coordinator(agent_ref.clone(), rx, limits);
         let (trace_tx, mut trace_rx) = tokio::sync::mpsc::unbounded_channel::<
             crate::upload::turn::SyntheticTurnTraceRequest,
@@ -218,6 +219,7 @@ impl MvpAgent {
             .as_ref()
             .and_then(|ps| ps.resolved_tool_overrides.load_full().map(|o| (*o).clone()));
         Some(crate::agent::subagent::SubagentSpawnContext {
+            parent_turn_authority: None,
             lsp: parent_lsp,
             process_scope: parent_process_scope,
             client_hooks: Default::default(),
@@ -337,7 +339,8 @@ impl MvpAgent {
                 .as_ref()
                 .map(|h| h.tool_context.task_output_tool_name.clone())
                 .unwrap_or_else(|| {
-                    echo_agent_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL.to_string()
+                    echo_agent_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL
+                        .to_string()
                 }),
             auto_wake_enabled: self
                 .cfg

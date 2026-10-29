@@ -43,30 +43,36 @@ const task = (overrides: Partial<CodingTask> = {}): CodingTask => ({
 });
 
 describe("coding workflow contract", () => {
-  it("builds one Agent contract with decomposition, TDD and fresh verification", () => {
+  it("defaults to direct Agent work without mandatory delivery ceremonies", () => {
     const prompt = buildCodingWorkflowPrompt("迁移登录", [" src/auth.ts ", "src/auth.ts"]);
-    expect(prompt).toContain("分析、规划、实施和验证");
-    expect(prompt).toContain("内部 brainstorming");
-    expect(prompt).toContain("运行时原生 Plan/Task 工具");
-    expect(prompt).toContain("task/subagent 工具");
-    expect(prompt).toContain("两道门禁");
-    expect(prompt).toContain("跨节点整体审查");
-    expect(prompt).toContain("先写能正确失败的回归测试");
-    expect(prompt).toContain("当前代码的新鲜输出");
+    expect(prompt).toContain("[回声代码 · agent]");
+    expect(prompt).toContain("在授权范围内直接完成修改");
+    expect(prompt).toContain("根据变更选择相关检查");
+    expect(prompt).toContain("保护用户修改");
+    expect(prompt).toContain("不要求固定 DAG、分轮 RED/GREEN、双重审查或人工交付表");
+    expect(prompt).not.toContain("两道门禁");
     expect(prompt.match(/src\/auth\.ts/g)).toHaveLength(1);
   });
 
-  it("keeps follow-ups inside the same engineering workflow", () => {
+  it("keeps follow-ups in the current session with the selected intent", () => {
     const prompt = buildCodingWorkflowPrompt("再增加审计日志", [], true);
-    expect(prompt).toContain("工程执行协议·补充要求");
-    expect(prompt).toContain("用户补充要求");
+    expect(prompt).toContain("继续当前会话");
+    expect(prompt).toContain("本轮要求");
+    expect(prompt).toContain("再增加审计日志");
   });
 
-  it("automatically applies the layered documentation protocol to natural language", () => {
-    const prompt = buildCodingWorkflowPrompt("为跨模块退款调用链生成系统级注释和文档");
-    expect(prompt).toContain("分层文档协议");
-    expect(prompt).toContain("architecture_documentation");
-    expect(prompt).toContain("各粒度产物必须从同一事实表生成");
+  it("carries explicit read-only intent and versioned editor context without escalating from rules", () => {
+    const ask = buildCodingWorkflowPrompt("解释当前函数", [], false, {
+      intent: "ask", editorContext: "file:///repo/auth.ts version=7 dirty=true\n未保存函数",
+    });
+    expect(ask).toContain("当前为 Ask");
+    expect(ask).toContain("未保存内容不要求保存");
+    expect(ask).toContain("version=7 dirty=true");
+    expect(ask).toContain("不能提升用户选择的只读权限");
+    const plan = buildCodingWorkflowPrompt("规划重构", [], false, { intent: "plan" });
+    expect(plan).toContain("当前为 Plan");
+    expect(plan).toContain("工程只读，不创建计划文件");
+    expect(plan).toContain("只有用户点击执行后才进入 Agent");
   });
 
   it("builds bounded instructions for plan repair and node continuation", () => {

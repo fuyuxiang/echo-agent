@@ -1,3 +1,4 @@
+import { confirmedRunPaths, releaseDocumentRun } from "./coding-document-tools";
 import { useEffect, useRef, useState } from "react";
 
 import { terminalSessionStatus } from "@/lib/turn-status";
@@ -75,6 +76,7 @@ export function useTaskLifecycle(
       !cwd
       || !taskId
       || !taskSessionId
+      || !task?.strictWorkflow
       || !runtimePlan
       || runtimePlan.entries.length === 0
       || !["discovering", "implementing", "repairing"].includes(taskPhase ?? "")
@@ -129,7 +131,12 @@ export function useTaskLifecycle(
     setSettling(true);
     void (async () => {
       try {
-        if (runtimePlan?.entries.length) {
+        if (terminalMessage?.promptId) {
+          await codingApi.checkpointStart(cwd,taskId,terminalMessage.promptId);
+          await codingApi.checkpointFinish(cwd,taskId,terminalMessage.promptId,confirmedRunPaths(taskSessionId,terminalMessage.promptId));
+          releaseDocumentRun(taskSessionId,terminalMessage.promptId);
+        }
+        if (runtimePlan?.entries.length && task?.strictWorkflow) {
           await codingApi.syncPlan(cwd, taskId, parseRuntimePlan(runtimePlan));
         }
         if (outcome === "paused" || outcome === "stopped") {
@@ -144,7 +151,7 @@ export function useTaskLifecycle(
           );
         } else {
           await codingApi.syncChanges(cwd, taskId);
-          await codingApi.reportImplementation(cwd, taskId);
+          await codingApi.reportImplementation(cwd, taskId, terminalMessage?.promptId);
         }
         await refresh();
       } catch (error) {

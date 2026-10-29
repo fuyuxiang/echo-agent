@@ -16,7 +16,7 @@ impl AsyncTerminalRunner for DummyTerminal {
 async fn persist_ack_waits_for_disk_flush_before_success() {
     let local = tokio::task::LocalSet::new();
     local
-        .run_until(async {
+        .run_until(Box::pin(async {
             let tmp = tempfile::TempDir::new().unwrap();
             let session_dir = tmp.path().join("session");
             let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
@@ -150,6 +150,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 )),
                 current_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
+                desktop_document_turn: std::cell::Cell::new(false),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
@@ -326,24 +327,23 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
             ))];
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
-            let prompt_task = tokio::task::spawn_local(async move {
-                actor_for_prompt
-                    .handle_prompt(
-                        "persist-ack-test",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        true,
-                        false,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    )
-                    .await
-            });
+            let prompt_task = tokio::task::spawn_local(Box::pin(async move {
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "persist-ack-test",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
+                .await
+            }));
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
             let storage = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
                 session_dir,
@@ -360,7 +360,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 "loaded chat history should contain the just-persisted prompt"
             );
             let _ = prompt_task.await.expect("prompt task should complete");
-        })
+        }))
         .await;
 }
 #[tokio::test(flavor = "current_thread")]
@@ -487,7 +487,9 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
 async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history() {
     let local = tokio::task::LocalSet::new();
     local
-        .run_until(async {
+        // This integration fixture embeds a full recovery turn. Keep its
+        // debug future on the heap so the ordinary test-thread stack suffices.
+        .run_until(Box::pin(async {
             let session_dir = tempfile::tempdir().expect("tempdir");
             let session_info = crate::session::info::Info {
                 id: acp::SessionId::new("persist-memory-disabled"),
@@ -643,6 +645,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 )),
                 current_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
+                desktop_document_turn: std::cell::Cell::new(false),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
@@ -817,9 +820,13 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 workspace_ops: echo_agent_workspace::WorkspaceOps::for_test(),
                 trace_config_template: std::cell::RefCell::new(None),
             });
-            let _ = actor
-                .process_conversation_turn_with_recovery("disabled-memory", None, None, None)
-                .await;
+            let _ = Box::pin(actor.process_conversation_turn_with_recovery(
+                "disabled-memory",
+                None,
+                None,
+                None,
+            ))
+            .await;
             let (flush_tx, flush_rx) = tokio::sync::oneshot::channel();
             persistence
                 .tx
@@ -851,7 +858,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     .injection_count
                     .load(std::sync::atomic::Ordering::Relaxed)
             );
-        })
+        }))
         .await;
 }
 /// Hard teardown (`kill_background_tasks = true`, the subagent-shutdown path)
@@ -951,6 +958,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     parking_lot::Mutex::new(PromptMode::Agent),
                 ),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
+                desktop_document_turn: std::cell::Cell::new(false),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
@@ -1476,7 +1484,7 @@ async fn maybe_apply_interrupt_envelope_skips_verbatim() {
 async fn handle_prompt_frames_interrupt_on_user_message() {
     let local = tokio::task::LocalSet::new();
     local
-        .run_until(async {
+        .run_until(Box::pin(async {
             let actor = actor_with_persistence_drain().await;
             actor.events.set_pending_interrupt_reminder();
             let query = "follow-up after interrupt";
@@ -1485,24 +1493,23 @@ async fn handle_prompt_frames_interrupt_on_user_message() {
             ))];
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
-            let prompt_task = tokio::task::spawn_local(async move {
-                actor_for_prompt
-                    .handle_prompt(
-                        "interrupt-wiring-test",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                        false,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    )
-                    .await
-            });
+            let prompt_task = tokio::task::spawn_local(Box::pin(async move {
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "interrupt-wiring-test",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    false,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
+                .await
+            }));
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
             let conv = actor.chat_state_handle.get_conversation().await;
             let user = conv
@@ -1517,7 +1524,7 @@ async fn handle_prompt_frames_interrupt_on_user_message() {
             assert_eq!(text, frame_user_turn(INTERRUPT_NOTE, &expected_assembled));
             assert!(!actor.events.take_pending_interrupt_reminder());
             prompt_task.abort();
-        })
+        }))
         .await;
 }
 /// Integration: a verbatim user turn must stay byte-identical to the caller
@@ -1526,7 +1533,7 @@ async fn handle_prompt_frames_interrupt_on_user_message() {
 async fn handle_prompt_verbatim_skips_interrupt_envelope() {
     let local = tokio::task::LocalSet::new();
     local
-        .run_until(async {
+        .run_until(Box::pin(async {
             let actor = actor_with_persistence_drain().await;
             actor.events.set_pending_interrupt_reminder();
             let query = "caller-owned follow-up";
@@ -1535,24 +1542,23 @@ async fn handle_prompt_verbatim_skips_interrupt_envelope() {
             ))];
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
-            let prompt_task = tokio::task::spawn_local(async move {
-                actor_for_prompt
-                    .handle_prompt(
-                        "interrupt-verbatim-test",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        true,
-                        false,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    )
-                    .await
-            });
+            let prompt_task = tokio::task::spawn_local(Box::pin(async move {
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "interrupt-verbatim-test",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
+                .await
+            }));
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
             let conv = actor.chat_state_handle.get_conversation().await;
             let user = conv
@@ -1566,7 +1572,7 @@ async fn handle_prompt_verbatim_skips_interrupt_envelope() {
             assert!(!user.text_content().contains(INTERRUPT_NOTE));
             assert!(!actor.events.take_pending_interrupt_reminder());
             prompt_task.abort();
-        })
+        }))
         .await;
 }
 /// Send-now must use the full interjection envelope (prefix + already-wrapped
@@ -1575,7 +1581,7 @@ async fn handle_prompt_verbatim_skips_interrupt_envelope() {
 async fn handle_prompt_send_now_frames_interjection_envelope() {
     let local = tokio::task::LocalSet::new();
     local
-        .run_until(async {
+        .run_until(Box::pin(async {
             let actor = actor_with_persistence_drain().await;
             let query = "create /tmp/A";
             let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
@@ -1583,24 +1589,23 @@ async fn handle_prompt_send_now_frames_interjection_envelope() {
             ))];
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
-            let prompt_task = tokio::task::spawn_local(async move {
-                actor_for_prompt
-                    .handle_prompt(
-                        "send-now-envelope-test",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                        true,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    )
-                    .await
-            });
+            let prompt_task = tokio::task::spawn_local(Box::pin(async move {
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "send-now-envelope-test",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    true,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
+                .await
+            }));
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
             let conv = actor.chat_state_handle.get_conversation().await;
             let user = conv
@@ -1619,7 +1624,7 @@ async fn handle_prompt_send_now_frames_interjection_envelope() {
                 )
             );
             prompt_task.abort();
-        })
+        }))
         .await;
 }
 /// Integration: a synthetic-origin turn (here `scheduler-fired-*`) driven
@@ -1630,7 +1635,7 @@ async fn handle_prompt_send_now_frames_interjection_envelope() {
 async fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
     let local = tokio::task::LocalSet::new();
     local
-        .run_until(async {
+        .run_until(Box::pin(async {
             let actor = actor_with_persistence_drain().await;
             actor.events.set_pending_interrupt_reminder();
             let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
@@ -1638,24 +1643,23 @@ async fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
             ))];
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
-            let prompt_task = tokio::task::spawn_local(async move {
-                actor_for_prompt
-                    .handle_prompt(
-                        "scheduler-fired-test-1",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        true,
-                        false,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    )
-                    .await
-            });
+            let prompt_task = tokio::task::spawn_local(Box::pin(async move {
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "scheduler-fired-test-1",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
+                .await
+            }));
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
             assert!(
                 actor.events.take_pending_interrupt_reminder(),
@@ -1669,7 +1673,7 @@ async fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
                 "a synthetic-origin turn must not inject the interrupt envelope"
             );
             prompt_task.abort();
-        })
+        }))
         .await;
 }
 #[tokio::test(flavor = "current_thread")]
@@ -2496,6 +2500,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     parking_lot::Mutex::new(PromptMode::Agent),
                 ),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
+                desktop_document_turn: std::cell::Cell::new(false),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),

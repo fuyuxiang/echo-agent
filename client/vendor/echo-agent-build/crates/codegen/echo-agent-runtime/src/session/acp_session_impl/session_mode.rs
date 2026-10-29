@@ -30,7 +30,63 @@ pub(super) fn filter_cursor_tools_by_plan_mode(
 ) -> Vec<ToolDefinition> {
     defs
 }
+/// Read-only turns use a closed capability set. New/unknown tools fail closed;
+/// shell, MCP, dynamic dispatch and mode-changing tools are excluded. Task
+/// children inherit the immutable authority and are bound to the parent turn.
+/// Tool names are resolved from registry metadata, so aliases cannot widen it.
+pub(super) fn readonly_tool_kind_allowed(
+    kind: Option<echo_agent_tools::types::tool::ToolKind>,
+) -> bool {
+    use echo_agent_tools::types::tool::ToolKind;
+    matches!(
+        kind,
+        Some(
+            ToolKind::Read
+                | ToolKind::ListDir
+                | ToolKind::Search
+                | ToolKind::MemorySearch
+                | ToolKind::MemoryGet
+                | ToolKind::AskUser
+                | ToolKind::Task
+        )
+    )
+}
+
+pub(super) fn readonly_tool_input_allowed(input: &ToolInput) -> bool {
+    if let ToolInput::Task(task) = input {
+        return task.cwd.is_none()
+            && task.resume_from.is_none()
+            && matches!(
+                task.isolation,
+                None | Some(echo_agent_tool_types::SubagentIsolationMode::None)
+            );
+    }
+    matches!(
+        input,
+        ToolInput::ReadFile(_)
+            | ToolInput::ListDir(_)
+            | ToolInput::Grep(_)
+            | ToolInput::CodexReadFile(_)
+            | ToolInput::CodexListDir(_)
+            | ToolInput::CodexGrepFiles(_)
+            | ToolInput::MemorySearch(_)
+            | ToolInput::MemoryGet(_)
+            | ToolInput::AskUserQuestion(_)
+    )
+}
+
 impl SessionActor {
+    /// Immutable turn-start authority is the ceiling even if a model tool,
+    /// custom rule or a next-turn mode selector changes the displayed mode.
+    pub(super) fn is_readonly_turn(&self) -> bool {
+        self.turn_start_prompt_mode.lock().is_read_only()
+            || self
+                .startup_hints
+                .inherited_turn_authority
+                .as_ref()
+                .is_some_and(|authority| authority.prompt_mode.is_read_only())
+    }
+
     /// A prompt rewrite cannot remove the previous profile's registered tools.
     /// Rebuild at automation boundaries and propagate a busy/build failure to ACP
     /// before advertising the new mode. The existing rebuild preserves history
@@ -39,6 +95,15 @@ impl SessionActor {
         &self,
         mode: acp::SessionModeId,
     ) -> Result<(), acp::Error> {
+        if self.client_identifier.as_deref() == Some("echo-agent-desktop")
+            && matches!(mode.0.as_ref(), "default" | "ask" | "plan")
+            && self.state.lock().await.running_task.is_some()
+        {
+            // The selector applies to the next user turn. Keep the actual
+            // running turn's immutable authority and plan tracker untouched.
+            *self.current_prompt_mode.lock() = prompt_mode_from_session_mode_id(&mode);
+            return Ok(());
+        }
         let active = self.active_agent_type.lock().clone();
         let was_automation = matches!(active.as_deref(), Some("computer-use" | "browser-use"));
         let entering_automation = matches!(mode.0.as_ref(), "computer_use" | "browser_use");
@@ -260,6 +325,14 @@ impl SessionActor {
                 }
             }
         }
+        if self.client_identifier.as_deref() == Some("echo-agent-desktop")
+            || self.startup_hints.inherited_turn_authority.is_some()
+        {
+            // Each admitted prompt has durable authority even for Ask↔Agent
+            // transitions that do not enter/leave the plan tracker. This rail
+            // persists to updates.jsonl and is replayed on renderer/restart.
+            self.enqueue_current_mode_update(session_mode_id_from_prompt_mode(prompt_mode));
+        }
     }
     /// Inject plan mode system-reminders into the conversation.
     ///
@@ -457,5 +530,64 @@ impl SessionActor {
             .notifications
             .persistence_tx
             .send(PersistenceMsg::PlanModeState(snapshot));
+    }
+}
+
+#[cfg(test)]
+mod readonly_capability_tests {
+    use super::*;
+    use echo_agent_tools::types::tool::ToolKind;
+    #[test]
+    fn readonly_capabilities_exclude_execution_dispatch_and_mode_escalation() {
+        for kind in [
+            ToolKind::Execute,
+            ToolKind::Write,
+            ToolKind::Edit,
+            ToolKind::UseTool,
+            ToolKind::SearchTool,
+            ToolKind::Skill,
+            ToolKind::Workflow,
+            ToolKind::EnterPlan,
+            ToolKind::ExitPlan,
+            ToolKind::Other,
+        ] {
+            assert!(!readonly_tool_kind_allowed(Some(kind)), "{kind:?}");
+        }
+        assert!(!readonly_tool_kind_allowed(None));
+        assert!(readonly_tool_kind_allowed(Some(ToolKind::Read)));
+        assert!(readonly_tool_kind_allowed(Some(ToolKind::Search)));
+        assert!(readonly_tool_kind_allowed(Some(ToolKind::Task)));
+    }
+    #[test]
+    fn dynamic_tool_cannot_claim_readonly_via_its_name_or_arguments() {
+        assert!(!readonly_tool_input_allowed(&ToolInput::Dynamic(
+            serde_json::json!({
+                "name": "read_file", "readOnlyHint": true
+            })
+        )));
+        let input = ToolInput::Bash(
+            echo_agent_tools::implementations::echo_agent_build::bash::BashToolInput {
+                command: "cat README.md".into(),
+                timeout: None,
+                description: "read".into(),
+                is_background: false,
+            },
+        );
+        assert!(!readonly_tool_input_allowed(&input));
+    }
+    #[test]
+    fn readonly_child_cannot_request_worktree_resume_or_other_cwd() {
+        let mut task: echo_agent_tool_types::TaskToolInput =
+            serde_json::from_value(serde_json::json!({"prompt":"review","description":"review"}))
+                .unwrap();
+        assert!(readonly_tool_input_allowed(&ToolInput::Task(task.clone())));
+        task.cwd = Some("/other-workspace".into());
+        assert!(!readonly_tool_input_allowed(&ToolInput::Task(task.clone())));
+        task.cwd = None;
+        task.resume_from = Some("old-child".into());
+        assert!(!readonly_tool_input_allowed(&ToolInput::Task(task.clone())));
+        task.resume_from = None;
+        task.isolation = Some(echo_agent_tool_types::SubagentIsolationMode::Worktree);
+        assert!(!readonly_tool_input_allowed(&ToolInput::Task(task)));
     }
 }

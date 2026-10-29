@@ -122,21 +122,23 @@ pub fn only_test_changes(set: &ChangeSet) -> bool {
 }
 
 pub fn needs_test_first(root: &Path, task: &CodingTask, set: &ChangeSet) -> bool {
-    !crate::coding::documentation::is_read_only_task(task)
+    task.strict_workflow
+        && !crate::coding::documentation::is_read_only_task(task)
         && !test_commands(root, task).is_empty()
         && set.changes.iter().any(|change| !is_test_path(&change.path))
 }
 
 pub fn should_pause_for_red(root: &Path, task: &CodingTask, set: &ChangeSet) -> bool {
     let evidence = load(root, &task.id);
-    evidence.red_record_id.is_none()
+    task.strict_workflow
+        && evidence.red_record_id.is_none()
         && evidence.waiver_reason.is_none()
         && !test_commands(root, task).is_empty()
         && only_test_changes(set)
 }
 
 pub fn can_resume(root: &Path, task: &CodingTask) -> bool {
-    if task.phase_reason.as_deref() != Some("等待红灯测试验证") {
+    if !task.strict_workflow || task.phase_reason.as_deref() != Some("等待红灯测试验证") {
         return true;
     }
     let evidence = load(root, &task.id);
@@ -568,6 +570,7 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("test.cjs"), "const test=require('node:test'); const assert=require('node:assert/strict'); test('existing regression',()=>assert.equal(require('./implementation.cjs').value,42));\n").unwrap();
         let mut task = task::create_task(root, "Existing regression", "Fix existing test").unwrap();
+        task.strict_workflow = true;
         task.phase = TaskPhase::Discovering;
         task.created_at = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
         task.task_nodes[0].verification_commands = vec!["node --test".into()];
@@ -947,6 +950,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let mut coding_task = task::create_task(root, "TDD", "Fix behavior").unwrap();
+        coding_task.strict_workflow = true;
         coding_task.task_nodes[0].verification_commands = vec!["pnpm test".into()];
         coding_task.phase = TaskPhase::Paused;
         coding_task.phase_reason = Some("等待红灯测试验证".into());

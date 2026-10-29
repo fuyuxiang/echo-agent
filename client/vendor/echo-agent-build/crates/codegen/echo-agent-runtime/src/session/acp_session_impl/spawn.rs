@@ -1799,6 +1799,7 @@ pub(crate) async fn spawn_session_actor(
         turn_abort: Default::default(),
         turn_end_tx: Default::default(),
         client_hooks: std::cell::RefCell::new(client_hooks),
+        desktop_document_turn: std::cell::Cell::new(false),
         hook_resolved_workspace_root: resolved_workspace_root,
         vcs_kind: {
             let root = std::path::Path::new(&session_info.cwd);

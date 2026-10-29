@@ -7,7 +7,7 @@
 //! than overwriting it with Git HEAD or silently ignoring Agent changes on top.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use crate::coding_workspace::{git_snapshot, CodingGitFile};
@@ -88,6 +88,9 @@ pub struct BaselineFile {
     pub existed: bool,
     pub content_base64: Option<String>,
     pub hash: Option<String>,
+    /// Missing only in legacy snapshots, whose original mode is unknown.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -147,6 +150,7 @@ pub struct ChangeSet {
 #[serde(rename_all = "camelCase")]
 pub struct ChangeSetView {
     pub task_id: String,
+    pub content_revision: String,
     pub baseline_mode: Option<BaselineMode>,
     pub changes: Vec<FileChangeView>,
     pub created_at: String,
@@ -160,6 +164,7 @@ impl From<&ChangeSet> for ChangeSetView {
     fn from(set: &ChangeSet) -> Self {
         Self {
             task_id: set.task_id.clone(),
+            content_revision: set.content_revision(),
             baseline_mode: set.baseline_mode,
             changes: set.changes.iter().map(FileChangeView::from).collect(),
             created_at: set.created_at.clone(),
@@ -204,6 +209,13 @@ impl ChangeSet {
 
     pub fn content_revision(&self) -> String {
         let mut hasher = Sha256::new();
+        hasher.update(
+            self.baseline_head
+                .as_deref()
+                .unwrap_or("filesystem")
+                .as_bytes(),
+        );
+        hasher.update([0]);
         for (path, hash) in &self.change_hashes {
             hasher.update(path.as_bytes());
             hasher.update([0]);
@@ -253,7 +265,14 @@ pub fn load(root: &Path, task_id: &str) -> ChangeSet {
 
 fn save(root: &Path, set: &ChangeSet) -> Result<(), String> {
     store::validate_task_id(&set.task_id)?;
-    store::write_json(&changeset_path(root, &set.task_id), set)
+    let path = changeset_path(root, &set.task_id);
+    if path.exists() && store::read_json::<ChangeSet>(&path).is_none() {
+        return Err(format!(
+            "变更记录损坏，已保留原文件，请检查 {}",
+            path.display()
+        ));
+    }
+    store::write_json(&path, set)
 }
 
 /// Reject paths that try to escape the workspace before any write or delete.
@@ -337,6 +356,8 @@ fn hash_bytes(bytes: &[u8]) -> String {
 
 fn git_head(root: &Path) -> Result<String, String> {
     let repository = crate::process_supervisor::background_sync_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(crate::coding_workspace::read_only_git_overrides(root)?)
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(root)
         .output()
@@ -366,6 +387,8 @@ fn git_head(root: &Path) -> Result<String, String> {
     }
 
     let output = crate::process_supervisor::background_sync_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(crate::coding_workspace::read_only_git_overrides(root)?)
         .args(["rev-parse", "--verify", "HEAD"])
         .current_dir(root)
         .output()
@@ -434,6 +457,43 @@ fn normalized_git_path(path: &[u8]) -> Result<String, String> {
     Ok(path.replace('\\', "/"))
 }
 
+pub(crate) fn content_hash_for_mode(bytes: &[u8], mode: &str) -> String {
+    let hash = hash_bytes(bytes);
+    if mode == "100755" {
+        format!("100755:{hash}")
+    } else if mode == "120000" {
+        format!("120000:{hash}")
+    } else {
+        hash
+    }
+}
+
+fn executable_mode(path: &Path) -> &'static str {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::symlink_metadata(path)
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        {
+            return "100755";
+        }
+    }
+    "100644"
+}
+
+fn baseline_hash_matches(baseline: &BaselineFile, current: Option<&str>) -> bool {
+    let current = if baseline.mode.is_none() {
+        current.map(|hash| hash.strip_prefix("100755:").unwrap_or(hash))
+    } else {
+        current
+    };
+    baseline.hash.as_deref() == current
+}
+
+fn live_content_hash(root: &Path, path: &str, bytes: &[u8]) -> String {
+    content_hash_for_mode(bytes, executable_mode(&root.join(path)))
+}
+
 fn hash_regular_file(path: &Path) -> Result<String, String> {
     let mut file = std::fs::File::open(path)
         .map_err(|error| format!("读取 {} 失败：{error}", path.display()))?;
@@ -476,13 +536,20 @@ fn live_file(root: &Path, path: &str) -> Result<LiveFile, String> {
     if metadata.len() <= MAX_BASELINE_BYTES as u64 {
         let bytes = std::fs::read(&target).map_err(|error| format!("读取 {path} 失败：{error}"))?;
         return Ok(LiveFile {
-            hash: hash_bytes(&bytes),
+            hash: live_content_hash(root, path, &bytes),
             content: Some(bytes),
             regular: true,
         });
     }
     Ok(LiveFile {
-        hash: hash_regular_file(&target)?,
+        hash: {
+            let hash = hash_regular_file(&target)?;
+            if executable_mode(&target) == "100755" {
+                format!("100755:{hash}")
+            } else {
+                hash
+            }
+        },
         content: None,
         regular: true,
     })
@@ -538,6 +605,7 @@ fn checkpoint_baseline(
     match std::fs::symlink_metadata(&target) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(BaselineFile {
+                mode: None,
                 path: path.to_string(),
                 existed: false,
                 content_base64: None,
@@ -556,6 +624,15 @@ fn checkpoint_baseline(
         true
     });
     Ok(BaselineFile {
+        mode: Some(
+            if std::fs::symlink_metadata(&target)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                "120000".into()
+            } else {
+                executable_mode(&target).into()
+            },
+        ),
         path: path.to_string(),
         existed: true,
         content_base64: content.map(|bytes| STANDARD.encode(bytes)),
@@ -565,6 +642,8 @@ fn checkpoint_baseline(
 
 fn git_tracked_paths(root: &Path) -> Result<BTreeSet<String>, String> {
     let output = crate::process_supervisor::background_sync_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(crate::coding_workspace::read_only_git_overrides(root)?)
         .args(["ls-files", "--cached", "-z"])
         .current_dir(root)
         .output()
@@ -585,6 +664,8 @@ fn git_tracked_paths(root: &Path) -> Result<BTreeSet<String>, String> {
 
 fn git_dirty_paths(root: &Path) -> Result<Vec<String>, String> {
     let output = crate::process_supervisor::background_sync_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(crate::coding_workspace::read_only_git_overrides(root)?)
         .args([
             "status",
             "--porcelain=v1",
@@ -745,6 +826,7 @@ pub fn record_change(root: &Path, task_id: &str, change: FileChange) -> Result<C
     {
         let baseline_bytes = change.baseline_content.as_deref().map(str::as_bytes);
         set.baseline_entries.push(BaselineFile {
+            mode: None,
             path: change.path.clone(),
             existed: baseline_bytes.is_some(),
             content_base64: baseline_bytes.map(|bytes| STANDARD.encode(bytes)),
@@ -852,6 +934,8 @@ fn mark_reviewed_if_current(
 
 async fn current_head(root: &Path) -> Result<String, String> {
     let output = crate::process_supervisor::background_async_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(crate::coding_workspace::read_only_git_overrides(root)?)
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()
@@ -921,6 +1005,7 @@ async fn baseline_from_git(
 ) -> Result<BaselineFile, String> {
     if matches!(live.status.as_str(), "added" | "untracked") {
         return Ok(BaselineFile {
+            mode: None,
             path: live.path.clone(),
             existed: false,
             content_base64: None,
@@ -929,6 +1014,8 @@ async fn baseline_from_git(
     }
     let spec = format!("{head}:{}", live.path);
     let output = crate::process_supervisor::background_async_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(crate::coding_workspace::read_only_git_overrides(root)?)
         .args(["show", "--no-ext-diff", &spec])
         .current_dir(root)
         .output()
@@ -940,10 +1027,27 @@ async fn baseline_from_git(
     if output.stdout.len() > MAX_BASELINE_BYTES {
         return Err(format!("{} 超过 16 MB 安全快照上限", live.path));
     }
+    let mode_output = crate::process_supervisor::background_async_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(crate::coding_workspace::read_only_git_overrides(root)?)
+        .args(["ls-tree", "-z", head, "--", &live.path])
+        .current_dir(root)
+        .output()
+        .await
+        .map_err(|error| format!("读取文件模式失败：{error}"))?;
+    let mode = String::from_utf8_lossy(&mode_output.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or("100644")
+        .to_string();
+    if mode != "100644" && mode != "100755" {
+        return Err(format!("{} 的文件类型不支持自动恢复", live.path));
+    }
     Ok(BaselineFile {
+        mode: Some(mode.clone()),
         path: live.path.clone(),
         existed: true,
-        hash: Some(hash_bytes(&output.stdout)),
+        hash: Some(content_hash_for_mode(&output.stdout, &mode)),
         content_base64: Some(STANDARD.encode(output.stdout)),
     })
 }
@@ -967,14 +1071,71 @@ async fn sync_from_git_with_set(root: &Path, mut set: ChangeSet) -> Result<Chang
             "该任务使用 Git 基线，但当前工作区已不是 Git 仓库；为避免覆盖文件，已停止同步".into(),
         );
     }
-    if set.committed_hash.is_some() {
-        return Ok(set);
+    let head = current_head(root).await?;
+    if let Some(committed) = set.committed_hash.clone() {
+        if set.baseline_head.as_deref() != Some(committed.as_str()) && head == committed {
+            let paths = set.committed_paths.clone();
+            let mut partial = BTreeMap::new();
+            for path in paths.iter().filter(|path| set.is_pre_existing(path)) {
+                let baseline = baseline_for(&set, path)?;
+                let original = baseline
+                    .content_base64
+                    .as_deref()
+                    .and_then(|encoded| STANDARD.decode(encoded).ok())
+                    .ok_or_else(|| {
+                        format!("旧部分提交的 {path} 缺少原始内容；已保留历史，不能自动迁移")
+                    })?;
+                let old_head = set
+                    .baseline_head
+                    .as_deref()
+                    .ok_or("旧部分提交缺少原始 HEAD")?;
+                let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+                let ours = temp.path().join("original-user");
+                let ancestor = temp.path().join("old-head");
+                let theirs = temp.path().join("committed");
+                std::fs::write(&ours, original).map_err(|error| error.to_string())?;
+                for (head, target) in [(old_head, &ancestor), (committed.as_str(), &theirs)] {
+                    let output = crate::process_supervisor::background_sync_command("git")
+                        .env("GIT_OPTIONAL_LOCKS", "0")
+                        .args(crate::coding_workspace::read_only_git_overrides(root)?)
+                        .args(["show", &format!("{head}:{path}")])
+                        .current_dir(root)
+                        .output()
+                        .map_err(|error| error.to_string())?;
+                    if !output.status.success() {
+                        return Err(format!("旧部分提交的 {path} Git 对象不可读取，原数据保留"));
+                    }
+                    std::fs::write(target, output.stdout).map_err(|error| error.to_string())?;
+                }
+                let merged = crate::process_supervisor::background_sync_command("git")
+                    .env("GIT_OPTIONAL_LOCKS", "0")
+                    .args(crate::coding_workspace::read_only_git_overrides(root)?)
+                    .args(["merge-file", "-p"])
+                    .arg(&ours)
+                    .arg(&ancestor)
+                    .arg(&theirs)
+                    .output()
+                    .map_err(|error| error.to_string())?;
+                if !merged.status.success() {
+                    return Err(format!(
+                        "旧部分提交的 {path} 迁移发生冲突；原文件与历史均已保留，请手工核对"
+                    ));
+                }
+                partial.insert(
+                    path.clone(),
+                    String::from_utf8(merged.stdout)
+                        .map_err(|_| "旧部分提交不是可迁移文本".to_string())?,
+                );
+            }
+            // Old releases froze tasks after one commit. Advance only their
+            // known committed baselines, preserving all unselected snapshots.
+            set = mark_committed_with_baselines(root, &set.task_id, &committed, &paths, &partial)?;
+        }
     }
     let baseline_head = set
         .baseline_head
         .clone()
         .ok_or_else(|| "任务缺少安全基线，请新建任务后重试".to_string())?;
-    let head = current_head(root).await?;
     if head != baseline_head {
         return Err("任务执行期间 Git HEAD 已改变，为避免覆盖新提交，已停止自动同步".into());
     }
@@ -993,7 +1154,9 @@ async fn sync_from_git_with_set(root: &Path, mut set: ChangeSet) -> Result<Chang
         let (current, current_hash, current_exists) =
             match read_workspace_bytes_async(root, &live.path).await {
                 Ok(bytes) => {
-                    let hash = bytes.as_deref().map(hash_bytes);
+                    let hash = bytes
+                        .as_deref()
+                        .map(|bytes| live_content_hash(root, &live.path, bytes));
                     let exists = bytes.is_some();
                     (bytes, hash, exists)
                 }
@@ -1023,6 +1186,7 @@ async fn sync_from_git_with_set(root: &Path, mut set: ChangeSet) -> Result<Chang
                 Err(_) => {
                     unsafe_files.push(live.path.clone());
                     BaselineFile {
+                        mode: None,
                         path: live.path.clone(),
                         existed: !matches!(live.status.as_str(), "added" | "untracked"),
                         content_base64: None,
@@ -1031,7 +1195,8 @@ async fn sync_from_git_with_set(root: &Path, mut set: ChangeSet) -> Result<Chang
                 }
             }
         };
-        let unchanged = baseline.existed == current_exists && baseline.hash == current_hash;
+        let unchanged = baseline.existed == current_exists
+            && baseline_hash_matches(&baseline, current_hash.as_deref());
         if unchanged {
             continue;
         }
@@ -1077,7 +1242,9 @@ async fn sync_from_git_with_set(root: &Path, mut set: ChangeSet) -> Result<Chang
         let (current, current_hash, current_exists) =
             match read_workspace_bytes_async(root, &baseline.path).await {
                 Ok(bytes) => {
-                    let hash = bytes.as_deref().map(hash_bytes);
+                    let hash = bytes
+                        .as_deref()
+                        .map(|bytes| live_content_hash(root, &baseline.path, bytes));
                     let exists = bytes.is_some();
                     (bytes, hash, exists)
                 }
@@ -1091,7 +1258,9 @@ async fn sync_from_git_with_set(root: &Path, mut set: ChangeSet) -> Result<Chang
                     }
                 }
             };
-        if baseline.existed == current_exists && baseline.hash == current_hash {
+        if baseline.existed == current_exists
+            && baseline_hash_matches(&baseline, current_hash.as_deref())
+        {
             continue;
         }
         hashes.insert(
@@ -1157,9 +1326,6 @@ pub fn sync_from_filesystem(root: &Path, task_id: &str) -> Result<ChangeSet, Str
 }
 
 fn sync_from_filesystem_with_set(root: &Path, mut set: ChangeSet) -> Result<ChangeSet, String> {
-    if set.committed_hash.is_some() {
-        return Ok(set);
-    }
     if set.effective_baseline_mode() != BaselineMode::Filesystem {
         return Err("当前任务不是本地检查点模式".into());
     }
@@ -1186,6 +1352,7 @@ fn sync_from_filesystem_with_set(root: &Path, mut set: ChangeSet) -> Result<Chan
         };
         let baseline = entries.get(&path).cloned().unwrap_or_else(|| {
             let baseline = BaselineFile {
+                mode: None,
                 path: path.clone(),
                 existed: false,
                 content_base64: None,
@@ -1194,7 +1361,7 @@ fn sync_from_filesystem_with_set(root: &Path, mut set: ChangeSet) -> Result<Chan
             entries.insert(path.clone(), baseline.clone());
             baseline
         });
-        if baseline.existed && baseline.hash.as_deref() == Some(live.hash.as_str()) {
+        if baseline.existed && baseline_hash_matches(&baseline, Some(live.hash.as_str())) {
             continue;
         }
 
@@ -1387,7 +1554,25 @@ fn restore_one(root: &Path, baseline: &BaselineFile) -> Result<(), String> {
             Err(error) => return Err(format!("无法检查 {}：{error}", baseline.path)),
         }
         std::fs::write(&target, content)
-            .map_err(|error| format!("还原 {} 失败：{error}", baseline.path))
+            .map_err(|error| format!("还原 {} 失败：{error}", baseline.path))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&target)
+                .map_err(|error| error.to_string())?
+                .permissions();
+            let mode = permissions.mode();
+            if let Some(captured_mode) = baseline.mode.as_deref() {
+                permissions.set_mode(if captured_mode == "100755" {
+                    mode | 0o111
+                } else {
+                    mode & !0o111
+                });
+            }
+            std::fs::set_permissions(&target, permissions)
+                .map_err(|error| format!("恢复 {} 文件模式失败：{error}", baseline.path))?;
+        }
+        Ok(())
     } else {
         match std::fs::symlink_metadata(&target) {
             Ok(metadata) => {
@@ -1409,6 +1594,136 @@ fn restore_one(root: &Path, baseline: &BaselineFile) -> Result<(), String> {
         }
         Ok(())
     }
+}
+
+/// Restore a single checkpoint file under the same native lease used by
+/// closed-document writes. Stage bytes before a final hash/parent check so
+/// both competing native edits and longer disk writes fail closed.
+fn restore_one_if_current(
+    root: &Path,
+    baseline: &BaselineFile,
+    expected: &str,
+) -> Result<(), String> {
+    let target = resolve_in_workspace(root, &baseline.path)?;
+    ensure_safe_parent_chain(root, &target, false)?;
+    let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
+    let lease_path = resolve_in_workspace(&canonical_root, &baseline.path)?;
+    let transaction = crate::coding_workspace::document_write_lock(&lease_path)?;
+    let _guard = transaction
+        .lock()
+        .map_err(|_| "文档写入协调状态已损坏".to_string())?;
+    if live_hash_for_path(root, &baseline.path)? != expected {
+        return Err("恢复冲突：文件在预检之后已变化，已保留当前内容".into());
+    }
+    let metadata = std::fs::symlink_metadata(&target).ok();
+    if metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.is_dir() || metadata.permissions().readonly())
+    {
+        return Err("文件已变为目录或只读，已拒绝恢复".into());
+    }
+    if !baseline.existed {
+        ensure_safe_parent_chain(root, &target, false)?;
+        if live_hash_for_path(root, &baseline.path)? != expected {
+            return Err("恢复冲突：删除前文件已变化，已保留当前内容".into());
+        }
+        if expected != "<deleted>" {
+            std::fs::remove_file(&target).map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+    let content = STANDARD
+        .decode(
+            baseline
+                .content_base64
+                .as_deref()
+                .ok_or_else(|| "缺少可恢复快照".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+    ensure_safe_parent_chain(root, &target, true)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| "文件没有父目录".to_string())?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(".echo-restore-")
+        .suffix(".coding.tmp")
+        .tempfile_in(parent)
+        .map_err(|error| error.to_string())?;
+    staged
+        .write_all(&content)
+        .map_err(|error| error.to_string())?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    if let Some(metadata) = metadata.as_ref().filter(|metadata| metadata.is_file()) {
+        staged
+            .as_file()
+            .set_permissions(metadata.permissions())
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(unix)]
+    if let Some(captured_mode) = baseline.mode.as_deref() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = staged
+            .as_file()
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .permissions();
+        // A temporary file starts at 0600. When recreating a missing regular
+        // file, use the captured Git mode's normal read/write permissions;
+        // existing regular files retain their current read/write bits.
+        let mode = if metadata.as_ref().is_some_and(|metadata| metadata.is_file()) {
+            permissions.mode()
+        } else {
+            0o644
+        };
+        permissions.set_mode(if captured_mode == "100755" {
+            mode | 0o111
+        } else {
+            mode & !0o111
+        });
+        staged
+            .as_file()
+            .set_permissions(permissions)
+            .map_err(|error| error.to_string())?;
+    }
+    let (file, staging) = staged.keep().map_err(|error| error.to_string())?;
+    drop(file);
+    let result = (|| {
+        ensure_safe_parent_chain(root, &target, false)?;
+        if live_hash_for_path(root, &baseline.path)? != expected {
+            return Err("恢复冲突：准备替换期间文件已变化，已保留当前内容".into());
+        }
+        if std::fs::symlink_metadata(&target)
+            .is_ok_and(|metadata| metadata.is_dir() || metadata.permissions().readonly())
+        {
+            return Err("文件已变为目录或只读，已拒绝替换".into());
+        }
+        if let Ok(metadata) = std::fs::symlink_metadata(&target) {
+            if metadata.is_file() {
+                #[allow(unused_mut)]
+                let mut permissions = metadata.permissions();
+                #[cfg(unix)]
+                if let Some(captured_mode) = baseline.mode.as_deref() {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = permissions.mode();
+                    permissions.set_mode(if captured_mode == "100755" {
+                        mode | 0o111
+                    } else {
+                        mode & !0o111
+                    });
+                }
+                std::fs::set_permissions(&staging, permissions)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        crate::paths::replace_file_atomically(&staging, &target)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(staging);
+    }
+    result
 }
 
 pub fn ensure_head_unchanged(root: &Path, set: &ChangeSet) -> Result<(), String> {
@@ -1434,12 +1749,82 @@ fn baseline_for<'a>(set: &'a ChangeSet, path: &str) -> Result<&'a BaselineFile, 
 
 /// Restore every task-related file to its exact task-start content. Returns the
 /// paths that were restored or deleted.
+#[cfg(test)]
 pub fn rollback(root: &Path, task_id: &str) -> Result<Vec<String>, String> {
-    let mut set = load(root, task_id);
-    if set.committed_hash.is_some() {
-        return Err("任务已提交，请使用 Git revert 创建可审计的逆向提交".into());
+    // Legacy snapshot/topology tests exercise the storage primitive directly.
+    // Every production bulk entry goes through receipt ownership below.
+    rollback_inner(root, task_id, false)
+}
+
+fn rollback_agent_owned(root: &Path, task_id: &str) -> Result<Vec<String>, String> {
+    rollback_inner(root, task_id, true)
+}
+
+fn ensure_rollback_receipts(root: &Path, set: &ChangeSet) -> Result<(), String> {
+    let mut checkpoints =
+        read_checkpoints(&store::task_dir(root, &set.task_id).join("checkpoints"));
+    checkpoints.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    for change in &set.changes {
+        let refuse = || {
+            format!("{} 包含来源不明、交错或之后的用户修改，无法安全整体回滚；请使用本轮恢复或逐文件取舍", change.path)
+        };
+        let baseline = baseline_for(set, &change.path)?;
+        let mut expected = baseline.hash.clone().unwrap_or_else(|| "<deleted>".into());
+        let mut owned = false;
+        for checkpoint in &checkpoints {
+            if checkpoint.restored_at.is_some() {
+                continue;
+            }
+            let Some(after) = checkpoint.after_hashes.get(&change.path) else {
+                continue;
+            };
+            // Restores retire confirmed paths while retaining their historical
+            // after hashes. A finished path in neither list was already
+            // restored; it is not another live link in the ownership chain.
+            if checkpoint.finished_at.is_some()
+                && !checkpoint.confirmed_paths.contains(&change.path)
+                && !checkpoint.external_paths.contains(&change.path)
+                && !checkpoint.interleaved_paths.contains(&change.path)
+            {
+                continue;
+            }
+            if checkpoint.task_id != set.task_id
+                || checkpoint.finished_at.is_none()
+                || checkpoint.interleaved_paths.contains(&change.path)
+                || checkpoint.external_paths.contains(&change.path)
+                || !checkpoint.confirmed_paths.contains(&change.path)
+            {
+                return Err(refuse());
+            }
+            let before = checkpoint
+                .before
+                .iter()
+                .find(|entry| entry.path == change.path)
+                .and_then(|entry| entry.hash.as_deref())
+                .unwrap_or("<deleted>");
+            if before != expected {
+                return Err(refuse());
+            }
+            expected = after.clone();
+            owned = true;
+        }
+        if !owned || set.change_hashes.get(&change.path) != Some(&expected) {
+            return Err(refuse());
+        }
     }
+    Ok(())
+}
+
+fn rollback_inner(
+    root: &Path,
+    task_id: &str,
+    require_receipts: bool,
+) -> Result<Vec<String>, String> {
+    let mut set = load(root, task_id);
     ensure_head_unchanged(root, &set)?;
+    if require_receipts {
+        ensure_rollback_receipts(root, &set)?;
+    }
     ensure_changes_current(root, &set)?;
     if !set.rollback_unsafe_files.is_empty() {
         return Err(format!(
@@ -1469,15 +1854,55 @@ pub fn rollback(root: &Path, task_id: &str) -> Result<Vec<String>, String> {
         if baseline_for(&set, &change.path)?.existed {
             continue;
         }
-        restore_one(root, baseline_for(&set, &change.path)?)?;
+        if require_receipts {
+            let expected = set
+                .change_hashes
+                .get(&change.path)
+                .ok_or_else(|| "恢复路径缺少内容版本".to_string())?;
+            restore_one_if_current(root, baseline_for(&set, &change.path)?, expected)?;
+        } else {
+            restore_one(root, baseline_for(&set, &change.path)?)?;
+        }
         restored.push(change.path.clone());
     }
     for change in &set.changes {
         if !baseline_for(&set, &change.path)?.existed {
             continue;
         }
-        restore_one(root, baseline_for(&set, &change.path)?)?;
+        if require_receipts {
+            let expected = set
+                .change_hashes
+                .get(&change.path)
+                .ok_or_else(|| "恢复路径缺少内容版本".to_string())?;
+            restore_one_if_current(root, baseline_for(&set, &change.path)?, expected)?;
+        } else {
+            restore_one(root, baseline_for(&set, &change.path)?)?;
+        }
         restored.push(change.path.clone());
+    }
+    if require_receipts {
+        for mut checkpoint in read_checkpoints(&store::task_dir(root, task_id).join("checkpoints"))
+        {
+            if checkpoint.task_id != task_id {
+                continue;
+            }
+            let previous = checkpoint.confirmed_paths.len();
+            checkpoint
+                .confirmed_paths
+                .retain(|path| !restored.contains(path));
+            if previous == checkpoint.confirmed_paths.len() {
+                continue;
+            }
+            if checkpoint.confirmed_paths.is_empty()
+                && checkpoint.external_paths.is_empty()
+                && checkpoint.interleaved_paths.is_empty()
+            {
+                checkpoint.restored_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+            let path = checkpoint_path(root, task_id, &checkpoint.run_id)?;
+            store::write_json(&path, &checkpoint)
+                .map_err(|error| format!("文件已恢复，但更新回合恢复记录失败：{error}"))?;
+        }
     }
     set.changes.clear();
     set.change_hashes.clear();
@@ -1491,9 +1916,6 @@ pub fn rollback(root: &Path, task_id: &str) -> Result<Vec<String>, String> {
 
 pub fn discard_file(root: &Path, task_id: &str, path: &str) -> Result<ChangeSet, String> {
     let mut set = load(root, task_id);
-    if set.committed_hash.is_some() {
-        return Err("任务已提交，不能再丢弃文件".into());
-    }
     ensure_head_unchanged(root, &set)?;
     let Some(index) = set.changes.iter().position(|change| change.path == path) else {
         return Ok(set);
@@ -1508,7 +1930,7 @@ pub fn discard_file(root: &Path, task_id: &str, path: &str) -> Result<ChangeSet,
     if set.rollback_unsafe_files.iter().any(|entry| entry == path) {
         return Err("该文件没有安全快照，已拒绝丢弃".into());
     }
-    restore_one(root, baseline_for(&set, path)?)?;
+    restore_one_if_current(root, baseline_for(&set, path)?, expected)?;
     set.changes.remove(index);
     set.change_hashes.remove(path);
     set.verified_revision = None;
@@ -1526,6 +1948,9 @@ pub struct ChangeDiff {
     pub modified: String,
     pub binary: bool,
     pub modified_hash: String,
+    /// A full-document edit represents the entire discard only when both
+    /// regular text files exist and no captured file mode needs restoring.
+    pub can_apply_text: bool,
 }
 
 pub fn change_diff(root: &Path, task_id: &str, path: &str) -> Result<ChangeDiff, String> {
@@ -1553,6 +1978,7 @@ pub fn change_diff(root: &Path, task_id: &str, path: &str) -> Result<ChangeDiff,
                 original: "文件过大或不是普通文件：不显示文本差异".into(),
                 modified: "可查看变更状态，但需使用专用工具审阅".into(),
                 binary: true,
+                can_apply_text: false,
                 modified_hash: set
                     .change_hashes
                     .get(path)
@@ -1561,25 +1987,66 @@ pub fn change_diff(root: &Path, task_id: &str, path: &str) -> Result<ChangeDiff,
             });
         }
     };
-    let modified_hash = modified_bytes
-        .as_ref()
-        .map_or_else(|| "<deleted>".to_string(), |bytes| hash_bytes(bytes));
+    let text_metadata_unchanged = baseline.existed
+        && modified_bytes.is_some()
+        && baseline.mode.as_deref() == Some(executable_mode(&resolve_in_workspace(root, path)?));
+    let modified_hash = modified_bytes.as_ref().map_or_else(
+        || "<deleted>".to_string(),
+        |bytes| live_content_hash(root, path, bytes),
+    );
     let original = String::from_utf8(original_bytes);
     let modified = String::from_utf8(modified_bytes.unwrap_or_default());
     match (original, modified) {
-        (Ok(original), Ok(modified)) => Ok(ChangeDiff {
-            original,
-            modified,
-            binary: false,
-            modified_hash,
-        }),
+        (Ok(original), Ok(modified)) if !original.contains('\0') && !modified.contains('\0') => {
+            let can_apply_text = text_metadata_unchanged
+                && original != modified
+                && !original.starts_with('\u{feff}')
+                && !modified.starts_with('\u{feff}')
+                && original.len() <= 2_000_000
+                && modified.len() <= 2_000_000;
+            Ok(ChangeDiff {
+                original,
+                modified,
+                binary: false,
+                modified_hash,
+                can_apply_text,
+            })
+        }
         _ => Ok(ChangeDiff {
             original: "二进制文件：不显示文本差异".into(),
             modified: "二进制文件：请使用专用工具审阅".into(),
             binary: true,
             modified_hash,
+            can_apply_text: false,
         }),
     }
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HunkRevertPreview {
+    pub path: String,
+    /// The complete current document. The editor must match this text and its
+    /// own document version before applying the proposal.
+    pub original: String,
+    pub modified: String,
+}
+
+#[tauri::command]
+pub async fn coding_changeset_revert_hunk_preview(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    task_id: String,
+    path: String,
+    hunk_id: String,
+) -> Result<HunkRevertPreview, String> {
+    let root = access.require_workspace(&root)?;
+    sync_changes(&root, &task_id).await?;
+    tokio::task::spawn_blocking(move || {
+        crate::coding::delivery::revert_hunk_preview(&root, &task_id, &path, &hunk_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 pub fn mark_committed(
@@ -1588,18 +2055,124 @@ pub fn mark_committed(
     hash: &str,
     paths: &[String],
 ) -> Result<ChangeSet, String> {
+    mark_committed_with_baselines(root, task_id, hash, paths, &BTreeMap::new())
+}
+
+pub fn mark_committed_with_baselines(
+    root: &Path,
+    task_id: &str,
+    hash: &str,
+    paths: &[String],
+    partial_baselines: &BTreeMap<String, String>,
+) -> Result<ChangeSet, String> {
     let mut set = load(root, task_id);
+    // Advance only the selected baselines. Unselected task changes and the
+    // user's original dirty files retain their exact pre-commit snapshots.
+    let mut snapshot_bytes = 0;
+    for path in paths {
+        let baseline = if let Some(content) = partial_baselines.get(path) {
+            let output = crate::process_supervisor::background_sync_command("git")
+                .env("GIT_OPTIONAL_LOCKS", "0")
+                .args(crate::coding_workspace::read_only_git_overrides(root)?)
+                .args(["ls-tree", "-z", hash, "--", path])
+                .current_dir(root)
+                .output()
+                .map_err(|error| error.to_string())?;
+            if !output.status.success() {
+                return Err(format!("无法读取部分提交的 {path} 元数据"));
+            }
+            if output.stdout.is_empty() {
+                BaselineFile {
+                    path: path.clone(),
+                    mode: None,
+                    existed: false,
+                    content_base64: None,
+                    hash: None,
+                }
+            } else {
+                let header = String::from_utf8_lossy(&output.stdout);
+                let captured_mode = set
+                    .baseline_entries
+                    .iter()
+                    .find(|entry| &entry.path == path)
+                    .and_then(|entry| entry.mode.clone())
+                    .or_else(|| header.split_whitespace().next().map(str::to_string));
+                BaselineFile {
+                    mode: captured_mode.clone(),
+                    path: path.clone(),
+                    existed: true,
+                    content_base64: Some(STANDARD.encode(content.as_bytes())),
+                    hash: Some(content_hash_for_mode(
+                        content.as_bytes(),
+                        captured_mode.as_deref().unwrap_or("100644"),
+                    )),
+                }
+            }
+        } else {
+            let output = crate::process_supervisor::background_sync_command("git")
+                .env("GIT_OPTIONAL_LOCKS", "0")
+                .args(crate::coding_workspace::read_only_git_overrides(root)?)
+                .args(["ls-tree", "-z", hash, "--", path])
+                .current_dir(root)
+                .output()
+                .map_err(|error| error.to_string())?;
+            if !output.status.success() {
+                return Err(format!("无法读取已提交的 {path} 元数据"));
+            }
+            if output.stdout.is_empty() {
+                BaselineFile {
+                    mode: None,
+                    path: path.clone(),
+                    existed: false,
+                    content_base64: None,
+                    hash: None,
+                }
+            } else {
+                let header = String::from_utf8_lossy(&output.stdout);
+                let mode = header.split_whitespace().next().unwrap_or("100644");
+                let content = crate::process_supervisor::background_sync_command("git")
+                    .env("GIT_OPTIONAL_LOCKS", "0")
+                    .args(crate::coding_workspace::read_only_git_overrides(root)?)
+                    .args(["show", &format!("{hash}:{path}")])
+                    .current_dir(root)
+                    .output()
+                    .map_err(|error| error.to_string())?;
+                if !content.status.success() {
+                    return Err(format!("无法读取已提交的 {path} 内容"));
+                }
+                snapshot_bytes += content.stdout.len();
+                if snapshot_bytes > MAX_FILESYSTEM_SNAPSHOT_BYTES {
+                    return Err("已提交快照超过安全大小限制".into());
+                }
+                BaselineFile {
+                    mode: Some(mode.into()),
+                    path: path.clone(),
+                    existed: true,
+                    content_base64: Some(STANDARD.encode(&content.stdout)),
+                    hash: Some(content_hash_for_mode(&content.stdout, mode)),
+                }
+            }
+        };
+        set.baseline_entries.retain(|entry| &entry.path != path);
+        set.baseline_entries.push(baseline);
+        set.reviewed_hashes.remove(path);
+        if !partial_baselines.contains_key(path) {
+            set.changes.retain(|change| &change.path != path);
+            set.change_hashes.remove(path);
+        }
+    }
+    set.baseline_head = Some(hash.to_string());
     set.committed_hash = Some(hash.to_string());
     set.committed_paths = paths.to_vec();
+    set.verified_revision = None;
+    set.verification_started_revision = None;
+    set.reviewed_files = set.reviewed_hashes.keys().cloned().collect();
     save(root, &set)?;
     Ok(set)
 }
 
 pub fn mark_verified_revision(root: &Path, task_id: &str) -> Result<ChangeSet, String> {
     let mut set = load(root, task_id);
-    if set.changes.is_empty() {
-        return Err("没有可绑定验证结果的任务变更".into());
-    }
     let current = set.content_revision();
     if set.verification_started_revision.as_deref() != Some(current.as_str()) {
         return Err("文件在验证执行期间发生变化，请重新运行完整验证批次".into());
@@ -1612,13 +2185,697 @@ pub fn mark_verified_revision(root: &Path, task_id: &str) -> Result<ChangeSet, S
 
 pub fn mark_verification_started(root: &Path, task_id: &str) -> Result<ChangeSet, String> {
     let mut set = load(root, task_id);
-    if set.changes.is_empty() {
-        return Err("没有可验证的任务变更".into());
-    }
     set.verification_started_revision = Some(set.content_revision());
     set.verified_revision = None;
     save(root, &set)?;
     Ok(set)
+}
+
+/// A turn checkpoint is distinct from the session's accumulated change set.
+/// Only paths confirmed by actual Agent tool events are restorable; observation
+/// of a filesystem delta alone never attributes that delta to the Agent.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct RunCheckpoint {
+    run_id: String,
+    #[serde(default)]
+    mode: Option<String>,
+    task_id: String,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    preserved_buffers: BTreeSet<String>,
+    #[serde(default)]
+    operation_receipts: BTreeSet<String>,
+    #[serde(default)]
+    interleaved_paths: BTreeSet<String>,
+    baseline_head: Option<String>,
+    created_at: String,
+    finished_at: Option<String>,
+    restored_at: Option<String>,
+    before: Vec<BaselineFile>,
+    after_hashes: BTreeMap<String, String>,
+    confirmed_paths: Vec<String>,
+    external_paths: Vec<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointView {
+    pub run_id: String,
+    pub task_id: String,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+    pub restored_at: Option<String>,
+    pub confirmed_paths: Vec<String>,
+    pub external_paths: Vec<String>,
+}
+
+impl From<&RunCheckpoint> for CheckpointView {
+    fn from(value: &RunCheckpoint) -> Self {
+        Self {
+            run_id: value.run_id.clone(),
+            task_id: value.task_id.clone(),
+            created_at: value.created_at.clone(),
+            finished_at: value.finished_at.clone(),
+            restored_at: value.restored_at.clone(),
+            confirmed_paths: value.confirmed_paths.clone(),
+            external_paths: value.external_paths.clone(),
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointRestoreResult {
+    pub restored_paths: Vec<String>,
+    pub conflicts: Vec<String>,
+}
+
+fn checkpoint_path(root: &Path, task_id: &str, run_id: &str) -> Result<PathBuf, String> {
+    store::validate_task_id(task_id)?;
+    store::validate_task_id(run_id)?;
+    Ok(store::task_dir(root, task_id)
+        .join("checkpoints")
+        .join(format!("{run_id}.json")))
+}
+
+fn read_checkpoints(directory: &Path) -> Vec<RunCheckpoint> {
+    std::fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension() == Some(std::ffi::OsStr::new("json")))
+        .filter_map(|entry| store::read_json::<RunCheckpoint>(&entry.path()))
+        .collect()
+}
+
+fn checkpoint_is_superseded(path: &Path, checkpoint: &RunCheckpoint) -> bool {
+    path.parent().is_some_and(|directory| {
+        read_checkpoints(directory).iter().any(|other| {
+            other.run_id != checkpoint.run_id && other.created_at > checkpoint.created_at
+        })
+    })
+}
+
+fn untag_content_hash(hash: &str) -> &str {
+    if hash == "missing" {
+        "<deleted>"
+    } else {
+        hash.strip_prefix("100755:").unwrap_or(hash)
+    }
+}
+
+pub fn checkpoint_start(
+    root: &Path,
+    task_id: &str,
+    run_id: &str,
+) -> Result<CheckpointView, String> {
+    let path = checkpoint_path(root, task_id, run_id)?;
+    store::with_task_transaction(root, task_id, || {
+        if let Some(existing) = store::read_json::<RunCheckpoint>(&path) {
+            return Ok(CheckpointView::from(&existing));
+        }
+        if path.exists() {
+            return Err("本轮检查点数据损坏，已保留原文件".into());
+        }
+        let task = task::load(root, task_id).ok_or_else(|| "任务不存在".to_string())?;
+        let paths = workspace_paths(root)?;
+        let mut bytes = 0;
+        let before = paths
+            .iter()
+            .map(|path| checkpoint_baseline(root, path, &mut bytes))
+            .collect::<Result<Vec<_>, _>>()?;
+        ensure_checkpoint_still_current(root, &paths, &before)?;
+        let checkpoint = RunCheckpoint {
+            run_id: run_id.into(),
+            mode: None,
+            task_id: task_id.into(),
+            session_id: task.session_id,
+            preserved_buffers: BTreeSet::new(),
+            operation_receipts: BTreeSet::new(),
+            interleaved_paths: BTreeSet::new(),
+            baseline_head: git_head(root).ok(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            finished_at: None,
+            restored_at: None,
+            before,
+            after_hashes: BTreeMap::new(),
+            confirmed_paths: Vec::new(),
+            external_paths: Vec::new(),
+        };
+        store::write_json(&path, &checkpoint)?;
+        Ok(CheckpointView::from(&checkpoint))
+    })
+}
+
+/// Bound once by native prompt admission, never by a mutable composer selector.
+pub(crate) fn checkpoint_bind_mode(
+    root: &Path,
+    task_id: &str,
+    run_id: &str,
+    mode: Option<&str>,
+) -> Result<(), String> {
+    checkpoint_start(root, task_id, run_id)?;
+    let path = checkpoint_path(root, task_id, run_id)?;
+    store::with_task_transaction(root, task_id, || {
+        let mut checkpoint: RunCheckpoint = store::read_json(&path).ok_or("本轮检查点不存在")?;
+        let mode = mode.unwrap_or("unknown");
+        if checkpoint
+            .mode
+            .as_deref()
+            .is_some_and(|existing| existing != mode)
+        {
+            return Err("本轮运行权限已绑定，不能修改".into());
+        }
+        checkpoint.mode = Some(mode.into());
+        store::write_json(&path, &checkpoint)
+    })
+}
+
+pub(crate) fn checkpoint_run_is_readonly(
+    root: &Path,
+    task_id: &str,
+    run_id: &str,
+) -> Result<bool, String> {
+    let checkpoint: RunCheckpoint = store::read_json(&checkpoint_path(root, task_id, run_id)?)
+        .ok_or("本轮检查点不存在，不能确认执行权限")?;
+    Ok(checkpoint.mode.as_deref() != Some("agent"))
+}
+
+pub fn checkpoint_preserve_buffer(
+    root: &Path,
+    task_id: &str,
+    run_id: &str,
+    relative: &str,
+    content: &str,
+) -> Result<CheckpointView, String> {
+    let path = checkpoint_path(root, task_id, run_id)?;
+    let target = resolve_in_workspace(root, relative)?;
+    ensure_safe_parent_chain(root, &target, false)?;
+    if content.len() > 2 * 1024 * 1024 || content.contains('\0') {
+        return Err("仅支持保留 2 MiB 以内的文本 buffer；未保存内容仍留在编辑器中".into());
+    }
+    store::with_task_transaction(root, task_id, || {
+        let task = task::load(root, task_id).ok_or_else(|| "任务不存在".to_string())?;
+        let mut checkpoint = store::read_json::<RunCheckpoint>(&path)
+            .ok_or_else(|| "本轮检查点不存在".to_string())?;
+        if checkpoint.task_id != task_id
+            || checkpoint.run_id != run_id
+            || checkpoint.finished_at.is_some()
+            || checkpoint.restored_at.is_some()
+            || matches!(
+                task.phase,
+                TaskPhase::Stopped | TaskPhase::Paused | TaskPhase::Delivered | TaskPhase::Blocked
+            )
+        {
+            return Err("本轮已结束或任务身份变化，已拒绝过期 buffer 快照".into());
+        }
+        if checkpoint
+            .session_id
+            .as_ref()
+            .is_some_and(|session| task.session_id.as_ref() != Some(session))
+        {
+            return Err("检查点会话与当前任务会话不一致".into());
+        }
+        if checkpoint.preserved_buffers.contains(relative) {
+            return Ok(CheckpointView::from(&checkpoint));
+        }
+        if checkpoint_is_superseded(&path, &checkpoint) {
+            return Err("已有更新的运行占用此任务，已拒绝旧轮 buffer 快照".into());
+        }
+        let existing = checkpoint
+            .before
+            .iter()
+            .find(|entry| entry.path == relative);
+        if existing.is_some_and(|entry| entry.existed && entry.content_base64.is_none()) {
+            return Err("该文件没有可安全覆盖的普通文本基线".into());
+        }
+        let mode = if existing
+            .and_then(|entry| entry.hash.as_deref())
+            .is_some_and(|hash| hash.starts_with("100755:"))
+        {
+            "100755"
+        } else {
+            "100644"
+        };
+        let baseline = BaselineFile {
+            mode: existing
+                .and_then(|entry| entry.mode.clone())
+                .or_else(|| Some(mode.into())),
+            path: relative.into(),
+            existed: true,
+            content_base64: Some(STANDARD.encode(content.as_bytes())),
+            hash: Some(content_hash_for_mode(content.as_bytes(), mode)),
+        };
+        checkpoint.before.retain(|entry| entry.path != relative);
+        checkpoint.before.push(baseline);
+        checkpoint.preserved_buffers.insert(relative.into());
+        if checkpoint.session_id.is_none() {
+            checkpoint.session_id = task.session_id;
+        }
+        store::write_json(&path, &checkpoint)?;
+        Ok(CheckpointView::from(&checkpoint))
+    })
+}
+
+#[tauri::command]
+pub async fn coding_checkpoint_preserve_buffer(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    task_id: String,
+    run_id: String,
+    path: String,
+    content: String,
+) -> Result<CheckpointView, String> {
+    let root = access.require_workspace(&root)?;
+    tokio::task::spawn_blocking(move || {
+        checkpoint_preserve_buffer(&root, &task_id, &run_id, &path, &content)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Native-only receipt for a successful, version-checked editor operation.
+/// This survives a renderer/app interruption and never relies on a filename
+/// merely appearing in model text or a filesystem watcher.
+pub fn checkpoint_note_applied(
+    root: &Path,
+    task_id: &str,
+    run_id: &str,
+    relative: &str,
+) -> Result<(), String> {
+    checkpoint_note_operation_applied(
+        root,
+        task_id,
+        run_id,
+        relative,
+        &uuid::Uuid::now_v7().to_string(),
+        None,
+        None,
+    )
+}
+
+pub fn checkpoint_note_operation_applied(
+    root: &Path,
+    task_id: &str,
+    run_id: &str,
+    relative: &str,
+    operation_id: &str,
+    before_hash: Option<&str>,
+    after_hash: Option<&str>,
+) -> Result<(), String> {
+    let path = checkpoint_path(root, task_id, run_id)?;
+    resolve_in_workspace(root, relative)?;
+    if operation_id.is_empty() || operation_id.len() > 256 {
+        return Err("修改凭据缺少有效 operationId".into());
+    }
+    store::with_task_transaction(root, task_id, || {
+        let task = task::load(root, task_id).ok_or_else(|| "任务不存在".to_string())?;
+        let mut checkpoint = store::read_json::<RunCheckpoint>(&path)
+            .ok_or_else(|| "本轮检查点不存在".to_string())?;
+        if checkpoint.task_id != task_id || checkpoint.run_id != run_id {
+            return Err("检查点身份与修改凭据不一致".into());
+        }
+        if checkpoint
+            .session_id
+            .as_ref()
+            .is_some_and(|session| task.session_id.as_ref() != Some(session))
+        {
+            return Err("修改凭据会话与任务不一致".into());
+        }
+        let receipt = format!("{operation_id}\0{relative}");
+        if checkpoint.operation_receipts.contains(&receipt) {
+            return Ok(());
+        }
+        if checkpoint.finished_at.is_some()
+            || checkpoint.restored_at.is_some()
+            || checkpoint_is_superseded(&path, &checkpoint)
+        {
+            return Err("检查点已结束或被替换，已拒绝过期修改凭据".into());
+        }
+        if checkpoint.operation_receipts.len() >= 8192 {
+            return Err("本轮恢复凭据数量达到安全上限，请结束当前轮后继续".into());
+        }
+        let current = live_hash_for_path(root, relative)?;
+        if after_hash.is_some_and(|after| untag_content_hash(after) != untag_content_hash(&current))
+        {
+            checkpoint.interleaved_paths.insert(relative.into());
+        }
+        let original = checkpoint
+            .before
+            .iter()
+            .find(|entry| entry.path == relative);
+        let prior = checkpoint
+            .after_hashes
+            .get(relative)
+            .map(String::as_str)
+            .or_else(|| original.and_then(|entry| entry.hash.as_deref()))
+            .unwrap_or("<deleted>");
+        if before_hash.is_some_and(|before| untag_content_hash(before) != untag_content_hash(prior))
+        {
+            checkpoint.interleaved_paths.insert(relative.into());
+        }
+        // Native document tools edit text and preserve executable metadata.
+        // A mode change between native receipts therefore belongs to an
+        // external actor and must survive a round restore too.
+        let known_mode = checkpoint
+            .after_hashes
+            .get(relative)
+            .map(|hash| hash.starts_with("100755:"))
+            .or_else(|| {
+                original
+                    .and_then(|entry| entry.mode.as_deref())
+                    .map(|mode| mode == "100755")
+            });
+        if known_mode.is_some_and(|executable| executable != current.starts_with("100755:"))
+            && current != "<deleted>"
+        {
+            checkpoint.interleaved_paths.insert(relative.into());
+        }
+        checkpoint.after_hashes.insert(relative.into(), current);
+        if !checkpoint
+            .confirmed_paths
+            .iter()
+            .any(|path| path == relative)
+        {
+            checkpoint.confirmed_paths.push(relative.into());
+        }
+        checkpoint.operation_receipts.insert(receipt);
+        if checkpoint.session_id.is_none() {
+            checkpoint.session_id = task.session_id;
+        }
+        store::write_json(&path, &checkpoint)
+    })
+}
+
+pub fn checkpoint_finish(
+    root: &Path,
+    task_id: &str,
+    run_id: &str,
+    _confirmed_paths: &[String],
+) -> Result<CheckpointView, String> {
+    let path = checkpoint_path(root, task_id, run_id)?;
+    store::with_task_transaction(root, task_id, || {
+        let mut checkpoint = store::read_json::<RunCheckpoint>(&path)
+            .ok_or_else(|| "本轮检查点不存在".to_string())?;
+        if checkpoint.finished_at.is_some() {
+            return Ok(CheckpointView::from(&checkpoint));
+        }
+        // A renderer filename is not evidence of a disk write. Only native
+        // receipts can bind restoration to the exact content actually applied.
+        let confirmed = checkpoint
+            .confirmed_paths
+            .iter()
+            .map(|path| {
+                resolve_in_workspace(root, path)?;
+                Ok(path.clone())
+            })
+            .collect::<Result<BTreeSet<_>, String>>()?;
+        let applied_hashes = checkpoint.after_hashes.clone();
+        checkpoint.after_hashes.clear();
+        checkpoint.confirmed_paths.clear();
+        checkpoint.external_paths.clear();
+        let before = checkpoint
+            .before
+            .iter()
+            .map(|entry| {
+                (
+                    entry.path.clone(),
+                    entry.hash.clone().unwrap_or_else(|| "<deleted>".into()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let all = workspace_paths(root)?
+            .into_iter()
+            .chain(before.keys().cloned())
+            .collect::<BTreeSet<_>>();
+        for name in all {
+            let live = live_hash_for_path(root, &name)?;
+            if before.get(&name).map(String::as_str).unwrap_or("<deleted>") == live {
+                continue;
+            }
+            checkpoint.after_hashes.insert(name.clone(), live);
+            if confirmed.contains(&name)
+                && !checkpoint.interleaved_paths.contains(&name)
+                && applied_hashes
+                    .get(&name)
+                    .is_some_and(|hash| hash == checkpoint.after_hashes.get(&name).unwrap())
+            {
+                checkpoint.confirmed_paths.push(name.clone());
+            } else {
+                checkpoint.external_paths.push(name.clone());
+            }
+        }
+        checkpoint.finished_at = Some(chrono::Utc::now().to_rfc3339());
+        store::write_json(&path, &checkpoint)?;
+        Ok(CheckpointView::from(&checkpoint))
+    })
+}
+
+/// Observe an authenticated external tool's actual terminal settlement, even
+/// after cancellation already finished the turn. This adds observations to
+/// that exact checkpoint without refreshing Agent receipts or new-turn state.
+pub fn checkpoint_observe_external_terminal(
+    root: &Path,
+    task_id: &str,
+    run_id: &str,
+) -> Result<(), String> {
+    let path = checkpoint_path(root, task_id, run_id)?;
+    store::with_task_transaction(root, task_id, || {
+        let mut checkpoint = store::read_json::<RunCheckpoint>(&path)
+            .ok_or_else(|| "外部调用对应的回合检查点不存在".to_string())?;
+        if checkpoint.task_id != task_id || checkpoint.run_id != run_id {
+            return Err("外部调用与检查点身份不一致".into());
+        }
+        let before = checkpoint
+            .before
+            .iter()
+            .map(|entry| {
+                (
+                    entry.path.clone(),
+                    entry.hash.as_deref().unwrap_or("<deleted>"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let paths = workspace_paths(root)?
+            .into_iter()
+            .chain(before.keys().cloned())
+            .chain(checkpoint.after_hashes.keys().cloned())
+            .collect::<BTreeSet<_>>();
+        let mut external = checkpoint
+            .external_paths
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        for name in paths {
+            let live = live_hash_for_path(root, &name)?;
+            let receipt = checkpoint.after_hashes.get(&name);
+            if checkpoint.confirmed_paths.contains(&name)
+                && receipt == Some(&live)
+                && !checkpoint.interleaved_paths.contains(&name)
+                && !external.contains(&name)
+            {
+                continue;
+            }
+            if before.get(&name).copied().unwrap_or("<deleted>") != live
+                || receipt.is_some_and(|previous| previous != &live)
+            {
+                external.insert(name);
+            }
+        }
+        checkpoint.external_paths = external.into_iter().collect();
+        store::write_json(&path, &checkpoint)
+    })
+}
+
+pub fn checkpoint_restore(
+    root: &Path,
+    task_id: &str,
+    run_id: &str,
+) -> Result<CheckpointRestoreResult, String> {
+    let path = checkpoint_path(root, task_id, run_id)?;
+    let task = task::load(root, task_id).ok_or_else(|| "任务不存在".to_string())?;
+    if matches!(
+        task.phase,
+        TaskPhase::Discovering
+            | TaskPhase::Implementing
+            | TaskPhase::Verifying
+            | TaskPhase::Repairing
+    ) {
+        return Err("请先停止当前运行，再恢复本轮修改".into());
+    }
+    if store::read_json::<RunCheckpoint>(&path)
+        .is_some_and(|checkpoint| checkpoint.finished_at.is_none())
+    {
+        // Reconcile a genuinely interrupted turn from persisted native edit
+        // receipts; commands themselves are never re-executed or replayed.
+        checkpoint_finish(root, task_id, run_id, &[])?;
+    }
+    store::with_task_transaction(root, task_id, || {
+        let task = task::load(root, task_id).ok_or_else(|| "任务不存在".to_string())?;
+        if matches!(
+            task.phase,
+            TaskPhase::Discovering
+                | TaskPhase::Implementing
+                | TaskPhase::Verifying
+                | TaskPhase::Repairing
+        ) {
+            return Err("请先停止当前运行，再恢复本轮修改".into());
+        }
+        let mut checkpoint = store::read_json::<RunCheckpoint>(&path)
+            .ok_or_else(|| "本轮检查点不存在".to_string())?;
+        if checkpoint.finished_at.is_none() {
+            return Err("本轮仍未结束，不能恢复".into());
+        }
+        if checkpoint.restored_at.is_some() {
+            return Ok(CheckpointRestoreResult {
+                restored_paths: Vec::new(),
+                conflicts: Vec::new(),
+            });
+        }
+        if checkpoint.baseline_head.is_some() && git_head(root).ok() != checkpoint.baseline_head {
+            return Err("本轮之后 Git HEAD 已变化；请使用 Git 历史恢复已提交内容".into());
+        }
+        let mut result = CheckpointRestoreResult {
+            restored_paths: Vec::new(),
+            conflicts: checkpoint.interleaved_paths.iter().cloned().collect(),
+        };
+        let mut baselines = Vec::new();
+        for name in &checkpoint.confirmed_paths {
+            if checkpoint.external_paths.contains(name)
+                || checkpoint.interleaved_paths.contains(name)
+            {
+                result.conflicts.push(name.clone());
+                continue;
+            }
+            let current = live_hash_for_path(root, name)?;
+            let baseline = checkpoint
+                .before
+                .iter()
+                .find(|entry| &entry.path == name)
+                .cloned()
+                .unwrap_or(BaselineFile {
+                    mode: None,
+                    path: name.clone(),
+                    existed: false,
+                    content_base64: None,
+                    hash: None,
+                });
+            if current == baseline.hash.as_deref().unwrap_or("<deleted>") {
+                // A repeated restore after a crash may find a file already
+                // restored. Treat that exact state as success without writing.
+                result.restored_paths.push(name.clone());
+                continue;
+            }
+            if checkpoint.after_hashes.get(name) != Some(&current) {
+                result.conflicts.push(name.clone());
+                continue;
+            }
+            if baseline.existed && baseline.content_base64.is_none() {
+                result.conflicts.push(name.clone());
+                continue;
+            }
+            let target = resolve_in_workspace(root, name)?;
+            ensure_safe_parent_chain(root, &target, false)?;
+            if std::fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_dir()) {
+                result.conflicts.push(name.clone());
+                continue;
+            }
+            baselines.push(baseline);
+        }
+        // Preflight all relevant paths before the first restore. A changed
+        // user buffer/disk file is reported as a conflict and remains intact.
+        for baseline in baselines {
+            let expected = checkpoint
+                .after_hashes
+                .get(&baseline.path)
+                .cloned()
+                .unwrap_or_else(|| "<deleted>".into());
+            match restore_one_if_current(root, &baseline, &expected) {
+                Ok(()) => result.restored_paths.push(baseline.path),
+                Err(_) => result.conflicts.push(baseline.path),
+            }
+        }
+        checkpoint
+            .confirmed_paths
+            .retain(|name| !result.restored_paths.contains(name));
+        if result.conflicts.is_empty() {
+            checkpoint.restored_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+        store::write_json(&path, &checkpoint)?;
+        Ok(result)
+    })
+}
+
+#[tauri::command]
+pub async fn coding_checkpoint_start(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    task_id: String,
+    run_id: String,
+) -> Result<CheckpointView, String> {
+    let root = access.require_workspace(&root)?;
+    tokio::task::spawn_blocking(move || checkpoint_start(&root, &task_id, &run_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+#[tauri::command]
+pub async fn coding_checkpoint_finish(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    task_id: String,
+    run_id: String,
+    confirmed_paths: Option<Vec<String>>,
+) -> Result<CheckpointView, String> {
+    let root = access.require_workspace(&root)?;
+    tokio::task::spawn_blocking(move || {
+        checkpoint_finish(
+            &root,
+            &task_id,
+            &run_id,
+            &confirmed_paths.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+#[tauri::command]
+pub async fn coding_checkpoint_list(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    task_id: String,
+) -> Result<Vec<CheckpointView>, String> {
+    let root = access.require_workspace(&root)?;
+    store::validate_task_id(&task_id)?;
+    let directory = store::task_dir(&root, &task_id).join("checkpoints");
+    let mut checkpoints = read_checkpoints(&directory)
+        .iter()
+        .map(CheckpointView::from)
+        .collect::<Vec<_>>();
+    checkpoints.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    Ok(checkpoints)
+}
+#[tauri::command]
+pub async fn coding_checkpoint_restore(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    task_id: String,
+    run_id: String,
+) -> Result<CheckpointRestoreResult, String> {
+    let root = access.require_workspace(&root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
+    let restore_root = root.clone();
+    let restore_task = task_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        checkpoint_restore(&restore_root, &restore_task, &run_id)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    sync_changes(&root, &task_id)
+        .await
+        .map_err(|error| format!("文件已恢复，但变更状态同步失败，请刷新后重试：{error}"))?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1705,6 +2962,7 @@ pub async fn coding_changeset_discard_file(
     path: String,
 ) -> Result<ChangeSetView, String> {
     let root = access.require_workspace(&root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     sync_changes(&root, &task_id).await?;
     let set = tokio::task::spawn_blocking(move || {
         let coding_task = task::load(&root, &task_id).ok_or_else(|| "任务不存在".to_string())?;
@@ -1745,6 +3003,7 @@ pub async fn coding_task_rollback(
     task_id: String,
 ) -> Result<Vec<String>, String> {
     let root = access.require_workspace(&root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     // Re-scan immediately before the destructive operation so files changed
     // by an external editor cannot be omitted from the rollback decision.
     sync_changes(&root, &task_id).await?;
@@ -1757,7 +3016,7 @@ pub async fn coding_task_rollback(
             ) {
                 return Err("任务正在执行或验证，请先停止后再回滚".into());
             }
-            let restored = rollback(&root, &task_id)?;
+            let restored = rollback_agent_owned(&root, &task_id)?;
             if let Some(mut coding_task) = task::load(&root, &task_id) {
                 coding_task.phase = TaskPhase::Blocked;
                 coding_task.phase_reason = Some("任务已回滚".into());
@@ -2043,6 +3302,7 @@ mod tests {
             ..ChangeSet::default()
         };
         set.baseline_entries.push(BaselineFile {
+            mode: None,
             path: "secret.txt".into(),
             existed: true,
             content_base64: Some(STANDARD.encode("do not cross IPC")),
@@ -2217,6 +3477,7 @@ mod tests {
         std::fs::write(outside.join("victim.txt"), "outside").unwrap();
         symlink(&outside, root.join("linked")).unwrap();
         let baseline = BaselineFile {
+            mode: None,
             path: "linked/victim.txt".into(),
             existed: true,
             content_base64: Some(STANDARD.encode("baseline")),
@@ -2240,6 +3501,7 @@ mod tests {
         let root = temp_root();
         symlink(root.join("missing-target"), root.join("created-link")).unwrap();
         let baseline = BaselineFile {
+            mode: None,
             path: "created-link".into(),
             existed: false,
             content_base64: None,
@@ -2440,5 +3702,720 @@ mod tests {
         assert_eq!(set.changes[0].added, 2);
         assert_eq!(set.changes[0].removed, 1);
         std::fs::remove_dir_all(&root).ok();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn executable_bit_changes_expire_evidence_and_restore_the_original_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("script.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(
+            root.join("script.sh"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        capture_filesystem_baseline(root, "mode-task").unwrap();
+        std::fs::set_permissions(
+            root.join("script.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let changed = sync_from_filesystem(root, "mode-task").unwrap();
+        assert_eq!(changed.changes.len(), 1);
+        assert_eq!(changed.changes[0].added, 0);
+        assert!(changed.change_hashes["script.sh"].starts_with("100755:"));
+        mark_verification_started(root, "mode-task").unwrap();
+        mark_verified_revision(root, "mode-task").unwrap();
+        std::fs::set_permissions(
+            root.join("script.sh"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert!(!sync_from_filesystem(root, "mode-task")
+            .unwrap()
+            .verification_is_current());
+        std::fs::set_permissions(
+            root.join("script.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        sync_from_filesystem(root, "mode-task").unwrap();
+        rollback(root, "mode-task").unwrap();
+        assert_eq!(
+            std::fs::metadata(root.join("script.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+    }
+
+    #[test]
+    fn turn_restore_preserves_user_changes_and_reports_later_overlaps() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("agent.txt"), "initial user content\n").unwrap();
+        std::fs::write(root.join("external.txt"), "initial external\n").unwrap();
+        let task = task::create_task(root, "Checkpoints", "Edit agent file").unwrap();
+        checkpoint_start(root, &task.id, "run-one").unwrap();
+        std::fs::write(root.join("agent.txt"), "agent round one\n").unwrap();
+        std::fs::write(root.join("external.txt"), "user edited independently\n").unwrap();
+        checkpoint_note_applied(root, &task.id, "run-one", "agent.txt").unwrap();
+        let finished = checkpoint_finish(root, &task.id, "run-one", &["agent.txt".into()]).unwrap();
+        assert_eq!(finished.confirmed_paths, ["agent.txt"]);
+        assert_eq!(finished.external_paths, ["external.txt"]);
+        std::fs::write(root.join("agent.txt"), "user typed after the Agent\n").unwrap();
+        let conflict = checkpoint_restore(root, &task.id, "run-one").unwrap();
+        assert_eq!(conflict.conflicts, ["agent.txt"]);
+        assert_eq!(
+            std::fs::read_to_string(root.join("agent.txt")).unwrap(),
+            "user typed after the Agent\n"
+        );
+        std::fs::write(root.join("agent.txt"), "agent round one\n").unwrap();
+        let restored = checkpoint_restore(root, &task.id, "run-one").unwrap();
+        assert_eq!(restored.restored_paths, ["agent.txt"]);
+        assert_eq!(
+            std::fs::read_to_string(root.join("agent.txt")).unwrap(),
+            "initial user content\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("external.txt")).unwrap(),
+            "user edited independently\n"
+        );
+        assert!(checkpoint_restore(root, &task.id, "run-one")
+            .unwrap()
+            .restored_paths
+            .is_empty());
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_checkpoint_detects_mode_only_changes_and_restores_executable_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        init_git(root, &[("script.sh", "#!/bin/sh\nexit 0\n")]);
+        capture_baseline(root, "git-mode-task", Vec::new()).unwrap();
+        std::fs::set_permissions(
+            root.join("script.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let set = sync_from_git(root, "git-mode-task").await.unwrap();
+        assert_eq!(set.changes.len(), 1);
+        assert!(set.change_hashes["script.sh"].starts_with("100755:"));
+        rollback(root, "git-mode-task").unwrap();
+        assert_eq!(
+            std::fs::metadata(root.join("script.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+    }
+    #[test]
+    fn turn_restore_preserves_the_original_dirty_editor_buffer_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "old disk text\n").unwrap();
+        let mut coding_task = task::create_task(root, "Dirty buffer", "Edit selection").unwrap();
+        coding_task.phase = TaskPhase::Implementing;
+        coding_task.session_id = Some("buffer-session".into());
+        task::save(root, &coding_task).unwrap();
+        checkpoint_start(root, &coding_task.id, "buffer-run").unwrap();
+        checkpoint_preserve_buffer(
+            root,
+            &coding_task.id,
+            "buffer-run",
+            "source.ts",
+            "user unsaved content\n",
+        )
+        .unwrap();
+        checkpoint_preserve_buffer(
+            root,
+            &coding_task.id,
+            "buffer-run",
+            "source.ts",
+            "duplicate event must not replace the original\n",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "old disk text\n",
+            "preservation does not implicitly save an editor buffer"
+        );
+        std::fs::write(root.join("source.ts"), "Agent edit based on user buffer\n").unwrap();
+        checkpoint_note_applied(root, &coding_task.id, "buffer-run", "source.ts").unwrap();
+        checkpoint_finish(root, &coding_task.id, "buffer-run", &["source.ts".into()]).unwrap();
+        assert!(checkpoint_preserve_buffer(
+            root,
+            &coding_task.id,
+            "buffer-run",
+            "source.ts",
+            "late buffer"
+        )
+        .is_err());
+        coding_task.phase = TaskPhase::Delivered;
+        task::save(root, &coding_task).unwrap();
+        let result = checkpoint_restore(root, &coding_task.id, "buffer-run").unwrap();
+        assert_eq!(result.restored_paths, ["source.ts"]);
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "user unsaved content\n"
+        );
+    }
+    #[test]
+    fn interrupted_turn_recovers_from_native_receipts_without_replaying_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "user starting content\n").unwrap();
+        let mut coding_task = task::create_task(root, "Crash recovery", "edit source").unwrap();
+        coding_task.phase = TaskPhase::Implementing;
+        task::save(root, &coding_task).unwrap();
+        checkpoint_start(root, &coding_task.id, "interrupted-run").unwrap();
+        std::fs::write(root.join("source.ts"), "actual completed edit\n").unwrap();
+        checkpoint_note_applied(root, &coding_task.id, "interrupted-run", "source.ts").unwrap();
+        coding_task.phase = TaskPhase::Stopped;
+        task::save(root, &coding_task).unwrap();
+        // No renderer finish event arrived. A settled task reconciles the
+        // persisted receipt and restores only the already-confirmed write.
+        let result = checkpoint_restore(root, &coding_task.id, "interrupted-run").unwrap();
+        assert_eq!(result.restored_paths, ["source.ts"]);
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "user starting content\n"
+        );
+    }
+
+    #[test]
+    fn user_write_after_an_agent_receipt_is_external_and_not_rolled_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "starting content\n").unwrap();
+        let coding_task = task::create_task(root, "Attribution", "edit source").unwrap();
+        checkpoint_start(root, &coding_task.id, "mixed-run").unwrap();
+        std::fs::write(root.join("source.ts"), "Agent edit\n").unwrap();
+        checkpoint_note_applied(root, &coding_task.id, "mixed-run", "source.ts").unwrap();
+        std::fs::write(root.join("source.ts"), "user typed after the edit\n").unwrap();
+        let finished =
+            checkpoint_finish(root, &coding_task.id, "mixed-run", &["source.ts".into()]).unwrap();
+        assert!(finished.confirmed_paths.is_empty());
+        assert_eq!(finished.external_paths, ["source.ts"]);
+        assert!(checkpoint_restore(root, &coding_task.id, "mixed-run")
+            .unwrap()
+            .restored_paths
+            .is_empty());
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "user typed after the edit\n"
+        );
+    }
+    #[test]
+    fn interleaved_user_content_between_agent_operations_survives_restore() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let initial = "starting content\n";
+        std::fs::write(root.join("source.ts"), initial).unwrap();
+        let coding_task = task::create_task(root, "Interleaving", "edit source").unwrap();
+        checkpoint_start(root, &coding_task.id, "interleaved-run").unwrap();
+        std::fs::write(root.join("source.ts"), "Agent first edit\n").unwrap();
+        checkpoint_note_operation_applied(
+            root,
+            &coding_task.id,
+            "interleaved-run",
+            "source.ts",
+            "edit-one",
+            Some(&hash_bytes(initial.as_bytes())),
+            None,
+        )
+        .unwrap();
+        let user_content = "Agent first edit plus user typing\n";
+        std::fs::write(root.join("source.ts"), user_content).unwrap();
+        let final_content = "Agent second edit preserving user typing\n";
+        std::fs::write(root.join("source.ts"), final_content).unwrap();
+        checkpoint_note_operation_applied(
+            root,
+            &coding_task.id,
+            "interleaved-run",
+            "source.ts",
+            "edit-two",
+            Some(&hash_bytes(user_content.as_bytes())),
+            None,
+        )
+        .unwrap();
+        let finished = checkpoint_finish(
+            root,
+            &coding_task.id,
+            "interleaved-run",
+            &["source.ts".into()],
+        )
+        .unwrap();
+        assert!(finished.confirmed_paths.is_empty());
+        assert_eq!(finished.external_paths, ["source.ts"]);
+        let restored = checkpoint_restore(root, &coding_task.id, "interleaved-run").unwrap();
+        assert_eq!(restored.conflicts, ["source.ts"]);
+        assert!(restored.restored_paths.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            final_content
+        );
+    }
+
+    #[test]
+    fn replayed_operation_receipt_does_not_claim_a_later_user_edit() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let initial = "starting content\n";
+        std::fs::write(root.join("source.ts"), initial).unwrap();
+        let coding_task = task::create_task(root, "Receipts", "edit source").unwrap();
+        checkpoint_start(root, &coding_task.id, "receipt-run").unwrap();
+        std::fs::write(root.join("source.ts"), "Agent edit\n").unwrap();
+        checkpoint_note_operation_applied(
+            root,
+            &coding_task.id,
+            "receipt-run",
+            "source.ts",
+            "same-operation",
+            Some(&hash_bytes(initial.as_bytes())),
+            None,
+        )
+        .unwrap();
+        let checkpoint_path = checkpoint_path(root, &coding_task.id, "receipt-run").unwrap();
+        let original_receipt = store::read_json::<RunCheckpoint>(&checkpoint_path).unwrap();
+        std::fs::write(root.join("source.ts"), "later user edit\n").unwrap();
+        checkpoint_note_operation_applied(
+            root,
+            &coding_task.id,
+            "receipt-run",
+            "source.ts",
+            "same-operation",
+            Some(&hash_bytes(initial.as_bytes())),
+            None,
+        )
+        .unwrap();
+        let repeated = store::read_json::<RunCheckpoint>(&checkpoint_path).unwrap();
+        assert_eq!(repeated.operation_receipts.len(), 1);
+        assert_eq!(repeated.after_hashes, original_receipt.after_hashes);
+        let finished =
+            checkpoint_finish(root, &coding_task.id, "receipt-run", &["source.ts".into()]).unwrap();
+        assert!(finished.confirmed_paths.is_empty());
+        assert_eq!(finished.external_paths, ["source.ts"]);
+        checkpoint_restore(root, &coding_task.id, "receipt-run").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "later user edit\n"
+        );
+    }
+
+    #[test]
+    fn checkpoint_inventory_only_reads_json_and_never_locks_lockfiles() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "initial\n").unwrap();
+        let coding_task = task::create_task(root, "Inventory", "read checkpoints").unwrap();
+        checkpoint_start(root, &coding_task.id, "inventory-run").unwrap();
+        let path = checkpoint_path(root, &coding_task.id, "inventory-run").unwrap();
+        let checkpoint_directory = path.parent().unwrap();
+        for _ in 0..3 {
+            let checkpoints = read_checkpoints(checkpoint_directory);
+            assert_eq!(checkpoints.len(), 1);
+            assert!(!checkpoint_is_superseded(&path, &checkpoints[0]));
+        }
+        assert!(std::fs::read_dir(checkpoint_directory)
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".lock.lock")));
+    }
+    #[test]
+    fn user_write_between_editor_apply_and_native_receipt_is_external() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let initial = "initial\n";
+        std::fs::write(root.join("source.ts"), initial).unwrap();
+        let coding_task = task::create_task(root, "After receipt", "edit source").unwrap();
+        checkpoint_start(root, &coding_task.id, "after-run").unwrap();
+        let agent_applied = "Agent applied\n";
+        std::fs::write(
+            root.join("source.ts"),
+            "user write before native response\n",
+        )
+        .unwrap();
+        checkpoint_note_operation_applied(
+            root,
+            &coding_task.id,
+            "after-run",
+            "source.ts",
+            "after-operation",
+            Some(&hash_bytes(initial.as_bytes())),
+            Some(&hash_bytes(agent_applied.as_bytes())),
+        )
+        .unwrap();
+        let finished =
+            checkpoint_finish(root, &coding_task.id, "after-run", &["source.ts".into()]).unwrap();
+        assert!(finished.confirmed_paths.is_empty());
+        assert_eq!(finished.external_paths, ["source.ts"]);
+        let restored = checkpoint_restore(root, &coding_task.id, "after-run").unwrap();
+        assert_eq!(restored.conflicts, ["source.ts"]);
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "user write before native response\n"
+        );
+    }
+    #[test]
+    fn checkpoint_conditional_restore_rechecks_under_the_shared_document_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let relative = "source.ts";
+        std::fs::write(root.join(relative), "Agent edit\n").unwrap();
+        let expected = live_hash_for_path(&root, relative).unwrap();
+        let baseline = BaselineFile {
+            path: relative.into(),
+            existed: true,
+            content_base64: Some(STANDARD.encode(b"initial\n")),
+            hash: Some(hash_bytes(b"initial\n")),
+            mode: Some("100644".into()),
+        };
+        let lease = crate::coding_workspace::document_write_lock(&root.join(relative)).unwrap();
+        let guard = lease.lock().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let ready = barrier.clone();
+        let restore_root = root.clone();
+        let worker = std::thread::spawn(move || {
+            ready.wait();
+            restore_one_if_current(&restore_root, &baseline, &expected)
+        });
+        barrier.wait();
+        std::fs::write(
+            root.join(relative),
+            "user edit while native restore queued\n",
+        )
+        .unwrap();
+        drop(guard);
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(error.contains("恢复冲突"));
+        assert_eq!(
+            std::fs::read_to_string(root.join(relative)).unwrap(),
+            "user edit while native restore queued\n"
+        );
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".coding.tmp")));
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn readonly_git_baseline_and_sync_never_execute_configured_programs_or_refresh_index() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        init_git(root, &[("source.ts", "initial\n")]);
+        let script = root.join(".git/read-sentinel");
+        std::fs::write(&script, "#!/bin/sh\n: > \"$0.called\"\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for key in [
+            "core.fsmonitor",
+            "diff.external",
+            "diff.fixture.textconv",
+            "filter.fixture.clean",
+            "filter.fixture.process",
+        ] {
+            let result = std::process::Command::new("git")
+                .args(["config", key, &script.to_string_lossy()])
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(result.status.success());
+        }
+        std::fs::write(
+            root.join(".git/info/attributes"),
+            "*.ts diff=fixture filter=fixture\n",
+        )
+        .unwrap();
+        let index = std::fs::read(root.join(".git/index")).unwrap();
+        capture_baseline(root, "readonly-native", Vec::new()).unwrap();
+        std::fs::write(root.join("source.ts"), "changed\n").unwrap();
+        let synced = sync_from_git(root, "readonly-native").await.unwrap();
+        assert!(synced
+            .changes
+            .iter()
+            .any(|change| change.path == "source.ts"));
+        let snapshot = crate::coding_workspace::git_snapshot(root).await;
+        assert!(snapshot.has_git);
+        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), index);
+        assert!(!root.join(".git/read-sentinel.called").exists(), "readonly baseline/snapshot ran a configured fsmonitor, external diff or textconv command");
+    }
+    #[test]
+    fn whole_task_rollback_refuses_unknown_user_changes_before_touching_agent_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("agent.txt"), "initial Agent file\n").unwrap();
+        std::fs::write(root.join("user.txt"), "initial user file\n").unwrap();
+        let coding_task =
+            task::create_task(root, "Safe cumulative rollback", "edit Agent file").unwrap();
+        capture_filesystem_baseline(root, &coding_task.id).unwrap();
+        checkpoint_start(root, &coding_task.id, "owned-run").unwrap();
+        std::fs::write(root.join("agent.txt"), "confirmed Agent edit\n").unwrap();
+        checkpoint_note_applied(root, &coding_task.id, "owned-run", "agent.txt").unwrap();
+        std::fs::write(root.join("user.txt"), "user typed during the run\n").unwrap();
+        checkpoint_finish(root, &coding_task.id, "owned-run", &[]).unwrap();
+        sync_from_filesystem(root, &coding_task.id).unwrap();
+        let error = rollback_agent_owned(root, &coding_task.id).unwrap_err();
+        assert!(
+            error.contains("user.txt") && error.contains("本轮恢复"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("user.txt")).unwrap(),
+            "user typed during the run\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("agent.txt")).unwrap(),
+            "confirmed Agent edit\n",
+            "reject the entire proposal before any restore"
+        );
+    }
+
+    #[test]
+    fn whole_task_rollback_allows_a_continuous_chain_of_confirmed_agent_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "user starting content\n").unwrap();
+        let coding_task =
+            task::create_task(root, "Confirmed cumulative rollback", "edit source").unwrap();
+        capture_filesystem_baseline(root, &coding_task.id).unwrap();
+        for (run, content) in [
+            ("pure-one", "first Agent edit\n"),
+            ("pure-two", "second Agent edit\n"),
+        ] {
+            checkpoint_start(root, &coding_task.id, run).unwrap();
+            std::fs::write(root.join("source.ts"), content).unwrap();
+            checkpoint_note_applied(root, &coding_task.id, run, "source.ts").unwrap();
+            checkpoint_finish(root, &coding_task.id, run, &[]).unwrap();
+        }
+        sync_from_filesystem(root, &coding_task.id).unwrap();
+        assert_eq!(
+            rollback_agent_owned(root, &coding_task.id).unwrap(),
+            ["source.ts"]
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "user starting content\n"
+        );
+        assert!(load(root, &coding_task.id).changes.is_empty());
+        checkpoint_start(root, &coding_task.id, "pure-after-rollback").unwrap();
+        std::fs::write(
+            root.join("source.ts"),
+            "Agent edit after a successful rollback\n",
+        )
+        .unwrap();
+        checkpoint_note_applied(root, &coding_task.id, "pure-after-rollback", "source.ts").unwrap();
+        checkpoint_finish(root, &coding_task.id, "pure-after-rollback", &[]).unwrap();
+        sync_from_filesystem(root, &coding_task.id).unwrap();
+        assert_eq!(
+            rollback_agent_owned(root, &coding_task.id).unwrap(),
+            ["source.ts"]
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "user starting content\n"
+        );
+    }
+
+    #[test]
+    fn whole_task_rollback_rejects_a_user_edit_between_two_confirmed_rounds() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "starting content\n").unwrap();
+        let coding_task = task::create_task(root, "Inter-round ownership", "edit source").unwrap();
+        capture_filesystem_baseline(root, &coding_task.id).unwrap();
+        checkpoint_start(root, &coding_task.id, "before-user").unwrap();
+        std::fs::write(root.join("source.ts"), "first Agent edit\n").unwrap();
+        checkpoint_note_applied(root, &coding_task.id, "before-user", "source.ts").unwrap();
+        checkpoint_finish(root, &coding_task.id, "before-user", &[]).unwrap();
+        std::fs::write(root.join("source.ts"), "user changed between rounds\n").unwrap();
+        checkpoint_start(root, &coding_task.id, "after-user").unwrap();
+        std::fs::write(
+            root.join("source.ts"),
+            "Agent preserved the new user content\n",
+        )
+        .unwrap();
+        checkpoint_note_applied(root, &coding_task.id, "after-user", "source.ts").unwrap();
+        checkpoint_finish(root, &coding_task.id, "after-user", &[]).unwrap();
+        sync_from_filesystem(root, &coding_task.id).unwrap();
+        assert!(rollback_agent_owned(root, &coding_task.id)
+            .unwrap_err()
+            .contains("交错"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "Agent preserved the new user content\n"
+        );
+    }
+
+    #[test]
+    fn late_external_terminal_observation_preserves_receipts_and_never_touches_a_new_turn() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "original\n").unwrap();
+        std::fs::write(root.join("unchanged.ts"), "unchanged\n").unwrap();
+        let mut coding_task =
+            task::create_task(root, "Late MCP settlement", "edit source").unwrap();
+        capture_filesystem_baseline(root, &coding_task.id).unwrap();
+        checkpoint_start(root, &coding_task.id, "cancelled-run").unwrap();
+        std::fs::write(root.join("source.ts"), "confirmed Agent content\n").unwrap();
+        checkpoint_note_applied(root, &coding_task.id, "cancelled-run", "source.ts").unwrap();
+        checkpoint_finish(root, &coding_task.id, "cancelled-run", &[]).unwrap();
+        let old_path = checkpoint_path(root, &coding_task.id, "cancelled-run").unwrap();
+        let original = store::read_json::<RunCheckpoint>(&old_path).unwrap();
+        checkpoint_start(root, &coding_task.id, "replacement-run").unwrap();
+        let replacement_path = checkpoint_path(root, &coding_task.id, "replacement-run").unwrap();
+        let replacement_bytes = std::fs::read(&replacement_path).unwrap();
+
+        std::fs::write(root.join("source.ts"), "late external server write\n").unwrap();
+        std::fs::write(root.join("mcp.txt"), "external server created this\n").unwrap();
+        checkpoint_observe_external_terminal(root, &coding_task.id, "cancelled-run").unwrap();
+        let observed = store::read_json::<RunCheckpoint>(&old_path).unwrap();
+        assert_eq!(observed.finished_at, original.finished_at);
+        assert_eq!(observed.confirmed_paths, original.confirmed_paths);
+        assert_eq!(observed.operation_receipts, original.operation_receipts);
+        assert_eq!(observed.after_hashes, original.after_hashes);
+        assert_eq!(observed.external_paths, ["mcp.txt", "source.ts"]);
+        assert_eq!(std::fs::read(&replacement_path).unwrap(), replacement_bytes);
+        let observed_bytes = std::fs::read(&old_path).unwrap();
+        checkpoint_observe_external_terminal(root, &coding_task.id, "cancelled-run").unwrap();
+        assert_eq!(std::fs::read(&old_path).unwrap(), observed_bytes);
+
+        // Even a later return to a known Agent hash cannot convert the late
+        // external write into an owned operation or authorize its restoration.
+        std::fs::write(root.join("source.ts"), "confirmed Agent content\n").unwrap();
+        checkpoint_observe_external_terminal(root, &coding_task.id, "cancelled-run").unwrap();
+        coding_task.phase = TaskPhase::Paused;
+        task::save(root, &coding_task).unwrap();
+        let restored = checkpoint_restore(root, &coding_task.id, "cancelled-run").unwrap();
+        assert!(restored.restored_paths.is_empty());
+        assert!(restored.conflicts.contains(&"source.ts".into()));
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "confirmed Agent content\n"
+        );
+        assert!(root.join("mcp.txt").exists());
+        assert_eq!(std::fs::read(&replacement_path).unwrap(), replacement_bytes);
+    }
+
+    #[test]
+    fn text_discard_proposal_distinguishes_content_from_creation_deletion_binary_and_modes() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "original\n").unwrap();
+        capture_filesystem_baseline(root, "text-discard").unwrap();
+        std::fs::write(root.join("source.ts"), "changed\n").unwrap();
+        sync_from_filesystem(root, "text-discard").unwrap();
+        assert!(
+            change_diff(root, "text-discard", "source.ts")
+                .unwrap()
+                .can_apply_text
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                root.join("source.ts"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            sync_from_filesystem(root, "text-discard").unwrap();
+            assert!(
+                !change_diff(root, "text-discard", "source.ts")
+                    .unwrap()
+                    .can_apply_text,
+                "a text replacement cannot undo the simultaneous mode change"
+            );
+            std::fs::write(root.join("source.ts"), "original\n").unwrap();
+            sync_from_filesystem(root, "text-discard").unwrap();
+            assert!(
+                !change_diff(root, "text-discard", "source.ts")
+                    .unwrap()
+                    .can_apply_text,
+                "mode-only changes need the metadata operation"
+            );
+            std::fs::set_permissions(
+                root.join("source.ts"),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+        }
+        std::fs::write(root.join("source.ts"), "\u{feff}changed UTF-8 BOM\n").unwrap();
+        sync_from_filesystem(root, "text-discard").unwrap();
+        assert!(
+            !change_diff(root, "text-discard", "source.ts")
+                .unwrap()
+                .can_apply_text,
+            "BOM is encoding metadata and must be restored through the byte-preserving path"
+        );
+        std::fs::write(root.join("source.ts"), "a".repeat(2_000_001)).unwrap();
+        sync_from_filesystem(root, "text-discard").unwrap();
+        assert!(
+            !change_diff(root, "text-discard", "source.ts")
+                .unwrap()
+                .can_apply_text,
+            "the document bridge must never receive an oversized replacement"
+        );
+        std::fs::write(root.join("source.ts"), b"binary\0data").unwrap();
+        sync_from_filesystem(root, "text-discard").unwrap();
+        let binary = change_diff(root, "text-discard", "source.ts").unwrap();
+        assert!(binary.binary && !binary.can_apply_text);
+        std::fs::remove_file(root.join("source.ts")).unwrap();
+        sync_from_filesystem(root, "text-discard").unwrap();
+        assert!(
+            !change_diff(root, "text-discard", "source.ts")
+                .unwrap()
+                .can_apply_text
+        );
+        std::fs::write(root.join("added.ts"), "new file\n").unwrap();
+        sync_from_filesystem(root, "text-discard").unwrap();
+        assert!(
+            !change_diff(root, "text-discard", "added.ts")
+                .unwrap()
+                .can_apply_text
+        );
+    }
+    #[test]
+    fn a_renderer_filename_without_native_content_evidence_never_grants_restore() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.ts"), "starting content").unwrap();
+        let task = task::create_task(root, "Receipt protection", "edit source").unwrap();
+        checkpoint_start(root, &task.id, "failed-save").unwrap();
+        std::fs::write(root.join("source.ts"), "external user content").unwrap();
+        let finished =
+            checkpoint_finish(root, &task.id, "failed-save", &["source.ts".into()]).unwrap();
+        assert!(finished.confirmed_paths.is_empty());
+        assert_eq!(finished.external_paths, ["source.ts"]);
+        assert!(checkpoint_restore(root, &task.id, "failed-save")
+            .unwrap()
+            .restored_paths
+            .is_empty());
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.ts")).unwrap(),
+            "external user content"
+        );
+    }
+    #[test]
+    fn native_run_mode_is_immutable_and_unknown_authority_never_schedules_checks() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let task = task::create_task(root, "Ask", "explain").unwrap();
+        checkpoint_bind_mode(root, &task.id, "ask-run", Some("ask")).unwrap();
+        assert!(checkpoint_run_is_readonly(root, &task.id, "ask-run").unwrap());
+        assert!(checkpoint_bind_mode(root, &task.id, "ask-run", Some("agent")).is_err());
+        checkpoint_bind_mode(root, &task.id, "agent-run", Some("agent")).unwrap();
+        assert!(!checkpoint_run_is_readonly(root, &task.id, "agent-run").unwrap());
+        checkpoint_bind_mode(root, &task.id, "legacy-run", None).unwrap();
+        assert!(checkpoint_run_is_readonly(root, &task.id, "legacy-run").unwrap());
     }
 }

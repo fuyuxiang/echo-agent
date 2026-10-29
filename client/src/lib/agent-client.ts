@@ -468,6 +468,15 @@ export async function agentPrepareSend(sessionId: string, cwd: string): Promise<
   }
 }
 
+export interface CodingTurnOptions {
+  mode?: "ask" | "plan" | "agent";
+  documentToolBridge?: boolean;
+  review?: {taskId:string;kind:"requirements"|"code_quality";contentRevision:string};
+  workspace?: string;
+  taskId?: string;
+  attachments?: string[];
+}
+
 /** Send a user prompt; streamed updates arrive via the events below. */
 export async function agentSend(
   sessionId: string,
@@ -475,7 +484,11 @@ export async function agentSend(
   attachments: string[] = [],
   displayText: string = text,
   promptId?: string,
+  coding?: CodingTurnOptions,
 ): Promise<void> {
+  if (coding?.workspace && coding.taskId && promptId) {
+    await invoke("coding_checkpoint_start",{root:coding.workspace,taskId:coding.taskId,runId:promptId});
+  }
   await synchronizeKnowledgeSources(sessionId, promptId);
   const prepared = await preparePromptWithPersonalKnowledge(
     sessionId,
@@ -491,6 +504,9 @@ export async function agentSend(
     displayText,
     promptId: promptId ?? null,
     sendNow: false,
+    ...(coding?.mode ? { mode: coding.mode } : {}),
+    ...(coding?.documentToolBridge ? { documentToolBridge: true } : {}),
+    ...(coding?.review ? {review:coding.review} : {}),
   });
 }
 
@@ -501,6 +517,7 @@ export async function agentSendNow(
   attachments: string[] = [],
   displayText: string = text,
   promptId?: string,
+  coding?: CodingTurnOptions,
 ): Promise<void> {
   await synchronizeKnowledgeSources(sessionId, promptId);
   const prepared = await preparePromptWithPersonalKnowledge(
@@ -517,6 +534,9 @@ export async function agentSendNow(
     displayText,
     promptId: promptId ?? null,
     sendNow: true,
+    ...(coding?.mode ? { mode: coding.mode } : {}),
+    ...(coding?.documentToolBridge ? { documentToolBridge: true } : {}),
+    ...(coding?.review ? {review:coding.review} : {}),
   });
 }
 

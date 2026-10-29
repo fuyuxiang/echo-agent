@@ -1129,6 +1129,15 @@ async fn handle_client_message(
         AcpClientMessage::SessionNotification(b) => {
             let update = serialize_session_update(&b.request.update);
             let sid = b.request.session_id.0.as_ref().to_string();
+            crate::coding_review_runtime::observe(
+                &sid,
+                &update,
+                b.request
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| serde_json::to_value(meta).ok())
+                    .as_ref(),
+            );
             crate::groups::observe(
                 &sid,
                 &update,
@@ -1472,7 +1481,14 @@ async fn handle_client_message(
             let raw_str = b.request.params.get();
             let params: Value = serde_json::from_str(raw_str).unwrap_or(Value::Null);
             if method == "echo.agent/session/prompt_complete" {
-                handle_prompt_complete(app, parse_complete_event(&params));
+                let complete = parse_complete_event(&params);
+                // The legacy broadcast has no prompt identity. The durable
+                // turn_completed rail below carries the Runtime's admitted
+                // identity even for Chat/WeiXin callers that omitted one.
+                // A session-only ending cannot settle a replacement turn.
+                if !complete.prompt_id.is_empty() {
+                    handle_prompt_complete(app, complete).await;
+                }
             } else if is_echo_agent_session_update_method(&method) {
                 // Session-scoped notification: EchoAgent uses this to push
                 // `SessionSummaryGenerated` after the first user prompt (the
@@ -1482,7 +1498,7 @@ async fn handle_client_message(
                     method,
                     "received ext notification, dispatching to handle_session_notification"
                 );
-                handle_session_notification(app, &params);
+                handle_session_notification(app, &params).await;
             } else if method == "echo.agent/mcp/server_status"
                 || method == "echo.agent/mcp/init_progress"
             {
@@ -1527,6 +1543,21 @@ async fn handle_client_message(
             let method = b.request.method.as_ref().to_string();
             let raw_str = b.request.params.get();
             match method.as_str() {
+                "echo.agent/desktop_document_tool" => {
+                    let params = serde_json::from_str::<Value>(raw_str);
+                    let handle = app.clone();
+                    tokio::spawn(async move {
+                        let result = match params {
+                            Ok(request) => {
+                                crate::coding_document_bridge::dispatch(handle, request).await
+                            }
+                            Err(_) => {
+                                serde_json::json!({"handled":true,"error":"Malformed document request"})
+                            }
+                        };
+                        send_ext_json(b.response_tx, result);
+                    });
+                }
                 "echo.agent/ask_user_question" => {
                     if raw_str.len() > MAX_EXT_METHOD_PARAMS_BYTES {
                         tracing::warn!(
@@ -1864,6 +1895,31 @@ pub(crate) fn parse_complete_event(params: &Value) -> CompleteEvent {
     }
 }
 
+fn parse_live_durable_completion(
+    session_id: &str,
+    params: &Value,
+    update: &Value,
+) -> Option<CompleteEvent> {
+    if params
+        .get("_meta")
+        .and_then(|meta| meta.get("isReplay"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return None;
+    }
+    let mut payload = update.as_object()?.clone();
+    payload.insert("sessionId".into(), Value::String(session_id.into()));
+    if let Some(meta) = params.get("_meta") {
+        payload.insert("_meta".into(), meta.clone());
+    }
+    if !payload.contains_key("stop_reason") && !payload.contains_key("stopReason") {
+        return None;
+    }
+    let complete = parse_complete_event(&Value::Object(payload));
+    (!complete.session_id.is_empty() && !complete.prompt_id.is_empty()).then_some(complete)
+}
+
 fn claim_public_completion(complete: &CompleteEvent) -> bool {
     if complete.prompt_id.is_empty() {
         return true;
@@ -1887,13 +1943,21 @@ fn claim_public_completion(complete: &CompleteEvent) -> bool {
 }
 /// Both ACP response and notification enter here. The durable automation record
 /// claims finalization, so channel order cannot change status or duplicate delivery.
-pub(crate) fn handle_prompt_complete(app: &AppHandle, complete: CompleteEvent) {
+pub(crate) async fn handle_prompt_complete(app: &AppHandle, complete: CompleteEvent) {
+    if complete.session_id.is_empty() || complete.prompt_id.is_empty() {
+        tracing::warn!("ignored completion without an admitted prompt identity");
+        return;
+    }
     // Prompt finished: preserve its full terminal semantics. In
     // particular, several distinct outcomes share stopReason
     // "cancelled" and can only be explained by their category.
     let session_id = complete.session_id.clone();
     let stop_reason = complete.stop_reason.clone();
     let disposition = completion_disposition(&complete);
+    crate::coding_document_bridge::complete_run(&session_id, &complete.prompt_id).await;
+    if let Err(error) = crate::coding_review_runtime::complete(app, &complete) {
+        tracing::warn!(%error,"runtime review persistence failed");
+    }
     let automation = if disposition != CompletionDisposition::Superseded {
         crate::automations::complete_run_for_session(
             &session_id,
@@ -2127,7 +2191,7 @@ pub(crate) fn completion_disposition(complete: &CompleteEvent) -> CompletionDisp
 /// { "sessionId": "...", "update": { "sessionUpdate": "session_summary_generated",
 ///                                   "session_summary": "..." }, "meta": {...} }
 /// ```
-fn handle_session_notification(app: &AppHandle, params: &Value) {
+async fn handle_session_notification(app: &AppHandle, params: &Value) {
     let Some(session_id) = params.get("sessionId").and_then(|v| v.as_str()) else {
         tracing::debug!("session_notification: missing sessionId, ignoring");
         return;
@@ -2144,6 +2208,9 @@ fn handle_session_notification(app: &AppHandle, params: &Value) {
     crate::groups::observe(session_id, update, params.get("_meta"));
     match kind {
         "turn_completed" => {
+            if let Some(complete) = parse_live_durable_completion(session_id, params, update) {
+                handle_prompt_complete(app, complete).await;
+            }
             // Durable turn endings arrive through this extension notification,
             // not ACP SessionNotification. Forward them to the transcript so
             // replayed replies close their streaming state on session load.
@@ -2853,6 +2920,71 @@ mod tests {
         assert_eq!(value["_meta"]["isReplay"], true);
         assert_eq!(value["sessionUpdate"], "turn_completed");
         assert_eq!(value["stop_reason"], "end_turn");
+    }
+
+    #[test]
+    fn live_durable_completion_uses_exact_prompt_and_cancellation_identity() {
+        let params = serde_json::json!({"_meta": {
+            "cancelTrigger": "send_now", "cancellationCategory": "Superseded"
+        }});
+        let update = serde_json::json!({
+            "sessionUpdate": "turn_completed", "prompt_id": "old-prompt",
+            "stop_reason": "cancelled", "agent_result": "partial response"
+        });
+        let complete = parse_live_durable_completion("session", &params, &update).unwrap();
+        assert_eq!(complete.session_id, "session");
+        assert_eq!(complete.prompt_id, "old-prompt");
+        assert_eq!(complete.stop_reason, "cancelled");
+        assert_eq!(complete.cancel_trigger.as_deref(), Some("send_now"));
+        assert_eq!(
+            complete.cancellation_category.as_deref(),
+            Some("Superseded")
+        );
+        assert_eq!(complete.agent_result.as_deref(), Some("partial response"));
+        assert_eq!(
+            completion_disposition(&complete),
+            CompletionDisposition::Superseded
+        );
+    }
+
+    #[test]
+    fn ordinary_chat_completion_uses_the_runtime_generated_prompt_identity() {
+        // Ordinary Chat and WeiXin may omit a client promptId. Runtime still
+        // allocates an internal identity and includes it on its durable rail.
+        let update = serde_json::json!({
+            "sessionUpdate": "turn_completed", "prompt_id": "runtime-generated",
+            "stop_reason": "end_turn"
+        });
+        let complete =
+            parse_live_durable_completion("ordinary-chat", &Value::Null, &update).unwrap();
+        assert_eq!(complete.prompt_id, "runtime-generated");
+        assert_eq!(complete.stop_reason, "end_turn");
+        assert_eq!(
+            completion_disposition(&complete),
+            CompletionDisposition::Success
+        );
+        assert!(
+            parse_live_durable_completion(
+                "ordinary-chat",
+                &serde_json::json!({
+                    "_meta": {"isReplay": true}
+                }),
+                &update
+            )
+            .is_none(),
+            "replayed history must not finalize or notify an active run"
+        );
+    }
+
+    #[test]
+    fn durable_completion_rejects_missing_prompt_or_terminal_fields() {
+        for update in [
+            serde_json::json!({"sessionUpdate":"turn_completed","stop_reason":"end_turn"}),
+            serde_json::json!({"sessionUpdate":"turn_completed","prompt_id":"" ,"stop_reason":"end_turn"}),
+            serde_json::json!({"sessionUpdate":"turn_completed","prompt_id":"p"}),
+        ] {
+            assert!(parse_live_durable_completion("session", &Value::Null, &update).is_none());
+        }
     }
 
     #[test]

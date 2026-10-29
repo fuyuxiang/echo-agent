@@ -30,6 +30,19 @@ function resetStores() {
 describe("beginAgentTurn", () => {
   beforeEach(resetStores);
 
+  it("records each admitted coding intent for the actual run and later correction while preserving other sessions",()=>{
+    const store=useSessionStore.getState();
+    store.setSession("s1");store.setAgentMode("default","s1");store.setAgentMode("plan","s2");
+    const send=vi.fn(()=>new Promise<void>(()=>{})) as AgentTurnSender;
+    expect(beginAgentTurn({sessionId:"s1",promptText:"read only",displayText:"read only",promptId:"ask-turn",coding:{mode:"ask",documentToolBridge:true}},send)).toBe(true);
+    expect(useSessionStore.getState().transcripts.s1.agentMode).toBe("ask");
+    expect(useSessionStore.getState().transcripts.s2.agentMode).toBe("plan");
+    store.markComplete({sessionId:"s1",promptId:"ask-turn",stopReason:"end_turn"});
+    expect(beginAgentTurn({sessionId:"s1",promptText:"implement",displayText:"implement",promptId:"agent-turn",coding:{mode:"agent",documentToolBridge:true}},send)).toBe(true);
+    expect(useSessionStore.getState().agentMode).toBe("default");
+    expect(send).toHaveBeenLastCalledWith("s1","implement",[],"implement","agent-turn",{mode:"agent",documentToolBridge:true});
+  });
+
   it("立即接纳用户消息和附件，不等待整轮 ACP 请求完成", () => {
     useSessionStore.getState().setSession("s1");
     let resolveSend!: () => void;

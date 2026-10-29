@@ -1474,9 +1474,19 @@ impl echo_agent_tool_runtime::Tool for McpErasedTool {
 
     async fn run(
         &self,
-        _ctx: echo_agent_tool_runtime::ToolCallContext,
+        ctx: echo_agent_tool_runtime::ToolCallContext,
         raw: serde_json::Value,
     ) -> Result<ToolOutput, echo_agent_tool_runtime::ToolError> {
+        let no_replay =
+            if let Ok(resources) = echo_agent_tools::types::tool_metadata::shared_resources(&ctx) {
+                resources
+                    .lock()
+                    .await
+                    .get::<echo_agent_tools::types::resources::DesktopMcpNoReplay>()
+                    .is_some_and(|policy| policy.0)
+            } else {
+                false
+            };
         let mcp_call_start = std::time::Instant::now();
         let (client, event_writer) = {
             let state = self.tool.mcp_state.lock().await;
@@ -1505,11 +1515,18 @@ impl echo_agent_tool_runtime::Tool for McpErasedTool {
         let mut is_timeout = false;
         let ew = &event_writer;
         let dispatch_result = match self
-            .try_call_tool(&client, &raw, &mut reconnect_attempted, &mut is_timeout, ew)
+            .try_call_tool_with_replay_policy(
+                &client,
+                &raw,
+                &mut reconnect_attempted,
+                &mut is_timeout,
+                ew,
+                no_replay,
+            )
             .await
         {
             Ok(result) => Ok(result),
-            Err(first_err) if client.has_auth() => {
+            Err(first_err) if client.has_auth() && !no_replay => {
                 auth_retry_attempted = true;
                 let reauth_ok = client.force_reauth(false).await;
                 ew.emit(echo_agent_session_events::Event::McpAuthRetry {
@@ -1518,14 +1535,18 @@ impl echo_agent_tool_runtime::Tool for McpErasedTool {
                     success: reauth_ok,
                 });
                 if reauth_ok {
-                    self.try_call_tool(&client, &raw, &mut reconnect_attempted, &mut is_timeout, ew)
-                        .await
-                        .map_err(|e| {
-                            echo_agent_tool_runtime::ToolError::custom(
-                                "process_manager",
-                                e.to_string(),
-                            )
-                        })
+                    self.try_call_tool_with_replay_policy(
+                        &client,
+                        &raw,
+                        &mut reconnect_attempted,
+                        &mut is_timeout,
+                        ew,
+                        no_replay,
+                    )
+                    .await
+                    .map_err(|e| {
+                        echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
+                    })
                 } else {
                     Err(first_err)
                 }
@@ -1693,6 +1714,7 @@ fn should_recover_service_error(
 }
 
 impl McpErasedTool {
+    #[cfg(test)]
     async fn try_call_tool(
         &self,
         client: &Arc<McpClient>,
@@ -1700,6 +1722,27 @@ impl McpErasedTool {
         reconnect_attempted: &mut bool,
         is_timeout: &mut bool,
         ew: &echo_agent_session_events::EventWriter,
+    ) -> Result<rmcp::model::CallToolResult, echo_agent_tool_runtime::ToolError> {
+        self.try_call_tool_with_replay_policy(
+            client,
+            raw,
+            reconnect_attempted,
+            is_timeout,
+            ew,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn try_call_tool_with_replay_policy(
+        &self,
+        client: &Arc<McpClient>,
+        raw: &serde_json::Value,
+        reconnect_attempted: &mut bool,
+        is_timeout: &mut bool,
+        ew: &echo_agent_session_events::EventWriter,
+        no_replay: bool,
     ) -> Result<rmcp::model::CallToolResult, echo_agent_tool_runtime::ToolError> {
         let mcp_service = client.ensure_initialized().await.map_err(|e| {
             echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
@@ -1714,12 +1757,21 @@ impl McpErasedTool {
 
         match result {
             Ok(Ok(call_result)) => Ok(call_result),
+            // A JSON-RPC error is an actual response from this tools/call.
+            // Coding must not replay it, and its native lease may settle as
+            // a failed terminal. Transport loss and timeout remain uncertain.
+            Ok(Err(ServiceError::McpError(error))) if no_replay => {
+                Ok(rmcp::model::CallToolResult::error(vec![
+                    rmcp::model::ContentBlock::text(error.to_string()),
+                ]))
+            }
             Ok(Err(service_err))
-                if should_recover_service_error(
-                    &service_err,
-                    client.is_http(),
-                    *reconnect_attempted,
-                ) =>
+                if !no_replay
+                    && should_recover_service_error(
+                        &service_err,
+                        client.is_http(),
+                        *reconnect_attempted,
+                    ) =>
             {
                 self.recover_and_retry(
                     client,

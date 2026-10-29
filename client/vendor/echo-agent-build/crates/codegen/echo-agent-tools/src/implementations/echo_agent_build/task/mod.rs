@@ -35,6 +35,11 @@ use regex::Regex;
 
 pub const TASK_TOOL_NAME: &str = "task";
 
+/// Host-set immutable turn policy: children must complete before the parent
+/// turn ends instead of escaping through background delivery / await budgets.
+#[derive(Clone, Copy, Default)]
+pub struct BoundSubagentToTurn(pub bool);
+
 /// Default max nesting depth when [`MaxSubagentDepth`] is not injected.
 pub const MAX_SUBAGENT_DEPTH: u32 = 1;
 
@@ -311,6 +316,15 @@ impl echo_agent_tool_runtime::Tool for TaskTool {
     ) -> Result<ToolOutput, echo_agent_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
+        let bounded = resources
+            .lock()
+            .await
+            .get::<BoundSubagentToTurn>()
+            .is_some_and(|policy| policy.0);
+        let mut input = input;
+        if bounded {
+            input.run_in_background = false;
+        }
         let tool_cancellation = ctx
             .get::<echo_agent_tool_runtime::Cancellation>()
             .map(|cancellation| cancellation.0.clone());
@@ -550,7 +564,7 @@ impl echo_agent_tool_runtime::Tool for TaskTool {
             run_in_background: input.run_in_background,
             // Model-spawned subagents must still appear in the idle reminder.
             surface_completion: true,
-            await_to_completion: false,
+            await_to_completion: bounded,
             fork_context: false,
             owner: SubagentOwner::Task,
             cancel_token: child_cancellation,
@@ -942,6 +956,39 @@ mod tests {
             }
             other => panic!("Expected SubagentCompleted output, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn bound_subagent_to_turn_overrides_background_and_await_budget() {
+        let (backend, mut rx) = make_backend();
+        let mut resources = Resources::new();
+        resources.insert(backend);
+        resources.insert(BoundSubagentToTurn(true));
+        resources.insert(SessionIdResource("parent-session".into()));
+        resources.insert(CurrentPromptIdResource("parent-turn".into()));
+        let host = tokio::spawn(async move {
+            let request = unwrap_spawn(rx.recv().await.unwrap());
+            assert!(!request.run_in_background);
+            assert!(request.await_to_completion);
+            assert_eq!(request.parent_prompt_id.as_deref(), Some("parent-turn"));
+            request
+                .respond_with(|request| SubagentResult {
+                    success: true,
+                    output: "Bound review completed".into(),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        let result = echo_agent_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(resources.into_shared()),
+            task_input("explore", true),
+        )
+        .await;
+        assert!(result.is_ok());
+        host.await.unwrap();
     }
 
     #[tokio::test]

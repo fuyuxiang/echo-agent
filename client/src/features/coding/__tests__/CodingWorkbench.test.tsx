@@ -95,6 +95,7 @@ import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout"
 import { useMessageQueueStore } from "@/stores/message-queue-store";
 import { useSessionStore } from "@/stores/session-store";
 import { codingQueueId } from "../lib/coding-followup";
+import { useCodingRuntimeStore } from "../lib/coding-task-runtime";
 
 function verificationTask(overrides: Partial<CodingTask> = {}): CodingTask {
   return {
@@ -117,11 +118,15 @@ describe("Theia workbench", () => {
   const bridgeToken = (frame: HTMLIFrameElement): string =>
     (JSON.parse(frame.name.slice("echo-embed:".length)) as { bridgeToken: string }).bridgeToken;
   beforeEach(() => {
+    useCodingRuntimeStore.setState({documentCancellationReady:true,documentCancellations:{},stopping:{}});
     window.history.replaceState({}, "", "/");
     window.localStorage.removeItem("echo-agent-panel-width");
     invoke.mockReset();
-    invoke.mockImplementation(async (command: string): Promise<unknown> => {
-      if (command === "coding_task_list" || command === "coding_verification_detect") return [];
+    invoke.mockImplementation(async (command: string, args?: unknown): Promise<unknown> => {
+    if (command === "coding_document_editor_attach") return (args as {root:string} | undefined)?.root;
+    if (command === "coding_verification_config_get") return {checks:[]};
+    if (["coding_checkpoint_list","coding_git_commit_history","coding_review_list"].includes(command)) return [];
+      if (["coding_task_list", "coding_verification_detect", "coding_isolation_list"].includes(command)) return [];
       if (command === "coding_theia_start") {
         return { url: "http://127.0.0.1:41773/", embedToken: "test-embed-token" };
       }
@@ -238,10 +243,10 @@ describe("Theia workbench", () => {
     const composer = container.querySelector(".echo-theia-agent__composer");
     const textbox = await screen.findByRole("textbox", { name: "补充开发要求" });
     fireEvent.change(textbox, { target: { value: "请处理边界情况" } });
-    await user.click(screen.getByRole("tab", { name: "任务变更" }));
+    await user.click(screen.getByRole("button", { name: "变更" }));
     expect(composer).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "补充开发要求" })).toHaveValue("请处理边界情况");
-    await user.click(screen.getByRole("tab", { name: "验证" }));
+    await user.click(screen.getByRole("button", { name: "检查" }));
     expect(screen.getByRole("textbox", { name: "补充开发要求" })).toHaveValue("请处理边界情况");
   });
 
@@ -275,7 +280,8 @@ describe("Theia workbench", () => {
     useTaskStore.setState({ root: "/repo", task: verificationTask({ phase: "delivered" }) });
     render(<CodingWorkbench cwd="/repo" models={[]} />);
     await screen.findByTitle("Echo Code IDE");
-    await userEvent.click(screen.getByRole("button", { name: "打开交付报告" }));
+    await userEvent.click(screen.getByText("更多"));
+    await userEvent.click(screen.getByRole("button", { name: "导出摘要" }));
     expect(screen.getByRole("region", { name: "交付报告" })).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith("coding_delivery_report", { root: "/repo", taskId: "verification-task" });
   });
@@ -294,7 +300,10 @@ describe("Theia workbench", () => {
 
   it("creates an isolated Git worktree for a parallel task in the same project", async () => {
     const onSelectWorkspace = vi.fn();
-    invoke.mockImplementation(async (command: string): Promise<unknown> => {
+    invoke.mockImplementation(async (command: string, args?: unknown): Promise<unknown> => {
+    if (command === "coding_document_editor_attach") return (args as {root:string} | undefined)?.root;
+    if (command === "coding_verification_config_get") return {checks:[]};
+    if (["coding_checkpoint_list","coding_git_commit_history","coding_review_list"].includes(command)) return [];
       if (command === "coding_task_list") return [{ id: "running-task", name: "正在开发", phase: "implementing", updatedAt: "now" }];
       if (command === "coding_verification_detect") return [];
       if (command === "coding_theia_start") return { url: "http://127.0.0.1:41773/", embedToken: "test-embed-token" };
@@ -313,12 +322,13 @@ describe("Theia workbench", () => {
     const frame = await screen.findByTitle("Echo Code IDE") as HTMLIFrameElement;
     const origin = new URL(frame.src).origin;
     const token = JSON.parse(frame.name.slice("echo-embed:".length)).bridgeToken;
-    const send = (data: object) => act(() => window.dispatchEvent(new MessageEvent("message", {origin, source: frame.contentWindow, data: {...data, token}})));
+    const send = (data: object) => act(() => window.dispatchEvent(new MessageEvent("message", {origin, source: frame.contentWindow, data: {...data, token, instanceId:"parallel-editor"}})));
     vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation((data: unknown) => {
       const message = data as {type: string; id: string};
       if (message.type === "echo/get-dirty") queueMicrotask(() => send({type: "echo/response", id: message.id, ok: true, value: 0}));
+      if (message.type === "echo/get-context") queueMicrotask(() => send({type:"echo/response",id:message.id,ok:true,value:{workspace:"/repo",document:null,openDocuments:[],diagnostics:[],diagnosticsTruncated:false,terminal:null,truncated:false}}));
     });
-    send({type: "echo/ready"});
+    send({type: "echo/ready",protocolVersion:1,capabilities:["document-snapshots"]});
     send({type: "echo/dirty-state", count: 0});
     expect(await screen.findByText("当前项目有任务正在执行；提交新任务时会创建隔离工作树。")).toBeInTheDocument();
     act(() => useAiDraftStore.getState().setDraft({ prompt: "", contextPaths: ["src/orders.ts"], source: "context-menu" }));
@@ -376,6 +386,25 @@ describe("Theia workbench", () => {
     const saveRequest = postMessage.mock.calls.find(([message]) => (message as { type?: string }).type === "echo/save-all")![0] as { id: string };
     send({ type: "echo/response", id: saveRequest.id, ok: true, value: 0 });
     await waitFor(() => expect(onSelectWorkspace).toHaveBeenCalledWith("/next"));
+  });
+
+  it("keeps worktree management and the persisted Tab preference reachable in their contextual menus", async () => {
+    const user = userEvent.setup();
+    localStorage.removeItem("echo-coding-tab-enabled");
+    render(<CodingWorkbench cwd="/repo" models={[]} />);
+    await screen.findByTitle("Echo Code IDE");
+    await user.click(screen.getByRole("button", { name: "切换项目" }));
+    await user.click(screen.getByRole("menuitem", { name: "管理工作树…" }));
+    expect(screen.getByRole("region", { name: "受管理的工作树" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭工作树管理" }));
+    await user.click(screen.getByRole("button", { name: "编辑器选项" }));
+    const completion = screen.getByRole("menuitemradio", { name: /Tab 代码补全/ });
+    expect(completion).toHaveAttribute("aria-checked", "true");
+    await user.click(completion);
+    expect(localStorage.getItem("echo-coding-tab-enabled")).toBe("false");
+    await user.click(screen.getByRole("button", { name: "编辑器选项" }));
+    expect(screen.getByRole("menuitemradio", { name: /Tab 代码补全/ })).toHaveAttribute("aria-checked", "false");
+    localStorage.removeItem("echo-coding-tab-enabled");
   });
 
   it("keeps preview controls compact and lets the editor reclaim the Agent space", async () => {

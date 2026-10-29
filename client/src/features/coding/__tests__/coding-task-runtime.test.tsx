@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   reportInterrupted: vi.fn(),
   reportStartFailed: vi.fn(),
   detectCommands: vi.fn(),
+  verificationConfig: vi.fn(),
   beginVerification: vi.fn(),
   runVerification: vi.fn(),
   reportVerification: vi.fn(),
@@ -18,6 +19,12 @@ const api = vi.hoisted(() => ({
 const beginAgentTurn = vi.hoisted(() => vi.fn(() => true));
 const agentLoadSession = vi.hoisted(() => vi.fn(async (_id: string, _root: string): Promise<string | null> => null));
 const phaseChanged = vi.hoisted(() => vi.fn(async (_listener: (event: { root: string; taskId: string }) => void) => () => undefined));
+const events=vi.hoisted(()=>({handlers:new Map<string,(event:unknown)=>void>(),invoke:vi.fn(async (command:string,_args?:unknown):Promise<unknown> => command === "coding_document_cancellation_state" ? [] : undefined)}));
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async (name:string,listener:(event:unknown)=>void) => {
+  events.handlers.set(name,listener);return ()=>{if(events.handlers.get(name)===listener)events.handlers.delete(name);};
+}) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke:events.invoke }));
 
 vi.mock("../lib/tauri-api", () => ({
   codingApi: api,
@@ -42,6 +49,7 @@ function task(root: string): CodingTask {
     name: "后台开发",
     requirement: "修复任务",
     phase: "discovering",
+    strictWorkflow: true,
     acceptanceCriteria: [],
     taskNodes: [],
     planIssues: [],
@@ -67,6 +75,7 @@ const transcript = {
 
 describe("CodingTaskRuntimeManager", () => {
   beforeEach(() => {
+    events.handlers.clear();events.invoke.mockReset().mockImplementation(async command => command === "coding_document_cancellation_state" ? [] : undefined);
     api.listTasks.mockReset();
     api.orchestratorState.mockReset();
     api.syncChanges.mockReset();
@@ -76,7 +85,7 @@ describe("CodingTaskRuntimeManager", () => {
     phaseChanged.mockClear();
     agentLoadSession.mockReset();
     agentLoadSession.mockResolvedValue(null);
-    useCodingRuntimeStore.setState({ tasks: {}, settling: {}, activeRunIds: {}, verificationBatches: {}, stopping: {}, actionEpochs: {}, editorBlocks: {} });
+    useCodingRuntimeStore.setState({ tasks: {}, settling: {}, activeRunIds: {}, verificationBatches: {}, stopping: {}, actionEpochs: {}, editorBlocks: {}, documentCancellations:{},documentCancellationReady:true });
     useSessionStore.setState({
       sessionId: "/other-session",
       transcripts: {
@@ -90,11 +99,113 @@ describe("CodingTaskRuntimeManager", () => {
     api.reportInterrupted.mockResolvedValue(undefined);
     api.reportStartFailed.mockResolvedValue(undefined);
     api.detectCommands.mockReset().mockResolvedValue([]);
+    api.verificationConfig.mockReset().mockResolvedValue({ checks: [] });
     api.beginVerification.mockReset().mockImplementation(async (root: string) => task(root));
     api.runVerification.mockReset().mockResolvedValue({ status: "passed" });
     api.reportVerification.mockReset().mockResolvedValue(undefined);
     api.beginFollowup.mockReset().mockImplementation(async (root: string) => ({...task(root),nextAction:null}));
     useMessageQueueStore.setState({queues:{}});
+  });
+
+  it("acknowledges a document stop only after the real editor confirms its fence",async()=>{
+    const cancelRun=vi.fn(async()=>false);
+    const unregister=registerWorkspaceEditor("/a",{getDirtyCount:async()=>0,saveAll:vi.fn(),cancelRun});
+    const view=render(<CodingTaskRuntimeManager roots={[]} apiReady={false} availableModelIds={[]} />);
+    await waitFor(()=>expect(events.handlers.has("agent://document-run-cancelled")).toBe(true));
+    const emit=events.handlers.get("agent://document-run-cancelled")!;
+    await act(async()=>emit({payload:{workspace:"/a",sessionId:"s1",runId:"r1",cancellationId:"unconfirmed"}}));
+    expect(cancelRun).toHaveBeenCalledWith("r1");
+    expect(events.invoke).not.toHaveBeenCalledWith("coding_document_cancel_ack",expect.anything());
+    cancelRun.mockResolvedValue(true);
+    await act(async()=>emit({payload:{workspace:"/a",sessionId:"s1",runId:"r1",cancellationId:"confirmed"}}));
+    await waitFor(()=>expect(events.invoke).toHaveBeenCalledWith("coding_document_cancel_ack",{cancellationId:"confirmed"}));
+    view.unmount();unregister();
+  });
+
+  it("hydrates native cancellation fences before dispatch and replays events that race the query", async () => {
+    let finish!: (value:unknown) => void;
+    events.invoke.mockImplementation(async command => command === "coding_document_cancellation_state"
+      ? new Promise(resolve => {finish=resolve;}) : undefined);
+    render(<CodingTaskRuntimeManager roots={["/a"]} />);
+    await waitFor(() => expect(events.invoke).toHaveBeenCalledWith("coding_document_cancellation_state",{}));
+    expect(beginAgentTurn).not.toHaveBeenCalled();
+    const event = {workspace:"/a",sessionId:"different-session",runId:"stopped-run",pending:true};
+    act(() => events.handlers.get("agent://document-cancellation-state")!({payload:event}));
+    await act(async () => { finish([]); });
+    expect(useCodingRuntimeStore.getState().documentCancellationReady).toBe(true);
+    expect(beginAgentTurn).not.toHaveBeenCalled();
+    act(() => useCodingRuntimeStore.getState().setStopping("/a","/a-task",false));
+    expect(beginAgentTurn).not.toHaveBeenCalled();
+    act(() => events.handlers.get("agent://document-cancellation-state")!({payload:{...event,pending:false}}));
+    await waitFor(() => expect(beginAgentTurn).toHaveBeenCalledOnce());
+  });
+
+  it.each(["verifying","delivered"] as const)("a native workspace fence blocks %s work across sessions while another project remains usable", async phase => {
+    const pending={workspace:"/a",sessionId:"old-session",runId:"old-run",pending:true};
+    events.invoke.mockImplementation(async command => command === "coding_document_cancellation_state" ? [pending] : undefined);
+    api.orchestratorState.mockImplementation(async root => ({task:{...task(root),phase:root === "/a" ? phase : "discovering",nextAction:root === "/a" ? null : "revise_plan"},problems:[]}));
+    const key=codingQueueId("/a","/a-task","/a-session")!;
+    if(phase === "delivered") useMessageQueueStore.getState().enqueue(key,"待停止确认后发送",[]);
+    render(<CodingTaskRuntimeManager roots={["/a","/b"]} />);
+    await waitFor(() => expect(beginAgentTurn).toHaveBeenCalledWith(expect.objectContaining({sessionId:"/b-session"})));
+    expect(api.beginVerification).not.toHaveBeenCalled();
+    expect(beginAgentTurn).not.toHaveBeenCalledWith(expect.objectContaining({sessionId:"/a-session"}));
+    if(phase === "delivered") expect(useMessageQueueStore.getState().getQueue(key)[0].status).toBe("queued");
+  });
+
+  it("does not clear a newer pending run when an older ACK arrives, including Windows native spelling", () => {
+    const state=useCodingRuntimeStore.getState();
+    state.setDocumentCancellation({workspace:String.raw`\\?\C:\项目\代码`,sessionId:"old",runId:"one",pending:true});
+    state.setDocumentCancellation({workspace:"c:/项目/代码/",sessionId:"new",runId:"two",pending:true});
+    state.setDocumentCancellation({workspace:"C:/项目/代码",sessionId:"old",runId:"one",pending:false});
+    expect(Object.values(useCodingRuntimeStore.getState().documentCancellations)).toEqual([expect.objectContaining({runId:"two"})]);
+    expect(state.claimVerificationBatch(String.raw`C:\项目\代码`,"unrelated-task")).toBeNull();
+  });
+
+  it("a missing renderer registry cannot acknowledge a native editor lease that still exists", async () => {
+    events.invoke.mockImplementation(async command => command === "coding_document_cancellation_state" ? [] : command === "coding_document_editor_present" ? true : undefined);
+    render(<CodingTaskRuntimeManager roots={[]} />);
+    await waitFor(()=>expect(events.handlers.has("agent://document-run-cancelled")).toBe(true));
+    await act(async()=>events.handlers.get("agent://document-run-cancelled")!({payload:{workspace:"/a",sessionId:"s",runId:"r",cancellationId:"unmounted-in-flight"}}));
+    expect(events.invoke).toHaveBeenCalledWith("coding_document_editor_present",{root:"/a"});
+    expect(events.invoke).not.toHaveBeenCalledWith("coding_document_cancel_ack",expect.anything());
+    expect(Object.values(useCodingRuntimeStore.getState().documentCancellations)).toHaveLength(1);
+  });
+
+  it("keeps a canonical workspace fence bound to an unmounted symlink spelling", () => {
+    const unregister=registerWorkspaceEditor("/project-link",{workspace:"/real-project",getDirtyCount:async()=>0,saveAll:async()=>true});
+    useCodingRuntimeStore.getState().track("/project-link","task-link");
+    unregister();
+    useCodingRuntimeStore.getState().setDocumentCancellation({workspace:"/real-project",sessionId:"old-session",runId:"run",pending:true});
+    expect(useCodingRuntimeStore.getState().claimVerificationBatch("/project-link","other-task")).toBeNull();
+  });
+
+  it("rebuilds the real retained cancellation handshake after manager remount instead of clearing pending from the query", async () => {
+    const pending={workspace:"/a",sessionId:"s",runId:"r",pending:true,cancellationId:"native-retained-id"};
+    let finishOld!: (value:boolean) => void;
+    const cancelRun=vi.fn(async()=>true).mockImplementationOnce(()=>new Promise(resolve=>{finishOld=resolve;}));
+    const unregister=registerWorkspaceEditor("/a",{getDirtyCount:async()=>0,saveAll:async()=>true,cancelRun});
+    events.invoke.mockImplementation(async command=>command === "coding_document_cancellation_state" ? [pending] : undefined);
+    const first=render(<CodingTaskRuntimeManager roots={[]} />);
+    await waitFor(()=>expect(cancelRun).toHaveBeenCalledOnce()); first.unmount();
+    const second=render(<CodingTaskRuntimeManager roots={[]} />);
+    await waitFor(()=>expect(events.invoke).toHaveBeenCalledWith("coding_document_cancel_ack",{cancellationId:pending.cancellationId}));
+    expect(cancelRun).toHaveBeenCalledTimes(2);
+    expect(Object.values(useCodingRuntimeStore.getState().documentCancellations)).toHaveLength(1);
+    act(()=>events.handlers.get("agent://document-cancellation-state")!({payload:{...pending,pending:false}}));
+    expect(Object.values(useCodingRuntimeStore.getState().documentCancellations)).toHaveLength(0);
+    await act(async()=>finishOld(true));
+    expect(events.invoke.mock.calls.filter(([command])=>command === "coding_document_cancel_ack")).toHaveLength(1);
+    second.unmount();unregister();
+  });
+
+  it("does not force scheduler planning or node continuation for the default lightweight policy", async () => {
+    api.orchestratorState.mockImplementation(async (root: string) => ({ task: { ...task(root), strictWorkflow: false }, problems: [] }));
+    render(<CodingTaskRuntimeManager roots={["/a"]} />);
+    await waitFor(() => expect(api.orchestratorState).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); });
+    expect(beginAgentTurn).not.toHaveBeenCalled();
+    expect(api.beginVerification).not.toHaveBeenCalled();
   });
 
   it("dispatches queued requirements in both background projects without a mounted workbench", async () => {
@@ -374,6 +485,15 @@ describe("CodingTaskRuntimeManager", () => {
       expect(api.beginVerification).toHaveBeenCalledTimes(2);
       expect(api.runVerification).toHaveBeenCalledTimes(2);
     } finally {view.unmount();}
+  });
+
+  it.each(["ask","plan"])("never automatically executes checks for a settled %s turn",async mode=>{
+    const current={...task("/a"),phase:"verifying",strictWorkflow:false,nextAction:null};
+    api.orchestratorState.mockResolvedValue({task:current,problems:[]});
+    useSessionStore.setState({transcripts:{"/a-session":{...transcript,agentMode:mode as "ask"|"plan"}}});
+    render(<CodingTaskRuntimeManager roots={["/a"]}/>);
+    await waitFor(()=>expect(api.reportInterrupted).toHaveBeenCalledWith("/a","/a-task","paused"));
+    expect(api.runVerification).not.toHaveBeenCalled();
   });
 
 });

@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CodingTask, DetectedCommand } from "../lib/types";
+import type { CodingTask, DetectedCommand, VerificationRecord } from "../lib/types";
 
 const api = vi.hoisted(() => ({
   beginVerification: vi.fn(), runVerification: vi.fn(), reportVerification: vi.fn(),
@@ -18,6 +18,7 @@ function task(id: string): CodingTask {
     acceptanceCriteria: [], taskNodes: [], planIssues: [], globalConstraints: [], createdAt: "", updatedAt: "1",
   };
 }
+const originalRefreshTaskState = useTaskStore.getState().refreshTaskState;
 const commands: DetectedCommand[] = [{ kind: "test", command: "pnpm test", label: "测试" }];
 
 describe("verification runner task scope", () => {
@@ -26,8 +27,8 @@ describe("verification runner task scope", () => {
     api.beginVerification.mockImplementation(async (_root: string, id: string) => task(id));
     api.reportVerification.mockResolvedValue(undefined);
     api.reportStartFailed.mockResolvedValue(undefined);
-    useCodingRuntimeStore.setState({ tasks: {}, settling: {}, activeRunIds: {}, verificationBatches: {}, stopping: {}, actionEpochs: {} });
-    useTaskStore.setState({ root: "", task: null });
+    useCodingRuntimeStore.setState({ tasks: {}, settling: {}, activeRunIds: {}, verificationBatches: {}, stopping: {}, actionEpochs: {}, documentCancellationReady:true,documentCancellations:{} });
+    useTaskStore.setState({ root: "", task: null, verifications: [], refreshTaskState: originalRefreshTaskState });
   });
 
   it("立即重复点击仍只启动一个验证批次", async () => {
@@ -126,6 +127,30 @@ describe("verification runner task scope", () => {
     expect(api.reportVerification).not.toHaveBeenCalled();
     expect(onToast).not.toHaveBeenCalled();
     expect(result.current.runningVerification).toBe(false);
+  });
+
+  it("runs only the selected command and preserves another check's same-revision result", async () => {
+    const second = { kind: "build" as const, command: "pnpm build", label: "构建" };
+    const both = [...commands, second];
+    useTaskStore.setState({ root: "/a", task: task("t1"), verifications: [], refreshTaskState: vi.fn().mockResolvedValue(undefined) });
+    api.runVerification.mockImplementation(async (_root: string, taskId: string, kind: VerificationRecord["kind"], command: string) => {
+      const record: VerificationRecord = { id: command, taskId, kind, command, status: "passed", exitCode: 0,
+        stdout: "", stderr: "", durationMs: 1, startedAt: "", finishedAt: "", structured: false,
+        contentRevision: "same-source", configurationRevision: "same-config" };
+      useTaskStore.getState().applyVerification(record);
+      return record;
+    });
+    const { result } = renderHook(() => useVerificationRunner({ cwd: "/a", task: task("t1"), commands: both,
+      detectedReady: true, setCommandOutput: vi.fn(), requestConfirmation: vi.fn() }));
+    act(() => result.current.runVerifications([both[0]]));
+    await waitFor(() => expect(api.reportVerification).toHaveBeenCalledTimes(1));
+    expect(api.runVerification).toHaveBeenCalledTimes(1);
+    expect(useTaskStore.getState().verifications.map(record => record.command)).toEqual(["pnpm test"]);
+    act(() => result.current.runVerifications([both[1]]));
+    await waitFor(() => expect(api.reportVerification).toHaveBeenCalledTimes(2));
+    expect(useTaskStore.getState().verifications.map(record => record.command)).toEqual(["pnpm test", "pnpm build"]);
+    expect(api.reportStartFailed).not.toHaveBeenCalled();
+    expect(api.runVerification.mock.calls.map(call => call[3])).toEqual(["pnpm test", "pnpm build"]);
   });
 
 });

@@ -602,12 +602,25 @@ pub struct FeedbackContext {
 
 // ── Startup hints ───────────────────────────────────────────────────────
 
+/// Native-only authority captured from a live parent turn. It never comes
+/// from model text, client JSON, a child persona or the mutable mode selector.
+#[derive(Debug, Clone)]
+pub struct InheritedTurnAuthority {
+    pub prompt_mode: crate::session::plan_mode::PromptMode,
+    pub document_tools: bool,
+    pub session_id: String,
+    pub run_id: String,
+    pub workspace: String,
+}
+
 // `pub` (not `pub(crate)`): carried by the public `SessionCommand` enum
 // (`UpdateAttachPolicy`), whose fields are reachable at `pub` — a
 // `pub(crate)` field type there trips the `private_interfaces` lint.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartupHints {
+    #[serde(skip)]
+    pub inherited_turn_authority: Option<InheritedTurnAuthority>,
     #[serde(default)]
     pub non_interactive: bool,
     #[serde(default)]

@@ -1856,6 +1856,61 @@ async fn http_transport_sends_default_user_agent_on_initialize() {
     );
 }
 
+async fn desktop_coding_call_without_replay(
+    behavior: CallToolBehavior,
+    timeout: u64,
+    protocol_terminal: bool,
+) {
+    let (url, handles) = spawn_fake_mcp(behavior).await;
+    let client = fake_http_client(&url, timeout);
+    let tool = fake_echo_tool();
+    tool.tool
+        .mcp_state
+        .lock()
+        .await
+        .shared_clients
+        .insert("fake".into(), client);
+    let mut resources = echo_agent_tools::types::resources::Resources::new();
+    resources.insert(echo_agent_tools::types::resources::DesktopMcpNoReplay(true));
+    let shared: echo_agent_tools::types::resources::SharedResources =
+        Arc::new(Mutex::new(resources));
+    let mut context = echo_agent_tool_runtime::ToolCallContext::default();
+    context.extensions.insert(shared);
+    let result = echo_agent_tool_runtime::Tool::run(&tool, context, serde_json::json!({})).await;
+    if protocol_terminal {
+        assert!(
+            matches!(result, Ok(ToolOutput::MCP(ref output))
+            if matches!(output.output(), MCPOutputDetails::Error(_))),
+            "a real protocol error must be a failed terminal, never a successful replay"
+        );
+    } else {
+        assert!(
+            result.is_err(),
+            "an uncertain call must be surfaced, not replaced by a successful replay"
+        );
+    }
+    assert_eq!(
+        handles.calls.load(Ordering::Relaxed),
+        1,
+        "Coding may issue exactly one real tools/call"
+    );
+    assert_eq!(
+        handles.inits.load(Ordering::Relaxed),
+        1,
+        "Coding must not reconnect/reinitialize and replay the ambiguous request"
+    );
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn desktop_coding_mcp_no_replay_after_real_rpc_server_error() {
+    desktop_coding_call_without_replay(CallToolBehavior::ErrorThenOk { code: -32603 }, 5, true)
+        .await;
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn desktop_coding_mcp_no_replay_after_real_rpc_timeout() {
+    desktop_coding_call_without_replay(CallToolBehavior::HangThenOk { hang_ms: 3000 }, 1, false)
+        .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn try_call_tool_http_mcperror_recovers_then_retry_succeeds() {
     let (url, handles) = spawn_fake_mcp(CallToolBehavior::ErrorThenOk { code: -32603 }).await;

@@ -419,6 +419,7 @@ pub(crate) async fn create_test_actor_with_terminal(
         turn_abort: Default::default(),
         turn_end_tx: Default::default(),
         client_hooks: Default::default(),
+        desktop_document_turn: std::cell::Cell::new(false),
         hook_resolved_workspace_root: String::new(),
         vcs_kind: echo_agent_workspace::session::git::VcsKind::Git,
         hook_load_errors: std::cell::RefCell::new(Vec::new()),

@@ -287,21 +287,28 @@ export class DiskFileSystemProvider implements Disposable,
         try {
             const filePath = this.toFilePath(resource);
 
-            // Validate target unless { create: true, overwrite: true }
-            if (!opts.create || !opts.overwrite) {
-                const fileExists = await promisify(exists)(filePath);
+            if (opts.create && !opts.overwrite) {
+                // An existence check followed by open('w') can truncate a file
+                // created in between. O_EXCL binds the check to the actual open.
+                handle = await promisify(open)(filePath, 'wx');
+                this.mapHandleToPos.set(handle, 0);
+                this.writeHandles.add(handle);
+            } else {
+                // Preserve the existing overwrite/save semantics for other callers.
+                if (!opts.create || !opts.overwrite) {
+                    const fileExists = await promisify(exists)(filePath);
 
-                if (fileExists) {
-                    if (!opts.overwrite) {
-                        throw createFileSystemProviderError('File already exists', FileSystemProviderErrorCode.FileExists);
+                    if (fileExists) {
+                        if (!opts.overwrite) {
+                            throw createFileSystemProviderError('File already exists', FileSystemProviderErrorCode.FileExists);
+                        }
+                    } else if (!opts.create) {
+                        throw createFileSystemProviderError('File does not exist', FileSystemProviderErrorCode.FileNotFound);
                     }
-                } else if (!opts.create) {
-                    throw createFileSystemProviderError('File does not exist', FileSystemProviderErrorCode.FileNotFound);
                 }
-            }
 
-            // Open
-            handle = await this.open(resource, { create: true });
+                handle = await this.open(resource, { create: true });
+            }
 
             // Write content at once
             await this.write(handle, 0, content, 0, content.byteLength);

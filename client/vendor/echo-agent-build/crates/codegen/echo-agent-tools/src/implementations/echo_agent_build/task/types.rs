@@ -207,7 +207,12 @@ pub fn sanitize_cwd_value(s: &str) -> Option<String> {
     if !is_not_sentinel(cleaned) {
         return None;
     }
-    Some(shellexpand::tilde_with_context(cleaned, || echo_agent_config::discovery_home_dir().map(|home| home.to_string_lossy().into_owned())).into_owned())
+    Some(
+        shellexpand::tilde_with_context(cleaned, || {
+            echo_agent_config::discovery_home_dir().map(|home| home.to_string_lossy().into_owned())
+        })
+        .into_owned(),
+    )
 }
 
 /// Returns `true` if the string looks like a real subagent ID rather than a

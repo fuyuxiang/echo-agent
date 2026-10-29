@@ -773,7 +773,7 @@ pub async fn model_ids(tx: &AcpAgentTx) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-fn image_mime(path: &Path) -> Option<&'static str> {
+pub(crate) fn image_mime(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -922,25 +922,97 @@ pub async fn prompt_with_attachments(
     prompt_id: Option<&str>,
     send_now: bool,
 ) -> Result<()> {
+    prompt_with_mode_and_attachments(
+        tx,
+        session_id,
+        text,
+        attachments,
+        display_text,
+        prompt_id,
+        send_now,
+        None,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn prompt_with_mode_and_attachments(
+    tx: &AcpAgentTx,
+    session_id: &str,
+    text: &str,
+    attachments: &[String],
+    display_text: Option<&str>,
+    prompt_id: Option<&str>,
+    send_now: bool,
+    mode: Option<&str>,
+    document_tool_bridge: bool,
+) -> Result<()> {
+    let request = prepare_mode_prompt(
+        session_id,
+        text,
+        attachments,
+        display_text,
+        prompt_id,
+        send_now,
+        mode,
+        document_tool_bridge,
+    )?;
+    send_prepared_prompt(tx, request).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_mode_prompt(
+    session_id: &str,
+    text: &str,
+    attachments: &[String],
+    display_text: Option<&str>,
+    prompt_id: Option<&str>,
+    send_now: bool,
+    mode: Option<&str>,
+    document_tool_bridge: bool,
+) -> Result<acp::PromptRequest> {
     let prompt_id = prompt_id
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-    let blocks = build_team_prompt_blocks(session_id, &prompt_id, text, attachments, display_text)?;
+    let mut blocks =
+        build_team_prompt_blocks(session_id, &prompt_id, text, attachments, display_text)?;
+    if document_tool_bridge {
+        if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
+            block
+                .meta
+                .get_or_insert_with(acp::Meta::new)
+                .insert("desktopDocumentTools".into(), serde_json::json!(true));
+        }
+    }
     let mut meta = acp::Meta::new();
     meta.insert(
         "promptId".into(),
         serde_json::Value::String(prompt_id.clone()),
     );
+    if let Some(mode) = mode {
+        if !matches!(mode, "ask" | "plan" | "agent") {
+            return Err(anyhow!("invalid prompt mode"));
+        }
+        meta.insert("mode".into(), serde_json::json!(mode));
+    }
+    if document_tool_bridge {
+        meta.insert("desktopDocumentTools".into(), serde_json::json!(true));
+    }
     if send_now {
         meta.insert("sendNow".into(), serde_json::Value::Bool(true));
     }
-    tracing::info!(session_id, %prompt_id, text_len = text.len(), send_now, "echoagent: prompt send");
     let req = acp::PromptRequest::new(session_id.to_string(), blocks).meta(Some(meta));
-    let _: acp::PromptResponse = acp_send(req, tx).await.map_err(|e| {
-        tracing::error!(session_id, error = ?e, "echoagent: prompt acp_send FAILED");
-        anyhow!("prompt: {e:?}")
-    })?;
-    tracing::info!(session_id, %prompt_id, "echoagent: prompt turn completed");
+    Ok(req)
+}
+
+pub(crate) async fn send_prepared_prompt(
+    tx: &AcpAgentTx,
+    request: acp::PromptRequest,
+) -> Result<()> {
+    let _: acp::PromptResponse = acp_send(request, tx)
+        .await
+        .map_err(|error| anyhow!("prompt: {error:?}"))?;
     Ok(())
 }
 

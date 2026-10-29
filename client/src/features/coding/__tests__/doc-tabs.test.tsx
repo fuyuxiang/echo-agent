@@ -69,215 +69,94 @@ function report(overrides: Partial<DeliveryReport> = {}): DeliveryReport {
   };
 }
 
-describe("DeliveryReportTab", () => {
+describe("DeliveryReportTab optional evidence export", () => {
   beforeEach(() => {
-    api.deliveryReport.mockReset();
+    vi.restoreAllMocks();
+    Object.values(api).forEach(mock => mock.mockReset());
     api.deliveryReport.mockResolvedValue(report());
-    api.confirmAcceptance.mockReset();
-    api.confirmAcceptance.mockResolvedValue(undefined);
-    api.confirmReview.mockReset();
-    api.confirmReview.mockResolvedValue(undefined);
-    api.waiveTestFirst.mockReset();
-    api.waiveTestFirst.mockResolvedValue({ waiverReason: "仅维护测试数据" });
   });
 
-  it("asks for a task first", () => {
+  it("waits for a coding session without requesting a report", () => {
     render(<DeliveryReportTab root="/repo" taskId={null} onOpenFile={vi.fn()} />);
-    expect(screen.getByText(/新建开发任务后即可生成交付报告/)).toBeInTheDocument();
+    expect(screen.getByText("选择会话后可导出摘要")).toBeInTheDocument();
+    expect(api.deliveryReport).not.toHaveBeenCalled();
   });
 
-  it("states that a delivered task is complete", async () => {
+  it("exports real changes without restoring manual delivery gates", async () => {
+    api.deliveryReport.mockResolvedValue(report({ deliverable: false, gates: [
+      gate({ id: "acceptance", status: "not_satisfied" }),
+      gate({ id: "requirements_review", status: "not_satisfied" }),
+      gate({ id: "test_first", status: "not_satisfied" }),
+    ] }));
     render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    expect(await screen.findByText("任务已完成")).toBeInTheDocument();
+    expect(await screen.findByText(/摘要引用会话真实变更和检查历史/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制 PR 摘要" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /确认|豁免|审查/ })).not.toBeInTheDocument();
+    expect(api.confirmAcceptance).not.toHaveBeenCalled();
+    expect(api.confirmReview).not.toHaveBeenCalled();
+    expect(api.waiveTestFirst).not.toHaveBeenCalled();
   });
 
-  it("refuses to look deliverable when a gate is unmet", async () => {
-    api.deliveryReport.mockResolvedValue(
-      report({
-        deliverable: false,
-        gates: [gate({ status: "not_satisfied", summary: "1 项检查未通过" })],
-        blockers: ["测试通过：1 项检查未通过"],
-      }),
-    );
+  it("distinguishes no executed checks from a passing result", async () => {
     render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    expect(await screen.findByText("尚不满足交付条件")).toBeInTheDocument();
-    expect(screen.getByText("未解决问题")).toBeInTheDocument();
+    const summary = await screen.findByText(/### 检查记录/);
+    expect(summary).toHaveTextContent("未执行");
+    expect(summary).not.toHaveTextContent("全部通过");
   });
 
-  it("shows a not-applicable gate distinctly from a passing one", async () => {
-    api.deliveryReport.mockResolvedValue(
-      report({
-        gates: [gate({ id: "lint", title: "静态检查通过", status: "not_applicable", summary: "当前工程未识别到该类检查命令", evidence: [] })],
-      }),
-    );
+  it("keeps historical revisions and real exit codes visible in the export", async () => {
+    const base = { taskId: "t1", kind: "test" as const, command: "pnpm test", stdout: "", stderr: "", durationMs: 10, startedAt: "", finishedAt: "", structured: false };
+    api.deliveryReport.mockResolvedValue(report({ verifications: [
+      { ...base, id: "old-failure", status: "failed", exitCode: 1, contentRevision: "old-revision" },
+      { ...base, id: "new-pass", status: "passed", exitCode: 0, contentRevision: "new-revision" },
+    ] }));
     render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    expect(await screen.findByText("不适用")).toBeInTheDocument();
+    const summary = await screen.findByText(/### 检查记录/);
+    expect(summary).toHaveTextContent("历史结果不代表当前版本");
+    expect(summary).toHaveTextContent("failed, exit=1, revision=old-revision");
+    expect(summary).toHaveTextContent("passed, exit=0, revision=new-revision");
   });
 
-  it("requires an explicit requirements review before code-quality confirmation", async () => {
-    const pending = report({
-      deliverable: false,
-      gates: [
-        gate({ id: "requirements_review", title: "需求符合性审查", status: "not_satisfied" }),
-        gate({ id: "code_quality_review", title: "代码质量审查", status: "not_satisfied" }),
-      ],
-    });
-    api.deliveryReport.mockResolvedValueOnce(pending).mockResolvedValue(report({
-      deliverable: false,
-      gates: [
-        gate({ id: "requirements_review", title: "需求符合性审查" }),
-        gate({ id: "code_quality_review", title: "代码质量审查", status: "not_satisfied" }),
-      ],
-    }));
-    render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    const actions = await screen.findAllByRole("button", { name: "审查并确认" });
-    expect(actions[1]).toBeDisabled();
-    await userEvent.click(actions[0]);
-    await userEvent.click(screen.getByRole("button", { name: "确认已审查" }));
-    expect(api.confirmReview).toHaveBeenCalledWith("/repo", "t1", "requirements");
-  });
-
-  it("records an explicit reason when RED is not applicable", async () => {
-    api.deliveryReport.mockResolvedValue(report({ task: task({ phase: "paused", phaseReason: "等待红灯测试验证" }) }));
-    render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    const reason = await screen.findByRole("textbox", { name: "测试先行不适用原因" });
-    await userEvent.type(reason, "仅维护测试数据，无生产代码行为变更");
-    await userEvent.click(screen.getByRole("button", { name: "说明并豁免" }));
-    expect(api.waiveTestFirst).toHaveBeenCalledWith("/repo", "t1", "仅维护测试数据，无生产代码行为变更");
-  });
-
-  it("切换任务后旧豁免响应不会改写当前报告或TDD状态", async () => {
-    let resolve!: (value: { waiverReason: string }) => void;
-    api.waiveTestFirst.mockReturnValue(new Promise((accept) => { resolve = accept; }));
-    api.deliveryReport.mockImplementation((_root: string, id: string) => Promise.resolve(report({
-      task: task({ id, name: id === "t1" ? "旧任务" : "新任务", phase: "paused", phaseReason: "等待红灯测试验证" }),
-    })));
-    const onTddChanged = vi.fn();
-    const props = { root: "/repo", onOpenFile: vi.fn(), onTddChanged };
-    const view = render(<DeliveryReportTab {...props} taskId="t1" />);
-    await userEvent.type(await screen.findByRole("textbox", { name: "测试先行不适用原因" }), "旧任务原因");
-    await userEvent.click(screen.getByRole("button", { name: "说明并豁免" }));
-    view.rerender(<DeliveryReportTab {...props} taskId="t2" />);
-    expect(await screen.findByRole("heading", { name: "新任务" })).toBeInTheDocument();
-    await act(async () => { resolve({ waiverReason: "旧任务原因" }); });
-    expect(onTddChanged).not.toHaveBeenCalled();
-    expect(screen.queryByRole("heading", { name: "旧任务" })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "新任务" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "测试先行不适用原因" })).toHaveValue("");
-  });
-
-  it("切换项目后旧验收响应不会再加载或显示原项目报告", async () => {
-    let resolve!: () => void;
-    api.confirmAcceptance.mockReturnValue(new Promise<void>((accept) => { resolve = accept; }));
-    api.deliveryReport.mockImplementation((root: string) => Promise.resolve(report({
-      task: task({ name: root === "/repo" ? "旧任务" : "新项目任务", acceptanceCriteria: [
-        { id: "ac1", content: "登录流程可用", satisfied: false, evidence: [] },
-      ] }),
-    })));
-    const onReviewChanged = vi.fn();
-    const props = { taskId: "t1", onOpenFile: vi.fn(), onReviewChanged };
-    const view = render(<DeliveryReportTab {...props} root="/repo" />);
-    await userEvent.click(await screen.findByRole("button", { name: "人工确认已满足" }));
-    await userEvent.click(screen.getByRole("button", { name: "确认已满足" }));
-    view.rerender(<DeliveryReportTab {...props} root="/other" />);
-    expect(await screen.findByRole("heading", { name: "新项目任务" })).toBeInTheDocument();
-    await act(async () => { resolve(); });
-    expect(onReviewChanged).not.toHaveBeenCalled();
-    expect(api.deliveryReport).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole("heading", { name: "新项目任务" })).toBeInTheDocument();
-  });
-
-  it("expands an unmet gate's evidence by default", async () => {
-    api.deliveryReport.mockResolvedValue(
-      report({
-        gates: [gate({ status: "not_satisfied", evidence: ["pnpm test：失败（退出码 1）"] })],
-      }),
-    );
-    render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    expect(await screen.findByText("pnpm test：失败（退出码 1）")).toBeInTheDocument();
-  });
-
-  it("opens a changed file", async () => {
-    const user = userEvent.setup();
+  it("opens a changed file in the workspace", async () => {
     const onOpenFile = vi.fn();
     render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={onOpenFile} />);
-    await user.click(await screen.findByText("src/auth.ts"));
+    await userEvent.click(await screen.findByRole("button", { name: "src/auth.ts" }));
     expect(onOpenFile).toHaveBeenCalledWith("src/auth.ts");
   });
 
-  it("shows the exit code each verdict came from", async () => {
-    api.deliveryReport.mockResolvedValue(
-      report({
-        verifications: [
-          {
-            id: "v1",
-            taskId: "t1",
-            kind: "test",
-            command: "pnpm test",
-            status: "failed",
-            exitCode: 1,
-            stdout: "",
-            stderr: "",
-            durationMs: 10,
-            startedAt: "",
-            finishedAt: "",
-            structured: false,
-          },
-        ],
-      }),
-    );
+  it("retries a failed evidence read without losing the coding session", async () => {
+    api.deliveryReport.mockRejectedValueOnce(new Error("历史读取失败")).mockResolvedValue(report());
     render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    const table = await screen.findByRole("table");
-    expect(table).toHaveTextContent("1");
-    expect(table).toHaveTextContent("未结构化");
+    expect(await screen.findByRole("alert")).toHaveTextContent("历史读取失败");
+    await userEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("button", { name: "复制 PR 摘要" })).toBeEnabled();
+    expect(api.deliveryReport).toHaveBeenNthCalledWith(2, "/repo", "t1");
   });
 
-  it("marks acceptance criteria without evidence", async () => {
-    api.deliveryReport.mockResolvedValue(
-      report({
-        task: task({
-          acceptanceCriteria: [
-            { id: "ac1", content: "登录流程可用", satisfied: false, evidence: [] },
-          ],
-        }),
-      }),
-    );
-    render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    expect(await screen.findByText("尚无可追溯的自动验收证据")).toBeInTheDocument();
+  it("ignores an old project's late report after navigating to another project", async () => {
+    let finishOld!: (value: DeliveryReport) => void;
+    api.deliveryReport.mockReturnValueOnce(new Promise<DeliveryReport>(resolve => { finishOld = resolve; }))
+      .mockResolvedValueOnce(report({ task: task({ name: "新项目会话" }) }));
+    const view = render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
+    view.rerender(<DeliveryReportTab root="/other" taskId="t2" onOpenFile={vi.fn()} />);
+    expect(await screen.findByText(/## 新项目会话/)).toBeInTheDocument();
+    await act(async () => { finishOld(report({ task: task({ name: "旧项目会话" }) })); });
+    expect(screen.queryByText(/## 旧项目会话/)).not.toBeInTheDocument();
+    expect(screen.getByText(/## 新项目会话/)).toBeInTheDocument();
   });
 
-  it("records an explicit human confirmation for delivered acceptance criteria", async () => {
+  it("copies the same evidence text and exposes clipboard failure", async () => {
     const user = userEvent.setup();
-    api.deliveryReport.mockResolvedValue(
-      report({
-        task: task({
-          acceptanceCriteria: [
-            { id: "ac1", content: "登录流程可用", satisfied: false, evidence: [] },
-          ],
-        }),
-      }),
-    );
-    render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    await user.click(await screen.findByRole("button", { name: "人工确认已满足" }));
-    expect(api.confirmAcceptance).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "确认已满足" }));
-    expect(api.confirmAcceptance).toHaveBeenCalledWith("/repo", "t1", "ac1");
-  });
-
-  it("lists the repair history when the engine retried", async () => {
-    api.deliveryReport.mockResolvedValue(
-      report({
-        repairRounds: [{ round: 1, problemFingerprints: ["a", "b"], startedAt: "", outcome: "new_errors" }],
-      }),
-    );
-    render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    expect(await screen.findByText(/第 1 轮 · 2 个问题/)).toBeInTheDocument();
-  });
-
-  it("surfaces a load failure", async () => {
-    api.deliveryReport.mockRejectedValue(new Error("任务不存在"));
-    render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} />);
-    expect(await screen.findByText("任务不存在")).toBeInTheDocument();
+    const write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("clipboard unavailable"));
+    const onToast = vi.fn();
+    render(<DeliveryReportTab root="/repo" taskId="t1" onOpenFile={vi.fn()} onToast={onToast} />);
+    const button = await screen.findByRole("button", { name: "复制 PR 摘要" });
+    await user.click(button);
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("src/auth.ts (+24 -6)"));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("未执行"));
+    expect(onToast).toHaveBeenLastCalledWith("PR 摘要已复制");
+    await user.click(button);
+    expect(onToast).toHaveBeenLastCalledWith("复制失败，请选择下方文本");
   });
 });
 

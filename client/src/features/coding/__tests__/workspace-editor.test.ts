@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { EditorPreparationCancelled, prepareWorkspaceEditor, registerWorkspaceEditor, withWorkspaceDiskMutation } from "../lib/workspace-editor";
+import { EditorPreparationCancelled, prepareWorkspaceEditor, registerWorkspaceEditor, withWorkspaceDiskMutation, workspaceEditor } from "../lib/workspace-editor";
 
 describe("workspace editor execution boundary", () => {
   it("queries only the requested workspace and refuses unattended dirty verification", async () => {
@@ -49,5 +49,27 @@ describe("workspace editor execution boundary", () => {
     const remove = registerWorkspaceEditor("/new-dirty", {getDirtyCount: async () => 1, saveAll: async () => true, lockEditing: unlock});
     try { await expect(withWorkspaceDiskMutation("/new-dirty", action)).rejects.toThrow("又有未保存"); expect(action).not.toHaveBeenCalled(); expect(unlock).toHaveBeenLastCalledWith(false); }
     finally { remove(); }
+  });
+  it("retains the live workspace owner when an older frame unregisters", () => {
+    const previous = {getDirtyCount: vi.fn(async () => 0),saveAll:vi.fn(async () => true)};
+    const current = {getDirtyCount: vi.fn(async () => 1),saveAll:vi.fn(async () => true)};
+    const removePrevious = registerWorkspaceEditor("/same-project",previous);
+    const removeCurrent = registerWorkspaceEditor("/same-project",current);
+    try { removePrevious(); expect(workspaceEditor("/same-project")).toBe(current); }
+    finally { removeCurrent(); }
+    expect(workspaceEditor("/same-project")).toBeUndefined();
+  });
+  it("exposes context and cancellation only on the registered project without saving or locking for reads", async () => {
+    const first = {getDirtyCount:vi.fn(async () => 1),saveAll:vi.fn(async () => true),lockEditing:vi.fn(),
+      getContext:vi.fn(async () => ({workspace:"/context-a",document:null,openDocuments:[],diagnostics:[],diagnosticsTruncated:false,terminal:null,truncated:false})),
+      cancelRun:vi.fn(async () => true)};
+    const second = {getDirtyCount:vi.fn(async () => 0),saveAll:vi.fn(async () => true),cancelRun:vi.fn(async () => true)};
+    const removeFirst = registerWorkspaceEditor("/context-a",first); const removeSecond = registerWorkspaceEditor("/context-b",second);
+    try {
+      await expect(workspaceEditor("/context-a")!.getContext!()).resolves.toEqual(expect.objectContaining({workspace:"/context-a"}));
+      await expect(workspaceEditor("/context-a")!.cancelRun!("run-a")).resolves.toBe(true);
+      expect(first.cancelRun).toHaveBeenCalledWith("run-a"); expect(second.cancelRun).not.toHaveBeenCalled();
+      expect(first.saveAll).not.toHaveBeenCalled(); expect(first.lockEditing).not.toHaveBeenCalled(); expect(first.getDirtyCount).not.toHaveBeenCalled();
+    } finally { removeFirst(); removeSecond(); }
   });
 });

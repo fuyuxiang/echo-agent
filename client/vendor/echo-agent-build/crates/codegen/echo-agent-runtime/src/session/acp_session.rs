@@ -191,10 +191,10 @@ use turn_report_slot::{CommitOutcome, TurnEpoch, TurnReportClaim};
 #[path = "acp_session_impl/turn_end_hooks.rs"]
 mod turn_end_hooks;
 use turn_end_hooks::TurnEnd;
-#[path = "acp_session_impl/document_tasks.rs"]
-mod document_tasks;
 #[path = "acp_session_impl/desktop_delivery.rs"]
 mod desktop_delivery;
+#[path = "acp_session_impl/document_tasks.rs"]
+mod document_tasks;
 #[path = "acp_session_impl/stop_gate.rs"]
 mod stop_gate;
 pub use stop_gate::MAX_STOP_HOOK_CONTINUATIONS_PER_TURN;
@@ -1046,6 +1046,8 @@ pub(crate) struct SessionActor {
     /// [`crate::session::acp_session::hooks`]. `RefCell` so `load_session` reconnect can
     /// replace the set on the live actor (see `SessionCommand::SetClientHooks`).
     pub(crate) client_hooks: std::cell::RefCell<crate::extensions::hooks::ClientHooks>,
+    /// Synchronous mirror for hooks that execute outside tool dispatch.
+    pub(crate) desktop_document_turn: std::cell::Cell<bool>,
     /// Resolved workspace root for hooks: git worktree root if in a git repo,
     /// otherwise session cwd. Used for hook child process cwd, envelope fields,
     /// and ECHO_AGENT_WORKSPACE_ROOT env var.

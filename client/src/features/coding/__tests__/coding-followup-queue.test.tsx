@@ -19,7 +19,7 @@ it("retains admitted context until the correlated native completion, then advanc
   hook.rerender({...props,manualReady:true});
   expect(props.send).not.toHaveBeenCalled();
   hook.rerender({...props,autoReady:true,manualReady:true});
-  await waitFor(()=>expect(props.send).toHaveBeenCalledExactlyOnceWith("核验边界",["/repo/a.ts"],expect.any(String),false));
+  await waitFor(()=>expect(props.send).toHaveBeenCalledExactlyOnceWith("核验边界",["/repo/a.ts"],expect.any(String),false,undefined));
   expect(useMessageQueueStore.getState().getQueue(hook.result.current.queueId!)[0].status).toBe("sending");
   hook.rerender({...props,autoReady:false,manualReady:false});
   act(()=>finish("sA",props.send.mock.calls[0][2]));

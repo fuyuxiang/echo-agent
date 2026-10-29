@@ -147,11 +147,29 @@ impl SessionActor {
         }
     }
 
+    pub(super) fn is_hook_execution_allowed(&self) -> bool {
+        !self.is_readonly_turn() && !self.desktop_document_turn.get()
+            && !self.startup_hints.inherited_turn_authority.as_ref().is_some_and(|authority|authority.document_tools)
+            // A desktop session is created before its first prompt declares
+            // capabilities. Startup/idle hooks cannot execute on that gap.
+            && !(self.client_identifier.as_deref()==Some("echo-agent-desktop")
+                && self.current_prompt_id.lock().unwrap().is_none())
+    }
+    pub(super) fn allowed_hook_registry(
+        &self,
+    ) -> Option<std::sync::Arc<echo_agent_hooks::discovery::HookRegistry>> {
+        self.is_hook_execution_allowed()
+            .then(|| self.hook_registry.borrow().clone())
+            .flatten()
+    }
     /// Whether any hook source could consume `event`, letting the hot path skip
     /// building a payload when nothing is listening. Deliberately coarse: any
     /// on-disk registry activates every event (see [`Self::has_enabled_hooks_for`] for
     /// the precise check), while client hooks are checked per event.
     pub(super) fn may_have_hooks_for(&self, event: HookEventName) -> bool {
+        if !self.is_hook_execution_allowed() {
+            return false;
+        }
         self.hook_registry.borrow().is_some()
             || self.client_hooks.borrow().contains_key(&event.canonical())
     }
@@ -159,6 +177,9 @@ impl SessionActor {
     /// Whether a hook is registered and enabled for `event` specifically, checking the on-disk
     /// registry per event rather than treating any registry as active.
     pub(super) fn has_enabled_hooks_for(&self, event: HookEventName) -> bool {
+        if !self.is_hook_execution_allowed() {
+            return false;
+        }
         self.hook_registry
             .borrow()
             .as_ref()
@@ -438,6 +459,9 @@ impl SessionActor {
     /// Fire-and-forget (no decision is consumed); independent of file hooks, so it
     /// runs even when no on-disk hook registry exists. No-op when nothing is registered.
     pub(super) fn notify_client_hooks(&self, envelope: &HookEventEnvelope) {
+        if !self.is_hook_execution_allowed() {
+            return;
+        }
         let hooks = self.client_hooks.borrow();
         let Some(groups) = hooks.get(&envelope.hook_event_name.canonical()) else {
             return;

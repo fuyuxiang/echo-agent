@@ -382,6 +382,19 @@ impl SessionHandle {
             Default::default()
         })
     }
+    /// A missing/dead parent must never become an unrestricted child.
+    pub(crate) async fn snapshot_turn_authority(
+        &self,
+    ) -> Result<crate::session::InheritedTurnAuthority, String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SessionCommand::SnapshotTurnAuthority { respond_to: tx })
+            .map_err(|_| "Parent authority is unavailable".to_string())?;
+        tokio::time::timeout(std::time::Duration::from_secs(10), rx)
+            .await
+            .map_err(|_| "Parent authority snapshot timed out".to_string())?
+            .map_err(|_| "Parent authority snapshot was cancelled".to_string())
+    }
     /// Snapshot the session's resolved tool schema for verbatim-fork inheritance.
     /// A dead actor or dropped reply fails open to an empty list (child then builds
     /// its own toolset, same as a non-fork spawn).

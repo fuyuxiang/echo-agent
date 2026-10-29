@@ -61,23 +61,24 @@ describe("phase presentation", () => {
 describe("AgentPane", () => {
   it("shows structured plan progress and its active node", () => {
     render(<AgentPane {...paneProps({ task: task({ planRevision: "rev-1", taskNodes: [node()] }) })} />);
-    expect(screen.getByLabelText("执行计划进度")).toHaveTextContent("执行计划 0/1");
-    expect(screen.getByLabelText("执行计划进度")).toHaveTextContent("T1");
+    expect(screen.getByText("执行计划 · 0/1")).toBeInTheDocument();
+    expect(screen.queryByLabelText("执行计划进度")).not.toBeInTheDocument();
   });
 
   it("surfaces invalid plan contracts before execution", () => {
     render(<AgentPane {...paneProps({ task: task({ planIssues: [{ severity: "error", code: "write-conflict", message: "T1 与 T2 同时写入 src/a.ts", nodeKeys: ["T1", "T2"] }] }) })} />);
-    expect(screen.getByRole("alert")).toHaveTextContent("执行计划需要修正");
+    expect(screen.getByText("计划详情 · 1 项提示")).toBeInTheDocument();
+    expect(screen.getByText("T1 与 T2 同时写入 src/a.ts")).toBeInTheDocument();
   });
 
-  it("keeps execution completion neutral until delivery evidence is available", async () => {
-    const user = userEvent.setup();
+  it("finishes a read-only answer without empty changes or delivery gates", async () => {
     const props = paneProps({ task: task({ phase: "delivered" }) });
     render(<AgentPane {...props} />);
-    expect(screen.getByText("执行完成 · 待检查交付条件")).toBeInTheDocument();
+    expect(screen.getByText("本轮完成")).toBeInTheDocument();
+    expect(screen.getByText("已完成回答")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /确认验收/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "交付报告" }));
-    expect(props.onOpenReport).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "交付报告" })).not.toBeInTheDocument();
+    expect(props.onOpenReport).not.toHaveBeenCalled();
   });
 
   it("shows a recoverable stopped state with review and continue actions", async () => {

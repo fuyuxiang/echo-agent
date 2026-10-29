@@ -26,6 +26,20 @@ fn mode_updates(rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionEvent>) -> 
     }
     seen
 }
+#[tokio::test(flavor = "current_thread")]
+async fn desktop_current_prompt_modes_record_every_admitted_ask_agent_turn() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut actor, mut events) = actor_with_events().await;
+            actor.client_identifier = Some("echo-agent-desktop".into());
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Ask);
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Agent);
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Ask);
+            assert_eq!(mode_updates(&mut events), vec!["ask", "default", "ask"]);
+            assert_eq!(*actor.current_prompt_mode.lock(), PromptMode::Ask);
+        })
+        .await;
+}
 #[test]
 fn prompt_mode_from_session_mode_id_uses_acp_session_mode() {
     assert_eq!(

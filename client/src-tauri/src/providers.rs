@@ -666,6 +666,141 @@ fn resolved_or_optional_api_key(table: &Map<String, Value>) -> Option<String> {
     resolved_provider_api_key(table).or_else(|| provider_can_omit_api_key(table).then(String::new))
 }
 
+/// Honor an explicit provider/model capability declaration without guessing
+/// from model names. Absence remains unknown and the actual service decides.
+pub(crate) fn require_model_images_if_declared(model_id: &str) -> Result<(), String> {
+    let config = read_config_checked()?;
+    let model = config
+        .get("model")
+        .and_then(Value::as_table)
+        .and_then(|models| models.get(model_id))
+        .and_then(Value::as_table);
+    let provider = model
+        .and_then(|model| model.get("model_provider"))
+        .and_then(Value::as_str)
+        .and_then(|id| {
+            config
+                .get("model_providers")
+                .and_then(Value::as_table)?
+                .get(id)
+        })
+        .and_then(Value::as_table);
+    let declared = model
+        .and_then(|model| model.get("supports_images"))
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            provider
+                .and_then(|provider| provider.get("supports_images"))
+                .and_then(Value::as_bool)
+        });
+    if declared == Some(false) {
+        return Err("当前模型明确不支持图片输入，请切换支持视觉输入的模型或移除图片".into());
+    }
+    Ok(())
+}
+
+/// Native-only model access for the bounded, tool-free inline completion path.
+/// Never serialize this type: credentials stay on the Rust side.
+pub(crate) struct InlineModelAccess {
+    pub api_key: String,
+    pub endpoint: String,
+    pub remote_model_id: String,
+    pub api_backend: String,
+    pub auth_scheme: String,
+    pub extra_headers: Vec<(String, String)>,
+}
+
+pub(crate) fn inline_model_access(model_id: &str) -> Result<InlineModelAccess, String> {
+    crate::policy::require_model(model_id)?;
+    inline_model_access_from_config(&read_config_checked()?, model_id)
+}
+
+fn inline_model_access_from_config(
+    config: &Value,
+    model_id: &str,
+) -> Result<InlineModelAccess, String> {
+    let model = config
+        .get("model")
+        .and_then(Value::as_table)
+        .and_then(|models| models.get(model_id))
+        .and_then(Value::as_table)
+        .ok_or("Tab 模型不存在，请在设置中选择可用模型")?;
+    let mut connection =
+        if let Some(provider_id) = model.get("model_provider").and_then(Value::as_str) {
+            config
+                .get("model_providers")
+                .and_then(Value::as_table)
+                .and_then(|providers| providers.get(provider_id))
+                .and_then(Value::as_table)
+                .ok_or("Tab 模型连接已被删除")?
+                .clone()
+        } else {
+            Map::new()
+        };
+    // Model overrides have the same precedence as the runtime catalog.
+    connection.extend(model.clone());
+    if connection.get(MANAGED_BY_KEY).and_then(Value::as_str) == Some(MANAGED_BY_ORGANIZATION) {
+        let lease = connection
+            .get(LEASE_UNTIL_KEY)
+            .and_then(Value::as_integer)
+            .unwrap_or(0);
+        if lease <= chrono::Utc::now().timestamp_millis() {
+            return Err("组织模型配置已过期，请重新同步".into());
+        }
+    }
+    let base = connection
+        .get("base_url")
+        .and_then(Value::as_str)
+        .ok_or("Tab 模型未配置 Base URL")?;
+    let explicit_http = connection.get(MANAGED_BY_KEY).is_none()
+        && connection
+            .get(ALLOW_INSECURE_HTTP_KEY)
+            .and_then(Value::as_bool)
+            == Some(true);
+    validate_provider_base_url_with_options(base, insecure_loopback_http_enabled(), explicit_http)?;
+    let backend = connection
+        .get("api_backend")
+        .and_then(Value::as_str)
+        .unwrap_or("chat_completions");
+    validate_api_backend(backend)?;
+    let auth = connection
+        .get("auth_scheme")
+        .and_then(Value::as_str)
+        .unwrap_or("bearer");
+    validate_auth_scheme(auth)?;
+    let api_key = resolved_or_optional_api_key(&connection).ok_or("Tab 模型没有可用凭据")?;
+    let remote_model_id = model
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(model_id)
+        .trim();
+    if remote_model_id.is_empty() {
+        return Err("Tab 模型 ID 为空".into());
+    }
+    let extra_headers = connection
+        .get("extra_headers")
+        .and_then(Value::as_table)
+        .map(|headers| {
+            headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .as_str()
+                        .map(|value| (name.clone(), value.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(InlineModelAccess {
+        api_key,
+        endpoint: inference_endpoint(base, backend)?,
+        remote_model_id: remote_model_id.into(),
+        api_backend: backend.into(),
+        auth_scheme: auth.into(),
+        extra_headers,
+    })
+}
+
 /// Secret-bearing provider context used only by native meeting jobs.  It is
 /// deliberately never serialized across the Tauri boundary.
 pub(crate) struct MeetingProviderAccess {

@@ -155,9 +155,12 @@ pub struct ExecutionLedgerEvent {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingTask {
-    /// Development-only task formats are intentionally not migrated. A task
-    /// without the current schema is hidden by `list_tasks` and cannot run.
+    /// Legacy versions are upgraded in memory and saved on the next mutation.
+    #[serde(default)]
     pub schema_version: u32,
+    /// Explicit opt-in for the former DAG/TDD/delivery policy.
+    #[serde(default)]
+    pub strict_workflow: bool,
     pub id: String,
     pub name: String,
     pub requirement: String,
@@ -171,7 +174,9 @@ pub struct CodingTask {
     pub phase_reason: Option<String>,
     #[serde(default)]
     pub blocker: Option<String>,
+    #[serde(default)]
     pub acceptance_criteria: Vec<AcceptanceCriterion>,
+    #[serde(default)]
     pub task_nodes: Vec<TaskNode>,
     /// Hash of the latest structured runtime plan. Missing only while a simple
     /// task still uses its initial ROOT node.
@@ -266,8 +271,8 @@ fn upsert_index(root: &Path, task: &CodingTask) -> Result<(), String> {
         updated_at: task.updated_at.clone(),
     };
     store::update_json(&store::tasks_index_path(root), |index: &mut TaskIndex| {
-        // Drop stale rows while the same exclusive lock protects this update.
-        index.tasks.retain(|entry| load(root, &entry.id).is_some());
+        // Keep unreadable/future-version rows for diagnosis. A normal save
+        // must never erase another task's history or migration failure.
         match index.tasks.iter_mut().find(|entry| entry.id == task.id) {
             Some(entry) => *entry = summary,
             None => index.tasks.push(summary),
@@ -278,8 +283,35 @@ fn upsert_index(root: &Path, task: &CodingTask) -> Result<(), String> {
 
 pub fn load(root: &Path, task_id: &str) -> Option<CodingTask> {
     store::validate_task_id(task_id).ok()?;
-    store::read_json::<CodingTask>(&task_path(root, task_id))
-        .filter(|task| task.schema_version == 2 && task.id == task_id)
+    let mut task = store::read_json::<CodingTask>(&task_path(root, task_id))?;
+    if task.id != task_id || task.schema_version > 2 {
+        return None;
+    }
+    // Additive compatibility: never delete or rewrite a legacy record while
+    // reading it. The next normal save persists this idempotent upgrade.
+    task.schema_version = 2;
+    if !task.strict_workflow {
+        task.global_constraints.retain(|constraint| {
+            constraint
+                != "Complex work must use a validated dependency graph and bounded write scopes"
+                && constraint != "Every planned verification command must pass before delivery"
+        });
+        for constraint in &mut task.global_constraints {
+            if constraint == "Do not claim completion without fresh verification evidence" {
+                *constraint = "Distinguish turn completion from actual check results; never claim unexecuted checks passed".into();
+            }
+        }
+    }
+    for (index, node) in task.task_nodes.iter_mut().enumerate() {
+        if node.plan_key.is_empty() {
+            node.plan_key = if index == 0 {
+                "ROOT".into()
+            } else {
+                format!("T{}", index + 1)
+            };
+        }
+    }
+    Some(task)
 }
 
 pub fn save(root: &Path, task: &CodingTask) -> Result<(), String> {
@@ -287,9 +319,28 @@ pub fn save(root: &Path, task: &CodingTask) -> Result<(), String> {
     if task.schema_version != 2 {
         return Err("不支持的代码开发任务数据版本".into());
     }
+    let path = task_path(root, &task.id);
+    if path.exists() {
+        let original = store::read_json::<serde_json::Value>(&path)
+            .ok_or_else(|| format!("旧任务记录不可读取，已保留 {}", path.display()))?;
+        let version = original
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if version > 2 {
+            return Err("未来版本任务记录不能被当前版本覆盖".into());
+        }
+        if version < 2 {
+            let backup = path.with_file_name("task.legacy.json");
+            if !backup.exists() {
+                let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+                store::write_bytes_atomic(&backup, &bytes)?;
+            }
+        }
+    }
     let mut stored = task.clone();
     stored.updated_at = now();
-    store::write_json(&task_path(root, &stored.id), &stored)?;
+    store::write_json(&path, &stored)?;
     upsert_index(root, &stored)
 }
 
@@ -305,6 +356,7 @@ pub fn create_task(root: &Path, name: &str, requirement: &str) -> Result<CodingT
     }
     let task = CodingTask {
         schema_version: 2,
+        strict_workflow: false,
         id: uuid::Uuid::now_v7().to_string(),
         name: trimmed.to_string(),
         requirement: requirement.clone(),
@@ -342,9 +394,8 @@ pub fn create_task(root: &Path, name: &str, requirement: &str) -> Result<CodingT
         plan_issues: Vec::new(),
         global_constraints: vec![
             "Preserve existing behavior outside the requested scope".into(),
-            "Do not claim completion without fresh verification evidence".into(),
-            "Complex work must use a validated dependency graph and bounded write scopes".into(),
-            "Every planned verification command must pass before delivery".into(),
+            "Distinguish turn completion from actual check results; never claim unexecuted checks passed".into(),
+            "Choose relevant checks and report their actual results independently of turn completion".into(),
         ],
         next_action: None,
         model_id: None,
@@ -353,6 +404,7 @@ pub fn create_task(root: &Path, name: &str, requirement: &str) -> Result<CodingT
         updated_at: timestamp,
     };
     save(root, &task)?;
+    crate::coding::isolation::associate(root, &task.id, None)?;
     Ok(task)
 }
 
@@ -407,6 +459,7 @@ pub fn bind_runtime(
             return Err("会话和模型标识不能为空".into());
         }
         let mut task = load(root, task_id).ok_or_else(|| "任务不存在".to_string())?;
+        crate::coding::isolation::associate(root, task_id, Some(session_id))?;
         task.session_id = Some(session_id.to_string());
         task.model_id = Some(model_id.to_string());
         save(root, &task)?;
@@ -1080,6 +1133,29 @@ pub fn confirm_acceptance(
 }
 
 #[tauri::command]
+pub async fn coding_task_for_session(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    session_id: String,
+) -> Result<Option<CodingTask>, String> {
+    let root = access.require_workspace(&root)?;
+    if session_id.trim().is_empty() {
+        return Ok(None);
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut matches = list_tasks(&root)
+            .into_iter()
+            .filter_map(|summary| load(&root, &summary.id))
+            .filter(|task| task.session_id.as_deref() == Some(session_id.as_str()))
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        matches.into_iter().next()
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn coding_task_list(
     access: State<'_, FilesystemAccess>,
     root: String,
@@ -1122,6 +1198,7 @@ pub async fn coding_task_delete(
     task_id: String,
 ) -> Result<(), String> {
     let root = access.require_workspace(&root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     tokio::task::spawn_blocking(move || delete_task(&root, &task_id))
         .await
         .map_err(|error| format!("删除任务失败：{error}"))?
@@ -1293,14 +1370,39 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_task_schema_is_hidden_instead_of_migrated() {
+    fn legacy_task_is_read_compatibly_without_erasing_history() {
         let root = temp_root();
         let task = create_task(&root, "旧任务", "完成修改").unwrap();
         let mut value = serde_json::to_value(&task).unwrap();
         value["schemaVersion"] = serde_json::json!(1);
+        value["legacyCustomField"] = serde_json::json!({"keep":"original unknown data"});
+        value.as_object_mut().unwrap().remove("strictWorkflow");
+        value["taskNodes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("planKey");
         store::write_json(&task_path(&root, &task.id), &value).unwrap();
-        assert!(load(&root, &task.id).is_none());
-        assert!(list_tasks(&root).is_empty());
+        let upgraded = load(&root, &task.id).unwrap();
+        assert_eq!(upgraded.schema_version, 2);
+        assert!(!upgraded.strict_workflow);
+        assert_eq!(upgraded.task_nodes[0].plan_key, "ROOT");
+        assert_eq!(upgraded.requirement, task.requirement);
+        assert_eq!(list_tasks(&root).len(), 1);
+        // Reads do not rewrite user data. The normal save persists migration.
+        assert_eq!(
+            store::read_json::<serde_json::Value>(&task_path(&root, &task.id)).unwrap()
+                ["schemaVersion"],
+            1
+        );
+        save(&root, &upgraded).unwrap();
+        let backup = store::read_json::<serde_json::Value>(
+            &task_path(&root, &task.id).with_file_name("task.legacy.json"),
+        )
+        .unwrap();
+        assert_eq!(backup["legacyCustomField"]["keep"], "original unknown data");
+        let again = load(&root, &task.id).unwrap();
+        assert_eq!(again.task_nodes[0].id, task.task_nodes[0].id);
+        assert_eq!(again.created_at, task.created_at);
         std::fs::remove_dir_all(&root).ok();
     }
 

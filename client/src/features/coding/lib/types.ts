@@ -15,7 +15,12 @@ export type TaskPhase =
   | "delivered"
   | "blocked";
 
-export type TaskNodeStatus = "pending" | "running" | "success" | "failed" | "blocked";
+export type TaskNodeStatus =
+  | "pending"
+  | "running"
+  | "success"
+  | "failed"
+  | "blocked";
 export type TaskNextAction = "revise_plan" | "continue_node";
 
 export interface AcceptanceCriterion {
@@ -81,6 +86,7 @@ export interface ExecutionLedgerEvent {
 
 export interface CodingTask {
   schemaVersion: 2;
+  strictWorkflow?: boolean;
   id: string;
   name: string;
   requirement: string;
@@ -120,6 +126,7 @@ export interface FileChange {
 }
 
 export interface ChangeSet {
+  contentRevision?: string;
   taskId: string;
   baselineMode?: "git" | "filesystem" | null;
   /** Legacy backend fields; current IPC intentionally omits internal baselines. */
@@ -146,6 +153,8 @@ export interface ChangeDiff {
   modified: string;
   binary: boolean;
   modifiedHash: string;
+  /** Both snapshots are regular text files with unchanged metadata and native editor size support. */
+  canApplyText?: boolean;
 }
 
 export interface IsolatedWorkspace {
@@ -160,8 +169,19 @@ export interface CommitHunk {
   preview: string;
 }
 
-export type VerificationKind = "build" | "lint" | "type_check" | "test" | "custom";
-export type VerificationStatus = "running" | "passed" | "failed" | "timed_out" | "cancelled" | "environment_unavailable";
+export type VerificationKind =
+  | "build"
+  | "lint"
+  | "type_check"
+  | "test"
+  | "custom";
+export type VerificationStatus =
+  | "running"
+  | "passed"
+  | "failed"
+  | "timed_out"
+  | "cancelled"
+  | "environment_unavailable";
 
 export interface TestSummary {
   total: number;
@@ -191,6 +211,9 @@ export interface VerificationRecord {
   startedAt: string;
   finishedAt: string;
   contentRevision?: string | null;
+  configurationRevision?: string | null;
+  workspaceTree?: string | null;
+  cwd?: string | null;
   testSummary?: TestSummary | null;
   /** False when the runner output could not be parsed into a summary. */
   structured: boolean;
@@ -223,7 +246,11 @@ export interface Problem {
   fingerprint: string;
 }
 
-export type RepairOutcome = "fixed" | "same_errors" | "new_errors" | "rounds_exhausted";
+export type RepairOutcome =
+  | "fixed"
+  | "same_errors"
+  | "new_errors"
+  | "rounds_exhausted";
 
 export interface RepairRound {
   round: number;
@@ -275,6 +302,10 @@ export interface ReviewRecord {
   kind: ReviewKind;
   contentRevision: string;
   confirmedAt: string;
+  sessionId?: string | null;
+  runId?: string | null;
+  summary?: string;
+  runtimeReview?: boolean;
 }
 
 export interface EvidenceEntry {
@@ -442,4 +473,37 @@ export interface ImpactGraph {
   testImpact: SymbolRecord[];
   edges: ImpactEdge[];
   depthUsed: number;
+}
+
+export interface ProjectCheck {
+  id: string;
+  kind: VerificationKind;
+  command: string;
+  label: string;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSecs?: number | null;
+  autoRun: boolean;
+}
+export interface VerificationConfig {
+  checks: ProjectCheck[];
+}
+export interface RunCheckpoint {
+  runId: string;
+  taskId: string;
+  createdAt: string;
+  finishedAt?: string | null;
+  restoredAt?: string | null;
+  confirmedPaths: string[];
+  externalPaths: string[];
+}
+export interface CommitEvidence {
+  hash: string;
+  tree: string;
+  paths: string[];
+  contentRevision: string;
+  verified: boolean;
+  verificationRecordIds: string[];
+  hookChangedTree: boolean;
+  createdAt: string;
 }

@@ -175,6 +175,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 )),
                 current_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
+                desktop_document_turn: std::cell::Cell::new(false),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),

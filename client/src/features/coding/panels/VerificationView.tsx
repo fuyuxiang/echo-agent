@@ -14,9 +14,13 @@ function verificationLabel(kind: VerificationKind): string {
 
 interface VerificationViewProps {
   records: VerificationRecord[];
+  currentRevision?: string;
+  currentConfigurationRevision?: string;
+  dirty?: boolean;
   detected: DetectedCommand[];
   running: boolean;
   hasTask: boolean;
+  executionBlocked?: boolean;
   onRun: (command: DetectedCommand) => void;
   onRunAll: () => void;
   onOpenOutput: (record: VerificationRecord) => void;
@@ -40,9 +44,11 @@ function formatDuration(durationMs: number): string {
  */
 export function VerificationView({
   records,
+  currentRevision, currentConfigurationRevision, dirty = false,
   detected,
   running,
   hasTask,
+  executionBlocked = false,
   onRun,
   onRunAll,
   onOpenOutput,
@@ -56,7 +62,7 @@ export function VerificationView({
   return (
     <div className="coding-panel">
       <div className="coding-panel__actions">
-        <button type="button" disabled={!hasTask || running || detected.length === 0 || redCheckpoint} onClick={onRunAll}>
+        <button type="button" disabled={executionBlocked || !hasTask || running || detected.length === 0 || redCheckpoint} onClick={onRunAll}>
           {running ? <LoaderCircle size={12} className="is-spinning" /> : <Play size={12} />}
           运行全部验证
         </button>
@@ -69,7 +75,7 @@ export function VerificationView({
           <button
             key={command.command}
             type="button"
-            disabled={!hasTask || running || redCheckpoint}
+            disabled={executionBlocked || !hasTask || running || redCheckpoint}
             onClick={() => onRun(command)}
             title={command.requiresApproval
               ? `${command.command}\n来自 Agent 执行计划，点击后需确认`
@@ -83,7 +89,7 @@ export function VerificationView({
           <button
             key={`red:${command.command}`}
             type="button"
-            disabled={running}
+            disabled={executionBlocked || running}
             onClick={() => onRunRed?.(command)}
             title={`预期失败的测试先行检查：${command.command}`}
           >
@@ -97,11 +103,15 @@ export function VerificationView({
         )}
       </div>
 
+      {dirty && <p role="status" className="coding-panel__hint">编辑器有未保存内容；磁盘检查结果不代表当前 buffer。运行前需要保存。</p>}
       {latest.length === 0 ? (
         <div className="coding-panel__empty">尚未运行构建或测试</div>
       ) : (
         <div className="coding-panel__list">
-          {latest.map((record) => (
+          {latest.map((record) => {
+            const stale = dirty || Boolean(currentRevision && record.contentRevision !== currentRevision)
+              || Boolean(currentConfigurationRevision && record.configurationRevision !== currentConfigurationRevision);
+            return (
             <button
               key={record.id}
               type="button"
@@ -121,12 +131,14 @@ export function VerificationView({
               )}
               <em>{verificationLabel(record.kind)}</em>
               <code>{record.command}</code>
+              {stale && <b title="源码、检查配置或运行环境依据已改变">已过期</b>}
+              {!record.contentRevision && <b>旧记录未绑定版本</b>}
               <span>
                 {record.testSummary
                   ? `${record.testSummary.passed} 通过 / ${record.testSummary.failed} 失败${
                       record.testSummary.skipped > 0 ? ` / ${record.testSummary.skipped} 跳过` : ""
                     }`
-                  : record.status === "passed"
+                  : record.status === "running" ? "运行中" : record.status === "passed"
                     ? "通过"
                     : record.status === "environment_unavailable"
                       ? "环境未就绪"
@@ -143,7 +155,7 @@ export function VerificationView({
                 退出码 {record.exitCode ?? "无"} · {formatDuration(record.durationMs)}
               </small>
             </button>
-          ))}
+          );})}
         </div>
       )}
     </div>

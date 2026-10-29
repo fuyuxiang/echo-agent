@@ -9,9 +9,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-#[cfg(target_os = "macos")]
 use std::sync::OnceLock;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -119,13 +118,13 @@ pub struct CodingGitSnapshot {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingDocument {
-    path: String,
+    pub(crate) path: String,
     relative_path: String,
-    content: String,
-    hash: String,
+    pub(crate) content: String,
+    pub(crate) hash: String,
     size: usize,
     modified_at: u128,
-    language: String,
+    pub(crate) language: String,
     line_ending: String,
 }
 
@@ -156,10 +155,10 @@ pub struct CodingSearchOptions {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingWriteDocumentRequest {
-    root: String,
-    path: String,
-    content: String,
-    expected_hash: String,
+    pub(crate) root: String,
+    pub(crate) path: String,
+    pub(crate) content: String,
+    pub(crate) expected_hash: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -354,6 +353,7 @@ impl CodingProcesses {
 }
 
 struct CodingTerminalSession {
+    workspace: String,
     master: PtyMaster,
     child: Mutex<PtyChild>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -641,8 +641,57 @@ fn validation_commands(root: &Path, manifests: &[ManifestCandidate]) -> Vec<Stri
     commands
 }
 
+/// Read-only Git plumbing must not execute repository-configured programs.
+/// Disable conversion filters only for these observations; explicit staging,
+/// commits and their normal hooks retain the user's Git configuration.
+pub(crate) fn read_only_git_overrides(root: &Path) -> Result<Vec<String>, String> {
+    let output = crate::process_supervisor::background_sync_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\.",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("无法读取只读 Git 配置：{error}"))?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        return Err("无法安全读取 Git filter 配置，已拒绝运行只读观察".into());
+    }
+    let mut overrides = vec!["-c".into(), "core.fsmonitor=false".into()];
+    let names =
+        String::from_utf8(output.stdout).map_err(|_| "Git filter 名称无法安全表示".to_string())?;
+    for key in names.split('\0').filter(|key| !key.is_empty()) {
+        if ![".clean", ".process", ".required"]
+            .iter()
+            .any(|suffix| key.ends_with(suffix))
+        {
+            continue;
+        }
+        if key.contains('=') {
+            return Err("Git filter 名称不能安全禁用，已拒绝只读观察".into());
+        }
+        overrides.push("-c".into());
+        overrides.push(format!(
+            "{key}={}",
+            if key.ends_with(".required") {
+                "false"
+            } else {
+                ""
+            }
+        ));
+    }
+    Ok(overrides)
+}
+
 async fn git_output(root: &Path, arguments: &[&str]) -> Option<String> {
     let output = crate::process_supervisor::background_async_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(read_only_git_overrides(root).ok()?)
         .arg("-C")
         .arg(root)
         .args(arguments)
@@ -659,6 +708,8 @@ async fn git_output(root: &Path, arguments: &[&str]) -> Option<String> {
 
 async fn git_output_bytes(root: &Path, arguments: &[&str]) -> Option<Vec<u8>> {
     let output = crate::process_supervisor::background_async_command("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(read_only_git_overrides(root).ok()?)
         .arg("-C")
         .arg(root)
         .args(arguments)
@@ -766,9 +817,19 @@ pub async fn git_snapshot(root: &Path) -> CodingGitSnapshot {
     )
     .await
     .unwrap_or_default();
-    let numstat = git_output_bytes(root, &["diff", "--numstat", "HEAD", "--"])
-        .await
-        .unwrap_or_default();
+    let numstat = git_output_bytes(
+        root,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--numstat",
+            "HEAD",
+            "--",
+        ],
+    )
+    .await
+    .unwrap_or_default();
     let stats = parse_git_numstat(&numstat);
     let files = parse_git_status(&status, &stats);
     CodingGitSnapshot {
@@ -805,6 +866,7 @@ pub async fn coding_git_diff(
     let mut arguments = vec![
         "diff",
         "--no-ext-diff",
+        "--no-textconv",
         "--no-color",
         "--unified=3",
         "HEAD",
@@ -867,6 +929,7 @@ pub async fn coding_git_set_staged(
     staged: bool,
 ) -> Result<CodingGitSnapshot, String> {
     let root = access.require_workspace(&root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     let path = normalize_git_relative_path(&root, &path)?;
     if git_output(&root, &["rev-parse", "--is-inside-work-tree"])
         .await
@@ -939,7 +1002,7 @@ fn normalize_git_relative_path(root: &Path, claimed: &str) -> Result<String, Str
     Ok(relative.to_string_lossy().replace('\\', "/"))
 }
 
-fn resolve_coding_document_path(root: &Path, claimed: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_coding_document_path(root: &Path, claimed: &str) -> Result<PathBuf, String> {
     let candidate = PathBuf::from(claimed);
     let candidate = if candidate.is_absolute() {
         candidate
@@ -960,11 +1023,11 @@ fn resolve_coding_document_path(root: &Path, claimed: &str) -> Result<PathBuf, S
     Ok(canonical)
 }
 
-fn document_hash(content: &[u8]) -> String {
+pub(crate) fn document_hash(content: &[u8]) -> String {
     format!("{:x}", Sha256::digest(content))
 }
 
-fn editor_language(path: &Path) -> String {
+pub(crate) fn editor_language(path: &Path) -> String {
     match path
         .extension()
         .and_then(|value| value.to_str())
@@ -1000,7 +1063,7 @@ fn editor_language(path: &Path) -> String {
     .to_string()
 }
 
-fn read_coding_document(root: &Path, claimed: &str) -> Result<CodingDocument, String> {
+pub(crate) fn read_coding_document(root: &Path, claimed: &str) -> Result<CodingDocument, String> {
     let path = resolve_coding_document_path(root, claimed)?;
     let metadata =
         std::fs::metadata(&path).map_err(|error| format!("无法读取文件信息：{error}"))?;
@@ -1008,6 +1071,9 @@ fn read_coding_document(root: &Path, claimed: &str) -> Result<CodingDocument, St
         return Err("文件超过 2 MB，为避免编辑器卡顿已拒绝打开".into());
     }
     let bytes = std::fs::read(&path).map_err(|error| format!("读取文件失败：{error}"))?;
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return Err("文件读取期间超过 2 MB 安全上限".into());
+    }
     if bytes.contains(&0) {
         return Err("二进制文件不能在代码编辑器中打开".into());
     }
@@ -1056,6 +1122,7 @@ pub async fn coding_write_document(
         return Err("写入内容超过 2 MB 安全上限".into());
     }
     let root = access.require_workspace(&request.root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     // The staged write, permission copy and atomic replace form one synchronous
     // unit; keep them together on the blocking pool.
     tokio::task::spawn_blocking(move || write_coding_document_blocking(&root, request))
@@ -1063,11 +1130,22 @@ pub async fn coding_write_document(
         .map_err(|error| format!("保存文件失败：{error}"))?
 }
 
-fn write_coding_document_blocking(
+pub(crate) fn write_coding_document_blocking(
     root: &Path,
     request: CodingWriteDocumentRequest,
 ) -> Result<CodingDocument, String> {
     let path = resolve_coding_document_path(root, &request.path)?;
+    let transaction = document_write_lock(&path)?;
+    let _guard = transaction
+        .lock()
+        .map_err(|_| "文档写入协调状态已损坏".to_string())?;
+    if std::fs::metadata(&path)
+        .map_err(|error| format!("保存前无法读取文件权限：{error}"))?
+        .permissions()
+        .readonly()
+    {
+        return Err("文档为只读，未应用修改".into());
+    }
     let current = std::fs::read(&path).map_err(|error| format!("保存前无法读取文件：{error}"))?;
     if document_hash(&current) != request.expected_hash {
         return Err("保存冲突：文件已被 Agent 或其他程序修改，请重新加载后合并改动".into());
@@ -1095,6 +1173,22 @@ fn write_coding_document_blocking(
                 .map_err(|error| format!("保留文件权限失败：{error}"))?;
         }
         drop(file);
+        // The staged write may take long enough for a formatter or external
+        // editor to save. Check the actual bytes again at the replace boundary.
+        let confirmed_path = resolve_coding_document_path(root, &request.path)?;
+        let confirmed = std::fs::read(&confirmed_path)
+            .map_err(|error| format!("替换前无法核对文件：{error}"))?;
+        if confirmed_path != path || document_hash(&confirmed) != request.expected_hash {
+            return Err("保存冲突：准备写入期间文件已变化，保留原内容".into());
+        }
+        let permissions = std::fs::metadata(&path)
+            .map_err(|error| format!("替换前无法核对文件权限：{error}"))?
+            .permissions();
+        if permissions.readonly() {
+            return Err("文档已变为只读，未覆盖原内容".into());
+        }
+        std::fs::set_permissions(&staging, permissions)
+            .map_err(|error| format!("替换前保留文件权限失败：{error}"))?;
         crate::paths::replace_file_atomically(&staging, &path)
     })();
     if result.is_err() {
@@ -1102,6 +1196,23 @@ fn write_coding_document_blocking(
     }
     result?;
     read_coding_document(root, &path.to_string_lossy())
+}
+
+pub(crate) fn document_write_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
+    static WRITES: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+    let mut writes = WRITES
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| "文档写入协调状态已损坏".to_string())?;
+    if let Some(lock) = writes.get(path).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    if writes.len() > 1024 {
+        writes.retain(|_, lock| lock.strong_count() > 0);
+    }
+    let lock = Arc::new(Mutex::new(()));
+    writes.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    Ok(lock)
 }
 
 fn safe_new_entry_name(name: &str) -> Result<&str, String> {
@@ -1155,6 +1266,7 @@ pub async fn coding_create_entry(
     request: CodingCreateEntryRequest,
 ) -> Result<String, String> {
     let root = access.require_workspace(&request.root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     tokio::task::spawn_blocking(move || create_entry_blocking(&root, request))
         .await
         .map_err(|error| format!("创建失败：{error}"))?
@@ -1285,6 +1397,7 @@ pub async fn coding_delete_entries(
         return Err(format!("一次最多删除 {MAX_BATCH_OPS} 个条目"));
     }
     let root = access.require_workspace(&request.root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     tokio::task::spawn_blocking(move || delete_entries_blocking(&root, request))
         .await
         .map_err(|error| format!("删除失败：{error}"))?
@@ -1416,6 +1529,7 @@ pub async fn coding_restore_from_trash(
         return Err(format!("一次最多恢复 {MAX_BATCH_OPS} 个条目"));
     }
     let root = access.require_workspace(&request.root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     tokio::task::spawn_blocking(move || restore_blocking(&root, request))
         .await
         .map_err(|error| format!("恢复失败：{error}"))?
@@ -1676,6 +1790,7 @@ pub async fn coding_rename_entry(
     request: CodingRenameEntryRequest,
 ) -> Result<CodingRenameResult, String> {
     let root = access.require_workspace(&request.root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     tokio::task::spawn_blocking(move || rename_entry_blocking(&root, request))
         .await
         .map_err(|error| format!("重命名失败：{error}"))?
@@ -1720,6 +1835,7 @@ pub async fn coding_copy_entries(
         return Err(format!("一次最多复制 {MAX_BATCH_OPS} 个条目"));
     }
     let root = access.require_workspace(&request.root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     tokio::task::spawn_blocking(move || copy_entries_blocking(&root, request))
         .await
         .map_err(|error| format!("复制失败：{error}"))?
@@ -1804,6 +1920,7 @@ pub async fn coding_move_entries(
         return Err(format!("一次最多移动 {MAX_BATCH_OPS} 个条目"));
     }
     let root = access.require_workspace(&request.root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     tokio::task::spawn_blocking(move || move_entries_blocking(&root, request))
         .await
         .map_err(|error| format!("移动失败：{error}"))?
@@ -1939,6 +2056,7 @@ pub async fn coding_terminal_create(
     rows: Option<u16>,
 ) -> Result<CodingTerminalCreated, String> {
     let root = access.require_workspace(&root)?;
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     #[cfg(target_os = "windows")]
     let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
     #[cfg(not(target_os = "windows"))]
@@ -1946,6 +2064,7 @@ pub async fn coding_terminal_create(
         .ok()
         .filter(|value| Path::new(value).is_absolute() && Path::new(value).is_file())
         .unwrap_or_else(|| "/bin/sh".to_string());
+    let workspace = root.to_string_lossy().into_owned();
     let config = PtyConfig {
         command: vec![shell],
         cols: cols.unwrap_or(100).clamp(20, 500),
@@ -1960,6 +2079,7 @@ pub async fn coding_terminal_create(
     let (master, child, mut reader, writer) = handle.into_parts();
     let terminal_id = uuid::Uuid::now_v7().to_string();
     let session = Arc::new(CodingTerminalSession {
+        workspace,
         master,
         child: Mutex::new(child),
         writer: Mutex::new(writer),
@@ -2035,6 +2155,9 @@ pub async fn coding_terminal_write(
         .get(&terminal_id)
         .cloned()
         .ok_or_else(|| "终端不存在或已经关闭".to_string())?;
+    if data != "\u{3}" {
+        crate::coding_document_bridge::ensure_workspace_admission(&session.workspace).await?;
+    }
     tokio::task::spawn_blocking(move || {
         let mut writer = session
             .writer

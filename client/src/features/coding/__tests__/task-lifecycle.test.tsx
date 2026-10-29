@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   getChangeSet: vi.fn(),
   captureBaseline: vi.fn(),
+  checkpointStart: vi.fn(),
+  checkpointFinish: vi.fn(),
   syncChanges: vi.fn(),
   syncPlan: vi.fn(),
   reportImplementation: vi.fn(),
@@ -23,6 +25,7 @@ const taskStoreState = {
     sessionId?: string | null;
     phaseReason?: string | null;
     blocker?: string | null;
+    strictWorkflow?: boolean;
   } | null,
 };
 
@@ -115,7 +118,7 @@ describe("useTaskLifecycle", () => {
   });
 
   it("persists runtime plan contracts while Agent is working", async () => {
-    taskStoreState.task = { id: "t1", phase: "discovering", sessionId: "s1" };
+    taskStoreState.task = { id: "t1", phase: "discovering", sessionId: "s1", strictWorkflow: true };
     renderHook(() => useTaskLifecycle("/repo"));
     await act(async () => {
       useSessionStore.setState({
@@ -188,7 +191,7 @@ describe("useTaskLifecycle", () => {
 
     await waitFor(() => expect(api.syncChanges).toHaveBeenCalledWith("/repo", "t1"));
     await waitFor(() =>
-      expect(api.reportImplementation).toHaveBeenCalledWith("/repo", "t1"),
+      expect(api.reportImplementation).toHaveBeenCalledWith("/repo", "t1", undefined),
     );
     // Order matters: sync must happen before report.
     const syncOrder = api.syncChanges.mock.invocationCallOrder[0] ?? 0;
@@ -213,6 +216,10 @@ describe("useTaskLifecycle", () => {
     ));
     expect(api.reportImplementation).not.toHaveBeenCalled();
     expect(api.reportStartFailed).not.toHaveBeenCalled();
+    expect(api.checkpointStart).toHaveBeenCalledWith("/repo", "t1", "prompt-1");
+    expect(api.checkpointFinish).toHaveBeenCalledWith("/repo", "t1", "prompt-1", []);
+    expect(api.checkpointStart.mock.invocationCallOrder[0]).toBeLessThan(api.checkpointFinish.mock.invocationCallOrder[0]!);
+    expect(api.checkpointFinish.mock.invocationCallOrder[0]).toBeLessThan(api.reportInterrupted.mock.invocationCallOrder[0]!);
   });
 
   it("records a pause separately and preserves the unfinished round", async () => {
@@ -230,6 +237,8 @@ describe("useTaskLifecycle", () => {
       "paused",
     ));
     expect(api.reportImplementation).not.toHaveBeenCalled();
+    expect(api.checkpointStart).toHaveBeenCalledWith("/repo", "t1", "prompt-1");
+    expect(api.checkpointFinish).toHaveBeenCalledWith("/repo", "t1", "prompt-1", []);
   });
 
   it("routes runtime failures to an exact blocker without claiming a clean finish", async () => {
@@ -247,6 +256,22 @@ describe("useTaskLifecycle", () => {
       "provider disconnected",
     ));
     expect(api.reportImplementation).not.toHaveBeenCalled();
+    expect(api.checkpointStart).toHaveBeenCalledWith("/repo", "t1", "prompt-1");
+    expect(api.checkpointFinish).toHaveBeenCalledWith("/repo", "t1", "prompt-1", []);
+  });
+
+  it("persists an empty checkpoint for a real read-only turn without tool edits", async () => {
+    taskStoreState.task = { id: "t1", phase: "discovering", sessionId: "s1" };
+    setTaskStreaming(true);
+    renderHook(() => useTaskLifecycle("/repo"));
+
+    await act(async () => completeTaskTurn({ stopReason: "end_turn" }));
+
+    await waitFor(() => expect(api.reportImplementation).toHaveBeenCalledWith("/repo", "t1", "prompt-1"));
+    expect(api.checkpointStart).toHaveBeenCalledWith("/repo", "t1", "prompt-1");
+    expect(api.checkpointFinish).toHaveBeenCalledWith("/repo", "t1", "prompt-1", []);
+    expect(api.checkpointFinish.mock.invocationCallOrder[0]).toBeLessThan(api.syncChanges.mock.invocationCallOrder[0]!);
+    expect(api.captureBaseline).not.toHaveBeenCalled();
   });
 
   it("ignores the cancelled half of a send-now handoff", async () => {

@@ -63,6 +63,7 @@ function deferred<T>() {
 
 describe("task store", () => {
   beforeEach(() => {
+    localStorage.clear();
     for (const fn of Object.values(api)) fn.mockReset();
     useTaskStore.setState({ root: "" });
     useTaskStore.getState().reset();
@@ -88,6 +89,27 @@ describe("task store", () => {
   it("does nothing without a workspace", async () => {
     await useTaskStore.getState().refreshSummaries();
     expect(api.listTasks).not.toHaveBeenCalled();
+  });
+
+  it("restores each project's last task once without allowing background refresh to undo a new selection",async()=>{
+    api.listTasks.mockImplementation(async(root:string)=>root === "/a" ? [{id:"a1"},{id:"a2"}] : [{id:"b1"}]);
+    let current=task();
+    api.getTask.mockImplementation(async(_root:string,id:string)=>{current=task({id,sessionId:`session-${id}`});return current;});
+    api.orchestratorState.mockImplementation(async()=>({task:current,problems:[],repairRounds:[],changedFileCount:0,maxRepairRounds:3}));
+    useTaskStore.getState().setRoot("/a");
+    await useTaskStore.getState().selectTask("a1");
+    useTaskStore.getState().setRoot("/b");
+    await useTaskStore.getState().selectTask("b1");
+    useTaskStore.getState().setRoot("/a");
+    await useTaskStore.getState().refreshSummaries();
+    expect(useTaskStore.getState().task?.sessionId).toBe("session-a1");
+    await useTaskStore.getState().selectTask("a2");
+    await useTaskStore.getState().refreshSummaries();
+    expect(useTaskStore.getState().task?.id).toBe("a2");
+    useTaskStore.getState().setRoot("/b");
+    await useTaskStore.getState().refreshSummaries();
+    expect(useTaskStore.getState().task?.sessionId).toBe("session-b1");
+    expect(localStorage.getItem("echo-coding-last-task-v1:/a")).toBe("a2");
   });
 
   it("loads task summaries for the workspace", async () => {
@@ -316,6 +338,23 @@ describe("explicit task creation ownership", () => {
     await selecting;
     expect(useTaskStore.getState().root).toBe("/b-select");
     expect(useTaskStore.getState().task?.id).toBe("selected-b");
+  });
+
+  it("does not restore over a manual selection whose details are still loading", async()=>{
+    vi.clearAllMocks();
+    const listed=deferred<any[]>(), chosen=deferred<CodingTask>();
+    localStorage.setItem("echo-coding-last-task-v1:/race","saved");
+    api.listTasks.mockReturnValue(listed.promise);
+    api.getTask.mockReturnValue(chosen.promise);
+    api.orchestratorState.mockResolvedValue({task:task({id:"chosen"}),problems:[],repairRounds:[],changedFileCount:0,maxRepairRounds:3});
+    useTaskStore.getState().setRoot("/race");
+    const listing=useTaskStore.getState().refreshSummaries();
+    const selecting=useTaskStore.getState().selectTask("chosen");
+    listed.resolve([{id:"saved"},{id:"chosen"}]);
+    await listing;
+    expect(api.getTask).toHaveBeenCalledTimes(1);
+    chosen.resolve(task({id:"chosen"}));await selecting;
+    expect(useTaskStore.getState().task?.id).toBe("chosen");
   });
 
 });

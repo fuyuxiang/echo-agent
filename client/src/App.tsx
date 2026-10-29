@@ -1,3 +1,6 @@
+import type { CodingTurnOptions } from "./lib/agent-client";
+import { codingApi } from "./features/coding/lib/tauri-api";
+import { useTaskStore } from "./features/coding/store/task-store";
 import { findModelDisplayName } from "@/lib/model-presentation";
 import { SessionNavigation } from "./components/SessionHeader";
 import { invoke } from "@tauri-apps/api/core";
@@ -1530,6 +1533,7 @@ function Shell() {
     attachments: string[] = [],
     queueItemId?: string,
     promptTextOverride?: string,
+    coding?: CodingTurnOptions,
   ): Promise<boolean> => {
     if (!text.trim() && attachments.length === 0) return false;
     if (!currentSessionId) return handleSendNew(text, attachments);
@@ -1595,6 +1599,7 @@ function Shell() {
         promptText: textForAgent,
         displayText: sendText,
         attachments: sendAttachments,
+        coding,
         promptId: queuePromptId,
         onRejected: consumedPendingContext || queuePromptId
           ? () => {
@@ -1704,6 +1709,7 @@ function Shell() {
     contextPaths: string[] = [],
     onSessionReady?: (sessionId: string) => Promise<void>,
     promptTextOverride?: string,
+    coding: CodingTurnOptions = { mode: "agent", documentToolBridge: true },
   ): Promise<string | undefined> => {
     setCodingWorkspaceCwd(root);
     // Register the task's repository in recent Coding projects and activate it.
@@ -1743,14 +1749,16 @@ function Shell() {
       // produced. Otherwise a very fast turn can finish before the workbench
       // knows which task should receive its Git sync event.
       if (onSessionReady) await onSessionReady(sessionId);
-      // The mode is an internal runtime safety primitive, not a user-facing
-      // product choice. Every Echo Code task starts with write-capable Agent.
-      await setCodingMode(sessionId, "agent");
+      // Persist the initial user-selected session intent; following turns pass
+      // their explicit mode without creating a different conversation.
+      await setCodingMode(sessionId, coding.mode ?? "agent");
       const promptText = promptTextOverride ?? buildCodingWorkflowPrompt(requirement, contextPaths);
       const accepted = beginAgentTurn({
         sessionId,
         promptText,
         displayText: requirement,
+        coding,
+        attachments: coding.attachments,
       });
       if (!accepted) throw new Error("代码开发会话未能获得前台焦点");
       usePermissionModeStore.getState().resetHomeMode();
@@ -1810,6 +1818,11 @@ function Shell() {
       sendText = claimed.text;
       sendAttachments = claimed.attachments ?? [];
     }
+    const codingTask = useTaskStore.getState().task;
+    const coding: CodingTurnOptions | undefined = codingTask?.sessionId === sessionId ? {
+      mode: transcript.agentMode === "ask" || transcript.agentMode === "plan" ? transcript.agentMode : "agent",
+      documentToolBridge:true,workspace:useTaskStore.getState().root,taskId:codingTask.id,
+    } : undefined;
     transcript.requestSendNow(promptId, sessionId);
     sessionsStore.getState().upsert({ sessionId, status: "working" });
 
@@ -1821,6 +1834,7 @@ function Shell() {
       sendAttachments,
       sendText,
       promptId,
+      coding,
     ).catch((error) => {
       if (isAgentPromptSettled(sessionId, promptId)) return;
       const detail = friendlyError(error);
@@ -2330,7 +2344,22 @@ function Shell() {
     setLoadingSession({ sessionId, generation });
     const persistedModelId = entry.currentModelId;
     const selectedModelId = resolveSessionModelId(models, persistedModelId);
-    if (!preservePlaceholder) setPlaceholderView(null);
+    let codingOwner: { root: string; taskId: string } | null = null;
+    if (!intent && entry.cwd) {
+      const detail = await codingApi.taskForSession(entry.cwd,sessionId).catch(() => null);
+      if (detail) codingOwner = {root:entry.cwd,taskId:detail.id};
+      if (selectionGenerationRef.current !== generation) return;
+    }
+    if (codingOwner) {
+      setCodingWorkspaceCwd(codingOwner.root);
+      setActiveCodingWorkspaceCwd(codingOwner.root);
+      setCodingWorkspaces(current => current.some(item => item.cwd === codingOwner!.root)
+        ? current : [{ cwd: codingOwner!.root, sessionCount: 0 }, ...current]);
+      setPlaceholderView("代码开发");
+      useTaskStore.getState().setRoot(codingOwner.root);
+      await useTaskStore.getState().selectTask(codingOwner.taskId);
+      if (selectionGenerationRef.current !== generation) return;
+    } else if (!preservePlaceholder) setPlaceholderView(null);
     if (intent?.kind === "subagent") {
       const point = { ...intent.source, childSessionId: sessionId };
       setSubagentTrail((trail) => pushSubagentReturnPoint(trail, point));
@@ -3002,8 +3031,9 @@ function Shell() {
     onActivateCodingSession: (targetSessionId: string, targetCwd: string) =>
       handleSelectSession(targetSessionId, targetCwd, true),
     onChangeCodingModel: handleModelChange,
-    onSendCodingMessage: (value: string, promptTextOverride?: string) =>
-      handleSendCurrent(value, [], undefined, promptTextOverride),
+    onSendCodingMessage: (value: string, promptTextOverride?: string, coding?: CodingTurnOptions) =>
+      handleSendCurrent(value, coding?.attachments ?? [], undefined, promptTextOverride, coding),
+    onCorrectCodingRun: (value: string) => handleSendNowCurrent(value),
     onCancelCodingRun: () => handleCancel("stop"),
     onStartProject: handleStartProject,
     onStartProjectConversation: handleStartProjectConversation,

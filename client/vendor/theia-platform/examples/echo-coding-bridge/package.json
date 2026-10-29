@@ -13,6 +13,8 @@
     "@theia/core": "1.74.0",
     "@theia/editor": "1.74.0",
     "@theia/filesystem": "1.74.0",
+    "@theia/monaco": "1.74.0",
+    "@theia/monaco-editor-core": "1.108.201",
     "@theia/terminal": "1.74.0",
     "@theia/workspace": "1.74.0"
   },
@@ -22,6 +24,7 @@
   "scripts": {
     "build": "theiaext build",
     "compile": "tsc -b",
+    "test": "node --test src/browser/echo-editor-bridge.test.mjs",
     "clean": "theiaext clean"
   }
 }

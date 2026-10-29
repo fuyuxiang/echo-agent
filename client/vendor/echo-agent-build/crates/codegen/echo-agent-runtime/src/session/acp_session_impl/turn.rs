@@ -571,10 +571,49 @@ impl SessionActor {
         }
         self.ensure_session_disk_writable().await?;
         self.signals_handle().increment_turn();
+        let declared_mode = self
+            .startup_hints
+            .inherited_turn_authority
+            .as_ref()
+            .filter(|authority| authority.prompt_mode.is_read_only())
+            .map(|authority| authority.prompt_mode)
+            .unwrap_or(prompt_mode);
         let prompt_mode =
-            self.resolve_turn_prompt_mode(input_origin.as_prompt_origin(), prompt_mode);
+            self.resolve_turn_prompt_mode(input_origin.as_prompt_origin(), declared_mode);
         *self.turn_start_prompt_mode.lock() = prompt_mode;
         *self.turn_prompt_mode.lock() = prompt_mode;
+        let desktop_document_tools = self
+            .startup_hints
+            .inherited_turn_authority
+            .as_ref()
+            .is_some_and(|authority| authority.document_tools)
+            || self.client_identifier.as_deref() == Some("echo-agent-desktop")
+                && prompt_blocks.iter().any(|block| match block {
+                    acp::ContentBlock::Text(text) => {
+                        text.meta
+                            .as_ref()
+                            .and_then(|meta| meta.get("desktopDocumentTools"))
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                    }
+                    _ => false,
+                });
+        self.tool_bridge_handle()
+            .update_resource(DesktopDocumentTools(desktop_document_tools))
+            .await;
+        self.tool_bridge_handle()
+            .update_resource(echo_agent_tools::types::resources::DesktopMcpNoReplay(
+                desktop_document_tools,
+            ))
+            .await;
+        self.desktop_document_turn.set(desktop_document_tools);
+        self.tool_bridge_handle()
+            .update_resource(
+                echo_agent_tools::implementations::echo_agent_build::task::BoundSubagentToTurn(
+                    desktop_document_tools || prompt_mode.is_read_only(),
+                ),
+            )
+            .await;
         let _turn_active_guard =
             TurnActiveGuard::activate(self.tool_context.is_turn_active.as_ref());
         let _session_turn_active_guard = TurnActiveGuard::activate(Some(&self.session_turn_active));
@@ -601,6 +640,9 @@ impl SessionActor {
             }
         }
         if let Some(bash_command) = Self::extract_bash_command(&prompt_blocks) {
+            if self.is_readonly_turn() || desktop_document_tools {
+                return Err(acp::Error::invalid_params().data("Direct shell input is unavailable for this run; use an authorized Agent tool so editor state can be checked"));
+            }
             return self
                 .handle_direct_bash_command(prompt_id, bash_command, &prompt_blocks)
                 .await;
@@ -674,6 +716,10 @@ impl SessionActor {
                         }
                     }
                     BuiltinAction::WorkflowLaunch { name, input } => {
+                        if self.is_readonly_turn() || desktop_document_tools {
+                            return Err(acp::Error::invalid_params()
+                                .data("Readonly or editor-coordinated runs cannot launch executable workflows"));
+                        }
                         self.persist_host_turn_user_echo(&original_prompt_text, prompt_id);
                         self.mark_front_message_committed().await;
                         let msg = self
@@ -1850,6 +1896,26 @@ impl SessionActor {
             }
         }
     }
+    // Construct the large turn future outside its callers' poll frames. This
+    // also keeps its construction temporary off the recovery/input poll stack;
+    // boxing only at each await site would still create that temporary there.
+    fn boxed_conversation_turn<'turn>(
+        self: &'turn Arc<Self>,
+        req_id: &'turn str,
+        trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
+        artifact_tracker: Option<&'turn crate::upload::manifest::ArtifactTracker>,
+        json_schema: Option<serde_json::Value>,
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<TurnOutcome, acp::Error>> + 'turn>,
+    > {
+        Box::pin(self.process_conversation_turn(
+            req_id,
+            trace_gcs_config,
+            artifact_tracker,
+            json_schema,
+        ))
+    }
+
     /// Wraps `process_conversation_turn` with auto-recovery for agents that opt in.
     ///
     /// Agents with a `completion_requirement` in their definition require the model
@@ -1882,7 +1948,7 @@ impl SessionActor {
             Some(req) => req,
             None => {
                 return self
-                    .process_conversation_turn(
+                    .boxed_conversation_turn(
                         req_id,
                         trace_gcs_config,
                         artifact_tracker.as_ref(),
@@ -1895,7 +1961,7 @@ impl SessionActor {
             Some(r) => r.clone(),
             None => {
                 return self
-                    .process_conversation_turn(
+                    .boxed_conversation_turn(
                         req_id,
                         trace_gcs_config,
                         artifact_tracker.as_ref(),
@@ -1907,7 +1973,7 @@ impl SessionActor {
         let required_tool = completion_req.tool.clone();
         let recovery_prompt = completion_req.reminder.clone();
         let mut result = self
-            .process_conversation_turn(
+            .boxed_conversation_turn(
                 req_id,
                 trace_gcs_config.clone(),
                 artifact_tracker.as_ref(),
@@ -1974,7 +2040,7 @@ impl SessionActor {
             let recovery_message = ConversationItem::auto_recovery(recovery_prompt.clone());
             self.chat_state_handle.push_user_message(recovery_message);
             result = self
-                .process_conversation_turn(
+                .boxed_conversation_turn(
                     req_id,
                     trace_gcs_config.clone(),
                     artifact_tracker.as_ref(),

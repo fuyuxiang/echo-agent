@@ -1691,6 +1691,13 @@ pub struct KnowledgeSourcesView {
     organization_attached: bool,
 }
 
+fn coding_session_owns_task(workspace: &Path, session_id: &str) -> bool {
+    crate::coding::task::list_tasks(workspace)
+        .into_iter()
+        .filter_map(|summary| crate::coding::task::load(workspace, &summary.id))
+        .any(|task| task.session_id.as_deref() == Some(session_id))
+}
+
 #[tauri::command]
 // Keep these arguments flat to preserve the existing Tauri IPC payload contract.
 #[allow(clippy::too_many_arguments)]
@@ -1703,7 +1710,16 @@ pub async fn agent_send(
     display_text: Option<String>,
     prompt_id: Option<String>,
     send_now: Option<bool>,
+    mode: Option<String>,
+    document_tool_bridge: Option<bool>,
+    review: Option<crate::coding_review_runtime::ReviewRequest>,
 ) -> Result<(), String> {
+    if mode
+        .as_deref()
+        .is_some_and(|mode| !matches!(mode, "ask" | "plan" | "agent"))
+    {
+        return Err("无效的运行模式".into());
+    }
     validate_send_payload(&session_id, &text, display_text.as_deref())?;
     if prompt_id
         .as_deref()
@@ -1719,6 +1735,15 @@ pub async fn agent_send(
         &session_id,
         None,
     )?;
+    let ownership_workspace = workspace.clone();
+    let ownership_session = session_id.clone();
+    let coding_owned_session = tokio::task::spawn_blocking(move || {
+        coding_session_owns_task(&ownership_workspace, &ownership_session)
+    })
+    .await
+    .map_err(|error| format!("无法确认开发会话的文档执行边界：{error}"))?;
+    // Generic retry/deep-link paths cannot disable a persisted Coding owner.
+    let document_tool_bridge = document_tool_bridge.unwrap_or(false) || coding_owned_session;
     let attachments = attachments.unwrap_or_default();
     let attachments = if attachments.is_empty() {
         Vec::new()
@@ -1732,7 +1757,47 @@ pub async fn agent_send(
         .unwrap()
         .clone()
         .ok_or("agent not initialized")?;
+    if attachments
+        .iter()
+        .any(|attachment| crate::agent_runtime::image_mime(Path::new(attachment)).is_some())
+    {
+        let info = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            agent_runtime::session_info(&tx, &session_id),
+        )
+        .await
+        .map_err(|_| "无法确认图片请求的当前模型，请重试")?
+        .map_err(|_| "无法确认图片请求的当前模型")?;
+        if let Some(model) = info.get("model").and_then(serde_json::Value::as_str) {
+            crate::providers::require_model_images_if_declared(model)?;
+        }
+    }
+    let prompt_id = prompt_id.or_else(|| {
+        (review.is_some() || document_tool_bridge).then(|| uuid::Uuid::now_v7().to_string())
+    });
     let send_now = send_now.unwrap_or(false);
+    if send_now {
+        if let Err(error) = crate::coding_document_bridge::cancel_session(&session_id).await {
+            // A failed editor fence never permits a replacement run. Still
+            // deliver the real Runtime cancellation so old shell work stops.
+            let _ = agent_runtime::cancel(&tx, &session_id, "stop", None).await;
+            return Err(error);
+        }
+    }
+    // All local payload/attachment/team validation completes before acquiring
+    // native execution authority. A rejected local payload leaves no live run.
+    let prepared_prompt = agent_runtime::prepare_mode_prompt(
+        &session_id,
+        &text,
+        &attachments,
+        display_text.as_deref(),
+        prompt_id.as_deref(),
+        send_now,
+        mode.as_deref(),
+        document_tool_bridge,
+    )
+    .map_err(|error| error.to_string())?;
+    crate::coding_document_bridge::ensure_workspace_admission(&workspace.to_string_lossy()).await?;
     let task_admitted = crate::automation::prepare_user_prompt(
         &tx,
         &session_id,
@@ -1741,21 +1806,65 @@ pub async fn agent_send(
         send_now,
     )
     .await?;
+    if let Some(review) = review {
+        if let Err(error) = crate::coding_review_runtime::begin(
+            &workspace,
+            &session_id,
+            prompt_id.as_deref().ok_or("审查运行身份缺失")?,
+            mode.as_deref(),
+            review,
+        ) {
+            if let Some(generation) = task_admitted {
+                crate::automation::prompt_admission_failed(&session_id, generation).await;
+            }
+            return Err(error);
+        }
+    }
+    if document_tool_bridge {
+        let registration = crate::coding_document_bridge::register_run(
+            app.clone(),
+            &session_id,
+            prompt_id.as_deref().ok_or("版本化编辑运行身份缺失")?,
+            &workspace.to_string_lossy(),
+            mode.as_deref(),
+        )
+        .await;
+        if let Err(error) = registration {
+            if let Some(prompt_id) = prompt_id.as_deref() {
+                crate::coding_review_runtime::discard(&session_id, prompt_id);
+            }
+            if let Some(generation) = task_admitted {
+                crate::automation::prompt_admission_failed(&session_id, generation).await;
+            }
+            return Err(error);
+        }
+    }
     tracing::info!(%session_id, attachment_count = attachments.len(), send_now, "agent prompt send");
-    let result = agent_runtime::prompt_with_attachments(
-        &tx,
-        &session_id,
-        &text,
-        &attachments,
-        display_text.as_deref(),
-        prompt_id.as_deref(),
-        send_now,
-    )
-    .await
-    .map_err(|error| {
-        tracing::error!(%session_id, error = ?error, "agent prompt failed");
-        error.to_string()
-    });
+    let result = agent_runtime::send_prepared_prompt(&tx, prepared_prompt)
+        .await
+        .map_err(|error| {
+            tracing::error!(%session_id, error = ?error, "agent prompt failed");
+            error.to_string()
+        });
+    if result.is_err() {
+        if let Some(prompt_id) = prompt_id.as_deref() {
+            crate::coding_review_runtime::discard(&session_id, prompt_id);
+            // Settle this exact failed admission. A transport error may still
+            // have dispatched work, so use the real cancellation handshake.
+            if document_tool_bridge {
+                let (document, runtime) = tokio::join!(
+                    crate::coding_document_bridge::cancel_session_run(&session_id, Some(prompt_id)),
+                    agent_runtime::cancel(&tx, &session_id, "stop", Some(prompt_id)),
+                );
+                if let Err(error) = document {
+                    tracing::warn!(%error, "Failed prompt retains editor protection");
+                }
+                if let Err(error) = runtime {
+                    tracing::warn!(%error, "Failed prompt runtime cancellation unavailable");
+                }
+            }
+        }
+    }
     if let (true, Some(generation)) = (result.is_err(), task_admitted) {
         crate::automation::prompt_admission_failed(&session_id, generation).await;
     }
@@ -1784,18 +1893,26 @@ pub async fn agent_cancel(
         "stop" => "stop",
         _ => return Err("无效的取消动作".into()),
     };
-    let automation_result = if cancel_trigger == "pause" {
-        crate::automation::pause_session(&session_id).await
-    } else {
-        crate::automation::stop_session(&session_id).await
+    // Fence editor transactions immediately; the UI still waits for the
+    // Runtime's real cancellation acknowledgement before showing stopped.
+    crate::coding_document_bridge::fence_session_run(&session_id, prompt_id.as_deref()).await;
+    let stop_automation = async {
+        if cancel_trigger == "pause" {
+            crate::automation::pause_session(&session_id).await
+        } else {
+            crate::automation::stop_session(&session_id).await
+        }
     };
+    let (document_result, automation_result, runtime_result) = tokio::join!(
+        crate::coding_document_bridge::cancel_session_run(&session_id, prompt_id.as_deref()),
+        stop_automation,
+        agent_runtime::cancel(&tx, &session_id, cancel_trigger, prompt_id.as_deref()),
+    );
     if let Err(ref error) = automation_result {
         tracing::warn!(%error, %session_id, cancel_trigger, "failed to stop automation while cancelling turn");
     }
-    agent_runtime::cancel(&tx, &session_id, cancel_trigger, prompt_id.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
-    automation_result
+    runtime_result.map_err(|error| error.to_string())?;
+    document_result.and(automation_result)
 }
 
 /// Cleanly shut down the agent (cancel token + clear state) so the frontend
@@ -1905,8 +2022,11 @@ async fn stop_agent_runtime_wait(
                     .clone();
                 *state.handle.lock().unwrap() = Some(handle);
                 let error = match failure {
-                    Some(reason) => format!("任务数据保存尚未完成：{reason}。已保留应用与后台保存任务，请修复后重试退出或初始化"),
-                    None => "任务数据仍在保存，已保留应用与后台保存任务，请稍后重试退出或初始化".to_string(),
+                    Some(reason) => format!(
+                        "任务数据保存尚未完成：{reason}。已保留应用与后台保存任务，请修复后重试退出或初始化"
+                    ),
+                    None => "任务数据仍在保存，已保留应用与后台保存任务，请稍后重试退出或初始化"
+                        .to_string(),
                 };
                 state.mark_runtime_models_failed(error.clone());
                 crate::permission_config::mark_runtime_permission_mode_offline(None);
@@ -2534,6 +2654,25 @@ pub fn agent_clear_session_expert(session_id: String) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coding_document_authority_follows_persisted_session_ownership() {
+        let workspace = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = workspace.path().canonicalize().unwrap();
+        let mut task = crate::coding::task::create_task(
+            &root,
+            "native owner",
+            "retain shared document authority",
+        )
+        .unwrap();
+        assert!(!coding_session_owns_task(&root, "owned-session"));
+        task.session_id = Some("owned-session".into());
+        crate::coding::task::save(&root, &task).unwrap();
+        assert!(coding_session_owns_task(&root, "owned-session"));
+        assert!(!coding_session_owns_task(&root, "unrelated-chat"));
+        assert!(!coding_session_owns_task(other.path(), "owned-session"));
+    }
 
     fn shutdown_fixture(state: &AppState) -> tokio::sync::watch::Sender<bool> {
         let (client, _agent) = echo_agent_acp::acp_channels();

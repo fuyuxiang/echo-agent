@@ -33,7 +33,11 @@ interface TaskState {
   setRoot: (root: string) => void;
   refreshSummaries: () => Promise<void>;
   selectTask: (taskId: string) => Promise<void>;
-  createTask: (name: string, requirement: string, root?: string) => Promise<CodingTask | null>;
+  createTask: (
+    name: string,
+    requirement: string,
+    root?: string,
+  ) => Promise<CodingTask | null>;
   renameTask: (taskId: string, name: string) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
   refreshTaskState: () => Promise<void>;
@@ -51,6 +55,15 @@ let stateGeneration = 0;
 let workspaceGeneration = 0;
 let summariesGeneration = 0;
 let selectionTarget: string | null = null;
+let restoreSelectionPending = false;
+const selectionKey = (root: string) => `echo-coding-last-task-v1:${root}`;
+function rememberSelection(root: string, id: string) {
+  try {
+    localStorage.setItem(selectionKey(root), id);
+  } catch {
+    /* task data remains native-owned */
+  }
+}
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   root: "",
@@ -71,6 +84,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     workspaceGeneration += 1;
     summariesGeneration += 1;
     selectionTarget = null;
+    restoreSelectionPending = true;
     set({
       root,
       summaries: [],
@@ -90,10 +104,30 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (!root) return;
     const workspace = workspaceGeneration;
     const generation = ++summariesGeneration;
-    const isCurrent = () => get().root === root && workspace === workspaceGeneration && generation === summariesGeneration;
+    const isCurrent = () =>
+      get().root === root &&
+      workspace === workspaceGeneration &&
+      generation === summariesGeneration;
     try {
       const summaries = await codingApi.listTasks(root);
-      if (isCurrent()) set({ summaries, error: null });
+      if (isCurrent()) {
+        set({ summaries, error: null });
+        if (restoreSelectionPending) {
+          restoreSelectionPending = false;
+          let saved: string | null = null;
+          try {
+            saved = localStorage.getItem(selectionKey(root));
+          } catch {
+            /* optional preference */
+          }
+          if (
+            !get().task &&
+            saved &&
+            summaries.some((item) => item.id === saved)
+          )
+            await get().selectTask(saved);
+        }
+      }
     } catch (error) {
       if (isCurrent()) set({ error: message(error) });
     }
@@ -102,6 +136,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   selectTask: async (taskId) => {
     const { root } = get();
     if (!root) return;
+    // A user selection owns navigation even while its detail is loading.
+    restoreSelectionPending = false;
     const generation = ++selectionGeneration;
     selectionTarget = taskId;
     stateGeneration += 1;
@@ -109,14 +145,24 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     try {
       const task = await codingApi.getTask(root, taskId);
       if (generation !== selectionGeneration || get().root !== root) return;
-      set({ task, changeSet: null, verifications: [], problems: [], ledger: [], orchestrator: null, error: null });
+      if (task) rememberSelection(root, task.id);
+      set({
+        task,
+        changeSet: null,
+        verifications: [],
+        problems: [],
+        ledger: [],
+        orchestrator: null,
+        error: null,
+      });
       await get().refreshTaskState();
     } catch (error) {
       if (generation === selectionGeneration && get().root === root) {
         set({ error: message(error) });
       }
     } finally {
-      if (generation === selectionGeneration && get().root === root) set({ loading: false });
+      if (generation === selectionGeneration && get().root === root)
+        set({ loading: false });
     }
   },
 
@@ -125,13 +171,23 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (!root) return null;
     const workspace = workspaceGeneration;
     const ownsWorkspace = get().root === root;
-    const generation = ownsWorkspace ? ++selectionGeneration : selectionGeneration;
-    if (ownsWorkspace) { selectionTarget = null; stateGeneration += 1; }
-    const isCurrent = () => get().root === root && workspace === workspaceGeneration && generation === selectionGeneration;
+    const generation = ownsWorkspace
+      ? ++selectionGeneration
+      : selectionGeneration;
+    if (ownsWorkspace) {
+      selectionTarget = null;
+      stateGeneration += 1;
+    }
+    const isCurrent = () =>
+      get().root === root &&
+      workspace === workspaceGeneration &&
+      generation === selectionGeneration;
     try {
       const task = await codingApi.createTask(root, name, requirement);
       if (!isCurrent()) return explicitRoot ? task : null;
       selectionTarget = task.id;
+      restoreSelectionPending = false;
+      rememberSelection(root, task.id);
       set({
         task,
         changeSet: null,
@@ -154,7 +210,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const { root } = get();
     if (!root) return;
     const workspace = workspaceGeneration;
-    const isCurrent = () => get().root === root && workspace === workspaceGeneration;
+    const isCurrent = () =>
+      get().root === root && workspace === workspaceGeneration;
     try {
       const task = await codingApi.renameTask(root, taskId, name);
       if (!isCurrent()) return;
@@ -170,7 +227,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const { root } = get();
     if (!root) return;
     const workspace = workspaceGeneration;
-    const isCurrent = () => get().root === root && workspace === workspaceGeneration;
+    const isCurrent = () =>
+      get().root === root && workspace === workspaceGeneration;
     try {
       await codingApi.deleteTask(root, taskId);
       if (!isCurrent()) return;
@@ -180,17 +238,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         selectionTarget = null;
         set({ loading: false });
       }
-      set((state) => (state.task?.id === taskId
-        ? {
-            ...state,
-            task: null,
-            changeSet: null,
-            verifications: [],
-            problems: [],
-            ledger: [],
-            orchestrator: null,
-          }
-        : state));
+      set((state) =>
+        state.task?.id === taskId
+          ? {
+              ...state,
+              task: null,
+              changeSet: null,
+              verifications: [],
+              problems: [],
+              ledger: [],
+              orchestrator: null,
+            }
+          : state,
+      );
       await get().refreshSummaries();
     } catch (error) {
       if (isCurrent()) set({ error: message(error) });
@@ -204,18 +264,20 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const generation = ++stateGeneration;
     const taskId = task.id;
     try {
-      const [changeSet, verifications, problems, ledger, orchestrator] = await Promise.all([
-        codingApi.getChangeSet(root, taskId),
-        codingApi.listVerifications(root, taskId),
-        codingApi.listProblems(root, taskId),
-        codingApi.executionLedger(root, taskId),
-        codingApi.orchestratorState(root, taskId),
-      ]);
+      const [changeSet, verifications, problems, ledger, orchestrator] =
+        await Promise.all([
+          codingApi.getChangeSet(root, taskId),
+          codingApi.listVerifications(root, taskId),
+          codingApi.listProblems(root, taskId),
+          codingApi.executionLedger(root, taskId),
+          codingApi.orchestratorState(root, taskId),
+        ]);
       if (
-        generation !== stateGeneration
-        || get().root !== root
-        || get().task?.id !== taskId
-      ) return;
+        generation !== stateGeneration ||
+        get().root !== root ||
+        get().task?.id !== taskId
+      )
+        return;
       set({
         changeSet,
         verifications,
@@ -228,10 +290,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       });
     } catch (error) {
       if (
-        generation === stateGeneration
-        && get().root === root
-        && get().task?.id === taskId
-      ) set({ error: message(error) });
+        generation === stateGeneration &&
+        get().root === root &&
+        get().task?.id === taskId
+      )
+        set({ error: message(error) });
     }
   },
 
@@ -250,6 +313,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }),
 
   reset: (preserveSummaries = false) => {
+    restoreSelectionPending = false;
+    rememberSelection(get().root, "");
     selectionGeneration += 1;
     stateGeneration += 1;
     workspaceGeneration += 1;

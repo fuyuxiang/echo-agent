@@ -1,3 +1,8 @@
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { workspaceEditor } from "./workspace-editor";
+import { idePath } from "./windows-path";
+import { listenDocumentTools } from "./coding-document-tools";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 
@@ -25,6 +30,9 @@ import {
 } from "./workflow";
 
 interface TrackedTask { root: string; taskId: string }
+export interface DocumentCancellationState { workspace: string; sessionId: string; runId: string; pending: boolean; cancellationId?: string }
+export const DOCUMENT_CANCELLATION_PENDING_MESSAGE = "Runtime 已停，编辑器或外部工具尚未确认结束，仍在停止或状态未知；已发生修改保留。";
+export const DOCUMENT_CANCELLATION_CHECKING_MESSAGE = "正在核对编辑器或外部工具的停止状态，暂缓新操作。";
 interface RuntimeState {
   tasks: Record<string, TrackedTask>;
   settling: Record<string, boolean>;
@@ -33,6 +41,12 @@ interface RuntimeState {
   editorBlocks: Record<string, string>;
   stopping: Record<string, boolean>;
   actionEpochs: Record<string, number>;
+  documentCancellations: Record<string, DocumentCancellationState>;
+  workspaceAliases: Record<string, string>;
+  documentCancellationReady: boolean;
+  setDocumentCancellation: (event: DocumentCancellationState) => void;
+  replaceDocumentCancellations: (events: DocumentCancellationState[]) => void;
+  setDocumentCancellationReady: (ready: boolean) => void;
   setStopping: (root: string, taskId: string, value: boolean) => void;
   setEditorBlock: (root: string, taskId: string, message: string | null) => void;
   claimVerificationBatch: (root: string, taskId: string) => string | null;
@@ -47,6 +61,37 @@ export function codingRuntimeKey(root: string, taskId: string): string {
   return JSON.stringify([root, taskId]);
 }
 
+function workspacePathKey(root: string): string {
+  const path = idePath(root).replace(/\/+$/, "") || "/";
+  return /^[A-Za-z]:\//.test(path) || path.startsWith("//") ? path.toLowerCase() : path;
+}
+function cancellationWorkspace(root: string, aliases?: Record<string, string>): string {
+  const normalized = workspacePathKey(workspaceEditor(root)?.workspace ?? root);
+  return aliases?.[normalized] ?? normalized;
+}
+export function codingWorkspaceCancellationPending(root: string, state = useCodingRuntimeStore.getState()): boolean {
+  return Object.values(state.documentCancellations).some(event => cancellationWorkspace(event.workspace, state.workspaceAliases) === cancellationWorkspace(root, state.workspaceAliases));
+}
+export function codingWorkspaceCancellationBlocked(root: string): boolean {
+  const state = useCodingRuntimeStore.getState();
+  return !state.documentCancellationReady || codingWorkspaceCancellationPending(root, state);
+}
+export function assertCodingWorkspaceCancellationClear(root: string): void {
+  const state = useCodingRuntimeStore.getState();
+  if (!state.documentCancellationReady) throw new Error(DOCUMENT_CANCELLATION_CHECKING_MESSAGE);
+  if (codingWorkspaceCancellationPending(root, state)) throw new Error(DOCUMENT_CANCELLATION_PENDING_MESSAGE);
+}
+function cancellationIdentity(event: DocumentCancellationState): string {
+  return JSON.stringify([cancellationWorkspace(event.workspace), event.sessionId, event.runId]);
+}
+function validCancellation(event: unknown): event is DocumentCancellationState {
+  if (!event || typeof event !== "object") return false;
+  const value = event as DocumentCancellationState;
+  return typeof value.workspace === "string" && !!value.workspace && typeof value.sessionId === "string"
+    && !!value.sessionId && typeof value.runId === "string" && !!value.runId && typeof value.pending === "boolean"
+    && (value.cancellationId === undefined || typeof value.cancellationId === "string" && !!value.cancellationId);
+}
+
 export const useCodingRuntimeStore = create<RuntimeState>((set, get) => ({
   tasks: {},
   settling: {},
@@ -55,6 +100,34 @@ export const useCodingRuntimeStore = create<RuntimeState>((set, get) => ({
   editorBlocks: {},
   stopping: {},
   actionEpochs: {},
+  documentCancellations: {},
+  workspaceAliases: {},
+  documentCancellationReady: false,
+  setDocumentCancellationReady: documentCancellationReady => set({ documentCancellationReady }),
+  replaceDocumentCancellations: events => {
+    set({ documentCancellations: {} });
+    for (const event of events) get().setDocumentCancellation(event);
+  },
+  setDocumentCancellation: event => set(state => {
+    const key = cancellationIdentity(event);
+    if (!event.pending && !state.documentCancellations[key] || event.pending && state.documentCancellations[key]) return state;
+    const documentCancellations = { ...state.documentCancellations };
+    if (event.pending) documentCancellations[key] = event; else delete documentCancellations[key];
+    const actionEpochs = { ...state.actionEpochs };
+    const workspaceAliases = { ...state.workspaceAliases };
+    if (event.pending) {
+      const selected = useTaskStore.getState();
+      const tasks = [...Object.values(state.tasks), ...(selected.task ? [{ root: selected.root, taskId: selected.task.id }] : [])];
+      for (const task of tasks) {
+        const canonical = workspaceEditor(task.root)?.workspace;
+        if (canonical) workspaceAliases[workspacePathKey(task.root)] = cancellationWorkspace(canonical);
+        if (cancellationWorkspace(task.root, workspaceAliases) !== cancellationWorkspace(event.workspace, workspaceAliases)) continue;
+        const taskKey = codingRuntimeKey(task.root, task.taskId);
+        actionEpochs[taskKey] = (state.actionEpochs[taskKey] ?? 0) + 1;
+      }
+    }
+    return { documentCancellations, actionEpochs, workspaceAliases };
+  }),
   setStopping: (root, taskId, value) => set(state => ({
     stopping: { ...state.stopping, [codingRuntimeKey(root, taskId)]: value },
     actionEpochs: value && !state.stopping[codingRuntimeKey(root, taskId)]
@@ -69,7 +142,7 @@ export const useCodingRuntimeStore = create<RuntimeState>((set, get) => ({
   }),
   claimVerificationBatch: (root, taskId) => {
     const key = codingRuntimeKey(root, taskId);
-    if (get().verificationBatches[key]) return null;
+    if (get().verificationBatches[key] || codingWorkspaceCancellationBlocked(root)) return null;
     const owner = crypto.randomUUID();
     set((state) => ({ verificationBatches: { ...state.verificationBatches, [key]: owner } }));
     return owner;
@@ -83,7 +156,9 @@ export const useCodingRuntimeStore = create<RuntimeState>((set, get) => ({
   }),
   track: (root, taskId) => set((state) => {
     const key = codingRuntimeKey(root, taskId);
-    return state.tasks[key] ? state : { tasks: { ...state.tasks, [key]: { root, taskId } } };
+    const canonical = workspaceEditor(root)?.workspace;
+    return { tasks: state.tasks[key] ? state.tasks : { ...state.tasks, [key]: { root, taskId } },
+      workspaceAliases: canonical ? {...state.workspaceAliases,[workspacePathKey(root)]:cancellationWorkspace(canonical)} : state.workspaceAliases };
   }),
   untrack: (root, taskId) => set((state) => {
     const key = codingRuntimeKey(root, taskId);
@@ -145,7 +220,8 @@ function CodingTaskRuntime({ root, taskId, apiReady, availableModelIds }: Tracke
   const latestTask = useRef(task);
   latestTask.current = task;
   const stopping = useCodingRuntimeStore(state => Boolean(state.stopping[codingRuntimeKey(root, taskId)]));
-  const canAct = () => mounted.current && !useCodingRuntimeStore.getState().stopping[codingRuntimeKey(root, taskId)];
+  const cancellationBlocked = useCodingRuntimeStore(state => !state.documentCancellationReady || codingWorkspaceCancellationPending(root, state));
+  const canAct = () => mounted.current && !codingWorkspaceCancellationBlocked(root) && !useCodingRuntimeStore.getState().stopping[codingRuntimeKey(root, taskId)];
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const verificationClaimed = useCodingRuntimeStore((state) => Boolean(state.verificationBatches[codingRuntimeKey(root, taskId)]));
   const refresh = useCallback(async () => {
@@ -196,11 +272,11 @@ function CodingTaskRuntime({ root, taskId, apiReady, availableModelIds }: Tracke
     workspace: root, taskId, sessionId,
     autoReady: queueEnabled && task?.phase === "delivered" && !!transcript && !transcript.control
       && !restoring && !streaming && !transcript.pendingSendNowPromptId && !transcript.planApprovals?.length
-      && !settling && !awaitingPermission && !awaitingQuestion && !stopping,
+      && !settling && !awaitingPermission && !awaitingQuestion && !stopping && !cancellationBlocked,
     manualReady: false,
-    send: (text, contextPaths, promptId, manual) => {
+    send: (text, contextPaths, promptId, manual, coding) => {
       const epoch = useCodingRuntimeStore.getState().actionEpochs[codingRuntimeKey(root, taskId)] ?? 0;
-      return sendCodingQueuedFollowup({ root, taskId, sessionId: sessionId!, text, contextPaths, promptId, manual,
+      return sendCodingQueuedFollowup({ root, taskId, sessionId: sessionId!, text, contextPaths, promptId, manual, coding,
         canDispatch: () => canAct() && queueEnabledRef.current
           && epoch === (useCodingRuntimeStore.getState().actionEpochs[codingRuntimeKey(root, taskId)] ?? 0)
           && !useCodingRuntimeStore.getState().settling[codingRuntimeKey(root, taskId)]
@@ -236,7 +312,7 @@ function CodingTaskRuntime({ root, taskId, apiReady, availableModelIds }: Tracke
   }, [refresh, root, sessionId, taskId]);
 
   useEffect(() => {
-    if (!task || task.phase !== "verifying" || settling || verificationClaimed || stopping || streaming || transcript?.pendingSendNowPromptId) return;
+    if (!task || task.phase !== "verifying" || settling || verificationClaimed || stopping || cancellationBlocked || streaming || transcript?.pendingSendNowPromptId) return;
     const key = `${root}:${taskId}:${task.updatedAt}`;
     if (verificationKey.current === key) return;
     const owner = useCodingRuntimeStore.getState().claimVerificationBatch(root, taskId);
@@ -252,6 +328,12 @@ function CodingTaskRuntime({ root, taskId, apiReady, availableModelIds }: Tracke
     void (async () => {
       try {
         try {
+          if (transcript?.agentMode === "ask" || transcript?.agentMode === "plan") {
+            await codingApi.reportInterrupted(root, taskId, "paused");
+            useCodingRuntimeStore.getState().setEditorBlock(root, taskId, "只读轮次不会自动执行检查；需要时请手动运行项目检查。");
+            await refresh();
+            return;
+          }
           await prepareWorkspaceEditor(root);
           if (!allowed() || latestTask.current?.phase !== "verifying") return;
           useCodingRuntimeStore.getState().setEditorBlock(root, taskId, null);
@@ -265,7 +347,9 @@ function CodingTaskRuntime({ root, taskId, apiReady, availableModelIds }: Tracke
           return;
         }
         const detected = await codingApi.detectCommands(root);
-        const commands = mergeTaskVerificationCommands(detected, task);
+        const config = await codingApi.verificationConfig(root);
+        const automatic = new Set(config.checks.filter(check => check.autoRun).map(check => check.command));
+        const commands = task.strictWorkflow ? mergeTaskVerificationCommands(detected, task) : detected.filter(command => automatic.has(command.command));
         if (!allowed() || latestTask.current?.phase !== "verifying") return;
         const current = await codingApi.orchestratorState(root, taskId);
         if (!allowed()) return;
@@ -298,11 +382,11 @@ function CodingTaskRuntime({ root, taskId, apiReady, availableModelIds }: Tracke
         useCodingRuntimeStore.getState().releaseVerificationBatch(root, taskId, owner);
       }
     })();
-  }, [refresh, root, settling, task, taskId, verificationClaimed, stopping, streaming, transcript?.pendingSendNowPromptId]);
+  }, [refresh, root, settling, task, taskId, verificationClaimed, stopping, cancellationBlocked, streaming, transcript?.pendingSendNowPromptId]);
 
   useEffect(() => {
-    if (!task || !["discovering", "implementing", "repairing"].includes(task.phase) || (!task.nextAction && task.phase !== "repairing") || !sessionId || !transcript
-      || restoring || streaming || transcript.pendingSendNowPromptId || settling || awaitingPermission || awaitingQuestion || stopping) return;
+    if (!task || !task.strictWorkflow || !["discovering", "implementing", "repairing"].includes(task.phase) || (!task.nextAction && task.phase !== "repairing") || !sessionId || !transcript
+      || restoring || streaming || transcript.pendingSendNowPromptId || settling || awaitingPermission || awaitingQuestion || stopping || cancellationBlocked) return;
     const key = JSON.stringify([task.id, task.updatedAt, task.phase, task.nextAction]);
     if (agentActionKey.current === key) return;
     let cancelled = false;
@@ -351,7 +435,7 @@ function CodingTaskRuntime({ root, taskId, apiReady, availableModelIds }: Tracke
           : task.nextAction === "continue_node" ? buildNodeContinuationInstruction(task, activeNode!) : text;
         useCodingRuntimeStore.getState().setEditorBlock(root, taskId, null);
         dispatched = true;
-        if (!beginAgentTurn({ sessionId, promptText: prompt, displayText: text, allowBackgroundSession: true })) {
+        if (!beginAgentTurn({ sessionId, promptText: prompt, displayText: text, allowBackgroundSession: true,coding:{mode:"agent",documentToolBridge:true,workspace:root,taskId} })) {
           if (current()) await codingApi.reportStartFailed(root, taskId, "Agent 未能接收自动续跑指令");
           await refresh();
         }
@@ -367,12 +451,104 @@ function CodingTaskRuntime({ root, taskId, apiReady, availableModelIds }: Tracke
       cancelled = true;
       if (!dispatched && agentActionKey.current === key) agentActionKey.current = null;
     };
-  }, [awaitingPermission, awaitingQuestion, problems, refresh, restoring, root, sessionId, settling, stopping, streaming, task, taskId, transcript]);
+  }, [awaitingPermission, awaitingQuestion, problems, refresh, restoring, root, sessionId, settling, stopping, cancellationBlocked, streaming, task, taskId, transcript]);
 
   return null;
 }
 
 export function CodingTaskRuntimeManager({ roots, apiReady = true, availableModelIds }: { roots: string[]; apiReady?: boolean; availableModelIds?: string[] }) {
+  useEffect(() => {
+    let disposed = false; let unlisten: (() => void) | undefined;
+    void listenDocumentTools().then(fn => { if (disposed) fn(); else unlisten = fn; });
+    let unlistenCancel: (() => void) | undefined;
+    let unlistenObserved: (() => void) | undefined;
+    let unlistenCancellationState: (() => void) | undefined;
+    let refreshing = false;
+    let received: DocumentCancellationState[] = [];
+    let retryQuery: ReturnType<typeof setTimeout> | undefined;
+    const retryCancellations = new Set<ReturnType<typeof setTimeout>>();
+    const acknowledging = new Set<string>();
+    const confirmCancellation = (pending: DocumentCancellationState & {cancellationId:string}) => {
+      if (disposed || acknowledging.has(pending.cancellationId)) return;
+      acknowledging.add(pending.cancellationId);
+      const acknowledge = async () => {
+        if (disposed) return;
+        try {
+          const editor = workspaceEditor(pending.workspace);
+          // A missing renderer registry does not prove that an existing native
+          // editor lease has drained its filesystem RPCs.
+          const confirmed = editor?.cancelRun ? await editor.cancelRun(pending.runId)
+            : (await invoke<boolean>("coding_document_editor_present", {root:pending.workspace})) === false;
+          if (disposed) return;
+          if (!confirmed) throw new Error("Editor cancellation is not confirmed");
+          await invoke("coding_document_cancel_ack", {cancellationId:pending.cancellationId});
+          acknowledging.delete(pending.cancellationId);
+        } catch {
+          if (disposed) return;
+          if (useCodingRuntimeStore.getState().documentCancellationReady
+            && !useCodingRuntimeStore.getState().documentCancellations[cancellationIdentity(pending)]) {
+            acknowledging.delete(pending.cancellationId); return;
+          }
+          const timer = setTimeout(() => { retryCancellations.delete(timer); void acknowledge(); }, 1_000);
+          retryCancellations.add(timer);
+        }
+      };
+      void acknowledge();
+    };
+    useCodingRuntimeStore.getState().setDocumentCancellationReady(false);
+    const refreshCancellations = async () => {
+      if (disposed || refreshing) return;
+      if (retryQuery) { clearTimeout(retryQuery); retryQuery = undefined; }
+      refreshing = true; received = [];
+      try {
+        const snapshot = await invoke<unknown>("coding_document_cancellation_state", {});
+        if (disposed) return;
+        if (!Array.isArray(snapshot) || !snapshot.every(validCancellation)) throw new Error("Invalid native cancellation state");
+        const state = useCodingRuntimeStore.getState();
+        state.replaceDocumentCancellations(snapshot);
+        for (const event of received) state.setDocumentCancellation(event);
+        state.setDocumentCancellationReady(true);
+        // Reconstruct the real handshake after a renderer remount, using the
+        // native retained identity. A query never substitutes for editor ACK.
+        for (const event of Object.values(useCodingRuntimeStore.getState().documentCancellations)) {
+          if (event.cancellationId) confirmCancellation({...event,cancellationId:event.cancellationId});
+        }
+      } catch {
+        if (!disposed) {
+          // An unavailable query must not release a previously observed native fence.
+          useCodingRuntimeStore.getState().setDocumentCancellationReady(false);
+          retryQuery = setTimeout(() => { void refreshCancellations(); }, 5_000);
+        }
+      } finally { refreshing = false; received = []; }
+    };
+    void listen<DocumentCancellationState>("agent://document-cancellation-state", event => {
+      if (disposed || !validCancellation(event.payload)) return;
+      if (refreshing) received.push(event.payload);
+      useCodingRuntimeStore.getState().setDocumentCancellation(event.payload);
+    }).then(fn => {
+      if (disposed) fn(); else { unlistenCancellationState = fn; void refreshCancellations(); }
+    }).catch(() => { if (!disposed) useCodingRuntimeStore.getState().setDocumentCancellationReady(false); });
+    const onFocus = () => { void refreshCancellations(); };
+    window.addEventListener("focus", onFocus);
+    void listen<{workspace:string;taskId:string;sessionId:string;runId:string;commandRunId:string;contentRevision:string}>("coding://changes-observed",event=>{
+      const state=useTaskStore.getState();
+      const owner=workspaceEditor(event.payload.workspace);
+      if(state.task?.id===event.payload.taskId && (state.root===event.payload.workspace || owner && owner===workspaceEditor(state.root))) {
+        void state.refreshTaskState().catch(()=>undefined);
+      }
+    }).then(fn=>{if(disposed) fn();else unlistenObserved=fn;});
+    void listen<{cancellationId:string;workspace:string;sessionId:string;runId:string}>("agent://document-run-cancelled", event => {
+      const pending = { ...event.payload, pending: true };
+      if (refreshing) received.push(pending);
+      useCodingRuntimeStore.getState().setDocumentCancellation(pending);
+      confirmCancellation(pending);
+    }).then(fn => { if (disposed) fn(); else unlistenCancel = fn; });
+    return () => {
+      disposed = true; unlisten?.();unlistenCancel?.();unlistenObserved?.();unlistenCancellationState?.();
+      window.removeEventListener("focus", onFocus); if (retryQuery) clearTimeout(retryQuery);
+      retryCancellations.forEach(timer => clearTimeout(timer));
+    };
+  }, []);
   const tracked = useCodingRuntimeStore((state) => state.tasks);
   const queues = useMessageQueueStore(state => state.queues);
   const tasks = useMemo(() => Object.values(tracked), [tracked]);

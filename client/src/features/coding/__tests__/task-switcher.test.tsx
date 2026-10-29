@@ -92,7 +92,7 @@ describe("TaskSwitcher", () => {
 
   it("没有历史任务时直接展示任务标题", () => {
     setup([], null);
-    expect(screen.getByText("开发任务")).toBeInTheDocument();
+    expect(screen.getByText("新对话")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "切换开发任务" })).not.toBeInTheDocument();
   });
 

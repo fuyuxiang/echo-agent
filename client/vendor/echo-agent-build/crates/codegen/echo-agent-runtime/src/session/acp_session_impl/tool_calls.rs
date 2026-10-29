@@ -637,11 +637,45 @@ impl SessionActor {
         let workspace_ops = self.workspace_ops.clone();
         let pending_interjections = self.pending_interjections.clone();
         let session_id: Arc<str> = Arc::from(&*self.session_info.id.0);
+        let desktop_bridge = if self
+            .tool_bridge_handle()
+            .read_resource::<DesktopDocumentTools>()
+            .await
+            .is_some_and(|policy| policy.0)
+        {
+            Some(DesktopDocumentBridge {
+                gateway: self.notifications.gateway.clone(),
+                authority: self.startup_hints.inherited_turn_authority.clone(),
+                run_id: self
+                    .current_prompt_id
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default(),
+                workspace: self
+                    .tool_context
+                    .cwd
+                    .as_path()
+                    .to_string_lossy()
+                    .into_owned(),
+                tool_kinds: approved
+                    .iter()
+                    .filter_map(|prepared| {
+                        self.tool_bridge_handle()
+                            .tool_kind(&prepared.tool_name)
+                            .map(|kind| (prepared.tool_name.clone(), kind.as_key().to_string()))
+                    })
+                    .collect(),
+            })
+        } else {
+            None
+        };
         let dispatch_futures: Vec<_> = approved
             .iter()
             .enumerate()
             .map(|(idx, prepared)| {
                 let prepared = Arc::new(prepared.clone());
+                let desktop_bridge = desktop_bridge.clone();
                 let am = self.auth_manager.clone();
                 let shared_recovery = Arc::clone(&shared_recovery);
                 let workspace_ops = workspace_ops.clone();
@@ -665,6 +699,7 @@ impl SessionActor {
                     let tool_span_for_record = tool_span.clone();
                     let run_tool = || {
                         let prepared = Arc::clone(&prepared);
+                        let desktop_bridge = desktop_bridge.clone();
                         let workspace_ops = workspace_ops.clone();
                         let session_id = session_id.clone();
                         let lock = lock.clone();
@@ -674,7 +709,13 @@ impl SessionActor {
                             } else {
                                 None
                             };
-                            dispatch_tool(&workspace_ops, &prepared, &session_id).await
+                            dispatch_tool(
+                                &workspace_ops,
+                                &prepared,
+                                &session_id,
+                                desktop_bridge.as_ref(),
+                            )
+                            .await
                         }
                     };
                     let result = if interruptible {
@@ -974,6 +1015,29 @@ impl SessionActor {
         }
         Ok(())
     }
+    /// `use_tool` is the existing stable MCP entry point. In coordinated
+    /// runs it may target native-registered MCP tools or an authenticated
+    /// managed catalog/client pair, never another built-in execution adapter.
+    async fn desktop_mcp_target_is_trusted(&self, target: &str) -> bool {
+        use echo_agent_tools::types::resources::{
+            ManagedGatewayToolCatalog, ManagedGatewayToolClient,
+        };
+        let bridge = self.tool_bridge_handle();
+        if let Some(metadata) = bridge.toolset().get_tool_metadata(target) {
+            return metadata.tool_namespace() == echo_agent_tools::types::tool::ToolNamespace::MCP;
+        }
+        let catalog = bridge.read_resource::<ManagedGatewayToolCatalog>().await;
+        let source = catalog.as_ref().and_then(|catalog| catalog.get(target));
+        source.is_some_and(|source| {
+            !source.connector_id.is_empty()
+                && !source.call_id.is_empty()
+                && !source.tool_id.is_empty()
+        }) && bridge
+            .read_resource::<ManagedGatewayToolClient>()
+            .await
+            .is_some()
+    }
+
     /// Phase 1: pre-flight (MCP, args, hooks, permission, ExitPlanMode).
     pub(crate) async fn prepare_tool_call(
         &self,
@@ -1017,6 +1081,38 @@ impl SessionActor {
                 None,
             )
             .await;
+        }
+        if self.is_readonly_turn()
+            && (self
+                .tool_bridge_handle()
+                .toolset()
+                .get_tool_metadata(&call.function.name)
+                .is_some_and(|metadata| {
+                    metadata.tool_namespace() == echo_agent_tools::types::tool::ToolNamespace::MCP
+                })
+                || !readonly_tool_kind_allowed(
+                    self.tool_bridge_handle().tool_kind(&call.function.name),
+                ))
+        {
+            self.handle_tool_not_executed(
+                &call.id, &tool_call_id,
+                "Ask/Plan capability policy blocked this tool before execution. Arbitrary shell, MCP, unrestricted delegation and writes are unavailable in read-only runs.".into(),
+            ).await?;
+            return Ok(Err(ToolLoop::Continue));
+        }
+        if self
+            .tool_bridge_handle()
+            .read_resource::<DesktopDocumentTools>()
+            .await
+            .is_some_and(|policy| policy.0)
+            && matches!(
+                self.tool_bridge_handle().tool_kind(&call.function.name),
+                Some(echo_agent_tools::types::tool::ToolKind::Workflow)
+            )
+        {
+            self.handle_tool_not_executed(&call.id, &tool_call_id,
+                "Workflow dispatch is unavailable in editor-coordinated runs. Use Task for subagents with inherited document authority, or use_tool for registered MCP integrations.".into()).await?;
+            return Ok(Err(ToolLoop::Continue));
         }
         let mcp_parts = parse_mcp_tool_name(&call.function.name);
         let is_mcp_tool = mcp_parts.is_some();
@@ -1146,10 +1242,37 @@ impl SessionActor {
             .clone()
             .unwrap_or_else(|| call.function.name.clone());
         let mut raw_arguments = call.function.arguments.clone();
-        if self.may_have_hooks_for(echo_agent_hooks::event::HookEventName::PreToolUse) {
+        // Enforce the immutable run capability ceiling before any hook or
+        // permission callback can execute a command or rewrite the tool input.
+        if self.is_readonly_turn()
+            && (!readonly_tool_kind_allowed(
+                self.tool_bridge_handle().tool_kind(&call.function.name),
+            ) || !readonly_tool_input_allowed(&tool_input))
+        {
+            self.handle_tool_not_executed(
+                &call.id, &tool_call_id,
+                "Ask/Plan is read-only for this run. This tool is unavailable; select Agent for a later run to authorize changes.".into(),
+            ).await?;
+            return Ok(Err(ToolLoop::Continue));
+        }
+        if self
+            .tool_bridge_handle()
+            .read_resource::<DesktopDocumentTools>()
+            .await
+            .is_some_and(|policy| policy.0)
+            && let ToolInput::UseTool(input) = &tool_input
+            && !self.desktop_mcp_target_is_trusted(&input.tool_name).await
+        {
+            self.handle_tool_not_executed(&call.id,&tool_call_id,
+                "Coding MCP dispatch requires an existing registered MCP tool or authenticated managed catalog/client. Native tools and Task cannot be routed through use_tool; call their native entry directly.".into()).await?;
+            return Ok(Err(ToolLoop::Continue));
+        }
+        if !self.is_readonly_turn()
+            && self.may_have_hooks_for(echo_agent_hooks::event::HookEventName::PreToolUse)
+        {
             let mut envelope =
                 self.make_pre_tool_use_envelope(&resolved_tool_name, &call.id, &raw_input);
-            let hook_registry_snapshot = self.hook_registry.borrow().clone();
+            let hook_registry_snapshot = self.allowed_hook_registry();
             if let Some(registry) = hook_registry_snapshot {
                 let ctx = self.hook_run_ctx();
                 let pre_result =

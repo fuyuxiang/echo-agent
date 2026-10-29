@@ -99,7 +99,7 @@ export function TaskSwitcher({
   };
 
   if (!activeId && tasks.length === 0) {
-    return <div className="coding-task-switcher coding-task-switcher--heading">开发任务</div>;
+    return <div className="coding-task-switcher coding-task-switcher--heading">新对话</div>;
   }
 
   return (

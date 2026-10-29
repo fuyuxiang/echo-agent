@@ -22,6 +22,15 @@ pub struct ReviewRecord {
     pub kind: ReviewKind,
     pub content_revision: String,
     pub confirmed_at: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub summary: String,
+    /// Legacy manual confirmations remain history, but are not model reviews.
+    #[serde(default)]
+    pub runtime_review: bool,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -37,6 +46,61 @@ pub fn list(root: &Path, task_id: &str) -> Vec<ReviewRecord> {
     store::read_json::<Reviews>(&path(root, task_id))
         .unwrap_or_default()
         .records
+}
+
+/// Called only by the native runtime after an actual read-only review turn
+/// completes. Persist the result even if it has since become stale; consumers
+/// compare its original revision with the current workspace revision.
+pub fn record_runtime_review(
+    root: &Path,
+    task_id: &str,
+    kind: ReviewKind,
+    session_id: &str,
+    run_id: &str,
+    expected_revision: &str,
+    summary: &str,
+) -> Result<ReviewRecord, String> {
+    let task = task::load(root, task_id).ok_or_else(|| "审查任务不存在".to_string())?;
+    if task.session_id.as_deref() != Some(session_id) {
+        return Err("审查会话与任务归属不一致".into());
+    }
+    if run_id.is_empty() || expected_revision.is_empty() || summary.trim().is_empty() {
+        return Err("实际审查结果不完整，未创建审查通过记录".into());
+    }
+    if summary.len() > 256 * 1024 {
+        return Err("审查结果超过存储上限".into());
+    }
+    let record = ReviewRecord {
+        kind,
+        content_revision: expected_revision.into(),
+        confirmed_at: chrono::Utc::now().to_rfc3339(),
+        session_id: Some(session_id.into()),
+        run_id: Some(run_id.into()),
+        summary: summary.into(),
+        runtime_review: true,
+    };
+    store::update_json(&path(root, task_id), |reviews: &mut Reviews| {
+        if !reviews
+            .records
+            .iter()
+            .any(|existing| existing.run_id.as_deref() == Some(run_id) && existing.kind == kind)
+        {
+            reviews.records.push(record.clone());
+        }
+        Ok(())
+    })?;
+    Ok(record)
+}
+
+#[tauri::command]
+pub async fn coding_review_list(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    task_id: String,
+) -> Result<Vec<ReviewRecord>, String> {
+    let root = access.require_workspace(&root)?;
+    store::validate_task_id(&task_id)?;
+    Ok(list(&root, &task_id))
 }
 
 pub fn confirm(root: &Path, task_id: &str, kind: ReviewKind) -> Result<ReviewRecord, String> {
@@ -79,6 +143,10 @@ pub fn confirm(root: &Path, task_id: &str, kind: ReviewKind) -> Result<ReviewRec
         kind,
         content_revision: revision,
         confirmed_at: chrono::Utc::now().to_rfc3339(),
+        session_id: None,
+        run_id: None,
+        summary: String::new(),
+        runtime_review: false,
     };
     store::update_json(&path(root, task_id), |reviews: &mut Reviews| {
         reviews.records.retain(|entry| entry.kind != kind);
@@ -151,5 +219,50 @@ mod tests {
         assert!(list(root, &coding_task.id)
             .iter()
             .all(|review| review.content_revision != set.content_revision()));
+    }
+    #[test]
+    fn runtime_review_keeps_real_output_and_original_revision_without_duplicate_replay() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let mut coding_task = task::create_task(root, "Review", "Review diff").unwrap();
+        coding_task.session_id = Some("session-review".into());
+        task::save(root, &coding_task).unwrap();
+        assert!(record_runtime_review(
+            root,
+            &coding_task.id,
+            ReviewKind::CodeQuality,
+            "other-session",
+            "run-review",
+            "revision",
+            "src/file.ts:4 contains a concrete problem"
+        )
+        .is_err());
+        let record = record_runtime_review(
+            root,
+            &coding_task.id,
+            ReviewKind::CodeQuality,
+            "session-review",
+            "run-review",
+            "original-revision",
+            "src/file.ts:4 contains a concrete problem",
+        )
+        .unwrap();
+        assert!(record.runtime_review);
+        assert_eq!(record.content_revision, "original-revision");
+        assert!(record.summary.contains("src/file.ts:4"));
+        record_runtime_review(
+            root,
+            &coding_task.id,
+            ReviewKind::CodeQuality,
+            "session-review",
+            "run-review",
+            "original-revision",
+            "duplicate replay",
+        )
+        .unwrap();
+        assert_eq!(list(root, &coding_task.id).len(), 1);
+        assert!(list(root, &coding_task.id)[0]
+            .summary
+            .contains("concrete problem"));
     }
 }

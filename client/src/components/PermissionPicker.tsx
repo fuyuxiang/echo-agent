@@ -50,12 +50,15 @@ export function PermissionPicker({
   onToast,
   triggerLabel,
   sessionId,
+  compact = false,
 }: {
   onToast?: (msg: string) => void;
   /** 覆盖触发按钮文字（如本地助理页固定显示「默认权限」）；缺省显示当前模式名。 */
   triggerLabel?: string;
   /** Existing task scope. Omit on Home for the one pending new-task draft. */
   sessionId?: string;
+  /** Icon trigger for narrow editor composers; the current mode stays in its accessible name and tooltip. */
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [confirmingAlways, setConfirmingAlways] = useState(false);
@@ -272,7 +275,7 @@ export function PermissionPicker({
     Boolean(status?.locked);
 
   return (
-    <div className="permission-picker" ref={rootRef}>
+    <div className={`permission-picker${compact ? " permission-picker--compact" : ""}`} ref={rootRef}>
       <button
         ref={triggerRef}
         type="button"
@@ -292,8 +295,8 @@ export function PermissionPicker({
         aria-controls={open ? popoverId : undefined}
       >
         <current.icon className="permission-picker__trigger-icon" size={14} aria-hidden="true" />
-        <span className="permission-picker__label">{triggerLabel ?? current.label}</span>
-        <ChevronDownIcon size="sm" />
+        {!compact && <span className="permission-picker__label">{triggerLabel ?? current.label}</span>}
+        {!compact && <ChevronDownIcon size="sm" />}
       </button>
       {open && typeof document !== "undefined" && createPortal(
         <div

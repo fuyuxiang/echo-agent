@@ -26,21 +26,15 @@ export function describePhase(phase: TaskPhase): PhasePresentation {
 }
 
 /** User-facing progress groups. The persisted phase remains the scheduler's state. */
-export function describeTaskProgress(phase: TaskPhase, report?: DeliveryReport | null): PhasePresentation {
+export function describeTaskProgress(phase: TaskPhase, _report?: DeliveryReport | null): PhasePresentation {
   if (phase === "discovering") return { label: "分析中", tone: "running", active: true };
   if (phase === "implementing") return { label: "开发中", tone: "running", active: true };
   if (["verifying", "diagnosing", "repairing"].includes(phase)) {
     return { label: "验证与修复", tone: "running", active: true };
   }
   if (phase === "blocked") return { label: "需要处理", tone: "bad", active: false };
-  if (phase === "delivered") {
-    if (!report) return { label: "执行完成 · 待检查交付条件", tone: "waiting", active: false };
-    if (report.deliverable) return { label: "满足交付条件", tone: "good", active: false };
-    const pending = report.gates.filter((gate) => gate.status === "not_satisfied");
-    const label = pending.some((gate) => gate.id === "acceptance") ? "待验收"
-      : pending.some((gate) => ["diff_review", "requirements_review", "code_quality_review"].includes(gate.id)) ? "待审查" : "待处理检查";
-    return { label, tone: "waiting", active: false };
-  }
+  if (phase === "delivered") return { label: "本轮完成", tone: "good", active: false };
+
   return describePhase(phase);
 }
 

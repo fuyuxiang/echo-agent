@@ -56,7 +56,11 @@ impl SessionActor {
             return Ok(());
         }
         let snapshot = self.snapshot_memory_flush_state().await;
-        if crate::session::helpers::session_compact::extract_real_user_queries(&snapshot.chat_history).is_empty() {
+        if crate::session::helpers::session_compact::extract_real_user_queries(
+            &snapshot.chat_history,
+        )
+        .is_empty()
+        {
             return Ok(());
         }
         let job = PendingMemory {
@@ -73,7 +77,11 @@ impl SessionActor {
         }
         // History lengths shrink after compaction and can stay equal after an
         // edit/retry. Only exact completed content is safe to skip.
-        if self.memory.jobs.completed(&job.identity().map_err(|e| e.to_string())?) {
+        if self
+            .memory
+            .jobs
+            .completed(&job.identity().map_err(|e| e.to_string())?)
+        {
             return Ok(());
         }
         crate::session::memory::pending::checkpoint(&storage, &job)
@@ -136,7 +144,9 @@ impl SessionActor {
                     )
                     .await;
                 if completed && job.source_id == self.session_info.id.to_string() {
-                    if let Some(identity) = identity { self.memory.jobs.mark_completed(identity); }
+                    if let Some(identity) = identity {
+                        self.memory.jobs.mark_completed(identity);
+                    }
                     self.last_idle_flush_conversation_len
                         .store(job.conversation_len, std::sync::atomic::Ordering::Relaxed);
                 }

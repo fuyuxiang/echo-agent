@@ -705,14 +705,17 @@ fn require_review_launch(window: &tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn desktop_review_context(window: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+pub async fn desktop_review_context(
+    window: tauri::WebviewWindow,
+    inline_focus_click: Option<crate::native_coding_validation::InlinePointerRequest>,
+) -> Result<serde_json::Value, String> {
     require_review_launch(&window)?;
     let phase =
         std::env::var("ECHO_DESKTOP_REVIEW_PHASE").unwrap_or_else(|_| "first-launch".into());
     if !matches!(phase.as_str(), "first-launch" | "restart") {
         return Err("Native review phase is invalid".into());
     }
-    Ok(serde_json::json!({
+    let mut context = serde_json::json!({
         "phase": phase,
         "pid": std::process::id(),
         "home": crate::paths::echo_agent_home_dir(),
@@ -725,7 +728,16 @@ pub fn desktop_review_context(window: tauri::WebviewWindow) -> Result<serde_json
         "coreRequested": std::env::var("ECHO_DESKTOP_REVIEW_CORE").as_deref() == Ok("1"),
         "ideRequested": std::env::var("ECHO_DESKTOP_REVIEW_IDE").as_deref() == Ok("1"),
         "browserRequested": std::env::var("ECHO_DESKTOP_REVIEW_BROWSER").as_deref() == Ok("1"),
-    }))
+    });
+    if std::env::var("ECHO_DESKTOP_REVIEW_CODING_INLINE_ONLY").as_deref() == Ok("1") {
+        context["inlineFocus"] =
+            crate::native_coding_validation::inline_focus_diagnostics(&window).await?;
+    }
+    if let Some(request) = inline_focus_click {
+        context["inlinePointer"] =
+            crate::native_coding_validation::inline_pointer_focus(&window, request).await?;
+    }
+    Ok(context)
 }
 
 #[tauri::command]

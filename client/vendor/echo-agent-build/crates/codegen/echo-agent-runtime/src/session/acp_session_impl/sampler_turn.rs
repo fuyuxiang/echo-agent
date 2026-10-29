@@ -166,7 +166,7 @@ impl SessionActor {
         self.resolve_hosted().0
     }
     pub(crate) fn hosted_tools_for_turn(&self) -> Vec<echo_agent_sampling_types::HostedTool> {
-        if self.backend_search_active() {
+        if !self.is_readonly_turn() && self.backend_search_active() {
             self.effective_hosted_tools()
         } else {
             Vec::new()
@@ -213,7 +213,26 @@ impl SessionActor {
     }
     pub(super) async fn prepare_tool_definitions_inner(&self) -> Vec<ToolDefinition> {
         let bridge = self.agent.borrow().tool_bridge().clone();
-        let defs = bridge.tool_definitions_builtins_only().await;
+        let mut defs = bridge.tool_definitions_builtins_only().await;
+        if self.is_readonly_turn() {
+            defs.retain(|definition| {
+                readonly_tool_kind_allowed(bridge.tool_kind(&definition.function.name))
+            });
+        }
+        if bridge
+            .read_resource::<DesktopDocumentTools>()
+            .await
+            .is_some_and(|policy| policy.0)
+        {
+            // Task children inherit root authority. MCP use_tool is coordinated
+            // by the same before/after dispatch; workflows have a separate adapter.
+            defs.retain(|definition| {
+                !matches!(
+                    bridge.tool_kind(&definition.function.name),
+                    Some(echo_agent_tools::types::tool::ToolKind::Workflow)
+                )
+            });
+        }
         let plan_active = self.plan_mode.lock().is_active();
         filter_cursor_tools_by_plan_mode(defs, plan_active)
     }

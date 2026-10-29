@@ -8,6 +8,19 @@ use super::*;
 const BASH_MODE_FINAL_OUTPUT_LINES: usize = 10;
 const BASH_MODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
+/// Per-turn opt-in set from trusted ACP block metadata by the desktop host.
+#[derive(Clone, Copy, Default)]
+pub(super) struct DesktopDocumentTools(pub bool);
+
+#[derive(Clone)]
+pub(super) struct DesktopDocumentBridge {
+    pub gateway: GatewaySender,
+    pub authority: Option<crate::session::InheritedTurnAuthority>,
+    pub run_id: String,
+    pub workspace: String,
+    pub tool_kinds: std::collections::HashMap<String, String>,
+}
+
 /// Phase 2: dispatch a tool call through [`WorkspaceOps::call_tool`].
 ///
 /// Agent sessions always use local workspace ops (in-process toolset).
@@ -15,7 +28,61 @@ pub(super) async fn dispatch_tool(
     workspace_ops: &echo_agent_workspace::WorkspaceOps,
     prepared: &PreparedToolCall,
     session_id: &str,
+    desktop: Option<&DesktopDocumentBridge>,
 ) -> Result<ToolRunResult, echo_agent_tool_runtime::ToolError> {
+    let external = desktop.is_some_and(|bridge| {
+        bridge
+            .tool_kinds
+            .get(&prepared.tool_name)
+            .is_some_and(|kind| kind == "use_tool")
+            || prepared.tool_name.contains("__")
+    });
+    if external {
+        let ops = workspace_ops.clone();
+        let prepared = prepared.clone();
+        let session = session_id.to_string();
+        let desktop = desktop.cloned();
+        // Dropping a Tokio JoinHandle detaches it. A user Stop aborts the
+        // model turn, but must keep this actual RPC alive until a protocol
+        // terminal (or an explicit uncertain result) settles its native lease.
+        return tokio::spawn(async move {
+            dispatch_tool_inner(&ops, &prepared, &session, desktop.as_ref(), true).await
+        }).await.map_err(|_| echo_agent_tool_runtime::ToolError::invalid_arguments(
+            "MCP execution task ended without a terminal; native workspace fence remains pending"
+        ))?;
+    }
+    dispatch_tool_inner(workspace_ops, prepared, session_id, desktop, false).await
+}
+
+async fn dispatch_tool_inner(
+    workspace_ops: &echo_agent_workspace::WorkspaceOps,
+    prepared: &PreparedToolCall,
+    session_id: &str,
+    desktop: Option<&DesktopDocumentBridge>,
+    external: bool,
+) -> Result<ToolRunResult, echo_agent_tool_runtime::ToolError> {
+    // Task itself only schedules a child; its individual tools are intercepted
+    // by the child's SessionActor using the inherited root authority.
+    let desktop = desktop.filter(|bridge| {
+        bridge
+            .tool_kinds
+            .get(&prepared.tool_name)
+            .is_none_or(|kind| kind != "task")
+    });
+    let authority = desktop.and_then(|bridge| bridge.authority.as_ref());
+    let owner_session_id = authority
+        .map(|authority| authority.session_id.as_str())
+        .unwrap_or(session_id);
+    let run_id = authority
+        .map(|authority| authority.run_id.as_str())
+        .or_else(|| desktop.map(|bridge| bridge.run_id.as_str()));
+    // Model tool IDs can repeat in later turns or across children. Namespace
+    // the opaque editor identity so an old timeout cannot remove a new entry.
+    let operation_id = format!(
+        "{}:{session_id}:{}",
+        run_id.unwrap_or_default(),
+        prepared.tool_call_id.0
+    );
     tracing::debug!(
         tool = %prepared.tool_name,
         call_id = %prepared.tool_call_id.0,
@@ -23,14 +90,141 @@ pub(super) async fn dispatch_tool(
         mode = "local",
         "dispatch_tool"
     );
-    workspace_ops
+    if let Some(desktop) = desktop {
+        let params = serde_json::json!({
+            "phase": "before", "sessionId": owner_session_id, "runId": run_id,
+            "externalTool": external,
+            "sourceSessionId":session_id,
+            "operationId": operation_id,
+            "workspace": authority.map(|authority|authority.workspace.as_str()).unwrap_or(&desktop.workspace),
+            "toolName": prepared.tool_name, "toolKind": desktop.tool_kinds.get(&prepared.tool_name), "input": prepared.parsed_args,
+        });
+        if params.to_string().len() > 2 * 1024 * 1024 {
+            return Err(echo_agent_tool_runtime::ToolError::invalid_arguments(
+                "Document tool request exceeds 2 MiB budget",
+            ));
+        }
+        let request = acp::ExtRequest::new(
+            "echo.agent/desktop_document_tool",
+            serde_json::value::to_raw_value(&params)
+                .map_err(|_| {
+                    echo_agent_tool_runtime::ToolError::invalid_arguments(
+                        "Invalid document tool request",
+                    )
+                })?
+                .into(),
+        );
+        // A disconnected/replaced editor must fail closed. In particular a
+        // timed-out write is never replayed through the disk tool fallback.
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            echo_agent_acp::acp_send(request, &desktop.gateway.tx()),
+        )
+        .await
+        .map_err(|_| {
+            echo_agent_tool_runtime::ToolError::invalid_arguments(
+                "Editor coordination timed out; operation was not replayed",
+            )
+        })?
+        .map_err(|_| {
+            echo_agent_tool_runtime::ToolError::invalid_arguments(
+                "Editor coordination unavailable; retry after reconnect",
+            )
+        })?;
+        let result: serde_json::Value = serde_json::from_str(response.0.get()).map_err(|_| {
+            echo_agent_tool_runtime::ToolError::invalid_arguments(
+                "Invalid editor coordination response",
+            )
+        })?;
+        if let Some(error) = result.get("error").and_then(serde_json::Value::as_str) {
+            return Err(echo_agent_tool_runtime::ToolError::invalid_arguments(error));
+        }
+        if result.get("handled").and_then(serde_json::Value::as_bool) == Some(true) {
+            let text = result
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    echo_agent_tool_runtime::ToolError::invalid_arguments(
+                        "Editor response omitted operation result",
+                    )
+                })?
+                .to_string();
+            return Ok(ToolRunResult {
+                output: echo_agent_tools::types::output::ToolOutput::Text(
+                    echo_agent_tools::types::output::TextOutput::from(text.clone()),
+                ),
+                prompt_text: text,
+                effective_tool_name: None,
+            });
+        }
+        // handled:false is an explicit host preflight approval for a tool the
+        // host does not implement (e.g. terminal execution). Omitted/malformed
+        // approval cannot silently bypass document protection.
+        if result.get("handled").and_then(serde_json::Value::as_bool) != Some(false) {
+            return Err(echo_agent_tool_runtime::ToolError::invalid_arguments(
+                "Editor did not approve tool dispatch",
+            ));
+        }
+    }
+    let result = workspace_ops
         .call_tool(
             &prepared.tool_name,
             prepared.parsed_args.clone(),
             &prepared.tool_call_id.0,
             Some(session_id),
         )
+        .await;
+    if let Some(desktop) = desktop {
+        let params = serde_json::json!({
+            "phase": "after", "sessionId": owner_session_id, "runId": run_id,
+            "sourceSessionId":session_id,
+            "operationId": operation_id,
+            "workspace": authority.map(|authority|authority.workspace.as_str()).unwrap_or(&desktop.workspace), "toolName": prepared.tool_name,
+            "toolKind": desktop.tool_kinds.get(&prepared.tool_name), "input": prepared.parsed_args,
+            "succeeded": result.is_ok(),
+            "externalTool": external, "executionSettled": external && result.is_ok(),
+        });
+        let request = acp::ExtRequest::new(
+            "echo.agent/desktop_document_tool",
+            serde_json::value::to_raw_value(&params)
+                .map_err(|_| {
+                    echo_agent_tool_runtime::ToolError::invalid_arguments(
+                        "Invalid post-tool observation",
+                    )
+                })?
+                .into(),
+        );
+        // Commands may already have changed disk even when they fail. Always
+        // observe after dispatch, and report an observation failure truthfully.
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            echo_agent_acp::acp_send(request, &desktop.gateway.tx()),
+        )
         .await
+        {
+            Ok(Ok(response)) => {
+                let observed: serde_json::Value =
+                    serde_json::from_str(response.0.get()).map_err(|_| {
+                        echo_agent_tool_runtime::ToolError::invalid_arguments(
+                            "Tool finished, but change observation returned invalid data",
+                        )
+                    })?;
+                if let Some(error) = observed.get("error").and_then(serde_json::Value::as_str) {
+                    return Err(echo_agent_tool_runtime::ToolError::invalid_arguments(
+                        format!(
+                            "Tool finished; existing side effects remain. Editor observation: {error}"
+                        ),
+                    ));
+                }
+            }
+            _ => {
+                return Err(echo_agent_tool_runtime::ToolError::invalid_arguments(
+                    "Tool finished, but editor change observation failed. Existing side effects remain; inspect disk before retrying.",
+                ));
+            }
+        }
+    }
+    result
 }
 
 /// First string-valued argument among `keys`, in priority order.
@@ -446,6 +640,209 @@ pub(super) fn build_tool_parse_error_message(
 mod tests {
     use super::*;
     use echo_agent_sampling_types::rs;
+
+    fn desktop_fixture() -> (
+        DesktopDocumentBridge,
+        tokio::sync::mpsc::UnboundedReceiver<echo_agent_acp::AcpClientMessage>,
+        PreparedToolCall,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let desktop = DesktopDocumentBridge {
+            gateway: echo_agent_acp::AcpAgentGatewaySender::new(tx),
+            authority: None,
+            run_id: "actual-prompt-id".to_string(),
+            workspace: "/tmp/owned-workspace".to_string(),
+            tool_kinds: [("write".to_string(), "write".to_string())].into(),
+        };
+        let prepared = PreparedToolCall {
+            call_id: "model-call".into(),
+            tool_call_id: acp::ToolCallId::new("operation-id"),
+            tool_name: "write".into(),
+            raw_arguments: r#"{"file_path":"a.txt","content":"new text"}"#.into(),
+            parsed_args: serde_json::json!({"file_path":"a.txt","content":"new text"}),
+            model_id: "test-model".into(),
+            concatenated_json_count: 1,
+            dispatch_target_name: None,
+            is_read_only: false,
+        };
+        (desktop, rx, prepared)
+    }
+
+    fn desktop_reply(
+        message: echo_agent_acp::AcpClientMessage,
+        value: serde_json::Value,
+    ) -> serde_json::Value {
+        let echo_agent_acp::AcpClientMessage::ExtMethod(args) = message else {
+            panic!("document dispatch must use the typed ACP extension channel")
+        };
+        assert_eq!(&*args.request.method, "echo.agent/desktop_document_tool");
+        let params = serde_json::from_str(args.request.params.get()).unwrap();
+        let raw = serde_json::value::to_raw_value(&value).unwrap();
+        let _ = args.response_tx.send(Ok(acp::ExtResponse::new(raw.into())));
+        params
+    }
+
+    #[tokio::test]
+    async fn desktop_document_bridge_returns_editor_result_without_disk_fallback() {
+        let ops = echo_agent_workspace::WorkspaceOps::for_test();
+        let (desktop, mut rx, prepared) = desktop_fixture();
+        let host = async {
+            let params = desktop_reply(
+                rx.recv().await.unwrap(),
+                serde_json::json!({"handled":true,"text":"Applied editor version 8"}),
+            );
+            assert_eq!(params["phase"], "before");
+            assert_eq!(params["sessionId"], "session-id");
+            assert_eq!(params["runId"], "actual-prompt-id");
+            assert_eq!(
+                params["operationId"],
+                "actual-prompt-id:session-id:operation-id"
+            );
+            assert_eq!(params["workspace"], "/tmp/owned-workspace");
+            assert_eq!(params["toolKind"], "write");
+            assert_eq!(params["input"], prepared.parsed_args);
+        };
+        let (result, ()) = tokio::join!(
+            dispatch_tool(&ops, &prepared, "session-id", Some(&desktop)),
+            host
+        );
+        // The workspace has no bound tool session. A disk fallback would fail.
+        assert_eq!(result.unwrap().prompt_text, "Applied editor version 8");
+        assert!(
+            rx.try_recv().is_err(),
+            "handled writes need no second execution"
+        );
+    }
+
+    #[tokio::test]
+    async fn desktop_document_bridge_child_dispatch_uses_parent_run_and_workspace() {
+        let ops = echo_agent_workspace::WorkspaceOps::for_test();
+        let (mut desktop, mut rx, prepared) = desktop_fixture();
+        desktop.authority = Some(crate::session::InheritedTurnAuthority {
+            prompt_mode: crate::session::plan_mode::PromptMode::Agent,
+            document_tools: true,
+            session_id: "parent-session".into(),
+            run_id: "parent-turn".into(),
+            workspace: "/tmp/parent-workspace".into(),
+        });
+        let host = async {
+            let params = desktop_reply(
+                rx.recv().await.unwrap(),
+                serde_json::json!({"handled":true,"text":"Applied child document edit"}),
+            );
+            assert_eq!(params["sessionId"], "parent-session");
+            assert_eq!(params["sourceSessionId"], "child-session");
+            assert_eq!(params["runId"], "parent-turn");
+            assert_eq!(params["workspace"], "/tmp/parent-workspace");
+            assert_eq!(
+                params["operationId"],
+                "parent-turn:child-session:operation-id"
+            );
+        };
+        let (result, ()) = tokio::join!(
+            dispatch_tool(&ops, &prepared, "child-session", Some(&desktop)),
+            host
+        );
+        assert_eq!(result.unwrap().prompt_text, "Applied child document edit");
+    }
+
+    #[tokio::test]
+    async fn desktop_document_bridge_requires_explicit_valid_preflight() {
+        let ops = echo_agent_workspace::WorkspaceOps::for_test();
+        for response in [
+            serde_json::json!({"error":"Document version conflict"}),
+            serde_json::json!({}),
+            serde_json::json!({"handled":"false"}),
+            serde_json::json!({"handled":true}),
+            serde_json::json!(null),
+        ] {
+            let (desktop, mut rx, prepared) = desktop_fixture();
+            let host = async { desktop_reply(rx.recv().await.unwrap(), response) };
+            let (result, _) = tokio::join!(
+                dispatch_tool(&ops, &prepared, "session-id", Some(&desktop)),
+                host
+            );
+            assert!(result.is_err());
+            assert!(
+                rx.try_recv().is_err(),
+                "invalid approval must not execute disk tools"
+            );
+        }
+        let (desktop, rx, prepared) = desktop_fixture();
+        drop(rx);
+        let result = dispatch_tool(&ops, &prepared, "session-id", Some(&desktop)).await;
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("coordination unavailable")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn desktop_document_bridge_timeout_and_input_budget_fail_closed() {
+        let ops = echo_agent_workspace::WorkspaceOps::for_test();
+        let (desktop, mut rx, prepared) = desktop_fixture();
+        let host = async {
+            let message = rx.recv().await.unwrap();
+            // Hold the response channel open while virtual time advances.
+            tokio::time::sleep(std::time::Duration::from_secs(31)).await;
+            drop(message);
+        };
+        let (result, ()) = tokio::join!(
+            dispatch_tool(&ops, &prepared, "session-id", Some(&desktop)),
+            host
+        );
+        assert!(result.unwrap_err().to_string().contains("not replayed"));
+        assert!(rx.try_recv().is_err());
+
+        let (desktop, mut rx, mut prepared) = desktop_fixture();
+        prepared.parsed_args = serde_json::json!({"content":"x".repeat(2 * 1024 * 1024)});
+        let result = dispatch_tool(&ops, &prepared, "session-id", Some(&desktop)).await;
+        assert!(result.unwrap_err().to_string().contains("2 MiB"));
+        assert!(
+            rx.try_recv().is_err(),
+            "oversized inputs must not reach the host"
+        );
+    }
+
+    #[tokio::test]
+    async fn desktop_document_bridge_observes_failed_fallback_and_keeps_identity() {
+        let ops = echo_agent_workspace::WorkspaceOps::for_test();
+        let (desktop, mut rx, prepared) = desktop_fixture();
+        let host = async {
+            let before = desktop_reply(
+                rx.recv().await.unwrap(),
+                serde_json::json!({"handled":false}),
+            );
+            let after = desktop_reply(
+                rx.recv().await.unwrap(),
+                serde_json::json!({"handled":true}),
+            );
+            assert_eq!(before["phase"], "before");
+            assert_eq!(after["phase"], "after");
+            assert_eq!(after["succeeded"], false);
+            for field in [
+                "sessionId",
+                "runId",
+                "operationId",
+                "workspace",
+                "toolName",
+                "toolKind",
+                "input",
+            ] {
+                assert_eq!(before[field], after[field]);
+            }
+        };
+        let future = dispatch_tool(&ops, &prepared, "session-id", Some(&desktop));
+        fn require_send<T: Send>(_: &T) {}
+        require_send(&future);
+        let (result, ()) = tokio::join!(future, host);
+        assert!(
+            result.is_err(),
+            "unbound workspace tool failure must remain failed"
+        );
+    }
 
     fn web_search_payload(status: rs::WebSearchToolCallStatus) -> serde_json::Value {
         // The exact serialized `web_search_call` payload the sampler forwards on

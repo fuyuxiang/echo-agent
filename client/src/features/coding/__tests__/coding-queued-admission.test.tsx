@@ -35,7 +35,7 @@ it("keeps a background outbox after local admission and a later native rejection
   await waitFor(()=>expect(native.send).toHaveBeenCalledOnce());
   const key=view.result.current.queueId!;
   const promptId=useMessageQueueStore.getState().getQueue(key)[0].promptId;
-  expect(native.send).toHaveBeenCalledWith("sA",expect.stringContaining("src/a.ts"),[],"完善边界处理",promptId);
+  expect(native.send).toHaveBeenCalledWith("sA",expect.stringContaining("src/a.ts"),[],"完善边界处理",promptId,{mode:"agent",documentToolBridge:true,workspace:"/repo",taskId:"A"});
   expect(useMessageQueueStore.getState().getQueue(key)[0].status).toBe("sending");
   await act(async()=>rejectNative(new Error("原生发送通道断开")));
   await waitFor(()=>expect(useMessageQueueStore.getState().getQueue(key)[0]).toMatchObject({status:"paused",recovery:"uncertain",text:"完善边界处理"}));
@@ -134,4 +134,11 @@ it("reports a failed settlement instead of claiming the original task was paused
   const release = claimCodingAdmission("/repo","A");
   expect(release).not.toBeNull();
   release?.();
+});
+
+it("keeps the explicit read-only intent and snapshot when dispatching a queued turn",async()=>{
+  await sendCodingQueuedFollowup({root:"/repo",taskId:"A",sessionId:"sA",promptId:"readonly",text:"解释选区",contextPaths:[],manual:false,canDispatch:()=>true,
+    coding:{mode:"ask",editorContext:'{"dirty":true,"version":9}',imagePaths:["/data/screenshot.png"]}});
+  expect(native.send).toHaveBeenCalledWith("sA",expect.stringContaining('"version":9'),["/data/screenshot.png"],"解释选区","readonly",
+    {mode:"ask",documentToolBridge:true,workspace:"/repo",taskId:"A"});
 });

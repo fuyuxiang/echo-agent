@@ -23,6 +23,8 @@ export interface QueueTerminalPolicy {
   failed: boolean;
 }
 
+export interface CodingQueuedContext { mode: "ask" | "plan" | "agent"; editorContext?: string; imagePaths?: string[] }
+
 export interface QueueItem {
   /** 稳定 id(用于 React key 与操作寻址)。 */
   id: string;
@@ -30,6 +32,7 @@ export interface QueueItem {
   text: string;
   /** Local paths that must travel with this queued prompt. */
   attachments?: string[];
+  coding?: CodingQueuedContext;
   status: QueueItemStatus;
   recovery?: "queued" | "uncertain";
   sendError?: string;
@@ -45,7 +48,7 @@ type QueueMap = Record<string, QueueItem[]>;
 interface QueueState {
   queues: QueueMap;
   /** 入队一条(追加到末尾,默认 queued)。返回新 item 的 id。 */
-  enqueue: (sessionId: string, text: string, attachments?: string[]) => string;
+  enqueue: (sessionId: string, text: string, attachments?: string[], coding?: CodingQueuedContext) => string;
   /** 编辑某条文本。 */
   update: (sessionId: string, id: string, text: string) => boolean;
   /** 删除某条。 */
@@ -114,12 +117,13 @@ function commitQueues(queues: QueueMap, set: (state: { queues: QueueMap }) => vo
 
 export const useMessageQueueStore = create<QueueState>((set, get) => ({
   queues: restoredQueues(),
-  enqueue: (sessionId, text, attachments = []) => {
+  enqueue: (sessionId, text, attachments = [], coding) => {
     const id = newId();
     const item: QueueItem = {
       id,
       text,
       attachments: [...new Set(attachments)],
+      ...(coding ? {coding} : {}),
       status: "queued",
       createdAt: Date.now(),
     };

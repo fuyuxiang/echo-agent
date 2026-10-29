@@ -15,7 +15,7 @@ describe("coding Tauri API contract", () => {
       [...client.matchAll(/["'](coding_[a-z0-9_]+)["']/g)].map((match) => match[1]),
     );
     const registered = new Set(
-      [...rust.matchAll(/(?:coding::[a-z0-9_]+|coding_workspace)::(coding_[a-z0-9_]+)/g)]
+      [...rust.matchAll(/(?:coding::[a-z0-9_]+|coding_[a-z0-9_]+)::(coding_[a-z0-9_]+)/g)]
         .map((match) => match[1]),
     );
 

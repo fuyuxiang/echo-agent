@@ -1,10 +1,5 @@
 import { useMemo, type ReactNode } from "react";
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Pause,
-  Square,
-} from "lucide-react";
+import { AlertTriangle, CheckCircle2, Pause, Square } from "lucide-react";
 
 import { ExecutionProcess } from "@/components/ExecutionProcess";
 import { Markdown, type MarkdownConfig } from "@/components/Markdown";
@@ -15,7 +10,12 @@ import { partitionAssistantParts } from "@/lib/execution-process";
 import type { ChatMessage } from "@/stores/session-store";
 
 import { describeTaskProgress } from "../lib/phase";
-import type { ChangeSet, CodingTask, DeliveryReport, VerificationRecord } from "../lib/types";
+import type {
+  ChangeSet,
+  CodingTask,
+  DeliveryReport,
+  VerificationRecord,
+} from "../lib/types";
 
 interface AgentPaneProps {
   task: CodingTask;
@@ -33,6 +33,7 @@ interface AgentPaneProps {
   sending: boolean;
   onContinue: () => void | Promise<void>;
   continueDisabled?: boolean;
+  executionPending?: string;
   onOpenVerification?: () => void;
   onOpenChanges: () => void;
   onOpenReport: () => void;
@@ -44,7 +45,7 @@ interface AgentPaneProps {
 /** Agent activity, interaction requests and delivery summary for one task. */
 export function AgentPane({
   task,
-  deliveryReport,
+  deliveryReport: _deliveryReport,
   changeSet,
   verifications,
   sessionId,
@@ -58,43 +59,45 @@ export function AgentPane({
   sending,
   onContinue,
   continueDisabled = false,
+  executionPending,
   onOpenVerification,
   onOpenChanges,
-  onOpenReport,
+  onOpenReport: _onOpenReport,
   onOpenFile,
   onPathsDropped,
 }: AgentPaneProps) {
-  const markdownConfig = useMemo<MarkdownConfig | undefined>(() => onOpenFile ? {
-    pathClickHandler: {
-      onPathClick: (path, type, range) => {
-        if (type === "file") onOpenFile(path, range?.start);
-      },
-    },
-  } : undefined, [onOpenFile]);
+  const markdownConfig = useMemo<MarkdownConfig | undefined>(
+    () =>
+      onOpenFile
+        ? {
+            pathClickHandler: {
+              onPathClick: (path, type, range) => {
+                if (type === "file") onOpenFile(path, range?.start);
+              },
+            },
+          }
+        : undefined,
+    [onOpenFile],
+  );
 
-  const phase = describeTaskProgress(task.phase, deliveryReport);
+  const phase = describeTaskProgress(task.phase);
   const sessionUnavailable = !sessionId;
   const changes = changeSet?.changes ?? [];
   const latestChecks = new Map<string, VerificationRecord>();
   for (const record of verifications) latestChecks.set(record.command, record);
-  const passedCheckCount = [...latestChecks.values()].filter(
-    (record) => record.status === "passed",
-  ).length;
-  const verificationSummary = passedCheckCount > 0
-    ? `${passedCheckCount} 项自动检查已通过`
-    : "未检测到可运行的自动检查";
-  const completedNodes = task.taskNodes.filter((node) => node.status === "success").length;
-  const activeNode = task.taskNodes.find((node) => node.status === "running");
-  const {
-    scrollRef,
-    contentRef,
-    following,
-    scrollToBottom,
-  } = useStickToBottom({
-    contentVersion: messages,
-    streaming,
-    sessionId,
-  });
+  const checks = [...latestChecks.values()];
+  const verificationSummary =
+    checks.length === 0
+      ? "检查未执行"
+      : `已记录 ${checks.length} 项检查，结果与版本见详情`;
+
+  const { scrollRef, contentRef, following, scrollToBottom } = useStickToBottom(
+    {
+      contentVersion: messages,
+      streaming,
+      sessionId,
+    },
+  );
 
   return (
     <div
@@ -106,7 +109,8 @@ export function AgentPane({
         }
       }}
       onDrop={(event) => {
-        if (!event.dataTransfer.types.includes("application/x-echo-paths")) return;
+        if (!event.dataTransfer.types.includes("application/x-echo-paths"))
+          return;
         event.preventDefault();
         const raw = event.dataTransfer.getData("application/x-echo-paths");
         if (!raw) return;
@@ -121,34 +125,42 @@ export function AgentPane({
       }}
     >
       <div className="coding-agent__body">
-        {phaseReason
-          && !blocker
-          && !["paused", "stopped", "delivered"].includes(task.phase)
-          && (
-          <div className="coding-agent__reason">{phaseReason}</div>
-        )}
+        {phaseReason &&
+          !blocker &&
+          !["paused", "stopped", "delivered"].includes(task.phase) && (
+            <div className="coding-agent__reason">{phaseReason}</div>
+          )}
 
-        {task.planRevision && task.taskNodes.length > 0 && phase.active && (
-          <div className="coding-agent__workflow-progress" aria-label="执行计划进度">
-            <span>执行计划 {completedNodes}/{task.taskNodes.length}</span>
-            {activeNode && <strong>{activeNode.planKey} · {activeNode.content}</strong>}
-          </div>
+        {task.planRevision && task.taskNodes.length > 0 && (
+          <details className="coding-agent__workflow-progress">
+            <summary>
+              执行计划 ·{" "}
+              {
+                task.taskNodes.filter((node) => node.status === "success")
+                  .length
+              }
+              /{task.taskNodes.length}
+            </summary>
+            {task.taskNodes.map((node) => (
+              <p key={node.id}>
+                {node.content} · {node.status}
+              </p>
+            ))}
+          </details>
         )}
 
         {task.planIssues.length > 0 && (
-          <div
-            className={`coding-agent__blocker ${task.planIssues.some((issue) => issue.severity === "error") ? "" : "is-warning"}`}
-            role={task.planIssues.some((issue) => issue.severity === "error") ? "alert" : "status"}
-          >
-            <AlertTriangle size={13} />
-            <div>
-              <strong>{task.planIssues.some((issue) => issue.severity === "error") ? "执行计划需要修正" : "执行计划提示"}</strong>
-              {task.nextAction === "revise_plan" && <p>Agent 将自动修订计划，无需手动重新提交任务。</p>}
-              {task.planIssues.map((issue) => <p key={`${issue.code}:${issue.nodeKeys.join(",")}`}>{issue.message}</p>)}
+          <details>
+            <summary>计划详情 · {task.planIssues.length} 项提示</summary>
+            <div role="status">
+              {task.planIssues.map((issue) => (
+                <p key={`${issue.code}:${issue.nodeKeys.join(",")}`}>
+                  {issue.message}
+                </p>
+              ))}
             </div>
-          </div>
+          </details>
         )}
-
         {blocker && (
           <div className="coding-agent__blocker" role="alert">
             <AlertTriangle size={13} />
@@ -159,54 +171,98 @@ export function AgentPane({
           </div>
         )}
 
-        {(task.phase === "paused" || task.phase === "stopped") && (
+        {executionPending && (
           <div className="coding-agent__decision is-interrupted" role="status">
-            {task.phase === "paused" ? <Pause size={13} /> : <Square size={12} />}
+            <Square size={12} />
+            <div className="coding-agent__decision-copy"><strong>仍在停止</strong><span>{executionPending}</span></div>
+            {changes.length > 0 && <button type="button" onClick={onOpenChanges}>查看当前变更</button>}
+          </div>
+        )}
+        {!executionPending && (task.phase === "paused" || task.phase === "stopped") && (
+          <div className="coding-agent__decision is-interrupted" role="status">
+            {task.phase === "paused" ? (
+              <Pause size={13} />
+            ) : (
+              <Square size={12} />
+            )}
             <div className="coding-agent__decision-copy">
-              <strong>{task.phase === "paused" ? "任务已暂停" : "任务已停止"}</strong>
-              <span>{phaseReason ?? (task.phase === "paused"
-                ? "会话上下文和当前文件变更已保留。"
-                : "执行记录和当前工作区状态已保留。")}</span>
+              <strong>
+                {task.phase === "paused" ? "任务已暂停" : "任务已停止"}
+              </strong>
+              <span>
+                {phaseReason ??
+                  (task.phase === "paused"
+                    ? "会话上下文和当前文件变更已保留。"
+                    : "执行记录和当前工作区状态已保留。")}
+              </span>
             </div>
             <div className="coding-agent__decision-actions">
-              {changes.length > 0 && <button type="button" onClick={onOpenChanges}>查看当前变更</button>}
-              {continueDisabled && onOpenVerification && <button type="button" onClick={onOpenVerification}>运行 RED</button>}
+              {changes.length > 0 && (
+                <button type="button" onClick={onOpenChanges}>
+                  查看当前变更
+                </button>
+              )}
+              {continueDisabled && onOpenVerification && (
+                <button type="button" onClick={onOpenVerification}>
+                  运行检查
+                </button>
+              )}
               <button
                 type="button"
                 className="is-primary"
                 disabled={sending || sessionUnavailable || continueDisabled}
                 onClick={() => void onContinue()}
               >
-                {sending ? "正在继续…" : continueDisabled ? "等待 RED" : "继续执行"}
+                {sending
+                  ? "正在继续…"
+                  : continueDisabled
+                    ? "等待检查"
+                    : "继续执行"}
               </button>
             </div>
           </div>
         )}
 
-        {task.phase === "delivered" && (
-          <div className={`coding-agent__decision ${deliveryReport?.deliverable ? "is-good" : "is-interrupted"}`}>
+        {!executionPending && task.phase === "delivered" && (
+          <div className="coding-agent__decision is-good" role="status">
             <CheckCircle2 size={13} />
             <div className="coding-agent__decision-copy">
-              <strong>{phase.label}</strong>
-              <span>{verificationSummary}，共修改 {changes.length} 个文件。{deliveryReport?.deliverable ? "请确认交付范围后提交。" : "请完成交付报告中尚未满足的验收与检查。"}</span>
+              <strong>本轮完成</strong>
+              <span>
+                {changes.length
+                  ? `${changes.length} 个文件变更 · ${verificationSummary}`
+                  : "已完成回答"}
+              </span>
             </div>
-            <div className="coding-agent__decision-actions">
-              <button type="button" onClick={onOpenChanges}>查看变更</button>
-              <button type="button" onClick={onOpenReport}>交付报告</button>
-            </div>
+            {changes.length > 0 && (
+              <div className="coding-agent__decision-actions">
+                <button type="button" onClick={onOpenChanges}>
+                  审阅修改
+                </button>
+                <button type="button" onClick={onOpenVerification}>
+                  检查详情
+                </button>
+              </div>
+            )}
           </div>
         )}
 
         {(awaitingPermission || awaitingQuestion || planApproval) && (
           <div className="coding-agent__interaction" aria-label="等待你的操作">
-            {awaitingPermission && <PermissionInlineCard sessionId={sessionId} />}
+            {awaitingPermission && (
+              <PermissionInlineCard sessionId={sessionId} />
+            )}
             {awaitingQuestion && <QuestionInlineCard sessionId={sessionId} />}
             {planApproval}
           </div>
         )}
 
         <div className="coding-agent__stream-shell">
-          <div className="coding-agent__stream" ref={scrollRef} aria-label="Agent 执行消息">
+          <div
+            className="coding-agent__stream"
+            ref={scrollRef}
+            aria-label="Agent 执行消息"
+          >
             <div className="coding-agent__stream-content" ref={contentRef}>
               {messages.length === 0 && sessionId && phase.active && (
                 <div className="coding-row">Agent 正在准备工程上下文…</div>
@@ -223,16 +279,26 @@ export function AgentPane({
                     <div className="coding-agent__user" key={entry.id}>
                       {entry.parts.map((part, index) =>
                         part.kind === "text" ? (
-                          <Markdown key={index} complete config={markdownConfig}>{part.text}</Markdown>
+                          <Markdown
+                            key={index}
+                            complete
+                            config={markdownConfig}
+                          >
+                            {part.text}
+                          </Markdown>
                         ) : null,
                       )}
                     </div>
                   );
                 }
                 const groups = partitionAssistantParts(entry.parts);
-                const hasFinalAnswer = groups.responseParts.some((part) => part.text.trim());
+                const hasFinalAnswer = groups.responseParts.some((part) =>
+                  part.text.trim(),
+                );
                 const hasTerminalStatus = Boolean(
-                  entry.complete && entry.stopReason && entry.stopReason !== "end_turn",
+                  entry.complete &&
+                    entry.stopReason &&
+                    entry.stopReason !== "end_turn",
                 );
                 return (
                   <div className="coding-agent__assistant" key={entry.id}>
@@ -253,7 +319,13 @@ export function AgentPane({
                       />
                     )}
                     {groups.responseParts.map((part, index) => (
-                      <Markdown key={index} complete={entry.complete} config={markdownConfig}>{part.text}</Markdown>
+                      <Markdown
+                        key={index}
+                        complete={entry.complete}
+                        config={markdownConfig}
+                      >
+                        {part.text}
+                      </Markdown>
                     ))}
                   </div>
                 );
@@ -273,7 +345,6 @@ export function AgentPane({
             </button>
           )}
         </div>
-
       </div>
     </div>
   );

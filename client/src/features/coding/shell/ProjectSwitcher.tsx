@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, FolderGit2, FolderOpen, X } from "lucide-react";
+import { Check, ChevronDown, FolderGit2, FolderOpen, GitBranch, X } from "lucide-react";
 import { idePath } from "../lib/windows-path";
 
 export interface ProjectSwitcherItem {
@@ -14,6 +14,7 @@ interface ProjectSwitcherProps {
   onSelect: (cwd: string) => void;
   onRemove: (cwd: string) => void;
   onOpenFolder: () => void;
+  onManageWorktrees?: () => void;
 }
 
 function projectName(cwd: string): string {
@@ -32,6 +33,7 @@ export function ProjectSwitcher({
   onSelect,
   onRemove,
   onOpenFolder,
+  onManageWorktrees,
 }: ProjectSwitcherProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -176,6 +178,20 @@ export function ProjectSwitcher({
             );
           })}
           <div className="coding-project-switcher__separator" />
+          {onManageWorktrees && (
+            <button
+              type="button"
+              role="menuitem"
+              className="coding-project-switcher__open"
+              onClick={() => {
+                setOpen(false);
+                onManageWorktrees();
+              }}
+            >
+              <GitBranch size={13} />
+              <span>管理工作树…</span>
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"

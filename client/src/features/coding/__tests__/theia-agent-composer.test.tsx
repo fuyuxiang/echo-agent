@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/components/ModelSelector", () => ({ ModelSelector: ({ disabled }: { disabled: boolean }) => <button data-testid="model-selector" disabled={disabled}>模型</button> }));
 vi.mock("@/components/PermissionPicker", () => ({ PermissionPicker: () => <div data-testid="permission-picker" /> }));
+const attachments=vi.hoisted(()=>({saveAttachmentBlob:vi.fn(),attachmentThumbnail:vi.fn(),discardAttachmentBlob:vi.fn()}));
+vi.mock("@/lib/agent-client",()=>attachments);
 
 import { TheiaAgentComposer } from "../agent/TheiaAgentComposer";
 import { useAiDraftStore } from "../store/ai-draft-store";
@@ -23,17 +25,64 @@ function props(overrides: Partial<Parameters<typeof TheiaAgentComposer>[0]> = {}
 }
 
 beforeEach(() => {
+  attachments.saveAttachmentBlob.mockReset().mockResolvedValue("/attachments/screenshot.png");
+  attachments.attachmentThumbnail.mockReset().mockResolvedValue("data:image/png;base64,eA==");
+  attachments.discardAttachmentBlob.mockReset().mockResolvedValue(undefined);
   localStorage.clear();
   useAiDraftStore.getState().clear();
 });
 
 describe("TheiaAgentComposer", () => {
+  it("keeps context capture in one keyboard-accessible menu and restores focus on Escape", async () => {
+    const onCaptureContext = vi.fn();
+    render(<TheiaAgentComposer {...props({ onCaptureContext })} />);
+    const trigger = screen.getByRole("button", { name: "添加上下文" });
+    expect(screen.queryByRole("menu", { name: "添加到对话" })).not.toBeInTheDocument();
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    await waitFor(() => expect(screen.getByRole("menuitem", { name: "当前文件或选区" })).toHaveFocus());
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("menu", { name: "添加到对话" })).not.toBeInTheDocument();
+    for (const [label, kind] of [["当前文件或选区", "document"], ["诊断（Problems）", "diagnostics"], ["终端输出", "terminal"]]) {
+      fireEvent.click(trigger);
+      fireEvent.click(screen.getByRole("menuitem", { name: label }));
+      expect(onCaptureContext).toHaveBeenLastCalledWith(kind);
+      expect(screen.queryByRole("menu", { name: "添加到对话" })).not.toBeInTheDocument();
+    }
+  });
+
+  it("persists pasted image bytes and forwards the actual attachment with the same coding message",async()=>{
+    const input=props({task,sessionId:"session-1"});
+    render(<TheiaAgentComposer {...input}/>);
+    const editor=screen.getByRole("textbox",{name:"补充开发要求"});
+    const image=new File([new Uint8Array([1,2,3])],"shot.png",{type:"image/png"});
+    fireEvent.paste(editor,{clipboardData:{files:[image]}});
+    await waitFor(()=>expect(screen.getByLabelText("图片上下文")).toBeInTheDocument());
+    expect(attachments.saveAttachmentBlob).toHaveBeenCalledWith({bytes:new Uint8Array([1,2,3]),mime:"image/png",suggestedName:"shot.png"});
+    fireEvent.change(editor,{target:{value:"根据截图修复布局"}});
+    fireEvent.click(screen.getByRole("button",{name:"发送给 Agent"}));
+    await waitFor(()=>expect(input.onSend).toHaveBeenCalledWith("根据截图修复布局",["/attachments/screenshot.png"]));
+  });
+
+  it("enforces the aggregate image budget across separate selections",async()=>{
+    attachments.saveAttachmentBlob.mockResolvedValueOnce("/attachments/large1.png").mockResolvedValueOnce("/attachments/large2.png");
+    const onToast=vi.fn();render(<TheiaAgentComposer {...props({onToast})}/>);
+    const picker=document.querySelector('input[type="file"]')!;
+    const large=new File([new Uint8Array(9*1024*1024)],"large.png",{type:"image/png"});
+    fireEvent.change(picker,{target:{files:[large,large]}});
+    await waitFor(()=>expect(attachments.saveAttachmentBlob).toHaveBeenCalledTimes(2));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"添加上下文"})).toBeEnabled());
+    fireEvent.change(picker,{target:{files:[large]}});
+    expect(onToast).toHaveBeenCalledWith(expect.stringContaining("本次总计 20MB"));
+    expect(attachments.saveAttachmentBlob).toHaveBeenCalledTimes(2);
+  });
   it.each(["streaming", "verifying"])("Enter queues during %s without starting another coding turn", async phase => {
     const onEnqueue=vi.fn(()=>true), input=props({task:{...task,phase:phase === "verifying" ? "verifying" : "implementing"},sessionId:"session-1",streaming:phase === "streaming",sending:phase === "streaming",onEnqueue,contextPaths:["/repo/a.ts"]});
     const view=render(<TheiaAgentComposer {...input} />);
     const editor=screen.getByRole("textbox",{name:"补充开发要求"});
     fireEvent.change(editor,{target:{value:"补充边界测试"}}); fireEvent.keyDown(editor,{key:"Enter"});
-    expect(onEnqueue).toHaveBeenCalledExactlyOnceWith("补充边界测试",["/repo/a.ts"]);
+    expect(onEnqueue).toHaveBeenCalledExactlyOnceWith("补充边界测试",["/repo/a.ts"],[]);
     expect(input.onSend).not.toHaveBeenCalled();
     await waitFor(()=>expect(editor).toHaveValue(""));
     view.rerender(<TheiaAgentComposer {...input} awaitingDecision />);
@@ -46,7 +95,7 @@ describe("TheiaAgentComposer", () => {
     render(<TheiaAgentComposer {...input} />);
     fireEvent.change(screen.getByRole("textbox", { name: "任务描述" }), { target: { value: "实现订单导出" } });
     fireEvent.click(screen.getByRole("button", { name: "开始 Agent 任务" }));
-    expect(input.onStart).toHaveBeenCalledWith("实现订单导出");
+    expect(input.onStart).toHaveBeenCalledWith("实现订单导出",[]);
     await waitFor(() => expect(screen.getByRole("button", { name: "开始 Agent 任务" })).toBeEnabled());
     expect(screen.getByRole("textbox", { name: "任务描述" })).toHaveValue("实现订单导出");
     expect(screen.getByRole("alert")).toHaveTextContent("启动失败");
@@ -78,7 +127,7 @@ describe("TheiaAgentComposer", () => {
     expect(screen.getByRole("button", { name: "发送给 Agent" })).toBeDisabled();
     rerender(<TheiaAgentComposer {...input} streaming={false} />);
     fireEvent.click(screen.getByRole("button", { name: "发送给 Agent" }));
-    await waitFor(() => expect(input.onSend).toHaveBeenCalledWith("修复边界条件"));
+    await waitFor(() => expect(input.onSend).toHaveBeenCalledWith("修复边界条件",[]));
     await waitFor(() => expect(screen.getByRole("textbox", { name: "补充开发要求" })).toHaveValue(""));
   });
 

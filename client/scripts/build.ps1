@@ -22,7 +22,22 @@ param(
     [switch]$AllowUnsignedPlatform
 )
 
-$ErrorActionPreference = "Stop"
+# "Continue" on purpose. In Windows PowerShell 5.1, a native command's stderr is
+# surfaced as a NativeCommandError whenever the command's stdout is consumed by
+# a pipeline (or its stderr is redirected, e.g. `*>&1 | Tee-Object`). Under
+# "Stop" that aborts the whole script regardless of the command's exit code:
+#
+#   $appVersion = (& node scripts\release-version.mjs check | Select-Object -Last 1)
+#
+# release-version.mjs writes its failure reason to stderr and exits 1, so the
+# version-mismatch branch of this script would die with a NativeCommandError
+# stack trace instead of reaching its own `$LASTEXITCODE` check. The same
+# applies to any helper that logs a warning line (npm warn, node warning).
+#
+# Cmdlet failures are still treated as fatal: the operations that must not be
+# swallowed carry an explicit -ErrorAction Stop below, and every external
+# command is checked through $LASTEXITCODE.
+$ErrorActionPreference = "Continue"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
 
@@ -70,8 +85,13 @@ if ($Version) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Log-Ok "Bumped and verified all four version sources"
 }
-$appVersion = (& node (Join-Path $ProjectRoot "scripts\release-version.mjs") check | Select-Object -Last 1).Trim()
+# Read the exit code before touching the output: a failing check writes to
+# stderr and prints nothing on stdout, and trimming that empty result would
+# raise a null-reference error instead of the intended exit code. The
+# interpolated form yields "" for a missing value instead of $null.
+$versionOutput = & node (Join-Path $ProjectRoot "scripts\release-version.mjs") check
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$appVersion = "$($versionOutput | Select-Object -Last 1)".Trim()
 Log-Ok "Release version: $appVersion"
 
 # Prefer an explicitly configured protoc, then PATH, then the documented
@@ -200,7 +220,7 @@ if (Test-Path $makensis) {
 } else {
     Log-Info "NSIS not cached; downloading via gh-proxy mirror"
     $tmpDir = Join-Path $env:TEMP "echoagent-nsis-prep"
-    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $tmpDir -ErrorAction Stop | Out-Null
 
     $nsisZipUrl = "https://gh-proxy.com/https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip"
     $dllUrl     = "https://gh-proxy.com/https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll"
@@ -241,20 +261,20 @@ if (Test-Path $makensis) {
         $downloadOk = $zipOk -and $dllOk
 
         if ($downloadOk) {
-            if (Test-Path $nsisCacheRoot) { Remove-Item $nsisCacheRoot -Recurse -Force }
+            if (Test-Path $nsisCacheRoot) { Remove-Item $nsisCacheRoot -Recurse -Force -ErrorAction Stop }
             # Extract to a staging dir first, then flatten the nsis-3.11/ prefix
             # so files land directly under $nsisCacheRoot (matching Tauri's layout).
             $staging = Join-Path $tmpDir "nsis-extract"
-            if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
-            Expand-Archive -Path $nsisZip -DestinationPath $staging -Force
-            New-Item -ItemType Directory -Force -Path $nsisCacheRoot | Out-Null
+            if (Test-Path $staging) { Remove-Item $staging -Recurse -Force -ErrorAction Stop }
+            Expand-Archive -Path $nsisZip -DestinationPath $staging -Force -ErrorAction Stop
+            New-Item -ItemType Directory -Force -Path $nsisCacheRoot -ErrorAction Stop | Out-Null
             $inner = Join-Path $staging "nsis-3.11"
-            Copy-Item -Path (Join-Path $inner "*") -Destination $nsisCacheRoot -Recurse -Force
+            Copy-Item -Path (Join-Path $inner "*") -Destination $nsisCacheRoot -Recurse -Force -ErrorAction Stop
 
             # nsis_tauri_utils.dll goes under an `additional` subdir (Tauri's convention).
             $pluginDir = Join-Path $nsisCacheRoot "Plugins\x86-unicode\additional"
-            New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
-            Copy-Item $utilsDll -Destination $pluginDir -Force
+            New-Item -ItemType Directory -Force -Path $pluginDir -ErrorAction Stop | Out-Null
+            Copy-Item $utilsDll -Destination $pluginDir -Force -ErrorAction Stop
             if (Test-Path $makensis) {
                 Log-Ok "NSIS cached at $makensis"
             } else {
@@ -297,7 +317,7 @@ if ($buildExit -eq 0 -and (Test-Path $bundleDir)) {
         Log-Err "Expected Tauri NSIS installer not found: $defaultInstaller"
         exit 1
     }
-    $versionInfo = (Get-Item $defaultInstaller).VersionInfo
+    $versionInfo = (Get-Item $defaultInstaller -ErrorAction Stop).VersionInfo
     $coreParts = (($appVersion -split '[-+]')[0] -split '\.')
     if ($versionInfo.FileMajorPart -ne [int]$coreParts[0] -or
         $versionInfo.FileMinorPart -ne [int]$coreParts[1] -or
@@ -318,7 +338,7 @@ if ($buildExit -eq 0 -and (Test-Path $bundleDir)) {
     } else {
         Log-Ok "Windows Authenticode signature is valid"
     }
-    Move-Item -Force $defaultInstaller $canonicalInstaller
+    Move-Item -Force $defaultInstaller $canonicalInstaller -ErrorAction Stop
     Log-Ok "Normalized release name for windows-x86_64"
 }
 

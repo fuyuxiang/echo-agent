@@ -12,7 +12,7 @@ import type { ConfirmationOptions } from "@/components/AppDialog";
 import { useTaskStore } from "../store/task-store";
 import { codingApi } from "./tauri-api";
 import type { CodingTask, DetectedCommand } from "./types";
-import { codingRuntimeKey, useCodingRuntimeStore } from "./coding-task-runtime";
+import { codingRuntimeKey, codingWorkspaceCancellationBlocked, codingWorkspaceCancellationPending, useCodingRuntimeStore } from "./coding-task-runtime";
 import { useCodingActionScope } from "../hooks/useCodingActionScope";
 
 interface VerificationRunnerOptions {
@@ -47,6 +47,7 @@ export function useVerificationRunner({
   const activeRunIdRef = useRef<string | null>(null);
   const autoVerificationRef = useRef<string | null>(null);
   const isCurrent = useCodingActionScope(cwd, task?.id);
+  const cancellationBlocked = useCodingRuntimeStore(state => !state.documentCancellationReady || codingWorkspaceCancellationPending(cwd, state));
 
   useEffect(() => {
     activeRunIdRef.current = null;
@@ -62,6 +63,7 @@ export function useVerificationRunner({
       const key = codingRuntimeKey(cwd, taskId);
       const epoch = useCodingRuntimeStore.getState().actionEpochs[key] ?? 0;
       const allowed = () => !useCodingRuntimeStore.getState().stopping[key]
+        && !codingWorkspaceCancellationBlocked(cwd)
         && epoch === (useCodingRuntimeStore.getState().actionEpochs[key] ?? 0);
       if (!allowed()) return;
       if (!["verifying", "paused", "stopped", "blocked", "delivered"].includes(task.phase)) {
@@ -186,12 +188,12 @@ export function useVerificationRunner({
       autoVerificationRef.current = null;
       return;
     }
-    if (!detectedReady || runningVerification || !commands.some((command) => command.requiresApproval)) return;
+    if (!detectedReady || runningVerification || cancellationBlocked || !commands.some((command) => command.requiresApproval)) return;
     const key = `${cwd}:${task.id}:${task.updatedAt}`;
     if (autoVerificationRef.current === key) return;
     autoVerificationRef.current = key;
     runVerifications(commands);
-  }, [commands, cwd, detectedReady, runVerifications, runningVerification, task]);
+  }, [commands, cwd, detectedReady, runVerifications, runningVerification, task, cancellationBlocked]);
 
   return {
     activeRunId,

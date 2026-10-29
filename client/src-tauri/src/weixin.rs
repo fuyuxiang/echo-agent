@@ -2528,6 +2528,9 @@ async fn route_message(
             None,
             Some(Uuid::now_v7().to_string()),
             Some(false),
+            None,
+            None,
+            None,
         )
         .await;
     }
@@ -2564,6 +2567,9 @@ async fn route_message(
         None,
         Some(prompt_id),
         Some(false),
+        None,
+        None,
+        None,
     )
     .await?;
     send_text(

@@ -236,12 +236,14 @@ impl SessionActor {
         prompt_id: Option<&str>,
         tool_name: Option<&str>,
     ) {
-        if !self.may_have_hooks_for(event) {
+        // Repository hooks can run arbitrary commands. A read-only model turn
+        // must not gain an execution channel indirectly through a read tool.
+        if self.is_readonly_turn() || !self.may_have_hooks_for(event) {
             return;
         }
         // Fires observe-only client hooks before (and independent of) the on-disk registry guard below.
         let envelope = self.fire_hook(event, prompt_id.map(|s| s.to_string()), payload);
-        let Some(registry) = self.hook_registry.borrow().clone() else {
+        let Some(registry) = self.allowed_hook_registry() else {
             return;
         };
         let ctx = self.hook_run_ctx();

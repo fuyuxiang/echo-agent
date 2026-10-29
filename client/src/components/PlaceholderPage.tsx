@@ -1,3 +1,4 @@
+import type { CodingTurnOptions } from "@/lib/agent-client";
 import { lazy, Suspense, type ReactNode } from "react";
 import { AgentToolIcon } from "@/foundation/components/Icon/icons";
 import type { ProjectMeta } from "@/stores/projects-store";
@@ -99,13 +100,16 @@ interface PlaceholderPageProps {
     contextPaths: string[],
     onSessionReady: (sessionId: string) => Promise<void>,
     promptTextOverride?: string,
+    coding?: CodingTurnOptions,
   ) => Promise<string | undefined>;
   onActivateCodingSession?: (sessionId: string, cwd: string) => Promise<void>;
   onChangeCodingModel?: (modelId: string) => void | Promise<void>;
   onSendCodingMessage?: (
     text: string,
     promptTextOverride?: string,
+    coding?: CodingTurnOptions,
   ) => boolean | void | Promise<boolean | void>;
+  onCorrectCodingRun?: (text: string) => boolean | Promise<boolean>;
   onCancelCodingRun?: () => boolean | void | Promise<boolean | void>;
   /** Current session id (for plugin actions that need a session). */
   sessionId?: string;
@@ -160,6 +164,7 @@ export function PlaceholderPage({
   onChangeCodingModel,
   onSendCodingMessage,
   onCancelCodingRun,
+  onCorrectCodingRun,
   sessionId,
   onStartProject,
   onStartProjectConversation,
@@ -255,6 +260,7 @@ export function PlaceholderPage({
           onChangeModel={onChangeCodingModel}
           onSendMessage={onSendCodingMessage}
           onCancelRun={onCancelCodingRun}
+          onCorrectRun={onCorrectCodingRun}
         />
       </DeferredPanel>
     );

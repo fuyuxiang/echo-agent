@@ -10,7 +10,8 @@ describe("single agent runtime architecture", () => {
     const commands = readProjectFile("src-tauri/src/commands.rs");
 
     expect(commands).toContain("agent_runtime::new_session");
-    expect(commands).toContain("agent_runtime::prompt_with_attachments");
+    expect(commands).toContain("agent_runtime::prepare_mode_prompt");
+    expect(commands).toContain("agent_runtime::send_prepared_prompt");
     expect(commands).not.toContain("is_codex_session");
     expect(commands).not.toContain("codex.new_thread");
     expect(commands).not.toContain("codex.send");

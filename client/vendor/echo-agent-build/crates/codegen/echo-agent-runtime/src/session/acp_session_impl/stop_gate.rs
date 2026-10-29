@@ -130,7 +130,7 @@ impl SessionActor {
                 session_crons: None,
             },
         );
-        let Some(registry) = self.hook_registry.borrow().clone() else {
+        let Some(registry) = self.allowed_hook_registry() else {
             return;
         };
         let ctx = self.hook_run_ctx();
@@ -309,7 +309,7 @@ impl SessionActor {
         let mut result = dispatcher::StopDispatchResult::default();
         // Clone out of the RefCell before the awaits so no `Ref` is held
         // across them.
-        let registry = self.hook_registry.borrow().clone();
+        let registry = self.allowed_hook_registry();
         if let Some(registry) = registry {
             let ctx = self.hook_run_ctx();
             result = dispatcher::dispatch_stop(&registry, event, &envelope, &ctx).await;

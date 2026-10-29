@@ -484,7 +484,9 @@ pub fn resolve_model_path(
     input: &str,
 ) -> PathBuf {
     let input = sanitize_model_path_arg(input);
-    let expanded = shellexpand::tilde_with_context(input, || echo_agent_config::discovery_home_dir().map(|home| home.to_string_lossy().into_owned()));
+    let expanded = shellexpand::tilde_with_context(input, || {
+        echo_agent_config::discovery_home_dir().map(|home| home.to_string_lossy().into_owned())
+    });
     let input_path = std::path::Path::new(expanded.as_ref());
     if let Some(display) = display_cwd
         && input_path.is_absolute()
@@ -544,6 +546,10 @@ pub fn display_cwd_or_cwd(cwd: &std::path::Path, display_cwd: Option<&std::path:
 /// be stored in `ToolCallContext::extensions`. Used by `use_tool` and the
 /// external MCP-call tool, which dispatch to target tools without going
 /// through the outer `ToolBridge` (which would deadlock).
+/// Desktop-coordinated MCP writes must not replay an uncertain request.
+#[derive(Clone, Copy, Debug)]
+pub struct DesktopMcpNoReplay(pub bool);
+
 #[derive(Clone)]
 pub struct InnerDispatch(pub std::sync::Arc<dyn echo_agent_tool_runtime::ToolDispatch>);
 #[derive(Debug, Clone)]
@@ -1541,13 +1547,17 @@ mod tests {
     }
     #[test]
     fn resolve_model_path_tilde_alone() {
-        let Some(home) = echo_agent_config::discovery_home_dir() else { return };
+        let Some(home) = echo_agent_config::discovery_home_dir() else {
+            return;
+        };
         let cwd = std::path::Path::new("/worktree/abc");
         assert_eq!(super::resolve_model_path(cwd, None, "~"), home);
     }
     #[test]
     fn resolve_model_path_tilde_slash_only() {
-        let Some(home) = echo_agent_config::discovery_home_dir() else { return };
+        let Some(home) = echo_agent_config::discovery_home_dir() else {
+            return;
+        };
         let cwd = std::path::Path::new("/worktree/abc");
         assert_eq!(super::resolve_model_path(cwd, None, "~/"), home);
     }
@@ -1574,7 +1584,9 @@ mod tests {
     }
     #[test]
     fn resolve_model_path_tilde_with_display_cwd() {
-        let Some(home) = echo_agent_config::discovery_home_dir() else { return };
+        let Some(home) = echo_agent_config::discovery_home_dir() else {
+            return;
+        };
         let cwd = std::path::Path::new("/worktree/abc");
         let display = home.join("project");
         let result = super::resolve_model_path(cwd, Some(&display), "~/project/src/main.rs");

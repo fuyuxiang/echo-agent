@@ -17,6 +17,13 @@ mod backup;
 mod bridge;
 mod coding;
 mod coding_workspace;
+mod coding_document_bridge;
+mod coding_external_tools;
+mod coding_closed_documents;
+mod coding_completion;
+mod coding_plan;
+mod coding_patch;
+mod coding_review_runtime;
 mod commands;
 #[cfg(test)]
 #[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/acp_session_impl/desktop_delivery.rs"]
@@ -1303,6 +1310,36 @@ pub fn run() {
             coding::tdd::coding_tdd_status,
             coding::tdd::coding_tdd_record_red,
             coding::tdd::coding_tdd_waive,
+            coding::verification::coding_verification_config_get,
+            coding::verification::coding_verification_config_save,
+            coding::changeset::coding_changeset_revert_hunk_preview,
+            coding::changeset::coding_checkpoint_start,
+            coding::changeset::coding_checkpoint_preserve_buffer,
+            coding::task::coding_task_for_session,
+            coding::changeset::coding_checkpoint_finish,
+            coding::changeset::coding_checkpoint_list,
+            coding::changeset::coding_checkpoint_restore,
+            coding::delivery::coding_git_commit_history,
+            coding::isolation::coding_isolation_list,
+            coding::isolation::coding_isolation_cleanup,
+            coding_closed_documents::coding_closed_document_snapshot,
+            coding_closed_documents::coding_closed_document_apply,
+            coding_document_bridge::coding_document_tool_respond,
+            coding_document_bridge::coding_document_tool_is_active,
+            coding_document_bridge::coding_document_cancel_ack,
+            coding_document_bridge::coding_document_cancellation_state,
+            coding_external_tools::coding_external_tools_pending,
+            coding_external_tools::coding_external_tool_recover,
+            coding_document_bridge::coding_document_editor_attach,
+            coding_document_bridge::coding_document_editor_present,
+            coding_document_bridge::coding_document_editor_detach,
+            coding_completion::coding_inline_observe,
+            coding::verification::coding_verification_freshness,
+            coding::review::coding_review_list,
+            coding_plan::coding_plan_save,
+            coding_patch::coding_document_patch_preview,
+            coding_completion::coding_inline_complete,
+            coding_completion::coding_inline_cancel,
             coding_workspace::coding_analyze_workspace,
             coding_workspace::coding_git_snapshot,
             coding_workspace::coding_git_diff,

@@ -5,6 +5,8 @@
 //! Output parsing only enriches a record with a test summary; when parsing
 //! fails the record is still trustworthy, just marked as unstructured.
 
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
@@ -138,6 +140,12 @@ pub struct VerificationRecord {
     pub finished_at: String,
     #[serde(default)]
     pub content_revision: Option<String>,
+    #[serde(default)]
+    pub configuration_revision: Option<String>,
+    #[serde(default)]
+    pub workspace_tree: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
     pub test_summary: Option<TestSummary>,
     /// False when the output could not be parsed into a summary, so the UI can
     /// say so instead of implying a clean structured result.
@@ -156,15 +164,238 @@ pub fn list_records(root: &Path, task_id: &str) -> Vec<VerificationRecord> {
     store::read_jsonl(&records_path(root, task_id))
 }
 
-/// Verification evidence is valid only for the exact implementation round
-/// that produced it. Clear the active batch before checking new content so a
-/// removed command or an empty detector result cannot reuse an older pass.
-pub fn clear_records(root: &Path, task_id: &str) -> Result<(), String> {
-    match std::fs::remove_file(records_path(root, task_id)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("清理旧验证记录失败：{error}")),
+/// History is append-only. A new command run never erases another command's
+/// evidence, including older revisions that remain useful for diagnosis.
+pub fn clear_records(_root: &Path, _task_id: &str) -> Result<(), String> {
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfiguredCheck {
+    pub id: String,
+    pub kind: VerificationKind,
+    pub command: String,
+    pub label: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub auto_run: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationProjectConfig {
+    #[serde(default)]
+    pub checks: Vec<ConfiguredCheck>,
+}
+
+pub fn project_config(root: &Path) -> VerificationProjectConfig {
+    store::read_json(&store::workspace_dir(root).join("verification-config.json"))
+        .unwrap_or_default()
+}
+
+pub fn configuration_revision(root: &Path) -> String {
+    configuration_revision_for(&project_config(root))
+}
+
+fn configuration_revision_for(config: &VerificationProjectConfig) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(config).unwrap_or_default());
+    // Relevant environment changes expire evidence without persisting secrets.
+    for key in [
+        "PATH",
+        "NODE_ENV",
+        "CI",
+        "RUSTFLAGS",
+        "JAVA_HOME",
+        "VIRTUAL_ENV",
+    ] {
+        hasher.update(key.as_bytes());
+        hasher.update(
+            std::env::var_os(key)
+                .unwrap_or_default()
+                .to_string_lossy()
+                .as_bytes(),
+        );
     }
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn current_records(
+    root: &Path,
+    task_id: &str,
+    set: &crate::coding::changeset::ChangeSet,
+) -> Vec<VerificationRecord> {
+    let revision = set.content_revision();
+    let configuration = configuration_revision(root);
+    list_records(root, task_id)
+        .into_iter()
+        .filter(|record| {
+            record.content_revision.as_deref() == Some(revision.as_str())
+                && record.configuration_revision.as_deref() == Some(configuration.as_str())
+        })
+        .collect()
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationFreshness {
+    pub content_revision: String,
+    pub configuration_revision: String,
+    pub workspace_tree: Option<String>,
+}
+
+#[tauri::command]
+pub async fn coding_verification_freshness(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    task_id: String,
+) -> Result<VerificationFreshness, String> {
+    let root = access.require_workspace(&root)?;
+    let set = crate::coding::changeset::sync_changes(&root, &task_id).await?;
+    Ok(VerificationFreshness {
+        content_revision: set.content_revision(),
+        configuration_revision: configuration_revision(&root),
+        workspace_tree: workspace_tree(&root).await,
+    })
+}
+
+#[tauri::command]
+pub async fn coding_verification_config_get(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+) -> Result<VerificationProjectConfig, String> {
+    let root = access.require_workspace(&root)?;
+    Ok(project_config(&root))
+}
+
+#[tauri::command]
+pub async fn coding_verification_config_save(
+    access: State<'_, FilesystemAccess>,
+    root: String,
+    config: VerificationProjectConfig,
+) -> Result<VerificationProjectConfig, String> {
+    let root = access.require_workspace(&root)?;
+    if config.checks.len() > 32 {
+        return Err("最多配置 32 项项目检查".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut commands = std::collections::HashSet::new();
+    for check in &config.checks {
+        if check
+            .timeout_secs
+            .is_some_and(|timeout| !(1..=3600).contains(&timeout))
+        {
+            return Err("检查超时必须为 1～3600 秒的整数".into());
+        }
+        if check.id.trim().is_empty()
+            || !ids.insert(&check.id)
+            || check.command.trim().is_empty()
+            || check.command.len() > 4096
+            || !commands.insert(&check.command)
+        {
+            return Err("检查 ID 和命令不能为空或重复".into());
+        }
+        let cwd = if check.cwd.is_empty() || check.cwd == "." {
+            root.clone()
+        } else {
+            crate::coding::changeset::resolve_in_workspace(&root, &check.cwd)?
+        };
+        let canonical = cwd
+            .canonicalize()
+            .map_err(|error| format!("检查目录不可用：{error}"))?;
+        if !canonical.starts_with(&root) || !canonical.is_dir() {
+            return Err("检查目录必须位于当前工程".into());
+        }
+        if check.env.keys().any(|key| {
+            let key = key.to_ascii_uppercase();
+            [
+                "TOKEN",
+                "PASSWORD",
+                "SECRET",
+                "CREDENTIAL",
+                "API_KEY",
+                "PRIVATE_KEY",
+            ]
+            .iter()
+            .any(|sensitive| key.contains(sensitive))
+        }) {
+            return Err(
+                "检查配置仅保存非敏感环境覆盖；密钥请使用现有模型/安全配置机制或继承进程环境"
+                    .into(),
+            );
+        }
+        if check
+            .env
+            .iter()
+            .any(|(key, value)| key.is_empty() || key.contains(['=', '\0']) || value.contains('\0'))
+        {
+            return Err("环境覆盖包含无效的名称或值".into());
+        }
+    }
+    store::write_json(
+        &store::workspace_dir(&root).join("verification-config.json"),
+        &config,
+    )?;
+    Ok(config)
+}
+
+/// Tree identity for the disk content consumed by checks. The private index
+/// preserves the user's staging area and respects normal Git ignore rules.
+pub async fn workspace_tree(root: &Path) -> Option<String> {
+    let dir = tempfile::tempdir().ok()?;
+    let index = dir.path().join("index");
+    let objects = dir.path().join("objects");
+    std::fs::create_dir(&objects).ok()?;
+    let location = crate::process_supervisor::background_async_command("git")
+        .args(["rev-parse", "--git-path", "objects"])
+        .current_dir(root)
+        .output()
+        .await
+        .ok()?;
+    if !location.status.success() {
+        return None;
+    }
+    let location = PathBuf::from(String::from_utf8_lossy(&location.stdout).trim());
+    let original_objects = if location.is_absolute() {
+        location
+    } else {
+        root.join(location)
+    };
+    let alternate = std::env::join_paths([original_objects]).ok()?;
+    // Fingerprinting never runs configured clean/process filters and never
+    // writes objects or index metadata into the user's repository. Git
+    // candidates transformed by filters consequently require separate proof.
+    let mut overrides = crate::coding_workspace::read_only_git_overrides(root).ok()?;
+    overrides.extend(["-c".into(), "core.splitIndex=false".into()]);
+    let mut result = None;
+    for arguments in [
+        vec!["read-tree", "HEAD"],
+        vec!["add", "-A", "--", "."],
+        vec!["write-tree"],
+    ] {
+        let output = crate::process_supervisor::background_async_command("git")
+            .args(&overrides)
+            .args(arguments)
+            .env("GIT_INDEX_FILE", &index)
+            .env("GIT_OBJECT_DIRECTORY", &objects)
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &alternate)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .current_dir(root)
+            .output()
+            .await
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        result = Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+    result
 }
 
 fn label_for(kind: VerificationKind) -> &'static str {
@@ -210,6 +441,18 @@ fn workspace_has_script(root: &Path, script: &str) -> bool {
 /// commands that actually exist are returned, so the orchestrator never invents
 /// a script the project does not define.
 pub fn detect_commands(root: &Path) -> Vec<DetectedCommand> {
+    let configured = project_config(root);
+    if !configured.checks.is_empty() {
+        return configured
+            .checks
+            .into_iter()
+            .map(|check| DetectedCommand {
+                kind: check.kind,
+                command: check.command,
+                label: check.label,
+            })
+            .collect();
+    }
     detect_commands_for_platform(root, cfg!(windows))
 }
 
@@ -565,6 +808,9 @@ pub fn record_from_parts(
         started_at: chrono::Utc::now().to_rfc3339(),
         finished_at: chrono::Utc::now().to_rfc3339(),
         content_revision: None,
+        configuration_revision: None,
+        workspace_tree: None,
+        cwd: None,
         structured: test_summary.is_some(),
         test_summary,
     }
@@ -691,6 +937,7 @@ async fn run_with_events(
     requested_run_id: Option<String>,
     approval_token: Option<String>,
 ) -> Result<VerificationRecord, String> {
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
     store::validate_task_id(&task_id)?;
     let coding_task = task::load(&root, &task_id).ok_or_else(|| "任务不存在".to_string())?;
     let command_text = command.trim().to_string();
@@ -700,8 +947,15 @@ async fn run_with_events(
     if let Some(reason) = high_risk_command_reason(&command_text, &root) {
         return Err(format!("命令被原生安全策略拒绝：{reason}"));
     }
-    if is_planned_verification(&coding_task, &command_text)
-        || !is_manifest_verification(&root, &command_text)
+    let configuration_snapshot = project_config(&root);
+    let check = configuration_snapshot
+        .checks
+        .iter()
+        .find(|check| check.command == command_text)
+        .cloned();
+    if check.is_none()
+        && (is_planned_verification(&coding_task, &command_text)
+            || !is_manifest_verification(&root, &command_text))
     {
         let token = approval_token
             .as_deref()
@@ -711,6 +965,20 @@ async fn run_with_events(
     let content_revision = crate::coding::changeset::sync_changes(&root, &task_id)
         .await?
         .content_revision();
+    let configuration = configuration_revision_for(&configuration_snapshot);
+    let tree = workspace_tree(&root).await;
+    let cwd = match check.as_ref().map(|check| check.cwd.as_str()) {
+        Some(value) if !value.is_empty() && value != "." => {
+            crate::coding::changeset::resolve_in_workspace(&root, value)?
+        }
+        _ => root.clone(),
+    };
+    let cwd = cwd
+        .canonicalize()
+        .map_err(|error| format!("检查目录不可用：{error}"))?;
+    if !cwd.starts_with(&root) {
+        return Err("检查目录必须位于当前工程".into());
+    }
     let run_id = requested_run_id
         .filter(|value| {
             !value.is_empty()
@@ -733,13 +1001,17 @@ async fn run_with_events(
         builder
     };
     builder
-        .current_dir(&root)
+        .current_dir(&cwd)
         .env("CI", "true")
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Some(check) = &check {
+        builder.envs(&check.env);
+    }
+    let kind = check.as_ref().map(|check| check.kind).unwrap_or(kind);
 
     let started_at = chrono::Utc::now().to_rfc3339();
     let started = Instant::now();
@@ -774,7 +1046,10 @@ async fn run_with_events(
     let stderr_task = spawn_reader(Box::new(stderr), "stderr", stderr_buffer.clone());
 
     let timeout = std::time::Duration::from_secs(
-        timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(5, 1_800),
+        timeout_secs
+            .or_else(|| check.as_ref().and_then(|check| check.timeout_secs))
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .clamp(1, 3_600),
     );
     let mut timed_out = false;
     let mut cancelled = false;
@@ -825,6 +1100,9 @@ async fn run_with_events(
     );
     record.started_at = started_at;
     record.content_revision = Some(content_revision);
+    record.configuration_revision = Some(configuration);
+    record.workspace_tree = tree;
+    record.cwd = Some(cwd.to_string_lossy().into_owned());
     let write_root = root.clone();
     let write_record = record.clone();
     tokio::task::spawn_blocking(move || append_record(&write_root, &write_record))
@@ -1095,7 +1373,7 @@ printf late > late-write
                     task_id,
                     VerificationKind::Custom,
                     command,
-                    Some(1), // The real runner clamps a requested one second to five.
+                    Some(1), // The runner honors the one-second timeout accepted by project settings.
                     Some(run_id),
                     Some(approval),
                 )
@@ -1160,7 +1438,7 @@ printf late > late-write
         // The graceful fixture exits zero: cancellation/timeout still cannot become Passed.
         assert_eq!(record.exit_code, Some(0));
         if kind == "timeout" {
-            assert!(record.duration_ms >= 5_000);
+            assert!(record.duration_ms >= 1_000);
         }
         assert!(record.stdout.contains("READY STDOUT"));
         assert!(record.stderr.contains("READY STDERR"));
@@ -1604,7 +1882,119 @@ printf late > late-write
         assert_eq!(records[0].command, "cmd-0");
         assert_eq!(records[2].command, "cmd-2");
         clear_records(&root, "task-1").unwrap();
-        assert!(list_records(&root, "task-1").is_empty());
+        assert_eq!(
+            list_records(&root, "task-1").len(),
+            3,
+            "starting another verification must retain all historical command outcomes"
+        );
         std::fs::remove_dir_all(&root).ok();
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn independent_checks_keep_same_revision_results_and_use_project_execution_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("checks")).unwrap();
+        std::fs::write(root.join("checks/marker.txt"), "marker\n").unwrap();
+        let mut coding_task =
+            task::create_task(&root, "Independent checks", "adjust behavior").unwrap();
+        coding_task.phase = task::TaskPhase::Delivered;
+        task::save(&root, &coding_task).unwrap();
+        crate::coding::changeset::capture_filesystem_baseline(&root, &coding_task.id).unwrap();
+        std::fs::write(root.join("source.txt"), "actual edit\n").unwrap();
+        crate::coding::changeset::sync_changes(&root, &coding_task.id)
+            .await
+            .unwrap();
+        let config = VerificationProjectConfig {
+            checks: vec![
+                ConfiguredCheck {
+                    id: "file".into(),
+                    kind: VerificationKind::Test,
+                    command: "test -f marker.txt".into(),
+                    label: "cwd test".into(),
+                    cwd: "checks".into(),
+                    env: BTreeMap::new(),
+                    timeout_secs: Some(15),
+                    auto_run: false,
+                },
+                ConfiguredCheck {
+                    id: "environment".into(),
+                    kind: VerificationKind::Build,
+                    command: "test \"$ECHO_CHECK_LABEL\" = alpha".into(),
+                    label: "env check".into(),
+                    cwd: ".".into(),
+                    env: BTreeMap::from([("ECHO_CHECK_LABEL".into(), "alpha".into())]),
+                    timeout_secs: Some(15),
+                    auto_run: false,
+                },
+            ],
+        };
+        store::write_json(
+            &store::workspace_dir(&root).join("verification-config.json"),
+            &config,
+        )
+        .unwrap();
+        let processes = CodingProcesses::default();
+        let events = Arc::new(CapturedEvents::default());
+        for (index, check) in config.checks.iter().enumerate() {
+            crate::coding::orchestrator::apply(
+                &root,
+                &coding_task.id,
+                crate::coding::orchestrator::OrchestratorEvent::VerificationStarted,
+            )
+            .unwrap();
+            let record = run_with_events(
+                events.clone(),
+                &processes,
+                root.clone(),
+                coding_task.id.clone(),
+                check.kind,
+                check.command.clone(),
+                None,
+                Some(format!("independent-{index}")),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                record.status,
+                VerificationStatus::Passed,
+                "{}",
+                record.stderr
+            );
+            assert_eq!(
+                record.cwd.as_deref(),
+                Some(
+                    root.join(&check.cwd)
+                        .canonicalize()
+                        .unwrap()
+                        .to_string_lossy()
+                        .as_ref()
+                )
+            );
+            let (finished, _) = crate::coding::orchestrator::apply(
+                &root,
+                &coding_task.id,
+                crate::coding::orchestrator::OrchestratorEvent::VerificationFinished,
+            )
+            .unwrap();
+            assert_eq!(finished.phase, task::TaskPhase::Delivered);
+            assert!(finished.blocker.is_none());
+            assert_eq!(list_records(&root, &coding_task.id).len(), index + 1);
+        }
+        let set = crate::coding::changeset::load(&root, &coding_task.id);
+        assert_eq!(current_records(&root, &coding_task.id, &set).len(), 2);
+        assert!(set.verification_is_current());
+        let mut changed_config = config;
+        changed_config.checks[1]
+            .env
+            .insert("ECHO_CHECK_LABEL".into(), "beta".into());
+        store::write_json(
+            &store::workspace_dir(&root).join("verification-config.json"),
+            &changed_config,
+        )
+        .unwrap();
+        assert!(current_records(&root, &coding_task.id, &set).is_empty());
+        assert_eq!(list_records(&root, &coding_task.id).len(), 2);
     }
 }

@@ -3,11 +3,13 @@ import { FrontendApplication, FrontendApplicationContribution } from '@theia/cor
 import { ConnectionStatus, ConnectionStatusService } from '@theia/core/lib/browser/connection-status-service';
 import { Widget } from '@theia/core/shared/@lumino/widgets';
 import { FileUri } from '@theia/core/lib/common/file-uri';
+import URI from '@theia/core/lib/common/uri';
 import { CommandRegistry } from '@theia/core/lib/common/command';
 import { MAIN_MENU_BAR } from '@theia/core/lib/common/menu';
 import { CorePreferences } from '@theia/core/lib/common/core-preferences';
 import { CommonCommands } from '@theia/core/lib/browser/common-commands';
 import { EditorManager } from '@theia/editor/lib/browser/editor-manager';
+import type { EditorWidget } from '@theia/editor/lib/browser/editor-widget';
 import { FrontendApplicationStateService } from '@theia/core/lib/browser/frontend-application-state';
 import { ThemeService } from '@theia/core/lib/browser/theming';
 import { WorkspaceService } from '@theia/workspace/lib/browser';
@@ -16,6 +18,8 @@ import { Disposable } from '@theia/core/lib/common/disposable';
 import { TerminalService } from '@theia/terminal/lib/browser/base/terminal-service';
 import { TerminalWidget } from '@theia/terminal/lib/browser/base/terminal-widget';
 import { echoHostBridge } from './echo-host-bridge';
+import { ECHO_EDITOR_CAPABILITIES } from './echo-editor-protocol';
+import { EchoEditorBridge } from './echo-editor-bridge';
 
 @injectable()
 export class EchoFrontendContribution implements FrontendApplicationContribution {
@@ -40,6 +44,7 @@ export class EchoFrontendContribution implements FrontendApplicationContribution
     protected readonly terminals: TerminalService;
     @inject(ConnectionStatusService)
     protected readonly connectionStatus: ConnectionStatusService;
+    @inject(EchoEditorBridge) protected readonly editorBridge: EchoEditorBridge;
     onStart(): void {
         if (echoHostBridge.enabled) {
             document.body.classList.add('echo-embedded');
@@ -63,7 +68,7 @@ export class EchoFrontendContribution implements FrontendApplicationContribution
             } else if (message.type === 'echo/set-theme' && (message.theme === 'light' || message.theme === 'dark')) {
                 this.themes.setCurrentTheme(message.theme, false);
             } else if (message.type === 'echo/save-all' && typeof message.id === 'string' && this.shell) {
-                void this.shell.saveAll().then(() => {
+                void this.editorBridge.whenIdle().then(() => this.shell!.saveAll()).then(() => {
                     this.reportDirtyState();
                     echoHostBridge.notify('echo/response', { id: message.id, ok: true, value: this.dirtyCount() });
                 }).catch(error => {
@@ -71,6 +76,7 @@ export class EchoFrontendContribution implements FrontendApplicationContribution
                 });
             } else if (message.type === 'echo/reload-clean' && typeof message.id === 'string') {
                 void (async () => {
+                    await this.editorBridge.whenIdle();
                     if (this.dirtyCount() !== 0) { throw new Error('IDE 有未保存内容，未覆盖编辑缓冲'); }
                     const documents = new Set(this.editors.all.map(editor => editor.editor.document));
                     await Promise.all(Array.from(documents, document => document.revert?.()));
@@ -78,13 +84,15 @@ export class EchoFrontendContribution implements FrontendApplicationContribution
                     echoHostBridge.notify('echo/response', { id: message.id, ok: true, value: this.dirtyCount() });
                 })().catch(error => echoHostBridge.notify('echo/response', { id: message.id, ok: false, error: String(error) }));
             } else if (message.type === 'echo/get-dirty'  && typeof message.id === 'string') {
-                echoHostBridge.notify('echo/response', { id: message.id, ok: true, value: this.dirtyCount() });
+                void this.editorBridge.whenIdle().then(() => {
+                    echoHostBridge.notify('echo/response', { id: message.id, ok: true, value: this.dirtyCount() });
+                }).catch(error => echoHostBridge.notify('echo/response', { id: message.id, ok: false, error: String(error) }));
             }
         });
-        this.editors.onActiveEditorChanged(editor => {
+        const reportCurrentEditor = (editor: EditorWidget | undefined) => {
             this.cursorSubscription?.dispose();
             echoHostBridge.notify('echo/active-file', {
-                path: editor?.editor.uri.path.fsPath() ?? null,
+                path: editor ? new URI(editor.editor.document.uri).path.fsPath() : null,
             });
             const reportSymbol = () => {
                 if (!editor) {
@@ -100,7 +108,7 @@ export class EchoFrontendContribution implements FrontendApplicationContribution
                 const word = selected && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(selected)
                     ? selected : `${before}${after}`;
                 echoHostBridge.notify('echo/active-symbol', {
-                    path: textEditor.uri.path.fsPath(),
+                    path: new URI(textEditor.document.uri).path.fsPath(),
                     symbol: /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(word) ? word : null,
                 });
             };
@@ -114,12 +122,14 @@ export class EchoFrontendContribution implements FrontendApplicationContribution
             }
             reportSymbol();
             window.requestAnimationFrame(() => this.updateEmptyState());
-        });
+        };
+        this.editors.onCurrentEditorChanged(reportCurrentEditor);
         for (const terminal of this.terminals.all) this.watchTerminalOutput(terminal);
         this.terminals.onDidCreateTerminal(terminal => this.watchTerminalOutput(terminal));
         void this.applicationState.reachedState('ready').then(async () => {
-            echoHostBridge.notify('echo/ready');
+            echoHostBridge.notify('echo/ready', { protocolVersion: 1, capabilities: ECHO_EDITOR_CAPABILITIES });
             this.reportDirtyState();
+            reportCurrentEditor(this.editors.currentEditor);
             const reportWorkspace = async () => {
                 const roots = await this.workspace.roots;
                 echoHostBridge.notify('echo/workspace', {

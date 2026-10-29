@@ -21,20 +21,22 @@ try {
     await input.fill("检查输入框和工具栏的对齐");
     const geometry = await page.locator(".echo-theia-agent__composer").evaluate((element) => {
       const toolbar = element.querySelector(".echo-theia-agent__composer-tools");
-      const controls = [...toolbar.children].map((child) => {
+      const controls = [...toolbar.children].filter(child => child.getBoundingClientRect().width > 0).map((child) => {
         const rect = child.getBoundingClientRect();
         return { left: rect.left, right: rect.right, center: rect.top + rect.height / 2, width: rect.width };
       });
       const input = element.querySelector("textarea");
-      return { width: element.clientWidth, scrollWidth: element.scrollWidth, controls,
+      const modelLabel = toolbar.querySelector('.model-selector__label').getBoundingClientRect();
+      const send = toolbar.querySelector('.echo-theia-agent__send').getBoundingClientRect();
+      return { width: element.clientWidth, scrollWidth: element.scrollWidth, controls, modelLabelWidth: modelLabel.width, sendWidth: send.width,
         toolbarWidth: toolbar.clientWidth, toolbarScrollWidth: toolbar.scrollWidth,
         outline: getComputedStyle(input).outlineStyle, inputHeight: input.clientHeight };
     });
     assert(geometry.scrollWidth <= geometry.width + 1, "Composer overflows");
     assert(geometry.toolbarScrollWidth <= geometry.toolbarWidth + 1, "Toolbar overflows");
     assert(Math.max(...geometry.controls.map((control) => control.center)) - Math.min(...geometry.controls.map((control) => control.center)) < 2, "Controls wrap or lose vertical alignment");
-    assert(geometry.controls[0].right <= geometry.controls[1].left && geometry.controls[1].right <= geometry.controls[2].left, "Controls overlap");
-    assert(geometry.controls[1].width >= 50 && geometry.controls[2].width === 32, "Model or send control is squeezed away");
+    assert(geometry.controls.every((control, index) => index === 0 || geometry.controls[index - 1].right <= control.left + 1), "Controls overlap");
+    assert(geometry.modelLabelWidth >= 28 && geometry.sendWidth >= 28, "Model label or send action is squeezed away");
     assert.equal(geometry.outline, "none", "Textarea duplicates the enclosing focus border");
     layouts.push({ width, font, theme, ...geometry });
     const model = page.getByRole("button", { name: /^开发任务模型：/ });
@@ -48,6 +50,12 @@ try {
     await page.getByRole("button", { name: /本任务免审批/ }).click();
     await page.getByRole("menuitemradio", { name: /自动判断/ }).click();
     await page.getByRole("button", { name: /自动判断/ }).waitFor();
+    await page.getByRole("button", { name: "添加上下文" }).click();
+    const contextMenu = page.getByRole("menu", { name: "添加到对话" });
+    const contextBounds = await contextMenu.boundingBox();
+    assert(contextBounds && contextBounds.x >= 0 && contextBounds.y >= 0 && contextBounds.x + contextBounds.width <= 1281 && contextBounds.y + contextBounds.height <= 801, "Context menu clipped");
+    await contextMenu.getByRole("menuitem", { name: "终端输出" }).click();
+    await page.getByRole("status").filter({hasText:"捕获上下文：terminal"}).waitFor();
     const shortHeight = await input.evaluate((element) => element.clientHeight);
     await input.fill("长草稿检查\n".repeat(30));
     const tall = await input.evaluate((element) => ({ height: element.clientHeight, scrollHeight: element.scrollHeight }));
@@ -122,6 +130,30 @@ try {
     assert(rect && rect.y >= 0 && rect.y + rect.height <= 640, "Send action is hidden in a long draft");
   }
   await page.close();
+  for (const theme of ["light", "dark"]) {
+    const settings = await browser.newPage({viewport:{width:1100,height:640}});
+    await settings.goto(`${base}?width=300&font=18&theme=${theme}&state=settings`);
+    await settings.getByText("项目检查配置", {exact:true}).click();
+    const environment=settings.getByRole("textbox",{name:"非敏感环境覆盖（KEY=value，每行一项）"});
+    await environment.fill("NODE_ENV=test");await environment.press("End");await environment.press("Enter");
+    assert.equal(await environment.inputValue(),"NODE_ENV=test\n","Environment editor swallowed a newline");
+    await environment.pressSequentially("LOG_LEVEL=debug");
+    await settings.getByRole("button",{name:"保存配置"}).click();
+    await settings.getByRole("status").filter({hasText:"检查配置已保存"}).waitFor();
+    const recovery=settings.getByRole("region",{name:"外部工具恢复"});
+    const recover=recovery.getByRole("button",{name:"记录核验并恢复工程"});
+    assert(await recover.isDisabled());
+    await recovery.getByRole("textbox",{name:"核验依据 operation"}).fill("已核实外部调用结束，并核对所有现有文件修改。");
+    await recovery.getByRole("checkbox").check();
+    await recover.scrollIntoViewIfNeeded();
+    const bounds=await recovery.evaluate(element=>({width:element.clientWidth,scrollWidth:element.scrollWidth}));
+    assert(bounds.scrollWidth<=bounds.width+1,"Recovery panel overflows at narrow width");
+    await settings.screenshot({path:join(output,`recovery-and-checks-${theme}.png`)});
+    await recover.click();
+    await settings.getByRole("status").filter({hasText:"工程已恢复"}).waitFor();
+    assert.equal(await recovery.count(),0);
+    await settings.close();
+  }
   writeFileSync(join(output, "layouts.json"), JSON.stringify(layouts, null, 2));
-  console.log(`Passed ${layouts.length} single-row layouts, menus, growing drafts, live font-size changes, keyboard/button submission and blocked states. Evidence: ${output}`);
+  console.log(`Passed ${layouts.length} single-row layouts, context/model/permission menus, growing drafts, live font-size changes, keyboard/button submission and blocked states. Visual/interaction fixture only; native IPC is isolated, no model calls. Evidence: ${output}`);
 } finally { await browser?.close(); await server.close(); }

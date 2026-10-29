@@ -109,7 +109,12 @@ impl SessionActor {
     /// Convert interjections that missed their turn's final drain into queued
     /// prompt turns, front of the queue in original order. Returns the count.
     pub(super) async fn flush_stranded_interjections(&self) -> usize {
-        let stranded = self.pending_interjections.drain_all().into_iter().filter(|entry|entry.scope.is_none()).collect::<Vec<_>>();
+        let stranded = self
+            .pending_interjections
+            .drain_all()
+            .into_iter()
+            .filter(|entry| entry.scope.is_none())
+            .collect::<Vec<_>>();
         let count = stranded.len();
         // Reversed push_fronts keep entry 0 front-most.
         for entry in stranded.into_iter().rev() {
@@ -314,9 +319,22 @@ impl SessionActor {
             return false;
         }
 
-        for PendingInterjection { text, attachments, scope } in entries {
-            if scope.as_ref().is_some_and(|scope| self.current_prompt_id.lock().ok()
-                .and_then(|id|id.clone()).as_deref() != Some(scope.prompt_id.as_str())) { continue; }
+        for PendingInterjection {
+            text,
+            attachments,
+            scope,
+        } in entries
+        {
+            if scope.as_ref().is_some_and(|scope| {
+                self.current_prompt_id
+                    .lock()
+                    .ok()
+                    .and_then(|id| id.clone())
+                    .as_deref()
+                    != Some(scope.prompt_id.as_str())
+            }) {
+                continue;
+            }
             // Sanitizer drops `[Image #N: <path>]` → `[Image #N]` before the
             // text reaches the model, covering legacy-client raw text AND the
             // queue-interject harvest. Wrapping and truncation stay in the
@@ -357,7 +375,12 @@ impl SessionActor {
                     "_meta":self.build_notification_meta()
                 });
                 if let Ok(params) = serde_json::value::to_raw_value(&payload) {
-                    self.notifications.gateway.forward_fire_and_forget(acp::ExtNotification::new("echo.agent/session_notification",params.into()));
+                    self.notifications
+                        .gateway
+                        .forward_fire_and_forget(acp::ExtNotification::new(
+                            "echo.agent/session_notification",
+                            params.into(),
+                        ));
                 }
             }
             tracing::info!("Injected mid-turn interjection as standalone synthetic user message");

@@ -205,7 +205,7 @@ pub(super) async fn fire_session_end_hooks(session: &SessionActor, reason: &str)
             tool_call_count: None,
         },
     );
-    if let Some(registry) = session.hook_registry.borrow().clone() {
+    if let Some(registry) = session.allowed_hook_registry() {
         let ctx = session.hook_run_ctx();
         let results = echo_agent_hooks::dispatcher::dispatch_non_blocking(
             &registry,
@@ -1997,6 +1997,19 @@ pub(super) async fn run_session(
                             let specs = session.turn_base_tool_specs(&defs);
                             let _ = respond_to.send(specs);
                         }
+                        SessionCommand::SnapshotTurnAuthority { respond_to } => {
+                            let inherited=session.startup_hints.inherited_turn_authority.clone();
+                            let authority=if let Some(authority)=inherited {authority} else {
+                                crate::session::InheritedTurnAuthority {
+                                    prompt_mode:*session.turn_start_prompt_mode.lock(),
+                                    document_tools:session.tool_bridge_handle().read_resource::<DesktopDocumentTools>().await.is_some_and(|policy|policy.0),
+                                    session_id:session.session_id_string(),
+                                    run_id:session.current_prompt_id.lock().unwrap().clone().unwrap_or_default(),
+                                    workspace:session.tool_context.cwd.as_path().to_string_lossy().into_owned(),
+                                }
+                            };
+                            let _=respond_to.send(authority);
+                        }
                         SessionCommand::SetClientHooks { hooks } => {
                             *session.client_hooks.borrow_mut() = hooks;
                         }
@@ -2133,7 +2146,7 @@ pub(super) async fn run_session(
                                     agent_type: None,
                                 },
                             );
-                            if let Some(registry) = session.hook_registry.borrow().clone() {
+                            if let Some(registry) = session.allowed_hook_registry() {
                                 let ctx = session.hook_run_ctx();
                                 let results = echo_agent_hooks::dispatcher::dispatch_non_blocking(
                                     &registry,

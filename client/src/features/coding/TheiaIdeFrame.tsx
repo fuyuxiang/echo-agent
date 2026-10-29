@@ -1,8 +1,9 @@
+import { isQuotaBlocking, loadQuotaConfig, loadUsage, recordUsage } from "@/lib/usage-quota";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Code2, LoaderCircle, RotateCw } from "lucide-react";
 import { useAppDialog } from "@/components/AppDialog";
-import { registerWorkspaceEditor } from "./lib/workspace-editor";
+import { registerWorkspaceEditor, type DocumentSnapshot, type EditOperation, type ApplyResult, type EditorContextSnapshot } from "./lib/workspace-editor";
 import { idePath, relativeToWorkspace } from "./lib/windows-path";
 
 export interface TheiaMutationTicket {
@@ -13,10 +14,17 @@ export interface TheiaMutationTicket {
 export interface TheiaIdeFrameHandle {
   getDirtyCount: () => Promise<number>;
   saveAll: () => Promise<boolean>;
+  getDocument: (path?: string, full?: boolean) => Promise<DocumentSnapshot>;
+  getContext: () => Promise<EditorContextSnapshot>;
+  applyEdits: (operation: EditOperation) => Promise<ApplyResult>;
+  openDiff: (path: string, original: string, title?: string) => Promise<void>;
 }
 
 interface TheiaIdeFrameProps {
   root: string;
+  modelId?: string;
+  completionEnabled?: boolean;
+  onCompletionStatus?: (status: string) => void;
   onBeforeMutation: (operation: string, paths: string[]) => Promise<TheiaMutationTicket | null>;
   onAfterMutation: (ticket: TheiaMutationTicket, success: boolean, error?: string) => Promise<void>;
   onActiveFile?: (path: string | null) => void;
@@ -44,6 +52,9 @@ function belongsToWorkspace(root: string, path: string): boolean {
 /** Theia owns the IDE surface; EchoAgent owns the surrounding task UI. */
 export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>(function TheiaIdeFrame({
   root,
+  modelId,
+  completionEnabled = true,
+  onCompletionStatus,
   onBeforeMutation,
   onAfterMutation,
   onActiveFile,
@@ -55,6 +66,14 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
   onDirtyChange,
 }, ref) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const instanceId = useRef<string | null>(null);
+  const capabilities = useRef(new Set<string>());
+  const [canonicalRoot,setCanonicalRoot] = useState(root);
+  const editorLeaseReady = useRef(false);
+  const protocolRequests = useRef(new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>());
+  const completionCalls = useRef(new Set<string>());
+  const completionConfig = useRef({modelId, completionEnabled, onCompletionStatus});
+  completionConfig.current = {modelId, completionEnabled, onCompletionStatus};
   const pendingRequests = useRef(new Map<string, { resolve: (count: number) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>());
   const lastKnownDirtyCount = useRef<number | null>(null);
   const hasBeenReady = useRef(false);
@@ -116,9 +135,34 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
     });
   }, [baseUrl, status, token]);
 
+  const requestProtocol = useCallback(<T,>(type: string, payload: Record<string, unknown> = {}): Promise<T> => {
+    if (status !== "ready" || !baseUrl || !instanceId.current || !frameRef.current?.contentWindow) {
+      return Promise.reject(new Error("IDE 版本化协议尚未连接"));
+    }
+    const capability = type === "echo/open-diff" ? "native-diff"
+      : type === "echo/get-document" || type === "echo/get-context" ? "document-snapshots" : "versioned-edits";
+    if (!capabilities.current.has(capability)) return Promise.reject(new Error(`当前 IDE 缺少 ${capability} 能力，请重新构建并连接`));
+    const id = crypto.randomUUID();
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => { protocolRequests.current.delete(id); reject(new Error("等待 IDE 文档响应超时")); }, 20_000);
+      protocolRequests.current.set(id, {resolve: value => resolve(value as T), reject, timer});
+      frameRef.current!.contentWindow!.postMessage({type, token, id, instanceId:instanceId.current, ...payload}, new URL(baseUrl).origin);
+    });
+  }, [status, baseUrl, token]);
+  const getDocument = useCallback((path?: string, full = false, range?: {offset:number;limit:number}) => requestProtocol<DocumentSnapshot>("echo/get-document", {path, full, range}), [requestProtocol]);
+  const getContext = useCallback(() => requestProtocol<EditorContextSnapshot>("echo/get-context"), [requestProtocol]);
+  const applyEdits = useCallback((operation: EditOperation) => requestProtocol<ApplyResult>("echo/apply-edits", {operation}), [requestProtocol]);
+  const openDiff = useCallback((path: string, original: string, title?: string) => {
+    if (!belongsToWorkspace(root, path)) return Promise.reject(new Error("Diff 文档不属于当前工程"));
+    return requestProtocol<void>("echo/open-diff", {path, original, title});
+  }, [root, requestProtocol]);
+
   useLayoutEffect(() => registerWorkspaceEditor(root, {
+    workspace:canonicalRoot,
     getDirtyCount: () => requestCount("echo/get-dirty", true),
     saveAll: async () => (await requestCount("echo/save-all", true)) === 0,
+    getDocument, getContext, applyEdits,
+    cancelRun: runId => requestProtocol<boolean>("echo/cancel-run",{runId}),
     refreshFromDisk: async () => { await requestCount("echo/reload-clean", true); },
     lockEditing: (locked) => {
       if (frameRef.current) {
@@ -126,15 +170,16 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
         frameRef.current.inert = locked;
       }
     },
-  }), [root, requestCount]);
+  }), [root, canonicalRoot, requestCount, getDocument, getContext, applyEdits, requestProtocol]);
 
   useImperativeHandle(ref, () => ({
+    getDocument, getContext, applyEdits, openDiff,
     getDirtyCount: () => requestCount("echo/get-dirty"),
     saveAll: async () => {
       const count = await requestCount("echo/save-all");
       return count === 0;
     },
-  }), [requestCount]);
+  }), [requestCount, getDocument, getContext, applyEdits, openDiff]);
 
   useEffect(() => () => {
     for (const request of pendingRequests.current.values()) {
@@ -142,9 +187,15 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
       request.reject(new Error("IDE 已关闭"));
     }
     pendingRequests.current.clear();
+    for (const request of protocolRequests.current.values()) { clearTimeout(request.timer); request.reject(new Error("IDE 连接已失效")); }
+    protocolRequests.current.clear();
+    for (const requestId of completionCalls.current) void invoke("coding_inline_cancel", {requestId}).catch(() => undefined);
+    completionCalls.current.clear();
   }, []);
 
   useEffect(() => {
+    instanceId.current = null; capabilities.current.clear();
+    editorLeaseReady.current = false;
     lastKnownDirtyCount.current = null;
     hasBeenReady.current = false;
   }, [root]);
@@ -155,6 +206,10 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
       request.reject(new Error("IDE 已重新加载，请重试"));
     }
     pendingRequests.current.clear();
+    for (const request of protocolRequests.current.values()) { clearTimeout(request.timer); request.reject(new Error("IDE 连接已失效")); }
+    protocolRequests.current.clear();
+    for (const requestId of completionCalls.current) void invoke("coding_inline_cancel", {requestId}).catch(() => undefined);
+    completionCalls.current.clear();
   }, [reloadKey, root]);
 
   useEffect(() => {
@@ -212,6 +267,23 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
   })}` : undefined, [activeEndpoint, token]);
 
   useEffect(() => {
+    editorLeaseReady.current=false;
+    const epoch=`${token}:${attempt}`;let disposed=false;let attachedRoot:string|undefined;
+    void invoke<string>("coding_document_editor_attach",{root,instanceId:epoch}).then(value=>{
+      if(typeof value!=="string") throw new Error("编辑器工作区注册响应无效");
+      attachedRoot=value;
+      if(disposed) void invoke("coding_document_editor_detach",{root:value,instanceId:epoch});
+      else {setCanonicalRoot(value);editorLeaseReady.current=true;if(hasBeenReady.current)setStatus("ready");}
+    }).catch(reason=>{if(!disposed){setError(`编辑器协调不可用：${String(reason)}`);setStatus("error");}});
+    return()=>{disposed=true;if(attachedRoot)void invoke("coding_document_editor_detach",{root:attachedRoot,instanceId:epoch}).catch(()=>undefined);};
+  },[root,token,attempt]);
+
+  useEffect(() => {
+    if (status !== "ready" || !baseUrl) return;
+    frameRef.current?.contentWindow?.postMessage({type:"echo/set-inline-completion",token,instanceId:instanceId.current,enabled:completionEnabled && !!modelId}, new URL(baseUrl).origin);
+  }, [status, baseUrl, token, completionEnabled, modelId]);
+
+  useEffect(() => {
     if (status !== "ready" || !baseUrl || !previewRequest) return;
     frameRef.current?.contentWindow?.postMessage({
       type: "echo/open-preview", token, url: previewRequest.url,
@@ -255,13 +327,68 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
       if (message.token !== token || typeof message.type !== "string") return;
       const { onActiveFile, onActiveSymbol, onPreviewUrl, onAfterMutation,
         onBeforeMutation, onDirtyChange, onToast } = bridgeCallbacks.current;
+      if (message.type !== "echo/ready" && instanceId.current && message.instanceId !== instanceId.current) return;
       if (message.type === "echo/ready") {
+        if (typeof message.instanceId === "string") {
+          if (instanceId.current && instanceId.current !== message.instanceId) {
+            for (const request of protocolRequests.current.values()) { clearTimeout(request.timer); request.reject(new Error("IDE 实例已更换")); }
+            protocolRequests.current.clear();
+          }
+          instanceId.current = message.instanceId;
+          capabilities.current = new Set(Array.isArray(message.capabilities) ? message.capabilities.filter((value):value is string => typeof value === "string") : []);
+        }
         offline = false;
         clearRecovery();
         setConnectionWarning("");
         resettingWorkspace.current = false;
         hasBeenReady.current = true;
-        setStatus("ready");
+        if(editorLeaseReady.current) setStatus("ready");
+        return;
+      }
+      if (["echo/inline-completion-shown","echo/inline-completion-accepted","echo/inline-completion-discarded","echo/inline-completion-error"].includes(message.type)) {
+        if (message.type === "echo/inline-completion-error") completionConfig.current.onCompletionStatus?.(`Tab 暂不可用：${String(message.error ?? "请求超时").slice(0,180)}`);
+        if (typeof message.requestId === "string") void invoke("coding_inline_observe",{event:{kind:message.type.replace("echo/inline-completion-",""),requestId:message.requestId,
+          uri:message.uri,documentVersion:message.version,elapsedMs:message.latencyMs,characters:message.characters,reason:message.reason}}).catch(() => undefined);
+        return;
+      }
+      if (message.type === "echo/editor-capabilities") {
+        capabilities.current = new Set(Array.isArray(message.capabilities) ? message.capabilities.filter((value):value is string => typeof value === "string") : []); return;
+      }
+      if (message.type === "echo/cancel-inline-completion" && typeof message.requestId === "string") {
+        completionCalls.current.delete(message.requestId);
+        void invoke("coding_inline_cancel", {requestId:message.requestId}).catch(() => undefined);
+        return;
+      }
+      if (message.type === "echo/inline-completion" && typeof message.id === "string") {
+        const config = completionConfig.current;
+        const requestId = message.requestId;
+        const target = event.source as Window;
+        const currentInstance = instanceId.current;
+        const respond = (ok: boolean, value?: unknown, error?: string) => {
+          if (disposed || currentInstance !== instanceId.current) return;
+          target.postMessage({type:"echo/response",token,instanceId:currentInstance,id:message.id,ok,value,error},theiaOrigin);
+        };
+        if (!config.completionEnabled || !config.modelId) { respond(true,{text:""}); return; }
+        if (typeof requestId !== "string" || message.workspace !== idePath(root) || typeof message.path !== "string"
+          || !belongsToWorkspace(root,message.path) || typeof message.prefix !== "string" || typeof message.suffix !== "string") {
+          respond(false,undefined,"补全上下文不属于当前工程"); return;
+        }
+        if (isQuotaBlocking(loadUsage(),loadQuotaConfig())) { config.onCompletionStatus?.("Tab 已达到本地用量上限"); respond(false,undefined,"用量已达到上限"); return; }
+        completionCalls.current.add(requestId);
+        void invoke<{text:string;requestId:string;documentVersion:number;modelId:string;elapsedMs:number;inputTokens:number;outputTokens:number;cached:boolean}>("coding_inline_complete", {request:{
+          requestId,workspace:root,uri:message.uri,documentVersion:message.version,prefix:message.prefix,suffix:message.suffix,language:message.language,modelId:config.modelId,
+        }}).then(result => {
+          // Account for completed model work even if the editor has since moved.
+          if (!result.cached) recordUsage(loadUsage(), {modelId:result.modelId,promptTokens:result.inputTokens,completionTokens:result.outputTokens,
+            sessionId:"inline-completion",promptId:result.requestId},loadQuotaConfig() ?? undefined);
+          if (!completionCalls.current.has(requestId)) return;
+          config.onCompletionStatus?.(`Tab ${result.elapsedMs}ms${result.cached ? " · 缓存" : ""}`);
+          respond(true,{text:result.text});
+        }).catch(error => {
+          if (!completionCalls.current.has(requestId)) return;
+          config.onCompletionStatus?.(`Tab 暂不可用：${String(error).replace(/^Error:\s*/, "").slice(0,180)}`);
+          respond(false,undefined,String(error));
+        }).finally(() => completionCalls.current.delete(requestId));
         return;
       }
       if (message.type === "echo/backend-connection") {
@@ -319,6 +446,13 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
         return;
       }
       if (message.type === "echo/response" && typeof message.id === "string") {
+        const protocol = protocolRequests.current.get(message.id);
+        if (protocol) {
+          protocolRequests.current.delete(message.id); clearTimeout(protocol.timer);
+          if (message.ok === true) protocol.resolve(message.value);
+          else protocol.reject(new Error(typeof message.error === "string" ? message.error : "IDE 文档操作失败"));
+          return;
+        }
         const request = pendingRequests.current.get(message.id);
         if (!request) return;
         pendingRequests.current.delete(message.id);
@@ -376,7 +510,7 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
       const target = event.source;
       const respond = (ok: boolean, value?: unknown, reason?: unknown) => {
         (target as Window).postMessage({
-          type: "echo/response", token, id: message.id, ok, value,
+          type: "echo/response", token, instanceId:instanceId.current, id: message.id, ok, value,
           error: reason === undefined ? undefined : String(reason),
         }, theiaOrigin);
       };

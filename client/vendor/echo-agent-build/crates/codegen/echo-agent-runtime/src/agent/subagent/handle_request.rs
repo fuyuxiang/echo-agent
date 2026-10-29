@@ -108,6 +108,35 @@ pub(crate) async fn run_shell_child(
         cwd,
         &definition,
     );
+    if let Some(authority) = ctx
+        .parent_turn_authority
+        .as_ref()
+        .filter(|authority| authority.document_tools || authority.prompt_mode.is_read_only())
+    {
+        // Resolve policy before any resume/worktree setup can mutate a project.
+        // All children operate in the exact parent workspace under its run.
+        if effective_runtime.isolation != echo_agent_tool_types::SubagentIsolationMode::None
+            || request.resume_from.is_some()
+            || request
+                .cwd
+                .as_deref()
+                .is_some_and(|cwd| cwd != authority.workspace)
+            || ctx.parent_cwd.to_string_lossy() != authority.workspace
+        {
+            return child_run_output(
+                failure_result(
+                    &request,
+                    "This turn requires a fresh subagent in the same editor-owned workspace; resume, alternate cwd and worktree isolation are unavailable",
+                ),
+                completion_data,
+                None,
+            );
+        }
+        request.run_in_background = false;
+        request.await_to_completion = true;
+        // Definition-level background defaults must not outlive this grant.
+        definition.background = Some(false);
+    }
     let prompt = request.prompt.clone();
     if let Some(ref err) = effective_runtime.persona_error {
         tracing::error!(
@@ -977,6 +1006,14 @@ pub(crate) async fn run_shell_child(
     crate::waterfall::mark(&request.id, crate::waterfall::stage::SESSION_SPAWN);
     spawn_timer.record(SubagentSpawnPhase::SpawnPrepare, start.elapsed());
     let bootstrap_started_at = std::time::Instant::now();
+    if ctx
+        .parent_turn_authority
+        .as_ref()
+        .is_some_and(|authority| authority.prompt_mode.is_read_only())
+    {
+        ctx.hook_registry = None;
+        ctx.client_hooks = Default::default();
+    }
     let spawn_result = session::spawn_session_on_thread(
         child_session_info,
         gateway.clone(),
@@ -1000,6 +1037,7 @@ pub(crate) async fn run_shell_child(
         None,
         initial_child_tokens,
         crate::session::StartupHints {
+            inherited_turn_authority: ctx.parent_turn_authority.clone(),
             inherited_prefix_len: Some(inherited_prefix_len),
             is_subagent: true,
             non_interactive: ctx.parent_non_interactive,

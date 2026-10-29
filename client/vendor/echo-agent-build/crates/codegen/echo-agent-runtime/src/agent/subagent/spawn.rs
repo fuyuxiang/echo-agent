@@ -124,11 +124,21 @@ impl coordinator::ChildRunner for ShellChildRunner {
                 this.resident_handle(&parent_sid)
             };
             if let Some(handle) = parent_handle {
-                let (pool, hooks, mut definitions) = tokio::join!(
+                let (pool, hooks, mut definitions, authority) = tokio::join!(
                     handle.snapshot_mcp_pool(),
                     handle.snapshot_client_hooks(),
-                    handle.snapshot_tool_definitions()
+                    handle.snapshot_tool_definitions(),
+                    handle.snapshot_turn_authority()
                 );
+                let authority=match authority {
+                    Ok(authority)=>authority,
+                    Err(error)=>return coordinator::ChildRunOutput {
+                        result: echo_agent_tools::implementations::echo_agent_build::task::types::SubagentResult {
+                            success:false,error:Some(error),subagent_id:run.request.id.clone(),child_session_id:run.request.id,..Default::default()
+                        },completion_data:Default::default(),snapshot_ref:None,
+                    },
+                };
+                ctx.parent_turn_authority = Some(authority);
                 ctx.parent_mcp_pool = pool;
                 ctx.client_hooks = hooks;
                 super::strip_ask_user_question_tool(&mut definitions);
