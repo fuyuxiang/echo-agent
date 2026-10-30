@@ -1,5 +1,7 @@
 # CLI 命令参考
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 本文档对应当前 `echo-agent` 参数解析器。最可靠的即时参考始终是
 `echo-agent --help` 和 `echo-agent <command> --help`。
 

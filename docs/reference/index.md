@@ -1,5 +1,7 @@
 # 参考手册
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 本章节汇集 Echo Agent 的完整技术参考资料，适用于日常开发、运维和集成场景。
 
 ## 文档索引

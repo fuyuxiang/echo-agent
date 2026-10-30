@@ -1,5 +1,7 @@
 # Matrix 通道
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 Matrix 通道通过长轮询 `/sync` 端点接收消息，通过 REST API 发送回复。无需公网端点，适合部署在内网或防火墙后。Matrix 是去中心化的开放通信协议，支持自建 Homeserver（如 Synapse、Dendrite）。

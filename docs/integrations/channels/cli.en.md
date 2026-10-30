@@ -1,5 +1,7 @@
 # CLI Channel
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 The CLI channel provides terminal-based interaction with Echo Agent in foreground mode.
 
 ---

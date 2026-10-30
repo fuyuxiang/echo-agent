@@ -1,5 +1,7 @@
 # Gateway Authentication
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Gateway provides three authentication modes to accommodate different scenarios from development to production deployment. The authentication system manages both user identity verification and API token authorization.
 
 ## Authentication Modes

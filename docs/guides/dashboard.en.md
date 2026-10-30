@@ -1,5 +1,7 @@
 # Dashboard Usage
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 The Echo Agent Dashboard is a web-based management interface for monitoring system status, managing sessions and resources, viewing logs, and analyzing usage data.
 
 The Dashboard is served by the gateway process rather than on a port of its own; both its address and its authentication come from the `gateway` configuration.
@@ -57,7 +59,6 @@ Displays the overall system health dashboard.
 - Channel connection status
 - Event-driven refresh with polling as a reconnect backstop
 
-<!-- Screenshot placeholder: Overview page showing status cards and resource charts -->
 
 ### Sessions
 
@@ -70,7 +71,6 @@ View and manage all active and historical sessions.
 - Reset a conversation; page through history and inspect execution records
 - Search session identifiers
 
-<!-- Screenshot placeholder: Sessions list showing status, source channel, and duration -->
 
 ### Memory
 
@@ -85,7 +85,6 @@ Browse and search memory entries across all tiers.
 
 This page is a cross-subject view: both the listing and the search require an admin token, since a regular API token can only read memories within its own scope.
 
-<!-- Screenshot placeholder: Memory search interface with entry cards and tier filters -->
 
 ### Skills
 
@@ -98,7 +97,6 @@ Manage installed skills and their configurations.
 - View skill trigger conditions and descriptions
 - Read skill content, files and dependency status, and install declared dependencies
 
-<!-- Screenshot placeholder: Skills page showing skill cards grid with toggle switches -->
 
 ### Knowledge
 
@@ -112,7 +110,6 @@ Manage documents and knowledge base content.
 
 Upload, delete and rebuild are all guarded server-side by the admin guard. The page has no document category or tag features.
 
-<!-- Screenshot placeholder: Knowledge page showing document list and indexing status indicators -->
 
 ### Cron
 
@@ -125,7 +122,6 @@ Configure and monitor scheduled tasks.
 - Manually trigger job execution
 - View execution history and results
 
-<!-- Screenshot placeholder: Cron page showing job table and execution timeline -->
 
 ### Kanban
 
@@ -138,7 +134,6 @@ Visualize and manage tasks using a board layout.
 
 Dragging requires write access: under a read-only token the board renders read-only, rather than offering controls that answer 403 on every drag.
 
-<!-- Screenshot placeholder: Kanban page showing multi-column board with task cards -->
 
 ### Logs
 
@@ -151,7 +146,6 @@ View system logs in real time.
 - Search text and page through older records
 - Pause or resume live refresh
 
-<!-- Screenshot placeholder: Logs page showing log stream and level filter controls -->
 
 ### Analytics
 
@@ -164,7 +158,6 @@ View usage statistics and model invocation costs.
 - Usage distribution by channel and skill
 - Today, last 7 days and last 30 days
 
-<!-- Screenshot placeholder: Analytics page showing line charts, pie charts, and cost summary table -->
 
 ### Config
 
@@ -180,7 +173,6 @@ Model credentials and gateway authentication remain read-only here; use the serv
 
 Restart reloads the configuration file and environment overrides. Environment precedence may keep a running value different from the file. There is no configuration history/automatic rollback button: restore a backed-up file, validate it and restart. Channel lifecycle operations below are the supported live activation boundary.
 
-<!-- Screenshot placeholder: Config page showing configuration form and change history panel -->
 
 ### Channels
 
@@ -194,7 +186,6 @@ Configure messaging channel connection parameters.
 
 Maintain channel credentials in the server configuration file; this page does not create accounts or edit credentials.
 
-<!-- Screenshot placeholder: Channels page showing channel list and connection status indicators -->
 
 ---
 

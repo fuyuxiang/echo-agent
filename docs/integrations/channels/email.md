@@ -1,5 +1,7 @@
 # Email 通道
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 Email 通道通过 IMAP 轮询接收邮件、SMTP 发送回复，无需公网端点即可运行。适用于需要异步沟通的场景，如客服工单、邮件自动回复等。

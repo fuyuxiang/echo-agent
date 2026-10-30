@@ -1,91 +1,67 @@
 # Echo Agent 文档
 
-**Echo Agent** 是一个自托管、长驻运行的 AI Agent 运行时，具备记忆持久化、技能自进化和多通道集成能力。
+Echo Agent 提供两种使用入口：**EchoAgent Desktop（Client）** 面向本机交互式工作，**Echo Agent Runtime** 面向终端运行、消息接入和自托管服务。本手册涵盖安装、日常使用、运行原理与部署维护。
 
----
+## 选择适合你的入口
 
-## 快速导航
+| 需求 | 建议入口 | 开始阅读 |
+| --- | --- | --- |
+| 在界面中处理文件、编写代码、操作浏览器或电脑 | Desktop | [桌面端快速开始](desktop/quickstart.md) |
+| 在终端使用 Agent，或通过网页管理服务 | Runtime | [Runtime 快速开始](getting-started/quickstart.md) |
+| 接入消息平台、Webhook 或定时调度 | Runtime | [通道集成](integrations/channels/index.md)与[后台服务](operations/background-service.md) |
+| 理解执行、记忆和工具调用 | 两端原理 | [架构总览](concepts/architecture.md) |
+| 为自己的应用提供 Agent 服务 | Runtime Gateway | [Gateway 集成](integrations/gateway/index.md) |
 
-<div class="grid cards" markdown>
+## Desktop：在工作区中完成任务
 
--   :material-rocket-launch:{ .lg .middle } **快速开始**
+桌面端将对话、任务计划、工具执行、权限确认、文件变更与交付物放在同一工作台中。代码任务可使用内嵌 IDE；办公任务可生成文档；浏览器与电脑操作按当前设备的能力启用。
 
-    ---
+首次使用的顺序是：安装应用 → 选择工作目录与模型 → 提交任务 → 检查执行结果。
 
-    5 分钟完成安装与首次对话
+- [安装与环境要求](desktop/installation.md)
+- [第一个任务](desktop/quickstart.md)
+- [任务、会话与权限](desktop/tasks-permissions.md)
+- [代码工作台](desktop/coding.md)
+- [浏览器与电脑操作](desktop/automation.md)
+- [文档、知识与记忆](desktop/knowledge-memory.md)
+- [模型与扩展](desktop/models-extensions.md)
+- [专家团与定时任务](desktop/collaboration-scheduling.md)
+- [数据管理与故障排查](desktop/operations.md)
 
-    [:octicons-arrow-right-24: 开始](getting-started/index.md)
+## Runtime：运行自己的 Agent 服务
 
--   :material-server-network:{ .lg .middle } **后台运行**
+Runtime 负责接收请求、组织上下文、调用模型、执行工具、保存会话与记忆。Gateway 在此基础上提供 Dashboard、HTTP API 和 WebSocket 接入。消息通道、知识库、MCP 和技能进化按配置启用。
 
-    ---
+```bash
+pip install "echo-agent[all]"
+echo-agent setup
+echo-agent gateway
+```
 
-    以守护进程或 systemd 服务部署，保持 Agent 7×24 在线
+启动后访问 <http://127.0.0.1:58123/>。安装环境、首次验证与终端使用方式见 [Runtime 快速开始](getting-started/quickstart.md)。
 
-    [:octicons-arrow-right-24: 部署指南](operations/deployment.md)
+| 目标 | 对应文档 |
+| --- | --- |
+| 安装、选择依赖和检查环境 | [安装指南](getting-started/installation.md) |
+| 配置模型并完成一个可验证的任务 | [使用流程](guides/first-workflow.md) |
+| 管理会话、知识、记忆和费用 | [Runtime 使用指南](guides/index.md) |
+| 保持服务在线、升级或恢复数据 | [部署与运维](operations/index.md) |
+| 查询准确的命令、参数和接口 | [参考手册](reference/index.md) |
 
--   :material-chat-processing:{ .lg .middle } **接入平台**
+## 理解两端的关系
 
-    ---
+两端都采用“模型推理 → 工具执行 → 结果反馈”的 Agent 工作方式，但当前源码使用不同的运行时实现。Desktop 在应用进程内运行 Rust 执行引擎；独立 Runtime 使用 Python 执行引擎。Desktop 可以独立使用，无需先部署 Gateway。
 
-    将 Agent 接入钉钉、飞书、微信、Slack、Telegram 等 14 个通道
+模型连接、权限配置、记忆与插件机制分别由两端管理。阅读具体操作前，请先确认页面适用范围；配置文件不可直接互换。详见[架构总览](concepts/architecture.md)。
 
-    [:octicons-arrow-right-24: 通道配置](integrations/channels/index.md)
+## 如何阅读本手册
 
--   :material-puzzle:{ .lg .middle } **扩展开发**
+**快速开始**给出最短可用流程与成功标准；**使用指南**围绕实际任务说明操作；**核心概念**解释设计思路、数据流和边界；**参考手册**列出精确参数；**参与开发**介绍工程与验证方式。
 
-    ---
-
-    编写自定义技能、插件和通道适配器
-
-    [:octicons-arrow-right-24: 开发指南](development/index.md)
-
-</div>
-
----
-
-## 核心能力
-
-| 模块 | 说明 | 详见 |
-|------|------|------|
-| **Agent Loop** | 接收事件 → 构建上下文 → 调用模型 → 执行工具，跨入口共享同一条执行路径 | [Agent 循环](concepts/agent-loop.md) |
-| **认知记忆** | Working / Episodic / Semantic / Archival 四层，配合衰减、矛盾检测与重要性重排 | [记忆系统](concepts/memory-system.md) |
-| **混合检索** | BM25 + FAISS 向量融合召回，按查询特征自适应权重，FAISS 缺失时自动降级 | [知识库](guides/knowledge-base.md) |
-| **自进化引擎** | 轨迹记录 → 候选生成 → 评测对照 → 晋升/驳回，支持冷却期与一键回滚 | [技能进化与评测](concepts/evolution-evaluation.md) |
-| **模型路由** | 主推理、上下文压缩、向量嵌入、风险审批可独立配置 provider 与模型 | [路由与 Fallback](guides/models/routing-fallback.md) |
-| **工具审批** | 三档策略 `manual` / `smart` / `off`，无人值守通道默认拒绝高风险调用 | [工具与权限](guides/tools-permissions.md) |
-| **多模型支持** | OpenAI、Anthropic、Gemini、Bedrock、OpenRouter，以及 DeepSeek、Qwen、Kimi、GLM、Ollama 等 OpenAI 兼容端点 | [Provider 总览](guides/models/providers.md) |
-| **14 通道适配器** | CLI、Cron、钉钉、Discord、Email、飞书、Matrix、QQ Bot、Slack、Telegram、Webhook、企业微信、微信、WhatsApp | [通道配置](integrations/channels/index.md) |
-| **跨进程互操作** | A2A JSON-RPC 入站服务 + MCP 客户端（含 OAuth），支持动态工具注册 | [MCP](integrations/mcp.md) · [A2A](integrations/a2a.md) |
-| **插件体系** | 通过 entry-point 注册外部插件 | [使用插件](integrations/plugins/using-plugins.md) |
-| **Dashboard** | 内置 Web 管理面板，查看对话、费用与运行状态 | [Dashboard](guides/dashboard.md) |
-| **定时任务** | 内置 Cron 调度器，按计划触发 Agent 执行 | [定时任务](guides/scheduled-jobs.md) |
-| **输出保全** | 超长工具输出落盘保全，模型只见首尾预览与取回路径，可用 `read_spill` 按字符区间或正则取回完整内容 | [上下文压缩与输出保全](concepts/context-compression-spill.md) |
-| **本地优先** | 会话、记忆、轨迹、凭证默认存放工作区，凭证加密落盘 | [安全模型](concepts/security-model.md) |
-
----
+核心概念不要求阅读源码。架构图标注边界与职责，时序图说明交互顺序，流程图说明判断分支，数据流图说明数据来源、处理和存储。
 
 ## 项目状态
 
-!!! warning "Beta 阶段"
-    Echo Agent 当前版本为 **v0.3.8**，处于 Beta 阶段。核心 API 趋于稳定，但在以下方面仍可能发生破坏性变更：
+项目处于 Beta 阶段，两端版本独立发布。升级前应阅读对应发行说明并备份数据。Runtime 需要 Python 3.11+；Desktop 的正式发行目标为 macOS 和 Windows，具体架构及依赖见各自安装指南。
 
-    - 配置文件格式（`config.yaml` schema）
-    - 插件 / 技能 API 接口
-    - 数据库表结构（连接初始化时自动迁移；`echo-agent migrate` 只处理记忆数据）
-
-    建议在升级前阅读 [CHANGELOG](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md) 并做好数据备份。
-
----
-
-## 系统要求
-
-- Python 3.11+
-- Linux / macOS / Windows（WSL2 推荐）
-- 至少一个模型 API Key（OpenAI、Anthropic 等）
-
----
-
-## 许可证
-
-Echo Agent 采用 [MIT 许可证](https://github.com/fuyuxiang/echo-agent/blob/master/LICENSE) 开源。
+项目采用 [MIT 许可证](https://github.com/fuyuxiang/echo-agent/blob/master/LICENSE)。问题反馈见 [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues)。

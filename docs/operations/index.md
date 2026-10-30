@@ -1,5 +1,7 @@
 # 部署与运维
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 本节涵盖 Echo Agent 的生产部署、日常运维和故障处理。
 
 ---

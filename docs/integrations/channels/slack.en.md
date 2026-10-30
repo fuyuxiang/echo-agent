@@ -1,5 +1,7 @@
 # Slack
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 Slack channel uses Socket Mode WebSocket (no public endpoint needed) with the Web API for messaging.

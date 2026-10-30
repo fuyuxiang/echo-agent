@@ -132,7 +132,7 @@
 !!! note "faiss and fastembed are different things"
     `faiss-cpu` belongs to the `[vector]` and `[all]` extras, so it can be skipped by choosing extras; without it, vector retrieval degrades to keyword search rather than failing.
 
-    `fastembed`, by contrast, is a **core dependency**: every installation pulls it in and no choice of extras avoids it. It depends on ONNX Runtime, which needs compiling on some platforms. If the install stalls there, WSL2 is the recommended route on Windows — resident-service registration is likewise limited to Linux / macOS / WSL2.
+    FastEmbed is a **bundled embedding component** whose ONNX Runtime and related dependencies are declared by the core installation. Selecting extras cannot avoid them. Platforms without binary wheels may require compilation. If the install stalls there, WSL2 is the recommended route on Windows — resident-service registration is likewise limited to Linux / macOS / WSL2.
 
 ---
 

@@ -1,5 +1,7 @@
 # Troubleshooting
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Symptom-based troubleshooting guide. Find your problem below.
 
 ---

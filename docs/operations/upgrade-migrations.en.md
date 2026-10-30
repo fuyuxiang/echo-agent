@@ -1,5 +1,7 @@
 # Upgrade and Data Migration
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Read the [Changelog](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md), check compatibility changes, and back up the workspace before upgrading. The commands below assume the default `~/.echo-agent` workspace and an installed user-level Gateway service. Use the actual paths for deployments with a custom `--workspace` or `--config`.
 
 ## Upgrade an installed package
@@ -45,7 +47,7 @@ Do not use `echo-agent migrate rollback` as a database rollback. See [backup and
 
 ## Server remediation compatibility (2026-10-21)
 
-These are working-tree changes, not a published release: the repository version remains 0.3.8. Upgrade matching code and dependencies together. Stop new ingress, drain in-flight work, and back up the complete workspace/config plus any configured external paths. Include consistent SQLite state, scheduler.json, memory/knowledge sources, skills/disabled state, artifacts, OAuth files, and .credential_key. A file checkpoint is not a database backup.
+Verify the actual release artifact or source commit and its matching dependencies. A version string alone does not establish whether a source fix is included in a published package. Stop new ingress, drain in-flight work, and back up the complete workspace/config plus any configured external paths. Include consistent SQLite state, scheduler.json, memory/knowledge sources, skills/disabled state, artifacts, OAuth files, and .credential_key. A file checkpoint is not a database backup.
 
 Gemini retains provider names/key precedence/model configuration but requires `google-genai>=2.32,<3`. cryptography and deadline-capable regex are core dependencies; keep credential encryption enabled. PyMuPDF remains below 2 pending its release metadata repair. Run pip check after installation.
 

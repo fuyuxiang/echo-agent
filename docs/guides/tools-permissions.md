@@ -1,5 +1,7 @@
 # 工具使用与权限控制
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 通过可扩展的工具体系为大模型赋予操作外部世界的能力。每个工具都有明确的风险等级和能力声明，运行时由审批网关（Approval Gate）决定是否放行。
 
 ---
@@ -467,4 +469,4 @@ execution:
 
 `echo-agent status --json` 区分工具被策略过滤、子系统关闭和搜索 key/base URL 未配置。
 脚本读取失败、依赖缺失、审批待决、请求超时及网页挑战应按实际结果分别处理，不能统一诊断为漏打包。
-详见[部署验收与缓存升级](../operations/deployment.md#技能执行与联网能力验收)。
+详见[部署验收与缓存升级](../operations/deployment.md#skills-runtime-verification)。

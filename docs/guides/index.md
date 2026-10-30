@@ -1,37 +1,21 @@
-# 使用指南
+# Runtime 使用指南
 
-本节涵盖 Echo Agent 的全部核心功能，从模型接入到任务调度，帮助你充分发挥 Agent 的能力。
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
 
----
+完成安装后，先执行[第一个工作流](first-workflow.md)，再按目标选择功能。每项集成都应先验证单次运行，再引入后台或定时执行。
 
-## 章节目录
+| 使用目标 | 对应指南 | 需要确认 |
+| --- | --- | --- |
+| 接入云端或本地模型 | [模型接入](models/index.md) | 提供商、地址、凭据、模型能力 |
+| 控制可执行操作 | [工具与权限](tools-permissions.md) | 工具可见性、审批和执行范围 |
+| 选择命令执行环境 | [执行后端](execution-backends.md) | 本地、工作副本、容器或远程的实际边界 |
+| 使用网页与媒体能力 | [浏览器与媒体](browser-media.md) | 可选依赖、网络与服务凭据 |
+| 保存稳定事实 | [记忆管理](memory-management.md) | 写入结果、来源与作用域 |
+| 从资料中查找答案 | [知识库](knowledge-base.md) | 导入、索引状态和检索来源 |
+| 继续或管理对话 | [会话](sessions.md) | 历史、重置、归档与访问边界 |
+| 执行多步工作并交付文件 | [任务与规划](tasks-planning.md) | 计划、实际状态、产物与验证 |
+| 按时间触发任务 | [定时任务](scheduled-jobs.md) | 调度、预授权与结果投递 |
+| 管理运行实例 | [Dashboard](dashboard.md) | 连接、认证与管理权限 |
+| 控制资源用量 | [成本控制](cost-control.md) | 预算、价格配置与实际账单差异 |
 
-| 章节 | 说明 |
-|------|------|
-| [模型接入](models/index.md) | 多模型配置、负载均衡、自定义端点 |
-| [工具使用与权限控制](tools-permissions.md) | 内置工具注册、权限策略与执行后端的隔离边界 |
-| [执行后端](execution-backends.md) | 本地/远程/容器化执行环境配置 |
-| [浏览器与媒体能力](browser-media.md) | 网页操作、截图、文件上传与媒体处理 |
-| [记忆管理](memory-management.md) | 短期/长期记忆、向量存储、记忆检索策略 |
-| [知识库](knowledge-base.md) | 文档导入、索引构建、RAG 检索增强 |
-| [会话管理](sessions.md) | 多会话并行、上下文隔离、会话持久化 |
-| [任务与规划](tasks-planning.md) | 任务分解、执行计划、多步推理 |
-| [定时任务](scheduled-jobs.md) | Cron 表达式、定时触发、失败重试 |
-| [Dashboard 使用](dashboard.md) | Web 仪表盘、实时监控、操作审计 |
-| [成本控制](cost-control.md) | Token 预算、用量告警、模型降级策略 |
-
----
-
-## 概览
-
-Echo Agent 将大语言模型的推理能力与可编排的工具体系相结合，提供完整的 Agent 运行时。本节各章节按功能域组织：
-
-- **模型层**：配置一个或多个 LLM 后端，支持 OpenAI、Anthropic、本地模型等多种接入方式。
-- **工具层**：声明 Agent 可调用的工具，并通过权限策略控制调用范围和频率。
-- **执行层**：选择代码和命令的执行环境——本地进程、Docker 容器或远程沙箱。
-- **能力扩展**：浏览器操作、媒体处理、知识库检索为 Agent 提供更丰富的感知与行动能力。
-- **状态管理**：记忆系统和会话管理确保 Agent 在多轮、多会话场景中保持上下文连贯。
-- **调度与监控**：定时任务、Dashboard 和成本控制帮助你在生产环境中安全高效地运行 Agent。
-
-!!! tip "建议阅读顺序"
-    如果你刚完成安装，建议从 [模型接入](models/index.md) 开始，然后阅读 [工具使用与权限控制](tools-permissions.md) 了解 Agent 的行动边界。
+系统设计见[核心概念](../concepts/index.md)，常驻运行见[部署与运维](../operations/index.md)，精确参数见[参考手册](../reference/index.md)。

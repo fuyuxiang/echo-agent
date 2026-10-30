@@ -1,5 +1,7 @@
 # 企业微信（WeCom）
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 企业微信通道通过 Webhook 回调接收消息，通过 REST API 发送消息。需要公网可达的回调端点，适合部署在有公网 IP 或通过反向代理暴露的服务器上。

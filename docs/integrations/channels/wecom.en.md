@@ -1,5 +1,7 @@
 # WeCom (Enterprise WeChat)
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 The WeCom channel receives messages via Webhook callbacks and sends messages through the REST API. A publicly accessible callback endpoint is required, suitable for servers with public IPs or those exposed through reverse proxies.

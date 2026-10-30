@@ -1,5 +1,7 @@
 # 本地模型接入
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 Echo Agent 支持通过 OpenAI 兼容 API 接入本地模型服务。所有本地模型服务均使用 OpenAI provider，只需配置自定义 `api_base` 即可。
 
 ## 支持的本地模型服务

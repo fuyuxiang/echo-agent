@@ -1,5 +1,7 @@
 # 定时任务
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 内置定时任务系统，允许通过 cronjob 工具创建、管理和监控周期性任务。本指南涵盖调度系统的完整使用方式。
 
 ## 系统概述

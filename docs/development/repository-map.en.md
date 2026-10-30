@@ -45,3 +45,15 @@ The server is an independent project under `echo-agent-runtime/`. Downloading th
 ## Key relationships
 
 `echo_agent/app.py` wires configuration, storage, models, the agent, channels, and the Gateway. `echo_agent/tools/` is the public tool extension interface; `echo_agent/agent/tools/` implements built-in tools. The Gateway uses `aiohttp` and token/pairing authorization, not a JWT server or an ASGI framework. SQLite schema migrations run when `echo_agent/storage/sqlite.py` initializes a connection; `echo-agent migrate` in `echo_agent/cli/migrate_cmd.py` handles memory data.
+
+## Desktop engineering map
+
+| Path, relative to the repository root | Responsibility |
+| --- | --- |
+| `client/src/` | React UI and application state |
+| `client/src-tauri/src/` | Desktop host, ACP bridge, workspaces, automation, persistence |
+| `client/vendor/echo-agent-build/` | Pinned Rust execution-engine source |
+| `client/vendor/theia-platform/` | Embedded IDE and integration |
+| `client/scripts/` | Build, packaging, and validation |
+
+The Python engine under `echo-agent-runtime/` is distinct from the Rust engine embedded by Desktop. See [Architecture](../concepts/architecture.md) for product boundaries.

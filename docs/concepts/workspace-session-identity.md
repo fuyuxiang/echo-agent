@@ -1,87 +1,32 @@
 # 工作区、会话与身份
 
-echo-agent 通过 **Session** 机制隔离对话上下文与并发作用域：每个 channel + chat 组合拥有独立的对话历史与状态，避免普通的上下文串扰。
+工作区、会话、记忆作用域和访问身份解决不同问题。理解这些边界，可以避免把“聊天分开了”误认为“资源访问已隔离”。
 
-!!! warning "Session 不是租户授权边界"
-    Session key 是路由与状态作用域，不是不可伪造的安全主体；会话隔离不等于多租户隔离。若需要在不相信的用户之间建立权限边界，请使用独立实例、工作区、数据库与凭据。详见[多客户端与多租户边界](security-model.md#multi-client-tenant-boundary)。
+| 概念 | 解决的问题 | 不能据此推导 |
+| --- | --- | --- |
+| 工作区 | 本次实例或任务处理哪些文件与本地状态 | 操作系统已阻止一切范围外访问 |
+| 会话 | 哪些消息构成同一条对话和执行上下文 | 持有会话标识就具有访问权限 |
+| 记忆作用域 | 哪些长期事实对当前任务可见 | 相同会话一定共享全部记忆 |
+| 访问身份 | 谁发起请求，允许访问什么资源 | 一个普通令牌自动隔离整个实例 |
 
-## 核心概念
+## Runtime 的路由与作用域
 
-| 概念 | 说明 |
-|------|------|
-| Session key | 会话唯一标识，格式为 `channel:chat_id` |
-| SessionManager | 会话生命周期管理器，负责创建、缓存、过期与归档 |
-| Scoped session | 群聊中按 `per_user` 策略追加 `:sender_id`，隔离用户级对话上下文（不构成授权边界） |
-| Memory scope | 独立于 session_key 的记忆作用域，决定长期记忆的归属 |
+Runtime 通常根据通道和对话标识确定会话。群聊可采用共享上下文或按发言者划分上下文；记忆范围独立计算，可能继续属于同一个群。私聊的记忆可随绑定身份确定归属。
 
-## Session Key 组成
+因此，把群聊改为逐人会话并不自动建立逐人的长期记忆隔离；部署者需要同时确认会话策略、身份绑定和记忆范围。
 
-```mermaid
-graph LR
-    A[channel] -->|":"| B[chat_id]
-    B -->|可选 ":sender_id"| C[scoped key]
-    
-    subgraph 示例
-        D["telegram:123456"]
-        E["slack:C04ABC"]
-        F["telegram:group_789:user_42"]
-    end
-```
+## 会话的连续性
 
-- `channel` — 接入通道标识（telegram / slack / cron 等）
-- `chat_id` — 该通道内的对话标识
-- 群聊 `per_user` 模式下追加 `:sender_id`
+同一会话串行处理消息，历史与执行状态持久化。活动上下文只保留需要的消息，并保持工具请求和结果配对。较早消息可通过压缩、记忆整合或历史查询保留用途，而不必每轮全部发送给模型。
 
-## 会话生命周期
+会话过期、归档、重置与删除是不同操作，不能仅凭一次不再召回历史就判断数据已经删除。保留策略与管理方式见[会话指南](../guides/sessions.md)。
 
-```mermaid
-stateDiagram-v2
-    [*] --> Active : acquire()
-    Active --> Active : 消息追加 / 更新
-    Active --> Expired : 空闲 ≥ 72h
-    Expired --> Active : 用户再次发言
-    Expired --> Archived : 空闲 ≥ 168h
-    Archived --> [*]
-```
+## Desktop 的工作目录与状态
 
-- **Active** — 正常接收消息，LRU 缓存命中
-- **Expired** — 超过 `expiry_hours=72` 未活跃，可被重新激活
-- **Archived** — 超过 `archive_hours=168`，从活跃存储移除
+Desktop 任务绑定实际目录，宿主协调文件授权、IDE 与工具。个人偏好可以跨项目使用，项目事实按工作区区分；专家团还区分成员上下文、成员记忆与共享决定。
 
-## 上下文作用域隔离
+更换工作目录或成员模型可能建立新的上下文。历史记录、长期记忆和真实文件是不同存储，清除一项不会自动清除其他项。详细行为见[桌面端任务指南](../desktop/tasks-permissions.md)与[专家团指南](../desktop/collaboration-scheduling.md)。
 
-```mermaid
-graph TD
-    MSG[收到消息] --> IS_GROUP{群聊?}
-    IS_GROUP -->|是| POLICY{scope 策略}
-    POLICY -->|per_user| PU["channel:chat_id:sender_id"]
-    POLICY -->|shared| SH["channel:chat_id"]
-    IS_GROUP -->|否| PRIV["channel:chat_id"]
+## 多用户部署
 
-    PU --> MEM_GROUP["memory_scope = group_id"]
-    SH --> MEM_GROUP
-    PRIV --> MEM_PRIV["memory_scope = owner / chat_id"]
-```
-
-- 群聊的 memory scope 始终绑定 group_id，无论 session 是否隔离
-- 私聊的 memory scope 取决于是否绑定 owner（bound vs unbound）
-
-## 持久化与并发
-
-**JSONL 存储**
-- 每个 session 对应一个 `.jsonl` 文件
-- 文件名使用 `urllib.parse.quote()` 编码（双射映射，无碰撞）
-- 支持从旧版 `"_"` 分隔方案自动迁移到 `"%3A"` 编码方案
-
-**并发控制**
-- 每个 session 持有独立的 `asyncio.Lock`
-- LRU 缓存上限 200，驱逐时不移除仍持有锁的 session
-- 原子写入 + 损坏数据恢复机制
-
-## 历史对齐
-
-`get_history(max_messages=500)` 返回历史时遵循以下规则：
-
-1. 跳过已 consolidate 的消息（`last_consolidated` 指针之后）
-2. 丢弃孤立的 tool result（无对应 tool_use 的结果）
-3. 对齐到 user message 边界——历史永远以 user 消息开头
+同一 Runtime 可以处理多个客户端与会话，但普通 API 令牌通常代表同一实例的受信任调用方。需要服务互不信任的用户或组织时，应分离进程、数据、工作区、凭据和网络入口。具体边界见[多客户端与多租户](security-model.md#multi-client-tenant-boundary)。

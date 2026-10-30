@@ -1,5 +1,7 @@
 # Webhook Channel
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 The Webhook channel accepts inbound messages at its configured HTTP path. `channels.webhook` is disabled by default. When enabled, it defaults to `0.0.0.0:8080` and `/webhook`. This is separate from the Gateway's `/api/v1/message` endpoint.
 
 ## Configuration

@@ -1,5 +1,7 @@
 # MCP (Model Context Protocol)
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 通过 MCP 协议连接外部工具服务器，扩展 Agent 的工具能力。
 
 ---

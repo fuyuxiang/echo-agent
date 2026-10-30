@@ -1,5 +1,7 @@
 # CLI Command Reference
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 This page follows the current `echo-agent` argument parser. Use `echo-agent --help` and `echo-agent <command> --help` for the installed version.
 
 ## Global options

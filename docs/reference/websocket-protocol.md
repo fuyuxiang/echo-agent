@@ -1,5 +1,7 @@
 # WebSocket 协议参考
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent Gateway 提供会话通信和 Dashboard 推送两个 WebSocket 端点。
 
 | 端点 | 默认路径 | 用途 |

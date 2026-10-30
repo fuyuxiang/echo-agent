@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="850" viewBox="0 0 1200 850" role="img" aria-labelledby="title description">
-  <title id="title">Memory carries context. Evolution builds skills.</title>
-  <desc id="description">Runtime memory: Working supplies current context; Episodic and Semantic retain summaries and facts. Scope and lifecycle eligibility filter mixed recall, which joins current context in ContextStage. Archived, superseded, and unresolved entries are excluded from normal recall. Evolution: trajectories and reflection produce candidates; validation, risk checks, and isolated A/B evaluation decide promotion, review, or rejection. Promoted changes support manual rollback.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1000" viewBox="0 0 1200 1000" role="img" aria-labelledby="title description">
+  <title id="title">Runtime memory and skill-evolution flow</title>
+  <desc id="description">Left: filter eligible memory, retrieve, and assemble context. Right: opt-in evolution proposes candidates, validates and evaluates them, then promotes, holds for review, or rejects.</desc>
   <defs>
     <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
       <path d="M0 0 8 4 0 8Z" fill="#2563eb" />
@@ -13,59 +13,64 @@
     </marker>
   </defs>
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
-    <rect x="1" y="1" width="1198" height="848" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="1" y="1" width="1198" height="998" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="36" y="32" width="5" height="55" rx="2" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">Memory carries context. Evolution builds skills.</text>
-    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Both support future tasks. Skill evolution is opt-in; proposals do not go straight to the live library.</text>
-    <rect x="36" y="128" width="548" height="620" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="60" y="172" fill="#2563eb" font-size="25" font-weight="700" text-anchor="start">01  Cognitive memory</text>
-    <rect x="616" y="128" width="548" height="620" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="640" y="172" fill="#087f82" font-size="25" font-weight="700" text-anchor="start">02  Self-evolving skills</text>
-    <rect x="76" y="206" width="468" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="77" y="220" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="96" y="236.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Current task and session context</text>
-    <text x="96" y="262.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Working</text>
-    <rect x="76" y="318" width="468" height="86" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="77" y="332" width="3" height="58" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="96" y="355.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Session summaries and durable facts</text>
-    <text x="96" y="381.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Episodic / Semantic</text>
-    <rect x="76" y="454" width="468" height="96" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="77" y="468" width="3" height="68" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="96" y="496.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Scope, eligibility, and hybrid recall</text>
-    <text x="96" y="522.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">BM25 + optional Vector / RRF</text>
-    <path d="M310 404 L310 454" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="76" y="604" width="468" height="72" rx="12" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="77" y="618" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="96" y="634.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">ContextStage</text>
-    <text x="96" y="660.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Current context + snapshots + recalled memory</text>
-    <path d="M310 550 L310 604" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <path d="M76 242 L56 242 L56 640 L76 640" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <text x="76" y="714" fill="#526780" font-size="17" font-weight="400" text-anchor="start">Archived / superseded / unresolved → excluded</text>
-    <rect x="640" y="206" width="500" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="641" y="220" width="3" height="44" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="660" y="236.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Execution trajectories and reflection</text>
-    <text x="660" y="262.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Recorder / TrajectoryStore</text>
-    <rect x="640" y="318" width="500" height="86" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="641" y="332" width="3" height="58" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="660" y="355.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Propose skill candidates</text>
-    <text x="660" y="381.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Evolver → SkillCandidate</text>
-    <path d="M890 278 L890 318" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <rect x="640" y="454" width="500" height="96" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="641" y="468" width="3" height="68" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="660" y="496.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Validate / risk-check / isolated A/B eval</text>
-    <text x="660" y="522.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Validation + PromotionGate</text>
-    <path d="M890 404 L890 454" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <rect x="640" y="604" width="236" height="72" rx="12" fill="#edf9f7" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="641" y="618" width="3" height="44" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="660" y="634.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Pass → promote</text>
-    <text x="660" y="660.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">When policy permits</text>
-    <rect x="902" y="604" width="238" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="903" y="618" width="3" height="44" rx="1" fill="#526780" stroke="none" stroke-width="1.2" />
-    <text x="922" y="634.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Review / reject</text>
-    <text x="922" y="660.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Risk / policy / eval</text>
-    <path d="M890 550 L890 578 L758 578 L758 604" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <path d="M890 578 L1020 578 L1020 604" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
-    <text x="640" y="714" fill="#526780" font-size="17" font-weight="400" text-anchor="start">Promoted skills serve future tasks; rollback is manual.</text>
-    <text x="600" y="797" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Background consolidation and evolution follow configuration; evolution updates skills, not model weights.</text>
+    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">Runtime memory and skill-evolution flow</text>
+    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Separate processes: memory supplies facts; evolution proposes reusable skills.</text>
+    <rect x="36" y="120" width="548" height="800" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
+    <rect x="47.39" y="131" width="142.02" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="118.4" y="149" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Memory recall</text>
+    <rect x="616" y="120" width="548" height="800" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
+    <rect x="627.96" y="131" width="323.28000000000003" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="789.6" y="149" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Skill evolution (off by default)</text>
+    <rect x="170" y="180" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310.0" y="211" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">Task needs context</text>
+    <rect x="86" y="290" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310" y="330" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Filter scope and eligibility</text>
+    <rect x="86" y="440" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310" y="480" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Keyword and optional vector recall</text>
+    <rect x="86" y="590" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310" y="630" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Fuse ranks; optionally rerank</text>
+    <rect x="86" y="740" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310" y="780" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Combine history, knowledge, memory</text>
+    <path d="M310 228 L310 290" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <path d="M310 354 L310 440" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <path d="M310 504 L310 590" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <path d="M310 654 L310 740" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <path d="M310 804 L310 850" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="170" y="850" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310.0" y="881" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">Supply turn context</text>
+    <rect x="750" y="180" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890.0" y="211" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">Evolution enabled</text>
+    <rect x="666" y="280" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890" y="320" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Propose from traces and reflection</text>
+    <path d="M890 228 L890 280" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="666" y="385" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890" y="425" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Validate, risk-check, evaluate</text>
+    <path d="M890 344 L890 385" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <polygon points="890,490 1070,550 890,610 710,550" fill="#fff" stroke="#c8d8e9" stroke-width="1.5" />
+    <text x="890" y="556" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">Admission outcome?</text>
+    <path d="M890 449 L890 490" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="640" y="720" width="156" height="64" rx="4" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="718" y="759" fill="#142b49" font-size="20" font-weight="600" text-anchor="middle">Promote</text>
+    <rect x="812" y="720" width="156" height="64" rx="4" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890" y="759" fill="#142b49" font-size="20" font-weight="600" text-anchor="middle">Review</text>
+    <rect x="984" y="720" width="156" height="64" rx="4" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="1062" y="759" fill="#142b49" font-size="20" font-weight="600" text-anchor="middle">Reject</text>
+    <path d="M710 550 L650 550 L650 680 L718 680 L718 720" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="687.8" y="656" width="60.400000000000006" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="718" y="672" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Admit</text>
+    <path d="M890 610 L890 720" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="864.04" y="655" width="51.92" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="890" y="671" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Hold</text>
+    <path d="M1070 550 L1130 550 L1130 680 L1062 680 L1062 720" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="1036.04" y="656" width="51.92" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="1062" y="672" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Fail</text>
+    <rect x="750" y="850" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890.0" y="881" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">Record result and reason</text>
+    <path d="M718 784 L718 818 L890 818 L890 850" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
+    <path d="M890 784 L890 818 L890 818 L890 850" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
+    <path d="M1062 784 L1062 818 L890 818 L890 850" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
+    <text x="600" y="963" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Legend: rounded terminals, processing rectangles, decision diamonds, control-flow arrows. Rollback is manual.</text>
   </g>
 </svg>

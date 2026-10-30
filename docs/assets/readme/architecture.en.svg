@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="878" viewBox="0 0 1200 878" role="img" aria-labelledby="title description">
-  <title id="title">One Runtime core. Three ways to run.</title>
-  <desc id="description">The Echo Agent Runtime core supports local terminal execution, Gateway service, and in-process Client embedding. Core responsibilities include the Agent Loop, context and memory, model routing, tools and MCP, skills and evolution, permissions and observability. External services follow configuration; each host and instance owns its state. This is a logical architecture, not a shared-process or shared-state topology.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1050" viewBox="0 0 1200 1050" role="img" aria-labelledby="title description">
+  <title id="title">C4 system context: Desktop and Runtime</title>
+  <desc id="description">A user accesses Desktop and standalone Runtime independently. Desktop embeds a Rust engine; Runtime uses Python. Each owns its state and can call models and external tools. No default Desktop-to-Python-Gateway execution link is implied.</desc>
   <defs>
     <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
       <path d="M0 0 8 4 0 8Z" fill="#2563eb" />
@@ -13,65 +13,63 @@
     </marker>
   </defs>
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
-    <rect x="1" y="1" width="1198" height="876" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="1" y="1" width="1198" height="1048" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="36" y="32" width="5" height="55" rx="2" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">One Runtime core. Three ways to run.</text>
-    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Echo Agent Runtime provides the core; Terminal, Gateway, and Client host it for different needs.</text>
-    <rect x="36" y="132" width="360" height="146" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="56" y="169" fill="#142b49" font-size="23" font-weight="700" text-anchor="start">Local / Terminal</text>
-    <text x="56" y="200" fill="#526780" font-size="18" font-weight="400" text-anchor="start">echo-agent run</text>
-    <rect x="56" y="221" width="320" height="36" rx="8" fill="#edf4ff" stroke="none" stroke-width="1.2" />
-    <text x="216" y="245" fill="#2563eb" font-size="18" font-weight="600" text-anchor="middle">Start a Runtime instance</text>
-    <path d="M216 278 L216 340" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="420" y="132" width="360" height="146" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="440" y="169" fill="#142b49" font-size="23" font-weight="700" text-anchor="start">Service / Gateway</text>
-    <text x="440" y="200" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Dashboard / API / Channels</text>
-    <rect x="440" y="221" width="320" height="36" rx="8" fill="#edf4ff" stroke="none" stroke-width="1.2" />
-    <text x="600" y="245" fill="#2563eb" font-size="18" font-weight="600" text-anchor="middle">Run Runtime as a service</text>
-    <path d="M600 278 L600 340" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="804" y="132" width="360" height="146" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="824" y="169" fill="#142b49" font-size="23" font-weight="700" text-anchor="start">Desktop / Client</text>
-    <text x="824" y="200" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Workspace / IDE / Automation</text>
-    <rect x="824" y="221" width="320" height="36" rx="8" fill="#edf9f7" stroke="none" stroke-width="1.2" />
-    <text x="984" y="245" fill="#087f82" font-size="18" font-weight="600" text-anchor="middle">Embed Runtime in process</text>
-    <path d="M984 278 L984 340" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <rect x="36" y="340" width="1128" height="320" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="60" y="383" fill="#142b49" font-size="29" font-weight="700" text-anchor="start">Echo Agent Runtime</text>
-    <text x="60" y="413" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Core responsibilities · features follow host integration and configuration</text>
-    <rect x="60" y="438" width="344" height="78" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="61" y="452" width="3" height="50" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="80" y="471.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Agent Loop</text>
-    <text x="80" y="497.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Plans / tasks / execution feedback</text>
-    <rect x="428" y="438" width="344" height="78" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="429" y="452" width="3" height="50" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="448" y="471.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Context and memory</text>
-    <text x="448" y="497.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Sessions / Memory / Knowledge</text>
-    <rect x="796" y="438" width="344" height="78" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="797" y="452" width="3" height="50" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="816" y="471.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Models and routing</text>
-    <text x="816" y="497.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Providers / routing / fallback</text>
-    <rect x="60" y="542" width="344" height="78" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="61" y="556" width="3" height="50" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="80" y="575.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Tools and MCP</text>
-    <text x="80" y="601.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Tools / MCP / executors</text>
-    <rect x="428" y="542" width="344" height="78" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="429" y="556" width="3" height="50" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="448" y="575.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Skills and evolution</text>
-    <text x="448" y="601.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Skill reuse / candidates / eval</text>
-    <rect x="796" y="542" width="344" height="78" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="797" y="556" width="3" height="50" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="816" y="575.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Policy and observability</text>
-    <text x="816" y="601.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Approval / logs / usage</text>
-    <rect x="36" y="728" width="548" height="80" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="37" y="742" width="3" height="52" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="762.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Configured models and external tools</text>
-    <text x="56" y="788.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Local or remote models · MCP / external APIs</text>
-    <rect x="616" y="728" width="548" height="80" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="617" y="742" width="3" height="52" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="636" y="762.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Local instance and host state</text>
-    <text x="636" y="788.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Sessions · memory · skills · workspace files</text>
-    <path d="M310 660 L310 728" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
-    <path d="M890 660 L890 728" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" stroke-dasharray="6 5" />
-    <text x="600" y="850" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Top: hosting modes. Bottom: service and data dependencies. Each host owns its processes and state.</text>
+    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">C4 system context: Desktop and Runtime</text>
+    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Scope: two products, their user, and external services; internal components are omitted.</text>
+    <rect x="400" y="128" width="400" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="401" y="142" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="420" y="167.0" fill="#142b49" font-size="24" font-weight="650" text-anchor="start">User</text>
+    <text x="420" y="193.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Person]</text>
+    <rect x="36" y="300" width="548" height="310" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
+    <rect x="47.65999999999998" y="311" width="227.88000000000002" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="161.6" y="329" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Interactive local work</text>
+    <rect x="616" y="300" width="548" height="310" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
+    <rect x="628.02" y="311" width="342.36" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="799.2" y="329" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Terminal or self-hosted deployment</text>
+    <rect x="66" y="375" width="488" height="116" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="67" y="389" width="3" height="88" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
+    <text x="86" y="414.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">EchoAgent Desktop</text>
+    <text x="86" y="440.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Tauri / Rust]</text>
+    <text x="86" y="466.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Embedded engine, workspace, and task UI</text>
+    <rect x="646" y="375" width="488" height="116" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="647" y="389" width="3" height="88" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="666" y="414.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Echo Agent Runtime</text>
+    <text x="666" y="440.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Python]</text>
+    <text x="666" y="466.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Standalone engine, channels, optional Gateway</text>
+    <rect x="105.42999999999998" y="530" width="409.14000000000004" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="310" y="548" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Own model config, sessions, memory, state</text>
+    <rect x="685.43" y="530" width="409.14000000000004" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="890" y="548" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Own model config, sessions, memory, state</text>
+    <path d="M480 218 L480 260 L310 260 L310 375" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="154.86" y="263" width="270.28" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="290" y="280" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Submits tasks via desktop UI</text>
+    <path d="M720 218 L720 260 L890 260 L890 375" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="769.365" y="263" width="261.27" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="900" y="280" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Terminal / HTTP / WebSocket</text>
+    <rect x="66" y="725" width="488" height="106" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="67" y="739" width="3" height="78" rx="1" fill="#526780" stroke="none" stroke-width="1.2" />
+    <text x="86" y="759.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Model service</text>
+    <text x="86" y="785.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
+    <text x="86" y="811.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Local or remote inference and retrieval</text>
+    <rect x="646" y="725" width="488" height="106" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="647" y="739" width="3" height="78" rx="1" fill="#526780" stroke="none" stroke-width="1.2" />
+    <text x="666" y="759.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Tool and business services</text>
+    <text x="666" y="785.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
+    <text x="666" y="811.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">MCP / external APIs</text>
+    <path d="M190 491 L190 725" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="68.375" y="649" width="243.25" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="190" y="666" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Requests model processing</text>
+    <path d="M770 491 L770 635 L430 635 L430 725" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="368.375" y="616" width="243.25" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="490" y="633" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Requests model processing</text>
+    <path d="M66 450 L20 450 L20 880 L890 880 L890 831" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
+    <rect x="455.85" y="885" width="288.3" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="600" y="902" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Desktop calls configured tools</text>
+    <path d="M1010 491 L1148 491 L1148 693 L1010 693 L1010 725" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="901.89" y="675" width="216.22" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="1010" y="692" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Calls configured tools</text>
+    <text x="600" y="978" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Legend: boxes name type and responsibility; arrows show calls; dashed boxes group usage/deployment scope.</text>
+    <text x="600" y="1015" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Arrows show request direction; responses return through the interaction. Product state is not auto-synchronized.</text>
   </g>
 </svg>

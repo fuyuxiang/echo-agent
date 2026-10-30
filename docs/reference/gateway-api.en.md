@@ -1,5 +1,7 @@
 # Gateway API Reference
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 The Gateway listens at `http://127.0.0.1:58123` by default, with the configurable `/api/v1` API prefix (`gateway.api_prefix`). HTTP routes are registered in `echo_agent/gateway/server.py` and `echo_agent/gateway/api/__init__.py`. All paths below are relative to the prefix. The server also registers `/meta`, `/playground`, `/ws`, and `/ws/dashboard`; the main WebSocket path is configurable.
 
 ## Authentication

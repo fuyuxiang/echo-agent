@@ -1,5 +1,7 @@
 # Developing Plugins
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Guide to creating Echo Agent plugins.
 
 ---

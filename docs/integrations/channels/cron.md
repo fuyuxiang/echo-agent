@@ -1,5 +1,7 @@
 # Cron Channel
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 Cron 通道通过定时任务触发 Agent 执行，无需外部消息输入。
 
 ---

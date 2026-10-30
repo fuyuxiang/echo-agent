@@ -1,5 +1,7 @@
 # Environment Variables
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent uses `ECHO_AGENT_` variables to override configuration fields. The mapping is implemented in `echo_agent/config/loader.py`. A few runtime variables are read directly by other modules.
 
 ## Configuration overrides

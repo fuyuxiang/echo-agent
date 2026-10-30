@@ -1,5 +1,7 @@
 # Terminal Interaction Commands
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 `echo-agent cli` defaults to the native-scrollback inline renderer;
 `echo-agent cli --tui` selects the full-screen Textual renderer. Both share the
 commands and WebSocket behavior below. Command names are case-insensitive.

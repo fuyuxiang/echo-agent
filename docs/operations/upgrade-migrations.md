@@ -1,5 +1,7 @@
 # 升级与数据迁移
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 升级前阅读 [Changelog](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md)，确认兼容性变化，并备份工作区。下列命令以默认工作区 `~/.echo-agent` 和已安装的用户级 Gateway 服务为例。使用自定义 `--workspace` 或 `--config` 时，应替换为实际路径。
 
 ## 升级已安装的包
@@ -45,7 +47,7 @@ SQLite 表结构迁移由 `echo_agent/storage/sqlite.py` 在数据库连接初�
 
 ## 2026-10-21 服务端修复兼容说明
 
-本次不新增第二个数据库/调度系统，不改桌面目录。使用本次源码构建的包和相同代码依赖一起升级；仓库版本号仍为0.3.8，未发布新版本，不应假设PyPI上同版本已包含这些修复。
+升级应以实际安装包或源码提交为单位核对变更，确保相关依赖匹配。仅比较版本字符串不足以确认源码修复是否已进入某个发布包；部署前应检查对应发行内容。
 
 1. **停新入站、等待在途执行结束，再备份。** 备份配置、完整workspace、SQLite及其一致性状态、scheduler.json、用户skills/禁用状态、记忆与知识源、artifact/spill清单、OAuth token和 `.credential_key`。配置中的绝对外部目录/显式共享checkpoint目录也需独立备份。不要只复制正在写入的SQLite主文件。
 2. **模型依赖。** Gemini的`gemini`/`google`配置名、key/env和模型保持；extras和lazy安装统一为`google-genai>=2.32,<3`，不要继续只装旧google-generativeai。`cryptography`与有超时的`regex`为核心依赖；不要通过关闭加密解决缺包。PyMuPDF暂限定1.x以避开2.0发行元数据错误。重新运行`pip check`。

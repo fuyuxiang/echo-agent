@@ -1,5 +1,7 @@
 # Feishu (Lark)
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 The Feishu channel connects via Event Subscription webhook and REST API for sending messages.

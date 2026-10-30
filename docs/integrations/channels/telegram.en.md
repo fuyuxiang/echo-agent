@@ -1,5 +1,7 @@
 # Telegram
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 The Telegram channel connects via Bot API Long-polling (`getUpdates`), requiring no public endpoint or Webhook server. This makes it ideal for deployments behind NAT or without a fixed IP address.

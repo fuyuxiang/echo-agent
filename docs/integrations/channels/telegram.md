@@ -1,5 +1,7 @@
 # Telegram
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 Telegram 通道通过 Bot API 的 Long-polling（`getUpdates`）方式连接，无需公网端点或 Webhook 服务器。适合部署在 NAT 后方、无固定 IP 的环境。

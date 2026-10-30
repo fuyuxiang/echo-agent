@@ -1,5 +1,7 @@
 # Backup and Restore
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 The default workspace is `~/.echo-agent`, but `workspace`, `-w/--workspace`, and individual `storage.*` settings can move data. Use `echo-agent config dump` to identify the effective paths. A full backup should cover configuration, the SQLite database, `storage.sessions_dir`, `storage.memory_dir`, and any knowledge documents or skills you need to retain. `checkpoint.store_path` defaults to `~/.echo-agent/checkpoints/store` and can be included as needed.
 
 ## Stopped-service full backup

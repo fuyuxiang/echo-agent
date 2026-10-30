@@ -1,5 +1,7 @@
 # Glossary
 
+**Scope: both products; product-specific definitions are identified below.**
+
 These definitions follow the current configuration, routes, and types in the source tree.
 
 | Term | Definition |
@@ -30,3 +32,16 @@ These definitions follow the current configuration, routes, and types in the sou
 | **Tool** | Callable operation exposed to the agent; execution tools include `exec`, `execute_code`, and `process`. |
 | **Tools Profile** | Tool admission set: `minimal`, `messaging`, `coding`, or `full`. |
 | **Workspace** | Directory containing configuration, runtime data, and working files. |
+
+## Product and workflow terms
+
+| Term | Definition |
+| --- | --- |
+| Desktop / Client | Local desktop workspace with an embedded Rust execution engine. |
+| Standalone Runtime | Python Agent service used through terminals, channels, or Gateway. |
+| ACP | Agent Client Protocol; Desktop uses typed in-process channels for host-engine interaction. |
+| Host | The component owning UI, resource management, local services, and engine lifecycle. |
+| Artifact | An actual task output file whose contents and saved location can be verified. |
+| Expert group | Desktop collaboration with persistent members, work, messages, and decisions. |
+| Provenance | The origin and evidence supporting a fact, memory, or result. |
+| Acceptance criteria | Observable conditions used to decide whether a task is complete. |

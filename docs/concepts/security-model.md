@@ -1,173 +1,48 @@
 # 安全模型
 
-Echo Agent 的安全体系按「纵深防御」原则设计，在请求路径上叠加多层独立检查。本文按威胁面组织，覆盖从通道入口到工具执行的完整链路。
+权限控制回答“当前请求可以执行什么”，执行隔离回答“实际操作能够影响哪里”。Echo Agent 通过入口认证、工具策略、操作检查和审批限制行为；真实隔离程度还取决于部署、执行后端和操作系统权限。
 
-## 安全层次总览
+## 分层检查
 
-```mermaid
-flowchart LR
-    REQ[请求入站] --> CA[通道认证<br/>allow_from]
-    CA --> SL[会话锁<br/>速率限制]
-    SL --> TP[工具策略过滤<br/>tools.profile]
-    TP --> SG[Shell 守卫<br/>硬/软模式]
-    SG --> AG[审批门<br/>ApprovalGate]
-    AG --> EXEC[执行]
-```
+| 层次 | 检查内容 | 设计作用 |
+| --- | --- | --- |
+| 接入 | 平台发送者、令牌、来源与配对条件 | 确认允许进入的请求 |
+| 作用域 | 会话、资源归属、记忆与工作区范围 | 选择当前请求可使用的数据 |
+| 工具准入 | 工具档位、能力与显式拒绝规则 | 缩小可请求的操作集合 |
+| 操作约束 | 路径、命令、网络目标和参数 | 约束实际操作对象 |
+| 审批 | 允许、询问或拒绝 | 处理需要进一步授权的动作 |
+| 执行环境 | 本地、容器或远程后端 | 决定实际进程与文件边界 |
 
-## 1. 安全档位 security.profile（3 级）
+这些检查分布在不同调用路径上，不表示任意工具都经过完全相同的一条线性管道。
 
-配置项 `security.profile` 控制整体安全姿态：
+## Runtime 的策略组合
 
-| 档位 | 场景 | 说明 |
-|------|------|------|
-| `personal_cli` | 单用户本地运行 | 最宽松，信任本地操作者 |
-| `daemon` | 后台服务 | 缩减权限，无人值守场景 |
-| `public_gateway` | 对外暴露的网关 | 最严格，假定输入不可信；不代表多租户隔离 |
+安全档位区分本机个人使用、后台服务和公开 Gateway；工具档位区分最小工具、消息、代码和完整工具集。最终可用能力由多层策略共同决定，不能仅靠提升某一个档位判断。
 
-### 多客户端与多租户的边界 { #multi-client-tenant-boundary }
+工具调用可直接允许、等待审批或拒绝。无人值守请求没有现场确认条件，不能依赖交互审批自动获得高风险操作权限。智能审批用于评估操作风险，不代替硬性拒绝规则。
 
-Echo Agent 可以并发处理多个通道、客户端和会话，但这不等于一个经过安全认证的多租户平台：
+命令检查可阻止已识别的危险形式；文件操作验证路径；受保护的网络抓取校验协议、地址、DNS 结果与重定向。此类控制不能推导为所有第三方代码或外部工具均受同等隔离。
 
-| 机制 | 它提供什么 | 它不提供什么 |
-|------|--------------|------------------|
-| 会话键 / 会话锁 | 模型上下文与并发处理边界 | 调用方身份认证或资源访问授权 |
-| `api_tokens` / `admin_tokens` | 请求认证与普通/管理两级 scope | 将每个 Token 自动变成全局用户身份、隔离所有实例资源 |
-| `security.profile: public_gateway` | 追加高风险工具与能力的拒绝规则 | 数据库、会话、任务和工作区的租户级分区 |
+## 多客户端与多租户边界 { #multi-client-tenant-boundary }
 
-!!! danger "认证不等于租户隔离"
-    多个普通 Token 默认属于同一 Echo Agent 实例的受信任调用方，不要把“每人发一枚 Token”当作强隔离。某些资源有更细的 owner/scope 校验，但不能由此推导整个 Gateway 都有相同边界。需要容纳互不信任的用户或组织时，应为每个租户运行独立进程，并分离工作区、数据目录、凭据和网络入口。
+同一实例支持多个客户端和会话，但会话键主要是上下文与路由标识。普通和管理令牌提供认证及管理层级，不会自动把整个实例划成独立租户。
 
-## 2. 工具档位 tools.profile（4 级）
+面向互不信任的用户或组织时，应分别运行实例，并分离进程、数据目录、数据库、工作区、凭据与网络入口。某个接口实现了更细的资源归属校验，不代表所有接口具有相同边界。
 
-```mermaid
-graph LR
-    M[minimal] --> MSG[messaging]
-    MSG --> COD[coding]
-    COD --> FULL[full]
-```
+## Desktop 的授权
 
-工具按档位分层暴露，高档位包含低档位全部工具：
+Desktop 将已授权目录、任务权限模式与能力授权结合使用。Browser Use 对副作用单独确认；Computer Use 从明确请求启动，任务内连续操作，暂停或停止后旧授权失效。操作系统权限由系统设置控制。
 
-| 档位 | 新增工具 | 典型用途 |
-|------|----------|----------|
-| `minimal` | agents_list, clarify, knowledge_search, list_dir, message, notify, read_file, read_spill, search_files, session_search, skill_view, skills_list, todo | 纯只读 + 消息 |
-| `messaging` | image_generate, memory, text_to_speech, vision_analyze | 多媒体交互 |
-| `coding` | edit_file, knowledge_index, patch, task, workflow, write_file | 文件读写 |
-| `full` | cronjob, exec, execute_code, process, skill_install, skill_manage | 进程执行 + 技能管理 |
+桌面工作区是工作范围，不是操作系统文件沙箱；IDE 终端以当前用户身份运行。只读讨论、普通工具审批与电脑任务授权是不同机制，应按功能理解。
 
-`agents_list` 是保留的策略名称，当前没有工具实现，因此即使出现在 `minimal` 策略集中也不可调用。
+## 数据与凭据
 
-!!! warning "高危工具"
-    `exec`、`execute_code`、`process` 具备 `process.exec` 能力，可执行任意命令。仅在 `full` 档位暴露，且受 Shell 守卫和审批门双重约束。
+由 Runtime 凭据管理器保存的凭据可以加密落盘，但直接填写在配置中的模型密钥和通道令牌不会因此自动迁入加密存储。迁移时应同时保留数据和对应密钥。
 
-## 3. 能力声明系统 Capabilities
+Desktop 的个人模型配置也可能包含 API Key，需要保护文件权限。两端的本地存储均不意味着模型、MCP、连接器或检索服务不接收任务数据。
 
-每个工具声明自身能力标签，用于策略过滤和审计：
+## 内容与指令的区别
 
-```python
-# 示例
-"exec":         {"process.exec"}
-"edit_file":    {"fs.read", "fs.write"}
-"image_generate": {"media.generate", "network.outbound"}
-"memory":       {"memory.read", "memory.write"}
-```
+网页、附件、工具结果和自动提取的记忆应作为资料处理，不能自行获得用户授权。记忆写入扫描、来源优先级和技能准入用于减少不可信内容影响后续行为；这些机制降低风险，不能保证所有注入均被识别。
 
-MCP 外部工具统一获得 `mcp.call` 能力标签。
-
-## 4. Shell 守卫 Guards
-
-Shell 守卫对命令执行类工具的参数做模式匹配，分两级处置：
-
-### 硬阻断（deny）— 不可覆盖
-
-| 模式 | 描述 |
-|------|------|
-| `root_rm` | `rm -rf /` 及系统根目录 |
-| `block_device_write` | `dd of=/dev/` |
-| `mkfs` | 格式化文件系统 |
-| `shutdown` | shutdown/reboot/halt/poweroff |
-| 敏感路径读取 | /etc/shadow, authorized_keys 等 |
-
-### 软拦截（ask）— 需审批通过
-
-- 递归删除（非根目录）
-- 网络外联命令
-- 权限修改命令
-
-设计要点：
-- 大小写不敏感匹配（`re.I`），防止 macOS 等大小写不敏感文件系统的绕过
-- 命令归一化（`normalizer.py`）+ Shell 分词（`tokenizer.py`）防管道/别名逃逸
-- 引号内数据不触发硬阻断（`echo "rm -rf /"` 不会误报）
-
-## 5. 路径策略 Path Policy
-
-`path_policy.py` 定义文件系统访问边界，限制工具可读写的目录范围。
-
-## 6. 网络守卫 Net Guard
-
-`net_guard.py` 控制出站网络请求，阻止未授权的外联行为。
-
-## 7. 审批机制
-
-### ApprovalGate
-
-工具调用的三态决策：
-
-| 决策 | 含义 |
-|------|------|
-| `allow` | 直接执行 |
-| `ask` | 需要人工批准后执行 |
-| `deny` | 直接拒绝，附带原因 |
-
-### 信任信号（首类字段）
-
-InboundEvent 上的信任信号是 **首类类型字段**，刻意不放在 metadata dict 中：
-
-```python
-unattended: bool = False      # 无人值守（定时/cron）
-cron_authorized: bool = False  # 此 cron job 已通过前置审批
-is_control: bool = False       # 内部控制命令
-```
-
-!!! warning "为什么不用 metadata"
-    metadata 由外部通道从不可信的调用方输入填充。若信任信号放在 metadata 中，webhook body 可以伪造 `{"_cron_authorized": true}` 绕过 EXEC 审批。首类字段只有内部可信生产者（scheduler/delivery）能设置。
-
-### 智能审批 Smart Approval
-
-`smart_approval.py` + `risk_classifier.py` 对工具调用做风险分级，实现低风险操作自动放行。
-
-### 审批白名单 ApprovalAllowlist
-
-预批准的工具 + 参数模式组合，减少交互摩擦。
-
-## 8. 凭据安全
-
-```yaml
-credentials:
-  encryption_key_env: ECHO_AGENT_CREDENTIAL_KEY
-  require_encryption: true
-```
-
-- CredentialManager 管理的凭据加密存储；YAML 中的模型/通道 token 不会自动迁入该存储，应使用环境变量或限制配置文件为 `0600`。
-- 密钥优先从指定环境变量读取，否则读取或创建权限为 `0600` 的 `.credential_key`。备份和迁移必须保留对应密钥。
-- `require_encryption: true` 时无法获得有效密钥或加密依赖不可用会拒绝初始化，不降级为明文。
-
-## 9. 记忆写入安全
-
-所有记忆写入经过 `_scan_memory_content()` 扫描：
-
-- **注入检测**：匹配 20+ 模式（中英双语），包括 prompt injection、role hijack、secrets 外泄
-- **隐形字符阻断**：检测 U+200B/U+200C/U+200D/U+2060/U+FEFF 等零宽字符
-- 命中任一模式则拒绝写入并记录审计日志
-
-出站防护的策略是静态的：协议白名单固定为 `http` 与 `https`（`file`、`data`、`gopher`、`ftp` 等在建立连接前即被拒绝），地址判定规则同样写在模块内，不从配置读取、也没有运行时重载入口。
-
-防护由五层构成，媒体下载与 web 工具共用同一份实现：
-
-| 层 | 作用 |
-|----|------|
-| 协议白名单 | 只允许 `http` / `https`，阻断 `file://`、`data:` 把 URL 抓取变成本地读取 |
-| 地址校验 | 拒绝回环、私有网段、链路本地地址（含云元数据端点 `169.254.169.254`） |
-| DNS 钉定 | 校验主机名后钉定解析结果，避免客户端重新解析造成 DNS rebinding |
-| 逐跳复检 | 每次 30x 跳转都重新校验目标，未检查的重定向等同于放行入内网 |
-| 体积上限 | 同时约束 `Content-Length` 与实际接收字节数 |
+配置与操作见[工具与权限](../guides/tools-permissions.md)、[安全加固](../operations/security-hardening.md)和[桌面任务权限](../desktop/tasks-permissions.md)。

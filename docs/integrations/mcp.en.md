@@ -1,5 +1,7 @@
 # MCP (Model Context Protocol)
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent acts as an MCP client for external tool servers. The current implementation requests protocol version `2025-06-18` and can negotiate `2025-03-26` or `2024-11-05`. It supports stdio and Streamable HTTP transport, tool listing and calls, resources and prompts, and reconnects. Sampling, elicitation, roots, and progress notifications are not implemented.
 
 ## Configuration

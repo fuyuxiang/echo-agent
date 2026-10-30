@@ -1,13 +1,29 @@
 # 通用会话扩展
 
-工具插件仍使用 register_tool，观察性生命周期使用 register_hook。需要控制原生消息、隔离会话、规范回复或处理真实投递回执的受信任插件，可继承 echo_agent.plugins.runtime.RuntimeExtension，通过 PluginContext.register_runtime_extension 注册。
+**适用范围：独立 Python Runtime；扩展开发者。** 会话扩展用于受信任插件接管会话策略与原生消息流程。普通工具插件仍使用工具注册与观察性钩子。
 
-会话扩展只允许一个所有者，重复或冲突注册会失败。此接口需要 hook.register 权限，在 strict 与 compat 模式下都不允许降级绕过。运行时方法的异常向宿主传播，不能使用观察性 hooks 的 fail-open 行为。绑定失败阻止启动；目录策略失败后，模型目录和每次工具执行都会再次检查故障状态，包括已经在推理中的轮次。独占会话策略的多个项目接入需由同一个扩展协调；普通工具插件可继续并存。原生工具在必需插件成功激活后才按最终策略装配。
+## 注册与所有权
 
-插件通过现有 echo_agent.plugins entry-point 或插件目录安装。通用核心不包含项目实现与项目默认配置。会话扩展必须声明 plugins.required；必需插件缺失、被禁用、未获得注册权限或激活失败均阻止启动，并回收已激活插件资源。
+实现 `RuntimeExtension`，通过 `PluginContext.register_runtime_extension` 注册。会话策略只允许一个所有者，重复或冲突注册会失败。严格模式和兼容模式都要求 `hook.register` 权限。
 
-RuntimeExtension 的 validate_config/recover 在注册与接收消息前执行；handle_event/before_turn/presentation 控制消息流程；record_delivery 接收 MessageBus 返回的真实最终渠道结果，普通发送和流式最终发送各通知一次；管理员恢复发送后，使用持久保存的原始入站事件报告这次恢复的实际回执，人工确认带有 operator_confirmed 标记。等待用户澄清时保留真实问题及选项，不用 presentation 的普通状态摘要替换提问。session_scope/memory_namespace/streaming_enabled/system_instructions 是程序拥有的会话策略。allowed_tool_patterns 为独占工具集合，可替换工具 profile 的建议集合；operator tools.deny、security.profile 和 execution.network_policy 始终继续生效。运行时对象保存在 Config 私有属性中，不序列化到配置或模型上下文。
+扩展必须列入 `plugins.required`。必需插件缺失、被禁用、权限不足或激活失败时，系统阻止启动并清理已激活插件资源。安装使用已有的插件入口或目录发现机制。
 
-MCPManager 只调用 bind_mcp_manager、configure_mcp_connection、build_mcp_adapter。插件可返回 None 隐藏私有操作；适配器必须保留已验证的 registered_name，整个目录验证成功后才原子替换。失败不留下部分工具；修正策略后，受信任程序可调用 refresh_tools 重建目录并解除故障。普通 MCP 在没有扩展时沿用原适配器。register_routes 挂载插件自有认证的 Gateway 端点，宿主不理解端点的项目协议。
+## 生命周期与策略
 
-插件在受信任 Python 进程内运行，注册权限不是操作系统沙箱。核心不承诺隔离恶意插件；项目权限和业务事务仍应由项目服务检验。
+配置验证与恢复发生在消息处理之前。事件处理、回合前置处理与展示策略共同控制输入和响应；会话范围、记忆命名空间、流式输出和系统指令由扩展管理。
+
+允许工具模式定义扩展拥有的工具目录，操作者的拒绝规则、安全档位与执行网络策略继续生效。扩展对象保存在私有运行状态中，不序列化到配置或模型上下文。
+
+运行时方法失败向宿主传播。绑定失败阻止启动；工具目录策略失败后，模型目录选择与实际工具执行继续检查故障状态，直到受信任刷新成功。此类控制不能使用观察性钩子的失败放行行为。
+
+## MCP 与投递
+
+MCP 集成调用扩展的绑定、连接配置与适配器构建接口。私有操作可以隐藏；适配器必须保留已验证的注册名称。整个目录验证完成后原子替换，失败时不保留部分工具。
+
+投递记录接收真实的最终通道回执，普通发送与流式最终发送分别记录。管理员恢复发送时，使用已保存的原始入站事件记录恢复回执。需要用户澄清时，保留真实问题与选项，不用普通状态摘要替换提问。
+
+插件自己的 Gateway 端点负责自身认证，通用宿主不解释项目特定协议。
+
+## 信任边界
+
+会话扩展是受信任的进程内 Python 代码，注册权限不构成操作系统隔离。项目服务仍需验证业务权限与事务。相关接口见 [Plugin API](development/plugin-api.md)和[开发插件](integrations/plugins/developing-plugins.md)。

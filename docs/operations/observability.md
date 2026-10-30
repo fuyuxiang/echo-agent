@@ -1,5 +1,7 @@
 # 可观测性
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 提供 stderr 日志、Gateway 内存日志查询、执行轨迹文件、OpenTelemetry 追踪提供器与成本统计。各功能使用不同的存储和查询入口。
 
 ## 日志

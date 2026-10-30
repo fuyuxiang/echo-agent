@@ -1,5 +1,7 @@
 # 安全档位矩阵
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 本页说明 Echo Agent 的工具准入判定：哪些工具会暴露给模型，以及哪些调用需要审批。所有取值均取自 `echo_agent/config/schema.py` 与 `echo_agent/security/tool_policy.py`。
 
 !!! warning "两个 profile 字段作用不同"

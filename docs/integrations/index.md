@@ -1,5 +1,7 @@
 # 集成与扩展
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 通过多层扩展体系与外部系统集成，覆盖消息通道、API 网关、技能系统、插件机制及多智能体协议。
 
 ## 架构概览

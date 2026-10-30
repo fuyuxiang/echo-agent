@@ -1,5 +1,7 @@
 # Email Channel
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 The Email channel receives messages via IMAP polling and sends replies via SMTP. No public endpoint is required. It is suited for asynchronous communication scenarios such as support tickets and automated email replies.

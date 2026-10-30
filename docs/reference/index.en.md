@@ -1,5 +1,7 @@
 # Reference Documentation
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 This section provides complete technical reference for Echo Agent v0.3.8 Beta. Each page documents a specific subsystem with precise specifications, option tables, and usage examples.
 
 !!! tip "Looking for tutorials?"

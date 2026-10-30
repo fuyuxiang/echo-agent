@@ -1,5 +1,7 @@
 # Slack
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 Slack 通道通过 Socket Mode（WebSocket）接收事件，使用 Web API 发送消息。Socket Mode 无需公网端点，Bot 主动连接 Slack 的 WebSocket 服务器。

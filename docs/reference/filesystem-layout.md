@@ -1,5 +1,7 @@
 # 文件系统布局
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 `Config.workspace` 默认 `~/.echo-agent`，`-w/--workspace` 可在支持的 CLI 子命令中覆盖工作区。下列相对路径均以实际工作区为根；配置项也可改写部分位置。请通过 `echo-agent config dump` 确认当前环境的最终路径。
 
 ## 工作区中的主要路径

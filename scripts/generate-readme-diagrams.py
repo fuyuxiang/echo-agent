@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the bilingual, self-contained SVG diagrams used by the project README.
+"""Build bilingual SVG diagrams for the README and documentation site.
 
 Run from any directory: python3 scripts/generate-readme-diagrams.py [--check]
 No third-party packages, network, fonts, or raster images are embedded.
@@ -88,110 +88,185 @@ class Diagram:
         return ET.tostring(self.root, encoding="unicode") + "\n"
 
 
+
+def label(d, x, y, content, size=17):
+    """Relation labels have an opaque background so routed lines remain legible."""
+    width = sum(1 if ord(c) < 128 else 1.8 for c in content) * size * 0.53 + 18
+    d.rect(x - width / 2, y - size, width, size + 7, "#f7faff", "none", 2)
+    d.text(x, y, content, size, MUTED, anchor="middle")
+
+
+def boundary(d, x, y, w, h, name):
+    node = d.rect(x, y, w, h, "none", MUTED, 4)
+    node.set("stroke-dasharray", "7 5")
+    label(d, x + 20 + sum(1 if ord(c) < 128 else 1.8 for c in name) * 4.8, y + 29, name, 18)
+
+
 def architecture(en: bool) -> str:
     def tr(zh, english):
         return english if en else zh
-
-    d = Diagram(878, tr("同一个核心，三种运行形态", "One Runtime core. Three ways to run."),
-                tr("Echo Agent Runtime 提供核心能力；终端、Gateway 与 Client 按各自场景承载运行。", "Echo Agent Runtime provides the core; Terminal, Gateway, and Client host it for different needs."),
-                tr("统一的 Echo Agent Runtime 核心支撑三种形态：终端本地运行、Gateway 服务、Client 进程内嵌入。核心职责包括 Agent Loop、上下文与记忆、模型路由、工具与 MCP、Skills 与进化、权限与可观测性。模型和外部工具按配置访问，状态由当前实例和宿主管理。图表达逻辑架构，不表示三种形态共享同一个进程或同一份状态。", "The Echo Agent Runtime core supports local terminal execution, Gateway service, and in-process Client embedding. Core responsibilities include the Agent Loop, context and memory, model routing, tools and MCP, skills and evolution, permissions and observability. External services follow configuration; each host and instance owns its state. This is a logical architecture, not a shared-process or shared-state topology."))
-    hosts = [
-        (36, tr("本地运行 / Terminal", "Local / Terminal"), "echo-agent run", tr("启动 Runtime 实例", "Start a Runtime instance"), BLUE),
-        (420, tr("在线服务 / Gateway", "Service / Gateway"), "Dashboard / API / Channels", tr("服务中运行 Runtime", "Run Runtime as a service"), BLUE),
-        (804, tr("桌面应用 / Client", "Desktop / Client"), "Workspace / IDE / Automation", tr("进程内嵌入 Runtime", "Embed Runtime in process"), TEAL),
-    ]
-    for x, title, body, embedded, color in hosts:
-        d.rect(x, 132, 360, 146)
-        d.text(x + 20, 169, title, 23, INK, 700)
-        d.text(x + 20, 200, body, 18, MUTED)
-        d.rect(x + 20, 221, 320, 36, "#edf4ff" if color == BLUE else "#edf9f7", "none", 8)
-        d.text(x + 180, 245, embedded, 18, color, 600, anchor="middle")
-        d.arrow([(x + 180, 278), (x + 180, 340)], color="teal" if color == TEAL else "blue")
-    d.rect(36, 340, 1128, 320)
-    d.text(60, 383, "Echo Agent Runtime", 29, INK, 700)
-    d.text(60, 413, tr("统一的核心职责 · 具体能力按宿主和配置启用", "Core responsibilities · features follow host integration and configuration"), 18, MUTED)
-    capabilities = [
-        (60, 438, "Agent Loop", tr("任务规划 · 推理 · 执行反馈", "Plans / tasks / execution feedback")),
-        (428, 438, tr("上下文与记忆", "Context and memory"), "Sessions / Memory / Knowledge"),
-        (796, 438, tr("模型接入与路由", "Models and routing"), "Providers / routing / fallback"),
-        (60, 542, tr("工具与 MCP", "Tools and MCP"), tr("工具调用 · 连接器 · 执行后端", "Tools / MCP / executors")),
-        (428, 542, tr("Skills 与进化", "Skills and evolution"), tr("技能复用 · 候选生成 · 评估", "Skill reuse / candidates / eval")),
-        (796, 542, tr("权限与可观测性", "Policy and observability"), tr("审批 · 日志 · 用量与状态", "Approval / logs / usage")),
-    ]
-    for x, y, title, body in capabilities:
-        d.node(x, y, 344, 78, title, (body,), accent=TEAL if y == 542 else BLUE, size=20)
-    d.node(36, 728, 548, 80, tr("所配置的模型与外部工具服务", "Configured models and external tools"),
-           (tr("本地或远端模型 · MCP / 外部 API", "Local or remote models · MCP / external APIs"),), size=21)
-    d.node(616, 728, 548, 80, tr("实例与宿主的本地状态", "Local instance and host state"),
-           (tr("会话 · 记忆 · 技能 · 工作区文件", "Sessions · memory · skills · workspace files"),), accent=TEAL, size=21)
-    d.arrow([(310, 660), (310, 728)], both=True)
-    d.arrow([(890, 660), (890, 728)], color="teal", dashed=True, both=True)
-    d.text(600, 850, tr("上层表示承载关系，下层表示服务与数据依赖；各运行实例的进程和状态由其宿主管理。", "Top: hosting modes. Bottom: service and data dependencies. Each host owns its processes and state."), 17, MUTED, anchor="middle")
+    d = Diagram(1050, tr("C4 系统上下文：Desktop 与 Runtime", "C4 system context: Desktop and Runtime"),
+                tr("读图范围：两个产品、用户及外部服务；不展开内部组件。", "Scope: two products, their user, and external services; internal components are omitted."),
+                tr("用户分别使用 Desktop 与 Runtime。Desktop 内嵌 Rust 引擎，Runtime 使用 Python 引擎；两者分别管理状态，均可调用模型和外部工具。当前没有 Desktop 到 Python Gateway 的默认执行连线。", "A user accesses Desktop and standalone Runtime independently. Desktop embeds a Rust engine; Runtime uses Python. Each owns its state and can call models and external tools. No default Desktop-to-Python-Gateway execution link is implied."))
+    d.node(400, 128, 400, 90, tr("用户", "User"), ("[Person]",), size=24)
+    boundary(d, 36, 300, 548, 310, tr("本机交互工作", "Interactive local work"))
+    boundary(d, 616, 300, 548, 310, tr("终端或自托管部署", "Terminal or self-hosted deployment"))
+    d.node(66, 375, 488, 116, "EchoAgent Desktop", ("[Software System · Tauri / Rust]", tr("内嵌执行引擎、工作区与任务界面", "Embedded engine, workspace, and task UI")), accent=TEAL)
+    d.node(646, 375, 488, 116, "Echo Agent Runtime", ("[Software System · Python]", tr("独立执行引擎、通道与可选 Gateway", "Standalone engine, channels, optional Gateway")))
+    label(d, 310, 548, tr("独立模型配置、会话、记忆与本地状态", "Own model config, sessions, memory, state"), 18)
+    label(d, 890, 548, tr("独立模型配置、会话、记忆与服务状态", "Own model config, sessions, memory, state"), 18)
+    d.arrow([(480, 218), (480, 260), (310, 260), (310, 375)])
+    label(d, 290, 280, tr("通过桌面界面提交任务", "Submits tasks via desktop UI"))
+    d.arrow([(720, 218), (720, 260), (890, 260), (890, 375)])
+    label(d, 900, 280, tr("终端 / HTTP / WebSocket", "Terminal / HTTP / WebSocket"))
+    d.node(66, 725, 488, 106, tr("模型服务", "Model service"), ("[External Software System]", tr("本地或远端推理、嵌入与重排", "Local or remote inference and retrieval")), accent=MUTED)
+    d.node(646, 725, 488, 106, tr("工具与业务服务", "Tool and business services"), ("[External Software System]", "MCP / external APIs"), accent=MUTED)
+    d.arrow([(190, 491), (190, 725)])
+    label(d, 190, 666, tr("请求模型处理", "Requests model processing"))
+    d.arrow([(770, 491), (770, 635), (430, 635), (430, 725)])
+    label(d, 490, 633, tr("请求模型处理", "Requests model processing"))
+    d.arrow([(66, 450), (20, 450), (20, 880), (890, 880), (890, 831)], color="teal")
+    label(d, 600, 902, tr("Desktop 调用已配置工具", "Desktop calls configured tools"))
+    d.arrow([(1010, 491), (1148, 491), (1148, 693), (1010, 693), (1010, 725)])
+    label(d, 1010, 692, tr("调用已配置工具", "Calls configured tools"))
+    d.text(600, 978, tr("图例：方框内标注类型与职责；有向实线表示调用关系；虚线框表示使用或部署范围。", "Legend: boxes name type and responsibility; arrows show calls; dashed boxes group usage/deployment scope."), 17, MUTED, anchor="middle")
+    d.text(600, 1015, tr("箭头表示请求方向，响应沿原交互返回；两端配置和状态不自动同步。", "Arrows show request direction; responses return through the interaction. Product state is not auto-synchronized."), 17, MUTED, anchor="middle")
     return d.output()
 
 
 def runtime(en: bool) -> str:
     def tr(zh, english):
         return english if en else zh
-
-    d = Diagram(870, tr("Runtime：从入口到执行", "Runtime: from input to execution"),
-                tr("app.py 装配生命周期；Gateway 为可选服务入口，AgentLoop 负责执行任务。", "app.py owns lifecycle composition; Gateway is optional; AgentLoop executes tasks."),
-                tr("消息通道和本地终端通过 ChannelManager 连接 MessageBus；Dashboard、CLI/TUI 和应用通过 HTTP/WebSocket 连接可选 Gateway，再进入 MessageBus。AgentLoop 消费入站事件并发布出站事件。循环使用 ContextStage、InferenceStage 与 ResponseStage，依赖会话、记忆、知识、模型、工具和审批模块。SQLite 与文件保存状态；执行轨迹在启用进化后进入 EvolutionEngine。", "Channels and the local terminal connect via ChannelManager to MessageBus. Dashboard, CLI/TUI, and apps connect through HTTP/WebSocket to optional Gateway and then MessageBus. AgentLoop consumes inbound and publishes outbound events. Its pipeline uses ContextStage, InferenceStage, and ResponseStage, with sessions, memory, knowledge, models, tools, and approval dependencies. SQLite/files persist state; evolution consumes execution trajectories when enabled."))
-    d.node(36, 128, 500, 76, tr("终端 / 消息通道", "Terminal / messaging channels"), (tr("本地 CLI 通道 · IM · Webhook", "Local CLI channel · IM · Webhook"),))
-    d.node(664, 128, 500, 76, tr("Dashboard / CLI·TUI / 你的应用", "Dashboard / CLI·TUI / your app"), ("HTTP / WebSocket",), accent=TEAL)
-    d.node(36, 248, 500, 76, "ChannelManager", ("echo_agent/channels/",))
-    d.node(664, 248, 500, 76, "GatewayServer", (tr("可选 · aiohttp · 认证与管理 API", "Optional · aiohttp · auth and management API"),), accent=TEAL)
-    d.arrow([(286, 204), (286, 248)], both=True)
-    d.arrow([(914, 204), (914, 248)], color="teal", both=True)
-    d.node(324, 372, 552, 76, "MessageBus", ("InboundEvent / OutboundEvent",))
-    d.arrow([(286, 324), (286, 350), (456, 350), (456, 372)], both=True)
-    d.arrow([(914, 324), (914, 350), (744, 350), (744, 372)], color="teal", both=True)
-    d.node(240, 494, 720, 90, "AgentLoop", ("ContextStage → InferenceStage → ResponseStage",), fill="#edf4ff")
-    d.arrow([(600, 448), (600, 494)], both=True)
-    boxes = [
-        (36, tr("上下文与状态", "Context and state"), ("Sessions / Memory / Knowledge",), BLUE),
-        (420, tr("模型与工具执行", "Models and tool execution"), ("Router / Tools / MCP / Approval",), BLUE),
-        (804, tr("Skills 与进化", "Skills and evolution"), ("Skills / Plugins / Evolution",), TEAL),
-    ]
-    for x, title, body, color in boxes:
-        d.node(x, 642, 360, 84, title, body, accent=color, size=20)
-        d.arrow([(600, 584), (600, 616), (x + 180, 616), (x + 180, 642)],
-                color="muted", dashed=True)
-    d.rect(36, 770, 1128, 58, "#edf3f9")
-    d.text(600, 806, tr("持久化：SQLite + 工作区文件；自动化、工具集与进化均按配置启用。", "Persistence: SQLite + workspace files. Automation, tools, and evolution follow configuration."), 18, MUTED, anchor="middle")
+    d = Diagram(990, tr("Runtime 组件视图", "Runtime component view"),
+                tr("读图范围：Python Runtime；实线为请求或数据流，虚线为组件依赖。", "Scope: Python Runtime. Solid arrows carry requests/data; dashed arrows show dependencies."),
+                tr("终端与消息平台通过通道接入，网页与 API 客户端通过 Gateway 接入，入站事件进入事件总线和执行循环。循环依赖上下文、模型工具及记忆技能组件，状态写入持久化存储。", "Terminal and messaging inputs use channels; browser and API clients use Gateway. Events enter the bus and execution loop, which depends on context, model/tool, and memory/skill components and persists state."))
+    d.node(36, 126, 500, 72, tr("终端与消息平台 [外部实体]", "Terminal and messaging [External]"))
+    d.node(664, 126, 500, 72, tr("网页与 API 客户端 [外部实体]", "Browser and API clients [External]"))
+    boundary(d, 20, 243, 1160, 630, "Echo Agent Runtime [Python process]")
+    d.node(56, 300, 460, 76, tr("通道适配 [组件]", "Channel adapters [Component]"), (tr("标准化输入、交付回复", "Normalize input; deliver replies"),))
+    d.node(684, 300, 460, 76, tr("Gateway [可选组件]", "Gateway [Optional component]"), (tr("认证、HTTP / WebSocket、管理界面", "Auth, HTTP / WebSocket, Dashboard"),), accent=TEAL)
+    d.arrow([(286, 198), (286, 300)], both=True)
+    label(d, 286, 225, tr("消息与回复", "Messages and replies"))
+    d.arrow([(914, 198), (914, 300)], color="teal", both=True)
+    label(d, 914, 225, "HTTP / WebSocket")
+    d.node(330, 426, 540, 68, tr("事件总线 [组件]", "Event bus [Component]"))
+    d.arrow([(286, 376), (286, 460), (330, 460)], both=True)
+    label(d, 210, 412, tr("入站与出站事件", "Inbound/outbound events"))
+    d.arrow([(914, 376), (914, 460), (870, 460)], color="teal", both=True)
+    label(d, 990, 412, tr("入站与出站事件", "Inbound/outbound events"))
+    d.node(330, 550, 540, 80, tr("任务执行循环 [组件]", "Agent loop [Component]"), (tr("组织上下文 → 推理与工具 → 保存结果", "Context → model/tools → save results"),))
+    d.arrow([(600, 494), (600, 550)])
+    label(d, 600, 530, tr("待处理任务", "Pending task"))
+    d.arrow([(330, 590), (270, 590), (270, 480), (330, 480)])
+    label(d, 190, 530, tr("回复与进度事件", "Reply/progress events"), 16)
+    boxes=[(56, tr("上下文 [组件]", "Context [Component]"), tr("会话与知识检索", "Sessions and knowledge")),
+           (428, tr("模型与工具 [组件]", "Models/tools [Component]"), tr("推理、审批与执行", "Inference, approval, execution")),
+           (800, tr("记忆与技能 [组件]", "Memory/skills [Component]"), tr("召回、整合与可选进化", "Recall, consolidation, opt-in evolution"))]
+    for x,title,body in boxes:
+        d.node(x, 706, 344, 90, title, (body,), size=19)
+        d.arrow([(600,630),(600,667),(x+172,667),(x+172,706)],color="muted",dashed=True)
+    label(d, 600, 674, tr("使用", "Uses"))
+    d.node(330, 902, 540, 62, tr("持久化存储 [SQLite / 文件]", "Persistent storage [SQLite / files]"), size=20)
+    d.arrow([(228,796),(228,933),(330,933)],color="muted")
+    d.arrow([(972,796),(972,933),(870,933)],color="muted")
+    label(d, 600, 853, tr("存储数据：会话、记忆、轨迹与技能状态", "Stored data: sessions, memory, traces, skill state"))
     return d.output()
 
 
 def learning(en: bool) -> str:
     def tr(zh, english):
         return english if en else zh
+    d = Diagram(1000, tr("Runtime 记忆与技能进化流程", "Runtime memory and skill-evolution flow"),
+                tr("两个独立流程：记忆为任务提供事实，进化将经验形成技能候选。", "Separate processes: memory supplies facts; evolution proposes reusable skills."),
+                tr("左侧：筛选有效记忆、混合检索、组织上下文。右侧：显式启用进化后生成候选，经校验和评估，分为晋升、待审核或拒绝。", "Left: filter eligible memory, retrieve, and assemble context. Right: opt-in evolution proposes candidates, validates and evaluates them, then promotes, holds for review, or rejects."))
+    for x,title in [(36,tr("记忆召回", "Memory recall")),(616,tr("技能进化（默认关闭）", "Skill evolution (off by default)"))]:
+        boundary(d,x,120,548,800,title)
+    def process(x,y,title):
+        d.rect(x,y,448,64,"#fff",LINE,0)
+        d.text(x+224,y+40,title,20,INK,650,anchor="middle")
+    def terminator(x,y,title,w=280):
+        d.rect(x,y,w,48,"#edf4ff",LINE,24)
+        d.text(x+w/2,y+31,title,19,INK,600,anchor="middle")
+    def decision(cx,cy,title):
+        el(d.canvas,"polygon",points=f"{cx},{cy-60} {cx+180},{cy} {cx},{cy+60} {cx-180},{cy}",fill="#fff",stroke=LINE,stroke_width=1.5)
+        d.text(cx,cy+6,title,19,INK,600,anchor="middle")
+    terminator(170,180,tr("任务需要上下文", "Task needs context"))
+    for y,title in [(290,tr("筛选作用域与有效性", "Filter scope and eligibility")),(440,tr("关键词与可选向量召回", "Keyword and optional vector recall")),(590,tr("融合排序与可选精排", "Fuse ranks; optionally rerank")),(740,tr("组合历史、知识与记忆", "Combine history, knowledge, memory"))]:
+        process(86,y,title)
+    for a,b in [(228,290),(354,440),(504,590),(654,740),(804,850)]:
+        d.arrow([(310,a),(310,b)])
+    terminator(170,850,tr("提供本轮上下文", "Supply turn context"))
+    terminator(750,180,tr("已启用进化", "Evolution enabled"))
+    process(666,280,tr("从轨迹与反思生成候选", "Propose from traces and reflection"))
+    d.arrow([(890,228),(890,280)])
+    process(666,385,tr("格式、风险与隔离评估", "Validate, risk-check, evaluate"))
+    d.arrow([(890,344),(890,385)])
+    decision(890,550,tr("评估与准入结论？", "Admission outcome?"))
+    d.arrow([(890,449),(890,490)])
+    for x,title in [(640,tr("晋升", "Promote")),(812,tr("待审核", "Review")),(984,tr("拒绝", "Reject"))]:
+        d.rect(x,720,156,64,"#fff",LINE,4)
+        d.text(x+78,759,title,20,INK,600,anchor="middle")
+    d.arrow([(710,550),(650,550),(650,680),(718,680),(718,720)])
+    label(d,718,672,tr("允许应用", "Admit"),16)
+    d.arrow([(890,610),(890,720)])
+    label(d,890,671,tr("需要确认", "Hold"),16)
+    d.arrow([(1070,550),(1130,550),(1130,680),(1062,680),(1062,720)])
+    label(d,1062,672,tr("未通过", "Fail"),16)
+    terminator(750,850,tr("保存结果与原因", "Record result and reason"))
+    for x in [718,890,1062]:
+        d.arrow([(x,784),(x,818),(890,818),(890,850)],color="muted")
+    d.text(600,963,tr("图例：圆角端点＝开始/结束，矩形＝处理，菱形＝判断；箭头为控制流。晋升后支持手动回滚。", "Legend: rounded terminals, processing rectangles, decision diamonds, control-flow arrows. Rollback is manual."),16,MUTED,anchor="middle")
+    return d.output()
 
-    d = Diagram(850, tr("记忆延续上下文，进化沉淀技能", "Memory carries context. Evolution builds skills."),
-                tr("两条链路共同服务后续任务；技能进化需显式启用，候选不直接写入正式技能库。", "Both support future tasks. Skill evolution is opt-in; proposals do not go straight to the live library."),
-                tr("Runtime 记忆链路：Working 提供当前上下文；Episodic 和 Semantic 保存摘要与事实，经作用域和有效性筛选后混合召回，与当前上下文一起送入 ContextStage。Archival、已取代或未解决冲突的条目不参与正常召回。进化链路：任务轨迹和反思生成候选，经校验、风险检查和隔离 A/B 评估决定晋升、待审核或拒绝；已晋升技能可手动回滚。", "Runtime memory: Working supplies current context; Episodic and Semantic retain summaries and facts. Scope and lifecycle eligibility filter mixed recall, which joins current context in ContextStage. Archived, superseded, and unresolved entries are excluded from normal recall. Evolution: trajectories and reflection produce candidates; validation, risk checks, and isolated A/B evaluation decide promotion, review, or rejection. Promoted changes support manual rollback."))
-    for x, label, color in ((36, tr("01  认知记忆", "01  Cognitive memory"), BLUE),
-                             (616, tr("02  技能自进化", "02  Self-evolving skills"), TEAL)):
-        d.rect(x, 128, 548, 620)
-        d.text(x + 24, 172, label, 25, color, 700)
-    d.node(76, 206, 468, 72, tr("当前任务与会话上下文", "Current task and session context"), ("Working",))
-    d.node(76, 318, 468, 86, tr("会话摘要与长期事实", "Session summaries and durable facts"), ("Episodic / Semantic",))
-    d.node(76, 454, 468, 96, tr("作用域 / 有效性筛选与混合召回", "Scope, eligibility, and hybrid recall"), ("BM25 + optional Vector / RRF",), size=20)
-    d.arrow([(310, 404), (310, 454)])
-    d.node(76, 604, 468, 72, "ContextStage", (tr("当前上下文 + 快照 + 相关记忆", "Current context + snapshots + recalled memory"),), fill="#edf4ff")
-    d.arrow([(310, 550), (310, 604)])
-    d.arrow([(76, 242), (56, 242), (56, 640), (76, 640)])
-    d.text(76, 714, tr("Archival / 已取代 / 未解决冲突 → 正常召回排除", "Archived / superseded / unresolved → excluded"), 17, MUTED)
-    d.node(640, 206, 500, 72, tr("任务轨迹与反思", "Execution trajectories and reflection"), ("Recorder / TrajectoryStore",), accent=TEAL)
-    d.node(640, 318, 500, 86, tr("生成技能候选", "Propose skill candidates"), ("Evolver → SkillCandidate",), accent=TEAL)
-    d.arrow([(890, 278), (890, 318)], color="teal")
-    d.node(640, 454, 500, 96, tr("校验 / 风险检查 / 隔离 A/B 评估", "Validate / risk-check / isolated A/B eval"), ("Validation + PromotionGate",), accent=TEAL, size=20)
-    d.arrow([(890, 404), (890, 454)], color="teal")
-    d.node(640, 604, 236, 72, tr("通过 → 晋升技能", "Pass → promote"), (tr("满足晋升策略时", "When policy permits"),), accent=TEAL, fill="#edf9f7", size=19)
-    d.node(902, 604, 238, 72, tr("待审核 / 拒绝", "Review / reject"), (tr("风险或配置决定", "Risk / policy / eval"),), accent=MUTED, size=19)
-    d.arrow([(890, 550), (890, 578), (758, 578), (758, 604)], color="teal")
-    d.arrow([(890, 578), (1020, 578), (1020, 604)], color="muted")
-    d.text(640, 714, tr("晋升后用于后续任务；支持手动回滚。", "Promoted skills serve future tasks; rollback is manual."), 17, MUTED)
-    d.text(600, 797, tr("记忆整合与进化在后台按配置运行；不代表模型权重训练或每次执行都自动提升。", "Background consolidation and evolution follow configuration; evolution updates skills, not model weights."), 18, MUTED, anchor="middle")
+
+def data_flow(en: bool, desktop: bool = False) -> str:
+    """Yourdon/DeMarco DFD: external rectangles, process circles, open stores."""
+    def tr(zh, english):
+        return english if en else zh
+    name = "Desktop" if desktop else "Runtime"
+    d=Diagram(980,tr(f"{name} 一级数据流图",f"{name} level-1 data-flow diagram"),
+              tr("Yourdon / DeMarco 记法：数据流动，不表示调用顺序或控制判断。", "Yourdon / DeMarco notation: data movement, not execution order or control flow."),
+              tr("用户输入进入任务处理，历史与记忆提供上下文，模型交换请求与结果，工具处理操作请求并返回结果，处理过程写入历史和交付物。", "User input enters task processing; history and memory supply context; model requests and responses are exchanged; tools return results; processing writes history and artifacts."))
+    def external(x,y,title):
+        d.rect(x,y,240,70,"#edf3f9",MUTED,0)
+        d.text(x+120,y+43,title,20,INK,650,anchor="middle")
+    def process(cx,cy,num,title):
+        el(d.canvas,"circle",cx=cx,cy=cy,r=76,fill="#fff",stroke=BLUE,stroke_width=1.6)
+        d.text(cx,cy-12,num,18,MUTED,anchor="middle")
+        d.text(cx,cy+21,title,20,INK,650,anchor="middle")
+    def store(x,y,title):
+        for yy in [y,y+60]:
+            el(d.canvas,"line",x1=x,y1=yy,x2=x+360,y2=yy,stroke=MUTED,stroke_width=2)
+        d.text(x+180,y+38,title,20,INK,600,anchor="middle")
+    external(40,170,tr("用户 / 接入客户端", "User / client"))
+    external(900,170,tr("模型服务", "Model service"))
+    external(900,600,tr("工具与外部系统", "Tools / external systems"))
+    process(570,205,"1.0",tr("组织上下文", "Build context"))
+    process(570,490,"2.0",tr("执行任务", "Execute task"))
+    store(40,440,tr("D1 历史、记忆与知识", "D1 History, memory, knowledge"))
+    store(390,825,tr("D2 执行记录与交付物", "D2 Execution records and artifacts"))
+    d.arrow([(280,205),(494,205)])
+    label(d,385,190,tr("目标与输入", "Goal and input"))
+    d.arrow([(516,545),(470,545),(470,620),(220,620),(220,500)],color="teal")
+    label(d,250,650,tr("新增历史与记忆", "History/memory updates"),16)
+    d.arrow([(400,455),(445,455),(445,250),(510,250)])
+    label(d,395,335,tr("相关内容", "Relevant content"))
+    d.arrow([(570,281),(570,414)])
+    label(d,570,355,tr("本轮上下文", "Turn context"))
+    d.arrow([(646,465),(800,465),(800,205),(900,205)])
+    label(d,770,190,tr("上下文与执行反馈", "Context and execution feedback"))
+    d.arrow([(1020,240),(1020,490),(646,490)])
+    label(d,835,515,tr("文本与工具调用请求", "Text and tool requests"),16)
+    d.arrow([(630,537),(720,537),(720,625),(900,625)])
+    label(d,790,609,tr("操作参数", "Operation parameters"))
+    d.arrow([(900,655),(610,655),(610,555)],color="teal")
+    label(d,780,680,tr("工具结果", "Tool results"))
+    d.arrow([(570,566),(570,825)])
+    label(d,570,755,tr("状态、结果与文件", "Status, results, files"))
+    d.arrow([(516,435),(480,435),(480,365),(20,365),(20,145),(160,145),(160,170)],color="teal")
+    label(d,190,350,tr("回复与执行状态", "Reply and execution status"),16)
+    d.text(600,929,tr("图例：矩形＝外部实体；圆形＝处理过程；平行线＝数据存储；箭头及名称＝数据流。", "Legend: rectangle = external entity; circle = process; parallel lines = data store; named arrow = data flow."),17,MUTED,anchor="middle")
+    d.text(600,961,tr("存储按所属实例或宿主管理；模型与外部工具可在本机或远端运行。", "Stores belong to the instance or host; models and external tools can run locally or remotely."),17,MUTED,anchor="middle")
     return d.output()
 
 
@@ -201,7 +276,14 @@ def main() -> int:
     args = parser.parse_args()
     failed = []
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    for name, build in (("architecture", architecture), ("runtime-architecture", runtime), ("memory-evolution", learning)):
+    builders = (
+        ("architecture", architecture),
+        ("runtime-architecture", runtime),
+        ("memory-evolution", learning),
+        ("runtime-data-flow", data_flow),
+        ("desktop-data-flow", lambda en: data_flow(en, desktop=True)),
+    )
+    for name, build in builders:
         for en in (False, True):
             path = OUTPUT / f"{name}{'.en' if en else ''}.svg"
             content = build(en)
@@ -214,7 +296,7 @@ def main() -> int:
     if failed:
         parser.exit(1, "Regenerate diagrams: " + ", ".join(failed) + "\n")
     if args.check:
-        print("All six README diagrams match their source.")
+        print(f"All {len(builders) * 2} documentation diagrams match their source.")
     return 0
 
 

@@ -1,5 +1,7 @@
 # Tasks & Planning
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent provides full task lifecycle management: from lightweight Todo lists to DAG-driven multi-step Workflows, to multi-agent delegation via the delegate tool. All tasks are unified on the Dashboard Kanban board with real-time monitoring and manual intervention support.
 
 ---

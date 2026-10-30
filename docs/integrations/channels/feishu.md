@@ -1,5 +1,7 @@
 # 飞书（Feishu/Lark）
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 飞书通道通过事件订阅（Event Subscription）接收消息，通过 REST API 发送消息。需要公网可达的 Webhook 端点接收事件推送，支持单聊和群聊（通过 @提及 策略控制）。

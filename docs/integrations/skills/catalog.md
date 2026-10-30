@@ -1,5 +1,7 @@
 # 内置技能目录
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 Echo Agent 提供 35 个内置技能，分布在 10 个类别中。本文列出所有可用技能及其功能说明。
 
 ## 概览

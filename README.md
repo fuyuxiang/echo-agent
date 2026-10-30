@@ -122,24 +122,24 @@ pnpm tauri dev
 
 ## 架构与运行方式
 
-**Echo Agent Runtime 是统一的运行时核心**，提供任务执行、上下文、认知记忆、模型接入、工具与技能等能力。终端和 Gateway 承载独立运行，`client/` 将 Runtime 嵌入桌面应用进程，再提供工作区、IDE 和自动化界面。各形态按宿主与配置启用具体能力。
+**Desktop 与独立 Runtime 采用共同的 Agent 工作方式，当前使用不同的执行引擎。** Python Runtime 提供终端、Gateway、消息通道、记忆与技能进化；Desktop 在进程内嵌入 Rust 引擎，提供工作区、IDE 和自动化界面。两端分别管理模型配置、会话和记忆，不要求先部署另一端。
 
-<p align="center"><img src="docs/assets/readme/architecture.svg" width="100%" alt="统一 Runtime 架构：终端本地运行、Gateway 在线服务与 Client 进程内嵌入，共同以 Echo Agent Runtime 为核心；核心负责执行、上下文、记忆、模型、工具、技能与权限，并依赖所配置的服务和当前实例状态" /></p>
+<p align="center"><img src="docs/assets/readme/architecture.svg" width="100%" alt="C4 系统上下文：Desktop 与独立 Runtime 分别运行，按配置访问模型与工具" /></p>
 
-### Runtime 的三种运行形态
+### 项目的主要运行方式
 
 | 方式 | 入口 | 执行引擎在哪里 |
 | --- | --- | --- |
 | **本地运行** | `echo-agent run` | 当前 Runtime 进程；Gateway 是否开放由配置决定 |
 | **Gateway 服务** | `echo-agent gateway` | 当前 Runtime 进程，对外开放 Dashboard、HTTP/WebSocket API |
-| **应用内嵌** | EchoAgent Desktop 或自建宿主应用 | 宿主进程内；Client 通过 ACP Channel 连接内嵌 Runtime |
+| **桌面应用** | EchoAgent Desktop | 桌面进程内的 Rust 引擎，通过 ACP Channel 与宿主通信 |
 
 <details>
 <summary>展开 Runtime 内部执行链路</summary>
 
 <p align="center"><img src="docs/assets/readme/runtime-architecture.svg" width="100%" alt="Runtime 内部执行链路：通道经 ChannelManager、应用经可选 GatewayServer 接入 MessageBus；AgentLoop 使用上下文、推理和响应阶段，并调用会话、记忆、模型、工具、权限、Skills 与进化组件" /></p>
 
-`app.py` 装配模型、存储、Agent、通道、调度和可选 Gateway，并管理启动与停止顺序。`AgentLoop` 消费入站事件并发布出站事件；工具执行受准入策略和审批控制。具体模块与任务处理流程见 [架构概览](docs/concepts/architecture.md)。
+Runtime 装配模型、存储、执行循环、通道、调度和可选 Gateway，并协调启动与停止。入站事件进入任务循环，工具执行受准入与审批控制，结果通过入口交付。详见[架构总览](https://fuyuxiang.github.io/echo-agent/concepts/architecture/)。
 
 </details>
 
@@ -157,7 +157,7 @@ pnpm tauri dev
 
 ## EchoAgent Desktop
 
-**让 Agent 在你的工作区中完成任务。** 桌面端通过 React、Tauri 与进程内嵌入的 Echo Agent Runtime，在同一个工作台中呈现计划、工具活动、文件变更和交付物。
+**让 Agent 在你的工作区中完成任务。** 桌面端通过 React、Tauri 与进程内嵌入的 Rust Agent 引擎，在同一个工作台中呈现计划、工具活动、文件变更和交付物。
 
 | 场景 | 桌面端能力 |
 | --- | --- |

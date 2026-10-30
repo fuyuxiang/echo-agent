@@ -1,5 +1,7 @@
 # Gateway 反向代理
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 以下示例让 Gateway 监听本机 `127.0.0.1:8090`，由反向代理提供 HTTPS。`8090` 是示例端口；默认端口为 `58123`。健康检查默认路径为 `/api/v1/health`；修改 `gateway.api_prefix` 后，应同步修改探针路径。
 
 ## Gateway 配置

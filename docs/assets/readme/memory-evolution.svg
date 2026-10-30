@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="850" viewBox="0 0 1200 850" role="img" aria-labelledby="title description">
-  <title id="title">记忆延续上下文，进化沉淀技能</title>
-  <desc id="description">Runtime 记忆链路：Working 提供当前上下文；Episodic 和 Semantic 保存摘要与事实，经作用域和有效性筛选后混合召回，与当前上下文一起送入 ContextStage。Archival、已取代或未解决冲突的条目不参与正常召回。进化链路：任务轨迹和反思生成候选，经校验、风险检查和隔离 A/B 评估决定晋升、待审核或拒绝；已晋升技能可手动回滚。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1000" viewBox="0 0 1200 1000" role="img" aria-labelledby="title description">
+  <title id="title">Runtime 记忆与技能进化流程</title>
+  <desc id="description">左侧：筛选有效记忆、混合检索、组织上下文。右侧：显式启用进化后生成候选，经校验和评估，分为晋升、待审核或拒绝。</desc>
   <defs>
     <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
       <path d="M0 0 8 4 0 8Z" fill="#2563eb" />
@@ -13,59 +13,64 @@
     </marker>
   </defs>
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
-    <rect x="1" y="1" width="1198" height="848" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="1" y="1" width="1198" height="998" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="36" y="32" width="5" height="55" rx="2" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">记忆延续上下文，进化沉淀技能</text>
-    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">两条链路共同服务后续任务；技能进化需显式启用，候选不直接写入正式技能库。</text>
-    <rect x="36" y="128" width="548" height="620" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="60" y="172" fill="#2563eb" font-size="25" font-weight="700" text-anchor="start">01  认知记忆</text>
-    <rect x="616" y="128" width="548" height="620" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="640" y="172" fill="#087f82" font-size="25" font-weight="700" text-anchor="start">02  技能自进化</text>
-    <rect x="76" y="206" width="468" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="77" y="220" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="96" y="236.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">当前任务与会话上下文</text>
-    <text x="96" y="262.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Working</text>
-    <rect x="76" y="318" width="468" height="86" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="77" y="332" width="3" height="58" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="96" y="355.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">会话摘要与长期事实</text>
-    <text x="96" y="381.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Episodic / Semantic</text>
-    <rect x="76" y="454" width="468" height="96" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="77" y="468" width="3" height="68" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="96" y="496.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">作用域 / 有效性筛选与混合召回</text>
-    <text x="96" y="522.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">BM25 + optional Vector / RRF</text>
-    <path d="M310 404 L310 454" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="76" y="604" width="468" height="72" rx="12" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="77" y="618" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="96" y="634.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">ContextStage</text>
-    <text x="96" y="660.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">当前上下文 + 快照 + 相关记忆</text>
-    <path d="M310 550 L310 604" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <path d="M76 242 L56 242 L56 640 L76 640" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <text x="76" y="714" fill="#526780" font-size="17" font-weight="400" text-anchor="start">Archival / 已取代 / 未解决冲突 → 正常召回排除</text>
-    <rect x="640" y="206" width="500" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="641" y="220" width="3" height="44" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="660" y="236.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">任务轨迹与反思</text>
-    <text x="660" y="262.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Recorder / TrajectoryStore</text>
-    <rect x="640" y="318" width="500" height="86" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="641" y="332" width="3" height="58" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="660" y="355.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">生成技能候选</text>
-    <text x="660" y="381.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Evolver → SkillCandidate</text>
-    <path d="M890 278 L890 318" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <rect x="640" y="454" width="500" height="96" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="641" y="468" width="3" height="68" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="660" y="496.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">校验 / 风险检查 / 隔离 A/B 评估</text>
-    <text x="660" y="522.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Validation + PromotionGate</text>
-    <path d="M890 404 L890 454" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <rect x="640" y="604" width="236" height="72" rx="12" fill="#edf9f7" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="641" y="618" width="3" height="44" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="660" y="634.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">通过 → 晋升技能</text>
-    <text x="660" y="660.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">满足晋升策略时</text>
-    <rect x="902" y="604" width="238" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="903" y="618" width="3" height="44" rx="1" fill="#526780" stroke="none" stroke-width="1.2" />
-    <text x="922" y="634.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">待审核 / 拒绝</text>
-    <text x="922" y="660.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">风险或配置决定</text>
-    <path d="M890 550 L890 578 L758 578 L758 604" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <path d="M890 578 L1020 578 L1020 604" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
-    <text x="640" y="714" fill="#526780" font-size="17" font-weight="400" text-anchor="start">晋升后用于后续任务；支持手动回滚。</text>
-    <text x="600" y="797" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">记忆整合与进化在后台按配置运行；不代表模型权重训练或每次执行都自动提升。</text>
+    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">Runtime 记忆与技能进化流程</text>
+    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">两个独立流程：记忆为任务提供事实，进化将经验形成技能候选。</text>
+    <rect x="36" y="120" width="548" height="800" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
+    <rect x="47.216" y="131" width="86.688" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="90.56" y="149" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">记忆召回</text>
+    <rect x="616" y="120" width="548" height="800" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
+    <rect x="627.54" y="131" width="189.72000000000003" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="722.4" y="149" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">技能进化（默认关闭）</text>
+    <rect x="170" y="180" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310.0" y="211" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">任务需要上下文</text>
+    <rect x="86" y="290" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310" y="330" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">筛选作用域与有效性</text>
+    <rect x="86" y="440" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310" y="480" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">关键词与可选向量召回</text>
+    <rect x="86" y="590" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310" y="630" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">融合排序与可选精排</text>
+    <rect x="86" y="740" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310" y="780" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">组合历史、知识与记忆</text>
+    <path d="M310 228 L310 290" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <path d="M310 354 L310 440" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <path d="M310 504 L310 590" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <path d="M310 654 L310 740" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <path d="M310 804 L310 850" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="170" y="850" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="310.0" y="881" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">提供本轮上下文</text>
+    <rect x="750" y="180" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890.0" y="211" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">已启用进化</text>
+    <rect x="666" y="280" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890" y="320" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">从轨迹与反思生成候选</text>
+    <path d="M890 228 L890 280" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="666" y="385" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890" y="425" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">格式、风险与隔离评估</text>
+    <path d="M890 344 L890 385" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <polygon points="890,490 1070,550 890,610 710,550" fill="#fff" stroke="#c8d8e9" stroke-width="1.5" />
+    <text x="890" y="556" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">评估与准入结论？</text>
+    <path d="M890 449 L890 490" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="640" y="720" width="156" height="64" rx="4" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="718" y="759" fill="#142b49" font-size="20" font-weight="600" text-anchor="middle">晋升</text>
+    <rect x="812" y="720" width="156" height="64" rx="4" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890" y="759" fill="#142b49" font-size="20" font-weight="600" text-anchor="middle">待审核</text>
+    <rect x="984" y="720" width="156" height="64" rx="4" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="1062" y="759" fill="#142b49" font-size="20" font-weight="600" text-anchor="middle">拒绝</text>
+    <path d="M710 550 L650 550 L650 680 L718 680 L718 720" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="678.472" y="656" width="79.05600000000001" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="718" y="672" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">允许应用</text>
+    <path d="M890 610 L890 720" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="850.472" y="655" width="79.05600000000001" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="890" y="671" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">需要确认</text>
+    <path d="M1070 550 L1130 550 L1130 680 L1062 680 L1062 720" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="1030.104" y="656" width="63.79200000000001" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="1062" y="672" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">未通过</text>
+    <rect x="750" y="850" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="890.0" y="881" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">保存结果与原因</text>
+    <path d="M718 784 L718 818 L890 818 L890 850" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
+    <path d="M890 784 L890 818 L890 818 L890 850" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
+    <path d="M1062 784 L1062 818 L890 818 L890 850" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
+    <text x="600" y="963" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">图例：圆角端点＝开始/结束，矩形＝处理，菱形＝判断；箭头为控制流。晋升后支持手动回滚。</text>
   </g>
 </svg>

@@ -1,5 +1,7 @@
 # Gateway Overview
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Echo Agent Gateway is an aiohttp-based HTTP/WebSocket server responsible for ingesting external messages, managing session lifecycles, enforcing authentication and rate limiting, and routing messages to platform-specific delivery channels.
 
 ## Core Features

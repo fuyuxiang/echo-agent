@@ -1,5 +1,7 @@
 # QQ 机器人（QQ Bot）
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 QQ Bot 通道通过**官方 QQ Bot API v2** 接入，采用 WebSocket 网关接收消息事件 + REST API 发送消息的混合架构。支持 C2C（单聊）、群聊和频道三种消息场景。

@@ -1,5 +1,7 @@
 # Integrations & Extensions
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent integrates with external systems through a multi-layer extension architecture covering message channels, API gateway, skill system, plugin mechanism, and multi-agent protocols.
 
 ## Architecture Overview

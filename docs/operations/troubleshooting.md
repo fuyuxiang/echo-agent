@@ -1,5 +1,7 @@
 # 故障排查
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 先确认实际加载的配置、工作区与启动方式：
 
 ```bash

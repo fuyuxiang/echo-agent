@@ -1,5 +1,7 @@
 # Scheduled Jobs
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent includes a built-in scheduling system that allows you to create, manage, and monitor periodic tasks using the cronjob tool. This guide covers the complete usage of the scheduling system.
 
 ## System Overview

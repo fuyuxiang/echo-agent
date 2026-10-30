@@ -1,5 +1,7 @@
 # DingTalk
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 The DingTalk channel communicates with the DingTalk Open Platform via **Stream Mode**. Stream Mode uses a callback registration + WebSocket long-polling mechanism, requiring no public-facing endpoint. This makes it ideal for deployments behind NAT, firewalls, or without a fixed public IP.

@@ -1,5 +1,7 @@
 # 微信个人号（iLink Bot）
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 微信个人号通道通过 iLink Bot API 实现与个人微信账号的对接。采用 HTTP 长轮询方式获取消息，无需公网端点，适合在 NAT 或防火墙后部署。

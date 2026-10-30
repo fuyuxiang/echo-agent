@@ -1,5 +1,7 @@
 # Discord
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 The Discord channel connects via WebSocket Gateway (v10) for real-time event reception and uses the REST API to send messages. No public endpoint is needed; the bot initiates outbound connections to Discord's gateway.

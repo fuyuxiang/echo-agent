@@ -1,5 +1,7 @@
 # Security Profile Matrix
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 This page describes how Echo Agent decides which tools reach the model and which calls need approval. Every value below is taken from `echo_agent/config/schema.py` and `echo_agent/security/tool_policy.py`.
 
 !!! warning "The two `profile` fields are not interchangeable"

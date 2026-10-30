@@ -1,5 +1,7 @@
 # Tools & Permissions
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent extends language model capabilities through an extensible tool system. Each tool declares a risk level and capabilities; the Approval Gate decides at runtime whether a call may proceed.
 
 ---

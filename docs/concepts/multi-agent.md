@@ -1,153 +1,49 @@
 # 多 Agent 协作
 
-Echo Agent 支持将复杂任务分解后委派给多个 Worker Agent 并发执行，由主 Agent 汇总结果。本机制通过 `delegate_task` 工具实现，适用于可并行化的多步骤任务。
+多 Agent 将目标拆分给多个执行上下文，再把结果交回主任务或协调员。它适合边界清楚、结果可以独立检查的工作；共享文件写入和依赖关系仍需要顺序协调。
 
-## 协作架构
+## Runtime 的 Worker 委派
 
-```mermaid
-flowchart TB
-    USER[用户] --> MAIN[主 Agent<br/>Agent Loop]
-    MAIN -->|delegate_task 工具| W1[Worker 1]
-    MAIN -->|delegate_task 工具| W2[Worker 2]
-    MAIN -->|delegate_task 工具| W3[Worker 3]
-    W1 --> R1[WorkerResult]
-    W2 --> R2[WorkerResult]
-    W3 --> R3[WorkerResult]
-    R1 --> MAIN
-    R2 --> MAIN
-    R3 --> MAIN
-    MAIN --> RESP[汇总响应]
-```
+主 Agent 通过内部委派工具提出子任务。每个 Worker 使用独立目标、指令、模型和预算，完成后返回状态、文本、错误与用量。主 Agent 负责检查子任务是否覆盖原目标，再形成最终回复。
 
-## 1. Worker Profile
+Worker 的工具集合不能超出父 Runtime 可用能力；指定工具或使用角色默认工具时仍受执行门控。委派深度、并发数量、迭代和超时限制共同约束执行。超过单批数量上限的任务不会自动保证全部执行，主任务应分批安排并核对结果。
 
-Worker 通过预定义的 Profile 模板配置：
-
-```python
-@dataclass(frozen=True)
-class WorkerProfile:
-    id: str
-    name: str
-    description: str = ""
-    instructions: str = ""          # Worker 专属指令
-    default_tools: tuple[str, ...]  # 可用工具子集
-    model: str = ""                 # 可独立指定模型
-    provider: str = ""
-    max_iterations: int = 12        # 迭代上限
-    max_tokens: int = 8192
-    temperature: float = 0.4
-```
-
-Profile 限定了 Worker 的能力边界——Worker 的最终工具集是父 Runtime 可用工具与显式 `tools` 请求的交集；未指定时才使用 Profile 的 `default_tools`，遵循最小权限原则。
-
-## 2. delegate_task 工具
-
-主 Agent 通过 `delegate_task` 工具发起委派：
-
-- 指定 Worker Profile 或使用默认配置
-- 描述子任务目标和约束
-- 可并发发起多个 delegate 调用
-
-## 3. 执行结果 WorkerResult
-
-```python
-@dataclass
-class WorkerResult:
-    task_index: int
-    status: str = "completed"  # completed | failed | timeout
-    output: str = ""
-    error: str = ""
-    iterations: int = 0
-    tool_calls: int = 0
-    duration_seconds: float = 0.0
-    model: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-```
-
-Worker 执行完成后返回结构化结果，主 Agent 可根据 status 判断是否需要重试或降级。
-
-## 4. WorkerToolOutcome
-
-Worker 内部的工具调用结果：
-
-```python
-@dataclass(frozen=True)
-class WorkerToolOutcome:
-    text: str
-    success: bool = True
-```
-
-区分成功与失败，使 Worker 循环能判断进展而非盲目重试。
-
-## 5. 执行时序
+## 协作时序
 
 ```mermaid
 sequenceDiagram
-    participant User
-    participant Main as 主 Agent
-    participant W1 as Worker 1
-    participant W2 as Worker 2
-
-    User->>Main: 复杂任务
-    Main->>Main: 分析并分解子任务
-    par 并发执行
-        Main->>W1: delegate_task(子任务 A)
-        Main->>W2: delegate_task(子任务 B)
+    actor U as 用户
+    participant C as 主任务或协调员
+    participant A as 成员 A
+    participant B as 成员 B
+    U->>C: 目标与验收要求
+    C->>C: 拆分任务并确认依赖
+    par 可独立执行的子任务
+        C->>A: 子任务、约束与预算
+        A-->>C: 结果、状态与证据
+    and
+        C->>B: 子任务、约束与预算
+        B-->>C: 结果、状态与证据
     end
-    W1-->>Main: WorkerResult(completed)
-    W2-->>Main: WorkerResult(completed)
-    Main->>Main: 汇总结果
-    Main->>User: 最终响应
+    C->>C: 检查覆盖、冲突与失败
+    opt 结果不完整
+        C->>C: 重排或补做缺失工作
+    end
+    C-->>U: 汇总交付与未完成项
 ```
 
-## 6. 安全与隔离
+该 UML 时序图只在独立工作区或允许并发的情况下使用并行片段。依赖前一步结果、修改相同资源的任务需要串行安排。
 
-- **工具限制**：显式工具请求或 Profile 默认集均不能超出父 Runtime 的可用工具与执行门控
-- **迭代上限**：`max_iterations` 防止 Worker 无限循环
-- **审计追踪**：每个 Worker 的工具调用都记录在审计日志中（`audit.py`）
-- **错误隔离**：单个 Worker 失败不影响其他 Worker 和主 Agent
+## Desktop 的专家团
 
-## 7. A2A 协议集成
+Desktop 在内嵌引擎之上，由宿主保存专家团消息、工作队列、依赖、决定与汇总状态。成员分别拥有执行会话与只读讨论会话；宿主组织协作，不另建推理内核。
 
-内部 Worker 委派与 A2A 是两条独立路径。当前 A2A 生产接线是入站服务：外部 Agent
-发现 Echo Agent，并向它提交文本任务。
+默认每个专家团最多并行两名成员，同一工作区的执行工作串行。成员结果到齐后可继续汇总；中断后检查已有工作，再手动重试。共享决定需要确认，成员长期记忆与个人或组织知识由各自范围控制。
 
-```mermaid
-flowchart LR
-    EXT1[外部 Agent A] -->|A2A JSON-RPC| EA[Echo Agent]
-    EXT2[外部 Agent B] -->|A2A JSON-RPC| EA
-    EXT1 -.->|GET Agent Card| EA
-    EXT2 -.->|GET Agent Card| EA
-```
+## 内部协作与 A2A
 
-- **Agent Card**：描述 Agent 能力的元数据，用于服务发现
-- **JSON-RPC**：通过 `tasks/send`、`tasks/get` 和 `tasks/cancel` 管理入站任务
-- **身份隔离**：认证 token 派生 principal，任务和会话按 principal 分区
+内部 Worker 和桌面专家团不等同于跨服务 Agent 网络。Runtime 当前 A2A 生产能力是入站任务服务；当前 Agent 运行时不提供 A2A 出站委派入口。外部调用可以提交任务、查询和取消，但不会使内部委派自动改为远端派发。
 
-内部 `delegate_task` 工具只调用本地 Worker 运行时，不会路由到外部 A2A Agent。代码库中的
-低层 `A2AClient` 辅助类没有生产调用方，也未经 `net_guard`，不应接收不可信 URL。
+## 验证协作质量
 
-## 8. 内部模块结构
-
-| 模块 | 职责 |
-|------|------|
-| `multi_agent/models.py` | WorkerProfile, WorkerResult 数据结构 |
-| `multi_agent/runtime.py` | Worker 执行运行时 |
-| `multi_agent/registry.py` | Worker Profile 注册表 |
-| `multi_agent/audit.py` | 委派审计日志 |
-| `tools/delegate.py` | delegate_task 工具实现 |
-| `a2a/protocol.py` | A2A 协议实现 |
-| `a2a/client.py` | 未接入生产运行时的低层客户端辅助类 |
-
-## 委派限额
-
-Worker 的并发度有独立配置，与工具并发分区策略无关——后者决定的是「一批工具调用中哪些可以并行」（只读且路径不冲突才并行），不约束子代理数量。
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `multiAgent.enabled` | `true` | 是否启用多代理委派 |
-| `multiAgent.maxDepth` | `3` | 委派嵌套最大深度 |
-| `multiAgent.maxParallelWorkers` | `4` | 单次委派的并行子代理数上限 |
-| `multiAgent.maxIterations` | `12` | 子代理的最大迭代轮数 |
-
-两种超限的处理方式不同：委派深度达到 `maxDepth` 时，`delegate_task` 调用直接失败并提示主代理自行处理；任务数超过 `maxParallelWorkers` 时，任务列表被截断到上限并记录一条告警，已截掉的任务不会执行。任务数多于上限时应分批委派，而不是依赖截断。
+主任务应逐项核对子任务状态、实际产物、来源证据与缺失工作。单个成员失败需要被明确处理；多个成员同意某个结论也不能代替事实验证。操作见[任务与规划](../guides/tasks-planning.md)与[桌面专家团](../desktop/collaboration-scheduling.md)。

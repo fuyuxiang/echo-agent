@@ -1,5 +1,7 @@
 # Deployment
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 The standalone `echo-agent-runtime/` project includes complete Dashboard sources, bundled skills and `deploy/` templates. Pure sources require a frontend build; official Runtime archives and Python packages include prebuilt assets. See the [Runtime README](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/README.en.md).
 
 Echo Agent can run in the foreground or as a registered Gateway service. The default workspace is `~/.echo-agent`; use `echo-agent config dump` to inspect the effective paths.
@@ -93,7 +95,7 @@ The authenticated `/playground` discovers custom HTTP/WS paths from `/meta`. Das
 
 For persistent output use artifact_create/append/finalize/deliver and their IDs/validation results. HTTP/WS without attachment transport can receive numbered text chunks; synchronous HTTP returns tool deliveries in `reply.tool_deliveries` and the final answer in `reply.text`. Business completion, artifact persistence, send acceptance, and remote acknowledgement remain distinct facts.
 
-Send SIGTERM and verify shutdown before switching to systemd. Give the service its own protected model environment: a service does not inherit an SSH shell's environment. Duplicate Runtime/port conflicts exit nonzero; service-control failures propagate instead of reporting success. The current acceptance host was macOS; Linux wheel-process CI is wired, but no local Linux host/Docker daemon was available. The existing Docker sample is not a newly built or qualified container artifact. See the [review evidence](../reviews/server-review-and-remediation.md).
+Send SIGTERM and verify shutdown before switching to systemd. Give the service its own protected model environment: a service does not inherit an SSH shell's environment. Duplicate Runtime/port conflicts exit nonzero; service-control failures propagate instead of reporting success. Service and browser workflows were validated in an isolated macOS environment. Linux package and process checks run in CI. The Docker configuration is a deployment example without a corresponding complete container acceptance record. See the [review evidence](../reviews/server-review-and-remediation.md).
 
 ## Validate skill execution and web access
 

@@ -1,5 +1,7 @@
 # 备份与恢复
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 默认工作区是 `~/.echo-agent`，但 `workspace`、`-w/--workspace` 和各 `storage.*` 路径可以改变实际存储位置。先运行 `echo-agent config dump` 确认部署路径。完整备份至少覆盖配置、SQLite 数据库、`storage.sessions_dir`、`storage.memory_dir` 和需要保留的知识文档与技能。`checkpoint.store_path` 默认 `~/.echo-agent/checkpoints/store`，也可按需一并备份。
 
 ## 停机完整备份

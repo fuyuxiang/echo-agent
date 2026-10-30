@@ -1,5 +1,7 @@
 # 消息通道
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 Echo Agent 的通道体系负责将来自不同平台的消息统一接入核心处理流程。每个通道实现为一个独立的适配器，继承自 `BaseChannel` 基类，通过 `ChannelManager` 统一管理生命周期。
 
 ## 核心架构

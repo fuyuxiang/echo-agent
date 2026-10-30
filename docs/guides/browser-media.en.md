@@ -1,5 +1,7 @@
 # Browser & Media Capabilities
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent provides browser automation, web retrieval, image understanding and generation, and text-to-speech capabilities — covering the full pipeline from information gathering to content creation.
 
 ---

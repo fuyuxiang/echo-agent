@@ -1,5 +1,7 @@
 # 会话管理
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 的会话系统为每个对话键提供独立的模型上下文，支持多通道、多会话并发交互。
 
 !!! warning "会话隔离不是访问控制"

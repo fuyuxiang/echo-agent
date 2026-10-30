@@ -1,397 +1,63 @@
-# 记忆系统深度解析
+# 记忆系统
 
-## 概述
+**适用范围：本页主要说明独立 Runtime。** 记忆将对话中值得保留的偏好和事实，转为后续任务可检索的上下文。它与完整聊天历史、文档知识库和当前任务进度分别管理。
 
-Echo-Agent 的记忆系统（Memory System）采用仿生学设计，模拟人类认知中的多层记忆结构。系统将信息按时效性、重要性和访问频率分布在四个层级中，通过 hybrid retrieval 实现高效召回，并借助 Ebbinghaus 遗忘曲线实现自然衰减，确保 prompt context 始终保持高信噪比。
+## 为什么需要分层
 
----
+把所有历史放进每次请求会提高成本，并把过期或无关内容带入当前任务。Runtime 将信息按使用方式分为四层：
 
-## 四层架构（Four-Tier Architecture）
+| 层次 | 保存内容 | 对当前任务的作用 |
+| --- | --- | --- |
+| 工作记忆（Working） | 当前处理所需的短期信息 | 支持本轮上下文组织 |
+| 情节记忆（Episodic） | 会话摘要及其来源关联 | 回顾发生过什么 |
+| 语义记忆（Semantic） | 偏好、身份、环境与项目事实 | 复用稳定知识 |
+| 归档记忆（Archival） | 不再参与正常召回的记录 | 支持管理、维护与追溯 |
 
-记忆系统由四个层级组成，从高频短时到低频持久依次为：
+分层是信息管理方法，不代表所有内容都会立即进入长期记忆。临时任务清单与执行状态应留在任务记录中，避免旧进度被当作长期事实反复召回。
 
-| Tier | 定位 | 存储特征 | 生命周期 |
-|------|------|----------|----------|
-| **WORKING** | 进程内缓冲区 | 最多 20 条，markdown 渲染后注入 prompt | 单次会话 |
-| **EPISODIC** | 会话摘要 | Episode 对象，支持 semantic search | 跨会话，按重要性保留 |
-| **SEMANTIC** | 持久事实 | 主要持久化单元（MemoryEntry dataclass） | 长期，受 decay 影响 |
-| **ARCHIVAL** | 归档/待清理 | superseded_by 已设置或低于 archive threshold | 可恢复，最终清除 |
+## 从对话到长期事实
 
-### WORKING 层
+回复后，系统根据未整合消息数量等条件安排后台整合：生成会话摘要，提取有价值的事实，检查重复与冲突，再更新存储和索引。该工作异步执行，发送回复时不要求所有长期记忆已写完。
 
-- 进程内环形缓冲区，容量上限 **20 entries**
-- 每次 prompt 构建时渲染为 markdown，注入 system message
-- 受 **char budget** 约束：超出预算时按 importance 降序截断
-- 会话结束后不持久化，由 consolidation pipeline 提取有价值内容下沉
+用户明确陈述、后台提取、模型推断与旧版迁移具有不同来源可信度。较低可信来源不能随意覆盖用户明确提供的事实。写入还会检查可疑指令和不可见字符，减少把外部内容转为长期指令的风险。
 
-### EPISODIC 层
-
-每段对话结束后生成 Episode 对象：
-
-```python
-@dataclass
-class Episode:
-    session_key: str          # 会话唯一标识
-    summary: str              # LLM 生成的摘要
-    message_range_start: int  # 消息范围起始
-    message_range_end: int    # 消息范围结束
-    entity_ids: List[str]     # 关联实体 ID
-    importance: float         # 0-1 重要性评分
-```
-
-检索方式：embedding 语义检索不可用时回落关键词检索。`search_episodes` 接受 query、session_key 和 limit；实体与时间字段不等于公开的筛选参数。
-
-### SEMANTIC 层
-
-系统的**主要持久化单元**（primary persistent unit）。存储经过验证的跨会话事实，每条记录为一个 `MemoryEntry` dataclass 实例。
-
-### ARCHIVAL 层
-
-包含两类条目：
-1. **被取代条目**：`superseded_by` 字段已设置，指向更新版本
-2. **低活跃条目**：effective_importance 低于 archive threshold
-
-归档条目仅供管理/维护查看，被取代条目仅供管理员查看；普通工具、检索和快照不会以低权重继续召回。版本关系可供追溯。
+## 召回与排序
 
 ```mermaid
-graph TD
-    subgraph "Four-Tier Memory Pyramid"
-        W["WORKING<br/>进程内缓冲 · max 20 entries<br/>char budget 截断"]
-        E["EPISODIC<br/>会话摘要 · semantic search<br/>Episode dataclass"]
-        S["SEMANTIC<br/>持久事实 · primary persistent unit<br/>MemoryEntry dataclass"]
-        A["ARCHIVAL<br/>归档/待清理<br/>superseded · below threshold"]
-    end
-
-    W -->|"consolidation<br/>提取事实"| S
-    W -->|"session end<br/>生成摘要"| E
-    E -->|"fact extraction"| S
-    S -->|"decay / supersede"| A
-    A -.->|"restore"| S
-
-    style W fill:#ff9800,color:#fff
-    style E fill:#2196f3,color:#fff
-    style S fill:#4caf50,color:#fff
-    style A fill:#9e9e9e,color:#fff
+flowchart TD
+    S([收到查询]) --> A[按作用域与有效性筛选候选]
+    A --> B[关键词召回]
+    B --> V{向量召回可用且已启用？}
+    V -->|是| C[执行向量召回]
+    V -->|否| D[融合可用结果并过滤无区分性匹配]
+    C --> D
+    D --> E{精排可用且已启用？}
+    E -->|是| F[在限定预算内精排前列候选]
+    E -->|否| G[保留融合顺序]
+    F --> H{精排成功？}
+    H -->|是| I[使用精排结果]
+    H -->|否| G
+    I --> J[结合重要性与上下文预算选取]
+    G --> J
+    J --> T([返回相关记忆])
 ```
 
----
+关键词检索擅长名称、编号等精确线索，向量检索补充语义相近的表达；倒数排名融合（RRF）将不同检索方式的排名组合起来。可选精排再比较查询和候选的相关性。嵌入或精排超时可回退，避免增强能力阻塞整轮响应。
 
-## 记忆类型（Memory Types）
+记忆向量与知识库索引是不同存储。记忆向量带有嵌入模型标识；模型改变后，不兼容的旧向量不应继续参与同一语义空间的比较，而需重新嵌入。
 
-系统定义两种记忆类型，决定条目的衰减策略：
+## 有效性、冲突与遗忘
 
-### USER 类型
+正常召回排除归档、已被取代和未解决冲突的条目。旧版本仍可用于管理追溯，但不会以低权重继续混入普通回答。
 
-- 存储用户**偏好、身份、习惯**等个人信息
-- **永不衰减**（exempt from decay）
-- 当 `pinned=True` 时始终出现在 core snapshot 中
-- 示例：用户姓名、语言偏好、编码风格偏好
+环境事实会随长时间未使用而降低有效重要性，使用可强化保留；活跃的用户身份与偏好免于一般时间衰减。归档、旧版本清理与删除分别受维护策略约束。
 
-### ENVIRONMENT 类型
+新旧事实发生矛盾时，系统先筛选可能冲突的记录，再结合来源与语义判断处理。无法解决的冲突保留待处理状态，避免把两种相反结论同时作为确定事实提供给模型。
 
-- 存储**项目知识、技术栈信息、代码结构**等环境上下文
-- **受 decay 影响**：长期不访问的条目 effective_importance 逐渐降低
-- 项目切换后相关性可能下降
-- 示例：项目目录结构、依赖版本、API 端点
+## Desktop 的记忆
 
----
+Desktop 使用自己的内嵌记忆实现，提供统一设置、来源查看、更正和遗忘。全局偏好与项目事实按用途划分，专家团成员记忆另有范围。它不自动复用本页所述 Python 存储或配置。操作见[文档、知识与记忆](../desktop/knowledge-memory.md)。
 
-## MemoryEntry 数据结构
+## 使用上的判断
 
-`MemoryEntry` 是记忆系统的核心数据模型，完整字段定义如下：
-
-```python
-@dataclass
-class MemoryEntry:
-    id: str                    # UUID，全局唯一标识
-    type: MemoryType           # USER | ENVIRONMENT
-    tier: MemoryTier           # WORKING | EPISODIC | SEMANTIC | ARCHIVAL
-    key: str                   # 语义键，用于去重和更新
-    content: str               # 记忆内容（纯文本或结构化）
-    tags: List[str]            # 标签，用于分类过滤
-    source_session: str        # 来源会话 ID
-    created_at: datetime       # 创建时间
-    updated_at: datetime       # 最后更新时间
-    importance: float          # 0-1 重要性评分（基础值）
-    access_count: int          # 累计访问次数
-    last_accessed: datetime    # 最后访问时间
-    embedding_id: str          # 向量存储中的 embedding ID
-    episode_id: Optional[str]  # 关联的 Episode ID
-    version: int               # 版本号，支持版本追踪
-    superseded_by: Optional[str]  # 被取代时指向新版本 ID
-    source: ProvenanceLevel    # 来源可信度等级
-    pinned: bool               # True 时始终包含在 core snapshot
-```
-
-记忆向量由单一索引承载（SQLite 持久化 + numpy 内存矩阵），一条记忆对应一个向量，不支持同一条目挂多个向量。知识库的向量是另一套独立存储（旁挂 `.npz` sidecar），与记忆向量物理隔离。
-
-每个存储的向量都打上写入时的 `model_id`。启动时标记与当前嵌入模型不一致的行不会载入矩阵，而是进入重新嵌入队列——更换嵌入模型不会让旧向量以错误的语义空间参与检索。
-
----
-
-## Provenance 系统（来源可信度）
-
-每条 MemoryEntry 携带 `source` 字段标识其来源，系统据此决定冲突时的优先级：
-
-| 等级 | 名称 | 权重 | 说明 |
-|------|------|------|------|
-| 3 | `user_stated` | 最高 | 用户明确陈述的事实 |
-| 2 | `consolidated` | 高 | consolidation pipeline 提取并验证 |
-| 1 | `model_inferred` | 中 | 模型从对话中推断 |
-| 0 | `legacy` | 最低 | 旧版迁移数据，未经验证 |
-
-### provenance_guard() 机制
-
-```python
-def provenance_guard(existing: MemoryEntry, incoming: MemoryEntry) -> bool:
-    """
-    防止低可信度来源覆盖高可信度记忆。
-    返回 True 表示允许写入，False 表示拒绝。
-    """
-    if incoming.source.value >= existing.source.value:
-        return True
-    # 低优先级不可覆盖高优先级
-    return False
-```
-
-!!! warning "安全注意"
-    provenance_guard 是防止 prompt injection 篡改用户声明事实的关键防线。
-    绝不可绕过此检查直接写入 SEMANTIC 层。
-
----
-
-## Hybrid Retrieval（混合检索）
-
-记忆检索采用多路召回 + 融合排序策略：
-
-### 检索管线
-
-```mermaid
-flowchart LR
-    Q[Query] --> T[Tokenize]
-    T --> BM25["BM25<br/>关键词匹配"]
-    T --> VEC["Vector Search<br/>语义相似度"]
-    BM25 --> RRF["RRF Fusion<br/>k=60"]
-    VEC --> RRF
-    RRF --> DT{"Discriminative<br/>Token Gate"}
-    DT -->|通过| RE["Cross-Encoder<br/>Reranker (optional)"]
-    DT -->|未通过| DISCARD[丢弃]
-    RE --> FC["Forgetting-Curve<br/>加权"]
-    FC --> RESULTS[最终结果]
-```
-
-### 各组件说明
-
-1. **BM25 关键词检索**：基于 TF-IDF 的稀疏检索，擅长精确匹配
-2. **Vector Embedding 检索**：通过 embedding 向量计算语义相似度
-3. **RRF Fusion（Reciprocal Rank Fusion）**：
-   - 公式：`score = Σ 1/(k + rank_i)`，其中 `k=60`
-   - 平衡两路结果，避免单一路径主导
-4. **Discriminative Token Gate**：过滤无区分性 token 匹配（如 stop words 命中）
-5. **Cross-Encoder Reranker**（可选）：精排阶段，牺牲速度换精度
-6. **Forgetting-Curve 加权**：最终得分乘以 effective_importance（见 Decay 章节）
-
-精排由 `memory.rerankEnabled`（默认 `true`）控制，只要 RRF 融合后有候选就会执行，没有额外的候选数量门槛。它只作用于融合结果的前 `memory.rerankTopK` 条（默认 10），其余保持 RRF 原序，以此约束开销。
-
-延迟预算分两层：单次推理等待 `memory.rerankTimeoutSeconds`（默认 5 秒），模型加载与下载走 `memory.rerankLoadTimeoutSeconds`。任一超时或失败都返回 RRF 原序——精排是纯增强，不构成召回的闸门。`memory.rerankMinScore` 大于 0 时会丢弃低分候选，但若全部被丢则回退为不过滤，避免阈值配错清空召回。
-
----
-
-## Decay 机制（Ebbinghaus 遗忘曲线）
-
-系统借鉴 Ebbinghaus 遗忘曲线模型，对记忆条目实施自然衰减：
-
-### 核心公式
-
-```python
-# 半衰期计算：访问越多，遗忘越慢
-half_life = base_half_life * (1 + log2(1 + access_count))
-
-# 有效重要性：随时间指数衰减
-days_since_access = (now - last_accessed).days
-effective_importance = importance * (0.5 ** (days_since_access / half_life))
-```
-
-### 衰减行为
-
-- **base_half_life**：基础半衰期，`memory.importance_decay_days` 默认 30 天
-- 每次访问（检索命中）触发 `access_count += 1` 和 `last_accessed` 更新
-- 访问相当于"复习"，延长半衰期
-- effective_importance 降至 archive threshold 以下时，条目迁移至 ARCHIVAL 层
-
-### 豁免规则
-
-以下条目**不受 decay 影响**：
-
-- `type == USER`：用户身份和偏好永不衰减
-- `pinned == True`：固定条目始终保持在 core snapshot 中
-
-基础半衰期取自 `memory.importanceDecayDays`，默认 30 天，最小值钳制为 1 天。所有非 USER 类型共用这一个基础值，不按 ENVIRONMENT 等子类型分别设置——类型间的差异体现在豁免规则（USER 完全豁免）而非不同的半衰期。
-
----
-
-## 记忆生命周期
-
-```mermaid
-stateDiagram-v2
-    [*] --> Created: 新建条目
-    Created --> Active: 写入 SEMANTIC 层
-
-    Active --> Active: access_count++<br/>reinforcement loop
-    Active --> Decaying: 长时间未访问
-    Decaying --> Active: 被检索命中<br/>重新激活
-    Decaying --> Archived: effective_importance<br/>< archive_threshold
-
-    Archived --> Active: restore / 手动恢复
-    Archived --> Superseded: 新版本写入<br/>superseded_by 设置
-    Active --> Superseded: contradiction detection<br/>发现矛盾并替换
-
-    Superseded --> [*]: 最终清除
-    Archived --> [*]: GC 清理
-
-    note right of Active
-        USER 类型和 pinned 条目
-        始终停留在此状态
-    end note
-```
-
----
-
-## 安全机制（Security）
-
-记忆系统是 prompt injection 的高价值攻击面。系统在写入路径上部署多层防御：
-
-### Prompt Injection 扫描
-
-所有写入操作经过 `_scan_memory_content()` 门控：
-
-```python
-def _scan_memory_content(content: str) -> ScanResult:
-    """
-    扫描记忆内容中的 prompt injection 模式。
-    支持中英文双语检测。
-    阻止包含不可见 unicode 字符的内容。
-    """
-    # 1. 不可见 unicode 检测
-    if contains_invisible_unicode(content):
-        return ScanResult(blocked=True, reason="invisible_unicode")
-
-    # 2. EN 注入模式匹配
-    if matches_en_injection_patterns(content):
-        return ScanResult(blocked=True, reason="en_injection")
-
-    # 3. ZH 注入模式匹配
-    if matches_zh_injection_patterns(content):
-        return ScanResult(blocked=True, reason="zh_injection")
-
-    return ScanResult(blocked=False)
-```
-
-### 防御层次
-
-| 层级 | 机制 | 防御目标 |
-|------|------|----------|
-| 写入门控 | `_scan_memory_content()` | 阻止恶意内容进入存储 |
-| Provenance Guard | `provenance_guard()` | 防止低权限覆盖高权限 |
-| Unicode 清洗 | invisible unicode blocking | 阻止零宽字符等隐形攻击 |
-| 双语检测 | EN + ZH pattern scanning | 覆盖中英文注入模式 |
-
-!!! warning "安全注意"
-    所有记忆写入路径（包括 consolidation pipeline 的自动写入）都必须经过
-    `_scan_memory_content()` 检查。任何绕过此检查的代码路径都是安全漏洞。
-
-!!! warning "安全注意"
-    不可见 unicode 字符（如零宽空格 U+200B、零宽连接符 U+200D 等）可用于
-    构造人眼不可见但模型可解析的指令。系统对此实施零容忍策略。
-
----
-
-## 矛盾检测（Contradiction Detection）
-
-当新记忆与已有记忆产生语义冲突时，系统通过矛盾检测机制解决：
-
-### Contradiction 数据结构
-
-```python
-@dataclass
-class Contradiction:
-    entry_a_id: str          # 冲突条目 A
-    entry_b_id: str          # 冲突条目 B
-    description: str         # 矛盾描述
-    confidence: float        # 检测置信度
-    resolution: Optional[str]  # 解决方案
-    resolved_at: Optional[datetime]
-```
-
-### 检测流程
-
-1. **Heuristic 预筛选**：基于 key 相似度和 tag 重叠快速定位潜在冲突
-2. **LLM Verification**：将候选冲突对提交 LLM 进行语义级判断
-3. **Versioned Lattice**：维护版本格（lattice）记录条目间的取代关系
-
-### 解决策略
-
-- 高 provenance 取代低 provenance
-- 时间更新者取代更旧者（同 provenance 时）
-- 无法自动解决时标记为 pending，等待用户确认
-- 被取代条目设置 `superseded_by`，迁移至 ARCHIVAL 层
-
----
-
-## Consolidation（整合管线）
-
-Consolidation 是记忆系统的"睡眠期"处理流程，类似人类睡眠时的记忆整合。在非评测回复后达到未整合消息阈值时排入后台：
-
-### Sleep-Time Pipeline 步骤
-
-```
-1. Episode Creation
-   └─ 将当前会话消息压缩为 Episode 对象
-   └─ 生成 summary，标记 entity_ids 和 importance
-
-2. Fact Extraction
-   └─ 从 Episode 和 WORKING 层中提取可持久化的事实
-   └─ 生成候选 MemoryEntry（tier=SEMANTIC）
-   └─ 设置 source=consolidated (provenance=2)
-
-3. Contradiction Detection
-   └─ 将候选事实与现有 SEMANTIC 条目对比
-   └─ 触发矛盾检测流程（见上节）
-   └─ 解决冲突或标记 pending
-
-4. Decay Pass
-   └─ 遍历所有 SEMANTIC 条目
-   └─ 重算 effective_importance
-   └─ 将低于 threshold 的条目迁移至 ARCHIVAL
-   └─ 更新 embedding index
-```
-
-### 触发条件
-
-- ResponseStage 在回复后调用 `should_consolidate(message_count, last_consolidated)`
-- 达到配置阈值后调度；`sleep_consolidation` 控制同一后台任务中的额外整合步骤
-- 当前没有独立空闲定时器或通用手动整合管理 API
-
-整合是异步执行的，不阻塞对话回复：会话结束时把任务交给后台任务调度器，而非在请求路径上同步跑完。
-
-并发控制有两层。一是按会话去重：调度器维护 `pending` 集合，同一会话已在队列中时重复调度直接返回，避免同一份记忆被并行整合。二是任务分级：整合任务标记为 DURABLE 级别，调度器饱和时将其排队而不丢弃，并且传入的是可重入的任务工厂而非裸协程，失败后能被重新调用。
-
----
-
-## 设计原则总结
-
-1. **仿生设计**：四层架构模拟人类短期/长期记忆分层
-2. **渐进遗忘**：Ebbinghaus 曲线确保无用信息自然退出
-3. **访问强化**：频繁使用的记忆越来越不容易遗忘
-4. **来源可信**：provenance 层级确保高质量信息不被低质量覆盖
-5. **安全优先**：写入路径全面门控，双语注入检测
-6. **混合检索**：BM25 + Vector + RRF 兼顾精确匹配和语义理解
-7. **版本追踪**：矛盾检测 + versioned lattice 保证事实一致性
-
----
-
-## 相关文档
-
-- [架构总览](architecture.md)
-- [工作区与会话身份](workspace-session-identity.md)
-- [事件投递](events-delivery.md)
+长期记忆适合稳定事实，知识库适合有来源的文档，聊天历史适合回查原话。检验记忆时，应检查实际条目、作用域和来源，不宜仅凭模型声称“我记住了”判断写入成功。Runtime 操作见[记忆管理](../guides/memory-management.md)。

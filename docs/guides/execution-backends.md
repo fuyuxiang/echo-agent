@@ -1,5 +1,7 @@
 # 执行后端
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 命令与代码类工具（`exec`、`execute_code`、`process`）不直接在 Agent 进程里跑，而是交给一个**执行器**。执行器决定隔离强度与运行位置。本页字段取自 `echo_agent/config/schema.py` 的 `ExecutionConfig`，行为取自 `echo_agent/agent/executors/factory.py`。
 
 ## 四种执行器

@@ -1,5 +1,7 @@
 # Compatibility Reference
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 This page follows `pyproject.toml` and the current CI configuration. The project is in the `0.x` Beta series; read the [Changelog](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md) and back up the workspace before upgrading.
 
 ## Python and platforms

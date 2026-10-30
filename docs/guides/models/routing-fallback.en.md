@@ -1,5 +1,7 @@
 # Routing & Fallback Strategy
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 This document explains how Echo-Agent routes requests to specific models based on task type, and how degradation fallback is executed when a model becomes unavailable.
 
 ## Route Matching Logic

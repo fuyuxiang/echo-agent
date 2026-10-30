@@ -1,5 +1,7 @@
 # Observability
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent offers stderr logs, an in-memory Gateway log query, execution-trace files, OpenTelemetry trace providers, and cost summaries. These use different storage and query paths.
 
 ## Logs

@@ -1,5 +1,7 @@
 # WebSocket Protocol Reference
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent Gateway exposes one WebSocket for agent sessions and one for Dashboard events.
 
 | Endpoint | Default path | Purpose |

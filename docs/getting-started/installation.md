@@ -133,7 +133,7 @@
 !!! note "faiss 与 fastembed 是两件事"
     `faiss-cpu` 属于 `[vector]` 与 `[all]` 分组，可以通过挑选 extra 来跳过；缺少它时向量检索降级为关键词检索，功能不中断。
 
-    `fastembed` 则是**核心依赖**，任何安装组合都会带上它，无法通过 extra 规避。它依赖 ONNX Runtime，在部分平台需要编译。若安装受阻，推荐在 Windows 上改用 WSL2——本项目的常驻服务注册也只支持 Linux / macOS / WSL2。
+    FastEmbed 作为**随包提供的嵌入组件**，所需 ONNX Runtime 等依赖由核心安装声明，不能通过 extra 规避。在缺少二进制 wheel 的平台上可能需要编译。若安装受阻，推荐在 Windows 上改用 WSL2——本项目的常驻服务注册也只支持 Linux / macOS / WSL2。
 
 ---
 

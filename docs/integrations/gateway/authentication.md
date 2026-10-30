@@ -1,5 +1,7 @@
 # Gateway 认证详解
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 Gateway 提供三种认证模式，适应从开发调试到生产部署的不同场景。认证系统同时管理用户身份验证和 API 令牌鉴权两个层面。
 
 ## 认证模式

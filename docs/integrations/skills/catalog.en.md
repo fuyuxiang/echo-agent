@@ -1,5 +1,7 @@
 # Built-in Skill Catalog
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Echo Agent provides 35 built-in skills across 10 categories. This document lists all available skills and their descriptions.
 
 ## Overview

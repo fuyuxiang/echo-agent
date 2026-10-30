@@ -1,5 +1,7 @@
 # 内置工具参考
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均取自代码中的注册信息：工具名是各工具类的 `name` 属性（定义在 `echo_agent/agent/tools/` 下），能力标签取自 `echo_agent/security/capabilities.py` 的 `TOOL_CAPABILITIES`，档位归属取自 `echo_agent/security/tool_policy.py`。
 
 !!! note "工具名不等于模块名"

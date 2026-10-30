@@ -1,87 +1,32 @@
-# Workspace, Session & Identity
+# Workspace, session, and identity
 
-echo-agent uses **Session** to isolate conversational context and concurrency scopes: each channel + chat combination owns an independent history and state, preventing ordinary context bleed.
+Workspaces, sessions, memory scopes, and identities solve different problems. Separate conversations do not by themselves establish resource authorization.
 
-!!! warning "A Session is not a tenant authorization boundary"
-    A session key is routing and state scope, not an unforgeable security principal; session separation does not provide multi-tenant isolation. If mutually untrusted users require an authorization boundary, run separate instances, workspaces, databases, and credentials. See [Multi-client vs. multi-tenant boundaries](security-model.en.md#multi-client-tenant-boundary).
+| Concept | Purpose | Does not imply |
+| --- | --- | --- |
+| Workspace | Relevant files and local state | Complete OS-enforced filesystem isolation |
+| Session | Related messages and execution context | Possession of an ID grants access |
+| Memory scope | Durable facts visible to a task | All memory is shared within a session |
+| Identity | Caller and authorized resources | One token isolates an entire tenant |
 
-## Core Concepts
+## Runtime routing and scope
 
-| Concept | Description |
-|---------|-------------|
-| Session key | Unique session identifier in the format `channel:chat_id` |
-| SessionManager | Lifecycle manager responsible for creation, caching, expiry, and archival |
-| Scoped session | In group chats with `per_user` policy, appends `:sender_id` to isolate per-user conversation context (not authorization) |
-| Memory scope | Independent of session_key; determines long-term memory ownership |
+Runtime generally identifies a session from its channel and conversation. Group context can be shared or split by sender. Memory scope is computed separately and may remain group-wide. Private-chat memory can follow bound identity.
 
-## Session Key Composition
+Per-user group sessions therefore do not automatically imply per-user long-term memory. Check session policy, identity binding, and memory scope together.
 
-```mermaid
-graph LR
-    A[channel] -->|":"| B[chat_id]
-    B -->|optional ":sender_id"| C[scoped key]
-    
-    subgraph Examples
-        D["telegram:123456"]
-        E["slack:C04ABC"]
-        F["telegram:group_789:user_42"]
-    end
-```
+## Continuity
 
-- `channel` — integration channel identifier (telegram / slack / cron, etc.)
-- `chat_id` — conversation identifier within that channel
-- In group `per_user` mode, `:sender_id` is appended
+Messages in a session are processed sequentially, with history and execution state persisted. Active history retains needed messages and keeps tool requests paired with results. Compression, consolidation, and history lookup support older content without sending everything on every turn.
 
-## Session Lifecycle
+Expiry, archiving, reset, and deletion are different operations. Failure to recall history does not prove erasure. See [Sessions](../guides/sessions.md) for retention and management.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Active : acquire()
-    Active --> Active : message append / update
-    Active --> Expired : idle >= 72h
-    Expired --> Active : user speaks again
-    Expired --> Archived : idle >= 168h
-    Archived --> [*]
-```
+## Desktop working directories
 
-- **Active** — receiving messages normally, LRU cache hit
-- **Expired** — inactive beyond `expiry_hours=72`, can be reactivated
-- **Archived** — inactive beyond `archive_hours=168`, removed from active storage
+Desktop binds tasks to actual directories and coordinates authorization, IDE, and tools. Personal preferences can span projects; project facts are scoped to workspaces. Groups distinguish member context, member memory, and shared decisions.
 
-## Conversation Scoping & Isolation
+Changing a directory or member model can establish a new context. History, memory, and real files are separate stores; clearing one does not clear the others. See [Tasks](../desktop/tasks-permissions.md) and [Expert groups](../desktop/collaboration-scheduling.md).
 
-```mermaid
-graph TD
-    MSG[Incoming message] --> IS_GROUP{Group chat?}
-    IS_GROUP -->|Yes| POLICY{scope policy}
-    POLICY -->|per_user| PU["channel:chat_id:sender_id"]
-    POLICY -->|shared| SH["channel:chat_id"]
-    IS_GROUP -->|No| PRIV["channel:chat_id"]
+## Multiple users
 
-    PU --> MEM_GROUP["memory_scope = group_id"]
-    SH --> MEM_GROUP
-    PRIV --> MEM_PRIV["memory_scope = owner / chat_id"]
-```
-
-- Group chat memory scope always binds to group_id, regardless of session isolation
-- Private chat memory scope depends on whether an owner is bound (bound vs unbound)
-
-## Persistence & Concurrency
-
-**JSONL Storage**
-- Each session maps to a single `.jsonl` file
-- Filenames are encoded via `urllib.parse.quote()` (bijective mapping, no collisions)
-- Automatic migration from legacy `"_"` separator scheme to `"%3A"` encoded scheme
-
-**Concurrency Control**
-- Each session holds an independent `asyncio.Lock`
-- LRU cache capped at 200 entries; eviction never removes sessions with held locks
-- Atomic writes with corrupt-data recovery
-
-## History Alignment
-
-`get_history(max_messages=500)` follows these rules when returning history:
-
-1. Skips consolidated messages (beyond the `last_consolidated` pointer)
-2. Discards orphaned tool results (results without a corresponding tool_use)
-3. Aligns to a user message boundary — history always starts with a user message
+Runtime supports multiple clients and sessions, but ordinary API tokens generally identify trusted callers of one instance. Mutually untrusted users or organizations need separate processes, data, workspaces, credentials, and network entry points. See [Tenant boundaries](security-model.md#multi-client-tenant-boundary).

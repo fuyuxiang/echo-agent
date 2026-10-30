@@ -1,5 +1,7 @@
 # Gateway Reverse Proxy
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 These examples bind the Gateway to `127.0.0.1:8090` and expose HTTPS through a reverse proxy. `8090` is an example port; the default is `58123`. The default health path is `/api/v1/health`; update the probe if `gateway.api_prefix` changes.
 
 ## Gateway configuration

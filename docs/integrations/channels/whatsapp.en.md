@@ -1,5 +1,7 @@
 # WhatsApp
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Connect Echo Agent via WhatsApp Business API.
 
 ---

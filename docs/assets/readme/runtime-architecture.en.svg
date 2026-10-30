@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="870" viewBox="0 0 1200 870" role="img" aria-labelledby="title description">
-  <title id="title">Runtime: from input to execution</title>
-  <desc id="description">Channels and the local terminal connect via ChannelManager to MessageBus. Dashboard, CLI/TUI, and apps connect through HTTP/WebSocket to optional Gateway and then MessageBus. AgentLoop consumes inbound and publishes outbound events. Its pipeline uses ContextStage, InferenceStage, and ResponseStage, with sessions, memory, knowledge, models, tools, and approval dependencies. SQLite/files persist state; evolution consumes execution trajectories when enabled.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="990" viewBox="0 0 1200 990" role="img" aria-labelledby="title description">
+  <title id="title">Runtime component view</title>
+  <desc id="description">Terminal and messaging inputs use channels; browser and API clients use Gateway. Events enter the bus and execution loop, which depends on context, model/tool, and memory/skill components and persists state.</desc>
   <defs>
     <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
       <path d="M0 0 8 4 0 8Z" fill="#2563eb" />
@@ -13,55 +13,75 @@
     </marker>
   </defs>
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
-    <rect x="1" y="1" width="1198" height="868" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="1" y="1" width="1198" height="988" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="36" y="32" width="5" height="55" rx="2" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">Runtime: from input to execution</text>
-    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">app.py owns lifecycle composition; Gateway is optional; AgentLoop executes tasks.</text>
-    <rect x="36" y="128" width="500" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="37" y="142" width="3" height="48" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="160.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Terminal / messaging channels</text>
-    <text x="56" y="186.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Local CLI channel · IM · Webhook</text>
-    <rect x="664" y="128" width="500" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="665" y="142" width="3" height="48" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="684" y="160.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Dashboard / CLI·TUI / your app</text>
-    <text x="684" y="186.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">HTTP / WebSocket</text>
-    <rect x="36" y="248" width="500" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="37" y="262" width="3" height="48" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="280.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">ChannelManager</text>
-    <text x="56" y="306.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">echo_agent/channels/</text>
-    <rect x="664" y="248" width="500" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="665" y="262" width="3" height="48" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="684" y="280.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">GatewayServer</text>
-    <text x="684" y="306.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Optional · aiohttp · auth and management API</text>
-    <path d="M286 204 L286 248" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
-    <path d="M914 204 L914 248" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" />
-    <rect x="324" y="372" width="552" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="325" y="386" width="3" height="48" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="344" y="404.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">MessageBus</text>
-    <text x="344" y="430.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">InboundEvent / OutboundEvent</text>
-    <path d="M286 324 L286 350 L456 350 L456 372" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
-    <path d="M914 324 L914 350 L744 350 L744 372" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" />
-    <rect x="240" y="494" width="720" height="90" rx="12" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="241" y="508" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="260" y="533.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">AgentLoop</text>
-    <text x="260" y="559.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">ContextStage → InferenceStage → ResponseStage</text>
-    <path d="M600 448 L600 494" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
-    <rect x="36" y="642" width="360" height="84" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="37" y="656" width="3" height="56" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="678.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Context and state</text>
-    <text x="56" y="704.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Sessions / Memory / Knowledge</text>
-    <path d="M600 584 L600 616 L216 616 L216 642" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
-    <rect x="420" y="642" width="360" height="84" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="421" y="656" width="3" height="56" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="440" y="678.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Models and tool execution</text>
-    <text x="440" y="704.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Router / Tools / MCP / Approval</text>
-    <path d="M600 584 L600 616 L600 616 L600 642" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
-    <rect x="804" y="642" width="360" height="84" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
-    <rect x="805" y="656" width="3" height="56" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="824" y="678.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Skills and evolution</text>
-    <text x="824" y="704.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Skills / Plugins / Evolution</text>
-    <path d="M600 584 L600 616 L984 616 L984 642" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
-    <rect x="36" y="770" width="1128" height="58" rx="12" fill="#edf3f9" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="600" y="806" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Persistence: SQLite + workspace files. Automation, tools, and evolution follow configuration.</text>
+    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">Runtime component view</text>
+    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Scope: Python Runtime. Solid arrows carry requests/data; dashed arrows show dependencies.</text>
+    <rect x="36" y="126" width="500" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="37" y="140" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="56" y="169.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Terminal and messaging [External]</text>
+    <rect x="664" y="126" width="500" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="665" y="140" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="684" y="169.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Browser and API clients [External]</text>
+    <rect x="20" y="243" width="1160" height="630" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
+    <rect x="32.04999999999998" y="254" width="351.90000000000003" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="208.0" y="272" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Echo Agent Runtime [Python process]</text>
+    <rect x="56" y="300" width="460" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="57" y="314" width="3" height="48" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="76" y="332.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Channel adapters [Component]</text>
+    <text x="76" y="358.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Normalize input; deliver replies</text>
+    <rect x="684" y="300" width="460" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="685" y="314" width="3" height="48" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
+    <text x="704" y="332.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Gateway [Optional component]</text>
+    <text x="704" y="358.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Auth, HTTP / WebSocket, Dashboard</text>
+    <path d="M286 198 L286 300" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
+    <rect x="186.89999999999998" y="208" width="198.20000000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="286" y="225" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Messages and replies</text>
+    <path d="M914 198 L914 300" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" />
+    <rect x="832.92" y="208" width="162.16" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="914" y="225" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">HTTP / WebSocket</text>
+    <rect x="330" y="426" width="540" height="68" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="331" y="440" width="3" height="40" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="350" y="467.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Event bus [Component]</text>
+    <path d="M286 376 L286 460 L330 460" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
+    <rect x="97.38499999999999" y="395" width="225.23000000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="210" y="412" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Inbound/outbound events</text>
+    <path d="M914 376 L914 460 L870 460" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" />
+    <rect x="877.385" y="395" width="225.23000000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="990" y="412" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Inbound/outbound events</text>
+    <rect x="330" y="550" width="540" height="80" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="331" y="564" width="3" height="52" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="350" y="584.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Agent loop [Component]</text>
+    <text x="350" y="610.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Context → model/tools → save results</text>
+    <path d="M600 494 L600 550" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="536.94" y="513" width="126.12" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="600" y="530" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Pending task</text>
+    <path d="M330 590 L270 590 L270 480 L330 480" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="91.96" y="514" width="196.08" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="190" y="530" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Reply/progress events</text>
+    <rect x="56" y="706" width="344" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="57" y="720" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="76" y="745.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Context [Component]</text>
+    <text x="76" y="771.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Sessions and knowledge</text>
+    <path d="M600 630 L600 667 L228 667 L228 706" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
+    <rect x="428" y="706" width="344" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="429" y="720" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="448" y="745.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Models/tools [Component]</text>
+    <text x="448" y="771.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Inference, approval, execution</text>
+    <path d="M600 630 L600 667 L600 667 L600 706" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
+    <rect x="800" y="706" width="344" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="801" y="720" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="820" y="745.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Memory/skills [Component]</text>
+    <text x="820" y="771.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Recall, consolidation, opt-in evolution</text>
+    <path d="M600 630 L600 667 L972 667 L972 706" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
+    <rect x="572.98" y="657" width="54.04" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="600" y="674" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Uses</text>
+    <rect x="330" y="902" width="540" height="62" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="331" y="916" width="3" height="34" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="350" y="940.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Persistent storage [SQLite / files]</text>
+    <path d="M228 796 L228 933 L330 933" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
+    <path d="M972 796 L972 933 L870 933" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
+    <rect x="365.75" y="836" width="468.5" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="600" y="853" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Stored data: sessions, memory, traces, skill state</text>
   </g>
 </svg>

@@ -1,5 +1,7 @@
 # Session Management
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent's session system gives each conversation key an independent model context and supports concurrent channels and sessions.
 
 !!! warning "Session isolation is not access control"

@@ -1,91 +1,67 @@
-# Echo Agent Documentation
+# Echo Agent documentation
 
-**Echo Agent** is a self-hosted, long-running AI Agent runtime with persistent memory, skills evolution, and multi-channel integrations.
+Echo Agent offers **EchoAgent Desktop (Client)** for interactive work on your computer and **Echo Agent Runtime** for terminal use, messaging integrations, and self-hosted services. This manual covers setup, daily use, architecture, and operations.
 
----
+## Choose your entry point
 
-## Quick Navigation
+| Goal | Entry point | Start here |
+| --- | --- | --- |
+| Work with files, code, browsers, or desktop applications in a UI | Desktop | [Desktop quickstart](desktop/quickstart.md) |
+| Use an Agent in a terminal or manage a service through a browser | Runtime | [Runtime quickstart](getting-started/quickstart.md) |
+| Connect messaging platforms, webhooks, or scheduled jobs | Runtime | [Channels](integrations/channels/index.md) and [background services](operations/background-service.md) |
+| Understand execution, memory, and tool calls | Both | [Architecture](concepts/architecture.md) |
+| Provide Agent services to an application | Runtime Gateway | [Gateway integration](integrations/gateway/index.md) |
 
-<div class="grid cards" markdown>
+## Desktop: complete tasks in a workspace
 
--   :material-rocket-launch:{ .lg .middle } **Getting Started**
+Desktop brings conversations, plans, tool activity, approvals, file changes, and deliverables into one application. Coding tasks can use the embedded IDE. Office tasks can generate documents. Browser and computer automation depend on device capabilities.
 
-    ---
+Start by installing the application, choosing a working directory and model, submitting a task, and checking the result.
 
-    Install and have your first conversation in 5 minutes
+- [Installation and requirements](desktop/installation.md)
+- [Your first task](desktop/quickstart.md)
+- [Tasks, sessions, and permissions](desktop/tasks-permissions.md)
+- [Coding workspace](desktop/coding.md)
+- [Browser and computer automation](desktop/automation.md)
+- [Documents, knowledge, and memory](desktop/knowledge-memory.md)
+- [Models and extensions](desktop/models-extensions.md)
+- [Expert groups and scheduled tasks](desktop/collaboration-scheduling.md)
+- [Data management and troubleshooting](desktop/operations.md)
 
-    [:octicons-arrow-right-24: Get started](getting-started/index.en.md)
+## Runtime: operate your own Agent service
 
--   :material-server-network:{ .lg .middle } **Background Deployment**
+Runtime receives requests, builds context, calls models, executes tools, and persists sessions and memory. Gateway adds Dashboard, HTTP API, and WebSocket access. Channels, knowledge indexing, MCP, and skill evolution are enabled through configuration.
 
-    ---
+```bash
+pip install "echo-agent[all]"
+echo-agent setup
+echo-agent gateway
+```
 
-    Run as a daemon or systemd service for 24/7 availability
+Open <http://127.0.0.1:58123/> after startup. See the [Runtime quickstart](getting-started/quickstart.md) for installation, verification, and terminal access.
 
-    [:octicons-arrow-right-24: Deployment guide](operations/deployment.md)
+| Goal | Documentation |
+| --- | --- |
+| Install dependencies and verify the environment | [Installation](getting-started/installation.md) |
+| Complete a verifiable task | [First workflow](guides/first-workflow.md) |
+| Manage sessions, knowledge, memory, and costs | [Runtime guides](guides/index.md) |
+| Operate, upgrade, or recover a service | [Operations](operations/index.md) |
+| Look up commands, configuration, and APIs | [Reference](reference/index.md) |
 
--   :material-chat-processing:{ .lg .middle } **Platform Integrations**
+## How the products relate
 
-    ---
+Both use a cycle of model reasoning, tool execution, and feedback, but the current source uses different runtime implementations. Desktop embeds a Rust execution engine. Standalone Runtime uses a Python engine. Desktop works independently without a Gateway deployment.
 
-    Connect your Agent to DingTalk, Feishu, WeChat, Slack, Telegram, and 14 channels total
+Each product manages its model connections, permissions, memory, and plugins. Check page scope before applying instructions; configuration files are not interchangeable. See [Architecture](concepts/architecture.md).
 
-    [:octicons-arrow-right-24: Channel configuration](integrations/channels/index.md)
+## Reading this manual
 
--   :material-puzzle:{ .lg .middle } **Extend & Develop**
+**Quickstarts** provide a short working path and success criteria. **Guides** explain tasks. **Concepts** explain design, data flow, and boundaries. **Reference** provides exact parameters. **Development** covers contribution workflows.
 
-    ---
+Concept pages require no source-code knowledge. Architecture diagrams show boundaries and responsibilities; sequence diagrams show interactions; flowcharts show decisions; data-flow diagrams show sources, processing, and storage.
 
-    Write custom skills, plugins, and channel adapters
+## Project status
 
-    [:octicons-arrow-right-24: Developer guide](development/index.en.md)
+The project is in Beta, with independent releases for each product. Read release notes and back up before upgrading. Runtime requires Python 3.11+. Desktop release targets are macOS and Windows; see the installation pages for architectures and requirements.
 
-</div>
-
----
-
-## Core Capabilities
-
-| Module | Description | Details |
-|--------|-------------|---------|
-| **Agent Loop** | Receive events → build context → call model → execute tools, shared across all entry points | [Agent loop](concepts/agent-loop.md) |
-| **Cognitive Memory** | Working / Episodic / Semantic / Archival four tiers, with decay, contradiction detection and importance reranking | [Memory system](concepts/memory-system.md) |
-| **Hybrid Retrieval** | BM25 + FAISS vector fusion, adaptive weighting per query, graceful degradation without FAISS | [Knowledge base](guides/knowledge-base.md) |
-| **Self-Evolution** | Trajectory recording → candidate generation → eval comparison → promote/reject, with cooldown and rollback | [Evolution & evaluation](concepts/evolution-evaluation.md) |
-| **Model Routing** | Main reasoning, context compression, embeddings and risk approval each configurable with independent provider and model | [Routing & fallback](guides/models/routing-fallback.md) |
-| **Tool Approval** | Three modes: `manual` / `smart` / `off`, unattended channels default to denying high-risk calls | [Tools & permissions](guides/tools-permissions.md) |
-| **Multi-model support** | OpenAI, Anthropic, Gemini, Bedrock, OpenRouter, plus OpenAI-compatible endpoints (DeepSeek, Qwen, Kimi, GLM, Ollama) | [Provider overview](guides/models/providers.md) |
-| **14 channel adapters** | CLI, Cron, DingTalk, Discord, Email, Feishu, Matrix, QQ Bot, Slack, Telegram, Webhook, WeCom, WeChat, WhatsApp | [Channel setup](integrations/channels/index.md) |
-| **Cross-Process Interop** | Inbound A2A JSON-RPC service + MCP client (with OAuth), with dynamic tool registration | [MCP](integrations/mcp.md) · [A2A](integrations/a2a.md) |
-| **Plugin system** | Register external plugins via entry-points | [Using plugins](integrations/plugins/using-plugins.md) |
-| **Dashboard** | Built-in web panel for conversations, cost and runtime status | [Dashboard](guides/dashboard.md) |
-| **Scheduled tasks** | Built-in cron scheduler for time-triggered Agent execution | [Scheduled jobs](guides/scheduled-jobs.md) |
-| **Output Preservation** | Oversized tool output is spilled to disk; the model sees a head/tail preview plus a retrieval path and can pull the full text back with `read_spill` | [Context compression & spill](concepts/context-compression-spill.md) |
-| **Local-First** | Sessions, memory, traces and credentials stored in the workspace by default, credentials encrypted at rest | [Security model](concepts/security-model.md) |
-
----
-
-## Project Status
-
-!!! warning "Beta Stage"
-    Echo Agent is currently at **v0.3.8** in Beta. The core API is stabilizing, but breaking changes may still occur in:
-
-    - Configuration file format (`config.yaml` schema)
-    - Plugin / skill API interfaces
-    - Database schema (migrated automatically during connection initialization; `echo-agent migrate` handles memory data only)
-
-    Review the [CHANGELOG](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md) and back up your data before upgrading.
-
----
-
-## System Requirements
-
-- Python 3.11+
-- Linux / macOS / Windows (WSL2 recommended)
-- At least one model API key (OpenAI, Anthropic, etc.)
-
----
-
-## License
-
-Echo Agent is open-source under the [MIT License](https://github.com/fuyuxiang/echo-agent/blob/master/LICENSE).
+The project uses the [MIT license](https://github.com/fuyuxiang/echo-agent/blob/master/LICENSE). Report issues through [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues).

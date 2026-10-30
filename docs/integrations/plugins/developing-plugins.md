@@ -1,5 +1,7 @@
 # 开发 Plugin
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 Echo Agent Plugin 开发指南。
 
 ---
@@ -98,11 +100,17 @@ echo-agent plugin check          # 检查所有插件状态
 ## 生命周期
 
 ```mermaid
-graph LR
-    A[发现] --> B[过滤 allow/deny]
-    B --> C[拓扑排序]
-    C --> D[加载模块]
-    D --> E[activate]
-    E --> F[运行中]
-    F --> G[deactivate]
+flowchart TD
+    S([开始]) --> A[发现插件]
+    A --> B{策略允许？}
+    B -->|否| X[跳过插件]
+    B -->|是| C[排列依赖顺序]
+    C --> D[加载并激活]
+    D --> E{激活成功？}
+    E -->|否| F[记录失败]
+    E -->|是| G[运行已注册能力]
+    G --> H[停止时停用]
+    X --> T([结束])
+    F --> T
+    H --> T
 ```

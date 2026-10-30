@@ -1,5 +1,7 @@
 # Memory Management
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Long-term memory is separate from conversation history. A Runtime using the same workspace can recall persisted facts across sessions. Clearing the terminal does not delete memory, and workspace-file checkpoints do not back it up.
 
 ## Tiers and ownership

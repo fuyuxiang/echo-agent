@@ -1,5 +1,7 @@
 # 路由与 Fallback 策略
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 本文档说明 Echo-Agent 如何根据任务类型将请求路由到特定模型，以及当模型不可用时如何执行降级回退。
 
 ## 路由匹配逻辑

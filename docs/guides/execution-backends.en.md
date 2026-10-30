@@ -1,5 +1,7 @@
 # Execution Backends
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Command and code tools (`exec`, `execute_code`, `process`) do not run inside the agent process. They are handed to an **executor**, which determines the isolation strength and where the work runs. The fields on this page come from `ExecutionConfig` in `echo_agent/config/schema.py`, and the behaviour from `echo_agent/agent/executors/factory.py`.
 
 ## The four executors

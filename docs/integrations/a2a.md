@@ -1,5 +1,7 @@
 # A2A (Agent-to-Agent)
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 提供 A2A 入站服务，让外部 Agent 发现它并向它委派文本任务。
 
 ---
@@ -47,6 +49,9 @@ stateDiagram-v2
     working --> canceled
     working --> input_required
     input_required --> working
+    completed --> [*]
+    failed --> [*]
+    canceled --> [*]
 ```
 
 ## 配置

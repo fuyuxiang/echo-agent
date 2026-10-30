@@ -1,5 +1,7 @@
 # Gateway API 参考
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Gateway 默认监听 `http://127.0.0.1:58123`，API 前缀为 `/api/v1`（可由 `gateway.api_prefix` 修改）。HTTP 接口由 `echo_agent/gateway/server.py` 和 `echo_agent/gateway/api/__init__.py` 注册；以下路径均为相对前缀。另有 `/meta`、`/playground`、`/ws` 和 `/ws/dashboard`，其中 WebSocket 路径可配置。
 
 ## 认证

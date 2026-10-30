@@ -1,5 +1,7 @@
 # 任务与规划
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 提供完整的任务生命周期管理：从轻量的 Todo 清单到 DAG 驱动的多步 Workflow，再到多 Agent 协同的 delegate 分派。所有任务统一呈现在 Dashboard Kanban 看板上，支持实时监控和手动干预。
 
 ---

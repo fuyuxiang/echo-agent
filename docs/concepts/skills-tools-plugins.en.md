@@ -1,311 +1,41 @@
-# Skills, Tools & Plugins Comparison
+# Tools, skills, and plugins
 
-echo-agent provides five capability extension mechanisms, each serving a distinct role with its
-own lifecycle and security boundary. This document systematically compares Tool, Skill, Plugin,
-MCP, and A2A to help developers choose the right extension approach.
+Tools, skills, plugins, MCP, and A2A operate at different levels. Choose based on whether you need an action, a method, extension logic, or an integration protocol.
 
----
+## Comparison
 
-## 1. Tool
+| Mechanism | Purpose | Example | Boundary |
+| --- | --- | --- | --- |
+| Tool | Parameterized operation with a result | Read a file, run a command, query a service | Visibility, validation, execution permissions |
+| Skill | Domain knowledge and workflow | Writing standards, investigation steps | Guides the model; tools perform actions |
+| Plugin | Load a set of capabilities | Register tools or event handling | Product-specific packaging and trust |
+| MCP | Connect tool services | External database tools | Service authentication and authorization still apply |
+| A2A | Receive external Agent tasks | External orchestrator submission | Runtime production support is inbound |
 
-A Tool is an **executable capability interface** that the Agent Loop can invoke directly. Each
-Tool is implemented as a Python class inheriting from the public
-`echo_agent.tools.Tool` contract.
+## Tool execution
 
-### Core Characteristics
+Models read tool descriptions and propose parameters. Execution validates requests, checks policy, runs the operation, and returns feedback. Errors can guide the next step. A name appearing in a policy table does not establish an implemented or enabled tool.
 
-- **name / description / parameters**: Declarative metadata used by the model for selection and
-  argument binding
-- **Return type**: `ToolResult` (contains success/error status, output text, optional metadata)
-- **Capability declarations**: Each Tool declares required capabilities (e.g., `fs.read`,
-  `process.exec`, `net.fetch`)
-- **Policy filtering**: `tools.profile` configuration (minimal / messaging / coding / full)
-  determines which Tools are visible to the current session
-- **Security gating**: Execution passes through an approval gate and shell guards
+## Skill use
 
-### Typical Examples
+Skills organize applicability, methods, and supporting resources. Relevant content helps the model plan and use available tools.
 
-| Tool Name | Capability | Purpose |
-|-----------|-----------|---------|
-| `exec` | `process.exec` | Execute shell commands |
-| `read_file` | `fs.read` | Read file contents |
-| `edit_file` | `fs.write` | Edit files |
-| `memory` | `memory.read`, `memory.write` | Read/write memory system |
-| `message` | `messaging.send` | Send messages |
-| `search_files` | `fs.read` | Search file contents |
+Skill text does not grant permissions. Scripts and external services still require dependencies and authorization. Manual installation, staged skills, and evolution candidates have different admission conditions; loading a skill does not always imply a full automated evaluation.
 
-### Invocation Flow
+## Plugin trust
 
-```
-Model emits tool_use → Agent Loop parses → Policy check → Approval Gate → Tool.execute() → ToolResult
-```
+Runtime discovers Python plugins through registered entry points and configured directories. They are **trusted in-process code**. Registration and hook declarations are not an OS sandbox.
 
----
+Desktop manages its own plugins and skills through the embedded engine and host, with source-aware installation and removal. Packages and configuration are not automatically compatible between products.
 
-## 2. Skill
+## MCP versus A2A
 
-A Skill is a **domain knowledge and workflow package**. Unlike Tools, Skills do not execute
-operations directly. Instead, they enrich the model's context with specialized knowledge and
-decision workflows via context injection.
+MCP lets the current Agent call a tool service. Runtime A2A lets external Agents submit tasks, inspect status, and cancel work. Internal Worker delegation is a separate local mechanism.
 
-### Core Characteristics
+There is no outbound A2A delegation entry point in the current Agent runtime. A2A intake does not automatically create a cross-service Agent network.
 
-- **Structure**: `SKILL.md` file + optional dependency resources (templates, references, etc.)
-- **Load source**: `skills/` directory (bundled built-in or workspace-level)
-- **Management tools**: `skill_view`, `skills_list`, `skill_install`, `skill_manage`
-- **Auto-evolution**: The evolution engine can auto-generate or improve Skills based on usage
-  feedback
-- **Risk grading**: `SkillRisk` type, classified as `low` or `high`
+## Choosing a mechanism
 
-### Admission Process
+Use a skill to standardize methods over existing tools. Add a tool or MCP connection for a missing operation. Use product-specific plugins to extend behavior. Evaluate Gateway or inbound Runtime A2A for external task submission.
 
-Before a Skill goes live, it must pass a complete admission process:
-
-1. **Author / Evolve**: Written manually or auto-generated by the evolution engine
-2. **Injection Scan**: Scans SKILL.md content for prompt injection risks
-3. **Stage**: Enters staging state with limited availability
-4. **Evaluate**: Assessed for effectiveness and safety through actual usage
-5. **Promote / Reject**: Promoted to active Skill if evaluation passes; rejected otherwise
-
-### Hot Reload
-
-Skills support hot reload — modifications to SKILL.md take effect without restarting the Agent.
-
----
-
-## 3. Plugin
-
-A Plugin is a **loadable Python extension** that allows third parties to extend echo-agent's
-capabilities without modifying core code.
-
-### Core Characteristics
-
-- **Structure**: `plugin.yaml` (metadata declaration) + `__init__.py` or specified entry point
-- **Load timing**: Auto-scanned and loaded from `plugins/` directory at Agent startup
-- **Extension capabilities**:
-  - Register new Tools
-  - Add event handlers (listen to system events)
-  - Extend existing functionality
-- **Trust boundary**: Plugins run within the Agent process with elevated privileges; source must
-  be trusted
-
-### Relationship to Tools
-
-A Plugin can **register** new Tools, but a Plugin is not itself a Tool. Plugins are the
-extension mechanism; Tools are the capability interface. A single Plugin can register zero to
-many Tools.
-
----
-
-## 4. MCP (Model Context Protocol)
-
-MCP is an **external tool protocol client** implementing the Model Context Protocol
-specification. It bridges external tool servers into the Agent's tool registry.
-
-### Core Characteristics
-
-- **Transport**: Supports stdio and HTTP transports (`echo_agent/mcp/transport.py`)
-- **Tool exposure**: External tools are registered with `mcp_*` prefix, managed uniformly via
-  `mcp.call` capability
-- **Dynamic discovery**: Can connect to new MCP servers at runtime with reconnection support
-- **Protocol standard**: Follows the open MCP specification, interoperable with any compliant
-  server
-
-### How It Works
-
-```
-Agent Loop → mcp_tool_name → MCP Client → [stdio/HTTP] → External MCP Server → Result
-```
-
-### Advantages
-
-- No need to implement external tools as Python code
-- External servers can be implemented in any language
-- Supports hot reconnection without interrupting Agent operation
-
----
-
-## 5. A2A (Agent-to-Agent)
-
-A2A is an **inter-agent task protocol**. The production runtime currently implements the
-inbound side: external agents can discover Echo Agent and delegate text tasks to it.
-
-### Core Characteristics
-
-- **Protocol foundation**: Agent Card + JSON-RPC (`echo_agent/a2a/protocol.py`, `server.py`)
-- **Inbound tasks**: External peers call Echo Agent through `tasks/send`, `tasks/get`, and
-  `tasks/cancel`
-- **Identity isolation**: Bearer tokens yield opaque principals; tasks and sessions are
-  principal-scoped
-- **Bounded retention**: Task storage is constrained by both a TTL and a count limit
-
-### How It Works
-
-```
-External agent discovers Agent Card → calls Echo Agent JSON-RPC endpoint → Agent Loop processes → task state/result returned
-```
-
-The repository retains a low-level `A2AClient` helper, but it has no production caller and does
-not use the shared `net_guard` redirect-by-redirect SSRF protection. There is currently no
-model-callable outbound A2A delegation tool.
-
-### Difference from MCP
-
-| Dimension | MCP | A2A |
-|-----------|-----|-----|
-| Target | Tools | Agents |
-| Granularity | Single function call | Complete task |
-| Protocol | Tool protocol | Task protocol |
-| Counterpart | Tool Server | Agent peer |
-
----
-
-## Comparison Overview
-
-| Aspect | Tool | Skill | Plugin | MCP | A2A |
-|--------|------|-------|--------|-----|-----|
-| **Nature** | Callable function | Knowledge package | Code extension | Protocol client | Inbound task protocol |
-| **Interface** | Python class | SKILL.md | plugin.yaml | stdio/HTTP | Agent Card |
-| **Called by** | Model / Loop | Context injection | Loop hooks | Model (as tool) | External A2A peer |
-| **Security** | Policy + Guards | Injection scan | Trust boundary | mcp.call cap | Bearer principal + owner isolation |
-| **Hot reload** | No | Yes | No | Yes (reconnect) | No |
-| **Auto-evolve** | No | Yes (evolution) | No | No | No |
-| **Language** | Python | Markdown | Python | Any | Any |
-| **Location** | tools/ | skills/ | plugins/ | mcp config | a2a/ + gateway |
-
----
-
-## Architecture Diagram
-
-The following Mermaid diagram shows how the five mechanisms connect to the Agent Loop:
-
-```mermaid
-graph TB
-    subgraph AgentLoop["Agent Loop"]
-        MODEL[Model / LLM]
-        LOOP[Loop Controller]
-    end
-
-    subgraph Tools["Tools Layer"]
-        T1[exec]
-        T2[read_file]
-        T3[edit_file]
-        T4[memory]
-        T5[message]
-    end
-
-    subgraph Skills["Skills Layer"]
-        S1[SKILL.md]
-        S2[Context Injection]
-    end
-
-    subgraph Plugins["Plugins Layer"]
-        P1[plugin.yaml]
-        P2[Event Handlers]
-        P3[Registered Tools]
-    end
-
-    subgraph MCP["MCP Layer"]
-        M1[MCP Client]
-        M2[External Server]
-    end
-
-    subgraph A2A["A2A Layer"]
-        A1[External A2A Peer]
-        A2[A2A Server]
-    end
-
-    MODEL -->|tool_use| LOOP
-    LOOP -->|execute| Tools
-    LOOP -->|inject context| Skills
-    Plugins -->|register tools| Tools
-    Plugins -->|hook events| LOOP
-    LOOP -->|mcp.call| M1
-    M1 -->|stdio/HTTP| M2
-    A1 -->|JSON-RPC| A2
-    A2 -->|process task| LOOP
-    S1 -->|load| S2
-    S2 -->|enrich prompt| MODEL
-```
-
----
-
-## Skill Lifecycle
-
-The following Mermaid diagram illustrates the complete Skill lifecycle from creation to
-production:
-
-```mermaid
-flowchart LR
-    A[Author / Evolve] --> B[Injection Scan]
-    B -->|Pass| C[Stage]
-    B -->|Risk detected| R1[Reject & Notify Author]
-    C --> D[Evaluate]
-    D -->|Meets criteria| E[Promote]
-    D -->|Insufficient| R2[Reject / Revise]
-    E --> F[Active Skill]
-    F -->|Usage feedback| G[Evolution Engine]
-    G -->|Improved version| A
-
-    style A fill:#e1f5fe
-    style E fill:#c8e6c9
-    style R1 fill:#ffcdd2
-    style R2 fill:#ffcdd2
-    style F fill:#c8e6c9
-```
-
-### Stage Descriptions
-
-| Stage | Description | Output |
-|-------|-------------|--------|
-| Author / Evolve | Manual authoring or engine auto-generation of SKILL.md | Draft Skill |
-| Injection Scan | Static scan for prompt injection and malicious patterns | Security report |
-| Stage | Enters staging with controlled-environment-only access | Staged Skill |
-| Evaluate | Assessed for effectiveness and safety through real usage | Evaluation metrics |
-| Promote | Elevated to fully available active Skill | Active Skill |
-| Reject | Denied with reason feedback | Rejection record |
-
----
-
-## Selection Guide
-
-### When to Use a Tool
-
-- You need to execute a concrete operation (read/write files, run commands, network requests)
-- The operation result must be returned to the model for further reasoning
-- You need precise parameter validation and permission control
-
-### When to Use a Skill
-
-- You need to inject domain expertise into the model's context
-- The workflow is complex and requires step-by-step guidance
-- The knowledge content may evolve and improve over time
-
-### When to Use a Plugin
-
-- You need to add custom logic outside the core codebase
-- You need to listen to system events for additional processing
-- You need to register a group of related Tools in bulk
-
-### When to Use MCP
-
-- An external system already has an MCP-compliant tool server
-- The tool implementation language is not Python
-- You need integration with third-party AI tool ecosystems
-
-### When to Use A2A
-
-- An external agent or orchestrator needs to submit text tasks to Echo Agent
-- An external system needs standard task status and cancellation methods
-- Multiple API-token principals need isolated tasks and sessions
-
-If Echo Agent itself must delegate to external agents, this version has no production outbound
-entry point.
-
----
-
-## Related Documentation
-
-- [Architecture Overview](architecture.en.md)
-- [Agent Loop](agent-loop.md)
-- [Events & Delivery](events-delivery.en.md)
+See [Runtime integrations](../integrations/index.md) and [Desktop models and extensions](../desktop/models-extensions.md).

@@ -1,5 +1,7 @@
 # 后台服务
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 `echo-agent gateway install` 在 Linux 上安装 systemd 用户级服务，在 macOS 上安装 launchd LaunchAgent。服务管理器运行前台 Gateway 进程并负责重启与日志收集；`echo-agent gateway` 本身也是可直接运行的前台命令。
 
 ## 安装与管理

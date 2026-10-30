@@ -1,5 +1,7 @@
 # Security Hardening
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 For a server, configure identity, API authorization and execution policy separately. A healthy process alone does not establish a secure or model-ready task path.
 
 ## Authentication and exposure

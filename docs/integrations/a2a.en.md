@@ -1,5 +1,7 @@
 # A2A (Agent-to-Agent)
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent exposes an inbound A2A service so external agents can discover it and delegate text tasks to it.
 
 ---

@@ -1,5 +1,7 @@
 # 环境变量参考
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 的环境变量分两类：一类是**配置覆盖变量**，由 `ECHO_AGENT_` 前缀按规则映射到配置项；另一类是少数**独立运行时变量**，由代码直接读取。本页机制与取值均以 `echo_agent/config/loader.py` 为准。
 
 ## 配置覆盖变量

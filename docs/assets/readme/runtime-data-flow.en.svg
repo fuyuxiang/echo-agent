@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="980" viewBox="0 0 1200 980" role="img" aria-labelledby="title description">
+  <title id="title">Runtime level-1 data-flow diagram</title>
+  <desc id="description">User input enters task processing; history and memory supply context; model requests and responses are exchanged; tools return results; processing writes history and artifacts.</desc>
+  <defs>
+    <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#2563eb" />
+    </marker>
+    <marker id="teal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#087f82" />
+    </marker>
+    <marker id="muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#526780" />
+    </marker>
+  </defs>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
+    <rect x="1" y="1" width="1198" height="978" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="36" y="32" width="5" height="55" rx="2" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">Runtime level-1 data-flow diagram</text>
+    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Yourdon / DeMarco notation: data movement, not execution order or control flow.</text>
+    <rect x="40" y="170" width="240" height="70" rx="0" fill="#edf3f9" stroke="#526780" stroke-width="1.2" />
+    <text x="160" y="213" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">User / client</text>
+    <rect x="900" y="170" width="240" height="70" rx="0" fill="#edf3f9" stroke="#526780" stroke-width="1.2" />
+    <text x="1020" y="213" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Model service</text>
+    <rect x="900" y="600" width="240" height="70" rx="0" fill="#edf3f9" stroke="#526780" stroke-width="1.2" />
+    <text x="1020" y="643" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Tools / external systems</text>
+    <circle cx="570" cy="205" r="76" fill="#fff" stroke="#2563eb" stroke-width="1.6" />
+    <text x="570" y="193" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">1.0</text>
+    <text x="570" y="226" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Build context</text>
+    <circle cx="570" cy="490" r="76" fill="#fff" stroke="#2563eb" stroke-width="1.6" />
+    <text x="570" y="478" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">2.0</text>
+    <text x="570" y="511" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">Execute task</text>
+    <line x1="40" y1="440" x2="400" y2="440" stroke="#526780" stroke-width="2" />
+    <line x1="40" y1="500" x2="400" y2="500" stroke="#526780" stroke-width="2" />
+    <text x="220" y="478" fill="#142b49" font-size="20" font-weight="600" text-anchor="middle">D1 History, memory, knowledge</text>
+    <line x1="390" y1="825" x2="750" y2="825" stroke="#526780" stroke-width="2" />
+    <line x1="390" y1="885" x2="750" y2="885" stroke="#526780" stroke-width="2" />
+    <text x="570" y="863" fill="#142b49" font-size="20" font-weight="600" text-anchor="middle">D2 Execution records and artifacts</text>
+    <path d="M280 205 L494 205" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="312.93" y="173" width="144.14" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="385" y="190" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Goal and input</text>
+    <path d="M516 545 L470 545 L470 620 L220 620 L220 500" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
+    <rect x="147.72" y="634" width="204.56" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="250" y="650" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">History/memory updates</text>
+    <path d="M400 455 L445 455 L445 250 L510 250" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="313.92" y="318" width="162.16" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="395" y="335" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Relevant content</text>
+    <path d="M570 281 L570 414" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="506.94" y="338" width="126.12" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="570" y="355" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Turn context</text>
+    <path d="M646 465 L800 465 L800 205 L900 205" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="625.85" y="173" width="288.3" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="770" y="190" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Context and execution feedback</text>
+    <path d="M1020 240 L1020 490 L646 490" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="732.72" y="499" width="204.56" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="835" y="515" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Text and tool requests</text>
+    <path d="M630 537 L720 537 L720 625 L900 625" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="690.9" y="592" width="198.20000000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="790" y="609" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Operation parameters</text>
+    <path d="M900 655 L610 655 L610 555" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
+    <rect x="716.94" y="663" width="126.12" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="780" y="680" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Tool results</text>
+    <path d="M570 566 L570 825" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="461.89" y="738" width="216.22" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="570" y="755" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Status, results, files</text>
+    <path d="M516 435 L480 435 L480 365 L20 365 L20 145 L160 145 L160 170" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
+    <rect x="70.75999999999999" y="334" width="238.48000000000002" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="190" y="350" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Reply and execution status</text>
+    <text x="600" y="929" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Legend: rectangle = external entity; circle = process; parallel lines = data store; named arrow = data flow.</text>
+    <text x="600" y="961" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Stores belong to the instance or host; models and external tools can run locally or remotely.</text>
+  </g>
+</svg>

@@ -1,5 +1,7 @@
 # Cost Control
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent includes a built-in cost tracking and budget control system that helps you understand per-model spending and prevent unexpected overruns.
 
 ## Overview

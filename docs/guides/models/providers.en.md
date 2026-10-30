@@ -1,5 +1,7 @@
 # Provider Overview
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Echo Agent supports multiple LLM providers through a unified YAML configuration format.
 
 ## Provider Comparison

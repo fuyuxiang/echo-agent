@@ -1,5 +1,7 @@
 # Background Service
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 `echo-agent gateway install` creates a systemd user service on Linux or a launchd LaunchAgent on macOS. The service manager runs the foreground Gateway process and handles restarts and logs. `echo-agent gateway` also runs directly in the foreground.
 
 ## Install and manage

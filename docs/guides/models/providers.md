@@ -1,5 +1,7 @@
 # Provider 总览
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 Echo Agent 支持多种 LLM Provider，通过统一的 YAML 配置格式接入不同模型服务。
 
 ## Provider 对比

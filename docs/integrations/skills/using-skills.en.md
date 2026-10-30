@@ -1,5 +1,7 @@
 # Skills System Guide
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Echo Agent bundles 35 SKILL.md files in 10 categories. Skills instruct the model and may contain scripts. Their presence does not configure an external account, API or local executable.
 
 ## Discovery, selection and execution

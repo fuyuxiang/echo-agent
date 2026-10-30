@@ -1,5 +1,7 @@
 # 部署方案
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 源码部署工程位于 `echo-agent-runtime/`，包括 Dashboard 的完整 `web/`、内置技能及 `deploy/` 模板，可以单独下载。纯源码需先构建前端；正式 Runtime 压缩包和 Python 安装包已附带前端产物。独立安装步骤见 [Runtime README](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/README.md)。
 
 Echo Agent 可前台运行，也可将 Gateway 注册为系统服务。默认工作区为 `~/.echo-agent`；实际配置和数据位置以 `echo-agent config dump` 为准。
@@ -149,9 +151,9 @@ curl --fail-with-body http://127.0.0.1:58123/api/v1/message \
 
 前台通过 SIGTERM 正常关闭后，再按[后台服务](background-service.md)安装用户级 systemd 服务。服务进程的环境变量与SSH shell不同，应给服务用户配置受保护的环境文件或服务环境；配置文件继续使用明确绝对路径。重复工作区 Runtime 或端口冲突退出非零。停止/启用失败不会再打印假成功。
 
-本次真实进程与浏览器验收是在macOS隔离环境进行；Linux包安装进程检查已接入CI，但没有可用Docker daemon/隔离Linux主机供本机实际执行。现有Docker示例保留为部署示例，不是本次新增或已构建通过的容器交付物。完整证据和边界见[服务端评审](../reviews/server-review-and-remediation.md)。
+服务进程与浏览器流程已在 macOS 隔离环境验证，Linux 包安装与进程检查由 CI 覆盖。Docker 配置作为部署示例提供，尚不具有对应容器环境的完整验收记录。验证范围见[服务端评审](../reviews/server-review-and-remediation.md)。
 
-## 技能执行与联网能力验收
+## 技能执行与联网能力验收 { #skills-runtime-verification }
 
 `deploy/echo-agent.yaml.example` 采用 `security.profile: daemon`、`tools.profile: coding`，
 并显式添加 `also_allow: [web_fetch, skill_run]`。`coding` 本身不包含联网或代码执行。
@@ -161,7 +163,7 @@ curl --fail-with-body http://127.0.0.1:58123/api/v1/message \
 
 用 `echo-agent status --json` 查看 `skill_run`、`web_fetch`、`web_search` 的策略原因。
 原生 `web_search` 仍需配置 Brave/Tavily/SerpAPI 的 key，或 SearXNG 的 base URL；
-本次没有增加原生免密钥 provider。获准执行的 web-search 与 deep-research 技能共用
+Runtime 没有原生免密钥模型提供商。获准执行的 web-search 与 deep-research 技能共用
 360（中文优先）→ Bing RSS → DDGS 的文字搜索实现。新闻、图片仅走 DDGS；外部搜索源可能
 超时、返回挑战页或失效，必须检查原始来源及正文，不能把非空结果当作相关性保证。
 

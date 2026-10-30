@@ -1,5 +1,7 @@
 # 运行方式
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 `echo-agent run` 和 `echo-agent gateway` 都启动完整 Agent 运行时。区别在于前者按 `gateway.enabled` 决定是否启动 HTTP/WebSocket Gateway；后者在本次运行中启用 Gateway，即使配置文件中未设置 `gateway.enabled: true`。两者默认都在前台运行。`echo-agent cli` 是连接已运行 Gateway 的瘦客户端。
 
 | 命令 | Gateway | 进程管理 | 用途 |

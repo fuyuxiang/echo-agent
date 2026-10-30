@@ -1,5 +1,7 @@
 # Configuration Guide
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 This page covers the **mechanics** of configuration: where files live, how they are loaded, how overrides work, and how validation behaves. For the meaning, type and default of each individual field, see the [configuration reference](configuration.md) — that page is generated from the schema by `echo_agent.config.docgen` and is therefore always in step with the code.
 
 !!! note "How the two pages divide the work"

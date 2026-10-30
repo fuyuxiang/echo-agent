@@ -1,5 +1,7 @@
 # WeChat Personal (iLink Bot)
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 The WeChat Personal channel integrates with individual WeChat accounts via the iLink Bot API. It uses HTTP long-polling to receive messages, requiring no public endpoint — ideal for deployments behind NAT or firewalls.

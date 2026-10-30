@@ -1,5 +1,7 @@
 # 插件系统使用指南
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 插件（Plugin）是 Echo Agent 的能力扩展机制，通过插件可以注册新工具并监听生命周期事件。
 
 ## 插件能做什么

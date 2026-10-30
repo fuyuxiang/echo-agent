@@ -1,5 +1,7 @@
 # 钉钉（DingTalk）
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 钉钉通道通过 **Stream Mode**（流模式）与钉钉开放平台通信。Stream Mode 采用回调注册 + WebSocket 长轮询机制，无需暴露公网端点，适合内网部署或无固定公网 IP 的场景。

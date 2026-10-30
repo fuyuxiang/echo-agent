@@ -45,3 +45,15 @@
 ## 关键关系
 
 `echo_agent/app.py` 将配置、存储、模型、Agent、通道和 Gateway 连接起来。`echo_agent/tools/` 是工具扩展的公共入口；`echo_agent/agent/tools/` 实现内置工具。Gateway 使用 `aiohttp` 和令牌/配对授权，不使用 JWT 服务端或 ASGI 框架。SQLite 表结构迁移在 `echo_agent/storage/sqlite.py` 初始化连接时运行；`echo-agent migrate` 位于 `echo_agent/cli/migrate_cmd.py`，处理的是记忆数据。
+
+## Desktop 工程地图
+
+| 路径（相对仓库根目录） | 职责 |
+| --- | --- |
+| `client/src/` | React 界面与应用状态 |
+| `client/src-tauri/src/` | 桌面宿主、ACP 桥接、工作区、自动化与持久化 |
+| `client/vendor/echo-agent-build/` | 固定版本的 Rust 执行引擎源码 |
+| `client/vendor/theia-platform/` | 内嵌 IDE 及其集成 |
+| `client/scripts/` | 构建、打包与验证 |
+
+`echo-agent-runtime/` 中的 Python 引擎与 Desktop 内嵌的 Rust 引擎分别维护。产品关系见[架构总览](../concepts/architecture.md)。

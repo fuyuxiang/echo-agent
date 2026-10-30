@@ -1,5 +1,7 @@
 # 安全加固
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 生产环境部署前，请逐项完成以下安全清单。
 
 ---

@@ -1,5 +1,7 @@
 # 配置指南
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 本页讲配置的**机制**：文件在哪、如何加载、如何覆盖、如何校验。逐个字段的含义、类型与默认值请查[配置参考](configuration.md) —— 那一页由 `echo_agent.config.docgen` 从 schema 自动生成，永远与代码同步。
 
 !!! note "两页的分工"

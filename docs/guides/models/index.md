@@ -1,5 +1,7 @@
 # 模型接入概述
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 Echo Agent 支持多种大模型供应商接入，并提供统一的路由、容错与密钥轮换机制。
 
 ---

@@ -1,5 +1,7 @@
 # QQ Bot
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 The QQ Bot channel connects via WebSocket gateway to QQ's official bot platform.

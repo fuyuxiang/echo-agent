@@ -1,5 +1,7 @@
 # Filesystem Layout
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 `Config.workspace` defaults to `~/.echo-agent`. Supported CLI subcommands can override it with `-w/--workspace`. Relative paths below are based on the effective workspace; configuration can move some of them. Use `echo-agent config dump` to inspect the effective paths.
 
 ## Main workspace paths

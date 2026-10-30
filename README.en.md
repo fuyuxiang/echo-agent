@@ -122,24 +122,24 @@ The evolution engine is **disabled by default and must be enabled in configurati
 
 ## Architecture and Runtime Modes
 
-**Echo Agent Runtime is the shared runtime core**, providing task execution, context, cognitive memory, model access, tools, and skills. Terminal and Gateway host standalone execution; `client/` embeds the Runtime in the desktop application process and adds workspace, IDE, and automation interfaces. Features follow the host integration and configuration.
+**Desktop and standalone Runtime follow the same Agent method but currently use different execution engines.** Python Runtime provides terminal, Gateway, channels, memory, and skill evolution. Desktop embeds a Rust engine for workspaces, IDE, and automation. Each manages its own models, sessions, and memory and works independently.
 
-<p align="center"><img src="docs/assets/readme/architecture.en.svg" width="100%" alt="Unified Runtime architecture: local Terminal, Gateway service, and in-process Client embedding use Echo Agent Runtime as the core for execution, context, memory, models, tools, skills, and permissions, with configured service and local state dependencies" /></p>
+<p align="center"><img src="docs/assets/readme/architecture.en.svg" width="100%" alt="C4 system context: Desktop and standalone Runtime, with independent engines and state" /></p>
 
-### Three Runtime Modes
+### Main Operating Modes
 
 | Mode | Entry point | Where execution runs |
 | --- | --- | --- |
 | **Local runtime** | `echo-agent run` | This Runtime process; Gateway is enabled according to configuration |
 | **Gateway service** | `echo-agent gateway` | This Runtime process, exposing Dashboard and HTTP/WebSocket APIs |
-| **Embedded application** | EchoAgent Desktop or your own host | In the host process; Client connects to its embedded Runtime over ACP channels |
+| **Desktop application** | EchoAgent Desktop | In-process Rust engine communicating with the host over ACP channels |
 
 <details>
 <summary>Expand the Runtime execution architecture</summary>
 
 <p align="center"><img src="docs/assets/readme/runtime-architecture.en.svg" width="100%" alt="Runtime execution architecture: ChannelManager and optional GatewayServer connect to MessageBus; AgentLoop uses context, inference, and response stages, with sessions, memory, models, tools, approval, skills, and evolution dependencies" /></p>
 
-`app.py` composes models, storage, the Agent, channels, scheduling, and optional Gateway, and owns start/stop ordering. `AgentLoop` consumes inbound and publishes outbound events. Tool execution follows admission policies and approval controls. See the [architecture overview](docs/concepts/architecture.en.md) for modules and task flow.
+Runtime composes models, storage, execution, channels, scheduling, and optional Gateway, and coordinates startup and shutdown. Input events enter the task loop; tools follow admission and approval policies; results return through the entry point. See the [architecture overview](https://fuyuxiang.github.io/echo-agent/en/concepts/architecture/).
 
 </details>
 
@@ -157,7 +157,7 @@ The evolution engine is **disabled by default and must be enabled in configurati
 
 ## EchoAgent Desktop
 
-**Put your Agent to work in your workspace.** Desktop uses React, Tauri, and an in-process Echo Agent Runtime to show plans, tool activity, file changes, and deliverables in one application.
+**Put your Agent to work in your workspace.** Desktop uses React, Tauri, and an in-process Rust Agent engine to show plans, tool activity, file changes, and deliverables in one application.
 
 | Scenario | Desktop capabilities |
 | --- | --- |

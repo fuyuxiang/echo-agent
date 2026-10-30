@@ -1,5 +1,7 @@
 # Discord
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 ## 概述
 
 Discord 通道通过 WebSocket Gateway（v10）维持实时连接，并使用 REST API 发送消息。无需公网端点，Bot 主动连接 Discord 网关。

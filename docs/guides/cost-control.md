@@ -1,5 +1,7 @@
 # 成本控制
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 内置成本追踪与预算控制系统，帮助你了解各模型的实际开销并避免意外超支。
 
 ## 概述

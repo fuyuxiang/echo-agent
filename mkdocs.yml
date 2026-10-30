@@ -1,6 +1,6 @@
 site_name: Echo Agent
 site_url: https://fuyuxiang.github.io/echo-agent
-site_description: 自托管、长期运行、带记忆和技能演化能力的 AI Agent Runtime
+site_description: EchoAgent Desktop 与 Echo Agent Runtime 的安装、使用、架构和运维手册
 site_author: Echo Agent contributors
 repo_url: https://github.com/fuyuxiang/echo-agent
 repo_name: fuyuxiang/echo-agent
@@ -61,6 +61,19 @@ plugins:
           site_name: Echo Agent
           nav_translations:
             首页: Home
+            Desktop 使用指南: Desktop Guide
+            桌面端安装: Desktop Installation
+            第一个桌面任务: First Desktop Task
+            任务、会话与权限: Tasks, Sessions & Permissions
+            代码工作台: Coding Workspace
+            浏览器与电脑操作: Browser & Computer Use
+            文档、知识与记忆: Documents, Knowledge & Memory
+            模型与扩展: Models & Extensions
+            专家团与定时任务: Groups & Scheduling
+            桌面端数据与排障: Desktop Data & Troubleshooting
+            Runtime 使用指南: Runtime Guides
+            第一个 Runtime 工作流: First Runtime Workflow
+            桌面端架构与数据流: Desktop Architecture & Data Flow
             开始使用: Getting Started
             安装: Installation
             快速开始: Quickstart
@@ -86,7 +99,7 @@ plugins:
             事件与投递: Events & Delivery
             工作区、会话与身份: Workspace, Session & Identity
             记忆系统: Memory System
-            上下文压缩与 Spill: Context Compression & Spill
+            上下文压缩与输出保全: Context Compression & Spill
             Skill、Tool 与 Plugin: Skills, Tools & Plugins
             安全模型: Security Model
             进化与评估: Evolution & Evaluation
@@ -132,6 +145,7 @@ plugins:
             新增 Channel: Add a Channel
             Skill 开发: Skill Authoring
             Plugin API: Plugin API
+            通用会话扩展: Runtime Session Extensions
             Dashboard 开发: Dashboard Development
             测试与评估: Testing & Evaluation
             文档贡献: Documentation
@@ -167,8 +181,20 @@ nav:
       - 安装: getting-started/installation.md
       - 快速开始: getting-started/quickstart.md
       - 升级与卸载: getting-started/upgrade-uninstall.md
-  - 使用指南:
+  - Desktop 使用指南:
+      - desktop/index.md
+      - 桌面端安装: desktop/installation.md
+      - 第一个桌面任务: desktop/quickstart.md
+      - 任务、会话与权限: desktop/tasks-permissions.md
+      - 代码工作台: desktop/coding.md
+      - 浏览器与电脑操作: desktop/automation.md
+      - 文档、知识与记忆: desktop/knowledge-memory.md
+      - 模型与扩展: desktop/models-extensions.md
+      - 专家团与定时任务: desktop/collaboration-scheduling.md
+      - 桌面端数据与排障: desktop/operations.md
+  - Runtime 使用指南:
       - guides/index.md
+      - 第一个 Runtime 工作流: guides/first-workflow.md
       - 模型接入:
           - guides/models/index.md
           - Provider 总览: guides/models/providers.md
@@ -187,11 +213,12 @@ nav:
   - 核心概念:
       - concepts/index.md
       - 架构总览: concepts/architecture.md
+      - 桌面端架构与数据流: concepts/desktop-architecture.md
       - Agent 循环: concepts/agent-loop.md
       - 事件与投递: concepts/events-delivery.md
       - 工作区、会话与身份: concepts/workspace-session-identity.md
       - 记忆系统: concepts/memory-system.md
-      - 上下文压缩与 Spill: concepts/context-compression-spill.md
+      - 上下文压缩与输出保全: concepts/context-compression-spill.md
       - Skill、Tool 与 Plugin: concepts/skills-tools-plugins.md
       - 安全模型: concepts/security-model.md
       - 进化与评估: concepts/evolution-evaluation.md
@@ -260,6 +287,7 @@ nav:
       - 新增 Channel: development/add-channel.md
       - Skill 开发: development/skill-authoring.md
       - Plugin API: development/plugin-api.md
+      - 通用会话扩展: runtime-extensions.md
       - Dashboard 开发: development/dashboard-development.md
       - 测试与评估: development/testing-evaluation.md
       - 文档贡献: development/documentation.md

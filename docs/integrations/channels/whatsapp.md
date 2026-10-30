@@ -1,5 +1,7 @@
 # WhatsApp
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 通过 WhatsApp Business API 接入 Echo Agent。
 
 ---

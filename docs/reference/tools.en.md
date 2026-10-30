@@ -1,5 +1,7 @@
 # Built-in Tool Reference
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent ships 41 built-in tools. The tool names, parameters and capability tags on this page are taken from the registrations in code: a tool's name is the `name` attribute of its class (under `echo_agent/agent/tools/`), capability tags come from `TOOL_CAPABILITIES` in `echo_agent/security/capabilities.py`, and profile membership comes from `echo_agent/security/tool_policy.py`.
 
 !!! note "A tool's name is not its module name"

@@ -1,5 +1,7 @@
 # Development Setup
 
+This section primarily documents Python Runtime development. For Desktop build requirements and commands, see [Desktop source setup](../desktop/installation.md). The products have separate toolchains; contributions should be verified in the affected component.
+
 ## System Requirements
 
 | Component | Minimum Version | Notes |

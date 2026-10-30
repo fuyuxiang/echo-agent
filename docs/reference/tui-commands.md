@@ -1,5 +1,7 @@
 # 终端交互命令
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 `echo-agent cli` 默认使用保留原生 scrollback 的 inline 界面，
 `echo-agent cli --tui` 使用全屏 Textual 界面。两种界面共用下列命令及
 WebSocket 协议行为；命令名不区分大小写。

@@ -1,5 +1,7 @@
 # Message Channels
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Echo Agent's channel system unifies message ingestion from diverse platforms into a single core processing pipeline. Each channel is implemented as an independent adapter inheriting from the `BaseChannel` base class, managed collectively by the `ChannelManager`.
 
 ## Core Architecture

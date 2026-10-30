@@ -1,5 +1,7 @@
 # Cron Channel
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 The Cron channel triggers Agent execution on a schedule without external messages.
 
 ---

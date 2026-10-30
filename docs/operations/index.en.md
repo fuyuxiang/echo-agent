@@ -1,5 +1,7 @@
 # Operations
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 This section covers production deployment, daily operations, and troubleshooting for Echo Agent.
 
 ---

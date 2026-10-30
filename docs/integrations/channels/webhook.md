@@ -1,5 +1,7 @@
 # Webhook 通道
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../../desktop/index.md)。
+
 Webhook 通道在配置的 HTTP 路径接收入站消息。`channels.webhook` 默认关闭；启用后默认监听 `0.0.0.0:8080` 的 `/webhook`。它不是 Gateway 的 `/api/v1/message` 接口。
 
 ## 配置

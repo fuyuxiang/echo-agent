@@ -1,5 +1,7 @@
 # Knowledge Base
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Knowledge parses, chunks and indexes authorized documents so `knowledge_search` can return cited passages. It is separate from long-term user memory. Reading a document does not add it to the index.
 
 ## Configuration

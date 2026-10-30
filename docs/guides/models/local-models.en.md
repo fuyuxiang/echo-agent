@@ -1,5 +1,7 @@
 # Local Models
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Echo Agent supports local models through OpenAI-compatible API endpoints. All local model servers use the OpenAI provider with a custom `api_base`.
 
 ## Supported Local Model Servers

@@ -1,5 +1,7 @@
 # 性能优化
 
+**适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
+
 Echo Agent 的性能瓶颈通常在模型调用延迟和本地数据 I/O。本文介绍关键调优手段。
 
 ---

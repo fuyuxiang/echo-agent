@@ -1,5 +1,7 @@
 # Matrix Channel
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 ## Overview
 
 The Matrix channel receives messages via long-polling the `/sync` endpoint and sends replies via the REST API. No public endpoint is required, making it suitable for deployment behind firewalls or on internal networks. Matrix is a decentralized open communication protocol that supports self-hosted homeservers (e.g., Synapse, Dendrite).

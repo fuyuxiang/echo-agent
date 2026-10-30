@@ -1,5 +1,7 @@
 # Runtime Modes
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Both `echo-agent run` and `echo-agent gateway` start the full Agent runtime. The former starts the HTTP/WebSocket Gateway only when `gateway.enabled` is true; the latter enables it for that run even when the setting is absent. Both run in the foreground by default. `echo-agent cli` is a thin client for an existing Gateway.
 
 | Command | Gateway | Process management | Use |

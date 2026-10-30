@@ -1,5 +1,7 @@
 # 参与开发
 
+本节主要说明 Python Runtime 开发。桌面端的构建环境与命令见 [Desktop 源码运行](../desktop/installation.md)。两端工具链不同，贡献应在实际影响的工程中验证。
+
 欢迎参与 Echo Agent 的开发！本章节覆盖从环境搭建到发布流程的完整开发指南。
 
 ## 目录

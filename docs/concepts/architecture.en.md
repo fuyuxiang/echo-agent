@@ -1,96 +1,85 @@
-# Architecture Overview
+# Architecture
 
-**Echo Agent Runtime is the unified runtime core** of the project. It runs in a terminal, as a Gateway service, or embedded in a host such as `client/`. This page presents the logical architecture, then uses the server implementation in `echo-agent-runtime/` to explain task execution. Client connects to its embedded Runtime over in-process ACP channels, while the host owns the interface and native capabilities. See [Desktop architecture and data flow](https://github.com/fuyuxiang/echo-agent/blob/master/client/README.en.md#architecture-and-data-flow) for Desktop internals.
+Echo Agent contains a desktop workspace and a standalone runtime. Both connect models, context, and tools through an Agent loop, but use different execution engines and manage configuration and state independently.
 
-## Project Boundaries
+## System context
 
-![Project architecture: one Runtime core supports local Terminal, Gateway service, and in-process Client embedding](../assets/readme/architecture.en.svg)
+[![C4 context: users access Desktop and Runtime independently; both call configured model and tool services](../assets/readme/architecture.en.svg)](../assets/readme/architecture.en.svg)
 
-Use the Runtime through a terminal, messaging channels, or Gateway, or embed it in an application whose host owns the instance and state. Both `echo-agent run` and `echo-agent gateway` start the full Runtime. `echo-agent cli` is an interactive client that connects to an existing Gateway over WebSocket. Commands and configuration determine whether Gateway, channels, tools, and automation are enabled.
+This C4-style context view names system types and responsibilities. Directed solid lines show requests, with responses returning through the interaction. Dashed outer boundaries group usage or deployment scope.
 
-Source-level embedding uses `bootstrap` and `AppRuntime` in `echo_agent/app.py`. The host owns component lifecycle, configuration, and workspace management. These interfaces follow the source version; pin it and validate startup, shutdown, and failure cleanup.
-
-## Runtime Components
-
-![Runtime execution architecture: ChannelManager and optional GatewayServer connect to MessageBus; AgentLoop uses context, inference, and response stages with state, model, tool, skill, and evolution dependencies](../assets/readme/runtime-architecture.en.svg)
-
-Solid lines show message exchange; dashed lines show execution dependencies. Components follow configuration. Gateway also holds references to sessions, memory, skills, and tasks for its management APIs; the diagram focuses on task execution.
-
-| Component | Responsibility | Code entry point, relative to `echo-agent-runtime/` |
+| Area | Desktop | Standalone Runtime |
 | --- | --- | --- |
-| Application composition | Assemble and manage configuration, storage, models, the Agent, channels, and Gateway | `echo_agent/app.py` |
-| Channels and events | Adapt channels, dispatch inbound events, and deliver outbound events | `echo_agent/channels/manager.py` · `echo_agent/bus/queue.py` |
-| Execution loop | Coordinate sessions, tasks, context, inference, and tool calls | `echo_agent/agent/loop.py` · `echo_agent/agent/pipeline/` |
-| Models and tools | Route providers, make model requests, and register and execute tools | `echo_agent/models/` · `echo_agent/agent/tools/` |
-| Memory and knowledge | Recall and consolidate eligible memories; index and retrieve knowledge | `echo_agent/memory/` · `echo_agent/knowledge/` |
-| Skills and evolution | Load skills, record trajectories, and validate and promote candidates | `echo_agent/skills/` · `echo_agent/evolution/` |
-| Service entry points | Serve aiohttp HTTP/WebSocket, Dashboard, authentication, and management APIs | `echo_agent/gateway/server.py` · `echo_agent/gateway/api/` |
-| Persistence | SQLite data and workspace files | `echo_agent/storage/sqlite.py` |
+| Entry points | Task UI, coding workspace, expert groups | Terminal, channels, Gateway |
+| Engine | In-process Rust engine | Standalone Python engine |
+| Host | Windows, workspaces, IDE, local services, lifecycle | Composition, channels, scheduling, service lifecycle |
+| Interface | Desktop application | Gateway Dashboard; CLI/TUI |
+| Extensions | Embedded tools, Desktop MCP, skills, plugins | Built-in tools, MCP, skills, Python plugins |
+| State | Application data and working directories | Instance workspace and storage |
 
-## How a Task Executes
+There is no default synchronization of sessions, memory, or configuration. Desktop does not require Python Gateway. Building an application against Gateway is a separate service integration path.
 
-This is a simplified path with tool calls. Streaming events can be emitted during inference; tool and approval branches are skipped when unnecessary.
+## Runtime components
+
+[![Runtime components: adapters and Gateway connect to the bus; the loop uses context, models/tools, and memory/skills](../assets/readme/runtime-architecture.en.svg)](../assets/readme/runtime-architecture.en.svg)
+
+This view expands Python Runtime only. Solid arrows carry requests or data; dashed arrows show dependencies. Gateway is optional.
+
+| Component | Responsibility | Purpose |
+| --- | --- | --- |
+| Channel adapters | Normalize input and format replies | Reuse execution while isolating platform differences |
+| Gateway | HTTP, WebSocket, authentication, management | Share an instance with browser and application clients |
+| Event bus | Dispatch input and output events | Decouple intake, execution, and delivery |
+| Agent loop | Coordinate sessions, context, inference, tools, finalization | Turn goals into controlled operations |
+| Context management | Select history, memory, knowledge, skills | Fit relevant information into a finite window |
+| Models and tools | Request reasoning; validate, approve, execute operations | Separate decisions from actions |
+| Persistence | Retain sessions, memory, traces, task state | Enable continuity, inspection, and recovery |
+
+## Task interactions
 
 ```mermaid
 sequenceDiagram
-    participant C as Channel or Gateway
-    participant B as MessageBus
-    participant A as AgentLoop
-    participant X as ContextStage
-    participant I as InferenceStage
+    actor U as User or client
+    participant E as Entry layer
+    participant A as Agent loop
+    participant C as Context management
     participant M as Model service
-    participant P as Policy and ApprovalGate
-    participant T as ToolRegistry
-    participant R as ResponseStage
-
-    C->>B: InboundEvent
-    B->>A: Dispatch task
-    A->>X: Assemble session, memory, knowledge, and skills
-    X-->>A: PipelineContext
-    A->>I: Start inference and tool execution
-    loop While execution budget and task state permit
-        I->>M: Model request and execution feedback
-        M-->>I: Text or tool calls
-        opt Tool calls present
-            I->>P: Tool admission and approval checks
-            P-->>I: Allow, deny, or wait for confirmation
-            opt Execution allowed
-                I->>T: Invoke tool
-                T-->>I: Tool result
+    participant P as Permission checks
+    participant T as Tool
+    participant S as Persistent storage
+    U->>E: Submit goal and input
+    E->>A: Normalized task event
+    A->>C: Request turn context
+    C->>S: Read relevant history, memory, knowledge
+    S-->>C: Available content
+    C-->>A: Budgeted context
+    loop While task state and budget permit
+        A->>M: Context and execution feedback
+        M-->>A: Text or tool request
+        opt Tool requested
+            A->>P: Check scope, policy, approval
+            alt Allowed
+                P-->>A: Allow
+                A->>T: Execute validated operation
+                T-->>A: Result or error
+            else Denied
+                P-->>A: Denial reason
             end
         end
     end
-    I-->>A: Inference result and task state
-    A->>R: Save session and schedule background processing
-    R-->>A: Response result
-    A->>B: OutboundEvent
-    B->>C: Deliver to the originating channel
+    A->>S: Save session and execution result
+    A-->>E: Final result and completion state
+    E-->>U: Reply and deliverables
 ```
 
-## Memory and Skill Evolution
+This UML sequence shows a typical tool-using task. Approval may require user input. Tasks without tools skip that branch. Streaming and progress can arrive earlier; final completion must match actual execution state.
 
-![Memory and skill evolution: eligible memories enter context; trajectories produce skill candidates, with validation, risk checks, and isolated evaluation leading to promotion, review, or rejection](../assets/readme/memory-evolution.en.svg)
+## Lifecycle and operating modes
 
-- **Memory**: Working supplies current context; Episodic and Semantic retain summaries and facts; Archival retains archived entries. Normal recall follows scope and lifecycle eligibility, excluding archived, superseded, and unresolved entries. Vector retrieval follows configuration.
-- **Evolution**: The engine is disabled by default. Once enabled, manual, threshold, or scheduled triggers produce candidates. Risk and configuration route candidates to review or isolated evaluation; only changes that meet the promotion policy reach the live skill library. Rollback of promoted changes is manual.
+Startup prepares configuration, models, storage, Agent, channels, and optional services. Shutdown coordinates cancellation, persistence, and cleanup. Foreground execution and Gateway share this lifecycle. Attached CLI/TUI clients do not create another engine.
 
-See the [memory system](memory-system.en.md) and [evolution and evaluation](evolution-evaluation.en.md).
+Usually run one full Runtime per workspace. Define storage, workspace, and credential boundaries before scaling or serving different trust domains. See [Runtime modes](../operations/runtime-modes.md) and [Security](security-model.md).
 
-## Services, Extensions, and Permission Boundaries
+## Continue reading
 
-- **Gateway is a service entry point**: Dashboard, CLI/TUI, and application APIs use the same Runtime. Channels and scheduling also run according to configuration. Normally use one full Runtime per workspace.
-- **MCP integrates tools**: The Runtime connects to tool services through its MCP client; local tools, Skills, and Plugins have their own extension points.
-- **A2A accepts inbound tasks**: There is no outbound A2A delegation entry point in the current Agent runtime, so diagrams should not show a generic Runtime-initiated peer delegation path.
-- **Permissions govern execution**: Tool admission, command policy, and ApprovalGate govern calls. Command policy is not OS-level isolation; actual execution boundaries also depend on the selected executor.
-- **State belongs to the deployment**: SQLite and workspace files retain state. Remote models, external MCP servers, and third-party channels receive the content needed for their operations.
-
-## Maintaining the Diagrams
-
-This page and the project README share the bilingual SVGs in `docs/assets/readme/`. After changing code relationships, run from the repository root:
-
-```bash
-python3 scripts/generate-readme-diagrams.py
-python3 scripts/generate-readme-diagrams.py --check
-```
-
-The generator header lists the implementation sources for each diagram. `--check` verifies that artifacts match the generator; module relationships, permissions, and arrow semantics still require review against the implementation.
+[Desktop architecture](desktop-architecture.md) explains local hosting; [Agent loop](agent-loop.md) explains action selection; [Events and delivery](events-delivery.md) distinguishes execution from delivery.

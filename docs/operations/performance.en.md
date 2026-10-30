@@ -1,5 +1,7 @@
 # Performance
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
+
 Echo Agent's bottlenecks are usually model-call latency and local data I/O. This page covers the tuning levers that exist in the configuration.
 
 ---

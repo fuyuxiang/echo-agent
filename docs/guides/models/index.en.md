@@ -1,5 +1,7 @@
 # Model Integration Overview
 
+**Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../../desktop/index.md).
+
 Echo Agent supports multiple LLM providers with unified routing, failover, and credential rotation mechanisms.
 
 ---
