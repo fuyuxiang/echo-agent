@@ -1695,16 +1695,20 @@ fn list_trash_items() -> Result<Vec<trash::TrashItem>, String> {
         trash::os_limited::list().map_err(|error| format!("无法读取系统回收站：{error}"))?;
     #[cfg(windows)]
     {
-        // trash 5 uses SIGDN_PARENTRELATIVE, a display name which can omit
-        // known extensions. Use the full original name for matching AND for
-        // restore_all's destination name, regardless of Explorer settings.
-        items
+        // Read original names from the actual recycle-bin namespace objects.
+        // PKEY_ItemName can be the internal $R... name, and reparsing a physical
+        // path loses the namespace's original-name metadata. Explorer's display
+        // names can also hide extensions, so neither is a restore destination.
+        let mut names = windows_trash_original_names()?;
+        Ok(items
             .into_iter()
-            .map(|mut item| {
-                item.name = windows_trash_original_name(&item.id)?;
-                Ok(item)
+            .filter_map(|mut item| {
+                // An entry can disappear between the two enumerations. It must
+                // fail the existing batch preflight rather than use a guess.
+                item.name = names.remove(&item.id)?;
+                Some(item)
             })
-            .collect()
+            .collect())
     }
     #[cfg(not(windows))]
     {
@@ -1713,32 +1717,59 @@ fn list_trash_items() -> Result<Vec<trash::TrashItem>, String> {
 }
 
 #[cfg(windows)]
-fn windows_trash_original_name(id: &std::ffi::OsStr) -> Result<std::ffi::OsString, String> {
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+fn windows_trash_original_names() -> Result<HashMap<std::ffi::OsString, std::ffi::OsString>, String>
+{
+    use std::os::windows::ffi::OsStringExt;
+    use windows::core::Interface;
     use windows::Win32::{
-        Storage::EnhancedStorage::PKEY_ItemName,
+        Storage::EnhancedStorage::PKEY_FileName,
         System::Com::CoTaskMemFree,
-        UI::Shell::{IShellItem2, SHCreateItemFromParsingName},
+        UI::Shell::{
+            BHID_EnumItems, FOLDERID_RecycleBinFolder, IEnumShellItems, IShellItem, IShellItem2,
+            SHGetKnownFolderItem, KF_FLAG_DEFAULT, SIGDN_DESKTOPABSOLUTEPARSING,
+        },
     };
 
-    let id = id
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
     // list_trash_items calls trash::list first, which initializes COM on this
-    // thread. GetString returns a task-allocated buffer that we copy and free.
+    // thread. Copy and free every task-allocated string before the next call.
     let result = (|| unsafe {
-        let item: IShellItem2 =
-            SHCreateItemFromParsingName(windows::core::PCWSTR(id.as_ptr()), None)?;
-        let name = item.GetString(&PKEY_ItemName)?;
-        if name.is_null() {
-            return Err(windows::core::Error::from_hresult(
-                windows::Win32::Foundation::E_FAIL,
-            ));
+        let recycle_bin: IShellItem =
+            SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None)?;
+        let entries: IEnumShellItems = recycle_bin.BindToHandler(None, &BHID_EnumItems)?;
+        let mut names = HashMap::new();
+        loop {
+            let mut fetched = 0;
+            let mut items = [None];
+            entries.Next(&mut items, Some(&mut fetched))?;
+            if fetched == 0 {
+                break;
+            }
+            let Some(item) = items[0].take() else { break };
+            let id = item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)?;
+            if id.is_null() {
+                return Err(windows::core::Error::from_hresult(
+                    windows::Win32::Foundation::E_FAIL,
+                ));
+            }
+            let id_value = std::ffi::OsString::from_wide(id.as_wide());
+            CoTaskMemFree(Some(id.0.cast()));
+            let item: IShellItem2 = item.cast()?;
+            let name = item.GetString(&PKEY_FileName)?;
+            if name.is_null() {
+                continue;
+            }
+            let name_value = std::ffi::OsString::from_wide(name.as_wide());
+            CoTaskMemFree(Some(name.0.cast()));
+            // A restore name must be one file-system component. Never publish
+            // an empty/absolute name supplied by an unrelated shell extension.
+            let mut components = Path::new(&name_value).components();
+            if matches!(components.next(), Some(Component::Normal(_)))
+                && components.next().is_none()
+            {
+                names.insert(id_value, name_value);
+            }
         }
-        let original = std::ffi::OsString::from_wide(name.as_wide());
-        CoTaskMemFree(Some(name.0.cast()));
-        Ok::<_, windows::core::Error>(original)
+        Ok::<_, windows::core::Error>(names)
     })();
     result.map_err(|error| format!("无法读取回收站条目的原始文件名：{error}"))
 }
@@ -3435,6 +3466,7 @@ mod tests {
         // extensions are hidden, and verify their contents after restoration.
         std::fs::write(root.join("a"), "no extension").unwrap();
         std::fs::write(root.join("a.json"), "{}").unwrap();
+        std::fs::write(root.join("中文 报告.v1.txt"), "unicode and multiple dots").unwrap();
         let a = root.join("a.txt").to_string_lossy().into_owned();
         let sub = root.join("sub").to_string_lossy().into_owned();
 
@@ -3445,10 +3477,11 @@ mod tests {
                 sub.clone(),
                 root.join("a").to_string_lossy().into_owned(),
                 root.join("a.json").to_string_lossy().into_owned(),
+                root.join("中文 报告.v1.txt").to_string_lossy().into_owned(),
             ],
         };
         let results = delete_entries_blocking(root, req).expect("delete should run");
-        assert_eq!(results.len(), 4);
+        assert_eq!(results.len(), 5);
         // Headless CI may not expose a system trash. A failure must keep the
         // source intact; a success must provide a restore token and remove it.
         for r in &results {
@@ -3472,6 +3505,18 @@ mod tests {
             .iter()
             .filter(|result| result.ok)
             .collect::<Vec<_>>();
+        #[cfg(windows)]
+        if !successful.is_empty() {
+            let items = list_trash_items().expect("recycle-bin original names must be readable");
+            for result in &successful {
+                let expected = Path::new(&result.source_path);
+                let item = items
+                    .iter()
+                    .find(|item| same_trash_path(&item.original_path(), expected))
+                    .unwrap_or_else(|| panic!("missing original name for {}", expected.display()));
+                assert_eq!(Some(item.name.as_os_str()), expected.file_name());
+            }
+        }
         if !successful.is_empty() {
             let restored = restore_blocking(
                 root,
@@ -3503,9 +3548,54 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(root.join("a.json")).unwrap(), "{}");
         assert_eq!(
+            std::fs::read_to_string(root.join("中文 报告.v1.txt")).unwrap(),
+            "unicode and multiple dots"
+        );
+        assert_eq!(
             std::fs::read_to_string(root.join("sub/b.txt")).unwrap(),
             "bravo"
         );
+    }
+
+    #[test]
+    fn trash_restore_collision_preserves_both_versions_and_allows_retry() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let original = root.join("a.txt");
+        let deleted = delete_entries_blocking(
+            root,
+            CodingDeleteEntryRequest {
+                root: workspace_str(&dir),
+                paths: vec![original.to_string_lossy().into_owned()],
+            },
+        )
+        .unwrap()
+        .remove(0);
+        if !deleted.ok {
+            assert!(deleted.restore_token.is_none());
+            assert_eq!(std::fs::read_to_string(&original).unwrap(), "alpha");
+            return;
+        }
+        let request = || CodingRestoreRequest {
+            root: workspace_str(&dir),
+            original_paths: vec![deleted.source_path.clone()],
+            restore_tokens: vec![deleted.restore_token.clone().unwrap()],
+        };
+        std::fs::write(&original, "new work after deletion").unwrap();
+        let conflict = restore_blocking(root, request()).unwrap();
+        assert!(!conflict[0].ok);
+        assert!(conflict[0].error.as_deref().unwrap().contains("已存在"));
+        assert_eq!(
+            std::fs::read_to_string(&original).unwrap(),
+            "new work after deletion"
+        );
+        std::fs::remove_file(&original).unwrap();
+        let retry = restore_blocking(root, request()).unwrap();
+        assert!(retry[0].ok, "{retry:?}");
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "alpha");
+        let replay = restore_blocking(root, request()).unwrap();
+        assert!(!replay[0].ok);
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "alpha");
     }
 
     #[cfg(windows)]

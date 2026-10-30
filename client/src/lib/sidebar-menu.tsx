@@ -2,13 +2,13 @@ import {
   EchoProjectNavIcon, BuildingIcon, Code2Icon, EchoExpertNavIcon,
   MoreMenuImaKnowledgeIcon, EchoAutomationNavIcon,
 } from "@/foundation/components/Icon/icons";
-import { isCapabilityView } from "./capability-navigation";
+import { CAPABILITY_SECTION_LABEL, isCapabilityView } from "./capability-navigation";
 
 export const SIDEBAR_MENU_ITEMS = {
   projects: { label: "项目", route: "项目", icon: EchoProjectNavIcon },
   organization: { label: "组织", route: "组织", icon: BuildingIcon },
   coding: { label: "代码开发", route: "代码开发", icon: Code2Icon },
-  capabilities: { label: "专家·技能·连接器", route: "专家·技能·连接器", icon: EchoExpertNavIcon },
+  capabilities: { label: CAPABILITY_SECTION_LABEL, route: "专家·技能·连接器", icon: EchoExpertNavIcon },
   knowledge: { label: "知识库", route: "知识库", icon: MoreMenuImaKnowledgeIcon },
   automation: { label: "定时任务", route: "自动化", icon: EchoAutomationNavIcon },
 } as const;

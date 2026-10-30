@@ -23,21 +23,53 @@ function Assert-Fails([scriptblock]$Action, [string]$Pattern, $ExitCode = $null)
     }
 }
 
-function Invoke-TestProcess([string]$Source) {
+function Stop-TestProcessTree($Process) {
+    if ($Process.HasExited) { return }
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $Process.Kill($true)
+    } else {
+        # .NET Framework has no Kill(entireProcessTree) overload. This process
+        # is owned by this fixture; keep its native children inside the timeout.
+        $killStart = New-Object System.Diagnostics.ProcessStartInfo
+        $killStart.FileName = Join-Path $env:SystemRoot 'System32/taskkill.exe'
+        $killStart.Arguments = "/PID $($Process.Id) /T /F"
+        $killStart.UseShellExecute = $false
+        $killStart.CreateNoWindow = $true
+        $killer = [System.Diagnostics.Process]::Start($killStart)
+        try {
+            if (-not $killer.WaitForExit(5000)) { $killer.Kill() }
+        } finally { $killer.Dispose() }
+        if (-not $Process.HasExited) { $Process.Kill() }
+    }
+    if (-not $Process.WaitForExit(5000)) { throw "Packaging fixture process could not be stopped" }
+}
+
+function Invoke-TestProcess([string]$Source, [int]$TimeoutMs = 20000) {
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.FileName = (Get-Process -Id $PID).Path
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Source))
     $start.Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
     $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $process = [System.Diagnostics.Process]::Start($start)
     try {
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-        return @{ ExitCode = $process.ExitCode; Stdout = $stdout; Stderr = $stderr }
-    } finally { $process.Dispose() }
+        # Both reads must start before waiting. Sequential ReadToEnd deadlocks
+        # when the unconsumed stream fills its (small on Windows) pipe buffer.
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMs)) {
+            throw "Packaging fixture timed out after $TimeoutMs ms (PID $($process.Id))"
+        }
+        $reads = [System.Threading.Tasks.Task[]]@($stdout, $stderr)
+        if (-not [System.Threading.Tasks.Task]::WaitAll($reads, $TimeoutMs)) {
+            throw "Packaging fixture output did not close after $TimeoutMs ms"
+        }
+        return @{ ExitCode = $process.ExitCode; Stdout = $stdout.Result; Stderr = $stderr.Result }
+    } finally {
+        try { Stop-TestProcessTree $process } finally { $process.Dispose() }
+    }
 }
 
 try {
@@ -49,6 +81,19 @@ try {
         ) | Out-Null
         Assert-True ($parseErrors.Count -eq 0) "Parser errors in ${name}: $parseErrors"
     }
+
+    # Reproduce the CI pipe pressure without relying on formatting or CLIXML.
+    $pressure = Invoke-TestProcess '[Console]::Error.Write(("e" * 262144)); [Console]::Out.Write(("o" * 262144)); exit 7'
+    Assert-True ($pressure.ExitCode -eq 7) "Pipe pressure lost the child exit code"
+    Assert-True ($pressure.Stdout.Length -eq 262144) "Pipe pressure truncated stdout"
+    Assert-True ($pressure.Stderr.Length -eq 262144) "Pipe pressure truncated stderr"
+    $timeoutPidFile = Join-Path $testRoot 'timeout.pid'
+    $timeoutSource = 'Set-Content -LiteralPath ''__PID_FILE__'' -Value $PID; Start-Sleep -Seconds 30'
+    $timeoutSource = $timeoutSource.Replace('__PID_FILE__', $timeoutPidFile.Replace("'", "''"))
+    Assert-Fails { Invoke-TestProcess $timeoutSource -TimeoutMs 3000 } "Packaging fixture timed out"
+    Assert-True (Test-Path -LiteralPath $timeoutPidFile) "Timed fixture did not reach its blocking operation"
+    $timedPid = [int](Get-Content -LiteralPath $timeoutPidFile)
+    Assert-True ($null -eq (Get-Process -Id $timedPid -ErrorAction SilentlyContinue)) "Timed fixture was left running"
 
     $PSNativeCommandUseErrorActionPreference = $true
     $output = Invoke-PackagingCommand $NodePath @("-e", "console.error('expected native warning'); console.log('1.2.3')")

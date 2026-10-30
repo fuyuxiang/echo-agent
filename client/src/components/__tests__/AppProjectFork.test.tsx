@@ -150,7 +150,7 @@ describe("manual memory commands", () => {
     expect(screen.queryByTestId("memory-settings-context")).toBeNull();
     expect(screen.getByText(/任务：项目源标题/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "查看记忆" }));
-    expect(await screen.findByTestId("memory-settings-context")).toHaveTextContent("personal-memory:source:/workspace");
+    expect(await screen.findByTestId("memory-settings-context")).toHaveTextContent("memory:source:/workspace");
   });
 
   it("background error copy is classified before adding a title containing an HTTP code", async () => {

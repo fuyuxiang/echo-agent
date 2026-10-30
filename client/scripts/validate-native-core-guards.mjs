@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import vm from 'node:vm';
+import ts from 'typescript';
 import { CORE_CHECKS, coreReviewProjectName, validateCoreManifest, verifyNativeCoreReport } from './validate-native-core-review.mjs';
 
 const home = '/private/tmp/echo-native-review-core-synthetic', nonce = 'a'.repeat(32), cwd = `${home}/workspaces/default`;
@@ -59,9 +60,29 @@ const cases = [];
   const labelLiteral = navigation.match(/CAPABILITY_SECTION_LABEL\s*=\s*("[^"\n]+")/)?.[1];
   assert(labelLiteral, 'Production capability navigation display label missing');
   const label = JSON.parse(labelLiteral);
-  const sidebar = readFileSync('src/components/Sidebar.tsx', 'utf8');
-  assert(/label === "专家·技能·连接器" \? CAPABILITY_SECTION_LABEL : label/.test(sidebar),
-    'Production Sidebar no longer renders the contracted capability display name');
+  // Inspect the real menu contract rather than a particular JSX expression.
+  // Sidebar.test.tsx separately exercises its rendered label and navigation.
+  const menu = ts.createSourceFile('sidebar-menu.tsx', readFileSync('src/lib/sidebar-menu.tsx', 'utf8'),
+    ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let definition;
+  const visit = node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(menu) === 'SIDEBAR_MENU_ITEMS') definition = node.initializer;
+    ts.forEachChild(node, visit);
+  };
+  visit(menu);
+  while (definition && (ts.isAsExpression(definition) || ts.isSatisfiesExpression(definition))) definition = definition.expression;
+  const property = (object, name) => object && ts.isObjectLiteralExpression(object)
+    ? object.properties.find(item => ts.isPropertyAssignment(item) && item.name.getText(menu) === name)?.initializer
+    : undefined;
+  assert(definition, 'Production Sidebar menu definition missing');
+  const capability = property(definition, 'capabilities');
+  assert(capability, 'Production capability menu entry missing');
+  const display = property(capability, 'label'), route = property(capability, 'route');
+  assert(display && (ts.isStringLiteral(display) ? display.text === label
+    : ts.isIdentifier(display) && display.text === 'CAPABILITY_SECTION_LABEL'),
+  'Production capability menu display label differs from the native navigation contract');
+  assert(route && ts.isStringLiteral(route) && route.text === '专家·技能·连接器',
+    'Production capability menu route differs from the native navigation contract');
   const predicate = fixtureSource.match(/\.find\((node => visible\(node\) && node\.textContent\.trim\(\) === '[^']+')\), 'leave automation via actual navigation'/)?.[1];
   assert(predicate, 'Actual automation-draft leave navigation predicate missing');
   const matches = vm.runInNewContext(`(${predicate})`, { visible: node => node.visible });
