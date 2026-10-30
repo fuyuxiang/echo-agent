@@ -122,7 +122,9 @@ export function ChatView({
   headerLeading,
   notice,
   taskRefreshSignal,
+  attentionRequest,
 }: {
+  attentionRequest?: number;
   onSend: (
     text: string,
     attachments?: string[],
@@ -183,6 +185,7 @@ export function ChatView({
 }) {
   const messages = useSessionStore((s) => s.messages);
   const streaming = useSessionStore((s) => s.streaming);
+  const usage = useSessionStore((s) => s.usage);
   const sendNowPending = useSessionStore((s) => s.sendNowPending);
   const streamingMessageId = useSessionStore((s) => s.streamingMessageId);
   const error = useSessionStore((s) => s.error);
@@ -190,6 +193,9 @@ export function ChatView({
   const planApproval = useSessionStore(s => s.planApproval);
   const planRevisionDirty = useSessionStore((s) => s.planRevisionDirty);
   const sessionId = useSessionStore((s) => s.sessionId);
+  const usageRefreshSignal = useMemo(() => ({ messageCount: messages.length, usage, taskRefreshSignal, commandRefreshKey }), [messages.length, usage, taskRefreshSignal, commandRefreshKey]);
+  const trayAttentionRef = useRef<HTMLDivElement>(null);
+  const handledAttentionRef = useRef<number | undefined>(undefined);
   const automation = useSessionAutomation(sessionId);
   const runtimeErrorContext = useSessionStore(s => s.runtimeErrorContext);
   const workspaceRefreshSignal = useMemo(() => ({error, revision:taskRefreshSignal}), [error, taskRefreshSignal]);
@@ -858,6 +864,19 @@ export function ChatView({
         onClick={() => void continueTask()}><Play size={14} />{continuing ? "正在继续…" : "继续任务"}</button>}
     </div>
   ) : null;
+  useEffect(() => {
+    if (attentionRequest === undefined || handledAttentionRef.current === attentionRequest || modelLoading) return;
+    const frame = requestAnimationFrame(() => {
+      handledAttentionRef.current = attentionRequest;
+      if (awaitingPlan && !planOpen) openWorkspace("plan");
+      const card = trayAttentionRef.current?.querySelector<HTMLElement>(".perm-inline, .question-inline, .yield-banner");
+      card?.scrollIntoView?.({ block: "nearest" });
+      const input = (card ?? trayAttentionRef.current)?.querySelector<HTMLElement>("input:not(:disabled), textarea:not(:disabled), button:not(:disabled)");
+      input?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [attentionRequest, modelLoading, awaitingPlan, planOpen, sessionId]);
+
   return (
     <>
     {sessionId && <SessionHeader key={sessionId} sessionId={sessionId} title={title || "新任务"}
@@ -1014,7 +1033,7 @@ export function ChatView({
             </button>
           )}
         </div>
-        <div className="chatview__footer">
+        <div className="chatview__footer" ref={trayAttentionRef}>
           <div className="session-task-controls"><TasksPanel sessionId={sessionId ?? undefined} refreshSignal={taskRefreshSignal} onToast={onToast} presentation="summary" onOpen={() => transitionWorkspace("subagents")} /></div>
           {/* Inline permission / question cards: session-scoped, never block sidebar. */}
           {!pendingPermission && <AutomationApprovalCard automation={automation} onToast={onToast} />}
@@ -1090,7 +1109,7 @@ export function ChatView({
             activeExpertName={activeExpertName}
             activeExpertAvatar={activeExpertAvatar}
             usageSessionId={sessionId ?? undefined}
-            usageMsgCount={messages.length}
+            usageRefreshSignal={usageRefreshSignal}
           />
         </div>
       </div>

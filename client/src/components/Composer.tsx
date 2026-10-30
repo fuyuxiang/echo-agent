@@ -169,7 +169,7 @@ export function Composer({
   onDismissExpert,
   /** Session id powering the context-usage pill (omit on the home page). */
   usageSessionId,
-  usageMsgCount,
+  usageRefreshSignal,
   knowledgeSessionId,
   knowledgeDeferred = false,
   onOpenKnowledgeBase,
@@ -285,8 +285,8 @@ export function Composer({
   onDismissExpert?: () => void;
   /** Session id powering the context-usage pill (omit on the home page). */
   usageSessionId?: string;
-  /** Triggers pill re-fetch when messages change. */
-  usageMsgCount?: number;
+  /** Triggers a capacity refresh after session usage/history updates. */
+  usageRefreshSignal?: unknown;
   /** Existing session scope for per-task knowledge preferences. Omit on Home. */
   knowledgeSessionId?: string;
   knowledgeDeferred?: boolean;
@@ -488,6 +488,7 @@ export function Composer({
   // ctxUsed/ctxTotal 由 ContextUsagePill 异步获取,这里不耦合;徽章在占比未知时
   // 仍显示 +N(新增 token),有占比信息时叠加(此处保守不取,避免与 pill 抢请求)。
   const cost = useMemo(() => estimateSendCost(text), [text]);
+  const contextRefreshSignal = useMemo(() => ({ usageRefreshSignal, modelId, modelLoading }), [usageRefreshSignal, modelId, modelLoading]);
   const boundaryRole: PermissionRole | null = usePermissionModeStore((state) =>
     commandSessionId ? state.statuses[commandSessionId]?.permissionMode ?? null : state.homeMode,
   );
@@ -1525,7 +1526,7 @@ export function Composer({
           />
           <div className="echo-composer__spacer" />
           <div className="composer-primary-tools">
-          <ContextUsagePill key={usageSessionId ?? "new-task"} sessionId={usageSessionId} onRefreshSignal={usageMsgCount}
+          <ContextUsagePill key={usageSessionId ?? "new-task"} sessionId={usageSessionId} active={streaming} onRefreshSignal={contextRefreshSignal}
             estimate={text.trim() ? cost : undefined} />
           {showModelPicker ? (
             <ModelSelector

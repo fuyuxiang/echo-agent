@@ -1,6 +1,7 @@
 import { buildDraft } from "../automation/schedule-utils";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AutomationPanel } from "../AutomationPanel";
 import { automationEditorDirty, useAutomationEditorStore } from "@/stores/automation-editor-store";
 import { AutomationPermissionConfirmDialog } from "../automation/AutomationPermissionConfirmDialog";
@@ -467,6 +468,90 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       prompt: "生成报告",
       modelId: "minimax-m3",
     });
+  });
+
+  it("macOS 点击选项先失焦时仍可选择模型、保存并重新打开", async () => {
+    beginRunnableEditor();
+    const models = [
+      { id: "ready-model", label: "原模型" },
+      { id: "other-model", label: "另一个模型" },
+    ];
+    vi.mocked(providersList).mockResolvedValue({ providers: [], models } as never);
+    render(<AutomationPanel />);
+    const trigger = await screen.findByRole("button", { name: "原模型 · 个人" });
+    fireEvent.click(trigger);
+    const option = screen.getByRole("button", { name: "另一个模型 · 个人" });
+    fireEvent.mouseDown(option, { button: 0 });
+    // WebKit does not focus buttons clicked with the mouse. The focused Auto
+    // or model option loses focus to the document before mouseup/click.
+    act(() => (document.activeElement as HTMLElement).blur());
+    fireEvent.mouseUp(option, { button: 0 });
+    fireEvent.click(option);
+    expect(useAutomationEditorStore.getState().draft?.modelId).toBe("other-model");
+    expect(document.querySelector(".atm-chip-dropdown__menu")).toBeNull();
+    expect(trigger).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({ modelId: "other-model" })));
+    const saved = vi.mocked(automationsSave).mock.calls[0][0];
+    act(() => useAutomationEditorStore.getState().begin(saved, saved));
+    const selectedTrigger = await screen.findByRole("button", { name: "另一个模型 · 个人" });
+    fireEvent.click(selectedTrigger);
+    expect(screen.getAllByRole("button", { name: "另一个模型 · 个人" })[1]).toHaveClass("active");
+    const auto = screen.getByRole("button", { name: /^Auto\s*每次运行/ });
+    fireEvent.mouseDown(auto, { button: 0 });
+    act(() => (document.activeElement as HTMLElement).blur());
+    fireEvent.mouseUp(auto, { button: 0 });
+    fireEvent.click(auto);
+    expect(useAutomationEditorStore.getState().draft?.modelId).toBeUndefined();
+    expect(screen.getByRole("button", { name: /Auto.*原模型/ })).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(automationsSave).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(automationsSave).mock.calls[1][0].modelId).toBeUndefined();
+  });
+
+  it("模型菜单仍支持内部 Tab 导航、Tab 离开、Esc 和点击外部关闭", async () => {
+    beginRunnableEditor();
+    render(<AutomationPanel />);
+    const trigger = await screen.findByRole("button", { name: "可用模型 · 个人" });
+    const user = userEvent.setup();
+    await user.click(trigger);
+    expect(screen.getByRole("button", { name: /^Auto\s*每次运行/ })).toHaveFocus();
+    await user.tab();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await user.tab();
+    expect(screen.getByRole("button", { name: "技能" })).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await user.click(trigger);
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await user.click(trigger);
+    fireEvent.mouseDown(screen.getByText("任务要求"));
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(useAutomationEditorStore.getState().draft?.modelId).toBe("ready-model");
+  });
+
+  it.each(["技能", "召唤专家"])("%s 菜单也允许 WebKit 失焦后的内部点击", async (name) => {
+    beginRunnableEditor();
+    vi.mocked(skillsList).mockResolvedValue([
+      { name: "first", displayName: "第一个技能", enabled: true },
+      { name: "second", displayName: "第二个技能", enabled: true },
+    ]);
+    vi.mocked(agentsList).mockResolvedValue([{ name: "新闻专家", path: "/review/agents/news.md", scope: "project", raw: "News" }]);
+    render(<AutomationPanel />);
+    await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name }));
+    const option = screen.getByRole("button", { name: name === "技能" ? "第二个技能" : "新闻专家" });
+    const copy = option.querySelector("span:last-child")!;
+    fireEvent.mouseDown(copy, { button: 0 });
+    act(() => (document.activeElement as HTMLElement).blur());
+    fireEvent.mouseUp(copy, { button: 0 });
+    fireEvent.click(copy);
+    const draft = useAutomationEditorStore.getState().draft;
+    if (name === "技能") expect(draft?.skills).toEqual(["second"]);
+    else expect(draft).toMatchObject({ expertId: "新闻专家", expertPath: "/review/agents/news.md" });
+    expect(option).toHaveClass("active");
+    expect(document.querySelector(".atm-chip-dropdown__menu")).toBeInTheDocument();
   });
 
   it("Auto 显示实际默认模型并保持自动选择语义", async () => {

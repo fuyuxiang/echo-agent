@@ -6,6 +6,30 @@ import * as agentClient from "@/lib/agent-client";
 const base = { streaming: false, onSend: vi.fn(), onCancel: vi.fn() };
 
 describe("Composer", () => {
+  it("会话加载完成、任务开始/结束、模型切换都自动同步容量", async () => {
+    const info = (usagePct: number) => ({ context: { total: 100000, used: usagePct * 1000, usagePct } });
+    const read = vi.spyOn(agentClient, "agentSessionInfo").mockResolvedValue({} as never);
+    try {
+      const view = render(<Composer {...base} usageSessionId="a" modelId="small" modelLoading />);
+      await waitFor(() => expect(read).toHaveBeenCalledWith("a"));
+      read.mockResolvedValue(info(30) as never);
+      view.rerender(<Composer {...base} usageSessionId="a" modelId="small" modelLoading={false} />);
+      await screen.findByRole("button", { name: "上下文已使用 30%" });
+      read.mockResolvedValue(info(60) as never);
+      view.rerender(<Composer {...base} streaming usageSessionId="a" modelId="small" />);
+      await screen.findByRole("button", { name: "上下文已使用 60%" });
+      read.mockResolvedValue(info(95) as never);
+      view.rerender(<Composer {...base} usageSessionId="a" modelId="small" />);
+      await screen.findByRole("button", { name: "上下文已使用 95%" });
+      read.mockResolvedValue(info(20) as never);
+      view.rerender(<Composer {...base} usageSessionId="a" modelId="large" />);
+      await screen.findByRole("button", { name: "上下文已使用 20%" });
+      view.unmount();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it("停止请求等待期间阻止重复操作，保留新输入的草稿", async () => {
     let finish!: (accepted: boolean) => void;
     const onCancel = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve; }));

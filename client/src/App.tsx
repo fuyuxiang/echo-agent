@@ -34,6 +34,8 @@ import {
 } from "./lib/model-selection";
 import { useSessionStore } from "./stores/session-store";
 import { useSessionsStore } from "./stores/sessions-store";
+import { useDesktopTray } from "./lib/use-desktop-tray";
+import { TrayActionCancelled } from "./lib/desktop-tray-connection";
 import { reconcileSessionCatalog } from "./lib/session-catalog";
 import { meetingDrafts } from "./lib/meeting-drafts";
 import { createExitPreparationController, type DesktopExitNotice, type DesktopExitFailure } from "./lib/recording-exit";
@@ -269,6 +271,8 @@ function Shell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("model");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [trayAttention, setTrayAttention] = useState<{ sessionId: string; sequence: number } | null>(null);
+  const [trayNewRequest, setTrayNewRequest] = useState(0);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [trustRequest, setTrustRequest] = useState<{ cwd?: string; reason?: string } | null>(null);
@@ -862,7 +866,6 @@ function Shell() {
               || !queuePolicy.autoAdvance
               || pendingInteractionStatus(p.sessionId)
             ) return;
-            // Refresh the composer context-usage pill after each turn.
             // Internal/external notifications are dispatched by the Rust bridge
             // for every session (including background automation sessions).
             // 消息队列自动续发(对齐 EchoAgent message-queue):该会话若有 active
@@ -2413,7 +2416,6 @@ function Shell() {
           transcript.messages,
         );
       }
-      // Populate the context-usage pill for the freshly loaded session.
     } catch (e) {
       if (selectionGenerationRef.current === generation && sessionsStore.getState().currentSessionId === sessionId) {
         sessionStore.getState().setError(friendlyError(e));
@@ -2443,6 +2445,57 @@ function Shell() {
   };
 
   notificationNavigatorRef.current = (sessionId) => handleSelectSession(sessionId, undefined, false, true);
+  const openTrayGroup = async (groupId: string) => {
+    const generation = ++selectionGenerationRef.current;
+    const ensureCurrentNavigation = () => {
+      if (selectionGenerationRef.current !== generation) throw new TrayActionCancelled();
+    };
+    if (placeholderView === "代码开发" && codingLeaveGuardRef.current && !(await codingLeaveGuardRef.current())) {
+      throw new TrayActionCancelled();
+    }
+    ensureCurrentNavigation();
+    if (useGroupStore.getState().groups.find(group => group.id === groupId)?.archived) throw new Error("专家团已归档");
+    await useGroupStore.getState().select(groupId);
+    ensureCurrentNavigation();
+    const group = useGroupStore.getState();
+    if (group.current?.id !== groupId || group.current.archived || group.error) throw new Error(group.error || "专家团已删除、归档或暂时无法打开");
+    navigateNow("专家团");
+  };
+  useDesktopTray(Boolean(init?.ok), async (action) => {
+    if (action.kind === "session") {
+      if (!action.targetId) throw new Error("任务入口无效");
+      const entry = findSessionSummary(action.targetId);
+      if (entry?.archived || sessionsStore.getState().deletedSessionIds.includes(action.targetId)) throw new Error("任务已删除或归档，请查看全部任务");
+      try { await handleSelectSession(action.targetId, undefined, false, true); }
+      catch (error) {
+        if (error instanceof Error && error.message === "请先处理代码开发中的未保存内容") throw new TrayActionCancelled();
+        throw error;
+      }
+      setTrayAttention(previous => ({ sessionId: action.targetId!, sequence: (previous?.sequence ?? 0) + 1 }));
+    } else if (action.kind === "group") {
+      if (!action.targetId) throw new Error("专家团入口无效");
+      await openTrayGroup(action.targetId);
+    } else if (action.kind === "new") {
+      const generation = ++selectionGenerationRef.current;
+      if (placeholderView === "代码开发" && codingLeaveGuardRef.current && !(await codingLeaveGuardRef.current())) {
+        throw new TrayActionCancelled();
+      }
+      if (selectionGenerationRef.current !== generation) throw new TrayActionCancelled();
+      createNewSessionView();
+      setTrayNewRequest(value => value + 1);
+    } else if (action.kind === "all") {
+      openSearch();
+      setSidebarCollapsed(false);
+    } else { throw new Error("不支持的托盘操作"); }
+    setSettingsOpen(false);
+    setAboutOpen(false);
+    if (action.kind !== "all") setSearchOpen(false);
+  }, (error, retry) => showActionToast(`任务菜单操作未完成：${friendlyError(error)}`, [{ label: "重试", onClick: retry }], 8000));
+  useEffect(() => {
+    if (!trayNewRequest || currentSessionId || placeholderView) return;
+    const frame = requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".home textarea")?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [trayNewRequest, currentSessionId, placeholderView]);
   notificationAutomationNavigatorRef.current = async (automationId) => {
     if (placeholderView === "代码开发" && codingLeaveGuardRef.current) {
       if (!(await codingLeaveGuardRef.current())) throw new Error("请先处理代码开发中的未保存内容");
@@ -3160,6 +3213,7 @@ function Shell() {
                     handleNavigate("专家团");
                   }}
                   title={currentTitle}
+                  attentionRequest={trayAttention?.sessionId === currentSessionId ? trayAttention.sequence : undefined}
                   notice={modelCatalogNotice}
                   onRename={handleRenameTitle}
                   navigation={{ sidebarCollapsed, onToggleSidebar: () => setSidebarCollapsed(!sidebarCollapsed), onNewTask: handleNewSession }}
@@ -3274,6 +3328,7 @@ function Shell() {
             open
             onClose={() => setSearchOpen(false)}
             onSelect={handleSelectSession}
+            onSelectGroup={openTrayGroup}
           />
         </Suspense>
       )}

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Search, X, Clock, FileText } from "lucide-react";
 import { useSessionsStore } from "@/stores/sessions-store";
+import { useGroupStore } from "@/features/groups/group-store";
 import { agentListSessions, sessionSearch } from "@/lib/agent-client";
 import type { SearchHit, SessionSummary } from "@/lib/types";
 import { useModalFocus } from "@/lib/use-modal-focus";
+import { TrayActionCancelled } from "@/lib/desktop-tray-connection";
 
 /**
  * Session search overlay — now powered by EchoAgent's FTS5 full-text index.
@@ -22,17 +24,23 @@ export function SearchOverlay({
   open,
   onClose,
   onSelect,
+  onSelectGroup,
 }: {
   open: boolean;
   onClose: () => void;
   onSelect: (sessionId: string, cwd?: string) => void | Promise<void>;
+  onSelectGroup?: (groupId: string) => void | Promise<void>;
 }) {
   // The local catalog already spans every historical working directory.
   const independent = useSessionsStore((s) => s.independent);
+  const groups = useGroupStore(state => state.groups);
   // Archive means leaving active work surfaces. Archived content is searched
   // and managed exclusively in Settings > Archived until it is restored.
   const sessions = independent.filter((session) => !session.archived && !session.hidden);
   const [query, setQuery] = useState("");
+  const matchingGroups = onSelectGroup ? groups.filter(group => !group.archived
+    && (!query.trim() || group.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())))
+    .sort((a, b) => b.updatedAt - a.updatedAt) : [];
   const [remoteHits, setRemoteHits] = useState<SearchHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -160,6 +168,21 @@ export function SearchOverlay({
     }
   };
 
+  const openGroup = async (groupId: string) => {
+    if (openingRef.current || !onSelectGroup) return;
+    openingRef.current = true;
+    const generation = lifecycleGenerationRef.current;
+    setOpeningId(`group:${groupId}`); setSearchError(null);
+    try {
+      await onSelectGroup(groupId);
+      if (generation === lifecycleGenerationRef.current) onClose();
+    } catch (error) {
+      if (generation === lifecycleGenerationRef.current && !(error instanceof TrayActionCancelled)) setSearchError(String(error).replace(/^Error:\s*/, ""));
+    } finally {
+      if (generation === lifecycleGenerationRef.current) { openingRef.current = false; setOpeningId(null); }
+    }
+  };
+
   if (!open) return null;
 
   return (
@@ -206,6 +229,18 @@ export function SearchOverlay({
         </div>
 
         <div className="conversation-search-modal__body">
+          {matchingGroups.length > 0 && <>
+            <div className="conversation-search-modal__count">专家团 ({matchingGroups.length})</div>
+            <ul className="conversation-search-modal__list">
+              {matchingGroups.slice(0, 30).map(group => <li key={group.id}>
+                <button type="button" className="conversation-search-modal__item" title={group.name} disabled={openingId !== null}
+                  onClick={() => void openGroup(group.id)}>
+                  <Clock size={14} strokeWidth={1.75} className="conversation-search-modal__item-icon" />
+                  <span className="conversation-search-modal__item-title">{group.name}</span>
+                </button>
+              </li>)}
+            </ul>
+          </>}
           {searchError && (
             <div className="conversation-search-modal__empty" role="alert">
               <div>搜索或打开失败：{searchError}</div>
@@ -289,6 +324,7 @@ export function SearchOverlay({
           {!searching &&
             !searchError &&
             localOnly.length === 0 &&
+            matchingGroups.length === 0 &&
             visibleRemoteHits.length === 0 &&
             query.trim().length > 0 && (
               <div className="conversation-search-modal__empty">
@@ -298,6 +334,7 @@ export function SearchOverlay({
           {!searching &&
             !searchError &&
             localOnly.length === 0 &&
+            matchingGroups.length === 0 &&
             remoteHits.length === 0 &&
             query.trim().length === 0 && (
               <div className="conversation-search-modal__count">

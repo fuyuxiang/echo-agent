@@ -232,6 +232,15 @@ describe("ChatView pause/yield/resume 闭环", () => {
     vi.mocked(setCodingMode).mockClear();
   });
 
+  it("托盘打开待确认任务后展开计划，再次打开仍保留计划面板", async () => {
+    setStore({ planApproval: { requestId: "tray-plan", sessionId: "s1", toolCallId: "plan", planContent: "核对资料后生成报告" } });
+    const { rerender } = render(<ThemeProvider><ChatView {...baseProps} attentionRequest={1} /></ThemeProvider>);
+    await waitFor(() => expect(screen.getByRole("tab", { name: "计划" })).toHaveAttribute("aria-selected", "true"));
+    rerender(<ThemeProvider><ChatView {...baseProps} attentionRequest={2} /></ThemeProvider>);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(screen.getByRole("tab", { name: "计划" })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("目录不可用时保留原回复，并禁用全部消息级重试", () => {
     workspaceMock.missing = true;
     setStore({messages:[

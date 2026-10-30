@@ -1,22 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Info } from "lucide-react";
 import { useAnchoredFloating } from "@/lib/use-anchored-floating";
 import type { estimateSendCost } from "@/lib/token-estimate";
-import { agentSessionInfo, agentSessionUsage } from "@/lib/agent-client";
-import type { ContextInfo, SessionUsage } from "@/lib/types";
+import { useContextUsage } from "@/lib/use-context-usage";
+import type { ContextInfo } from "@/lib/types";
 
 /**
  * Context-usage ring + popover for the Composer footer.
- * Self-contained: fetches EchoAgent echo.agent/session/info+usage on mount and after
- * each refresh cycle. No external store needed — avoids selector/key
- * synchronization issues.
+ * Reads runtime snapshots independently of the popover's visibility. Polls
+ * during execution and refreshes on turn/model changes and window activation.
  */
-
-interface Snapshot {
-  ctx: ContextInfo;
-  usage?: SessionUsage;
-}
 
 /** Adaptive token formatting: ≥100万 → 万, else K. */
 function fmtToken(t: number, useWan: boolean): string {
@@ -62,45 +56,20 @@ function buildRows(ctx: ContextInfo): CategoryRow[] {
   return rows;
 }
 
-export function ContextUsagePill({ sessionId, onRefreshSignal, estimate }: { sessionId?: string; onRefreshSignal?: number; estimate?: ReturnType<typeof estimateSendCost> }) {
-  const [snap, setSnap] = useState<Snapshot | null>(null);
+export function ContextUsagePill({ sessionId, active = false, onRefreshSignal, estimate }: { sessionId?: string; active?: boolean; onRefreshSignal?: unknown; estimate?: ReturnType<typeof estimateSendCost> }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const generationRef = useRef(0);
+  const { ctx, usage } = useContextUsage(sessionId, active, open, onRefreshSignal);
   const { style } = useAnchoredFloating(triggerRef, popoverRef, open, { align: "end", width: 320 });
 
-  const refresh = useCallback(async () => {
-    if (!sessionId) return;
-    const generation = ++generationRef.current;
-    try {
-      const info = await agentSessionInfo(sessionId);
-      if (info?.context?.total) {
-        let usage: SessionUsage | undefined;
-        try { usage = await agentSessionUsage(sessionId); } catch { /* nice-to-have */ }
-        if (generation === generationRef.current) setSnap({ ctx: info.context, usage });
-      }
-    } catch { /* session not live in agent — pill stays hidden */ }
+  useEffect(() => {
+    setOpen(false);
   }, [sessionId]);
 
-  // Fetch on mount + session change.
-  useEffect(() => {
-    setSnap(null);
-    setOpen(false);
-    void refresh();
-    return () => { generationRef.current += 1; };
-  }, [sessionId, refresh]);
-
-  // Re-fetch when parent signals (e.g. agent://complete).
-  useEffect(() => {
-    if (onRefreshSignal !== undefined) void refresh();
-  }, [onRefreshSignal, refresh]);
-
-  // Re-fetch when popover opens.
   useEffect(() => {
     if (!open) return;
-    void refresh();
     popoverRef.current?.focus();
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node) && !popoverRef.current?.contains(e.target as Node)) setOpen(false);
@@ -112,17 +81,16 @@ export function ContextUsagePill({ sessionId, onRefreshSignal, estimate }: { ses
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, refresh]);
+  }, [open]);
 
-  const ctx = snap?.ctx;
   if (!ctx?.total && !estimate) return null;
 
   const pct = ctx?.usagePct ?? 0;
   const useWan = (ctx?.total ?? 0) >= 1_000_000;
   const rows = ctx ? buildRows(ctx) : [];
   const cacheHit =
-    snap?.usage && snap.usage.inputTokens > 0
-      ? `${((snap.usage.cachedReadTokens / snap.usage.inputTokens) * 100).toFixed(1)}%`
+    usage && usage.inputTokens > 0
+      ? `${((usage.cachedReadTokens / usage.inputTokens) * 100).toFixed(1)}%`
       : "—";
 
   // Ring SVG params

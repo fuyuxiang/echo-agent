@@ -29,6 +29,8 @@ mod commands;
 #[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/acp_session_impl/desktop_delivery.rs"]
 mod desktop_delivery_tests;
 mod desktop_preferences;
+mod desktop_tray;
+mod desktop_tray_model;
 mod desktop_validation;
 mod document_export;
 mod expert_avatar;
@@ -329,9 +331,72 @@ pub(crate) fn abort_prepared_exit(app: &tauri::AppHandle, error: String, runtime
     );
 }
 
+/// Read native registries and live actors rather than the user-visible menu.
+/// Archived/hidden sessions still execute, and a recovering WebView can miss
+/// activity events entirely. Bound the read so a failed Runtime stays quittable.
+async fn application_exit_activity(
+    app: &tauri::AppHandle,
+) -> Result<desktop_tray_model::ExitActivity, String> {
+    let state = app.state::<AppState>();
+    let tx = state.tx.lock().map_err(|_| "Runtime 状态不可读")?.clone();
+    let permissions = app.state::<Permissions>();
+    let questions = app.state::<Questions>();
+    let plans = app.state::<PlanApprovals>();
+    let trusts = app.state::<FolderTrusts>();
+    let runtime = async {
+        let Some(tx) = tx else {
+            return Ok::<_, String>(desktop_tray_model::ExitActivity::default());
+        };
+        let snapshot: desktop_tray_model::RuntimeExitSnapshot = ext::call_ext(
+            &tx,
+            "echo.agent/sessions/list",
+            ext::raw_params(&serde_json::json!({})),
+        )
+        .await
+        .map_err(|error| format!("读取 Runtime 活动失败：{error}"))?;
+        if !state.is_runtime_current(&tx) {
+            return Err("Runtime 已切换，活动状态需要重新确认".into());
+        }
+        Ok(snapshot.activity())
+    };
+    let groups = async {
+        tauri::async_runtime::spawn_blocking(groups::group_list)
+            .await
+            .map_err(|error| format!("读取专家团活动失败：{error}"))?
+    };
+    let (runtime, permissions, questions, plans, trusts, approvals, groups) = tokio::join!(
+        runtime,
+        permissions.list(None),
+        questions.list(None),
+        plans.list(None),
+        trusts.list(None),
+        automation::automation_pending_approvals(None),
+        groups,
+    );
+    let mut activity = runtime?;
+    // A dispatching group may not have created its Runtime session yet.
+    activity.running |= groups?
+        .iter()
+        .any(|group| group.works.iter().any(|work| work.active()));
+    activity.waiting |= !permissions.is_empty()
+        || !questions.is_empty()
+        || !plans.is_empty()
+        || !trusts.is_empty()
+        // An uninitialized optional browser/computer service has no approvals.
+        || approvals.is_ok_and(|approvals| !approvals.is_empty());
+    Ok(activity)
+}
+
 pub(crate) async fn prepare_application_exit(app: &tauri::AppHandle) -> Result<(), String> {
     if !try_begin_exit(&EXIT_IN_PROGRESS) {
         return Err("应用正在退出、恢复或更新，请稍候".into());
+    }
+    let activity = tokio::time::timeout(Duration::from_secs(3), application_exit_activity(app))
+        .await
+        .unwrap_or_else(|_| Err("后台任务状态读取超时".into()));
+    if !desktop_tray::confirm_active_exit(app, activity).await {
+        EXIT_IN_PROGRESS.store(false, Ordering::Release);
+        return Err("已取消退出，任务继续运行".into());
     }
     host_watchdog::prepare_exit();
     webview_recovery::pause_for_exit(app);
@@ -698,11 +763,7 @@ fn bind_main_window_lifecycle(app: &tauri::AppHandle, window: &tauri::WebviewWin
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn setup_desktop_lifecycle(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri::{
-        menu::{Menu, MenuItem},
-        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-        Manager,
-    };
+    use tauri::Manager;
     #[cfg(target_os = "macos")]
     use tauri_plugin_autostart::MacosLauncher;
     let custom_home = paths::redirected_data_home();
@@ -715,46 +776,7 @@ fn setup_desktop_lifecycle(app: &mut tauri::App) -> Result<(), Box<dyn std::erro
     app.handle().plugin(autostart.build())?;
     automations::sync_autostart_state(app.handle());
 
-    let show = MenuItem::with_id(app, "show", "打开 EchoAgent", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出 EchoAgent", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-    let mut tray = TrayIconBuilder::with_id("main-tray")
-        .menu(&menu)
-        .tooltip("EchoAgent - 后台运行中")
-        // macOS conventionally opens the status-item menu on left click.
-        // Windows users expect a left click or double click to restore the app.
-        .show_menu_on_left_click(!cfg!(target_os = "windows"))
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => show_main_window(app),
-            "quit" => {
-                request_graceful_exit(app.clone());
-            }
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            let should_show = matches!(
-                event,
-                TrayIconEvent::DoubleClick {
-                    button: MouseButton::Left,
-                    ..
-                }
-            ) || (cfg!(target_os = "windows")
-                && matches!(
-                    event,
-                    TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    }
-                ));
-            if should_show {
-                show_main_window(tray.app_handle());
-            }
-        });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
-    }
-    tray.build(app)?;
+    desktop_tray::setup(app.handle())?;
 
     if let Some(window) = app.get_webview_window("main") {
         bind_main_window_lifecycle(app.handle(), &window);
@@ -940,6 +962,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(webview_recovery::RendererRecovery::default())
         .manage(AppState::default())
+        .manage(desktop_tray::DesktopTray::default())
         .manage(backup::BackupState::default())
         .manage(Permissions::new())
         .manage(Questions::new())
@@ -952,6 +975,9 @@ pub fn run() {
         .manage(org::shared_state())
         .manage(weixin::WeixinState::default())
         .invoke_handler(tauri::generate_handler![
+            desktop_tray::desktop_tray_sync,
+            desktop_tray::desktop_tray_pending_action,
+            desktop_tray::desktop_tray_ack_action,
             weixin::weixin_status,
             weixin::weixin_qr_start,
             weixin::weixin_qr_poll,

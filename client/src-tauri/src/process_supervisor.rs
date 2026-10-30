@@ -50,7 +50,6 @@ impl SyncChild {
         #[cfg(windows)]
         {
             let _ = self.job.terminate();
-            return;
         }
         #[cfg(not(windows))]
         let _ = self.inner.start_kill();
@@ -364,13 +363,13 @@ pub(crate) fn spawn_crash_watcher(
             Err(error) => return Err(error),
         };
         match windows_job::contains_host_job(&child) {
-            Ok(false) => return Ok(child),
+            Ok(false) => Ok(child),
             result => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(result.err().unwrap_or_else(|| {
-                    io::Error::other("crash watcher remained in the host Job")
-                }));
+                Err(result
+                    .err()
+                    .unwrap_or_else(|| io::Error::other("crash watcher remained in the host Job")))
             }
         }
     }
@@ -444,12 +443,12 @@ pub fn spawn_sync(command: std::process::Command) -> io::Result<SyncChild> {
             let _ = child.wait();
             return Err(error);
         }
-        return Ok(SyncChild {
+        Ok(SyncChild {
             _protection: echo_agent_tools::util::process_safety::protect_tree(child.id())
                 .map_err(io::Error::other)?,
             inner: Box::new(child),
             job,
-        });
+        })
     }
     #[cfg(not(windows))]
     {

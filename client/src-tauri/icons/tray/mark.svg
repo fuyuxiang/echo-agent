@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- The three swept bars retain EchoAgent's E silhouette at menu-bar sizes. -->
+  <path d="M11 4h17c-1.6 4.2-4.9 6-10.5 6H9.7C7 10 5.5 11 4 12.6 4.7 7.2 6.8 4 11 4Z"/>
+  <path d="M9 13h16c-1.4 4-4.4 6-9 6H8c-2.2 0-3.8.6-5 1.8C3.3 15.8 5.2 13 9 13Z"/>
+  <path d="M7 22h12.5c4.2 0 6.7 2 8.5 6H11c-4.8 0-7.3-2.3-8-6.5 1 .4 2.4.5 4 .5Z"/>
+</svg>

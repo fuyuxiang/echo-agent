@@ -622,7 +622,13 @@ function Fixture() {
   if (surface === "automation-edit") return <div className="automation-panel echo-agent-automation"><AutomationEditPage
     mode="create" draft={automationDraft} setDraft={setAutomationDraft}
     saving={false} workspaces={[{ cwd: "/Users/review/Documents/EchoAgent", sessionCount: 9 }]}
-    models={[]} skills={[]} experts={[]} connectors={[]} records={[]}
+    models={query.get("modelChoices") === "1" ? [
+      { id: "echoagent-ojlab/brook", label: "Echo Brook", source: "builtin" },
+      { id: "echoagent-ojlab/cedar", label: "Echo Cedar", source: "builtin" },
+      { id: "echoagent-ojlab/reed", label: "Echo Reed", source: "builtin" },
+    ] : []}
+    autoModelId={query.get("modelChoices") === "1" ? "echoagent-ojlab/reed" : undefined}
+    skills={[]} experts={[]} connectors={[]} records={[]}
     onSave={() => {}} onClose={() => {}} onArchiveRecord={() => {}}
     onRetryRecord={() => {}} onDeleteRecord={() => {}}
   /></div>;

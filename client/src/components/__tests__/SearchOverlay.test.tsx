@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SearchOverlay } from "../SearchOverlay";
 import { useSessionsStore } from "@/stores/sessions-store";
+import { useGroupStore } from "@/features/groups/group-store";
+import type { Group } from "@/features/groups/group-client";
+import { TrayActionCancelled } from "@/lib/desktop-tray-connection";
 
 vi.mock("@/lib/agent-client", () => ({
   sessionSearch: vi.fn(),
@@ -12,6 +15,7 @@ const { sessionSearch, agentListSessions } = await import("@/lib/agent-client");
 
 describe("SearchOverlay", () => {
   beforeEach(() => {
+    useGroupStore.setState({ groups: [] });
     vi.mocked(sessionSearch).mockReset().mockResolvedValue([]);
     vi.mocked(agentListSessions).mockReset().mockResolvedValue([]);
     useSessionsStore.setState({ deletedSessionIds: [],
@@ -23,6 +27,23 @@ describe("SearchOverlay", () => {
       filterDate: null,
       pendingSessionPatches: {},
     });
+  });
+
+  it("全部任务同时显示专家团入口，打开失败保留列表并允许重试", async () => {
+    useGroupStore.setState({ groups: [
+      { id: "group-one", name: "产品评审", archived: false, updatedAt: 1 } as Group,
+      { id: "archived", name: "归档评审", archived: true, updatedAt: 2 } as Group,
+    ] });
+    const onSelectGroup = vi.fn().mockRejectedValueOnce(new Error("暂时不可用")).mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    render(<SearchOverlay open onClose={onClose} onSelect={vi.fn()} onSelectGroup={onSelectGroup} />);
+    expect(screen.queryByText("归档评审")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "产品评审" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("暂时不可用");
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "产品评审" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(onSelectGroup).toHaveBeenCalledWith("group-one");
   });
 
   it("FTS 命中先 hydrate 完整摘要再打开", async () => {
@@ -54,6 +75,19 @@ describe("SearchOverlay", () => {
       currentModelId: "model-a",
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("取消专家团跳转后保留搜索并允许重新选择，不显示失败提示", async () => {
+    useGroupStore.setState({ groups: [{ id: "group", name: "产品评审", archived: false, updatedAt: 1 } as Group] });
+    const onClose = vi.fn();
+    const onSelectGroup = vi.fn().mockRejectedValueOnce(new TrayActionCancelled()).mockResolvedValue(undefined);
+    render(<SearchOverlay open onClose={onClose} onSelect={vi.fn()} onSelectGroup={onSelectGroup} />);
+    fireEvent.click(screen.getByRole("button", { name: "产品评审" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "产品评审" })).toBeEnabled());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "产品评审" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 
   it("FTS 失败显示错误与重试，不伪装成空结果", async () => {

@@ -2,6 +2,12 @@
 //! This validates platform API types; it does not substitute for a graphical
 //! WebView2 fault-injection run on Windows.
 #![allow(dead_code)]
+#[path = "../../src-tauri/src/desktop_tray_model.rs"]
+mod desktop_tray_model;
+#[path = "../../src-tauri/src/desktop_tray.rs"]
+mod desktop_tray;
+fn show_main_window(_: &tauri::AppHandle) {}
+fn request_graceful_exit(_: tauri::AppHandle) {}
 extern crate self as echo_agent_tools;
 #[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-tools/src/util/process_safety.rs"]
 pub mod process_safety;

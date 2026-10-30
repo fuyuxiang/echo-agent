@@ -8,7 +8,6 @@ export function CapabilitySection({ active, onNavigate, children }: {
 }) {
   return <div className="panel-section panel-section--capabilities">
     <nav className="panel-navigation panel-navigation--capabilities" aria-label={`${CAPABILITY_SECTION_LABEL}管理`}>
-      <strong>{CAPABILITY_SECTION_LABEL}</strong>
       <div className="panel-navigation__links">{CAPABILITY_NAV_ITEMS.map(({ route, title }) => (
         <button key={route} type="button" aria-current={route === active ? "page" : undefined}
           onClick={() => onNavigate?.(route)}>{title}</button>

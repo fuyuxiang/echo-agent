@@ -87,7 +87,9 @@ function ToolbarDropdown({
   useEffect(() => {
     if (!isOpen) return;
     if (disabled) { setIsOpen(false); return; }
-    const handler = (e: MouseEvent) => {
+    // WebKit mouse clicks can blur the focused option with relatedTarget=null
+    // before click. Only an actual outside pointer/focus target closes the menu.
+    const handler = (e: MouseEvent | FocusEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) setIsOpen(false);
     };
     const keyHandler = (event: KeyboardEvent) => {
@@ -99,16 +101,17 @@ function ToolbarDropdown({
     };
     containerRef.current?.querySelector<HTMLButtonElement>(".atm-chip-dropdown__menu button:not(:disabled)")?.focus();
     document.addEventListener("mousedown", handler);
+    document.addEventListener("focusin", handler);
     document.addEventListener("keydown", keyHandler);
     return () => {
       document.removeEventListener("mousedown", handler);
+      document.removeEventListener("focusin", handler);
       document.removeEventListener("keydown", keyHandler);
     };
   }, [isOpen, disabled]);
 
   return (
-    <div className={`atm-chip-dropdown${isOpen ? " atm-chip-dropdown--open" : ""}`} ref={containerRef}
-      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsOpen(false); }}>
+    <div className={`atm-chip-dropdown${isOpen ? " atm-chip-dropdown--open" : ""}`} ref={containerRef}>
       <button
         type="button"
         ref={triggerRef}

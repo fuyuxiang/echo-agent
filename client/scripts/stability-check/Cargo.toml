@@ -13,6 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 libc = "0.2"
 process-wrap = { version = "9.0.0", features = ["std", "tokio1"] }
 [build-dependencies]
@@ -35,6 +36,10 @@ incremental = true
 webview2-com = "=0.38.2"
 windows = "0.61.3"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
 
 [patch.crates-io]
 glib = { path = "../../vendor/glib" }
