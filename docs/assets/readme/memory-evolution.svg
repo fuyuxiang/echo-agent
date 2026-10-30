@@ -21,10 +21,10 @@
     <rect x="47.216" y="131" width="86.688" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="90.56" y="149" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">记忆召回</text>
     <rect x="616" y="120" width="548" height="800" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
-    <rect x="627.54" y="131" width="189.72000000000003" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="627.54" y="131" width="189.72" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="722.4" y="149" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">技能进化（默认关闭）</text>
     <rect x="170" y="180" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="310.0" y="211" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">任务需要上下文</text>
+    <text x="310" y="211" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">任务需要上下文</text>
     <rect x="86" y="290" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
     <text x="310" y="330" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">筛选作用域与有效性</text>
     <rect x="86" y="440" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
@@ -39,9 +39,9 @@
     <path d="M310 654 L310 740" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
     <path d="M310 804 L310 850" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
     <rect x="170" y="850" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="310.0" y="881" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">提供本轮上下文</text>
+    <text x="310" y="881" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">提供本轮上下文</text>
     <rect x="750" y="180" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="890.0" y="211" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">已启用进化</text>
+    <text x="890" y="211" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">已启用进化</text>
     <rect x="666" y="280" width="448" height="64" rx="0" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
     <text x="890" y="320" fill="#142b49" font-size="20" font-weight="650" text-anchor="middle">从轨迹与反思生成候选</text>
     <path d="M890 228 L890 280" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
@@ -58,16 +58,16 @@
     <rect x="984" y="720" width="156" height="64" rx="4" fill="#fff" stroke="#c8d8e9" stroke-width="1.2" />
     <text x="1062" y="759" fill="#142b49" font-size="20" font-weight="600" text-anchor="middle">拒绝</text>
     <path d="M710 550 L650 550 L650 680 L718 680 L718 720" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="678.472" y="656" width="79.05600000000001" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="678.472" y="656" width="79.056" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="718" y="672" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">允许应用</text>
     <path d="M890 610 L890 720" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="850.472" y="655" width="79.05600000000001" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="850.472" y="655" width="79.056" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="890" y="671" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">需要确认</text>
     <path d="M1070 550 L1130 550 L1130 680 L1062 680 L1062 720" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="1030.104" y="656" width="63.79200000000001" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="1030.104" y="656" width="63.792" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="1062" y="672" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">未通过</text>
     <rect x="750" y="850" width="280" height="48" rx="24" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
-    <text x="890.0" y="881" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">保存结果与原因</text>
+    <text x="890" y="881" fill="#142b49" font-size="19" font-weight="600" text-anchor="middle">保存结果与原因</text>
     <path d="M718 784 L718 818 L890 818 L890 850" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
     <path d="M890 784 L890 818 L890 818 L890 850" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
     <path d="M1062 784 L1062 818 L890 818 L890 850" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />

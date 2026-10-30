@@ -54,7 +54,7 @@
     <rect x="732.72" y="499" width="204.56" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="835" y="515" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Text and tool requests</text>
     <path d="M630 537 L720 537 L720 625 L900 625" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="690.9" y="592" width="198.20000000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="690.9" y="592" width="198.2" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="790" y="609" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Operation parameters</text>
     <path d="M900 655 L610 655 L610 555" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
     <rect x="716.94" y="663" width="126.12" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
@@ -63,7 +63,7 @@
     <rect x="461.89" y="738" width="216.22" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="570" y="755" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Status, results, files</text>
     <path d="M516 435 L480 435 L480 365 L20 365 L20 145 L160 145 L160 170" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <rect x="70.75999999999999" y="334" width="238.48000000000002" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="70.76" y="334" width="238.48" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="190" y="350" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Reply and execution status</text>
     <text x="600" y="929" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Legend: rectangle = external entity; circle = process; parallel lines = data store; named arrow = data flow.</text>
     <text x="600" y="961" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Stores belong to the instance or host; models and external tools can run locally or remotely.</text>

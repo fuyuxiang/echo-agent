@@ -39,7 +39,7 @@
     <rect x="335.455" y="173" width="99.09" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="385" y="190" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">目标与输入</text>
     <path d="M516 545 L470 545 L470 620 L220 620 L220 500" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <rect x="187.576" y="634" width="124.84800000000001" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="187.576" y="634" width="124.848" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="250" y="650" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">新增历史与记忆</text>
     <path d="M400 455 L445 455 L445 250 L510 250" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
     <rect x="353.564" y="318" width="82.872" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
@@ -48,10 +48,10 @@
     <rect x="520.455" y="338" width="99.09" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="570" y="355" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">本轮上下文</text>
     <path d="M646 465 L800 465 L800 205 L900 205" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="696.1279999999999" y="173" width="147.74400000000003" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="696.128" y="173" width="147.744" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="770" y="190" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">上下文与执行反馈</text>
     <path d="M1020 240 L1020 490 L646 490" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="757.312" y="499" width="155.37600000000003" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="757.312" y="499" width="155.376" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="835" y="515" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">文本与工具调用请求</text>
     <path d="M630 537 L720 537 L720 625 L900 625" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
     <rect x="748.564" y="592" width="82.872" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
@@ -60,10 +60,10 @@
     <rect x="738.564" y="663" width="82.872" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="780" y="680" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">工具结果</text>
     <path d="M570 566 L570 825" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="496.128" y="738" width="147.74400000000003" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="496.128" y="738" width="147.744" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="570" y="755" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">状态、结果与文件</text>
     <path d="M516 435 L480 435 L480 365 L20 365 L20 145 L160 145 L160 170" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <rect x="127.576" y="334" width="124.84800000000001" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="127.576" y="334" width="124.848" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="190" y="350" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">回复与执行状态</text>
     <text x="600" y="929" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">图例：矩形＝外部实体；圆形＝处理过程；平行线＝数据存储；箭头及名称＝数据流。</text>
     <text x="600" y="961" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">存储按所属实例或宿主管理；模型与外部工具可在本机或远端运行。</text>

@@ -19,27 +19,27 @@
     <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Scope: two products, their user, and external services; internal components are omitted.</text>
     <rect x="400" y="128" width="400" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="401" y="142" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="420" y="167.0" fill="#142b49" font-size="24" font-weight="650" text-anchor="start">User</text>
-    <text x="420" y="193.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Person]</text>
+    <text x="420" y="167" fill="#142b49" font-size="24" font-weight="650" text-anchor="start">User</text>
+    <text x="420" y="193" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Person]</text>
     <rect x="36" y="300" width="548" height="310" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
-    <rect x="47.65999999999998" y="311" width="227.88000000000002" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="47.66" y="311" width="227.88" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="161.6" y="329" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Interactive local work</text>
     <rect x="616" y="300" width="548" height="310" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
     <rect x="628.02" y="311" width="342.36" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="799.2" y="329" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Terminal or self-hosted deployment</text>
     <rect x="66" y="375" width="488" height="116" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="67" y="389" width="3" height="88" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="86" y="414.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">EchoAgent Desktop</text>
-    <text x="86" y="440.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Tauri / Rust]</text>
-    <text x="86" y="466.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Embedded engine, workspace, and task UI</text>
+    <text x="86" y="414" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">EchoAgent Desktop</text>
+    <text x="86" y="440" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Tauri / Rust]</text>
+    <text x="86" y="466" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Embedded engine, workspace, and task UI</text>
     <rect x="646" y="375" width="488" height="116" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="647" y="389" width="3" height="88" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="666" y="414.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Echo Agent Runtime</text>
-    <text x="666" y="440.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Python]</text>
-    <text x="666" y="466.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Standalone engine, channels, optional Gateway</text>
-    <rect x="105.42999999999998" y="530" width="409.14000000000004" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="666" y="414" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Echo Agent Runtime</text>
+    <text x="666" y="440" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Python]</text>
+    <text x="666" y="466" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Standalone engine, channels, optional Gateway</text>
+    <rect x="105.43" y="530" width="409.14" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="310" y="548" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Own model config, sessions, memory, state</text>
-    <rect x="685.43" y="530" width="409.14000000000004" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="685.43" y="530" width="409.14" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="890" y="548" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Own model config, sessions, memory, state</text>
     <path d="M480 218 L480 260 L310 260 L310 375" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
     <rect x="154.86" y="263" width="270.28" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
@@ -49,14 +49,14 @@
     <text x="900" y="280" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Terminal / HTTP / WebSocket</text>
     <rect x="66" y="725" width="488" height="106" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="67" y="739" width="3" height="78" rx="1" fill="#526780" stroke="none" stroke-width="1.2" />
-    <text x="86" y="759.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Model service</text>
-    <text x="86" y="785.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
-    <text x="86" y="811.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Local or remote inference and retrieval</text>
+    <text x="86" y="759" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Model service</text>
+    <text x="86" y="785" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
+    <text x="86" y="811" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Local or remote inference and retrieval</text>
     <rect x="646" y="725" width="488" height="106" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="647" y="739" width="3" height="78" rx="1" fill="#526780" stroke="none" stroke-width="1.2" />
-    <text x="666" y="759.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Tool and business services</text>
-    <text x="666" y="785.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
-    <text x="666" y="811.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">MCP / external APIs</text>
+    <text x="666" y="759" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Tool and business services</text>
+    <text x="666" y="785" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
+    <text x="666" y="811" fill="#526780" font-size="18" font-weight="400" text-anchor="start">MCP / external APIs</text>
     <path d="M190 491 L190 725" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
     <rect x="68.375" y="649" width="243.25" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="190" y="666" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Requests model processing</text>

@@ -19,40 +19,40 @@
     <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Scope: Python Runtime. Solid arrows carry requests/data; dashed arrows show dependencies.</text>
     <rect x="36" y="126" width="500" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="37" y="140" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="169.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Terminal and messaging [External]</text>
+    <text x="56" y="169" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Terminal and messaging [External]</text>
     <rect x="664" y="126" width="500" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="665" y="140" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="684" y="169.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Browser and API clients [External]</text>
+    <text x="684" y="169" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Browser and API clients [External]</text>
     <rect x="20" y="243" width="1160" height="630" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
-    <rect x="32.04999999999998" y="254" width="351.90000000000003" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
-    <text x="208.0" y="272" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Echo Agent Runtime [Python process]</text>
+    <rect x="32.05" y="254" width="351.9" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="208" y="272" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Echo Agent Runtime [Python process]</text>
     <rect x="56" y="300" width="460" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="57" y="314" width="3" height="48" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="76" y="332.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Channel adapters [Component]</text>
-    <text x="76" y="358.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Normalize input; deliver replies</text>
+    <text x="76" y="332" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Channel adapters [Component]</text>
+    <text x="76" y="358" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Normalize input; deliver replies</text>
     <rect x="684" y="300" width="460" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="685" y="314" width="3" height="48" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="704" y="332.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Gateway [Optional component]</text>
-    <text x="704" y="358.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Auth, HTTP / WebSocket, Dashboard</text>
+    <text x="704" y="332" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Gateway [Optional component]</text>
+    <text x="704" y="358" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Auth, HTTP / WebSocket, Dashboard</text>
     <path d="M286 198 L286 300" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
-    <rect x="186.89999999999998" y="208" width="198.20000000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="186.9" y="208" width="198.2" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="286" y="225" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Messages and replies</text>
     <path d="M914 198 L914 300" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" />
     <rect x="832.92" y="208" width="162.16" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="914" y="225" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">HTTP / WebSocket</text>
     <rect x="330" y="426" width="540" height="68" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="331" y="440" width="3" height="40" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="350" y="467.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Event bus [Component]</text>
+    <text x="350" y="467" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Event bus [Component]</text>
     <path d="M286 376 L286 460 L330 460" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
-    <rect x="97.38499999999999" y="395" width="225.23000000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="97.385" y="395" width="225.23" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="210" y="412" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Inbound/outbound events</text>
     <path d="M914 376 L914 460 L870 460" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" />
-    <rect x="877.385" y="395" width="225.23000000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="877.385" y="395" width="225.23" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="990" y="412" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Inbound/outbound events</text>
     <rect x="330" y="550" width="540" height="80" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="331" y="564" width="3" height="52" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="350" y="584.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Agent loop [Component]</text>
-    <text x="350" y="610.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Context → model/tools → save results</text>
+    <text x="350" y="584" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Agent loop [Component]</text>
+    <text x="350" y="610" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Context → model/tools → save results</text>
     <path d="M600 494 L600 550" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
     <rect x="536.94" y="513" width="126.12" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="600" y="530" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Pending task</text>
@@ -61,24 +61,24 @@
     <text x="190" y="530" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">Reply/progress events</text>
     <rect x="56" y="706" width="344" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="57" y="720" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="76" y="745.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Context [Component]</text>
-    <text x="76" y="771.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Sessions and knowledge</text>
+    <text x="76" y="745" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Context [Component]</text>
+    <text x="76" y="771" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Sessions and knowledge</text>
     <path d="M600 630 L600 667 L228 667 L228 706" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
     <rect x="428" y="706" width="344" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="429" y="720" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="448" y="745.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Models/tools [Component]</text>
-    <text x="448" y="771.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Inference, approval, execution</text>
+    <text x="448" y="745" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Models/tools [Component]</text>
+    <text x="448" y="771" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Inference, approval, execution</text>
     <path d="M600 630 L600 667 L600 667 L600 706" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
     <rect x="800" y="706" width="344" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="801" y="720" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="820" y="745.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Memory/skills [Component]</text>
-    <text x="820" y="771.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Recall, consolidation, opt-in evolution</text>
+    <text x="820" y="745" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">Memory/skills [Component]</text>
+    <text x="820" y="771" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Recall, consolidation, opt-in evolution</text>
     <path d="M600 630 L600 667 L972 667 L972 706" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
     <rect x="572.98" y="657" width="54.04" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="600" y="674" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Uses</text>
     <rect x="330" y="902" width="540" height="62" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="331" y="916" width="3" height="34" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="350" y="940.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Persistent storage [SQLite / files]</text>
+    <text x="350" y="940" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Persistent storage [SQLite / files]</text>
     <path d="M228 796 L228 933 L330 933" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
     <path d="M972 796 L972 933 L870 933" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
     <rect x="365.75" y="836" width="468.5" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />

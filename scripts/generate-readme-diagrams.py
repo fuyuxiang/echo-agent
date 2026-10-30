@@ -32,7 +32,14 @@ LINE = "#c8d8e9"
 
 
 def el(parent: ET.Element, tag: str, **attrs: object) -> ET.Element:
-    return ET.SubElement(parent, f"{{{NS}}}{tag}", {k.replace("_", "-"): str(v) for k, v in attrs.items()})
+    # SVG coordinates need no sub-millipixel precision. Normalize floats so
+    # equivalent geometry has identical output across Python versions.
+    def value(item: object) -> str:
+        if isinstance(item, float):
+            return f"{item:.3f}".rstrip("0").rstrip(".")
+        return str(item)
+
+    return ET.SubElement(parent, f"{{{NS}}}{tag}", {k.replace("_", "-"): value(v) for k, v in attrs.items()})
 
 
 class Diagram:
@@ -89,9 +96,14 @@ class Diagram:
 
 
 
+def text_units(content: str) -> float:
+    # Integer accumulation avoids the version-dependent float sum algorithm.
+    return sum(5 if ord(char) < 128 else 9 for char in content) / 5
+
+
 def label(d, x, y, content, size=17):
     """Relation labels have an opaque background so routed lines remain legible."""
-    width = sum(1 if ord(c) < 128 else 1.8 for c in content) * size * 0.53 + 18
+    width = text_units(content) * size * 0.53 + 18
     d.rect(x - width / 2, y - size, width, size + 7, "#f7faff", "none", 2)
     d.text(x, y, content, size, MUTED, anchor="middle")
 
@@ -99,7 +111,7 @@ def label(d, x, y, content, size=17):
 def boundary(d, x, y, w, h, name):
     node = d.rect(x, y, w, h, "none", MUTED, 4)
     node.set("stroke-dasharray", "7 5")
-    label(d, x + 20 + sum(1 if ord(c) < 128 else 1.8 for c in name) * 4.8, y + 29, name, 18)
+    label(d, x + 20 + text_units(name) * 4.8, y + 29, name, 18)
 
 
 def architecture(en: bool) -> str:

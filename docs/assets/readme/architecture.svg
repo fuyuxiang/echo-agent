@@ -19,52 +19,52 @@
     <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">读图范围：两个产品、用户及外部服务；不展开内部组件。</text>
     <rect x="400" y="128" width="400" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="401" y="142" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="420" y="167.0" fill="#142b49" font-size="24" font-weight="650" text-anchor="start">用户</text>
-    <text x="420" y="193.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Person]</text>
+    <text x="420" y="167" fill="#142b49" font-size="24" font-weight="650" text-anchor="start">用户</text>
+    <text x="420" y="193" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Person]</text>
     <rect x="36" y="300" width="548" height="310" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
-    <rect x="47.324" y="311" width="121.03200000000001" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="47.324" y="311" width="121.032" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="107.84" y="329" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">本机交互工作</text>
     <rect x="616" y="300" width="548" height="310" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
-    <rect x="627.432" y="311" width="155.37600000000003" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="627.432" y="311" width="155.376" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="705.12" y="329" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">终端或自托管部署</text>
     <rect x="66" y="375" width="488" height="116" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="67" y="389" width="3" height="88" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="86" y="414.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">EchoAgent Desktop</text>
-    <text x="86" y="440.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Tauri / Rust]</text>
-    <text x="86" y="466.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">内嵌执行引擎、工作区与任务界面</text>
+    <text x="86" y="414" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">EchoAgent Desktop</text>
+    <text x="86" y="440" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Tauri / Rust]</text>
+    <text x="86" y="466" fill="#526780" font-size="18" font-weight="400" text-anchor="start">内嵌执行引擎、工作区与任务界面</text>
     <rect x="646" y="375" width="488" height="116" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="647" y="389" width="3" height="88" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="666" y="414.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Echo Agent Runtime</text>
-    <text x="666" y="440.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Python]</text>
-    <text x="666" y="466.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">独立执行引擎、通道与可选 Gateway</text>
-    <rect x="155.03799999999995" y="530" width="309.9240000000001" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="666" y="414" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Echo Agent Runtime</text>
+    <text x="666" y="440" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[Software System · Python]</text>
+    <text x="666" y="466" fill="#526780" font-size="18" font-weight="400" text-anchor="start">独立执行引擎、通道与可选 Gateway</text>
+    <rect x="155.038" y="530" width="309.924" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="310" y="548" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">独立模型配置、会话、记忆与本地状态</text>
-    <rect x="735.038" y="530" width="309.9240000000001" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="735.038" y="530" width="309.924" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="890" y="548" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">独立模型配置、会话、记忆与服务状态</text>
     <path d="M480 218 L480 260 L310 260 L310 375" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="199.90999999999997" y="263" width="180.18000000000004" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="199.91" y="263" width="180.18" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="290" y="280" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">通过桌面界面提交任务</text>
     <path d="M720 218 L720 260 L890 260 L890 375" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="789.187" y="263" width="221.62600000000003" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="789.187" y="263" width="221.626" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="900" y="280" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">终端 / HTTP / WebSocket</text>
     <rect x="66" y="725" width="488" height="106" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="67" y="739" width="3" height="78" rx="1" fill="#526780" stroke="none" stroke-width="1.2" />
-    <text x="86" y="759.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">模型服务</text>
-    <text x="86" y="785.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
-    <text x="86" y="811.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">本地或远端推理、嵌入与重排</text>
+    <text x="86" y="759" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">模型服务</text>
+    <text x="86" y="785" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
+    <text x="86" y="811" fill="#526780" font-size="18" font-weight="400" text-anchor="start">本地或远端推理、嵌入与重排</text>
     <rect x="646" y="725" width="488" height="106" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="647" y="739" width="3" height="78" rx="1" fill="#526780" stroke="none" stroke-width="1.2" />
-    <text x="666" y="759.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">工具与业务服务</text>
-    <text x="666" y="785.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
-    <text x="666" y="811.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">MCP / external APIs</text>
+    <text x="666" y="759" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">工具与业务服务</text>
+    <text x="666" y="785" fill="#526780" font-size="18" font-weight="400" text-anchor="start">[External Software System]</text>
+    <text x="666" y="811" fill="#526780" font-size="18" font-weight="400" text-anchor="start">MCP / external APIs</text>
     <path d="M190 491 L190 725" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="132.346" y="649" width="115.30800000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="132.346" y="649" width="115.308" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="190" y="666" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">请求模型处理</text>
     <path d="M770 491 L770 635 L430 635 L430 725" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="432.346" y="616" width="115.30800000000002" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="432.346" y="616" width="115.308" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="490" y="633" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">请求模型处理</text>
     <path d="M66 450 L20 450 L20 880 L890 880 L890 831" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
-    <rect x="498.197" y="885" width="203.60600000000005" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="498.197" y="885" width="203.606" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="600" y="902" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">Desktop 调用已配置工具</text>
     <path d="M1010 491 L1148 491 L1148 693 L1010 693 L1010 725" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
     <rect x="944.237" y="675" width="131.526" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />

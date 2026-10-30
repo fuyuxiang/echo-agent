@@ -19,30 +19,30 @@
     <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">读图范围：Python Runtime；实线为请求或数据流，虚线为组件依赖。</text>
     <rect x="36" y="126" width="500" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="37" y="140" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="56" y="169.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">终端与消息平台 [外部实体]</text>
+    <text x="56" y="169" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">终端与消息平台 [外部实体]</text>
     <rect x="664" y="126" width="500" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="665" y="140" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="684" y="169.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">网页与 API 客户端 [外部实体]</text>
+    <text x="684" y="169" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">网页与 API 客户端 [外部实体]</text>
     <rect x="20" y="243" width="1160" height="630" rx="4" fill="none" stroke="#526780" stroke-width="1.2" stroke-dasharray="7 5" />
-    <rect x="32.04999999999998" y="254" width="351.90000000000003" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
-    <text x="208.0" y="272" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Echo Agent Runtime [Python process]</text>
+    <rect x="32.05" y="254" width="351.9" height="25" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <text x="208" y="272" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">Echo Agent Runtime [Python process]</text>
     <rect x="56" y="300" width="460" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="57" y="314" width="3" height="48" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="76" y="332.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">通道适配 [组件]</text>
-    <text x="76" y="358.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">标准化输入、交付回复</text>
+    <text x="76" y="332" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">通道适配 [组件]</text>
+    <text x="76" y="358" fill="#526780" font-size="18" font-weight="400" text-anchor="start">标准化输入、交付回复</text>
     <rect x="684" y="300" width="460" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="685" y="314" width="3" height="48" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
-    <text x="704" y="332.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Gateway [可选组件]</text>
-    <text x="704" y="358.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">认证、HTTP / WebSocket、管理界面</text>
+    <text x="704" y="332" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Gateway [可选组件]</text>
+    <text x="704" y="358" fill="#526780" font-size="18" font-weight="400" text-anchor="start">认证、HTTP / WebSocket、管理界面</text>
     <path d="M286 198 L286 300" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
-    <rect x="236.45499999999998" y="208" width="99.09" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="236.455" y="208" width="99.09" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="286" y="225" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">消息与回复</text>
     <path d="M914 198 L914 300" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" />
     <rect x="832.92" y="208" width="162.16" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="914" y="225" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">HTTP / WebSocket</text>
     <rect x="330" y="426" width="540" height="68" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="331" y="440" width="3" height="40" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="350" y="467.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">事件总线 [组件]</text>
+    <text x="350" y="467" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">事件总线 [组件]</text>
     <path d="M286 376 L286 460 L330 460" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
     <rect x="144.237" y="395" width="131.526" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="210" y="412" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">入站与出站事件</text>
@@ -51,37 +51,37 @@
     <text x="990" y="412" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">入站与出站事件</text>
     <rect x="330" y="550" width="540" height="80" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="331" y="564" width="3" height="52" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="350" y="584.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">任务执行循环 [组件]</text>
-    <text x="350" y="610.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">组织上下文 → 推理与工具 → 保存结果</text>
+    <text x="350" y="584" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">任务执行循环 [组件]</text>
+    <text x="350" y="610" fill="#526780" font-size="18" font-weight="400" text-anchor="start">组织上下文 → 推理与工具 → 保存结果</text>
     <path d="M600 494 L600 550" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
     <rect x="550.455" y="513" width="99.09" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="600" y="530" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">待处理任务</text>
     <path d="M330 590 L270 590 L270 480 L330 480" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
-    <rect x="127.576" y="514" width="124.84800000000001" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="127.576" y="514" width="124.848" height="23" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="190" y="530" fill="#526780" font-size="16" font-weight="400" text-anchor="middle">回复与进度事件</text>
     <rect x="56" y="706" width="344" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="57" y="720" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="76" y="745.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">上下文 [组件]</text>
-    <text x="76" y="771.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">会话与知识检索</text>
+    <text x="76" y="745" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">上下文 [组件]</text>
+    <text x="76" y="771" fill="#526780" font-size="18" font-weight="400" text-anchor="start">会话与知识检索</text>
     <path d="M600 630 L600 667 L228 667 L228 706" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
     <rect x="428" y="706" width="344" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="429" y="720" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="448" y="745.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">模型与工具 [组件]</text>
-    <text x="448" y="771.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">推理、审批与执行</text>
+    <text x="448" y="745" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">模型与工具 [组件]</text>
+    <text x="448" y="771" fill="#526780" font-size="18" font-weight="400" text-anchor="start">推理、审批与执行</text>
     <path d="M600 630 L600 667 L600 667 L600 706" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
     <rect x="800" y="706" width="344" height="90" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="801" y="720" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="820" y="745.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">记忆与技能 [组件]</text>
-    <text x="820" y="771.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">召回、整合与可选进化</text>
+    <text x="820" y="745" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">记忆与技能 [组件]</text>
+    <text x="820" y="771" fill="#526780" font-size="18" font-weight="400" text-anchor="start">召回、整合与可选进化</text>
     <path d="M600 630 L600 667 L972 667 L972 706" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
     <rect x="574.782" y="657" width="50.436" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="600" y="674" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">使用</text>
     <rect x="330" y="902" width="540" height="62" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
     <rect x="331" y="916" width="3" height="34" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
-    <text x="350" y="940.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">持久化存储 [SQLite / 文件]</text>
+    <text x="350" y="940" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">持久化存储 [SQLite / 文件]</text>
     <path d="M228 796 L228 933 L330 933" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
     <path d="M972 796 L972 933 L870 933" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
-    <rect x="445.038" y="836" width="309.92400000000004" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
+    <rect x="445.038" y="836" width="309.924" height="24" rx="2" fill="#f7faff" stroke="none" stroke-width="1.2" />
     <text x="600" y="853" fill="#526780" font-size="17" font-weight="400" text-anchor="middle">存储数据：会话、记忆、轨迹与技能状态</text>
   </g>
 </svg>
