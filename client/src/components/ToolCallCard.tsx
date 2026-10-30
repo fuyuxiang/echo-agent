@@ -19,6 +19,7 @@ type ToolCallCardProps = {
   tc: ToolCallView;
   /** Open the right-side detail drawer (Phase 2). */
   onOpen?: (tc: ToolCallView) => void;
+  showStatusLabel?: boolean;
 };
 
 const MAX_TOOL_IMAGE_BASE64_CHARS = 16 * 1024 * 1024;
@@ -47,9 +48,9 @@ function toolImageSource(image: ImageToolContent): string | null {
  * Always one line in the transcript: kind + short title + status.
  * Details (command/diff/output) open in the side drawer via `onOpen`.
  */
-export function ToolCallCard({ tc, onOpen }: ToolCallCardProps) {
+export function ToolCallCard({ tc, onOpen, showStatusLabel = false }: ToolCallCardProps) {
   if (isSilentOrganizationSkip(tc)) return (
-    <button type="button" className="toolcall toolcall--compact" onClick={() => onOpen?.(tc)}
+    <button type="button" className="toolcall toolcall--compact" data-tool-call-id={tc.toolCallId} onClick={() => onOpen?.(tc)}
       title="本轮组织知识检索不可用，回答未包含该来源。点击查看原因；可在组织页面重新连接。">
       <span className="toolcall__kind">知识来源</span>
       <span className="toolcall__title">本轮未使用组织知识 · 查看原因</span>
@@ -100,6 +101,7 @@ export function ToolCallCard({ tc, onOpen }: ToolCallCardProps) {
     <button
       type="button"
       className={"toolcall toolcall--compact " + statusCls}
+      data-tool-call-id={tc.toolCallId}
       onClick={() => onOpen?.(tc)}
       title={`${officeTool ? "办公文档" : tc.kind}: ${officeTool ? officeTitle : tc.title}（${statusLabel}，点击查看详情）`}
       aria-label={`${officeTool ? "办公文档" : tc.kind} ${summary} ${statusLabel}`}
@@ -109,6 +111,7 @@ export function ToolCallCard({ tc, onOpen }: ToolCallCardProps) {
       {tc.documentProgress && <span className="toolcall__document-count" aria-hidden="true">
         {documentProgressCount(tc.documentProgress)}
       </span>}
+      {showStatusLabel && <span className="toolcall__status-label" aria-hidden="true">{statusLabel}</span>}
       <span className={"toolcall__status-mark toolcall__status-mark--" + tc.status}>
         {statusMark}
       </span>

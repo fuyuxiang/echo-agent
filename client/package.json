@@ -38,6 +38,8 @@
     "test:ui:session-workspace": "node scripts/validate-session-workspace-ui.mjs",
     "test:ui:loading-tips": "node scripts/validate-loading-tips-ui.mjs",
     "test:ui:execution-outcome": "node scripts/validate-execution-outcome-ui.mjs",
+    "test:ui:execution-progress": "node scripts/validate-execution-progress-ui.mjs",
+    "test:ui:execution-progress:webkit": "node scripts/validate-execution-progress-webkit.mjs",
     "test:ui:session-redesign": "node scripts/validate-session-redesign-ui.mjs && node scripts/validate-conversation-navigation-ui.mjs",
     "test:ui:coding-composer": "node scripts/validate-coding-composer-ui.mjs",
     "git:push": "bash scripts/git-push.sh",

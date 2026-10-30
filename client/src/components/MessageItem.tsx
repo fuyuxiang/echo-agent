@@ -255,11 +255,7 @@ export const MessageItem = memo(function MessageItem({
   // A preserved partial response can be commentary before later reasoning or
   // tools. Only trailing answer text signals that the model has moved on to
   // the final response; do not treat that compatibility fallback as completion.
-  const lastMeaningfulPart = [...message.parts].reverse().find((part) =>
-    part.kind === "tool_call" || part.text.trim().length > 0,
-  );
-  const hasFinalAnswer = lastMeaningfulPart?.kind === "text"
-    && Boolean(assistantGroups?.responseParts.some((part) => part.text.trim()));
+  const hasFinalAnswer = assistantGroups?.answerStarted ?? false;
   const hasTerminalProcessStatus = Boolean(
     message.complete
       && message.stopReason
@@ -270,6 +266,12 @@ export const MessageItem = memo(function MessageItem({
     knowledgeTrace?.personal && knowledgeTrace.personal.state !== "idle"
       || knowledgeTrace?.organization?.state === "unavailable",
   );
+  const hasExecutionProcess = Boolean(assistantGroups && (
+    assistantGroups.processParts.length > 0 || hasTerminalProcessStatus || hasKnowledgeTrace || notice
+  ));
+  const generatingAnswer = streaming && waitingForModel && !message.complete && hasFinalAnswer
+    && !assistantGroups?.processParts.some(part => part.kind === "tool_call" && part.toolCall.status === "in_progress")
+    && knowledgeTrace?.personal?.state !== "searching";
   const retryKind = messageRetryKind(message);
   const retryLabel = messageRetryLabel(retryKind, retrying);
   const copyMainLabel = copiedKind === "plain"
@@ -420,8 +422,7 @@ export const MessageItem = memo(function MessageItem({
           {streaming && waitingForModel && !message.complete && message.parts.length === 0 && !hasKnowledgeTrace && (
             <LoadingRow key={`${sessionId}:${message.id}`} startedAt={message.startedAt} />
           )}
-          {assistantGroups
-            && (assistantGroups.processParts.length > 0 || hasTerminalProcessStatus || hasKnowledgeTrace || notice)
+          {assistantGroups && hasExecutionProcess
             && (
               <ExecutionProcess
                 sessionId={sessionId}
@@ -460,11 +461,9 @@ export const MessageItem = memo(function MessageItem({
               {part.text}
             </Markdown>
           ))}
-          {streaming &&
-            message.complete === false &&
-            (assistantGroups?.responseParts.length ?? 0) > 0 && (
-              <span className="msg__caret">▋</span>
-            )}
+          {generatingAnswer && (
+            <div className="msg__writing" role="status"><span aria-hidden="true" />正在生成回复</div>
+          )}
           {notice && <div className={`execution-notice execution-notice--${notice.tone}`} role={notice.tone === "neutral" ? "status" : "alert"}>
             <div className="execution-notice__copy"><strong>{notice.title}</strong><p>{notice.description}</p></div>
             <div className="execution-notice__actions">

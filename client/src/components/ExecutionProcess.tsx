@@ -1,7 +1,8 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { ToolCallCard } from "./ToolCallCard";
 import { documentProgressSummary } from "@/lib/document-progress";
+import { executionProcessPreview } from "@/lib/execution-process-preview";
 import { useTheme } from "./ThemeProvider";
 import type { MessagePart, ToolCallView } from "@/stores/session-store";
 import {
@@ -118,6 +119,67 @@ function ReasoningDisclosure({
   );
 }
 
+function ExecutionExcerpt({ text, kind }: { text: string; kind?: "text" | "thought" }) {
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const followLatest = () => {
+    const element = textRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  };
+  useLayoutEffect(followLatest, [text]);
+  useLayoutEffect(() => {
+    if (!textRef.current || typeof ResizeObserver === "undefined") return;
+    // Width and font changes can wrap the same excerpt into more lines.
+    const observer = new ResizeObserver(followLatest);
+    observer.observe(textRef.current);
+    return () => observer.disconnect();
+  }, []);
+  return <div className="execution-process__excerpt">
+    <span className="execution-process__excerpt-label">{kind === "thought" ? "思考片段" : "进展"}</span>
+    <p ref={textRef}>{text}</p>
+  </div>;
+}
+
+function ExecutionPreview({ parts, toolCount, searchingKnowledge, onOpenTool, onExpand, headerRef }: {
+  parts: MessagePart[];
+  toolCount: number;
+  searchingKnowledge: boolean;
+  onOpenTool?: (tool: ToolCallView) => void;
+  onExpand: () => void;
+  headerRef: RefObject<HTMLButtonElement>;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [focusedToolCallId, setFocusedToolCallId] = useState<string>();
+  const preview = useMemo(() => executionProcessPreview(parts, focusedToolCallId), [parts, focusedToolCallId]);
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    return () => {
+      // Answer/completion transitions remove the preview, but must not drop a
+      // keyboard user's focus or steal focus back from an already-open drawer.
+      if (container?.contains(document.activeElement)) headerRef.current?.focus({ preventScroll: true });
+    };
+  }, [headerRef]);
+
+  return <div ref={containerRef} className="execution-process__preview" aria-label="实时执行进展">
+    {preview.excerpt && <ExecutionExcerpt text={preview.excerpt} kind={preview.excerptKind} />}
+    {searchingKnowledge && <p className="execution-process__preview-note">正在从个人知识库检索相关片段…</p>}
+    {preview.tools.length > 0 && <div className="execution-process__recent-tools"
+      onFocusCapture={event => {
+        const id = (event.target as HTMLElement).closest<HTMLElement>("[data-tool-call-id]")?.dataset.toolCallId;
+        if (id) setFocusedToolCallId(id);
+      }}
+      onBlurCapture={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedToolCallId(undefined);
+      }}
+    >
+      {preview.tools.map(tool => <ToolCallCard key={tool.toolCallId} tc={tool} onOpen={onOpenTool} showStatusLabel />)}
+    </div>}
+    {preview.hiddenToolCount > 0 && <button type="button" className="execution-process__preview-more" onClick={onExpand}>
+      {preview.hiddenRunningCount > 0 ? `另有 ${preview.hiddenRunningCount} 项操作正在进行 · ` : ""}
+      共 {toolCount} 项操作，展开查看全部
+    </button>}
+  </div>;
+}
+
 /**
  * One desktop-friendly process group per assistant turn. It keeps the live
  * state readable, folds automatically when the final answer begins, and delegates
@@ -215,6 +277,7 @@ export function ExecutionProcess({
   }, [active, messageId, sessionId, shouldOpenAutomatically]);
 
   const processRows = useMemo(() => groupProcessRows(parts), [parts]);
+  const showPreview = active && !finalAnswerStarted && !open;
   const duration = startedAt != null && (active || completedAt != null)
     ? formatProcessDuration(Math.max(0, (completedAt ?? now) - startedAt))
     : null;
@@ -240,33 +303,34 @@ export function ExecutionProcess({
       : summary.title;
   const recovered = summary.state === "complete" && summary.recoveredTools.length > 0;
   const recoveredById = new Map(summary.recoveredTools.map(recovery => [recovery.failedToolCallId,recovery.successfulToolCallId]));
+  const changeOpen = (next: boolean) => {
+    userToggled.current = true;
+    rememberExecutionDisclosureChoice(sessionId, messageId, next);
+    setOpen(next);
+  };
 
   return (
-    <section className={`execution-process execution-process--${summary.state}${recovered ? " execution-process--recovered" : ""}`}>
+    <section className={`execution-process execution-process--${summary.state}${showPreview ? " execution-process--previewing" : ""}${recovered ? " execution-process--recovered" : ""}`}>
       <button
         ref={headerRef}
         type="button"
         className="execution-process__header"
         aria-label={[title, duration].filter(Boolean).join(" · ")}
         aria-expanded={open}
-        aria-controls={bodyId}
+        aria-controls={open ? bodyId : undefined}
         aria-describedby={open && summary.description ? `${bodyId}-summary` : undefined}
-        onClick={() => {
-          userToggled.current = true;
-          const next = !open;
-          rememberExecutionDisclosureChoice(sessionId, messageId, next);
-          setOpen(next);
-        }}
+        onClick={() => changeOpen(!open)}
       >
         <span className="execution-process__status" aria-hidden="true" />
         <span className="execution-process__heading">
-          <span className="execution-process__title" role="status" aria-live="polite">
+          <span className="execution-process__title" role={finalAnswerStarted ? undefined : "status"}>
             {title}
           </span>
           {duration && (
             <span className="execution-process__meta">· {duration}</span>
           )}
         </span>
+        {active && <span className="execution-process__toggle-label" aria-hidden="true">{open ? "收起过程" : "展开过程"}</span>}
         <span
           className={`execution-process__chevron${open ? " execution-process__chevron--open" : ""}`}
           aria-hidden="true"
@@ -274,6 +338,10 @@ export function ExecutionProcess({
           ›
         </span>
       </button>
+
+      {showPreview && <ExecutionPreview parts={parts} toolCount={summary.toolCount}
+        searchingKnowledge={knowledgeTrace?.personal?.state === "searching"}
+        onOpenTool={onOpenTool} onExpand={() => changeOpen(true)} headerRef={headerRef} />}
 
       {open && (
         <div className="execution-process__body" id={bodyId}>

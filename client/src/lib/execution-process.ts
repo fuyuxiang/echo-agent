@@ -17,6 +17,8 @@ export interface AssistantPartGroups {
   processParts: MessagePart[];
   /** Text emitted by the final model generation for the user. */
   responseParts: TextMessagePart[];
+  /** Trailing normalized text, rather than preserved pre-tool commentary. */
+  answerStarted: boolean;
 }
 
 /**
@@ -31,6 +33,10 @@ export interface AssistantPartGroups {
  */
 export function partitionAssistantParts(parts: MessagePart[]): AssistantPartGroups {
   const normalizedParts = expandTaggedThinking(parts);
+  const lastMeaningfulPart = [...normalizedParts].reverse().find(part =>
+    part.kind === "tool_call" || part.text.trim().length > 0,
+  );
+  const answerStarted = lastMeaningfulPart?.kind === "text";
   const textParts = normalizedParts.filter(isTextPart);
   const lastNonEmptyText = [...textParts].reverse().find((part) => part.text.trim());
 
@@ -41,7 +47,7 @@ export function partitionAssistantParts(parts: MessagePart[]): AssistantPartGrou
     const processParts = normalizedParts.filter(
       (part) => part.kind !== "text" || part.streamId !== lastNonEmptyText.streamId,
     );
-    return { processParts, responseParts };
+    return { processParts, responseParts, answerStarted };
   }
 
   let lastProcessIndex = -1;
@@ -53,12 +59,14 @@ export function partitionAssistantParts(parts: MessagePart[]): AssistantPartGrou
     return {
       processParts: normalizedParts.slice(0, lastProcessIndex + 1),
       responseParts,
+      answerStarted,
     };
   }
 
   return {
     processParts: normalizedParts.filter((part) => part.kind !== "text"),
     responseParts: textParts,
+    answerStarted,
   };
 }
 

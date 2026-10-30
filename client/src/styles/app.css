@@ -2142,15 +2142,21 @@
   border-radius: 3px;
   padding: 0 4px;
 }
-.msg__caret {
-  display: inline-block;
-  animation: blink 1s steps(2, start) infinite;
-  color: var(--echo-brand);
+.msg__writing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--echo-text-medium);
+  font-size: 0.75rem;
+  line-height: 24px;
 }
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
+.msg__writing > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--echo-brand);
+  animation: processStatusPulse 1.4s ease-in-out infinite;
 }
 /* 真实状态保持主层级，低频陪伴文案在下方独立展示。 */
 .msg__loading {
@@ -2300,6 +2306,93 @@
   white-space: nowrap;
   color: var(--echo-text-tertiary);
   font-size: 0.6875rem;
+}
+.execution-process__toggle-label {
+  flex: none;
+  color: var(--echo-text-tertiary);
+  font-size: 0.6875rem;
+}
+/* The compact live view exposes real activity without growing with the log.
+   Full history and raw output remain behind the existing disclosure/drawer. */
+.execution-process__preview {
+  margin: 4px 0 4px 5px;
+  padding: 2px 0 2px 14px;
+  border-left: 1px solid color-mix(in srgb, var(--echo-brand) 28%, var(--echo-border-subtle));
+}
+.execution-process__excerpt {
+  margin: 0 4px 7px;
+}
+.execution-process__excerpt-label {
+  color: var(--echo-text-tertiary);
+  font-size: 0.6875rem;
+  line-height: 20px;
+}
+.execution-process__excerpt p {
+  /* Keep the last two lines visible as text, width and font size change. */
+  max-height: 3.3em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--echo-text-medium);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+}
+.execution-process__recent-tools {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.execution-process__preview .toolcall {
+  min-height: 30px;
+  margin: 0;
+  padding: 4px 7px;
+}
+.execution-process__preview .toolcall--run {
+  background: color-mix(in srgb, var(--echo-brand) 6%, transparent);
+}
+.execution-process__preview .toolcall__title {
+  color: var(--echo-text-medium);
+}
+.execution-process__preview .toolcall__kind {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--echo-text-medium);
+  font-family: inherit;
+}
+.execution-process__preview .toolcall--run .toolcall__title {
+  color: var(--echo-text-strong);
+}
+.toolcall__status-label {
+  flex: none;
+  color: var(--echo-text-tertiary);
+  font-size: 0.6875rem;
+}
+.execution-process__preview-note,
+.execution-process__preview-more {
+  margin: 5px 4px 0;
+  color: var(--echo-text-tertiary);
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.execution-process__preview-more {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.execution-process__preview-more:hover {
+  color: var(--echo-text-medium);
+  text-decoration: underline;
+}
+.execution-process__preview-more:focus-visible {
+  outline: 2px solid var(--echo-brand);
+  outline-offset: 3px;
+  border-radius: 2px;
 }
 .execution-process__chevron {
   flex: none;
@@ -7789,10 +7882,11 @@ button.diff__path {
   .sidebar__conv-status--working .sidebar__conv-status-dot,
   .pd-session-status--running .pd-session-status__dot,
   .msg__loading-tip > span:last-child,
-  .msg__caret {
+  .msg__writing > span {
     animation: none;
   }
   .execution-process__chevron,
+  .execution-process .toolcall,
   .execution-process__reasoning > summary::before {
     transition: none;
   }

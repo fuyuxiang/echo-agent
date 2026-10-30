@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MessageItem } from "../MessageItem";
 import { ExecutionProcess } from "../ExecutionProcess";
@@ -7,6 +7,124 @@ import type { ChatMessage, ToolCallView } from "@/stores/session-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 
 describe("assistant execution process", () => {
+  it("默认收起时直接显示思考片段和真实操作，正式答复开始后撤下预览", () => {
+    const onOpenTool = vi.fn();
+    const live: ChatMessage = {
+      id: "live-preview", role: "assistant", complete: false,
+      parts: [
+        { kind: "text", text: "我先核对资料。" },
+        { kind: "thought", text: "准备检查表格的字段与统计口径。" },
+        { kind: "tool_call", toolCall: { toolCallId: "preview-read", title: "Read 报告.xlsx", kind: "read_file", status: "in_progress", content: [] } },
+      ],
+    };
+    const view = (item: ChatMessage) => <ThemeProvider><MessageItem message={item} streaming={!item.complete} onOpenTool={onOpenTool} /></ThemeProvider>;
+    const { container, rerender } = render(view(live));
+    expect(screen.getByRole("button", { name: /正在读取项目文件/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByLabelText("实时执行进展")).toBeVisible();
+    expect(screen.getByText("准备检查表格的字段与统计口径。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /read_file.*报告.xlsx.*运行中/ }));
+    expect(onOpenTool).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "preview-read" }));
+    expect(container.querySelector(".msg__caret")).toBeNull();
+    expect(container.querySelector(".msg__writing")).toBeNull();
+
+    const finishedTool = { ...live.parts[2], toolCall: { ...(live.parts[2] as Extract<ChatMessage["parts"][number], { kind: "tool_call" }>).toolCall, status: "completed" as const } };
+    const answering = { ...live, parts: [...live.parts.slice(0, 2), finishedTool, { kind: "text" as const, text: "核对结果如下。" }] };
+    rerender(view(answering));
+    expect(screen.queryByLabelText("实时执行进展")).toBeNull();
+    expect(screen.getByRole("button", { name: /正在生成回复/ })).toBeVisible();
+    expect(container.querySelector(".msg__writing")).toBeVisible();
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByText("核对结果如下。")).toBeVisible();
+    rerender(view({ ...answering, complete: true }));
+    expect(screen.getByRole("button", { name: /查看过程/ })).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelector(".msg__writing")).toBeNull();
+  });
+
+  it("正文末尾状态与并行工具、等待决定、完成状态互斥", () => {
+    const parts: ChatMessage["parts"] = [
+      { kind: "thought", text: "正在核对资料。" },
+      { kind: "tool_call", toolCall: { toolCallId: "parallel", kind: "read_file", title: "核对资料", status: "in_progress", content: [] } },
+      { kind: "text", text: "这里先保留部分说明。" },
+    ];
+    const message: ChatMessage = { id: "parallel-answer-status", role: "assistant", complete: false, parts };
+    const view = (item: ChatMessage, waitingForModel = true) => <ThemeProvider><MessageItem message={item} streaming waitingForModel={waitingForModel} /></ThemeProvider>;
+    const { container, rerender } = render(view(message));
+    expect(container.querySelector(".msg__writing")).toBeNull();
+    expect(screen.getByLabelText("实时执行进展")).toBeVisible();
+    const answering = { ...message, parts: parts.map(part => part.kind === "tool_call" ? { ...part, toolCall: { ...part.toolCall, status: "completed" as const } } : part) };
+    rerender(view(answering));
+    expect(container.querySelector(".msg__writing")).toBeVisible();
+    rerender(view(answering, false));
+    expect(container.querySelector(".msg__writing")).toBeNull();
+    rerender(view({ ...answering, complete: true }));
+    expect(container.querySelector(".msg__writing")).toBeNull();
+  });
+
+  it("工具完成和新增并行工具不移除正在聚焦的预览项，焦点离开后恢复最近三项", () => {
+    const onOpenTool = vi.fn();
+    const makeTool = (id: string, status: ToolCallView["status"]): ChatMessage["parts"][number] => ({
+      kind: "tool_call", toolCall: { toolCallId: id, kind: "read_file", title: id, status, content: [] },
+    });
+    const parts = [makeTool("focused", "in_progress"), ...[1, 2, 3].map(id => makeTool(`other-${id}`, "completed"))];
+    const view = (items: ChatMessage["parts"]) => <ThemeProvider><ExecutionProcess parts={items} active onOpenTool={onOpenTool} /></ThemeProvider>;
+    const { rerender, container } = render(view(parts));
+    const target = screen.getByRole("button", { name: "read_file focused 运行中" });
+    act(() => target.focus());
+    const next = [makeTool("focused", "completed"), ...parts.slice(1), makeTool("new-running", "in_progress")];
+    rerender(view(next));
+    expect(target).toHaveFocus();
+    expect(target).toHaveAccessibleName("read_file focused 完成");
+    expect(container.querySelectorAll(".execution-process__preview .toolcall")).toHaveLength(3);
+    fireEvent.click(target);
+    expect(onOpenTool).toHaveBeenLastCalledWith(expect.objectContaining({ toolCallId: "focused", status: "completed" }));
+    const header = container.querySelector<HTMLButtonElement>(".execution-process__header")!;
+    act(() => header.focus());
+    expect(header).toHaveFocus();
+    expect(target).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "read_file new-running 运行中" })).toBeVisible();
+  });
+
+  it.each(["answer", "complete"])("预览因 %s 自动移除时把键盘焦点移回过程入口", transition => {
+    const parts: ChatMessage["parts"] = [{ kind: "tool_call", toolCall: { toolCallId: "transition", kind: "read_file", title: "transition", status: "completed", content: [] } }];
+    const view = (active: boolean, hasFinalAnswer = false) => <ThemeProvider><ExecutionProcess parts={parts} active={active} hasFinalAnswer={hasFinalAnswer} /></ThemeProvider>;
+    const { container, rerender } = render(view(true));
+    act(() => screen.getByRole("button", { name: "read_file transition 完成" }).focus());
+    rerender(view(transition !== "complete", transition === "answer"));
+    expect(screen.queryByLabelText("实时执行进展")).toBeNull();
+    expect(container.querySelector(".execution-process__header")).toHaveFocus();
+  });
+
+  it("自动撤下预览时保留详情面板内的焦点", () => {
+    const parts: ChatMessage["parts"] = [{ kind: "thought", text: "正在核对。" }];
+    const view = (active: boolean) => <ThemeProvider><ExecutionProcess parts={parts} active={active} /><button>详情面板操作</button></ThemeProvider>;
+    const { rerender } = render(view(true));
+    const outside = screen.getByRole("button", { name: "详情面板操作" });
+    act(() => outside.focus());
+    rerender(view(false));
+    expect(outside).toHaveFocus();
+  });
+
+  it("仅正文流式输出时使用可读状态，完成或等待决定时移除", () => {
+    const live: ChatMessage = { id: "text-writing", role: "assistant", complete: false, parts: [{ kind: "text", text: "这是回复的开头。" }] };
+    const { container, rerender } = render(<ThemeProvider><MessageItem message={live} streaming /></ThemeProvider>);
+    expect(screen.getByRole("status", { name: "" })).toHaveTextContent("正在生成回复");
+    expect(container.querySelector(".msg__caret")).toBeNull();
+    rerender(<ThemeProvider><MessageItem message={live} streaming waitingForModel={false} /></ThemeProvider>);
+    expect(container.querySelector(".msg__writing")).toBeNull();
+    rerender(<ThemeProvider><MessageItem message={{ ...live, complete: true }} streaming={false} /></ThemeProvider>);
+    expect(container.querySelector(".msg__writing")).toBeNull();
+  });
+
+  it("上一段说明之后的流式推理标签仍显示思考进展，不误判为正式答复", () => {
+    render(<ThemeProvider><MessageItem streaming message={{
+      id: "tagged-live-preview", role: "assistant", complete: false,
+      parts: [{ kind: "text", text: "我先整理资料。" }, { kind: "text", text: "<think>正在核对引用来源。" }],
+    }} /></ThemeProvider>);
+    expect(screen.getByLabelText("实时执行进展")).toBeVisible();
+    expect(screen.getByText("正在核对引用来源。")).toBeVisible();
+    expect(screen.queryByText("正在生成回复")).toBeNull();
+  });
+
   it("执行过程收起后仍显示最新资料的读取覆盖", () => {
     render(<ThemeProvider><ExecutionProcess autoExpand active={false} parts={[{ kind: "tool_call", toolCall: {
       toolCallId: "document", kind: "read_file", title: "Read 比赛.xlsx", status: "completed", content: [],
