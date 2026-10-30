@@ -3,9 +3,25 @@ mod debug_redact;
 pub mod find_protoc;
 
 use anyhow::Context;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::{fs, iter};
+
+fn dependency_paths<'a>(
+    content: &'a str,
+    descriptor_path: &str,
+) -> anyhow::Result<impl Iterator<Item = &'a str>> {
+    // Match the complete target before the separator: Windows drive letters
+    // contain a colon, and the temporary directory may contain spaces.
+    let dependencies = content
+        .strip_prefix(descriptor_path)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .context("unexpected protoc dependency_out target")?;
+    Ok(dependencies
+        .lines()
+        .map(|line| line.trim().strip_suffix('\\').unwrap_or(line.trim()).trim())
+        .filter(|line| !line.is_empty()))
+}
 
 /// Find the protoc well-known types include directory.
 ///
@@ -144,20 +160,24 @@ impl EchoAgentProtoBuilder {
 
         // Can only process one input file when using --dependency_out=FILE.
         for proto in protos {
-            // EchoAgent patch: `/dev/stdout` and `/dev/null` don't exist on
-            // Windows. Use a temp file for the dependency list instead. (On
-            // Unix this behaves identically.)
-            let dep_file = tempfile::NamedTempFile::new()
-                .context("failed to create temp file for protoc dependency_out")?;
-            let dep_path = dep_file.path().to_path_buf();
-            let null_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
+            // protoc's Windows path handling can turn `NUL` into a real file
+            // in the crate directory. Keep both outputs in a temporary
+            // directory, cleaned up on success and error, with no open handles
+            // that could prevent protoc from writing them on Windows.
+            let temp_dir = tempfile::tempdir()
+                .context("failed to create temp directory for protoc dependencies")?;
+            let dep_path = temp_dir.path().join("dependencies.d");
+            let descriptor_path = temp_dir.path().join("descriptor.pbbin");
+            let descriptor_path = descriptor_path
+                .to_str()
+                .context("descriptor temp path not UTF-8")?;
             let mut command = Command::new(protoc.unwrap_or(Path::new("protoc")));
             command
                 .arg(format!(
                     "--dependency_out={}",
                     dep_path.to_str().context("dep temp path not UTF-8")?
                 ))
-                .arg(format!("--descriptor_set_out={null_path}"));
+                .arg(format!("--descriptor_set_out={descriptor_path}"));
 
             // Add protoc's well-known types include directory first (if found).
             // This is needed for Bazel sandboxed builds where protoc and its
@@ -187,20 +207,7 @@ impl EchoAgentProtoBuilder {
             // passed via --dependency_out (instead of parsing stdout).
             let dep_content = fs::read_to_string(&dep_path)
                 .context("failed to read protoc dependency_out temp file")?;
-            // Keep `dep_file` alive until we've read it.
-            drop(output);
-
-            let mut lines = dep_content.lines();
-            let first_line = lines.next().context("protoc dependency file is empty")?;
-            // protoc writes the descriptor_set_out path as a prefix on the
-            // first line. Strip it whether it's /dev/null, NUL, or a path.
-            let rem = first_line
-                .split_once(':')
-                .map(|(_, r)| r)
-                .unwrap_or(first_line);
-            for line in iter::once(rem).chain(lines) {
-                let line = line.trim();
-                let line = line.strip_suffix("\\").unwrap_or(line);
+            for line in dependency_paths(&dep_content, descriptor_path)? {
                 // Depending on absolute paths like
                 // /Users/user/homebrew/Cellar/protobuf/29.1/include/google/protobuf/timestamp.proto
                 // is valid, but we want to have output more deterministic.
@@ -362,5 +369,111 @@ pub fn configure() -> EchoAgentProtoBuilder {
         pbjson_exclude: Vec::new(),
         file_descriptor_set_path: None,
         honor_debug_redact: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dependency_paths_preserve_windows_drive_letters_and_spaces() {
+        let target = r"C:\Users\开发者\AppData\Local\Temp\proto build\descriptor.pbbin";
+        let content =
+            format!("{target}: C:\\source tree\\shared.proto\\\r\n C:\\source tree\\main.proto");
+        assert_eq!(
+            dependency_paths(&content, target)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            [r"C:\source tree\shared.proto", r"C:\source tree\main.proto"]
+        );
+    }
+
+    #[test]
+    fn dependency_paths_match_the_complete_target() {
+        let target = "/tmp/proto: build/descriptor.pbbin";
+        let content = format!("{target}: shared.proto\\\n main.proto\n");
+        assert_eq!(
+            dependency_paths(&content, target)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            ["shared.proto", "main.proto"]
+        );
+        assert!(dependency_paths(&content, "/tmp/other.pbbin").is_err());
+        assert!(dependency_paths("", target).is_err());
+    }
+
+    #[test]
+    fn protoc_dependency_outputs_are_temporary_on_success_and_failure() {
+        const CASE_ENV: &str = "ECHO_AGENT_PROTO_DEPENDENCY_TEST_CASE";
+        if let Ok(case) = std::env::var(CASE_ENV) {
+            let protoc = find_protoc::find_protoc().unwrap();
+            let result = EchoAgentProtoBuilder::emit_rerun_if_changed(
+                protoc.as_deref(),
+                None,
+                [Path::new("main.proto")],
+                [Path::new(".")],
+            );
+            if case == "success" {
+                result.unwrap();
+            } else {
+                assert!(result.is_err());
+            }
+            return;
+        }
+
+        let protoc = find_protoc::find_protoc()
+            .unwrap()
+            .expect("protoc must be installed for the dependency regression test");
+        let protoc = std::path::absolute(protoc).unwrap();
+        for (case, source) in [
+            (
+                "success",
+                "syntax = \"proto3\"; import \"shared.proto\"; message Main { Shared value = 1; }",
+            ),
+            ("failure", "syntax = \"proto3\"; this is invalid protobuf"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let workspace = root.path().join("workspace with spaces");
+            let scratch = root.path().join("compiler output with spaces");
+            fs::create_dir(&workspace).unwrap();
+            fs::create_dir(&scratch).unwrap();
+            fs::write(workspace.join("main.proto"), source).unwrap();
+            fs::write(
+                workspace.join("shared.proto"),
+                "syntax = \"proto3\"; message Shared { string value = 1; }",
+            )
+            .unwrap();
+
+            // Isolate cwd and temp environment changes in a child process.
+            // On Windows this also catches a real NUL file in the workspace.
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::protoc_dependency_outputs_are_temporary_on_success_and_failure",
+                    "--nocapture",
+                ])
+                .current_dir(&workspace)
+                .env(CASE_ENV, case)
+                .env("PROTOC", &protoc)
+                .env("TMPDIR", &scratch)
+                .env("TMP", &scratch)
+                .env("TEMP", &scratch)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let mut files = fs::read_dir(&workspace)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            files.sort();
+            assert_eq!(files, ["main.proto", "shared.proto"], "{case}");
+            assert_eq!(fs::read_dir(&scratch).unwrap().count(), 0, "{case}");
+        }
     }
 }

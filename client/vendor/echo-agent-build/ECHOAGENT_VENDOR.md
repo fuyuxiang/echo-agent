@@ -22,6 +22,14 @@ PATH/PROTOC environment changes. This prevents a missing relative `protoc` watch
 from rebuilding the Runtime on every Cargo invocation. Locator regressions run
 with `cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib`.
 
+Local Windows build correction (2026-10-30): `echo-agent-proto-build` writes both
+the dependency manifest and the disposable descriptor set inside a temporary
+directory. Passing `NUL` as the descriptor output could create a real reserved-name
+file in the crate directory on Windows. Dependency parsing matches the complete
+descriptor target so drive letters and spaces in temporary paths remain valid.
+The library tests above cover Windows manifest paths and invoke real `protoc` in
+an isolated workspace to check for leftover files on success and failure.
+
 When importing a newer source revision, use a temporary checkout, compare it
 with the maintained source and integrate required compatibility changes there,
 run the complete namespace migration, then replace only the tracked source snapshot
