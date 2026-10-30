@@ -1,10 +1,15 @@
 import { useState, useCallback, useRef, useEffect, useMemo, useContext, useLayoutEffect } from "react";
+import { SlidersHorizontal } from "lucide-react";
 import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 import { useSessionsStore, selectHasFilter } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import { IS_MACOS } from "@/lib/platform";
-import { CAPABILITY_SECTION_LABEL, isCapabilityView } from "@/lib/capability-navigation";
+import { useModalPresence } from "@/lib/use-modal-focus";
+import {
+  SIDEBAR_MENU_ITEMS, loadSidebarMenuLayout, saveSidebarMenuLayout,
+  isSidebarMenuItemActive, type SidebarMenuId,
+} from "@/lib/sidebar-menu";
 import {
   agentRenameSession,
   agentDeleteSession,
@@ -15,9 +20,6 @@ import type { SessionSummary, SessionStatus } from "@/lib/types";
 import { isWaitingForUser } from "@/lib/turn-status";
 import {
   EchoNewTaskIcon,
-  EchoProjectNavIcon,
-  EchoExpertNavIcon,
-  EchoAutomationNavIcon,
   EchoMoreNavIcon,
   SearchIcon,
   FilterIcon,
@@ -29,23 +31,14 @@ import {
   PinFilledIcon,
   MoreDotsIcon,
   AddIcon,
-  BuildingIcon,
-  MoreMenuImaKnowledgeIcon,
-  Code2Icon,
 } from "@/foundation/components/Icon/icons";
 import { SessionContextMenu } from "./SessionContextMenu";
 import { weixinHandoff } from "@/lib/weixin-client";
 import { MoveToProjectDialog } from "./MoveToProjectDialog";
 import { useAppDialog } from "./AppDialog";
 import { GroupSidebar } from "@/features/groups/GroupSidebar";
+import { SidebarMenuCustomizer } from "./SidebarMenuCustomizer";
 const logoMarkUrl = "/app-icon.png";
-
-const NAV = [
-  { label: "项目", icon: EchoProjectNavIcon },
-  { label: "组织", icon: BuildingIcon },
-  { label: "代码开发", icon: Code2Icon },
-  { label: "专家·技能·连接器", icon: EchoExpertNavIcon },
-];
 
 /** Compact, locale-friendly relative time for the sidebar row tail. */
 function relativeTime(iso: string, now: number): string {
@@ -334,17 +327,22 @@ function handleMenuKeyDown(
  * "更多" 侧栏按钮的弹出菜单 — 对齐 EchoAgent：
  * - 悬停打开，向右浮出；点击和键盘也可打开。
  * - 离开时延迟关闭，允许鼠标跨过按钮和菜单之间的间隙。
- * - 展示知识库和定时任务；个人记忆由设置管理。
+ * - 展示用户收进“更多”的入口，并提供菜单栏自定义。
  */
 function MoreDropdown({
   onNavigate,
   activeNav,
+  items,
+  onCustomize,
 }: {
   onNavigate: (label: string) => void;
   activeNav: string;
+  items: SidebarMenuId[];
+  onCustomize: (returnFocus: HTMLButtonElement | null) => void;
 }) {
   const layout = useContext(SidebarLayoutContext);
-  const unavailable = !!(layout?.collapsed || layout?.resizing);
+  const modalOpen = useModalPresence();
+  const unavailable = !!(layout?.collapsed || layout?.resizing || modalOpen);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -424,35 +422,7 @@ function MoreDropdown({
     setOpen(true);
   };
 
-  const ITEMS: {
-    id: string;
-    label: string;
-    icon: React.ReactNode;
-    action: () => void;
-  }[] = [
-    {
-      id: "knowledge_base",
-      label: "知识库",
-      icon: <MoreMenuImaKnowledgeIcon size="md" />,
-      action: () => {
-        closeMenu();
-        onNavigate("知识库");
-      },
-    },
-    {
-      id: "automation",
-      label: "定时任务",
-      icon: <EchoAutomationNavIcon size="md" />,
-      action: () => {
-        closeMenu();
-        onNavigate("自动化");
-      },
-    },
-  ];
-  const activeMoreLabel = activeNav === "自动化" ? "定时任务" : activeNav;
-  const isActive =
-    activeNav === "更多" ||
-    ITEMS.some((item) => item.label === activeMoreLabel);
+  const isActive = activeNav === "更多" || items.some(id => isSidebarMenuItemActive(id, activeNav));
 
   return (
     <div
@@ -488,7 +458,7 @@ function MoreDropdown({
       >
         <EchoMoreNavIcon size="md" />
         <span>更多</span>
-        <span className="sidebar__nav-sub">知识与工具</span>
+        {items.length > 0 && items.every(id => id === "knowledge" || id === "automation") && <span className="sidebar__nav-sub">知识与工具</span>}
       </button>
       {open && (
         <div
@@ -502,21 +472,30 @@ function MoreDropdown({
             triggerRef.current?.focus();
           })}
         >
-          {ITEMS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={
-                "sidebar__more-item" +
-                (activeMoreLabel === item.label ? " sidebar__more-item--active" : "")
-              }
-              role="menuitem"
-              onClick={item.action}
-            >
-              <span className="sidebar__more-item-icon">{item.icon}</span>
-              <span className="sidebar__more-item-label">{item.label}</span>
-            </button>
-          ))}
+          {items.map(id => {
+            const { label, route, icon: Icon } = SIDEBAR_MENU_ITEMS[id];
+            return (
+              <button
+                key={id}
+                type="button"
+                className={
+                  "sidebar__more-item" +
+                  (isSidebarMenuItemActive(id, activeNav) ? " sidebar__more-item--active" : "")
+                }
+                role="menuitem"
+                onClick={() => { closeMenu(); onNavigate(route); }}
+              >
+                <span className="sidebar__more-item-icon"><Icon size="md" /></span>
+                <span className="sidebar__more-item-label">{label}</span>
+              </button>
+            );
+          })}
+          {items.length > 0 && <div className="sidebar__more-divider" role="separator" />}
+          <button type="button" className="sidebar__more-item" role="menuitem"
+            onClick={() => { closeMenu(); onCustomize(triggerRef.current); }}>
+            <span className="sidebar__more-item-icon"><SlidersHorizontal size={16} /></span>
+            <span className="sidebar__more-item-label">自定义菜单栏</span>
+          </button>
         </div>
       )}
     </div>
@@ -575,6 +554,9 @@ export function Sidebar({
   activeNav: string;
 }) {
   const sidebarLayout = useContext(SidebarLayoutContext);
+  const [menuLayout, setMenuLayout] = useState(loadSidebarMenuLayout);
+  const [customizingMenu, setCustomizingMenu] = useState(false);
+  const menuReturnFocus = useRef<HTMLButtonElement | null>(null);
   const now = useSidebarTime();
   const independent = useSessionsStore((s) => s.independent);
   const tasksOpen = useSessionsStore((s) => s.tasksOpen);
@@ -1002,23 +984,30 @@ export function Sidebar({
           <EchoNewTaskIcon size="md" />
           <span>新建任务</span>
         </button>
-        {NAV.map(({ label, icon: Icon }) => (
-          <button
-            key={label}
-            aria-label={label === "专家·技能·连接器" ? CAPABILITY_SECTION_LABEL : label}
-            title={label === "专家·技能·连接器" ? "管理专家、技能与连接器" : undefined}
-            className={
-              "sidebar__nav-item" +
-              (activeNav === label || (label === "专家·技能·连接器" && isCapabilityView(activeNav)) ? " sidebar__nav-item--active" : "")
-            }
-            onClick={() => onNavigate(label)}
-          >
-            <Icon size="md" />
-            <span>{label === "专家·技能·连接器" ? CAPABILITY_SECTION_LABEL : label}</span>
-          </button>
-        ))}
-        <MoreDropdown onNavigate={onNavigate} activeNav={activeNav} />
+        {menuLayout.primary.map(id => {
+          const { label, route, icon: Icon } = SIDEBAR_MENU_ITEMS[id];
+          return (
+            <button
+              key={id}
+              aria-label={label}
+              title={id === "capabilities" ? "管理专家、技能与连接器" : undefined}
+              className={
+                "sidebar__nav-item" +
+                (isSidebarMenuItemActive(id, activeNav) ? " sidebar__nav-item--active" : "")
+              }
+              onClick={() => onNavigate(route)}
+            >
+              <Icon size="md" />
+              <span>{label}</span>
+            </button>
+          );
+        })}
+        <MoreDropdown onNavigate={onNavigate} activeNav={activeNav} items={menuLayout.more}
+          onCustomize={returnFocus => { menuReturnFocus.current = returnFocus; setCustomizingMenu(true); }} />
       </nav>
+      {customizingMenu && <SidebarMenuCustomizer layout={menuLayout} returnFocus={menuReturnFocus.current}
+        onSave={next => setMenuLayout(saveSidebarMenuLayout(next))}
+        onClose={() => setCustomizingMenu(false)} />}
 
       <div className="sidebar__content">
         {sessionsError && (

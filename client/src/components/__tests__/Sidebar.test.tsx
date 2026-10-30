@@ -6,6 +6,7 @@ import { useSessionsStore } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { resetOrgSessionMirror, useOrgSessionStore } from "@/stores/org-session-store";
 import { SidebarLayoutContext } from "@/lib/sidebar-layout";
+import { SIDEBAR_MENU_STORAGE_KEY } from "@/lib/sidebar-menu";
 import type { SessionStatus } from "@/lib/types";
 import { agentDeleteSession } from "@/lib/agent-client";
 
@@ -33,6 +34,7 @@ describe("Sidebar", () => {
   afterEach(() => vi.useRealTimers());
 
   beforeEach(() => {
+    localStorage.removeItem(SIDEBAR_MENU_STORAGE_KEY);
     resetOrgSessionMirror();
     useSessionsStore.setState({ deletedSessionIds: [],
       independent: [],
@@ -94,6 +96,170 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: /更多/ })).not.toHaveClass("sidebar__nav-item--active");
     fireEvent.click(entry);
     expect(onNavigate).toHaveBeenCalledWith("组织");
+  });
+
+  const openMenuCustomizer = () => {
+    fireEvent.click(screen.getByRole("button", { name: /更多/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "自定义菜单栏" }));
+    return screen.getByRole("dialog", { name: "自定义菜单栏" });
+  };
+
+  const moveMenuEntry = (dialog: HTMLElement, label: string, key: string) => {
+    fireEvent.keyDown(within(dialog).getByRole("button", { name: `拖动${label}` }), { key });
+  };
+
+  const measureMenu = (dialog: HTMLElement) => {
+    const rect = (top: number, height: number) => ({ left: 0, right: 500, top, bottom: top + height, width: 500, height, x: 0, y: top, toJSON: () => ({}) });
+    vi.spyOn(dialog.querySelector(".sidebar-menu-customizer__body")!, "getBoundingClientRect").mockImplementation(() => rect(0, 800));
+    for (const section of dialog.querySelectorAll<HTMLElement>("[data-menu-group]")) {
+      const top = section.dataset.menuGroup === "primary" ? 0 : 440;
+      vi.spyOn(section, "getBoundingClientRect").mockImplementation(() => rect(top, 360));
+      for (const row of section.querySelectorAll<HTMLElement>("[data-menu-id]")) {
+        vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => rect(top + 80 + [...section.querySelectorAll("[data-menu-id]")].indexOf(row) * 60, 50));
+      }
+    }
+  };
+  const menuPointer = (target: Element | Window, type: string, y: number, x = 460, id = 1, buttons = type === "pointerup" ? 0 : 1) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons });
+    Object.defineProperties(event, { pointerId: { value: id }, pointerType: { value: "mouse" } });
+    fireEvent(target, event);
+  };
+  const dragMenuEntry = async (dialog: HTMLElement, label: string, y: number) => {
+    measureMenu(dialog);
+    const handle = within(dialog).getByRole("button", { name: `拖动${label}` });
+    const source = handle.closest("[data-menu-id]")!.getBoundingClientRect();
+    menuPointer(handle, "pointerdown", source.top + 25);
+    menuPointer(window, "pointermove", y);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
+    menuPointer(window, "pointerup", y);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  };
+
+  it("自定义菜单支持跨组移动、排序、保存和重新挂载后恢复", () => {
+    const onNavigate = vi.fn();
+    const { container, unmount } = render(<Sidebar {...base} onNavigate={onNavigate} />);
+    const dialog = openMenuCustomizer();
+    expect(screen.queryByRole("menu", { name: "更多功能" })).not.toBeInTheDocument();
+    expect(within(dialog).getByText("新建任务").closest("div")).not.toHaveAttribute("draggable");
+    expect(within(dialog).queryByRole("button", { name: /^(上移|下移|将)/ })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "拖动项目" })).toHaveAttribute("draggable", "false");
+    moveMenuEntry(dialog, "知识库", "ArrowLeft");
+    moveMenuEntry(dialog, "知识库", "ArrowUp");
+    moveMenuEntry(dialog, "组织", "ArrowRight");
+    expect(within(dialog).getByRole("button", { name: "拖动组织" })).toHaveFocus();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(within(container.querySelector(".sidebar__nav") as HTMLElement).getAllByRole("button").map(el => el.textContent)).toEqual([
+      "新建任务", "项目", "代码开发", "知识库", "专家·技能·连接器", "更多",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "知识库" }));
+    expect(onNavigate).toHaveBeenCalledWith("知识库");
+    unmount();
+    render(<Sidebar {...base} activeNav="组织" onNavigate={onNavigate} />);
+    expect(screen.getByRole("button", { name: "知识库" })).toBeInTheDocument();
+    const more = screen.getByRole("button", { name: "更多" });
+    expect(more).toHaveClass("sidebar__nav-item--active");
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织" }));
+    expect(onNavigate).toHaveBeenCalledWith("组织");
+  });
+
+  it("不依赖 HTML5 拖放事件，指针拖动支持跨组移动并调整同组顺序", async () => {
+    render(<Sidebar {...base} />);
+    const dialog = openMenuCustomizer();
+    const primary = within(dialog).getByRole("list", { name: "一级菜单入口" });
+    await dragMenuEntry(dialog, "知识库", 82);
+    expect(Array.from(primary.querySelectorAll("[data-menu-id]")).map(el => el.getAttribute("data-menu-id"))).toEqual([
+      "knowledge", "projects", "organization", "coding", "capabilities",
+    ]);
+    await dragMenuEntry(dialog, "知识库", 247);
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(JSON.parse(localStorage.getItem(SIDEBAR_MENU_STORAGE_KEY)!).primary).toEqual([
+      "projects", "organization", "knowledge", "coding", "capabilities",
+    ]);
+  });
+
+  it.each(["pointercancel", "blur", "Escape", "lostpointercapture", "outside"])("指针拖动在 %s 时取消且不误关弹窗", async reason => {
+    render(<Sidebar {...base} />);
+    const dialog = openMenuCustomizer();
+    measureMenu(dialog);
+    const handle = within(dialog).getByRole("button", { name: "拖动项目" });
+    menuPointer(handle, "pointerdown", 105);
+    menuPointer(window, "pointermove", 300);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
+    expect(document.querySelector(".sidebar-menu-customizer__preview")).toBeInTheDocument();
+    if (reason === "Escape") fireEvent.keyDown(window, { key: "Escape" });
+    else if (reason === "blur") fireEvent(window, new Event("blur"));
+    else if (reason === "outside") menuPointer(window, "pointerup", 300, 900);
+    else menuPointer(reason === "lostpointercapture" ? handle : window, reason, 300);
+    expect(document.querySelector(".sidebar-menu-customizer__preview")).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "自定义菜单栏" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("list", { name: "一级菜单入口" }).querySelector("[data-menu-id]")).toHaveAttribute("data-menu-id", "projects");
+    expect(localStorage.getItem(SIDEBAR_MENU_STORAGE_KEY)).toBeNull();
+  });
+
+  it("原生事件未提供全局 buttons 状态时仍按捕获的按下和松开完成拖动", async () => {
+    render(<Sidebar {...base} />);
+    const dialog = openMenuCustomizer();
+    measureMenu(dialog);
+    menuPointer(within(dialog).getByRole("button", { name: "拖动项目" }), "pointerdown", 105, 460, 1, 0);
+    menuPointer(window, "pointermove", 247, 460, 1, 0);
+    menuPointer(window, "pointerup", 247, 460, 1, 0);
+    expect([...within(dialog).getByRole("list", { name: "一级菜单入口" }).querySelectorAll<HTMLElement>("[data-menu-id]")].map(row => row.dataset.menuId)).toEqual([
+      "organization", "coding", "projects", "capabilities",
+    ]);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  });
+
+  it("取消或 Escape 放弃草稿并将焦点还给更多按钮", async () => {
+    render(<Sidebar {...base} />);
+    let dialog = openMenuCustomizer();
+    moveMenuEntry(dialog, "项目", "ArrowRight");
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(screen.getByRole("button", { name: "项目" })).toBeInTheDocument();
+    dialog = openMenuCustomizer();
+    moveMenuEntry(dialog, "项目", "ArrowRight");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /更多/ })).toHaveFocus();
+    expect(localStorage.getItem(SIDEBAR_MENU_STORAGE_KEY)).toBeNull();
+  });
+
+  it("所有入口放进一级菜单后仍能自定义、正确导航并恢复默认", () => {
+    const onNavigate = vi.fn();
+    const { rerender } = render(<Sidebar {...base} onNavigate={onNavigate} />);
+    let dialog = openMenuCustomizer();
+    for (const label of ["知识库", "定时任务"]) moveMenuEntry(dialog, label, "ArrowLeft");
+    expect(within(dialog).getByText("将入口拖到这里")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: "定时任务" }));
+    expect(onNavigate).toHaveBeenCalledWith("自动化");
+    rerender(<Sidebar {...base} activeNav="自动化" onNavigate={onNavigate} />);
+    expect(screen.getByRole("button", { name: "定时任务" })).toHaveClass("sidebar__nav-item--active");
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    expect(screen.getAllByRole("menuitem")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("menuitem", { name: "自定义菜单栏" }));
+    dialog = screen.getByRole("dialog", { name: "自定义菜单栏" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "恢复默认" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(screen.queryByRole("button", { name: "定时任务" })).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem(SIDEBAR_MENU_STORAGE_KEY)!).more).toEqual(["knowledge", "automation"]);
+  });
+
+  it("保存失败时保留草稿并提示重试，不应用未保存的菜单", () => {
+    render(<Sidebar {...base} />);
+    const dialog = openMenuCustomizer();
+    moveMenuEntry(dialog, "项目", "ArrowRight");
+    const failSave = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+    try {
+      fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("菜单设置保存失败");
+      expect(screen.getByRole("button", { name: "项目" })).toBeInTheDocument();
+      expect(within(within(dialog).getByRole("list", { name: "更多入口" })).getByRole("button", { name: "拖动项目" })).toBeInTheDocument();
+    } finally { failSave.mockRestore(); }
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "项目" })).not.toBeInTheDocument();
   });
 
   it("渲染会话列表并可选中", () => {
@@ -440,7 +606,8 @@ describe("Sidebar", () => {
     expect(onNavigate).not.toHaveBeenCalled();
     expect(within(menu).getByText("知识库")).toBeInTheDocument();
     expect(within(menu).getByRole("menuitem", { name: "定时任务" })).toBeInTheDocument();
-    expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
+    expect(within(menu).getByRole("menuitem", { name: "自定义菜单栏" })).toBeInTheDocument();
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(3);
     for (const settingsEntry of ["我的文件", "个人记忆", "用量统计", "通知渠道", "云存储", "已归档"]) {
       expect(within(menu).queryByText(settingsEntry)).not.toBeInTheDocument();
     }
@@ -490,7 +657,7 @@ describe("Sidebar", () => {
     trigger.focus();
     fireEvent.keyDown(trigger, { key: "ArrowUp" });
     const menu = screen.getByRole("menu", { name: "更多功能" });
-    const lastItem = within(menu).getByRole("menuitem", { name: "定时任务" });
+    const lastItem = within(menu).getByRole("menuitem", { name: "自定义菜单栏" });
     expect(lastItem).toHaveFocus();
 
     fireEvent.mouseLeave(menu, { relatedTarget: document.body });
