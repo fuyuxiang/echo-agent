@@ -2228,12 +2228,12 @@ button,
 
 .settings-navigation__item--active {
   color: var(--echo-text-strong);
-  background: var(--ui-brand-soft);
-  box-shadow: inset 2px 0 var(--echo-brand);
+  background: var(--echo-bg-hover);
+  box-shadow: none;
 }
 
 .settings-navigation__item--active .settings-navigation__icon {
-  color: var(--echo-brand);
+  color: inherit;
 }
 
 .settings-modal__panel {
@@ -2833,7 +2833,7 @@ button,
   z-index: 1;
   flex: 0 0 auto;
   padding-bottom: 8px;
-  background: var(--ui-surface);
+  background: var(--ui-surface-muted);
 }
 
 .settings-view-tabs {
@@ -2943,7 +2943,8 @@ button,
 }
 
 .settings-navigation__item--active {
-  box-shadow: inset 3px 0 var(--echo-brand);
+  box-shadow: none;
+  font-weight: 650;
 }
 
 .settings-navigation__label {
@@ -3013,8 +3014,8 @@ button,
   align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
-  padding: 0 0 24px;
-  border-bottom: 1px solid var(--ui-line);
+  padding: 0;
+  border-bottom: 0;
 }
 
 .settings-section__heading,
@@ -3083,7 +3084,7 @@ button,
 .settings-group__title {
   margin: 0;
   color: var(--echo-text-strong);
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
   font-weight: 650;
   line-height: 1.45;
 }
@@ -3122,7 +3123,7 @@ button,
 }
 
 .settings-row--comfortable {
-  min-height: 68px;
+  min-height: 72px;
 }
 
 .settings-group__content > .settings-row + .settings-row,
@@ -3151,7 +3152,8 @@ button,
 }
 
 .settings-row__name svg {
-  color: var(--echo-brand);
+  color: var(--echo-text-medium);
+  flex-shrink: 0;
 }
 
 .settings-row__description {
@@ -4297,7 +4299,7 @@ a.help-card:hover {
 
   .settings-section__header,
   .models-settings-panel__header {
-    padding-bottom: 20px;
+    padding-bottom: 0;
   }
 
   .settings-section__actions,

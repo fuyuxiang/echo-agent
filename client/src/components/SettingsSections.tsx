@@ -13,6 +13,7 @@
  *  - agent-settings: 子代理、配置重载与诊断
  */
 import { useCallback, useEffect, useState } from "react";
+import { useSettingsDraft } from "@/lib/settings-drafts";
 import { BrowserTaskSettings } from "./BrowserTaskSettings";
 import {
   Sun,
@@ -139,15 +140,17 @@ export function SettingsGroup({
   meta,
   children,
   className = "",
+  settingId,
 }: {
   title: string;
   desc?: string;
   meta?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  settingId?: string;
 }) {
   return (
-    <section className={`settings-group${className ? ` ${className}` : ""}`}>
+    <section className={`settings-group${className ? ` ${className}` : ""}`} data-setting-id={settingId}>
       <header className="settings-group__header">
         <div>
           <h3 className="settings-group__title">{title}</h3>
@@ -171,14 +174,14 @@ function AppearanceSettingsGroup() {
   }, [fontSize]);
 
   return (
-    <SettingsGroup title="界面外观" desc="选择适合当前环境的显示主题和阅读字号。">
+    <SettingsGroup title="外观" settingId="appearance" meta={<span>立即生效</span>}>
       <div className="settings-row settings-row--comfortable">
         <div className="settings-row__label settings-row__label--stacked">
           <span className="settings-row__name">
             {theme === "dark" ? <Moon size={17} /> : <Sun size={17} />}
-            主题
+            外观模式
           </span>
-          <span className="settings-row__description">可固定主题，也可跟随系统外观自动切换</span>
+          <span className="settings-row__description">选择浅色、深色，或跟随系统设置。</span>
         </div>
         <div className="settings-row__control theme-toggle" role="group" aria-label="界面主题">
           <button
@@ -205,10 +208,10 @@ function AppearanceSettingsGroup() {
         </div>
       </div>
 
-      <div className="settings-row settings-row--comfortable">
+      <div className="settings-row settings-row--comfortable" data-setting-id="font-size">
         <div className="settings-row__label settings-row__label--stacked">
-          <span className="settings-row__name"><Type size={17} />字号</span>
-          <span className="settings-row__description">当前正文大小为 {fontSize}px</span>
+          <span className="settings-row__name"><Type size={17} />字体大小</span>
+          <span className="settings-row__description">调整对话和界面文字大小，当前正文 {fontSize}px。</span>
         </div>
         <div className="settings-row__control settings-font-control">
           <span className="settings-font-control__sample settings-font-control__sample--small">A</span>
@@ -218,7 +221,8 @@ function AppearanceSettingsGroup() {
             max={MAX_FONT_SIZE}
             value={fontSize}
             onChange={(e) => setFontSize(Number(e.target.value))}
-            aria-label="界面字号"
+            aria-label="字体大小"
+            aria-valuetext={`${fontSize} 像素`}
           />
           <span className="settings-font-control__sample settings-font-control__sample--large">A</span>
           <button className="settings-btn settings-reset" onClick={() => setFontSize(DEFAULT_FONT_SIZE)}>
@@ -273,6 +277,7 @@ export function MemorySettingsPanel({ compact = false }: { compact?: boolean }) 
   const [config, setConfig] = useState<MemoryConfig>(DEFAULT_MEMORY_CONFIG);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  useSettingsDraft({ dirty: false, busy, label: "记忆设置" });
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
@@ -327,14 +332,14 @@ export function MemorySettingsPanel({ compact = false }: { compact?: boolean }) 
   const controls = <>
     {loadError && <div role="alert" className="settings-hint">配置未加载，暂时无法修改。<button className="settings-btn" onClick={() => setReload((n) => n + 1)}>重新加载</button></div>}
     <div className="settings-row settings-row--comfortable">
-      <div className="settings-row__label settings-row__label--stacked"><span className="settings-row__name">记住并参考对话信息</span><span className="settings-row__description">让 Echo 记住你的偏好和工作背景，在后续对话中参考；关闭后停止提取和使用已有记忆</span></div>
-      <label className="sk-toggle"><input type="checkbox" aria-label="记住并参考对话信息" checked={config.enabled} disabled={loading || loadError || busy} onChange={(event) => void updateConfig("enabled", event.target.checked)} /><span className="sk-toggle-track"><span className="sk-toggle-thumb" /></span></label>
+      <div className="settings-row__label settings-row__label--stacked"><span className="settings-row__name">使用记忆</span><span className="settings-row__description">记住你的偏好和项目背景，在后续对话中参考。</span></div>
+      <label className="sk-toggle"><input type="checkbox" role="switch" aria-label="使用记忆" checked={config.enabled} disabled={loading || loadError || busy} onChange={(event) => void updateConfig("enabled", event.target.checked)} /><span className="sk-toggle-track"><span className="sk-toggle-thumb" /></span></label>
     </div>
     {!loading && !loadError && legacyPolicyChanged && <p className="settings-hint" role="note">你在旧版中关闭了部分记忆策略，自动学习或参考记忆可能受限。<button className="settings-btn" disabled={busy} onClick={() => void restorePolicy()}>恢复推荐策略</button></p>}
-    <p className="settings-hint">自动整理偏好、项目事实和近期事项，提取使用已配置的模型服务。开启自动整理后，会保存尚未处理的内容，并在下次打开工作区继续整理。你可以随时查看、更正或忘记已保存的内容。</p>
+    <p className="settings-hint">关闭后立即停止后续提取和使用记忆，已有内容仍可查看和管理。自动整理会使用已配置的模型服务。</p>
     {msg && <p className="settings-msg" role="status">{msg}</p>}
   </>;
-  return compact ? <div className="personal-memory__switch">{controls}</div> : <SettingsSection title="记忆" desc="管理 Echo 对你的了解。">{controls}</SettingsSection>;
+  return compact ? <div className="personal-memory__switch" data-setting-id="memory-preference">{controls}</div> : <SettingsSection title="记忆" desc="管理 Echo 对你的了解。">{controls}</SettingsSection>;
 
 }
 
@@ -364,7 +369,8 @@ export function HelpSettingsPanel() {
   return (
     <SettingsSection title="帮助与更新" desc="检查版本更新，查阅使用文档和常见问题排查步骤。">
       <SettingsGroup
-        title="版本升级"
+        title="版本与更新"
+        settingId="updates"
         desc="启动时自动检查新版本。更新服务需要内网或 VPN。"
         meta={<span>v{APP_VERSION}</span>}
       >
@@ -420,7 +426,7 @@ export function HelpSettingsPanel() {
         </div>
       </SettingsGroup>
       {resourceError && <p className="settings-msg settings-msg--warn" role="alert">{resourceError}</p>}
-      <SettingsDisclosure title="常见问题与技术信息" description="模型不可用、Agent 无法启动时的排查步骤">
+      <SettingsDisclosure title="常见问题与技术信息" settingId="help-faq" description="模型不可用、Agent 无法启动时的排查步骤">
         <ol className="settings-checklist">
           <li><span>1</span><div><strong>确认模型配置</strong><p>在“模型”中确认有可用模型；使用个人服务时，添加连接并填写所需凭据。</p></div></li>
           <li><span>2</span><div><strong>检查配置文件</strong><p>确认 <code>~/.echo-agent/config.toml</code> 可以正常读写。</p></div></li>
@@ -436,6 +442,7 @@ export function HelpSettingsPanel() {
 
 export function SecuritySettingsPanel() {
   const [rules, setRules] = useState<PermissionRule[]>([]);
+  const [savedRules, setSavedRules] = useState("[]");
   const [loading, setLoading] = useState(true);
   const [rulesError, setRulesError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -446,12 +453,16 @@ export function SecuritySettingsPanel() {
   const [automationBusy, setAutomationBusy] = useState(false);
   const [automationError, setAutomationError] = useState<string | null>(null);
   const [automationFeedback, setAutomationFeedback] = useState("");
+  const rulesDirty = JSON.stringify(rules) !== savedRules;
+  const builderDirty = draft.action !== "ask" || draft.tool !== "bash" || Boolean(draft.pattern?.trim());
+  useSettingsDraft({ dirty: rulesDirty || builderDirty, busy: saving, label: "权限规则" });
 
   const loadRules = useCallback(async () => {
     setLoading(true);
     try {
       const nextRules = await permissionList();
       setRules(nextRules);
+      setSavedRules(JSON.stringify(nextRules));
       setRulesError(null);
     } catch (reason) {
       // Preserve the last known rules. Replacing them with [] would make the
@@ -515,11 +526,12 @@ export function SecuritySettingsPanel() {
   };
 
   const saveRules = async () => {
-    if (loading || rulesError) return;
+    if (loading || rulesError || saving || builderDirty) return;
     setSaving(true);
     setFeedback("");
     try {
       await permissionSave(rules);
+      setSavedRules(JSON.stringify(rules));
       setFeedback("规则已保存；重启 Agent 后对既有会话生效。");
     } catch (error) {
       setFeedback(`保存失败：${String(error).replace(/^Error:\s*/, "")}`);
@@ -536,13 +548,14 @@ export function SecuritySettingsPanel() {
       desc="查看系统授权，管理 Agent 可以使用的操作范围。"
     >
       <SettingsGroup
-        title="网页与电脑操作"
-        desc="这些能力默认关闭，只会在你从输入框的 + 菜单为当前任务开启后使用。"
+        title="浏览器与电脑操作"
+        settingId="automation-permissions"
+        desc="这些能力按任务授权使用。可以从输入框的 + 菜单为当前任务开启；打开设置不会启用它们。"
         meta={<span className="settings-status-badge">{automationLoading ? "检查中…" : automationError ? "检查失败" : "按任务开启"}</span>}
       >
         <div className="settings-row settings-row--comfortable">
           <div className="settings-row__label settings-row__label--stacked">
-            <span className="settings-row__name"><Globe2 size={17} />操作网页</span>
+            <span className="settings-row__name"><Globe2 size={17} />浏览器操作</span>
             <span className="settings-row__description">
               {automationSupport?.browser.available
                 ? `${automationSupport.browser.browserName || "兼容浏览器"}已就绪，每个任务使用独立浏览数据`
@@ -555,7 +568,7 @@ export function SecuritySettingsPanel() {
         </div>
         <div className="settings-row settings-row--comfortable">
           <div className="settings-row__label settings-row__label--stacked">
-            <span className="settings-row__name"><Monitor size={17} />操作电脑</span>
+            <span className="settings-row__name"><Monitor size={17} />电脑操作</span>
             <span className="settings-row__description">
               {automationSupport?.computer.available
                 ? automationSupport.computer.screenCapture && automationSupport.computer.inputControl
@@ -591,10 +604,10 @@ export function SecuritySettingsPanel() {
           </button>
         </div>
       </SettingsGroup>
-      <SettingsDisclosure title="浏览器数据与访问范围" description="选择任务，管理登录状态、缓存和本机与内网访问范围。">
+      <SettingsDisclosure title="浏览器数据与访问范围" settingId="browser-data" description="选择任务，管理登录状态、缓存和本机与内网访问范围。">
         <BrowserTaskSettings />
       </SettingsDisclosure>
-      <SettingsDisclosure title="自定义工具规则" description={feedback.startsWith("保存失败") ? feedback : rulesError ? "读取失败，请展开重试；原有规则不会被覆盖。" : loading ? "正在读取…" : `${rules.length} 条规则 · 按工具或命令细化授权`} defaultOpen={Boolean(rulesError) || feedback.startsWith("保存失败")}>
+      <SettingsDisclosure title="自定义工具规则" settingId="permission-rules" description={feedback.startsWith("保存失败") ? feedback : rulesError ? "读取失败，请展开重试；原有规则不会被覆盖。" : loading ? "正在读取…" : `${rules.length} 条规则${rulesDirty || builderDirty ? " · 有未保存的修改" : ""} · 按工具或命令细化授权`} defaultOpen={Boolean(rulesError) || feedback.startsWith("保存失败")}>
         <SettingsGroup
           title="工具权限规则"
           desc="拒绝优先于询问，询问优先于允许。保存后重启 Agent 生效。"
@@ -620,7 +633,7 @@ export function SecuritySettingsPanel() {
                     className="settings-btn settings-btn--ghost settings-btn--danger settings-btn--compact settings-btn--icon-only rules-list__remove"
                     onClick={() => setRules((items) => items.filter((_, itemIndex) => itemIndex !== index))}
                     aria-label={`删除规则 ${index + 1}`}
-                    disabled={loading || Boolean(rulesError)}
+                    disabled={loading || saving || Boolean(rulesError)}
                   >
                     ×
                   </button>
@@ -634,7 +647,7 @@ export function SecuritySettingsPanel() {
           <div className="permission-rule-builder">
             <label className="permission-rule-builder__field">
               <span>处理方式</span>
-              <select className="form-control" value={draft.action} onChange={(e) => setDraft({ ...draft, action: e.target.value })} aria-label="规则动作" disabled={loading || Boolean(rulesError)}>
+              <select className="form-control" value={draft.action} onChange={(e) => setDraft({ ...draft, action: e.target.value })} aria-label="规则动作" disabled={loading || saving || Boolean(rulesError)}>
                 <option value="deny">拒绝</option>
                 <option value="ask">询问</option>
                 <option value="allow">允许</option>
@@ -642,21 +655,23 @@ export function SecuritySettingsPanel() {
             </label>
             <label className="permission-rule-builder__field">
               <span>工具类型</span>
-              <select className="form-control" value={draft.tool} onChange={(e) => setDraft({ ...draft, tool: e.target.value })} aria-label="工具类型" disabled={loading || Boolean(rulesError)}>
+              <select className="form-control" value={draft.tool} onChange={(e) => setDraft({ ...draft, tool: e.target.value })} aria-label="工具类型" disabled={loading || saving || Boolean(rulesError)}>
                 {['bash', 'read', 'edit', 'grep', 'mcp', 'webfetch', 'any'].map((tool) => <option key={tool} value={tool}>{tool}</option>)}
               </select>
             </label>
             <label className="permission-rule-builder__field permission-rule-builder__field--pattern">
               <span>匹配模式（可选）</span>
-              <input className="form-control" value={draft.pattern ?? ""} onChange={(e) => setDraft({ ...draft, pattern: e.target.value })} placeholder="例如 git *" disabled={loading || Boolean(rulesError)} />
+              <input className="form-control" value={draft.pattern ?? ""} onChange={(e) => setDraft({ ...draft, pattern: e.target.value })} placeholder="例如 git *" disabled={loading || saving || Boolean(rulesError)} />
             </label>
           </div>
           <div className="settings-group__footer">
-            <button className="settings-btn" type="button" onClick={addRule} disabled={loading || Boolean(rulesError)}>添加到列表</button>
-            <button className="settings-btn settings-btn--primary" type="button" onClick={() => void saveRules()} disabled={saving || loading || Boolean(rulesError)}>
+            <button className="settings-btn" type="button" onClick={addRule} disabled={loading || saving || Boolean(rulesError)}>添加到列表</button>
+            {builderDirty && <button className="settings-btn" type="button" onClick={() => setDraft({ action: "ask", tool: "bash", pattern: "" })} disabled={saving}>清空输入</button>}
+            <button className="settings-btn settings-btn--primary" type="button" onClick={() => void saveRules()} disabled={saving || loading || Boolean(rulesError) || builderDirty}>
               {saving ? "保存中…" : "保存全部规则"}
             </button>
           </div>
+          {builderDirty && <p className="settings-hint" role="note">当前规则尚未加入列表。请先“添加到列表”，再保存全部规则。</p>}
         </SettingsGroup>
         {feedback && <p className="settings-hint" role={feedback.startsWith("保存失败") ? "alert" : "status"}>{feedback}</p>}
       </SettingsDisclosure>
@@ -682,7 +697,7 @@ export function DataSettingsPanel() {
 
   return (
     <SettingsSection title="备份与恢复" desc="导出本机数据备份，或恢复已有备份。已归档任务可在上方单独管理。">
-      <SettingsGroup title="本机数据备份" desc="保存会话、项目资料和应用数据。不包含密钥、组织登录凭据及外部工作目录的文件。">
+      <SettingsGroup title="数据备份" settingId="backups" desc="保存会话、项目资料和应用数据。不包含密钥、组织登录凭据及外部工作目录的文件。">
         <p className="settings-hint">备份包含聊天和资料正文，请保存在可信位置。建议等待任务结束后操作；恢复前会显示校验结果并再次确认。</p>
         <div className="settings-group__footer">
           <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
@@ -704,15 +719,15 @@ export function DataSettingsPanel() {
               });
             } catch (error) { setMessage(`备份校验失败：${String(error)}`); }
             finally { setBusy(false); }
-          }}>选择备份恢复</button>
+          }}>从备份恢复</button>
         </div>
       </SettingsGroup>
       <SettingsDisclosure title="本地数据与备份范围" description="查看存储位置，以及备份包含的内容">
         <p className="settings-hint">备份包含会话、项目资料、代码任务记录、记忆、粘贴附件、草稿、队列和本机用量。恢复会替换同名记录，其他数据保留。历史外部文件仍依赖原工作目录。</p>
-        <SettingsGroup title="本地数据目录" desc="会话、项目、自动化、通知和配置都保存在此目录。">
+        <SettingsGroup title="本地数据目录" settingId="data-directory" desc="会话、项目、自动化、通知和配置都保存在此目录。">
           <div className="settings-row settings-row--comfortable settings-row--path">
             <div className="settings-row__label settings-row__label--stacked">
-              <span className="settings-row__name"><Folder size={17} />EchoAgent 数据目录</span>
+              <span className="settings-row__name"><Folder size={17} />存储位置</span>
               <span className="settings-row__description">此位置包含应用的重要本地数据</span>
             </div>
             <code className="settings-path-value">{agentHome || "正在读取…"}</code>
@@ -742,6 +757,7 @@ export function GeneralSettingsPanel() {
   const [desktopPreferencesError, setDesktopPreferencesError] = useState<string | null>(null);
   const [desktopPreferencesReload, setDesktopPreferencesReload] = useState(0);
   const [savingDesktopPreferences, setSavingDesktopPreferences] = useState(false);
+  useSettingsDraft({ dirty: false, busy: savingDesktopPreferences, label: "后台运行设置" });
 
   useEffect(() => {
     let active = true;
@@ -788,21 +804,21 @@ export function GeneralSettingsPanel() {
   return (
     <SettingsSection
       title="通用"
-      desc="设置主题、阅读字号，以及关闭窗口后的运行方式。"
     >
       <AppearanceSettingsGroup />
-      <SettingsGroup title="窗口与后台运行" desc="设置关闭主窗口后是否继续执行任务和自动化调度。">
+      <SettingsGroup title="后台运行" settingId="background">
         <div className="settings-row settings-row--comfortable">
           <div className="settings-row__label settings-row__label--stacked">
-            <span className="settings-row__name"><AppWindow size={17} />关闭窗口时继续后台运行</span>
+            <span className="settings-row__name"><AppWindow size={17} />关闭窗口后继续运行</span>
             <span className="settings-row__description">
-              关闭后可从系统托盘重新打开；从托盘选择“退出 EchoAgent”才会完全退出。
+              开启后，关闭窗口会保留在系统托盘，任务和自动化调度可继续运行。关闭此选项后，下次关闭窗口将退出应用。
             </span>
           </div>
           <label className="sk-toggle">
             <input
               type="checkbox"
-              aria-label="关闭窗口时继续后台运行"
+              role="switch"
+              aria-label="关闭窗口后继续运行"
               checked={closeToTray}
               disabled={loadingDesktopPreferences || savingDesktopPreferences || Boolean(desktopPreferencesError)}
               onChange={(event) => void handleCloseToTrayChange(event.target.checked)}
@@ -830,6 +846,7 @@ export function GeneralSettingsPanel() {
 
 function RuntimeReloadSettingsGroup() {
   const [busy, setBusy] = useState(false);
+  useSettingsDraft({ dirty: false, busy, label: "配置重载" });
   const [msg, setMsg] = useState<string | null>(null);
   const handleReload = async (kind: "mcp_all" | "skills" | "models") => {
     setBusy(true);
@@ -843,7 +860,7 @@ function RuntimeReloadSettingsGroup() {
     }
   };
   return <>
-      <SettingsGroup title="重新加载配置" desc="只刷新对应配置，不关闭当前窗口或中断其他页面。">
+      <SettingsGroup title="重新加载配置" settingId="reload" desc="只刷新对应配置，不关闭当前窗口。">
         <div className="settings-action-row">
           <div className="settings-action-row__content"><strong>MCP 连接器</strong><span>重新读取所有 MCP 服务和工具配置。</span></div>
           <button className="settings-btn" onClick={() => handleReload("mcp_all")} disabled={busy}><RefreshCw size={15} />重新加载</button>
@@ -867,6 +884,7 @@ function DiagnosticSettingsGroup() {
     try { return localStorage.getItem("echoagent.otlp.endpoint") ?? ""; } catch { return ""; }
   });
   const [otlpEndpoint, setOtlpEndpoint] = useState(savedEndpoint);
+  useSettingsDraft({ dirty: otlpEndpoint.trim() !== savedEndpoint, label: "诊断配置" });
   const saveOtlp = () => {
     const endpoint = otlpEndpoint.trim();
     try {
@@ -879,8 +897,8 @@ function DiagnosticSettingsGroup() {
     }
     setFeedback(endpoint ? "OTLP 已启用，重启应用后生效。" : "OTLP 已关闭，重启应用后生效。");
   };
-  return <SettingsDisclosure title="诊断事件上报" description={savedEndpoint ? "已保存 OTLP 端点 · 重启后生效" : "默认关闭 · 供排查运行问题时使用"}>
-      <SettingsGroup title="遥测与诊断" desc="仅上报运行事件名、级别和技术属性，不包含对话正文。">
+  return <SettingsDisclosure title="诊断数据上报" settingId="diagnostics" defaultOpen={feedback.startsWith("无法保存")} description={otlpEndpoint.trim() !== savedEndpoint ? "有未保存的修改" : savedEndpoint ? "已保存 OTLP 端点 · 重启应用后生效" : "默认关闭 · 供排查运行问题时使用"}>
+      <SettingsGroup title="遥测与诊断" desc="按需配置运行事件上报，用于排查问题；不包含对话正文。">
         <div className="settings-row settings-row--comfortable">
           <div className="settings-row__label settings-row__label--stacked">
             <span className="settings-row__name">OTLP 遥测端点</span>
@@ -895,10 +913,11 @@ function DiagnosticSettingsGroup() {
               placeholder="http://127.0.0.1:4318/v1/logs"
             />
             <button type="button" className="settings-btn" onClick={saveOtlp}>保存</button>
+            {otlpEndpoint.trim() !== savedEndpoint && <button type="button" className="settings-btn" onClick={() => { setOtlpEndpoint(savedEndpoint); setFeedback(""); }}>撤销修改</button>}
           </div>
         </div>
       </SettingsGroup>
-    {feedback && <p className="settings-hint" role={feedback.startsWith("保存失败") ? "alert" : "status"}>{feedback}</p>}
+    {feedback && <p className="settings-hint" role={feedback.startsWith("无法保存") ? "alert" : "status"}>{feedback}</p>}
   </SettingsDisclosure>;
 }
 
@@ -912,6 +931,9 @@ export function AgentSettingsPanel() {
   const [runtimeMsg, setRuntimeMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  const depthDirty = subagentDepth !== null && subagentDraft !== String(subagentDepth);
+  useSettingsDraft({ dirty: depthDirty, busy: savingRuntime, label: "子代理配置" });
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -938,7 +960,7 @@ export function AgentSettingsPanel() {
     if (subagentDepth === null || loadError) return;
     const requestedDepth = Number(subagentDraft);
     if (!Number.isInteger(requestedDepth) || requestedDepth < 1 || requestedDepth > 10) {
-      setRuntimeMsg("子代理嵌套深度须为 1 到 10 的整数");
+      setRuntimeMsg("子代理最大层级须为 1 到 10 的整数");
       return;
     }
     setSavingRuntime(true);
@@ -960,7 +982,7 @@ export function AgentSettingsPanel() {
       title="高级设置"
       desc="调整 Agent 执行参数、重新加载配置，或按需开启诊断。通常无需修改。"
       actions={(
-        <button className="settings-btn" onClick={reload} disabled={loading}>
+        <button className="settings-btn" onClick={reload} disabled={loading || savingRuntime || depthDirty}>
           <RefreshCw size={15} /> {loading ? "加载中…" : "刷新状态"}
         </button>
       )}
@@ -975,15 +997,15 @@ export function AgentSettingsPanel() {
       )}
 
       {/* 运行时配置：子代理深度 */}
-      <SettingsGroup title="子代理" desc="控制任务分派的最大层级，修改后需重启 Agent。">
+      <SettingsGroup title="子代理" settingId="subagents">
           {/* 子代理嵌套深度 */}
           <div className="agent-runtime-row">
             <div className="agent-runtime-row__label">
-              <span className="agent-runtime-row__name">子代理嵌套深度</span>
+              <span className="agent-runtime-row__name">子代理最大层级</span>
               <span className="agent-runtime-row__hint">
                 {subagentDepth === null
                   ? "子代理配置当前不可用，重试成功前不会保存任何默认值。"
-                  : `最大子代理派发层级，当前为 ${subagentDepth}。深度 1 表示仅顶层可以派发。`}
+                  : `设置任务继续分派的最大层级，已保存为 ${subagentDepth}。1 表示仅顶层可分派，重启 Agent 后生效。`}
               </span>
             </div>
             <div className="agent-runtime-row__control">
@@ -991,7 +1013,7 @@ export function AgentSettingsPanel() {
                 type="number"
                 min={1}
                 max={10}
-                aria-label="子代理嵌套深度"
+                aria-label="子代理最大层级"
                 className="settings-input settings-input--narrow"
                 value={subagentDraft}
                 onChange={(e) => setSubagentDraft(e.target.value)}
@@ -1010,6 +1032,7 @@ export function AgentSettingsPanel() {
               >
                 {savingRuntime ? "保存中…" : "保存"}
               </button>
+              {depthDirty && <button className="settings-btn" disabled={savingRuntime} onClick={() => { setSubagentDraft(String(subagentDepth)); setRuntimeMsg(null); }}>撤销修改</button>}
             </div>
           </div>
 

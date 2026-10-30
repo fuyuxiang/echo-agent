@@ -23,6 +23,7 @@ import {
 } from "@/lib/cloud-storage";
 import { ArrowUp, Download, Eye, FileText, Folder, Trash2 } from "lucide-react";
 import { useAppDialog } from "./AppDialog";
+import { useSettingsDraft } from "@/lib/settings-drafts";
 
 export function CloudStoragePanel({ onToast, onUnsavedChange }: {
   onToast?: (msg: string) => void;
@@ -86,6 +87,14 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
     password: "",
     enabled: true,
   });
+  const configBaseline = useRef(JSON.stringify(draft));
+  const configDirty = showConfig && JSON.stringify(draft) !== configBaseline.current;
+  useSettingsDraft({ dirty: configDirty || previewDirty, busy: configSaving || busyAction !== null, label: "云存储配置或文件" });
+  const confirmConfigChange = (action: () => void) => {
+    if (configSavingRef.current) return;
+    if (!configDirty) { action(); return; }
+    requestConfirmation({ title: "舍弃存储源的修改？", description: "当前存储源配置尚未保存。", confirmLabel: "舍弃修改", danger: true, action });
+  };
 
   const loadConfigs = useCallback(async () => {
     const generation = ++configGeneration.current;
@@ -310,17 +319,20 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
     });
   };
 
-  const beginNewConfig = () => {
-    setDraft({ id: "", label: "", kind: "webdav", baseUrl: "", username: "", password: "", enabled: true });
+  const beginNewConfig = () => confirmConfigChange(() => {
+    const next: StorageProviderConfig = { id: "", label: "", kind: "webdav", baseUrl: "", username: "", password: "", enabled: true };
+    configBaseline.current = JSON.stringify(next);
+    setDraft(next);
     setShowConfig(true);
-  };
+  });
 
-  const editSelectedConfig = () => {
+  const editSelectedConfig = () => confirmConfigChange(() => {
     const config = configs.find((item) => item.id === selectedProvider);
     if (!config) return;
+    configBaseline.current = JSON.stringify(config);
     setDraft({ ...config });
     setShowConfig(true);
-  };
+  });
 
   const uploadFiles = async () => {
     if (!selectedProvider) return;
@@ -480,7 +492,7 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
           <label className="storage-panel__field">密码或应用令牌（可选）<input className="form-control" aria-label="WebDAV 密码或应用令牌" type="password" value={draft.password ?? ""} disabled={configSaving} onChange={(e) => setDraft({ ...draft, password: e.target.value })} autoComplete="new-password" /></label>
           <label className="storage-panel__enabled"><input type="checkbox" checked={draft.enabled} disabled={configSaving} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} /> 启用此存储源</label>
           <div className="storage-panel__config-actions">
-            <button type="button" className="form-button" onClick={() => setShowConfig(false)} disabled={configSaving}>取消</button>
+            <button type="button" className="form-button" onClick={() => confirmConfigChange(() => setShowConfig(false))} disabled={configSaving}>取消</button>
             <button type="button" className="form-button form-button--primary" onClick={() => void saveConfig()} disabled={configSaving || !draft.baseUrl.trim()}>
               {configSaving ? "保存中…" : "保存"}
             </button>

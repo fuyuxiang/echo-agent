@@ -178,34 +178,34 @@ describe("NotifyChannelsPanel", () => {
 
 it("桌面提醒默认可测并携带任务目标，系统授权帮助按需展开", async () => {
   render(<NotifyChannelsPanel sessionId="active-task" />);
-  expect(await screen.findByText(/默认开启，无需添加渠道/)).toBeInTheDocument();
-  expect(screen.getByRole("switch", {name:"桌面提醒"})).toBeChecked();
-  fireEvent.click(screen.getByRole("button", {name:"测试桌面提醒"}));
+  expect(await screen.findByText(/已开启 · 默认设置/)).toBeInTheDocument();
+  expect(screen.getByRole("switch", {name:"桌面通知"})).toBeChecked();
+  fireEvent.click(screen.getByRole("button", {name:"发送测试通知"}));
   expect(await screen.findByRole("status")).toHaveTextContent("已向系统提交通知");
   expect(backend.desktopTest).toHaveBeenCalledWith("active-task");
   expect(screen.queryByText(/系统通知权限：未知/)).toBeNull();
-  fireEvent.click(screen.getByText("收不到桌面提醒？"));
+  fireEvent.click(screen.getByText("收不到桌面通知？"));
   expect(screen.getByText(/应用目前无法读取系统授权状态/)).toBeVisible();
 });
 
 it("显式关闭保留记录，桌面配置不进入高级渠道表单", async () => {
   backend.seed([{id:"off",label:"我的桌面",kind:"desktop",enabled:false}]);
   render(<NotifyChannelsPanel />);
-  expect(await screen.findByText(/你已关闭桌面提醒/)).toBeInTheDocument();
-  expect(screen.getByRole("button", {name:"测试桌面提醒"})).toBeDisabled();
+  expect(await screen.findByText(/已关闭/)).toBeInTheDocument();
+  expect(screen.getByRole("button", {name:"发送测试通知"})).toBeDisabled();
   expect(screen.queryByRole("button", {name:"移除 我的桌面"})).toBeNull();
   expect(screen.queryByRole("option", {name:"桌面通知"})).toBeNull();
-  fireEvent.click(screen.getByRole("switch", {name:"桌面提醒"}));
+  fireEvent.click(screen.getByRole("switch", {name:"桌面通知"}));
   await waitFor(() => expect(backend.desktopToggle).toHaveBeenCalledWith(true));
-  expect(await screen.findByText(/已开启。关闭后/)).toBeInTheDocument();
+  expect(await screen.findByText(/^已开启$/)).toBeInTheDocument();
 });
 
 it("组织策略限制和投递失败不会显示为已授权或发送成功", async () => {
   backend.desktopStatus.mockResolvedValueOnce({enabled:false, source:"policy",permission:"unknown",policyError:"组织禁止通知"} as never);
   render(<NotifyChannelsPanel />);
-  expect(await screen.findByText(/组织策略已限制桌面提醒/)).toBeInTheDocument();
-  expect(screen.getByRole("switch", {name:"桌面提醒"})).toBeDisabled();
-  expect(screen.getByRole("button", {name:"测试桌面提醒"})).toBeDisabled();
+  expect(await screen.findByText(/组织策略已限制桌面通知/)).toBeInTheDocument();
+  expect(screen.getByRole("switch", {name:"桌面通知"})).toBeDisabled();
+  expect(screen.getByRole("button", {name:"发送测试通知"})).toBeDisabled();
 });
 
 it("桌面提交错误和开关保存失败均可见，并保留先前状态", async () => {
@@ -213,19 +213,19 @@ it("桌面提交错误和开关保存失败均可见，并保留先前状态", a
   backend.desktopTest.mockRejectedValueOnce(new Error("系统拒绝通知"));
   backend.desktopToggle.mockRejectedValueOnce(new Error("配置不可写"));
   render(<NotifyChannelsPanel onToast={onToast} />);
-  await screen.findByText(/默认开启，无需添加渠道/);
-  fireEvent.click(screen.getByRole("button", {name:"测试桌面提醒"}));
+  await screen.findByText(/已开启 · 默认设置/);
+  fireEvent.click(screen.getByRole("button", {name:"发送测试通知"}));
   expect(await screen.findByRole("status")).toHaveTextContent("系统拒绝通知");
-  fireEvent.click(screen.getByRole("switch", {name:"桌面提醒"}));
+  fireEvent.click(screen.getByRole("switch", {name:"桌面通知"}));
   await waitFor(() => expect(onToast).toHaveBeenCalledWith(expect.stringContaining("配置不可写")));
-  expect(screen.getByRole("switch", {name:"桌面提醒"})).toBeChecked();
+  expect(screen.getByRole("switch", {name:"桌面通知"})).toBeChecked();
 });
 
 
 it("默认只显示日常提醒与隐私设置，添加表单按需打开并可取消", async () => {
   render(<NotifyChannelsPanel />);
-  await screen.findByText(/默认开启，无需添加渠道/);
-  expect(screen.getByRole("checkbox", { name: "桌面通知显示任务名称" })).not.toBeChecked();
+  await screen.findByText(/已开启 · 默认设置/);
+  expect(screen.getByRole("switch", { name: "在通知中显示任务标题" })).not.toBeChecked();
   expect(screen.getByRole("button", { name: /推送到其他应用/ })).toHaveAttribute("aria-expanded", "false");
   expect(screen.queryByRole("textbox")).toBeNull();
   await openAdd();
@@ -238,12 +238,12 @@ it("默认只显示日常提醒与隐私设置，添加表单按需打开并可�
 it("外部渠道加载失败不阻断桌面提醒与隐私设置", async () => {
   backend.load.mockRejectedValueOnce(new Error("渠道配置暂时不可读"));
   render(<NotifyChannelsPanel />);
-  await screen.findByText(/默认开启，无需添加渠道/);
-  expect(screen.getByRole("switch", { name: "桌面提醒" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "测试桌面提醒" })).toBeEnabled();
+  await screen.findByText(/已开启 · 默认设置/);
+  expect(screen.getByRole("switch", { name: "桌面通知" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "发送测试通知" })).toBeEnabled();
   await openAdvanced();
   expect(screen.getByRole("alert")).toHaveTextContent("渠道配置暂时不可读");
-  fireEvent.click(screen.getByRole("button", { name: "测试桌面提醒" }));
+  fireEvent.click(screen.getByRole("button", { name: "发送测试通知" }));
   expect(await screen.findByRole("status")).toHaveTextContent("已向系统提交通知");
   fireEvent.click(screen.getByRole("button", { name: "重试" }));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
@@ -253,11 +253,11 @@ it("桌面状态失败只禁用桌面设置，重试后恢复", async () => {
   backend.desktopStatus.mockRejectedValueOnce(new Error("暂时无法读取"));
   render(<NotifyChannelsPanel />);
   expect(await screen.findByRole("alert")).toHaveTextContent("桌面提醒状态不可用");
-  expect(screen.getByRole("switch", { name: "桌面提醒" })).toBeDisabled();
+  expect(screen.getByRole("switch", { name: "桌面通知" })).toBeDisabled();
   await openAdd();
   expect(screen.getByRole("textbox", { name: "Webhook URL" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "重试读取桌面提醒" }));
-  await waitFor(() => expect(screen.getByRole("switch", { name: "桌面提醒" })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("switch", { name: "桌面通知" })).toBeEnabled());
 });
 
 it("已停用的旧邮件渠道只允许移除，不提供无法生效的启用和测试", async () => {
@@ -274,7 +274,7 @@ it("已停用的旧邮件渠道只允许移除，不提供无法生效的启用�
 it("隐私偏好保存失败时保留旧值，并可重新读取后再保存", async () => {
   vi.mocked(desktopNotificationPreviewSave).mockRejectedValueOnce(new Error("文件只读"));
   render(<NotifyChannelsPanel />);
-  const preview = screen.getByRole("checkbox", { name: "桌面通知显示任务名称" });
+  const preview = screen.getByRole("switch", { name: "在通知中显示任务标题" });
   await waitFor(() => expect(preview).toBeEnabled());
   fireEvent.click(preview);
   expect(await screen.findByRole("alert")).toHaveTextContent("文件只读");
@@ -284,4 +284,20 @@ it("隐私偏好保存失败时保留旧值，并可重新读取后再保存", a
   fireEvent.click(preview);
   await waitFor(() => expect(preview).toBeChecked());
   expect(desktopPreferencesGet).toHaveBeenCalledTimes(2);
+});
+
+
+it("渠道取消需确认，保存失败在未提供 Toast 时也可见且保留输入", async () => {
+  render(<NotifyChannelsPanel />);
+  await openAdd();
+  const endpoint = screen.getByRole("textbox", { name: "Webhook URL" });
+  fireEvent.change(endpoint, { target: { value: "https://hooks.example.test/draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  const dialog = await screen.findByRole("alertdialog", { name: "舍弃通知渠道的修改？" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  expect(endpoint).toHaveValue("https://hooks.example.test/draft");
+  backend.save.mockRejectedValueOnce(new Error("配置只读"));
+  fireEvent.click(screen.getByRole("button", { name: "+ 添加" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("配置只读");
+  expect(endpoint).toHaveValue("https://hooks.example.test/draft");
 });

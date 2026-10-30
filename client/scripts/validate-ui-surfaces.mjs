@@ -56,7 +56,7 @@ page.setDefaultNavigationTimeout(60000);
       await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important}" });
       if (surface === "personal-memory") {
         await page.getByRole("heading", { name: "记忆", exact: true }).waitFor();
-        assert.equal(await page.getByRole("checkbox").count(), 1, "memory should expose only its master switch");
+        assert.equal(await page.getByRole("switch").count(), 1, "memory should expose only its master switch");
         assert.equal(await page.locator(".resources-panel").count(), 0, "legacy documents should be loaded on demand");
         const memoryLayout = await page.evaluate(() => ({
           overflow: document.documentElement.scrollWidth > innerWidth + 1,
@@ -199,8 +199,8 @@ page.setDefaultNavigationTimeout(60000);
       const controls = await page.locator("select.form-control").evaluateAll(elements => elements.map(element => ({ appearance: getComputedStyle(element).appearance, height: element.getBoundingClientRect().height })));
       for (const control of controls) { assert.equal(control.appearance, "none"); assert.ok(control.height >= 36, `${surface}: short select (${control.height}px)`); }
       if (surface === "memory") {
-        assert.equal(await page.getByRole("checkbox").count(), 1);
-        assert.equal(await page.getByRole("checkbox", { name: "记住并参考对话信息" }).isChecked(), true);
+        assert.equal(await page.getByRole("switch").count(), 1);
+        assert.equal(await page.getByRole("switch", { name: "使用记忆", exact: true }).isChecked(), true);
       }
       if (surface === "security") {
         await page.getByText("自定义工具规则", { exact: true }).click();
@@ -283,9 +283,9 @@ page.setDefaultNavigationTimeout(60000);
   await page.screenshot({ path: join(output, "organization-xlsx-preview.png") });
 
   await page.goto("http://127.0.0.1:1439/__ui-review?surface=memory");
-  await page.getByRole("checkbox", { name: "记住并参考对话信息", exact: true }).locator("..").click();
+  await page.getByRole("switch", { name: "使用记忆", exact: true }).locator("..").click();
   await page.getByText("记忆配置已保存，立即用于后续提取和模型请求。").waitFor();
-  assert.equal(await page.getByRole("checkbox", { name: "记住并参考对话信息", exact: true }).isChecked(), false);
+  assert.equal(await page.getByRole("switch", { name: "使用记忆", exact: true }).isChecked(), false);
 
   await page.goto("http://127.0.0.1:1439/__ui-review?surface=notify-channels");
   await page.getByRole("button", { name: /推送到其他应用/ }).click();

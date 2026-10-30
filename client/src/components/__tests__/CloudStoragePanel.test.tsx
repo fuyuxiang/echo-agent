@@ -48,6 +48,22 @@ describe("CloudStoragePanel", () => {
     await screen.findByText("report.pdf");
   }
 
+  it("取消存储源编辑需要确认，继续编辑保留草稿", async () => {
+    await selectProvider();
+    fireEvent.click(screen.getByRole("button", { name: "编辑配置" }));
+    const name = screen.getByRole("textbox", { name: "存储源显示名" });
+    fireEvent.change(name, { target: { value: "新的团队名称" } });
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    let dialog = await screen.findByRole("alertdialog", { name: "舍弃存储源的修改？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(name).toHaveValue("新的团队名称");
+    expect(saveStorageProviderConfig).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    dialog = await screen.findByRole("alertdialog", { name: "舍弃存储源的修改？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "舍弃修改" }));
+    expect(screen.queryByRole("textbox", { name: "存储源显示名" })).toBeNull();
+  });
+
   it("可编辑已有配置并保留密码掩码", async () => {
     await selectProvider();
     fireEvent.click(screen.getByRole("button", { name: "编辑配置" }));

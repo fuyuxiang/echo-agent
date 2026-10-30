@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { useAppDialog } from "@/components/AppDialog";
+import { useSettingsDraft } from "./settings-drafts";
 
 /** One dismissal path for Escape, scrim, close and cancel in draft editors. */
 export function useUnsavedClose({
@@ -13,6 +14,7 @@ export function useUnsavedClose({
   onClose: () => void;
   scopeKey?: string | number;
 }) {
+  useSettingsDraft({ dirty, busy });
   const { requestConfirmation, dialog } = useAppDialog(scopeKey);
   const current = useRef({ dirty, busy, onClose });
   current.current = { dirty, busy, onClose };

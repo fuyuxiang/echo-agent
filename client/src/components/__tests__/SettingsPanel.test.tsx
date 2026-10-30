@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
@@ -24,6 +24,7 @@ vi.mock("@/lib/agent-client", () => ({
   notificationClear: vi.fn().mockResolvedValue(undefined),
   permissionList: vi.fn().mockResolvedValue([]),
   permissionSave: vi.fn().mockResolvedValue(undefined),
+  internalReload: vi.fn().mockResolvedValue(undefined),
   skillsList: vi.fn().mockResolvedValue([]),
   subagentsConfigGet: vi.fn().mockResolvedValue({ maxDepth: 1 }),
   subagentsConfigSave: vi.fn().mockResolvedValue(1),
@@ -73,6 +74,7 @@ import {
   openExternalUrl,
   permissionList,
   permissionSave,
+  internalReload,
   subagentsConfigGet,
   subagentsConfigSave,
   webSearchConfigGet,
@@ -83,6 +85,175 @@ import {
 } from "@/lib/agent-client";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
+
+beforeEach(() => vi.clearAllMocks());
+
+describe("Settings navigation and search", () => {
+  it("权限输入、规则列表和保存中的请求都受到离开保护", async () => {
+    vi.mocked(permissionList).mockResolvedValue([]);
+    const onClose = vi.fn();
+    render(<ThemeProvider><SettingsPanel open initialSection="security" onClose={onClose} /></ThemeProvider>);
+    fireEvent.click(screen.getByText("自定义工具规则"));
+    const pattern = screen.getByPlaceholderText("例如 git *");
+    await waitFor(() => expect(pattern).toBeEnabled());
+    fireEvent.change(pattern, { target: { value: "git status" } });
+    expect(screen.getByRole("button", { name: "保存全部规则" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "通用" }));
+    let dialog = await screen.findByRole("alertdialog", { name: "舍弃未保存的修改？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(pattern).toHaveValue("git status");
+    fireEvent.click(screen.getByRole("button", { name: "添加到列表" }));
+    fireEvent.click(screen.getByRole("button", { name: "关闭设置" }));
+    dialog = await screen.findByRole("alertdialog", { name: "舍弃未保存的修改？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+
+    let release!: () => void;
+    vi.mocked(permissionSave).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: "保存全部规则" }));
+    fireEvent.click(screen.getByRole("button", { name: "通用" }));
+    expect(screen.getByText(/正在处理，请等待完成/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "安全与权限", level: 2 })).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => release());
+    expect(screen.queryByText(/正在处理，请等待完成/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "通用" }));
+    expect(screen.getByRole("heading", { name: "通用", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("保存失败后清除等待提示并保留未保存的权限规则", async () => {
+    vi.mocked(permissionList).mockResolvedValueOnce([]);
+    let fail!: (error: Error) => void;
+    vi.mocked(permissionSave).mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+    render(<ThemeProvider><SettingsPanel open initialSection="security" onClose={() => {}} /></ThemeProvider>);
+    fireEvent.click(screen.getByText("自定义工具规则"));
+    const pattern = screen.getByPlaceholderText("例如 git *");
+    await waitFor(() => expect(pattern).toBeEnabled());
+    fireEvent.change(pattern, { target: { value: "git status" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加到列表" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存全部规则" }));
+    fireEvent.click(screen.getByRole("button", { name: "通用" }));
+    expect(screen.getByText(/正在处理，请等待完成/)).toBeInTheDocument();
+
+    await act(async () => fail(new Error("权限配置不可写")));
+    expect(screen.getByRole("alert")).toHaveTextContent("权限配置不可写");
+    expect(screen.queryByText(/正在处理，请等待完成/)).toBeNull();
+    expect(screen.getByText("git status")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "通用" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "取消" }));
+    expect(screen.getByText("git status")).toBeInTheDocument();
+  });
+
+  it("并行设置操作全部完成后才清除等待提示并允许离开", async () => {
+    let finishSave!: (depth: number) => void;
+    let finishReload!: () => void;
+    vi.mocked(subagentsConfigSave).mockImplementationOnce(() => new Promise<number>(resolve => { finishSave = resolve; }));
+    vi.mocked(internalReload).mockImplementationOnce(() => new Promise<void>(resolve => { finishReload = resolve; }));
+    const onClose = vi.fn();
+    render(<ThemeProvider><SettingsPanel open initialSection="agent-settings" onClose={onClose} /></ThemeProvider>);
+    const depth = screen.getByRole("spinbutton", { name: "子代理最大层级" });
+    await waitFor(() => expect(depth).toBeEnabled());
+    fireEvent.change(depth, { target: { value: "3" } });
+    fireEvent.click(within(depth.closest(".agent-runtime-row") as HTMLElement).getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "重新加载" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "通用" }));
+    expect(screen.getByText(/正在处理，请等待完成/)).toBeInTheDocument();
+
+    await act(async () => finishSave(3));
+    expect(depth).toHaveValue(3);
+    expect(screen.getByText(/正在处理，请等待完成/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "关闭设置" }));
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => finishReload());
+    expect(screen.queryByText(/正在处理，请等待完成/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "通用" }));
+    expect(screen.getByRole("heading", { name: "通用", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("输入法确认和取消候选词不会跳转设置或关闭弹窗", () => {
+    const onClose = vi.fn();
+    render(<ThemeProvider><SettingsPanel open onClose={onClose} /></ThemeProvider>);
+    const search = screen.getByRole("combobox", { name: "搜索设置" });
+    search.focus();
+    fireEvent.change(search, { target: { value: "模型" } });
+    for (const event of [{ isComposing: true }, { keyCode: 229 }]) {
+      fireEvent.keyDown(search, { key: "Enter", ...event });
+      fireEvent.keyDown(search, { key: "Escape", ...event });
+      expect(search).toHaveValue("模型");
+      expect(search).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByRole("button", { name: "通用" })).toHaveAttribute("aria-current", "page");
+    }
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(search).toHaveAttribute("aria-expanded", "false");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("通知渠道草稿在子视图、搜索和微信跳转时保留，确认后才能离开", async () => {
+    render(<ThemeProvider><SettingsPanel open initialSection="notify-channels" onClose={() => {}} /></ThemeProvider>);
+    fireEvent.click(screen.getByRole("button", { name: /推送到其他应用/ }));
+    const add = screen.getByRole("button", { name: "添加渠道" });
+    await waitFor(() => expect(add).toBeEnabled());
+    fireEvent.click(add);
+    fireEvent.change(screen.getByRole("textbox", { name: "通知渠道显示名" }), { target: { value: "日报" } });
+    fireEvent.click(screen.getByRole("button", { name: "通知记录" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "取消" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "搜索设置" }), { target: { value: "备份" } });
+    fireEvent.click(screen.getByRole("option", { name: /数据备份与恢复/ }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "取消" }));
+    expect(screen.getByRole("textbox", { name: "通知渠道显示名" })).toHaveValue("日报");
+    fireEvent.click(within(screen.getByText(/将任务事件发送到已配置的外部应用/)).getByRole("button", { name: "微信连接" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "舍弃修改" }));
+    await screen.findByRole("heading", { name: "微信连接", level: 2 });
+  });
+
+  it("外部直达链接也保护未保存的高级配置，并允许撤销修改", async () => {
+    vi.mocked(subagentsConfigGet).mockResolvedValueOnce({ maxDepth: 2 });
+    const view = render(<ThemeProvider><SettingsPanel open initialSection="agent-settings" onClose={() => {}} /></ThemeProvider>);
+    const depth = screen.getByRole("spinbutton", { name: "子代理最大层级" });
+    await waitFor(() => expect(depth).toHaveValue(2));
+    fireEvent.change(depth, { target: { value: "4" } });
+    expect(screen.getByRole("button", { name: "刷新状态" })).toBeDisabled();
+    view.rerender(<ThemeProvider><SettingsPanel open initialSection="help" onClose={() => {}} /></ThemeProvider>);
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "取消" }));
+    expect(depth).toHaveValue(4);
+    fireEvent.click(screen.getByRole("button", { name: "撤销修改" }));
+    expect(depth).toHaveValue(2);
+    fireEvent.click(screen.getByRole("button", { name: "帮助与更新" }));
+    expect(screen.getByRole("heading", { name: "帮助与更新", level: 2 })).toBeInTheDocument();
+  });
+
+  it("搜索定位真实配置并展开折叠区域，Escape 先关闭结果列表", async () => {
+    const onClose = vi.fn();
+    render(<ThemeProvider><SettingsPanel open onClose={onClose} /></ThemeProvider>);
+    const search = screen.getByRole("combobox", { name: "搜索设置" });
+    fireEvent.focus(search);
+    fireEvent.change(search, { target: { value: "遥测" } });
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(search).toHaveAttribute("aria-expanded", "false");
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.change(search, { target: { value: "OTLP" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    const field = await screen.findByRole("textbox", { name: "OTLP 遥测端点" });
+    await waitFor(() => expect(field.closest("details")).toHaveAttribute("open"));
+    expect(screen.getByRole("button", { name: "高级设置" })).toHaveAttribute("aria-current", "page");
+    expect(search).toHaveValue("");
+
+    fireEvent.change(search, { target: { value: "Webhook" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    await waitFor(() => expect(screen.getByRole("button", { name: /推送到其他应用/ })).toHaveAttribute("aria-expanded", "true"));
+    fireEvent.change(search, { target: { value: "常见问题" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    const faq = screen.getByText("常见问题与技术信息").closest("details")!;
+    await waitFor(() => expect(faq).toHaveAttribute("open"));
+    expect(screen.getByText("确认模型配置")).toBeVisible();
+    await waitFor(() => expect(faq.querySelector("summary")).toHaveFocus());
+    fireEvent.change(search, { target: { value: "不存在的设置" } });
+    expect(screen.getByText(/没有找到相关设置/)).toBeInTheDocument();
+  });
+});
 
 function renderSettings() {
   return render(
@@ -141,12 +312,12 @@ describe("SettingsPanel", () => {
   it("按使用场景分组设置，默认进入通用，常用偏好聚合为子页面", async () => {
     const { container } = renderSettings();
 
-    for (const group of ["偏好", "智能体", "连接与数据", "支持"]) {
+    for (const group of ["偏好", "智能体", "连接与数据", "关于与支持"]) {
       expect(screen.getByRole("heading", { name: group, level: 2 })).toBeInTheDocument();
     }
 
     expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(11);
-    expect(screen.getByRole("button", { name: "用量统计" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "模型用量" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "通知" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "微信连接" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "云存储" })).toBeInTheDocument();
@@ -154,7 +325,7 @@ describe("SettingsPanel", () => {
     expect(await screen.findByRole("heading", { name: "通用", level: 2 })).toBeInTheDocument();
     expect(screen.queryByText("MCP 连接器")).not.toBeInTheDocument();
     expect(screen.getByRole("group", { name: "界面主题" })).toBeInTheDocument();
-    expect(screen.getByRole("slider", { name: "界面字号" })).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "字体大小" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "通用" })).toHaveAttribute("aria-current", "page");
     fireEvent.click(screen.getByRole("button", { name: "快捷键" }));
     expect(screen.getByRole("heading", { name: "快捷键", level: 2 })).toBeInTheDocument();
@@ -176,13 +347,13 @@ describe("SettingsPanel", () => {
     expect(screen.queryByLabelText("OTLP 遥测端点")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "高级设置" }));
     expect(await screen.findByRole("heading", { name: "重新加载配置" })).toBeInTheDocument();
-    const disclosure = screen.getByText("诊断事件上报").closest("details")!;
+    const disclosure = screen.getByText("诊断数据上报").closest("details")!;
     expect(disclosure).not.toHaveAttribute("open");
-    fireEvent.click(screen.getByText("诊断事件上报"));
+    fireEvent.click(screen.getByText("诊断数据上报"));
     const field = screen.getByRole("textbox", { name: "OTLP 遥测端点" });
     fireEvent.change(field, { target: { value: "javascript:invalid" } });
     fireEvent.click(within(disclosure).getByRole("button", { name: "保存" }));
-    expect(screen.getByRole("status")).toHaveTextContent("无法保存诊断配置");
+    expect(screen.getByRole("alert")).toHaveTextContent("无法保存诊断配置");
     expect(localStorage.getItem("echoagent.otlp.endpoint")).toBeNull();
     fireEvent.change(field, { target: { value: "http://127.0.0.1:4318/v1/logs" } });
     fireEvent.click(within(disclosure).getByRole("button", { name: "保存" }));
@@ -221,9 +392,9 @@ describe("SettingsPanel", () => {
     renderSettings();
 
     const pages = [
-      ["通用", "通用"], ["通知", "提醒设置"], ["微信连接", "微信连接"],
+      ["通用", "通用"], ["通知", "通知设置"], ["微信连接", "微信连接"],
       ["模型", "模型与连接"], ["高级设置", "高级设置"], ["记忆", "记忆"],
-      ["用量统计", "用量统计"], ["云存储", "云存储"], ["数据管理", "备份与恢复"],
+      ["模型用量", "模型用量"], ["云存储", "云存储"], ["数据管理", "备份与恢复"],
       ["安全与权限", "安全与权限"], ["帮助与更新", "帮助与更新"],
     ];
     for (const [label, heading] of pages) {
@@ -237,8 +408,8 @@ describe("SettingsPanel", () => {
   it("通知、记忆和数据在一个一级入口下保留完整子页面", async () => {
     renderSettings();
     fireEvent.click(screen.getByRole("button", { name: "通知" }));
-    fireEvent.click(screen.getByRole("button", { name: "提醒设置" }));
-    expect(await screen.findByRole("heading", { name: "提醒设置" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "通知设置" }));
+    expect(await screen.findByRole("heading", { name: "通知设置" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "通知" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("button", { name: "微信远程对话" })).not.toBeInTheDocument();
 
@@ -248,8 +419,8 @@ describe("SettingsPanel", () => {
     expect(screen.getByRole("button", { name: "记忆" })).toHaveAttribute("aria-current", "page");
 
     fireEvent.click(screen.getByRole("button", { name: "数据管理" }));
-    fireEvent.click(screen.getByRole("button", { name: "已归档" }));
-    expect(await screen.findByRole("heading", { name: "已归档" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "已归档会话" }));
+    expect(await screen.findByRole("heading", { name: "已归档会话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "数据管理" })).toHaveAttribute("aria-current", "page");
   });
 
@@ -275,20 +446,20 @@ describe("SettingsPanel", () => {
     expect(screen.getByRole("button", { name: "微信连接" })).toHaveAttribute("aria-current", "page");
   });
 
-  it("安全中心说明网页与电脑操作按任务开启，不设置高风险全局默认值", async () => {
+  it("安全中心说明浏览器与电脑操作按任务开启，不设置高风险全局默认值", async () => {
     render(
       <ThemeProvider>
         <SettingsPanel open initialSection="security" onClose={() => {}} />
       </ThemeProvider>,
     );
 
-    expect(await screen.findByRole("heading", { name: "网页与电脑操作", level: 3 }))
+    expect(await screen.findByRole("heading", { name: "浏览器与电脑操作", level: 3 }))
       .toBeInTheDocument();
     expect(screen.getByText(/\+ 菜单为当前任务开启/)).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /默认.*操作电脑/ })).toBeNull();
   });
 
-  it("提醒设置和通知记录分开，记录页不重复显示偏好与概览", async () => {
+  it("通知设置和通知记录分开，记录页不重复显示偏好与概览", async () => {
     renderSettings();
 
     expect(screen.queryByRole("button", { name: "助理设置" })).not.toBeInTheDocument();
@@ -299,7 +470,7 @@ describe("SettingsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "通知记录" }));
     expect(await screen.findByRole("heading", { name: "通知记录" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "通知概览" })).toBeNull();
-    expect(screen.queryByRole("checkbox", { name: "桌面通知显示任务名称" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "在通知中显示任务标题" })).toBeNull();
     expect(screen.getByRole("heading", { name: "最近通知", level: 3 })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "全部" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "全部已读" })).toBeDisabled();
@@ -358,8 +529,8 @@ describe("SettingsPanel", () => {
     }]);
     const onOpenSession = vi.fn().mockResolvedValue(undefined);
     render(<ThemeProvider><SettingsPanel open initialSection="agent-mail" onOpenSession={onOpenSession} onClose={() => {}} /></ThemeProvider>);
-    fireEvent.click(screen.getByRole("button", { name: "提醒设置" }));
-    const preview = await screen.findByRole("checkbox", { name: "桌面通知显示任务名称" });
+    fireEvent.click(screen.getByRole("button", { name: "通知设置" }));
+    const preview = await screen.findByRole("switch", { name: "在通知中显示任务标题" });
     await waitFor(() => expect(preview).toBeEnabled());
     fireEvent.click(preview);
     await waitFor(() => expect(desktopNotificationPreviewSave).toHaveBeenCalledWith(true));
@@ -413,13 +584,13 @@ describe("SettingsPanel", () => {
     vi.mocked(memoryConfigSave).mockClear();
     render(<ThemeProvider><SettingsPanel open initialSection="memory" onClose={() => {}} /></ThemeProvider>);
     await screen.findByText(/配置未加载/);
-    for (const input of screen.getAllByRole("checkbox")) expect(input).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: "记住并参考对话信息" }));
+    for (const input of screen.getAllByRole("switch")) expect(input).toBeDisabled();
+    fireEvent.click(screen.getByRole("switch", { name: "使用记忆" }));
     expect(memoryConfigSave).not.toHaveBeenCalled();
     vi.mocked(memoryConfigGet).mockResolvedValueOnce({ enabled: true, initialInjectionEnabled: false, saveOnEnd: false, watcherEnabled: false, autoFlushEnabled: false, dreamEnabled: false, revision: "r1" });
     fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: "记住并参考对话信息" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("checkbox", { name: "记住并参考对话信息" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "使用记忆" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("switch", { name: "使用记忆" }));
     await waitFor(() => expect(memoryConfigSave).toHaveBeenCalledWith({ enabled: false }, "r1"));
     expect(screen.queryByRole("checkbox", { name: "监听外部修改" })).not.toBeInTheDocument();
   });
@@ -430,7 +601,7 @@ describe("SettingsPanel", () => {
     render(<ThemeProvider><SettingsPanel open initialSection="memory" onClose={() => {}} /></ThemeProvider>);
     const restore = await screen.findByRole("button", { name: "恢复推荐策略" });
     expect(memoryConfigSave).not.toHaveBeenCalled();
-    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+    expect(screen.getAllByRole("switch")).toHaveLength(1);
     fireEvent.click(restore);
     await waitFor(() => expect(memoryConfigSave).toHaveBeenCalledWith({ enabled: true, initialInjectionEnabled: true, saveOnEnd: true, watcherEnabled: true, autoFlushEnabled: true, dreamEnabled: true }, "legacy"));
   });
@@ -456,7 +627,7 @@ describe("SettingsPanel", () => {
       </ThemeProvider>,
     );
 
-    const autoFlush = await screen.findByRole("checkbox", { name: "记住并参考对话信息" });
+    const autoFlush = await screen.findByRole("switch", { name: "使用记忆" });
     expect(screen.queryByLabelText("记忆检索方式")).not.toBeInTheDocument();
     expect(autoFlush).toBeChecked();
     fireEvent.click(autoFlush);
@@ -476,7 +647,7 @@ describe("SettingsPanel", () => {
       </ThemeProvider>,
     );
 
-    const toggle = await screen.findByRole("checkbox", { name: "关闭窗口时继续后台运行" });
+    const toggle = await screen.findByRole("switch", { name: "关闭窗口后继续运行" });
     await waitFor(() => expect(toggle).toBeEnabled());
     expect(toggle).toBeChecked();
 
@@ -498,7 +669,7 @@ describe("SettingsPanel", () => {
       </ThemeProvider>,
     );
 
-    const toggle = await screen.findByRole("checkbox", { name: "关闭窗口时继续后台运行" });
+    const toggle = await screen.findByRole("switch", { name: "关闭窗口后继续运行" });
     await waitFor(() => expect(toggle).toBeEnabled());
     fireEvent.click(toggle);
 
@@ -509,7 +680,7 @@ describe("SettingsPanel", () => {
   it("桌面偏好读取失败时不允许覆盖未知配置，重试后恢复操作", async () => {
     vi.mocked(desktopPreferencesGet).mockRejectedValueOnce(new Error("偏好文件不可读"));
     render(<ThemeProvider><SettingsPanel open initialSection="general" onClose={() => {}} /></ThemeProvider>);
-    const toggle = await screen.findByRole("checkbox", { name: "关闭窗口时继续后台运行" });
+    const toggle = await screen.findByRole("switch", { name: "关闭窗口后继续运行" });
     expect(await screen.findByRole("alert")).toHaveTextContent("偏好文件不可读");
     expect(toggle).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
@@ -539,7 +710,7 @@ describe("SettingsPanel", () => {
 
   it("天气和搜索作为默认能力，无需在设置里指定搜索模型", async () => {
     render(<ThemeProvider><SettingsPanel open initialSection="agent-settings" onClose={() => {}} /></ThemeProvider>);
-    expect(await screen.findByText("子代理嵌套深度")).toBeInTheDocument();
+    expect(await screen.findByText("子代理最大层级")).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Web 搜索模型 ID" })).not.toBeInTheDocument();
     expect(webSearchConfigGet).not.toHaveBeenCalled();
     expect(webSearchConfigSave).not.toHaveBeenCalled();
@@ -621,7 +792,7 @@ describe("SettingsPanel", () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByRole("heading", { name: "已归档", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "已归档会话", level: 2 })).toBeInTheDocument();
     expect(screen.getByText("发布复盘")).toBeInTheDocument();
     expect(screen.getByText(/发布项目 · 项目对话/)).toBeInTheDocument();
     expect(screen.queryByText("活动任务")).toBeNull();
@@ -772,8 +943,8 @@ describe("SettingsPanel", () => {
 it("通知一级入口直接提供桌面提醒和带当前任务目标的测试", async () => {
   render(<ThemeProvider><SettingsPanel open onClose={() => {}} sessionId="active-task" /></ThemeProvider>);
   fireEvent.click(screen.getByRole("button", {name:"通知"}));
-  expect(await screen.findByText(/默认开启，无需添加渠道/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", {name:"测试桌面提醒"}));
+  expect(await screen.findByText(/已开启 · 默认设置/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"发送测试通知"}));
   await waitFor(() => expect(testDesktopNotify).toHaveBeenCalledWith("active-task"));
   fireEvent.click(screen.getByRole("button", {name:"通知记录"}));
   expect(await screen.findByRole("heading", {name:"通知记录"})).toBeInTheDocument();

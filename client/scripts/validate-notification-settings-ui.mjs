@@ -28,10 +28,10 @@ try {
         observer.observe(document, { childList: true, subtree: true });
       }, font);
       await page.goto(`${origin}/__ui-review?surface=notify-channels&theme=${theme}`, { waitUntil: "networkidle" });
-      const desktop = page.getByRole("switch", { name: "桌面提醒", exact: true });
+      const desktop = page.getByRole("switch", { name: "桌面通知", exact: true });
       assert(await desktop.isChecked());
       assert.equal(await page.getByRole("textbox").count(), 0, "Webhook form should not dominate the initial settings view");
-      const privacy = page.getByRole("checkbox", { name: "桌面通知显示任务名称" });
+      const privacy = page.getByRole("switch", { name: "在通知中显示任务标题" });
       assert(!await privacy.isChecked());
       await privacy.locator("..").click();
       assert(await privacy.isChecked(), "Privacy preference did not save");
@@ -68,14 +68,14 @@ try {
     await page.goto(`${origin}/__ui-review?surface=notify-channels&notificationState=${failure}`, { waitUntil: "networkidle" });
     await page.getByRole("button", { name: /推送到其他应用/ }).click();
     if (failure === "channel-error") {
-      assert(await page.getByRole("button", { name: "测试桌面提醒" }).isEnabled());
+      assert(await page.getByRole("button", { name: "发送测试通知" }).isEnabled());
       await page.getByRole("button", { name: "重试", exact: true }).click();
       await page.getByText("尚未添加外部推送，日常桌面提醒无需配置这里。", { exact: true }).waitFor();
     } else {
-      assert(await page.getByRole("switch", { name: "桌面提醒", exact: true }).isDisabled());
+      assert(await page.getByRole("switch", { name: "桌面通知", exact: true }).isDisabled());
       assert(await page.getByRole("button", { name: "添加渠道", exact: true }).isEnabled());
       await page.getByRole("button", { name: "重试读取桌面提醒" }).click();
-      await page.getByRole("button", { name: "测试桌面提醒" }).click();
+      await page.getByRole("button", { name: "发送测试通知" }).click();
       await page.getByRole("status").filter({ hasText: "已向系统提交通知" }).waitFor();
     }
   }

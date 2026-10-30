@@ -2,11 +2,12 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 
 /** Secondary configuration stays discoverable without competing with daily preferences. */
-export function SettingsDisclosure({ title, description, children, defaultOpen = false }: {
+export function SettingsDisclosure({ title, description, children, defaultOpen = false, settingId }: {
   title: string;
   description?: string;
   children: ReactNode;
   defaultOpen?: boolean;
+  settingId?: string;
 }) {
   const [expanded, setExpanded] = useState(defaultOpen);
   useEffect(() => {
@@ -15,7 +16,7 @@ export function SettingsDisclosure({ title, description, children, defaultOpen =
     if (defaultOpen) setExpanded(true);
   }, [defaultOpen]);
   return (
-    <details className="settings-disclosure" open={expanded}>
+    <details className="settings-disclosure" open={expanded} data-setting-id={settingId}>
       <summary onClick={(event) => { event.preventDefault(); setExpanded(value => !value); }}>
         <span className="settings-disclosure__heading">
           <strong>{title}</strong>

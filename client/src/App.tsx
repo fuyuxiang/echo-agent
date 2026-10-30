@@ -1356,7 +1356,7 @@ function Shell() {
     setNotificationAutomationOpen(null);
     if (label !== "专家·技能·连接器") setCreateExpertRequested(false);
     if (label === "个人记忆" || label === "资料库" || label === "更多") {
-      openSettings("personal-memory");
+      openSettings("memory");
       return;
     }
     if (label === "用量统计") {
@@ -2219,7 +2219,7 @@ function Shell() {
     sessionsStore.getState().remove(sessionId, cwd);
     if (result?.memoryCleanupWarning) {
       showActionToast(`对话已删除，部分记忆未能清理，请到记忆页面检查。\n${result.memoryCleanupWarning}`, [
-        { label: "查看记忆", onClick: () => openSettings("personal-memory") },
+        { label: "查看记忆", onClick: () => openSettings("memory") },
       ]);
     }
   };
@@ -2689,7 +2689,7 @@ function Shell() {
             if (sessionsStore.getState().currentSessionId !== sessionId) {
               throw new Error("任务打开已被新的导航操作取代，请重新打开记忆");
             }
-            openSettings("personal-memory");
+            openSettings("memory");
           },
         }];
         const notify = (message: string, kind: ToastMessageKind = "info") => {

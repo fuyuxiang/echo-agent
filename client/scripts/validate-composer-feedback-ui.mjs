@@ -104,13 +104,15 @@ try {
   assert.equal(await splitter.evaluate(e=>getComputedStyle(e).outlineStyle), "none", "IDE splitter regained a large outline");
   assert.notEqual(await splitter.evaluate(e=>getComputedStyle(e).backgroundColor), before, "IDE splitter lacks its own focus indicator");
   await page.goto(`${base}/__ui-review?surface=notify-channels`, {waitUntil:"networkidle"});
-  await page.getByText("默认开启，无需添加渠道").waitFor();
-  await page.getByRole("button",{name:"测试桌面提醒"}).click();
+  const desktop = page.getByRole("switch", {name:"桌面通知", exact:true});
+  assert(await desktop.isChecked());
+  await page.getByRole("button",{name:"发送测试通知", exact:true}).click();
   await page.getByRole("status").filter({hasText:"已向系统提交通知"}).waitFor();
   // The native checkbox is visually replaced by its labelled switch track.
-  await page.getByRole("switch",{name:"桌面提醒"}).locator("..").click();
-  await page.getByText("你已关闭桌面提醒").waitFor();
-  assert(await page.getByRole("button",{name:"测试桌面提醒"}).isDisabled());
+  await desktop.locator("..").click();
+  await page.getByText("已关闭", {exact:true}).waitFor();
+  assert(!await desktop.isChecked());
+  assert(await page.getByRole("button",{name:"发送测试通知", exact:true}).isDisabled());
   await page.screenshot({path:join(output,"notifications.png")});
   writeFileSync(join(output,"geometry.json"),JSON.stringify({centered:centeredEvidence,layouts:evidence,selections:selectionEvidence},null,2));
   console.log(`Passed ${centeredEvidence.length} centered home layouts, ${evidence.length} long-draft layouts and desktop notification interaction; evidence: ${output}`);

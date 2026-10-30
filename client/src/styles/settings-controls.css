@@ -4,6 +4,34 @@
   --echo-button-danger-border: var(--echo-button-secondary-border);
 }
 
+.settings-modal__content { background: var(--ui-surface-muted); }
+.settings-modal__toolbar { position: relative; z-index: 3; background: var(--ui-surface); }
+.settings-modal__location { flex: 1 1 auto; }
+.settings-modal__location > span { flex-shrink: 0; }
+.settings-preference-state { color: var(--echo-text-medium); font-size: .75rem; font-weight: 550; line-height: 1.5; }
+.settings-navigation-feedback { flex: none; margin: 0; padding: 10px 20px; color: var(--echo-text-strong); background: var(--echo-brand-soft); font-size: .8125rem; }
+.settings-search { position: relative; display: flex; align-items: center; flex: 0 1 260px; min-width: 120px; color: var(--echo-text-medium); }
+.settings-search > svg { position: absolute; left: 10px; pointer-events: none; }
+.settings-search > input.form-control { width: 100%; min-width: 0; min-height: 2.25rem; padding-left: 34px; font-size: .8125rem; }
+.settings-search__results { position: absolute; top: calc(100% + 8px); right: 0; z-index: 4; width: min(420px, calc(100vw - 64px)); max-height: min(380px, 55vh); overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid var(--ui-line); border-radius: 12px; background: var(--ui-surface); box-shadow: 0 12px 36px rgba(0, 0, 0, .16); }
+.settings-search__results > button { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; min-height: 44px; padding: 10px 12px; border: 0; border-radius: 8px; background: transparent; color: var(--echo-text-strong); text-align: left; font: inherit; font-size: .8125rem; cursor: pointer; }
+.settings-search__results > button[aria-selected="true"], .settings-search__results > button:hover { background: var(--echo-bg-hover); }
+.settings-search__results > button:focus-visible { outline: 2px solid var(--echo-focus-ring); outline-offset: -2px; }
+.settings-search__results small { flex-shrink: 0; color: var(--echo-text-medium); font-size: .75rem; }
+.settings-search__results > p { margin: 0; padding: 14px; color: var(--echo-text-medium); font-size: .8125rem; line-height: 1.6; }
+.settings-search-highlight { outline: 2px solid var(--echo-focus-ring); outline-offset: -2px; border-radius: 12px; }
+@media (max-width: 560px) {
+  .settings-modal__toolbar { padding: 10px 12px; gap: 8px; }
+  .settings-modal__location { flex: 0 1 120px; }
+  .settings-search { flex: 1 1 160px; }
+  .settings-search__results { right: -44px; width: min(420px, calc(100vw - 48px)); }
+  .settings-search__results > button { gap: 8px; }
+}
+@media (max-width: 420px) {
+  .settings-modal__location > span { display: none; }
+  .settings-modal__location { flex-basis: 80px; }
+}
+
 /* Destructive list actions stay secondary. The final confirmation owns the
  * stronger destructive treatment. Ghost icon actions remain frameless. */
 .settings-modal :is(.settings-btn--danger, .form-button--danger, .echo-button--danger, .btn--danger) {
@@ -22,7 +50,8 @@
   accent-color: var(--echo-brand);
 }
 .settings-modal .sk-toggle input:checked + .sk-toggle-track { background: var(--echo-button-primary-bg); }
-.settings-modal .sk-toggle-thumb { background: var(--echo-button-primary-fg); }
+.settings-modal .sk-toggle-thumb { background: var(--echo-text-medium); }
+.settings-modal .sk-toggle input:checked + .sk-toggle-track .sk-toggle-thumb { background: var(--echo-button-primary-fg); }
 .settings-modal .sk-toggle:has(input:disabled) { opacity: .5; }
 .settings-modal .sk-toggle:has(input:focus-visible) { outline: 2px solid var(--echo-focus-ring); outline-offset: 3px; border-radius: 999px; }
 .settings-modal .notify-panel__btn[role="switch"][aria-checked="true"] {

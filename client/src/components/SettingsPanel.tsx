@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Settings as SettingsIcon,
   SlidersHorizontal,
@@ -34,6 +34,8 @@ import { PersonalMemoryPanel } from "./PersonalMemoryPanel";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { useAppDialog } from "./AppDialog";
 import { useSessionsStore } from "@/stores/sessions-store";
+import { SettingsDraftContext, type SettingsDraftState } from "@/lib/settings-drafts";
+import { SettingsSearch } from "./SettingsSearch";
 
 /**
  * EchoAgent-style Settings dialog.
@@ -79,19 +81,22 @@ const GENERAL_VIEWS: Array<[SettingsSectionId, string]> = [
   ["general", "常用偏好"], ["shortcuts", "快捷键"],
 ];
 const NOTIFICATION_VIEWS: Array<[SettingsSectionId, string]> = [
-  ["notify-channels", "提醒设置"], ["agent-mail", "通知记录"],
-];
-const MEMORY_VIEWS: Array<[SettingsSectionId, string]> = [
-  ["memory", "记忆"], ["personal-memory", "记忆"],
+  ["notify-channels", "通知设置"], ["agent-mail", "通知记录"],
 ];
 const DATA_VIEWS: Array<[SettingsSectionId, string]> = [
-  ["data", "备份与恢复"], ["archived", "已归档"],
+  ["data", "备份与恢复"], ["archived", "已归档会话"],
 ];
+
+// Keep callers of historical IDs working without maintaining duplicate views.
+function normalizeSection(section: SettingsSectionId): SettingsSectionId {
+  if (section === "personalize") return "general";
+  if (section === "personal-memory") return "memory";
+  return section;
+}
 
 function isActiveNavItem(active: SettingsSectionId, item: SettingsSectionId): boolean {
   if (item === "agent-mail" || item === "notify-channels") return active === "agent-mail" || active === "notify-channels";
   if (item === "general") return GENERAL_VIEWS.some(([id]) => id === active);
-  if (item === "memory") return active === "memory" || active === "personal-memory";
   if (item === "data") return active === "data" || active === "archived";
   return active === item;
 }
@@ -129,21 +134,21 @@ const NAV_GROUPS: NavGroup[] = [
     { id: "model", label: "模型", icon: Cpu },
     { id: "memory", label: "记忆", icon: Brain },
     { id: "security", label: "安全与权限", icon: Shield },
+    { id: "agent-settings", label: "高级设置", icon: SlidersHorizontal },
   ] },
   { label: "连接与数据", items: [
     { id: "weixin-channel", label: "微信连接", icon: MessageCircle },
     { id: "cloud-storage", label: "云存储", icon: Cloud },
-    { id: "usage", label: "用量统计", icon: BarChart3 },
+    { id: "usage", label: "模型用量", icon: BarChart3 },
     { id: "data", label: "数据管理", icon: Database },
   ] },
-  { label: "支持", items: [
-    { id: "agent-settings", label: "高级设置", icon: SlidersHorizontal },
+  { label: "关于与支持", items: [
     { id: "help", label: "帮助与更新", icon: HelpCircle },
   ] },
 ];
 
 function settingsSectionTitle(section: SettingsSectionId): string {
-  const subview = [...GENERAL_VIEWS, ...NOTIFICATION_VIEWS, ...MEMORY_VIEWS, ...DATA_VIEWS]
+  const subview = [...GENERAL_VIEWS, ...NOTIFICATION_VIEWS, ...DATA_VIEWS]
     .find(([id]) => id === section);
   return subview?.[1] ?? NAV_GROUPS.flatMap(group => group.items)
     .find(item => item.id === section)?.label ?? "设置";
@@ -179,39 +184,100 @@ export function SettingsPanel({
   onOpenAutomation?: (automationId: string) => void | Promise<void>;
   onToast?: (message: string) => void;
 }) {
-  const [active, setActive] = useState<SettingsSectionId>(initialSection === "personalize" ? "general" : initialSection);
+  const [active, setActive] = useState<SettingsSectionId>(() => normalizeSection(initialSection));
   const [cloudDirty, setCloudDirty] = useState(false);
   const [memoryDirty, setMemoryDirty] = useState(false);
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const drafts = useRef(new Map<string, SettingsDraftState>());
+  const [draftBusy, setDraftBusy] = useState(false);
+  const reportDraft = useCallback((id: string, state: SettingsDraftState | null) => {
+    if (state) drafts.current.set(id, state);
+    else drafts.current.delete(id);
+    setDraftBusy([...drafts.current.values()].some(draft => draft.busy));
+  }, []);
+  const [leaveFeedback, setLeaveFeedback] = useState("");
+  useEffect(() => {
+    if (!draftBusy && !memoryBusy) setLeaveFeedback("");
+  }, [draftBusy, memoryBusy]);
+  const [searchTarget, setSearchTarget] = useState<{ target?: string } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const { requestConfirmation, dialog } = useAppDialog();
   const confirmLeave = (action: () => void) => {
-    const isMemory = active === "memory" || active === "personal-memory";
-    if (isMemory && memoryBusy) return;
-    if (!(active === "cloud-storage" && cloudDirty) && !(isMemory && memoryDirty)) {
+    const isMemory = active === "memory";
+    const isCloudDraft = active === "cloud-storage" && cloudDirty;
+    const isBusy = () => (isMemory && memoryBusy) || [...drafts.current.values()].some(draft => draft.busy);
+    if (isBusy()) { setLeaveFeedback("正在处理，请等待完成后再关闭或切换页面。"); return; }
+    setLeaveFeedback("");
+    const dirty = [...drafts.current.values()].filter(draft => draft.dirty);
+    if (!isCloudDraft && !(isMemory && memoryDirty) && !dirty.length) {
       action();
       return;
     }
+    // Search options unmount when the confirmation takes focus. Return to
+    // their stable input on cancel so keyboard users can continue searching.
+    const origin = document.activeElement;
+    const returnFocus = origin instanceof HTMLElement
+      ? origin.closest(".settings-search")?.querySelector<HTMLInputElement>("input")
+      : undefined;
     requestConfirmation({
-      title: isMemory ? "舍弃未保存的记忆？" : "舍弃云端文件未保存的修改？",
-      description: isMemory ? "记忆编辑或导入尚未保存。继续将丢失这些修改。" : "当前云端文本尚未保存。继续将丢失这些修改。",
+      title: isMemory ? "舍弃未保存的记忆？" : isCloudDraft ? "舍弃云端文件未保存的修改？" : "舍弃未保存的修改？",
+      description: isMemory ? "记忆编辑或导入尚未保存。继续将丢失这些修改。" : isCloudDraft ? "当前云端文本尚未保存。继续将丢失这些修改。" : `${[...new Set(dirty.map(draft => draft.label ?? "编辑内容"))].join("、")}尚未保存。继续将丢失这些修改。`,
       confirmLabel: "舍弃修改",
       danger: true,
-      action: async () => action(),
+      returnFocus,
+      action: () => { if (!isBusy()) action(); },
     });
+  };
+  const selectSection = (section: SettingsSectionId) => {
+    const next = normalizeSection(section);
+    if (next !== active) confirmLeave(() => { setActive(next); setSearchTarget(null); });
   };
   const requestClose = () => confirmLeave(onClose);
   const modalRef = useModalFocus<HTMLDivElement>(open, requestClose);
   const archivedCount = useSessionsStore((state) => state.independent
     .filter((session) => session.archived && !session.hidden).length);
 
-  // Select the caller-requested section every time the dialog opens.
+  const selectRequested = useRef(selectSection);
+  selectRequested.current = selectSection;
+  const wasOpen = useRef(false);
+  // A new direct link while Settings is open follows the same draft guard.
   useEffect(() => {
-    if (open) setActive(initialSection === "personalize" ? "general" : initialSection);
+    if (open) {
+      if (wasOpen.current) selectRequested.current(initialSection);
+      else { setActive(normalizeSection(initialSection)); setSearchTarget(null); setLeaveFeedback(""); }
+    }
+    wasOpen.current = open;
   }, [initialSection, open]);
+
+  useEffect(() => {
+    if (!searchTarget || !open) return;
+    const panel = panelRef.current;
+    const target = searchTarget.target ? panel?.querySelector<HTMLElement>(`[data-setting-id="${searchTarget.target}"]`) : panel?.querySelector<HTMLElement>(".settings-section__header, .model-connections__header, .personal-memory__header") ?? panel;
+    if (!target) return;
+    // Opening summaries through their normal interaction preserves controlled
+    // disclosure state and mounts any lazily rendered secondary content.
+    const ancestors: HTMLDetailsElement[] = [];
+    for (let node: HTMLElement | null = target; node && node !== panel; node = node.parentElement) {
+      if (node instanceof HTMLDetailsElement && !node.open) ancestors.unshift(node);
+    }
+    ancestors.forEach(details => details.querySelector<HTMLElement>(":scope > summary")?.click());
+    target.querySelector<HTMLElement>(':scope > button[aria-expanded="false"]')?.click();
+    const frame = requestAnimationFrame(() => {
+      target.scrollIntoView?.({ block: "center" });
+      const control = target.querySelector<HTMLElement>("summary, button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), h2");
+      const focusTarget = control ?? target;
+      if (!focusTarget.matches("button,input,select,textarea,summary")) focusTarget.tabIndex = -1;
+      focusTarget.focus({ preventScroll: true });
+      target.classList.add("settings-search-highlight");
+    });
+    const timer = window.setTimeout(() => target.classList.remove("settings-search-highlight"), 3000);
+    return () => { cancelAnimationFrame(frame); clearTimeout(timer); target.classList.remove("settings-search-highlight"); };
+  }, [searchTarget, active, open]);
 
   if (!open) return null;
 
   return (
+    <SettingsDraftContext.Provider value={reportDraft}>
     <div
       className="settings-modal-overlay"
       ref={modalRef}
@@ -239,7 +305,7 @@ export function SettingsPanel({
                             "settings-navigation__item" +
                             (isActiveNavItem(active, item.id) ? " settings-navigation__item--active" : "")
                           }
-                          onClick={() => confirmLeave(() => setActive(item.id))}
+                          onClick={() => selectSection(item.id)}
                           aria-current={isActiveNavItem(active, item.id) ? "page" : undefined}
                         >
                           <span className="settings-navigation__icon">
@@ -267,6 +333,11 @@ export function SettingsPanel({
               <span>设置</span><span aria-hidden="true">/</span>
               <strong>{settingsSectionTitle(active)}</strong>
             </div>
+            <SettingsSearch onSelect={(entry, onSelected) => {
+              const navigate = () => { setActive(normalizeSection(entry.section)); setSearchTarget({ target: entry.target }); onSelected(); };
+              if (normalizeSection(entry.section) === active) navigate();
+              else confirmLeave(navigate);
+            }} />
             <button
               type="button"
               className="settings-modal__close"
@@ -278,15 +349,16 @@ export function SettingsPanel({
               <X size={16} strokeWidth={1.75} />
             </button>
           </div>
-          <div className="settings-modal__panel">
+          {leaveFeedback && <p className="settings-navigation-feedback" role="status">{leaveFeedback}</p>}
+          <div className="settings-modal__panel" ref={panelRef} tabIndex={-1}>
             {active === "model" ? (
               <ModelConnectionsPanel onModelsChanged={onModelsChanged} />
             ) : active === "shortcuts" ? (
               <div className="settings-subview">
-                <SettingsViewTabs label="通用视图" items={GENERAL_VIEWS} active={active} onSelect={setActive} />
+                <SettingsViewTabs label="通用视图" items={GENERAL_VIEWS} active={active} onSelect={selectSection} />
                 <ShortcutsSettingsPanel />
               </div>
-            ) : active === "memory" || active === "personal-memory" ? (
+            ) : active === "memory" ? (
               <div className="settings-subview settings-personal-memory">
                 <PersonalMemoryPanel cwd={cwd} sessionId={sessionId} onToast={onToast} onOpenSession={onOpenSession} onUnsavedChange={setMemoryDirty} onBusyChange={setMemoryBusy} />
               </div>
@@ -296,12 +368,12 @@ export function SettingsPanel({
               <SecuritySettingsPanel />
             ) : active === "data" ? (
               <div className="settings-subview">
-                <SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={setActive} />
+                <SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={selectSection} />
                 <DataSettingsPanel />
               </div>
             ) : active === "archived" ? (
               <div className="settings-subview">
-                <SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={setActive} />
+                <SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={selectSection} />
                 <ArchivedSessionsSettingsPanel
                   onRestoreSession={onRestoreSession}
                   onDeleteSession={onDeleteSession}
@@ -311,23 +383,23 @@ export function SettingsPanel({
                 />
               </div>
             ) : active === "usage" ? (
-              <SettingsSection title="用量统计" desc="查看本机记录的模型用量；费用为估算，不代表服务商账单。"><UsageQuotaPanel /></SettingsSection>
+              <SettingsSection title="模型用量" desc="查看本机记录的模型请求和用量。费用仅供估算，以服务商账单为准。"><UsageQuotaPanel /></SettingsSection>
             ) : active === "notify-channels" ? (
-              <SettingsSection title="提醒设置" desc="选择如何接收提醒，以及通知中显示哪些信息。" navigation={<SettingsViewTabs label="通知视图" items={NOTIFICATION_VIEWS} active={active} onSelect={setActive} />}><NotifyChannelsPanel onToast={onToast} sessionId={sessionId} /></SettingsSection>
+              <SettingsSection title="通知设置" navigation={<SettingsViewTabs label="通知视图" items={NOTIFICATION_VIEWS} active={active} onSelect={selectSection} />}><NotifyChannelsPanel onToast={onToast} sessionId={sessionId} onOpenWeixin={() => selectSection("weixin-channel")} /></SettingsSection>
             ) : active === "weixin-channel" ? (
               <SettingsSection title="微信连接" desc="在微信继续已授权的桌面任务。使用期间请保持电脑开机、联网并运行 EchoAgent。"><WeixinChannelPanel onToast={onToast} /></SettingsSection>
             ) : active === "cloud-storage" ? (
               <SettingsSection title="云存储" desc="连接 WebDAV 存储，按需浏览和传输文件。此功能不会自动同步本地资料。"><CloudStoragePanel onToast={onToast} onUnsavedChange={setCloudDirty} /></SettingsSection>
             ) : active === "general" ? (
               <div className="settings-subview">
-                <SettingsViewTabs label="通用视图" items={GENERAL_VIEWS} active={active} onSelect={setActive} />
+                <SettingsViewTabs label="通用视图" items={GENERAL_VIEWS} active={active} onSelect={selectSection} />
                 <GeneralSettingsPanel />
               </div>
             ) : active === "agent-settings" ? (
               <AgentSettingsPanel />
             ) : active === "agent-mail" ? (
               <div className="settings-subview">
-                <SettingsViewTabs label="通知视图" items={NOTIFICATION_VIEWS} active={active} onSelect={setActive} />
+                <SettingsViewTabs label="通知视图" items={NOTIFICATION_VIEWS} active={active} onSelect={selectSection} />
                 <NotificationCenterSettingsPanel onOpenSession={onOpenSession} onOpenAutomation={onOpenAutomation} onToast={onToast} onClose={onClose} />
               </div>
             ) : null}
@@ -336,5 +408,6 @@ export function SettingsPanel({
       </div>
       {dialog}
     </div>
+    </SettingsDraftContext.Provider>
   );
 }

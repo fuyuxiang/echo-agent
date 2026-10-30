@@ -32,6 +32,7 @@
     "test:mermaid": "node scripts/validate-mermaid-render.mjs",
     "test:production-startup": "node scripts/validate-production-startup.mjs",
     "test:task-recovery": "node scripts/test-browser-inputs.mjs && node scripts/validate-task-recovery-ui.mjs",
+    "test:ui:settings": "node scripts/validate-settings-navigation-ui.mjs && node scripts/validate-notification-settings-ui.mjs && node scripts/validate-settings-controls-ui.mjs",
     "test:ui:tool-modes": "node scripts/validate-unified-tool-modes-ui.mjs",
     "test:ui:share-export": "node scripts/validate-share-export-ui.mjs",
     "test:ui:model-presentation": "node scripts/validate-model-presentation-ui.mjs",

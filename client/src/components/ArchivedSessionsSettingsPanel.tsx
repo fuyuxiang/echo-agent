@@ -330,7 +330,7 @@ export function ArchivedSessionsSettingsPanel({
     <div className="settings-section archived-settings" aria-busy={bulkBusy}>
       <header className="settings-section__header archived-settings__header">
         <div className="settings-section__heading">
-          <h2 className="settings-section__title">已归档</h2>
+          <h2 className="settings-section__title">已归档会话</h2>
           <p className="settings-section__desc">归档只会收起会话，不会删除历史记录。可在这里恢复并继续任务。</p>
         </div>
         <button

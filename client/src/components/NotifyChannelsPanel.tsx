@@ -17,6 +17,7 @@ import {
 import { useAppDialog } from "./AppDialog";
 import { SettingsGroup } from "./SettingsSections";
 import { desktopPreferencesGet, desktopNotificationPreviewSave } from "@/lib/agent-client";
+import { useSettingsDraft } from "@/lib/settings-drafts";
 
 const KIND_LABELS: Record<ChannelKind, string> = {
   "slack-webhook": "Slack",
@@ -32,7 +33,7 @@ const ADDABLE_KINDS: ChannelKind[] = [
   "generic-webhook",
 ];
 
-export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: string) => void; sessionId?: string }) {
+export function NotifyChannelsPanel({ onToast, sessionId, onOpenWeixin }: { onToast?: (msg: string) => void; sessionId?: string; onOpenWeixin?: () => void }) {
   const [channels, setChannels] = useState<NotifyChannel[]>([]);
   const [desktop, setDesktop] = useState<DesktopNotifyStatus | null>(null);
   const [desktopTestResult, setDesktopTestResult] = useState<string | null>(null);
@@ -58,6 +59,18 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
   const loadGeneration = useRef(0);
   const desktopGeneration = useRef(0);
   const mutationInFlight = useRef(false);
+  const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
+  const reportFeedback = (text: string, error = true) => { setFeedback({ text, error }); onToast?.(text); };
+  const originalChannel = channels.find(channel => channel.id === editingId);
+  const editorDirty = editorOpen && (editingId
+    ? newLabel !== originalChannel?.label || Boolean(newEndpoint.trim())
+    : Boolean(newLabel.trim() || newEndpoint.trim() || newKind !== "slack-webhook"));
+  useSettingsDraft({ dirty: Boolean(editorDirty), busy: mutating !== null || previewSaving, label: "通知渠道" });
+  const discardEditor = (action: () => void) => {
+    if (mutationInFlight.current) return;
+    if (!editorDirty) { action(); return; }
+    requestConfirmation({ title: "舍弃通知渠道的修改？", description: "当前渠道尚未保存。已保存的通知配置不会改变。", confirmLabel: "舍弃修改", danger: true, action });
+  };
 
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
@@ -150,7 +163,7 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
       // freshly submitted webhook secret in the channel list.
       refreshed = await load();
     } catch (error) {
-      onToast?.(`${editingId ? "保存" : "添加"}失败：${String(error).replace(/^Error:\s*/, "")}`);
+      reportFeedback(`${editingId ? "保存" : "添加"}失败：${String(error).replace(/^Error:\s*/, "")}`);
       return;
     } finally {
       mutationInFlight.current = false;
@@ -161,7 +174,7 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
     setNewKind("slack-webhook");
     setEditingId(null);
     setEditorOpen(false);
-    if (!refreshed) onToast?.(`通知渠道“${label}”已保存，列表暂未更新，请刷新重试`);
+    reportFeedback(refreshed ? `通知渠道“${label}”已保存，立即用于后续通知。` : `通知渠道“${label}”已保存，列表暂未更新，请刷新重试`, false);
   };
 
   const edit = (channel: NotifyChannel) => {
@@ -204,7 +217,7 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
       await setNotifyChannelEnabled(id, !ch.enabled);
       setChannels((items) => items.map((item) => item.id === id ? { ...item, enabled: !item.enabled } : item));
     } catch (error) {
-      onToast?.(`修改失败：${String(error).replace(/^Error:\s*/, "")}`);
+      reportFeedback(`修改失败：${String(error).replace(/^Error:\s*/, "")}`);
     } finally {
       mutationInFlight.current = false;
       setMutating(null);
@@ -217,9 +230,9 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
     setMutating(`test:${id}`);
     try {
       const result = await testNotifyChannel(id);
-      onToast?.(result.ok ? "测试通知已向渠道提交" : `发送失败：${result.error ?? "检查渠道地址"}`);
+      reportFeedback(result.ok ? "测试通知已向渠道提交" : `发送失败：${result.error ?? "检查渠道地址"}`, !result.ok);
     } catch (error) {
-      onToast?.(`发送失败：${String(error).replace(/^Error:\s*/, "")}`);
+      reportFeedback(`发送失败：${String(error).replace(/^Error:\s*/, "")}`);
     } finally {
       mutationInFlight.current = false;
       setMutating(null);
@@ -234,7 +247,7 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
     try {
       await setDesktopNotifyEnabled(!desktop.enabled);
       await loadDesktop();
-    } catch (error) { onToast?.(`更新桌面提醒失败：${String(error).replace(/^Error:\s*/, "")}`); }
+    } catch (error) { reportFeedback(`更新桌面通知失败：${String(error).replace(/^Error:\s*/, "")}`); }
     finally { mutationInFlight.current = false; setMutating(null); }
   };
   const testDesktop = async () => {
@@ -254,14 +267,15 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
 
   return (
     <div className="notify-panel" role="region" aria-label="通知设置">
-      <SettingsGroup title="桌面提醒" desc="任务需要授权、回复完成或失败时，提醒你回来查看。">
+      <SettingsGroup title="桌面通知" settingId="desktop-notifications">
         <div className="settings-row settings-row--comfortable notify-panel__preference">
           <div className="settings-row__label settings-row__label--stacked">
-            <span className="settings-row__name">允许桌面提醒</span>
-            <span className="settings-row__description">{desktopLoading ? "正在读取状态…" : desktopError ? "读取失败，请重试" : desktop?.source === "policy" ? "组织策略已限制桌面提醒" : desktop?.enabled ? desktop.source === "default" ? "默认开启，无需添加渠道" : "已开启" : "你已关闭桌面提醒"}。关闭后仍保留应用内通知记录。</span>
+            <span className="settings-row__name">桌面通知</span>
+            <span className="settings-row__description">任务完成、失败或需要确认时，通过系统通知提醒你。关闭后仍保留应用内通知记录。</span>
+            <span className="settings-preference-state" aria-live="polite">{desktopLoading ? "正在读取状态…" : desktopError ? "读取失败，请重试" : mutating === "desktop-toggle" ? "正在保存…" : desktop?.source === "policy" ? "组织策略已限制桌面通知" : desktop?.enabled ? desktop.source === "default" ? "已开启 · 默认设置" : "已开启" : "已关闭"}</span>
           </div>
           <label className="sk-toggle">
-            <input type="checkbox" role="switch" aria-label="桌面提醒" checked={desktop?.enabled ?? false}
+            <input type="checkbox" role="switch" aria-label="桌面通知" checked={desktop?.enabled ?? false}
               onChange={() => void toggleDesktop()} disabled={desktopLoading || !!desktopError || mutating !== null || !desktop || desktop.source === "policy"} />
             <span className="sk-toggle-track"><span className="sk-toggle-thumb" /></span>
           </label>
@@ -273,24 +287,24 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
         {desktop?.policyError && <p className="settings-msg settings-msg--warn">{desktop.policyError}</p>}
         <div className="notify-panel__test-row">
           <details className="notify-panel__help">
-            <summary>收不到桌面提醒？</summary>
+            <summary>收不到桌面通知？</summary>
             <p>请检查系统通知权限与勿扰模式。macOS：系统设置 → 通知；Windows：设置 → 系统 → 通知，找到 EchoAgent 并允许通知。</p>
             <p>查看当前任务时，不重复弹出该任务的常规提醒。定时任务按各自的通知设置提醒。</p>
             <p>应用目前无法读取系统授权状态。测试提交成功表示系统已接收请求，是否弹出仍由系统决定。</p>
           </details>
-          <button type="button" className="settings-btn" onClick={() => void testDesktop()} disabled={!desktop?.enabled || desktopLoading || !!desktopError || mutating !== null}>{mutating === "desktop-test" ? "正在提交…" : "测试桌面提醒"}</button>
+          <button type="button" className="settings-btn" onClick={() => void testDesktop()} disabled={!desktop?.enabled || desktopLoading || !!desktopError || mutating !== null}>{mutating === "desktop-test" ? "正在提交…" : "发送测试通知"}</button>
         </div>
         {desktopTestResult && <p className="notify-panel__feedback" role="status">{desktopTestResult}</p>}
       </SettingsGroup>
 
-      <SettingsGroup title="通知内容">
+      <SettingsGroup title="通知内容" settingId="notification-content">
         <div className="settings-row settings-row--comfortable notify-panel__preference">
           <div className="settings-row__label settings-row__label--stacked">
-            <span className="settings-row__name">显示任务名称</span>
-            <span className="settings-row__description">默认隐藏，避免任务名称出现在锁屏通知中。点击通知仍可回到关联任务。</span>
+            <span className="settings-row__name">在通知中显示任务标题</span>
+            <span className="settings-row__description">关闭后，新通知将隐藏任务标题，减少锁屏信息暴露。点击通知仍可回到关联任务。</span>
           </div>
           <label className="sk-toggle">
-            <input type="checkbox" aria-label="桌面通知显示任务名称" checked={showTaskTitle}
+            <input type="checkbox" role="switch" aria-label="在通知中显示任务标题" checked={showTaskTitle}
               disabled={previewLoading || previewSaving || Boolean(previewError)}
               onChange={(event) => void savePreview(event.target.checked)} />
             <span className="sk-toggle-track"><span className="sk-toggle-thumb" /></span>
@@ -302,14 +316,14 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
         </p>}
       </SettingsGroup>
 
-      <section className="notify-advanced">
+      <section className="notify-advanced" data-setting-id="external-notifications">
         <button type="button" className="notify-advanced__toggle" aria-expanded={advancedOpen} aria-controls={advancedId} onClick={() => setAdvancedOpen(!advancedOpen)}>
           <span className="notify-advanced__heading"><span className="settings-group__title">推送到其他应用</span><span className="settings-group__desc">高级选项 · Slack、Discord 和 Webhook</span></span>
           <span className="notify-advanced__count">{loading ? "正在读取…" : loadError ? "读取失败" : customChannels.length ? `${customChannels.length} 个已配置` : "未配置"}</span>
           <ChevronDown size={16} aria-hidden="true" />
         </button>
         {advancedOpen && <div className="notify-advanced__content" id={advancedId}>
-          <p className="notify-panel__external-note">将任务事件发送到已配置的外部应用。接收范围遵循各任务的通知设置；远程对话与账号绑定请前往“消息通道”。</p>
+          <p className="notify-panel__external-note">将任务事件发送到已配置的外部应用，接收范围遵循各任务的通知设置。远程对话与账号绑定请前往{onOpenWeixin ? <button type="button" className="settings-btn settings-btn--ghost settings-btn--compact" onClick={onOpenWeixin}>微信连接</button> : "“设置 → 微信连接”"}。</p>
           {loadError && (
             <div className="panel-inline-error" role="alert">
               <span>通知渠道加载失败：{loadError}</span>
@@ -333,7 +347,7 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
                       <button type="button" className="settings-btn settings-btn--compact notify-panel__btn" role="switch" aria-checked={ch.enabled} onClick={() => void toggle(ch.id)} title={ch.enabled ? "禁用" : "启用"} aria-label={`${ch.enabled ? "禁用" : "启用"} ${ch.label}`} disabled={loading || mutating !== null || !!loadError}>
                         {ch.enabled ? "已开启" : "已关闭"}
                       </button>
-                      <button type="button" className="settings-btn settings-btn--compact notify-panel__btn" onClick={() => edit(ch)} disabled={loading || mutating !== null || !!loadError}>编辑</button>
+                      <button type="button" className="settings-btn settings-btn--compact notify-panel__btn" onClick={() => discardEditor(() => edit(ch))} disabled={loading || mutating !== null || !!loadError}>编辑</button>
                       <button type="button" className="settings-btn settings-btn--compact notify-panel__btn" onClick={() => void testSend(ch.id)} disabled={!ch.enabled || mutating !== null || !!loadError} title="测试发送">
                         测试
                       </button>
@@ -382,7 +396,7 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
                 disabled={mutating !== null || loading || Boolean(loadError)}
               /></label>}
               <div className="notify-panel__form-actions">
-                <button type="button" className="form-button" onClick={cancelEdit} disabled={mutating !== null}>取消</button>
+                <button type="button" className="form-button" onClick={() => discardEditor(cancelEdit)} disabled={mutating !== null}>取消</button>
                 <button type="submit" className="form-button form-button--primary" disabled={mutating !== null || loading || Boolean(loadError) || (!editingId && newKind !== "desktop" && !newEndpoint.trim())}>
                   {mutating === "save" ? "保存中…" : editingId ? "保存修改" : "+ 添加"}
                 </button>
@@ -391,6 +405,7 @@ export function NotifyChannelsPanel({ onToast, sessionId }: { onToast?: (msg: st
           </form>}
         </div>}
       </section>
+      {feedback && <p className={`settings-msg${feedback.error ? " settings-msg--warn" : ""}`} role={feedback.error ? "alert" : "status"}>{feedback.text}</p>}
       {dialog}
     </div>
   );

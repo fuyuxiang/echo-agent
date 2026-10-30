@@ -115,3 +115,31 @@ describe("个人记忆管理", () => {
     expect(screen.getByRole("button", { name: "添加 1 条记忆" })).toBeInTheDocument();
   });
 });
+
+
+it("查看原记忆不算修改，编辑后恢复原值不触发离开警告", async () => {
+  const onUnsavedChange = vi.fn();
+  render(<PersonalMemoryPanel onUnsavedChange={onUnsavedChange} />);
+  fireEvent.click(await screen.findByRole("button", { name: "更正 报告语言" }));
+  expect(onUnsavedChange).toHaveBeenLastCalledWith(false);
+  const content = screen.getByLabelText("记忆内容");
+  fireEvent.change(content, { target: { value: "先给结论" } });
+  expect(onUnsavedChange).toHaveBeenLastCalledWith(true);
+  fireEvent.change(content, { target: { value: record.content } });
+  expect(onUnsavedChange).toHaveBeenLastCalledWith(false);
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.queryByLabelText("记忆内容")).toBeNull();
+});
+
+it("导入原文变更后必须重新预览，不能保存旧预览", async () => {
+  render(<PersonalMemoryPanel />);
+  fireEvent.click(await screen.findByRole("button", { name: "导入记忆" }));
+  const content = screen.getByLabelText("待导入的记忆");
+  fireEvent.change(content, { target: { value: "报告先给结论" } });
+  fireEvent.click(screen.getByRole("button", { name: "预览导入" }));
+  expect(screen.getByRole("button", { name: "添加 1 条记忆" })).toBeInTheDocument();
+  fireEvent.change(content, { target: { value: "报告使用双语" } });
+  expect(screen.queryByRole("button", { name: "添加 1 条记忆" })).toBeNull();
+  expect(api.memoryRecordSave).not.toHaveBeenCalled();
+});
