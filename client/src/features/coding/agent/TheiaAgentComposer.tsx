@@ -324,7 +324,7 @@ export function TheiaAgentComposer({
       aria-label={task ? "任务追问" : "新建开发任务"}
     >
       <div className="echo-theia-agent__composer-box">
-        {(includeEditor || extraContext.length > 0 || images.length > 0 || contextPaths.length > 0 || streaming) &&
+        {(includeEditor || extraContext.length > 0 || images.length > 0 || contextPaths.length > 0 || streaming && !awaitingDecision) &&
           <div className="echo-theia-agent__attachments">
             {(includeEditor || extraContext.length > 0) && <div className="coding-context-controls" aria-label="已添加的编辑器上下文">
               {includeEditor && (
@@ -410,7 +410,7 @@ export function TheiaAgentComposer({
                 ))}
               </div>
             )}
-            {streaming && (
+            {streaming && !awaitingDecision && (
               <small className="coding-panel__hint">
                 模式选择用于下一轮；停止当前执行需等待停止确认。
               </small>
@@ -448,7 +448,9 @@ export function TheiaAgentComposer({
           }}
           rows={3}
           placeholder={
-            !task
+            awaitingDecision
+              ? "请先处理上方需要确认的事项"
+              : !task
               ? intent === "ask"
                 ? "提问，或添加代码来讨论…"
                 : intent === "plan"

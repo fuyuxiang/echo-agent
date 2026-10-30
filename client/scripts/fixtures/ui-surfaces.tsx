@@ -22,11 +22,16 @@ import { WorkbenchIdentity } from "../../src/features/coding/shell/WorkbenchIden
 import { ProjectSwitcher } from "../../src/features/coding/shell/ProjectSwitcher";
 import { TaskSwitcher } from "../../src/features/coding/shell/TaskSwitcher";
 import { TheiaAgentComposer } from "../../src/features/coding/agent/TheiaAgentComposer";
+import { AgentPane } from "../../src/features/coding/agent/AgentPane";
+import type { CodingTask } from "../../src/features/coding/lib/types";
 import { OrganizationMemoryPanel } from "../../src/components/OrganizationMemoryPanel";
 import { useSubagentStore } from "../../src/stores/subagent-store";
 import { usePermissionStore } from "../../src/stores/permission-store";
+import { useQuestionStore } from "../../src/stores/question-store";
+import { questionReviewRequest } from "./question-review";
 import { ChatView } from "../../src/components/ChatView";
 import { Sidebar } from "../../src/components/Sidebar";
+import { SessionNavigation } from "../../src/components/SessionHeader";
 import { AutomationEditPage } from "../../src/components/automation/AutomationEditPage";
 import { AutomationPanel } from "../../src/components/AutomationPanel";
 import type { Automation } from "../../src/lib/types";
@@ -216,7 +221,7 @@ if (query.get("surface") === "sidebar-scroll") {
     useProjectsStore.setState({ projects: [{ ...project, name: "产品设计", conversations: [{ sessionId: "sidebar-project-session", title: "项目中的方案讨论与细节确认", createdAt: ago(120) }] }] });
   }
 }
-if (query.get("surface") === "workbench") {
+if (["workbench", "coding-question"].includes(query.get("surface") ?? "")) {
   const chat = useSessionStore.getState();
   const state = query.get("state") || "complete";
   useSessionsStore.setState({ tasksOpen: true });
@@ -233,7 +238,11 @@ if (query.get("surface") === "workbench") {
     { content: "审查真实业务入口", status: "completed", priority: "high" },
     { content: "验证工作台交互与交付", status: "in_progress", priority: "high" },
   ] });
-  if (["running", "permission", "paused", "browser-paused", "computer-paused"].includes(state)) chat.startStreaming("review-conversation", "workbench-run");
+  if (["running", "permission", "question", "paused", "browser-paused", "computer-paused"].includes(state)) chat.startStreaming("review-conversation", "workbench-run");
+  if (state === "question") {
+    useSessionsStore.getState().upsert({ sessionId: "review-conversation", title: "制作一份中年打工人的养生 PPT", status: "awaiting_question" });
+    useQuestionStore.getState().request(questionReviewRequest(query.get("questionVariant"), query.get("questionMode") === "plan"));
+  }
   if (state === "permission") {
     const kind = query.get("permissionCase");
     useSessionsStore.getState().upsert({ sessionId: "review-conversation", status: "awaiting_permission" });
@@ -282,7 +291,7 @@ Object.assign(window, {
     unregisterCallback: (id: number) => callbacks.delete(id),
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
     invoke: async (command: string, args: any = {}) => {
-      if (query.get("surface") === "workbench") workbenchCalls.push({command, args});
+      if (["workbench", "coding-question"].includes(query.get("surface") ?? "")) workbenchCalls.push({command, args});
       if (command === "agent_resolve_permission") recoveryReview.permissionResolutions++;
       if (command === "permission_mode_set") recoveryReview.modeChanges++;
       if (extensionState === "error" && ["agents_list", "skills_list", "plugins_list", "mcp_list"].includes(command)) {
@@ -309,6 +318,9 @@ Object.assign(window, {
         case "list_dir": return [];
         case "agent_list_pending_interactions": {
           const state = query.get("state") ?? "long";
+          if (["workbench", "coding-question"].includes(query.get("surface") ?? "") && state === "question") return {
+            permissions: [], questions: useQuestionStore.getState().queues[args.sessionId] ?? [], planApprovals: [], folderTrustRequests: [],
+          };
           if (query.get("surface") !== "trust" || trustResolved) return { permissions: [], questions: [], planApprovals: [], folderTrustRequests: [] };
           if (state === "loading") return new Promise(() => {});
           if (state === "error") throw new Error(trustReviewError);
@@ -370,6 +382,9 @@ Object.assign(window, {
         ];
         case "agent_resolve_permission":
           if (query.get("permissionFailure") === "1") throw new Error("连接暂不可用，请重试");
+          return true;
+        case "agent_resolve_question":
+          if (query.get("questionFailure") === "1") throw new Error("连接暂不可用，请重试，已填写的回答仍会保留");
           return true;
         case "permission_mode_set": return { sessionId: args.sessionId, permissionMode: args.mode, configuredPermissionMode: args.mode,
           autoModeAvailable: true, alwaysApproveAvailable: true, locked: false, runtimeSyncState: "synced", runtimeAppliedMode: args.mode,
@@ -498,13 +513,14 @@ Object.assign(window, {
 });
 
 function ConversationLayoutFixture() {
+  const [searchOpen, setSearchOpen] = useState(false);
   const sessionId = useSessionStore((state) => state.sessionId);
   const entry = useSessionsStore(state => state.independent.find(item => item.sessionId === sessionId));
   const layout = useAppSidebarLayout();
   return <div className={"app" + (query.get("platform") === "mac" ? " app--macos" : "")}>
     <SidebarLayoutContext.Provider value={layout.context}>
     <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "")}>
-      <Sidebar activeNav="新建任务" onNewSession={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => {}}
+      <Sidebar activeNav="新建任务" onNewSession={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => setSearchOpen(true)}
         onSelect={(id) => { useSessionStore.getState().setSession(id); useSessionsStore.setState({ currentSessionId: id }); }} />
       <SidebarResizeHandle layout={layout} />
       <main className="app__main">
@@ -535,23 +551,55 @@ function ConversationLayoutFixture() {
         />
       </main>
     </div></SidebarLayoutContext.Provider>
+    <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} onSelect={() => setSearchOpen(false)} />
     <GlobalTooltip />
   </div>;
 }
 
 function HomeReviewFixture() {
+  const [searchOpen, setSearchOpen] = useState(false);
   const layout = useAppSidebarLayout();
   const [cwd, setCwd] = useState(query.has("automaticWorkspace") ? "" : "/review/EchoAgent");
-  return <div className="app"><SidebarLayoutContext.Provider value={layout.context}>
+  return <div className={"app" + (query.get("platform") === "mac" ? " app--macos" : "")}><SidebarLayoutContext.Provider value={layout.context}>
     <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "") + (layout.resizing ? " app__body--sidebar-resizing" : "")}>
-      <Sidebar activeNav="新建任务" onNewSession={() => {}} onSelect={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => {}} onToggleCollapse={() => layout.setCollapsed(true)} />
+      <Sidebar activeNav="新建任务" onNewSession={() => {}} onSelect={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => setSearchOpen(true)} />
       <SidebarResizeHandle layout={layout} />
       <main className="app__main">
-        {layout.collapsed && <div className="main-page-controls"><button className="main-topbar__btn" aria-label="展开侧边栏" onClick={() => layout.setCollapsed(false)}>展开侧边栏</button></div>}
+        <header className="main-page-controls" data-tauri-drag-region>
+          <SessionNavigation sidebarCollapsed={layout.collapsed} onToggleSidebar={layout.context.toggleSidebar}
+            onNewTask={() => { (window as any).workbenchNewTask = true; }} />
+        </header>
         <HomePage onSend={() => {}} streaming={false} apiReady={query.get("state") !== "unconfigured"} creatingSession={query.get("state") === "loading"} sendError={query.get("state") === "error" ? "会话创建失败，请重试" : null} onOpenSettings={() => {}} onPlaceholder={() => {}} models={[{ id: "review/model", label: "评审模型", providerId: "review", providerKind: "custom" }]} modelId="review/model" onModelChange={() => {}} cwd={cwd} automaticWorkspace={!cwd} defaultWorkspaceCwd="/review/EchoAgent" workspaces={[{cwd:"/review/EchoAgent",sessionCount:1},{cwd:"/review/Other",sessionCount:1}]} onSelectWorkspace={setCwd} />
       </main>
     </div>
+    <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} onSelect={() => setSearchOpen(false)} />
+    <GlobalTooltip />
   </SidebarLayoutContext.Provider></div>;
+}
+
+function CodingQuestionReview() {
+  const pending = useQuestionStore(state => Boolean(state.queues["review-conversation"]?.length));
+  const width = Math.min(800, Math.max(300, Number(query.get("panelWidth")) || 410));
+  const task: CodingTask = {
+    schemaVersion: 2, id: "question-review", name: "确认实现方案", requirement: "确认实现方案", phase: "implementing",
+    acceptanceCriteria: [], taskNodes: [], planIssues: [], globalConstraints: [],
+    sessionId: "review-conversation", createdAt: "2026-10-31T00:00:00Z", updatedAt: "2026-10-31T00:00:00Z",
+  };
+  return <div className="coding-workbench coding-workbench--theia" style={{ "--echo-agent-width": `${width}px` } as React.CSSProperties}>
+    <header className="coding-workbench__topbar"><WorkbenchIdentity onExit={() => {}}><span>确认实现方案</span></WorkbenchIdentity><div /></header>
+    <main className="echo-theia-workspace" />
+    <div className="echo-theia-agent__splitter" />
+    <aside className="echo-theia-agent">
+      <div className="echo-theia-agent__heading"><strong>Agent</strong></div>
+      <div className="echo-theia-agent__content"><AgentPane task={task} changeSet={null} verifications={[]}
+        sessionId="review-conversation" messages={[]} streaming awaitingPermission={false} awaitingQuestion={pending}
+        sending={false} onContinue={() => {}} onOpenChanges={() => {}} onOpenReport={() => {}} /></div>
+      <TheiaAgentComposer workspaceRoot="/review/EchoAgent" task={task} sessionId="review-conversation"
+        models={[{ id: "review/model", label: "评审模型", providerId: "review", providerKind: "custom" }]}
+        modelId="review/model" contextPaths={[]} apiReady starting={false} sending={false} streaming awaitingDecision={pending}
+        onModelChange={() => {}} onStart={() => {}} onSend={() => {}} onRemoveContext={() => {}} onDraftContextPaths={() => {}} />
+    </aside>
+  </div>;
 }
 
 function CodingSidebarReview({ children }: { children: React.ReactNode }) {
@@ -645,15 +693,20 @@ function Fixture() {
     />
     <GlobalTooltip />
   </div>;
-  if (surface === "sidebar-scroll") return <div style={{ display: "flex", height: "100%" }}>
+  if (surface === "sidebar-scroll") return <div className={"app" + (query.get("platform") === "mac" ? " app--macos" : "")}>
+    {/* Reserve the same 32px custom title bar as the Windows/Linux shell. */}
+    {query.get("platform") === "other" && <div className="titlebar" aria-hidden="true" />}
+    <div className="app__body">
     <Sidebar
       activeNav="新建任务" onNewSession={() => {}} onSelect={() => {}} onNavigate={() => {}}
       onOpenSettings={() => {}} onOpenSearch={() => {}} onToggleCollapse={() => {}}
       onPlaceholder={() => {}}
     />
     <main style={{ flex: 1, background: "var(--echo-bg-secondary)" }} />
+    </div>
     <GlobalTooltip />
   </div>;
+  if (surface === "coding-question") return <CodingQuestionReview />;
   if (surface === "conversation-layout" || surface === "workbench") return <ConversationLayoutFixture />;
   if (surface.startsWith("modal-")) return <ModalReview variant={surface === "modal-short" ? "short" : surface === "modal-error" ? "error" : "long"} />;
   if (surface === "results") return <ResultReviewFixture />;

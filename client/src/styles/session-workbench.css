@@ -15,6 +15,7 @@
 .session-header { container: session-header / inline-size; }
 .session-header__navigation, .session-header__actions { display: flex; align-items: center; gap: 4px; flex: none; }
 .session-header__navigation:empty { display: none; }
+.app--macos .app__body--collapsed .session-header__navigation { align-self: flex-start; margin-top: 12px; }
 .session-header__identity { display: flex; align-items: center; gap: 16px; flex: 1 1 auto; min-width: 0; }
 .session-header__identity .main-topbar__title-area { flex: 0 1 auto; min-width: 60px; max-width: 55%; }
 .session-header__identity .main-topbar__title-input { width: 220px; min-width: 60px; max-width: 55%; }

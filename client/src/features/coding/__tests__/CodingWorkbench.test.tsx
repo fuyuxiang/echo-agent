@@ -147,23 +147,29 @@ describe("Theia workbench", () => {
     useMessageQueueStore.setState({queues:{}});
   });
 
-  it.each(["", "/repo"])("toggles the global sidebar in both directions and keeps focus in the coding header (%s)", async cwd => {
+  it.each(["", "/repo"])("restores the sidebar from the coding header and returns focus to its toolbar (%s)", async cwd => {
     function Shell() {
       const layout = useAppSidebarLayout();
       return <SidebarLayoutContext.Provider value={layout.context}>
-        <CodingWorkbench cwd={cwd} models={[]} />
+        <div ref={layout.bodyRef}>
+          <aside className="sidebar" id="app-sidebar" hidden={layout.collapsed}>
+            <button aria-label="收起侧边栏" onClick={layout.context.toggleSidebar}>收起</button>
+          </aside>
+          <CodingWorkbench cwd={cwd} models={[]} />
+        </div>
       </SidebarLayoutContext.Provider>;
     }
-    render(<Shell />);
-    const toggle = screen.getByRole("button", { name: "收起侧边栏" });
-    toggle.focus();
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(toggle).toHaveFocus();
-    fireEvent.click(screen.getByRole("button", { name: "展开侧边栏" }));
+    const { container } = render(<Shell />);
+    expect(container.querySelector('.coding-workbench__topbar button[aria-label="收起侧边栏"]')).toBeNull();
+    const collapse = screen.getByRole("button", { name: "收起侧边栏" });
+    collapse.focus();
+    fireEvent.click(collapse);
+    const expand = screen.getByRole("button", { name: "展开侧边栏" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    expect(expand).toHaveFocus();
+    fireEvent.click(expand);
     expect(screen.queryByRole("button", { name: "展开侧边栏" })).not.toBeInTheDocument();
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(toggle).toHaveFocus();
+    expect(collapse).toHaveFocus();
     if (cwd) expect(await screen.findByTitle("Echo Code IDE")).toBeInTheDocument();
     else expect(screen.getByText("打开代码库开始开发")).toBeInTheDocument();
   });

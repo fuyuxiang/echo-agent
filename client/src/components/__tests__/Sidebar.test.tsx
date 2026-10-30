@@ -59,6 +59,17 @@ describe("Sidebar", () => {
     });
   });
 
+  it("空任务区显示引导，有任务后恢复列表标题", () => {
+    render(<Sidebar {...base} />);
+    expect(screen.getByText("暂无任务")).toBeInTheDocument();
+    expect(screen.getByText("点击上方按钮开始新任务")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^任务 \(/ })).not.toBeInTheDocument();
+    act(() => useSessionsStore.getState().setIndependent([{ sessionId: "first-task", title: "第一件任务", cwd: "/home" }]));
+    expect(screen.queryByText("暂无任务")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^任务 \(/ })).toHaveTextContent("任务 (1)");
+    expect(screen.getByText("第一件任务")).toBeInTheDocument();
+  });
+
   it("按工作流顺序渲染导航项", () => {
     const { container } = render(<Sidebar {...base} />);
     const nav = container.querySelector(".sidebar__nav");
@@ -366,6 +377,23 @@ describe("Sidebar", () => {
       else expect(within(button).queryByRole("img")).toBeNull();
       expect(button).not.toHaveTextContent("运行中");
     }
+  });
+
+  it("将收起、全局搜索和筛选集中在顶部，品牌行和任务标题保持简洁", () => {
+    const { container } = render(<Sidebar {...base} />);
+    const tools = screen.getByRole("group", { name: "侧边栏工具" });
+    expect(within(tools).getAllByRole("button").map(button => button.getAttribute("aria-label")))
+      .toEqual(["收起侧边栏", "搜索全部任务", "筛选任务"]);
+    expect(container.querySelector(".sidebar__logo-row button")).toBeNull();
+    expect(container.querySelector(".sidebar__section-head .task-filter-trigger")).toBeNull();
+  });
+
+  it("未传折叠回调时使用应用侧栏上下文", () => {
+    const toggleSidebar = vi.fn();
+    const layout = { collapsed: false, resizing: false, panelMaxWidth: 600, registerPanel: vi.fn(), expandSidebar: vi.fn(), toggleSidebar };
+    render(<SidebarLayoutContext.Provider value={layout}><Sidebar {...base} onToggleCollapse={undefined} /></SidebarLayoutContext.Provider>);
+    fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
+    expect(toggleSidebar).toHaveBeenCalledOnce();
   });
 
   it("搜索按钮触发 onOpenSearch,设置按钮触发 onOpenSettings", () => {

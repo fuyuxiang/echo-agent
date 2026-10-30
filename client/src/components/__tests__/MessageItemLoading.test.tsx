@@ -87,4 +87,27 @@ describe("waiting companion lifecycle", () => {
     view.rerender(<ThemeProvider><MessageItem message={{...waiting,parts:[outputCases[2][1]]}} streaming waitingForModel={false} /></ThemeProvider>);
     expect(view.container.querySelector(".execution-process--running")).not.toBeNull();
   });
+
+  it("回复期间使用流动 E，等待用户、出错和完成时保持静止", () => {
+    const renderMessage = (props = {}) => <ThemeProvider><MessageItem message={waiting} streaming {...props} /></ThemeProvider>;
+    const view = render(renderMessage());
+    expect(view.container.querySelector(".msg__avatar img")).toBeNull();
+    expect(view.container.querySelector(".echo-mark--active")).not.toBeNull();
+    for (const props of [
+      { waitingForModel: false },
+      { runtimeError: "模型连接中断" },
+      { streaming: false },
+      { message: { ...waiting, complete: true } },
+    ]) {
+      view.rerender(renderMessage(props));
+      expect(view.container.querySelector(".echo-mark")).not.toBeNull();
+      expect(view.container.querySelector(".echo-mark--active")).toBeNull();
+    }
+  });
+
+  it("自定义作者保留首字头像", () => {
+    const view = render(<ThemeProvider><MessageItem message={waiting} streaming authorName="产品专家" /></ThemeProvider>);
+    expect(view.container.querySelector(".msg__avatar")).toHaveTextContent("产");
+    expect(view.container.querySelector(".echo-mark")).toBeNull();
+  });
 });

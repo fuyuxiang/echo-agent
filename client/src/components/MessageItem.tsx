@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { LoadingRow } from "./LoadingRow";
+import { EchoMark } from "./EchoMark";
 import { ExecutionProcess } from "./ExecutionProcess";
 import { ActionMenu } from "./ActionMenu";
 import { FeedbackDialog } from "./FeedbackDialog";
@@ -43,7 +44,6 @@ import {
   type MessageRetryKind,
 } from "@/lib/message-retry";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
-const logoMarkUrl = "/app-icon.png";
 import {
   createWebSpeechTtsProvider,
   getActiveTts,
@@ -413,10 +413,12 @@ export const MessageItem = memo(function MessageItem({
     <div className={"msg msg--assistant" + (compactIdentity ? " msg--continuation" : "")}>
       <div>
         <div className="msg__header">
-          <span className="msg__avatar">
-            {authorName ? <span aria-hidden="true">{authorName.slice(0, 1)}</span> : <img src={logoMarkUrl} alt="" aria-hidden="true" draggable={false} />}
+          <span className={`msg__avatar${authorName ? "" : " msg__avatar--echo"}`}>
+            {authorName ? <span aria-hidden="true">{authorName.slice(0, 1)}</span> : (
+              <EchoMark active={streaming && waitingForModel && !message.complete && !runtimeError} />
+            )}
           </span>
-          <span className="msg__name">{authorName ?? "EchoAgent"}</span>
+          {authorName ? <span className="msg__name">{authorName}</span> : <span className="sr-only">EchoAgent</span>}
         </div>
         <div className="msg__body">
           {streaming && waitingForModel && !message.complete && message.parts.length === 0 && !hasKnowledgeTrace && (

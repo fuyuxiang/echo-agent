@@ -858,7 +858,11 @@
   background: var(--echo-bg-secondary);
 }
 
-.app--macos .coding-workbench__topbar {
+.app--macos .app__body--collapsed .coding-workbench {
+  grid-template-rows: max(56px, 2.75rem) minmax(0, 1fr);
+}
+
+.app--macos .app__body--collapsed .coding-workbench__topbar {
   /* Native Overlay traffic lights occupy roughly x:12-76. */
   padding-left: 84px;
 }
@@ -2424,6 +2428,19 @@
   max-height: min(56%, 440px);
   overflow: auto;
   scrollbar-gutter: stable;
+}
+
+/* A questionnaire owns input while the agent waits. Give its scrollable body
+   room to read, while retaining a message row below the interaction. */
+.coding-agent__interaction:has(.question-inline) {
+  max-height: calc(100% - 56px);
+}
+
+/* Keep a held draft available in a small scrolling field while the question
+   owns input. Resolving the card restores the draft's normal height. */
+.echo-theia-agent:has(.question-inline) .echo-theia-agent__composer-box textarea {
+  min-height: 48px;
+  max-height: 48px;
 }
 
 .coding-agent__interaction .perm-inline,

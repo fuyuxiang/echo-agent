@@ -30,11 +30,11 @@ page.setDefaultNavigationTimeout(60000);
       for (const width of [1440, 768]) {
         await page.setViewportSize({ width, height: 720 });
         await page.goto(`http://127.0.0.1:1439/__ui-review?surface=${surface}&platform=${platform}`);
-        await page.locator(surface === "collapsed-project" ? ".pd-crumb" : ".panel-navigation > strong").waitFor();
+        await page.locator(surface === "collapsed-project" ? ".pd-crumb" : ".panel-navigation__links").waitFor();
         const layout = await page.evaluate((surface) => {
           const box = (selector) => document.querySelector(selector).getBoundingClientRect();
           const controls = box(".main-page-controls");
-          const heading = box(surface === "collapsed-project" ? ".pd-crumb" : ".panel-navigation > strong");
+          const heading = box(surface === "collapsed-project" ? ".pd-crumb" : ".panel-navigation__links");
           const content = box(surface === "collapsed-project" ? ".pd-page" : ".panel-section");
           const main = box(".app__main");
           const buttons = [...document.querySelectorAll(".main-page-controls button")].map((element) => element.getBoundingClientRect());

@@ -8,11 +8,11 @@ export function WorkbenchIdentity({ onExit, children }: { onExit: () => void; ch
   const sidebarLayout = useContext(SidebarLayoutContext);
   return (
     <div className="coding-workbench__topbar-left" data-tauri-drag-region>
-      {sidebarLayout && (
+      {sidebarLayout?.collapsed && (
         <button type="button" className="coding-icon-btn" onClick={sidebarLayout.toggleSidebar}
-          aria-expanded={!sidebarLayout.collapsed} aria-controls="app-sidebar"
-          aria-label={sidebarLayout.collapsed ? "展开侧边栏" : "收起侧边栏"}
-          data-tip={sidebarLayout.collapsed ? "展开侧边栏" : "收起侧边栏"}>
+          aria-expanded={false} aria-controls="app-sidebar"
+          aria-label="展开侧边栏"
+          data-tip="展开侧边栏">
           <SidebarToggleIcon size="md" />
         </button>
       )}

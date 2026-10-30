@@ -114,10 +114,12 @@ describe("QuestionInlineCard", () => {
     expect(screen.queryByText("Framework?")).not.toBeInTheDocument();
   });
 
-  it("keeps every item in a multi-question request reachable from a keyboard-scrollable region", () => {
+  it("shows one question at a time and retains answers when navigating before a single final submission", async () => {
+    clientMocks.resolve.mockResolvedValue(true);
     useQuestionStore.getState().clearAll();
     useQuestionStore.getState().request({
       ...request,
+      timeout: 1800,
       questions: [
         request.questions[0],
         {
@@ -134,16 +136,104 @@ describe("QuestionInlineCard", () => {
 
     render(<QuestionInlineCard sessionId="session-1" />);
 
-    expect(screen.getByText("2 个问题")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "第 1 题，共 2 题" })).toBeInTheDocument();
     expect(screen.getByText("Framework?")).toBeInTheDocument();
-    expect(screen.getByText("MVP scope?")).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Agent 问题列表" })).toHaveAttribute("tabindex", "0");
+    expect(screen.queryByText("MVP scope?")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "当前问题" })).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("button", { name: "上一题" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /React/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "补充回答" }), { target: { value: "支持离线使用" } });
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    expect(clientMocks.resolve).not.toHaveBeenCalled();
+    expect(screen.getByText("MVP scope?")).toHaveFocus();
+    expect(screen.queryByText("Framework?")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Contacts/ }));
+    fireEvent.click(screen.getByRole("button", { name: "上一题" }));
+    expect(screen.getByRole("button", { name: /React/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("textbox", { name: "补充回答" })).toHaveValue("支持离线使用");
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    expect(screen.getByRole("button", { name: /Contacts/ })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    await waitFor(() => expect(clientMocks.resolve).toHaveBeenCalledTimes(1));
+    expect(clientMocks.resolve).toHaveBeenCalledWith("question-1", {
+      outcome: "accepted",
+      answers: { "Framework?": ["React", "Other"], "MVP scope?": ["Contacts"] },
+      annotations: { "Framework?": { notes: "支持离线使用" } },
+    });
+  });
+
+  it("skips unanswered questions without inventing answers or discarding earlier selections", async () => {
+    clientMocks.resolve.mockResolvedValue(true);
+    useQuestionStore.getState().clearAll();
+    useQuestionStore.getState().request({
+      ...request, timeout: 1800,
+      questions: [request.questions[0], { ...request.questions[0], id: "q-2", question: "Anything else?" }],
+    });
+    render(<QuestionInlineCard sessionId="session-1" />);
+    fireEvent.click(screen.getByRole("button", { name: /React/ }));
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "跳过并提交" }));
+    await waitFor(() => expect(clientMocks.resolve).toHaveBeenCalledTimes(1));
+    expect(clientMocks.resolve).toHaveBeenCalledWith("question-1", {
+      outcome: "accepted", answers: { "Framework?": ["React"] }, annotations: undefined,
+    });
+  });
+
+  it("supports option number shortcuts without capturing numbers or IME confirmation in custom text", () => {
+    render(<QuestionInlineCard sessionId="session-1" />);
+    fireEvent.keyDown(screen.getByRole("region", { name: "当前问题" }), { key: "1" });
+    expect(screen.getByRole("button", { name: /React/ })).toHaveAttribute("aria-pressed", "true");
+    const input = screen.getByRole("textbox", { name: "补充回答" });
+    fireEvent.keyDown(input, { key: "2" });
+    fireEvent.keyDown(screen.getByRole("region", { name: "当前问题" }), { key: "2", isComposing: true });
+    expect(screen.getByRole("button", { name: /Vue/ })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("treats a single-choice custom answer as an alternative and preserves the option's original label and preview", async () => {
+    clientMocks.resolve.mockResolvedValue(true);
+    useQuestionStore.getState().clearAll();
+    useQuestionStore.getState().request({
+      ...request, timeout: 1800,
+      questions: [{ ...request.questions[0], multiSelect: false,
+        options: [{ label: "React（推荐）", description: "UI", preview: "preview" }] }],
+    });
+    render(<QuestionInlineCard sessionId="session-1" />);
+    const option = screen.getByRole("button", { name: /React/ });
+    fireEvent.click(option);
+    fireEvent.change(screen.getByRole("textbox", { name: "自定义回答" }), { target: { value: "另一种方案" } });
+    expect(option).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(option);
+    expect(screen.getByRole("textbox", { name: "自定义回答" })).toHaveValue("");
+    fireEvent.click(option);
+    expect(option).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "跳过" })).toBeInTheDocument();
+    fireEvent.click(option);
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    await waitFor(() => expect(clientMocks.resolve).toHaveBeenCalledWith("question-1", {
+      outcome: "accepted", answers: { "Framework?": ["React（推荐）"] },
+      annotations: { "Framework?": { preview: "preview" } },
+    }));
+  });
+
+  it.each([
+    ["聊聊这些选择", "chat_about_this"],
+    ["跳过访谈直接规划", "skip_interview"],
+  ])("preserves partial answers for the plan action %s", async (label, outcome) => {
+    clientMocks.resolve.mockResolvedValue(true);
+    render(<QuestionInlineCard sessionId="session-1" />);
+    fireEvent.click(screen.getByRole("button", { name: /React/ }));
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    await waitFor(() => expect(clientMocks.resolve).toHaveBeenCalledExactlyOnceWith("question-1", {
+      outcome, partialAnswers: { "Framework?": "React" },
+    }));
   });
 
   it("does not submit while the user confirms a Chinese IME candidate", async () => {
     clientMocks.resolve.mockResolvedValue(true);
     render(<QuestionInlineCard sessionId="session-1" />);
-    const input = screen.getByPlaceholderText("输入补充回答…");
+    const input = screen.getByRole("textbox", { name: "补充回答" });
     fireEvent.change(input, { target: { value: "中文回答" } });
     fireEvent.keyDown(input, { key: "Enter", isComposing: true });
     fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
@@ -165,7 +255,7 @@ describe("QuestionInlineCard", () => {
       act(() => useQuestionStore.getState().request(next));
       rerender(<QuestionInlineCard sessionId="session-2" />);
       await act(async () => rejectAnswer(new Error("旧请求失败")));
-      expect(screen.getByText("Second question")).toBeInTheDocument();
+      expect(screen.getByRole("region", { name: "Second question" })).toBeInTheDocument();
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: /React/ })).toBeEnabled();
     } finally {

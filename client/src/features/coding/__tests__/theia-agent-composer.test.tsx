@@ -85,9 +85,15 @@ describe("TheiaAgentComposer", () => {
     expect(onEnqueue).toHaveBeenCalledExactlyOnceWith("补充边界测试",["/repo/a.ts"],[]);
     expect(input.onSend).not.toHaveBeenCalled();
     await waitFor(()=>expect(editor).toHaveValue(""));
+    fireEvent.change(editor,{target:{value:"确认后继续使用的草稿"}});
     view.rerender(<TheiaAgentComposer {...input} awaitingDecision />);
     expect(editor).toBeDisabled();
+    expect(editor).toHaveValue("确认后继续使用的草稿");
+    expect(editor).toHaveAttribute("placeholder", "请先处理上方需要确认的事项");
     expect(screen.getByRole("button",{name:"加入待发送队列"})).toBeDisabled();
+    view.rerender(<TheiaAgentComposer {...input} awaitingDecision={false} />);
+    expect(editor).toBeEnabled();
+    expect(editor).toHaveValue("确认后继续使用的草稿");
   });
 
   it("starts a task from the bottom composer and keeps its text on a failed start", async () => {

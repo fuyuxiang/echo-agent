@@ -4,7 +4,7 @@ import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 import { useSessionsStore, selectHasFilter } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useOrgSessionStore } from "@/stores/org-session-store";
-import { IS_MACOS } from "@/lib/platform";
+import { IS_MACOS, shortcutLabel } from "@/lib/platform";
 import { useModalPresence } from "@/lib/use-modal-focus";
 import {
   SIDEBAR_MENU_ITEMS, loadSidebarMenuLayout, saveSidebarMenuLayout,
@@ -38,7 +38,6 @@ import { MoveToProjectDialog } from "./MoveToProjectDialog";
 import { useAppDialog } from "./AppDialog";
 import { GroupSidebar } from "@/features/groups/GroupSidebar";
 import { SidebarMenuCustomizer } from "./SidebarMenuCustomizer";
-const logoMarkUrl = "/app-icon.png";
 
 /** Compact, locale-friendly relative time for the sidebar row tail. */
 function relativeTime(iso: string, now: number): string {
@@ -554,6 +553,7 @@ export function Sidebar({
   activeNav: string;
 }) {
   const sidebarLayout = useContext(SidebarLayoutContext);
+  const collapseSidebar = onToggleCollapse ?? sidebarLayout?.toggleSidebar;
   const [menuLayout, setMenuLayout] = useState(loadSidebarMenuLayout);
   const [customizingMenu, setCustomizingMenu] = useState(false);
   const menuReturnFocus = useRef<HTMLButtonElement | null>(null);
@@ -935,6 +935,8 @@ export function Sidebar({
     [taskSessions, filterStatus, filterDate],
   );
   const scopedIndependentCount = taskSessions.filter((session) => !session.archived).length;
+  const showEmptyTaskState = scopedIndependentCount === 0 && projects.length === 0
+    && !sessionsLoading && !sessionsError && !hasFilter;
   const visibleProjectRowCount = projects.reduce((count, project) => {
     if (!expandedProjects[project.id]) return count + 1;
     const conversationCount = project.conversations.filter((conversation) => (
@@ -946,31 +948,77 @@ export function Sidebar({
 
   return (
     <aside id="app-sidebar" ref={sidebarRef} className="sidebar">
-      {/* macOS Overlay 标题栏:红绿灯悬浮在 logo 行左上,整行作为拖拽区
-          (Windows 的窗口拖拽由自绘 TitleBar 负责,故仅在 mac 加属性)。 */}
-      <div className="sidebar__logo-row" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
-        <img
-          className="sidebar__brand-mark"
-          src={logoMarkUrl}
-          alt=""
-          aria-hidden="true"
-          draggable={false}
-        />
-        <div className="sidebar__logo-col" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
-          <span className="sidebar__logo">EchoAgent</span>
+      {/* Keep global navigation together and leave the macOS traffic lights clear. */}
+      <div className="sidebar__toolbar" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
+        <div className="sidebar__toolbar-actions" role="group" aria-label="侧边栏工具">
+          {collapseSidebar && <button
+            type="button"
+            className="sidebar__icon-btn"
+            aria-label="收起侧边栏"
+            aria-expanded="true"
+            aria-controls="app-sidebar"
+            data-tip={`收起侧边栏（${shortcutLabel("⌘B", "Ctrl+B")}）`}
+            onClick={collapseSidebar}
+          >
+            <SidebarToggleIcon size="md" />
+          </button>}
+          <button type="button" className="sidebar__icon-btn" aria-label="搜索全部任务"
+            data-tip={`搜索全部任务（${shortcutLabel("⌘K", "Ctrl+K")}）`} onClick={onOpenSearch}>
+            <SearchIcon size="md" />
+          </button>
+          <div className="task-filter-wrap" ref={filterRef}>
+            <button
+              ref={filterTriggerRef}
+              type="button"
+              className={"sidebar__icon-btn task-filter-trigger" + (hasFilter ? " task-filter-trigger--active" : "")}
+              aria-label="筛选任务"
+              data-tip={hasFilter ? "筛选任务（已启用）" : "筛选任务"}
+              aria-haspopup="menu"
+              aria-expanded={filterOpen}
+              aria-controls={filterOpen ? "sidebar-task-filter-menu" : undefined}
+              onClick={() => setFilterOpen((v) => !v)}
+              onKeyDown={(event) => {
+                if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
+                  event.preventDefault();
+                  openFilterFromKeyboard(event.key === "ArrowUp" ? "last" : "first");
+                } else if (event.key === "Escape" && filterOpen) {
+                  event.preventDefault();
+                  setFilterOpen(false);
+                }
+              }}
+            >
+              <FilterIcon size="md" />
+              {hasFilter && <span className="task-filter-trigger__dot" />}
+            </button>
+            {filterOpen && (
+              <div
+                ref={filterMenuRef}
+                id="sidebar-task-filter-menu"
+                className="task-filter-popover"
+                role="menu"
+                aria-label="任务筛选"
+                onKeyDown={(event) => handleMenuKeyDown(event, () => {
+                  setFilterOpen(false);
+                  filterTriggerRef.current?.focus();
+                })}
+              >
+                <TaskFilterMenu
+                  filterStatus={filterStatus}
+                  filterDate={filterDate}
+                  hasFilter={hasFilter}
+                  onSelectStatus={setFilterStatus}
+                  onSelectDate={setFilterDate}
+                  onClear={clearFilters}
+                />
+              </div>
+            )}
+          </div>
         </div>
-        <div className="sidebar__logo-spacer" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})} />
-        {onToggleCollapse && <button
-          className="sidebar__icon-btn"
-          aria-label="收起侧边栏"
-          data-tip="收起侧边栏"
-          onClick={onToggleCollapse}
-        >
-          <SidebarToggleIcon size="md" />
-        </button>}
-        <button className="sidebar__icon-btn" aria-label="搜索全部任务" title="搜索全部任务" onClick={onOpenSearch}>
-          <SearchIcon size="md" />
-        </button>
+      </div>
+      <div className="sidebar__logo-row" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
+        <div className="sidebar__logo-col" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
+          <span className="sidebar__logo"><span className="sidebar__logo-echo">Echo</span><span className="sidebar__logo-agent">Agent</span></span>
+        </div>
       </div>
 
       <nav className="sidebar__nav">
@@ -1027,7 +1075,7 @@ export function Sidebar({
         )}
         {/* 任务分组: 所有未归属项目的会话，cwd 不参与分类。 */}
         <div className={"sidebar__list-section sidebar__list-section--tasks" + (tasksOpen && filteredIndependent.length > 3 ? " sidebar__list-section--long" : "")}>
-        <div className="sidebar__section-head">
+        {!showEmptyTaskState && <div className="sidebar__section-head">
           <button
             type="button"
             className="sidebar__section-label"
@@ -1041,61 +1089,15 @@ export function Sidebar({
               className={"sidebar__chevron" + (tasksOpen ? "" : " sidebar__chevron--collapsed")}
             />
           </button>
-          <div className="task-filter-wrap" ref={filterRef}>
-            <button
-              ref={filterTriggerRef}
-              type="button"
-              className={"sidebar__section-action task-filter-trigger" + (hasFilter ? " task-filter-trigger--active" : "")}
-              aria-label="筛选任务"
-              aria-haspopup="menu"
-              aria-expanded={filterOpen}
-              aria-controls={filterOpen ? "sidebar-task-filter-menu" : undefined}
-              onClick={() => setFilterOpen((v) => !v)}
-              onKeyDown={(event) => {
-                if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
-                  event.preventDefault();
-                  openFilterFromKeyboard(event.key === "ArrowUp" ? "last" : "first");
-                } else if (event.key === "Escape" && filterOpen) {
-                  event.preventDefault();
-                  setFilterOpen(false);
-                }
-              }}
-            >
-              <FilterIcon size="sm" />
-              {hasFilter && <span className="task-filter-trigger__dot" />}
-            </button>
-            {filterOpen && (
-              <div
-                ref={filterMenuRef}
-                id="sidebar-task-filter-menu"
-                className="task-filter-popover"
-                role="menu"
-                aria-label="任务筛选"
-                onKeyDown={(event) => handleMenuKeyDown(event, () => {
-                  setFilterOpen(false);
-                  filterTriggerRef.current?.focus();
-                })}
-              >
-                <TaskFilterMenu
-                  filterStatus={filterStatus}
-                  filterDate={filterDate}
-                  hasFilter={hasFilter}
-                  onSelectStatus={setFilterStatus}
-                  onSelectDate={setFilterDate}
-                  onClear={clearFilters}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-        {tasksOpen && (
+        </div>}
+        {(tasksOpen || showEmptyTaskState) && (
           <div id="sidebar-task-list" className="sidebar__group">
             {filteredIndependent.length === 0 && scopedIndependentCount > 0 && (
               <div className="sidebar__empty sidebar__empty--filter">无匹配筛选条件的任务</div>
             )}
             {filteredIndependent.length === 0 && scopedIndependentCount === 0 && !sessionsLoading && (
-              <div className="sidebar__empty">
-                这里还没有任务，去完成第一件事吧
+              <div className={showEmptyTaskState ? "sidebar__empty-state" : "sidebar__empty"}>
+                {showEmptyTaskState ? <><strong>暂无任务</strong><span>点击上方按钮开始新任务</span></> : "这里还没有任务，去完成第一件事吧"}
               </div>
             )}
             {sortPinnedFirst(filteredIndependent).map((session) => renderConv(session))}

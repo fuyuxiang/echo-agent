@@ -261,6 +261,17 @@ describe("全局侧栏宽度交互", () => {
     expect(handle()).toHaveAttribute("aria-valuenow", "400");
   });
 
+  it("moves keyboard focus between the sidebar toolbar and collapsed header", () => {
+    render(<Harness />);
+    const collapse = screen.getByRole("button", { name: "收起侧边栏" });
+    collapse.focus();
+    fireEvent.click(collapse);
+    const expand = screen.getByRole("button", { name: "展开侧边栏" });
+    expect(expand).toHaveFocus();
+    fireEvent.click(expand);
+    expect(screen.getByRole("button", { name: "收起侧边栏" })).toHaveFocus();
+  });
+
   it("collapses only beyond the threshold on release, then restores the last committed width", async () => {
     localStorage.setItem(SIDEBAR_WIDTH_KEY, "336");
     render(<Harness />);

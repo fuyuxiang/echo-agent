@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Check, ChevronLeft, ChevronRight, Clock3, MessageCircleQuestion, PencilLine, X } from "lucide-react";
 import {
   useQuestionStore,
   selectQuestionForSession,
@@ -16,6 +17,7 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
   const dismiss = useQuestionStore((state) => state.dismiss);
   const [selections, setSelections] = useState<Record<string, string[]>>({});
   const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
+  const [activeIndex, setActiveIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
@@ -23,13 +25,27 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
   const currentScopeRef = useRef(requestScope);
   currentScopeRef.current = requestScope;
   const resolvingScopesRef = useRef(new Set<string>());
+  const questionId = useId();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const focusOnStepRef = useRef(false);
 
   useEffect(() => {
     setSelections({});
     setCustomInputs({});
+    setActiveIndex(0);
+    focusOnStepRef.current = false;
     setBusy(requestScope !== null && resolvingScopesRef.current.has(requestScope));
     setError(null);
   }, [requestScope]);
+
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+    if (focusOnStepRef.current) {
+      headingRef.current?.focus({ preventScroll: true });
+      focusOnStepRef.current = false;
+    }
+  }, [activeIndex, requestScope]);
 
   useEffect(() => {
     if (!head || head.timeout == null) {
@@ -85,7 +101,9 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
 
   const handleSelect = useCallback((question: QuestionItem, label: string) => {
     setSelections((previous) => {
-      if (!question.multiSelect) return { ...previous, [question.id]: [label] };
+      if (!question.multiSelect) {
+        return { ...previous, [question.id]: previous[question.id]?.[0] === label ? [] : [label] };
+      }
       const selected = previous[question.id] ?? [];
       const next = selected.includes(label)
         ? selected.filter((item) => item !== label)
@@ -166,45 +184,94 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
     }
   };
 
-  const hasAnswer = head.questions.some(
-    (question) =>
-      (selections[question.id]?.length ?? 0) > 0 ||
-      Boolean(customInputs[question.id]?.trim()),
+  const questionIndex = Math.min(activeIndex, Math.max(0, head.questions.length - 1));
+  const question = head.questions[questionIndex];
+  const hasCurrentAnswer = question && (
+    (selections[question.id]?.length ?? 0) > 0 || Boolean(customInputs[question.id]?.trim())
   );
+  const lastQuestion = questionIndex === head.questions.length - 1;
   const expired = remainingSeconds === 0;
+  const navigate = (index: number) => {
+    if (busy || expired || index < 0 || index >= head.questions.length || index === questionIndex) return;
+    focusOnStepRef.current = true;
+    setActiveIndex(index);
+  };
+  const advance = () => {
+    if (lastQuestion) void resolve({ outcome: "accepted", ...buildAccepted() });
+    else navigate(questionIndex + 1);
+  };
+  const preview = question && !question.multiSelect
+    ? question.options.find((option) => option.label === selections[question.id]?.[0])?.preview
+    : undefined;
 
   return (
-    <div className="question-inline">
+    <section
+      className="question-inline"
+      aria-label={head.title || "Agent 提问"}
+      onKeyDown={(event) => {
+        if (!question || busy || expired || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
+          || event.ctrlKey || event.metaKey || event.altKey
+          || (event.target as HTMLElement).closest("input, textarea, [contenteditable=true]")) return;
+        if (!/^[1-9]$/.test(event.key)) return;
+        const option = question.options[Number(event.key) - 1];
+        if (option) {
+          event.preventDefault();
+          handleSelect(question, option.label);
+        }
+      }}
+    >
       <div className="question-inline__head">
-        <span className="question-inline__icon">?</span>
-        <span className="question-inline__title">{head.title || "Agent 提问"}</span>
-        {head.questions.length > 1 && (
-          <span className="question-inline__count">{head.questions.length} 个问题</span>
-        )}
+        <MessageCircleQuestion size={17} className="question-inline__icon" aria-hidden="true" />
+        <span className="question-inline__title" title={head.title}>问题</span>
+        <div className="question-inline__progress">
+          {remainingSeconds != null && !expired && (
+            <span className="question-inline__timeout" title={`剩余 ${remainingSeconds} 秒`}>
+              <Clock3 size={12} aria-hidden="true" />
+              {remainingSeconds < 60 ? `剩余 ${remainingSeconds} 秒`
+                : `${Math.floor(remainingSeconds / 60)}:${String(remainingSeconds % 60).padStart(2, "0")}`}
+            </span>
+          )}
+          <nav className="question-inline__navigation" aria-label="问题导航">
+            {head.questions.length > 1 && <button type="button" className="question-inline__icon-button"
+              aria-label="上一题" title="上一题" disabled={busy || expired || questionIndex === 0}
+              onClick={() => navigate(questionIndex - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>}
+            <span className="question-inline__count" role="status" aria-live="polite"
+              aria-label={`第 ${question ? questionIndex + 1 : 0} 题，共 ${head.questions.length} 题`}>
+              {question ? questionIndex + 1 : 0} / {head.questions.length}
+            </span>
+            {head.questions.length > 1 && <button type="button" className="question-inline__icon-button"
+              aria-label="下一题" title="下一题" disabled={busy || expired || lastQuestion}
+              onClick={() => navigate(questionIndex + 1)}><ChevronRight size={16} aria-hidden="true" /></button>}
+          </nav>
+        </div>
+        <button type="button" className="question-inline__icon-button question-inline__close"
+          aria-label="取消" title="取消本次提问" disabled={busy || expired}
+          onClick={() => void resolve({ outcome: "cancelled", cancelled: true })}>
+          <X size={16} aria-hidden="true" />
+        </button>
       </div>
       <div
+        ref={bodyRef}
         className="question-inline__body"
         role="region"
-        aria-label="Agent 问题列表"
+        aria-label="当前问题"
         tabIndex={0}
       >
-        {remainingSeconds != null && (
-          <p className="question-inline__timeout" aria-live="polite">
-            {expired
-              ? "已超时，正在等待 Agent 结束本次提问…"
-              : `剩余 ${remainingSeconds} 秒`}
-          </p>
+        {expired && (
+          <p className="question-inline__notice" role="status">已超时，正在等待 Agent 结束本次提问…</p>
         )}
-        {head.questions.map((question) => (
-          <div key={question.id} className="question-inline__question">
-            <p className="question-inline__question-text">
+        {question && (
+          <div className="question-inline__question">
+            <h3 ref={headingRef} id={questionId} tabIndex={-1} className="question-inline__question-text">
               {question.question}
-              {question.multiSelect && <span> · 可多选</span>}
-            </p>
+            </h3>
+            {question.multiSelect && <p className="question-inline__hint">可选择多项，也可以补充说明</p>}
             {question.options.length > 0 && (
-              <div className="question-inline__options">
-                {question.options.map((option) => {
+              <div className="question-inline__options" role="group" aria-labelledby={questionId}>
+                {question.options.map((option, index) => {
                   const selected = selections[question.id]?.includes(option.label) ?? false;
+                  const recommended = /[（(]\s*(推荐|recommended)\s*[）)]\s*$/i.test(option.label);
+                  const label = recommended ? option.label.replace(/[（(]\s*(推荐|recommended)\s*[）)]\s*$/i, "").trim() : option.label;
                   return (
                     <button
                       key={option.id ?? option.label}
@@ -216,57 +283,59 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
                       onClick={() => handleSelect(question, option.label)}
                       disabled={busy || expired}
                       aria-pressed={selected}
+                      aria-keyshortcuts={index < 9 ? String(index + 1) : undefined}
                     >
-                      <span>{option.label}</span>
-                      {option.description && (
-                        <small className="question-inline__option-description">
-                          {option.description}
-                        </small>
-                      )}
+                      <span className="question-inline__option-number" aria-hidden="true">{index + 1}</span>
+                      <span className="question-inline__option-copy">
+                        <span className="question-inline__option-label">{label}{recommended && <span className="question-inline__recommended">推荐</span>}</span>
+                        {option.description && <span className="question-inline__option-description">{option.description}</span>}
+                      </span>
+                      <span className="question-inline__option-check" aria-hidden="true">{selected && <Check size={16} />}</span>
                     </button>
                   );
                 })}
               </div>
             )}
-            {!question.multiSelect && selections[question.id]?.[0] && (() => {
-              const preview = question.options.find(
-                (option) => option.label === selections[question.id]?.[0],
-              )?.preview;
-              return preview ? (
-                <pre className="question-inline__preview">{preview}</pre>
-              ) : null;
-            })()}
+            {preview && <pre className="question-inline__preview">{preview}</pre>}
+          </div>
+        )}
+        {error && <p className="question-inline__error" role="alert">{error}</p>}
+      </div>
+      <div className="question-inline__footer">
+        <div className="question-inline__answer-row">
+          {question && <label className="question-inline__custom">
+            <PencilLine size={16} aria-hidden="true" />
             <input
-              type="text"
-              className="question-inline__custom-input"
-              placeholder={question.multiSelect ? "输入补充回答…" : "输入自定义回答…"}
+              type="text" className="question-inline__custom-input"
+              aria-label={question.multiSelect ? "补充回答" : "自定义回答"}
+              placeholder={question.multiSelect ? "也可以补充说明…" : "或自行填写回复…"}
               value={customInputs[question.id] ?? ""}
               onChange={(event) => handleCustomInput(question, event.target.value)}
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-                if (event.key === "Enter" && hasAnswer && !busy && !expired) {
+                if (event.key === "Enter" && hasCurrentAnswer && !busy && !expired) {
                   event.preventDefault();
-                  void resolve({ outcome: "accepted", ...buildAccepted() });
+                  advance();
                 }
               }}
               disabled={busy || expired}
             />
+          </label>}
+          <div className="question-inline__actions">
+            {!hasCurrentAnswer && <button type="button" className="question-inline__action"
+              onClick={advance} disabled={busy || expired || !question}>
+              {lastQuestion && head.questions.length > 1 ? "跳过并提交" : "跳过"}
+            </button>}
+            <button type="button" className="question-inline__action question-inline__action--primary"
+              onClick={advance} disabled={busy || expired || !hasCurrentAnswer}>
+              {busy ? "提交中…" : lastQuestion ? "提交" : "下一步"}
+            </button>
           </div>
-        ))}
-        {error && <p className="question-inline__error" role="alert">{error}</p>}
-      </div>
-      <div className="question-inline__footer">
-        <button
-          className="btn btn--ghost"
-          onClick={() => void resolve({ outcome: "cancelled", cancelled: true })}
-          disabled={busy || expired}
-        >
-          取消
-        </button>
+        </div>
         {head.mode === "plan" && (
-          <>
+          <div className="question-inline__plan-actions">
             <button
-              className="btn btn--ghost"
+              type="button" className="question-inline__plan-action"
               onClick={() => void resolve({
                 outcome: "chat_about_this",
                 partialAnswers: buildPartialAnswers(),
@@ -276,25 +345,19 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
               聊聊这些选择
             </button>
             <button
-              className="btn btn--ghost"
+              type="button" className="question-inline__plan-action"
+              aria-label="跳过访谈直接规划" title="跳过剩余问题，使用已填写的选择直接规划"
               onClick={() => void resolve({
                 outcome: "skip_interview",
                 partialAnswers: buildPartialAnswers(),
               })}
               disabled={busy || expired}
             >
-              跳过访谈直接规划
+              直接规划
             </button>
-          </>
+          </div>
         )}
-        <button
-          className="btn btn--primary"
-          onClick={() => void resolve({ outcome: "accepted", ...buildAccepted() })}
-          disabled={busy || expired || !hasAnswer}
-        >
-          提交
-        </button>
       </div>
-    </div>
+    </section>
   );
 }

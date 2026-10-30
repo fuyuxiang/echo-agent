@@ -579,7 +579,7 @@ body.dark,
 /* Application geometry and surface roles. rem tracks the reading-size setting;
  * px floors preserve desktop hit targets at the smallest text setting. */
 :root {
-  --echo-surface-sidebar: #eff1f2;
+  --echo-surface-sidebar: #f6f6f6;
   --echo-surface-raised: var(--echo-bg-primary);
   --echo-brand-soft: color-mix(in srgb, var(--echo-brand-primary) 10%, transparent);
   --echo-brand-border: color-mix(in srgb, var(--echo-brand-primary) 28%, var(--echo-border-default));

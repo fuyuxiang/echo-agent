@@ -80,6 +80,8 @@
 .app--macos .app__body--collapsed .main-page-controls {
   /* 三个红绿灯总宽约 70px,左侧留 84px */
   padding-left: 84px;
+  padding-top: 12px;
+  align-items: flex-start;
 }
 /* Transparent icon buttons — no background until hover (EchoAgent style). */
 .main-topbar__btn {
@@ -3522,19 +3524,20 @@ button.diff__path {
 .diff__line--del .diff__line-prefix { color: #cf222e; }
 .diff__line-text { flex: 1; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
 
-/* ---------- inline question card (session-scoped, non-blocking) ---------- */
+/* ---------- inline question card: one question at a time, aligned with Composer ---------- */
 .question-inline {
+  container: question-card / inline-size;
   display: flex;
   flex-direction: column;
-  margin: 0 auto 8px;
-  width: min(640px, 100%);
+  margin: 0 0 10px;
+  width: 100%;
   min-width: 0;
-  max-height: min(680px, 72vh);
+  max-height: min(520px, calc(100vh - 220px));
   box-sizing: border-box;
   background: var(--echo-bg-primary);
-  border-radius: 12px;
-  border: 1px solid var(--echo-brand, #10b981);
-  box-shadow: var(--echo-shadow-md);
+  border: 1px solid var(--echo-border-default);
+  border-radius: 20px;
+  box-shadow: var(--echo-shadow-sm);
   overflow: hidden;
 }
 .question-inline__head {
@@ -3543,130 +3546,240 @@ button.diff__path {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--echo-border-default);
+  padding: 14px 18px 12px;
+  color: var(--echo-text-weak);
 }
-.question-inline__icon {
+.question-inline__icon { flex: none; }
+.question-inline__title {
+  flex: 1;
+  min-width: 28px;
+  font-size: .8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.question-inline__progress { display: flex; align-items: center; flex: none; gap: 8px; }
+.question-inline__navigation { display: flex; align-items: center; flex: none; gap: 2px; }
+.question-inline__count {
+  min-width: 36px;
+  text-align: center;
+  color: var(--echo-text-weak);
+  font-size: .75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.question-inline__icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--echo-brand, #10b981);
-  color: #fff;
-  font-weight: 700;
-  font-size: 0.8125rem;
-  flex-shrink: 0;
-}
-.question-inline__title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-weight: 600;
-  font-size: 0.8125rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.question-inline__count {
   flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--echo-text-weak);
-  font-size: 0.6875rem;
-  white-space: nowrap;
+  cursor: pointer;
 }
+.question-inline__icon-button:not(:disabled):hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.question-inline__close { margin-left: 4px; }
 .question-inline__body {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 10px 16px;
+  padding: 0 18px 4px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
-.question-inline__body:focus-visible {
-  outline: 2px solid var(--echo-brand, #10b981);
-  outline-offset: -2px;
-}
-.question-inline__body::-webkit-scrollbar {
-  width: 7px;
-}
-.question-inline__body::-webkit-scrollbar-track {
-  background: transparent;
-}
+.question-inline__body:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: -2px; }
+.question-inline__body::-webkit-scrollbar { width: 6px; }
+.question-inline__body::-webkit-scrollbar-track { background: transparent; }
 .question-inline__body::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--echo-text-weak) 48%, transparent);
-  background-clip: padding-box;
-}
-.question-inline__body::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--echo-text-medium) 64%, transparent);
+  background: color-mix(in srgb, var(--echo-text-weak) 45%, transparent);
   background-clip: padding-box;
 }
 .question-inline__timeout {
-  margin: 0 0 10px;
-  color: var(--echo-text-weak);
-  font-size: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 4px;
+  margin: 0 4px 0 0;
+  font-size: .6875rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
-.question-inline__question {
-  margin-bottom: 12px;
-}
-.question-inline__question:last-child {
-  margin-bottom: 0;
+/* The Agent pane can be only 300px wide. Keep dismissal on the title row;
+   progress gets its own row before the countdown's final-minute copy grows. */
+@container question-card (max-width: 22rem) {
+  .question-inline__head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px 8px;
+    padding: 10px 12px 8px;
+  }
+  .question-inline__icon { grid-column: 1; grid-row: 1; }
+  .question-inline__title { grid-column: 2; grid-row: 1; min-width: 0; }
+  .question-inline__close { grid-column: 3; grid-row: 1; margin-left: 0; }
+  .question-inline__progress { grid-column: 1 / -1; grid-row: 2; min-width: 0; justify-content: space-between; }
+  .question-inline__navigation { margin-left: auto; }
 }
 .question-inline__question-text {
-  margin: 0 0 8px;
-  font-size: 0.8125rem;
+  margin: 0 0 12px;
   color: var(--echo-text-strong);
+  font-size: .9375rem;
+  font-weight: 600;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  outline: none;
 }
-.question-inline__options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
+.question-inline__hint { margin: -6px 0 10px; color: var(--echo-text-weak); font-size: .75rem; }
+.question-inline__options { display: flex; flex-direction: column; gap: 5px; }
 .question-inline__option {
-  padding: 5px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--echo-border-default);
-  background: var(--echo-bg-secondary);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
   color: var(--echo-text-strong);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
-  font-size: 0.75rem;
-  transition: all 0.15s;
+  transition: background .15s, border-color .15s;
 }
-.question-inline__option:hover {
-  border-color: var(--echo-brand, #10b981);
-  background: var(--echo-bg-tertiary);
+.question-inline__option:not(:disabled):hover { background: var(--echo-bg-hover); }
+.question-inline__option--selected,
+.question-inline__option--selected:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--echo-brand) 40%, var(--echo-border-default));
+  background: var(--echo-brand-soft);
 }
-.question-inline__option--selected {
-  border-color: var(--echo-brand, #10b981);
-  background: var(--echo-brand, #10b981);
+.question-inline__option-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: 6px;
+  background: var(--echo-bg-secondary);
+  color: var(--echo-text-weak);
+  font-size: .75rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.question-inline__option--selected .question-inline__option-number {
+  border-color: transparent;
+  background: var(--echo-brand);
   color: #fff;
 }
-.question-inline__custom-input {
-  width: 100%;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--echo-border-default);
+.question-inline__option-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 3px; }
+.question-inline__option-label { font-size: .875rem; font-weight: 500; line-height: 1.65; overflow-wrap: anywhere; }
+.question-inline__option-description { color: var(--echo-text-weak); font-size: .75rem; line-height: 1.55; overflow-wrap: anywhere; }
+.question-inline__recommended {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 5px;
+  border-radius: 4px;
   background: var(--echo-bg-secondary);
-  color: var(--echo-text-strong);
-  font-size: 0.75rem;
-  outline: none;
-  box-sizing: border-box;
+  color: var(--echo-text-medium);
+  font-size: .625rem;
+  font-weight: 400;
+  vertical-align: 1px;
 }
-.question-inline__custom-input:focus {
-  border-color: var(--echo-brand, #10b981);
+.question-inline__option-check { display: inline-flex; align-items: center; flex: none; width: 16px; height: 24px; color: var(--echo-brand); }
+.question-inline__preview {
+  max-height: 100px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--echo-bg-secondary);
+  color: var(--echo-text-medium);
+  font-size: .75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
 }
+.question-inline__notice, .question-inline__error { margin: 0 0 10px; font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; }
+.question-inline__notice { color: var(--echo-text-weak); }
+.question-inline__error { margin: 10px 0 0; color: var(--echo-status-error, #e5484d); }
 .question-inline__footer {
   display: flex;
   flex: none;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 8px 16px;
-  border-top: 1px solid var(--echo-border-default);
-  background: var(--echo-bg-primary);
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 18px 14px;
+}
+.question-inline__answer-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.question-inline__custom {
+  display: flex;
+  align-items: center;
+  flex: 1 1 180px;
+  gap: 9px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--echo-text-weak);
+  cursor: text;
+}
+.question-inline__custom > svg { flex: none; }
+.question-inline__custom:focus-within { border-color: var(--echo-border-default); background: var(--echo-bg-secondary); }
+.question-inline__custom-input {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--echo-text-strong);
+  font: inherit;
+  font-size: .8125rem;
+  line-height: 1.6;
+  outline: none;
+}
+.question-inline__custom-input::placeholder { color: var(--echo-text-weak); }
+.question-inline__actions { display: flex; align-items: center; flex: none; justify-content: flex-end; gap: 8px; margin-left: auto; }
+.question-inline__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--echo-text-strong);
+  font: inherit;
+  font-size: .8125rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.question-inline__action:not(:disabled):hover { background: var(--echo-bg-hover); }
+.question-inline__action--primary { border-color: var(--echo-text-strong); background: var(--echo-text-strong); color: var(--echo-bg-primary); }
+.question-inline__action--primary:not(:disabled):hover { background: var(--echo-text-medium); border-color: var(--echo-text-medium); }
+.question-inline button:disabled { opacity: .4; cursor: default; }
+.question-inline button:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: -2px; }
+.question-inline__plan-actions { display: flex; flex-wrap: wrap; gap: 8px 16px; border-top: 1px solid var(--echo-border-default); padding-top: 10px; }
+.question-inline__plan-action { padding: 0; border: 0; background: transparent; color: var(--echo-text-weak); font: inherit; font-size: .75rem; line-height: 1.5; cursor: pointer; }
+.question-inline__plan-action:not(:disabled):hover { color: var(--echo-text-strong); }
+
+/* Keep the empty, waiting composer secondary while a question owns input.
+   Existing drafts keep their normal height and become editable after resolution. */
+.chatview__footer:has(.question-inline) .echo-composer__input:placeholder-shown {
+  min-height: 24px;
+  max-height: 24px;
 }
 
 /* ========================================================================
@@ -4747,18 +4860,9 @@ button.diff__path {
   background: var(--echo-bg-hover);
 }
 
-/* ===== macOS 原生 Overlay 标题栏适配 =====
- * mac 下隐藏自绘 TitleBar(tauri.macos.conf.json: decorations + Overlay),
- * 红绿灯悬浮在窗口左上(默认位置约 x:12-80, y:8-24),需要:
- * 1. 侧栏 logo 行顶部留出安全区,避免 logo/图标被红绿灯遮挡;
- * 2. 侧栏折叠时 main-topbar 贴到窗口左边缘,需左侧让出红绿灯宽度;
- * 3. 以上区域均带 data-tauri-drag-region,可拖拽移动窗口。 */
-.app--macos .sidebar__logo-row {
-  height: auto;
-  min-height: 56px;
-  /* 红绿灯高约 24px,再加少量呼吸空间 */
-  padding-top: 34px;
-  padding-bottom: 8px;
+/* macOS Overlay: leave the native traffic lights clear beside the toolbar. */
+.app--macos .sidebar__toolbar {
+  padding-left: 84px;
 }
 .app--macos .app__body--collapsed .main-topbar {
   /* 三个红绿灯总宽约 70px,左侧留 84px */
@@ -6685,6 +6789,30 @@ button.diff__path {
   position: relative;
   z-index: 20;
 }
+.sidebar__toolbar {
+  height: 56px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  box-sizing: border-box;
+  -webkit-app-region: drag;
+}
+.sidebar__toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+.sidebar__toolbar .sidebar__icon-btn {
+  padding: 0;
+  -webkit-app-region: no-drag;
+}
+.sidebar__toolbar .sidebar__icon-btn:focus-visible {
+  outline: 2px solid var(--echo-brand);
+  outline-offset: -2px;
+}
 .sidebar__logo-row {
   /* EchoAgent: logo 行高56,左缩进24(图标右对齐),下方距新建任务2px */
   display: flex;
@@ -6706,11 +6834,6 @@ button.diff__path {
   font-weight: 700;
   line-height: 18px;
   color: var(--echo-text-weak);
-}
-.sidebar__version {
-  font-size: 0.625rem;
-  line-height: 14px;
-  color: var(--echo-text-muted);
 }
 .sidebar__logo-spacer {
   flex: 1;
@@ -6928,8 +7051,12 @@ button.diff__path {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* Each list scrolls independently; keep the filter popover unclipped. */
-  overflow: visible;
+  /* Lists scroll independently. If the window cannot fit even one row per
+     section, scroll the catalog rather than compressing rows to a sliver.
+     The filter lives in the toolbar; session menus are portalled. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   /* 与 .sidebar__nav 保持一致的水平内边距,使「任务/空间」分组与「新建任务」对齐 */
   padding: 0 12px;
   box-sizing: border-box;
@@ -6945,6 +7072,13 @@ button.diff__path {
   flex: 1 1 0;
   min-height: 0;
 }
+.sidebar__list-section:has(> .sidebar__group) { min-height: 76px; }
+.sidebar__list-section--tasks:has(> .sidebar__group),
+.sidebar__list-section--projects:has(> .sidebar__group) {
+  /* A timestamp can wrap below the title, including inside a project. */
+  min-height: calc(38px + max(36px, 2.2rem + 10px));
+}
+.sidebar__list-section--chats:has(> .sidebar__group) { min-height: calc(38px + max(40px, 3rem)); }
 .sidebar__list-section + .sidebar__list-section {
   margin-top: 6px;
 }
@@ -7056,6 +7190,10 @@ button.diff__path {
   top: calc(100% + 4px);
   right: 0;
   width: 220px;
+  /* Also allow room for the separate Windows/Linux title bar. */
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--echo-bg-primary);
   border: 1px solid var(--echo-border-default);
   border-radius: 12px;

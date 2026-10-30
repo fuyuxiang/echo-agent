@@ -24,12 +24,13 @@ export interface SessionNavigationProps {
 }
 
 export function SessionNavigation({ sidebarCollapsed, onToggleSidebar, onNewTask }: SessionNavigationProps) {
+  if (!sidebarCollapsed) return null;
   return <>
-    {onToggleSidebar && <button type="button" className="main-topbar__btn" aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
-      aria-expanded={!sidebarCollapsed} aria-controls="app-sidebar" onClick={onToggleSidebar} data-tip={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}>
+    {onToggleSidebar && <button type="button" className="main-topbar__btn" aria-label="展开侧边栏"
+      aria-expanded={false} aria-controls="app-sidebar" onClick={onToggleSidebar} data-tip="展开侧边栏">
       <SidebarToggleIcon size="md" />
     </button>}
-    {sidebarCollapsed && onNewTask && <button type="button" className="main-topbar__btn" aria-label="新建任务" data-tip="新建任务" onClick={onNewTask}><EchoNewTaskIcon size="md" /></button>}
+    {onNewTask && <button type="button" className="main-topbar__btn" aria-label="新建任务" data-tip="新建任务" onClick={onNewTask}><EchoNewTaskIcon size="md" /></button>}
   </>;
 }
 

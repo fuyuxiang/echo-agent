@@ -94,7 +94,9 @@ export function useAppSidebarLayout() {
 
   useLayoutEffect(() => {
     if (collapsed && bodyRef.current?.querySelector(".sidebar")?.contains(document.activeElement)) {
-      bodyRef.current.querySelector<HTMLElement>("[data-sidebar-resize]")?.focus({ preventScroll: true });
+      const restore = bodyRef.current.querySelector<HTMLElement>('button[aria-label="展开侧边栏"]')
+        ?? bodyRef.current.querySelector<HTMLElement>("[data-sidebar-resize]");
+      restore?.focus({ preventScroll: true });
     } else if (!collapsed && expandFocusRef.current) {
       bodyRef.current?.querySelector<HTMLElement>('.sidebar button[aria-label="收起侧边栏"]')?.focus({ preventScroll: true });
       expandFocusRef.current = false;
