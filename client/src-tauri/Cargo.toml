@@ -138,7 +138,7 @@ core-graphics = { version = "0.25", features = ["elcapitan", "highsierra"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 webview2-com = "=0.38.2"
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Threading", "Win32_Storage_EnhancedStorage", "Win32_Storage_FileSystem", "Win32_UI_Accessibility", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Call Windows DPAPI directly. Spawning PowerShell made credential persistence
 # depend on .NET assembly loading and discarded the actual encryption error.
 windows-sys = { version = "0.61.2", features = [

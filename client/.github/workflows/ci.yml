@@ -187,8 +187,14 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            libxdo-dev \
-            protobuf-compiler
+            libxdo-dev
+      # Match vendor/echo-agent-build/bin/protoc; older distro compilers do not
+      # understand the built-in debug_redact option used by the vendored tests.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '29.3'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -255,7 +261,7 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
-          version: '23.x'
+          version: '29.3'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
         with:
@@ -287,7 +293,7 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
-          version: '23.x'
+          version: '29.3'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
         with:
@@ -348,7 +354,7 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
-          version: '23.x'
+          version: '29.3'
           # setup-protoc queries the GitHub Releases API. Authenticate those
           # read-only requests so shared runner IP rate limits cannot break CI.
           repo-token: ${{ secrets.GITHUB_TOKEN }}

@@ -1649,7 +1649,98 @@ fn same_trash_path(left: &Path, right: &Path) -> bool {
     // Shell recycle-bin paths omit the extended-length prefix returned by
     // Rust canonicalize(). The destination may no longer exist, so compare
     // normalized spellings without resolving it through the filesystem.
-    dunce::simplified(left) == dunce::simplified(right)
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Components, Prefix};
+
+        fn parts(path: &Path) -> (Option<Prefix<'_>>, Components<'_>) {
+            let mut components = path.components();
+            let prefix = match components.clone().next() {
+                Some(Component::Prefix(prefix)) => {
+                    components.next();
+                    Some(match prefix.kind() {
+                        Prefix::VerbatimDisk(drive) => Prefix::Disk(drive),
+                        Prefix::VerbatimUNC(server, share) => Prefix::UNC(server, share),
+                        prefix => prefix,
+                    })
+                }
+                _ => None,
+            };
+            (prefix, components)
+        }
+
+        // dunce deliberately retains UNC and long-path prefixes for I/O.
+        // This is only an identity comparison, including deleted targets.
+        let (left_prefix, left_components) = parts(left);
+        let (right_prefix, right_components) = parts(right);
+        left_prefix == right_prefix && left_components.eq(right_components)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+#[cfg(any(
+    target_os = "windows",
+    all(
+        unix,
+        not(target_os = "macos"),
+        not(target_os = "ios"),
+        not(target_os = "android")
+    )
+))]
+fn list_trash_items() -> Result<Vec<trash::TrashItem>, String> {
+    let items =
+        trash::os_limited::list().map_err(|error| format!("无法读取系统回收站：{error}"))?;
+    #[cfg(windows)]
+    {
+        // trash 5 uses SIGDN_PARENTRELATIVE, a display name which can omit
+        // known extensions. Use the full original name for matching AND for
+        // restore_all's destination name, regardless of Explorer settings.
+        items
+            .into_iter()
+            .map(|mut item| {
+                item.name = windows_trash_original_name(&item.id)?;
+                Ok(item)
+            })
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(items)
+    }
+}
+
+#[cfg(windows)]
+fn windows_trash_original_name(id: &std::ffi::OsStr) -> Result<std::ffi::OsString, String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows::Win32::{
+        Storage::EnhancedStorage::PKEY_ItemName,
+        System::Com::CoTaskMemFree,
+        UI::Shell::{IShellItem2, SHCreateItemFromParsingName},
+    };
+
+    let id = id
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // list_trash_items calls trash::list first, which initializes COM on this
+    // thread. GetString returns a task-allocated buffer that we copy and free.
+    let result = (|| unsafe {
+        let item: IShellItem2 =
+            SHCreateItemFromParsingName(windows::core::PCWSTR(id.as_ptr()), None)?;
+        let name = item.GetString(&PKEY_ItemName)?;
+        if name.is_null() {
+            return Err(windows::core::Error::from_hresult(
+                windows::Win32::Foundation::E_FAIL,
+            ));
+        }
+        let original = std::ffi::OsString::from_wide(name.as_wide());
+        CoTaskMemFree(Some(name.0.cast()));
+        Ok::<_, windows::core::Error>(original)
+    })();
+    result.map_err(|error| format!("无法读取回收站条目的原始文件名：{error}"))
 }
 
 #[cfg(any(
@@ -1662,8 +1753,7 @@ fn same_trash_path(left: &Path, right: &Path) -> bool {
     )
 ))]
 fn preflight_restore_batch(restore_tokens: &[String], targets: &[PathBuf]) -> Result<(), String> {
-    let items =
-        trash::os_limited::list().map_err(|error| format!("无法读取系统回收站：{error}"))?;
+    let items = list_trash_items()?;
     for (restore_token, target) in restore_tokens.iter().zip(targets) {
         if !same_trash_path(Path::new(restore_token), target) {
             return Err("恢复标识与目标路径不匹配".into());
@@ -1782,8 +1872,7 @@ fn restore_trash_item(restore_token: &str, target: &Path) -> Result<(), String> 
     if !same_trash_path(&expected, target) {
         return Err("恢复标识与目标路径不匹配".into());
     }
-    let items =
-        trash::os_limited::list().map_err(|error| format!("无法读取系统回收站：{error}"))?;
+    let items = list_trash_items()?;
     let item = items
         .into_iter()
         .filter(|item| same_trash_path(&item.original_path(), &expected))
@@ -3342,15 +3431,24 @@ mod tests {
     fn delete_entries_moves_to_trash_or_keeps_source_and_reports_per_item() {
         let dir = make_workspace();
         let root = dir.path();
+        // Distinguish names that Explorer may display identically when known
+        // extensions are hidden, and verify their contents after restoration.
+        std::fs::write(root.join("a"), "no extension").unwrap();
+        std::fs::write(root.join("a.json"), "{}").unwrap();
         let a = root.join("a.txt").to_string_lossy().into_owned();
         let sub = root.join("sub").to_string_lossy().into_owned();
 
         let req = CodingDeleteEntryRequest {
             root: workspace_str(&dir),
-            paths: vec![a.clone(), sub.clone()],
+            paths: vec![
+                a.clone(),
+                sub.clone(),
+                root.join("a").to_string_lossy().into_owned(),
+                root.join("a.json").to_string_lossy().into_owned(),
+            ],
         };
         let results = delete_entries_blocking(root, req).expect("delete should run");
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 4);
         // Headless CI may not expose a system trash. A failure must keep the
         // source intact; a success must provide a restore token and remove it.
         for r in &results {
@@ -3395,6 +3493,19 @@ mod tests {
                 assert!(Path::new(&result.source_path).exists());
             }
         }
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("a")).unwrap(),
+            "no extension"
+        );
+        assert_eq!(std::fs::read_to_string(root.join("a.json")).unwrap(), "{}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("sub/b.txt")).unwrap(),
+            "bravo"
+        );
     }
 
     #[cfg(windows)]
@@ -3411,6 +3522,16 @@ mod tests {
         assert!(!same_trash_path(
             Path::new(r"\\?\C:\workspace\a.txt"),
             Path::new(r"C:\workspace\b.txt")
+        ));
+        let long = format!(r"C:\workspace\{}deleted.txt", "nested\\".repeat(50));
+        assert!(long.len() > 260);
+        assert!(same_trash_path(
+            Path::new(&format!(r"\\?\{long}")),
+            Path::new(&long)
+        ));
+        assert!(!same_trash_path(
+            Path::new(r"\\?\UNC\server\share\deleted"),
+            Path::new(r"\\server\other-share\deleted")
         ));
     }
 

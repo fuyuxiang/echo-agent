@@ -385,6 +385,9 @@ pub(crate) fn replace_file_atomically(staging: &Path, destination: &Path) -> Res
 pub(crate) fn replace_file_atomically(staging: &Path, destination: &Path) -> Result<(), String> {
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+    };
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileAttributesW, MoveFileExW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
         FILE_ATTRIBUTE_TEMPORARY, INVALID_FILE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING,
@@ -432,23 +435,37 @@ pub(crate) fn replace_file_atomically(staging: &Path, destination: &Path) -> Res
             return Err(io::Error::last_os_error().to_string());
         }
     }
-    // SAFETY: both buffers are NUL-terminated and remain alive for the call.
-    let replaced = unsafe {
-        MoveFileExW(
-            staging_wide.as_ptr(),
-            destination_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if replaced == 0 {
-        Err(format!(
-            "atomically replace {} from {}: {}",
+    // Concurrent renames and short-lived scanner/reader handles can deny
+    // replacement on Windows. Retry only those errors, for at most ~1 second;
+    // keep the destination intact and reuse the complete staging file.
+    let mut delays = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512].into_iter();
+    loop {
+        // SAFETY: both buffers are NUL-terminated and remain alive for the call.
+        let replaced = unsafe {
+            MoveFileExW(
+                staging_wide.as_ptr(),
+                destination_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if replaced != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if matches!(
+            error.raw_os_error().map(|code| code as u32),
+            Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+        ) {
+            if let Some(delay) = delays.next() {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                continue;
+            }
+        }
+        return Err(format!(
+            "atomically replace {} from {}: {error}",
             destination.display(),
             staging.display(),
-            io::Error::last_os_error()
-        ))
-    } else {
-        Ok(())
+        ));
     }
 }
 
@@ -804,12 +821,17 @@ mod tests {
         let payloads = (0..12)
             .map(|index| format!("writer-{index}:{}", "x".repeat(32 * 1024)))
             .collect::<Vec<_>>();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(payloads.len()));
         let handles = payloads
             .iter()
             .cloned()
             .map(|payload| {
                 let path = path.clone();
-                std::thread::spawn(move || write_private_file(&path, payload.as_bytes()).unwrap())
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    write_private_file(&path, payload.as_bytes()).unwrap();
+                })
             })
             .collect::<Vec<_>>();
         for handle in handles {
@@ -826,5 +848,51 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[cfg(windows)]
+    fn hold_against_replacement(path: &Path) -> fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(path)
+            .unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_replace_retries_until_a_temporary_windows_handle_is_closed() {
+        let target = tempfile::tempdir().unwrap();
+        let path = target.path().join("config.toml");
+        fs::write(&path, b"old").unwrap();
+        let staging = target.path().join("staging.tmp");
+        fs::write(&staging, b"complete replacement").unwrap();
+        let held = hold_against_replacement(&path);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(held);
+        });
+        let result = super::replace_file_atomically(&staging, &path);
+        release.join().unwrap();
+        result.unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"complete replacement");
+        assert!(!staging.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_write_keeps_old_content_and_cleans_staging_when_windows_handle_stays_open() {
+        let target = tempfile::tempdir().unwrap();
+        let path = target.path().join("config.toml");
+        fs::write(&path, b"old").unwrap();
+        let held = hold_against_replacement(&path);
+        assert!(write_private_file(&path, b"new").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+        assert_eq!(fs::read_dir(target.path()).unwrap().count(), 1);
+        drop(held);
+        write_private_file(&path, b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
     }
 }
