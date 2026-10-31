@@ -51,7 +51,8 @@ try {
     range.setStart(text.firstChild, start); range.setEnd(text.firstChild, start + marker.length);
     const latest = range.getBoundingClientRect(), box = text.getBoundingClientRect();
     return latest.top >= box.top - 1 && latest.bottom <= box.bottom + 1
-      && box.height <= parseFloat(getComputedStyle(text).lineHeight) * 2 + 1;
+      && box.height <= parseFloat(getComputedStyle(text).lineHeight) + 1
+      && getComputedStyle(text).whiteSpace === "nowrap";
   }, marker);
 
   for (const [width, height, theme, font] of [[1440, 1000, "light", 13], [1440, 1000, "dark", 13], [1024, 680, "light", 13], [1024, 680, "dark", 18]]) {
@@ -89,7 +90,7 @@ try {
 
     await stage("tools");
     const preview = page.locator(".execution-process__preview");
-    await preview.getByText("正在整理养生建议和参考数据，接下来会把内容组织成清晰的演示页面。", { exact: true }).waitFor();
+    await page.getByLabel("当前阶段进展").getByText("正在整理养生建议和参考数据，接下来会把内容组织成清晰的演示页面。", { exact: true }).waitFor();
     assert.equal(await preview.locator(".toolcall").count(), 0, "tools start collapsed below the main stage");
     assert.equal(await page.getByText("原始内部分析片段。", { exact: true }).count(), 0);
     await page.screenshot({ path: join(output, `stage-${width}-${theme}-${font}.png`) });
@@ -128,9 +129,10 @@ try {
     await preview.locator(".execution-process__operations-toggle").click();
 
     await page.locator(".execution-process__preview-more").click();
+    assert(await page.locator(".execution-process__header").evaluate(element => element === document.activeElement));
+    await page.locator(".execution-process__body .execution-process__operations-toggle").click();
     assert.equal(await page.locator(".execution-process__body .toolcall").count(), 4);
     assert.equal(await preview.count(), 0, "full history must not duplicate the preview");
-    assert(await page.locator(".execution-process__header").evaluate(element => element === document.activeElement));
     await page.locator(".execution-process__header").click();
     await preview.locator(".execution-process__operations-toggle").click();
     await preview.locator('[data-tool-call-id="ongoing"]').focus();
@@ -188,9 +190,10 @@ try {
       return text;
     });
     await page.getByRole("button", { name: /^正在查询天气(?: ·.*)?$/ }).waitFor();
-    await page.getByText(publicText, { exact: true }).waitFor();
-    assert.equal(await page.getByText(publicText, { exact: true }).count(), 1, "unclassified public text is shown once, outside the process");
-    assert.equal(await page.locator(".execution-process__excerpt, .msg__writing").count(), 0);
+    await page.getByLabel("当前阶段进展").waitFor();
+    assert.equal(await page.getByText(publicText, { exact: true }).count(), 0, "full source text belongs to its stage; only the latest sentence is previewed");
+    assert.equal(await page.locator(".execution-process__excerpt").count(), 1);
+    assert.equal(await page.locator(".msg__writing").count(), 0);
     await page.getByRole("button", { name: "1 项进行中", exact: true }).click();
     await page.getByText("🌤️ 天气查询", { exact: true }).waitFor();
     await page.getByRole("button", { name: "other 南京 运行中", exact: true }).waitFor();
@@ -203,7 +206,10 @@ try {
     });
     assert(wireExport.includes(publicText), "cancellation keeps phase-less public text in normal exports");
     await page.getByRole("button", { name: /^查看过程(?: ·.*)?$/ }).waitFor();
-    assert.equal(await page.getByText(publicText, { exact: true }).count(), 1);
+    assert.equal(await page.getByText(publicText, { exact: true }).count(), 0);
+    await page.locator(".execution-process__header").click();
+    await page.locator(".execution-process__progress").getByText(publicText, { exact: true }).waitFor();
+    await page.locator(".execution-process__header").click();
     await page.screenshot({ path: join(output, `wire-result-${width}-${theme}-${font}.png`) });
 
     // Optional explicit commentary metadata must preserve the order of the
@@ -229,11 +235,66 @@ try {
       ["thought", "first", "改用备用配置。", "retry"]);
     assert.equal(await ordered.locator("details[open]").count(), 0);
     await page.screenshot({ path: join(output, `ordered-stage-${width}-${theme}-${font}.png`) });
+
+    // Replay the reference video's structure: public stage commentary,
+    // associated searches/commands, optional reasoning and a changing live line.
+    await page.evaluate(async () => {
+      const { useSessionStore } = await import("/src/stores/session-store.ts");
+      const store = useSessionStore.getState(), sessionId = store.sessionId;
+      store.setMessages([]); store.startStreaming(sessionId, "travel-stages");
+      const parts = [];
+      const descriptions = ["先核对泰山官方门票、索道和交通信息。", "信息够了，再补齐当前季节的关键细节。", "信息齐了，先整理路线全景，再生成完整攻略文件。"];
+      descriptions.forEach((text, index) => {
+        const streamId = `travel-${index}`;
+        parts.push({ kind: "text", text, streamId });
+        parts.push({ kind: "thought", text: "核对来源、适用日期与路线条件，保留不确定的信息。", streamId });
+        for (let call = 0; call < 20; call++) parts.push({ kind: "tool_call", streamId, toolCall: {
+          toolCallId: `${streamId}-${call}`, title: index === 2 ? `整理攻略文件 · ${call + 1}` : `核对官网资料 · ${call + 1}`,
+          kind: index === 2 ? "bash" : "web_search", status: index === 2 && call === 19 ? "in_progress" : "completed", content: [],
+        } });
+      });
+      store.setMessages([
+        { id: "travel-user", role: "user", complete: true, parts: [{ kind: "text", text: "帮我做一份泰山游玩攻略。" }] },
+        { id: useSessionStore.getState().streamingMessageId, role: "assistant", complete: false, startedAt: Date.now() - 373_000, parts },
+      ]);
+    });
+    const liveLine = page.getByLabel("当前阶段进展");
+    await liveLine.getByText("信息齐了，先整理路线全景，再生成完整攻略文件。", { exact: true }).waitFor();
+    assert.equal(await page.locator(".execution-process__excerpt").count(), 1);
+    assert.equal(await page.locator(".msg__body > .markdown-body").count(), 0, "intermediate generations must not accumulate as answers");
+    const lineGeometry = await liveLine.locator("p").evaluate(element => ({ height: element.clientHeight, line: parseFloat(getComputedStyle(element).lineHeight), whiteSpace: getComputedStyle(element).whiteSpace }));
+    assert(lineGeometry.height <= lineGeometry.line + 1 && lineGeometry.whiteSpace === "nowrap");
+    await page.locator(".msg--assistant").screenshot({ path: join(output, `travel-compact-${width}-${theme}-${font}.png`) });
+    await page.locator(".execution-process__header").click();
+    const history = page.getByRole("region", { name: "思考与执行过程" });
+    await history.waitFor();
+    assert.equal(await history.locator(".execution-process__stage").count(), 3);
+    assert.equal(await history.locator(".execution-process__tool-group").count(), 3);
+    assert.equal(await history.locator(".toolcall").count(), 0, "long batches start folded");
+    assert.equal(await page.locator(".execution-process__stage--current").getAttribute("data-stage-id"), await liveLine.getAttribute("data-stage-id"));
+    await history.locator(".execution-process__operations-toggle").last().click();
+    assert.equal(await history.locator(".toolcall").count(), 20);
+    await history.evaluate(element => { element.scrollTop = 0; });
+    await page.waitForFunction(() => document.querySelector(".execution-process__body").scrollTop === 0);
+    await page.evaluate(async () => {
+      const { useSessionStore } = await import("/src/stores/session-store.ts");
+      const store = useSessionStore.getState();
+      store.setMessages(store.messages.map(message => message.role === "assistant" ? { ...message, parts: [...message.parts,
+        { kind: "text", streamId: "travel-2", text: "路线结构已整理，正在核对攻略文件。" },
+      ] } : message));
+    });
+    await liveLine.getByText("路线结构已整理，正在核对攻略文件。", { exact: true }).waitFor();
+    assert.equal(await history.evaluate(element => element.scrollTop), 0, "streaming must not interrupt reading older stages");
+    const historyGeometry = await history.evaluate(element => ({ height: element.clientHeight, scrollHeight: element.scrollHeight }));
+    assert(historyGeometry.scrollHeight > historyGeometry.height && historyGeometry.height <= height * .52 + 1);
+    await page.locator(".msg--assistant").screenshot({ path: join(output, `travel-expanded-${width}-${theme}-${font}.png`) });
+    await history.locator(".execution-process__operations-toggle").last().click();
+    await page.locator(".msg--assistant").screenshot({ path: join(output, `travel-stages-${width}-${theme}-${font}.png`) });
     evidence.push({ platform, width, height, theme, font, geometry });
   }
   assert.deepEqual(errors, []);
   writeFileSync(join(output, "evidence.json"), JSON.stringify({ evidence, errors }, null, 2));
-  console.log(JSON.stringify({ ok: true, output, layouts: evidence.length, checks: ["primary stage description", "collapsed tool summary", "Mac/Windows browser platforms", "latest two lines", "font and width changes", "long code fences", "bounded parallel activity", "tool drawer", "keyboard focus", "manual disclosure", "independent question and resume", "long-answer feedback", "completion", "phase-less Runtime text and cancellation export", "real UseTool weather identity", "chronological plan events", "reduced motion"], errors }, null, 2));
+  console.log(JSON.stringify({ ok: true, output, layouts: evidence.length, checks: ["primary stage description", "collapsed tool groups", "Mac/Windows browser platforms", "single current-stage line", "font and width changes", "long code fences", "bounded parallel activity", "tool drawer", "keyboard focus", "manual disclosure", "independent question and resume", "long-answer feedback", "completion", "phase-less Runtime text and cancellation export", "real UseTool weather identity", "chronological plan events", "reduced motion"], errors }, null, 2));
 } catch (error) {
   await page?.screenshot({ path: join(output, "failure.png") });
   console.error(await page?.evaluate(async () => {

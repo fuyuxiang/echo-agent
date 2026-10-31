@@ -239,7 +239,7 @@ export const MessageItem = memo(function MessageItem({
   );
 
   const assistantGroups = message.role === "assistant"
-    ? partitionAssistantParts(message.parts)
+    ? partitionAssistantParts(message.parts, { organizeProgress: true })
     : null;
   const allTextParts = message.parts.filter(
     (part): part is Extract<typeof part, { kind: "text" }> => part.kind === "text",
@@ -444,6 +444,7 @@ export const MessageItem = memo(function MessageItem({
                 hasFinalAnswer={hasFinalAnswer}
                 waitingReason={waitingReason}
                 markdownConfig={markdownConfig}
+                findQuery={findQuery}
                 onOpenTool={onOpenTool}
                 revealRequest={processReveal}
                 knowledgeTrace={knowledgeTrace}

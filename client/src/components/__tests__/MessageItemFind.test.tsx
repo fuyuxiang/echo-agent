@@ -44,4 +44,19 @@ describe("MessageItem find highlighting", () => {
     const { container } = renderMessage(message, "关键词");
     expect(container.querySelectorAll(".find-hit")).toHaveLength(3);
   });
+
+  it("归入阶段的公开进展仍能查找，结束查找后恢复原来的折叠状态", () => {
+    const message: ChatMessage = { id: "find-stage-progress", role: "assistant", complete: true, parts: [
+      { kind: "text", text: "核验官方票价关键词", streamId: "1" },
+      { kind: "tool_call", streamId: "1", toolCall: { toolCallId: "ticket-source", kind: "read", title: "票价来源", status: "completed", content: [] } },
+      { kind: "text", text: "最终攻略", streamId: "2" },
+    ] };
+    const view = (findQuery: string) => <ThemeProvider><MessageItem message={message} streaming={false} findQuery={findQuery} /></ThemeProvider>;
+    const { container, rerender } = render(view("关键词"));
+    expect(container.querySelector(".execution-process__header")).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelectorAll(".find-hit")).toHaveLength(1);
+    expect(container.querySelector(".execution-process__body .find-hit")).toBeVisible();
+    rerender(view(""));
+    expect(container.querySelector(".execution-process__header")).toHaveAttribute("aria-expanded", "false");
+  });
 });

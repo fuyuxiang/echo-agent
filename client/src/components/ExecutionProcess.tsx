@@ -3,7 +3,7 @@ import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { ToolCallCard } from "./ToolCallCard";
 import { documentProgressSummary } from "@/lib/document-progress";
 import { executionProcessPreview } from "@/lib/execution-process-preview";
-import { executionStages, stageOperationSummary } from "@/lib/execution-stages";
+import { executionStages, executionStageState, stageOperationSummary } from "@/lib/execution-stages";
 import { useTheme } from "./ThemeProvider";
 import type { MessagePart, ToolCallView } from "@/stores/session-store";
 import {
@@ -33,6 +33,7 @@ interface ExecutionProcessProps {
   hasFinalAnswer?: boolean;
   waitingReason?: string;
   markdownConfig?: MarkdownConfig;
+  findQuery?: string;
   onOpenTool?: (tool: ToolCallView) => void;
   knowledgeTrace?: KnowledgeTurnTrace;
   onOpenKnowledgePath?: (path: string) => void;
@@ -40,9 +41,11 @@ interface ExecutionProcessProps {
 }
 
 type ReasoningPart = Extract<MessagePart, { kind: "thought" }>;
+type ToolPart = Extract<MessagePart, { kind: "tool_call" }>;
 type ProcessRow =
   | { kind: "thought"; parts: ReasoningPart[]; index: number }
-  | { kind: "part"; part: Exclude<MessagePart, ReasoningPart>; index: number };
+  | { kind: "tools"; parts: ToolPart[]; index: number }
+  | { kind: "part"; part: Extract<MessagePart, { kind: "text" }>; index: number };
 
 /** Keep commentary, operations and disclosures in their original event order. */
 function groupStageRows(parts: MessagePart[]): ProcessRow[] {
@@ -53,6 +56,10 @@ function groupStageRows(parts: MessagePart[]): ProcessRow[] {
       const previous = rows[rows.length - 1];
       if (previous?.kind === "thought") previous.parts.push(part);
       else rows.push({ kind: "thought", parts: [part], index });
+    } else if (part.kind === "tool_call") {
+      const previous = rows[rows.length - 1];
+      if (previous?.kind === "tools") previous.parts.push(part);
+      else rows.push({ kind: "tools", parts: [part], index });
     } else rows.push({ kind: "part", part, index });
   });
   return rows;
@@ -96,31 +103,28 @@ function ReasoningDisclosure({ parts, active, markdownConfig, theme }: Reasoning
   );
 }
 
-function ExecutionExcerpt({ text }: { text: string }) {
-  const textRef = useRef<HTMLParagraphElement>(null);
-  const followLatest = () => {
-    const element = textRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  };
-  useLayoutEffect(followLatest, [text]);
-  useLayoutEffect(() => {
-    if (!textRef.current) return;
-    // Width and font changes can wrap the same excerpt into more lines.
-    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(followLatest);
-    observer?.observe(textRef.current);
-    // WebKit can coalesce a quick font down/up into the same final box size.
-    // Its intermediate layout still clamps scrollTop, without a resize event.
-    const rootObserver = typeof MutationObserver === "undefined" ? undefined : new MutationObserver(followLatest);
-    rootObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "class"] });
-    window.addEventListener("resize", followLatest);
-    return () => {
-      observer?.disconnect();
-      rootObserver?.disconnect();
-      window.removeEventListener("resize", followLatest);
-    };
-  }, []);
-  return <div className="execution-process__excerpt">
-    <p ref={textRef}>{text}</p>
+function StageTools({ parts, recoveredById, onOpenTool }: {
+  parts: ToolPart[];
+  recoveredById: Map<string, string>;
+  onOpenTool?: (tool: ToolCallView) => void;
+}) {
+  // A single operation starts visible. If more calls join its batch, preserve
+  // the same DOM and disclosure so a reader's keyboard target stays mounted.
+  const [open, setOpen] = useState(parts.length === 1);
+  const id = useId();
+  const tools = parts.map(part => part.toolCall);
+  const content = parts.map(({ toolCall }) => <div key={toolCall.toolCallId} className="execution-process__tool">
+    <ToolCallCard tc={toolCall} onOpen={onOpenTool} showStatusLabel />
+    {recoveredById.has(toolCall.toolCallId) && <span className="execution-process__recovery-detail">该次失败已通过后续重试恢复</span>}
+  </div>);
+  return <div className={`execution-process__tool-group${parts.length === 1 ? " execution-process__tool" : ""}`}>
+    {parts.length > 1 && <button type="button" className="execution-process__operations-toggle" aria-expanded={open}
+      aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)}>
+      <span aria-hidden="true">{open ? "⌄" : "›"}</span>
+      {stageOperationSummary(tools)}
+      <span className="execution-process__group-action">{open ? "收起操作" : "查看操作"}</span>
+    </button>}
+    {open && <div id={id} className={parts.length > 1 ? "execution-process__group-tools" : undefined}>{content}</div>}
   </div>;
 }
 
@@ -136,8 +140,6 @@ function ExecutionPreview({ parts, toolCount, searchingKnowledge, onOpenTool, on
   const [focusedToolCallId, setFocusedToolCallId] = useState<string>();
   const [toolsOpen, setToolsOpen] = useState(false);
   const toolsId = useId();
-  const latestStage = useMemo(() => executionStages(parts).slice(-1)[0], [parts]);
-  const progress = useMemo(() => executionProcessPreview(latestStage?.progress ?? []), [latestStage]);
   const allTools = useMemo(() => parts.flatMap(part => part.kind === "tool_call" ? [part.toolCall] : []), [parts]);
   const preview = useMemo(() => executionProcessPreview(parts, focusedToolCallId), [parts, focusedToolCallId]);
   useLayoutEffect(() => {
@@ -150,8 +152,7 @@ function ExecutionPreview({ parts, toolCount, searchingKnowledge, onOpenTool, on
   }, [headerRef]);
 
   return <div ref={containerRef} className="execution-process__preview" aria-label="实时执行进展">
-    {progress.excerpt && <ExecutionExcerpt text={progress.excerpt} />}
-    {!progress.excerpt && !toolCount && !searchingKnowledge && <button type="button" className="execution-process__preview-more" onClick={onExpand}>查看思考摘要</button>}
+    {!toolCount && !searchingKnowledge && <button type="button" className="execution-process__preview-more" onClick={onExpand}>{parts.some(part => part.kind === "thought") ? "查看思考摘要" : "查看阶段详情"}</button>}
     {searchingKnowledge && <p className="execution-process__preview-note">正在从个人知识库检索相关片段…</p>}
     {toolCount > 0 && <button type="button" className="execution-process__operations-toggle"
       aria-expanded={toolsOpen} aria-controls={toolsOpen ? toolsId : undefined}
@@ -197,6 +198,7 @@ export function ExecutionProcess({
   hasFinalAnswer = false,
   waitingReason,
   markdownConfig,
+  findQuery,
   onOpenTool,
   knowledgeTrace,
   onOpenKnowledgePath,
@@ -204,6 +206,8 @@ export function ExecutionProcess({
 }: ExecutionProcessProps) {
   const { theme } = useTheme();
   const bodyId = useId();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const followProcess = useRef(true);
   const headerRef = useRef<HTMLButtonElement>(null);
   const summary = useMemo(
     () => summarizeExecutionProcess(
@@ -230,6 +234,11 @@ export function ExecutionProcess({
   const shouldOpenAutomatically = autoExpand && active && !finalAnswerStarted;
   const savedChoice = getExecutionDisclosureChoice(sessionId, messageId);
   const [open, setOpen] = useState(savedChoice ?? shouldOpenAutomatically);
+  // Public text moved into a stage remains searchable. Search opens it only
+  // temporarily and does not overwrite the reader's saved disclosure choice.
+  const searchMatch = Boolean(findQuery && parts.some(part => part.kind === "text"
+    && part.phase !== "commentary" && part.text.toLocaleLowerCase().includes(findQuery.toLocaleLowerCase())));
+  const expanded = open || searchMatch;
   const [now, setNow] = useState(() => Date.now());
   const previousActive = useRef(active);
   const previousAutomaticOpen = useRef(shouldOpenAutomatically);
@@ -274,9 +283,20 @@ export function ExecutionProcess({
   }, [active, messageId, sessionId, shouldOpenAutomatically]);
 
   const stages = useMemo(() => executionStages(parts), [parts]);
+  const currentStage = stages[stages.length - 1];
+  const progress = useMemo(() => executionProcessPreview(currentStage?.progress ?? []), [currentStage]);
+  // Follow the live edge only while the reader stays there. Reading an older
+  // stage or opening a disclosure must never be undone by a streamed update.
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (expanded && active && !findQuery && followProcess.current && body && !body.contains(document.activeElement)) {
+      body.scrollTop = body.scrollHeight;
+    }
+  }, [expanded, active, parts, findQuery]);
   let plannedStageNumber = 0;
   const stageNumbers = stages.map(stage => stage.planned ? ++plannedStageNumber : undefined);
-  const showPreview = active && !finalAnswerStarted && !open;
+  const showPreview = active && !finalAnswerStarted && !expanded;
+  const showProgress = !finalAnswerStarted && Boolean(progress.excerpt || waitingReason);
   const duration = startedAt != null && (active || completedAt != null)
     ? formatProcessDuration(Math.max(0, (completedAt ?? now) - startedAt))
     : null;
@@ -299,8 +319,8 @@ export function ExecutionProcess({
     ? "正在检索个人知识库"
     : active && finalAnswerStarted
       ? "正在生成回复"
-      : stages.slice(-1)[0]?.parts.some(part => part.stageTitle || part.kind === "text")
-        ? stages[stages.length - 1].title : summary.title);
+      : currentStage?.planned
+        ? currentStage.title : summary.title);
   const recovered = summary.state === "complete" && summary.recoveredTools.length > 0;
   const recoveredById = new Map(summary.recoveredTools.map(recovery => [recovery.failedToolCallId,recovery.successfulToolCallId]));
   const changeOpen = (next: boolean) => {
@@ -310,15 +330,16 @@ export function ExecutionProcess({
   };
 
   return (
+    <>
     <section className={`execution-process execution-process--${waitingReason && active ? "waiting" : summary.state}${showPreview ? " execution-process--previewing" : ""}${recovered ? " execution-process--recovered" : ""}`}>
       <button
         ref={headerRef}
         type="button"
         className="execution-process__header"
         aria-label={[title, duration].filter(Boolean).join(" · ")}
-        aria-expanded={open}
-        aria-controls={open ? bodyId : undefined}
-        aria-describedby={open && summary.description ? `${bodyId}-summary` : undefined}
+        aria-expanded={expanded}
+        aria-controls={expanded ? bodyId : undefined}
+        aria-describedby={expanded && summary.description ? `${bodyId}-summary` : undefined}
         onClick={() => changeOpen(!open)}
       >
         <span className="execution-process__status" aria-hidden="true" />
@@ -330,9 +351,9 @@ export function ExecutionProcess({
             <span className="execution-process__meta">· {duration}</span>
           )}
         </span>
-        {active && <span className="execution-process__toggle-label" aria-hidden="true">{open ? "收起过程" : "展开过程"}</span>}
+        {active && <span className="execution-process__toggle-label" aria-hidden="true">{expanded ? "收起过程" : "展开过程"}</span>}
         <span
-          className={`execution-process__chevron${open ? " execution-process__chevron--open" : ""}`}
+          className={`execution-process__chevron${expanded ? " execution-process__chevron--open" : ""}`}
           aria-hidden="true"
         >
           ›
@@ -343,8 +364,13 @@ export function ExecutionProcess({
         searchingKnowledge={knowledgeTrace?.personal?.state === "searching"}
         onOpenTool={onOpenTool} onExpand={() => changeOpen(true)} headerRef={headerRef} />}
 
-      {open && (
-        <div className="execution-process__body" id={bodyId}>
+      {expanded && (
+        <div className="execution-process__body" id={bodyId} ref={bodyRef}
+          tabIndex={0} role="region" aria-label="思考与执行过程"
+          onScroll={event => {
+            const body = event.currentTarget;
+            followProcess.current = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+          }}>
           {meta.length > 0 && <p className="execution-process__hint">{meta.join(" · ")}</p>}
           {!active && <p className="execution-process__diagnostic-title">{summary.title}</p>}
           {summary.description && <p id={`${bodyId}-summary`} className="execution-process__outcome-detail">{summary.description}</p>}
@@ -365,20 +391,27 @@ export function ExecutionProcess({
           <ol className="execution-process__stages" aria-label="执行记录">
             {stages.map((stage, index) => {
               const rows = groupStageRows(stage.parts);
-              return <li key={stage.id} className={`execution-process__stage${stage.planned ? "" : " execution-process__stage--activity"}`}>
-                <h4><span className="execution-process__stage-index" aria-hidden="true">{stageNumbers[index] ?? "·"}</span>{stage.title.replace(/^正在/, "")}</h4>
-                {stage.tools.length > 0 && <p className="execution-process__stage-operations">{stageOperationSummary(stage.tools)}</p>}
+              const headingPart = !stage.planned ? stage.progress[0] : undefined;
+              // An opening public sentence can serve as the stage heading.
+              // Later commentary stays at its original position in the log.
+              const headingIsProgress = Boolean(headingPart && stage.parts[0] === headingPart
+                && headingPart.text.trim().replace(/[。！？!?]+$/, "") === stage.title);
+              const state = executionStageState(stage, index === stages.length - 1, active, Boolean(waitingReason));
+              return <li key={stage.id} data-stage-id={stage.id} data-stage-state={state}
+                className={`execution-process__stage${stage.planned ? "" : " execution-process__stage--activity"}${active && index === stages.length - 1 ? " execution-process__stage--current" : ""}`}>
+                <div className="execution-process__stage-heading">
+                  <h4><span className="execution-process__stage-index" aria-hidden="true">{stageNumbers[index] ?? "·"}</span>{headingIsProgress && headingPart ? headingPart.text.trim() : stage.title.replace(/^正在/, "")}</h4>
+                  <span className="execution-process__stage-state">{state}</span>
+                </div>
                 {rows.map((row, rowIndex) => {
                   const rowActive = active && index === stages.length - 1 && rowIndex === rows.length - 1;
                   if (row.kind === "thought") return <ReasoningDisclosure key={row.index} parts={row.parts} active={rowActive}
                     markdownConfig={markdownConfig} theme={theme} />;
+                  if (row.kind === "tools") return <StageTools key={row.index} parts={row.parts} recoveredById={recoveredById} onOpenTool={onOpenTool} />;
                   const part = row.part;
-                  if (part.kind === "text") return <div className="execution-process__progress" key={row.index}>
-                    <Markdown complete={!rowActive} theme={theme} config={markdownConfig}>{part.text}</Markdown>
-                  </div>;
-                  return <div key={row.index} className="execution-process__tool">
-                    <ToolCallCard tc={part.toolCall} onOpen={onOpenTool} showStatusLabel />
-                    {recoveredById.has(part.toolCall.toolCallId) && <span className="execution-process__recovery-detail">该次失败已通过后续重试恢复</span>}
+                  if (headingIsProgress && part === headingPart && !findQuery) return null;
+                  return <div className="execution-process__progress" key={row.index}>
+                    <Markdown complete={!rowActive} theme={theme} config={markdownConfig} findQuery={part.phase !== "commentary" ? findQuery : undefined}>{part.text}</Markdown>
                   </div>;
                 })}
               </li>;
@@ -391,6 +424,10 @@ export function ExecutionProcess({
         </div>
       )}
     </section>
+    {showProgress && <div className="execution-process__excerpt" data-stage-id={currentStage?.id} aria-label="当前阶段进展">
+      <p title={waitingReason ?? progress.excerpt}>{waitingReason ?? progress.excerpt}</p>
+    </div>}
+    </>
   );
 }
 

@@ -7,6 +7,61 @@ import type { ChatMessage, ToolCallView } from "@/stores/session-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 
 describe("assistant execution process", () => {
+  it("过程外只保留匹配当前阶段的一行，更新时替换并可在过程内找回旧说明", () => {
+    const initial: ChatMessage = { id: "stage-matched-progress", role: "assistant", complete: false, parts: [
+      { kind: "text", text: "已经拿到官方票价。", streamId: "1" },
+      { kind: "tool_call", streamId: "1", toolCall: { toolCallId: "tickets", kind: "web_fetch", title: "核对官方票价", status: "completed", content: [] } },
+      { kind: "text", text: "继续核对索道信息。\n\n正在读取官方开放时间。", streamId: "2" },
+      { kind: "tool_call", streamId: "2", toolCall: { toolCallId: "hours", kind: "web_fetch", title: "核对开放时间", status: "in_progress", content: [] } },
+    ] };
+    const view = (message: ChatMessage, waitingReason?: string) => <ThemeProvider><MessageItem message={message} streaming waitingReason={waitingReason} /></ThemeProvider>;
+    const { container, rerender } = render(view(initial));
+    const excerpt = container.querySelector(".execution-process__excerpt")!;
+    expect(excerpt).toHaveTextContent("正在读取官方开放时间。");
+    expect(excerpt.querySelectorAll("p")).toHaveLength(1);
+    expect(container.querySelectorAll(".msg__body > .markdown-body")).toHaveLength(0);
+    expect(screen.queryByText("已经拿到官方票价。")).toBeNull();
+    fireEvent.click(container.querySelector(".execution-process__header")!);
+    expect(container.querySelectorAll(".execution-process__stage")).toHaveLength(2);
+    expect(container.querySelector(".execution-process__body")).toHaveTextContent("已经拿到官方票价。");
+    expect(container.querySelector(".execution-process__stage--current")).toHaveAttribute("data-stage-id", excerpt.getAttribute("data-stage-id"));
+    expect(container.querySelectorAll(".execution-process__excerpt")).toHaveLength(1);
+    rerender(view(initial, "等待你批准操作"));
+    expect(excerpt).toHaveTextContent("等待你批准操作");
+    expect(container.querySelector(".execution-process__stage--current")).toHaveAttribute("data-stage-state", "等待确认");
+    rerender(view({ ...initial, parts: [...initial.parts, { kind: "thought", text: "下一阶段分析", streamId: "3" }] }));
+    expect(container.querySelector(".execution-process__excerpt")).toBeNull();
+  });
+
+  it("同批连续操作折叠为可展开的操作组，思考和后续说明仍在原位", () => {
+    const onOpenTool = vi.fn();
+    const { container } = render(<ThemeProvider><ExecutionProcess active autoExpand onOpenTool={onOpenTool} parts={[
+      { kind: "text", phase: "commentary", text: "核对票价与交通", streamId: "1" },
+      ...["tickets", "transport"].map(id => ({ kind: "tool_call" as const, streamId: "1", toolCall: { toolCallId: id, title: id, kind: "read", status: "completed" as const, content: [] } })),
+      { kind: "thought", text: "核对两个来源", streamId: "1" },
+      { kind: "text", phase: "commentary", text: "现在核对开放时间", streamId: "1" },
+    ]} /></ThemeProvider>);
+    expect(container.querySelectorAll(".execution-process__tool-group")).toHaveLength(1);
+    expect(container.querySelector(".toolcall")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /已完成 2 项操作/ }));
+    expect(container.querySelectorAll(".toolcall")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "read tickets 完成" }));
+    expect(onOpenTool).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "tickets" }));
+    expect(container.querySelector(".execution-process__reasoning")).not.toHaveAttribute("open");
+    expect(container.querySelector(".execution-process__excerpt")).toHaveTextContent("现在核对开放时间");
+  });
+
+  it("阅读单项操作时新增同批操作不会卸载已聚焦的操作", () => {
+    const part = (id: string): ChatMessage["parts"][number] => ({ kind: "tool_call", streamId: "1", toolCall: { toolCallId: id, kind: "read", title: id, status: "completed", content: [] } });
+    const view = (parts: ChatMessage["parts"]) => <ThemeProvider><ExecutionProcess active autoExpand parts={parts} /></ThemeProvider>;
+    const { rerender } = render(view([part("focused-call")]));
+    const target = screen.getByRole("button", { name: "read focused-call 完成" });
+    act(() => target.focus());
+    rerender(view([part("focused-call"), part("new-call")]));
+    expect(target).toHaveFocus();
+    expect(screen.getByRole("button", { name: /已完成 2 项操作/ })).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("同一计划跨生成时保持失败、后续进展和重试的顺序，思考在原位折叠", () => {
     const parts: ChatMessage["parts"] = [
       { kind: "thought", text: "检查原配置", streamId: "1", stageTitle: "核验结果并修复" },
@@ -49,7 +104,7 @@ describe("assistant execution process", () => {
     expect(screen.getByRole("button", { name: "other 南京 运行中" })).toBeVisible();
   });
 
-  it("真实事件未提供语义标记时保留完整正文，查找工具不冒充查询结果", () => {
+  it("真实事件未提供语义标记时也将说明归入过程，正文只显示当前阶段的一行", () => {
     const message: ChatMessage = { id: "stage-description", role: "assistant", complete: false, parts: [
       { kind: "thought", text: "让我并行发起。", streamId: "1" },
       ...["weather", "web"].map(id => ({ kind: "tool_call" as const, streamId: "1", toolCall: {
@@ -66,7 +121,7 @@ describe("assistant execution process", () => {
     expect(screen.queryByText("让我并行发起。")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "正在分析任务" }));
     expect(screen.getByRole("list", { name: "执行记录" })).toBeVisible();
-    expect(screen.getByText("我先确认实时信息来源，同时核对出行条件。")).toBeVisible();
+    expect(container.querySelector(".execution-process__progress")).toHaveTextContent("我先确认实时信息来源，同时核对出行条件。");
     expect(screen.getByText("思考摘要").closest("details")).not.toHaveAttribute("open");
   });
 
@@ -259,7 +314,7 @@ describe("assistant execution process", () => {
   it("完成后默认收起过程并始终展示最终答复", () => {
     renderMessage();
 
-    expect(screen.getByText("我先检查代码。")).toBeVisible();
+    expect(screen.queryByText("我先检查代码。")).toBeNull();
     expect(screen.getByText("最终修复结果")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /查看过程/ })).toHaveAttribute(
       "aria-expanded",
@@ -641,6 +696,7 @@ describe("assistant execution process", () => {
     expect(header).toHaveAttribute("aria-expanded","false");
     fireEvent.click(header);
     expect(screen.getByText(/1 次中间失败已由后续同一操作的重试恢复/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /已完成 1 项操作 · 1 项失败/ }));
     fireEvent.click(screen.getByRole("button",{name:/web_fetch .*失败/}));
     expect(onOpenTool).toHaveBeenLastCalledWith(expect.objectContaining({toolCallId:"weather-failed",status:"failed",content:[{type:"text",text:"首次连接超时"}]}));
     expect(screen.getByRole("button",{name:/web_fetch .*完成/})).toBeVisible();

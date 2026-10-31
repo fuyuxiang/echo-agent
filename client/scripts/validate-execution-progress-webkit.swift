@@ -72,7 +72,7 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
               const tail = range.getBoundingClientRect(), box = excerpt.getBoundingClientRect();
               window.progressGeometry = {scrollTop:excerpt.scrollTop,scrollHeight:excerpt.scrollHeight,clientHeight:excerpt.clientHeight,
                 tailTop:tail.top,tailBottom:tail.bottom,boxTop:box.top,boxBottom:box.bottom,boxHeight:box.height,lineHeight:getComputedStyle(excerpt).lineHeight};
-              return tail.top >= box.top - 1 && tail.bottom <= box.bottom + 1 && box.height <= parseFloat(getComputedStyle(excerpt).lineHeight) * 2 + 1;
+              return tail.top >= box.top - 1 && tail.bottom <= box.bottom + 1 && box.height <= parseFloat(getComputedStyle(excerpt).lineHeight) + 1 && getComputedStyle(excerpt).whiteSpace === 'nowrap';
             };
             const showTools = async () => {
               await wait(() => document.querySelector('.execution-process__operations-toggle'));
@@ -114,9 +114,11 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             set(parts);
             await showTools();
             preview.querySelector('.execution-process__preview-more').click();
+            assert(document.activeElement === document.querySelector('.execution-process__header'), 'Expand all must keep a stable focus target');
+            await wait(() => document.querySelector('.execution-process__body .execution-process__operations-toggle'));
+            document.querySelector('.execution-process__body .execution-process__operations-toggle').click();
             await wait(() => document.querySelector('.execution-process__body .toolcall'));
             assert(document.querySelectorAll('.execution-process__body .toolcall').length === 4, 'Expand all must reveal the full history');
-            assert(document.activeElement === document.querySelector('.execution-process__header'), 'Expand all must keep a stable focus target');
             document.querySelector('.execution-process__header').click();
             await showTools();
             document.querySelector('.execution-process__preview .toolcall--run').focus();
@@ -140,7 +142,7 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             assert(!document.querySelector('.execution-process--running'), 'Completed response must not remain busy');
             assert(!document.querySelector('.msg__writing'), 'Completion must remove generation feedback');
             assert(document.activeElement === document.querySelector('.execution-process__header'), 'Completion must restore keyboard focus');
-            report({action:'done',viewport:[innerWidth,innerHeight],previewHeight:box.height,checks:['native layout','latest two lines','font changes','long code fences','parallel activity','keyboard focus','expand all','long-answer feedback','completion']});
+            report({action:'done',viewport:[innerWidth,innerHeight],previewHeight:box.height,checks:['native layout','single current-stage line','font changes','long code fences','parallel activity','keyboard focus','expand all','long-answer feedback','completion']});
           } catch (error) { report({action:'fail',error:String(error)+'\n'+error.stack+'\n'+JSON.stringify(window.progressGeometry)}); }
         })();
         """#) { _, error in if let error = error { self.fail(String(describing: error)) } }

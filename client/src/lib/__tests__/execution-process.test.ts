@@ -24,6 +24,44 @@ const tool = (
 });
 
 describe("partitionAssistantParts", () => {
+  it("紧凑展示把各轮公开进展与对应工具归组，保留原始公开文本供导出", () => {
+    const parts: MessagePart[] = [
+      { kind: "text", text: "先核对票价。", streamId: "1" },
+      { ...tool("completed"), streamId: "1" },
+      { kind: "text", text: "补齐开放时间。", streamId: "2" },
+      { ...tool("completed"), streamId: "2" },
+      { kind: "text", text: "完整攻略如下。", streamId: "3" },
+    ];
+    const display = partitionAssistantParts(parts, { organizeProgress: true });
+    expect(display.processParts).toEqual(parts.slice(0, 4));
+    expect(display.responseParts.map(part => part.text)).toEqual(["完整攻略如下。"]);
+    expect(display.answerStarted).toBe(true);
+    expect(partitionAssistantParts(parts).responseParts).toHaveLength(3);
+    expect(parts[0]).not.toHaveProperty("phase");
+  });
+
+  it("紧凑展示不会吞掉显式阶段成果或同轮最终答复", () => {
+    const parts: MessagePart[] = [
+      { kind: "text", phase: "partial_answer", text: "已核实的票价", streamId: "1" },
+      { ...tool("in_progress"), streamId: "1" },
+      { kind: "text", phase: "final_answer", text: "请确认日期", streamId: "1" },
+    ];
+    expect(partitionAssistantParts(parts, { organizeProgress: true }).responseParts).toEqual([parts[0], parts[2]]);
+  });
+
+  it("同轮工具后的说明及没有生成标识的历史进展均可在完整过程中阅读", () => {
+    const parts: MessagePart[] = [
+      { kind: "text", text: "原始进展" }, tool("completed"),
+      { kind: "text", text: "这一轮的说明", streamId: "1" },
+      { ...tool("failed"), streamId: "1" },
+      { kind: "text", text: "同轮后续说明", streamId: "1" },
+    ];
+    const display = partitionAssistantParts(parts, { organizeProgress: true });
+    expect(display.processParts).toEqual(parts);
+    expect(display.responseParts).toEqual([]);
+    expect(display.answerStarted).toBe(false);
+  });
+
   it("同轮工具之后的未分类文本保留在正文，但不误报最终答复", () => {
     const result = partitionAssistantParts([
       { ...tool("completed"), streamId: "1" },

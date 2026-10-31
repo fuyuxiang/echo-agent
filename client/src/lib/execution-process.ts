@@ -30,16 +30,26 @@ export interface AssistantPartGroups {
  * so preserve their text in the conversation, copy, search and export alike.
  * Generation ids still help avoid announcing a final answer during tool work.
  */
-export function partitionAssistantParts(parts: MessagePart[]): AssistantPartGroups {
+export function partitionAssistantParts(
+  parts: MessagePart[],
+  options: { organizeProgress?: boolean } = {},
+): AssistantPartGroups {
   const normalizedParts = expandTaggedThinking(parts);
   const lastMeaningfulPart = [...normalizedParts].reverse().find(part =>
     part.kind === "tool_call" || part.text.trim().length > 0,
   );
   const toolStreams = new Set(normalizedParts.flatMap(part =>
     part.kind === "tool_call" && part.streamId ? [part.streamId] : []));
-  const responseParts = normalizedParts.filter((part): part is TextMessagePart =>
-    isTextPart(part) && part.phase !== "commentary",
-  );
+  const lastToolIndex = normalizedParts.reduce((last, part, index) => part.kind === "tool_call" ? index : last, -1);
+  const hasRunningTools = normalizedParts.some(part => part.kind === "tool_call" && part.toolCall.status === "in_progress");
+  // Presentation groups intermediate public text with the work it accompanies.
+  // Keep the source untouched: copy/search/export callers can still request all
+  // public text, and explicit partial/final answers always remain in the answer.
+  const responseParts = normalizedParts.filter((part, index): part is TextMessagePart => {
+    if (!isTextPart(part) || part.phase === "commentary") return false;
+    if (!options.organizeProgress || part.phase) return true;
+    return !hasRunningTools && index > lastToolIndex && !(part.streamId && toolStreams.has(part.streamId));
+  });
   const responseSet = new Set<MessagePart>(responseParts);
   return {
     processParts: normalizedParts.filter(part => !responseSet.has(part)),

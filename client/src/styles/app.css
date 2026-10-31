@@ -2317,20 +2317,21 @@
 /* The compact live view exposes real activity without growing with the log.
    Full history and raw output remain behind the existing disclosure/drawer. */
 .execution-process__preview {
-  margin: 4px 0 4px 5px;
-  padding: 2px 0 2px 14px;
-  border-left: 1px solid color-mix(in srgb, var(--echo-brand) 28%, var(--echo-border-subtle));
+  margin: 0 0 0 16px;
+  padding: 0;
 }
 .execution-process__excerpt {
-  margin: 0 4px 7px;
+  min-width: 0;
+  max-width: 100%;
+  margin: -3px 0 14px;
 }
 .execution-process__excerpt p {
-  /* Keep the last two lines visible as text, width and font size change. */
-  max-height: 3.3em;
+  /* Exactly one current-stage sentence. History lives in the process above. */
   overflow: hidden;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   margin: 0;
-  color: var(--echo-text-strong);
+  color: var(--echo-text-medium);
   font-size: 0.875rem;
   line-height: 1.65;
 }
@@ -2358,15 +2359,24 @@
 }
 .execution-process__operations-toggle:hover { color: var(--echo-text-medium); }
 .execution-process__operations-toggle:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 2px; border-radius: 3px; }
-.execution-process__stages { margin: 8px 0 0; padding: 0; list-style: none; }
-.execution-process__stage { padding: 0 4px 12px 18px; margin-left: 3px; border-left: 1px solid var(--echo-border-subtle); min-width: 0; }
+.execution-process__stages { margin: 12px 0 0; padding: 0; list-style: none; }
+.execution-process__stage { padding: 0 4px 20px 20px; margin-left: 5px; border-left: 1px solid var(--echo-border-subtle); min-width: 0; }
 .execution-process__stage:last-child { padding-bottom: 2px; }
-.execution-process__stage h4 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px -28px; color: var(--echo-text-medium); font-size: .8125rem; font-weight: 500; line-height: 1.6; overflow-wrap: anywhere; }
+.execution-process__stage-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.execution-process__stage h4 { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin: 0 0 6px -30px; color: var(--echo-text-strong); font-size: .8125rem; font-weight: 500; line-height: 1.6; overflow-wrap: anywhere; }
+.execution-process__stage-state { flex: none; color: var(--echo-text-tertiary); font-size: .6875rem; line-height: 1.6; }
+.execution-process__stage--current { border-left-color: color-mix(in srgb, var(--echo-brand) 40%, var(--echo-border-subtle)); }
+.execution-process__stage--current .execution-process__stage-state { color: var(--echo-color-text-brand-default); }
+.execution-process__stage[data-stage-state="含失败记录"] .execution-process__stage-state { color: var(--echo-color-text-warning-default); }
 .execution-process__stage-index { flex: none; min-width: 18px; border-radius: 50%; background: var(--echo-bg-secondary); color: var(--echo-text-tertiary); text-align: center; font-size: .6875rem; }
 .execution-process__stage--activity .execution-process__stage-index { background: transparent; font-size: .875rem; }
-.execution-process__progress { color: var(--echo-text-strong); font-size: .875rem; overflow-wrap: anywhere; }
+.execution-process__stage--current .execution-process__stage-index { color: var(--echo-brand); }
+.execution-process__progress { color: var(--echo-text-medium); font-size: .8125rem; overflow-wrap: anywhere; }
 .execution-process__progress .markdown-body { font-size: inherit; }
-.execution-process__stage-operations { margin: 8px 0 4px; color: var(--echo-text-tertiary); font-size: .75rem; line-height: 1.6; }
+.execution-process__tool-group { margin: 6px 0; }
+.execution-process__tool-group > .execution-process__operations-toggle { width: 100%; margin: 0; padding: 6px 0; }
+.execution-process__group-action { margin-left: auto; white-space: nowrap; font-size: .6875rem; }
+.execution-process__group-tools { padding: 2px 0 2px 10px; border-left: 1px solid var(--echo-border-subtle); }
 .execution-process__preview .toolcall {
   min-height: 30px;
   margin: 0;
@@ -2433,7 +2443,12 @@
 .execution-process__body {
   padding: 4px 8px 8px;
   border-top: 1px solid var(--echo-border-subtle, var(--echo-border-default));
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
+.execution-process__body:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: -2px; }
 .execution-process__diagnostic-title { margin: 6px 4px; font-size: .75rem; color: var(--echo-text-medium); }
 .execution-notice { margin: 12px 0 4px; padding: 10px 12px; border-radius: 8px; background: var(--echo-bg-secondary); color: var(--echo-text-strong); font-size: .8125rem; line-height: 1.6; overflow-wrap: anywhere; }
 .execution-notice--error { border-left: 2px solid var(--echo-status-error); }

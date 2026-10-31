@@ -32,8 +32,8 @@ export function executionProcessPreview(parts: MessagePart[], focusedToolCallId?
   };
 }
 
-function previewExcerpt(text: string): string {
-  // Do not mount another streaming Markdown tree for this two-line preview.
+export function previewExcerpt(text: string): string {
+  // Do not mount another streaming Markdown tree for the single-line preview.
   // Use the latest paragraph so long thoughts still show newly received text.
   const paragraphs = readableTextTail(text)
     .split(/\n\s*\n/)
@@ -46,8 +46,9 @@ function previewExcerpt(text: string): string {
     .replace(/[*_`]/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  const characters = Array.from(plain);
-  return characters.length > 200 ? `…${characters.slice(-200).join("")}` : plain;
+  const sentence = plain.match(/[^。！？!?]+[。！？!?]?[”’」』]*$/u)?.[0]?.trim() || plain;
+  const characters = Array.from(sentence);
+  return characters.length > 200 ? `…${characters.slice(-200).join("")}` : sentence;
 }
 
 /** Scan fence boundaries before truncating, keeping only a bounded prose tail. */

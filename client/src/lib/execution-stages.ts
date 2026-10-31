@@ -1,6 +1,7 @@
 import type { MessagePart, ToolCallView } from "@/stores/session-store";
 import { activeToolLabel } from "./execution-process";
 import { isToolDiscovery } from "./tool-renderers";
+import { previewExcerpt } from "./execution-process-preview";
 
 export interface ExecutionStage {
   id: string;
@@ -46,11 +47,27 @@ export function executionStages(parts: MessagePart[]): ExecutionStage[] {
   }
   for (const stage of stages) {
     if (stage.parts.some(part => part.stageTitle)) continue;
+    const description = stage.progress[0] && previewExcerpt(stage.progress[0].text);
+    if (description) {
+      // Quote a real public stage description, never raw reasoning or an
+      // invented plan. Long descriptions remain fully available in the stage.
+      stage.title = Array.from(description.replace(/[。！？!?]+$/, "")).slice(0, 48).join("");
+      continue;
+    }
     const activeTool = [...stage.tools].reverse().find(tool => tool.status === "in_progress") ?? stage.tools.slice(-1)[0];
     stage.title = activeTool ? activeToolLabel(activeTool) : "分析任务";
     if (activeTool && !stage.tools.some(tool => tool.status === "in_progress")) stage.title = stage.title.replace(/^正在/, "");
   }
   return stages;
+}
+
+/** Last event group is current; older parallel tools stay in their own stage. */
+export function executionStageState(stage: ExecutionStage, current: boolean, active: boolean, waiting = false): string {
+  if (active && current && waiting) return "等待确认";
+  if (active && (current || stage.tools.some(tool => tool.status === "in_progress"))) return "进行中";
+  if (stage.tools.some(tool => tool.status === "in_progress")) return "未记录完成";
+  if (stage.tools.some(tool => tool.status === "failed")) return "含失败记录";
+  return stage.tools.length ? "已执行" : "已记录";
 }
 
 export function stageOperationSummary(tools: ToolCallView[]): string {

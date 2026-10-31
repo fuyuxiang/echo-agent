@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executionStages, stageOperationSummary } from "../execution-stages";
+import { executionStages, executionStageState, stageOperationSummary } from "../execution-stages";
 import type { MessagePart, ToolCallView } from "@/stores/session-store";
 
 const discovery = (id: string, status: ToolCallView["status"] = "completed"): MessagePart => ({
@@ -27,7 +27,7 @@ describe("execution stages", () => {
     expect(stages).toHaveLength(2);
     expect(stages[0].progress[0].text).toBe("核对实时信息来源");
     expect(stages[0].thoughts).toHaveLength(1);
-    expect(stages[0].title).toBe("查找可用工具");
+    expect(stages[0].title).toBe("核对实时信息来源");
     expect(stageOperationSummary(stages[0].tools)).toBe("已完成 2 项工具查找");
     expect(stages[0].title).not.toContain("天气");
     expect(stages.every(stage => !stage.planned)).toBe(true);
@@ -46,5 +46,13 @@ describe("execution stages", () => {
     expect(stageOperationSummary(stages[0].tools)).toBe("1 项进行中 · 1 项失败");
     expect(stageOperationSummary([])).toBe("");
     expect(stageOperationSummary([{ toolCallId: "web", title: "搜索南京天气", kind: "web_search", status: "completed", content: [] }])).toBe("已完成 1 项操作");
+  });
+  it("当前阶段、旧阶段并行操作和等待状态分别按实际事件展示", () => {
+    const [stage] = executionStages([discovery("a", "in_progress")]);
+    expect(executionStageState(stage, true, true, true)).toBe("等待确认");
+    expect(executionStageState(stage, false, true)).toBe("进行中");
+    expect(executionStageState(stage, false, false)).toBe("未记录完成");
+    const [failed] = executionStages([discovery("b", "failed")]);
+    expect(executionStageState(failed, false, false)).toBe("含失败记录");
   });
 });

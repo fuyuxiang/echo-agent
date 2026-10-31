@@ -7,6 +7,9 @@ const tool = (id: string, status: ToolCallView["status"] = "completed"): Message
 });
 
 describe("live execution preview", () => {
+  it("同段进展只展示最新一句，让单行摘要随当前阶段替换", () => {
+    expect(executionProcessPreview([{ kind: "text", text: "官方票价已核实。正在补齐开放时间。" }]).excerpt).toBe("正在补齐开放时间。");
+  });
   it("recent completed calls cannot push older running work out of view", () => {
     const preview = executionProcessPreview([tool("long-running", "in_progress"), ...[1, 2, 3, 4].map(id => tool(String(id)))]);
     expect(preview.tools.map(item => item.toolCallId)).toEqual(["long-running", "3", "4"]);
