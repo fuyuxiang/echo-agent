@@ -104,7 +104,7 @@ try {
   for (const scenario of ["all-failed", "unfinished", "history", "uncertain-send", "browser-upload", "uncertain-browser-upload"]) {
     await page.setViewportSize({ width: 1280, height: 800 }); await page.goto(`${base}&theme=light`);
     await page.locator(".session-header").waitFor(); await setup(scenario); await settle(scenario);
-    await page.getByRole("button", { name: /执行记录/ }).waitFor();
+    await page.getByRole("button", { name: / · 查看过程$/ }).waitFor();
     assert.equal(await page.locator(".session-header [role=status]").count(), 0);
     assert.equal(await page.locator(".execution-notice").count(), scenario === "history" ? 0 : 1);
     if (["unfinished", "uncertain-send", "uncertain-browser-upload"].includes(scenario)) assert((await page.locator(".execution-notice").textContent()).includes("结果尚未确认"));

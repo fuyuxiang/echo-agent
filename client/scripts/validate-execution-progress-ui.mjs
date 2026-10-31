@@ -22,7 +22,7 @@ try {
       { kind: "text", phase: "commentary", streamId: "stage-1", stageTitle: "核对资料与准备演示结构",
         text: "资料来源已经确认。正在核对数据和演示结构。" },
       { kind: "thought", streamId: "stage-1", stageTitle: "核对资料与准备演示结构",
-        text: "分析片段。".repeat(200) + "分析原文末尾" },
+        text: value === "long-record" ? Array.from({ length: 60 }, (_, i) => `分析第 ${i + 1} 段：检查资料来源、数据和交互反馈，保留完整过程以供回看。`).join("\n\n") : "分析片段。".repeat(200) + "分析原文末尾" },
       tool("ongoing", ["tools", "waiting"].includes(value) ? "in_progress" : "completed"),
       ...["old", "recent", "latest"].map(id => tool(id, "completed")),
     ];
@@ -50,6 +50,7 @@ try {
     const process = page.locator(".execution-process"), header = process.locator(".execution-process__header");
     await process.getByText("核对资料与准备演示结构", { exact: true }).waitFor();
     assert.equal(await header.getAttribute("aria-expanded"), "false");
+    assert.match(await header.textContent(), /展开过程/);
     assert.equal(await process.getByRole("button").count(), 1, "one entry for records");
     assert.equal(await process.locator(".toolcall, .execution-process__reasoning").count(), 0);
     assert.match(await process.locator(".execution-process__excerpt").textContent(), /资料来源已经确认。正在核对数据/);
@@ -57,14 +58,20 @@ try {
     const geometry = await process.evaluate(element => {
       const box = element.getBoundingClientRect(), excerpt = element.querySelector(".execution-process__excerpt p");
       return { x: box.x, right: box.right, clipped: element.scrollWidth > element.clientWidth + 1,
+        clientWidth: element.clientWidth, scrollWidth: element.scrollWidth,
+        overflowing: Array.from(element.querySelectorAll("*")).filter(node => node.getBoundingClientRect().right > box.right + 1).map(node => ({ class: node.className, right: node.getBoundingClientRect().right })),
         overflow: document.documentElement.scrollWidth > innerWidth + 1, excerptWhiteSpace: getComputedStyle(excerpt).whiteSpace,
-        animations: element.getAnimations({ subtree: true }).length };
+        statusAnimation: getComputedStyle(element.querySelector(".execution-process__status")).animationName,
+        chevronTransition: getComputedStyle(element.querySelector(".execution-process__chevron")).transitionDuration };
     });
-    assert(!geometry.clipped && !geometry.overflow && geometry.x >= 0 && geometry.right <= width + 1);
-    assert.equal(geometry.excerptWhiteSpace, "normal"); assert.equal(geometry.animations, 0);
+    assert(!geometry.clipped && !geometry.overflow && geometry.x >= 0 && geometry.right <= width + 1, JSON.stringify({ width, theme, font, geometry }));
+    assert.equal(geometry.excerptWhiteSpace, "normal");
+    assert.equal(geometry.statusAnimation, "none");
+    assert(geometry.chevronTransition.split(",").every(duration => parseFloat(duration) <= 0.00001), "reduced motion disables the chevron transition");
     await page.screenshot({ path: join(output, `progress-${width}-${theme}-${font}.png`) });
 
     await header.focus(); await page.keyboard.press("Enter");
+    assert.match(await header.textContent(), /收起过程/);
     assert.equal(await process.locator(".toolcall").count(), 4, "one click reveals all operations");
     const body = process.locator(".execution-process__body");
     assert.equal(await body.evaluate(el => getComputedStyle(el).overflowY), "visible", "transcript owns scrolling");
@@ -82,7 +89,20 @@ try {
     await process.getByRole("button", { name: "收起全文", exact: true }).click();
     assert.equal(await process.getByText(/分析原文末尾/).count(), 0);
     await page.screenshot({ path: join(output, `records-${width}-${theme}-${font}.png`) });
-    await header.click();
+    await stage("long-record");
+    await process.getByRole("button", { name: "展开全文", exact: true }).click();
+    const collapse = process.getByRole("button", { name: "收起过程", exact: true });
+    await collapse.scrollIntoViewIfNeeded();
+    assert(await body.evaluate(el => el.getBoundingClientRect().height > document.querySelector(".chatview__scroll").clientHeight), "long records exceed the viewport");
+    await collapse.focus(); await page.keyboard.press("Enter");
+    await page.waitForFunction(() => {
+      const entry = document.querySelector(".execution-process__header");
+      const viewport = document.querySelector(".chatview__scroll").getBoundingClientRect();
+      const box = entry.getBoundingClientRect();
+      return !document.querySelector(".execution-process__body") && entry === document.activeElement
+        && box.top >= viewport.top - 1 && box.bottom <= viewport.bottom + 1;
+    });
+    assert.match(await header.textContent(), /展开过程/);
 
     await stage("waiting");
     await process.getByRole("note").waitFor();
@@ -94,6 +114,10 @@ try {
     assert.equal(await process.locator(".execution-process__excerpt").count(), 0);
     assert.equal(await page.locator(".msg--assistant [role=status]").count(), 1);
     await stage("long-answer");
+    // Inspecting and collapsing a long record is deliberate reading intent.
+    // Resume following explicitly before asserting that new output stays visible.
+    const latest = page.getByRole("button", { name: "回到最新消息并恢复自动跟随", exact: true });
+    if (await latest.isVisible()) await latest.click();
     await page.waitForFunction(() => {
       const status = document.querySelector(".msg__writing")?.getBoundingClientRect();
       const viewport = document.querySelector(".chatview__scroll")?.getBoundingClientRect();
@@ -103,12 +127,13 @@ try {
     await process.getByText("本轮已完成", { exact: true }).waitFor();
     assert.equal(await page.locator(".execution-process--running, .msg__writing").count(), 0);
     assert.equal(await header.getAttribute("aria-expanded"), "false");
+    assert.match(await header.textContent(), /查看过程/);
     evidence.push({ width, height, theme, font, geometry });
   }
   assert.deepEqual(errors, []);
   writeFileSync(join(output, "evidence.json"), JSON.stringify({ layouts: evidence, errors }, null, 2));
   console.log(JSON.stringify({ ok: true, output, layouts: evidence.length,
-    checks: ["task progress", "context", "one record entry", "all operations", "details", "focus", "long analysis", "actual waiting", "answer feedback", "completion", "reduced motion"], errors }, null, 2));
+    checks: ["task progress", "context", "one record entry", "all operations", "details", "focus", "long analysis", "footer collapse returns to overview", "actual waiting", "answer feedback", "completion", "reduced motion"], errors }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(output, "failure.png") }).catch(() => {});
   throw error;

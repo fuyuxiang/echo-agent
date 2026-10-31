@@ -1,4 +1,4 @@
-import { buildDraft } from "../automation/schedule-utils";
+import { draftFromAutomation, buildDraft } from "../automation/schedule-utils";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,6 +6,7 @@ import { AutomationPanel } from "../AutomationPanel";
 import { automationEditorDirty, useAutomationEditorStore } from "@/stores/automation-editor-store";
 import { AutomationPermissionConfirmDialog } from "../automation/AutomationPermissionConfirmDialog";
 import type { AutomationSnapshot } from "@/lib/types";
+import { ModelManagementContext } from "@/lib/model-management";
 
 // ---- mock Tauri IPC 层 ----
 const emptySnapshot: AutomationSnapshot = { automations: [], records: [] };
@@ -13,6 +14,10 @@ let snapshot: AutomationSnapshot = emptySnapshot;
 
 vi.mock("@/lib/agent-client", () => ({
   automationsSnapshot: vi.fn(async () => snapshot),
+  desktopPreferencesGet: vi.fn(async () => ({ closeToTray: true })),
+  automationsResetSession: vi.fn(async () => ({ ...snapshot.automations[0], dedicatedSessionId: undefined })),
+  automationRunStop: vi.fn(async () => {}),
+  automationRunResult: vi.fn(async () => ({ text: "本次结果", truncated: false })),
   automationsSave: vi.fn(async (a: unknown) => a),
   automationsDelete: vi.fn(async () => {}),
   automationsSetStatus: vi.fn(async () => {}),
@@ -43,6 +48,9 @@ import {
   agentsList,
   automationsDelete,
   automationsRun,
+  automationsResetSession,
+  automationRunStop,
+  automationRunResult,
   automationsSave,
   automationsSnapshot,
   mcpList,
@@ -53,6 +61,9 @@ import {
 beforeEach(() => {
   useAutomationEditorStore.getState().close();
   snapshot = emptySnapshot;
+  vi.mocked(automationsResetSession).mockClear();
+  vi.mocked(automationRunStop).mockReset().mockResolvedValue(undefined);
+  vi.mocked(automationRunResult).mockReset().mockResolvedValue({ text: "本次结果", truncated: false });
   vi.mocked(automationsSnapshot).mockReset().mockImplementation(async () => snapshot);
   vi.mocked(agentListWorkspaces).mockReset().mockResolvedValue([]);
   vi.mocked(filesystemPickDirectory).mockReset().mockResolvedValue(null);
@@ -63,7 +74,7 @@ beforeEach(() => {
     synchronized: true,
     runtimeModels: [],
   });
-  vi.mocked(automationsSave).mockReset().mockImplementation(async (automation) => automation);
+  vi.mocked(automationsSave).mockReset().mockImplementation(async (automation) => { snapshot = { ...snapshot, automations: [automation] }; return automation; });
   vi.mocked(automationsDelete).mockReset().mockResolvedValue(undefined);
   vi.mocked(automationsRun).mockReset().mockResolvedValue("record-id");
   vi.mocked(providersList).mockReset().mockResolvedValue({ providers: [], models: [] });
@@ -72,6 +83,10 @@ beforeEach(() => {
   vi.mocked(mcpList).mockReset().mockResolvedValue([]);
 });
 
+function openAdvanced() {
+  const trigger = screen.queryByRole("button", { name: "高级设置" });
+  if (trigger?.getAttribute("aria-expanded") === "false") fireEvent.click(trigger);
+}
 function beginRunnableEditor() {
   const draft = { ...buildDraft(undefined, "/tmp"), id: "job-a", name: "原任务", prompt: "读取报告", modelId: "ready-model" };
   const automation = { ...draft, createdAt: "2026-10-17T00:00:00Z" };
@@ -83,9 +98,86 @@ function beginRunnableEditor() {
 }
 
 describe("自动化编辑流程与通知导航", () => {
-  const ready = () => waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull());
+  const ready = async () => { await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull()); openAdvanced(); };
 
-  it.each(["保存", "测试运行"])("%s 不会重新创建已删除的任务", async (action) => {
+  it.each([false, true])("管理模型返回后刷新模型与默认项，保留草稿；原先有模型=%s", async (hasModels) => {
+    beginRunnableEditor();
+    if (!hasModels) {
+      useAutomationEditorStore.getState().setDraft(draft => ({ ...draft!, modelId: undefined }));
+      vi.mocked(providersList).mockResolvedValue({ providers: [], models: [] });
+      vi.mocked(agentAuthStatus).mockResolvedValue({ ready: false, providers: [], runtimeReady: true, synchronized: true, runtimeModels: [] });
+    }
+    const manage = vi.fn(() => {
+      vi.mocked(providersList).mockResolvedValue({ providers: [], models: [{ id: "new-model", label: "新增可用模型" }] } as never);
+      vi.mocked(agentAuthStatus).mockResolvedValue({ ready: true, providers: [], runtimeReady: true, synchronized: true, runtimeModels: ["new-model"], defaultModelId: "new-model" });
+      window.dispatchEvent(new Event("echo:model-catalog-changed"));
+    });
+    render(<ModelManagementContext.Provider value={manage}><AutomationPanel /></ModelManagementContext.Provider>);
+    await ready();
+    fireEvent.change(screen.getByRole("textbox", { name: "名称" }), { target: { value: "保留我的草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: /选择定时任务模型/ }));
+    if (hasModels) fireEvent.click(screen.getByRole("button", { name: "管理模型" }));
+    await waitFor(() => expect(providersList).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull());
+    openAdvanced();
+    if (!hasModels) {
+      expect(screen.getByRole("button", { name: "选择定时任务模型：新增可用模型" })).toBeInTheDocument();
+      expect(useAutomationEditorStore.getState().draft?.modelId).toBeUndefined();
+    }
+    fireEvent.click(screen.getByRole("button", { name: /选择定时任务模型/ }));
+    expect(screen.getByRole("option", { name: "新增可用模型" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "可用模型" })).toBeNull();
+    fireEvent.click(screen.getByRole("option", { name: "新增可用模型" }));
+    expect(screen.getByDisplayValue("保留我的草稿")).toBeInTheDocument();
+    expect(useAutomationEditorStore.getState().draft?.modelId).toBe("new-model");
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({ name: "保留我的草稿", modelId: "new-model" })));
+  });
+
+  it.each(["待确认", "已停止"])("%s 筛选仅显示对应未归档轮次", async (label) => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [
+      { id: "attention", status: "running", needsAttention: true, automationName: "待处理运行" },
+      { id: "stopped", status: "stopped", automationName: "停止运行" },
+      { id: "success", status: "success", automationName: "成功运行" },
+      { id: "archived-attention", status: "running", needsAttention: true, automationName: "归档待处理", archived: true },
+      { id: "archived-stopped", status: "stopped", automationName: "归档停止", archived: true },
+    ].map(run => ({ automationId: task.id, startedAt: new Date().toISOString(), archived: false, ...run }));
+    // Record titles use the current task name when its definition exists.
+    snapshot.automations = [];
+    render(<AutomationPanel />);
+    fireEvent.click(screen.getByText("运行记录"));
+    await screen.findByRole("button", { name: /成功运行/ });
+    fireEvent.click(screen.getByRole("button", { name: "筛选运行记录" }));
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    expect(screen.queryByRole("button", { name: /成功运行/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /归档待处理|归档停止/ })).toBeNull();
+    expect(screen.getByRole("button", { name: label === "待确认" ? /待处理运行/ : /停止运行/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: label === "待确认" ? /停止运行/ : /待处理运行/ })).toBeNull();
+  });
+
+  it("停止超时保留停止意图、恢复重试入口，重试完成后不改变后续计划", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [{ id: "stop-retry", automationId: task.id, automationName: task.name, status: "running", startedAt: new Date().toISOString(), archived: false }];
+    vi.mocked(automationRunStop).mockImplementationOnce(async () => {
+      snapshot = { ...snapshot, records: snapshot.records.map(run => ({ ...run, stopRequested: true })) };
+      throw new Error("取消确认超时");
+    }).mockImplementationOnce(async () => {
+      snapshot = { ...snapshot, records: snapshot.records.map(run => ({ ...run, status: "stopped" })) };
+    });
+    const toast = vi.fn(); render(<AutomationPanel onToast={toast} />);
+    fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    fireEvent.click(screen.getByRole("button", { name: "停止本次运行" }));
+    const retry = await screen.findByRole("button", { name: "再次请求停止" });
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("停止尚未确认，可重试"));
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByRole("region", { name: "本次运行结果" })).toHaveTextContent("已停止"));
+    expect(automationRunStop).toHaveBeenCalledTimes(2);
+    expect(snapshot.automations[0].status).toBe("ACTIVE");
+  });
+
+  it.each(["保存修改", "保存并立即运行"])("%s 不会重新创建已删除的任务", async (action) => {
     beginRunnableEditor(); snapshot = emptySnapshot;
     const toast = vi.fn(); render(<AutomationPanel onToast={toast} />); await ready();
     fireEvent.click(screen.getByRole("button", { name: action }));
@@ -100,8 +192,8 @@ describe("自动化编辑流程与通知导航", () => {
     const first = render(<AutomationPanel />); await ready();
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     fireEvent.click(screen.getByRole("button", { name: "删除自动化任务" }));
-    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "测试运行" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存并立即运行" })).toBeDisabled();
     first.unmount(); render(<AutomationPanel />);
     expect(screen.getByText("正在删除自动化任务…")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "取消" })).toBeDisabled();
@@ -113,7 +205,7 @@ describe("自动化编辑流程与通知导航", () => {
   it("旧页面迟到的删除响应不能清空另一个编辑流程", async () => {
     beginRunnableEditor(); let resolveDelete!: () => void;
     vi.mocked(automationsDelete).mockReturnValueOnce(new Promise(resolve => { resolveDelete = resolve; }));
-    const first = render(<AutomationPanel />);
+    const first = render(<AutomationPanel />); await ready();
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     fireEvent.click(screen.getByRole("button", { name: "删除自动化任务" }));
     first.unmount();
@@ -126,7 +218,7 @@ describe("自动化编辑流程与通知导航", () => {
 
   it("删除失败保留草稿、恢复按钮，并允许重试", async () => {
     beginRunnableEditor(); vi.mocked(automationsDelete).mockRejectedValueOnce(new Error("磁盘忙"));
-    const toast = vi.fn(); render(<AutomationPanel onToast={toast} />);
+    const toast = vi.fn(); render(<AutomationPanel onToast={toast} />); await ready();
     fireEvent.change(screen.getByDisplayValue("原任务"), { target: { value: "删除失败仍保留" } });
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     fireEvent.click(screen.getByRole("button", { name: "删除自动化任务" }));
@@ -145,7 +237,7 @@ describe("自动化编辑流程与通知导航", () => {
     const toast = vi.fn(); render(<AutomationPanel onToast={toast} />); await ready();
     expect(screen.getByRole("textbox", { name: "任务要求" })).toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "名称" }), { target: { value: "批量操作期间保留" } });
-    fireEvent.click(screen.getByRole("button", { name: "自动化" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
     fireEvent.click(screen.getByRole("button", { name: "批量管理" }));
     fireEvent.click(screen.getByRole("button", { name: "全选" }));
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
@@ -170,13 +262,14 @@ describe("自动化编辑流程与通知导航", () => {
     vi.mocked(automationsSave).mockImplementationOnce(async a => ({ ...a, name: a.name.trim() }));
     const toast = vi.fn(); render(<AutomationPanel onToast={toast} />); await ready();
     fireEvent.change(screen.getByDisplayValue("原任务"), { target: { value: " 已保存的新名称 " } });
-    fireEvent.click(screen.getByRole("button", { name: "测试运行" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存并立即运行" }));
     await waitFor(() => expect(useAutomationEditorStore.getState().operation).toBeNull());
     expect(automationsRun).toHaveBeenCalledWith("job-a");
-    expect(screen.getByDisplayValue("已保存的新名称")).toBeInTheDocument();
     expect(automationEditorDirty()).toBe(false);
-    if (runFails) expect(toast).toHaveBeenCalledWith(expect.stringContaining("修改已保存，但触发测试运行失败"));
-    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    if (runFails) expect(screen.getByDisplayValue("已保存的新名称")).toBeInTheDocument();
+    else expect(screen.getByRole("heading", { name: "原任务" })).toBeInTheDocument();
+    if (runFails) expect(toast).toHaveBeenCalledWith(expect.stringContaining("修改已保存，但安排运行失败"));
+    if (runFails) fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(useAutomationEditorStore.getState().draft).toBeNull();
   });
@@ -185,18 +278,18 @@ describe("自动化编辑流程与通知导航", () => {
     beginRunnableEditor(); vi.mocked(automationsSave).mockRejectedValueOnce(new Error("原自动化任务已被移除"));
     const toast = vi.fn(); render(<AutomationPanel onToast={toast} />); await ready();
     fireEvent.change(screen.getByDisplayValue("原任务"), { target: { value: "保留新输入" } });
-    fireEvent.click(screen.getByRole("button", { name: "测试运行" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存并立即运行" }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.stringContaining("已被移除")));
     expect(automationsRun).not.toHaveBeenCalled(); expect(automationEditorDirty()).toBe(true);
     expect(screen.getByDisplayValue("保留新输入")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "保存" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ })).toBeEnabled();
   });
 
   it("重复测试点击只保存一次，旧页面保存响应不会改写新的编辑流程或继续运行", async () => {
     beginRunnableEditor(); let resolveSave!: (a: Awaited<ReturnType<typeof automationsSave>>) => void;
     vi.mocked(automationsSave).mockReturnValueOnce(new Promise(resolve => { resolveSave = resolve; }));
     const first = render(<AutomationPanel />); await ready();
-    const test = screen.getByRole("button", { name: "测试运行" });
+    const test = screen.getByRole("button", { name: "保存并立即运行" });
     act(() => { fireEvent.click(test); fireEvent.click(test); });
     expect(automationsSave).toHaveBeenCalledTimes(1);
     const submitted = vi.mocked(automationsSave).mock.calls[0][0]; first.unmount();
@@ -218,45 +311,44 @@ describe("自动化编辑流程与通知导航", () => {
     expect(useAutomationEditorStore.getState().draft?.prompt).toBe("读取报告");
     expect(automationEditorDirty()).toBe(true);
     expect(automationsSave).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ }));
     await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({ id: "", name: "恢复的重要内容" })));
   });
 
   it("保留草稿期间暂停原任务，继续保存不会意外重新启用任务", async () => {
     beginRunnableEditor(); render(<AutomationPanel />); await ready();
     fireEvent.change(screen.getByDisplayValue("原任务"), { target: { value: "保留修改" } });
-    fireEvent.click(screen.getByRole("button", { name: "自动化" }));
-    fireEvent.click(screen.getByRole("button", { name: "打开「原任务」更多操作" }));
-    fireEvent.click(screen.getByRole("button", { name: "暂停" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
+    fireEvent.click(screen.getByRole("switch", { name: "启用定时任务「原任务」" }));
     await waitFor(() => expect(useAutomationEditorStore.getState().operation).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
     expect(automationEditorDirty()).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ }));
     await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({ status: "PAUSED", name: "保留修改" })));
   });
 
   it("通知打开目标记录且保留草稿，用户可恢复编辑，重复通知仍可重新导航", async () => {
     beginRunnableEditor(); useAutomationEditorStore.getState().setDraft(d => d && ({ ...d, name: "保留的输入" }));
     const { rerender } = render(<AutomationPanel notificationAutomationId="job-b" notificationAutomationSequence={1} />);
-    expect(await screen.findByRole("tab", { name: "运行记录" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("heading", { name: "最近运行结果" })).toBeInTheDocument();
     expect(screen.getByRole("status", { name: "保留的自动化草稿" })).toHaveTextContent("保留的输入");
-    expect(screen.getByText(/正在查看“关联自动化”/)).toBeInTheDocument();
+    expect(screen.getByText("未找到关联任务或运行记录，可能已被删除或清理。")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
     expect(screen.getByDisplayValue("保留的输入")).toBeInTheDocument();
     rerender(<AutomationPanel notificationAutomationId="job-b" notificationAutomationSequence={2} />);
-    expect(screen.getByRole("tab", { name: "运行记录" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "最近运行结果" })).toBeInTheDocument();
     expect(automationsSave).not.toHaveBeenCalled();
   });
 
   it("返回列表保留草稿，创建另一任务前明确确认，取消不会丢失输入", async () => {
     beginRunnableEditor(); render(<AutomationPanel />); await ready();
     fireEvent.change(screen.getByDisplayValue("原任务"), { target: { value: "尚未保存" } });
-    fireEvent.click(screen.getByRole("button", { name: "自动化" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
     expect(screen.getByRole("status", { name: "保留的自动化草稿" })).toHaveTextContent("尚未保存");
-    fireEvent.click(screen.getByRole("button", { name: "添加自动化" }));
+    fireEvent.click(screen.getByRole("button", { name: "新建定时任务" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "保留草稿" }));
     expect(useAutomationEditorStore.getState().draft?.name).toBe("尚未保存");
-    fireEvent.click(screen.getByRole("button", { name: "添加自动化" }));
+    fireEvent.click(screen.getByRole("button", { name: "新建定时任务" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "舍弃并继续" }));
     await waitFor(() => expect(useAutomationEditorStore.getState().isCreating).toBe(true));
     expect(useAutomationEditorStore.getState().draft?.name).toBe("");
@@ -269,7 +361,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     useAutomationEditorStore.getState().begin(draft, { ...draft, createdAt: "2026-10-17T00:00:00Z" });
     const toast = vi.fn(); render(<AutomationPanel onToast={toast} />);
     await waitFor(() => expect(automationsSnapshot).toHaveBeenCalled());
-    fireEvent.click(await screen.findByRole("button", { name: "保存" }));
+    fireEvent.click(await screen.findByRole("button", { name: /保存修改|创建任务|保存中/ }));
     expect(toast).toHaveBeenCalledWith(expect.stringContaining("已被移除"));
     expect(screen.getByDisplayValue("保留内容")).toBeInTheDocument();
     expect(automationsSave).not.toHaveBeenCalled();
@@ -277,7 +369,8 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
   it("离开页面再返回时保留尚未提交的自动化输入，不创建实际任务", async () => {
     const first = render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 添加自动化"));
+    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    openAdvanced();
     fireEvent.change(document.querySelector(".atm-modal-input")!, { target: { value: "跨页保留的草稿" } });
     first.unmount();
     render(<AutomationPanel />);
@@ -292,9 +385,9 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       .mockResolvedValueOnce(emptySnapshot);
     const { rerender } = render(<AutomationPanel refreshSignal={0} />);
     rerender(<AutomationPanel refreshSignal={1} />);
-    expect(await screen.findByText("开启你的第一个自动化任务吧")).toBeInTheDocument();
+    expect(await screen.findByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
     await act(async () => resolveInitial({ automations: [], records: [] }));
-    expect(screen.getByText("开启你的第一个自动化任务吧")).toBeInTheDocument();
+    expect(screen.getByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
   });
 
   it("首次加载被失败的后台刷新取代时显示可重试错误，不能一直加载", async () => {
@@ -306,7 +399,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     rerender(<AutomationPanel refreshSignal={1} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("后台刷新断线");
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    expect(await screen.findByText("开启你的第一个自动化任务吧")).toBeInTheDocument();
+    expect(await screen.findByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
     await act(async () => resolveInitial(emptySnapshot));
   });
 
@@ -314,13 +407,13 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     render(<AutomationPanel />);
     expect(screen.getByText("定时任务")).toBeInTheDocument();
     expect(screen.getByText("运行记录")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText("开启你的第一个自动化任务吧")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument());
   });
 
   it("定时任务空态：hero 文案 + 添加按钮 + 12 个模板", async () => {
     render(<AutomationPanel />);
-    await waitFor(() => expect(screen.getByText("开启你的第一个自动化任务吧")).toBeInTheDocument());
-    expect(screen.getByText("+ 添加自动化")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument());
+    expect(screen.getByText("+ 新建定时任务")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "自动化任务模板" })).toBeInTheDocument();
     expect(screen.getByText("每日 AI 新闻推送")).toBeInTheDocument();
     expect(screen.getByText("可爱萌宠手机壁纸")).toBeInTheDocument();
@@ -334,7 +427,8 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
   it("取消自动化编辑前保护未保存的输入，继续编辑保留内容，确认后退出", async () => {
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 添加自动化"));
+    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    openAdvanced();
     fireEvent.change(document.querySelector(".atm-modal-input")!, { target: { value: "不能丢失的定时任务" } });
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     const dialog = await screen.findByRole("alertdialog", { name: "舍弃未保存的修改？" });
@@ -342,12 +436,13 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     expect(screen.getByDisplayValue("不能丢失的定时任务")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "舍弃修改" }));
-    expect(await screen.findByText("开启你的第一个自动化任务吧")).toBeInTheDocument();
+    expect(await screen.findByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
   });
 
   it("自动化工具条下拉支持 Escape 关闭并把焦点还给触发按钮", async () => {
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 添加自动化"));
+    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    openAdvanced();
     const trigger = screen.getByRole("button", { name: /^技能/ });
     fireEvent.click(trigger);
     expect(screen.getByText("暂无可用技能")).toBeInTheDocument();
@@ -362,17 +457,18 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("自动化数据加载失败：快照损坏");
-    expect(screen.queryByText("开启你的第一个自动化任务吧")).not.toBeInTheDocument();
+    expect(screen.queryByText("安排任务，让 EchoAgent 按时为你处理")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    expect(await screen.findByText("开启你的第一个自动化任务吧")).toBeInTheDocument();
+    expect(await screen.findByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
   });
 
-  it("点击「+ 添加自动化」进入表单（截图 2 字段）", async () => {
+  it("点击「+ 新建定时任务」进入表单（截图 2 字段）", async () => {
     render(<AutomationPanel />);
-    await waitFor(() => screen.getByText("+ 添加自动化"));
-    fireEvent.click(screen.getByText("+ 添加自动化"));
-    await waitFor(() => expect(screen.getByText("添加自动化任务")).toBeInTheDocument());
+    await waitFor(() => screen.getByText("+ 新建定时任务"));
+    fireEvent.click(screen.getByText("+ 新建定时任务"));
+    openAdvanced();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "新建定时任务" })).toBeInTheDocument());
     expect(screen.getByText("名称")).toBeInTheDocument();
     expect(screen.getByText("工作目录", { selector: "label" })).toBeInTheDocument();
     expect(screen.getByText("任务要求")).toBeInTheDocument();
@@ -381,14 +477,14 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     expect(screen.getByText("按间隔")).toBeInTheDocument();
     expect(screen.getByText("单次")).toBeInTheDocument();
     expect(screen.getByText(/生效日期区间/)).toBeInTheDocument();
-    expect(screen.getByText(/完成后推送到通知渠道/)).toBeInTheDocument();
+    expect(screen.getByText("完成后通知我")).toBeInTheDocument();
     expect(screen.getByText("取消")).toBeInTheDocument();
-    expect(screen.getByText("保存")).toBeInTheDocument();
+    expect(screen.getByText("创建任务")).toBeInTheDocument();
     // 提示词工具条 chips
-    expect(screen.getByText(/Auto/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "跟随默认模型" })).toBeInTheDocument();
     expect(screen.getByText(/技能/)).toBeInTheDocument();
     expect(screen.getByText("召唤专家")).toBeInTheDocument();
-    expect(screen.getByText("默认权限")).toBeInTheDocument();
+    expect(screen.getAllByText("默认权限").length).toBeGreaterThan(0);
   });
 
   it("工作空间可输入路径并通过系统目录选择授权新路径", async () => {
@@ -400,7 +496,8 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       synchronized: true, runtimeModels: ["ready-model"], defaultModelId: "ready-model",
     });
     render(<AutomationPanel cwd="/recent" />);
-    fireEvent.click(await screen.findByText("+ 添加自动化"));
+    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    openAdvanced();
 
     const input = document.querySelector("#automation-workspace-path") as HTMLInputElement;
     expect(input.value).toBe("/recent");
@@ -415,7 +512,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
     fireEvent.change(document.querySelector(".atm-modal-input") as HTMLInputElement, { target: { value: "自定义目录任务" } });
     fireEvent.change(document.querySelector(".atm-prompt-textarea") as HTMLTextAreaElement, { target: { value: "运行任务" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ }));
     await waitFor(() => expect(automationsSave).toHaveBeenCalledTimes(1));
     expect(vi.mocked(automationsSave).mock.calls[0][0].cwds).toBe("/new/custom");
   });
@@ -426,7 +523,8 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       { name: "review", displayName: "代码审查", enabled: true },
     ]);
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 添加自动化"));
+    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    openAdvanced();
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("模型：模型目录离线");
@@ -452,15 +550,16 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       defaultModelId: "minimax-m3",
     });
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 添加自动化"));
+    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    openAdvanced();
 
-    fireEvent.click(await screen.findByRole("button", { name: /Auto.*MiniMax-M3/ }));
-    fireEvent.click(screen.getByRole("button", { name: "MiniMax-M3 · 个人" }));
-    expect(screen.getByRole("button", { name: /MiniMax-M3/ })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /选择定时任务模型：MiniMax-M3/ }));
+    fireEvent.click(screen.getByRole("option", { name: "MiniMax-M3" }));
+    expect(screen.getByRole("button", { name: /选择定时任务模型：MiniMax-M3/ })).toBeInTheDocument();
 
     fireEvent.change(document.querySelector(".atm-modal-input") as HTMLInputElement, { target: { value: "每日报告" } });
     fireEvent.change(document.querySelector(".atm-prompt-textarea") as HTMLTextAreaElement, { target: { value: "生成报告" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ }));
 
     await waitFor(() => expect(automationsSave).toHaveBeenCalledTimes(1));
     expect(vi.mocked(automationsSave).mock.calls[0][0]).toMatchObject({
@@ -470,65 +569,27 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     });
   });
 
-  it("macOS 点击选项先失焦时仍可选择模型、保存并重新打开", async () => {
+  it("共享模型选择器支持 WebKit 失焦后选择、保存与默认模式", async () => {
     beginRunnableEditor();
-    const models = [
-      { id: "ready-model", label: "原模型" },
-      { id: "other-model", label: "另一个模型" },
-    ];
-    vi.mocked(providersList).mockResolvedValue({ providers: [], models } as never);
-    render(<AutomationPanel />);
-    const trigger = await screen.findByRole("button", { name: "原模型 · 个人" });
-    fireEvent.click(trigger);
-    const option = screen.getByRole("button", { name: "另一个模型 · 个人" });
-    fireEvent.mouseDown(option, { button: 0 });
-    // WebKit does not focus buttons clicked with the mouse. The focused Auto
-    // or model option loses focus to the document before mouseup/click.
-    act(() => (document.activeElement as HTMLElement).blur());
-    fireEvent.mouseUp(option, { button: 0 });
-    fireEvent.click(option);
-    expect(useAutomationEditorStore.getState().draft?.modelId).toBe("other-model");
-    expect(document.querySelector(".atm-chip-dropdown__menu")).toBeNull();
-    expect(trigger).toHaveFocus();
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    vi.mocked(providersList).mockResolvedValue({ providers: [], models: [{ id: "ready-model", label: "原模型" }, { id: "other-model", label: "另一个模型" }] } as never);
+    render(<AutomationPanel />); await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull()); openAdvanced();
+    const trigger = screen.getByRole("button", { name: /选择定时任务模型：原模型/ }); fireEvent.click(trigger);
+    const option = screen.getByRole("option", { name: "另一个模型" });
+    fireEvent.mouseDown(option); act(() => (document.activeElement as HTMLElement).blur()); fireEvent.mouseUp(option); fireEvent.click(option);
+    expect(useAutomationEditorStore.getState().draft?.modelId).toBe("other-model"); expect(trigger).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
     await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({ modelId: "other-model" })));
-    const saved = vi.mocked(automationsSave).mock.calls[0][0];
-    act(() => useAutomationEditorStore.getState().begin(saved, saved));
-    const selectedTrigger = await screen.findByRole("button", { name: "另一个模型 · 个人" });
-    fireEvent.click(selectedTrigger);
-    expect(screen.getAllByRole("button", { name: "另一个模型 · 个人" })[1]).toHaveClass("active");
-    const auto = screen.getByRole("button", { name: /^Auto\s*每次运行/ });
-    fireEvent.mouseDown(auto, { button: 0 });
-    act(() => (document.activeElement as HTMLElement).blur());
-    fireEvent.mouseUp(auto, { button: 0 });
-    fireEvent.click(auto);
+    act(() => useAutomationEditorStore.getState().begin(draftFromAutomation(snapshot.automations[0]), snapshot.automations[0])); openAdvanced();
+    fireEvent.click(screen.getByRole("button", { name: "跟随默认模型" }));
     expect(useAutomationEditorStore.getState().draft?.modelId).toBeUndefined();
-    expect(screen.getByRole("button", { name: /Auto.*原模型/ })).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(automationsSave).toHaveBeenCalledTimes(2));
-    expect(vi.mocked(automationsSave).mock.calls[1][0].modelId).toBeUndefined();
   });
 
-  it("模型菜单仍支持内部 Tab 导航、Tab 离开、Esc 和点击外部关闭", async () => {
-    beginRunnableEditor();
-    render(<AutomationPanel />);
-    const trigger = await screen.findByRole("button", { name: "可用模型 · 个人" });
-    const user = userEvent.setup();
-    await user.click(trigger);
-    expect(screen.getByRole("button", { name: /^Auto\s*每次运行/ })).toHaveFocus();
-    await user.tab();
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
-    await user.tab();
-    expect(screen.getByRole("button", { name: "技能" })).toHaveFocus();
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    await user.click(trigger);
-    await user.keyboard("{Escape}");
-    expect(trigger).toHaveFocus();
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    await user.click(trigger);
-    fireEvent.mouseDown(screen.getByText("任务要求"));
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(useAutomationEditorStore.getState().draft?.modelId).toBe("ready-model");
+  it("共享模型菜单 Escape 只关闭菜单，保留编辑与模型选择", async () => {
+    beginRunnableEditor(); render(<AutomationPanel />); await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull()); openAdvanced();
+    const trigger = screen.getByRole("button", { name: /选择定时任务模型：可用模型/ }); const user = userEvent.setup();
+    await user.click(trigger); expect(screen.getByRole("listbox")).toBeInTheDocument();
+    await user.keyboard("{Escape}"); expect(trigger).toHaveFocus(); expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "名称" })).toHaveValue("原任务"); expect(useAutomationEditorStore.getState().draft?.modelId).toBe("ready-model");
   });
 
   it.each(["技能", "召唤专家"])("%s 菜单也允许 WebKit 失焦后的内部点击", async (name) => {
@@ -540,6 +601,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     vi.mocked(agentsList).mockResolvedValue([{ name: "新闻专家", path: "/review/agents/news.md", scope: "project", raw: "News" }]);
     render(<AutomationPanel />);
     await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull());
+    openAdvanced();
     fireEvent.click(screen.getByRole("button", { name }));
     const option = screen.getByRole("button", { name: name === "技能" ? "第二个技能" : "新闻专家" });
     const copy = option.querySelector("span:last-child")!;
@@ -568,12 +630,14 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       defaultModelId: "minimax-m3",
     });
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 添加自动化"));
+    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    openAdvanced();
 
-    expect(await screen.findByRole("button", { name: /Auto.*MiniMax-M3/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /选择定时任务模型：MiniMax-M3/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "跟随默认模型" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.change(document.querySelector(".atm-modal-input") as HTMLInputElement, { target: { value: "Auto 报告" } });
     fireEvent.change(document.querySelector(".atm-prompt-textarea") as HTMLTextAreaElement, { target: { value: "执行任务" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ }));
 
     await waitFor(() => expect(automationsSave).toHaveBeenCalledTimes(1));
     expect(vi.mocked(automationsSave).mock.calls[0][0].modelId).toBeUndefined();
@@ -582,11 +646,12 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
   it("Auto 没有可用默认模型时阻止保存并给出可操作提示", async () => {
     const onToast = vi.fn();
     render(<AutomationPanel onToast={onToast} />);
-    fireEvent.click(await screen.findByText("+ 添加自动化"));
+    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    openAdvanced();
 
     fireEvent.change(document.querySelector(".atm-modal-input") as HTMLInputElement, { target: { value: "Auto 报告" } });
     fireEvent.change(document.querySelector(".atm-prompt-textarea") as HTMLTextAreaElement, { target: { value: "执行任务" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ }));
 
     expect(automationsSave).not.toHaveBeenCalled();
     expect(onToast).toHaveBeenCalledWith("当前没有可用的默认模型，请在「设置 → 模型」检查连接。");
@@ -604,8 +669,9 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
   it("频率切换：按间隔显示 每 N 小时，单次显示日期选择", async () => {
     render(<AutomationPanel />);
-    await waitFor(() => screen.getByText("+ 添加自动化"));
-    fireEvent.click(screen.getByText("+ 添加自动化"));
+    await waitFor(() => screen.getByText("+ 新建定时任务"));
+    fireEvent.click(screen.getByText("+ 新建定时任务"));
+    openAdvanced();
     await waitFor(() => screen.getByText("执行频率"));
     fireEvent.click(screen.getByText("按间隔"));
     expect(screen.getByText("每")).toBeInTheDocument();
@@ -688,10 +754,8 @@ describe("AutomationPanel（有任务/有记录）", () => {
     snapshot = { automations: [baseAutomation], records: [] };
     render(<AutomationPanel />);
 
-    const trigger = await screen.findByRole("button", { name: `打开「${baseAutomation.name}」更多操作` });
-    trigger.focus();
-    fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    fireEvent.click(await screen.findByRole("button", { name: baseAutomation.name }));
+    const trigger = screen.getByRole("button", { name: "删除任务" }); trigger.focus(); fireEvent.click(trigger);
 
     const dialog = screen.getByRole("dialog", { name: `删除 ${baseAutomation.name}？` });
     const cancel = within(dialog).getByRole("button", { name: "取消" });
@@ -710,9 +774,9 @@ describe("AutomationPanel（有任务/有记录）", () => {
   it("编辑、测试运行和管理是独立控件，编辑不触发实际运行", async () => {
     snapshot = { automations: [baseAutomation], records: [] };
     render(<AutomationPanel />);
-    const edit = await screen.findByRole("button", { name: `编辑自动化「${baseAutomation.name}」` });
-    const run = screen.getByRole("button", { name: `测试运行「${baseAutomation.name}」` });
-    const manage = screen.getByRole("button", { name: `打开「${baseAutomation.name}」更多操作` });
+    const edit = await screen.findByRole("button", { name: `编辑定时任务「${baseAutomation.name}」` });
+    const run = screen.getByRole("button", { name: `立即运行「${baseAutomation.name}」` });
+    const manage = screen.getByRole("switch", { name: `启用定时任务「${baseAutomation.name}」` });
     for (const control of [edit, run, manage]) {
       expect(control.parentElement?.closest('button, [role="button"]')).toBeNull();
     }
@@ -725,7 +789,7 @@ describe("AutomationPanel（有任务/有记录）", () => {
     snapshot = { automations: [baseAutomation], records: [] };
     render(<AutomationPanel />);
     fireEvent.click(await screen.findByRole("button", { name: "批量管理" }));
-    const select = screen.getByRole("checkbox", { name: `选择自动化「${baseAutomation.name}」` });
+    const select = screen.getByRole("checkbox", { name: `选择定时任务「${baseAutomation.name}」` });
     expect(select).not.toBeChecked();
     fireEvent.click(select);
     expect(select).toBeChecked();
@@ -733,16 +797,53 @@ describe("AutomationPanel（有任务/有记录）", () => {
     expect(automationsRun).not.toHaveBeenCalled();
   });
 
+  it("新建和模板入口直接展示，模板可返回列表或创建待确认草稿", async () => {
+    snapshot = { automations: [baseAutomation], records: [] };
+    render(<AutomationPanel />);
+    const templates = await screen.findByRole("button", { name: "从模板添加" });
+    expect(screen.getByRole("button", { name: "新建定时任务" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "更多新建方式" })).toBeNull();
+    fireEvent.click(templates);
+    expect(document.querySelectorAll(".template-card").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "定时任务" }));
+    expect(screen.getByRole("button", { name: baseAutomation.name })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "从模板添加" }));
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".template-card")!);
+    expect(await screen.findByRole("dialog", { name: "新建定时任务" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "名称" })).not.toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "任务要求" })).not.toHaveValue("");
+    expect(automationsSave).not.toHaveBeenCalled();
+    expect(automationsRun).not.toHaveBeenCalled();
+  });
+
   it("任务列表：显示名称与调度摘要", async () => {
     snapshot = { automations: [baseAutomation], records: [] };
     render(<AutomationPanel />);
     await waitFor(() => expect(screen.getByText("每日 AI 新闻推送")).toBeInTheDocument());
-    expect(screen.getByText("当前")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /已启用/ })).toBeInTheDocument();
     expect(screen.getByText("每天 09:00")).toBeInTheDocument();
     // 有任务时工具栏出现搜索/批量管理/添加自动化
-    expect(screen.getByPlaceholderText("搜索自动化/记录")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("搜索定时任务")).toBeInTheDocument();
     expect(screen.getByText("批量管理")).toBeInTheDocument();
-    expect(screen.getByText("添加自动化")).toBeInTheDocument();
+    expect(screen.getByText("新建定时任务")).toBeInTheDocument();
+  });
+
+  it("运行说明可按需展开，运行设置仍能进入系统设置", async () => {
+    snapshot = { automations: [baseAutomation], records: [] };
+    const onOpenSettings = vi.fn();
+    render(<AutomationPanel onOpenSettings={onOpenSettings} />);
+    const help = await screen.findByRole("button", { name: "运行说明" });
+    const explanation = screen.getByText(/电脑需保持开机且 EchoAgent/);
+    expect(help).toHaveAttribute("aria-expanded", "false");
+    expect(explanation).not.toBeVisible();
+    fireEvent.click(help);
+    expect(help).toHaveAttribute("aria-expanded", "true");
+    expect(explanation).toBeVisible();
+    fireEvent.click(help);
+    expect(explanation).not.toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "运行设置" }));
+    expect(onOpenSettings).toHaveBeenCalledWith("general");
+    expect(automationsRun).not.toHaveBeenCalled();
   });
 
   it("运行记录：按天分组显示", async () => {
@@ -764,7 +865,7 @@ describe("AutomationPanel（有任务/有记录）", () => {
     fireEvent.click(screen.getByText("运行记录"));
     await waitFor(() => expect(screen.getByText("今天")).toBeInTheDocument());
     expect(screen.getByText("每日 AI 新闻推送")).toBeInTheDocument();
-    expect(screen.getByText("成功")).toBeInTheDocument();
+    expect(screen.getByText("已完成")).toBeInTheDocument();
   });
 
   it("运行记录：点击可打开对应 Agent 会话", async () => {
@@ -789,6 +890,7 @@ describe("AutomationPanel（有任务/有记录）", () => {
     fireEvent.click(screen.getByText("运行记录"));
     const row = await screen.findByRole("button", { name: /可查看结果的任务/ });
     fireEvent.click(row);
+    fireEvent.click(screen.getByRole("button", { name: "查看完整会话" }));
     expect(onOpenSession).toHaveBeenCalledWith("session-123", "/workspace/project");
   });
 
@@ -805,9 +907,10 @@ describe("AutomationPanel（有任务/有记录）", () => {
     fireEvent.click(screen.getByRole("button", {name: "筛选运行记录"}));
     fireEvent.click(screen.getByRole("button", {name: "人工接管"}));
     fireEvent.click(screen.getByRole("button", {name: /人工继续的任务/}));
+    fireEvent.click(screen.getByRole("button", { name: "查看完整会话" }));
     expect(onOpenSession).toHaveBeenCalledWith("manual-session", undefined);
     expect(screen.queryByRole("button", {name: /重新运行/})).not.toBeInTheDocument();
-    expect(screen.getByTitle("归档")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "归档记录" })).toBeEnabled();
   });
 
   it("失败记录可使用当前自动化配置重新运行", async () => {
@@ -847,11 +950,11 @@ describe("AutomationPanel（有任务/有记录）", () => {
     };
     render(<AutomationPanel />);
 
-    const runButton = await screen.findByLabelText("「每日 AI 新闻推送」正在运行");
+    const runButton = await screen.findByLabelText("立即运行「每日 AI 新闻推送」");
     expect(runButton).toBeDisabled();
 
     fireEvent.click(screen.getByText("运行记录"));
-    expect(await screen.findByText("等待调度")).toBeInTheDocument();
+    expect(await screen.findByText("排队中")).toBeInTheDocument();
     expect(screen.queryByTitle("归档")).not.toBeInTheDocument();
     expect(screen.queryByTitle("删除")).not.toBeInTheDocument();
   });
@@ -908,7 +1011,7 @@ describe("AutomationPanel（有任务/有记录）", () => {
 
 
 describe("自动化专家稳定引用", () => {
-  const ready = () => waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull());
+  const ready = async () => { await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull()); openAdvanced(); };
   it("新选择保存稳定定义路径，并在编辑草稿中保留", async () => {
     beginRunnableEditor();
     vi.mocked(agentsList).mockResolvedValue([{name: "Identity Expert", scope: "project", path: "/tmp/.echo-agent/agents/stable.md", raw: "---\nname: Identity Expert\n---\nRole"}]);
@@ -916,7 +1019,7 @@ describe("自动化专家稳定引用", () => {
     fireEvent.click(screen.getByRole("button", {name: "召唤专家"}));
     fireEvent.click(screen.getByRole("button", {name: "Identity Expert"}));
     expect(useAutomationEditorStore.getState().draft?.expertPath).toBe("/tmp/.echo-agent/agents/stable.md");
-    fireEvent.click(screen.getByRole("button", {name: "保存"}));
+    fireEvent.click(screen.getByRole("button", {name: /保存修改|创建任务|保存中/}));
     await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({expertId: "Identity Expert", expertName: "Identity Expert", expertPath: "/tmp/.echo-agent/agents/stable.md"})));
   });
   it("旧专家引用缺少路径时清楚提示重新选择，不因目录里存在同名专家而默默保存", async () => {
@@ -925,11 +1028,93 @@ describe("自动化专家稳定引用", () => {
     vi.mocked(agentsList).mockResolvedValue([{name: "Old Expert", scope: "project", path: "/tmp/.echo-agent/agents/replacement.md", raw: "Other role"}]);
     const toast = vi.fn(); render(<AutomationPanel onToast={toast} />); await ready();
     expect(screen.getByRole("button", {name: "Old Expert · 需重新选择"})).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", {name: "保存"}));
+    fireEvent.click(screen.getByRole("button", {name: /保存修改|创建任务|保存中/}));
     expect(toast).toHaveBeenCalledWith(expect.stringContaining("重新选择专家")); expect(automationsSave).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", {name: "Old Expert · 需重新选择"}));
     fireEvent.click(screen.getByRole("button", {name: "Old Expert"}));
-    fireEvent.click(screen.getByRole("button", {name: "保存"}));
+    fireEvent.click(screen.getByRole("button", {name: /保存修改|创建任务|保存中/}));
     await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({expertPath: "/tmp/.echo-agent/agents/replacement.md"})));
+  });
+});
+
+
+describe("定时任务会话、结果与控制闭环", () => {
+  it("筛选后全选按当前任务身份判断，不因旧选择数量相同而选错任务", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.automations.push({ ...task, id: "other-task", name: "另一任务", status: "PAUSED" });
+    render(<AutomationPanel />); fireEvent.click(await screen.findByRole("button", { name: "批量管理" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择定时任务「原任务」" }));
+    fireEvent.click(screen.getByRole("button", { name: /^已暂停/ }));
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    expect(screen.getByRole("checkbox", { name: "选择定时任务「另一任务」" })).toBeChecked();
+  });
+
+  it("工作目录历史选项在 WebKit 空失焦目标后仍能选中", async () => {
+    beginRunnableEditor(); vi.mocked(agentListWorkspaces).mockResolvedValue([{ cwd: "/history/workspace", sessionCount: 1 }]);
+    render(<AutomationPanel />); await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull()); openAdvanced();
+    const input = screen.getByRole("textbox", { name: /工作目录/ }); fireEvent.change(input, { target: { value: "" } });
+    const option = screen.getByRole("button", { name: "/history/workspace" });
+    fireEvent.mouseDown(option); fireEvent.blur(input, { relatedTarget: null }); fireEvent.mouseUp(option); fireEvent.click(option);
+    expect(useAutomationEditorStore.getState().draft?.cwds).toBe("/history/workspace");
+    await waitFor(() => expect(agentsList).toHaveBeenCalledWith("/history/workspace"));
+    expect(skillsList).toHaveBeenCalledWith("/history/workspace");
+  });
+
+  it("高级设置默认折叠，旧任务默认新会话，关闭后真实保存配置", async () => {
+    beginRunnableEditor();
+    render(<AutomationPanel />);
+    expect(screen.queryByRole("switch", { name: "每次运行都开启新会话" })).toBeNull();
+    openAdvanced();
+    const toggle = screen.getByRole("switch", { name: "每次运行都开启新会话" });
+    expect(toggle).toHaveAttribute("aria-checked", "true"); fireEvent.click(toggle);
+    expect(screen.getByText(/后续运行沿用此任务的专属会话/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({ newSessionEachRun: false })));
+  });
+
+  it("任务名称打开结果详情，历史按记录读取，完整会话由明确入口打开", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [
+      { id: "first", automationId: task.id, automationName: task.name, sessionId: "shared", promptId: "p1", status: "success", startedAt: "2026-10-01T00:00:00Z", archived: false },
+      { id: "second", automationId: task.id, automationName: task.name, sessionId: "shared", promptId: "p2", status: "success", startedAt: "2026-10-02T00:00:00Z", archived: false },
+    ];
+    vi.mocked(automationRunResult).mockImplementation(async id => ({ text: id === "first" ? "第一轮独立结果" : "第二轮独立结果", truncated: false }));
+    const open = vi.fn(); render(<AutomationPanel onOpenSession={open} />);
+    fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    expect(await screen.findByText("第二轮独立结果")).toBeInTheDocument(); expect(open).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /10-01.*手动运行/ }));
+    expect(await screen.findByText("第一轮独立结果")).toBeInTheDocument(); expect(screen.queryByText("第二轮独立结果")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "查看完整会话" })); expect(open).toHaveBeenCalledWith("shared", undefined);
+  });
+
+  it("重置明确确认且保留全部历史，不会立即执行", async () => {
+    const task = beginRunnableEditor(); task.newSessionEachRun = false; useAutomationEditorStore.getState().close();
+    snapshot.records = [{ id: "old", automationId: task.id, automationName: task.name, status: "success", startedAt: "2026-10-01T00:00:00Z", archived: false }];
+    render(<AutomationPanel />); fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    fireEvent.click(screen.getByRole("button", { name: "重置会话上下文" })); expect(automationsResetSession).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole("dialog", { name: "重置任务会话上下文？" })).getByRole("button", { name: "重置上下文" }));
+    await waitFor(() => expect(automationsResetSession).toHaveBeenCalledWith(task.id));
+    expect(screen.getByRole("region", { name: "运行历史" }).querySelectorAll("button")).toHaveLength(1); expect(automationsRun).not.toHaveBeenCalled();
+  });
+
+  it("通知失败与任务成功分开呈现，不引导重复执行", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [{ id: "delivered", automationId: task.id, automationName: task.name, status: "success", notificationDelivery: "通知投递未全部成功", startedAt: "2026-10-01T00:00:00Z", archived: false }];
+    const settings = vi.fn(); render(<AutomationPanel onOpenSettings={settings} />); fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    const result = screen.getByRole("region", { name: "本次运行结果" }); expect(result).toHaveTextContent("已完成"); expect(result).toHaveTextContent("通知投递未全部成功");
+    expect(screen.queryByRole("button", { name: "使用当前配置重试" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "检查通知设置" })); expect(settings).toHaveBeenCalledWith("notifications");
+  });
+
+  it("停止排队轮次只调用该记录的停止接口，不修改未来计划", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [{ id: "queued-one", automationId: task.id, automationName: task.name, status: "queued", startedAt: "2026-10-01T00:00:00Z", archived: false }];
+    vi.mocked(automationRunStop).mockImplementationOnce(async () => { snapshot = { ...snapshot, records: snapshot.records.map(run => ({ ...run, status: "stopped" })) }; });
+    render(<AutomationPanel />); fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    fireEvent.click(screen.getByRole("button", { name: "停止本次运行" }));
+    await waitFor(() => expect(automationRunStop).toHaveBeenCalledWith("queued-one"));
+    await waitFor(() => expect(screen.getByRole("region", { name: "本次运行结果" })).toHaveTextContent("已停止"));
+    expect(snapshot.automations[0].status).toBe("ACTIVE"); expect(automationsRun).not.toHaveBeenCalled();
   });
 });

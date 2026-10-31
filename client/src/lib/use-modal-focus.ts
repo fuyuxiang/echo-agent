@@ -78,12 +78,12 @@ function ownedTransient(container: HTMLElement, target: EventTarget | null): {
   trigger: HTMLElement | null;
 } | null {
   const targetSurface = target instanceof Element
-    ? target.closest<HTMLElement>('[role="menu"], [role="listbox"]')
+    ? target.closest<HTMLElement>('[role="menu"], [role="listbox"], [data-model-picker], [data-modal-transient]')
     : null;
   const triggers = Array.from(container.querySelectorAll<HTMLElement>('[aria-expanded="true"][aria-controls]'));
   for (const trigger of triggers) {
     const surface = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
-    if (surface && surface.matches('[role="menu"], [role="listbox"]') && (!targetSurface || surface.contains(targetSurface))) {
+    if (surface && surface.matches('[role="menu"], [role="listbox"], [data-model-picker], [data-modal-transient]') && (!targetSurface || surface.contains(targetSurface))) {
       return { surface, trigger };
     }
   }
@@ -156,6 +156,12 @@ export function useModalFocus<T extends HTMLElement>(
       const lastItem = items[items.length - 1];
       const active = document.activeElement;
       if (transient?.trigger && !container.contains(active)) {
+        if (transient.surface.matches("[data-model-picker]")) {
+          const popupItems = focusableElements(transient.surface);
+          // The picker has one roving option plus a separate management
+          // action. Allow Tab between them before returning to modal fields.
+          if (event.shiftKey ? active !== popupItems[0] : active !== popupItems[popupItems.length - 1]) return;
+        }
         // Browser Tab order follows the portal at the end of body. Resume at
         // the invoking selector's next/previous field in the modal instead.
         event.preventDefault();

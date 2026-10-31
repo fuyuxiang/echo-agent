@@ -15,8 +15,8 @@
 //!  - validity window: validFromDate / validUntilDate (recurring only)
 //!  - extras: skills, expert, connectorIds, permissionMode, pushToWeChat
 //!
-//! At fire time the scheduler opens a fresh EchoAgent session in the automation's
-//! cwd and sends the prompt; a run record (running → success/failed) is
+//! At fire time the scheduler creates or resumes the task-owned session in its
+//! cwd and sends an independently identified prompt; a run record (running → success/failed) is
 //! written so the 运行记录 tab can render history.
 //!
 //! The scheduler runs in-process (tokio task). A short polling interval keeps
@@ -25,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -71,6 +71,9 @@ fn default_interval() -> u32 {
 }
 fn default_hour() -> u32 {
     9
+}
+fn default_new_session_each_run() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +167,14 @@ pub struct Automation {
     pub valid_until_date: Option<String>,
     #[serde(default)]
     pub push_to_we_chat: bool,
+    /// Missing in legacy tasks: preserve their independent-session behavior.
+    #[serde(default = "default_new_session_each_run")]
+    pub new_session_each_run: bool,
+    /// Native-owned context generation. Editors cannot assign session identities.
+    #[serde(default)]
+    pub context_generation: u64,
+    #[serde(default)]
+    pub dedicated_session_id: Option<String>,
     #[serde(default)]
     pub last_run_at: Option<String>,
     #[serde(default)]
@@ -184,11 +195,19 @@ fn default_schedule_type() -> String {
 /// A single run-history entry (运行记录 / inbox item).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AutomationExecutionSummary {
+    pub prompt: String,
+    pub new_session_each_run: bool,
+    pub permission_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AutomationRunRecord {
     pub id: String,
     pub automation_id: String,
     pub automation_name: String,
-    /// "queued" | "running" | "success" | "failed" | "interrupted".
+    /// "queued" | "running" | "success" | "failed" | "interrupted" | "stopped".
     pub status: String,
     pub started_at: String,
     #[serde(default)]
@@ -202,6 +221,16 @@ pub struct AutomationRunRecord {
     pub notification_delivery: Option<String>,
     #[serde(default)]
     pub completion_pending: bool,
+    #[serde(default)]
+    pub stop_requested: bool,
+    /// Derived from the pending interaction registries when taking a snapshot.
+    #[serde(default, skip_deserializing)]
+    pub needs_attention: bool,
+    #[serde(default)]
+    pub waiting_reason: Option<String>,
+    /// Non-authoritative audit data retained after recovery input is retired.
+    #[serde(default)]
+    pub execution_config: Option<AutomationExecutionSummary>,
     /// Workspace used by this run. Persisted so a run can be opened after a
     /// restart without guessing the session's directory from renderer state.
     #[serde(default)]
@@ -255,6 +284,8 @@ pub struct AutomationUpdateEvent {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     /// Concrete model bound to this newly created session, never the Auto sentinel.
@@ -273,7 +304,7 @@ pub(crate) fn emit_automation_update(app: &AppHandle, event: AutomationUpdateEve
 enum RunUpdate<'a> {
     Queued,
     Running,
-    SessionCreated(&'a str, &'a str),
+    SessionCreated(&'a str, &'a str, &'a str),
     Failed {
         session_id: Option<&'a str>,
         error: &'a str,
@@ -297,19 +328,24 @@ fn run_update_event(
     update: RunUpdate<'_>,
 ) -> AutomationUpdateEvent {
     let current_model_id = match &update {
-        RunUpdate::SessionCreated(_, model_id) => Some((*model_id).to_string()),
+        RunUpdate::SessionCreated(_, model_id, _) => Some((*model_id).to_string()),
+        _ => None,
+    };
+    let prompt_id = match &update {
+        RunUpdate::SessionCreated(_, _, prompt_id) => Some((*prompt_id).to_string()),
         _ => None,
     };
     let (phase, status, session_id, error) = match update {
         RunUpdate::Queued => ("queued", "queued", None, None),
         RunUpdate::Running => ("running", "running", None, None),
-        RunUpdate::SessionCreated(session_id, _) => {
+        RunUpdate::SessionCreated(session_id, _, _) => {
             ("sessionCreated", "running", Some(session_id), None)
         }
         RunUpdate::Failed { session_id, error } => ("finished", "failed", session_id, Some(error)),
     };
     AutomationUpdateEvent {
         current_model_id,
+        prompt_id,
         phase: phase.into(),
         automation_id: automation.id.clone(),
         automation_name: automation.name.clone(),
@@ -658,23 +694,37 @@ fn read_records() -> Result<RunRecordStore, String> {
 const MAX_RECORDS: usize = 500;
 
 fn write_records(store: &mut RunRecordStore) -> Result<(), String> {
-    // Keep history bounded without ever evicting an unfinished run. Dropping a
-    // queued/running row would also drop our durable dispatch/recovery marker.
-    while store.records.len() > MAX_RECORDS {
-        let Some(index) = store.records.iter().position(|record| {
-            matches!(record.status.as_str(), "success" | "failed" | "interrupted")
-                && !pending_terminals().lock().unwrap().contains_key(&record.id)
-        }) else {
-            break;
-        };
-        store.records.remove(index);
-    }
+    prune_records(
+        store,
+        &pending_terminals()
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect(),
+    );
     let body =
         serde_json::to_string_pretty(store).map_err(|e| format!("serialize records: {e}"))?;
     if body.len() as u64 > MAX_AUTOMATION_RECORD_BYTES {
         return Err("自动化运行记录超过 32 MiB 安全上限".into());
     }
     write_json(&records_path(), &body)
+}
+
+fn prune_records(store: &mut RunRecordStore, pending_ids: &HashSet<String>) {
+    // Keep history bounded without ever evicting an unfinished run. Dropping a
+    // queued/running row would also drop our durable dispatch/recovery marker.
+    while store.records.len() > MAX_RECORDS {
+        let Some(index) = store.records.iter().position(|record| {
+            matches!(
+                record.status.as_str(),
+                "success" | "failed" | "interrupted" | "stopped"
+            ) && !pending_ids.contains(&record.id)
+        }) else {
+            break;
+        };
+        store.records.remove(index);
+    }
 }
 
 fn append_run_started(
@@ -697,6 +747,14 @@ fn append_run_started(
         prompt_id: None,
         notification_delivery: None,
         completion_pending: false,
+        stop_requested: false,
+        needs_attention: false,
+        waiting_reason: None,
+        execution_config: Some(AutomationExecutionSummary {
+            prompt: automation.prompt.clone(),
+            new_session_each_run: automation.new_session_each_run,
+            permission_mode: automation.permission_mode.clone(),
+        }),
         cwd: Some(cwd.to_string_lossy().into_owned()),
         model_id: resolved_model_id
             .map(str::to_string)
@@ -746,6 +804,9 @@ fn record_run_session(record_id: &str, session_id: &str, prompt_id: &str) -> Res
         .iter_mut()
         .find(|record| record.id == record_id)
         .ok_or_else(|| format!("automation record {record_id} not found"))?;
+    if record.stop_requested || !matches!(record.status.as_str(), "running" | "queued") {
+        return Err("本次运行已停止，未发送任务消息".into());
+    }
     record.session_id = Some(session_id.into());
     record.prompt_id = Some(prompt_id.into());
     write_records(&mut records)?;
@@ -789,6 +850,33 @@ fn record_session_id(record_id: &str) -> Result<Option<String>, String> {
         .and_then(|record| record.session_id))
 }
 
+fn set_run_waiting(record_id: &str, reason: Option<&str>) -> Result<(), String> {
+    let _guard = record_access().lock().unwrap();
+    let mut store = read_records()?;
+    let record = store
+        .records
+        .iter_mut()
+        .find(|item| item.id == record_id)
+        .ok_or("运行记录不存在")?;
+    if record.stop_requested {
+        return Err("本次运行已停止".into());
+    }
+    record.waiting_reason = reason.map(str::to_string);
+    write_records(&mut store)
+}
+
+fn terminal_status(stop_requested: bool, interrupted: bool, ok: bool) -> &'static str {
+    if interrupted {
+        "interrupted"
+    } else if stop_requested {
+        "stopped"
+    } else if ok {
+        "success"
+    } else {
+        "failed"
+    }
+}
+
 fn finalize_record(
     record: &mut AutomationRunRecord,
     ok: bool,
@@ -799,9 +887,14 @@ fn finalize_record(
     if !matches!(record.status.as_str(), "queued" | "running") {
         return false;
     }
-    record.status = if ok { "success" } else { "failed" }.into();
+    record.status = terminal_status(record.stop_requested, false, ok).into();
     record.finished_at = Some(finished_at.to_string());
-    record.error = (!ok).then(|| error.unwrap_or("自动化执行失败").to_string());
+    record.waiting_reason = None;
+    record.error = if record.stop_requested {
+        Some("本次运行已停止，后续计划不受影响".into())
+    } else {
+        (!ok).then(|| error.unwrap_or("自动化执行失败").to_string())
+    };
     record.automation_snapshot = None;
     if let Some(session_id) = session_id {
         record.session_id = Some(session_id.into());
@@ -945,13 +1038,7 @@ pub(crate) fn prepare_restored_terminals(home: &Path) -> Result<(), String> {
                 return Err("自动化恢复事实轮次不一致".into());
             }
             finalize_from_fact(&mut record, &fact);
-            let expected_status = if fact.interrupted {
-                "interrupted"
-            } else if fact.ok {
-                "success"
-            } else {
-                "failed"
-            };
+            let expected_status = terminal_status(record.stop_requested, fact.interrupted, fact.ok);
             if record.status != expected_status {
                 return Err("自动化恢复事实与终态历史冲突，原数据已保留".into());
             }
@@ -1030,8 +1117,8 @@ fn finalize_from_fact(record: &mut AutomationRunRecord, fact: &TerminalFact) -> 
         fact.session_id.as_deref(),
         fact.error.as_deref(),
     );
-    if changed && fact.interrupted {
-        record.status = "interrupted".into();
+    if changed {
+        record.status = terminal_status(record.stop_requested, fact.interrupted, fact.ok).into();
     }
     changed
 }
@@ -1048,6 +1135,7 @@ fn completion_for_record(record: &AutomationRunRecord) -> AutomationCompletion {
         automation_name: record.automation_name.clone(),
         event: AutomationUpdateEvent {
             current_model_id: None,
+            prompt_id: record.prompt_id.clone(),
             phase: "finished".into(),
             automation_id: record.automation_id.clone(),
             automation_name: record.automation_name.clone(),
@@ -1130,6 +1218,23 @@ pub fn complete_run_for_session(
     error: Option<&str>,
 ) -> AutomationCompletionOutcome {
     complete_run_prompt(session_id, prompt_id, ok, error, false)
+}
+
+pub(crate) fn mark_run_stopping(session_id: &str, prompt_id: &str) {
+    let _guard = record_access().lock().unwrap();
+    let Ok(mut records) = read_records() else {
+        return;
+    };
+    if let Some(record) = records.records.iter_mut().find(|record| {
+        matches_prompt(record, session_id, prompt_id)
+            && matches!(record.status.as_str(), "running" | "queued")
+            && !record.stop_requested
+    }) {
+        record.stop_requested = true;
+        if let Err(error) = write_records(&mut records) {
+            tracing::warn!(%error, "could not preserve scheduled run stop intent");
+        }
+    }
 }
 
 /// Manual takeover ends this scheduled occurrence. The replacement message is
@@ -1272,7 +1377,9 @@ fn publication_title(completion: &AutomationCompletion) -> String {
     format!(
         "自动化《{}》{}",
         completion.automation_name,
-        if completion.event.status == "interrupted" {
+        if completion.event.status == "stopped" {
+            "已停止"
+        } else if completion.event.status == "interrupted" {
             "已人工接管"
         } else if completion.event.status == "failed" {
             "运行失败"
@@ -1394,7 +1501,9 @@ pub(crate) fn publish_automation_completion(app: &AppHandle, completion: Automat
                         },
                     )
                     .await;
-                    if results.iter().all(|result| result.ok) {
+                    if results.is_empty() {
+                        "未启用可用通知渠道，结果已保留在运行记录中".to_string()
+                    } else if results.iter().all(|result| result.ok) {
                         "通知已投递".to_string()
                     } else {
                         "通知投递未全部成功，请查看通知渠道；不会自动重发已尝试的副作用".to_string()
@@ -1750,6 +1859,21 @@ fn claim_due_unblocked(
         let Some(scheduled_for) = scheduled_for else {
             continue;
         };
+        // Poll/startup grace does not authorize a one-off hours after its time.
+        let missed_once = a.schedule_type == "once"
+            && DateTime::parse_from_rfc3339(&scheduled_for).is_ok_and(|due| {
+                now.signed_duration_since(due.with_timezone(&Local)) > Duration::minutes(5)
+            });
+        let expired = a
+            .valid_until_date
+            .as_deref()
+            .and_then(parse_date)
+            .is_some_and(|until| now.date_naive() > until);
+        if missed_once || expired {
+            a.status = "PAUSED".into();
+            a.next_run_at = None;
+            continue;
+        }
         due.push(ClaimedAutomation {
             automation: a.clone(),
             scheduled_for,
@@ -1960,7 +2084,7 @@ fn set_status_at(
 
 /// Full snapshot: automations (with recomputed next runs) + run records.
 #[tauri::command]
-pub fn automations_snapshot(app: AppHandle) -> Result<AutomationSnapshot, String> {
+pub async fn automations_snapshot(app: AppHandle) -> Result<AutomationSnapshot, String> {
     // Never hold both file-store locks: prompt completion acquires records
     // before looking up its automation, so nested locking here could deadlock.
     let automations = {
@@ -1970,7 +2094,7 @@ pub fn automations_snapshot(app: AppHandle) -> Result<AutomationSnapshot, String
         write_store(&store)?;
         store.automations
     };
-    let records = {
+    let mut records = {
         let _guard = record_access().lock().unwrap();
         let mut records = read_records()?.records;
         let pending = pending_terminals().lock().unwrap();
@@ -1985,6 +2109,42 @@ pub fn automations_snapshot(app: AppHandle) -> Result<AutomationSnapshot, String
         }
         records
     };
+    let pending = crate::bridge::pending_interactions(
+        &app.state::<crate::bridge::Permissions>(),
+        &app.state::<crate::bridge::Questions>(),
+        &app.state::<crate::bridge::PlanApprovals>(),
+        &app.state::<crate::bridge::FolderTrusts>(),
+        None,
+    )
+    .await;
+    let mut attention: HashSet<String> = pending
+        .permissions
+        .iter()
+        .map(|item| item.session_id.clone())
+        .chain(pending.questions.iter().map(|item| item.session_id.clone()))
+        .chain(
+            pending
+                .plan_approvals
+                .iter()
+                .map(|item| item.session_id.clone()),
+        )
+        .chain(
+            pending
+                .folder_trust_requests
+                .iter()
+                .map(|item| item.session_id.clone()),
+        )
+        .collect();
+    if let Ok(approvals) = crate::automation::automation_pending_approvals(None).await {
+        attention.extend(approvals.into_iter().map(|approval| approval.session_id));
+    }
+    for record in &mut records {
+        record.needs_attention = record.status == "running"
+            && record
+                .session_id
+                .as_deref()
+                .is_some_and(|id| attention.contains(id));
+    }
     sync_autostart_enabled(
         &app,
         automations
@@ -2011,6 +2171,8 @@ fn save_automation_in_store(
     creating: bool,
 ) -> Result<Automation, String> {
     if creating {
+        automation.context_generation = 0;
+        automation.dedicated_session_id = None;
         store.automations.push(automation.clone());
     } else {
         let existing = store
@@ -2018,12 +2180,362 @@ fn save_automation_in_store(
             .iter_mut()
             .find(|item| item.id == automation.id)
             .ok_or("原自动化任务已被移除，请保留草稿并新建任务。")?;
+        // Renaming or changing a prompt must not move a due occurrence into
+        // the future, or change the anchor of an interval schedule.
+        let same_schedule = automation.status == existing.status
+            && automation.schedule_type == existing.schedule_type
+            && serde_json::to_value(&automation.schedule).ok()
+                == serde_json::to_value(&existing.schedule).ok()
+            && automation.scheduled_date == existing.scheduled_date
+            && automation.scheduled_time == existing.scheduled_time
+            && automation.valid_from_date == existing.valid_from_date
+            && automation.valid_until_date == existing.valid_until_date;
+        if same_schedule {
+            automation.next_run_at = existing.next_run_at.clone();
+        }
         // Scheduler metadata can advance while an editor is suspended.
         automation.created_at = existing.created_at.clone();
         automation.last_run_at = existing.last_run_at.clone();
+        // A stale/suspended editor must not rewind a reset or inject another
+        // task's session. Workspace and authority changes start a fresh chain.
+        let reset = automation.new_session_each_run != existing.new_session_each_run
+            || automation.cwds != existing.cwds
+            || automation.permission_mode != existing.permission_mode
+            || automation.expert_path != existing.expert_path
+            || automation.model_is_thinking != existing.model_is_thinking;
+        automation.context_generation =
+            existing.context_generation.saturating_add(u64::from(reset));
+        automation.dedicated_session_id = if reset {
+            None
+        } else {
+            existing.dedicated_session_id.clone()
+        };
         *existing = automation.clone();
     }
     Ok(automation)
+}
+
+/// Shared with ordinary chat prompts so scheduled turns never race an
+/// interactive follow-up in the same task-owned conversation.
+pub(crate) fn session_turn_lock(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>> =
+        OnceLock::new();
+    let mut locks = LOCKS.get_or_init(Default::default).lock().unwrap();
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(session_id).and_then(std::sync::Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(session_id.into(), Arc::downgrade(&lock));
+    lock
+}
+
+pub(crate) fn owns_session(session_id: &str) -> bool {
+    let _guard = record_access().lock().unwrap();
+    if read_records().is_ok_and(|store| {
+        store
+            .records
+            .iter()
+            .any(|record| record.session_id.as_deref() == Some(session_id))
+    }) {
+        return true;
+    }
+    drop(_guard);
+    let _guard = store_access().lock().unwrap();
+    read_store().is_ok_and(|store| {
+        store
+            .automations
+            .iter()
+            .any(|item| item.dedicated_session_id.as_deref() == Some(session_id))
+    })
+}
+
+fn dedicated_session_for_run(automation: &Automation) -> Result<Option<String>, String> {
+    if automation.new_session_each_run {
+        return Ok(None);
+    }
+    let _guard = store_access().lock().unwrap();
+    let store = read_store()?;
+    let current = store
+        .automations
+        .iter()
+        .find(|item| item.id == automation.id);
+    Ok(current
+        .filter(|item| item.context_generation == automation.context_generation)
+        .and_then(|item| item.dedicated_session_id.clone())
+        .or_else(|| automation.dedicated_session_id.clone()))
+}
+
+fn bind_dedicated_session(automation: &Automation, session_id: &str) -> Result<(), String> {
+    if automation.new_session_each_run {
+        return Ok(());
+    }
+    let _guard = store_access().lock().unwrap();
+    let mut store = read_store()?;
+    if let Some(current) = store
+        .automations
+        .iter_mut()
+        .find(|item| item.id == automation.id)
+    {
+        if !current.new_session_each_run
+            && current.context_generation == automation.context_generation
+        {
+            current.dedicated_session_id = Some(session_id.into());
+            write_store(&store)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn automations_reset_session(id: String) -> Result<Automation, String> {
+    crate::policy::require_feature("automations")?;
+    let _guard = store_access().lock().unwrap();
+    let mut store = read_store()?;
+    let item = store
+        .automations
+        .iter_mut()
+        .find(|item| item.id == id)
+        .ok_or("定时任务已不存在")?;
+    item.context_generation = item.context_generation.saturating_add(1);
+    item.dedicated_session_id = None;
+    let result = item.clone();
+    write_store(&store)?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn automation_run_stop(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    crate::policy::require_feature("automations")?;
+    let (session_id, prompt_id) = {
+        let _guard = record_access().lock().unwrap();
+        let mut store = read_records()?;
+        let record = store
+            .records
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or("运行记录不存在")?;
+        if !matches!(record.status.as_str(), "queued" | "running") {
+            return Ok(());
+        }
+        record.stop_requested = true;
+        let identity = (record.session_id.clone(), record.prompt_id.clone());
+        if record.status == "queued"
+            || (record.waiting_reason.is_some() && record.session_id.is_none())
+        {
+            finalize_record(
+                record,
+                false,
+                &Local::now().to_rfc3339(),
+                None,
+                Some("用户停止"),
+            );
+        }
+        write_records(&mut store)?;
+        identity
+    };
+    if let Some(session_id) = session_id {
+        let tx = state
+            .tx
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("Agent 尚未初始化，本次运行将于恢复时结束")?;
+        let (tools, runtime) = tokio::join!(
+            crate::automation::stop_existing_session(&session_id),
+            crate::agent_runtime::cancel(&tx, &session_id, "stop", prompt_id.as_deref())
+        );
+        runtime.map_err(|e| e.to_string())?;
+        tools?;
+    }
+    let _ = app.emit("automation://changed", ());
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRunResult {
+    text: String,
+    truncated: bool,
+}
+
+/// Read only the prompt recorded by the native scheduler. A later follow-up in
+/// the same conversation must never appear as an older occurrence's result.
+fn result_from_reader(
+    mut reader: impl BufRead,
+    prompt_id: Option<&str>,
+) -> Result<AutomationRunResult, String> {
+    const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+    const MAX_RESULT_BYTES: usize = 128 * 1024;
+    const MAX_RESULT_EVENTS: usize = 128 * 1024;
+    let mut text = String::new();
+    let mut truncated = false;
+    let mut seen = HashSet::new();
+    if prompt_id.is_none() {
+        return Ok(AutomationRunResult { text, truncated });
+    }
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let mut oversized = false;
+        // read_until would allocate the entire line (including tool images).
+        // Drain oversized rows in fixed buffers, then continue to later turns.
+        loop {
+            let buffer = reader
+                .fill_buf()
+                .map_err(|e| format!("读取运行结果失败：{e}"))?;
+            if buffer.is_empty() {
+                break;
+            }
+            let length = buffer
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or(buffer.len());
+            let complete = buffer[length - 1] == b'\n';
+            if !oversized && line.len() + length <= MAX_LINE_BYTES {
+                line.extend_from_slice(&buffer[..length]);
+            } else {
+                oversized = true;
+            }
+            reader.consume(length);
+            if complete {
+                break;
+            }
+        }
+        if oversized {
+            truncated = true;
+            continue;
+        }
+        if line.is_empty() {
+            break;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let params = value.get("params").unwrap_or(&value);
+        let Some(update) = params.get("update") else {
+            continue;
+        };
+        let meta = params
+            .get("_meta")
+            .or_else(|| params.get("meta"))
+            .or_else(|| update.get("_meta"));
+        let identity = meta
+            .and_then(|m| m.get("promptId").or_else(|| m.get("prompt_id")))
+            .and_then(serde_json::Value::as_str);
+        // Old rows without a prompt boundary require the explicit full-chat
+        // link. Never guess by taking the latest message of a reused session.
+        if identity != prompt_id {
+            continue;
+        }
+        let kind = update
+            .get("sessionUpdate")
+            .and_then(serde_json::Value::as_str);
+        if !matches!(kind, Some("agent_message_chunk" | "tool_call")) {
+            continue;
+        }
+        if let Some(event) = meta
+            .and_then(|m| m.get("eventId"))
+            .and_then(serde_json::Value::as_str)
+        {
+            if seen.len() >= MAX_RESULT_EVENTS {
+                truncated = true;
+                break;
+            }
+            if !seen.insert(<[u8; 32]>::from(Sha256::digest(event.as_bytes()))) {
+                continue;
+            }
+        }
+        let mut output_full = false;
+        match kind {
+            Some("agent_message_chunk") => {
+                if let Some(chunk) = update
+                    .get("content")
+                    .and_then(|c| c.get("text"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    for ch in chunk.chars() {
+                        if text.len() + ch.len_utf8() > MAX_RESULT_BYTES {
+                            truncated = true;
+                            output_full = true;
+                            break;
+                        }
+                        text.push(ch);
+                    }
+                }
+            }
+            Some("tool_call") if !text.is_empty() && !text.ends_with("\n\n") => {
+                if text.len() + 2 <= MAX_RESULT_BYTES {
+                    text.push_str("\n\n");
+                } else {
+                    truncated = true;
+                    output_full = true;
+                }
+            }
+            _ => {}
+        }
+        if output_full {
+            break;
+        }
+    }
+    Ok(AutomationRunResult {
+        text: text.trim().into(),
+        truncated,
+    })
+}
+
+#[cfg(test)]
+fn result_from_updates(bytes: &[u8], prompt_id: Option<&str>) -> AutomationRunResult {
+    result_from_reader(std::io::Cursor::new(bytes), prompt_id).unwrap()
+}
+
+#[tauri::command]
+pub async fn automation_run_result(id: String) -> Result<AutomationRunResult, String> {
+    crate::policy::require_feature("automations")?;
+    tauri::async_runtime::spawn_blocking(move || read_run_result(&id))
+        .await
+        .map_err(|error| format!("读取运行结果失败：{error}"))?
+}
+
+fn read_run_result(id: &str) -> Result<AutomationRunResult, String> {
+    let record = {
+        let _guard = record_access().lock().unwrap();
+        read_records()?
+            .records
+            .into_iter()
+            .find(|item| item.id == id)
+            .ok_or("运行记录不存在")?
+    };
+    let Some(session_id) = record.session_id else {
+        return Ok(AutomationRunResult {
+            text: String::new(),
+            truncated: false,
+        });
+    };
+    let paths = echo_agent_runtime::session::persistence::session_history_paths(
+        &session_id,
+        record.cwd.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    let directory = paths
+        .first()
+        .ok_or("本次运行的会话已不存在，任务记录仍保留")?;
+    let file = crate::shell_fs::open_regular_file_no_follow(&directory.join("updates.jsonl"))?;
+    // Read a stable prefix so an actively growing conversation cannot keep a
+    // preview request alive indefinitely. Total history size is unrestricted.
+    let length = file
+        .metadata()
+        .map_err(|e| format!("读取运行结果失败：{e}"))?
+        .len();
+    result_from_reader(
+        BufReader::new(file.take(length)),
+        record.prompt_id.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -2135,6 +2647,8 @@ pub fn automations_set_status(
     status: String,
 ) -> Result<(), String> {
     crate::policy::require_feature("automations")?;
+    let _record_guard = record_access().lock().unwrap();
+    let mut records = read_records()?;
     let _guard = store_access().lock().unwrap();
     let mut store = read_store()?;
     if status.eq_ignore_ascii_case("ACTIVE") {
@@ -2151,16 +2665,35 @@ pub fn automations_set_status(
     }
     set_status_at(&mut store, &id, &status, now_local())?;
     write_store(&store)?;
+    if status.eq_ignore_ascii_case("PAUSED") {
+        for record in &mut records.records {
+            if record.automation_id == id
+                && record.status == "queued"
+                && record.scheduled_for.is_some()
+            {
+                record.stop_requested = true;
+                finalize_record(
+                    record,
+                    false,
+                    &Local::now().to_rfc3339(),
+                    None,
+                    Some("计划已暂停"),
+                );
+            }
+        }
+        write_records(&mut records)?;
+    }
     let has_active = store
         .automations
         .iter()
         .any(|automation| automation.status == "ACTIVE");
     drop(_guard);
+    drop(_record_guard);
     sync_autostart_enabled(&app, has_active);
     Ok(())
 }
 
-/// Manually fire an automation now (test run). Opens a new EchoAgent session and
+/// Manually fire an automation now. Uses the task's configured session mode and
 /// sends the prompt — the result appears in the sidebar like any chat, and a
 /// run record is written for the 运行记录 tab.
 #[tauri::command]
@@ -2414,6 +2947,9 @@ async fn execute_automation_run(
         }
     }
 
+    // Kept outside the timeout future so every error/cancellation still holds
+    // the session fence until launch-only permissions have been restored.
+    let mut session_guard = None;
     let result = {
         let state = app.state::<AppState>();
         tokio::time::timeout(
@@ -2426,6 +2962,7 @@ async fn execute_automation_run(
                 &cwd,
                 &record_id,
                 &resolved_model_id,
+                &mut session_guard,
             ),
         )
         .await
@@ -2468,20 +3005,19 @@ async fn execute_automation_run(
                 "执行超过 {} 分钟，已取消",
                 AUTOMATION_RUN_TIMEOUT.as_secs() / 60
             );
-            match record_session_id(&record_id) {
-                Ok(Some(session_id)) => {
-                    let _ = crate::agent_runtime::cancel(&tx, &session_id, "stop", None).await;
-                    release_full_access_session(&app, &tx, &session_id).await;
-                    app.state::<AppState>()
-                        .forget_session_workspace(&session_id);
-                }
-                Ok(None) => {}
-                Err(read_error) => {
-                    tracing::error!(error = %read_error, %record_id, "failed to read timed-out automation session");
-                }
-            }
             let session_id = record_session_id(&record_id).ok().flatten();
-            if record_run_finished(&record_id, false, None, Some(&error)) {
+            // Persist the timeout before its cancellation emits a generic
+            // stopped terminal, so delivery order cannot hide the failure.
+            let persisted = record_run_finished(&record_id, false, None, Some(&error));
+            if let Some(session_id) = &session_id {
+                let _ = tokio::join!(
+                    crate::automation::stop_existing_session(session_id),
+                    crate::agent_runtime::cancel(&tx, session_id, "stop", None)
+                );
+                release_full_access_session(&app, &tx, session_id).await;
+                app.state::<AppState>().forget_session_workspace(session_id);
+            }
+            if persisted {
                 emit_run_update(
                     &app,
                     &automation,
@@ -2552,8 +3088,26 @@ async fn commit_created_automation_session(
     })
 }
 
-/// Open a fresh EchoAgent session and send the automation prompt.
-/// Returns the new session id on success.
+async fn resume_automation_session(
+    tx: &echo_agent_acp::AcpAgentTx,
+    session_id: &str,
+    cwd: &Path,
+    model_id: &str,
+    reasoning_effort: Option<&str>,
+    permission_mode: &str,
+    already_live: bool,
+) -> Result<(), String> {
+    if !already_live {
+        crate::agent_runtime::load_session(tx, session_id, cwd, permission_mode)
+            .await
+            .map_err(|e| format!("无法恢复任务专属会话：{e}。请重置会话上下文后重试"))?;
+    }
+    crate::agent_runtime::set_session_model_with_effort(tx, session_id, model_id, reasoning_effort)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Create or resume the task's owned session and send one identified prompt.
 async fn run_automation_once(
     app: &AppHandle,
     state: &AppState,
@@ -2562,6 +3116,7 @@ async fn run_automation_once(
     cwd: &Path,
     record_id: &str,
     resolved_model_id: &str,
+    session_guard: &mut Option<tokio::sync::OwnedMutexGuard<()>>,
 ) -> Result<(String, crate::bridge::CompleteEvent), String> {
     crate::policy::require_feature("automations")?;
     crate::policy::require_model(resolved_model_id)?;
@@ -2572,34 +3127,103 @@ async fn run_automation_once(
     let context = resolve_execution_context(tx, automation, cwd).await?;
     let reasoning_effort = automation.model_is_thinking.then_some("high");
     let full_access = automation.permission_mode == "fullAccess";
-    let permission_guard = if full_access {
-        crate::permission_config::ensure_always_approve_available()?;
-        Some(
-            crate::permission_config::permission_transition_lock()
-                .lock()
-                .await,
-        )
-    } else {
-        None
-    };
-    let session_id = crate::agent_runtime::new_session_with_options(
-        tx,
-        cwd,
-        Some(resolved_model_id),
-        reasoning_effort,
-        full_access.then_some("always-approve"),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
     let prompt_id = uuid::Uuid::now_v7().to_string();
+    let existing = dedicated_session_for_run(automation)?;
+    if let Some(session_id) = &existing {
+        let lock = session_turn_lock(session_id);
+        *session_guard = Some(match lock.clone().try_lock_owned() {
+            Ok(guard) => guard,
+            Err(_) => {
+                set_run_waiting(record_id, Some("等待专属会话中的当前对话结束"))?;
+                loop {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        lock.clone().lock_owned(),
+                    )
+                    .await
+                    {
+                        Ok(guard) => {
+                            set_run_waiting(record_id, None)?;
+                            break guard;
+                        }
+                        Err(_) => {
+                            let _guard = record_access().lock().unwrap();
+                            if !read_records()?.records.iter().any(|record| {
+                                record.id == record_id
+                                    && !record.stop_requested
+                                    && record.status == "running"
+                            }) {
+                                return Err("本次运行已停止".into());
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if !crate::sessions::persisted_session_exists(session_id)? {
+            return Err("任务专属会话已不存在，请在任务详情重置会话上下文后重新运行".into());
+        }
+    }
+    if full_access {
+        crate::permission_config::ensure_always_approve_available()?;
+    }
+    let permission_guard = crate::permission_config::permission_transition_lock()
+        .lock()
+        .await;
     let target_mode = crate::permission_config::permission_mode_for_session();
+    let session_id = if let Some(session_id) = existing {
+        // Do not replay into an already-live actor; resume persisted history
+        // only after a restart, then reapply the task's exact execution model.
+        resume_automation_session(
+            tx,
+            &session_id,
+            cwd,
+            resolved_model_id,
+            reasoning_effort,
+            &target_mode,
+            state.session_workspace(&session_id).is_ok(),
+        )
+        .await?;
+        // Persist identity before elevating an existing actor. Even a partial
+        // permission-sync failure can then be found and revoked by the caller.
+        record_run_session(record_id, &session_id, &prompt_id)?;
+        if full_access {
+            full_access_sessions()
+                .lock()
+                .unwrap()
+                .insert(session_id.clone());
+        }
+        crate::permission_config::sync_runtime_session_permission_mode(
+            tx,
+            &session_id,
+            if full_access {
+                "always-approve"
+            } else {
+                &target_mode
+            },
+        )
+        .await?;
+        session_id
+    } else {
+        let session_id = crate::agent_runtime::new_session_with_options(
+            tx,
+            cwd,
+            Some(resolved_model_id),
+            reasoning_effort,
+            full_access.then_some("always-approve"),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        *session_guard = Some(session_turn_lock(&session_id).lock_owned().await);
+        session_id
+    };
     if let Err(failure) = commit_created_automation_session(
         tx,
         &session_id,
         full_access,
         &target_mode,
         || state.record_session_workspace(&session_id, cwd),
-        || record_run_session(record_id, &session_id, &prompt_id),
+        || record_run_session(record_id, &session_id, &prompt_id).and_then(|()| bind_dedicated_session(automation, &session_id)),
         |reset_error| {
             let reason = format!(
                 "自动化会话创建失败后无法恢复权限（{reset_error}）；为避免残留全权限会话，Agent 已安全停止，请重新启动"
@@ -2625,7 +3249,7 @@ async fn run_automation_once(
         automation,
         record_id,
         cwd,
-        RunUpdate::SessionCreated(&session_id, resolved_model_id),
+        RunUpdate::SessionCreated(&session_id, resolved_model_id, &prompt_id),
     );
     if full_access {
         full_access_sessions()
@@ -3704,7 +4328,7 @@ mod tests {
 
     #[test]
     fn claim_due_pauses_once_task_and_cannot_claim_twice() {
-        let now = local(2026, 7, 6, 10, 0);
+        let now = local(2026, 7, 6, 9, 1);
         let once = Automation {
             id: "once".into(),
             name: "once".into(),
@@ -4532,11 +5156,12 @@ mod tests {
                 &automation,
                 "record",
                 Path::new("/workspace"),
-                RunUpdate::SessionCreated("session", "actual-model"),
+                RunUpdate::SessionCreated("session", "actual-model", "prompt"),
             );
             let json = serde_json::to_value(event).unwrap();
             assert_eq!(json["currentModelId"], "actual-model");
             assert_eq!(json["sessionId"], "session");
+            assert_eq!(json["promptId"], "prompt");
             assert_eq!(json["phase"], "sessionCreated");
         }
         // Completion must not overwrite a model changed later by the user.
@@ -4643,6 +5268,259 @@ mod tests {
         );
     }
 
+    #[test]
+    fn legacy_tasks_keep_independent_sessions_and_new_tasks_cannot_inject_bindings() {
+        let mut raw = serde_json::to_value(test_automation()).unwrap();
+        for key in [
+            "newSessionEachRun",
+            "contextGeneration",
+            "dedicatedSessionId",
+        ] {
+            raw.as_object_mut().unwrap().remove(key);
+        }
+        let legacy: Automation = serde_json::from_value(raw).unwrap();
+        assert!(legacy.new_session_each_run);
+        assert!(legacy.dedicated_session_id.is_none());
+        let mut input = legacy;
+        input.context_generation = 999;
+        input.dedicated_session_id = Some("another-task-session".into());
+        let mut store = AutomationStore::default();
+        let created = save_automation_in_store(&mut store, input, true).unwrap();
+        assert_eq!(created.context_generation, 0);
+        assert!(created.dedicated_session_id.is_none());
+    }
+
+    #[test]
+    fn stale_edit_cannot_rewind_context_reset_or_move_the_due_occurrence() {
+        let mut original = test_automation();
+        original.id = "task".into();
+        original.new_session_each_run = false;
+        original.context_generation = 4;
+        original.dedicated_session_id = Some("old-chain".into());
+        original.next_run_at = Some("2026-07-06T09:00:00+08:00".into());
+        let mut stale = original.clone();
+        original.context_generation = 5;
+        original.dedicated_session_id = None;
+        let mut store = AutomationStore {
+            automations: vec![original],
+        };
+        stale.name = "Renamed after reset".into();
+        stale.next_run_at = Some("2099-01-01T09:00:00+08:00".into());
+        let saved = save_automation_in_store(&mut store, stale, false).unwrap();
+        assert_eq!(saved.context_generation, 5);
+        assert!(saved.dedicated_session_id.is_none());
+        assert_eq!(
+            saved.next_run_at.as_deref(),
+            Some("2026-07-06T09:00:00+08:00")
+        );
+    }
+
+    #[test]
+    fn context_boundaries_start_new_chains_and_roundtrip_survives_restart() {
+        let mut original = test_automation();
+        original.id = "task".into();
+        original.new_session_each_run = false;
+        original.context_generation = 2;
+        original.dedicated_session_id = Some("owned-session".into());
+        let mut keep = original.clone();
+        keep.prompt = "updated requirements".into();
+        let mut store = AutomationStore {
+            automations: vec![original.clone()],
+        };
+        let saved = save_automation_in_store(&mut store, keep, false).unwrap();
+        let restored: Automation =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(
+            restored.dedicated_session_id.as_deref(),
+            Some("owned-session")
+        );
+        for change in 0..5 {
+            let mut draft = original.clone();
+            match change {
+                0 => draft.cwds = "/other-workspace".into(),
+                1 => draft.permission_mode = "default".into(),
+                2 => draft.expert_path = Some("/different-expert.md".into()),
+                3 => draft.new_session_each_run = true,
+                _ => draft.model_is_thinking = true,
+            }
+            let mut store = AutomationStore {
+                automations: vec![original.clone()],
+            };
+            let saved = save_automation_in_store(&mut store, draft, false).unwrap();
+            assert_eq!(saved.context_generation, 3, "boundary {change}");
+            assert!(saved.dedicated_session_id.is_none());
+        }
+    }
+
+    #[test]
+    fn reused_session_results_are_prompt_scoped_deduplicated_and_exclude_reasoning() {
+        let update = |prompt: &str, event: &str, kind: &str, text: &str| {
+            serde_json::json!({
+            "params": { "_meta": { "promptId": prompt, "eventId": event }, "update": { "sessionUpdate": kind, "content": { "type": "text", "text": text } } }
+        }).to_string()
+        };
+        let first = update("p1", "a", "agent_message_chunk", "第一轮结果");
+        let text = [
+            first.clone(),
+            first,
+            update("p1", "b", "agent_thought_chunk", "private reasoning"),
+            update("p2", "c", "agent_message_chunk", "第二轮结果"),
+        ]
+        .join("\n");
+        assert_eq!(
+            result_from_updates(text.as_bytes(), Some("p1")).text,
+            "第一轮结果"
+        );
+        assert_eq!(
+            result_from_updates(text.as_bytes(), Some("p2")).text,
+            "第二轮结果"
+        );
+        assert!(result_from_updates(text.as_bytes(), None).text.is_empty());
+        assert!(result_from_updates(text.as_bytes(), Some("missing"))
+            .text
+            .is_empty());
+    }
+
+    #[test]
+    fn result_preview_is_bounded_without_splitting_unicode() {
+        let update = serde_json::json!({ "params": { "_meta": { "promptId": "p" }, "update": { "sessionUpdate": "agent_message_chunk", "content": { "text": "中文结果".repeat(40_000) } } } }).to_string();
+        let result = result_from_updates(update.as_bytes(), Some("p"));
+        assert!(result.truncated);
+        assert!(result.text.len() <= 128 * 1024);
+        assert!(result.text.is_char_boundary(result.text.len()));
+    }
+
+    #[test]
+    fn stopping_one_run_keeps_later_records_and_never_overwrites_its_terminal_outcome() {
+        let (mut records, mut fact) = terminal_fixture();
+        records.records[0].stop_requested = true;
+        fact.ok = true; // A racing completion cannot turn a requested stop into success.
+        assert!(apply_terminal_fact(&mut records, &fact).unwrap());
+        assert_eq!(records.records[0].status, "stopped");
+        assert!(!apply_terminal_fact(&mut records, &fact).unwrap());
+        let id = append_run_started(
+            &mut records,
+            &test_automation(),
+            "later",
+            Path::new("/fixture"),
+            None,
+            Some("model"),
+        );
+        assert_ne!(id, records.records[0].id);
+        assert_eq!(records.records[1].status, "queued");
+    }
+
+    #[test]
+    fn missed_once_is_not_dispatched_but_a_delayed_poll_can_still_fire() {
+        let once = Automation {
+            id: "one".into(),
+            schedule_type: "once".into(),
+            scheduled_date: Some("2026-07-06".into()),
+            scheduled_time: Some("09:00".into()),
+            next_run_at: Some(local(2026, 7, 6, 9, 0).to_rfc3339()),
+            ..test_automation()
+        };
+        let mut missed = AutomationStore {
+            automations: vec![once.clone()],
+        };
+        assert!(claim_due(&mut missed, local(2026, 7, 6, 10, 0)).is_empty());
+        assert_eq!(missed.automations[0].status, "PAUSED");
+        assert!(missed.automations[0].last_run_at.is_none());
+        let mut delayed = AutomationStore {
+            automations: vec![once],
+        };
+        assert_eq!(claim_due(&mut delayed, local(2026, 7, 6, 9, 3)).len(), 1);
+    }
+
+    #[test]
+    fn expired_due_occurrence_is_not_executed_outside_its_validity_window() {
+        let task = Automation {
+            id: "expired".into(),
+            valid_until_date: Some("2026-07-05".into()),
+            next_run_at: Some(local(2026, 7, 5, 9, 0).to_rfc3339()),
+            ..test_automation()
+        };
+        let mut store = AutomationStore {
+            automations: vec![task],
+        };
+        assert!(claim_due(&mut store, local(2026, 7, 6, 10, 0)).is_empty());
+        assert_eq!(store.automations[0].status, "PAUSED");
+        assert!(store.automations[0].last_run_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn scheduled_and_manual_turns_share_a_fence_without_blocking_other_sessions() {
+        let lock = session_turn_lock("dedicated-one");
+        let held = lock.clone().lock_owned().await;
+        assert!(session_turn_lock("dedicated-one").try_lock().is_err());
+        assert!(session_turn_lock("dedicated-two").try_lock().is_ok());
+        drop(held);
+        assert!(session_turn_lock("dedicated-one").try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn dedicated_session_resumes_after_restart_and_later_runs_do_not_replay_it() {
+        use echo_agent_acp::AcpAgentMessage;
+        for (already_live, effort) in [
+            (false, None),
+            (true, None),
+            (false, Some("high")),
+            (true, Some("high")),
+        ] {
+            let (client, mut agent) = echo_agent_acp::acp_channels();
+            let task = tokio::spawn(async move {
+                resume_automation_session(
+                    &client.tx,
+                    "dedicated",
+                    Path::new("/owned-workspace"),
+                    "current-default-model",
+                    effort,
+                    "ask",
+                    already_live,
+                )
+                .await
+            });
+            if !already_live {
+                let AcpAgentMessage::LoadSession(request) = agent.rx.recv().await.unwrap() else {
+                    panic!("restart must load the same dedicated session");
+                };
+                assert_eq!(request.request.session_id.0.as_ref(), "dedicated");
+                assert_eq!(request.request.cwd, Path::new("/owned-workspace"));
+                assert_eq!(
+                    request.request.meta.as_ref().unwrap().get("yoloMode"),
+                    Some(&serde_json::json!(false))
+                );
+                request
+                    .response_tx
+                    .send(Ok(agent_client_protocol::LoadSessionResponse::new()))
+                    .unwrap();
+            }
+            let AcpAgentMessage::SetSessionModel(request) = agent.rx.recv().await.unwrap() else {
+                panic!("every run must apply the resolved task model");
+            };
+            assert_eq!(request.request.session_id.0.as_ref(), "dedicated");
+            assert_eq!(request.request.model_id.0.as_ref(), "current-default-model");
+            assert_eq!(
+                request
+                    .request
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("reasoningEffort"))
+                    .and_then(|value| value.as_str()),
+                effort
+            );
+            request
+                .response_tx
+                .send(Ok(agent_client_protocol::SetSessionModelResponse::new()))
+                .unwrap();
+            task.await.unwrap().unwrap();
+            assert!(
+                agent.rx.try_recv().is_err(),
+                "resume must never create a replacement conversation"
+            );
+        }
+    }
+
     fn test_automation() -> Automation {
         Automation {
             id: String::new(),
@@ -4665,6 +5543,9 @@ mod tests {
             valid_from_date: None,
             valid_until_date: None,
             push_to_we_chat: false,
+            new_session_each_run: true,
+            context_generation: 0,
+            dedicated_session_id: None,
             last_run_at: None,
             next_run_at: None,
             created_at: String::new(),
@@ -4699,6 +5580,88 @@ mod tests {
             restored_orphan: false,
         };
         (records, fact)
+    }
+
+    #[test]
+    fn streaming_results_read_large_histories_and_skip_oversized_rows() {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = tempfile::tempfile().unwrap();
+        // Cumulative history exceeds the old 32 MiB whole-file ceiling.
+        let old = serde_json::json!({"params":{"_meta":{"promptId":"older"},"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"x".repeat(1024 * 1024)}}}}).to_string();
+        for _ in 0..33 {
+            writeln!(file, "{old}").unwrap();
+        }
+        // A large tool/image row must not prevent later result extraction.
+        file.write_all(&vec![b'x'; 9 * 1024 * 1024]).unwrap();
+        file.write_all(b"\ninvalid json\n").unwrap();
+        let current = serde_json::json!({"params":{"_meta":{"promptId":"current","eventId":"e"},"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"本轮可用结果"}}}}).to_string();
+        writeln!(file, "{current}\n{current}").unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let result = result_from_reader(BufReader::new(file), Some("current")).unwrap();
+        assert_eq!(result.text, "本轮可用结果");
+        assert!(result.truncated); // An oversized history row was omitted.
+    }
+
+    #[test]
+    fn history_retention_evicts_old_stopped_runs_but_preserves_unfinished_and_pending_runs() {
+        let (records, _) = terminal_fixture();
+        let template = records.records[0].clone();
+        let mut records = RunRecordStore {
+            records: (0..MAX_RECORDS + 3)
+                .map(|i| {
+                    let mut record = template.clone();
+                    record.id = i.to_string();
+                    record.status = if i == 0 { "running" } else { "stopped" }.into();
+                    record
+                })
+                .collect(),
+        };
+        let pending = HashSet::from(["1".to_string()]);
+        prune_records(&mut records, &pending);
+        assert_eq!(records.records.len(), MAX_RECORDS);
+        assert_eq!(records.records[0].id, "0");
+        assert_eq!(records.records[1].id, "1");
+        assert_eq!(records.records[2].id, "5");
+        assert_eq!(
+            records.records.last().unwrap().id,
+            (MAX_RECORDS + 2).to_string()
+        );
+    }
+
+    #[test]
+    fn restore_stopped_runs_with_pending_facts_is_idempotent_and_never_republishes() {
+        for terminal_history in [false, true] {
+            for ok in [false, true] {
+                let home = tempfile::tempdir().unwrap();
+                let (mut records, mut fact) = terminal_fixture();
+                records.records[0].stop_requested = true;
+                fact.ok = ok;
+                if terminal_history {
+                    finalize_from_fact(&mut records.records[0], &fact);
+                }
+                let history = home.path().join("echoagent-automation-records.json");
+                std::fs::write(&history, serde_json::to_vec(&records).unwrap()).unwrap();
+                let outbox = home.path().join("automation-terminal-outbox");
+                std::fs::create_dir_all(&outbox).unwrap();
+                let path = outbox.join(format!(
+                    "{:x}.json",
+                    Sha256::digest(fact.record_id.as_bytes())
+                ));
+                std::fs::write(&path, serde_json::to_vec(&fact).unwrap()).unwrap();
+                prepare_restored_terminals(home.path()).unwrap();
+                prepare_restored_terminals(home.path()).unwrap();
+                let restored: RunRecordStore =
+                    serde_json::from_slice(&std::fs::read(&history).unwrap()).unwrap();
+                assert_eq!(restored.records[0].status, "stopped");
+                let mut restored_fact: TerminalFact =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                let completion = restored_fact.completion.as_ref().unwrap();
+                assert_eq!(completion.event.status, "stopped");
+                assert_eq!(completion.event.prompt_id, restored.records[0].prompt_id);
+                assert!(!completion.push);
+                assert!(!claim_external_attempt(&mut restored_fact, true, |_| Ok(())).unwrap());
+            }
+        }
     }
 
     #[test]

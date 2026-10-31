@@ -123,7 +123,9 @@ export async function desktopPreferencesGet(): Promise<DesktopPreferences> {
 }
 
 export async function desktopPreferencesSave(closeToTray: boolean): Promise<DesktopPreferences> {
-  return invoke<DesktopPreferences>("desktop_preferences_save", { closeToTray });
+  const saved = await invoke<DesktopPreferences>("desktop_preferences_save", { closeToTray });
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("echo:desktop-preferences-changed"));
+  return saved;
 }
 
 export async function desktopNotificationPreviewSave(showTaskTitle: boolean): Promise<DesktopPreferences> {
@@ -1550,6 +1552,18 @@ export async function automationsSetStatus(id: string, status: AutomationStatus)
 /** Queue an automation run and return its durable record id immediately. */
 export async function automationsRun(id: string): Promise<string> {
   return invoke<string>("automations_run", { id });
+}
+
+export async function automationsResetSession(id: string): Promise<Automation> {
+  return invoke<Automation>("automations_reset_session", { id });
+}
+
+export async function automationRunStop(id: string): Promise<void> {
+  await invoke<void>("automation_run_stop", { id });
+}
+
+export async function automationRunResult(id: string): Promise<{ text: string; truncated: boolean }> {
+  return invoke("automation_run_result", { id });
 }
 
 /** Archive / unarchive a run record. */

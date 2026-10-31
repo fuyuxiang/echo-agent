@@ -1099,6 +1099,7 @@ pub fn run() {
             org::org_download_document,
             org::org_scan_document_folder,
             org::org_list_documents,
+            org::org_library_query,
             org::org_list_memories,
             org::org_memory_promotions_mine,
             org::org_submit_memory_candidate,
@@ -1258,6 +1259,9 @@ pub fn run() {
             automations::automations_delete,
             automations::automations_set_status,
             automations::automations_run,
+            automations::automations_reset_session,
+            automations::automation_run_stop,
+            automations::automation_run_result,
             automations::automation_records_archive,
             automations::automation_records_delete,
             // shell / filesystem (markdown links, path click, apply write)

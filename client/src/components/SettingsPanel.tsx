@@ -161,6 +161,7 @@ export function SettingsPanel({
   sessionId,
   cwd,
   initialSection = "general",
+  initialModelId,
   onRestoreSession,
   onDeleteSession,
   onOpenSession,
@@ -178,6 +179,7 @@ export function SettingsPanel({
   cwd?: string;
   /** Section selected whenever the dialog is opened. */
   initialSection?: SettingsSectionId;
+  initialModelId?: string;
   onRestoreSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
   onDeleteSession?: (sessionId: string, cwd?: string) => Promise<void>;
   onOpenSession?: (sessionId: string, cwd?: string) => void | Promise<void>;
@@ -352,7 +354,7 @@ export function SettingsPanel({
           {leaveFeedback && <p className="settings-navigation-feedback" role="status">{leaveFeedback}</p>}
           <div className="settings-modal__panel" ref={panelRef} tabIndex={-1}>
             {active === "model" ? (
-              <ModelConnectionsPanel onModelsChanged={onModelsChanged} />
+              <ModelConnectionsPanel onModelsChanged={onModelsChanged} initialModelId={initialModelId} />
             ) : active === "shortcuts" ? (
               <div className="settings-subview">
                 <SettingsViewTabs label="通用视图" items={GENERAL_VIEWS} active={active} onSelect={selectSection} />

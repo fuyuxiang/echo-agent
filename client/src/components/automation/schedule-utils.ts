@@ -124,6 +124,7 @@ export function buildDraft(template?: AutomationTemplate, initialCwd = ""): Auto
     validFromDate: template?.validFromDate ?? "",
     validUntilDate: template?.validUntilDate ?? "",
     pushToWeChat: template?.pushToChannels ?? false,
+    newSessionEachRun: true,
   };
 }
 
@@ -154,6 +155,7 @@ export function draftFromAutomation(a: Automation): AutomationDraft {
     validFromDate: a.validFromDate ?? "",
     validUntilDate: a.validUntilDate ?? "",
     pushToWeChat: a.pushToWeChat ?? false,
+    newSessionEachRun: a.newSessionEachRun ?? true,
   };
 }
 

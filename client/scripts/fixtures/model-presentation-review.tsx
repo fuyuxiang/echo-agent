@@ -8,7 +8,7 @@ const query = new URLSearchParams(location.search);
 document.documentElement.dataset.theme = query.get("theme") || "light";
 document.documentElement.classList.toggle("dark", query.get("theme") === "dark");
 
-const models: ModelOption[] = query.get("catalog") === "aliases" ? [
+const models: ModelOption[] = query.get("catalog") === "empty" ? [] : query.get("catalog") === "aliases" ? [
   {id:"gateway/fast",label:"通用模型",remoteModelId:"fast",providerId:"gateway",providerLabel:"我的网关",source:"personal"},
   {id:"gateway/strong",label:"通用模型",remoteModelId:"strong",providerId:"gateway",providerLabel:"我的网关",source:"personal"},
 ] : query.get("catalog") === "distinct" ? [
@@ -24,13 +24,15 @@ const models: ModelOption[] = query.get("catalog") === "aliases" ? [
 ];
 
 function Review() {
-  const [id, setId] = useState(models[0].id);
-  const selected = models.find((model) => model.id === id)!;
+  const [id, setId] = useState(models[0]?.id);
+  const [managedId, setManagedId] = useState<string>();
+  const selected = models.find((model) => model.id === id);
   return <main style={{ padding: 24, height: "100%", background: "var(--echo-bg-primary)", color: "var(--echo-text-strong)", overflow: "auto" }}>
     <div style={{ width: "min(100%, 420px)", marginLeft: "auto", paddingTop: 40 }}>
       <h2>任务模型</h2>
-      <ModelSelector modelId={id} models={models} onModelChange={setId} ariaLabel="任务模型" />
-      <p data-testid="selected" data-model-id={id} style={{ overflowWrap: "anywhere" }}>{modelChoiceLabel(selected, models)}</p>
+      <ModelSelector modelId={id} models={models} onModelChange={setId} ariaLabel="任务模型" onManageModels={id => setManagedId(id ?? "empty")} />
+      <p data-testid="managed" data-model-id={managedId}>{managedId && "已打开模型管理"}</p>
+      <p data-testid="selected" data-model-id={id} style={{ overflowWrap: "anywhere" }}>{selected ? modelChoiceLabel(selected, models) : "未配置模型"}</p>
       <label style={{ display: "grid", gap: 8 }}>项目默认模型
         <select value={id} onChange={(event) => setId(event.target.value)} style={{ maxWidth: "100%" }}>
           {models.map((model) => <option key={model.id} value={model.id}>{modelChoiceLabel(model, models)}</option>)}

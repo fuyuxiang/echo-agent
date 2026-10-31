@@ -10,7 +10,7 @@ import { SearchOverlay } from "../../src/components/SearchOverlay";
 import "../../src/styles/index.css";
 // Development-only visual fixture. Native calls use isolated in-memory data;
 // this module is never imported by the production entry point.
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { SidebarLayoutContext, useAppSidebarLayout } from "../../src/lib/sidebar-layout";
 import { SidebarResizeHandle } from "../../src/components/SidebarResizeHandle";
@@ -32,6 +32,7 @@ import { questionReviewRequest } from "./question-review";
 import { ChatView } from "../../src/components/ChatView";
 import { Sidebar } from "../../src/components/Sidebar";
 import { SessionNavigation } from "../../src/components/SessionHeader";
+import { PageChromeProvider } from "../../src/components/PageToolbar";
 import { AutomationEditPage } from "../../src/components/automation/AutomationEditPage";
 import { AutomationPanel } from "../../src/components/AutomationPanel";
 import type { Automation } from "../../src/lib/types";
@@ -59,6 +60,8 @@ import { useMessageQueueStore } from "../../src/stores/message-queue-store";
 const query = new URLSearchParams(location.search);
 const recoveryReview = { permissionResolutions: 0, modeChanges: 0 };
 Object.assign(window, { recoveryReview });
+const modelTestCalls: { providerId: string; modelId: string }[] = [];
+Object.assign(window, { modelTestCalls });
 if (query.get("surface") === "update") useUpdateStore.setState({ status: "error", error: "暂时无法检查更新，请保留现有工作并稍后重试。" });
 if (query.get("surface") === "runtime") query.set("executionView", "runtime");
 localStorage.setItem("echoagent.theme", query.get("theme") ?? "light");
@@ -116,6 +119,17 @@ let extensionConfig = JSON.stringify({ mcpServers: { "review-tool": { command: "
 const extensionAttempts: Record<string, number> = {};
 if (extensionState && extensionCount) useSessionStore.getState().setSession("review-extension-session");
 let rules: unknown[] = [];
+let organizationScopeAttempts = 0;
+let organizationConnectionReady = Promise.resolve();
+let resumeOrganizationConnection: (() => void) | undefined;
+const pauseOrganizationConnection = () => {
+  organizationConnectionReady = new Promise<void>(resolve => { resumeOrganizationConnection = resolve; });
+};
+if (query.get("orgLoading") === "1") pauseOrganizationConnection();
+Object.assign(window, { organizationConnectionReview: {
+  pause: pauseOrganizationConnection,
+  resume: () => resumeOrganizationConnection?.(),
+} });
 const orgUser = { id: "review-user", username: "review", displayName: "界面检查", role: "member", clearance: 1 };
 const orgScopes = [
   { id: "mine", kind: "personal", name: "我的空间", canPublishDocuments: true },
@@ -127,6 +141,27 @@ const orgDocuments = [
   { id: "review-xlsx", title: "指标体系模型设计模板.xlsx", sourceType: "xlsx", status: "ready", byteSize: 379494, scopeId: "team", scopeKind: "team", scopeName: "产品研发团队", ownerId: "another-user", chunkCount: 1899, tags: [], updatedAt: 1 },
   { id: "review-pptx", title: "指标体系构建方法论.pptx", sourceType: "pptx", status: "ready", byteSize: 1572864, scopeId: "team", scopeKind: "team", scopeName: "产品研发团队", ownerId: "another-user", chunkCount: 2, tags: [], updatedAt: 1 },
 ];
+const orgMany = query.get("orgState") === "many";
+const orgEmpty = query.get("orgState") === "empty";
+let orgLoggedIn = true;
+const orgLibraryCalls: unknown[] = [];
+Object.assign(window, { orgLibraryCalls });
+const orgScopeSample = (index: number) => index % 3 === 0
+  ? { scopeId: "mine", scopeKind: "personal", scopeName: "我的空间" }
+  : { scopeId: "team", scopeKind: "team", scopeName: "产品研发团队" };
+let orgMemorySamples = Array.from({length:orgMany?245:0},(_,index)=>({
+  id:`memory-${index}`,kind:index%2?"howto":"decision",content:`${index+1}. ${index===244?"末页记录：":""}发布前先核对部署版本和数据库迁移状态，再验证关键接口。${index===0?"保留故障日志用于复盘。".repeat(30):"确认影响范围后执行回滚。"}`,
+  rationale:"适用于日常发布和版本验收，减少遗漏导致的回归问题。",outcome:"验收结果可追踪，问题处理路径更明确。",
+  evidence:[],confidence:.94,trust:"verified",stale:false,status:"active",updatedAt:1,...orgScopeSample(index),
+}));
+let orgSkillSamples = Array.from({length:orgMany?67:0},(_,index)=>({
+  skillId:`skill-${index}`,versionId:`version-${index}`,name:`${["需求评审","发布验证","接口诊断","文档整理"][index%4]} ${index+1}${index===0?" · 核心业务流程交付校验":""}`,
+  description:"检查需求、实现与交付结果的一致性，生成可以继续使用的验证报告。",version:"1.2.0",mandatory:index%5===0,enabled:index%5===0||index%2===0,allowPersonalOverride:true,updatedAt:1,...orgScopeSample(index),
+}));
+const orgDocumentSamples = orgEmpty?[]:orgMany?Array.from({length:126},(_,index)=>({...orgDocuments[index%3],id:`document-${index}`,title:`${index+1}. ${index===125?"末页记录：":""}${orgDocuments[index%3].title}`,ownerId:index%2?"review-user":"other-user",...orgScopeSample(index)})):orgDocuments;
+let orgPromotionSamples = Array.from({length:orgMany?111:0},(_,index)=>({id:`promotion-${index}`,payloadType:"memory",payload:{kind:"howto",content:`经验提交 ${index+1}：记录任务处理和交付步骤。`},source:"user",state:"approved",createdAt:1,...orgScopeSample(index)}));
+const orgSkillSubmissionSamples = Array.from({length:orgMany?113:0},(_,index)=>({id:`skill-submission-${index}`,name:`接口诊断提交 ${index+1}`,version:"1.2.0",state:"approved",scanStatus:"passed",createdAt:1,...orgScopeSample(index)}));
+const orgDocumentSubmissionSamples = Array.from({length:orgMany?121:0},(_,index)=>({id:`doc-submission-${index}`,title:`交付报告 ${index+1}.md`,sourceType:"md",byteSize:100,state:"approved",scanStatus:"passed",createdAt:1,...orgScopeSample(index)}));
 if (["conversation", "conversation-layout", "workbench", "queue"].includes(query.get("surface") ?? "")) {
   const chat = useSessionStore.getState();
   chat.setSession("review-conversation");
@@ -245,12 +280,16 @@ if (["workbench", "coding-question"].includes(query.get("surface") ?? "")) {
   }
   if (state === "permission") {
     const kind = query.get("permissionCase");
+    const approvalCommand = query.get("commandFormat") === "powershell"
+      ? `$f = "C:\\Users\\Taurus\\.echo-agent\\sessions\\${"%5C%E6%97%A5%E5%B8%B8".repeat(20)}\\mcp\\call_cached_result.txt"; $lines = Get-Content $f; foreach ($n in 46,96,146,196) { $lines[$n-1] }`
+      : `python3 scripts/check-delivery.py --workspace /review/EchoAgent/${"很长的目录/".repeat(12)}`;
+    const approvalTitle = Array.from(`Execute \`${approvalCommand}\``);
     useSessionsStore.getState().upsert({ sessionId: "review-conversation", status: "awaiting_permission" });
     usePermissionStore.getState().request({ requestId: "workbench-permission", sessionId: "review-conversation", toolCallId: "review-write",
       toolKind: kind === "history" ? "other" : kind === "command" ? "execute" : "edit",
-      title: kind === "history" ? "conversation_history" : kind === "command" ? "是否允许运行以下命令？" : "是否允许写入工作目录中的交付记录？",
+      title: kind === "history" ? "conversation_history" : kind === "command" ? approvalTitle.length > 512 ? `${approvalTitle.slice(0, 512).join("")}\n[truncated]` : approvalTitle.join("") : "是否允许写入工作目录中的交付记录？",
       rawInput: kind === "history" ? { sessionId: "review-conversation", limit: 10 }
-        : kind === "command" ? { command: `python3 scripts/check-delivery.py --workspace /review/EchoAgent/${"很长的目录/".repeat(12)}`, cwd: "/review/EchoAgent" }
+        : kind === "command" ? { command: approvalCommand, description: "核对已有资料，继续整理交付结果。", cwd: "/review/EchoAgent" }
         : { path: "/review/EchoAgent/交付记录.md", content: "本轮交付记录" },
       options: [
         { optionId: "allow", kind: "allow", title: "允许一次" }, { optionId: "deny", kind: "deny", title: "拒绝" },
@@ -327,7 +366,19 @@ Object.assign(window, {
           return trustReviewPending(state as "short" | "long");
         }
         case "folder_trust_respond": trustResolved = true; return true;
-        case "providers_list": if (query.has("settingsDesign")) return {
+        case "providers_list": if (query.has("modelTesting")) return {
+          providers: [
+            { id: "test-org", label: "研发团队", providerKind: "custom", source: "organization", managed: true, baseUrl: "https://review.invalid/v1", credentialConfigured: true },
+            { id: "test-personal", label: "我的网关", providerKind: "custom", source: "personal", baseUrl: "https://review.invalid/v1", credentialConfigured: true },
+            { id: "test-builtin", label: "Echo", providerKind: "custom", source: "builtin", managed: true, baseUrl: "https://review.invalid/v1" },
+          ],
+          models: [
+            { modelId: "test-org/a", remoteModelId: "team-a", name: "团队模型", providerId: "test-org", managed: true },
+            { modelId: "test-personal/a", remoteModelId: "personal-a", name: "个人模型", providerId: "test-personal" },
+            { modelId: "test-personal/b", remoteModelId: "personal-b", name: "备用模型", providerId: "test-personal" },
+            { modelId: "test-builtin/a", remoteModelId: "builtin-a", name: "Echo Brook", providerId: "test-builtin", managed: true },
+          ],
+        }; if (query.has("settingsDesign")) return {
           providers: [
             { id: "review-org", label: "组织提供", providerKind: "custom", source: "organization", managed: true, baseUrl: "https://api.example.test/v1", credentialConfigured: true, syncedAt: "2026-10-18T10:00:00Z" },
             { id: "review-personal", label: "我的模型连接", providerKind: "custom", source: "personal", baseUrl: "https://api.example.test/v1", credentialConfigured: true },
@@ -349,6 +400,15 @@ Object.assign(window, {
           return Array.from({ length: 36 }, (_, index) => ({ id: `review-model-${index + 1}`, ownedBy: "隔离供应商 · 无真实模型请求" }));
         }
         case "providers_save_connection": throw new Error("隔离验证：保存失败，未写入原生配置");
+        case "providers_test_model_connection": {
+          if (!query.has("modelTesting")) throw new Error("隔离验证不调用真实模型");
+          modelTestCalls.push({ providerId: args.provider.id, modelId: args.modelId });
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          if (args.modelId === "personal-b" && modelTestCalls.filter(call => call.modelId === "personal-b").length === 1) {
+            throw new Error("模型接口返回 429：请求过于频繁，请稍后重试。隔离验证不会请求真实服务。");
+          }
+          return;
+        }
         case "agents_defaults_get": return { defaultModel: "", defaultPermission: "ask", rememberToolApprovals: true };
         case "agent_auth_status": return { ready: false, providers: [], runtimeReady: false, synchronized: true, runtimeModels: [], reason: "尚未配置可用模型" };
         case "desktop_preferences_get": return { closeToTray: true, showNotificationTaskTitle: notificationTitlePreview };
@@ -358,7 +418,7 @@ Object.assign(window, {
         case "notification_mark_all_read": notificationEntries = notificationEntries.map(entry => ({ ...entry, read: true })); return;
         case "notification_clear": notificationEntries = []; return;
         case "subagents_config_get": return { maxDepth: 2 };
-        case "automations_snapshot": return { automations: query.get("surface") === "automation-flow" && !automationFlowRemoved ? [automationFlowTask] : [], records: [] };
+        case "automations_snapshot": return { automations: query.get("surface") === "management-schedules" ? [{ ...automationFlowTask, name: "每日 AI 新闻推送", prompt: "关注当天 AI 领域的重要动态，筛选值得关注的信息，整理来源与关键结论。", status: "ACTIVE", nextRunAt: new Date(Date.now() + 3600000).toISOString() }] : query.get("surface") === "automation-flow" && !automationFlowRemoved ? [automationFlowTask] : [], records: [] };
         case "automations_save": {
           if (query.get("surface") !== "automation-flow") throw new Error("This fixture does not save automations");
           if (args.automation.id && automationFlowRemoved) throw new Error("原自动化任务已被移除");
@@ -488,8 +548,29 @@ Object.assign(window, {
         case "tasks_list":
           if (query.get("surface") === "workbench" && !["running", "permission", "collaboration", "paused", "browser-paused", "computer-paused"].includes(query.get("state") || "complete")) return [];
           return [{ id: "review-task", source: "task", description: "执行代码验证和生成报告", status: "running", sessionId: args.sessionId }];
-        case "org_session": return { loggedIn: query.get("surface") !== "organization-login", organizationMemoryEnabled: true, serverUrl: "https://10.132.19.82:8787", user: orgUser, bootstrap: { apiVersion: 1, user: orgUser, scopes: orgScopes, policy: { allowPersonalCloud: true, allowSkillSubmission: true }, serverTime: 1 } };
-        case "org_list_scopes": return orgScopes;
+        case "org_library_query": {
+          orgLibraryCalls.push({...args});
+          if(args.resource === "summary")return {
+            memories:orgMemorySamples.length,documents:orgDocumentSamples.length,documentReady:orgDocumentSamples.filter(item=>item.status==="ready").length,documentProcessing:0,
+            skills:orgSkillSamples.length,skillInstalled:orgSkillSamples.filter(item=>item.enabled).length,skillMandatory:orgSkillSamples.filter(item=>item.mandatory).length,
+            memoryPending:orgPromotionSamples.filter(item=>item.state==="pending").length,documentPending:0,skillPending:0,
+          };
+          const source: any[] = args.resource === "memories" ? orgMemorySamples : args.resource === "documents" ? orgDocumentSamples : args.resource === "skills" ? orgSkillSamples : args.resource === "memory-submissions" ? orgPromotionSamples : args.resource === "document-submissions" ? orgDocumentSubmissionSamples : orgSkillSubmissionSamples;
+          const items=source.filter(item=>(!args.scopeId || item.scopeId===args.scopeId) && (!args.query || JSON.stringify(item).includes(args.query)) && (!args.filter ||
+            (args.resource==="memories"?item.kind===args.filter:args.resource==="skills"?args.filter==="installed"?item.enabled:args.filter==="mandatory"?item.mandatory:!item.enabled:args.resource==="documents"?item.status===args.filter:item.state===args.filter)));
+          return {items:items.slice(((args.page??1)-1)*(args.size??20),(args.page??1)*(args.size??20)),total:items.length,page:args.page??1,size:args.size??20};
+        }
+        case "org_logout": orgLoggedIn=false;return;
+        case "org_set_skill_preference": orgSkillSamples=orgSkillSamples.map(item=>item.skillId===args.skillId?{...item,enabled:args.enabled}:item);return {skillId:args.skillId,enabled:args.enabled};
+        case "org_sync_skills": return {installed:[],removed:[],cursor:"review",leaseUntil:1};
+        case "org_publish_skill": return {state:"approved"};
+        case "org_submit_memory_candidate": orgPromotionSamples=[{id:"review-new-promotion",payloadType:"memory",payload:{kind:args.kind,content:args.content},source:"user",state:"pending",createdAt:1,scopeId:args.targetScopeId,scopeKind:"team",scopeName:"产品研发团队"},...orgPromotionSamples];return {promotionId:"review-new-promotion",state:"pending"};
+        case "org_session":
+          await organizationConnectionReady;
+          return { loggedIn: orgLoggedIn && query.get("surface") !== "organization-login", organizationMemoryEnabled: true, serverUrl: "https://10.132.19.82:8787", user: orgUser, bootstrap: { apiVersion: 1, user: orgUser, scopes: orgScopes, policy: { allowPersonalCloud: true, allowSkillSubmission: true }, serverTime: 1 } };
+        case "org_list_scopes":
+          if (query.get("orgError") === "1" && organizationScopeAttempts++ === 0) throw new Error("refresh organization session: error sending request for url (https://review.invalid/api/v1/auth/refresh)");
+          return orgScopes;
         case "org_list_documents": {
           const items = orgDocuments.filter((document) => !args.scopeId || document.scopeId === args.scopeId);
           return { items, total: items.length, page: 1, size: 20 };
@@ -613,15 +694,18 @@ function CodingSidebarReview({ children }: { children: React.ReactNode }) {
   </SidebarLayoutContext.Provider></div>;
 }
 
-function ManagementReviewFixture({ surface }: { surface: "projects" | "organization-shell" | "automation-templates" }) {
+function ManagementReviewFixture({ surface }: { surface: string }) {
   const layout = useAppSidebarLayout();
-  return <div className="app"><SidebarLayoutContext.Provider value={layout.context}>
+  useEffect(() => { layout.setCollapsed(query.get("collapsed") === "1"); }, []);
+  const label = surface === "projects" ? "项目" : surface === "organization-shell" ? "组织" : surface === "management-experts" ? "专家·技能·连接器" : surface === "management-knowledge" ? "知识库" : "自动化";
+  return <div className={`app${query.get("platform") === "mac" ? " app--macos" : ""}`}><SidebarLayoutContext.Provider value={layout.context}>
     <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "") + (layout.resizing ? " app__body--sidebar-resizing" : "")}>
-      <Sidebar activeNav={surface === "projects" ? "项目" : surface === "organization-shell" ? "组织" : "自动化"} onNewSession={() => {}} onSelect={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => {}} onToggleCollapse={() => layout.setCollapsed(true)} />
+      <Sidebar activeNav={label} onNewSession={() => {}} onSelect={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => {}} onToggleCollapse={() => layout.setCollapsed(true)} />
       <SidebarResizeHandle layout={layout} />
       <main className="app__main">
-        {layout.collapsed && <div className="main-page-controls"><button className="main-topbar__btn" aria-label="展开侧边栏" onClick={() => layout.setCollapsed(false)}>展开侧边栏</button></div>}
-        {surface === "projects" ? <ProjectsPanel /> : surface === "organization-shell" ? <OrganizationMemoryPanel onStartConversation={() => {}} /> : <AutomationPanel cwd="/review/EchoAgent" />}
+        <PageChromeProvider macOS={query.get("platform") === "mac"} sidebarCollapsed={layout.collapsed} onToggleSidebar={() => layout.setCollapsed(false)} onNewTask={() => {}}>
+          <PlaceholderPage label={label} cwd="/review/EchoAgent" onOpenAutomationSettings={() => {}} onStartOrganizationConversation={() => {}} />
+        </PageChromeProvider>
       </main>
     </div>
   </SidebarLayoutContext.Provider></div>;
@@ -656,13 +740,11 @@ function Fixture() {
     return <div className={`app${query.get("platform") === "mac" ? " app--macos" : ""}`}>
       <div className="app__body app__body--collapsed">
         <main className="app__main">
-          <header className="main-page-controls" data-tauri-drag-region>
-            <button className="main-topbar__btn" aria-label="展开侧边栏">☰</button>
-            <button className="main-topbar__btn" aria-label="新建任务">＋</button>
-          </header>
+          <PageChromeProvider macOS={query.get("platform") === "mac"} sidebarCollapsed onToggleSidebar={() => {}} onNewTask={() => {}}>
           {surface === "collapsed-project"
             ? <ProjectDetailView project={project} onBack={() => {}} picker={{ options: { connectors: [], experts: [], skills: [] }, loading: false, error: null }} />
             : <PlaceholderPage label="专家·技能·连接器" />}
+          </PageChromeProvider>
         </main>
       </div>
     </div>;
@@ -744,7 +826,7 @@ function Fixture() {
     }} onCancel={() => {}} title="评审投影仪性能与内存泄漏" /></main>
     {recoverySent && query.has("recovery") && <p role="note" style={{position:"absolute",top:0,left:0,maxWidth:"100%",background:"var(--echo-bg-secondary)",fontSize:12,padding:8}}>{recoverySent}</p>}
   </div>;
-  if (surface === "projects" || surface === "organization-shell" || surface === "automation-templates") return <ManagementReviewFixture surface={surface} />;
+  if (["projects", "organization-shell", "automation-templates", "management-experts", "management-knowledge", "management-schedules"].includes(surface)) return <ManagementReviewFixture surface={surface} />;
   if (surface === "organization" || surface === "organization-login") return <div style={{ height: "100%", overflow: "auto" }}><OrganizationMemoryPanel onStartConversation={() => {}} /></div>;
   if (surface === "meeting") return <MeetingMinutesPanel modelId="review/MiniMax-M3" models={[{ id: "review/MiniMax-M3", label: "MiniMax M3", providerId: "review", providerKind: "custom", source: "personal" }]} />;
   if (surface === "permission-picker") return <div style={{ position: "relative", height: "100%", background: "var(--echo-bg-secondary)" }}>
@@ -778,6 +860,6 @@ function Fixture() {
     </div></div>;
     return query.get("codingShell") === "1" ? <CodingSidebarReview>{coding}</CodingSidebarReview> : coding;
   }
-  return <SettingsPanel open initialSection={(surface === "weixin-connected" || surface === "weixin-offline" || surface === "weixin-unconnected" ? "weixin-channel" : surface) as SettingsSectionId} cwd={surface === "personal-memory" ? "/Users/fuyuxiang/Documents/EchoAgent" : undefined} onClose={() => {}} />;
+  return <SettingsPanel open initialModelId={query.get("initialModelId") ?? undefined} initialSection={(surface === "weixin-connected" || surface === "weixin-offline" || surface === "weixin-unconnected" ? "weixin-channel" : surface) as SettingsSectionId} cwd={surface === "personal-memory" ? "/Users/fuyuxiang/Documents/EchoAgent" : undefined} onClose={() => {}} />;
 }
 createRoot(document.getElementById("root")!).render(<ThemeProvider><Fixture /></ThemeProvider>);

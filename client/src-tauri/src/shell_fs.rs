@@ -562,7 +562,7 @@ fn bounded_limit(requested: Option<u64>, hard_max: usize) -> usize {
         .min(hard_max)
 }
 
-fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
+pub(crate) fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
     let metadata = std::fs::symlink_metadata(path).map_err(|e| format!("读取失败：{e}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err("读取目标必须是普通文件，不能是符号链接".into());

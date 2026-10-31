@@ -936,6 +936,10 @@ export interface Automation {
   validFromDate?: string;
   validUntilDate?: string;
   pushToWeChat: boolean;
+  /** Legacy tasks default to independent conversations. */
+  newSessionEachRun?: boolean;
+  contextGeneration?: number;
+  dedicatedSessionId?: string;
   lastRunAt?: string;
   nextRunAt?: string;
   createdAt: string;
@@ -943,12 +947,17 @@ export interface Automation {
 
 /** A single run-history entry (运行记录). */
 export interface AutomationRunRecord {
+  promptId?: string;
+  stopRequested?: boolean;
+  needsAttention?: boolean;
+  waitingReason?: string;
+  executionConfig?: { prompt: string; newSessionEachRun: boolean; permissionMode: AutomationPermissionMode };
   completionPending?: boolean;
   notificationDelivery?: string;
   id: string;
   automationId: string;
   automationName: string;
-  status: "queued" | "running" | "success" | "failed" | "interrupted" | string;
+  status: "queued" | "running" | "success" | "failed" | "interrupted" | "stopped" | string;
   startedAt: string;
   finishedAt?: string;
   sessionId?: string;
@@ -972,6 +981,7 @@ export interface AutomationUpdateEvent {
   recordId: string;
   status: AutomationRunRecord["status"];
   sessionId?: string;
+  promptId?: string;
   currentModelId?: string;
   cwd?: string;
   error?: string;

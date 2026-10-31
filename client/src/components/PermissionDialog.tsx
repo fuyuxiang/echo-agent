@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, FileText, Globe, Terminal, Wrench } from "lucide-react";
 import { usePermissionStore, selectPermissionForSession } from "@/stores/permission-store";
@@ -6,39 +6,24 @@ import { agentResolvePermission, permissionModeSet } from "@/lib/agent-client";
 import { permissionModeStatusFromEvent, usePermissionModeStore } from "@/stores/permission-mode-store";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useAnchoredFloating } from "@/lib/use-anchored-floating";
-import type { PermissionOption, PermissionRequest } from "@/lib/types";
+import type { PermissionOption } from "@/lib/types";
+import { permissionPresentation } from "@/lib/permission-presentation";
 
 const ENABLE_ALWAYS_APPROVE_OPTION_ID = "enable-always-approve";
-
-function presentation(request: PermissionRequest) {
-  const kind = request.toolKind;
-  const input = request.rawInput && typeof request.rawInput === "object"
-    ? request.rawInput as Record<string, unknown> : {};
-  const command = input.command ?? input.cmd;
-  const path = input.path ?? input.file_path ?? input.filePath;
-  const url = input.url;
-  const terminal = ["execute", "run_terminal_command"].includes(kind);
-  const file = ["read", "edit", "delete", "read_file", "edit_file"].includes(kind);
-  const web = ["fetch", "search", "web_fetch", "web_search"].includes(kind);
-  return {
-    label: terminal ? "终端" : file ? "文件" : web ? "网络" : "工具",
-    Icon: terminal ? Terminal : file ? FileText : web ? Globe : Wrench,
-    title: request.title === "conversation_history" ? "是否允许读取会话记录？" : request.title,
-    preview: [command, path, url].find(value => typeof value === "string" && value.trim()) as string | undefined,
-  };
-}
 
 function optionPresentation(option: PermissionOption): { label: string; description?: string } {
   if (option.optionId === ENABLE_ALWAYS_APPROVE_OPTION_ID) return { label: "本任务免审批", description: "仅限当前任务，需再次确认" };
   if (option.kind === "allow") return { label: "允许一次" };
-  if (option.kind === "deny") return { label: "拒绝" };
+  if (option.kind === "deny") return { label: "拒绝本次" };
   const title = option.title.trim();
-  const scoped = title.match(/^(?:always\s+(?:allow|reject)|始终允许|始终拒绝)\s*[:：]\s*([\s\S]+)$/i)?.[1]?.trim();
+  const scoped = title.match(/^(?:always\s+(?:allow|reject)|never\s+allow|始终允许|始终拒绝)\s*[:：]\s*([\s\S]+)$/i)?.[1]?.trim();
+  const projectScope = title.match(/^(?:Yes,\s*always allow|No,\s*never allow)\s+(.+?)\s+for this project$/i)?.[1]?.trim();
   if (option.kind === "allow_always" || option.kind === "deny_always") {
     const allow = option.kind === "allow_always";
     return {
       label: !scoped && /[\u3400-\u9fff]/u.test(title) ? title : allow ? "始终允许此类操作" : "始终拒绝此类操作",
-      description: scoped ? `范围：${scoped}` : allow ? "后续同类请求自动允许" : "后续同类请求自动拒绝",
+      description: projectScope ? `项目范围：${projectScope}（跨任务生效）`
+        : scoped ? `范围：${scoped}` : allow ? "后续同类请求自动允许" : "后续同类请求自动拒绝",
     };
   }
   // Preserve custom choices from newer runtimes without guessing their scope.
@@ -56,6 +41,11 @@ export function PermissionInlineCard({ sessionId }: { sessionId: string | null }
   const [error, setError] = useState<string | null>(null);
   const [confirmingAlways, setConfirmingAlways] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [previewExpanded, setPreviewExpanded] = useState(false);
+  const [previewLong, setPreviewLong] = useState(false);
+  const previewRef = useRef<HTMLPreElement>(null);
+  const previewId = useId();
+  const content = useMemo(() => head ? permissionPresentation(head) : null, [head]);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -71,7 +61,23 @@ export function PermissionInlineCard({ sessionId }: { sessionId: string | null }
     setError(null);
     setConfirmingAlways(false);
     setMenuOpen(false);
+    setPreviewExpanded(false);
   }, [head?.requestId]);
+
+  useLayoutEffect(() => {
+    const element = previewRef.current;
+    if (!element) { setPreviewLong(false); return; }
+    const measure = () => {
+      const style = getComputedStyle(element);
+      const limit = (parseFloat(style.lineHeight) || 18) * 3
+        + (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      setPreviewLong(element.scrollHeight > limit + 1);
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(element);
+    return () => observer?.disconnect();
+  }, [head?.requestId, content?.preview]);
 
   useEffect(() => {
     if (confirmingAlways) confirmCancelRef.current?.focus();
@@ -96,8 +102,9 @@ export function PermissionInlineCard({ sessionId }: { sessionId: string | null }
     return () => cancelAnimationFrame(frame);
   }, [sessionId, head?.requestId, priorityRequestId, consumePriority]);
 
-  if (!head) return null;
-  const { label, Icon, title, preview } = presentation(head);
+  if (!head || !content) return null;
+  const { category, title, purpose, preview, previewKind, details } = content;
+  const Icon = category === "terminal" ? Terminal : category === "file" ? FileText : category === "web" ? Globe : Wrench;
   const allowOnce = head.options.find(o => o.optionId === "allow-once" && o.kind === "allow")
     ?? head.options.find(o => o.kind === "allow" && o.optionId !== ENABLE_ALWAYS_APPROVE_OPTION_ID);
   const denyOnce = head.options.find(o => o.optionId === "reject-once" && o.kind === "deny")
@@ -141,18 +148,25 @@ export function PermissionInlineCard({ sessionId }: { sessionId: string | null }
   };
 
   return (
-    <section id={`permission-${head.requestId}`} className="perm-inline" aria-label="操作授权" aria-busy={resolvingId != null} tabIndex={-1}>
+    <section id={`permission-${head.requestId}`} className="perm-inline perm-inline--tool" aria-label="操作授权" aria-busy={resolvingId != null} tabIndex={-1}>
       <div className="perm-inline__head">
         <Icon size={15} aria-hidden="true" />
-        <span className="perm-inline__kind">{label}</span>
+        <p className="perm-inline__title">{title}</p>
         {count > 1 && <span className="perm-inline__count">还有 {count - 1} 项待审批</span>}
       </div>
-      <div className="perm-inline__body">
-        <p className="perm-inline__title">{title}</p>
-        {preview && <pre className="perm-inline__preview" tabIndex={0} aria-label="操作内容">{preview}</pre>}
-        {head.rawInput != null && <details className="perm-inline__details">
+      <div className="perm-inline__body" key={head.requestId}>
+        {purpose && <p className="perm-inline__purpose">操作说明：{purpose}</p>}
+        {preview && <>
+          <pre ref={previewRef} id={previewId} className={`perm-inline__preview perm-inline__operation${previewExpanded ? " is-expanded" : ""}`}
+            tabIndex={0} aria-label="操作内容">{preview}</pre>
+          {previewLong && <button type="button" className="perm-inline__expand" aria-controls={previewId}
+            aria-expanded={previewExpanded} onClick={() => setPreviewExpanded(value => !value)}>
+            {previewExpanded ? `收起${previewKind}` : `展开完整${previewKind}`}
+          </button>}
+        </>}
+        {details != null && <details className="perm-inline__details">
           <summary>操作详情</summary>
-          <pre className="perm-inline__raw">{JSON.stringify(head.rawInput, null, 2)}</pre>
+          <pre className="perm-inline__raw">{JSON.stringify(details, null, 2)}</pre>
         </details>}
         {error && <p className="perm-inline__error" role="alert">{error}</p>}
       </div>
@@ -166,7 +180,7 @@ export function PermissionInlineCard({ sessionId }: { sessionId: string | null }
         </div>
       </div> : <footer className="perm-inline__footer" role="group" aria-label="授权选择">
         <button type="button" className="perm-inline__action" onClick={() => void resolve(denyOnce, !denyOnce)} disabled={resolvingId != null}>
-          {resolvingId === (denyOnce?.optionId ?? "deny") ? "处理中…" : "拒绝"}
+          {resolvingId === (denyOnce?.optionId ?? "deny") ? "处理中…" : "拒绝本次"}
         </button>
         <div className="perm-inline__allow-group">
           {allowOnce && <button type="button" className="perm-inline__action perm-inline__action--allow"

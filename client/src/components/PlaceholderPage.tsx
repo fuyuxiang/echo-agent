@@ -59,6 +59,7 @@ function DeferredPanel({ children }: { children: ReactNode }) {
 }
 
 interface PlaceholderPageProps {
+  onOpenAutomationSettings?: (section: "general" | "notifications") => void;
   label: string;
   /** Navigate to another sidebar view (e.g. 自动化 → 管理连接器 → 专家·技能·连接器). */
   onNavigate?: (label: string) => void;
@@ -180,6 +181,7 @@ export function PlaceholderPage({
   automationRefreshSignal,
   notificationAutomationId,
   notificationAutomationSequence,
+  onOpenAutomationSettings,
 }: PlaceholderPageProps) {
   if (label === "项目") {
     return (
@@ -225,6 +227,7 @@ export function PlaceholderPage({
     return (
       <DeferredPanel>
         <AutomationPanel
+          onOpenSettings={onOpenAutomationSettings}
           onToast={onToast}
           onNavigate={onNavigate}
           onOpenSession={onOpenSession}

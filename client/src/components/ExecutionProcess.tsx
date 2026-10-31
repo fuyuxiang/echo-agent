@@ -120,6 +120,7 @@ export function ExecutionProcess({
   const bodyId = useId();
   const bodyRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLButtonElement>(null);
+  const returnToOverview = useRef(false);
   const summary = useMemo(() => summarizeExecutionProcess(parts, active, stopReason,
     cancellationCategory, cancelTrigger, { settled }),
   [active, cancellationCategory, cancelTrigger, parts, settled, stopReason]);
@@ -186,6 +187,15 @@ export function ExecutionProcess({
     };
   }, [expanded]);
 
+  useLayoutEffect(() => {
+    if (expanded || !returnToOverview.current) return;
+    returnToOverview.current = false;
+    // A footer collapse removes the reader's current position. Return to the
+    // surviving control after layout, including when activated by keyboard.
+    headerRef.current?.focus({ preventScroll: true });
+    headerRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [expanded]);
+
   const stages = useMemo(() => executionStages(parts), [parts]);
   const currentStage = stages[stages.length - 1];
   const progress = useMemo(() => executionProgressText(currentStage?.progress ?? []), [currentStage]);
@@ -222,6 +232,7 @@ export function ExecutionProcess({
 
   const state = waitingReason && active ? "waiting"
     : !active && summary.state === "complete" && resultNotice?.tone === "warning" ? "attention" : summary.state;
+  const disclosureLabel = expanded ? "收起过程" : active ? "展开过程" : "查看过程";
   return <section className={`execution-process execution-process--${state}${recovered ? " execution-process--recovered" : ""}`}
     aria-label="任务进展">
     <div className="execution-process__overview">
@@ -232,12 +243,12 @@ export function ExecutionProcess({
       </div>
       <button ref={headerRef} type="button" className="execution-process__header"
         data-chat-reading="true"
-        aria-label={[title, duration, expanded ? "收起执行记录" : "查看执行记录"].filter(Boolean).join(" · ")}
+        aria-label={[title, duration, disclosureLabel].filter(Boolean).join(" · ")}
         aria-expanded={expanded} aria-controls={expanded ? bodyId : undefined}
         aria-describedby={expanded && summary.description ? `${bodyId}-summary` : undefined}
         onClick={() => changeOpen(!expanded)}>
-        <span>{expanded ? "收起执行记录" : "查看执行记录"}</span>
-        <span className={`execution-process__chevron${expanded ? " execution-process__chevron--open" : ""}`} aria-hidden="true">›</span>
+        <span>{disclosureLabel}</span>
+        <span className={`execution-process__chevron${expanded ? " execution-process__chevron--open" : active ? " execution-process__chevron--expand" : ""}`} aria-hidden="true">›</span>
       </button>
     </div>
     {showProgress && <div className="execution-process__excerpt" data-stage-id={currentStage?.id} aria-label="当前阶段进展">
@@ -249,7 +260,7 @@ export function ExecutionProcess({
     </p>}
     {expanded && <div className="execution-process__body" id={bodyId} ref={bodyRef}
       data-chat-reading="true"
-      tabIndex={0} role="region" aria-label="执行记录详情">
+      tabIndex={0} role="region" aria-label="执行过程详情">
       {summary.description && <p id={`${bodyId}-summary`} className="execution-process__outcome-detail">{summary.description}</p>}
       {summary.recoveredTools.length > 0 && <p className="execution-process__recovery-detail">
         {summary.recoveredTools.length} 次中间失败已由后续同一操作的重试恢复，原始记录保留如下。
@@ -282,7 +293,15 @@ export function ExecutionProcess({
           </li>;
         })}
       </ol>
-      {summary.toolCount > 0 && onOpenTool && <p className="execution-process__hint">选择操作可在右侧查看输入、输出和文件变更</p>}
+      <div className="execution-process__footer">
+        {summary.toolCount > 0 && onOpenTool && <p className="execution-process__hint">选择操作可在右侧查看输入、输出和文件变更</p>}
+        <button type="button" className="execution-process__collapse"
+          aria-expanded={true} aria-controls={bodyId}
+          onClick={() => { returnToOverview.current = true; changeOpen(false); }}>
+          <span>收起过程</span>
+          <span className="execution-process__chevron execution-process__chevron--open" aria-hidden="true">›</span>
+        </button>
+      </div>
     </div>}
   </section>;
 }

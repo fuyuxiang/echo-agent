@@ -3,6 +3,7 @@ import { codingApi } from "./features/coding/lib/tauri-api";
 import { useTaskStore } from "./features/coding/store/task-store";
 import { findModelDisplayName } from "@/lib/model-presentation";
 import { SessionNavigation } from "./components/SessionHeader";
+import { PageChromeProvider } from "./components/PageToolbar";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -27,6 +28,7 @@ import type { SettingsSectionId } from "./components/SettingsPanel";
 
 import { ChevronLeftIcon } from "./foundation/components/Icon/icons";
 import type { ModelOption } from "./components/ModelSelector";
+import { ModelManagementContext } from "./lib/model-management";
 import {
   isConfiguredModelId,
   resolveConfiguredModelId,
@@ -164,6 +166,7 @@ import {
 } from "./lib/turn-status";
 import {
   isControlledSessionStatus,
+  readPersistedSessionControl,
   type SessionControlAction,
 } from "./lib/session-control";
 
@@ -270,6 +273,7 @@ function Shell() {
   const rendererRecovery = useRendererRecoveryStatus();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("model");
+  const [settingsModelId, setSettingsModelId] = useState<string>();
   const [searchOpen, setSearchOpen] = useState(false);
   const [trayAttention, setTrayAttention] = useState<{ sessionId: string; sequence: number } | null>(null);
   const [trayNewRequest, setTrayNewRequest] = useState(0);
@@ -280,6 +284,8 @@ function Shell() {
   const [automationRefreshSignal, setAutomationRefreshSignal] = useState(0);
   const [notificationAutomationOpen, setNotificationAutomationOpen] = useState<{ id: string; sequence: number } | null>(null);
   const notificationAutomationSequenceRef = useRef(0);
+  const automationAdmissionRecordsRef = useRef(new Set<string>());
+  const automationSessionRunsRef = useRef(new Map<string, { recordId: string; promptId?: string }>());
   const [commandRefreshKey, setCommandRefreshKey] = useState(0);
   const [placeholderView, setPlaceholderView] = useState<string | null>(null);
   const [hasOpenedCodingWorkspace, setHasOpenedCodingWorkspace] = useState(false);
@@ -404,11 +410,16 @@ function Shell() {
   const { confirm: confirmAutomationExit, dismiss: dismissAutomationExit, dialog: automationExitDialog } = useAppDialog();
 
   const openSettings = useCallback((section: SettingsSectionId = "general") => {
+    setSettingsModelId(undefined);
     setSettingsSection(section);
     setSearchOpen(false);
     setAboutOpen(false);
     setSettingsOpen(true);
   }, []);
+  const openModelManagement = useCallback((modelId?: string) => {
+    openSettings("model");
+    setSettingsModelId(modelId);
+  }, [openSettings]);
   const openSearch = useCallback(() => {
     setSettingsOpen(false);
     setAboutOpen(false);
@@ -602,6 +613,7 @@ function Shell() {
     } finally {
       if (modelCatalogGenerationRef.current === generation) {
         setModelCatalogLoading(false);
+        window.dispatchEvent(new Event("echo:model-catalog-changed"));
       }
     }
   }, [sessionsStore]);
@@ -1020,27 +1032,58 @@ function Shell() {
             setAutomationRefreshSignal((value) => value + 1);
             if (event.sessionId && event.cwd) {
               const sessionStore = sessionsStore.getState();
+              if (sessionStore.deletedSessionIds.includes(event.sessionId)) return;
               const existing = sessionStore.independent.find(
                 (session) => session.sessionId === event.sessionId,
               );
+              const newAdmission = event.phase === "sessionCreated" && Boolean(event.recordId) && !automationAdmissionRecordsRef.current.has(event.recordId);
+              if (event.phase === "sessionCreated" && !newAdmission) return;
+              const admissionControl = useSessionStore.getState().transcripts[event.sessionId]?.control
+                ?? readPersistedSessionControl(event.sessionId);
+              const admitNewPrompt = newAdmission && Boolean(event.promptId)
+                && admissionControl?.promptId !== event.promptId;
+              if (newAdmission) {
+                automationAdmissionRecordsRef.current.add(event.recordId);
+                if (automationAdmissionRecordsRef.current.size > 2000) automationAdmissionRecordsRef.current.delete(automationAdmissionRecordsRef.current.values().next().value!);
+                automationSessionRunsRef.current.set(event.sessionId, { recordId: event.recordId, promptId: event.promptId });
+                if (automationSessionRunsRef.current.size > 2000) automationSessionRunsRef.current.delete(automationSessionRunsRef.current.keys().next().value!);
+                // Native dispatch owns this new prompt. Retire only the old
+                // turn's stop fence; a duplicate admission must never undo a
+                // pause/stop requested for the current turn.
+                if (admitNewPrompt && event.promptId) {
+                  const transcripts = useSessionStore.getState();
+                  transcripts.resumeSession(event.sessionId);
+                  transcripts.startStreaming(event.sessionId, event.promptId);
+                  transcripts.clearReplaySuppression(event.sessionId);
+                }
+              }
+              const owner = automationSessionRunsRef.current.get(event.sessionId);
+              const transcript = useSessionStore.getState().transcripts[event.sessionId];
+              const activePromptId = transcript?.pendingSendNowPromptId
+                ?? transcript?.messages.slice().reverse().find(message => message.role === "assistant")?.promptId;
+              const finishedPromptId = event.promptId ?? owner?.promptId;
+              const staleFinish = event.phase === "finished" && (
+                (owner && owner.recordId !== event.recordId)
+                || (finishedPromptId && activePromptId && finishedPromptId !== activePromptId)
+              );
+              if (staleFinish) return;
               const status = event.status === "failed"
                 ? "failed"
                 : event.status === "success"
                   ? "completed"
-                  : "working";
+                  : event.status === "stopped"
+                    ? "stopped"
+                    : "working";
               sessionStore.upsert({
                 sessionId: event.sessionId,
                 cwd: event.cwd,
-                ...(event.currentModelId && !existing?.currentModelId
+                ...(event.currentModelId && (newAdmission || !existing?.currentModelId)
                   ? { currentModelId: event.currentModelId }
                   : {}),
                 // Use the automation name to hydrate a brand-new background
                 // row, but never replace a title already generated for it.
                 ...(existing ? {} : { title: event.automationName }),
-                // A background schedule is not permission to revive a task the
-                // user explicitly paused or stopped. Its own automation status
-                // remains visible in AutomationPanel.
-                ...(!isControlledSessionStatus(existing?.status) ? { status } : {}),
+                ...(admitNewPrompt || !isControlledSessionStatus(existing?.status) ? { status } : {}),
                 updatedAt: new Date().toISOString(),
               });
             }
@@ -2525,7 +2568,8 @@ function Shell() {
           for (const open of opens) {
             if (disposed) return;
             try {
-              if (open.sessionId) await notificationNavigatorRef.current(open.sessionId);
+              if (open.automationId && !open.requestId) await notificationAutomationNavigatorRef.current(open.automationId);
+              else if (open.sessionId) await notificationNavigatorRef.current(open.sessionId);
               else if (open.automationId) await notificationAutomationNavigatorRef.current(open.automationId);
               else throw new Error("通知缺少关联任务");
               setSettingsOpen(false);
@@ -3048,6 +3092,7 @@ function Shell() {
   const codingCwd = activeCodingWorkspaceCwd || codingWorkspaceCwd
     || (codingWorkspaceActive ? activeSessionCwd || newSessionTargetCwd : "");
   const placeholderProps = {
+    onOpenAutomationSettings: (section: "general" | "notifications") => openSettings(section === "notifications" ? "notify-channels" : "general"),
     onNavigate: handleNavigate,
     onOpenSession: handleSelectSession,
     onGoHome: handleGoHome,
@@ -3104,6 +3149,7 @@ function Shell() {
   ) : null;
 
   return (
+    <ModelManagementContext.Provider value={openModelManagement}>
     <div className={`app${IS_MACOS ? " app--macos" : ""}${codingWorkspaceActive ? " app--coding" : ""}`}>
       {exitPreparing && !automationExitDialog && <div className="app__exit-overlay" role="status" aria-live="polite">正在保存录音与任务数据并准备退出…</div>}
       {init?.ok && <CodingTaskRuntimeManager apiReady={init.auth.ready} availableModelIds={models.map(model => model.id)} roots={[...new Set([
@@ -3141,7 +3187,8 @@ function Shell() {
         />
         <SidebarResizeHandle layout={sidebarLayout} />
         <main className="app__main">
-          {(!currentSessionId || placeholderView) && !codingWorkspaceActive && (
+          <PageChromeProvider macOS={IS_MACOS} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} onNewTask={handleNewSession}>
+          {(!currentSessionId || placeholderView) && !codingWorkspaceActive && !(init?.ok && !initError && ["项目", "组织", "专家·技能·连接器", "专家团", "技能", "连接器", "插件", "自动化", "知识库"].includes(placeholderView ?? "")) && (
             <header className="main-page-controls" data-tauri-drag-region>
               <SessionNavigation sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} onNewTask={handleNewSession} />
             </header>
@@ -3296,6 +3343,7 @@ function Shell() {
               )}
             </Suspense>
           )}
+          </PageChromeProvider>
         </main>
       </div>
       </SidebarLayoutContext.Provider>
@@ -3337,6 +3385,7 @@ function Shell() {
           <SettingsPanel
             open
             initialSection={settingsSection}
+            initialModelId={settingsModelId}
             sessionId={currentSessionId ?? undefined}
             cwd={activeSessionCwd || newSessionTargetCwd}
             onClose={() => setSettingsOpen(false)}
@@ -3374,5 +3423,6 @@ function Shell() {
       <GroupActionsHost onFeedback={showActionToast} />
       {automationExitDialog}
     </div>
+    </ModelManagementContext.Provider>
   );
 }

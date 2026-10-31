@@ -68,24 +68,28 @@ final class AutomationModelReview: NSObject, WKNavigationDelegate, WKScriptMessa
           let token = 0;
           const click = element => new Promise(resolve => {
             assert(element, 'Missing click target');
+            element.scrollIntoView({block:'center'});
             const rect = element.getBoundingClientRect(), id = ++token;
             window.automationModelResolvers[id] = () => { delete window.automationModelResolvers[id]; resolve(); };
             report({action:'click',token:id,x:rect.x+rect.width/2,y:rect.y+rect.height/2});
           });
-          const trigger = () => document.querySelector('.atm-prompt-chip');
-          const options = () => [...document.querySelectorAll('.atm-chip-dropdown__menu .atm-chip-option')];
+          const trigger = () => document.querySelector('.model-selector__trigger');
+          const options = () => [...document.querySelectorAll('.model-selector__item[role=option]')];
           try {
+            await wait(() => document.querySelector('.atm-advanced-trigger'));
+            await click(document.querySelector('.atm-advanced-trigger'));
             await wait(trigger);
             await click(trigger());
-            await wait(() => options().length === 4);
+            await wait(() => options().length === 3);
             await click(options().find(option => option.textContent.includes('Echo Brook')));
             assert(trigger().textContent.includes('Echo Brook'), 'Native pointer selection did not update the model');
-            assert(!document.querySelector('.atm-chip-dropdown__menu'), 'Selection did not close menu');
+            assert(!document.querySelector('[data-model-picker]'), 'Selection did not close menu');
             await click(trigger());
-            await wait(() => options().length === 4);
-            assert(options().find(option => option.classList.contains('active'))?.textContent.includes('Echo Brook'), 'Selected model checkmark was lost');
-            await click(options().find(option => option.textContent.trim().startsWith('Auto')));
-            assert(trigger().textContent.includes('Auto') && trigger().textContent.includes('Echo Reed'), 'Could not return to Auto');
+            await wait(() => options().length === 3);
+            assert(options().find(option => option.getAttribute('aria-selected') === 'true')?.textContent.includes('Echo Brook'), 'Selected model checkmark was lost');
+            await click(trigger());
+            await click([...document.querySelectorAll('button')].find(option => option.textContent.trim() === '跟随默认模型'));
+            assert(trigger().textContent.includes('Echo Reed'), 'Could not return to default model');
             report({action:'done',checks:['native pointer selects model','menu closes after selection','selection survives reopening','Auto restores default policy'],events});
           } catch (error) { report({action:'fail',error:String(error),events}); }
         })();

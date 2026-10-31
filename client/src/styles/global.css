@@ -53,7 +53,7 @@ body {
  */
 :root {
   color-scheme: light;
-  --echo-brand: var(--echo-brand-primary, #00c29a);
+  --echo-brand: var(--echo-color-text-brand-default, #007d64);
   --echo-brand-hover: var(--echo-color-text-brand-hover, #40d1b3);
   --echo-accent: var(--echo-brand);
   --echo-color-primary: var(--echo-brand);

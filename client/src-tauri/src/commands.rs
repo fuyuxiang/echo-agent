@@ -1568,7 +1568,11 @@ pub async fn agent_load_session(
     let _permission_transition_guard = crate::permission_config::permission_transition_lock()
         .lock()
         .await;
-    let permission_mode = crate::permission_config::effective_session_permission_mode(&session_id);
+    let permission_mode = if crate::automations::is_full_access_session(&session_id) {
+        "always-approve".into()
+    } else {
+        crate::permission_config::effective_session_permission_mode(&session_id)
+    };
     let tx = state
         .tx
         .lock()
@@ -1721,6 +1725,16 @@ pub async fn agent_send(
         return Err("无效的运行模式".into());
     }
     validate_send_payload(&session_id, &text, display_text.as_deref())?;
+    // Scheduler prompts hold the same lock through permission cleanup. Reject
+    // interactive replacement instead of silently cancelling a scheduled turn.
+    let turn_lock = crate::automations::session_turn_lock(&session_id);
+    let _turn_guard = if crate::automations::owns_session(&session_id) {
+        Some(turn_lock.try_lock().map_err(|_| {
+            "此会话正在执行任务，请等待完成或先停止本次运行后再发送消息".to_string()
+        })?)
+    } else {
+        None
+    };
     if prompt_id
         .as_deref()
         .is_some_and(|value| !valid_session_id(value))
@@ -2283,6 +2297,16 @@ pub async fn agent_set_model(
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
     }
+    let turn_lock = crate::automations::session_turn_lock(&session_id);
+    let _turn_guard = if crate::automations::owns_session(&session_id) {
+        Some(
+            turn_lock
+                .try_lock()
+                .map_err(|_| "此会话正在执行任务，请结束当前轮次后再切换模型".to_string())?,
+        )
+    } else {
+        None
+    };
     state.session_workspace(&session_id)?;
     crate::policy::require_model(&model_id)?;
     require_runtime_ready(Some(&app), &state, Some(&model_id))?;

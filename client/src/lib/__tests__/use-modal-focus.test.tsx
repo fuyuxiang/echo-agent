@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useModalFocus } from "../use-modal-focus";
+import { ModelSelector } from "@/components/ModelSelector";
 
 function FocusHarness({ onClose }: { onClose: () => void }) {
   const [menu, setMenu] = useState(false);
@@ -35,6 +36,30 @@ function FocusHarness({ onClose }: { onClose: () => void }) {
 }
 
 describe("useModalFocus", () => {
+  it("模型弹层内可Tab到管理入口，Escape仅关闭弹层，越界后回到模态相邻字段", () => {
+    const close = vi.fn();
+    function Harness() {
+      const ref = useModalFocus<HTMLDivElement>(true, close);
+      return <div ref={ref} role="dialog"><input aria-label="名称" />
+        <ModelSelector modelId="a" models={[{ id: "a", label: "模型 A" }]} onModelChange={vi.fn()} onManageModels={vi.fn()} />
+        <button>保存</button></div>;
+    }
+    render(<Harness />);
+    const trigger = screen.getByRole("button", { name: "模型 A" });
+    fireEvent.click(trigger);
+    expect(fireEvent.keyDown(screen.getByRole("option"), { key: "Tab" })).toBe(true);
+    const manage = screen.getByRole("button", { name: "管理模型" });
+    manage.focus();
+    expect(fireEvent.keyDown(manage, { key: "Tab", shiftKey: true })).toBe(true);
+    fireEvent.keyDown(manage, { key: "Escape" });
+    expect(close).not.toHaveBeenCalled();
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    screen.getByRole("button", { name: "管理模型" }).focus();
+    fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "保存" })).toHaveFocus();
+  });
   it("初始和循环焦点跳过隐藏控件及 disabled fieldset", () => {
     render(<FocusHarness onClose={vi.fn()} />);
     const input = screen.getByRole("textbox", { name: "名称" });

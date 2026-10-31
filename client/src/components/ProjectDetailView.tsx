@@ -1,4 +1,5 @@
 import { findModelChoiceLabel, findModelDisplayName } from "@/lib/model-presentation";
+import { PageToolbar } from "./PageToolbar";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 /**
@@ -229,7 +230,7 @@ export function ProjectDetailView({
 
   return (
     <div className="pd-page">
-      <header className="pd-topbar">
+      <PageToolbar className="pd-topbar">
         <div className="pd-crumb">
           <FolderIcon size="sm" />
           <button className="pd-crumb__link" onClick={onBack}>项目</button>
@@ -252,7 +253,7 @@ export function ProjectDetailView({
             </div>
           )}
         </div>
-      </header>
+      </PageToolbar>
 
       <div className="pd-body">
         <div className="pd-main">
@@ -523,6 +524,7 @@ function ConfigDrawer({
               </p>
               <ModelSelector
                 ariaLabel="选择项目默认模型"
+                onBeforeManageModels={closeDrawer}
                 modelId={modelId}
                 models={models}
                 onModelChange={onModelChange}

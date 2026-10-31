@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   AlertTriangle,
   Archive,
-  BookOpenCheck,
   BrainCircuit,
   Building2,
-  CheckCircle2,
+  ChevronDown,
+  MoreHorizontal,
+  Search,
   FileText,
   Download,
   Eye,
@@ -27,22 +29,16 @@ import {
   XCircle,
 } from "lucide-react";
 import {
-  orgDocumentSubmissionsMinePage,
   orgArchiveDocument,
   orgDownloadDocument,
   orgFetchDocument,
-  orgListDocuments,
-  orgListMemories,
   orgListScopes,
-  orgListSkills,
   orgLogin,
   orgLogout,
-  orgMemoryPromotionsMine,
   orgPreviewDocument,
   orgRemoveOwnSubmission,
   orgScanDocumentFolder,
   orgSession,
-  orgSkillSubmissionsMine,
   orgSubmitDocument,
   orgSubmitMemoryCandidate,
   orgNewDocumentVersion,
@@ -58,6 +54,7 @@ import {
   type OrgScope,
   type OrgSession,
   type OrgSkill,
+  type OrgLibraryResource,
   type MemoryPromotion,
   type Submission,
 } from "@/lib/org-client";
@@ -67,9 +64,30 @@ import { FilePreview } from "./FilePreview";
 import { Button } from "./Button";
 import { CapabilityPage } from "./experts-panel/shared/CapabilityPage";
 import organizationHeroImg from "@/assets/organization-hero.png";
+import { PageToolbar } from "./PageToolbar";
+import { ActionMenu } from "./ActionMenu";
+import { useOrganizationLibrary } from "./organization/use-organization-library";
 import { useModalFocus } from "@/lib/use-modal-focus";
 
 type Tab = "overview" | "memories" | "documents" | "skills";
+
+function OrganizationError({ reason, onRetry, busy = false, onDismiss }: {
+  reason: string; onRetry?: () => void; busy?: boolean; onDismiss?: () => void;
+}) {
+  const connection = /error sending request|fetch|network|connect|timed?\s*out|timeout|dns|certificate|tls|ssl/i.test(reason);
+  const expired = /\b401\b|unauthorized|token.*expired/i.test(reason);
+  const message = connection ? "暂时无法连接组织服务，请检查网络和服务地址后重试。"
+    : expired ? "组织登录状态已过期，请重新登录。"
+      : /[\u4e00-\u9fff]/.test(reason) && !/https?:\/\//.test(reason) ? reason.replace(/^Error:\s*/, "").slice(0, 200)
+        : "组织操作未完成，请重试或查看技术详情。";
+  return <div className="org-memory__error org-connection-error" role="alert">
+    <XCircle size={16} aria-hidden="true" /><div className="org-connection-error__copy"><p>{message}</p>
+      {reason.replace(/^Error:\s*/, "") !== message && <details><summary>技术详情</summary><pre>{reason}</pre></details>}
+    </div>
+    {onRetry && <Button onClick={onRetry} disabled={busy}>{busy ? "重试中…" : "重试"}</Button>}
+    {onDismiss && <button type="button" aria-label="关闭错误提示" onClick={onDismiss}><X size={16} /></button>}
+  </div>;
+}
 
 const memoryKindLabel: Record<OrgMemoryKind, string> = {
   fact: "事实",
@@ -87,6 +105,7 @@ const stateLabel = (state: string) => ({
   approved: "已通过",
   rejected: "已拒绝",
   withdrawn: "已撤回",
+  revoked: "已撤销",
   queued: "排队中",
   scanning: "扫描中",
   passed: "通过",
@@ -166,35 +185,46 @@ export function OrganizationMemoryPanel({
   cwd?: string;
   onStartConversation?: () => void;
 }) {
+  const library = useOrganizationLibrary();
+  const { pages, queries, summary: librarySummary } = library;
+  const documents = pages.documents.items;
+  const memories = pages.memories.items;
+  const skills = pages.skills.items;
+  const memoryPromotions = pages["memory-submissions"].items;
+  const documentSubmissions = pages["document-submissions"].items;
+  const skillSubmissions = pages["skill-submissions"].items;
+  const [resourceViews, setResourceViews] = useState<Record<string, "published" | "mine">>({});
+  const contentRef = useRef<HTMLDivElement>(null);
+  const scrollPositions = useRef<Record<string, number>>({});
+  const [actionInvoker, setActionInvoker] = useState<HTMLElement | null>(null);
+  const [memoryDetail, setMemoryDetail] = useState<OrgMemory | null>(null);
+  const memoryDetailRef = useModalFocus<HTMLDivElement>(!!memoryDetail, () => setMemoryDetail(null));
+  const [skillDialog, setSkillDialog] = useState<{ kind: "upload" } | { kind: "publish"; skill: OrgSkill } | null>(null);
+  const skillDialogRef = useModalFocus<HTMLDivElement>(!!skillDialog, () => { if (!busyRef.current) setSkillDialog(null); }, actionInvoker);
   const [session, setSession] = useState<OrgSession | null>(null);
   const mirroredSession = useOrgSessionStore((state) => state.session);
   const mirrorOrgSession = useOrgSessionStore((state) => state.setSession);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const [uploadProgress, setUploadProgress] = useState<{
     label: string;
     completed: number;
     total: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
+  const [workspaceUnavailable, setWorkspaceUnavailable] = useState(false);
   const [serverUrl, setServerUrl] = useState("https://");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [tab, setTab] = useState<Tab>("overview");
   const [scopes, setScopes] = useState<OrgScope[]>([]);
-  const [selectedScope, setSelectedScope] = useState("");
-  const selectedScopeRef = useRef("");
   const [writeScope, setWriteScope] = useState("");
   const [publishScope, setPublishScope] = useState("");
-  const [documents, setDocuments] = useState<OrgDocument[]>([]);
-  const [memories, setMemories] = useState<OrgMemory[]>([]);
-  const [memoryPromotions, setMemoryPromotions] = useState<MemoryPromotion[]>([]);
-  const [documentSubmissions, setDocumentSubmissions] = useState<Submission[]>([]);
-  const [documentTotal, setDocumentTotal] = useState(0);
-  const [documentPage, setDocumentPage] = useState(1);
-  const [submissionTotal, setSubmissionTotal] = useState(0);
-  const [submissionPage, setSubmissionPage] = useState(1);
   const [folderBatch, setFolderBatch] = useState<{ folder: string; files: OrgFolderFile[]; skipped: number; totalBytes: number; scopeId: string; scopeName: string } | null>(null);
+  const folderBatchRef = useModalFocus<HTMLDivElement>(!!folderBatch, () => { if (!busyRef.current) setFolderBatch(null); });
   const [uploadIntent, setUploadIntent] = useState<"files" | "folder" | null>(null);
   const uploadDialogRef = useModalFocus<HTMLDivElement>(Boolean(uploadIntent), () => setUploadIntent(null));
   const [preview, setPreview] = useState<{ name: string; content: string; parsed: boolean; docId?: string; nextChunk?: number; more?: boolean; resourceId: string; submission: boolean; sourceType: string; unavailableReason?: string } | null>(null);
@@ -204,11 +234,10 @@ export function OrganizationMemoryPanel({
   const previewDialogRef = useModalFocus<HTMLDivElement>(Boolean(preview), () => closePreview());
   const closePublishDialog = () => { if (!busy) setPublishDocumentTarget(null); };
   const closeRemoveDialog = () => { if (!busy) setRemoveTarget(null); };
-  const publishDialogRef = useModalFocus<HTMLDivElement>(Boolean(publishDocumentTarget), closePublishDialog);
-  const removeDialogRef = useModalFocus<HTMLDivElement>(Boolean(removeTarget), closeRemoveDialog);
-  const [skills, setSkills] = useState<OrgSkill[]>([]);
-  const [skillSubmissions, setSkillSubmissions] = useState<Submission[]>([]);
+  const publishDialogRef = useModalFocus<HTMLDivElement>(Boolean(publishDocumentTarget), closePublishDialog, actionInvoker);
+  const removeDialogRef = useModalFocus<HTMLDivElement>(Boolean(removeTarget), closeRemoveDialog, actionInvoker);
   const [showMemoryForm, setShowMemoryForm] = useState(false);
+  const memoryFormRef = useModalFocus<HTMLDivElement>(showMemoryForm, () => { if (!busyRef.current) setShowMemoryForm(false); });
   const [memoryKind, setMemoryKind] = useState<OrgMemoryKind>("howto");
   const [memoryContent, setMemoryContent] = useState("");
   const [memoryRationale, setMemoryRationale] = useState("");
@@ -227,30 +256,26 @@ export function OrganizationMemoryPanel({
   };
 
   const clearWorkspace = useCallback(() => {
+    setWorkspaceLoaded(false);
+    setWorkspaceUnavailable(false);
     workspaceGeneration.current += 1;
     workspaceLoad.current = null;
     previewGeneration.current += 1;
     setScopes([]);
-    setSelectedScope("");
-    selectedScopeRef.current = "";
+    library.clear();
+    setResourceViews({});
+    scrollPositions.current = {};
+    setMemoryDetail(null);
+    setSkillDialog(null);
+    setActionInvoker(null);
     setWriteScope("");
     setPublishScope("");
-    setDocuments([]);
-    setDocumentTotal(0);
-    setDocumentPage(1);
-    setMemories([]);
-    setMemoryPromotions([]);
-    setDocumentSubmissions([]);
-    setSubmissionTotal(0);
-    setSubmissionPage(1);
     setFolderBatch(null);
     setUploadIntent(null);
     setPreview(null);
     setPreviewLoading(false);
     setRemoveTarget(null);
     setPublishDocumentTarget(null);
-    setSkills([]);
-    setSkillSubmissions([]);
     setShowMemoryForm(false);
     setMemoryContent("");
     setMemoryRationale("");
@@ -259,59 +284,41 @@ export function OrganizationMemoryPanel({
     setMemoryValidUntil("");
     setPassword("");
     setTab("overview");
-  }, []);
+  }, [library.clear]);
 
   useEffect(() => {
     if (mirroredSession) setSession(mirroredSession);
   }, [mirroredSession]);
 
-  const loadWorkspace = useCallback((): Promise<void> => {
+  const loadWorkspace = useCallback((force = false): Promise<void> => {
     const boundary = useOrgSessionStore.getState().boundaryRevision;
-    if (workspaceLoad.current?.boundary === boundary) return workspaceLoad.current.promise;
+    if (!force && workspaceLoad.current?.boundary === boundary) return workspaceLoad.current.promise;
     const generation = ++workspaceGeneration.current;
     const isCurrent = () => useOrgSessionStore.getState().boundaryRevision === boundary
       && workspaceGeneration.current === generation;
     const promise = (async () => {
       const nextScopes = await orgListScopes();
       if (!isCurrent()) return;
-      const activeScope = nextScopes.some((scope) => scope.id === selectedScopeRef.current)
-        ? selectedScopeRef.current : "";
-      selectedScopeRef.current = activeScope;
-      const [docs, nextSkills, docSubs, skillSubs, nextMemories, promotions] = await Promise.all([
-        orgListDocuments(activeScope || undefined),
-        orgListSkills(),
-        orgDocumentSubmissionsMinePage(),
-        orgSkillSubmissionsMine(),
-        orgListMemories(),
-        orgMemoryPromotionsMine(),
-      ]);
+      await library.refresh();
       if (!isCurrent()) return;
       setScopes(nextScopes);
-      if (selectedScopeRef.current === activeScope) {
-        setDocuments(docs.items);
-        setDocumentTotal(docs.total);
-        setDocumentPage(1);
-        setSelectedScope(activeScope);
-      }
-      setSkills(nextSkills);
-      setDocumentSubmissions(docSubs.items);
-      setSubmissionTotal(docSubs.total);
-      setSubmissionPage(1);
-      setSkillSubmissions(skillSubs);
-      setMemories(nextMemories);
-      setMemoryPromotions(promotions.filter((item) => item.payloadType === "memory"));
       setWriteScope((current) => nextScopes.some((scope) => scope.id === current && scope.canPublishDocuments !== false)
         ? current
         : nextScopes.find((scope) => scope.kind === "personal")?.id || nextScopes[0]?.id || "");
       setPublishScope((current) => nextScopes.some((scope) => scope.id === current && scope.kind !== "personal")
         ? current
         : nextScopes.find((scope) => scope.kind === "team")?.id || nextScopes.find((scope) => scope.kind === "org")?.id || "");
-    })().finally(() => {
+      setWorkspaceLoaded(true);
+      setWorkspaceUnavailable(false);
+    })().catch((reason) => {
+      if (isCurrent()) setWorkspaceUnavailable(true);
+      throw reason;
+    }).finally(() => {
       if (workspaceLoad.current?.promise === promise) workspaceLoad.current = null;
     });
     workspaceLoad.current = { boundary, promise };
     return promise;
-  }, []);
+  }, [library.refresh]);
 
   useEffect(() => useOrgSessionStore.subscribe((next, previous) => {
     if (next.boundaryRevision === previous.boundaryRevision) return;
@@ -357,7 +364,8 @@ export function OrganizationMemoryPanel({
     const active = documentSubmissions.some(submissionIsActive)
       || skillSubmissions.some(submissionIsActive)
       || memoryPromotions.some((item) => item.state === "pending")
-      || documents.some(documentIsProcessing);
+      || documents.some(documentIsProcessing)
+      || !!librarySummary && (librarySummary.memoryPending + librarySummary.documentPending + librarySummary.skillPending + librarySummary.documentProcessing > 0);
     if (!active) return;
     let disposed = false;
     let refreshInFlight = false;
@@ -381,31 +389,14 @@ export function OrganizationMemoryPanel({
     loadWorkspace,
     memoryPromotions,
     skillSubmissions,
+    librarySummary,
   ]);
 
-  const uploadScope = useMemo(
-    () => scopes.find((scope) => scope.id === writeScope),
-    [scopes, writeScope],
-  );
+  const uploadScope = scopes.find((scope) => scope.id === writeScope);
   const allowSkillSubmission = session?.bootstrap?.policy.allowSkillSubmission !== false;
   const availableDocumentScopes = scopes.filter((scope) => scope.canPublishDocuments !== false
     && (scope.kind !== "personal" || session?.bootstrap?.policy.allowPersonalCloud !== false));
   const allowDocumentUpload = !!uploadScope && availableDocumentScopes.some((scope) => scope.id === uploadScope.id);
-  const visibleDocuments = documents;
-  const visibleMemories = useMemo(
-    () => selectedScope ? memories.filter((memory) => memory.scopeId === selectedScope) : memories,
-    [memories, selectedScope],
-  );
-  const visibleSkills = useMemo(
-    () => selectedScope ? skills.filter((skill) => skill.scopeId === selectedScope) : skills,
-    [skills, selectedScope],
-  );
-  const visibleDocumentSubmissions = documentSubmissions;
-  const visibleSkillSubmissions = useMemo(
-    () => selectedScope ? skillSubmissions.filter((submission) => submission.scopeId === selectedScope) : skillSubmissions,
-    [skillSubmissions, selectedScope],
-  );
-
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     const boundary = currentBoundary();
@@ -444,7 +435,7 @@ export function OrganizationMemoryPanel({
         resetWorkspace(nextSession);
         return;
       }
-      await loadWorkspace();
+      await loadWorkspace(true);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -567,7 +558,7 @@ export function OrganizationMemoryPanel({
         onToast?.(`上传失败：${failures[0] ?? "未知原因"}`);
       }
       setUploadProgress({ label: "正在刷新列表", completed: files.length, total: files.length });
-      await loadWorkspace();
+      await loadWorkspace(true);
       setFolderBatch(null);
     } catch (reason) {
       const refreshError = `刷新列表失败：${String(reason).replace(/^Error:\s*/, "")}`;
@@ -576,52 +567,6 @@ export function OrganizationMemoryPanel({
       setUploadProgress(null);
       setBusy(false);
     }
-  };
-
-  const changeDocumentScope = async (scopeId: string) => {
-    const boundary = currentBoundary();
-    selectedScopeRef.current = scopeId;
-    setSelectedScope(scopeId);
-    setDocuments([]);
-    setDocumentTotal(0);
-    setDocumentPage(1);
-    setError(null);
-    try {
-      const page = await orgListDocuments(scopeId || undefined);
-      if (!isCurrentBoundary(boundary) || selectedScopeRef.current !== scopeId) return;
-      setDocuments(page.items);
-      setDocumentTotal(page.total);
-      setDocumentPage(1);
-    } catch (reason) {
-      if (isCurrentBoundary(boundary) && selectedScopeRef.current === scopeId) setError(String(reason));
-    }
-  };
-
-  const loadMoreDocuments = async () => {
-    const boundary = currentBoundary();
-    const scope = selectedScopeRef.current;
-    const next = documentPage + 1;
-    setBusy(true);
-    try {
-      const page = await orgListDocuments(scope || undefined, undefined, next);
-      if (!isCurrentBoundary(boundary) || selectedScopeRef.current !== scope) return;
-      setDocuments((current) => [...current, ...page.items.filter((item) => !current.some((old) => old.id === item.id))]);
-      setDocumentTotal(page.total);
-      setDocumentPage(next);
-    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
-  };
-
-  const loadMoreSubmissions = async () => {
-    const boundary = currentBoundary();
-    const next = submissionPage + 1;
-    setBusy(true);
-    try {
-      const page = await orgDocumentSubmissionsMinePage(next);
-      if (!isCurrentBoundary(boundary)) return;
-      setDocumentSubmissions((current) => [...current, ...page.items.filter((item) => !current.some((old) => old.id === item.id))]);
-      setSubmissionTotal(page.total);
-      setSubmissionPage(next);
-    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
 
   const showDocumentPreview = async (id: string, name: string, sourceType: string, submission: boolean, publishedDocId?: string | null) => {
@@ -709,7 +654,7 @@ export function OrganizationMemoryPanel({
       setRemoveTarget(null);
       setPreview(null);
       onToast?.("已停止共享此文档，服务器上的原件仍保留");
-      await loadWorkspace();
+      await loadWorkspace(true);
     } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
 
@@ -737,7 +682,7 @@ export function OrganizationMemoryPanel({
       setMemoryValidUntil("");
       setShowMemoryForm(false);
       onToast?.("经验已提交，审核通过后可供团队使用");
-      await loadWorkspace();
+      await loadWorkspace(true);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -798,7 +743,7 @@ export function OrganizationMemoryPanel({
         onToast?.(`技能上传失败：${failures[0] ?? "未知原因"}`);
       }
       setUploadProgress({ label: "正在刷新列表", completed: paths.length, total: paths.length });
-      await loadWorkspace();
+      await loadWorkspace(true);
     } catch (reason) {
       const refreshError = `刷新列表失败：${String(reason).replace(/^Error:\s*/, "")}`;
       setError(batchError ? `${batchError}\n${refreshError}` : refreshError);
@@ -827,7 +772,7 @@ export function OrganizationMemoryPanel({
     try {
       await orgNewDocumentVersion(document.id, path);
       onToast?.("新版本已上传，处理完成后会自动替换旧版本");
-      await loadWorkspace();
+      await loadWorkspace(true);
     } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
 
@@ -838,7 +783,7 @@ export function OrganizationMemoryPanel({
       const result = await orgPublishDocument(document.id, publishScope);
       onToast?.(result.state === "pending" ? "已生成副本，等待安全扫描" : "文档副本已发布");
       setPublishDocumentTarget(null);
-      await loadWorkspace();
+      await loadWorkspace(true);
     } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
 
@@ -846,7 +791,7 @@ export function OrganizationMemoryPanel({
     setBusy(true);
     try {
       await orgSetSkillPreference(skill.skillId, !skill.enabled);
-      await loadWorkspace();
+      await loadWorkspace(true);
     } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
 
@@ -856,7 +801,8 @@ export function OrganizationMemoryPanel({
     try {
       const result = await orgPublishSkill(skill.skillId, publishScope);
       onToast?.(result.state === "pending" ? "技能副本已提交审核" : "技能副本已发布");
-      await loadWorkspace();
+      setSkillDialog(null);
+      await loadWorkspace(true);
     } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
 
@@ -866,7 +812,7 @@ export function OrganizationMemoryPanel({
     try {
       const result = await orgSyncSkills();
       onToast?.(`已更新 ${result.installed.length} 个技能`);
-      await loadWorkspace();
+      await loadWorkspace(true);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -874,13 +820,35 @@ export function OrganizationMemoryPanel({
     }
   };
 
+  const view = resourceViews[tab] ?? "published";
+  const activeResource: OrgLibraryResource = tab === "memories" ? (view === "mine" ? "memory-submissions" : "memories")
+    : tab === "skills" ? (view === "mine" ? "skill-submissions" : "skills") : (view === "mine" ? "document-submissions" : "documents");
+  const activeQuery = queries[activeResource];
+  const activePage = pages[activeResource];
+  const scrollKey = tab === "overview" ? "overview" : activeResource;
+  const updateQuery = (patch: Partial<typeof activeQuery>) => {
+    scrollPositions.current[scrollKey] = 0;
+    library.update(activeResource, patch);
+  };
+  useLayoutEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = scrollPositions.current[scrollKey] ?? 0;
+  }, [scrollKey, activeQuery.page, activeQuery.size, activeQuery.scopeId, activeQuery.query, activeQuery.filter, workspaceLoaded]);
+
   if (loading) {
-    return <div className="org-memory org-memory--center"><Loader2 className="org-memory__spin" />正在连接组织服务…</div>;
+    return (
+      <CapabilityPage title="组织" headingLevel={1} className="organization-loading">
+        <div className="organization-loading__status" role="status">
+          <Loader2 className="org-memory__spin" size={20} aria-hidden="true" />
+          <span>正在连接组织服务…</span>
+        </div>
+      </CapabilityPage>
+    );
   }
 
   if (!session?.loggedIn) {
     return (
       <div className="org-memory org-memory--login">
+        <PageToolbar className="org-login-toolbar"><span className="capability-page__title">组织</span></PageToolbar>
         <div className="org-login-card">
           <div className="org-login-card__mark"><Building2 size={28} /></div>
           <h1>连接组织</h1>
@@ -895,7 +863,7 @@ export function OrganizationMemoryPanel({
             <label>服务器地址<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="https://memory.company.com" required /></label>
             <label>账号<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label>
             <label>密码<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" autoFocus={session?.requiresReauthentication === true} required /></label>
-            {error && <div className="org-memory__error"><XCircle size={15} />{error}</div>}
+            {error && <OrganizationError reason={error} />}
             <button className="org-memory__primary" disabled={busy}>{busy && <Loader2 className="org-memory__spin" size={15} />}安全登录</button>
           </form>
           <div className="org-login-card__security"><LockKeyhole size={14} />密码不会保存；自动续期凭据由系统安全存储保护，访问令牌只留在内存中。</div>
@@ -904,185 +872,119 @@ export function OrganizationMemoryPanel({
     );
   }
 
-  const pendingMemoryCount = memoryPromotions.filter((item) => item.state === "pending").length;
-  const pendingDocumentCount = documentSubmissions.filter(submissionIsActive).length
-    + documents.filter(documentIsProcessing).length;
-  const pendingSkillCount = skillSubmissions.filter(submissionIsActive).length;
+  const pendingMemoryCount = librarySummary?.memoryPending ?? 0;
+  const pendingDocumentCount = (librarySummary?.documentPending ?? 0) + (librarySummary?.documentProcessing ?? 0);
+  const pendingSkillCount = librarySummary?.skillPending ?? 0;
   const pendingCount = pendingMemoryCount + pendingDocumentCount + pendingSkillCount;
-  const pageTitle = tab === "overview" ? "组织知识"
-    : tab === "memories" ? "经验"
-      : tab === "documents" ? "文档" : "组织 Skills";
-  const pageDescription = tab === "overview" ? "管理任务可参考的组织经验、文档和技能。"
-    : tab === "memories" ? "记录决策、规范、操作手册和问题处理经验，供任务检索和参考。"
-      : tab === "documents" ? "查看、上传和管理组织文档。"
-        : "提交、安装和同步组织共享技能。";
+  const pageTitle = tab === "overview" ? "组织知识" : tab === "memories" ? "经验" : tab === "documents" ? "文档" : "组织 Skills";
+  const pageDescription = tab === "overview" ? "让团队经验、文档和技能服务于每个任务。"
+    : tab === "memories" ? "沉淀可复用的决策、规范和处理经验。"
+      : tab === "documents" ? "查找、阅读和管理授权范围内的文档。" : "发现组织共享技能，安装到当前设备使用。";
+  const orgName = session.bootstrap?.scopes.find(scope => scope.kind === "org")?.name ?? "组织";
+  const identity = session.user?.displayName || session.user?.username || session.username || "组织账号";
+  const capability = session.organizationMemoryEnabled ? "组织知识已启用"
+    : session.bootstrap?.scopes.some(scope => scope.kind !== "personal") ? "组织知识暂不可用" : "暂无团队或组织共享权限";
+  const navigatePending = (next: Tab) => {
+    setTab(next);
+    setResourceViews(previous => ({ ...previous, [next]: "mine" }));
+  };
 
   return (
-    <CapabilityPage
-      className="org-memory org-memory--connected"
-      title={session.bootstrap?.scopes.find((scope) => scope.kind === "org")?.name ?? "组织知识管理中心"}
-      headingLevel={1}
-      description="集中管理组织经验、文档和技能，让团队知识助力每个任务"
-      illustration={<img src={organizationHeroImg} width={2172} height={724} alt="组织协作与知识共享插画" draggable={false} />}
-      metadata={<>
-          <span className="org-memory__identity" title={`${session.user?.displayName ?? session.user?.username} · ${session.serverUrl}`}>{session.user?.displayName ?? session.user?.username} · {session.serverUrl}</span>
-          <span className={`org-memory__capability ${session.organizationMemoryEnabled ? "is-active" : ""}`} role="status">
-            <i />{session.organizationMemoryEnabled
-              ? "Agent 组织上下文已启用"
-              : session.bootstrap?.scopes?.some((scope) => scope.kind === "team" || scope.kind === "org")
-                ? "Agent 组织上下文暂不可用"
-                : "未加入共享组织范围"}
-          </span>
-        </>}
-      actions={<>
-          <Button onClick={() => void refreshWorkspace()} disabled={busy}><RefreshCw size={15} />刷新</Button>
-          <Button onClick={() => void handleLogout()} disabled={busy}><LogOut size={15} />退出组织</Button>
-        </>}
-    >
-
-      <div className="org-memory__workspace">
+    <section className="org-memory org-workspace" aria-label="组织">
+      <PageToolbar className="org-workspace__topbar">
+        <div className="org-workspace__brand"><Building2 size={20} aria-hidden="true" /><h1>{orgName}</h1></div>
+        <span className={`org-workspace__connection ${session.organizationMemoryEnabled ? "is-active" : ""}`} role="status"><i />{capability}</span>
+        <ActionMenu label={`组织账号：${identity}`} menuLabel="组织账号" triggerClassName="org-account-trigger" resetKey={session.user?.id}
+          trigger={<><UserRound size={16} aria-hidden="true" /><span>{identity}</span><ChevronDown size={14} aria-hidden="true" /></>}>
+          {({ close }) => <><div className="org-account-details"><strong>{identity}</strong><span>{session.serverUrl}</span><small>退出登录不会退出组织成员关系</small></div>
+            <button type="button" role="menuitem" className="topbar-actions__item" disabled={busy} onClick={() => { close(); void handleLogout(); }}><LogOut size={15} />退出登录</button></>}
+        </ActionMenu>
+      </PageToolbar>
+      <div className="org-workspace__body">
         <nav className="org-memory__nav" aria-label="组织功能">
-          <div className="org-memory__nav-label">工作台</div>
-          <button className={tab === "overview" ? "active" : ""} aria-current={tab === "overview" ? "page" : undefined} onClick={() => setTab("overview")}><LayoutDashboard size={16} /><span>概览</span></button>
-          <div className="org-memory__nav-label">知识资产</div>
-          <button className={tab === "memories" ? "active" : ""} aria-current={tab === "memories" ? "page" : undefined} onClick={() => setTab("memories")}><BrainCircuit size={16} /><span>经验</span><em>{memories.length}</em></button>
-          <button className={tab === "documents" ? "active" : ""} aria-current={tab === "documents" ? "page" : undefined} onClick={() => setTab("documents")}><FileText size={16} /><span>文档</span><em>{documents.length}</em></button>
-          <div className="org-memory__nav-label">能力分发</div>
-          <button className={tab === "skills" ? "active" : ""} aria-current={tab === "skills" ? "page" : undefined} onClick={() => setTab("skills")}><CheckCircle2 size={16} /><span>Skills</span><em>{skills.length}</em></button>
+          {([["overview", "概览", LayoutDashboard], ["memories", "经验", BrainCircuit], ["documents", "文档", FileText], ["skills", "Skills", PackageOpen]] as const).map(([key, label, Icon]) =>
+            <button type="button" key={key} className={tab === key ? "active" : ""} aria-current={tab === key ? "page" : undefined} onClick={() => setTab(key)}><Icon size={17} aria-hidden="true" /><span>{label}</span>{" "}{key !== "overview" && <em>{workspaceLoaded ? librarySummary?.[key] ?? "—" : "—"}</em>}</button>)}
         </nav>
-
         <main className="org-memory__content">
-          <div className="org-memory__page-header">
+          <header className="org-workspace__page-header">
             <div><h2>{pageTitle}</h2><p>{pageDescription}</p></div>
-            {tab !== "overview" && tab !== "documents" && <label className="org-memory__filter"><span>查看范围</span><select value={selectedScope} onChange={(event) => void changeDocumentScope(event.target.value)}><option value="">全部授权范围</option>{scopes.map((scope) => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>}
-            {tab === "documents" && <div className="org-document-library__upload-actions">
-              <button onClick={() => openDocumentUpload("folder")} disabled={busy || availableDocumentScopes.length === 0}><FolderUp size={15} />上传文件夹</button>
-              <button className="org-memory__primary" onClick={() => openDocumentUpload("files")} disabled={busy || availableDocumentScopes.length === 0}><Upload size={15} />上传文档</button>
+            <div className="org-workspace__page-actions">
+              {!workspaceUnavailable && <button type="button" className="org-icon-button" aria-label="刷新" title="更新组织资料" disabled={busy} onClick={() => void refreshWorkspace()}><RefreshCw size={16} className={busy ? "org-memory__spin" : undefined} /></button>}
+              {tab === "memories" && <button className="org-memory__primary" disabled={busy || !writeScope} onClick={() => { setMemoryWorkspace(value => value || cwd || ""); setShowMemoryForm(true); }}><Plus size={15} />提交经验</button>}
+              {tab === "documents" && <div className="org-upload-button"><button className="org-memory__primary" onClick={() => openDocumentUpload("files")} disabled={busy || availableDocumentScopes.length === 0}><Upload size={15} />上传文档</button>
+                <ActionMenu label="更多上传方式" menuLabel="上传方式" busy={busy || availableDocumentScopes.length === 0} triggerClassName="org-memory__primary" trigger={<ChevronDown size={15} />}>
+                  {({ close }) => <button type="button" role="menuitem" className="topbar-actions__item" onClick={() => { close(); openDocumentUpload("folder"); }}><FolderUp size={15} />上传文件夹</button>}
+                </ActionMenu></div>}
+              {tab === "skills" && <><button type="button" className="echo-button" onClick={() => void syncSkills()} disabled={busy}><RefreshCw size={15} />同步技能</button><button className="org-memory__primary" onClick={() => { setActionInvoker(null); setSkillDialog({ kind: "upload" }); }} disabled={busy || !uploadScope || !allowSkillSubmission}><Upload size={15} />提交 Skill</button></>}
+            </div>
+          </header>
+          {tab !== "overview" && <div className="org-resource-toolbar">
+            <div className="org-resource-views" role="group" aria-label="资源视图"><button type="button" aria-pressed={view === "published"} onClick={() => setResourceViews(previous => ({ ...previous, [tab]: "published" }))}>已发布</button><button type="button" aria-pressed={view === "mine"} onClick={() => setResourceViews(previous => ({ ...previous, [tab]: "mine" }))}>我的提交</button></div>
+            <div className="org-resource-filters">
+              <div className="org-resource-search"><Search size={16} aria-hidden="true" /><input type="search" aria-label={`搜索${pageTitle}`} placeholder={view === "mine" ? "搜索我的提交" : `搜索${tab === "skills" ? "技能" : pageTitle}`} maxLength={2000} value={activeQuery.query} onChange={event => updateQuery({ query: event.target.value })} />{activeQuery.query && <button type="button" aria-label="清空搜索" onClick={() => updateQuery({ query: "" })}><X size={14} /></button>}</div>
+              <select aria-label="查看范围" value={activeQuery.scopeId} onChange={event => updateQuery({ scopeId: event.target.value })}><option value="">全部授权范围</option>{scopes.map(scope => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select>
+              <select aria-label={view === "mine" ? "提交状态" : tab === "memories" ? "经验类型" : tab === "documents" ? "文档状态" : "安装状态"} value={activeQuery.filter} onChange={event => updateQuery({ filter: event.target.value })}>
+                <option value="">{view === "mine" ? "全部状态" : tab === "memories" ? "全部类型" : tab === "documents" ? "全部状态" : "全部技能"}</option>
+                {(view === "mine" ? [["pending", "待处理"], ["approved", "已通过"], ["rejected", "已拒绝"], ...(tab === "skills" ? [["revoked", "已撤销"]] : [["withdrawn", "已撤回"]])] : tab === "memories" ? Object.entries(memoryKindLabel) : tab === "documents" ? [["ready", "可检索"], ["processing", "处理中"], ["failed", "处理失败"]] : [["installed", "已安装"], ["available", "未安装"], ["mandatory", "组织必装"]]).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+              <span className="org-resource-count" role="status">{activePage.loading ? "正在更新…" : activePage.error ? "更新失败" : `共 ${activePage.total} 项`}</span>
+            </div>
+          </div>}
+          <div className="org-resource-scroll" ref={contentRef} tabIndex={0} aria-label={`${pageTitle}资源区域`} onScroll={event => { scrollPositions.current[scrollKey] = event.currentTarget.scrollTop; }}>
+            {error && !showMemoryForm && !skillDialog && !folderBatch && <OrganizationError reason={error} busy={busy} onRetry={workspaceUnavailable || !workspaceLoaded ? () => void refreshWorkspace() : undefined} onDismiss={() => setError(null)} />}
+            {workspaceUnavailable && workspaceLoaded && <p className="org-workspace-status" role="status">组织资料更新失败，下方保留上次加载的内容。</p>}
+            {uploadProgress && <div className="org-memory__upload-progress" role="status"><Loader2 className="org-memory__spin" size={15} /><span>{uploadProgress.label}</span><strong>{uploadProgress.completed}/{uploadProgress.total}</strong></div>}
+            {tab !== "overview" && activePage.error && !workspaceUnavailable && <OrganizationError reason={activePage.error} onRetry={() => library.retry(activeResource)} />}
+            {!workspaceLoaded && <p className="org-workspace-status" role="status">组织资料暂不可用，恢复连接后刷新查看。</p>}
+            {tab === "overview" && <section className="org-overview">
+              <div className="org-workspace__welcome"><div><h3>组织知识管理中心</h3><p>集中管理组织经验、文档和技能，让团队知识助力每个任务。</p><span>{capability}</span></div><img src={organizationHeroImg} width={2172} height={724} alt="组织协作与知识共享插画" draggable={false} /></div>
+              <div className="org-overview__hero"><div className="org-overview__hero-icon"><MessageSquareText size={22} /></div><div><h3>在对话中使用组织知识</h3><p>发起任务时自动选择组织知识，可连续追问，也可以让 Agent 结合组织规则直接执行。</p></div><button className="org-memory__primary" onClick={onStartConversation} disabled={!session.organizationMemoryEnabled || !onStartConversation}>发起对话</button></div>
+              {workspaceLoaded && librarySummary && <><div className="org-overview__metrics" aria-label="组织知识概况"><button type="button" onClick={() => setTab("memories")}><span>已发布经验</span><strong>{librarySummary.memories}</strong><small>{pendingMemoryCount} 条待审核</small></button><button type="button" onClick={() => setTab("documents")}><span>可检索文档</span><strong>{librarySummary.documentReady}</strong><small>{librarySummary.documentProcessing} 条处理中 · 共 {librarySummary.documents} 份文档</small></button><button type="button" onClick={() => setTab("skills")}><span>已安装 Skills</span><strong>{librarySummary.skillInstalled}/{librarySummary.skills}</strong><small>{librarySummary.skillMandatory} 个组织必装</small></button></div>
+                <div className="org-overview__attention"><div><h3>需要关注</h3><p>查看提交审核和文档处理进度。</p></div>{pendingCount === 0 && <div className="org-library__empty">当前没有待处理事项</div>}{pendingMemoryCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingMemoryCount} 条经验待审核</span><button onClick={() => navigatePending("memories")}>查看经验</button></div>}{pendingDocumentCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingDocumentCount} 项文档正在扫描或建立索引</span><button onClick={() => { if (librarySummary.documentPending > 0) navigatePending("documents"); else { setTab("documents"); setResourceViews(previous => ({ ...previous, documents: "published" })); library.update("documents", { filter: "processing" }); } }}>查看文档</button></div>}{pendingSkillCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingSkillCount} 个 Skill 正在审核或扫描</span><button onClick={() => navigatePending("skills")}>查看 Skills</button></div>}</div></>}
+            </section>}
+            {workspaceLoaded && tab !== "overview" && <div className={`org-resource-results${activePage.loading ? " is-loading" : ""}`} aria-busy={activePage.loading}>
+              {activePage.items.length === 0 && !activePage.loading && !activePage.error && <div className="org-resource-empty"><PackageOpen size={28} /><strong>{activeQuery.query || activeQuery.scopeId || activeQuery.filter ? "没有找到匹配的内容" : view === "mine" ? "还没有提交记录" : "当前范围暂无已发布内容"}</strong><p>{activeQuery.query || activeQuery.scopeId || activeQuery.filter ? "试试其他关键词，或调整筛选条件。" : view === "mine" ? "提交后的审核与处理进度会显示在这里。" : "上传或提交后，通过处理的内容会显示在这里。"}</p>{(activeQuery.query || activeQuery.scopeId || activeQuery.filter) && <button className="echo-button" onClick={() => updateQuery({ query: "", scopeId: "", filter: "" })}>清空筛选</button>}</div>}
+              {view === "published" && tab === "memories" && <div className="org-library__list">{memories.map(memory => <article className="org-library__row org-memory-row" key={memory.id}><div className="org-library__icon"><BrainCircuit size={18} /></div><div className="org-library__main"><span className="org-memory-kind">{memoryKindLabel[memory.kind]}</span><button type="button" className="org-memory-summary" onClick={() => setMemoryDetail(memory)}>{memory.content}</button><span>{memory.scopeName} · {memory.trust === "verified" ? "已验证" : "已审核"}{memory.workspaceRef ? ` · ${memory.workspaceRef}` : ""}</span></div><span className={`org-state org-state--${memory.stale ? "failed" : "ready"}`}>{memory.stale ? "已过期" : "可用于任务"}</span></article>)}</div>}
+              {view === "published" && tab === "documents" && <div className="org-library__list">{documents.map(document => {
+                const mayManage = document.ownerId === session.user?.id || session.user?.role === "curator" || session.user?.role === "admin";
+                const canPublishCopy = document.scopeKind === "personal" && scopes.some(scope => scope.kind !== "personal" && scope.canPublishDocuments !== false);
+                const fileName = document.title.match(/\.[A-Za-z0-9]{1,8}$/) ? document.title : `${document.title}.${document.sourceType === "image" ? "png" : document.sourceType}`;
+                return <article className="org-library__row org-document-library__row" key={document.id}><div className="org-library__icon"><FileText size={19} /></div><div className="org-library__main"><strong title={document.title}>{document.title}</strong><span>{document.scopeName} · {document.sourceType.toUpperCase()} · {readableBytes(document.byteSize)}</span>{document.failReason && <em>{document.failReason}</em>}</div><span className={`org-state org-state--${document.status}`}>{stateLabel(document.status)}</span><div className="org-library__actions">{document.status === "ready" && <><button onClick={() => void showDocumentPreview(document.id, fileName, document.sourceType, false)} disabled={previewLoading}><Eye size={14} />查看</button><button onClick={() => void downloadDocument(document.id, fileName, false)}><Download size={14} />下载</button></>}{(mayManage || canPublishCopy) && <ActionMenu label={`更多文档操作：${document.title}`} menuLabel="文档操作" resetKey={document.id} busy={busy} triggerClassName="org-icon-button" trigger={<MoreHorizontal size={18} />}>{({ close, triggerRef }) => <>{canPublishCopy && <button role="menuitem" disabled={document.status !== "ready"} className="topbar-actions__item" onClick={() => { setActionInvoker(triggerRef.current); close(); setPublishDocumentTarget(document); }}>发布副本</button>}{mayManage && <><button role="menuitem" className="topbar-actions__item" disabled={document.status !== "ready"} onClick={() => { close(true); void uploadNewVersion(document); }}><History size={15} />新版本</button><button role="menuitem" className="topbar-actions__item" disabled={document.status !== "ready"} onClick={() => { setActionInvoker(triggerRef.current); close(); setRemoveTarget({ id: document.id, name: document.title, submission: false }); }}><Archive size={15} />归档</button></>}</>}</ActionMenu>}</div></article>;
+              })}</div>}
+              {view === "published" && tab === "skills" && <div className="org-skill-grid">{skills.map(skill => <article className="org-skill-card" key={skill.skillId}><div><strong>{skill.name}</strong><span>v{skill.version}</span></div><p>{skill.description}</p><div className="org-skill-card__meta"><span className={`org-scope-badge org-scope-badge--${skill.scopeKind}`}><ScopeIcon kind={skill.scopeKind} />{skill.scopeName}</span><span className={`org-state org-state--${skill.enabled ? "ready" : "pending"}`}>{skill.mandatory ? "组织必装" : skill.enabled ? "已安装" : "未安装"}</span></div><footer>{skill.mandatory ? <span className="org-skill-card__managed"><LockKeyhole size={13} />由组织管理</span> : <button className={skill.enabled ? "echo-button" : "org-memory__primary"} disabled={busy} onClick={() => void toggleSkill(skill)}>{skill.enabled ? "卸载" : "安装"}</button>}{skill.scopeKind === "personal" && scopes.some(scope => scope.kind !== "personal") && <button className="org-skill-card__publish" disabled={busy} onClick={() => { setActionInvoker(null); setSkillDialog({ kind: "publish", skill }); }}>发布副本</button>}</footer></article>)}</div>}
+              {view === "mine" && tab === "memories" && <MemoryPromotionList promotions={memoryPromotions} />}
+              {view === "mine" && tab === "skills" && <SubmissionList title="我的 Skill 提交" submissions={skillSubmissions} />}
+              {view === "mine" && tab === "documents" && <div className="org-document-submissions">{documentSubmissions.map(submission => {
+                const id = submission.id ?? submission.submissionId ?? "";
+                const name = submission.title ?? submission.name ?? "未命名文档";
+                const fileName = name.match(/\.[A-Za-z0-9]{1,8}$/) ? name : `${name}.${submission.sourceType === "image" ? "png" : submission.sourceType ?? "txt"}`;
+                return <article className="org-document-submissions__row" key={id}><div className="org-document-submissions__main"><strong>{name}</strong><small>{submission.scopeName} · {submission.byteSize ? readableBytes(submission.byteSize) : "文件"}</small>{submission.reviewNote && <em>{submission.reviewNote}</em>}</div><span className={`org-state org-state--${submission.state === "approved" ? "ready" : submission.scanStatus ?? submission.state}`}>{documentSubmissionLabel(submission)}</span><div className="org-document-submissions__actions">{submission.scanStatus === "passed" && <><button onClick={() => void showDocumentPreview(id, fileName, submission.sourceType ?? "txt", true, submission.resultDocumentId)} disabled={previewLoading}><Eye size={14} />查看</button><button onClick={() => void downloadDocument(id, fileName, true)}><Download size={14} />下载</button></>}<button onClick={() => { setActionInvoker(null); setRemoveTarget({ id, name, submission: true }); }} disabled={busy || !id}><Trash2 size={14} />删除</button></div></article>;
+              })}</div>}
             </div>}
           </div>
-
-          {error && <div className="org-memory__error"><XCircle size={15} />{error}<button onClick={() => setError(null)}>关闭</button></div>}
-          {uploadProgress && <div className="org-memory__upload-progress" role="status" aria-live="polite"><Loader2 className="org-memory__spin" size={15} /><span>{uploadProgress.label}</span><strong>{uploadProgress.completed}/{uploadProgress.total}</strong></div>}
-
-          {tab === "overview" && <section className="org-overview">
-            <div className="org-overview__hero">
-              <div className="org-overview__hero-icon"><MessageSquareText size={22} /></div>
-              <div><h3>在对话中使用组织知识</h3><p>发起任务时自动选择组织知识，可连续追问，也可以让 Agent 结合组织规则直接执行。</p></div>
-              <button className="org-memory__primary" onClick={onStartConversation} disabled={!session.organizationMemoryEnabled || !onStartConversation}>发起对话</button>
+          {tab !== "overview" && workspaceLoaded && !(activePage.error && activePage.items.length === 0) && <footer className="org-resource-pagination"><span>{activePage.total ? `${(activePage.page - 1) * activePage.size + 1}–${Math.min(activePage.page * activePage.size, activePage.total)} / ${activePage.total} 项` : "0 项"}</span><label>每页<select aria-label="每页数量" value={activeQuery.size} onChange={event => updateQuery({ size: Number(event.target.value) })}><option value={20}>20</option><option value={50}>50</option></select></label><div><button type="button" disabled={activePage.loading || activePage.page <= 1} onClick={() => updateQuery({ page: activePage.page - 1 })}>上一页</button><span>{activePage.page} / {Math.max(1, Math.ceil(activePage.total / activePage.size))}</span><button type="button" disabled={activePage.loading || activePage.page * activePage.size >= activePage.total} onClick={() => updateQuery({ page: activePage.page + 1 })}>下一页</button></div></footer>}
+          {createPortal(<div className="org-memory org-dialog-layer">
+          {showMemoryForm && <div ref={memoryFormRef} tabIndex={-1} className="org-document-modal" role="dialog" aria-modal="true" aria-label="提交经验">
+            <div className="org-editor-dialog"><header><h3>提交经验</h3><button type="button" aria-label="关闭经验表单" disabled={busy} onClick={() => setShowMemoryForm(false)}><X size={18} /></button></header>
+              <form onSubmit={submitMemoryCandidate}><div className="org-memory-form">
+                <label>发布范围<select data-modal-initial-focus value={writeScope} onChange={event => setWriteScope(event.target.value)} required>{scopes.map(scope => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>
+                <label>类型<select value={memoryKind} onChange={event => setMemoryKind(event.target.value as OrgMemoryKind)}>{Object.entries(memoryKindLabel).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label className="org-memory-form__wide">经验内容<textarea aria-label="经验内容" required maxLength={2000} rows={4} value={memoryContent} onChange={event => setMemoryContent(event.target.value)} placeholder="写成可直接指导下一次任务的明确结论或步骤" /></label>
+                <label className="org-memory-form__wide">为什么有效（可选）<textarea maxLength={2000} rows={2} value={memoryRationale} onChange={event => setMemoryRationale(event.target.value)} placeholder="背景、适用条件或决策依据" /></label>
+                <label>结果（可选）<input maxLength={2000} value={memoryOutcome} onChange={event => setMemoryOutcome(event.target.value)} placeholder="例如：构建时间下降 30%" /></label>
+                <label>项目/工作空间（可选）<input maxLength={1000} value={memoryWorkspace} onChange={event => setMemoryWorkspace(event.target.value)} placeholder="用于项目定向召回" /></label>
+                <label>有效期（可选）<input type="date" value={memoryValidUntil} onChange={event => setMemoryValidUntil(event.target.value)} /></label>
+                {error && <div className="org-memory-form__wide"><OrganizationError reason={error} /></div>}
+              </div><footer><button type="button" disabled={busy} onClick={() => setShowMemoryForm(false)}>取消</button><button className="org-memory__primary" disabled={busy || !memoryContent.trim() || !writeScope}>{busy ? "提交中…" : "提交审核"}</button></footer></form>
             </div>
-            <div className="org-overview__metrics" aria-label="组织知识概况">
-              <button type="button" onClick={() => setTab("memories")}><span>已发布经验</span><strong>{memories.length}</strong><small>{memoryPromotions.filter((item) => item.state === "pending").length} 条待审核</small></button>
-              <button type="button" onClick={() => setTab("documents")}><span>可检索文档</span><strong>{documents.filter((item) => item.status === "ready").length}</strong><small>{documents.filter((item) => item.status !== "ready" && item.status !== "archived").length} 条处理中</small></button>
-              <button type="button" onClick={() => setTab("skills")}><span>已安装 Skills</span><strong>{skills.filter((item) => item.enabled).length}/{skills.length}</strong><small>{skills.filter((item) => item.mandatory).length} 个组织强制</small></button>
-            </div>
-            <div className="org-overview__attention">
-              <div><h3>需要关注</h3><p>聚合当前账号需要处理的提交、同步与索引状态。</p></div>
-              {pendingCount === 0 && <div className="org-library__empty">当前没有待处理事项</div>}
-              {pendingMemoryCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingMemoryCount} 条经验待审核</span><button type="button" onClick={() => setTab("memories")}>查看经验</button></div>}
-              {pendingDocumentCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingDocumentCount} 项文档正在扫描或建立索引</span><button type="button" onClick={() => setTab("documents")}>查看文档</button></div>}
-              {pendingSkillCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingSkillCount} 个 Skill 正在审核或扫描</span><button type="button" onClick={() => setTab("skills")}>查看 Skills</button></div>}
-            </div>
-          </section>}
-
-      {tab === "memories" && (
-        <section className="org-library org-memory-library">
-          <div className="org-library__toolbar org-memory-library__toolbar">
-            <div className="org-memory-library__summary"><strong>已发布</strong><span>{visibleMemories.length}</span></div>
-            <button className="org-memory__primary" onClick={() => {
-              setMemoryWorkspace((value) => value || cwd || "");
-              setShowMemoryForm((value) => !value);
-            }} disabled={!writeScope}><Plus size={15} />提交经验</button>
-          </div>
-          {showMemoryForm && (
-            <form className="org-memory-form" onSubmit={submitMemoryCandidate}>
-              <label>发布范围<select value={writeScope} onChange={(event) => setWriteScope(event.target.value)} required><option value="">选择范围</option>{scopes.map((scope) => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>
-              <label>类型<select value={memoryKind} onChange={(event) => setMemoryKind(event.target.value as OrgMemoryKind)}>{Object.entries(memoryKindLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-              <label className="org-memory-form__wide">经验内容<textarea required maxLength={2000} rows={4} value={memoryContent} onChange={(event) => setMemoryContent(event.target.value)} placeholder="写成可直接指导下一次任务的明确结论或步骤" /></label>
-              <label className="org-memory-form__wide">为什么有效<textarea maxLength={2000} rows={2} value={memoryRationale} onChange={(event) => setMemoryRationale(event.target.value)} placeholder="背景、适用条件或决策依据（建议填写）" /></label>
-              <label>结果<input maxLength={2000} value={memoryOutcome} onChange={(event) => setMemoryOutcome(event.target.value)} placeholder="例如：构建时间下降 30%" /></label>
-              <label>项目/工作空间<input maxLength={1000} value={memoryWorkspace} onChange={(event) => setMemoryWorkspace(event.target.value)} placeholder="可选，用于项目定向召回" /></label>
-              <label>有效期<input type="date" value={memoryValidUntil} onChange={(event) => setMemoryValidUntil(event.target.value)} /></label>
-              <div className="org-memory-form__actions"><button type="button" onClick={() => setShowMemoryForm(false)}>取消</button><button className="org-memory__primary" disabled={busy || !memoryContent.trim()}>{busy && <Loader2 className="org-memory__spin" size={14} />}提交审核</button></div>
-            </form>
-          )}
-          <div className="org-library__list">
-            {visibleMemories.length === 0 && <div className="org-library__empty">当前范围还没有可用于任务的组织经验</div>}
-            {visibleMemories.map((memory) => <div className="org-library__row org-memory-row" key={memory.id}>
-              <div className="org-library__icon">{memory.kind === "pitfall" ? <AlertTriangle size={18} /> : memory.kind === "howto" ? <BookOpenCheck size={18} /> : <BrainCircuit size={18} />}</div>
-              <div className="org-library__main"><strong>{memory.content}</strong><span>{memory.scopeName} · {memoryKindLabel[memory.kind]} · 置信度 {Math.round(memory.confidence * 100)}% · {memory.trust === "verified" ? "已验证" : "已审核"}{memory.workspaceRef ? ` · ${memory.workspaceRef}` : ""}</span>{memory.rationale && <p>{memory.rationale}</p>}{memory.outcome && <em className="org-memory-row__outcome">结果：{memory.outcome}</em>}</div>
-              <div className="org-library__actions">{memory.stale ? <span className="org-state org-state--failed">已过期，仅供参考</span> : <span className="org-state org-state--ready">可召回</span>}</div>
-            </div>)}
-          </div>
-          <MemoryPromotionList promotions={memoryPromotions} />
-        </section>
-      )}
-
-      {tab === "documents" && (
-        <section className="org-library org-document-library">
-          <div className="org-document-library__heading">
-            <h2>共享文档 <span>{documentTotal}</span></h2>
-            <label className="org-document-library__filter"><span>查看范围</span><select aria-label="查看范围" value={selectedScope} onChange={(event) => void changeDocumentScope(event.target.value)}><option value="">全部授权范围</option>{scopes.map((scope) => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>
-          </div>
-          {folderBatch && <div className="org-document-batch" role="region" aria-label="文件夹上传确认">
-            <strong>准备上传 {folderBatch.files.length} 个文档</strong>
-            <p>目标：{folderBatch.scopeName} · 共 {readableBytes(folderBatch.totalBytes)} · 已跳过 {folderBatch.skipped} 项不支持或不符合限制的内容</p>
-            <small>{folderBatch.folder}</small>
-            <ul>{folderBatch.files.slice(0, 8).map((file) => <li key={file.path}>{file.relativePath} <span>{readableBytes(file.size)}</span></li>)}</ul>
-            {folderBatch.files.length > 8 && <small>还有 {folderBatch.files.length - 8} 个文件</small>}
-            <div className="org-document-batch__actions"><button onClick={() => setFolderBatch(null)}>取消</button><button className="org-memory__primary" disabled={busy} onClick={() => void uploadDocumentsInBatch(folderBatch.files.map((file) => ({ path: file.path, title: file.relativePath })), folderBatch.scopeId)}>开始上传</button></div>
           </div>}
-          <div className="org-library__list">
-            {visibleDocuments.length === 0 && <div className="org-library__empty">当前授权范围还没有已发布文档</div>}
-            {visibleDocuments.map((document) => {
-              const mayManage = document.ownerId === session.user?.id || session.user?.role !== "member";
-              const fileName = document.title.match(/\.[A-Za-z0-9]{1,8}$/) ? document.title : `${document.title}.${document.sourceType === "image" ? "png" : document.sourceType}`;
-              return <div className="org-library__row org-document-library__row" key={document.id}>
-                <div className="org-library__icon"><FileText size={18} /></div>
-                <div className="org-library__main"><strong>{document.title}</strong><span>{document.scopeName} · {document.sourceType.toUpperCase()} · {readableBytes(document.byteSize)} · {document.chunkCount} 个知识片段</span>{document.failReason && <em>{document.failReason}</em>}</div>
-                <div className="org-library__actions">{document.status === "ready" && <><button onClick={() => void showDocumentPreview(document.id, fileName, document.sourceType, false)} disabled={previewLoading}><Eye size={13} />查看</button><button onClick={() => void downloadDocument(document.id, fileName, false)}><Download size={13} />下载</button></>}{document.scopeKind === "personal" && scopes.some((scope) => scope.kind !== "personal" && scope.canPublishDocuments !== false) && <button onClick={() => setPublishDocumentTarget(document)} disabled={busy}>发布副本</button>}{mayManage && <><button onClick={() => void uploadNewVersion(document)} disabled={busy}><History size={13} />新版本</button><button onClick={() => setRemoveTarget({ id: document.id, name: document.title, submission: false })} disabled={busy || document.status !== "ready"}><Archive size={13} />归档</button></>}<span className={`org-state org-state--${document.status}`}>{stateLabel(document.status)}</span></div>
-              </div>
-            })}
-          </div>
-          {documents.length < documentTotal && <div className="org-document-more"><button onClick={() => void loadMoreDocuments()} disabled={busy}>加载更多共享文档（{documents.length}/{documentTotal}）</button></div>}
-          <div className="org-submissions org-document-submissions"><h3>我的文档提交 <small>全部范围 · {submissionTotal} 项</small></h3>
-            {visibleDocumentSubmissions.length === 0 && <p className="org-document-submissions__empty">还没有文档提交</p>}
-            {visibleDocumentSubmissions.map((submission) => {
-              const id = submission.id ?? submission.submissionId ?? "";
-              const name = submission.title ?? submission.name ?? "未命名文档";
-              const fileName = name.match(/\.[A-Za-z0-9]{1,8}$/) ? name : `${name}.${submission.sourceType === "image" ? "png" : submission.sourceType ?? "txt"}`;
-              return <div className="org-document-submissions__row" key={id}>
-                <div className="org-document-submissions__main"><strong>{name}</strong><small>{submission.scopeName} · {submission.byteSize ? readableBytes(submission.byteSize) : "文件"}</small>{submission.reviewNote && <em>{submission.reviewNote}</em>}</div>
-                <div className="org-document-submissions__actions"><span className={`org-state org-state--${submission.state === "approved" ? "ready" : submission.scanStatus ?? submission.state}`}>{documentSubmissionLabel(submission)}</span>{submission.scanStatus === "passed" && <><button onClick={() => void showDocumentPreview(id, fileName, submission.sourceType ?? "txt", true, submission.resultDocumentId)} disabled={previewLoading}><Eye size={13} />查看</button><button onClick={() => void downloadDocument(id, fileName, true)}><Download size={13} />下载</button></>}<button onClick={() => setRemoveTarget({ id, name, submission: true })} disabled={busy || !id}><Trash2 size={13} />删除</button></div>
-              </div>;
-            })}
-            {documentSubmissions.length < submissionTotal && <div className="org-document-more"><button onClick={() => void loadMoreSubmissions()} disabled={busy}>加载更多提交（{documentSubmissions.length}/{submissionTotal}）</button></div>}
-          </div>
-        </section>
-      )}
-
-      {tab === "skills" && (
-        <section className="org-library org-skill-library">
-          <div className="org-library__toolbar org-skill-library__toolbar">
-            <div className="org-skill-library__summary"><strong>已发布</strong><span>{visibleSkills.length}</span></div>
-            <div className="org-library__actions org-skill-library__actions">
-              <label className="org-library__scope-field org-skill-library__scope-field"><span>提交到</span><select aria-label="Skill 提交范围" value={writeScope} onChange={(event) => setWriteScope(event.target.value)}><option value="">选择提交范围</option>{scopes.map((scope) => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>
-              {skills.some((skill) => skill.scopeKind === "personal") && scopes.some((scope) => scope.kind !== "personal") && <label className="org-library__scope-field org-skill-library__scope-field"><span>副本发布到</span><select aria-label="Skill 副本发布目标" value={publishScope} onChange={(event) => setPublishScope(event.target.value)}><option value="">选择副本发布目标</option>{scopes.filter((scope) => scope.kind !== "personal").map((scope) => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>}
-              <button onClick={() => void syncSkills()} disabled={busy}><RefreshCw size={15} />安全同步</button><button className="org-memory__primary" onClick={() => void pickAndUploadSkill()} disabled={busy || !uploadScope || !allowSkillSubmission}><Upload size={15} />提交 Skill</button>
-            </div>
-          </div>
-          <div className="org-skill-grid">
-            {visibleSkills.length === 0 && <div className="org-skill-library__empty"><span className="org-skill-library__empty-icon"><PackageOpen size={20} /></span><strong>暂无已发布的 Skill</strong><span>提交并通过审核后会显示在这里</span></div>}
-            {visibleSkills.map((skill) => (
-              <article className="org-skill-card" key={skill.skillId}>
-                <div><strong>{skill.name}</strong><span>v{skill.version}</span></div>
-                <p>{skill.description}</p>
-                <footer><span className={`org-scope-badge org-scope-badge--${skill.scopeKind}`}><ScopeIcon kind={skill.scopeKind} />{skill.scopeName}</span>{skill.scopeKind === "personal" && <button onClick={() => void publishSkill(skill)} disabled={busy || !publishScope}>发布副本</button>}{skill.mandatory ? <span className="org-state org-state--ready">组织强制 · 已安装</span> : <button onClick={() => void toggleSkill(skill)} disabled={busy}>{skill.enabled ? "卸载" : "安装"}</button>}</footer>
-              </article>
-            ))}
-          </div>
-          <SubmissionList title="我的 Skill 提交" submissions={visibleSkillSubmissions} />
-        </section>
-      )}
+          {memoryDetail && <div ref={memoryDetailRef} tabIndex={-1} className="org-document-modal" role="dialog" aria-modal="true" aria-label="经验详情" onClick={event => { if(event.target === event.currentTarget) setMemoryDetail(null); }}>
+            <div className="org-editor-dialog"><header><div><h3>{memoryKindLabel[memoryDetail.kind]}</h3><span>{memoryDetail.scopeName} · {memoryDetail.trust === "verified" ? "已验证" : "已审核"}</span></div><button data-modal-initial-focus aria-label="关闭经验详情" onClick={() => setMemoryDetail(null)}><X size={18} /></button></header><div className="org-memory-detail"><p>{memoryDetail.content}</p>{memoryDetail.stale && <span className="org-state org-state--failed">已过期，仅供参考</span>}{memoryDetail.rationale && <><h4>适用背景与依据</h4><p>{memoryDetail.rationale}</p></>}{memoryDetail.outcome && <><h4>结果</h4><p>{memoryDetail.outcome}</p></>}{memoryDetail.workspaceRef && <><h4>项目/工作空间</h4><p>{memoryDetail.workspaceRef}</p></>}{memoryDetail.validUntil && <><h4>有效期至</h4><p>{new Date(memoryDetail.validUntil).toLocaleDateString()}</p></>}</div></div>
+          </div>}
+          {skillDialog && <div ref={skillDialogRef} tabIndex={-1} className="org-document-modal" role="dialog" aria-modal="true" aria-label={skillDialog.kind === "upload" ? "提交 Skill" : "发布 Skill 副本"}>
+            <div className="org-document-modal__confirm"><h3>{skillDialog.kind === "upload" ? "提交 Skill" : "发布 Skill 副本"}</h3><p>{skillDialog.kind === "upload" ? "选择共享范围后，选择本地 Skill 文件或技能包。提交内容会按组织规则审核。" : `将“${skillDialog.skill.name}”发布到共享范围，个人版本保持不变。`}</p><label className="org-document-publish__scope"><span>{skillDialog.kind === "upload" ? "提交到" : "发布到"}</span><select data-modal-initial-focus aria-label={skillDialog.kind === "upload" ? "Skill 提交范围" : "Skill 副本发布目标"} value={skillDialog.kind === "upload" ? writeScope : publishScope} onChange={event => skillDialog.kind === "upload" ? setWriteScope(event.target.value) : setPublishScope(event.target.value)}><option value="">选择范围</option>{scopes.filter(scope => skillDialog.kind === "upload" || scope.kind !== "personal").map(scope => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>{error && <OrganizationError reason={error} />}<div><button disabled={busy} onClick={() => setSkillDialog(null)}>取消</button><button className="org-memory__primary" disabled={busy || (skillDialog.kind === "upload" ? !writeScope || !allowSkillSubmission : !publishScope)} onClick={() => { if(skillDialog.kind === "publish") void publishSkill(skillDialog.skill); else { setSkillDialog(null); void pickAndUploadSkill(); } }}>{busy ? "处理中…" : skillDialog.kind === "upload" ? "选择文件" : "确认发布"}</button></div></div>
+          </div>}
+          {folderBatch && <div ref={folderBatchRef} tabIndex={-1} className="org-document-modal" role="dialog" aria-modal="true" aria-label="文件夹上传确认"><div className="org-editor-dialog"><header><h3>准备上传 {folderBatch.files.length} 个文档</h3></header><div className="org-document-batch"><p>目标：{folderBatch.scopeName} · 共 {readableBytes(folderBatch.totalBytes)} · 已跳过 {folderBatch.skipped} 项不支持或不符合限制的内容</p><small>{folderBatch.folder}</small><ul>{folderBatch.files.map(file => <li key={file.path}>{file.relativePath}<span>{readableBytes(file.size)}</span></li>)}</ul>{error && <OrganizationError reason={error} />}</div><footer><button disabled={busy} onClick={() => setFolderBatch(null)}>取消</button><button className="org-memory__primary" disabled={busy} onClick={() => void uploadDocumentsInBatch(folderBatch.files.map(file => ({ path:file.path,title:file.relativePath })),folderBatch.scopeId)}>开始上传</button></footer></div></div>}
           {preview && <div ref={previewDialogRef} tabIndex={-1} onClick={(event) => { if (event.target === event.currentTarget) closePreview(); }} className="org-document-modal" role="dialog" aria-modal="true" aria-label={`查看文档 ${preview.name}`}>
             <div className="org-document-modal__panel">
               <header><div><strong>{preview.name}</strong>{preview.parsed && <small>内容来自知识索引，原件排版请下载查看</small>}</div><div className="org-document-modal__header-actions">{!preview.unavailableReason && <button onClick={() => void downloadDocument(preview.resourceId, preview.name, preview.submission)}><Download size={14} />下载原件</button>}<button data-modal-initial-focus aria-label="关闭预览" onClick={closePreview}><X size={18} /></button></div></header>
@@ -1103,9 +1005,10 @@ export function OrganizationMemoryPanel({
           {removeTarget && <div ref={removeDialogRef} tabIndex={-1} onClick={(event) => { if (event.target === event.currentTarget) closeRemoveDialog(); }} aria-busy={busy} className="org-document-modal" role="alertdialog" aria-modal="true" aria-label="确认删除文档">
             <div className="org-document-modal__confirm"><h3>移除文档？</h3><p>“{removeTarget.name}”会从共享列表和 Agent 检索中移除。服务器会保留已上传的原始文件内容。</p><div><button data-modal-initial-focus onClick={closeRemoveDialog} disabled={busy}>取消</button><button className="org-memory__primary" onClick={() => void removeOwnDocument()} disabled={busy}>{busy ? "处理中…" : "确认移除"}</button></div></div>
           </div>}
+          </div>, document.body)}
         </main>
       </div>
-    </CapabilityPage>
+    </section>
   );
 }
 
@@ -1119,10 +1022,29 @@ function ParsedDocumentPreview({ name, sourceType, content }: { name: string; so
 
 function SubmissionList({ title, submissions }: { title: string; submissions: Submission[] }) {
   if (submissions.length === 0) return null;
-  return <div className="org-submissions"><h3>{title}</h3>{submissions.slice(0, 8).map((submission) => <div key={submission.id ?? submission.submissionId}><span>{submission.title ?? submission.name} {submission.version ? `v${submission.version}` : ""}</span><small>{submission.scopeName}</small>{submission.scanStatus && <span className={`org-state org-state--${submission.scanStatus}`}>扫描：{stateLabel(submission.scanStatus)}</span>}<span className={`org-state org-state--${submission.state}`}>{stateLabel(submission.state)}</span>{submission.reviewNote && <em>{submission.reviewNote}</em>}{submission.scanReport?.findings.filter((item) => item.severity !== "info").map((item) => <em key={`${item.code}-${item.path ?? ""}`}>{item.code}：{item.message}{item.path ? ` (${item.path})` : ""}</em>)}</div>)}</div>;
+  return <div className="org-submissions"><h3>{title}</h3>{submissions.map(submission => {
+    const label = submission.state !== "pending" ? stateLabel(submission.state)
+      : submission.scanStatus === "queued" ? "等待安全检查"
+        : submission.scanStatus === "scanning" ? "安全检查中"
+          : submission.scanStatus === "failed" ? "安全检查未通过" : "待审核";
+    return <div key={submission.id ?? submission.submissionId}>
+      <span>{submission.title ?? submission.name}{submission.version ? ` · v${submission.version}` : ""}</span>
+      <span className={`org-state org-state--${submission.state}`}>{label}</span>
+      <small>{submission.scopeName}</small>
+      {submission.reviewNote && <em>{submission.reviewNote}</em>}
+      {submission.scanReport?.findings.filter(item => item.severity !== "info").map(item => <em key={`${item.code}-${item.path ?? ""}`}>{item.message}{item.path ? ` (${item.path})` : ""}</em>)}
+    </div>;
+  })}</div>;
 }
 
 function MemoryPromotionList({ promotions }: { promotions: MemoryPromotion[] }) {
   if (promotions.length === 0) return null;
-  return <div className="org-submissions"><h3>我的经验提交</h3>{promotions.slice(0, 8).map((item) => <div key={item.id}><span>{item.payload.content ?? "经验候选"}</span><small>{item.scopeName} · {item.payload.kind ? memoryKindLabel[item.payload.kind] : "经验"}</small><span className={`org-state org-state--${item.state}`}>{stateLabel(item.state)}</span>{item.reviewNote && <em>{item.reviewNote}</em>}</div>)}</div>;
+  return <div className="org-submissions"><h3>我的经验提交</h3>{promotions.map(item => <div key={item.id}>
+    <details className="org-submission-detail"><summary><span>{item.payload.content ?? "经验候选"}</span><small>查看内容</small></summary>
+      {item.payload.rationale && <p>{item.payload.rationale}</p>}{item.payload.outcome && <p>结果：{item.payload.outcome}</p>}
+    </details>
+    <span className={`org-state org-state--${item.state}`}>{stateLabel(item.state)}</span>
+    <small>{item.scopeName} · {item.payload.kind ? memoryKindLabel[item.payload.kind] : "经验"}</small>
+    {item.reviewNote && <em>{item.reviewNote}</em>}
+  </div>)}</div>;
 }

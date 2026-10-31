@@ -12,7 +12,7 @@ const failed: ChatMessage = { id: "delivery", role: "assistant", complete: true,
 describe("compact process and actionable result notices", () => {
   it("默认入口中性且只显示耗时，失败计数和原始原因仅展开可见", () => {
     const { container } = render(<ThemeProvider><MessageItem message={failed} streaming={false} /></ThemeProvider>);
-    const header = screen.getByRole("button", { name: /执行记录/ });
+    const header = screen.getByRole("button", { name: / · (展开|查看|收起)过程$/ });
     expect(header).toHaveAccessibleName(/6分15秒/);
     expect(header).not.toHaveTextContent(/项操作|部分|失败/);
     expect(header).toHaveAttribute("aria-expanded", "false");
@@ -68,7 +68,7 @@ describe("compact process and actionable result notices", () => {
   });
   it("历史缺少结束时间不把现在与旧开始时间的差伪装成执行耗时", () => {
     render(<ThemeProvider><MessageItem message={{ ...failed, completedAt: undefined }} streaming={false} /></ThemeProvider>);
-    expect(screen.getByRole("button", { name: /执行记录/ }).querySelector(".execution-process__meta")).toBeNull();
+    expect(screen.getByRole("button", { name: / · (展开|查看|收起)过程$/ }).querySelector(".execution-process__meta")).toBeNull();
   });
   it("缺权限在对应回复说明影响并打开设置，不提供重复执行入口", () => {
     const settings = vi.fn();

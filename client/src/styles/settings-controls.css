@@ -46,12 +46,13 @@
   background-color: var(--echo-bg-secondary);
   color: var(--echo-text-weak);
 }
-.settings-modal :is(input[type="checkbox"], input[type="radio"], input[type="range"]) {
-  accent-color: var(--echo-brand);
+.settings-modal :is(input[type="checkbox"], input[type="radio"]) {
+  accent-color: var(--echo-control-selected-bg);
 }
-.settings-modal .sk-toggle input:checked + .sk-toggle-track { background: var(--echo-button-primary-bg); }
+.settings-modal input[type="range"] { accent-color: var(--echo-brand); }
+.settings-modal .sk-toggle input:checked + .sk-toggle-track { background: var(--echo-control-selected-bg); }
 .settings-modal .sk-toggle-thumb { background: var(--echo-text-medium); }
-.settings-modal .sk-toggle input:checked + .sk-toggle-track .sk-toggle-thumb { background: var(--echo-button-primary-fg); }
+.settings-modal .sk-toggle input:checked + .sk-toggle-track .sk-toggle-thumb { background: var(--echo-control-selected-fg); }
 .settings-modal .sk-toggle:has(input:disabled) { opacity: .5; }
 .settings-modal .sk-toggle:has(input:focus-visible) { outline: 2px solid var(--echo-focus-ring); outline-offset: 3px; border-radius: 999px; }
 .settings-modal .notify-panel__btn[role="switch"][aria-checked="true"] {

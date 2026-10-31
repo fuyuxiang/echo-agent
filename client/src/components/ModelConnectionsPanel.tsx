@@ -1,4 +1,5 @@
 import { modelDisplayName } from "@/lib/model-presentation";
+import { modelTestDuration, useModelConnectionTests } from "@/lib/use-model-connection-tests";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 import { useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
 import {
@@ -50,6 +51,7 @@ import { useAppDialog } from "./AppDialog";
 
 interface ModelConnectionsPanelProps {
   onModelsChanged?: () => void | Promise<void>;
+  initialModelId?: string;
 }
 
 interface ProviderPreset {
@@ -212,7 +214,7 @@ async function reloadRuntime(): Promise<string | null> {
   }
 }
 
-export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanelProps) {
+export function ModelConnectionsPanel({ onModelsChanged, initialModelId }: ModelConnectionsPanelProps) {
   const [catalog, setCatalog] = useState<ProviderListModel>({ providers: [], models: [] });
   const [defaults, setDefaults] = useState<AgentDefaults | null>(null);
   const [effectiveDefaultModelId, setEffectiveDefaultModelId] = useState<string | null>(null);
@@ -223,13 +225,31 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
   const [modelEditor, setModelEditor] = useState<{ provider: ModelProviderEntry; model?: ModelEntry } | null>(null);
   const [importProvider, setImportProvider] = useState<ModelProviderEntry | null>(null);
   const [syncingOrganization, setSyncingOrganization] = useState(false);
-  const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
+  const { results: modelTests, test: testModel } = useModelConnectionTests(catalog);
+  const modelRowsRef = useRef(new Map<string, HTMLLIElement>());
+  const locatedModelRef = useRef<string>();
   const reloadGenerationRef = useRef(0);
   const sourceListRef = useRef<HTMLElement>(null);
   const detailRef = useRef<HTMLElement>(null);
   const organizationSession = useOrgSessionStore((state) => state.session);
   const hydrateOrganization = useOrgSessionStore((state) => state.hydrate);
   const { requestConfirmation, dialog } = useAppDialog(selectedProviderId);
+
+  useEffect(() => {
+    if (!initialModelId || loading || locatedModelRef.current === initialModelId) return;
+    const model = catalog.models.find(entry => entry.modelId === initialModelId);
+    if (!model) return;
+    if (selectedProviderId !== model.providerId) {
+      setSelectedProviderId(model.providerId);
+      return;
+    }
+    const row = modelRowsRef.current.get(initialModelId);
+    if (row) {
+      locatedModelRef.current = initialModelId;
+      row.scrollIntoView?.({ block: "nearest" });
+      row.focus({ preventScroll: true });
+    }
+  }, [initialModelId, loading, catalog, selectedProviderId]);
 
   const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
     const target = event.target;
@@ -267,7 +287,8 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
         if (current && nextCatalog.providers.some((provider) => provider.id === current)) {
           return current;
         }
-        return nextCatalog.providers.find((provider) => provider.source === "organization")?.id
+        return nextCatalog.models.find(model => model.modelId === initialModelId)?.providerId
+          ?? nextCatalog.providers.find((provider) => provider.source === "organization")?.id
           ?? nextCatalog.providers[0]?.id
           ?? null;
       });
@@ -280,7 +301,7 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
     } finally {
       if (generation === reloadGenerationRef.current) setLoading(false);
     }
-  }, []);
+  }, [initialModelId]);
 
   useEffect(() => {
     void reload();
@@ -395,30 +416,6 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
     }
   };
 
-  const handleTestSaved = async (provider: ModelProviderEntry) => {
-    const providerModels = catalog.models.filter((entry) => entry.providerId === provider.id);
-    const model = providerModels.find((entry) => entry.modelId === effectiveDefaultModelId)
-      ?? providerModels.find((entry) => entry.modelId === savedDefaultModelId)
-      ?? providerModels[0];
-    if (!model) {
-      setMessage({ kind: "warn", text: "请先为该连接添加一个 Model ID，再测试实际模型调用。" });
-      return;
-    }
-    setTestingProviderId(provider.id);
-    setMessage(null);
-    try {
-      await providersTestModelConnection(
-        { ...provider, apiKey: undefined },
-        modelRemoteId(model),
-      );
-      setMessage({ kind: "ok", text: `模型「${modelRemoteId(model)}」调用成功。` });
-    } catch (error) {
-      setMessage({ kind: "err", text: `模型调用失败：${String(error)}` });
-    } finally {
-      setTestingProviderId(null);
-    }
-  };
-
   return (
     <div className="model-connections" onWheel={handleWheel}>
       <header className="model-connections__header">
@@ -518,12 +515,6 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
                   <p>{PROVIDER_PRESETS[selectedProvider.providerKind]?.label || selectedProvider.providerKind}</p>
                 </div>
                 <div className="model-connections__detail-actions">
-                  <button className="echo-button echo-button--secondary echo-button--small" onClick={() => void handleTestSaved(selectedProvider)} disabled={testingProviderId === selectedProvider.id}>
-                    <span className="echo-button__content">
-                      {testingProviderId === selectedProvider.id ? <Loader2 className="models-settings-panel__spin" size={13} /> : <Check size={13} />}
-                      测试模型
-                    </span>
-                  </button>
                   {!selectedProvider.managed && (
                     <>
                       <button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only" onClick={() => setConnectionEditor(selectedProvider)} aria-label="编辑连接" title="编辑连接"><Pencil size={14} /></button>
@@ -555,6 +546,8 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
                 )}
               </div>
 
+              {selectedModels.length > 0 && <p className="model-connections__test-hint">测试会发送一次简短请求，可能消耗少量额度。耗时仅代表本次请求。</p>}
+
               {selectedModels.length === 0 ? (
                 <div className="model-connections__models-empty">该连接还没有模型，请同步模型列表或手动添加远端模型 ID。</div>
               ) : (
@@ -563,26 +556,47 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
                     const isSavedDefault = savedDefaultModelId === model.modelId;
                     const isEffective = effectiveDefaultModelId === model.modelId;
                     const limits = modelLimitsText(model, selectedProvider);
+                    const testResult = modelTests[model.modelId];
                     return (
-                      <li key={model.modelId}>
+                      <li key={model.modelId} tabIndex={-1} data-model-id={model.modelId} data-model-highlighted={model.modelId === initialModelId || undefined} ref={element => {
+                        if (element) modelRowsRef.current.set(model.modelId, element);
+                        else modelRowsRef.current.delete(model.modelId);
+                      }}>
                         <div className="model-connections__model-copy">
                           <strong>{modelName(model)}</strong>
                           <span>远端模型 ID：{model.remoteModelId || modelDisplayName(model.modelId)}</span>
                           {limits && <span className="model-connections__model-limits">{limits}</span>}
                         </div>
                         <div className="model-connections__model-actions">
+                          <button type="button" className="echo-button echo-button--secondary echo-button--small"
+                            aria-label={`测试模型 ${modelName(model)}`} aria-busy={testResult?.status === "testing"}
+                            disabled={testResult?.status === "testing"} onClick={() => void testModel(selectedProvider, model)}>
+                            <span className="echo-button__content">
+                              {testResult?.status === "testing" && <Loader2 className="models-settings-panel__spin" size={13} aria-hidden="true" />}
+                              {testResult?.status === "testing" ? "测试中…" : testResult ? "重新测试" : "测试模型"}
+                            </span>
+                          </button>
                           {isSavedDefault && <span className="model-connections__default"><Star size={12} fill="currentColor" />{isEffective ? "已设默认 · 当前使用" : effectiveDefaultModelId ? "已设默认（当前未使用）" : "已设默认"}</span>}
                           {!isSavedDefault && isEffective && <span className="model-connections__default">当前自动使用</span>}
                           {!isSavedDefault && (
                             <button className="echo-button echo-button--ghost echo-button--small" onClick={() => void handleSetDefault(model)}>设为默认</button>
                           )}
                           {!selectedProvider.managed && (
-                            <>
+                            <span className="model-connections__edit-actions">
                               <button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only" onClick={() => setModelEditor({ provider: selectedProvider, model })} aria-label={`编辑模型 ${modelRemoteId(model)}`}><Pencil size={13} /></button>
                               <button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only echo-button--danger" onClick={() => void handleDeleteModel(model)} aria-label={`删除模型 ${modelRemoteId(model)}`}><Trash2 size={13} /></button>
-                            </>
+                            </span>
                           )}
                         </div>
+                        {testResult && testResult.status !== "testing" && <div role="status" className={`model-connections__test-result model-connections__test-result--${testResult.status}`}>
+                          <div>{testResult.status === "success" ? <><CheckCircle2 size={14} aria-hidden="true" /><span>测试通过 · 耗时 {modelTestDuration(testResult.durationMs)}</span></>
+                            : <><CircleAlert size={14} aria-hidden="true" /><span>上次测试失败</span></>}
+                            <time dateTime={new Date(testResult.completedAt).toISOString()} title={new Date(testResult.completedAt).toLocaleString("zh-CN")}>
+                              测试于 {new Date(testResult.completedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+                            </time>
+                          </div>
+                          {testResult.error && <p>{testResult.error}</p>}
+                        </div>}
                       </li>
                     );
                   })}
@@ -1009,7 +1023,7 @@ function ConnectionEditor({
         </div>
 
         <footer className="models-settings-panel__editor-footer model-connection-editor__footer">
-          <p className="model-connection-editor__test-note">测试会向所选模型发送一条极短请求，可能产生少量 API 用量；直接保存不会发起请求。</p>
+          <p className="model-connection-editor__test-note">测试并保存仅测试一个模型，可能消耗少量额度；其他模型可在保存后逐一测试。直接保存不会发起请求。</p>
           <button className="echo-button echo-button--secondary echo-button--medium" onClick={cancel} disabled={saving || testing || discovering}>取消</button>
           <div className="model-connection-editor__footer-actions">
             <button className="echo-button echo-button--secondary echo-button--medium" onClick={() => void handleSave()} disabled={saving || testing || discovering}>{saving ? "保存中…" : "直接保存"}</button>

@@ -39,6 +39,17 @@ export function modelSourceLabel(model: PresentableModel | string): string {
   return "个人";
 }
 
+/** Keep source groups consistent with ModelConnectionsPanel; preserve the
+ * catalog order within each group instead of reordering by selection/speed. */
+export function groupModelsBySource<T extends PresentableModel>(models: readonly T[]): { label: string; models: T[] }[] {
+  return [
+    { source: "组织", label: "组织提供" },
+    { source: "个人", label: "我的连接" },
+    { source: "内置", label: "内置模型" },
+  ].map(({ source, label }) => ({ label, models: models.filter(model => modelSourceLabel(model) === source) }))
+    .filter(group => group.models.length > 0);
+}
+
 /** Friendly connection name distinguishes models sharing the same name/source. */
 export function modelConnectionLabel(model: PresentableModel): string | undefined {
   if (modelSourceLabel(model) === "内置") return undefined;

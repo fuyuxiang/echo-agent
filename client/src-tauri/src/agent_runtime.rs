@@ -1052,11 +1052,26 @@ pub(crate) fn build_team_prompt_blocks(
 /// `MODEL_SWITCH_INCOMPATIBLE_AGENT` — surface that error to the caller so
 /// the UI can prompt for a new session.
 pub async fn set_session_model(tx: &AcpAgentTx, session_id: &str, model_id: &str) -> Result<()> {
+    set_session_model_with_effort(tx, session_id, model_id, None).await
+}
+
+pub async fn set_session_model_with_effort(
+    tx: &AcpAgentTx,
+    session_id: &str,
+    model_id: &str,
+    reasoning_effort: Option<&str>,
+) -> Result<()> {
     tracing::info!(session_id, model_id, "echoagent: set_session_model send");
-    let req = acp::SetSessionModelRequest::new(
+    let mut req = acp::SetSessionModelRequest::new(
         acp::SessionId::new(session_id.to_string()),
         acp::ModelId::new(std::sync::Arc::from(model_id)),
     );
+    if let Some(effort) = reasoning_effort.filter(|value| !value.is_empty()) {
+        req = req.meta(Some(serde_json::Map::from_iter([(
+            "reasoningEffort".into(),
+            serde_json::Value::String(effort.into()),
+        )])));
+    }
     let _: acp::SetSessionModelResponse = acp_send(req, tx).await.map_err(|e| {
         tracing::error!(session_id, model_id, error = ?e, "echoagent: set_session_model FAILED");
         anyhow!("set_session_model: {e:?}")

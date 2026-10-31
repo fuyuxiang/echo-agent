@@ -112,7 +112,7 @@ try {
       await page.getByRole("button", {name:/后台任务/}).waitFor();
       const allow = page.getByRole("button",{name:"允许一次",exact:true});
       await allow.click({trial:true});
-      await page.getByRole("button",{name:"拒绝",exact:true}).click({trial:true});
+      await page.getByRole("button",{name:"拒绝本次",exact:true}).click({trial:true});
     }
     if (state === "running") {
       await page.getByRole("button",{name:"停止生成",exact:true}).waitFor();

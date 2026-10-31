@@ -896,7 +896,7 @@
   place-items: center;
   border: 1px solid color-mix(in srgb, var(--echo-brand) 18%, var(--echo-border-subtle));
   border-radius: 7px;
-  background: color-mix(in srgb, var(--echo-brand) 9%, var(--echo-bg-primary));
+  background: var(--echo-brand-soft);
   color: var(--echo-brand);
 }
 
@@ -2185,7 +2185,7 @@
   height: 26px;
   place-items: center;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--echo-brand) 10%, var(--echo-bg-primary));
+  background: var(--echo-brand-soft);
   color: var(--echo-brand);
 }
 
@@ -2680,7 +2680,7 @@
 }
 
 .coding-agent__mode-switch button.is-active {
-  background: color-mix(in srgb, var(--echo-brand) 12%, var(--echo-bg-primary));
+  background: var(--echo-brand-soft);
   color: var(--echo-brand);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--echo-brand) 18%, transparent);
 }
@@ -2827,7 +2827,7 @@
 }
 
 .coding-explorer__heading-actions button.is-active {
-  background: color-mix(in srgb, var(--echo-accent) 14%, transparent);
+  background: var(--echo-brand-soft);
   color: var(--echo-accent);
 }
 
@@ -3151,7 +3151,7 @@
   width: 14px;
   height: 14px;
   margin: 0 3px 0 8px;
-  accent-color: var(--echo-brand);
+  accent-color: var(--echo-control-selected-bg);
   cursor: pointer;
 }
 

@@ -63,6 +63,7 @@ export async function loadDesktopNotifyStatus(): Promise<DesktopNotifyStatus> {
 
 export async function setDesktopNotifyEnabled(enabled: boolean): Promise<void> {
   await invoke<void>("notify_desktop_set_enabled", { enabled });
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("echo:notification-settings-changed"));
 }
 
 export async function testDesktopNotify(sessionId?: string): Promise<DeliveryResult> {
@@ -77,14 +78,17 @@ export async function loadNotifyChannels(): Promise<NotifyChannel[]> {
 
 export async function saveNotifyChannel(channel: NotifyChannel): Promise<void> {
   await invoke<void>("notify_channel_upsert", { channel });
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("echo:notification-settings-changed"));
 }
 
 export async function removeNotifyChannel(id: string): Promise<void> {
   await invoke<void>("notify_channel_remove", { id });
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("echo:notification-settings-changed"));
 }
 
 export async function setNotifyChannelEnabled(id: string, enabled: boolean): Promise<void> {
   await invoke<void>("notify_channel_set_enabled", { id, enabled });
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("echo:notification-settings-changed"));
 }
 
 export async function testNotifyChannel(id: string): Promise<DeliveryResult> {

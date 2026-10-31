@@ -1,0 +1,89 @@
+/* The visible page owns window navigation. Do not reserve an empty extra row. */
+.page-toolbar {
+  min-width: 0;
+  -webkit-app-region: drag;
+}
+.page-toolbar__navigation {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.page-toolbar button,
+.page-toolbar input,
+.page-toolbar select,
+.page-toolbar a,
+.page-toolbar summary,
+.page-toolbar details {
+  -webkit-app-region: no-drag;
+}
+.page-toolbar.page-toolbar--native-controls {
+  padding-inline-start: 84px;
+}
+.panel-navigation > nav {
+  min-width: 0;
+}
+.capability-page__header--illustrated:has(> .page-toolbar__navigation) {
+  grid-template-areas: "navigation navigation" "heading illustration" "controls illustration";
+}
+.capability-page__header--illustrated > .page-toolbar__navigation {
+  grid-area: navigation;
+}
+.capability-page__header--illustrated .capability-page__description,
+.capability-page__header--illustrated .capability-page__metadata {
+  min-height: 0;
+}
+.org-login-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  min-height: 36px;
+}
+.org-memory--login {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+}
+.org-login-toolbar {
+  align-self: stretch;
+}
+.org-login-card {
+  width: min(100%, 460px);
+  box-sizing: border-box;
+}
+.org-connection-error {
+  align-items: flex-start;
+}
+.org-connection-error__copy {
+  flex: 1;
+  min-width: 0;
+}
+.org-connection-error__copy p {
+  margin: 0;
+}
+.org-connection-error details {
+  margin-top: 6px;
+  font-size: 0.75rem;
+}
+.org-connection-error summary {
+  cursor: pointer;
+}
+.org-connection-error pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.org-workspace-status {
+  margin: 12px 0;
+  color: var(--echo-text-medium);
+  font-size: 0.8125rem;
+}
+@container capability-page (max-width: 680px) {
+  .capability-page__header--illustrated:has(> .page-toolbar__navigation) {
+    grid-template-areas: "navigation" "heading" "illustration" "controls";
+  }
+}

@@ -65,13 +65,25 @@ export interface DocumentPage {
   size: number;
 }
 
+export type OrgLibraryResource = "memories" | "documents" | "skills" | "memory-submissions" | "document-submissions" | "skill-submissions";
+export interface OrgLibraryQuery { scopeId: string; query: string; filter: string; page: number; size: number }
+export interface OrgLibraryPage<T> { items: T[]; total: number; page: number; size: number }
+export interface OrgLibrarySummary {
+  memories: number; documents: number; documentReady: number; documentProcessing: number;
+  skills: number; skillInstalled: number; skillMandatory: number;
+  memoryPending: number; documentPending: number; skillPending: number;
+}
+export const orgLibraryQuery = <T>(resource: OrgLibraryResource, query: OrgLibraryQuery) =>
+  invoke<OrgLibraryPage<T>>("org_library_query", { resource, ...query });
+export const orgLibrarySummary = () => invoke<OrgLibrarySummary>("org_library_query", { resource: "summary" });
+
 export interface Submission {
   id?: string;
   submissionId?: string;
   title?: string;
   name?: string;
   version?: string;
-  state: "pending" | "approved" | "rejected" | "withdrawn";
+  state: "pending" | "approved" | "rejected" | "withdrawn" | "revoked";
   scopeId: string;
   scopeName: string;
   scopeKind: OrgScopeKind;

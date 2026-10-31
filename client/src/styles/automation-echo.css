@@ -84,6 +84,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
+  gap: 0;
   position: relative;
   scrollbar-color: transparent transparent;
   scrollbar-width: thin;
@@ -371,9 +372,9 @@
   flex-shrink: 0;
   margin: 4px 8px 6px;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--echo-color-primary, #126bff) 20%, transparent);
+  border: 1px solid var(--echo-brand-border);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--echo-color-primary, #126bff) 6%, transparent);
+  background: var(--echo-brand-soft);
   color: var(--atm-text-secondary);
   font-size: 0.75rem;
   line-height: 20px;
@@ -1430,7 +1431,7 @@
   transition: background 0.15s ease;
   flex-shrink: 0;
 }
-.echo-switch--checked { background: var(--atm-primary-btn-bg); }
+.echo-switch--checked { background: var(--echo-control-selected-bg); box-shadow: inset 0 0 0 1px var(--echo-control-selected-fg); }
 .echo-switch--disabled { opacity: 0.5; cursor: not-allowed; }
 .echo-switch-thumb {
   display: block;
@@ -1441,7 +1442,7 @@
   box-shadow: var(--atm-switch-thumb-shadow);
   transition: transform 0.15s ease;
 }
-.echo-switch--checked .echo-switch-thumb { transform: translateX(16px); background: var(--atm-primary-btn-text); }
+.echo-switch--checked .echo-switch-thumb { transform: translateX(16px); background: var(--echo-control-selected-fg); }
 
 .atm-detail-created-at {
   color: var(--echo-color-text-tertiary, rgba(0, 0, 0, 0.5));
@@ -1800,5 +1801,143 @@
   box-sizing: border-box;
 }
 [data-theme="dark"] .echo-checkbox-box { border-color: rgba(255, 255, 255, 0.3); }
-.echo-checkbox--checked .echo-checkbox-box { background: var(--atm-primary-btn-bg, #111); border-color: var(--atm-primary-btn-border, #111); }
+.echo-checkbox--checked .echo-checkbox-box { background: var(--echo-control-selected-bg); color: var(--echo-control-selected-fg); border-color: var(--echo-control-selected-fg); }
 .echo-checkbox-label { font-size: 0.8125rem; line-height: 1.5; color: var(--atm-text-primary); }
+
+/* Scheduled tasks: readable plans, scoped results and a focused editor. */
+.automation-panel .atm-toolbar { height: auto; min-height: 72px; padding: 16px 24px; flex-wrap: wrap; background: var(--atm-surface); border-bottom: 1px solid var(--atm-border-soft); }
+.automation-panel .atm-toolbar-right { flex-wrap: wrap; }
+.automation-panel.echo-agent-automation .atm-toolbar-left { width: auto; min-width: 0; max-width: 100%; flex: 0 1 auto; }
+.automation-panel.echo-agent-automation .atm-toolbar-right { width: auto; flex: 1 1 36rem; justify-content: flex-end; }
+.automation-panel.echo-agent-automation .atm-search-input { flex: 1 1 10rem; max-width: 240px; min-width: 100px; background: transparent; }
+.automation-panel.echo-agent-automation .atm-toolbar-right > .atm-toolbar-btn,
+.atm-create-actions > .atm-toolbar-btn { background: transparent; border: 1px solid var(--atm-border); }
+.automation-panel .atm-create-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 100%; }
+.atm-create-actions > .atm-new-task-btn { color: var(--echo-brand); border-color: color-mix(in srgb, var(--echo-brand) 40%, var(--atm-border)); }
+.automation-panel .atm-toolbar-right .atm-toolbar-btn:hover:not(:disabled) { background: var(--atm-surface-hover); }
+.atm-task-list--cards { container: scheduled-tasks / inline-size; width: 100%; max-width: var(--echo-page-width); margin: 0 auto; padding: 18px 24px 24px; box-sizing: border-box; display: flex; flex-direction: column; gap: 18px; }
+.atm-runtime { flex: none; padding-bottom: 14px; border-bottom: 1px solid var(--atm-border-soft); line-height: 1.7; }
+.atm-runtime-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.atm-runtime-status { display: flex; align-items: center; flex: 1 1 26rem; flex-wrap: wrap; gap: 6px 20px; padding: 0; background: transparent; color: var(--atm-text-secondary); font-size: .8125rem; }
+.atm-runtime-actions { display: flex; flex: none; align-items: center; gap: 16px; margin-left: auto; }
+.atm-runtime-status--warn { color: var(--echo-status-warning); }
+.atm-runtime-actions .atm-runtime-help-toggle { color: var(--atm-text-secondary); }
+.atm-runtime-help-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.atm-runtime > .atm-runtime-help { margin-top: 8px; }
+.atm-runtime-help, .atm-form-help { margin: 0; font-size: .75rem; line-height: 1.65; color: var(--atm-text-secondary); overflow-wrap: anywhere; }
+.atm-task-filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0; }
+.atm-task-filter { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 12px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--atm-text-secondary); font: inherit; font-size: .8125rem; cursor: pointer; }
+.atm-task-filter span { font-variant-numeric: tabular-nums; }
+.atm-task-filter[aria-pressed="true"] { background: var(--echo-brand-soft); color: var(--echo-brand); }
+.atm-task-filter:hover { background: var(--atm-surface-hover); }
+.atm-task-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; flex: none; }
+.atm-task-card { display: flex; flex-direction: column; min-width: 0; padding: 20px; border: 1px solid var(--atm-border); border-radius: 14px; background: var(--atm-surface); box-shadow: 0 2px 8px #142f2708; }
+.atm-task-card.is-selected { border-color: var(--echo-brand); }
+.atm-task-card__header { display: flex; align-items: flex-start; gap: 12px; min-height: 26px; }
+.atm-task-card__header > input { flex: none; margin: 5px 0 0; accent-color: var(--echo-brand); }
+.atm-task-card__title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--atm-text-primary); font: inherit; font-size: .9375rem; font-weight: 600; line-height: 1.6; text-align: left; overflow: hidden; overflow-wrap: anywhere; cursor: pointer; }
+.atm-task-card__title:hover { color: var(--echo-brand); }
+.atm-task-card__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.atm-task-card__actions .atm-toolbar-btn { flex: 1; justify-content: center; min-height: 32px; padding: 5px 10px; background: transparent; border: 1px solid var(--atm-border); font-size: .75rem; }
+.atm-task-card__actions .atm-toolbar-btn:disabled { opacity: .55; cursor: default; }
+.atm-task-card__toggle { display: inline-flex; flex: none; align-items: center; gap: 6px; padding-top: 2px; font-size: .75rem; line-height: 1.6; color: var(--atm-text-secondary); white-space: nowrap; }
+.atm-task-card__prompt { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; min-height: 3.4em; overflow: hidden; overflow-wrap: anywhere; margin: 12px 0 18px; color: var(--atm-text-secondary); font-size: .8125rem; line-height: 1.7; }
+.atm-task-card__details { display: flex; flex-direction: column; gap: 10px; margin-top: auto; color: var(--atm-text-secondary); font-size: .75rem; line-height: 1.6; }
+.atm-task-card__schedule { display: flex; flex-direction: column; gap: 4px; }
+.atm-task-card__next { padding-left: 20px; color: var(--atm-text-tertiary); }
+.atm-task-card__schedule > span:first-child, .atm-task-card__meta > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.atm-task-card svg { flex-shrink: 0; }
+.atm-task-card__footer { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--atm-border-soft); }
+.atm-task-card__meta { display: flex; flex-wrap: wrap; gap: 6px 12px; min-width: 0; }
+.atm-task-card__meta > span:first-child { flex-basis: 100%; }
+.atm-task-card__meta > span:not(:first-child) { color: var(--atm-text-tertiary); }
+.atm-task-card__activity { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; color: var(--atm-text-secondary); font-size: .75rem; line-height: 1.6; }
+.atm-task-card__activity > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.atm-task-card__result, .atm-text-button { display: inline-flex; align-items: center; gap: 6px; padding: 3px 0; border: 0; background: transparent; font: inherit; font-size: .75rem; color: var(--echo-brand); cursor: pointer; text-align: left; }
+.atm-task-card__result { flex-shrink: 0; }
+.atm-task-card__activity.needs-attention { color: var(--echo-status-warning); }
+.atm-task-card__result:hover, .atm-text-button:hover { text-decoration: underline; }
+@container scheduled-tasks (max-width: 60rem) {
+  .atm-task-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container scheduled-tasks (max-width: 40rem) {
+  .atm-task-cards { grid-template-columns: minmax(0, 1fr); }
+}
+.atm-task-detail { width: 100%; max-width: 1000px; margin: 0 auto; padding: 24px; box-sizing: border-box; }
+.atm-task-detail__toolbar, .atm-task-detail__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.atm-task-detail__toolbar { justify-content: space-between; gap: 12px; }
+.atm-task-detail__title { margin: 24px 0 12px; font-size: 1.25rem; line-height: 1.5; overflow-wrap: anywhere; }
+.atm-task-detail__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; color: var(--atm-text-secondary); font-size: .8125rem; line-height: 1.7; }
+.atm-task-detail__muted { color: var(--atm-text-secondary); font-size: .75rem; line-height: 1.7; overflow-wrap: anywhere; }
+.atm-task-detail h2 { font-size: .9375rem; font-weight: 600; margin: 0 0 16px; }
+.atm-task-config { margin: 20px 0 24px; padding-block: 14px; border-block: 1px solid var(--atm-border-soft); font-size: .8125rem; line-height: 1.7; }
+.atm-task-config summary { cursor: pointer; font-weight: 500; }
+.atm-task-config summary svg { vertical-align: middle; margin-left: 6px; }
+.atm-task-config__prompt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.atm-task-config dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; color: var(--atm-text-secondary); }
+.atm-task-config dd { margin: 0; overflow-wrap: anywhere; }
+.atm-run-result { padding: 20px; margin-top: 24px; background: var(--atm-surface-muted); border-radius: 12px; overflow-wrap: anywhere; }
+.atm-run-result__state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: .8125rem; line-height: 1.7; }
+.atm-run-result__state > span { color: var(--atm-text-secondary); }
+.atm-run-result__state--success > svg { color: var(--echo-status-success); }
+.atm-run-result__state--failed > svg { color: var(--echo-status-error); }
+.atm-run-result__state--attention { color: var(--echo-status-warning); }
+.atm-run-result__error { font-size: .8125rem; line-height: 1.7; }
+.atm-run-result__content { padding: 14px 0; min-width: 0; }
+.atm-run-result__content .markdown-body { font-size: .875rem; }
+.atm-notification-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; color: var(--atm-text-secondary); font-size: .75rem; line-height: 1.7; }
+.atm-detail-empty { padding: 20px 0; color: var(--atm-text-secondary); font-size: .8125rem; }
+.atm-detail-empty p { margin: 8px 0; }
+.atm-task-history { margin-top: 28px; }
+.atm-task-history h2 span { margin-left: 8px; color: var(--atm-text-secondary); font-weight: 400; }
+.atm-task-history__row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; width: 100%; padding: 14px 12px; border: 0; border-bottom: 1px solid var(--atm-border-soft); border-radius: 6px; background: transparent; color: var(--atm-text-secondary); text-align: left; font: inherit; font-size: .8125rem; cursor: pointer; }
+.atm-task-history__row:hover { background: var(--atm-surface-hover); }
+.atm-task-history__row.is-selected { background: var(--echo-brand-soft); color: var(--echo-brand); }
+.atm-task-detail__danger { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--atm-border-soft); display: flex; gap: 12px; align-items: center; font-size: .75rem; color: var(--atm-text-secondary); }
+.atm-task-detail__danger button { color: var(--echo-status-error); }
+.automation-panel.atm-editor-host { padding: 0; overflow: hidden; }
+.atm-editor-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box; background: var(--atm-surface-muted); }
+.atm-editor-dialog { display: flex; flex-direction: column; width: min(920px, 100%); max-height: 100%; min-height: 0; height: min(880px, 100%); border: 1px solid var(--atm-border); border-radius: 16px; background: var(--atm-surface); overflow: hidden; box-shadow: var(--echo-shadow-md); }
+.atm-editor-dialog .atm-detail-page { min-height: 0; }
+.atm-editor-dialog .atm-detail-header { border-bottom: 1px solid var(--atm-border-soft); }
+.atm-detail-header-right h2 { margin: 0; font-size: .9375rem; line-height: 1.5; }
+.atm-editor-dialog .atm-detail-content { display: block; margin: 0; padding: 0; overflow: auto; }
+.atm-editor-dialog .atm-modal-body { padding: 20px 24px; overflow: visible; }
+.atm-editor-dialog .atm-prompt-textarea { min-height: 120px; }
+.atm-execution-summary { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--atm-text-secondary); font-size: .75rem; line-height: 1.7; padding: 16px 0; }
+.atm-execution-summary span { overflow-wrap: anywhere; max-width: 100%; }
+.atm-advanced-trigger { display: flex; align-items: center; gap: 8px; border: 0; border-top: 1px solid var(--atm-border-soft); padding: 16px 0; width: 100%; background: transparent; color: var(--atm-text-primary); font: inherit; font-size: .8125rem; text-align: left; cursor: pointer; }
+.atm-advanced-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+.atm-option-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin: 8px 0 20px; font-size: .8125rem; line-height: 1.6; }
+.atm-option-row > div { flex: 1; min-width: 0; }
+.atm-option-row p { margin: 5px 0; color: var(--atm-text-secondary); font-size: .75rem; line-height: 1.7; }
+.atm-option-row .echo-switch { flex-shrink: 0; margin-top: 2px; }
+.atm-advanced-settings .atm-prompt-toolbar { padding: 12px 0; flex-wrap: wrap; border: 0; }
+.atm-model-field { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; max-width: 100%; }
+.atm-model-field small { color: var(--atm-text-secondary); }
+.atm-model-field .model-selector { max-width: 100%; }
+.atm-editor-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 24px; border-top: 1px solid var(--atm-border-soft); flex: none; background: var(--atm-surface); }
+.atm-editor-footer > p { font-size: .75rem; color: var(--atm-text-secondary); line-height: 1.6; margin: 0; }
+.atm-editor-footer > div { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.atm-editor-footer .atm-detail-btn { min-height: 36px; font-size: .8125rem; }
+.automation-panel .atm-inbox-row .atm-row-hover-actions { opacity: 1; visibility: visible; pointer-events: auto; }
+@media (max-width: 760px) {
+  .automation-panel .atm-toolbar { padding: 14px 16px; }
+  .automation-panel .atm-toolbar-left, .automation-panel .atm-toolbar-right { width: 100%; justify-content: space-between; }
+  .automation-panel .atm-search-input { flex: 1; width: auto; min-width: 120px; }
+  .atm-task-list--cards, .atm-task-detail { padding: 16px; }
+  .atm-task-card { padding: 16px; }
+  .atm-editor-overlay { padding: 0; }
+  .atm-editor-dialog { height: 100%; width: 100%; border: 0; border-radius: 0; }
+  .atm-editor-dialog .atm-detail-header { padding-inline: 16px; }
+  .atm-editor-dialog .atm-modal-body { padding: 16px; }
+  .atm-editor-dialog .atm-detail-breadcrumb-current, .atm-editor-dialog .atm-detail-breadcrumb-sep { display: none; }
+  .atm-editor-footer { padding: 12px 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .atm-status-icon-spinning { animation: none; } }
+.atm-editor-error { padding: 10px 12px; border-radius: 8px; color: var(--echo-status-error); background: var(--echo-bg-secondary); font-size: .8125rem; line-height: 1.7; }
+.atm-editor-delete { color: var(--echo-status-error); }
+.atm-run-audit { margin: 12px 0 16px; font-size: .75rem; color: var(--atm-text-secondary); line-height: 1.7; }
+.atm-run-audit summary { cursor: pointer; }
+.atm-run-audit dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; }
+.atm-run-audit dd { margin: 0; overflow-wrap: anywhere; }

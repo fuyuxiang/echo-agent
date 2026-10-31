@@ -338,6 +338,50 @@ describe("session-store transcripts", () => {
     expect(useSessionStore.getState().control).toBeUndefined();
   });
 
+  it("重启后未打开的停止会话恢复新轮次，仍隔离上一轮的迟到消息", () => {
+    localStorage.setItem("echoagent.session-controls.v1", JSON.stringify({ A: {
+      action: "stop", phase: "stopped", promptId: "old-prompt", requestedAt: 1,
+    } }));
+    const store = useSessionStore.getState();
+    store.resumeSession("A");
+    store.requestSendNow("new-prompt", "A");
+    store.applyUpdate({ ...userChunk({ type: "text", text: "新要求" }, "A"), _meta: { promptId: "new-prompt" } });
+    store.applyUpdate({ ...chunk("新结果", "A"), _meta: { promptId: "new-prompt" } });
+    store.markComplete({ sessionId: "A", promptId: "new-prompt", stopReason: "end_turn" });
+    store.applyUpdate({ ...chunk("旧结果不应出现", "A"), _meta: { promptId: "old-prompt" } });
+    const transcript = useSessionStore.getState().transcripts.A;
+    expect(transcript.streamingMessageId).toBeNull();
+    expect(transcript.control).toBeUndefined();
+    expect(transcript.messages.flatMap(message => message.parts)).toEqual([
+      { kind: "text", text: "新要求" }, { kind: "text", text: "新结果" },
+    ]);
+    expect(JSON.parse(localStorage.getItem("echoagent.session-controls.v1")!)).toEqual({});
+  });
+
+  it("后台轮次在用户消息回显前可停止，回显后保持用户与助手顺序及同一占位消息", () => {
+    const store = useSessionStore.getState();
+    store.startStreaming("A", "scheduled-prompt");
+    const placeholderId = useSessionStore.getState().transcripts.A.streamingMessageId;
+    store.applyUpdate({ ...userChunk({ type: "text", text: "定时要求" }, "A"), _meta: { promptId: "scheduled-prompt", promptIndex: 0 } });
+    const transcript = useSessionStore.getState().transcripts.A;
+    expect(transcript.pendingSendNowPromptId).toBeNull();
+    expect(transcript.streamingMessageId).toBe(placeholderId);
+    expect(transcript.messages.map(message => message.role)).toEqual(["user", "assistant"]);
+    store.requestControl("A", "stop", "scheduled-prompt");
+    store.confirmControl("A", "stop");
+    expect(useSessionStore.getState().transcripts.A.control?.phase).toBe("stopped");
+  });
+
+  it("后台任务入场不清除前台会话的错误提示", () => {
+    const store = useSessionStore.getState();
+    store.setSession("foreground");
+    store.setError("当前会话的模型连接失败");
+    store.startStreaming("background", "scheduled-prompt");
+    expect(useSessionStore.getState().error).toBe("当前会话的模型连接失败");
+    store.startStreaming("foreground", "manual-prompt");
+    expect(useSessionStore.getState().error).toBeNull();
+  });
+
   it.each(["pausing", "paused"])("暂停屏障仍接收本轮迟到的身份元数据，不恢复执行：%s", (phase) => {
     const store = useSessionStore.getState();
     store.setSession("A");

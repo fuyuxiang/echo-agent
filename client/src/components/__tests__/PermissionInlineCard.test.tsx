@@ -78,14 +78,46 @@ describe("PermissionInlineCard", () => {
 
   it("默认只突出单次批准和拒绝，长期授权留在下拉中", () => {
     render(<PermissionInlineCard sessionId="session-1" />);
-    expect(screen.getByText("终端")).toBeInTheDocument();
+    expect(screen.getByText("是否允许运行这条命令？")).toBeInTheDocument();
     const choices = screen.getByRole("group", { name: "授权选择" });
     expect(within(choices).getAllByRole("button")).toHaveLength(3);
     expect(within(choices).getByRole("button", { name: "允许一次" })).toBeInTheDocument();
-    expect(within(choices).getByRole("button", { name: "拒绝" })).toBeInTheDocument();
+    expect(within(choices).getByRole("button", { name: "拒绝本次" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem")).toBeNull();
     expect(screen.getByText("操作详情").closest("details")).not.toHaveAttribute("open");
     expect(screen.getByLabelText("操作内容")).toHaveTextContent("python3 -c 'print(1)'");
+  });
+
+  it("长命令只有一份，可完整展开和收起，新请求从折叠状态开始", () => {
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(240);
+    try {
+      const command = '$f = "C:\\Users\\Taurus\\.echo-agent\\sessions\\' + "encoded-cache/".repeat(50) + 'output.txt"; Get-Content $f';
+      usePermissionStore.setState({ queues: { "session-1": [{ ...request, title: `Execute \`${command}\``, rawInput: { command } }] } });
+      render(<PermissionInlineCard sessionId="session-1" />);
+      expect(screen.getByText("是否允许运行这条命令？")).toBeVisible();
+      expect(screen.getByLabelText("操作内容").textContent).toBe(command);
+      expect(screen.queryByText("操作详情")).toBeNull();
+      const toggle = screen.getByRole("button", { name: "展开完整命令" });
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByLabelText("操作内容")).toHaveClass("is-expanded");
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(toggle);
+      act(() => usePermissionStore.setState({ queues: { "session-1": [{ ...request, requestId: "next-command", title: `Execute \`${command}\``, rawInput: { command } }] } }));
+      expect(screen.getByRole("button", { name: "展开完整命令" })).toHaveAttribute("aria-expanded", "false");
+    } finally { scrollHeight.mockRestore(); }
+  });
+
+  it("有说明才展示一句操作说明，其他参数中不重复命令和说明", () => {
+    usePermissionStore.setState({ queues: { "session-1": [{ ...request, title: "Execute `python3 check.py`", rawInput: {
+      command: "python3 check.py", description: "核对交付文件，继续整理检查结果。", cwd: "/workspace",
+    } }] } });
+    const { container } = render(<PermissionInlineCard sessionId="session-1" />);
+    expect(screen.getByText("操作说明：核对交付文件，继续整理检查结果。")).toBeVisible();
+    fireEvent.click(screen.getByText("操作详情"));
+    expect(container.querySelector(".perm-inline__raw")).toHaveTextContent("/workspace");
+    expect(container.querySelector(".perm-inline__raw")).not.toHaveTextContent(/python3|核对交付文件/);
   });
 
   it("授权菜单聚焦和悬停后都不再显示后端英文悬浮提示", async () => {
@@ -139,7 +171,7 @@ describe("PermissionInlineCard", () => {
 
   it("拒绝只提交当前请求的拒绝选项", async () => {
     render(<PermissionInlineCard sessionId="session-1" />);
-    fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
+    fireEvent.click(screen.getByRole("button", { name: "拒绝本次" }));
     await waitFor(() => expect(resolvePermission).toHaveBeenCalledWith("permission-1", { optionId: "reject-once", cancelled: false }));
     expect(setPermissionMode).not.toHaveBeenCalled();
   });
@@ -147,7 +179,7 @@ describe("PermissionInlineCard", () => {
   it("缺少拒绝选项时取消请求，不会猜测其他选项", async () => {
     usePermissionStore.setState({ queues: { "session-1": [{ ...request, options: request.options.filter(o => o.kind !== "deny") }] } });
     render(<PermissionInlineCard sessionId="session-1" />);
-    fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
+    fireEvent.click(screen.getByRole("button", { name: "拒绝本次" }));
     await waitFor(() => expect(resolvePermission).toHaveBeenCalledWith("permission-1", { optionId: undefined, cancelled: true }));
   });
 
@@ -185,6 +217,21 @@ describe("PermissionInlineCard", () => {
     openOptions();
     fireEvent.click(screen.getByRole("menuitem", { name: /^始终允许此类操作\s*范围：python3$/ }));
     await waitFor(() => expect(resolvePermission).toHaveBeenCalledWith("permission-1", { optionId: "allow-always-command", cancelled: false }));
+    expect(setPermissionMode).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["deny_always", "Never allow: git", "范围：git"],
+    ["allow_always", "Yes, always allow example.com for this project", "项目范围：example.com（跨任务生效）"],
+    ["deny_always", "No, never allow www.example.com for this project", "项目范围：www.example.com（跨任务生效）"],
+  ] as const)("持续授权显示 Runtime 实际给出的范围：%s / %s", async (kind, title, scope) => {
+    usePermissionStore.setState({ queues: { "session-1": [{ ...request, options: [
+      ...request.options, { optionId: "runtime-scoped", kind, title },
+    ] }] } });
+    render(<PermissionInlineCard sessionId="session-1" />);
+    openOptions();
+    fireEvent.click(screen.getByText(scope));
+    await waitFor(() => expect(resolvePermission).toHaveBeenCalledWith("permission-1", { optionId: "runtime-scoped", cancelled: false }));
     expect(setPermissionMode).not.toHaveBeenCalled();
   });
 

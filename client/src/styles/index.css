@@ -11,7 +11,9 @@
 @import "../components/AutomationBoundaryNotice.css";
 @import "../components/WeixinChannelPanel.css";
 @import "./visual-polish.css";
+@import "./page-toolbar.css";
 @import "./form-controls.css";
+@import "./organization-workspace.css";
 @import "./settings-controls.css";
 @import "./session-workbench.css";
 @import "./permissions.css";

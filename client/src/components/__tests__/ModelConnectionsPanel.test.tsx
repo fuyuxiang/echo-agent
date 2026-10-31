@@ -57,8 +57,50 @@ describe("ModelConnectionsPanel", () => {
     mocks.agentsDefaultsGet.mockResolvedValue(defaults);
     mocks.agentAuthStatus.mockResolvedValue({ ready: true, defaultModelId: undefined });
     mocks.internalReload.mockResolvedValue(undefined);
+    mocks.providersTestModelConnection.mockReset();
     mocks.orgSession.mockResolvedValue({ loggedIn: false });
     mocks.listenOrgModelsChanged.mockResolvedValue(() => {});
+  });
+
+  it.each(["personal", "organization", "builtin"] as const)("%s 模型可逐一测试，失败重试不影响默认配置", async source => {
+    const provider = { ...importProvider, source, managed: source !== "personal" };
+    mocks.providersList.mockResolvedValue({ providers: [provider], models: [
+      { modelId: "local/a", remoteModelId: "remote-a", name: "模型 A", providerId: provider.id, managed: provider.managed },
+      { modelId: "local/b", remoteModelId: "remote-b", name: "模型 B", providerId: provider.id, managed: provider.managed },
+    ] });
+    let rejectTest!: (error: Error) => void;
+    mocks.providersTestModelConnection.mockImplementationOnce(() => new Promise((_, reject) => { rejectTest = reject; }))
+      .mockResolvedValueOnce(undefined);
+    render(<ModelConnectionsPanel />);
+    const button = await screen.findByRole("button", { name: "测试模型 模型 B" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(screen.getByRole("button", { name: "测试模型 模型 A" })).toBeEnabled();
+    expect(mocks.providersTestModelConnection).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: provider.id, apiKey: undefined }), "remote-b");
+    await act(async () => { rejectTest(new Error("模型接口返回 429：请稍后重试")); });
+    const row = button.closest("li")!;
+    expect(within(row).getByRole("status")).toHaveTextContent("上次测试失败");
+    expect(within(row).getByRole("status")).toHaveTextContent("模型接口返回 429");
+    fireEvent.click(button);
+    expect(await within(row).findByRole("status")).toHaveTextContent("测试通过 · 耗时");
+    expect(within(row).queryByText(/429/)).not.toBeInTheDocument();
+    expect(mocks.agentsDefaultsSave).not.toHaveBeenCalled();
+    expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
+  });
+
+  it("管理入口定位指定连接和模型，跨连接同名模型不会混淆", async () => {
+    mocks.providersList.mockResolvedValue({ providers: [
+      { ...importProvider, id: "org", source: "organization", label: "团队", managed: true },
+      importProvider,
+    ], models: [
+      { modelId: "org/a", remoteModelId: "a", name: "同名模型", providerId: "org" },
+      { modelId: "personal/a", remoteModelId: "a", name: "同名模型", providerId: "personal" },
+    ] });
+    render(<ModelConnectionsPanel initialModelId="personal/a" />);
+    const region = await screen.findByRole("region", { name: "工作连接连接详情" });
+    expect(within(region).getByRole("listitem")).toHaveAttribute("data-model-id", "personal/a");
+    expect(within(region).getByRole("listitem")).toHaveFocus();
   });
 
   it("中文输入 Model ID 时 Enter 不添加，关闭草稿先确认", async () => {
@@ -231,12 +273,12 @@ describe("ModelConnectionsPanel", () => {
     expect(screen.queryByText(/embed-pro|rerank-pro|chat-glm|chat-qwen|chat-xc/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "编辑连接" })).not.toBeInTheDocument();
     mocks.providersTestModelConnection.mockResolvedValue(undefined);
-    fireEvent.click(screen.getByRole("button", { name: "测试模型" }));
+    fireEvent.click(screen.getByRole("button", { name: "测试模型 Echo Reed" }));
     await waitFor(() => expect(mocks.providersTestModelConnection).toHaveBeenCalledWith(
       expect.objectContaining({ id: "echoagent-ojlab", apiKey: undefined }),
       "Echo Reed",
     ));
-    expect(await screen.findByText("模型「Echo Reed」调用成功。")).toBeInTheDocument();
+    expect(await screen.findByText(/测试通过 · 耗时/)).toBeInTheDocument();
   });
 
   it("标题和无纵向溢出的连接列表可继续滚动详情，移动布局交由原生滚动", async () => {

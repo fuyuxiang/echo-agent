@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
+  orgLibraryQuery: vi.fn(), orgLibrarySummary: vi.fn(),
   orgSession: vi.fn(), orgLogin: vi.fn(), orgLogout: vi.fn(),
   orgMemoryPromotionsMine: vi.fn(), orgListScopes: vi.fn(), orgListDocuments: vi.fn(),
   orgListMemories: vi.fn(), orgListSkills: vi.fn(), orgDocumentSubmissionsMinePage: vi.fn(),
@@ -55,6 +56,13 @@ function mockWorkspace() {
   api.orgSubmitMemoryCandidate.mockResolvedValue({ promotionId: "p1", state: "pending" });
 }
 
+function documentAction(name: string, index = 0) {
+  const trigger = screen.getAllByRole("button", { name: /更多文档操作/ })[index];
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("menuitem", { name }));
+  return trigger;
+}
+
 describe("OrganizationMemoryPanel", () => {
   beforeEach(() => {
     resetOrgSessionMirror();
@@ -63,6 +71,48 @@ describe("OrganizationMemoryPanel", () => {
     agentClientMocks.filesystemPickFiles.mockResolvedValue([]);
     agentClientMocks.filesystemPickDirectory.mockResolvedValue(null);
     mockWorkspace();
+    api.orgLibraryQuery.mockImplementation(async (resource: string, query: {scopeId:string;query:string;filter:string;page:number;size:number}) => {
+      let items: any[] = [];
+      let total: number | undefined;
+      if(resource === "documents") { const page = await api.orgListDocuments(query.scopeId || undefined, query.query || undefined, query.page, query.size); items=page.items; total=page.total; }
+      else if(resource === "document-submissions") { const page=await api.orgDocumentSubmissionsMinePage(query.page,query.size);items=page.items;total=page.total; }
+      else if(resource === "memories") items=await api.orgListMemories();
+      else if(resource === "skills") items=await api.orgListSkills();
+      else if(resource === "memory-submissions") items=(await api.orgMemoryPromotionsMine()).filter((item:any)=>item.payloadType === "memory");
+      else items=await api.orgSkillSubmissionsMine();
+      items=items.filter(item=>(!query.scopeId || item.scopeId===query.scopeId) && (!query.query || JSON.stringify(item).includes(query.query)));
+      return {items: total === undefined ? items.slice((query.page-1)*query.size,query.page*query.size):items,total:total??items.length,page:query.page,size:query.size};
+    });
+    api.orgLibrarySummary.mockImplementation(async () => {
+      await Promise.resolve();
+      const result = async (mock: ReturnType<typeof vi.fn>) => await mock.mock.results[mock.mock.results.length - 1]?.value;
+      const [docs, memories, skills, promos, docSubs, skillSubs] = await Promise.all([api.orgListDocuments,api.orgListMemories,api.orgListSkills,api.orgMemoryPromotionsMine,api.orgDocumentSubmissionsMinePage,api.orgSkillSubmissionsMine].map(result));
+      return {memories:memories?.length??0,documents:docs?.total??0,documentReady:docs?.items?.filter((item:any)=>item.status === "ready").length??0,documentProcessing:docs?.items?.filter((item:any)=>["pending","parsing","chunking","embedding"].includes(item.status)).length??0,
+        skills:skills?.length??0,skillInstalled:skills?.filter((item:any)=>item.enabled).length??0,skillMandatory:skills?.filter((item:any)=>item.mandatory).length??0,
+        memoryPending:promos?.filter((item:any)=>item.state === "pending" && item.payloadType === "memory").length??0,documentPending:docSubs?.items?.filter((item:any)=>item.state === "pending").length??0,skillPending:skillSubs?.filter((item:any)=>item.state === "pending").length??0};
+    });
+  });
+
+  it("首次加载失败不显示零数据，重试后恢复真实资源数量", async () => {
+    api.orgListScopes.mockRejectedValueOnce(new Error("error sending request for url (https://memory.example.com/api/v1/auth/refresh)"));
+    render(<OrganizationMemoryPanel />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("暂时无法连接组织服务");
+    expect(screen.queryByLabelText("组织知识概况")).toBeNull();
+    expect(screen.getByText("组织资料暂不可用，恢复连接后刷新查看。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByLabelText("组织知识概况")).toHaveTextContent("可检索文档");
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(api.orgListScopes).toHaveBeenCalledTimes(2);
+  });
+
+  it("刷新失败保留已加载内容，明确提示资料未更新", async () => {
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    api.orgListScopes.mockRejectedValueOnce(new Error("network connection failed"));
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("暂时无法连接组织服务");
+    expect(screen.getByText("组织资料更新失败，下方保留上次加载的内容。")).toBeInTheDocument();
+    expect(screen.getByLabelText("组织知识概况")).toHaveTextContent("可检索文档");
   });
 
   it("登录凭据失效后回填服务器和账号，只要求重新输入密码", async () => {
@@ -86,7 +136,7 @@ describe("OrganizationMemoryPanel", () => {
   it("登录后进入管理概览且不再提供独立组织问答", async () => {
     const onStartConversation = vi.fn();
     render(<OrganizationMemoryPanel onStartConversation={onStartConversation} />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     expect(screen.getByRole("heading", { name: "组织知识" })).toBeInTheDocument();
     expect(screen.getByText("在对话中使用组织知识")).toBeInTheDocument();
     expect(screen.queryByText("组织问答")).not.toBeInTheDocument();
@@ -134,7 +184,7 @@ describe("OrganizationMemoryPanel", () => {
     let resolvePreview!: (value: { kind: "text"; content: string }) => void;
     api.orgPreviewDocument.mockReturnValue(new Promise((resolve) => { resolvePreview = resolve; }));
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
     fireEvent.click(screen.getAllByRole("button", { name: "查看" })[0]);
 
@@ -143,7 +193,7 @@ describe("OrganizationMemoryPanel", () => {
       loggedIn: true, serverUrl: "https://other.example.com",
       user: { id: "u2", username: "bob", displayName: "Bob", role: "member", clearance: 0 },
     }));
-    await screen.findByText("Bob · https://other.example.com");
+    await screen.findByRole("button", { name: "组织账号：Bob" });
     await act(async () => resolvePreview({ kind: "text", content: "Alice 私有文档内容" }));
 
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
@@ -168,7 +218,7 @@ describe("OrganizationMemoryPanel", () => {
       loggedIn: true, serverUrl: "https://new.example.com",
       user: { id: "u2", username: "bob", displayName: "Bob", role: "member", clearance: 0 },
     }));
-    await screen.findByText("Bob · https://new.example.com");
+    await screen.findByRole("button", { name: "组织账号：Bob" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
     expect(screen.queryByText("旧账号保密文档")).toBeNull();
   });
@@ -176,16 +226,16 @@ describe("OrganizationMemoryPanel", () => {
   it("更新文档原件选择失败时显示恢复提示", async () => {
     agentClientMocks.filesystemPickFiles.mockRejectedValueOnce(new Error("文件选择器不可用"));
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
-    fireEvent.click(screen.getAllByRole("button", { name: "新版本" })[0]);
+    documentAction("新版本");
     expect(await screen.findByText("选择新版本失败：文件选择器不可用")).toBeInTheDocument();
     expect(api.orgNewDocumentVersion).not.toHaveBeenCalled();
   });
 
   it("查看范围只过滤列表，不改变写入目标", async () => {
     render(<OrganizationMemoryPanel cwd="/workspace/payments" />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
     fireEvent.change(screen.getByLabelText("查看范围"), { target: { value: teamScope.id } });
     fireEvent.click(screen.getByRole("button", { name: "提交经验" }));
@@ -200,7 +250,7 @@ describe("OrganizationMemoryPanel", () => {
 
   it("切换查看范围时只显示当前范围文档", async () => {
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
     expect(screen.getByText("个人文档")).toBeInTheDocument();
     expect(screen.getByText("团队文档")).toBeInTheDocument();
@@ -218,7 +268,7 @@ describe("OrganizationMemoryPanel", () => {
       total: 1, page: 1, size: 20,
     });
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
     const view = screen.getAllByRole("button", { name: "查看" })[0];
     view.focus();
@@ -228,15 +278,14 @@ describe("OrganizationMemoryPanel", () => {
     fireEvent.keyDown(globalThis.document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(view).toHaveFocus();
-    const publish = screen.getByRole("button", { name: "发布副本" });
-    publish.focus();
-    fireEvent.click(publish);
+    const publish = documentAction("发布副本");
     const confirmation = screen.getByRole("dialog", { name: "发布文档副本" });
     const cancel = within(confirmation).getByRole("button", { name: "取消" });
     expect(cancel).toHaveFocus();
     fireEvent.keyDown(globalThis.document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(publish).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "我的提交" }));
     const remove = screen.getAllByRole("button", { name: "删除" })[0];
     remove.focus();
     fireEvent.click(remove);
@@ -252,14 +301,14 @@ describe("OrganizationMemoryPanel", () => {
   it("写入范围为团队时仍可为个人文档选择副本发布目标", async () => {
     api.orgPublishDocument.mockResolvedValue({ state: "approved" });
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
     fireEvent.click(screen.getByRole("button", { name: "上传文档" }));
     const uploadDialog = screen.getByRole("dialog", { name: "选择上传位置" });
     fireEvent.change(within(uploadDialog).getByLabelText("文档上传范围"), { target: { value: teamScope.id } });
     fireEvent.click(within(uploadDialog).getByRole("button", { name: "取消" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "发布副本" }));
+    documentAction("发布副本");
     const dialog = screen.getByRole("dialog", { name: "发布文档副本" });
     expect(within(dialog).getByLabelText("文档副本发布目标")).toHaveValue(teamScope.id);
     fireEvent.click(within(dialog).getByRole("button", { name: "确认发布" }));
@@ -273,7 +322,7 @@ describe("OrganizationMemoryPanel", () => {
     });
     api.orgFetchDocument.mockResolvedValue({ docId: "office-1", text: "文档中的实际内容", chunks: [{ seq: 0, text: "文档中的实际内容" }] });
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
     fireEvent.click(screen.getByRole("button", { name: "查看" }));
     expect(await screen.findByText("文档中的实际内容")).toBeInTheDocument();
@@ -289,7 +338,7 @@ describe("OrganizationMemoryPanel", () => {
     });
     api.orgFetchDocument.mockResolvedValue({ docId: "office-2", text: "", chunks: [] });
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
     fireEvent.click(screen.getByRole("button", { name: "查看" }));
     const dialog = await screen.findByRole("dialog", { name: "查看文档 待解析.docx" });
@@ -306,7 +355,8 @@ describe("OrganizationMemoryPanel", () => {
     });
     api.orgListScopes.mockResolvedValue([personalScope]);
     render(<OrganizationMemoryPanel onStartConversation={vi.fn()} />);
-    expect(await screen.findByText("未加入共享组织范围")).toBeInTheDocument();
+    await screen.findByRole("button", { name: "组织账号：Alice" });
+    expect(screen.getAllByText("暂无团队或组织共享权限").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "发起对话" })).toBeDisabled();
   });
 
@@ -318,7 +368,7 @@ describe("OrganizationMemoryPanel", () => {
     }]);
     api.orgSetSkillPreference.mockResolvedValue({ skillId: "skill-1", enabled: true });
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^Skills/ }));
     fireEvent.click(await screen.findByRole("button", { name: "安装" }));
     await waitFor(() => expect(api.orgSetSkillPreference).toHaveBeenCalledWith("skill-1", true));
@@ -397,8 +447,9 @@ describe("OrganizationMemoryPanel", () => {
     let finishLogout: (() => void) | undefined;
     api.orgLogout.mockImplementation(() => new Promise<void>((resolve) => { finishLogout = resolve; }));
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
-    fireEvent.click(screen.getByRole("button", { name: "退出组织" }));
+    await screen.findByRole("button", { name: "组织账号：Alice" });
+    fireEvent.click(screen.getByRole("button", { name: "组织账号：Alice" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出登录" }));
     expect(screen.getByRole("heading", { name: "连接组织" })).toBeInTheDocument();
     expect(screen.queryByText("Alice · https://memory.example.com")).not.toBeInTheDocument();
     expect(useOrgSessionStore.getState().session?.loggedIn).toBe(false);
@@ -426,7 +477,7 @@ describe("OrganizationMemoryPanel", () => {
     });
     vi.mocked(filesystemPickFiles).mockResolvedValue(Array.from({ length: 5 }, (_, index) => `/tmp/${index}.md`));
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
     fireEvent.click(screen.getByRole("button", { name: "上传文档" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "选择上传位置" })).getByRole("button", { name: "选择文件" }));
@@ -444,7 +495,7 @@ describe("OrganizationMemoryPanel", () => {
       : { state: "approved", dedup: false });
     vi.mocked(filesystemPickFiles).mockResolvedValue(["/tmp/0.md", "/tmp/1.md"]);
     render(<OrganizationMemoryPanel onToast={toast} />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
     fireEvent.click(screen.getByRole("button", { name: "上传文档" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "选择上传位置" })).getByRole("button", { name: "选择文件" }));
@@ -462,8 +513,9 @@ describe("OrganizationMemoryPanel", () => {
     api.orgDownloadDocument.mockResolvedValue("/tmp/report.md");
     api.orgRemoveOwnSubmission.mockResolvedValue({ removed: true });
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    fireEvent.click(screen.getByRole("button", { name: "我的提交" }));
     const row = screen.getByText("报告").closest(".org-document-submissions__row") as HTMLElement;
     fireEvent.click(within(row).getByRole("button", { name: "查看" }));
     expect(await screen.findByRole("dialog", { name: "查看文档 报告.md" })).toBeInTheDocument();
@@ -486,9 +538,10 @@ describe("OrganizationMemoryPanel", () => {
     });
     api.orgSubmitDocument.mockResolvedValue({ state: "approved" });
     render(<OrganizationMemoryPanel />);
-    await screen.findByText("Alice · https://memory.example.com");
+    await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
-    fireEvent.click(screen.getByRole("button", { name: "上传文件夹" }));
+    fireEvent.click(screen.getByRole("button", { name: "更多上传方式" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "上传文件夹" }));
     const uploadDialog = screen.getByRole("dialog", { name: "选择上传位置" });
     fireEvent.change(within(uploadDialog).getByLabelText("文档上传范围"), { target: { value: teamScope.id } });
     fireEvent.click(within(uploadDialog).getByRole("button", { name: "选择文件夹" }));
@@ -500,4 +553,119 @@ describe("OrganizationMemoryPanel", () => {
       "/workspace/docs/nested/b.txt", teamScope.id, "nested/b.txt",
     ));
   });
+  it("概览与左侧显示服务端总数，翻页与刷新不丢失当前页", async () => {
+    api.orgLibrarySummary.mockResolvedValue({ memories: 245, documents: 126, documentReady: 120, documentProcessing: 6, skills: 67, skillInstalled: 12, skillMandatory: 3, memoryPending: 0, documentPending: 0, skillPending: 0 });
+    const original = api.orgLibraryQuery.getMockImplementation()!;
+    api.orgLibraryQuery.mockImplementation(async (resource, query) => resource === "documents"
+      ? { items: [document(`page-${query.page}`, `第 ${query.page} 页文档`, teamScope.id, teamScope.name)], total: 126, page: query.page, size: query.size }
+      : original(resource, query));
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    expect(screen.getByRole("button", { name: "文档 126" })).toBeInTheDocument();
+    expect(screen.getByLabelText("组织知识概况")).toHaveTextContent("120");
+    fireEvent.click(screen.getByRole("button", { name: "文档 126" }));
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("第 2 页文档")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled());
+    expect(screen.getByText("第 2 页文档")).toBeInTheDocument();
+    expect(screen.getByText("2 / 7")).toBeInTheDocument();
+  });
+
+  it("三个资源及我的提交分别保存筛选条件，不互相改变", async () => {
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
+    fireEvent.change(screen.getByLabelText("查看范围"), { target: { value: teamScope.id } });
+    fireEvent.change(screen.getByLabelText("经验类型"), { target: { value: "howto" } });
+    fireEvent.click(screen.getByRole("button", { name: "我的提交" }));
+    expect(screen.getByLabelText("查看范围")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("提交状态"), { target: { value: "approved" } });
+    fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    expect(screen.getByLabelText("查看范围")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
+    expect(screen.getByLabelText("提交状态")).toHaveValue("approved");
+    fireEvent.click(screen.getByRole("button", { name: "已发布" }));
+    expect(screen.getByLabelText("查看范围")).toHaveValue(teamScope.id);
+    expect(screen.getByLabelText("经验类型")).toHaveValue("howto");
+  });
+
+  it("迟到的旧搜索不能覆盖新搜索结果", async () => {
+    let finishOld!: (value: unknown) => void;
+    const original = api.orgLibraryQuery.getMockImplementation()!;
+    api.orgLibraryQuery.mockImplementation(async (resource, query) => {
+      if (resource !== "documents" || !query.query) return original(resource, query);
+      if (query.query === "旧搜索") return new Promise(resolve => { finishOld = resolve; });
+      return { items: [document("new", "新搜索结果", teamScope.id, teamScope.name)], total: 1, page: 1, size: 20 };
+    });
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "旧搜索" } });
+    await waitFor(() => expect(finishOld).toBeTypeOf("function"));
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "新搜索" } });
+    expect(await screen.findByText("新搜索结果")).toBeInTheDocument();
+    await act(async () => finishOld({ items: [document("old", "旧搜索结果", teamScope.id, teamScope.name)], total: 1, page: 1, size: 20 }));
+    expect(screen.queryByText("旧搜索结果")).toBeNull();
+    expect(screen.getByText("新搜索结果")).toBeInTheDocument();
+  });
+
+  it("我的提交显示完整分页，不再截断为8条", async () => {
+    api.orgMemoryPromotionsMine.mockResolvedValue(Array.from({ length: 31 }, (_, index) => ({ id: `p-${index}`, payloadType: "memory", payload: { content: `经验记录 ${index+1}` }, state: "approved", scopeId: teamScope.id, scopeName: teamScope.name, scopeKind: "team" })));
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
+    fireEvent.click(screen.getByRole("button", { name: "我的提交" }));
+    expect(screen.getByText("经验记录 20")).toBeInTheDocument();
+    expect(screen.queryByText("经验记录 21")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("经验记录 31")).toBeInTheDocument();
+    expect(screen.queryByText("经验记录 1")).toBeNull();
+  });
+
+  it("经验弹窗关闭后保留草稿并恢复提交入口焦点", async () => {
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
+    const trigger=screen.getByRole("button", { name: "提交经验" });
+    trigger.focus(); fireEvent.click(trigger);
+    fireEvent.change(screen.getByLabelText("经验内容"), { target: { value: "发布前检查回滚脚本" } });
+    fireEvent.keyDown(globalThis.document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    expect(screen.getByLabelText("经验内容")).toHaveValue("发布前检查回滚脚本");
+  });
+
+  it("新筛选失败不会把旧范围结果冒充当前结果，重试可恢复", async () => {
+    const original=api.orgLibraryQuery.getMockImplementation()!;
+    let failed=false;
+    api.orgLibraryQuery.mockImplementation(async(resource, query)=>{
+      if(resource==="documents"&&query.scopeId===teamScope.id&&!failed){failed=true;throw new Error("network failed");}
+      return original(resource,query);
+    });
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    fireEvent.change(screen.getByLabelText("查看范围"), { target: { value: teamScope.id } });
+    await screen.findByRole("alert");
+    expect(screen.queryByText("个人文档")).toBeNull();
+    expect(screen.queryByText("当前范围暂无已发布内容")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("团队文档")).toBeInTheDocument();
+  });
+
+  it("Skill共享目标只在操作弹窗中选择，提交范围与查看范围分离", async()=>{
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^Skills/ }));
+    expect(screen.queryByLabelText("Skill 提交范围")).toBeNull();
+    fireEvent.change(screen.getByLabelText("查看范围"),{target:{value:teamScope.id}});
+    fireEvent.click(screen.getByRole("button", { name: "提交 Skill" }));
+    const dialog=screen.getByRole("dialog",{name:"提交 Skill"});
+    expect(within(dialog).getByLabelText("Skill 提交范围")).toHaveValue(personalScope.id);
+    fireEvent.click(within(dialog).getByRole("button",{name:"取消"}));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
 });

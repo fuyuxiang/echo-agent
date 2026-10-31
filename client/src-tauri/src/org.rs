@@ -2261,6 +2261,76 @@ pub async fn org_list_documents(
     authenticated_json(&state.inner, Method::GET, &request_path, None).await
 }
 
+fn library_query_path(
+    resource: &str,
+    scope_id: Option<&str>,
+    query: Option<&str>,
+    filter: Option<&str>,
+    page: Option<u32>,
+    size: Option<u32>,
+) -> Result<String, String> {
+    if !matches!(
+        resource,
+        "summary"
+            | "memories"
+            | "documents"
+            | "skills"
+            | "memory-submissions"
+            | "document-submissions"
+            | "skill-submissions"
+    ) {
+        return Err("organization library resource is invalid".into());
+    }
+    if let Some(scope) = scope_id.filter(|s| !s.is_empty()) {
+        validate_resource_id(scope, "organization scope id")?;
+    }
+    if let Some(query) = query {
+        validate_bounded_text(query, "organization library query", MAX_QUERY_CHARS, true)?;
+    }
+    if let Some(filter) = filter {
+        validate_bounded_text(filter, "organization library filter", 30, true)?;
+    }
+    let mut url = Url::parse("http://local/api/v1/knowledge/library").unwrap();
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("resource", resource);
+        for (key, value) in [("scopeId", scope_id), ("q", query), ("filter", filter)] {
+            if let Some(value) = value.filter(|value| !value.is_empty()) {
+                pairs.append_pair(key, value);
+            }
+        }
+        pairs.append_pair("page", &page.unwrap_or(1).clamp(1, 1_000_000).to_string());
+        pairs.append_pair("size", &size.unwrap_or(20).clamp(1, 100).to_string());
+    }
+    Ok(format!(
+        "{}?{}",
+        url.path(),
+        url.query().unwrap_or_default()
+    ))
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn org_library_query(
+    state: State<'_, OrgState>,
+    resource: String,
+    scope_id: Option<String>,
+    query: Option<String>,
+    filter: Option<String>,
+    page: Option<u32>,
+    size: Option<u32>,
+) -> Result<Value, String> {
+    let path = library_query_path(
+        &resource,
+        scope_id.as_deref(),
+        query.as_deref(),
+        filter.as_deref(),
+        page,
+        size,
+    )?;
+    authenticated_json(&state.inner, Method::GET, &path, None).await
+}
+
 #[tauri::command]
 pub async fn org_list_memories(
     state: State<'_, OrgState>,
@@ -4612,6 +4682,36 @@ fn drain_sse_events(pending: &mut Vec<u8>) -> Result<Vec<(String, Value)>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_queries_are_bounded_and_cannot_change_the_endpoint() {
+        assert!(library_query_path("../auth/logout", None, None, None, None, None).is_err());
+        let path = library_query_path(
+            "memories",
+            Some("team"),
+            Some("回滚 & scopeId=private"),
+            Some("howto"),
+            Some(0),
+            Some(500),
+        )
+        .unwrap();
+        let url = Url::parse(&format!("http://local{path}")).unwrap();
+        let pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(url.path(), "/api/v1/knowledge/library");
+        assert_eq!(pairs["scopeId"], "team");
+        assert_eq!(pairs["q"], "回滚 & scopeId=private");
+        assert_eq!(pairs["page"], "1");
+        assert_eq!(pairs["size"], "100");
+        assert!(library_query_path(
+            "skills",
+            None,
+            Some(&"x".repeat(MAX_QUERY_CHARS + 1)),
+            None,
+            None,
+            None
+        )
+        .is_err());
+    }
 
     #[test]
     fn local_knowledge_snapshot_distinguishes_revoked_sources_from_no_store() {

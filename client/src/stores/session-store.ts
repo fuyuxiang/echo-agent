@@ -746,7 +746,7 @@ function normalizeUserChunk(update: Record<string, unknown>): ReplayedUserChunk 
   };
 }
 
-function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk): SessionTranscript {
+function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk, livePromptId?: string): SessionTranscript {
   const messages = [...transcript.messages];
 
   // A prompt may replay as text followed by one or more image blocks. Merge
@@ -794,9 +794,6 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk)
     return { ...transcript, messages };
   }
 
-  // A new replayed user turn closes the previous assistant turn. Insert it
-  // before an empty live placeholder if one exists, otherwise append normally.
-  const completed = completeStreamingAssistant({ ...transcript, messages });
   const user: ChatMessage = {
     id: nextId(),
     role: "user",
@@ -806,6 +803,16 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk)
     promptIndex: chunk.promptIndex,
     complete: true,
   };
+  // Background admission arrives before the canonical user echo. Keep its
+  // identified placeholder active (and stoppable) with the user before it.
+  const placeholder = messages[placeholderIndex];
+  if (livePromptId && placeholder?.promptId === livePromptId
+    && !placeholder.complete && placeholder.parts.length === 0) {
+    messages.splice(placeholderIndex, 0, user);
+    return { ...transcript, messages, executionStageTitle: undefined };
+  }
+  // A new replayed user turn closes the previous assistant turn.
+  const completed = completeStreamingAssistant({ ...transcript, messages });
   return { ...completed, messages: [...completed.messages, user], executionStageTitle: undefined };
 }
 
@@ -1023,8 +1030,9 @@ export const useSessionStore = create<SessionState>((set, get) => {
           messages: [...t.messages, placeholder],
         };
       });
-      // Local error banner doesn't belong to the transcript; clear it globally.
-      set({ error: null, runtimeErrorContext: null });
+      // A background schedule must not dismiss the focused conversation's
+      // error banner. Clear it only when that conversation starts a new turn.
+      if (get().sessionId === sid) set({ error: null, runtimeErrorContext: null });
     },
 
     requestSendNow: (promptId, sessionId) => {
@@ -1087,7 +1095,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
     },
 
     resumeSession: (sessionId) => {
-      persistSessionControl(sessionId);
+      // An unfocused background session may only have a persisted control.
+      // Read and retire its prompt fence before removing it from storage.
       applyToTranscript(sessionId, (transcript) =>
         transcript.control
           ? {
@@ -1097,6 +1106,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
             }
           : transcript
       );
+      persistSessionControl(sessionId);
     },
 
     restoreControl: (sessionId, control) => {
@@ -1531,7 +1541,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           case "user_message_chunk": {
             const chunk = normalizeUserChunk(u as unknown as Record<string, unknown>);
             if (chunk.hidden || (!chunk.text && chunk.attachments.length === 0)) return tr;
-            return activatePendingSendNow(applyUserChunk(tr, chunk));
+            return activatePendingSendNow(applyUserChunk(tr, chunk, isReplay ? undefined : updatePromptId));
           }
           case "agent_message_chunk": {
             const delta = extractDelta((u as { content?: unknown }).content);

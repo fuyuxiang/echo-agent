@@ -120,6 +120,68 @@ beforeEach(() => {
 });
 
 describe("自动化会话模型同步", () => {
+  it("沿用专属会话的新轮次同步实际模型，旧停止事件不能覆盖新轮次", async () => {
+    await start(); created("model-a");
+    act(() => handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "r-next", status: "running", sessionId: "auto-1", cwd: "/workspace", currentModelId: "model-b" }));
+    expect(useSessionsStore.getState().independent[0].currentModelId).toBe("model-b");
+    act(() => handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "r", status: "stopped", sessionId: "auto-1", cwd: "/workspace" }));
+    expect(useSessionsStore.getState().independent[0].status).toBe("working");
+    act(() => handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "r-next", status: "stopped", sessionId: "auto-1", cwd: "/workspace" }));
+    expect(useSessionsStore.getState().independent[0].status).toBe("stopped");
+  });
+
+  it("上一轮停止后新计划轮次仍接收消息、授权和问题，重复入场不解除本轮停止", async () => {
+    await start(); created("model-a");
+    act(() => {
+      useSessionStore.getState().startStreaming("auto-1", "p-first");
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "p-first", stopReason: "cancelled", cancelTrigger: "stop" });
+      handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "r", promptId: "p-first", status: "stopped", sessionId: "auto-1", cwd: "/workspace" });
+    });
+    expect(useSessionStore.getState().transcripts["auto-1"].control?.phase).toBe("stopped");
+    const admission = { phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "r-next", promptId: "p-next", status: "running", sessionId: "auto-1", cwd: "/workspace", currentModelId: "model-b" };
+    act(() => handlers.onAutomationUpdate?.(admission));
+    expect(useSessionStore.getState().transcripts["auto-1"].pendingSendNowPromptId).toBeNull();
+    expect(useSessionStore.getState().transcripts["auto-1"].streamingMessageId).not.toBeNull();
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "第二轮要求" }, _meta: { promptId: "p-next" } });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "第二轮结果" }, _meta: { promptId: "p-next" } });
+      handlers.onPermission?.({ sessionId: "auto-1", requestId: "permission-next", toolCallId: "tool", title: "第二轮授权", toolKind: "execute", options: [] });
+      handlers.onQuestion?.({ sessionId: "auto-1", requestId: "question-next", toolCallId: "question", title: "第二轮问题", mode: "default", questions: [] });
+    });
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    expect(transcript.control).toBeUndefined();
+    expect(transcript.messages.find(message => message.promptId === "p-next")?.parts).toContainEqual({ kind: "text", text: "第二轮结果" });
+    expect(usePermissionStore.getState().queues["auto-1"]).toHaveLength(1);
+    expect(useQuestionStore.getState().queues["auto-1"]).toHaveLength(1);
+    act(() => {
+      useSessionStore.getState().requestControl("auto-1", "stop", "p-next");
+      handlers.onAutomationUpdate?.(admission);
+    });
+    expect(useSessionStore.getState().transcripts["auto-1"].control?.promptId).toBe("p-next");
+  });
+
+  it("运行完成通知迟到时不能覆盖后续手动追问的状态", async () => {
+    await start(); created("model-a");
+    act(() => {
+      useSessionStore.getState().startStreaming("auto-1", "manual-followup");
+      handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "r", promptId: "scheduled", status: "success", sessionId: "auto-1", cwd: "/workspace" });
+    });
+    expect(useSessionsStore.getState().independent[0].status).toBe("working");
+  });
+
+  it.each(["pause", "stop"] as const)("入场事件迟到时不能解除用户对同一轮次的 %s", async (action) => {
+    await start();
+    act(() => {
+      useSessionStore.getState().startStreaming("auto-1", "already-admitted");
+      useSessionStore.getState().requestControl("auto-1", action, "already-admitted");
+      useSessionStore.getState().confirmControl("auto-1", action);
+      useSessionsStore.getState().upsert({ sessionId: "auto-1", cwd: "/workspace", status: action === "pause" ? "paused" : "stopped" });
+      handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "r-late", promptId: "already-admitted", status: "running", sessionId: "auto-1", cwd: "/workspace" });
+    });
+    expect(useSessionStore.getState().transcripts["auto-1"].control?.action).toBe(action);
+    expect(useSessionsStore.getState().independent[0].status).toBe(action === "pause" ? "paused" : "stopped");
+  });
+
   it("运行时错误关联真实轮次，迟到的旧错误不能覆盖新执行", async () => {
     await start();
     created("model-a");

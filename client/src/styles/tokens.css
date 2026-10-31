@@ -82,8 +82,8 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-color-text-tertiary: var(--echo-palette-black-50);
   --echo-color-text-disabled: var(--echo-palette-black-30);
   --echo-color-text-solid: var(--echo-palette-black-100);
-  --echo-color-text-brand-default: #007d64;
-  --echo-color-text-brand-hover: #00614d;
+  --echo-color-text-brand-default: #00614d;
+  --echo-color-text-brand-hover: #004f3f;
   --echo-color-text-brand-focus: var(--echo-palette-brand-5);
   --echo-color-text-brand-active: var(--echo-palette-brand-9);
   --echo-color-text-brand-disabled: var(--echo-palette-brand-3);
@@ -102,6 +102,11 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-color-text-warning-default: #a34b00;
   --echo-color-text-warning-hover: var(--echo-palette-orange-7);
   --echo-brand-primary: var(--echo-palette-brand-8);
+  /* One mint surface for brand actions, selections and enabled controls. */
+  --echo-brand-soft: color-mix(in srgb, var(--echo-brand-primary) 10%, var(--echo-bg-primary));
+  --echo-brand-soft-hover: color-mix(in srgb, var(--echo-brand-primary) 16%, var(--echo-bg-primary));
+  --echo-brand-soft-active: color-mix(in srgb, var(--echo-brand-primary) 22%, var(--echo-bg-primary));
+  --echo-brand-border: color-mix(in srgb, var(--echo-color-text-brand-default) 28%, var(--echo-border-default));
   --echo-text-strong: var(--echo-color-text-primary);
   --echo-text-medium: var(--echo-color-text-secondary);
   --echo-text-weak: var(--echo-color-text-tertiary);
@@ -124,9 +129,9 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-border-subtle: var(--echo-palette-gray-3);
   --echo-border-strong: var(--echo-color-border-primary);
   --echo-border-focus: var(--echo-color-border-focus);
-  --echo-control-selected-bg: var(--echo-palette-black-90);
-  --echo-control-selected-bg-hover: color-mix(in srgb, var(--echo-palette-black-100) 96%, transparent);
-  --echo-control-selected-fg: var(--echo-palette-white-100);
+  --echo-control-selected-bg: var(--echo-brand-soft);
+  --echo-control-selected-bg-hover: var(--echo-brand-soft-hover);
+  --echo-control-selected-fg: var(--echo-color-text-brand-default);
   --echo-success: var(--echo-status-success);
   --echo-warning: var(--echo-status-warning);
   --echo-error: var(--echo-status-error);
@@ -244,6 +249,10 @@ body.dark,
   --echo-color-text-warning-default: var(--echo-palette-orange-9);
   --echo-color-text-warning-hover: var(--echo-palette-orange-8);
   --echo-brand-primary: var(--echo-palette-brand-7);
+  --echo-brand-soft: color-mix(in srgb, var(--echo-brand-primary) 10%, var(--echo-bg-primary));
+  --echo-brand-soft-hover: color-mix(in srgb, var(--echo-brand-primary) 16%, var(--echo-bg-primary));
+  --echo-brand-soft-active: color-mix(in srgb, var(--echo-brand-primary) 22%, var(--echo-bg-primary));
+  --echo-brand-border: color-mix(in srgb, var(--echo-color-text-brand-default) 28%, var(--echo-border-default));
   --echo-text-strong: var(--echo-color-text-primary);
   --echo-text-medium: var(--echo-color-text-secondary);
   --echo-text-weak: var(--echo-color-text-tertiary);
@@ -264,9 +273,9 @@ body.dark,
   --echo-border-subtle: color-mix(in srgb, var(--echo-palette-white-100) 6%, transparent);
   --echo-border-strong: var(--echo-color-border-primary);
   --echo-border-focus: var(--echo-color-border-focus);
-  --echo-control-selected-bg: var(--echo-color-text-brand-default);
-  --echo-control-selected-bg-hover: var(--echo-color-text-brand-hover);
-  --echo-control-selected-fg: var(--echo-palette-white-100);
+  --echo-control-selected-bg: var(--echo-brand-soft);
+  --echo-control-selected-bg-hover: var(--echo-brand-soft-hover);
+  --echo-control-selected-fg: var(--echo-color-text-brand-default);
   --echo-success: var(--echo-status-success);
   --echo-warning: var(--echo-status-warning);
   --echo-error: var(--echo-status-error);
@@ -289,13 +298,13 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-todo-menu-text-default: var(--echo-palette-black-90);
   --echo-todo-menu-text-heading: var(--echo-palette-black-30);
   --echo-todo-menu-text-view-more: var(--echo-palette-black-50);
-  /* Product actions retain EchoAgent's teal identity with readable labels. */
-  --echo-button-primary-bg: #007d64;
-  --echo-button-primary-bg-hover: #00614d;
-  --echo-button-primary-bg-active: #004f3f;
+  /* Primary actions use the same mint surface as selected product controls. */
+  --echo-button-primary-bg: var(--echo-brand-soft);
+  --echo-button-primary-bg-hover: var(--echo-brand-soft-hover);
+  --echo-button-primary-bg-active: var(--echo-brand-soft-active);
   --echo-button-primary-bg-disabled: color-mix(in srgb, var(--echo-button-primary-bg) 24%, transparent);
-  --echo-button-primary-fg: var(--echo-palette-white-100);
-  --echo-button-primary-fg-disabled: var(--echo-palette-white-60);
+  --echo-button-primary-fg: var(--echo-color-text-brand-default);
+  --echo-button-primary-fg-disabled: var(--echo-color-text-disabled);
   --echo-button-secondary-bg: var(--echo-palette-white-100);
   --echo-button-secondary-bg-hover: color-mix(in srgb, var(--echo-palette-black-100) 4%, transparent);
   --echo-button-secondary-bg-active: color-mix(in srgb, var(--echo-palette-black-100) 8%, transparent);
@@ -347,7 +356,7 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-scrollbar-thumb-hover: var(--echo-palette-black-30);
   --echo-badge-warning-bg: var(--echo-status-warning-soft);
   --echo-badge-warning-fg: var(--echo-color-text-warning-default);
-  --echo-badge-success-bg: var(--echo-palette-green-1);
+  --echo-badge-success-bg: var(--echo-brand-soft);
   --echo-badge-success-fg: var(--echo-color-text-success-active);
   --echo-accent-unread: var(--echo-palette-brand-8);
   --echo-bg-pill-active: rgba(0, 0, 0, 0.75);
@@ -371,12 +380,12 @@ body.dark,
   --echo-todo-menu-text-default: var(--echo-palette-white-90);
   --echo-todo-menu-text-heading: var(--echo-palette-white-40);
   --echo-todo-menu-text-view-more: var(--echo-palette-white-50);
-  --echo-button-primary-bg: #7cf0d8;
-  --echo-button-primary-bg-hover: #a8f5e5;
-  --echo-button-primary-bg-active: #5adcc1;
+  --echo-button-primary-bg: var(--echo-brand-soft);
+  --echo-button-primary-bg-hover: var(--echo-brand-soft-hover);
+  --echo-button-primary-bg-active: var(--echo-brand-soft-active);
   --echo-button-primary-bg-disabled: color-mix(in srgb, var(--echo-button-primary-bg) 24%, transparent);
-  --echo-button-primary-fg: #102b25;
-  --echo-button-primary-fg-disabled: rgba(0, 0, 0, 0.45);
+  --echo-button-primary-fg: var(--echo-color-text-brand-default);
+  --echo-button-primary-fg-disabled: var(--echo-color-text-disabled);
   --echo-button-secondary-bg: var(--echo-color-bg-primary-default);
   --echo-button-secondary-bg-hover: var(--echo-color-bg-primary-hover);
   --echo-button-secondary-bg-active: var(--echo-color-bg-primary-active);
@@ -428,7 +437,7 @@ body.dark,
   --echo-scrollbar-thumb-hover: var(--echo-palette-white-30);
   --echo-badge-warning-bg: var(--echo-status-warning-soft);
   --echo-badge-warning-fg: var(--echo-color-text-warning-hover);
-  --echo-badge-success-bg: color-mix(in srgb, var(--echo-color-text-success-default) 18%, transparent);
+  --echo-badge-success-bg: var(--echo-brand-soft);
   --echo-badge-success-fg: var(--echo-color-text-success-hover);
   --echo-accent-unread: var(--echo-color-text-brand-default);
   --echo-bg-pill-active: rgba(255, 255, 255, 0.18);
@@ -581,8 +590,6 @@ body.dark,
 :root {
   --echo-surface-sidebar: #f6f6f6;
   --echo-surface-raised: var(--echo-bg-primary);
-  --echo-brand-soft: color-mix(in srgb, var(--echo-brand-primary) 10%, transparent);
-  --echo-brand-border: color-mix(in srgb, var(--echo-brand-primary) 28%, var(--echo-border-default));
   --echo-focus-ring: var(--echo-color-text-brand-default);
   --echo-radius-control: 8px;
   --echo-radius-card: 14px;

@@ -1954,6 +1954,9 @@ pub(crate) async fn handle_prompt_complete(app: &AppHandle, complete: CompleteEv
     let session_id = complete.session_id.clone();
     let stop_reason = complete.stop_reason.clone();
     let disposition = completion_disposition(&complete);
+    if disposition == CompletionDisposition::Stopped {
+        crate::automations::mark_run_stopping(&session_id, &complete.prompt_id);
+    }
     crate::coding_document_bridge::complete_run(&session_id, &complete.prompt_id).await;
     if let Err(error) = crate::coding_review_runtime::complete(app, &complete) {
         tracing::warn!(%error,"runtime review persistence failed");

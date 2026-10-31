@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ModelSelector } from "../ModelSelector";
+import { ModelManagementContext } from "@/lib/model-management";
 
 describe("ModelSelector", () => {
   it("同一连接的同名别名可从菜单、提示和无障碍名称区分，并选择正确路由", () => {
@@ -63,7 +64,7 @@ describe("ModelSelector", () => {
     }
   });
 
-  it("不同名的内置、组织和个人模型只显示名称，切换后触发器也没有来源或连接副标题", () => {
+  it("不同来源轻量分组，模型行不重复来源且切换保留真实ID", () => {
     const models = [
       {id:"echoagent-ojlab/Echo Reed",source:"builtin" as const},
       {id:"organization/MiniMax-M3.1-Flash",remoteModelId:"MiniMax-M3.1-Flash",source:"organization" as const,providerLabel:"组织提供"},
@@ -73,7 +74,10 @@ describe("ModelSelector", () => {
     const view=render(<ModelSelector models={models} modelId={models[0].id} onModelChange={onModelChange}/>);
     const trigger=screen.getByRole("button",{name:"Echo Reed"});
     expect(trigger.title).toBe("Echo Reed");fireEvent.click(trigger);
-    const menu=screen.getByRole("listbox");expect(menu.textContent).not.toMatch(/内置|组织|个人|网关/);
+    const menu=screen.getByRole("listbox");
+    expect(screen.getAllByRole("group").map(group => group.getAttribute("aria-labelledby") && document.getElementById(group.getAttribute("aria-labelledby")!)?.textContent)).toEqual(["组织提供", "我的连接", "内置模型"]);
+    expect(screen.getByRole("option", { name: "MiniMax-M3.1-Flash" }).textContent).toBe("MiniMax-M3.1-Flash");
+    expect(menu.textContent).not.toContain("个人网关");
     fireEvent.click(screen.getByRole("option",{name:"MiniMax-M3.1-Flash"}));
     expect(onModelChange).toHaveBeenCalledWith(models[1].id);
     view.rerender(<ModelSelector models={models} modelId={models[1].id} onModelChange={onModelChange}/>);
@@ -107,9 +111,11 @@ describe("ModelSelector", () => {
     fireEvent.click(trigger);
 
     const menu = screen.getByRole("listbox", { name: "选择模型" });
-    expect(menu.parentElement).toBe(document.body);
-    expect(menu).toHaveStyle({ position: "fixed", zIndex: "var(--echo-layer-popover)" });
-    expect(menu).toHaveAttribute("data-placement", "bottom");
+    const popup = screen.getByRole("dialog", { name: "选择模型" });
+    expect(popup.parentElement).toBe(document.body);
+    expect(popup).toHaveStyle({ position: "fixed", zIndex: "var(--echo-layer-popover)" });
+    expect(popup).toHaveAttribute("data-placement", "bottom");
+    expect(popup).toContainElement(menu);
   });
 
   it("弹窗内的 portal 菜单可显式使用弹窗局部层", () => {
@@ -123,7 +129,7 @@ describe("ModelSelector", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "模型 A" }));
-    expect(screen.getByRole("listbox", { name: "选择模型" })).toHaveStyle({
+    expect(screen.getByRole("dialog", { name: "选择模型" })).toHaveStyle({
       zIndex: "var(--echo-layer-dialog-popover)",
     });
   });
@@ -241,5 +247,49 @@ describe("ModelSelector", () => {
     expect(firstControls).toBeTruthy();
     expect(secondControls).toBeTruthy();
     expect(firstControls).not.toBe(secondControls);
+  });
+
+  it("管理入口独立于选项列表，定位当前模型且先关闭项目抽屉", () => {
+    const actions: string[] = [];
+    const manage = vi.fn(id => actions.push(`manage:${id}`));
+    const change = vi.fn();
+    render(<ModelManagementContext.Provider value={manage}><ModelSelector modelId="org/a"
+      models={[{ id: "org/a", label: "模型 A", source: "organization" }]}
+      onModelChange={change} onBeforeManageModels={() => actions.push("close-drawer")} /></ModelManagementContext.Provider>);
+    fireEvent.click(screen.getByRole("button", { name: "模型 A" }));
+    const management = screen.getByRole("button", { name: "管理模型" });
+    expect(screen.getByRole("listbox")).not.toContainElement(management);
+    fireEvent.click(management);
+    expect(actions).toEqual(["close-drawer", "manage:org/a"]);
+    expect(change).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("空配置时可直接进入配置，加载时不触发管理", () => {
+    const manage = vi.fn();
+    const view = render(<ModelSelector models={[]} onModelChange={vi.fn()} onManageModels={manage} />);
+    fireEvent.click(screen.getByRole("button", { name: "配置模型" }));
+    expect(manage).toHaveBeenCalledExactlyOnceWith(undefined);
+    view.rerender(<ModelSelector models={[]} modelLoading onModelChange={vi.fn()} onManageModels={manage} />);
+    expect(screen.getByRole("button", { name: "正在同步模型…" })).toBeDisabled();
+  });
+
+  it("跨组方向键按视觉顺序导航，单一来源不显示冗余组标题", () => {
+    const change = vi.fn();
+    const view = render(<ModelSelector models={[
+      { id: "b", label: "内置 B", source: "builtin" },
+      { id: "p", label: "个人 P", source: "personal" },
+      { id: "o", label: "组织 O", source: "organization" },
+    ]} onModelChange={change} />);
+    fireEvent.click(screen.getByRole("button", { name: "请选择模型" }));
+    expect(screen.getByRole("option", { name: "组织 O" })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: "个人 P" })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "End" });
+    expect(screen.getByRole("option", { name: "内置 B" })).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Escape" });
+    view.rerender(<ModelSelector models={[{ id: "p", label: "个人 P", source: "personal" }]} onModelChange={change} />);
+    fireEvent.click(screen.getByRole("button", { name: "请选择模型" }));
+    expect(document.querySelector(".model-selector__group-label")).toBeNull();
   });
 });

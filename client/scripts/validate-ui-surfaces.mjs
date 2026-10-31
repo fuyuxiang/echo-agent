@@ -33,15 +33,15 @@ page.setDefaultNavigationTimeout(60000);
         await page.locator(surface === "collapsed-project" ? ".pd-crumb" : ".panel-navigation__links").waitFor();
         const layout = await page.evaluate((surface) => {
           const box = (selector) => document.querySelector(selector).getBoundingClientRect();
-          const controls = box(".main-page-controls");
+          const controls = box(".page-toolbar__navigation");
           const heading = box(surface === "collapsed-project" ? ".pd-crumb" : ".panel-navigation__links");
           const content = box(surface === "collapsed-project" ? ".pd-page" : ".panel-section");
           const main = box(".app__main");
-          const buttons = [...document.querySelectorAll(".main-page-controls button")].map((element) => element.getBoundingClientRect());
-          return { controls: { top: controls.top, bottom: controls.bottom }, heading: { top: heading.top }, content: { top: content.top, bottom: content.bottom }, main: { bottom: main.bottom }, buttons: buttons.map(({ left, right }) => ({ left, right })) };
+          const buttons = [...document.querySelectorAll(".page-toolbar__navigation button")].map((element) => element.getBoundingClientRect());
+          return { controls: { top: controls.top, bottom: controls.bottom, right: controls.right }, heading: { top: heading.top, left: heading.left }, content: { top: content.top, bottom: content.bottom }, main: { bottom: main.bottom }, buttons: buttons.map(({ left, right }) => ({ left, right })) };
         }, surface);
-        assert.ok(layout.content.top >= layout.controls.bottom - 1, `${surface} ${platform} ${width}: page starts behind controls`);
-        assert.ok(layout.heading.top >= layout.controls.bottom - 1, `${surface} ${platform} ${width}: heading overlaps controls`);
+        assert.ok(layout.controls.top >= layout.content.top - 1, `${surface} ${platform} ${width}: controls precede the visible page`);
+        assert.ok(layout.heading.top >= layout.controls.bottom - 1 || layout.heading.left >= layout.controls.right - 1, `${surface} ${platform} ${width}: heading overlaps controls`);
         assert.ok(layout.content.bottom <= layout.main.bottom + 1, `${surface} ${platform} ${width}: page extends below main`);
         assert.ok(layout.buttons[0].left >= (platform === "mac" ? 84 : 12), `${surface} ${platform} ${width}: controls overlap window chrome`);
         assert.ok(layout.buttons[1].left >= layout.buttons[0].right, `${surface} ${platform} ${width}: controls overlap each other`);
@@ -153,17 +153,17 @@ page.setDefaultNavigationTimeout(60000);
       }
       if (surface === "organization") {
         await page.locator(".org-memory__nav button", { hasText: "文档" }).click();
-        await page.getByRole("heading", { name: /共享文档/ }).waitFor();
+        await page.getByRole("heading", { name: "文档", exact: true }).waitFor();
         const geometry = await page.evaluate(() => {
           const rect = (selector) => {
             const box = document.querySelector(selector).getBoundingClientRect();
             return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
           };
           return {
-            title: rect(".org-memory__page-header > div:first-child"),
-            actions: rect(".org-document-library__upload-actions"),
-            sectionTitle: rect(".org-document-library__heading h2"),
-            filter: rect(".org-document-library__filter"),
+            title: rect(".org-workspace__page-header > div:first-child"),
+            actions: rect(".org-workspace__page-actions"),
+            sectionTitle: rect(".org-resource-views"),
+            filter: rect('[aria-label="查看范围"]'),
           };
         });
         assert.ok(geometry.title.right <= geometry.actions.left + 1 || geometry.title.bottom <= geometry.actions.top + 1, "document upload actions overlap heading");
@@ -180,10 +180,10 @@ page.setDefaultNavigationTimeout(60000);
         layouts += 1;
         await uploadDialog.getByRole("button", { name: "取消" }).click();
         await page.locator(".org-memory__nav button", { hasText: "Skills" }).click();
-        await page.getByText("暂无已发布的 Skill").waitFor();
+        await page.getByText("当前范围暂无已发布内容").waitFor();
         const skillsGeometry = await page.evaluate(() => {
-          const summary = document.querySelector(".org-skill-library__summary").getBoundingClientRect();
-          const actions = document.querySelector(".org-skill-library__actions").getBoundingClientRect();
+          const summary = document.querySelector(".org-workspace__page-header > div:first-child").getBoundingClientRect();
+          const actions = document.querySelector(".org-workspace__page-actions").getBoundingClientRect();
           return { summary: { right: summary.right, bottom: summary.bottom }, actions: { left: actions.left, top: actions.top } };
         });
         assert.ok(skillsGeometry.summary.right <= skillsGeometry.actions.left + 1 || skillsGeometry.summary.bottom <= skillsGeometry.actions.top + 1, "organization Skills toolbar overlaps");
@@ -388,6 +388,7 @@ page.setDefaultNavigationTimeout(60000);
   layouts += await validateAutomationEditorUi(page, output);
   await page.setViewportSize({ width: 1024, height: 720 });
   await page.goto("http://127.0.0.1:1439/__ui-review?surface=automation-edit");
+  await page.getByRole("button", { name: "高级设置", exact: true }).click();
   await page.locator("#automation-workspace-path").focus();
   assert.equal(await page.locator(".atm-workspace-input__dropdown").count(), 0, "selected workspace should not suggest itself on focus");
   const workspaceRow = await page.evaluate(() => {
@@ -396,16 +397,9 @@ page.setDefaultNavigationTimeout(60000);
     return { inputRight: input.right, browseLeft: browse.left, browseRight: browse.right, viewportWidth: innerWidth };
   });
   assert.ok(workspaceRow.inputRight < workspaceRow.browseLeft && workspaceRow.browseRight < workspaceRow.viewportWidth, "workspace picker should fit beside the path");
-  const modelTrigger = page.locator(".atm-prompt-chip").filter({ hasText: /^Auto/ });
-  await modelTrigger.click();
-  assert.equal(await modelTrigger.getAttribute("aria-expanded"), "true", "automation model popup must expose expanded state");
-  await page.waitForFunction(() => document.activeElement?.matches(".atm-chip-option"));
-  await page.keyboard.press("Escape");
-  assert.equal(await page.locator(".atm-chip-dropdown__menu").count(), 0, "Escape must dismiss automation model popup");
-  assert.ok(await modelTrigger.evaluate(element => element === document.activeElement), "popup must restore keyboard focus");
-  await modelTrigger.click();
-  await page.keyboard.press("Tab");
-  assert.equal(await page.locator(".atm-chip-dropdown__menu").count(), 0, "Tab leaving automation popup must dismiss it");
+  // Keyboard behavior of the shared model picker is covered with populated
+  // catalogs by validate-scheduled-tasks-ui and validate-model-presentation-ui.
+  assert.equal(await page.getByRole("button", { name: "跟随默认模型", exact: true }).getAttribute("aria-pressed"), "true");
   await page.screenshot({ path: join(output, "automation-workspace-input.png") });
   layouts += 1;
   assert.deepEqual(errors, [], "browser runtime errors");

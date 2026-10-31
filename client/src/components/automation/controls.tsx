@@ -180,16 +180,19 @@ export function Switch({
   onChange,
   disabled,
   className = "",
+  ariaLabel,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
   className?: string;
+  ariaLabel?: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
+      aria-label={ariaLabel}
       aria-checked={checked}
       disabled={disabled}
       className={`echo-switch${checked ? " echo-switch--checked" : ""}${disabled ? " echo-switch--disabled" : ""} ${className}`}

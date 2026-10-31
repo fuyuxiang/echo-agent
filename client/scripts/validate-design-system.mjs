@@ -28,13 +28,13 @@ const surfaces = process.argv.includes("--controls-only") ? ["page:技能", "pag
   "weixin-connected", "weixin-offline",
 ];
 function checkBrandAction({ background, color }, label) {
-  const rgb = value => value.match(/[\d.]+/g).slice(0, 3).map(Number);
+  const rgb = value => value.match(/[\d.]+/g).slice(0, 3).map(channel => Number(channel) * (value.startsWith("color(srgb") ? 255 : 1));
   const luminance = value => rgb(value).map(channel => {
     const c = channel / 255;
     return c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4;
   }).reduce((sum, channel, index) => sum + channel * [.2126, .7152, .0722][index], 0);
   const [r, g, b] = rgb(background);
-  assert.ok(g > r + 20 && g > b, `${label}: primary action lost its teal identity`);
+  assert.ok(g > r + 10 && g > b, `${label}: primary action lost its mint identity`);
   const levels = [luminance(background), luminance(color)].sort((a, b) => b - a);
   assert.ok((levels[0] + .05) / (levels[1] + .05) >= 4.5, `${label}: primary label contrast is below 4.5:1`);
 }

@@ -1,5 +1,6 @@
 import { useRef, type ReactNode } from "react";
 import { SearchIcon, XCloseIcon } from "@/foundation/components/Icon/icons";
+import { PageToolbar } from "@/components/PageToolbar";
 import { Button, IconButton } from "@/components/Button";
 
 interface Props {
@@ -27,7 +28,7 @@ export function CapabilityPage({ title, headingLevel = 2, description, metadata,
   return (
     <section className={`capability-page ${className}`} aria-label={title}>
       <div className="capability-page__inner">
-        <header className={`capability-page__header${illustration ? " capability-page__header--illustrated" : ""}`}>
+        <PageToolbar className={`capability-page__header${illustration ? " capability-page__header--illustrated" : ""}`}>
           <div className="capability-page__heading">
             <Heading className="capability-page__title">{title}</Heading>
             {description && <p className="capability-page__description">{description}</p>}
@@ -49,7 +50,7 @@ export function CapabilityPage({ title, headingLevel = 2, description, metadata,
             {actions && <div className="capability-page__actions">{actions}</div>}
           </div>
           {illustration && <div className="capability-page__illustration">{illustration}</div>}
-        </header>
+        </PageToolbar>
         {summary && <div className="capability-page__summary">{summary}</div>}
         <div className="capability-page__content">{children}</div>
       </div>

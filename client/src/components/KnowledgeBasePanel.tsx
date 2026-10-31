@@ -5,6 +5,7 @@
  * lib/knowledge-base)。本面板提供搜索框 + 跨源结果列表。无 provider 时显示空态。
  */
 import { useEffect, useState } from "react";
+import { PageToolbar } from "./PageToolbar";
 import { FolderOpen, Info, Search } from "lucide-react";
 import {
   searchKbWithDiagnostics,
@@ -262,7 +263,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
 
   return (
     <div className="kb-panel" role="region" aria-label="知识库">
-      <div className="kb-panel__head">
+      <PageToolbar className="kb-panel__head">
         <div className="kb-panel__heading">
           <h1 className="kb-panel__title">知识库</h1>
           <p>管理知识源并搜索其中的资料</p>
@@ -287,7 +288,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
             {rebuilding ? "重建中…" : "↻ 刷新索引"}
           </button>
         </div>}
-      </div>
+      </PageToolbar>
       {sourcesError && (
         <div className="kb-panel__index-status kb-panel__load-error" role="alert">
           <span>知识源读取失败：{sourcesError}</span>

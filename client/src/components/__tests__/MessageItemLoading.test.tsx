@@ -49,7 +49,7 @@ describe("waiting companion lifecycle", () => {
     view.rerender(row(message, false));
     act(() => vi.advanceTimersByTime(30_000));
     expect(view.container.querySelector(".msg__loading")).toBeNull();
-    if (state === "错误") expect(screen.getByRole("button",{name:/执行记录/})).toBeVisible();
+    if (state === "错误") expect(screen.getByRole("button",{name:/ · (展开|查看|收起)过程$/})).toBeVisible();
   });
 
   it("知识检索开始后显示真实进度，停止显示模型等待和趣味提示", () => {
