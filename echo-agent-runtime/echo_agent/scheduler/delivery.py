@@ -91,7 +91,11 @@ def build_scheduled_job_handler(bus: Any, *, inspection_runner: Any = None) -> C
         if payload.get("_inspection_tick") and inspection_runner is not None:
             await inspection_runner()
             return "inspection"
-        accepted = await bus.publish_inbound(inbound_event_from_job(job))
+        event = inbound_event_from_job(job)
+        outputs = getattr(bus, "scheduled_outputs", None)
+        if outputs is not None:
+            outputs.register(event)
+        accepted = await bus.publish_inbound(event)
         if not accepted:
             raise RuntimeError(
                 f"Scheduled job {job.id} was rejected by the bus (queue full or shutting down)"

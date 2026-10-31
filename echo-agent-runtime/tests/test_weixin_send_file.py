@@ -30,6 +30,7 @@ def _make_weixin(tmp_path: Path) -> WeixinChannel:
         data_dir=str(tmp_path / "weixin"),
     )
     ch = WeixinChannel(cfg, MessageBus())
+    ch._token_store.set(cfg.account_id, "user@im", "conversation-context")
     ch._send_session = MagicMock()  # truthy; real calls are monkeypatched
     return ch
 

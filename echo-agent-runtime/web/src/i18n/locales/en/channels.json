@@ -44,6 +44,19 @@
     "unsent": "Some content was not delivered. Continue after the confirmed parts.",
     "success": "Delivery record updated",
     "failed": "Delivery recovery did not complete",
-    "viewFull": "View the full message and attachment names"
+    "viewFull": "View the full message and attachment names",
+    "sendMessage": "Restore the Weixin conversation by sending this bot a message in Weixin.",
+    "relogin": "Your Weixin login expired. Scan the login QR code again, then send the bot a message.",
+    "autoRetry": "Saved scheduled results will resume automatically after a new message. Confirmed parts are skipped.",
+    "errorDetails": "Failure details",
+    "download": "Download report",
+    "downloadFailed": "Report download failed",
+    "waitingContext": "Report saved; waiting for delivery to resume."
+  },
+  "deliveryHealth": {
+    "ready": "Conversation context saved; delivery still depends on Weixin acceptance",
+    "no_context": "Listening; send this bot a message to establish a delivery conversation",
+    "needs_message": "Weixin rejected a conversation; send the bot a message to resume saved results",
+    "login_required": "Weixin login expired; scan the login QR code again"
   }
 }

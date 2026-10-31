@@ -56,7 +56,7 @@ describe("Cron 页", () => {
 
     expect(await screen.findByText("每日汇报")).toBeInTheDocument();
     expect(screen.getByText("0 9 * * *")).toBeInTheDocument();
-    expect(screen.getByText("completed")).toBeInTheDocument();
+    expect(screen.getByText("已完成")).toBeInTheDocument();
   });
 
   it("编辑时用现有 payload 回填表单", async () => {

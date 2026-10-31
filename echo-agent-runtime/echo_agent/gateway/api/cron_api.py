@@ -37,6 +37,13 @@ def _validate_job_fields(body: dict) -> str:
         for field in ("command", "message"):
             if field in payload and not isinstance(payload[field], str):
                 return f"payload.{field} must be a string"
+        history = payload.get("report_history_path")
+        if history is not None:
+            from pathlib import PurePosixPath
+
+            if (not isinstance(history, str) or not history.endswith(".json") or
+                    PurePosixPath(history).is_absolute() or ".." in PurePosixPath(history).parts):
+                return "payload.report_history_path must be a relative JSON path inside the workspace"
     return ""
 
 
@@ -355,6 +362,8 @@ class CronAPI:
             "last_run_ms": job.last_run_ms,
             "next_run_ms": job.next_run_ms,
             "last_status": job.last_status,
+            "last_error": job.last_error,
+            "delivery_status": job.run_history[-1].get("delivery_status", "") if job.run_history else "",
             "active_run_id": job.active_run_id,
             "payload": job.payload,
             "config_valid": _payload_has_content(job.payload),

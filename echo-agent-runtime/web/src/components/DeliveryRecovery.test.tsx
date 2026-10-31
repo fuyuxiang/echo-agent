@@ -53,4 +53,21 @@ describe("投递恢复", () => {
     setup({ ...delivery, status: "retrying" });
     expect(await screen.findByRole("button", { name: "继续发送未送达的内容" })).toBeDisabled();
   });
+
+  it("微信会话不可用时明确说明恢复动作，禁用重复重试", async () => {
+    setup({ ...delivery, status: "awaiting_context", unknown_parts: 0,
+      recovery_action: "send_message", can_retry: false, auto_retry: true,
+      error: "ret=-2: prepare failed" } as typeof delivery);
+    expect(await screen.findByRole("status")).toHaveTextContent("请先在微信给这个机器人发一条消息");
+    expect(screen.getByRole("status")).toHaveTextContent("自动补发已保存的定时任务结果");
+    expect(screen.getByRole("button", { name: "继续发送未送达的内容" })).toBeDisabled();
+    expect(screen.getByText("查看失败详情")).toBeInTheDocument();
+  });
+
+  it("定时任务页面只请求定时结果", async () => {
+    const fetch = vi.spyOn(api, "apiFetch").mockResolvedValue({ durable: true, messages: [] });
+    render(<ConfirmProvider><DeliveryRecovery scheduledOnly /></ConfirmProvider>);
+    await screen.findByText("暂无需要处理的投递");
+    expect(fetch).toHaveBeenCalledWith("/deliveries?scheduled=true", expect.anything());
+  });
 });

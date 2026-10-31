@@ -623,6 +623,35 @@ class Scheduler:
             ]
         return []
 
+    async def record_delivery(self, job_id: str, run_id: str, delivery: dict[str, Any]) -> None:
+        job = self._jobs.get(job_id)
+        run = next((r for r in job.run_history if r.get("run_id") == run_id), None) if job else None
+        if run is None:
+            return
+        deliveries = run.setdefault("deliveries", [])
+        previous = next((item for item in deliveries if item["event_id"] == delivery["event_id"]), None)
+        if previous is not None and previous["status"] == "delivered":
+            return  # A confirmed receipt cannot be downgraded by a late retry.
+        if previous is not None:
+            previous.update(delivery)
+        else:
+            deliveries.append(delivery)
+        states = {item["status"] for item in deliveries}
+        complete = all(
+            sum(d["status"] == "delivered" and d.get("artifact_id") == item.get("artifact_id") for d in deliveries)
+            >= item.get("total_parts", 1) for item in deliveries
+        )
+        run["delivery_status"] = ("delivered" if states == {"delivered"} and complete else
+                                  "partial" if states == {"delivered"} else
+                                  "unknown" if "unknown" in states else
+                                  "awaiting_context" if "awaiting_context" in states else "failed")
+        if run["status"] == "delivery_pending" and run["delivery_status"] == "delivered":
+            run.update(status="delivery_recovered", error="", recovered_ts=_now_ms())
+            if run is job.run_history[-1]:
+                job.last_status, job.last_error = run["status"], ""
+        await self._save_async()
+        await self._emit("cron_run", job)
+
     async def record_run_outcome(self, job_id: str, status: str, error: str = "", *, run_id: str = "") -> None:
         """Write back the real end-to-end outcome of a dispatched job run.
 
@@ -645,6 +674,10 @@ class Scheduler:
         if len(candidates) != 1:
             return
         run = candidates[0]
+        run["execution_status"] = status
+        if run.get("delivery_status") == "awaiting_context":
+            status = "delivery_pending"
+            error = next((d["error"] for d in run.get("deliveries", []) if d.get("status") == "awaiting_context"), error)
         run.update(status=status, error=error, completed_ts=_now_ms())
         if run is job.run_history[-1]:
             job.last_status = status

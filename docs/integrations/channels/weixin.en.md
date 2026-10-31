@@ -57,6 +57,22 @@ Start channel → Request login QR code → Display QR in terminal/logs → Scan
 
     This channel therefore cannot run fully unattended. For long-running deployments, alert on that error code so a re-scan can be done promptly.
 
+## Scheduled delivery and recovery
+
+A listening connection does not establish permission to send proactive messages. Replies use the
+conversation context from a recent inbound user message. Missing context and explicit `ret=-2`
+rejections retain scheduled results and show an actionable recovery message. The runtime does not
+interpret `-2` as a documented fixed expiration period or rate limit.
+
+A fresh message from the same recipient resumes explicitly rejected scheduled outputs, including
+after a restart. Recovery reuses saved content and confirmed multipart receipts without re-running
+the agent. Unknown outcomes, such as a timeout after a request started, still require operator verification.
+The dashboard provides authenticated downloads of saved reports while the channel is unavailable.
+
+Context state uses private permissions, atomic replacement and a complete backup. Backups cannot
+extend server-side conversation validity. A `-14` login expiration requires QR login again, followed
+by a message to establish a conversation. For required notifications, configure another delivery channel.
+
 ## Callback/Webhook Setup
 
 This channel does **not** require Webhook callback configuration. Messages are fetched via HTTP long-polling:

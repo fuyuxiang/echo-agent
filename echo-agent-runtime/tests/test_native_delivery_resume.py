@@ -34,6 +34,8 @@ async def test_native_adapter_retry_preserves_text_and_skips_confirmed_parts(tmp
     # Telegram/Weixin directories are isolated from the operator's live account.
     config = config_cls(data_dir=str(tmp_path)) if name in {"telegram", "weixin", "matrix"} else config_cls()
     channel = classes[name](config, bus)
+    if name == "weixin":
+        channel._token_store.set(config.account_id, "chat", "conversation-context")
     channel._session = object()
     sent = []
     def record(text):
@@ -120,6 +122,8 @@ async def test_missing_native_acknowledgement_stays_unknown_and_is_not_replayed(
     config_cls = schema.WeComChannelConfig if name == "wecom" else getattr(schema, f"{name.capitalize()}ChannelConfig")
     config = config_cls(data_dir=str(tmp_path)) if name in {"telegram", "weixin", "matrix"} else config_cls()
     channel = classes[name](config, bus)
+    if name == "weixin":
+        channel._token_store.set(config.account_id, "chat", "conversation-context")
     if name in {"telegram", "slack"}:
         sender = AsyncMock(return_value={} if name == "telegram" else {"ok": True})
         channel._api = sender

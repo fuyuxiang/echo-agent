@@ -10,6 +10,8 @@ interface CronRun {
   status: string;
   error: string | null;
   run_count: number;
+  delivery_status?: string;
+  recovered_ts?: number;
 }
 
 /**
@@ -76,7 +78,7 @@ export function CronRunsDrawer({ job, onClose }: { job: CronJob; onClose: () => 
                 </div>
                 <div className="flex justify-between gap-2 text-xs">
                   <span className="text-gray-500">{t("runStatus")}</span>
-                  <span>{run.status}</span>
+                  <span>{t(`outcome.${run.status}`, { defaultValue: run.status })}</span>
                 </div>
                 <div className="text-xs text-gray-500">
                   {t("runCount", { count: run.run_count })}
@@ -86,6 +88,10 @@ export function CronRunsDrawer({ job, onClose }: { job: CronJob; onClose: () => 
                     <span className="font-medium">{t("runError")}: </span>{run.error}
                   </div>
                 )}
+                {run.delivery_status && <p className="text-xs text-gray-600">
+                  {t("deliveryStatus")}: {t(`deliveryOutcome.${run.delivery_status}`, { defaultValue: run.delivery_status })}
+                </p>}
+                {run.recovered_ts && <p className="text-xs text-green-700">{t("recoveredAt", { time: dateTime(run.recovered_ts) })}</p>}
               </li>
             ))}
           </ul>

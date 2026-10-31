@@ -100,6 +100,8 @@ def compute_fingerprint(job: Any) -> str:
             str(getattr(job, "timezone", "") or ""),
         ],
     }
+    if payload.get("report_history_path"):
+        material["report_history_path"] = payload["report_history_path"]
     blob = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

@@ -10,7 +10,14 @@
     "deliverChatId": "会话/群 ID(deliver_chat_id,可选)",
     "sourceSessionKey": "会话目标 source_session_key(可选,填了可自动解析渠道)"
   },
-  "col": { "name": "名称", "cron": "Cron", "status": "状态", "lastResult": "最近结果", "nextRun": "下次执行", "actions": "操作" },
+  "col": {
+    "name": "名称",
+    "cron": "Cron",
+    "status": "状态",
+    "lastResult": "最近结果",
+    "nextRun": "下次执行",
+    "actions": "操作"
+  },
   "invalidConfig": "配置无效",
   "active": "活跃",
   "paused": "暂停",
@@ -60,5 +67,27 @@
     "none": "未授权"
   },
   "authGrantedBy": "由 {{operator}} 于 {{time}} 授权",
-  "authStaleHint": "任务内容在授权后被修改，授权已失效。"
+  "authStaleHint": "任务内容在授权后被修改，授权已失效。",
+  "deliveryPendingHint": "结果已保存，等待微信恢复后补发",
+  "deliveryStatus": "消息投递",
+  "recoveredAt": "补发成功：{{time}}",
+  "outcome": {
+    "queued": "已排队",
+    "dispatching": "正在启动",
+    "running": "执行中",
+    "completed": "已完成",
+    "error": "执行失败",
+    "incomplete": "执行未完成",
+    "interrupted": "执行中断",
+    "delivery_pending": "等待投递恢复",
+    "delivery_recovered": "已补发",
+    "skipped": "已跳过"
+  },
+  "deliveryOutcome": {
+    "delivered": "渠道已确认",
+    "awaiting_context": "等待恢复会话",
+    "unknown": "发送结果待核对",
+    "failed": "投递失败",
+    "partial": "部分内容已送达"
+  }
 }

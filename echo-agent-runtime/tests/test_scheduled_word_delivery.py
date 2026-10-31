@@ -62,6 +62,7 @@ async def test_scheduled_word_delivery_end_to_end(tmp_path, monkeypatch):
         account_id="acct@im.bot", token="acct@im.bot:tok", data_dir=str(tmp_path / "wx"),
     )
     channel = WeixinChannel(cfg, bus)
+    channel._token_store.set(cfg.account_id, "wxid_123", "conversation-context")
     channel._send_session = object()  # truthy; real network is monkeypatched away
     bus.subscribe_outbound(channel.name, channel.send)
 

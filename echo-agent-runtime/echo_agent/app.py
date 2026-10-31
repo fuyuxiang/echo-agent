@@ -333,6 +333,11 @@ async def bootstrap(
 
         channels = ChannelManager(config.channels, bus, on_cli_exit=on_cli_exit)
         stack.push_async_callback(_rollback, "channels", channels.stop_all)
+        if scheduler is not None and agent.turn_runs is not None:
+            from echo_agent.scheduler.output import ScheduledOutputs
+
+            bus.scheduled_outputs = ScheduledOutputs(bus, scheduler, agent.turn_runs, ws)
+            stack.push_async_callback(_rollback, "scheduled_outputs", bus.scheduled_outputs.stop)
         # Wire the real heartbeat config so verbosity (key_milestones/every_tool/
         # silent) actually takes effect at runtime; the manager otherwise defaults.
         channels._heartbeat_cfg = config.agent.heartbeat
@@ -347,6 +352,8 @@ async def bootstrap(
         _artifact_deliver_tool = agent.tools.get("artifact_deliver")
         if _artifact_deliver_tool is not None:
             _artifact_deliver_tool._channel_lookup = channels.get_channel
+            if bus.scheduled_outputs is not None:
+                bus.scheduled_outputs.artifact_deliver = _artifact_deliver_tool
         health = HealthChecker(check_interval=config.observability.health_check_interval_seconds)
 
         from echo_agent.observability.monitor import ComponentHealth as CH
@@ -543,6 +550,9 @@ class AppRuntime:
             ctx.agent.turn_runs.set_event_sink(self._gateway.dashboard_ws.broadcast)
             ctx.channels.set_event_sink(self._gateway.dashboard_ws.broadcast)
             logger.info("Gateway started on {}:{}", ctx.config.gateway.host, ctx.config.gateway.port)
+        outputs = getattr(ctx.bus, "scheduled_outputs", None)
+        if outputs is not None:
+            await outputs.resume_waiting(ctx.channels.get_channel)
         return True
 
     async def stop(self) -> None:

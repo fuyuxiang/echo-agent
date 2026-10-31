@@ -128,6 +128,20 @@ Each occurrence persists a unique `run_id` before enqueueing. `queued` means adm
 
 The same job cannot overlap itself, including manual triggers. On restart, prior queued/executing occurrences become `interrupted` and are not blindly replayed. Inspect prior effects before manually retrying. Recurring schedules are recalculated from now rather than replaying every missed occurrence.
 
+### Delivery recovery and report history
+
+Missing or rejected Weixin conversation context leaves saved results in `delivery_pending` and
+releases the execution slot. Fresh inbound activity resumes the saved delivery; success is recorded
+as `delivery_recovered` with its recovery time. The agent and its tools are not re-executed. Unknown
+delivery outcomes require verification in the dashboard before retrying.
+
+An optional payload field `report_history_path`, such as `data/ai-radar/history.json`, connects a
+workspace-relative JSON report journal. The runtime maintains delivery fields in its `reports` array,
+keyed by execution date: `pending_delivery` until complete receipts arrive, then `status: success`
+and the actual `pushed_at`. `job_id`, `run_id` and `delivery_status` link to scheduler records.
+Research content remains task-managed; premature same-day `last_pushed` values are withdrawn on
+delivery failure. Changing this path invalidates the existing unattended authorization.
+
 ## Dashboard Cron Page
 
 The Dashboard provides a dedicated Cron management page that supports:

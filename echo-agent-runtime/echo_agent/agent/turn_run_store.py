@@ -116,23 +116,34 @@ class TurnRunStore:
         if rows[0]["payload"] != payload:
             raise RuntimeError("outbound delivery identity conflict")
 
-    async def update_outbound(self, event_id: str, status: str, error: str = "") -> None:
+    async def update_outbound(self, event_id: str, status: str, error: str = "", *, detail: dict | None = None) -> None:
         await self._storage.execute_sql(
-            "UPDATE outbound_messages SET status=?,error=?,updated_at=? WHERE event_id=?",
-            (status, error, self._clock(), event_id),
+            "UPDATE outbound_messages SET status=?,error=?,detail=?,updated_at=? WHERE event_id=?",
+            (status, error, json.dumps(detail or {}, ensure_ascii=False), self._clock(), event_id),
         )
 
     async def list_outbound(self, *, limit: int = 100) -> list[dict]:
         rows = await self._storage.fetch_sql(
-            "SELECT * FROM outbound_messages WHERE status!='delivered' ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM outbound_messages WHERE status NOT IN ('delivered','superseded') ORDER BY created_at DESC LIMIT ?",
             (max(1, min(limit, 100)),),
         )
         result = []
         for row in rows:
             payload = json.loads(row["payload"])
+            if payload.get("metadata", {}).get("scheduled_notice"):
+                continue
             parts = await self.outbound_parts(row["event_id"], payload["channel"])
-            result.append({**row, "payload": payload, "parts": parts})
+            result.append({**row, "payload": payload, "parts": parts, "detail": json.loads(row.get("detail") or "{}")})
         return result
+
+    async def waiting_outbound(self, channel: str, chat_id: str) -> list[dict]:
+        rows = await self._storage.fetch_sql(
+            "SELECT event_id FROM outbound_messages WHERE status='awaiting_context' "
+            "AND json_extract(payload,'$.channel')=? AND json_extract(payload,'$.chat_id')=? "
+            "AND json_extract(payload,'$.metadata.scheduled_output')=1 "
+            "ORDER BY created_at LIMIT 20", (channel, chat_id),
+        )
+        return rows
 
     async def outbound_parts(self, event_id: str, channel: str) -> list[dict]:
         prefix = f"{channel}:{event_id}:"

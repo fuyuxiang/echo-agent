@@ -34,3 +34,14 @@ def test_atomic_state_replaces_complete_json_and_uses_private_permissions(tmp_pa
     wx._atomic_write_json(target, {"用户": "token"})
     assert json.loads(target.read_text()) == {"用户": "token"}
     assert target.stat().st_mode & 0o077 == 0
+
+
+def test_corrupt_primary_recovers_last_complete_backup(tmp_path):
+    store = wx._ContextTokenStore(tmp_path)
+    store.set("account", "user", "context")
+    (tmp_path / "account.context-tokens.json").write_text("")
+    restarted = wx._ContextTokenStore(tmp_path)
+    restarted.restore("account")
+    assert restarted.get("account", "user") == "context"
+    assert json.loads((tmp_path / "account.context-tokens.json").read_text()) == {"user": "context"}
+    assert (tmp_path / "account.context-tokens.json.bak").stat().st_mode & 0o077 == 0

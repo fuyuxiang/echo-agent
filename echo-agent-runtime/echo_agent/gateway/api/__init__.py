@@ -40,6 +40,7 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     deliveries_api = DeliveriesAPI(server)
     app.router.add_get(f"{prefix}/deliveries", deliveries_api.list_messages)
     app.router.add_get(f"{prefix}/deliveries/{{id}}", deliveries_api.message_detail)
+    app.router.add_get(f"{prefix}/deliveries/{{id}}/files/{{index}}", deliveries_api.download_file)
     app.router.add_post(f"{prefix}/deliveries/{{id}}/recover", deliveries_api.recover)
 
     app.router.add_get(f"{prefix}/memory", memory_api.list_entries)

@@ -188,7 +188,7 @@ def _api_error(response: dict[str, Any]) -> str:
 def _is_session_expired(response: dict[str, Any]) -> bool:
     """响应是否表示 bot 会话已过期(两个字段任一为 -14)。"""
     return any(
-        response.get(field) == _SESSION_EXPIRED_ERRCODE for field in ("errcode", "ret")
+        response.get(field) in (_SESSION_EXPIRED_ERRCODE, str(_SESSION_EXPIRED_ERRCODE)) for field in ("errcode", "ret")
     )
 
 
@@ -388,15 +388,24 @@ class _ContextTokenStore:
 
     def restore(self, account_id: str) -> None:
         path = self._path(account_id)
-        if not path.exists():
-            return
-        try:
-            data = json.loads(path.read_text())
-            for uid, tok in data.items():
-                if isinstance(tok, str) and tok:
-                    self._cache[f"{account_id}:{uid}"] = tok
-        except Exception as exc:
-            logger.warning("weixin: failed to restore context tokens: {}", exc)
+        for candidate in (path, path.with_suffix(".json.bak")):
+            if not candidate.exists():
+                continue
+            try:
+                data = json.loads(candidate.read_text())
+                if not isinstance(data, dict) or any(not isinstance(v, str) for v in data.values()):
+                    raise ValueError("invalid context token store")
+                if not data and candidate == path and path.with_suffix(".json.bak").exists():
+                    continue
+                for uid, tok in data.items():
+                    if tok:
+                        self._cache[f"{account_id}:{uid}"] = tok
+                if candidate != path:
+                    logger.warning("weixin: restored last good context token backup")
+                    _atomic_write_json(path, data)
+                return
+            except Exception as exc:
+                logger.warning("weixin: failed to restore context tokens: {}", exc)
 
     def get(self, account_id: str, user_id: str) -> str | None:
         return self._cache.get(f"{account_id}:{user_id}")
@@ -411,6 +420,8 @@ class _ContextTokenStore:
         try:
             path = self._path(account_id)
             _atomic_write_json(path, payload)
+            # A complete second copy also recovers pre-existing corrupt files.
+            _atomic_write_json(path.with_suffix(".json.bak"), payload)
         except Exception as exc:
             logger.warning("weixin: failed to persist context tokens: {}", exc)
 
@@ -509,6 +520,39 @@ class WeixinChannel(BaseChannel):
         self._poll_task: asyncio.Task | None = None
         # Strong refs for per-message tasks (see asyncio.create_task docs).
         self._msg_tasks: set[asyncio.Task] = set()
+        self._blocked_chats: set[str] = set()
+        self._login_required = False
+
+    def delivery_readiness(self, chat_id: str) -> SendResult | None:
+        if self._login_required:
+            return SendResult(False, error="Weixin login expired; scan the login QR code again",
+                              error_code="weixin_login_required", recovery_action="relogin")
+        if chat_id in self._blocked_chats:
+            return SendResult(False, error="Weixin rejected this conversation; send the bot a new message to restore delivery",
+                              error_code="weixin_context_rejected", recovery_action="send_message")
+        if not self._token_store.get(self._account_id, chat_id):
+            return SendResult(False, error="Weixin conversation context is missing; send the bot a message to restore delivery",
+                              error_code="weixin_context_required", recovery_action="send_message")
+        return None
+
+    def delivery_health(self) -> str:
+        if self._login_required:
+            return "login_required"
+        if self._blocked_chats:
+            return "needs_message"
+        return "ready" if self._token_store._cache else "no_context"
+
+    def _send_failure(self, chat_id: str, response: dict[str, Any], error: str) -> SendResult:
+        if _is_session_expired(response):
+            self._login_required = True
+            return SendResult(False, error=error, error_code="weixin_login_required", recovery_action="relogin")
+        if any(str(response.get(key)) == "-2" for key in ("ret", "errcode")):
+            # -2 is an upstream refusal, not a documented fixed TTL or rate
+            # limit. Stop repeating the request until fresh inbound activity.
+            self._blocked_chats.add(chat_id)
+            return SendResult(False, error=error, error_code="weixin_context_rejected",
+                              recovery_action="send_message")
+        return SendResult(False, error=error)
 
     def _spawn_msg_task(self, coro: Any) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -614,6 +658,8 @@ class WeixinChannel(BaseChannel):
         return await self.send_parts(event, chunks, send_part, before_send=before_send)
 
     async def _send_text_chunk(self, chat_id: str, chunk: str, *, context_token: str | None = None) -> SendResult:
+        if issue := self.delivery_readiness(chat_id):
+            return issue
         if context_token is None:
             context_token = self._token_store.get(self._account_id, chat_id)
         try:
@@ -630,7 +676,7 @@ class WeixinChannel(BaseChannel):
                 return SendResult(success=False, error=failure or "Weixin acknowledgement missing", delivery_unknown=True)
             if failure:
                 logger.warning("weixin send error: {}", failure)
-                return SendResult(success=False, error=failure)
+                return self._send_failure(chat_id, resp, failure)
         except Exception as exc:
             error = self.safe_delivery_error(exc)
             logger.error("weixin send failed to {}: {}", chat_id[:8] if chat_id else "?", error)
@@ -659,6 +705,8 @@ class WeixinChannel(BaseChannel):
         """
         if not self._send_session or not self._token:
             return SendResult(success=False, error="no session or no token")
+        if issue := self.delivery_readiness(chat_id):
+            return issue
         path, cleanup = await self._materialize_source(source)
         if not path:
             return SendResult(success=False, error=f"could not resolve media source: {source[:80]}")
@@ -711,6 +759,8 @@ class WeixinChannel(BaseChannel):
         as_image: bool = False, as_voice: bool = False, voice_ms: int = 0,
     ) -> SendResult:
         """Encrypt, upload to the CDN, and deliver one media item via sendmessage."""
+        if issue := self.delivery_readiness(chat_id):
+            return issue
         assert self._send_session is not None and self._token is not None
         plaintext = Path(path).read_bytes()
         rawsize = len(plaintext)
@@ -808,7 +858,7 @@ class WeixinChannel(BaseChannel):
             return SendResult(success=False, error=failure or "Weixin acknowledgement missing", delivery_unknown=True)
         if failure:
             logger.warning("weixin media send error: {}", failure)
-            return SendResult(success=False, error=f"sendmessage {failure}")
+            return self._send_failure(chat_id, resp, f"sendmessage {failure}")
         # Prefer the server receipt; code-only responses keep the local id
         # solely for event correlation.
         return SendResult(success=True, message_id=_server_message_id(resp) or str(msg["client_id"]))
@@ -819,6 +869,8 @@ class WeixinChannel(BaseChannel):
         """Send a native Weixin voice bubble; fall back to file attachment on any failure."""
         if not self._send_session or not self._token:
             return SendResult(success=False, error="no session or no token")
+        if issue := self.delivery_readiness(chat_id):
+            return issue
         path, cleanup = await self._materialize_source(audio_source)
         if not path:
             return SendResult(success=False, error=f"could not resolve audio source: {audio_source[:80]}")
@@ -884,6 +936,7 @@ class WeixinChannel(BaseChannel):
                 failure = _api_error(response)
                 if failure:
                     if _is_session_expired(response):
+                        self._login_required = True
                         logger.error("weixin: session expired, pausing 10 minutes")
                         await asyncio.sleep(600)
                         consecutive_failures = 0
@@ -970,6 +1023,9 @@ class WeixinChannel(BaseChannel):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             self._token_store.set(self._account_id, sender_id, context_token)
+            self._blocked_chats.discard(sender_id)
+            self._login_required = False
+            self.bus.notify_channel_ready(self.name, sender_id)
 
         item_list = message.get("item_list") or []
         text, reply_to_text, reply_to_sender = _extract_text(item_list)

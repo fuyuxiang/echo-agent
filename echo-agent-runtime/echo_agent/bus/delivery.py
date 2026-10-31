@@ -84,6 +84,10 @@ class DeliveryResult:
             detail["delivery_unknown"] = True
         if sr.message_ids:
             detail["message_ids"] = list(sr.message_ids)
+        if sr.error_code:
+            detail["error_code"] = sr.error_code
+        if sr.recovery_action:
+            detail["recovery_action"] = sr.recovery_action
         return cls(
             DeliveryStage.FAILED,
             channel,

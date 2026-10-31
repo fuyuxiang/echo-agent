@@ -85,6 +85,7 @@ async def test_weixin_voice_unknown_outcome_never_falls_back_to_a_second_send(tm
     source = tmp_path / "voice.wav"
     source.write_bytes(b"voice")
     channel = weixin.WeixinChannel(WeixinChannelConfig(data_dir=str(tmp_path)), MessageBus())
+    channel._token_store.set(channel._account_id, "peer", "conversation-context")
     channel._send_session, channel._token = MagicMock(), "test"
     monkeypatch.setattr(weixin, "encode_to_silk", AsyncMock(return_value=(None, 10)))
     channel._send_file = AsyncMock(return_value=SendResult(success=False, delivery_unknown=True, error="timeout"))

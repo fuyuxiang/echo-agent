@@ -10,7 +10,14 @@
     "deliverChatId": "Chat ID (deliver_chat_id, optional)",
     "sourceSessionKey": "Session target source_session_key (optional, auto-resolves channel)"
   },
-  "col": { "name": "Name", "cron": "Cron", "status": "Status", "lastResult": "Last result", "nextRun": "Next run", "actions": "Actions" },
+  "col": {
+    "name": "Name",
+    "cron": "Cron",
+    "status": "Status",
+    "lastResult": "Last result",
+    "nextRun": "Next run",
+    "actions": "Actions"
+  },
   "invalidConfig": "Invalid config",
   "active": "Active",
   "paused": "Paused",
@@ -60,5 +67,27 @@
     "none": "Not authorized"
   },
   "authGrantedBy": "Granted by {{operator}} at {{time}}",
-  "authStaleHint": "The job changed after it was authorized, so the grant no longer applies."
+  "authStaleHint": "The job changed after it was authorized, so the grant no longer applies.",
+  "deliveryPendingHint": "Result saved; delivery will resume when the conversation is restored",
+  "deliveryStatus": "Message delivery",
+  "recoveredAt": "Recovered at {{time}}",
+  "outcome": {
+    "queued": "Queued",
+    "dispatching": "Dispatching",
+    "running": "Running",
+    "completed": "Completed",
+    "error": "Failed",
+    "incomplete": "Incomplete",
+    "interrupted": "Interrupted",
+    "delivery_pending": "Awaiting delivery recovery",
+    "delivery_recovered": "Delivery recovered",
+    "skipped": "Skipped"
+  },
+  "deliveryOutcome": {
+    "delivered": "Confirmed by channel",
+    "awaiting_context": "Waiting for conversation",
+    "unknown": "Needs verification",
+    "failed": "Delivery failed",
+    "partial": "Partially delivered"
+  }
 }

@@ -320,6 +320,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, part_id TEXT NOT NULL,
         action TEXT NOT NULL, message_id TEXT NOT NULL, resolved_at REAL NOT NULL)"""),
     (40, "ALTER TABLE outbound_resolutions ADD COLUMN actor TEXT NOT NULL DEFAULT ''"),
+    (41, "ALTER TABLE outbound_messages ADD COLUMN detail TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 

@@ -22,7 +22,40 @@ class DeliveriesAPI:
         from pathlib import Path
         from urllib.parse import urlsplit
         return web.json_response({"text": event.text,
-                                  "files": [Path(urlsplit(block.url).path).name for block in event.content if block.url]})
+                                  "files": [Path(urlsplit(block.url).path).name for block in event.content if block.url],
+                                  "downloadable_files": [index for index, block in enumerate(b for b in event.content if b.url)
+                                                         if self._local_file(block.url) is not None]})
+
+    def _local_file(self, url):
+        from pathlib import Path
+        from urllib.parse import urlsplit
+
+        root = getattr(self._server, "_workspace", None)
+        if not isinstance(root, (str, Path)) or urlsplit(url).scheme:
+            return None
+        root = Path(root).resolve()
+        path = Path(url)
+        path = (root / path).resolve()
+        return path if path.is_relative_to(root) and path.is_file() else None
+
+    async def download_file(self, request: web.Request) -> web.StreamResponse:
+        guard = self._server._require_admin_token(request, action="deliveries_download")
+        if guard is not None:
+            return guard
+        store = self._store()
+        event = await store.get_outbound_event(request.match_info["id"]) if store else None
+        try:
+            index = int(request.match_info["index"])
+        except (ValueError, TypeError):
+            index = -1
+        blocks = [block for block in event.content if block.url] if event else []
+        path = self._local_file(blocks[index].url) if 0 <= index < len(blocks) else None
+        if path is None:
+            return web.json_response({"error": "saved report is unavailable"}, status=404)
+        from urllib.parse import quote
+
+        return web.FileResponse(path, headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}",
+                                               "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     async def list_messages(self, request: web.Request) -> web.Response:
         guard = self._server._require_admin_token(request, action="deliveries_list")
@@ -35,6 +68,17 @@ class DeliveriesAPI:
         messages = []
         for row in rows:
             payload = row["payload"]
+            metadata = payload.get("metadata", {})
+            if request.query.get("scheduled") == "true" and not metadata.get("scheduled_output"):
+                continue
+            job_filter = request.query.get("job_id")
+            if isinstance(job_filter, str) and job_filter and metadata.get("job_id") != job_filter:
+                continue
+            manager = getattr(self._server, "channel_manager", None)
+            channel = manager.get_channel(payload["channel"]) if manager else None
+            readiness = getattr(channel, "delivery_readiness", None)
+            issue = readiness(payload["chat_id"]) if callable(readiness) else None
+            detail = row.get("detail") or {}
             preview = "\n".join(block.get("text", "") for block in payload["content"] if block.get("text"))
             messages.append({
                 "event_id": row["event_id"], "channel": payload["channel"], "chat_id": payload["chat_id"],
@@ -43,6 +87,12 @@ class DeliveriesAPI:
                 "confirmed_parts": sum(bool(part["message_id"]) for part in row["parts"]),
                 "unknown_parts": sum(not part["message_id"] and part["state"] == "unknown" for part in row["parts"]),
                 "created_at": row["created_at"],
+                "error": row.get("error", ""),
+                "error_code": issue.error_code if issue else detail.get("error_code", ""),
+                "recovery_action": issue.recovery_action if issue else "",
+                "can_retry": issue is None and channel is not None and channel.is_running,
+                "auto_retry": bool(metadata.get("scheduled_output") and row["status"] == "awaiting_context"),
+                "job_id": metadata.get("job_id", ""),
             })
         return web.json_response({"messages": messages, "durable": True})
 
@@ -102,6 +152,11 @@ class DeliveriesAPI:
                     channel = self._server.channel_manager.get_channel(event.channel)
                     if channel is None or not channel.is_running:
                         return web.json_response({"error": "start this channel before retrying"}, status=409)
+                    readiness = getattr(channel, "delivery_readiness", None)
+                    issue = readiness(event.chat_id) if callable(readiness) else None
+                    if issue is not None:
+                        return web.json_response({"error": issue.error, "error_code": issue.error_code,
+                                                  "recovery_action": issue.recovery_action}, status=409)
                     await store.resolve_outbound(event_id,
                                                  confirmed_not_delivered=body.get("confirmed_not_delivered") is True, actor=actor)
                     await store.update_outbound(event_id, "retrying")
@@ -111,6 +166,8 @@ class DeliveriesAPI:
         if body["action"] == "confirm_delivery":
             from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
             result = DeliveryResult(DeliveryStage.DELIVERED, event.channel, detail={"operator_confirmed": True})
+            if bus.scheduled_outputs is not None:
+                await bus.scheduled_outputs.record(event, result)
             callback = getattr(self._server._agent_loop, "record_recovered_delivery", None)
             if callback is not None:
                 await callback(event, result)
@@ -118,7 +175,10 @@ class DeliveriesAPI:
             return web.json_response({"success": True, "status": "delivered"})
         event.metadata["_delivery_retry"] = True
         bus.track_outbound(event.event_id)
-        result = await bus.publish_outbound(event)
+        if bus.scheduled_outputs is not None and event.metadata.get("scheduled_output"):
+            result = await bus.scheduled_outputs.retry(event)
+        else:
+            result = await bus.publish_outbound(event)
         callback = getattr(self._server._agent_loop, "record_recovered_delivery", None)
         if callback is not None:
             await callback(event, result)

@@ -96,3 +96,20 @@ export async function apiUpload<T = unknown>(path: string, body: FormData): Prom
   }
   return resp.json();
 }
+
+/** Download with the same header authentication as the rest of the dashboard. */
+export async function apiDownload(path: string): Promise<Blob> {
+  const resp = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (resp.status === 401) {
+    if (location.pathname !== "/login") {
+      sessionStorage.setItem(RETURN_TO_STORAGE_KEY, location.pathname + location.search);
+    }
+    onUnauthorized?.();
+    throw new Error("Unauthorized");
+  }
+  if (!resp.ok) {
+    const error = await resp.json().catch(() => ({ error: resp.statusText }));
+    throw new Error(error.error || resp.statusText);
+  }
+  return resp.blob();
+}

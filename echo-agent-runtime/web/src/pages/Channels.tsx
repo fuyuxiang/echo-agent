@@ -6,7 +6,7 @@ import { runMutation } from "../stores/toast";
 import { useIsAdmin } from "../stores/capabilities";
 import { Loadable } from "../components/Loadable";
 import { RefreshCw, Power, RotateCw } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DeliveryRecovery } from "../components/DeliveryRecovery";
 
 interface Channel {
@@ -18,6 +18,7 @@ interface Channel {
   enabled_managed?: boolean;
   allow_from_count?: number;
   group_policy?: string;
+  delivery_health?: string;
 }
 
 export function Channels() {
@@ -26,6 +27,11 @@ export function Channels() {
   const isAdmin = useIsAdmin();
   const canWrite = isAdmin !== false;
   const [inflight, setInflight] = useState<string | null>(null);
+  useEffect(() => {
+    if (!data?.channels.some(channel => channel.name === "weixin" && channel.running)) return;
+    const timer = window.setInterval(() => { void refetch(); }, 15000);
+    return () => window.clearInterval(timer);
+  }, [data, refetch]);
 
   useWsSubscribe(["channels"], () => refetch(), ["channel_updated"]);
 
@@ -89,6 +95,9 @@ export function Channels() {
                   <div className="font-medium text-sm">{ch.name}</div>
                   {ch.restart_required && <div className="text-xs text-amber-700">{t("savedPending")}</div>}
                   {ch.enabled_managed && <div className="text-xs text-gray-500">{t("managedEnabled")}</div>}
+                  {ch.running && ch.delivery_health && <p className={`text-xs mt-1 ${ch.delivery_health === "ready" ? "text-gray-500" : "text-amber-700"}`}>
+                    {t(`deliveryHealth.${ch.delivery_health}`)}
+                  </p>}
                   <div className="text-xs text-gray-500 flex gap-3">
                     <span>{ch.enabled ? t("common:enabled") : t("common:disabled")}</span>
                     {ch.group_policy && <span>{t("groupPolicy", { policy: ch.group_policy })}</span>}

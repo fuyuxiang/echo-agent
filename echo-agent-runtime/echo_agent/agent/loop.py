@@ -1719,6 +1719,9 @@ class AgentLoop:
             run_id = str(event.metadata.get("run_id") or "")
             await scheduler.record_run_outcome(job_id, status, error,
                                                **({"run_id": run_id} if run_id else {}))
+            outputs = getattr(self.bus, "scheduled_outputs", None)
+            if outputs is not None:
+                await outputs.finished(event)
         except Exception as e:
             logger.debug("Cron outcome writeback failed for job {}: {}", job_id, e)
 
@@ -1943,7 +1946,7 @@ class AgentLoop:
                     # IM 追问发送失败时撤销待答绑定，不能把下一条消息当作未送达问题的答案。
                     if result.termination_reason == "awaiting_clarification":
                         self.clarify.clear_im_pending(event.session_key)
-                    await self._record_cron_outcome(event, "error", "delivery failed")
+                    await self._record_cron_outcome(event, "error", delivery.error if delivery and delivery.error else "delivery failed")
                     if result.termination_reason == "awaiting_clarification":
                         await self._wait_task_for_clarification(event, response_text, delivery_failed=True)
                     else:

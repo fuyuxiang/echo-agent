@@ -34,6 +34,9 @@ class SendResult:
     # Multipart receipts include acknowledged parts even when a later part fails.
     message_ids: list[str] = field(default_factory=list)
     delivery_unknown: bool = False
+    # Machine-readable recovery information; the dashboard localizes the action.
+    error_code: str = ""
+    recovery_action: str = ""
 
 
 class DeliveryRejected(RuntimeError):

@@ -312,6 +312,10 @@ class ArtifactDeliverTool(Tool):
             # identity so append-only CLI and TUI clients retain every part;
             # ``_inbound_event_id`` itself stays unchanged for turn accounting.
             event.metadata.update({
+                "_artifact_id": params["artifact_id"],
+                "artifact_caption": caption,
+                "artifact_intent_id": ctx.artifact_intent_id,
+                "artifact_chunk_chars": self._text_fallback_chunk_chars,
                 "_artifact_delivery_id": delivery_id[:16],
                 "_artifact_part": index,
                 "_artifact_parts": total,
@@ -388,6 +392,9 @@ class ArtifactDeliverTool(Tool):
                 event = OutboundEvent(
                     channel=ctx.channel, chat_id=ctx.chat_id, content=blocks,
                 ).mark_tool_delivery(ctx)
+                event.metadata["_artifact_id"] = params["artifact_id"]
+                event.metadata["artifact_caption"] = caption
+                event.metadata["artifact_intent_id"] = ctx.artifact_intent_id
                 receipt = await self._publish(event)
                 if receipt is not None and not getattr(receipt, "ok", True):
                     detail = getattr(receipt, "error", "") or getattr(

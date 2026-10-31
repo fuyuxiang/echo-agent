@@ -71,6 +71,11 @@ class MessageBus:
         self._turn_run_store = None
         self._delivery_locks = weakref.WeakValueDictionary()
         self._tracked_outbound: set[str] = set()
+        self.scheduled_outputs = None
+
+    def notify_channel_ready(self, channel: str, chat_id: str) -> None:
+        if self.scheduled_outputs is not None and self._accepting:
+            self.scheduled_outputs.channel_ready(channel, chat_id)
 
     @property
     def has_durable_outbound_storage(self) -> bool:
@@ -201,17 +206,23 @@ class MessageBus:
                     self._publishers_idle.set()
 
     async def publish_outbound(self, event: OutboundEvent) -> DeliveryResult:
+        if self.scheduled_outputs is not None:
+            await self.scheduled_outputs.prepare(event)
         result = await self._dispatch_outbound(event)
         if self._turn_run_store is not None and event.event_id in self._tracked_outbound:
             try:
                 await self._turn_run_store.update_outbound(
                     event.event_id, "delivered" if result.ok else
-                    "unknown" if result.detail.get("delivery_unknown") else "failed", result.error or "",
+                    "unknown" if result.detail.get("delivery_unknown") else
+                    "awaiting_context" if result.detail.get("recovery_action") in {"send_message", "relogin"}
+                    else "failed", result.error or "", detail=result.detail,
                 )
             except Exception:
                 logger.warning("Could not update outbound recovery summary for {}", event.event_id)
             if result.ok:
                 self._tracked_outbound.discard(event.event_id)
+        if self.scheduled_outputs is not None:
+            await self.scheduled_outputs.record(event, result)
         return result
 
     async def _dispatch_outbound(self, event: OutboundEvent) -> DeliveryResult:
@@ -403,6 +414,8 @@ class MessageBus:
                     *(self._notify_inbound_rejected(event, "shutdown") for event in rejected),
                     return_exceptions=True,
                 )
+        if self.scheduled_outputs is not None:
+            await self.scheduled_outputs.stop()
         logger.info("MessageBus stopped")
 
     async def _dispatch_loop(self) -> None:

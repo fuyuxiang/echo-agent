@@ -73,6 +73,12 @@ class ChannelsAPI:
                 "restart_required": saved_cfg != ch_cfg,
                 "enabled_managed": ConfigAPI._is_managed(f"channels.{name}.enabled", managed_paths),
             }
+            adapter = manager.get_channel(name)
+            delivery_health = getattr(adapter, "delivery_health", None)
+            if callable(delivery_health):
+                health = delivery_health()
+                if isinstance(health, str):
+                    entry["delivery_health"] = health
             if enabled:
                 allow_from = getattr(ch_cfg, "allow_from", None)
                 if isinstance(allow_from, (list, tuple)) and allow_from:

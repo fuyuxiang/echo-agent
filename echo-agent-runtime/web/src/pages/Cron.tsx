@@ -8,6 +8,7 @@ import { runMutation, toast } from "../stores/toast";
 import { Loadable } from "../components/Loadable";
 import { useConfirm } from "../components/ConfirmDialog";
 import { CronRunsDrawer } from "../components/CronRunsDrawer";
+import { DeliveryRecovery } from "../components/DeliveryRecovery";
 import { useIsAdmin } from "../stores/capabilities";
 import { Play, Trash2, Plus, Pencil, History } from "lucide-react";
 
@@ -18,6 +19,8 @@ export interface CronJob {
   enabled: boolean;
   status: string;
   last_status: string;
+  last_error?: string;
+  delivery_status?: string;
   active_run_id?: string;
   next_run_ms: number | null;
   config_valid?: boolean;
@@ -419,7 +422,13 @@ export function Cron() {
                         {job.enabled ? t("active") : t("paused")}
                       </button>
                     </td>
-                    <td className="text-xs">{job.last_status || "-"}</td>
+                    <td className="text-xs max-w-64">
+                      <span className={job.last_status === "delivery_pending" ? "text-amber-700" : job.last_status === "error" ? "text-red-700" : ""}>
+                        {job.last_status ? t(`outcome.${job.last_status}`, { defaultValue: job.last_status }) : "-"}
+                      </span>
+                      {job.last_status === "delivery_pending" && <p className="mt-1 text-gray-500">{t("deliveryPendingHint")}</p>}
+                      {job.last_error && job.last_status !== "delivery_pending" && <p className="mt-1 text-gray-500 break-words" title={job.last_error}>{job.last_error}</p>}
+                    </td>
                     <td className="text-xs">{dateTime(job.next_run_ms)}</td>
                     <td className="flex gap-1 py-2">
                       {/* Trigger / edit / delete are mutations; the run history
@@ -436,6 +445,8 @@ export function Cron() {
           </div>
         )}
       </Loadable>
+
+      {isAdmin === true && <DeliveryRecovery scheduledOnly />}
 
       {runsFor && (
         <CronRunsDrawer job={runsFor} onClose={() => setRunsFor(null)} />

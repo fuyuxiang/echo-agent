@@ -123,6 +123,19 @@ echo-agent cron revoke <job_id>       # 撤销授权
 
 同一任务在本次运行尚未结束时不会再次触发，包括手动触发。重启时，上一个进程留下的排队/执行记录记为 `interrupted`，不会盲目重新执行可能已产生副作用的操作；检查结果和外部系统后再决定是否手动重试。定时计划会从当前时间重新计算，不补跑所有错过的周期。
 
+### 投递恢复与日报历史
+
+微信缺少发送上下文或明确拒收时，已生成的结果记为 `delivery_pending`，释放本次执行槽位，保留原报告。
+新的微信消息恢复会话后，Runtime 自动继续投递；成功后记录 `delivery_recovered` 和恢复时间。
+补发不会重新运行任务，也不会重发已经确认的分段。发送结果未知时须在 Dashboard 中先核对。
+
+定时任务可以通过 payload 中的 `report_history_path` 指定工作区内的相对 JSON 路径，
+例如 `data/ai-radar/history.json`。Runtime 按执行日期维护 `reports` 数组的投递字段：
+生成后为 `pending_delivery`，收到完整投递回执后才写入 `status: success` 和实际 `pushed_at`。
+`job_id`、`run_id` 和 `delivery_status` 用于关联调度器的执行记录。
+检索内容、来源和技术条目仍由任务维护；`last_pushed` 在投递失败时会撤回当天的提前成功标记。
+任务应以 Runtime 回执为送达依据，不能自行提前填写成功。该路径的变更会使现有任务授权失效，需要重新授权。
+
 ## Dashboard Cron 页面
 
 Dashboard 提供专门的 Cron 管理页面，支持：
