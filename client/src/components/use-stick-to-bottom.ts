@@ -219,14 +219,16 @@ export function useStickToBottom({
     const handleTouchEnd = () => {
       touchYRef.current = null;
     };
-    const handleCopyAction = (event: Event) => {
+    const handleReadingAction = (event: Event) => {
       // Clipboard writes do not emit a native `copy` event. Mark copy affordances
       // explicitly and stop following before their async clipboard work or the
       // next streamed layout update can move the view. `click` also covers
       // keyboard activation; pointer-down handles mouse/touch at the earliest point.
-      if (!streamingRef.current) return;
       const target = event.target as Element | null;
-      if (target?.closest?.("[data-chat-copy]")) pauseFollowing();
+      // Expanding records is explicit reading intent, including in completed
+      // turns. Pause before their layout grows so the first stage stays put.
+      if (target?.closest?.("[data-chat-reading]")
+        || streamingRef.current && target?.closest?.("[data-chat-copy]")) pauseFollowing();
     };
     const handleCopy = (event: ClipboardEvent) => {
       // Also cover keyboard/context-menu copying of selected transcript text,
@@ -255,8 +257,8 @@ export function useStickToBottom({
     scrollElement.addEventListener("touchmove", handleTouchMove, { passive: true });
     scrollElement.addEventListener("touchend", handleTouchEnd, { passive: true });
     scrollElement.addEventListener("touchcancel", handleTouchEnd, { passive: true });
-    scrollElement.addEventListener("pointerdown", handleCopyAction, { passive: true });
-    scrollElement.addEventListener("click", handleCopyAction, { passive: true });
+    scrollElement.addEventListener("pointerdown", handleReadingAction, { passive: true });
+    scrollElement.addEventListener("click", handleReadingAction, { passive: true });
     scrollElement.ownerDocument.addEventListener("copy", handleCopy);
 
     // The content observer catches asynchronously expanding Markdown, images,
@@ -278,8 +280,8 @@ export function useStickToBottom({
       scrollElement.removeEventListener("touchmove", handleTouchMove);
       scrollElement.removeEventListener("touchend", handleTouchEnd);
       scrollElement.removeEventListener("touchcancel", handleTouchEnd);
-      scrollElement.removeEventListener("pointerdown", handleCopyAction);
-      scrollElement.removeEventListener("click", handleCopyAction);
+      scrollElement.removeEventListener("pointerdown", handleReadingAction);
+      scrollElement.removeEventListener("click", handleReadingAction);
       scrollElement.ownerDocument.removeEventListener("copy", handleCopy);
       contentElement.removeEventListener("load", handleLateLayout, true);
       resizeObserver?.disconnect();

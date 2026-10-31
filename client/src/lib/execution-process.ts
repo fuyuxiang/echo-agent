@@ -32,7 +32,7 @@ export interface AssistantPartGroups {
  */
 export function partitionAssistantParts(
   parts: MessagePart[],
-  options: { organizeProgress?: boolean } = {},
+  options: { organizeProgress?: boolean; active?: boolean } = {},
 ): AssistantPartGroups {
   const normalizedParts = expandTaggedThinking(parts);
   const lastMeaningfulPart = [...normalizedParts].reverse().find(part =>
@@ -45,11 +45,18 @@ export function partitionAssistantParts(
   // Presentation groups intermediate public text with the work it accompanies.
   // Keep the source untouched: copy/search/export callers can still request all
   // public text, and explicit partial/final answers always remain in the answer.
-  const responseParts = normalizedParts.filter((part, index): part is TextMessagePart => {
+  let responseParts = normalizedParts.filter((part, index): part is TextMessagePart => {
     if (!isTextPart(part) || part.phase === "commentary") return false;
     if (!options.organizeProgress || part.phase) return true;
-    return !hasRunningTools && index > lastToolIndex && !(part.streamId && toolStreams.has(part.streamId));
+    return !(hasRunningTools && options.active !== false) && index > lastToolIndex
+      && !(part.streamId && toolStreams.has(part.streamId));
   });
+  // Some Runtime turns end after tool work without a separate answer stream.
+  // Keep their existing public results readable when retiring the live view.
+  // Explicit commentary and thoughts still belong only to the record.
+  if (options.organizeProgress && options.active === false && responseParts.length === 0) {
+    responseParts = normalizedParts.filter((part): part is TextMessagePart => isTextPart(part) && part.phase !== "commentary");
+  }
   const responseSet = new Set<MessagePart>(responseParts);
   return {
     processParts: normalizedParts.filter(part => !responseSet.has(part)),

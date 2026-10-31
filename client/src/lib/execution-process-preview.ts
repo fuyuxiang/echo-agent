@@ -1,62 +1,56 @@
-import type { MessagePart, ToolCallView } from "@/stores/session-store";
+import type { MessagePart } from "@/stores/session-store";
 
 /** A bounded view of real events, never an inferred plan or progress percentage. */
-export function executionProcessPreview(parts: MessagePart[], focusedToolCallId?: string) {
-  const tools: ToolCallView[] = [];
-  let latestText: Extract<MessagePart, { kind: "text" | "thought" }> | undefined;
-  for (const part of parts) {
-    if (part.kind === "tool_call") tools.push(part.toolCall);
-    else if (part.text.trim()) latestText = part;
+export function executionProgressText(parts: MessagePart[]): string {
+  // Public progress and internal analysis have different audiences. Never use
+  // thoughts, tool output, or a final answer as the default progress summary.
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const part = parts[index];
+    if (part.kind !== "text" || part.phase === "final_answer" || part.phase === "partial_answer") continue;
+    const excerpt = previewExcerpt(part.text);
+    if (excerpt) return excerpt;
   }
-
-  // Keep older parallel work visible even when newer, shorter calls finish.
-  const running = tools.filter(tool => tool.status === "in_progress");
-  // A keyboard target must not disappear when it completes or new work arrives.
-  const selected = new Set<string>();
-  if (focusedToolCallId && tools.some(tool => tool.toolCallId === focusedToolCallId)) {
-    selected.add(focusedToolCallId);
-  }
-  for (let index = running.length - 1; index >= 0 && selected.size < 3; index--) {
-    selected.add(running[index].toolCallId);
-  }
-  for (let index = tools.length - 1; index >= 0 && selected.size < 3; index--) {
-    selected.add(tools[index].toolCallId);
-  }
-  const visibleTools = tools.filter(tool => selected.has(tool.toolCallId));
-  return {
-    tools: visibleTools,
-    hiddenToolCount: tools.length - visibleTools.length,
-    hiddenRunningCount: running.filter(tool => !selected.has(tool.toolCallId)).length,
-    excerpt: latestText ? previewExcerpt(latestText.text) : "",
-    excerptKind: latestText?.kind,
-  };
+  return "";
 }
 
 export function previewExcerpt(text: string): string {
-  // Do not mount another streaming Markdown tree for the single-line preview.
-  // Use the latest paragraph so long thoughts still show newly received text.
-  const paragraphs = readableTextTail(text)
+  const paragraphs = readableProse(text, "end")
     .split(/\n\s*\n/)
-    .map(value => value.trim())
+    .map(plainProgressText)
     .filter(Boolean);
-  const plain = (paragraphs[paragraphs.length - 1] ?? "")
+  // Keep the context of the current paragraph, rather than selecting a final
+  // sentence that might just say "please wait". The full text stays in records.
+  const characters = Array.from(paragraphs[paragraphs.length - 1] ?? "");
+  return characters.length > 200 ? `…${characters.slice(-200).join("")}` : characters.join("");
+}
+
+/** A stable heading from the beginning of actual public progress. */
+export function progressStageTitle(text: string): string {
+  const plain = plainProgressText(readableProse(text, "start"));
+  const firstSentence = plain.match(/^[^。！？!?\n]+/)?.[0]?.trim() ?? "";
+  const characters = Array.from(firstSentence);
+  return characters.slice(0, 48).join("") + (characters.length > 48 ? "…" : "");
+}
+
+function plainProgressText(text: string): string {
+  return text
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+)/gm, "")
     .replace(/[*_`]/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  const sentence = plain.match(/[^。！？!?]+[。！？!?]?[”’」』]*$/u)?.[0]?.trim() || plain;
-  const characters = Array.from(sentence);
-  return characters.length > 200 ? `…${characters.slice(-200).join("")}` : sentence;
 }
 
 /** Scan fence boundaries before truncating, keeping only a bounded prose tail. */
-function readableTextTail(text: string): string {
+function readableProse(text: string, edge: "start" | "end"): string {
   let tail = "";
   let cursor = 0;
   let fence: { marker: string; length: number } | undefined;
-  const append = (value: string) => { tail = (tail + value.slice(-2_048)).slice(-2_048); };
+  const append = (value: string) => {
+    tail = edge === "start" ? (tail + value.slice(0, 2_048)).slice(0, 2_048)
+      : (tail + value.slice(-2_048)).slice(-2_048);
+  };
   for (const match of text.matchAll(/^ {0,3}(`{3,}|~{3,})([^\r\n]*)(?:\r?\n|$)/gm)) {
     const marker = match[1][0];
     if (!fence) {

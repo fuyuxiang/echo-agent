@@ -288,3 +288,24 @@ describe("formatProcessDuration", () => {
     expect(formatProcessDuration(65_000)).toBe("1分5秒");
   });
 });
+
+
+describe("terminal public result visibility", () => {
+  const toolPart: MessagePart = { kind: "tool_call", toolCall: { toolCallId: "unfinished", kind: "read", title: "读取资料", status: "in_progress", content: [] } };
+  it("终态工具缺少回执时，仍保留尾部公开结果", () => {
+    const parts: MessagePart[] = [toolPart, { kind: "text", text: "已经取得的阶段结果。" }];
+    expect(partitionAssistantParts(parts, { organizeProgress: true, active: false }).responseParts.map(part => part.text)).toEqual(["已经取得的阶段结果。"]);
+    expect(partitionAssistantParts(parts, { organizeProgress: true, active: true }).responseParts).toHaveLength(0);
+  });
+  it("没有独立最终答复时保留公开输出，显式进展说明和分析仍留在记录中", () => {
+    const parts: MessagePart[] = [
+      { kind: "text", text: "已经核对的资料结论。", streamId: "1" },
+      { kind: "thought", text: "内部分析", streamId: "1" },
+      toolPart,
+      { kind: "text", text: "正在继续检查。", phase: "commentary" },
+    ];
+    const grouped = partitionAssistantParts(parts, { organizeProgress: true, active: false });
+    expect(grouped.responseParts.map(part => part.text)).toEqual(["已经核对的资料结论。"]);
+    expect(grouped.processParts).toEqual(parts.slice(1));
+  });
+});

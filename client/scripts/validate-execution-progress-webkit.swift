@@ -62,88 +62,55 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             report({action:'progress',stage:'production UI mounted'});
             const { useSessionStore } = await import('/src/stores/session-store.ts');
             const store = useSessionStore.getState(), id = store.streamingMessageId;
-            const tool = (id, status) => ({kind:'tool_call',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',toolCall:{toolCallId:id,kind:'read_file',title:'检查健康资料与参考文献 · ' + id,status,content:[]}});
-            const parts = [{kind:'text',phase:'commentary',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',text:'较早的推理内容。'.repeat(100)+'最新决定：改用备用方案验证。'},tool('ongoing','in_progress'),tool('old','completed'),tool('recent','completed'),tool('latest','completed')];
-            const set = (parts, complete = false) => store.setMessages([{id,role:'assistant',complete,startedAt:Date.now()-76000,parts}]);
-            const latestVisible = () => {
-              const excerpt = document.querySelector('.execution-process__excerpt p'), start = excerpt?.textContent.indexOf('改用备用方案验证。') ?? -1;
-              if (start < 0) return false;
-              const range = document.createRange(); range.setStart(excerpt.firstChild,start); range.setEnd(excerpt.firstChild,start+'改用备用方案验证。'.length);
-              const tail = range.getBoundingClientRect(), box = excerpt.getBoundingClientRect();
-              window.progressGeometry = {scrollTop:excerpt.scrollTop,scrollHeight:excerpt.scrollHeight,clientHeight:excerpt.clientHeight,
-                tailTop:tail.top,tailBottom:tail.bottom,boxTop:box.top,boxBottom:box.bottom,boxHeight:box.height,lineHeight:getComputedStyle(excerpt).lineHeight};
-              return tail.top >= box.top - 1 && tail.bottom <= box.bottom + 1 && box.height <= parseFloat(getComputedStyle(excerpt).lineHeight) + 1 && getComputedStyle(excerpt).whiteSpace === 'nowrap';
-            };
-            const showTools = async () => {
-              await wait(() => document.querySelector('.execution-process__operations-toggle'));
-              const toggle = document.querySelector('.execution-process__operations-toggle');
-              if (toggle.getAttribute('aria-expanded') === 'false') toggle.click();
-              await wait(() => document.querySelector('.execution-process__preview .toolcall--run'));
-            };
+            const tool = (id, status) => ({kind:'tool_call',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',toolCall:{toolCallId:id,kind:'read_file',title:'检查健康资料 · ' + id,status,content:[]}});
+            const parts = [
+              {kind:'text',phase:'commentary',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',text:'资料来源已经确认。正在交叉核对数据来源与演示结构。'},
+              {kind:'thought',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',text:'详细分析。'.repeat(200)+'分析原文末尾'},
+              tool('ongoing','in_progress'),tool('old','completed'),tool('recent','completed'),tool('latest','completed')
+            ];
+            const set = (parts, complete = false, idle = false) => store.setMessages([{id,role:'assistant',complete,
+              startedAt:Date.now()-76000,lastActivityAt:Date.now()-(idle?45000:0),stopReason:complete?'end_turn':undefined,parts}]);
             document.documentElement.style.fontSize = (16 * 18 / 13) + 'px';
             set(parts);
-            await wait(() => document.querySelector('.execution-process__operations-toggle'));
-            await showTools();
-            const preview = document.querySelector('.execution-process__preview'), box = preview.getBoundingClientRect();
-            assert(preview.querySelectorAll('.toolcall').length === 3, 'Preview must show at most three real tool calls');
-            assert(preview.querySelector('.toolcall--run').textContent.includes('ongoing'), 'Earlier running work must stay visible');
-            assert(preview.scrollWidth <= preview.clientWidth + 1 && box.x >= 0 && box.right <= innerWidth + 1, 'Preview overflows the native window');
-            await wait(latestVisible);
-            report({action:'progress',stage:'latest excerpt visible'});
-            document.documentElement.style.fontSize = '16px';
-            await wait(latestVisible);
-            report({action:'progress',stage:'smaller font excerpt visible'});
-            document.documentElement.style.fontSize = (16 * 18 / 13) + 'px';
-            await wait(latestVisible);
-            report({action:'progress',stage:'larger font excerpt visible'});
-            assert(!document.querySelector('.msg__caret, .msg__writing'), 'Execution must not show an answer cursor');
-            await new Promise(resolve => { window.resolveProgressSnapshot = resolve; report({action:'snapshot'}); });
-            report({action:'progress',stage:'native snapshot saved'});
-
-            const focused = preview.querySelector('[data-tool-call-id="ongoing"]'); focused.focus();
-            const completedParts = parts.map(part => part.kind === 'tool_call' ? {...part,toolCall:{...part.toolCall,status:'completed'}} : part);
-            set(completedParts);
+            await wait(() => document.querySelector('.execution-process__title')?.textContent === '核对资料与准备演示结构');
+            let entry = document.querySelector('.execution-process__header');
+            assert(entry.getAttribute('aria-expanded') === 'false', 'Records must default to collapsed');
+            assert(document.querySelectorAll('.execution-process button').length === 1, 'Only one record entry');
+            const process = document.querySelector('.execution-process'), box = process.getBoundingClientRect();
+            assert(process.scrollWidth <= process.clientWidth + 1 && box.x >= 0 && box.right <= innerWidth + 1, 'Progress overflows native window');
+            assert(getComputedStyle(document.querySelector('.execution-process__excerpt p')).whiteSpace === 'normal', 'Progress must wrap');
+            entry.click();
+            await wait(() => document.querySelectorAll('.execution-process .toolcall').length === 4);
+            const body = document.querySelector('.execution-process__body');
+            assert(getComputedStyle(body).overflowY === 'visible', 'Records must use transcript scrolling');
+            const focused = body.querySelector('[data-tool-call-id="ongoing"]');
+            focused.focus();
+            const completed = parts.map(part => part.kind === 'tool_call' ? {...part,toolCall:{...part.toolCall,status:'completed'}} : part);
+            set(completed);
             await wait(() => focused.textContent.includes('完成'));
-            assert(document.activeElement === focused && focused.isConnected, 'Native tool completion must retain keyboard focus');
-            assert(preview.querySelectorAll('.toolcall').length === 3, 'Focus retention must keep the preview bounded');
-            document.querySelector('.execution-process__header').focus();
-            await wait(() => !focused.isConnected);
-            set([{kind:'text',phase:'commentary',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',text:'早先进展。\n\n```ts\n'+'const draft = 1;\n'.repeat(300)+'```\n\n代码核对完成。'}]);
-            await wait(() => document.querySelector('.execution-process__excerpt p')?.textContent === '代码核对完成。');
-            report({action:'progress',stage:'focus retention and long fences passed'});
+            assert(document.activeElement === focused, 'Updating tools must retain keyboard focus');
+            body.querySelector('summary').click();
+            await wait(() => document.querySelector('.execution-process__read-more'));
+            document.querySelector('.execution-process__read-more').click();
+            await wait(() => document.querySelector('.execution-process__reasoning-body')?.textContent.includes('分析原文末尾'));
+            document.querySelector('.execution-process__read-more').click();
+            await wait(() => !document.querySelector('.execution-process__reasoning-body')?.textContent.includes('分析原文末尾'));
+            entry.click();
+            set(parts,false,true);
+            await wait(() => document.querySelector('.execution-process__waiting-note'));
             set(parts);
-            await showTools();
-            preview.querySelector('.execution-process__preview-more').click();
-            assert(document.activeElement === document.querySelector('.execution-process__header'), 'Expand all must keep a stable focus target');
-            await wait(() => document.querySelector('.execution-process__body .execution-process__operations-toggle'));
-            document.querySelector('.execution-process__body .execution-process__operations-toggle').click();
-            await wait(() => document.querySelector('.execution-process__body .toolcall'));
-            assert(document.querySelectorAll('.execution-process__body .toolcall').length === 4, 'Expand all must reveal the full history');
-            document.querySelector('.execution-process__header').click();
-            await showTools();
-            document.querySelector('.execution-process__preview .toolcall--run').focus();
-            set([...completedParts,{kind:'text',text:'这是正式答复。'}]);
-            await wait(() => document.querySelector('.execution-process__title')?.textContent === '正在生成回复');
-            assert(!document.querySelector('.execution-process__preview'), 'Answer generation must retire the live preview');
-            assert(document.activeElement === document.querySelector('.execution-process__header'), 'Answer transition must restore keyboard focus');
-            report({action:'progress',stage:'answer transition passed'});
-            assert(document.querySelectorAll('.msg--assistant [role="status"]').length === 1, 'Answer generation must have one live announcement');
-            set([...completedParts,{kind:'text',text:Array.from({length:30},(_,i)=>'第 '+(i+1)+' 段：这是持续生成的长回复，底部应始终保留可见的生成状态。').join('\n\n')}]);
-            await wait(() => {
-              const status = document.querySelector('.msg__writing')?.getBoundingClientRect(), viewport = document.querySelector('.chatview__scroll')?.getBoundingClientRect(), header = document.querySelector('.execution-process__header')?.getBoundingClientRect();
-              return status && viewport && header && status.top >= viewport.top && status.bottom <= viewport.bottom + 1 && header.bottom < viewport.top;
-            });
-            report({action:'progress',stage:'long-answer feedback visible'});
-            set(parts);
-            await showTools();
-            document.querySelector('.execution-process__preview .toolcall--run').focus();
-            set(completedParts,true);
-            await wait(() => document.querySelector('.execution-process__title')?.textContent === '查看过程');
-            assert(!document.querySelector('.execution-process--running'), 'Completed response must not remain busy');
-            assert(!document.querySelector('.msg__writing'), 'Completion must remove generation feedback');
-            assert(document.activeElement === document.querySelector('.execution-process__header'), 'Completion must restore keyboard focus');
-            report({action:'done',viewport:[innerWidth,innerHeight],previewHeight:box.height,checks:['native layout','single current-stage line','font changes','long code fences','parallel activity','keyboard focus','expand all','long-answer feedback','completion']});
-          } catch (error) { report({action:'fail',error:String(error)+'\n'+error.stack+'\n'+JSON.stringify(window.progressGeometry)}); }
+            await wait(() => !document.querySelector('.execution-process__waiting-note'));
+            await new Promise(resolve => { window.resolveProgressSnapshot = resolve; report({action:'snapshot'}); });
+            const answering = [...completed,{kind:'text',phase:'final_answer',streamId:'answer-1',text:'这是已经核对好的最终答复。'}];
+            set(answering);
+            await wait(() => document.querySelector('.msg__writing'));
+            assert(!document.querySelector('.execution-process__excerpt'), 'Answer must retire progress excerpt');
+            assert(document.querySelectorAll('.msg--assistant [role=status]').length === 1, 'Announce generation once');
+            set(answering,true);
+            await wait(() => document.querySelector('.execution-process__title')?.textContent === '本轮已完成');
+            assert(!document.querySelector('.execution-process--running, .msg__writing'), 'Completion must remove running feedback');
+            report({action:'done',viewport:[innerWidth,innerHeight],checks:['native layout','wrapping progress','single record entry','all operations','keyboard focus','long analysis','actual wait','answer feedback','completion']});
+          } catch (error) { report({action:'fail',error:String(error)+'\n'+error.stack}); }
         })();
         """#) { _, error in if let error = error { self.fail(String(describing: error)) } }
     }

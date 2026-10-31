@@ -57,7 +57,9 @@ export function LoadingRow({ startedAt }: { startedAt?: number }) {
           </span>
         )}
       </div>
-      {tip && <p className="msg__loading-tip" aria-live="off">{tip}</p>}
+      {elapsed >= 30_000
+        ? <p className="msg__loading-tip" aria-live="off">尚未收到模型输出，可继续等待，或停止本次执行。</p>
+        : tip && <p className="msg__loading-tip" aria-live="off">{tip}</p>}
     </div>
   );
 }

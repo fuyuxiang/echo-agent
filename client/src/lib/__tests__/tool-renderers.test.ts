@@ -44,6 +44,8 @@ describe("detectToolRenderer", () => {
   });
   it("EchoAgent task 工具 → task 渲染器（优先于 defer 的子串匹配）", () => {
     expect(detectToolRenderer("task")).toBe("task");
+    expect(detectToolRenderer("spawn_subagent")).toBe("task");
+    expect(detectToolRenderer("spawn_agent")).toBe("task");
     // 注意：含 task 子串但不是纯 task 的（如 defer）不应被 task 拦截
     expect(detectToolRenderer("defer_execute")).toBe("defer-execute");
   });

@@ -79,6 +79,7 @@ function Harness({
           <button type="button" data-chat-copy="true" data-testid="copy-action">
             copy
           </button>
+          <button type="button" data-chat-reading="true" data-testid="record-action">执行记录</button>
         </div>
       </div>
       <button type="button" data-testid="pause" onClick={pauseFollowing}>pause</button>
@@ -235,6 +236,21 @@ describe("useStickToBottom", () => {
     act(flushAnimationFrames);
 
     expect(scroller.scrollTop).toBe(592);
+  });
+
+  it.each([true, false])("opening records preserves their first stage before layout grows (streaming=%s)", streaming => {
+    const { getByTestId, rerender } = render(<Harness version={1} streaming={streaming} />);
+    const scroller = getByTestId("scroll");
+    setScrollMetrics(scroller, { scrollHeight: 1_000, clientHeight: 400, scrollTop: 600 });
+    fireEvent.click(getByTestId("record-action"));
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1_800 });
+    act(() => resizeObservers[0].trigger());
+    rerender(<Harness version={2} streaming={streaming} />);
+    act(flushAnimationFrames);
+    expect(scroller.scrollTop).toBe(600);
+    expect(getByTestId("following")).toHaveTextContent("false");
+    fireEvent.click(getByTestId("resume"));
+    expect(scroller.scrollTop).toBe(1_400);
   });
 
   it("copying from the transcript pauses following before streamed content grows", () => {

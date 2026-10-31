@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executionProcessPreview } from "../execution-process-preview";
+import { executionProgressText } from "../execution-process-preview";
 import type { MessagePart, ToolCallView } from "@/stores/session-store";
 
 const tool = (id: string, status: ToolCallView["status"] = "completed"): MessagePart => ({
@@ -7,47 +7,29 @@ const tool = (id: string, status: ToolCallView["status"] = "completed"): Message
 });
 
 describe("live execution preview", () => {
-  it("同段进展只展示最新一句，让单行摘要随当前阶段替换", () => {
-    expect(executionProcessPreview([{ kind: "text", text: "官方票价已核实。正在补齐开放时间。" }]).excerpt).toBe("正在补齐开放时间。");
+  it("同段进展保留结果与下一步的上下文", () => {
+    expect(executionProgressText([{ kind: "text", text: "官方票价已核实。正在补齐开放时间。" }])).toBe("官方票价已核实。正在补齐开放时间。");
   });
-  it("recent completed calls cannot push older running work out of view", () => {
-    const preview = executionProcessPreview([tool("long-running", "in_progress"), ...[1, 2, 3, 4].map(id => tool(String(id)))]);
-    expect(preview.tools.map(item => item.toolCallId)).toEqual(["long-running", "3", "4"]);
-    expect(preview.hiddenToolCount).toBe(2);
-    expect(preview.hiddenRunningCount).toBe(0);
-  });
-
-  it("bounds parallel activity and reports omitted running calls", () => {
-    const preview = executionProcessPreview([1, 2, 3, 4, 5].map(id => tool(String(id), "in_progress")));
-    expect(preview.tools).toHaveLength(3);
-    expect(preview.hiddenRunningCount).toBe(2);
+  it("默认进展只采用公开说明，不展示内部分析、工具输出或最终答复", () => {
+    expect(executionProgressText([
+      { kind: "text", phase: "commentary", text: "已核实票价，正在补齐开放时间。" },
+      { kind: "thought", text: "内部分析内容" }, tool("read", "failed"),
+      { kind: "text", phase: "final_answer", text: "最终结果" },
+    ])).toBe("已核实票价，正在补齐开放时间。");
+    expect(executionProgressText([{ kind: "thought", text: "内部分析" }])).toBe("");
   });
 
-  it("keeps a focused call visible after completion and while newer parallel work arrives", () => {
-    const parts = [tool("focused"), ...[1, 2, 3, 4].map(id => tool(String(id), "in_progress"))];
-    const pinned = executionProcessPreview(parts, "focused");
-    expect(pinned.tools.map(item => item.toolCallId)).toEqual(["focused", "3", "4"]);
-    expect(pinned.hiddenToolCount).toBe(2);
-    expect(pinned.hiddenRunningCount).toBe(2);
-    expect(executionProcessPreview(parts).tools.map(item => item.toolCallId)).toEqual(["2", "3", "4"]);
-    expect(executionProcessPreview(parts, "removed").tools).toEqual(executionProcessPreview(parts).tools);
+  it("代码块不覆盖同阶段已有的可读进展", () => {
+    expect(executionProgressText([
+      { kind: "text", text: "正在核对资料。" },
+      { kind: "text", text: "```js\nconst draft = 1;" },
+    ])).toBe("正在核对资料。");
   });
 
-  it("keeps actual failure state and uses the newest readable paragraph", () => {
-    const preview = executionProcessPreview([
-      { kind: "thought", text: "较早的思考。" }, tool("read", "failed"),
-      { kind: "thought", text: "早先段落。\n\n**接下来**检查[文件](https://example.invalid)。" },
-    ]);
-    expect(preview.tools[0].status).toBe("failed");
-    expect(preview.excerpt).toBe("接下来检查文件。");
-    expect(preview.excerptKind).toBe("thought");
-  });
-
-  it("bounds long streaming thoughts and does not invent activity for empty events", () => {
-    expect(executionProcessPreview([{ kind: "thought", text: "思考".repeat(10_000) + "最新片段" }]).excerpt)
+  it("限制长内容并保留 Unicode 字符，空事件不会虚构进展", () => {
+    expect(executionProgressText([{ kind: "text", text: "进展".repeat(10_000) + "最新片段" }]))
       .toMatch(/^….{196}最新片段$/);
-    expect(executionProcessPreview([])).toMatchObject({ tools: [], excerpt: "", hiddenToolCount: 0 });
-    expect(executionProcessPreview([{ kind: "thought", text: "```js\nconst draft = 1;" }]).excerpt).toBe("");
+    expect(executionProgressText([])).toBe("");
   });
 
   it.each([
@@ -57,19 +39,19 @@ describe("live execution preview", () => {
     ["  ```ts\r", "const draft = 1;\r\n", "  ```\r"],
   ])("keeps prose after a long %s fence without exposing its code", (opening, code, closing) => {
     const text = `早先的进展。\n\n${opening}\n${code.repeat(300)}${closing}\n\n当前最新决定：**改用备用方案**。`;
-    expect(executionProcessPreview([{ kind: "thought", text }]).excerpt).toBe("当前最新决定：改用备用方案。");
+    expect(executionProgressText([{ kind: "text", text }])).toBe("当前最新决定：改用备用方案。");
   });
 
   it("keeps prior prose while a long fence is still streaming, including misleading shorter fences", () => {
     const text = "正在核对方案。\n\n````ts\n" + "const draft = 1;\n".repeat(300) + "```\n仍属于代码块";
-    expect(executionProcessPreview([{ kind: "thought", text }]).excerpt).toBe("正在核对方案。");
-    expect(executionProcessPreview([{ kind: "thought", text: "```js\n" + "code\n".repeat(1000) }]).excerpt).toBe("");
+    expect(executionProgressText([{ kind: "text", text }])).toBe("正在核对方案。");
+    expect(executionProgressText([{ kind: "text", text: "```js\n" + "code\n".repeat(1000) }])).toBe("");
   });
 
   it("keeps the newest prose across multiple code blocks and preserves complete Unicode characters", () => {
-    expect(executionProcessPreview([{ kind: "thought", text: "第一段。\n```js\na\n```\n第二段。\n~~~\nb\n~~~\n最终段落。" }]).excerpt)
+    expect(executionProgressText([{ kind: "text", text: "第一段。\n```js\na\n```\n第二段。\n~~~\nb\n~~~\n最终段落。" }]))
       .toBe("最终段落。");
-    const excerpt = executionProcessPreview([{ kind: "thought", text: "进展".repeat(1000) + "😀".repeat(199) + "完成" }]).excerpt;
+    const excerpt = executionProgressText([{ kind: "text", text: "进展".repeat(1000) + "😀".repeat(199) + "完成" }]);
     expect(Array.from(excerpt)).toHaveLength(201);
     expect(excerpt).toBe("…" + "😀".repeat(198) + "完成");
   });

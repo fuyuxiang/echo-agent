@@ -50,6 +50,8 @@ export interface ChatMessage {
   /** Local wall-clock metadata for live turns. Historical replay may omit it. */
   startedAt?: number;
   completedAt?: number;
+  /** Local receipt time of an accepted live progress event; never replay time. */
+  lastActivityAt?: number;
   /** True only for an assistant reconstructed from durable history replay.
    *  This lets the UI close a truncated historical tail without cancelling a
    *  genuinely live turn that is still running in the background. */
@@ -1456,7 +1458,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         ? updateMeta.promptId
         : undefined;
 
-      applyToTranscript(target, (tr) => {
+      const applySessionUpdate = (tr: SessionTranscript): SessionTranscript => {
         // Admission can race Pause: keep this turn's canonical identity and
         // transport context even after its visible stream has been fenced.
         // Never append messages, resume work or accept another prompt's echo.
@@ -1762,6 +1764,19 @@ export const useSessionStore = create<SessionState>((set, get) => {
           default:
             return tr;
         }
+      };
+      applyToTranscript(target, tr => {
+        const previousMessage = tr.messages.find(message => message.id === tr.streamingMessageId);
+        const next = applySessionUpdate(tr);
+        if (next === tr || isReplay || !next.streamingMessageId
+          || !["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"].includes(t)) return next;
+        const index = next.messages.findIndex(message => message.id === next.streamingMessageId);
+        // A late update to an older tool must not imply current-turn progress.
+        if (index < 0 || next.messages[index].complete
+          || t !== "plan" && next.messages[index] === previousMessage) return next;
+        const messages = [...next.messages];
+        messages[index] = { ...messages[index], lastActivityAt: Date.now() };
+        return { ...next, messages };
       });
       return get().transcripts[target] !== previousTranscript;
     },

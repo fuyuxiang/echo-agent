@@ -20,6 +20,8 @@ type ToolCallCardProps = {
   /** Open the right-side detail drawer (Phase 2). */
   onOpen?: (tc: ToolCallView) => void;
   showStatusLabel?: boolean;
+  /** The owning turn has ended; an absent tool receipt is not a live operation. */
+  executionEnded?: boolean;
 };
 
 const MAX_TOOL_IMAGE_BASE64_CHARS = 16 * 1024 * 1024;
@@ -48,7 +50,7 @@ function toolImageSource(image: ImageToolContent): string | null {
  * Always one line in the transcript: kind + short title + status.
  * Details (command/diff/output) open in the side drawer via `onOpen`.
  */
-export function ToolCallCard({ tc, onOpen, showStatusLabel = false }: ToolCallCardProps) {
+export function ToolCallCard({ tc, onOpen, showStatusLabel = false, executionEnded = false }: ToolCallCardProps) {
   if (isSilentOrganizationSkip(tc)) return (
     <button type="button" className="toolcall toolcall--compact" data-tool-call-id={tc.toolCallId} onClick={() => onOpen?.(tc)}
       title="本轮组织知识检索不可用，回答未包含该来源。点击查看原因；可在组织页面重新连接。">
@@ -57,7 +59,8 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false }: ToolCallCa
     </button>
   );
 
-  const statusCls =
+  const pendingResult = executionEnded && tc.status === "in_progress";
+  const statusCls = pendingResult ? "toolcall--pending" :
     tc.status === "completed"
       ? "toolcall--ok"
       : tc.status === "failed"
@@ -65,11 +68,11 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false }: ToolCallCa
         : "toolcall--run";
 
   const statusLabel =
-    tc.status === "completed" ? "完成" : tc.status === "failed" ? "失败" : "运行中";
+    pendingResult ? "结果待确认" : tc.status === "completed" ? "完成" : tc.status === "failed" ? "失败" : "运行中";
 
   // 状态符号：完成态用 SVG 对勾（文本 "✓" U+2713 在 macOS WKWebView 下依赖
   // 字体回退，可能渲染成 tofu/emoji 样式）；"!" / "…" 是 ASCII/通用字符，安全。
-  const statusMark =
+  const statusMark = pendingResult ? "?" :
     tc.status === "completed" ? (
       <CheckIcon size={10} strokeWidth={3} />
     ) : tc.status === "failed" ? (
@@ -90,7 +93,7 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false }: ToolCallCa
     renderer !== "default" && renderer !== "unknown";
   const kindLabel = officeTool ? "文档" : specialized
     ? `${rendererIcon(renderer)} ${rendererLabel(renderer)}`
-    : prettyKind(tc.kind);
+    : "工具";
   const summary = tc.documentProgress ? documentProgressLabel(tc.documentProgress)
     : officeTool ? shortTitle : specialized ? summarizeTool(tc, renderer) : shortTitle;
 
@@ -109,7 +112,7 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false }: ToolCallCa
         {documentProgressCount(tc.documentProgress)}
       </span>}
       {showStatusLabel && <span className="toolcall__status-label" aria-hidden="true">{statusLabel}</span>}
-      <span className={"toolcall__status-mark toolcall__status-mark--" + tc.status}>
+      <span className={"toolcall__status-mark toolcall__status-mark--" + (pendingResult ? "pending" : tc.status)}>
         {statusMark}
       </span>
     </button>
@@ -158,10 +161,13 @@ function shortenTitle(title: string, kind: string): string {
 export function ToolCallDetailBody({
   tc,
   onOpenPath,
+  executionEnded = false,
 }: {
   tc: ToolCallView;
   onOpenPath?: (path: string) => void;
+  executionEnded?: boolean;
 }) {
+  const pendingResult = executionEnded && tc.status === "in_progress";
   const diff = tc.content.find((c) => c.type === "diff") as DiffContent | undefined;
   const cmd = tc.content.find((c) => c.type === "command_output") as
     | CommandOutputContent
@@ -188,8 +194,8 @@ export function ToolCallDetailBody({
     <div className="tool-detail">
       <div className="tool-detail__meta">
         <span className="toolcall__kind">{officeTool ? "文档" : prettyKind(tc.kind)}</span>
-        <span className={"tool-detail__status tool-detail__status--" + tc.status}>
-          {tc.status === "completed"
+        <span className={"tool-detail__status tool-detail__status--" + (pendingResult ? "pending" : tc.status)}>
+          {pendingResult ? "结果待确认" : tc.status === "completed"
             ? "已完成"
             : tc.status === "failed"
               ? "失败"

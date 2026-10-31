@@ -118,7 +118,12 @@ export function seedExecutionReview(state: ExecutionReviewState = readExecutionR
 
   chat.pushUser(userText ?? "请检查 UI、执行过程与生成结果，安排两名子代理并行检查，汇总可阅读的最终报告。\n这是隔离界面数据，不调用真实模型、工具或外部服务。", [], executionReviewSessionId);
   chat.startStreaming(executionReviewSessionId, promptId);
-  update("agent_message_chunk", { content: { text: "我会先建立界面与交互基线，再并行检查视觉布局和结果交付。以下过程是隔离验证内容。" } });
+  update("plan", { entries: [
+    { content: "建立界面与执行状态检查基线", priority: "high", status: "completed" },
+    { content: "并行核验视觉布局与结果交付", priority: "high", status: "in_progress" },
+    { content: "汇总结果并验证产物操作", priority: "medium", status: "pending" },
+  ] });
+  update("agent_message_chunk", { content: { text: "页面结构和资料已读取。正在并行检查视觉布局、交互反馈与结果交付。" } });
   update("agent_thought_chunk", { content: { text: "需要把最终结论与中间日志分开。检查小窗口下的标题、折叠入口、工具摘要与子代理进度；当用户向上阅读时，应保留位置并提供回到最新消息入口。\n".repeat(12) } });
   tool(toolIds.team, "echoagent__create_team", "创建隔离 UI 评审团队", {
     team_id: "review-isolated-team", members: ["visual-reviewer", "result-reviewer"],

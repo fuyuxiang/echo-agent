@@ -53,7 +53,7 @@ try {
       assert.equal(await header.getAttribute("aria-expanded"), "false");
       assert.equal(await page.locator(".session-header [role=status]").count(), 0);
       await settle(scenario);
-      await process.locator(".execution-process__title").filter({ hasText: "查看过程" }).waitFor();
+      await page.waitForFunction(() => !document.querySelector(".execution-process--running"));
       assert.equal(await header.getAttribute("aria-expanded"), "false");
       assert.equal(await process.locator(".toolcall, .execution-process__outcome-detail").count(), 0);
       assert.doesNotMatch(await header.textContent(), /部分|失败|项操作|待确认/);
@@ -77,7 +77,7 @@ try {
         return { x: box.x, right: box.right, overflow: document.documentElement.scrollWidth > innerWidth + 1, clipped: element.scrollWidth > element.clientWidth + 1, color: marker.backgroundColor, neutral };
       });
       assert(!geometry.overflow && !geometry.clipped && geometry.x >= 0 && geometry.right <= width + 1);
-      assert.equal(geometry.color, geometry.neutral, "the collapsed process must not imply success or failure");
+      assert.notEqual(geometry.color, geometry.neutral, "confirmed completion and unresolved results have distinct markers");
       await page.screenshot({ path: join(output, `${scenario}-${width}-${theme}.png`) });
       await header.click();
       assert.equal(await process.locator(".toolcall").count(), 2);
@@ -104,14 +104,14 @@ try {
   for (const scenario of ["all-failed", "unfinished", "history", "uncertain-send", "browser-upload", "uncertain-browser-upload"]) {
     await page.setViewportSize({ width: 1280, height: 800 }); await page.goto(`${base}&theme=light`);
     await page.locator(".session-header").waitFor(); await setup(scenario); await settle(scenario);
-    await page.getByRole("button", { name: /查看过程/ }).waitFor();
+    await page.getByRole("button", { name: /执行记录/ }).waitFor();
     assert.equal(await page.locator(".session-header [role=status]").count(), 0);
     assert.equal(await page.locator(".execution-notice").count(), scenario === "history" ? 0 : 1);
     if (["unfinished", "uncertain-send", "uncertain-browser-upload"].includes(scenario)) assert((await page.locator(".execution-notice").textContent()).includes("结果尚未确认"));
   }
   assert.deepEqual(errors, []);
   writeFileSync(join(output, "evidence.json"), JSON.stringify({ layouts: evidence, errors }, null, 2));
-  console.log(JSON.stringify({ ok: true, output, layouts: evidence.length, checks: ["neutral process", "alternate recovery", "single runtime error", "delivery impact", "uncertain side effect", "history", "retained records", "safe continuation", "session restoration"], errors }, null, 2));
+  console.log(JSON.stringify({ ok: true, output, layouts: evidence.length, checks: ["explicit process outcome", "alternate recovery", "single runtime error", "delivery impact", "uncertain side effect", "history", "retained records", "safe continuation", "session restoration"], errors }, null, 2));
 } catch (error) {
   if (page) {
     await page.screenshot({path: join(output, "failure.png")}).catch(() => {});

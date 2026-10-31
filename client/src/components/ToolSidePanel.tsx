@@ -111,6 +111,9 @@ export function ToolSidePanel({
   details,
   detailsRef,
 }: ToolSidePanelProps) {
+  const toolExecutionEnded = useMemo(() => open && toolCall ? [...(messages ?? [])].reverse().find(message => message.parts.some(
+    part => part.kind === "tool_call" && part.toolCall.toolCallId === toolCall?.toolCallId,
+  ))?.complete ?? false : false, [open, messages, toolCall?.toolCallId]);
   const [legacyView, setView] = useState<WorkspaceView>(mode === "tool" ? "artifacts" : mode);
   const view: WorkspaceView = onModeChange && mode !== "tool" ? mode : legacyView;
   useEffect(() => { if (mode !== "tool") setView(mode); }, [mode]);
@@ -424,7 +427,7 @@ export function ToolSidePanel({
         }} className="tool-side-panel__body task-details__body">
           <div hidden={!runtimeView || showToolDetail}>{details}</div>
           {browserVisited.current && <div className="task-details__browser" hidden={view !== "browser" || showToolDetail}><BrowserPreview url={browserUrl ?? ""} onUrlChange={setBrowserUrl} /></div>}
-          {(!listView || split || !showList) && ((!runtimeView && view !== "browser") || showToolDetail) && (showToolDetail ? toolCall ? <ToolCallDetailBody tc={toolCall} onOpenPath={path => onSelectArtifact({id:path,path,kind:toolCall.kind,title:toolCall.title,toolCallId:toolCall.toolCallId,status:toolCall.status})} /> : <p className="tool-side-panel__empty">选择操作查看详情</p> : <MainContent view={view} artifacts={artifacts} sessionId={sessionId} cwd={cwd} previewPath={previewPath}
+          {(!listView || split || !showList) && ((!runtimeView && view !== "browser") || showToolDetail) && (showToolDetail ? toolCall ? <ToolCallDetailBody tc={toolCall} executionEnded={toolExecutionEnded} onOpenPath={path => onSelectArtifact({id:path,path,kind:toolCall.kind,title:toolCall.title,toolCallId:toolCall.toolCallId,status:toolCall.status})} /> : <p className="tool-side-panel__empty">选择操作查看详情</p> : <MainContent view={view} artifacts={artifacts} sessionId={sessionId} cwd={cwd} previewPath={previewPath}
             selectedArtifactId={selectedArtifactId} selectedFilePath={selectedFilePath} browserUrl={browserUrl}
             onArtifactSelect={a => { const tc = findToolCall?.(a.toolCallId); if (tc) onSelectTool(tc); else onToast?.("关联工具记录已不可用，可继续预览文件内容"); }}
             onBrowserUrlChange={setBrowserUrl} onOpenOs={path => openLocalPath(path,{cwd,type:"file",onToast,revealFile:false})} onToast={onToast} />)}

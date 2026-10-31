@@ -10,12 +10,11 @@ export async function validateExecutionReview(page, output) {
   await page.locator('[data-execution-ready="true"]').waitFor();
   const process = page.locator(".execution-process__header").first();
   await process.waitFor();
-  assert.equal(await process.getAttribute("aria-expanded"), "true", "interim commentary hides active work");
+  assert.equal(await process.getAttribute("aria-expanded"), "false", "records default to collapsed");
   assert.ok(await page.locator(".execution-process--running").count(), "interim commentary incorrectly completes active work");
-  assert.equal(await page.locator(".toolcall--run").count(), 3, "unfinished tools are missing from the live process");
+  assert.equal(await page.locator(".toolcall--run").count(), 0);
   await process.click();
-  assert.equal(await process.getAttribute("aria-expanded"), "false");
-  await process.click();
+  assert.equal(await page.locator(".toolcall--run").count(), 3, "one disclosure exposes unfinished tools");
   await page.locator(".execution-process__body").waitFor();
   await page.locator(".toolcall").filter({ hasText: "pnpm test" }).first().click();
   await page.locator(".tool-side-panel").waitFor();
@@ -26,9 +25,16 @@ export async function validateExecutionReview(page, output) {
   await page.goto(`${base}/__ui-review?surface=execution&state=running&theme=dark`);
   await page.locator('[data-execution-ready="true"]').waitFor();
   const scroll = page.locator(".chatview__scroll");
+  await page.locator(".execution-process__header").click();
+  await page.getByText("分析详情", { exact: true }).click();
+  await page.getByRole("button", { name: "展开全文", exact: true }).click();
   // Add enough real chunks to require scrolling, then use an actual wheel
   // gesture to express reading intent before subsequent content grows.
   for (let i = 0; i < 5; i++) await page.getByRole("button", { name: "追加流式内容", exact: true }).click();
+  const growingAnalysis = page.locator(".execution-process__reasoning").last();
+  if (await growingAnalysis.getAttribute("open") === null) await growingAnalysis.locator("summary").click();
+  const expandGrowing = growingAnalysis.getByRole("button", { name: "展开全文", exact: true });
+  if (await expandGrowing.count()) await expandGrowing.click();
   await scroll.hover();
   await page.mouse.wheel(0, -1500);
   await page.waitForTimeout(200);
@@ -74,7 +80,7 @@ export async function validateExecutionReview(page, output) {
   assert.ok(await page.getByRole("button", { name: "追加流式内容", exact: true }).isDisabled(), "stop ACK leaves the task streaming");
   assert.equal(await page.locator(".execution-process--running").count(), 0, "stop ACK leaves a running process header");
   await page.screenshot({ path: join(output, "execution-stopped-1280-light.png") });
-  const evidence = { passed: true, screenshots: 7, checks: ["interim commentary keeps active process running/open", "process collapse/expand", "long tool output", "stream growth preserves reading position", "completion clears active state", "parallel runtime display", "partial failure details", "team read error", "stop ACK clears streaming state"], scroll: { before, after, heightBefore: reading.height, heightAfter: grownHeight, maxBefore: reading.max } };
+  const evidence = { passed: true, screenshots: 7, checks: ["one entry exposes live records", "process collapse/expand", "long tool output", "stream growth preserves reading position", "completion clears active state", "parallel runtime display", "partial failure details", "team read error", "stop ACK clears streaming state"], scroll: { before, after, heightBefore: reading.height, heightAfter: grownHeight, maxBefore: reading.max } };
   writeFileSync(join(output, "execution-review.json"), JSON.stringify(evidence, null, 2));
   return evidence;
 }

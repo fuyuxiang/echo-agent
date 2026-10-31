@@ -14,7 +14,7 @@ it("真实消息组件保留专家结论、正确显示运行状态且默认折�
   expect(view.complete).toBe(false);
   render(<ThemeProvider><MessageItem message={view} streaming authorName="接口专家" autoExpandProcess={false} onOpenTool={onOpenTool} /></ThemeProvider>);
   expect(screen.getByText("接口专家")).toBeInTheDocument();
-  expect(screen.getByText("已找到接口约束。")).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("已找到接口约束");
   expect(screen.queryByText(/有操作未收尾/)).toBeNull();
   expect(screen.queryByText(/深度思考/)).toBeNull();
   const disclosure = document.querySelector(".execution-process__header")!;

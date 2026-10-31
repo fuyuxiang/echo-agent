@@ -49,7 +49,7 @@ describe("waiting companion lifecycle", () => {
     view.rerender(row(message, false));
     act(() => vi.advanceTimersByTime(30_000));
     expect(view.container.querySelector(".msg__loading")).toBeNull();
-    if (state === "错误") expect(screen.getByRole("button",{name:/查看过程/})).toBeVisible();
+    if (state === "错误") expect(screen.getByRole("button",{name:/执行记录/})).toBeVisible();
   });
 
   it("知识检索开始后显示真实进度，停止显示模型等待和趣味提示", () => {
@@ -72,6 +72,13 @@ describe("waiting companion lifecycle", () => {
     expect(view.container.querySelector(".msg__loading-tip")).toBeNull();
     act(() => vi.advanceTimersByTime(1));
     expect(view.container.querySelector(".msg__loading-tip")).not.toBeNull();
+  });
+
+  it("长时间没有首个事件时明确说明尚未收到模型输出", () => {
+    render(row());
+    act(() => vi.advanceTimersByTime(30_000));
+    expect(screen.getByText("尚未收到模型输出，可继续等待，或停止本次执行。")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("正在等待模型响应");
   });
 
   it("历史中的未完成空消息不伪装成正在等待的任务", () => {

@@ -2232,224 +2232,142 @@
     background-position: -200% 0;
   }
 }
-/* One semantic process group per assistant turn. The center column stays
-   scannable; detailed command/output/diff content remains in the right panel. */
+/* Task meaning and progress remain readable before opening execution records. */
 .execution-process {
   width: 100%;
   max-width: 100%;
-  margin: 2px 0 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  overflow: hidden;
+  margin: 2px 0 14px;
+  min-width: 0;
   box-sizing: border-box;
 }
-.execution-process__header {
+.execution-process__overview {
   display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  min-height: 32px;
-  margin: 0;
-  padding: 4px 2px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.execution-process__header:hover {
-  background: color-mix(in srgb, var(--echo-palette-black-100) 4%, transparent);
-}
-.execution-process__header:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--echo-brand) 55%, transparent);
-  outline-offset: -2px;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
 }
 .execution-process__status {
-  width: 8px;
-  height: 8px;
+  align-self: flex-start;
+  width: 7px;
+  height: 7px;
+  margin-top: 9px;
   flex: none;
   border-radius: 50%;
   background: var(--echo-text-tertiary);
 }
 .execution-process--running .execution-process__status {
-  background: var(--echo-brand);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--echo-brand) 12%, transparent);
+  background: var(--echo-color-text-brand-default);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--echo-brand) 10%, transparent);
   animation: processStatusPulse 1.4s ease-in-out infinite;
 }
-.execution-process:not(.execution-process--running) .execution-process__status {
-  background: var(--echo-text-tertiary);
-}
-@keyframes processStatusPulse {
-  50% { opacity: 0.5; }
-}
+.execution-process--complete .execution-process__status { background: var(--echo-color-text-success-default); }
+.execution-process--failed .execution-process__status { background: var(--echo-color-text-error-default); }
+.execution-process--partial .execution-process__status,
+.execution-process--attention .execution-process__status,
+.execution-process--waiting .execution-process__status { background: var(--echo-color-text-warning-default); }
+@keyframes processStatusPulse { 50% { opacity: .5; } }
 .execution-process__heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 2px 10px;
   flex: 1;
   min-width: 0;
 }
 .execution-process__title {
-  flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--echo-text-medium);
-  font-size: 0.8125rem;
+  color: var(--echo-text-strong);
+  font-size: .875rem;
   font-weight: 500;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 .execution-process__meta {
-  flex: 0 1000 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--echo-text-tertiary);
-  font-size: 0.6875rem;
-}
-.execution-process__toggle-label {
-  flex: none;
-  color: var(--echo-text-tertiary);
-  font-size: 0.6875rem;
-}
-/* The compact live view exposes real activity without growing with the log.
-   Full history and raw output remain behind the existing disclosure/drawer. */
-.execution-process__preview {
-  margin: 0 0 0 16px;
-  padding: 0;
-}
-.execution-process__excerpt {
-  min-width: 0;
-  max-width: 100%;
-  margin: -3px 0 14px;
-}
-.execution-process__excerpt p {
-  /* Exactly one current-stage sentence. History lives in the process above. */
-  overflow: hidden;
+  font-size: .75rem;
+  line-height: 1.7;
   white-space: nowrap;
-  text-overflow: ellipsis;
-  margin: 0;
-  color: var(--echo-text-medium);
-  font-size: 0.875rem;
-  line-height: 1.65;
 }
-.execution-process__recent-tools {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-.execution-process__operations-toggle {
-  display: flex;
-  align-items: baseline;
+.execution-process__header {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   gap: 5px;
-  max-width: 100%;
-  margin: 6px 4px;
-  padding: 3px 0;
+  flex: none;
+  min-height: 30px;
+  padding: 2px 4px;
   border: 0;
+  border-radius: 4px;
   background: transparent;
-  color: var(--echo-text-tertiary);
+  color: var(--echo-text-medium);
   font: inherit;
-  font-size: 0.75rem;
-  line-height: 1.6;
-  text-align: left;
-  overflow-wrap: anywhere;
+  font-size: .75rem;
   cursor: pointer;
 }
-.execution-process__operations-toggle:hover { color: var(--echo-text-medium); }
-.execution-process__operations-toggle:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 2px; border-radius: 3px; }
-.execution-process__stages { margin: 12px 0 0; padding: 0; list-style: none; }
+.execution-process__header:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.execution-process__header:focus-visible,
+.execution-process__read-more:focus-visible {
+  outline: 2px solid var(--echo-brand);
+  outline-offset: 2px;
+}
+.execution-process__chevron {
+  flex: none;
+  font-size: 1.125rem;
+  line-height: 1;
+  transition: transform .15s ease;
+}
+.execution-process__chevron--open { transform: rotate(90deg); }
+.execution-process__excerpt { margin: 4px 0 0 17px; min-width: 0; }
+.execution-process__excerpt p {
+  margin: 0;
+  color: var(--echo-text-medium);
+  font-size: .8125rem;
+  line-height: 1.7;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.execution-process__metrics {
+  margin: 5px 0 0 17px;
+  color: var(--echo-text-tertiary);
+  font-size: .75rem;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.execution-process__waiting-note {
+  margin: 8px 0 0 17px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--echo-bg-secondary);
+  color: var(--echo-text-medium);
+  font-size: .75rem;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.execution-process__body {
+  margin: 10px 0 0 17px;
+  padding: 8px 0 2px;
+  border-top: 1px solid var(--echo-border-default);
+  /* The transcript owns scrolling. Expanding a record must not create a
+     second scroll area or jump past its first stage. */
+  min-width: 0;
+}
+.execution-process__body:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 3px; }
+.execution-process__stages { margin: 8px 0 0; padding: 0; list-style: none; }
 .execution-process__stage { padding: 0 4px 20px 20px; margin-left: 5px; border-left: 1px solid var(--echo-border-subtle); min-width: 0; }
 .execution-process__stage:last-child { padding-bottom: 2px; }
 .execution-process__stage-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.execution-process__stage h4 { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin: 0 0 6px -30px; color: var(--echo-text-strong); font-size: .8125rem; font-weight: 500; line-height: 1.6; overflow-wrap: anywhere; }
-.execution-process__stage-state { flex: none; color: var(--echo-text-tertiary); font-size: .6875rem; line-height: 1.6; }
+.execution-process__stage h4 { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin: 0 0 6px -30px; color: var(--echo-text-strong); font-size: .8125rem; font-weight: 500; line-height: 1.7; overflow-wrap: anywhere; }
+.execution-process__stage-state { flex: none; color: var(--echo-text-tertiary); font-size: .75rem; line-height: 1.7; }
 .execution-process__stage--current { border-left-color: color-mix(in srgb, var(--echo-brand) 40%, var(--echo-border-subtle)); }
 .execution-process__stage--current .execution-process__stage-state { color: var(--echo-color-text-brand-default); }
 .execution-process__stage[data-stage-state="含失败记录"] .execution-process__stage-state { color: var(--echo-color-text-warning-default); }
-.execution-process__stage-index { flex: none; min-width: 18px; border-radius: 50%; background: var(--echo-bg-secondary); color: var(--echo-text-tertiary); text-align: center; font-size: .6875rem; }
+.execution-process__stage-index { flex: none; min-width: 18px; border-radius: 50%; background: var(--echo-bg-secondary); color: var(--echo-text-tertiary); text-align: center; font-size: .75rem; }
 .execution-process__stage--activity .execution-process__stage-index { background: transparent; font-size: .875rem; }
 .execution-process__stage--current .execution-process__stage-index { color: var(--echo-brand); }
 .execution-process__progress { color: var(--echo-text-medium); font-size: .8125rem; overflow-wrap: anywhere; }
 .execution-process__progress .markdown-body { font-size: inherit; }
 .execution-process__tool-group { margin: 6px 0; }
-.execution-process__tool-group > .execution-process__operations-toggle { width: 100%; margin: 0; padding: 6px 0; }
-.execution-process__group-action { margin-left: auto; white-space: nowrap; font-size: .6875rem; }
-.execution-process__group-tools { padding: 2px 0 2px 10px; border-left: 1px solid var(--echo-border-subtle); }
-.execution-process__preview .toolcall {
-  min-height: 30px;
-  margin: 0;
-  padding: 4px 7px;
-}
-.execution-process__preview .toolcall--run {
-  background: color-mix(in srgb, var(--echo-brand) 6%, transparent);
-}
-.execution-process__preview .toolcall__title {
-  color: var(--echo-text-medium);
-}
-.execution-process__preview .toolcall__kind {
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: var(--echo-text-medium);
-  font-family: inherit;
-}
-.execution-process__preview .toolcall--run .toolcall__title {
-  color: var(--echo-text-strong);
-}
-.toolcall__status-label {
-  flex: none;
-  color: var(--echo-text-tertiary);
-  font-size: 0.6875rem;
-}
-.execution-process__preview-note,
-.execution-process__preview-more {
-  margin: 5px 4px 0;
-  color: var(--echo-text-tertiary);
-  font-size: 0.6875rem;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.execution-process__preview-more {
-  display: block;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.execution-process__preview-more:hover {
-  color: var(--echo-text-medium);
-  text-decoration: underline;
-}
-.execution-process__preview-more:focus-visible {
-  outline: 2px solid var(--echo-brand);
-  outline-offset: 3px;
-  border-radius: 2px;
-}
-.execution-process__chevron {
-  flex: none;
-  color: var(--echo-text-tertiary);
-  font-size: 1.25rem;
-  line-height: 1;
-  transform: rotate(0deg);
-  transition: transform 0.15s ease;
-}
-.execution-process__chevron--open {
-  transform: rotate(90deg);
-}
-.execution-process__body {
-  padding: 4px 8px 8px;
-  border-top: 1px solid var(--echo-border-subtle, var(--echo-border-default));
-  max-height: min(52vh, 520px);
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-.execution-process__body:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: -2px; }
-.execution-process__diagnostic-title { margin: 6px 4px; font-size: .75rem; color: var(--echo-text-medium); }
+.toolcall__status-label { flex: none; color: var(--echo-text-medium); font-size: .75rem; }
 .execution-notice { margin: 12px 0 4px; padding: 10px 12px; border-radius: 8px; background: var(--echo-bg-secondary); color: var(--echo-text-strong); font-size: .8125rem; line-height: 1.6; overflow-wrap: anywhere; }
 .execution-notice--error { border-left: 2px solid var(--echo-status-error); }
 .execution-notice--warning { border-left: 2px solid var(--echo-color-text-warning-default); }
@@ -2501,6 +2419,19 @@
 .execution-process__reasoning[open] > summary::before {
   transform: rotate(90deg);
 }
+.execution-process__read-more {
+  display: block;
+  margin: 5px 0 8px 16px;
+  padding: 4px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--echo-color-text-brand-default);
+  font: inherit;
+  font-size: .75rem;
+  cursor: pointer;
+}
+.execution-process__read-more:hover { text-decoration: underline; }
 .execution-process__reasoning-body {
   margin: 2px 0 6px 6px;
   padding: 2px 0 2px 12px;
@@ -2520,9 +2451,7 @@
   line-height: 18px;
 }
 .execution-process__terminal-detail {
-  max-height: 160px;
   margin: 6px 4px;
-  overflow: auto;
   color: var(--echo-text-medium);
   font-size: 0.6875rem;
   line-height: 18px;
@@ -2677,6 +2606,8 @@ button.knowledge-trace__item:hover {
 .toolcall--err {
   border-color: color-mix(in srgb, var(--echo-status-error, #e5484d) 50%, var(--echo-border-default));
 }
+.toolcall--pending .toolcall__status-label,
+.tool-detail__status--pending { color: var(--echo-color-text-warning-default); }
 .toolcall__kind {
   font-family: var(--echo-font-code-family);
   background: var(--echo-bg-primary);

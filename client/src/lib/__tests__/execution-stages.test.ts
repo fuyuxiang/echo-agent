@@ -41,6 +41,20 @@ describe("execution stages", () => {
     expect(stages.map(stage => stage.title)).toEqual(["核对条件", "整理路线"]);
     expect(stages[0].parts).toHaveLength(2);
   });
+  it("阶段标题使用开头的任务说明，流式追加长内容不会改成末尾套话", () => {
+    const opening = "核对官方资料。";
+    const initial = executionStages([{ kind: "text", text: opening, streamId: "1" }]);
+    const extended = executionStages([{ kind: "text", text: opening + "过程记录。".repeat(1000) + "请稍候。", streamId: "1" }]);
+    expect(initial[0].title).toBe("核对官方资料");
+    expect(extended[0].title).toBe(initial[0].title);
+  });
+  it("已经恢复的失败不继续作为待处理项计数，但保留恢复事实", () => {
+    const tools = [discovery("a", "failed"), discovery("b")];
+    const [stage] = executionStages(tools);
+    const recovered = new Set(["a"]);
+    expect(stageOperationSummary(stage.tools, recovered)).toBe("已完成 1 项工具查找 · 1 次失败已恢复");
+    expect(executionStageState(stage, true, false, false, recovered)).toBe("失败已恢复");
+  });
   it("未知和失败状态不被说明文字或标题伪装为完成", () => {
     const stages = executionStages([discovery("a", "in_progress"), discovery("b", "failed")]);
     expect(stageOperationSummary(stages[0].tools)).toBe("1 项进行中 · 1 项失败");

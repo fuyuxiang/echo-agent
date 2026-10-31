@@ -17,7 +17,7 @@ try {
     await page.goto(`http://127.0.0.1:${port}/__ui-review?theme=${theme}`);
     const header = page.locator(".execution-process__header");
     await header.click();
-    assert.match(await header.textContent(), /决赛准备3-评委参考问题.xlsx · 已读取 1,240\/4,001 段内容/);
+    assert.match(await page.locator(".execution-process__metrics").textContent(), /决赛准备3-评委参考问题.xlsx · 已读取 1,240\/4,001 段内容/);
     assert.equal(await header.getAttribute("aria-expanded"), "false");
     await header.click();
     const button = page.getByRole("button", { name: /已读取 1,240 \/ 4,001 段内容/ });

@@ -37,7 +37,7 @@ const RENDERER_MAP: Array<{ test: RegExp; renderer: ToolRenderer }> = [
   { test: /^echoagent-live-info__weather_forecast$/i, renderer: "weather" },
   // EchoAgent 原生子代理派发工具 kind="task"、id="task"。优先级高于 defer-execute
   // 的 /task/ 子串匹配，放在 defer 之前。
-  { test: /^task$/i, renderer: "task" },
+  { test: /^(task|spawn_subagent|spawn_agent)$/i, renderer: "task" },
   { test: /defer/i, renderer: "defer-execute" },
   { test: /^(send_message|notify|post_message)$/i, renderer: "send-message" },
   { test: /^(image_gen|image_generation|generate_image|dall|text_to_image|draw)$/i, renderer: "image-gen" },

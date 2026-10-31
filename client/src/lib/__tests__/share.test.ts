@@ -40,7 +40,7 @@ describe("buildSharePayload", () => {
     expect(content.indexOf("改用备用配置。")).toBeLessThan(content.indexOf("读取备用配置"));
   });
 
-  it("普通分享保留阶段成果和最终答复，完整记录区分阶段说明与思考摘要", () => {
+  it("普通分享保留阶段成果和最终答复，完整记录区分阶段说明与分析详情", () => {
     const progress: ChatMessage[] = [{ id: "stages", role: "assistant", complete: true, parts: [
       { kind: "text", phase: "commentary", text: "我先核对交通来源。", streamId: "1" },
       { kind: "thought", text: "内部分析摘要", streamId: "1" },
@@ -54,7 +54,7 @@ describe("buildSharePayload", () => {
     expect(normal).not.toContain("内部分析摘要");
     const detailed = buildSharePayload(progress, "markdown", "攻略", { includeProcess: true }).content;
     expect(detailed).toContain("> **阶段进展**\n>\n> 我先核对交通来源。");
-    expect(detailed).toContain("> **思考摘要**\n>\n> 内部分析摘要");
+    expect(detailed).toContain("> **分析详情**\n>\n> 内部分析摘要");
     expect(detailed.match(/我先核对交通来源。/g)).toHaveLength(1);
   });
   it("markdown 格式", () => {

@@ -239,7 +239,7 @@ export const MessageItem = memo(function MessageItem({
   );
 
   const assistantGroups = message.role === "assistant"
-    ? partitionAssistantParts(message.parts, { organizeProgress: true })
+    ? partitionAssistantParts(message.parts, { organizeProgress: true, active: streaming && !message.complete })
     : null;
   const allTextParts = message.parts.filter(
     (part): part is Extract<typeof part, { kind: "text" }> => part.kind === "text",
@@ -437,10 +437,12 @@ export const MessageItem = memo(function MessageItem({
                 autoExpand={autoExpandProcess}
                 startedAt={message.startedAt}
                 completedAt={message.completedAt}
+                lastActivityAt={message.lastActivityAt}
                 stopReason={message.stopReason}
                 cancelTrigger={message.cancelTrigger}
                 cancellationCategory={message.cancellationCategory}
                 agentResult={[...new Set([message.agentResult, runtimeError].filter(Boolean))].join("\n") || undefined}
+                resultNotice={notice ?? undefined}
                 hasFinalAnswer={hasFinalAnswer}
                 waitingReason={waitingReason}
                 markdownConfig={markdownConfig}
@@ -473,7 +475,7 @@ export const MessageItem = memo(function MessageItem({
           {notice && <div className={`execution-notice execution-notice--${notice.tone}`} role={notice.tone === "neutral" ? "status" : "alert"}>
             <div className="execution-notice__copy"><strong>{notice.title}</strong><p>{notice.description}</p></div>
             <div className="execution-notice__actions">
-              <button type="button" onClick={() => {
+              <button type="button" data-chat-reading="true" onClick={() => {
                 if (notice.tools[0] && onOpenTool) onOpenTool(notice.tools[0]);
                 else setProcessReveal((value) => value + 1);
               }}>{notice.tools.length ? "查看相关操作" : "查看原因"}</button>

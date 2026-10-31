@@ -87,7 +87,7 @@ function appendProcessMarkdown(lines: string[], parts: ChatMessage["parts"]): vo
 
     if (inToolList) lines.push("");
     inToolList = false;
-    lines.push(part.kind === "text" ? "> **阶段进展**" : "> **思考摘要**");
+    lines.push(part.kind === "text" ? "> **阶段进展**" : "> **分析详情**");
     lines.push(">");
     for (const line of part.text.split("\n")) lines.push(`> ${line}`);
     lines.push("");
