@@ -24,7 +24,36 @@ const tool = (
 });
 
 describe("partitionAssistantParts", () => {
-  it("把工具前的模型说明归入过程，只保留尾部答复", () => {
+  it("同轮工具之后的未分类文本保留在正文，但不误报最终答复", () => {
+    const result = partitionAssistantParts([
+      { ...tool("completed"), streamId: "1" },
+      { kind: "text", text: "先确认可用工具，同时核对出行条件。", streamId: "1" },
+    ]);
+    expect(result.processParts).toHaveLength(1);
+    expect(result.responseParts.map(part => part.text)).toEqual(["先确认可用工具，同时核对出行条件。"]);
+    expect(result.answerStarted).toBe(false);
+  });
+  it("显式阶段成果和最终答复优先于同轮工具推断，继续执行也不隐藏成果", () => {
+    const result = partitionAssistantParts([
+      { kind: "text", phase: "commentary", text: "准备查找资料", streamId: "1" },
+      { kind: "text", phase: "partial_answer", text: "已确认的交通方案", streamId: "1" },
+      { ...tool("in_progress"), streamId: "1" },
+      { kind: "text", phase: "final_answer", text: "请确认你的出行日期？", streamId: "1" },
+    ]);
+    expect(result.responseParts.map(part => part.text)).toEqual(["已确认的交通方案", "请确认你的出行日期？"]);
+    expect(result.processParts.map(part => part.kind)).toEqual(["text", "tool_call"]);
+    expect(result.answerStarted).toBe(true);
+  });
+  it("阶段成果不触发最终答复的自动折叠，未知生成保守保留", () => {
+    const result = partitionAssistantParts([
+      { kind: "text", text: "交通已核实", streamId: "1" },
+      { ...tool("completed"), streamId: "2" },
+      { kind: "text", phase: "partial_answer", text: "景点开放信息", streamId: "2" },
+    ]);
+    expect(result.responseParts.map(part => part.text)).toEqual(["交通已核实", "景点开放信息"]);
+    expect(result.answerStarted).toBe(false);
+  });
+  it("旧事件缺少语义标记时保留工具前后的公开文本", () => {
     const result = partitionAssistantParts([
       { kind: "text", text: "我先检查项目。" },
       { kind: "thought", text: "需要确认入口。" },
@@ -32,11 +61,11 @@ describe("partitionAssistantParts", () => {
       { kind: "text", text: "修复已经完成。" },
     ]);
 
-    expect(result.processParts).toHaveLength(3);
-    expect(result.responseParts.map((part) => part.text)).toEqual(["修复已经完成。"]);
+    expect(result.processParts.map(part => part.kind)).toEqual(["thought", "tool_call"]);
+    expect(result.responseParts.map((part) => part.text)).toEqual(["我先检查项目。", "修复已经完成。"]);
   });
 
-  it("优先用模型生成标识区分多轮工具过程和最终答复", () => {
+  it("生成标识只用于判断答复状态，不代替公开文本的语义分类", () => {
     const firstTool = tool("completed");
     const result = partitionAssistantParts([
       { kind: "text", text: "I should inspect the project first.", streamId: "generation-1" },
@@ -46,11 +75,31 @@ describe("partitionAssistantParts", () => {
     ]);
 
     expect(result.processParts.map((part) => part.kind)).toEqual([
-      "text",
       "tool_call",
       "thought",
     ]);
-    expect(result.responseParts.map((part) => part.text)).toEqual(["这是最终答案。"]);
+    expect(result.responseParts.map((part) => part.text)).toEqual(["I should inspect the project first.", "这是最终答案。"]);
+    expect(result.answerStarted).toBe(true);
+  });
+
+  it.each([undefined, "same-generation"])("阶段成果先于后续工具出现时仍保留：%s", streamId => {
+    const result = partitionAssistantParts([
+      { kind: "text", text: "已核实的交通方案", streamId },
+      { ...tool("in_progress"), streamId },
+    ]);
+    expect(result.responseParts.map(part => part.text)).toEqual(["已核实的交通方案"]);
+    expect(result.answerStarted).toBe(false);
+  });
+
+  it("只有明确的进展说明进入过程，空白尾块不改变答复状态", () => {
+    const result = partitionAssistantParts([
+      { kind: "text", text: "已确认的成果", streamId: "1" },
+      { kind: "text", phase: "commentary", text: "继续检查", streamId: "2" },
+      { kind: "text", text: "  ", streamId: "2" },
+    ]);
+    expect(result.processParts.map(part => part.kind === "text" ? part.text : "")).toEqual(["继续检查"]);
+    expect(result.responseParts[0].text).toBe("已确认的成果");
+    expect(result.answerStarted).toBe(false);
   });
 
   it("拆分同一文本块中的 think 标签和正式答案", () => {

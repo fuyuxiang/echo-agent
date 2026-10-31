@@ -8,7 +8,7 @@ import type { ChatMessage } from "@/stores/session-store";
 import { partitionAssistantParts } from "@/lib/execution-process";
 
 export interface SessionExportOptions {
-  /** Include reasoning summaries and tool records. Defaults to final answers only. */
+  /** Include reasoning and tool records. Defaults to public responses only. */
   includeProcess?: boolean;
 }
 
@@ -87,7 +87,7 @@ function appendProcessMarkdown(lines: string[], parts: ChatMessage["parts"]): vo
 
     if (inToolList) lines.push("");
     inToolList = false;
-    lines.push("> **深度思考**");
+    lines.push(part.kind === "text" ? "> **阶段进展**" : "> **思考摘要**");
     lines.push(">");
     for (const line of part.text.split("\n")) lines.push(`> ${line}`);
     lines.push("");

@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSessionStore } from "../session-store";
 import { collectSessionArtifacts } from "@/lib/session-artifacts";
+import { partitionAssistantParts } from "@/lib/execution-process";
+import { buildSessionMarkdown } from "@/lib/export-markdown";
+import { extractPlainText } from "@/lib/extract-text";
 import type { AcpContentBlock, AcpSessionUpdate, PromptComplete } from "@/lib/types";
 
 /**
@@ -75,6 +78,91 @@ const userMessageTextForTest = (m: ReturnType<typeof useSessionStore.getState>["
 
 describe("session-store transcripts", () => {
   beforeEach(resetStore);
+
+  it.each([false, true])("真实 Runtime 无 phase 的成果在工具、切换会话和中止后仍可阅读及导出：回放=%s", isReplay => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    const meta = { promptId: "wire-prompt", streamStartMs: 101, isReplay };
+    store.applyUpdate({ ...userChunk({ type: "text", text: "核实交通方案" }, "A"), _meta: { promptIndex: 0, isReplay } });
+    store.applyUpdate({ ...chunk("已核实交通方案：乘坐高铁前往南京。", "A"), _meta: meta });
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "内部推理内容" }, _meta: meta });
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "tool_call", toolCallId: "ask", title: "Ask: 计划哪天出发？", kind: "other", _meta: meta });
+    store.setSession("B");
+    store.applyUpdate({ ...chunk("车程约两小时。", "A"), _meta: meta });
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "turn_completed", prompt_id: "wire-prompt", stop_reason: "cancelled", _meta: { isReplay } });
+    expect(useSessionStore.getState().messages).toEqual([]);
+    store.setSession("A");
+    const message = useSessionStore.getState().messages.find(message => message.role === "assistant")!;
+    expect(message.complete).toBe(true);
+    expect(message.parts.filter(part => part.kind === "text").every(part => part.phase === undefined)).toBe(true);
+    const visible = extractPlainText(message);
+    const exported = buildSessionMarkdown(useSessionStore.getState().messages);
+    for (const text of [visible, exported]) {
+      expect(text).toContain("已核实交通方案：乘坐高铁前往南京。");
+      expect(text).toContain("车程约两小时。");
+      expect(text).not.toContain("内部推理内容");
+      expect(text.match(/已核实交通方案/g)).toHaveLength(1);
+    }
+    expect(partitionAssistantParts(message.parts).answerStarted).toBe(false);
+  });
+
+  it("新的回放用户消息替换空占位时也清除旧阶段，不能根据消息数量判断新轮次", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.startStreaming("A");
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "plan", entries: [{ content: "旧阶段", priority: "high", status: "in_progress" }] });
+    const previousCount = useSessionStore.getState().messages.length;
+    store.applyUpdate({ ...userChunk({ type: "text", text: "新问题" }, "A", 1), _meta: { promptIndex: 1, isReplay: true } });
+    expect(useSessionStore.getState().messages).toHaveLength(previousCount);
+    store.applyUpdate({ ...chunk("新问题的回复", "A"), _meta: { isReplay: true } });
+    const messages = useSessionStore.getState().messages;
+    expect(messages[messages.length - 1]?.parts[0].stageTitle).toBeUndefined();
+  });
+
+  it("工具事件穿插文本时，已声明的阶段成果语义不会丢失", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.applyUpdate({ ...chunk("阶段成果：", "A"), _meta: { streamStartMs: 1, phase: "partial_answer" } });
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "tool_call", toolCallId: "interleaved", title: "查询来源", _meta: { streamStartMs: 1 } });
+    store.applyUpdate({ ...chunk("已核实交通条件。", "A"), _meta: { streamStartMs: 1 } });
+    const groups = partitionAssistantParts(useSessionStore.getState().messages[0].parts);
+    expect(groups.responseParts.map(part => part.text)).toEqual(["阶段成果：", "已核实交通条件。"]);
+    expect(groups.responseParts.every(part => part.phase === "partial_answer")).toBe(true);
+    expect(groups.answerStarted).toBe(false);
+  });
+
+  it("新轮次不沿用上一轮计划的进行中标题", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "plan", entries: [{ content: "上一轮阶段", priority: "high", status: "in_progress" }] });
+    store.startStreaming("A", "new-prompt");
+    store.applyUpdate({ ...chunk("新问题的直接回复", "A"), _meta: { promptId: "new-prompt" } });
+    expect(useSessionStore.getState().messages[0].parts[0].stageTitle).toBeUndefined();
+    expect(useSessionStore.getState().plan?.entries[0].content).toBe("上一轮阶段");
+  });
+
+  it.each([false, true])("进度语义和计划快照在流式、回放及跨会话中保持一致：%s", isReplay => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    const meta = { streamStartMs: 101, isReplay };
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "plan", entries: [{ content: "核对出行条件", priority: "high", status: "in_progress" }], _meta: meta });
+    store.applyUpdate({ ...chunk("我先确认来源。", "A"), _meta: { ...meta, phase: "commentary" } });
+    store.applyUpdate({ ...chunk("同时确认关键条件。", "A"), _meta: meta });
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "tool_call", toolCallId: "lookup", title: 'Search tools: "旅游"', _meta: meta });
+    store.setSession("B");
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "plan", entries: [{ content: "整理路线", priority: "high", status: "in_progress" }], _meta: meta });
+    store.applyUpdate({ ...chunk("可供选择的交通方案", "A"), content: { type: "text" as const, text: "可供选择的交通方案", _meta: { phase: "partial_answer" } }, _meta: { ...meta, streamStartMs: 102 } });
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "tool_call_update", toolCallId: "lookup", status: "completed", _meta: meta });
+    expect(useSessionStore.getState().messages).toEqual([]);
+    store.setSession("A");
+    const parts = useSessionStore.getState().messages[0].parts;
+    expect(parts[0]).toMatchObject({ phase: "commentary", stageTitle: "核对出行条件", text: "我先确认来源。同时确认关键条件。" });
+    expect(parts[1]).toMatchObject({ stageTitle: "核对出行条件", toolCall: { status: "completed" } });
+    expect(parts[2]).toMatchObject({ phase: "partial_answer", stageTitle: "整理路线" });
+    const groups = partitionAssistantParts(parts);
+    expect(groups.responseParts.map(part => part.text)).toEqual(["可供选择的交通方案"]);
+    expect(groups.answerStarted).toBe(false);
+  });
 
   it.each([false, true])("持久化完成记录阻止迟到文本重开轮次，兼容历史重放：%s", isReplay => {
     const store = useSessionStore.getState();

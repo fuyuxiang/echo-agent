@@ -1,5 +1,5 @@
 import type { ChatMessage, MessagePart, ToolCallView } from "@/stores/session-store";
-import { detectToolRenderer } from "@/lib/tool-renderers";
+import { detectToolCallRenderer, isToolDiscovery } from "@/lib/tool-renderers";
 import { findToolRecoveries, type ToolRecovery } from "@/lib/tool-recovery";
 
 export type TextMessagePart = Extract<MessagePart, { kind: "text" }>;
@@ -15,58 +15,39 @@ const INTERNAL_REASONING_OPENING = /^\s*<(think|thinking|reasoning|analysis)(?:\
 export interface AssistantPartGroups {
   /** Reasoning, tool calls, and intermediate model commentary. */
   processParts: MessagePart[];
-  /** Text emitted by the final model generation for the user. */
+  /** User-facing partial/final answers, plus unclassified Runtime text. */
   responseParts: TextMessagePart[];
-  /** Trailing normalized text, rather than preserved pre-tool commentary. */
+  /** The current generation is producing an answer, rather than calling tools. */
   answerStarted: boolean;
 }
 
 /**
  * Split one assistant turn into a compact execution process and its final answer.
  *
- * ACP marks explicit reasoning, while EchoAgent also stamps every inference
- * generation with `streamStartMs`. Text from a generation that goes on to call
- * tools is process commentary; text from the last generation is the answer.
- * Historical events without that stamp use the ordered-protocol fallback: the
- * trailing text after the last process event is the answer. If there is no
- * trailing text, keep all text visible rather than hiding a partial response.
+ * ACP AgentMessageChunk is public text. Only explicit commentary metadata can
+ * move it into the process: a tool call does not prove that the preceding text
+ * was merely commentary. Current Runtime and historical events can omit phase,
+ * so preserve their text in the conversation, copy, search and export alike.
+ * Generation ids still help avoid announcing a final answer during tool work.
  */
 export function partitionAssistantParts(parts: MessagePart[]): AssistantPartGroups {
   const normalizedParts = expandTaggedThinking(parts);
   const lastMeaningfulPart = [...normalizedParts].reverse().find(part =>
     part.kind === "tool_call" || part.text.trim().length > 0,
   );
-  const answerStarted = lastMeaningfulPart?.kind === "text";
-  const textParts = normalizedParts.filter(isTextPart);
-  const lastNonEmptyText = [...textParts].reverse().find((part) => part.text.trim());
-
-  if (lastNonEmptyText?.streamId) {
-    const responseParts = textParts.filter(
-      (part) => part.streamId === lastNonEmptyText.streamId,
-    );
-    const processParts = normalizedParts.filter(
-      (part) => part.kind !== "text" || part.streamId !== lastNonEmptyText.streamId,
-    );
-    return { processParts, responseParts, answerStarted };
-  }
-
-  let lastProcessIndex = -1;
-  for (let index = 0; index < normalizedParts.length; index += 1) {
-    if (normalizedParts[index].kind !== "text") lastProcessIndex = index;
-  }
-  const responseParts = normalizedParts.slice(lastProcessIndex + 1).filter(isTextPart);
-  if (responseParts.some((part) => part.text.trim())) {
-    return {
-      processParts: normalizedParts.slice(0, lastProcessIndex + 1),
-      responseParts,
-      answerStarted,
-    };
-  }
-
+  const toolStreams = new Set(normalizedParts.flatMap(part =>
+    part.kind === "tool_call" && part.streamId ? [part.streamId] : []));
+  const responseParts = normalizedParts.filter((part): part is TextMessagePart =>
+    isTextPart(part) && part.phase !== "commentary",
+  );
+  const responseSet = new Set<MessagePart>(responseParts);
   return {
-    processParts: normalizedParts.filter((part) => part.kind !== "text"),
-    responseParts: textParts,
-    answerStarted,
+    processParts: normalizedParts.filter(part => !responseSet.has(part)),
+    responseParts,
+    answerStarted: lastMeaningfulPart?.kind === "text"
+      && lastMeaningfulPart.phase !== "partial_answer" && responseSet.has(lastMeaningfulPart)
+      && (lastMeaningfulPart.phase === "final_answer"
+        || !lastMeaningfulPart.streamId || !toolStreams.has(lastMeaningfulPart.streamId)),
   };
 }
 
@@ -100,6 +81,7 @@ function expandTaggedThinking(parts: MessagePart[]): MessagePart[] {
       expanded.push({
         kind: "thought",
         text: thoughtText,
+        ...(part.stageTitle ? { stageTitle: part.stageTitle } : {}),
         ...(part.streamId ? { streamId: part.streamId } : {}),
       });
     }
@@ -109,6 +91,7 @@ function expandTaggedThinking(parts: MessagePart[]): MessagePart[] {
         .trimStart();
       if (answerText) {
         expanded.push({
+          ...part,
           kind: "text",
           text: answerText,
           ...(part.streamId ? { streamId: part.streamId } : {}),
@@ -270,8 +253,9 @@ function toolDiffPaths(tool: ToolCallView): string[] {
   );
 }
 
-function activeToolLabel(tool: ToolCallView): string {
-  switch (detectToolRenderer(tool.kind)) {
+export function activeToolLabel(tool: ToolCallView): string {
+  if (isToolDiscovery(tool)) return "查找可用工具";
+  switch (detectToolCallRenderer(tool)) {
     case "command":
       return "正在运行命令";
     case "edit":
@@ -280,6 +264,8 @@ function activeToolLabel(tool: ToolCallView): string {
       return "正在读取项目文件";
     case "search":
       return "正在检索资料";
+    case "weather":
+      return "正在查询天气";
     case "task":
       return "子代理正在处理";
     case "defer-execute":

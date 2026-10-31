@@ -9,7 +9,7 @@ import { computeUnifiedDiff, hunksToUnifiedLines, summarizeDiff, type DiffLine }
 import { CheckIcon } from "@/foundation/components/Icon/icons";
 import { orgFetchDocument, orgQaFeedback } from "@/lib/org-client";
 import {
-  detectToolRenderer,
+  detectToolCallRenderer,
   rendererLabel,
   rendererIcon,
   summarizeTool,
@@ -85,10 +85,7 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false }: ToolCallCa
 
   // 专用渲染器(对齐 EchoAgent tools/renderers):非 default/unknown 时用图标 +
   // 渲染器标签 + 摘要替代通用 kind 文案。
-  const titleRenderer = detectToolRenderer(tc.title);
-  const renderer = titleRenderer === "search" || titleRenderer === "weather"
-    ? titleRenderer
-    : detectToolRenderer(tc.kind);
+  const renderer = detectToolCallRenderer(tc);
   const specialized =
     renderer !== "default" && renderer !== "unknown";
   const kindLabel = officeTool ? "文档" : specialized

@@ -61,10 +61,18 @@ export interface ChatMessage {
   agentResult?: string;
 }
 
-export type MessagePart =
-  | { kind: "text"; text: string; streamId?: string }
-  | { kind: "thought"; text: string; streamId?: string }
-  | { kind: "tool_call"; toolCall: ToolCallView; streamId?: string };
+/** Optional producer metadata. Unmarked ACP message text remains public. */
+export type AssistantMessagePhase = "commentary" | "partial_answer" | "final_answer";
+interface ExecutionPartMetadata {
+  streamId?: string;
+  /** Snapshot of the real active plan entry, never a generated UI plan. */
+  stageTitle?: string;
+}
+export type MessagePart = (
+  | { kind: "text"; text: string; phase?: AssistantMessagePhase }
+  | { kind: "thought"; text: string }
+  | { kind: "tool_call"; toolCall: ToolCallView }
+) & ExecutionPartMetadata;
 
 /** A tool-call card rendered inline. Mirrors a subset of ToolCallUpdate. */
 export interface ToolCallView {
@@ -127,6 +135,8 @@ export interface SessionTranscript {
   pendingSendNowPromptId: string | null;
   usage: Usage;
   plan: Plan | null;
+  /** Active stage for this turn; older plans remain available for editing. */
+  executionStageTitle?: string;
   /** Local plan edits awaiting submission. Lives with the cached transcript. */
   planRevisionDirty?: boolean;
   /** Authoritative mode from ACP CurrentModeUpdate. */
@@ -482,27 +492,40 @@ function ensureStreamingAssistant(
   return { messages: [...messages, asst], id };
 }
 
+function activeStageMetadata(title?: string): { stageTitle?: string } {
+  return title ? { stageTitle: title } : {};
+}
+
 function appendText(
   msg: ChatMessage,
   kind: "text" | "thought",
   delta: string,
   streamId?: string,
+  metadata: { phase?: AssistantMessagePhase; stageTitle?: string } = {},
 ): ChatMessage {
   const parts = [...msg.parts];
   const last = parts[parts.length - 1];
-  if (last && last.kind === kind && last.streamId === streamId) {
+  if (kind === "text" && !metadata.phase) {
+    // Tool chunks can interleave with text in the same model generation.
+    const previousText = last?.kind === "text" && last.streamId === streamId ? last
+      : streamId ? [...parts].reverse().find(part => part.kind === "text" && part.streamId === streamId) : undefined;
+    if (previousText?.kind === "text" && previousText.phase) metadata = { ...metadata, phase: previousText.phase };
+  }
+  if (last && last.kind === kind && last.streamId === streamId
+    && (kind !== "text" || last.kind === "text" && last.phase === metadata.phase)
+    && last.stageTitle === metadata.stageTitle) {
     if (last.text.endsWith(TRUNCATED_OUTPUT_MARKER)) return msg;
     const available = MAX_MESSAGE_TEXT_CHARS - last.text.length - TRUNCATED_OUTPUT_MARKER.length;
     const text = delta.length <= Math.max(0, available)
       ? last.text + delta
       : last.text + delta.slice(0, Math.max(0, available)) + TRUNCATED_OUTPUT_MARKER;
-    parts[parts.length - 1] = { kind, text, ...(streamId ? { streamId } : {}) } as MessagePart;
+    parts[parts.length - 1] = { ...last, text };
   } else {
     const available = MAX_MESSAGE_TEXT_CHARS - TRUNCATED_OUTPUT_MARKER.length;
     const text = delta.length <= available
       ? delta
       : delta.slice(0, available) + TRUNCATED_OUTPUT_MARKER;
-    parts.push({ kind, text, ...(streamId ? { streamId } : {}) } as MessagePart);
+    parts.push({ kind, text, ...(streamId ? { streamId } : {}), ...metadata } as MessagePart);
   }
   return { ...msg, parts };
 }
@@ -781,7 +804,7 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk)
     promptIndex: chunk.promptIndex,
     complete: true,
   };
-  return { ...completed, messages: [...completed.messages, user] };
+  return { ...completed, messages: [...completed.messages, user], executionStageTitle: undefined };
 }
 
 /** Turn an admitted send-now hand-off into the next assistant placeholder. */
@@ -839,16 +862,17 @@ function rememberDismissedControlPrompt(transcript: SessionTranscript): string[]
   return [...transcript.dismissedControlPromptIds, promptId].slice(-32);
 }
 
-function upsertToolCall(msg: ChatMessage, tc: ToolCallView, streamId?: string): ChatMessage {
+function upsertToolCall(msg: ChatMessage, tc: ToolCallView, streamId?: string, stageTitle?: string): ChatMessage {
   const parts = [...msg.parts];
   const idx = parts.findIndex(
     (p) => p.kind === "tool_call" && p.toolCall.toolCallId === tc.toolCallId
   );
   if (idx === -1) {
-    parts.push({ kind: "tool_call", toolCall: tc, ...(streamId ? { streamId } : {}) });
+    parts.push({ kind: "tool_call", toolCall: tc, ...(streamId ? { streamId } : {}), ...activeStageMetadata(stageTitle) });
   } else {
     const current = parts[idx];
     parts[idx] = {
+      ...current,
       kind: "tool_call",
       toolCall: { ...tc, startedAt: current.kind === "tool_call" ? current.toolCall.startedAt ?? tc.startedAt : tc.startedAt,
         toolName: tc.toolName ?? (current.kind === "tool_call" ? current.toolCall.toolName : undefined) },
@@ -992,6 +1016,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           ...t,
           dismissedControlPromptIds: rememberDismissedControlPrompt(t),
           control: undefined,
+          executionStageTitle: undefined,
           streamingMessageId: id,
           messages: [...t.messages, placeholder],
         };
@@ -1509,6 +1534,10 @@ export const useSessionStore = create<SessionState>((set, get) => {
           case "agent_message_chunk": {
             const delta = extractDelta((u as { content?: unknown }).content);
             if (!delta) return tr;
+            const content = (u as { content?: { _meta?: Record<string, unknown> } }).content;
+            const rawPhase = content?._meta?.phase ?? updateMeta?.phase;
+            const phase: AssistantMessagePhase | undefined = rawPhase === "commentary"
+              || rawPhase === "partial_answer" || rawPhase === "final_answer" ? rawPhase : undefined;
             const { messages, id } = ensureStreamingAssistant(
               tr.messages,
               tr.streamingMessageId,
@@ -1516,7 +1545,10 @@ export const useSessionStore = create<SessionState>((set, get) => {
               isReplay,
             );
             const idx = messages.findIndex((m) => m.id === id);
-            messages[idx] = appendText(messages[idx], "text", delta, streamId);
+            messages[idx] = appendText(messages[idx], "text", delta, streamId, {
+              ...(phase ? { phase } : {}),
+              ...activeStageMetadata(tr.executionStageTitle),
+            });
             return {
               ...tr,
               messages: [...messages],
@@ -1534,7 +1566,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
               isReplay,
             );
             const idx = messages.findIndex((m) => m.id === id);
-            messages[idx] = appendText(messages[idx], "thought", delta, streamId);
+            messages[idx] = appendText(messages[idx], "thought", delta, streamId, activeStageMetadata(tr.executionStageTitle));
             return {
               ...tr,
               messages: [...messages],
@@ -1577,7 +1609,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
               officeReceipt: officeReceipt ?? undefined,
               documentProgress: documentProgressFromRawOutput(raw.rawOutput ?? raw.raw_output),
             };
-            messages[idx] = upsertToolCall(messages[idx], view, streamId);
+            messages[idx] = upsertToolCall(messages[idx], view, streamId, tr.executionStageTitle);
             return {
               ...tr,
               messages: [...messages],
@@ -1659,7 +1691,9 @@ export const useSessionStore = create<SessionState>((set, get) => {
             const plan = Array.isArray(uu.entries)
               ? { entries: uu.entries }
               : uu.plan && Array.isArray(uu.plan.entries) ? uu.plan : null;
-            return { ...tr, plan, planRevisionDirty: false };
+            const stageContent = plan?.entries.find(entry => entry.status === "in_progress")?.content;
+            const executionStageTitle = typeof stageContent === "string" ? stageContent.trim().slice(0, 240) || undefined : undefined;
+            return { ...tr, plan, executionStageTitle, planRevisionDirty: false };
           }
           case "current_mode_update": {
             const raw = u as unknown as Record<string, unknown>;

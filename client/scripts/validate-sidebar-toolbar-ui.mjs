@@ -13,9 +13,20 @@ const catalogEvidence = [];
 const macWindow = JSON.parse(readFileSync(new URL("../src-tauri/tauri.macos.conf.json", import.meta.url), "utf8")).app.windows[0];
 let browser;
 
+async function emulatePlatform(page) {
+  await page.addInitScript(() => {
+    const mac = new URLSearchParams(location.search).get("platform") === "mac";
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: mac ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    });
+  });
+}
+
 try {
   browser = await (await reviewChromium()).launch({ headless: true, executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
   const page = await browser.newPage();
+  await emulatePlatform(page);
   page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -36,7 +47,11 @@ try {
         return {
           sidebar: rect(document.querySelector(".sidebar")),
           toolbar: rect(document.querySelector(".sidebar__toolbar")),
-          brand: rect(document.querySelector(".sidebar__logo-row")),
+          brand: rect(document.querySelector(".sidebar__logo")),
+          brandRow: document.querySelector(".sidebar__logo-row") ? rect(document.querySelector(".sidebar__logo-row")) : null,
+          brandCount: document.querySelectorAll(".sidebar__logo").length,
+          brandOverflow: document.querySelector(".sidebar__logo").scrollWidth > document.querySelector(".sidebar__logo").clientWidth,
+          nav: rect(document.querySelector(".sidebar__nav")),
           tools: [...document.querySelectorAll(".sidebar__toolbar-actions button")].map(element => ({ label: element.getAttribute("aria-label"), ...rect(element) })),
           duplicateCollapse: document.querySelectorAll('button[aria-label="收起侧边栏"]').length,
           overflow: document.documentElement.scrollWidth > innerWidth + 1,
@@ -45,19 +60,28 @@ try {
       assert.equal(geometry.overflow, false, `${name}: page overflow`);
       assert.equal(geometry.toolbar.height, 56, `${name}: toolbar must leave breathing room`);
       assert.equal(geometry.duplicateCollapse, 1, `${name}: one collapse control`);
+      assert.equal(geometry.brandCount, 1, `${name}: one brand wordmark`);
+      assert.equal(geometry.brandOverflow, false, `${name}: keep the full brand wordmark readable`);
       assert.deepEqual(geometry.tools.map(tool => tool.label), ["收起侧边栏", "搜索全部任务", "筛选任务"]);
       for (const [index, tool] of geometry.tools.entries()) {
         assert.ok(tool.width === 32 && tool.height === 32 && tool.right <= geometry.sidebar.right - 16, `${name}: inconsistent tool targets`);
         assert.equal(tool.y - geometry.toolbar.y, 12, `${name}: toolbar top inset`);
         assert.equal(geometry.toolbar.bottom - tool.bottom, 12, `${name}: toolbar bottom inset`);
-        assert.ok(tool.bottom <= geometry.brand.y && tool.y === geometry.tools[0].y, `${name}: tools must align above branding`);
+        assert.equal(tool.y, geometry.tools[0].y, `${name}: tools must align`);
         if (index) assert.equal(tool.x - geometry.tools[index - 1].right, 4, `${name}: tool spacing`);
       }
       if (platform === "mac") {
+        assert.ok(geometry.brandRow && geometry.toolbar.bottom <= geometry.brandRow.y, `${name}: retain the separate macOS brand row`);
+        assert.ok(geometry.nav.y >= geometry.brandRow.bottom, `${name}: macOS navigation stays below branding`);
         assert.ok(geometry.tools[0].x >= 84, `${name}: traffic-light safe area`);
         // AppKit's standard button frame centers 2pt below Tao's configured
         // vertical inset; verified against the real Tauri window screenshot.
         assert.equal(geometry.tools[0].y + geometry.tools[0].height / 2, macWindow.trafficLightPosition.y + 2, `${name}: native controls and toolbar must share a center line`);
+      } else {
+        assert.equal(geometry.brandRow, null, `${name}: Windows must not reserve a second brand row`);
+        assert.ok(geometry.brand.y >= geometry.toolbar.y && geometry.brand.bottom <= geometry.toolbar.bottom, `${name}: Windows branding stays inside the toolbar`);
+        assert.ok(geometry.brand.right <= geometry.tools[0].x - 8, `${name}: Windows branding must not overlap tools`);
+        assert.equal(geometry.nav.y, geometry.toolbar.bottom, `${name}: Windows navigation moves directly below the toolbar`);
       }
       await page.mouse.move(width - 10, height - 10);
       await page.screenshot({ path: join(output, `expanded-${name}.png`) });
@@ -112,6 +136,7 @@ try {
   // catalogs and the real font preference maximum, including the 32px
   // Windows/Linux title bar that reduces the available sidebar height.
   const catalogPage = await browser.newPage();
+  await emulatePlatform(catalogPage);
   catalogPage.setDefaultNavigationTimeout(60000);
   catalogPage.on("pageerror", error => errors.push(error.message));
   await catalogPage.addInitScript(() => localStorage.setItem("echoagent.sidebar-menu.v1", JSON.stringify({

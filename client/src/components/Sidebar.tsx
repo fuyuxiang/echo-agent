@@ -4,7 +4,7 @@ import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 import { useSessionsStore, selectHasFilter } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useOrgSessionStore } from "@/stores/org-session-store";
-import { IS_MACOS, shortcutLabel } from "@/lib/platform";
+import { IS_MACOS, IS_WINDOWS, shortcutLabel } from "@/lib/platform";
 import { useModalPresence } from "@/lib/use-modal-focus";
 import {
   SIDEBAR_MENU_ITEMS, loadSidebarMenuLayout, saveSidebarMenuLayout,
@@ -948,8 +948,11 @@ export function Sidebar({
 
   return (
     <aside id="app-sidebar" ref={sidebarRef} className="sidebar">
-      {/* Keep global navigation together and leave the macOS traffic lights clear. */}
-      <div className="sidebar__toolbar" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
+      {/* Windows shares one row for branding and tools; macOS keeps its traffic-light safe area. */}
+      <div className={"sidebar__toolbar" + (IS_WINDOWS ? " sidebar__toolbar--branded" : "")} {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
+        {IS_WINDOWS && (
+          <span className="sidebar__logo sidebar__toolbar-brand"><span className="sidebar__logo-echo">Echo</span><span className="sidebar__logo-agent">Agent</span></span>
+        )}
         <div className="sidebar__toolbar-actions" role="group" aria-label="侧边栏工具">
           {collapseSidebar && <button
             type="button"
@@ -1015,11 +1018,13 @@ export function Sidebar({
           </div>
         </div>
       </div>
-      <div className="sidebar__logo-row" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
-        <div className="sidebar__logo-col" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
-          <span className="sidebar__logo"><span className="sidebar__logo-echo">Echo</span><span className="sidebar__logo-agent">Agent</span></span>
+      {!IS_WINDOWS && (
+        <div className="sidebar__logo-row" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
+          <div className="sidebar__logo-col" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
+            <span className="sidebar__logo"><span className="sidebar__logo-echo">Echo</span><span className="sidebar__logo-agent">Agent</span></span>
+          </div>
         </div>
-      </div>
+      )}
 
       <nav className="sidebar__nav">
         <button

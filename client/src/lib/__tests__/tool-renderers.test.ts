@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   detectToolRenderer,
+  detectToolCallRenderer,
+  isToolDiscovery,
   rendererLabel,
   rendererIcon,
   summarizeTool,
@@ -50,6 +52,32 @@ describe("detectToolRenderer", () => {
   });
   it("空 kind → unknown", () => {
     expect(detectToolRenderer("")).toBe("unknown");
+  });
+});
+
+describe("Runtime tool identity", () => {
+  it.each([
+    { title: "echoagent-live-info__weather_forecast" },
+    { toolName: "echoagent-live-info__weather_forecast" },
+    { toolName: "use_tool", rawInput: { variant: "UseTool", tool_name: "echoagent-live-info__weather_forecast" } },
+    { rawInput: { variant: "UseTool", tool_name: "echoagent-live-info__weather_forecast" } },
+  ])("从真实直调、UseTool 包装和历史标题识别天气：%j", fields => {
+    expect(detectToolCallRenderer({ ...tc("other"), ...fields })).toBe("weather");
+  });
+
+  it("工具包装、卡片和活动状态共享搜索与工具发现的识别", () => {
+    const wrapped = (tool_name: string) => ({ ...tc("other"), toolName: "use_tool", rawInput: { variant: "UseTool", tool_name } });
+    expect(detectToolCallRenderer(wrapped("echoagent-live-info__search_web"))).toBe("search");
+    expect(isToolDiscovery(wrapped("search_tools"))).toBe(true);
+    expect(isToolDiscovery(wrapped("echoagent-live-info__search_web"))).toBe(false);
+    expect(isToolDiscovery(tc("other", undefined, 'Search tools: "天气"'))).toBe(true);
+  });
+
+  it("支持 ACP execute/fetch，未知工具不根据描述中的业务词猜测身份", () => {
+    expect(detectToolCallRenderer(tc("execute"))).toBe("command");
+    expect(detectToolCallRenderer(tc("fetch"))).toBe("search");
+    expect(detectToolCallRenderer(tc("other", { tool_name: "echoagent-live-info__weather_forecast" }, "查询天气信息"))).toBe("default");
+    expect(detectToolCallRenderer({ ...tc("read"), toolName: "unrecognized_tool" })).toBe("read");
   });
 });
 

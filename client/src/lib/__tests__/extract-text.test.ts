@@ -33,9 +33,9 @@ describe("extractPlainText", () => {
     expect(extractPlainText(m, { includeThoughts: true })).toBe("answer\nthinking");
   });
 
-  it("默认只索引最终答案，不让折叠的中间分析污染搜索", () => {
+  it("明确标记的进展不会进入正文搜索", () => {
     const m = msg([
-      { kind: "text", text: "internal English analysis" },
+      { kind: "text", phase: "commentary", text: "internal English analysis" },
       {
         kind: "tool_call",
         toolCall: {

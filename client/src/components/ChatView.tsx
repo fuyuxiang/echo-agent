@@ -977,6 +977,9 @@ export function ChatView({
                       message={m}
                       streaming={streaming && m.id === streamingMessageId}
                       waitingForModel={!awaitingDecision && !awaitingPlan && !awaitingQuestion && !controlPhase && !error}
+                      waitingReason={streaming && m.id === streamingMessageId
+                        ? awaitingQuestion ? "等待你补充信息" : awaitingPlan ? "等待你确认计划" : awaitingDecision ? "等待你批准操作" : undefined
+                        : undefined}
                       markdownConfig={markdownConfig}
                       cwd={cwd}
                       sessionId={sessionId ?? undefined}

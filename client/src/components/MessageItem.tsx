@@ -94,6 +94,7 @@ export const MessageItem = memo(function MessageItem({
   message,
   streaming,
   waitingForModel = true,
+  waitingReason,
   markdownConfig,
   cwd,
   sessionId,
@@ -124,6 +125,7 @@ export const MessageItem = memo(function MessageItem({
   streaming: boolean;
   /** Suppress model-wait copy while a decision, cancellation or error takes priority. */
   waitingForModel?: boolean;
+  waitingReason?: string;
   autoExpandProcess?: boolean;
   runtimeError?: string;
   suppressStoppedNotice?: boolean;
@@ -440,6 +442,7 @@ export const MessageItem = memo(function MessageItem({
                 cancellationCategory={message.cancellationCategory}
                 agentResult={[...new Set([message.agentResult, runtimeError].filter(Boolean))].join("\n") || undefined}
                 hasFinalAnswer={hasFinalAnswer}
+                waitingReason={waitingReason}
                 markdownConfig={markdownConfig}
                 onOpenTool={onOpenTool}
                 revealRequest={processReveal}

@@ -318,7 +318,7 @@ Object.assign(window, {
         case "list_dir": return [];
         case "agent_list_pending_interactions": {
           const state = query.get("state") ?? "long";
-          if (["workbench", "coding-question"].includes(query.get("surface") ?? "") && state === "question") return {
+          if (query.get("surface") === "execution" || ["workbench", "coding-question"].includes(query.get("surface") ?? "") && state === "question") return {
             permissions: [], questions: useQuestionStore.getState().queues[args.sessionId] ?? [], planApprovals: [], folderTrustRequests: [],
           };
           if (query.get("surface") !== "trust" || trustResolved) return { permissions: [], questions: [], planApprovals: [], folderTrustRequests: [] };

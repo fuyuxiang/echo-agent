@@ -30,10 +30,10 @@ export type ToolRenderer =
   | "unknown";
 
 const RENDERER_MAP: Array<{ test: RegExp; renderer: ToolRenderer }> = [
-  { test: /^(run_terminal_command|bash|execute_command|shell|terminal)$/i, renderer: "command" },
+  { test: /^(run_terminal_command|bash|execute_command|execute|shell|terminal)$/i, renderer: "command" },
   { test: /^(edit|write|write_file|edit_file|multi_edit)$/i, renderer: "edit" },
   { test: /^(read_file|read|list_dir|ls|grep|glob)$/i, renderer: "read" },
-  { test: /^(web_search|web_fetch|search|echoagent-live-info__search_web)$/i, renderer: "search" },
+  { test: /^(web_search|web_fetch|search|fetch|echoagent-live-info__search_web)$/i, renderer: "search" },
   { test: /^echoagent-live-info__weather_forecast$/i, renderer: "weather" },
   // EchoAgent 原生子代理派发工具 kind="task"、id="task"。优先级高于 defer-execute
   // 的 /task/ 子串匹配，放在 defer 之前。
@@ -61,6 +61,35 @@ export function detectToolRenderer(kind: string): ToolRenderer {
     if (test.test(k)) return renderer;
   }
   return "default";
+}
+
+/** Resolve Runtime's UseTool wrapper before falling back to legacy ACP kinds. */
+function toolTargetName(tool: ToolCallView): string | undefined {
+  const raw = tool.rawInput;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const input = raw as Record<string, unknown>;
+    if ((tool.toolName === "use_tool" || input.variant === "UseTool")
+      && typeof input.tool_name === "string" && input.tool_name.trim()) return input.tool_name.trim();
+  }
+  return tool.toolName;
+}
+
+/** Shared by the activity heading and tool card, including real MCP calls. */
+export function detectToolCallRenderer(tool: ToolCallView): ToolRenderer {
+  const name = toolTargetName(tool);
+  if (name) {
+    const renderer = detectToolRenderer(name);
+    if (renderer !== "default" && renderer !== "unknown") return renderer;
+  }
+  // Legacy live-info calls carry their exact tool identity in the title.
+  const titleRenderer = detectToolRenderer(tool.title);
+  if (titleRenderer === "search" || titleRenderer === "weather") return titleRenderer;
+  return detectToolRenderer(tool.kind);
+}
+
+export function isToolDiscovery(tool: ToolCallView): boolean {
+  return /^(?:search_tool|search_tools|SearchTool)$/i.test(toolTargetName(tool) ?? tool.kind)
+    || /^Search tools: "/.test(tool.title);
 }
 
 /** 渲染器的人类可读标签。 */

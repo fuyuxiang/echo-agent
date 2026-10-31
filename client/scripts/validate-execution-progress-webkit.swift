@@ -62,19 +62,28 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             report({action:'progress',stage:'production UI mounted'});
             const { useSessionStore } = await import('/src/stores/session-store.ts');
             const store = useSessionStore.getState(), id = store.streamingMessageId;
-            const tool = (id, status) => ({kind:'tool_call',toolCall:{toolCallId:id,kind:'read_file',title:'检查健康资料与参考文献 · ' + id,status,content:[]}});
-            const parts = [{kind:'thought',text:'较早的推理内容。'.repeat(100)+'最新决定：改用备用方案验证。'},tool('ongoing','in_progress'),tool('old','completed'),tool('recent','completed'),tool('latest','completed')];
+            const tool = (id, status) => ({kind:'tool_call',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',toolCall:{toolCallId:id,kind:'read_file',title:'检查健康资料与参考文献 · ' + id,status,content:[]}});
+            const parts = [{kind:'text',phase:'commentary',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',text:'较早的推理内容。'.repeat(100)+'最新决定：改用备用方案验证。'},tool('ongoing','in_progress'),tool('old','completed'),tool('recent','completed'),tool('latest','completed')];
             const set = (parts, complete = false) => store.setMessages([{id,role:'assistant',complete,startedAt:Date.now()-76000,parts}]);
             const latestVisible = () => {
               const excerpt = document.querySelector('.execution-process__excerpt p'), start = excerpt?.textContent.indexOf('改用备用方案验证。') ?? -1;
               if (start < 0) return false;
               const range = document.createRange(); range.setStart(excerpt.firstChild,start); range.setEnd(excerpt.firstChild,start+'改用备用方案验证。'.length);
               const tail = range.getBoundingClientRect(), box = excerpt.getBoundingClientRect();
+              window.progressGeometry = {scrollTop:excerpt.scrollTop,scrollHeight:excerpt.scrollHeight,clientHeight:excerpt.clientHeight,
+                tailTop:tail.top,tailBottom:tail.bottom,boxTop:box.top,boxBottom:box.bottom,boxHeight:box.height,lineHeight:getComputedStyle(excerpt).lineHeight};
               return tail.top >= box.top - 1 && tail.bottom <= box.bottom + 1 && box.height <= parseFloat(getComputedStyle(excerpt).lineHeight) * 2 + 1;
+            };
+            const showTools = async () => {
+              await wait(() => document.querySelector('.execution-process__operations-toggle'));
+              const toggle = document.querySelector('.execution-process__operations-toggle');
+              if (toggle.getAttribute('aria-expanded') === 'false') toggle.click();
+              await wait(() => document.querySelector('.execution-process__preview .toolcall--run'));
             };
             document.documentElement.style.fontSize = (16 * 18 / 13) + 'px';
             set(parts);
-            await wait(() => document.querySelector('.execution-process__preview .toolcall--run'));
+            await wait(() => document.querySelector('.execution-process__operations-toggle'));
+            await showTools();
             const preview = document.querySelector('.execution-process__preview'), box = preview.getBoundingClientRect();
             assert(preview.querySelectorAll('.toolcall').length === 3, 'Preview must show at most three real tool calls');
             assert(preview.querySelector('.toolcall--run').textContent.includes('ongoing'), 'Earlier running work must stay visible');
@@ -99,17 +108,17 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             assert(preview.querySelectorAll('.toolcall').length === 3, 'Focus retention must keep the preview bounded');
             document.querySelector('.execution-process__header').focus();
             await wait(() => !focused.isConnected);
-            set([{kind:'thought',text:'早先进展。\n\n```ts\n'+'const draft = 1;\n'.repeat(300)+'```\n\n代码核对完成。'}]);
+            set([{kind:'text',phase:'commentary',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',text:'早先进展。\n\n```ts\n'+'const draft = 1;\n'.repeat(300)+'```\n\n代码核对完成。'}]);
             await wait(() => document.querySelector('.execution-process__excerpt p')?.textContent === '代码核对完成。');
             report({action:'progress',stage:'focus retention and long fences passed'});
             set(parts);
-            await wait(() => document.querySelector('.execution-process__preview .toolcall--run'));
+            await showTools();
             preview.querySelector('.execution-process__preview-more').click();
             await wait(() => document.querySelector('.execution-process__body .toolcall'));
             assert(document.querySelectorAll('.execution-process__body .toolcall').length === 4, 'Expand all must reveal the full history');
             assert(document.activeElement === document.querySelector('.execution-process__header'), 'Expand all must keep a stable focus target');
             document.querySelector('.execution-process__header').click();
-            await wait(() => document.querySelector('.execution-process__preview .toolcall--run'));
+            await showTools();
             document.querySelector('.execution-process__preview .toolcall--run').focus();
             set([...completedParts,{kind:'text',text:'这是正式答复。'}]);
             await wait(() => document.querySelector('.execution-process__title')?.textContent === '正在生成回复');
@@ -124,7 +133,7 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             });
             report({action:'progress',stage:'long-answer feedback visible'});
             set(parts);
-            await wait(() => document.querySelector('.execution-process__preview .toolcall--run'));
+            await showTools();
             document.querySelector('.execution-process__preview .toolcall--run').focus();
             set(completedParts,true);
             await wait(() => document.querySelector('.execution-process__title')?.textContent === '查看过程');
@@ -132,7 +141,7 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             assert(!document.querySelector('.msg__writing'), 'Completion must remove generation feedback');
             assert(document.activeElement === document.querySelector('.execution-process__header'), 'Completion must restore keyboard focus');
             report({action:'done',viewport:[innerWidth,innerHeight],previewHeight:box.height,checks:['native layout','latest two lines','font changes','long code fences','parallel activity','keyboard focus','expand all','long-answer feedback','completion']});
-          } catch (error) { report({action:'fail',error:String(error)+'\n'+error.stack}); }
+          } catch (error) { report({action:'fail',error:String(error)+'\n'+error.stack+'\n'+JSON.stringify(window.progressGeometry)}); }
         })();
         """#) { _, error in if let error = error { self.fail(String(describing: error)) } }
     }

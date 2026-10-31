@@ -16,6 +16,47 @@ const messages: ChatMessage[] = [
 ];
 
 describe("buildSharePayload", () => {
+  it.each(["end_turn", "cancelled", "error"])("无 phase 的真实工具轮次在 %s 后保留阶段成果和后续正文", stopReason => {
+    const transcript: ChatMessage[] = [{ id: "wire-result", role: "assistant", complete: true, stopReason, parts: [
+      { kind: "text", text: "已核实的交通方案。", streamId: "1" },
+      { kind: "tool_call", streamId: "1", toolCall: { toolCallId: "ask", title: "Ask: 何时出发？", kind: "other", status: "completed", content: [] } },
+      { kind: "text", text: "后续补充信息。", streamId: "2" },
+    ] }];
+    const content = buildSharePayload(transcript, "markdown").content;
+    expect(content).toContain("已核实的交通方案。");
+    expect(content).toContain("后续补充信息。");
+    expect(content.match(/已核实的交通方案。/g)).toHaveLength(1);
+    expect(content).not.toContain("Ask:");
+  });
+
+  it("完整导出保留同一真实阶段内失败、说明、重试的时序", () => {
+    const transcript: ChatMessage[] = [{ id: "retry-order", role: "assistant", complete: true, parts: [
+      { kind: "tool_call", toolCall: { toolCallId: "first", title: "首次读取失败", kind: "read", status: "failed", content: [] } },
+      { kind: "text", phase: "commentary", text: "改用备用配置。" },
+      { kind: "tool_call", toolCall: { toolCallId: "retry", title: "读取备用配置", kind: "read", status: "completed", content: [] } },
+    ] }];
+    const content = buildSharePayload(transcript, "markdown", "重试记录", { includeProcess: true }).content;
+    expect(content.indexOf("首次读取失败")).toBeLessThan(content.indexOf("改用备用配置。"));
+    expect(content.indexOf("改用备用配置。")).toBeLessThan(content.indexOf("读取备用配置"));
+  });
+
+  it("普通分享保留阶段成果和最终答复，完整记录区分阶段说明与思考摘要", () => {
+    const progress: ChatMessage[] = [{ id: "stages", role: "assistant", complete: true, parts: [
+      { kind: "text", phase: "commentary", text: "我先核对交通来源。", streamId: "1" },
+      { kind: "thought", text: "内部分析摘要", streamId: "1" },
+      { kind: "text", phase: "partial_answer", text: "已核实的交通方案。", streamId: "1" },
+      { kind: "text", phase: "final_answer", text: "完整出行攻略。", streamId: "2" },
+    ] }];
+    const normal = buildSharePayload(progress, "markdown").content;
+    expect(normal).toContain("已核实的交通方案。");
+    expect(normal).toContain("完整出行攻略。");
+    expect(normal).not.toContain("核对交通来源");
+    expect(normal).not.toContain("内部分析摘要");
+    const detailed = buildSharePayload(progress, "markdown", "攻略", { includeProcess: true }).content;
+    expect(detailed).toContain("> **阶段进展**\n>\n> 我先核对交通来源。");
+    expect(detailed).toContain("> **思考摘要**\n>\n> 内部分析摘要");
+    expect(detailed.match(/我先核对交通来源。/g)).toHaveLength(1);
+  });
   it("markdown 格式", () => {
     const p = buildSharePayload(messages, "markdown", "测试");
     expect(p.filename).toBe("测试.md");

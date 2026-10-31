@@ -11,27 +11,23 @@ let browser, page;
 try {
   browser = await (await reviewChromium()).launch({ ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN }
     : process.platform === "darwin" ? { executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" } : {}), headless: true });
-  page = await browser.newPage({ reducedMotion: "reduce" });
-  page.setDefaultTimeout(15000);
-  page.setDefaultNavigationTimeout(60000);
   const errors = [];
-  page.on("pageerror", error => errors.push(error.message));
   const evidence = [];
   const stage = async value => {
     await page.evaluate(async value => {
       const { useSessionStore } = await import("/src/stores/session-store.ts");
       const store = useSessionStore.getState();
-      const tool = (id, title, status) => ({ kind: "tool_call", toolCall: { toolCallId: id, kind: "read_file", title, status, content: [{ type: "text", text: "隔离资料内容，用于验证右侧详情正常打开。" }] } });
-      const thought = { kind: "thought", text: "先核对资料来源与页面结构。\n\n正在整理养生建议和参考数据，接下来会把内容组织成清晰的演示页面。" };
-      if (value === "long-thinking") thought.text = "较早的推理内容。".repeat(100) + "最新决定：改用备用方案验证。";
-      if (value === "fenced-thinking") thought.text = "正在核对代码。\n\n```ts\n" + "const draft = 1;\n".repeat(300) + "```\n\n最新决定：代码已经核对完成。";
-      const parts = value.includes("thinking") ? [thought] : [thought,
+      const tool = (id, title, status) => ({ kind: "tool_call", streamId: "stage-1", stageTitle: "核对资料与准备演示结构", toolCall: { toolCallId: id, kind: "read_file", title, status, content: [{ type: "text", text: "隔离资料内容，用于验证右侧详情正常打开。" }] } });
+      const progress = { kind: "text", phase: "commentary", streamId: "stage-1", stageTitle: "核对资料与准备演示结构", text: "先核对资料来源与页面结构。\n\n正在整理养生建议和参考数据，接下来会把内容组织成清晰的演示页面。" };
+      if (value === "long-thinking") progress.text = "较早的推理内容。".repeat(100) + "最新决定：改用备用方案验证。";
+      if (value === "fenced-thinking") progress.text = "正在核对代码。\n\n```ts\n" + "const draft = 1;\n".repeat(300) + "```\n\n最新决定：代码已经核对完成。";
+      const parts = value.includes("thinking") ? [progress] : [progress, { kind: "thought", text: "原始内部分析片段。", streamId: "stage-1" },
         tool("ongoing", "检查健康资料与参考文献", value === "tools" ? "in_progress" : "completed"),
         tool("old", "检查演示文稿规范", "completed"),
         tool("recent", "核对数据来源", "completed"),
         tool("latest", "读取页面组件与字体规范", "completed"),
       ];
-      if (["answer", "long-answer", "complete"].includes(value)) parts.push({ kind: "text", text: value === "long-answer"
+      if (["answer", "long-answer", "complete"].includes(value)) parts.push({ kind: "text", phase: "final_answer", streamId: "answer-1", text: value === "long-answer"
         ? Array.from({ length: 30 }, (_, index) => `第 ${index + 1} 段：整理办公场景中的日常健康建议，保留依据并说明适用条件。`).join("\n\n")
         : "资料已经整理好。演示文稿将采用清晰的章节结构，突出适合办公场景的日常健康建议。" });
       const complete = value === "complete";
@@ -44,6 +40,8 @@ try {
       const header = document.querySelector(".execution-process__header");
       return header && (value === "complete" ? header.textContent.includes("查看过程") : value.includes("answer") ? document.querySelector(".msg__writing") : document.querySelector(".execution-process__preview"));
     }, value);
+    const toggle = page.locator(".execution-process__operations-toggle[aria-expanded=true]");
+    if (await toggle.count()) await toggle.click();
   };
   const latestExcerptVisible = marker => page.waitForFunction(marker => {
     const text = document.querySelector(".execution-process__excerpt p");
@@ -57,13 +55,22 @@ try {
   }, marker);
 
   for (const [width, height, theme, font] of [[1440, 1000, "light", 13], [1440, 1000, "dark", 13], [1024, 680, "light", 13], [1024, 680, "dark", 18]]) {
+    await page?.close();
+    const platform = width === 1440 ? "mac" : "windows";
+    page = await browser.newPage({ reducedMotion: "reduce", userAgent: platform === "windows"
+      ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+      : "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36" });
+    page.setDefaultTimeout(15000);
+    page.setDefaultNavigationTimeout(60000);
+    page.on("pageerror", error => errors.push(error.message));
     await page.setViewportSize({ width, height });
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=execution&state=running&theme=${theme}`);
     await page.locator(".execution-process__header").waitFor();
     await page.evaluate(font => document.documentElement.style.fontSize = `${16 * font / 13}px`, font);
     await stage("thinking");
     assert.equal(await page.locator(".execution-process__header").getAttribute("aria-expanded"), "false");
-    await page.getByText("思考片段", { exact: true }).waitFor();
+    await page.getByText("核对资料与准备演示结构", { exact: true }).waitFor();
+    assert.equal(await page.locator(".execution-process__reasoning").count(), 0, "thoughts stay behind disclosure");
     await page.screenshot({ path: join(output, `thinking-${width}-${theme}-${font}.png`) });
 
     await stage("long-thinking");
@@ -82,6 +89,11 @@ try {
 
     await stage("tools");
     const preview = page.locator(".execution-process__preview");
+    await preview.getByText("正在整理养生建议和参考数据，接下来会把内容组织成清晰的演示页面。", { exact: true }).waitFor();
+    assert.equal(await preview.locator(".toolcall").count(), 0, "tools start collapsed below the main stage");
+    assert.equal(await page.getByText("原始内部分析片段。", { exact: true }).count(), 0);
+    await page.screenshot({ path: join(output, `stage-${width}-${theme}-${font}.png`) });
+    await preview.locator(".execution-process__operations-toggle").click();
     assert.equal(await preview.locator(".toolcall").count(), 3);
     assert.equal(await preview.locator(".toolcall--run").count(), 1, "keep earlier parallel work visible");
     await preview.getByText("运行中", { exact: true }).waitFor();
@@ -113,12 +125,14 @@ try {
     await page.locator(".execution-process__header").focus();
     assert.equal(await focusedTool.count(), 0, "leaving the target restores the recent-call selection");
     await stage("tools");
+    await preview.locator(".execution-process__operations-toggle").click();
 
     await page.locator(".execution-process__preview-more").click();
     assert.equal(await page.locator(".execution-process__body .toolcall").count(), 4);
     assert.equal(await preview.count(), 0, "full history must not duplicate the preview");
     assert(await page.locator(".execution-process__header").evaluate(element => element === document.activeElement));
     await page.locator(".execution-process__header").click();
+    await preview.locator(".execution-process__operations-toggle").click();
     await preview.locator('[data-tool-call-id="ongoing"]').focus();
     await stage("answer");
     assert.equal(await preview.count(), 0, "answer generation retires the live preview");
@@ -134,17 +148,92 @@ try {
     });
     await page.screenshot({ path: join(output, `long-answer-${width}-${theme}-${font}.png`) });
     await stage("tools");
+    await page.evaluate(async () => {
+      const { useSessionStore } = await import("/src/stores/session-store.ts");
+      const { useQuestionStore } = await import("/src/stores/question-store.ts");
+      useQuestionStore.getState().request({ requestId: "stage-question", sessionId: useSessionStore.getState().sessionId,
+        toolCallId: "ongoing", title: "确认出行安排", mode: "default", questions: [{ id: "days", question: "计划游玩几天？",
+          multiSelect: false, options: [{ label: "两天", description: "周末行程" }, { label: "三天", description: "更从容" }] }] });
+    });
+    await page.getByRole("button", { name: /等待你补充信息/ }).waitFor();
+    const question = page.locator(".question-inline");
+    await question.getByText("计划游玩几天？", { exact: true }).waitFor();
+    assert.equal(await page.locator(".execution-process--running, .msg__writing, .execution-process .question-inline").count(), 0);
+    await question.locator(".question-inline__option").first().click();
+    await page.screenshot({ path: join(output, `waiting-${width}-${theme}-${font}.png`) });
+    await question.getByRole("button", { name: "提交", exact: true }).click();
+    await question.waitFor({ state: "hidden" });
+    await page.locator(".execution-process--running").waitFor();
+    await preview.locator(".execution-process__operations-toggle").click();
     await preview.locator('[data-tool-call-id="ongoing"]').focus();
     await stage("complete");
     assert(await page.locator(".execution-process__header").evaluate(element => element === document.activeElement), "completion must preserve keyboard navigation");
     assert.equal(await page.locator(".execution-process__header").getAttribute("aria-expanded"), "false");
     assert.equal(await page.locator(".execution-process--running, .execution-process__preview").count(), 0);
     assert.equal(await page.locator(".msg__writing").count(), 0);
-    evidence.push({ width, height, theme, font, geometry });
+
+    // Match the current Runtime wire format: public text has no phase, and a
+    // UseTool call carries its effective identity in the title and raw input.
+    const publicText = await page.evaluate(async () => {
+      const { useSessionStore } = await import("/src/stores/session-store.ts");
+      const store = useSessionStore.getState(), sessionId = store.sessionId;
+      store.setMessages([]);
+      store.startStreaming(sessionId, "wire-progress");
+      const meta = { promptId: "wire-progress", streamStartMs: 7001 };
+      const text = "已核实交通方案：乘坐高铁前往南京。车程约两小时，以下内容在后续工具调用和任务中止后仍应完整保留。";
+      store.applyUpdate({ __sessionId: sessionId, sessionUpdate: "agent_message_chunk", content: { type: "text", text }, _meta: meta });
+      store.applyUpdate({ __sessionId: sessionId, sessionUpdate: "tool_call", toolCallId: "wire-weather", kind: "other",
+        title: "echoagent-live-info__weather_forecast", status: "in_progress", rawInput: { variant: "UseTool", tool_name: "echoagent-live-info__weather_forecast", tool_input: { location: "南京" } },
+        _meta: { ...meta, "echo.agent/tool": { version: 1, name: "use_tool" } } });
+      return text;
+    });
+    await page.getByRole("button", { name: /^正在查询天气(?: ·.*)?$/ }).waitFor();
+    await page.getByText(publicText, { exact: true }).waitFor();
+    assert.equal(await page.getByText(publicText, { exact: true }).count(), 1, "unclassified public text is shown once, outside the process");
+    assert.equal(await page.locator(".execution-process__excerpt, .msg__writing").count(), 0);
+    await page.getByRole("button", { name: "1 项进行中", exact: true }).click();
+    await page.getByText("🌤️ 天气查询", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "other 南京 运行中", exact: true }).waitFor();
+    const wireExport = await page.evaluate(async () => {
+      const { useSessionStore } = await import("/src/stores/session-store.ts");
+      const { buildSessionMarkdown } = await import("/src/lib/export-markdown.ts");
+      const store = useSessionStore.getState();
+      store.applyUpdate({ __sessionId: store.sessionId, sessionUpdate: "turn_completed", prompt_id: "wire-progress", stop_reason: "cancelled" });
+      return buildSessionMarkdown(useSessionStore.getState().messages);
+    });
+    assert(wireExport.includes(publicText), "cancellation keeps phase-less public text in normal exports");
+    await page.getByRole("button", { name: /^查看过程(?: ·.*)?$/ }).waitFor();
+    assert.equal(await page.getByText(publicText, { exact: true }).count(), 1);
+    await page.screenshot({ path: join(output, `wire-result-${width}-${theme}-${font}.png`) });
+
+    // Optional explicit commentary metadata must preserve the order of the
+    // underlying events when several generations share a real plan stage.
+    await page.evaluate(async () => {
+      const { useSessionStore } = await import("/src/stores/session-store.ts");
+      const store = useSessionStore.getState(), sessionId = store.sessionId;
+      store.setMessages([]);
+      store.startStreaming(sessionId, "ordered-progress");
+      const emit = (sessionUpdate, fields, streamStartMs = 8001) => store.applyUpdate({ __sessionId: sessionId, sessionUpdate, ...fields, _meta: { promptId: "ordered-progress", streamStartMs } });
+      emit("plan", { entries: [{ content: "核验结果并修复", priority: "high", status: "in_progress" }] });
+      emit("agent_thought_chunk", { content: { type: "text", text: "检查原配置。" } });
+      emit("tool_call", { toolCallId: "first", title: "首次读取失败", kind: "read", status: "failed" });
+      emit("agent_message_chunk", { content: { type: "text", text: "改用备用配置。", _meta: { phase: "commentary" } } }, 8002);
+      emit("tool_call", { toolCallId: "retry", title: "读取备用配置", kind: "read", status: "in_progress" }, 8002);
+    });
+    await page.getByRole("button", { name: /^核验结果并修复(?: ·.*)?$/ }).click();
+    const ordered = page.locator(".execution-process__stage");
+    assert.equal(await ordered.count(), 1);
+    assert.deepEqual(await ordered.evaluate(element => [...element.children]
+      .filter(child => child.matches(".execution-process__reasoning, .execution-process__progress, .execution-process__tool"))
+      .map(child => child.querySelector("[data-tool-call-id]")?.dataset.toolCallId ?? (child.matches("details") ? "thought" : child.textContent))),
+      ["thought", "first", "改用备用配置。", "retry"]);
+    assert.equal(await ordered.locator("details[open]").count(), 0);
+    await page.screenshot({ path: join(output, `ordered-stage-${width}-${theme}-${font}.png`) });
+    evidence.push({ platform, width, height, theme, font, geometry });
   }
   assert.deepEqual(errors, []);
   writeFileSync(join(output, "evidence.json"), JSON.stringify({ evidence, errors }, null, 2));
-  console.log(JSON.stringify({ ok: true, output, layouts: evidence.length, checks: ["latest two lines", "font and width changes", "long code fences", "bounded parallel activity", "tool drawer", "keyboard focus", "manual disclosure", "long-answer feedback", "completion", "reduced motion"], errors }, null, 2));
+  console.log(JSON.stringify({ ok: true, output, layouts: evidence.length, checks: ["primary stage description", "collapsed tool summary", "Mac/Windows browser platforms", "latest two lines", "font and width changes", "long code fences", "bounded parallel activity", "tool drawer", "keyboard focus", "manual disclosure", "independent question and resume", "long-answer feedback", "completion", "phase-less Runtime text and cancellation export", "real UseTool weather identity", "chronological plan events", "reduced motion"], errors }, null, 2));
 } catch (error) {
   await page?.screenshot({ path: join(output, "failure.png") });
   console.error(await page?.evaluate(async () => {
