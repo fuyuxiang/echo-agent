@@ -2,6 +2,19 @@
  * fragment would hide namespace, wrapping and SVG image-decoder regressions. */
 export async function inspectDiagramImage(image) {
   if (!image) throw new Error("Missing production diagram image");
+  const colorCanvas = document.createElement("canvas");
+  colorCanvas.width = colorCanvas.height = 1;
+  const colorContext = colorCanvas.getContext("2d", { willReadFrequently: true });
+  let surface = "rgb(255, 255, 255)";
+  for (let element = image; element; element = element.parentElement) {
+    const background = getComputedStyle(element).backgroundColor;
+    colorContext.clearRect(0, 0, 1, 1);
+    colorContext.fillStyle = background; colorContext.fillRect(0, 0, 1, 1);
+    const alpha = colorContext.getImageData(0, 0, 1, 1).data[3];
+    if (!alpha) continue;
+    if (alpha !== 255) throw new Error("Diagram review needs an explicit composited translucent backdrop");
+    surface = background; break;
+  }
   await image.decode();
   // WKWebView reports the responsive SVG element's current layout size as
   // naturalWidth/naturalHeight. Decode the same Blob independently to measure
@@ -59,11 +72,12 @@ export async function inspectDiagramImage(image) {
       const label = box?.firstElementChild ?? node.querySelector(".label");
       const card = node.querySelector(".label-container");
       const cardBounds = bounds((card ?? node).getBoundingClientRect());
-      const textRects = [];
+      const textRects = [], textColors = new Set();
       if (label) {
         const walker = doc.createTreeWalker(label, NodeFilter.SHOW_TEXT);
         while (walker.nextNode()) {
           if (!walker.currentNode.textContent.trim()) continue;
+          textColors.add(frame.contentWindow.getComputedStyle(walker.currentNode.parentElement).color);
           const range = doc.createRange(); range.selectNodeContents(walker.currentNode);
           textRects.push(...[...range.getClientRects()].filter(r => r.width > 0 && r.height > 0).map(bounds));
         }
@@ -93,6 +107,7 @@ export async function inspectDiagramImage(image) {
         shape, lines: new Set(textRects.map(r => Math.round(r.top * 10))).size,
         whiteSpace: style?.whiteSpace, overflowWrap: style?.overflowWrap,
         fill: card ? frame.contentWindow.getComputedStyle(card).fill : null,
+        textColors: [...textColors],
         bounds: cardBounds, textBounds, textRects, visibleBounds,
       };
     });
@@ -133,13 +148,15 @@ export async function inspectDiagramImage(image) {
       const fromIndex = match ? elements.findIndex(n => n.id.endsWith(`-node_${match[1]}`)) : -1;
       const toIndex = match ? elements.findIndex(n => n.id.endsWith(`-node_${match[2]}`)) : -1;
       const start = pathPoint(path, 0), end = pathPoint(path, length);
+      const paint = frame.contentWindow.getComputedStyle(path);
       return { id: path.getAttribute("data-id"), length, start, end,
+        stroke: paint.stroke, strokeOpacity: Number(paint.strokeOpacity) * Number(paint.opacity),
         from: nodes[fromIndex]?.text ?? null, to: nodes[toIndex]?.text ?? null,
         startGap: fromIndex >= 0 ? outlineGap(elements[fromIndex].querySelector(".label-container"), start, nodes[fromIndex].bounds) : null,
         endGap: toIndex >= 0 ? outlineGap(elements[toIndex].querySelector(".label-container"), end, nodes[toIndex].bounds) : null,
         viewportSlack: slack(bounds(path.getBoundingClientRect()), viewport) };
     });
-    return { svg, viewBox, nodes, overlaps, textOverlaps, edges: edgeDetails.length, edgeDetails,
+    return { svg, surface, viewBox, nodes, overlaps, textOverlaps, edges: edgeDetails.length, edgeDetails,
       edgeLabels: [...root.querySelectorAll(".edgeLabels .label")].map(label => normalize(label.textContent)).filter(Boolean),
       imageWidth: decoded.naturalWidth, imageHeight: decoded.naturalHeight,
       svgWidth: Number(root.getAttribute("width")), svgHeight: Number(root.getAttribute("height")),

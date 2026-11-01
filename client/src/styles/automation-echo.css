@@ -242,7 +242,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #F64040;
+  background: var(--echo-status-error);
 }
 .atm-filter-menu {
   position: absolute;
@@ -397,7 +397,7 @@
   gap: 4px;
   margin-top: 8px;
   margin-bottom: 2px;
-  color: var(--echo-color-text-disabled, rgba(0, 0, 0, 0.3));
+  color: var(--echo-text-weak);
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 20px;
@@ -498,7 +498,7 @@
 .atm-row-validity {
   font-size: 0.875rem;
   line-height: 22px;
-  color: var(--echo-color-text-disabled);
+  color: var(--echo-text-weak);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -510,15 +510,15 @@
 .atm-row-validity { max-width: 30%; }
 .atm-row-next,
 .atm-row-paused-label {
-  color: var(--echo-color-text-disabled, rgba(0, 0, 0, 0.3));
+  color: var(--echo-text-weak);
   font-size: 0.875rem;
   line-height: 22px;
 }
-.atm-row-time { font-size: 0.875rem; line-height: 22px; color: var(--echo-color-text-disabled); }
+.atm-row-time { font-size: 0.875rem; line-height: 22px; color: var(--echo-text-weak); }
 .atm-row-result-label {
   font-size: 0.875rem;
   line-height: 22px;
-  color: var(--echo-color-text-disabled);
+  color: var(--echo-text-weak);
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
@@ -634,7 +634,7 @@
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 20px;
-  color: var(--echo-color-text-disabled, rgba(0, 0, 0, 0.3));
+  color: var(--echo-text-weak);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -780,7 +780,7 @@
 .atm-modal-input {
   width: 100%;
   height: 32px;
-  border: 1px solid var(--atm-border);
+  border: 1px solid var(--echo-border-control);
   background: var(--atm-surface);
   color: var(--atm-text-primary);
   border-radius: 8px;
@@ -864,7 +864,7 @@
 
 /* 提示词（边框大输入区 + 底部工具条） */
 .atm-modal-chat-input {
-  border: 1px solid var(--atm-border);
+  border: 1px solid var(--echo-border-control);
   border-radius: 6px;
   background: var(--atm-surface);
   padding: 12px;
@@ -999,7 +999,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--atm-border);
+  border: 1px solid var(--echo-border-control);
   border-radius: 8px;
   padding: 0 10px 0 12px;
   font-size: 0.8125rem;
@@ -1021,7 +1021,7 @@
 .atm-custom-select-dropdown {
   max-height: 220px;
   overflow-y: auto;
-  border: 1px solid var(--atm-border);
+  border: 1px solid var(--echo-border-control);
   border-radius: 8px;
   background: var(--atm-popover-bg);
   box-shadow: var(--atm-modal-shadow);
@@ -1424,7 +1424,7 @@
   height: 20px;
   border: none;
   border-radius: 999px;
-  background: var(--atm-border);
+  background: var(--echo-border-control);
   cursor: pointer;
   padding: 2px;
   box-sizing: border-box;
@@ -1792,7 +1792,7 @@
   justify-content: center;
   width: 16px;
   height: 16px;
-  border: 1px solid var(--echo-palette-black-20, rgba(0, 0, 0, 0.2));
+  border: 1px solid var(--echo-border-control);
   border-radius: 4px;
   background: var(--atm-surface, #fff);
   color: var(--atm-primary-btn-text, #fff);
@@ -1800,7 +1800,6 @@
   transition: background 0.15s ease, border-color 0.15s ease;
   box-sizing: border-box;
 }
-[data-theme="dark"] .echo-checkbox-box { border-color: rgba(255, 255, 255, 0.3); }
 .echo-checkbox--checked .echo-checkbox-box { background: var(--echo-control-selected-bg); color: var(--echo-control-selected-fg); border-color: var(--echo-control-selected-fg); }
 .echo-checkbox-label { font-size: 0.8125rem; line-height: 1.5; color: var(--atm-text-primary); }
 

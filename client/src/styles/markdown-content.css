@@ -3,14 +3,15 @@
   --md-hljs-comment: #008000;
   --md-hljs-keyword: #0000ff;
   --md-hljs-string: #a31515;
-  --md-hljs-number: #098658;
+  --md-hljs-number: #146c49;
   --md-hljs-function: #795e26;
   --md-hljs-variable: #001080;
-  --md-hljs-built-in: #267f99;
+  --md-hljs-built-in: #206980;
   --md-hljs-meta: #6a737d;
   --md-hljs-deletion: #b31d28;
   --md-hljs-deletion-bg: #ffeef0;
-  --md-hljs-addition: #22863a;
+  /* This stylesheet also ships alone in offline HTML exports. */
+  --md-hljs-addition: var(--echo-status-success, #167347);
   --md-hljs-addition-bg: #f0fff4;
   --md-hljs-section: #005cc5;
   --md-code-border: var(--echo-border-default, #ebebeb);
@@ -30,10 +31,10 @@
   --md-hljs-function: #dcdcaa;
   --md-hljs-variable: #9cdcfe;
   --md-hljs-built-in: #4ec9b0;
-  --md-hljs-meta: #808080;
-  --md-hljs-deletion: #f85149;
+  --md-hljs-meta: #a0aba5;
+  --md-hljs-deletion: var(--echo-status-error, #f47374);
   --md-hljs-deletion-bg: rgba(248, 81, 73, 0.15);
-  --md-hljs-addition: #3fb950;
+  --md-hljs-addition: var(--echo-status-success, #83cf9c);
   --md-hljs-addition-bg: rgba(63, 185, 80, 0.15);
   --md-hljs-section: #4daafc;
   --md-code-border: var(--echo-border-default, #333);
@@ -41,7 +42,7 @@
   --md-code-title: var(--echo-text-strong, rgba(255, 255, 255, 0.9));
   --md-code-action: var(--echo-text-secondary, rgba(255, 255, 255, 0.55));
   --md-code-action-hover-bg: rgba(255, 255, 255, 0.08);
-  --md-link: #7aa2ff;
+  --md-link: var(--echo-text-link);
   --md-blockquote-border: var(--echo-border-default, #444);
   --md-blockquote-fg: var(--echo-text-medium, rgba(255, 255, 255, 0.65));
 }

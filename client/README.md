@@ -154,6 +154,8 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 | `pnpm test:desktop-native` | 独立编译生产原生桌面模块并运行回归，不启动完整 Runtime 或派发桌面输入；macOS 事件对象测试需要可访问的图形会话。 |
 | `pnpm test:task-recovery` | 在真实 Chromium 中验证网页输入和任务恢复界面；需可用的 Playwright 与 Chromium，可用 `PLAYWRIGHT_MODULE`、`CHROME_BIN` 指定。 |
 | `pnpm test:mermaid` | 验证真实图表渲染、换行、预览、复制、下载及失败恢复；macOS 同时检查原生 WKWebView。 |
+| `pnpm test:ui:contrast` | 检查亮暗主题、窗口与字号组合中的文字、控件和状态图标；包含弹层、计划审批、未保存计数、录音标记及编辑后的表单内容，并用不可读反例验证检查器。 |
+| `pnpm test:ui:contrast:complex` / `pnpm test:ui:contrast:webkit` | 分别检查渐变、插画和原生下拉框背景上的真实像素对比度，以及 macOS 原生 WKWebView 表单与主题切换。 |
 | `pnpm build` | TypeScript 类型检查与前端生产构建。 |
 | `pnpm test:production-startup` | 构建后用静态服务和隔离浏览器检查真实生产资源启动、脚本错误及资源加载；日常 CI 自动运行并保留截图、报告。 |
 | `pnpm office:test` | 验证内置文档生成器。 |

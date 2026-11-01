@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
+import { inspectRenderedColors } from "./ui-color-audit.mjs";
 
 const output = reviewOutput(resolve("src-tauri/target/share-export-review"));
 const server = await createUiReviewServer(0, { fixture: "/scripts/fixtures/share-export-review.tsx" });
@@ -19,6 +20,9 @@ try {
     await page.goto(`${url}?theme=${theme}`);
     await page.getByText("正文结束", { exact: true }).waitFor();
     const clientStyle = await page.locator(".hljs-keyword").first().evaluate(el => getComputedStyle(el).color);
+    const diffColors = page => page.locator(".hljs-addition,.hljs-deletion").evaluateAll(elements => elements.map(el => ({kind:el.className,color:getComputedStyle(el).color})));
+    const clientDiff = await diffColors(page);
+    assert.equal(clientDiff.length,2,"The export fixture must contain highlighted added and deleted lines");
     await page.getByRole("button", { name: "导出与本地分享", exact: true }).click();
     await page.getByRole("button", { name: "导出 HTML", exact: true }).click();
     await page.waitForFunction(() => window.exportReview?.saves.length === 1, null, { timeout: 60000 });
@@ -52,6 +56,16 @@ try {
         assert.equal(await reading.locator("script,button,iframe,object").count(), 0);
         assert.equal(await reading.evaluate(() => window.pwned), undefined);
         assert.equal(await reading.locator(".hljs-keyword").first().evaluate(el => getComputedStyle(el).color), clientStyle);
+        assert.deepEqual(await diffColors(reading),clientDiff,"Offline diff colors must match the application in both themes");
+        for (const media of ["screen","print"]) {
+          await reading.emulateMedia({media});
+          await reading.locator(".hljs-addition").scrollIntoViewIfNeeded();
+          const colors=await reading.evaluate(inspectRenderedColors);
+          assert(colors.text.some(item=>item.selector.includes("hljs-addition")),"Diff text must actually be measured");
+          assert.deepEqual(colors.failures.filter(item=>/hljs-(addition|deletion)/.test(item.selector)),[],`Offline diff text must remain readable for ${media}`);
+        }
+        await reading.emulateMedia({media:"screen"});
+        await reading.evaluate(()=>window.scrollTo(0,0));
         assert.equal(await reading.locator(".md-export-fallback").count(), 0);
         assert.ok(await reading.locator("img").evaluateAll(images => images.every(image => image.complete && image.naturalWidth > 0)), "inline images and diagrams decode offline");
         const geometry = await reading.evaluate(() => ({

@@ -1,3 +1,4 @@
+import { avatarTextColor } from "../lib/avatar-color";
 /**
  * 专家面板 — 1:1 复刻 EchoAgent colleagues-panel
  *
@@ -75,7 +76,7 @@ const ASSISTANT_TEMPLATES = [
     name: "代码专家",
     description: "专注于代码编写、调试和优化",
     icon: Code2Icon,
-    color: "#00C29A",
+    color: "var(--echo-brand)",
     systemPrompt: "你是一名代码专家，专注于代码编写、调试和优化。请给出简洁、正确、可运行的代码，并解释关键设计决策。",
     defaultAvatar: 3,
     defaultTags: ["default", "reasoning"],
@@ -86,7 +87,7 @@ const ASSISTANT_TEMPLATES = [
     name: "文档助手",
     description: "帮助撰写和优化各类文档",
     icon: FileTextIcon,
-    color: "#1470B4",
+    color: "var(--echo-status-info)",
     systemPrompt: "你是一名技术文档工程师，擅长撰写清晰、结构化的文档。请根据用户需求生成易于理解的说明、教程或 API 文档。",
     defaultAvatar: 2,
     defaultTags: ["default"],
@@ -97,7 +98,7 @@ const ASSISTANT_TEMPLATES = [
     name: "网络研究员",
     description: "搜索和分析网络信息",
     icon: GlobeIcon,
-    color: "#FF7800",
+    color: "var(--echo-status-warning)",
     systemPrompt: "你是一名网络研究员，擅长从多个来源收集、交叉验证信息，并给出带引用的结构化总结。",
     defaultAvatar: 17,
     defaultTags: ["default", "multimodal"],
@@ -108,7 +109,7 @@ const ASSISTANT_TEMPLATES = [
     name: "业务分析师",
     description: "数据分析和业务洞察",
     icon: BriefcaseIcon,
-    color: "#9B59B6",
+    color: "var(--echo-status-purple)",
     systemPrompt: "你是一名业务分析师，擅长把数据转化为可执行的洞察。请关注关键指标、趋势和风险，给出明确的行动建议。",
     defaultAvatar: 8,
     defaultTags: ["reasoning"],
@@ -764,7 +765,7 @@ function ColleagueAvatar({
     <div className="colleague-avatar" style={{ width: size, height: size }}>
       <div
         className="colleague-avatar-face"
-        style={{ background: bg, fontSize: size * 0.42, width: size, height: size }}
+        style={{ background: bg, color: avatarTextColor(bg), fontSize: size * 0.42, width: size, height: size }}
         title={name}
       >
         {initial}

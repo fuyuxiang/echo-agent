@@ -129,6 +129,8 @@ See the [automation platform and security guide](docs/automation-platform-suppor
 | `pnpm test:desktop-native` | Compile production native desktop modules independently and run regressions without starting the full Runtime or dispatching desktop input; macOS event-object tests require an accessible graphical session. |
 | `pnpm test:task-recovery` | Verify webpage input and task recovery UI in real Chromium; requires Playwright and Chromium, configurable with `PLAYWRIGHT_MODULE` and `CHROME_BIN`. |
 | `pnpm test:mermaid` | Verify actual diagram rendering, wrapping, preview, copy, download and failure recovery; also test native WKWebView on macOS. |
+| `pnpm test:ui:contrast` | Check text, controls and status icons across themes, window sizes and font sizes, including overlays, plan approval, dirty-file counts, recording animation and edited fields. Unreadable reference cases verify the detector itself. |
+| `pnpm test:ui:contrast:complex` / `pnpm test:ui:contrast:webkit` | Sample actual pixels behind text on gradients, illustrations and select controls, or verify native macOS WKWebView forms and theme changes. |
 | `pnpm build` | Type-check TypeScript and build the production frontend. |
 | `pnpm test:production-startup` | After building, serve production assets and check startup, script errors, and resource loading in an isolated browser; CI retains screenshots and reports. |
 | `pnpm office:test` | Verify the built-in document generator. |

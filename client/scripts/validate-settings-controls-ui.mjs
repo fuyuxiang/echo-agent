@@ -24,6 +24,7 @@ async function inspect(page, context) {
       primary: token("backgroundColor", "var(--echo-button-primary-bg)"),
       secondary: token("backgroundColor", "var(--echo-button-secondary-bg)"),
       border: token("borderTopColor", "var(--echo-button-secondary-border)"),
+      fieldBorder: token("borderTopColor", "var(--echo-border-control)"),
       foreground: token("color", "var(--echo-button-secondary-fg)"),
       danger: token("color", "var(--echo-button-danger-fg)"),
       selected: token("backgroundColor", "var(--echo-brand-soft)"),
@@ -76,7 +77,7 @@ async function inspect(page, context) {
     if(button.disabled) assert.equal(button.opacity,"0.5",`${label}: disabled state`);
   }
   for (const field of controls.fields) {
-    if(!field.focused && !field.invalid) assert.equal(field.border,controls.palette.border,`${JSON.stringify(context)} ${field.name}: field border`);
+    if(!field.focused && !field.invalid) assert.equal(field.border,controls.palette.fieldBorder,`${JSON.stringify(context)} ${field.name}: field border`);
     assert.equal(field.radius,controls.palette.radius,`${JSON.stringify(context)} ${field.name}: field radius`);
   }
 }

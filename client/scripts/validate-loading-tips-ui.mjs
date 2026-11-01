@@ -95,13 +95,24 @@ try {
     if (width === 1440) {
       await page.locator('.sidebar__conv[data-session-id="review-other"] .sidebar__conv-select').click();
       assert.equal(await tip.count(),0);
-      await page.clock.runFor(30_000);
+      // Return before the existing 30s factual-wait threshold to test the
+      // companion copy's fresh presentation delay independently.
+      await page.clock.runFor(5_000);
       assert.equal(await tip.count(),0,"background tasks must not leak tips into the active transcript");
       await page.locator('.sidebar__conv[data-session-id="review-conversation"] .sidebar__conv-select').click();
       await page.locator(".msg__loading-main").waitFor();
       assert.equal(await tip.count(),0,"restoring a session starts a fresh presentation delay");
-      await page.clock.runFor(3_000);
+      await page.clock.runFor(2_999);
+      assert.equal(await tip.count(),0);
+      await page.clock.runFor(1);
       await tip.waitFor();
+      await page.locator('.sidebar__conv[data-session-id="review-other"] .sidebar__conv-select').click();
+      await page.clock.runFor(30_000);
+      assert.equal(await tip.count(),0,"background tasks must not leak tips into the active transcript");
+      await page.locator('.sidebar__conv[data-session-id="review-conversation"] .sidebar__conv-select').click();
+      await page.locator(".msg__loading-main").waitFor();
+      assert.equal(await tip.textContent(),"尚未收到模型输出，可继续等待，或停止本次执行。",
+        "a restored request beyond 30s must keep its factual waiting status");
     }
     await chunk(kind);
     await page.locator(".msg__loading").waitFor({state:"hidden"});

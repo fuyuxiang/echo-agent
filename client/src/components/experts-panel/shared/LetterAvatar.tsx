@@ -1,3 +1,4 @@
+import { avatarTextColor } from "../../../lib/avatar-color";
 import { useState } from "react";
 
 /** Stable 10-color palette (EchoAgent-style) used for letter fallbacks. */
@@ -48,7 +49,7 @@ export function LetterAvatar({
     height: size,
     borderRadius: radius,
     background: showImg ? "var(--echo-bg-tertiary)" : bg,
-    color: "#fff",
+    color: avatarTextColor(bg),
     fontSize: Math.round(size * 0.42),
     flex: "0 0 auto",
   };

@@ -17,6 +17,20 @@ const evidence = [];
 const baselineSizes = new Map();
 const normalized = text => text.replace(/[\s\u00a0]+/gu, " ").trim();
 const fits = values => Object.values(values).every(value => Number.isFinite(value) && value >= -0.75);
+function paintContrast(foreground, background, opacity = 1) {
+  const rgb = color => {
+    const channels = color.match(/[\d.]+/g)?.map(Number);
+    assert.ok(channels && channels.length >= 3, `Unmeasurable SVG paint: ${color}`);
+    return [...channels.slice(0,3).map(c => color.startsWith("color(srgb ") ? c * 255 : c), channels[3] ?? 1];
+  };
+  const back = rgb(background), front = rgb(foreground), alpha = front[3] * opacity;
+  assert.equal(back[3],1,"SVG backdrop must be composited before measuring contrast");
+  const bg = back.slice(0,3), fg = front.slice(0,3).map((c,i) => c * alpha + bg[i] * (1-alpha));
+  const luminance = color => color.map(c => c / 255).map(c => c <= .04045 ? c / 12.92 : ((c+.055)/1.055)**2.4).reduce((s,c,i) => s+c*[.2126,.7152,.0722][i],0);
+  const levels = [luminance(fg),luminance(bg)].sort((a,b)=>b-a);
+  return (levels[0]+.05)/(levels[1]+.05);
+}
+assert.ok(Math.abs(paintContrast("rgba(0,0,0,.5)","rgb(255,255,255)") - 3.97665) < .001);
 function validateBounds(result, key) {
   const [, , width, height] = result.viewBox;
   assert.ok(result.viewBox.length === 4 && result.viewBox.every(Number.isFinite) && width > 0 && height > 0, `${key}: invalid viewBox`);
@@ -32,6 +46,7 @@ function validateBounds(result, key) {
     assert.ok(node.curvedOverflow === null || node.curvedOverflow <= 0.75, `${key}: text extends outside curved shape ${JSON.stringify(node)}`);
   }
   for (const edge of result.edgeDetails) {
+    assert.ok(paintContrast(edge.stroke,result.surface,edge.strokeOpacity) >= 3, `${key}: tree connection contrast below 3:1 (${edge.stroke})`);
     assert.ok(Number.isFinite(edge.length) && edge.length > 0, `${key}: invalid edge ${JSON.stringify(edge)}`);
     assert.ok(fits(edge.viewportSlack), `${key}: edge extends outside viewBox ${JSON.stringify(edge)}`);
   }
@@ -47,6 +62,7 @@ function validateMindmap(result, expected, key) {
       `${key}: edge no longer touches its node outlines ${JSON.stringify(edge)}`);
   }
   for (const node of result.nodes) {
+    for (const color of node.textColors) assert.ok(paintContrast(color,node.fill) >= 4.5, `${key}: diagram label contrast below 4.5:1 (${color} on ${node.fill})`);
     assert.equal(node.html, true, `${key}: mindmap labels lost wrapping`);
     assert.equal(node.whiteSpace, "pre-wrap", `${key}: standalone SVG lost wrapping CSS`);
     assert.equal(node.overflowWrap, "anywhere", `${key}: identifier cannot wrap`);

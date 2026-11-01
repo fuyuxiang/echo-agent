@@ -76,7 +76,7 @@ function createMindmapTheme(theme: "light" | "dark") {
     : ["#d9edff", "#e4efff", "#e2f4eb", "#ede7fb", "#fff2d8", "#fbe5ef", "#dff3f5", "#ffebdc", "#e8ecfa"];
   const accents = dark
     ? ["#78b1f0", "#6fc79a", "#af98eb", "#dec180", "#e79fbf", "#7bc4cc", "#e8b589", "#96aae5"]
-    : ["#75a1d9", "#72b795", "#a08bd0", "#d6b66e", "#d996b5", "#70b4bd", "#d9a078", "#8d9fce"];
+    : ["#426fa6", "#397d5b", "#795cab", "#967134", "#a3567e", "#357d87", "#9b673f", "#5f74b2"];
   const themeVariables: Record<string, string | boolean> = {
     darkMode: dark, fontSize: "16px", textColor: text, primaryTextColor: text,
     git0: colors[0], gitBranchLabel0: text,

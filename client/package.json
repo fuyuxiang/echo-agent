@@ -60,7 +60,10 @@
     "ide:verify-git": "node scripts/validate-theia-git-runtime.mjs",
     "ide:lock": "node scripts/update-theia-runtime-lock.mjs",
     "test:security": "node --test scripts/test-theia-archive-security.mjs scripts/test-dependency-patches.mjs scripts/test-theia-scanoss.mjs",
-    "security:audit": "python3 scripts/audit-dependencies.py"
+    "security:audit": "python3 scripts/audit-dependencies.py",
+    "test:ui:contrast": "node scripts/validate-color-contrast-ui.mjs --full --open-overlays --plan-review --profile-review",
+    "test:ui:contrast:complex": "node scripts/validate-complex-color-ui.mjs",
+    "test:ui:contrast:webkit": "node scripts/validate-color-webkit.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

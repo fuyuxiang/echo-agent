@@ -1324,8 +1324,8 @@ button,
 }
 
 .automation-control > .automation-control__end:hover:not(:disabled) {
-  border-color: color-mix(in srgb, #dc4545 45%, var(--ui-line));
-  color: #c53b3b;
+  border-color: color-mix(in srgb, var(--echo-status-error) 45%, var(--ui-line));
+  color: var(--echo-status-error);
 }
 
 .automation-control__private {
@@ -1337,7 +1337,7 @@ button,
 }
 
 .automation-control__private input {
-  accent-color: var(--echo-control-selected-bg);
+  accent-color: var(--echo-control-accent);
 }
 
 .automation-control__more {
@@ -1408,8 +1408,8 @@ button,
 }
 
 .automation-control__more-menu > button:hover:not(:disabled) {
-  border-color: color-mix(in srgb, #dc4545 45%, var(--ui-line));
-  color: #c53b3b;
+  border-color: color-mix(in srgb, var(--echo-status-error) 45%, var(--ui-line));
+  color: var(--echo-status-error);
 }
 
 /* Narrow chat columns can wrap the footer. Keep the setup message in flow
@@ -1461,7 +1461,6 @@ button,
 
 .msg--assistant .msg__avatar {
   overflow: hidden;
-  background: transparent;
   box-shadow: none;
 }
 
@@ -1472,6 +1471,7 @@ button,
 }
 
 .msg--assistant .msg__avatar--echo {
+  background: transparent;
   overflow: visible;
   border-radius: 0;
 }
@@ -1644,7 +1644,7 @@ button,
 .atm-segmented,
 .atm-toolbar-btn,
 .atm-search-input {
-  border: 1px solid var(--ui-line);
+  border: 1px solid var(--echo-border-control);
   background: color-mix(in srgb, var(--ui-surface) 74%, transparent);
 }
 
@@ -3596,10 +3596,10 @@ button,
 
 .archived-settings__error {
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, #e5484d 35%, transparent);
+  border: 1px solid color-mix(in srgb, var(--echo-status-error) 35%, transparent);
   border-radius: 9px;
-  background: color-mix(in srgb, #e5484d 8%, transparent);
-  color: #c83338;
+  background: var(--echo-status-error-soft);
+  color: var(--echo-status-error);
   font-size: 0.75rem;
 }
 
@@ -3652,7 +3652,7 @@ button,
   width: 17px;
   height: 17px;
   margin: 0;
-  accent-color: var(--echo-control-selected-bg);
+  accent-color: var(--echo-control-accent);
   cursor: pointer;
 }
 
@@ -4121,10 +4121,6 @@ a.help-card:hover {
   border-left-width: 3px;
   border-radius: 9px;
   background: var(--ui-surface-muted);
-}
-
-.notification-row--read {
-  opacity: 0.72;
 }
 
 .notification-row__title {

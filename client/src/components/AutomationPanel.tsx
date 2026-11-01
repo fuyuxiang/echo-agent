@@ -182,7 +182,7 @@ function RecordStatusIcon({ item }: { item: AutomationRunRecord }) {
         className="atm-status-icon-spinning"
         style={{ display: "inline-flex" }}
       >
-        <RunningStatusIcon size={16} color="#00C29A" />
+        <RunningStatusIcon size={16} color="var(--echo-status-info)" />
       </span>
     );
   }

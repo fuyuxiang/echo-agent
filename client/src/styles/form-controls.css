@@ -95,6 +95,16 @@
     .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save, .coding-primary-btn):active:not(:disabled):not([aria-disabled="true"]) {
   background: var(--button-active);
 }
+/* A deeper danger tint needs its paired foreground, especially over secondary
+ * surfaces. Solid confirmations keep their existing white-on-red pairing. */
+:is(.echo-button--danger, .btn--danger, .form-button--danger, .settings-btn--danger,
+    .atm-btn--danger, .meeting-danger, .colleague-profile-btn--danger):not(.echo-button--danger-solid):hover:not(:disabled):not([aria-disabled="true"]) {
+  color: var(--echo-button-danger-fg-hover);
+}
+:is(.echo-button--danger, .btn--danger, .form-button--danger, .settings-btn--danger,
+    .atm-btn--danger, .meeting-danger, .colleague-profile-btn--danger):not(.echo-button--danger-solid):active:not(:disabled):not([aria-disabled="true"]) {
+  color: var(--echo-button-danger-fg-active);
+}
 :is(.echo-button, .btn, .form-button, .capability-button, .settings-btn, .atm-btn,
     .app-dialog__button, .atm-create-btn, .atm-detail-btn, .meeting-primary,
     .meeting-secondary, .meeting-danger,
@@ -128,7 +138,7 @@
   min-width: 0;
   min-height: var(--echo-size-control-md);
   padding: 6px 11px;
-  border: 1px solid var(--echo-button-secondary-border);
+  border: 1px solid var(--echo-border-control);
   border-radius: var(--echo-radius-control);
   background-color: var(--echo-bg-input);
   color: var(--echo-text-strong);
@@ -140,7 +150,11 @@
     .app-dialog__field textarea, .group-form input:not([type="checkbox"]),
     .group-form textarea, .group-form select, .meeting-panel__create input,
     .meeting-panel__create select)):focus { border-color: var(--echo-focus-ring); }
-:is(.form-control, .settings-input)::placeholder { color: var(--echo-text-weak); }
+/* Native WebView placeholder defaults differ across platforms and themes. */
+:where(input, textarea):not(:where(.monaco-editor *, .xterm *))::placeholder {
+  color: var(--echo-text-weak);
+  opacity: 1;
+}
 :is(.form-control, .settings-input):disabled { opacity: .55; cursor: not-allowed; }
 :is(.form-control, .settings-input)[readonly] { background-color: var(--echo-bg-secondary); }
 :is(.form-control, .settings-input)[aria-invalid="true"] { border-color: var(--echo-status-error); }

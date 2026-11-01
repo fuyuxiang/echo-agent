@@ -4,6 +4,7 @@ import { FeedbackDialog } from "../../src/components/FeedbackDialog";
 import { UpdateDialog } from "../../src/components/UpdateDialog";
 import { useUpdateStore } from "../../src/stores/update-store";
 import { DesignSystemReview } from "./design-system-review";
+import { ColorSystemReview } from "./color-system-review";
 import { ToastReview } from "./toast-review";
 import { ContentMenusReview } from "./content-menus-review";
 import { SearchOverlay } from "../../src/components/SearchOverlay";
@@ -200,6 +201,9 @@ if (["conversation", "conversation-layout", "workbench", "queue"].includes(query
     { sessionId: "review-writing", title: "部署 writing-dna skill 与验证", cwd: "", status: "completed", updatedAt: new Date(Date.now() - 72 * 3600000).toISOString() },
   ], tasksOpen: true, loading: false, currentSessionId: "review-conversation" });
   if (query.has("planReview")) {
+    if (query.has("pausedQueueReview")) useMessageQueueStore.setState({ queues: { "review-conversation": [{
+      id: "paused-plan-review", text: "检查计划后恢复这条交付消息", status: "paused", createdAt: Date.now(),
+    }] } });
     const plan = { entries: [{ content: "检查当前实现与交付结果", priority: "high" as const, status: "pending" as const }] };
     chat.setPlan(plan);
     chat.requestPlanApproval({ requestId: "review-plan", sessionId: "review-conversation", toolCallId: "review-plan-tool" });
@@ -727,6 +731,7 @@ function Fixture() {
   if (surface === "feedback") return <FeedbackDialog open sessionId="review" messageId="review" rating="up" onClose={() => {}} />;
   if (surface === "update") return <UpdateDialog open onClose={() => {}} />;
   if (surface === "controls") return <DesignSystemReview />;
+  if (surface === "color-system") return <ColorSystemReview />;
   if (surface === "search") return <SearchOverlay open onClose={() => {}} onSelect={() => {}} />;
   if (surface === "automation-flow") return <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
     <div style={{ padding: 8 }}><button type="button" onClick={() => setAutomationNotificationSequence(sequence => sequence + 1)}>模拟任务通知</button></div>

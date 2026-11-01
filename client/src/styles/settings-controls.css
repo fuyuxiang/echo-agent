@@ -47,7 +47,7 @@
   color: var(--echo-text-weak);
 }
 .settings-modal :is(input[type="checkbox"], input[type="radio"]) {
-  accent-color: var(--echo-control-selected-bg);
+  accent-color: var(--echo-control-accent);
 }
 .settings-modal input[type="range"] { accent-color: var(--echo-brand); }
 .settings-modal .sk-toggle input:checked + .sk-toggle-track { background: var(--echo-control-selected-bg); }

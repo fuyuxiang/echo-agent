@@ -29,6 +29,12 @@ try {
       }, font);
       await page.goto(`${origin}/__ui-review?surface=notify-channels&theme=${theme}`, { waitUntil: "networkidle" });
       const desktop = page.getByRole("switch", { name: "桌面通知", exact: true });
+      // IPC state resolves after the control first mounts. Assert the loaded
+      // preference, not the temporary disabled/unchecked loading state.
+      await page.waitForFunction(() => {
+        const input = document.querySelector('input[role="switch"][aria-label="桌面通知"]');
+        return input && !input.disabled;
+      });
       assert(await desktop.isChecked());
       assert.equal(await page.getByRole("textbox").count(), 0, "Webhook form should not dominate the initial settings view");
       const privacy = page.getByRole("switch", { name: "在通知中显示任务标题" });

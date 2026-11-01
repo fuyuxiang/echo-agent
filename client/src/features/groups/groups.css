@@ -189,7 +189,7 @@
 }
 
 .group-form input:not([type=checkbox]),.group-form textarea,.group-form select {
-  border:1px solid var(--echo-border-default);
+  border:1px solid var(--echo-border-control);
   background:var(--echo-bg-secondary);
   border-radius:8px;
   padding:10px 12px;
@@ -820,7 +820,7 @@
   max-width:100%;
   background:var(--echo-bg-secondary);
   color:var(--echo-text-primary);
-  border:1px solid var(--echo-border-default);
+  border:1px solid var(--echo-border-control);
   border-radius:6px;
   padding:6px;
   font:inherit;

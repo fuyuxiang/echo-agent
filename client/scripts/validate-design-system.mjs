@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
 import { inspectButtonBackgrounds, assertButtonBackgrounds } from "./ui-button-audit.mjs";
 import { assertSettingsActionsSeparated } from "./ui-settings-audit.mjs";
+import { inspectRenderedColors } from "./ui-color-audit.mjs";
 
 // Read the working tree, never HEAD: this is post-change acceptance evidence.
 assert.notEqual(process.env.UI_REVIEW_BASELINE, "1", "Post-change validation must use the working tree");
@@ -19,7 +20,7 @@ const scenarios = [
   [1920, 1080, "light", 18], [1920, 1080, "dark", 11],
 ];
 const surfaces = process.argv.includes("--controls-only") ? ["page:技能", "page:连接器", "page:插件", "page:项目"] : [
-  "home", "home:unconfigured", "home:loading", "home:error", "conversation", "search", "browser-toolbar",
+  "home", "home:unconfigured", "home:loading", "home:error", "conversation", "search", "browser-toolbar", "color-system",
   "capabilities", "page:技能", "page:连接器", "page:插件", "page:项目", "collapsed-project",
   "page:自动化", "automation-edit", "page:知识库", "organization", "organization-login", "meeting", "coding",
   "model", "general", "personalize", "memory", "personal-memory", "agent-settings", "shortcuts",
@@ -77,6 +78,9 @@ async function checkPlans(page, base, scenario) {
   }
 }
 async function inspect(page, spec, scenario, capture = false) {
+  const colors = await page.evaluate(inspectRenderedColors);
+  assert.deepEqual(colors.failures, [], `${spec} ${scenario}: text contrast below WCAG AA`);
+  assert.deepEqual(colors.controlFailures, [], `${spec} ${scenario}: control/focus contrast below 3:1`);
   const buttonAudit = await inspectButtonBackgrounds(page, scenario[2]);
   assertButtonBackgrounds(buttonAudit, `${spec} ${scenario}`);
   const geometry = await page.evaluate(() => {
@@ -89,7 +93,7 @@ async function inspect(page, spec, scenario, capture = false) {
   assert.ok(!geometry.overflow, `${spec} ${scenario}: document overflows horizontally`);
   for(const box of geometry.dialogs) assert.ok(box.x >= -1 && box.y >= -1 && box.right <= scenario[0]+1 && box.bottom <= scenario[1]+1, `${spec}: modal outside viewport`);
   if(capture) await page.screenshot({ path:join(output, `${spec.replaceAll(":","-")}-${scenario.join("-")}.png`) });
-  evidence.push({ spec, scenario, ...geometry, buttons:buttonAudit.buttons });
+  evidence.push({ spec, scenario, ...geometry, buttons:buttonAudit.buttons, colors });
 }
 try {
   browser = await (await reviewChromium()).launch({ headless:true, executablePath:process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
@@ -142,6 +146,7 @@ try {
         await container.evaluate(e => e.style.removeProperty("width"));
       }
       if(surface==="automation-edit") {
+        await page.getByRole("button", { name: "高级设置", exact: true }).click();
         const toggles=await page.locator(".echo-switch--checked").evaluateAll(elements=>elements.map(e=>({track:getComputedStyle(e).backgroundColor,thumb:getComputedStyle(e.querySelector(".echo-switch-thumb")).backgroundColor})));
         assert.ok(toggles.length>0 && toggles.every(toggle=>toggle.track!==toggle.thumb),"Checked switch thumb disappears into its track");
       }

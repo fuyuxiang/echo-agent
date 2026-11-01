@@ -979,8 +979,8 @@
   min-width: 15px;
   padding: 0 4px;
   border-radius: 8px;
-  background: var(--echo-status-warning, #d97706);
-  color: white;
+  background: var(--echo-status-warning-solid);
+  color: var(--echo-status-on-solid);
   font-size: 0.5625rem;
   font-weight: 650;
   line-height: 15px;
@@ -1292,8 +1292,8 @@
 }
 
 .coding-doc__note.is-warning {
-  border: 1px solid color-mix(in srgb, #d97706 28%, var(--echo-border-default));
-  background: color-mix(in srgb, #d97706 7%, var(--echo-bg-tertiary));
+  border: 1px solid color-mix(in srgb, var(--echo-status-warning) 28%, var(--echo-border-default));
+  background: color-mix(in srgb, var(--echo-status-warning) 7%, var(--echo-bg-tertiary));
 }
 
 .coding-doc__note.is-warning p {
@@ -1466,7 +1466,7 @@
   flex: 1 1 220px;
   min-width: 0;
   padding: 5px 7px;
-  border: 1px solid var(--echo-border-default);
+  border: 1px solid var(--echo-border-control);
   border-radius: 5px;
   background: var(--echo-bg-primary);
   color: var(--echo-text-strong);
@@ -2333,8 +2333,8 @@
 }
 
 .coding-agent__blocker.is-warning {
-  border-color: color-mix(in srgb, #d97706 28%, var(--echo-border-default));
-  background: color-mix(in srgb, #d97706 7%, var(--echo-bg-tertiary));
+  border-color: color-mix(in srgb, var(--echo-status-warning) 28%, var(--echo-border-default));
+  background: color-mix(in srgb, var(--echo-status-warning) 7%, var(--echo-bg-tertiary));
 }
 
 .coding-agent__decision {
@@ -2415,8 +2415,8 @@
 }
 
 .coding-agent__decision.is-interrupted {
-  border-color: color-mix(in srgb, #d97706 28%, var(--echo-border-default));
-  background: color-mix(in srgb, #d97706 6%, var(--echo-bg-tertiary));
+  border-color: color-mix(in srgb, var(--echo-status-warning) 28%, var(--echo-border-default));
+  background: color-mix(in srgb, var(--echo-status-warning) 6%, var(--echo-bg-tertiary));
 }
 
 .coding-agent__interaction {
@@ -3151,7 +3151,7 @@
   width: 14px;
   height: 14px;
   margin: 0 3px 0 8px;
-  accent-color: var(--echo-control-selected-bg);
+  accent-color: var(--echo-control-accent);
   cursor: pointer;
 }
 
@@ -3346,7 +3346,7 @@
   font-size: 0.6875rem;
   background: var(--echo-bg-input, #ffffff);
   color: var(--echo-text-default);
-  border: 1px solid var(--echo-border-default);
+  border: 1px solid var(--echo-border-control);
   border-radius: 4px;
 }
 
@@ -3412,7 +3412,7 @@
   padding: 6px 8px;
   color: var(--echo-text-strong);
   background: var(--echo-bg-primary);
-  border: 1px solid var(--echo-border-default);
+  border: 1px solid var(--echo-border-control);
   border-radius: 4px;
   font: inherit;
 }
@@ -3422,12 +3422,12 @@
 .coding-workspace-detail>.coding-explorer-view,.coding-workspace-detail>.coding-panel{overflow:visible;flex-shrink:0}
 .coding-context-preview{padding:16px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono,monospace)}
 .coding-editable-plan{padding:10px;border-top:1px solid var(--echo-border-default);max-height:40%;overflow:auto;flex-shrink:0}
-.coding-editable-plan textarea{width:100%;box-sizing:border-box;resize:vertical;background:var(--echo-bg-primary);color:inherit;border:1px solid var(--echo-border-default);padding:8px;font:inherit;line-height:1.5}
+.coding-editable-plan textarea{width:100%;box-sizing:border-box;resize:vertical;background:var(--echo-bg-primary);color:inherit;border:1px solid var(--echo-border-control);padding:8px;font:inherit;line-height:1.5}
 .coding-editable-plan>div{display:flex;gap:8px;padding-top:6px}
 .coding-check-config,.coding-run-history{padding:12px;flex-shrink:0;font-size:.75rem;overflow-wrap:anywhere}
 .coding-check-config fieldset{min-width:0;border:1px solid var(--echo-border-default);border-radius:6px;margin:10px 0;padding:10px;display:grid;gap:8px}
 .coding-check-config label{display:grid;gap:4px}
-.coding-check-config input,.coding-check-config textarea,.coding-check-config select{width:100%;min-width:0;max-width:100%;box-sizing:border-box;background:var(--echo-bg-primary);color:inherit;border:1px solid var(--echo-border-default);border-radius:4px;padding:6px 8px;font:inherit}
+.coding-check-config input,.coding-check-config textarea,.coding-check-config select{width:100%;min-width:0;max-width:100%;box-sizing:border-box;background:var(--echo-bg-primary);color:inherit;border:1px solid var(--echo-border-control);border-radius:4px;padding:6px 8px;font:inherit}
 .coding-check-config input[type=checkbox]{width:auto;justify-self:start}
 .coding-check-config p,.coding-run-history p{opacity:.8;line-height:1.6}
 .coding-image-context{display:flex;gap:6px;overflow:auto;padding:4px 0}

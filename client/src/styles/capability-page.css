@@ -36,7 +36,7 @@
 .capability-page__content { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .capability-search__clear:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 2px; }
 .capability-search { position: relative; flex: 0 1 240px; width: 240px; min-width: 140px; }
-.capability-search input { display: block; width: 100%; min-width: 0; height: var(--capability-control-height); border: 1px solid var(--echo-border-default); border-radius: 8px; padding: 6px 36px; background: var(--echo-bg-primary); color: var(--echo-text-strong); font: inherit; font-size: .8125rem; box-sizing: border-box; appearance: none; }
+.capability-search input { display: block; width: 100%; min-width: 0; height: var(--capability-control-height); border: 1px solid var(--echo-border-control); border-radius: 8px; padding: 6px 36px; background: var(--echo-bg-primary); color: var(--echo-text-strong); font: inherit; font-size: .8125rem; box-sizing: border-box; appearance: none; }
 .capability-search input::-webkit-search-cancel-button { display: none; }
 .capability-search input:focus { outline: 2px solid color-mix(in srgb, var(--echo-brand) 24%, transparent); outline-offset: 1px; border-color: var(--echo-brand); }
 .capability-search input::placeholder { color: var(--echo-text-weak); }

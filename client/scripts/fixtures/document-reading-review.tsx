@@ -19,7 +19,7 @@ function Review() {
   const [opened, setOpened] = useState("");
   return <main style={{ maxWidth: 900, margin: "48px auto", padding: 20, color: "var(--echo-text-strong)" }}>
     <p>正在逐位分析选手代码，已完成的阶段记录会保留。</p>
-    <ExecutionProcess parts={[{ kind: "tool_call", toolCall: call }]} active onOpenTool={() => setDetail(!detail)} />
+    <ExecutionProcess parts={[{ kind: "tool_call", toolCall: call }]} active autoExpand onOpenTool={() => setDetail(!detail)} />
     {detail && <ToolCallDetailBody tc={call} onOpenPath={setOpened} />}
     {opened && <p role="note">阶段记录已打开：{opened}</p>}
   </main>;

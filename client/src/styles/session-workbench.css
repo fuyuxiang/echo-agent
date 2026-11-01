@@ -177,7 +177,7 @@
 .file-preview__bar .file-preview__path { flex: 1 1 100%; }
 
 /* Paused/stopped feedback is part of the turn for every tool mode. */
-.chatview .session-turn-feedback { margin:12px 0 0; padding:6px 0; border:0; border-radius:0; background:transparent; color:var(--text-secondary); font-size:.8125rem; flex-wrap:wrap; }
+.chatview .session-turn-feedback { margin:12px 0 0; padding:6px 0; border:0; border-radius:0; background:transparent; color:var(--echo-text-medium); font-size:.8125rem; flex-wrap:wrap; }
 .chatview .session-turn-feedback > span { min-width:0; overflow-wrap:anywhere; }
 .chatview .session-turn-feedback .btn { flex-shrink:0; min-height:32px; }
 .browser-task-settings { min-width:0; }
