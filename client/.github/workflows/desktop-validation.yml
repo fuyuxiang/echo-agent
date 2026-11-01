@@ -117,6 +117,8 @@ jobs:
       - run: node scripts/validate-theia-runtime.mjs
       - run: pnpm test:rust
         env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
           ECHO_VALIDATE_LONG_PATHS: ${{ runner.os == 'Windows' && '1' || '0' }}
       - name: Start packaged macOS WebView, IDE and native IPC
         if: runner.os == 'macOS'
