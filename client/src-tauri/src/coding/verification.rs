@@ -1310,9 +1310,8 @@ mod tests {
     #[cfg(unix)]
     async fn exercise_native_runner(root: PathBuf, kind: &str) {
         std::fs::create_dir(&root).unwrap();
-        std::fs::write(
-            root.join("verification-fixture.sh"),
-            r#"child=''
+        let cancelled = kind.starts_with("cancel");
+        let fixture = r#"child=''
 trap 'kill "$child" 2>/dev/null; wait "$child"; exit 0' TERM
 sleep 30 &
 child=$!
@@ -1324,9 +1323,18 @@ wait "$child"
 printf 'LATE STDOUT\n'
 printf 'LATE STDERR\n' >&2
 printf late > late-write
-"#,
-        )
-        .unwrap();
+"#;
+        let fixture = if kind == "cancel-force" {
+            // Both the shell and its descendant ignore TERM, so cleanup must
+            // exercise the supervisor's bounded escalation to SIGKILL.
+            fixture.replace(
+                "trap 'kill \"$child\" 2>/dev/null; wait \"$child\"; exit 0' TERM",
+                "trap '' TERM",
+            )
+        } else {
+            fixture.to_string()
+        };
+        std::fs::write(root.join("verification-fixture.sh"), fixture).unwrap();
         let coding_task =
             task::create_task(&root, "subprocess", "synthetic local verification").unwrap();
         crate::coding::changeset::capture_filesystem_baseline(&root, &coding_task.id).unwrap();
@@ -1424,20 +1432,33 @@ printf late > late-write
         assert!(processes
             .register(&run_id, CancellationToken::new())
             .is_err());
-        if kind == "cancel" {
+        let stopping = Instant::now();
+        if cancelled {
             processes.cancel(&run_id).unwrap();
         }
         let record = execution.await.unwrap().unwrap();
         assert_eq!(
             record.status,
-            if kind == "cancel" {
+            if cancelled {
                 VerificationStatus::Cancelled
             } else {
                 VerificationStatus::TimedOut
             }
         );
-        // The graceful fixture exits zero: cancellation/timeout still cannot become Passed.
-        assert_eq!(record.exit_code, Some(0));
+        // A loaded host can exhaust the TERM grace period even for the graceful
+        // fixture. Both a zero exit and a signal exit are valid cleanup results;
+        // neither may turn cancellation/timeout into Passed.
+        if kind == "cancel-force" {
+            assert_eq!(record.exit_code, None);
+        } else {
+            assert!(matches!(record.exit_code, None | Some(0)), "{record:?}");
+        }
+        if cancelled && record.exit_code.is_none() {
+            assert!(
+                stopping.elapsed() >= std::time::Duration::from_millis(500),
+                "signal termination must allow the supervisor's TERM grace period"
+            );
+        }
         if kind == "timeout" {
             assert!(record.duration_ms >= 1_000);
         }
@@ -1470,7 +1491,7 @@ printf late > late-write
         assert_eq!(records[0].status, record.status);
         assert!(record.content_revision.is_some());
 
-        if kind == "cancel" {
+        if cancelled {
             assert!(run_with_events(
                 events.clone(),
                 &processes,
@@ -1534,6 +1555,15 @@ printf late > late-write
         isolated_runner_case(
             "cancel",
             "coding::verification::tests::native_subprocess_cancel_reaps_tree_and_same_id_retry_requires_new_approval",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_subprocess_forced_cancel_reaps_tree_and_retry_requires_new_approval() {
+        isolated_runner_case(
+            "cancel-force",
+            "coding::verification::tests::native_subprocess_forced_cancel_reaps_tree_and_retry_requires_new_approval",
         );
     }
 
@@ -1805,31 +1835,35 @@ printf late > late-write
 
     #[test]
     fn timeout_and_cancel_are_distinct_from_failure() {
-        let timed_out = record_from_parts(
-            "task-1",
-            VerificationKind::Test,
-            "pnpm test",
-            None,
-            String::new(),
-            String::new(),
-            300_000,
-            true,
-            false,
-        );
-        assert_eq!(timed_out.status, VerificationStatus::TimedOut);
+        for exit_code in [None, Some(0), Some(1), Some(127)] {
+            let timed_out = record_from_parts(
+                "task-1",
+                VerificationKind::Test,
+                "pnpm test",
+                exit_code,
+                String::new(),
+                String::new(),
+                300_000,
+                true,
+                false,
+            );
+            assert_eq!(timed_out.status, VerificationStatus::TimedOut);
+            assert_eq!(timed_out.exit_code, exit_code);
 
-        let cancelled = record_from_parts(
-            "task-1",
-            VerificationKind::Test,
-            "pnpm test",
-            None,
-            String::new(),
-            String::new(),
-            500,
-            false,
-            true,
-        );
-        assert_eq!(cancelled.status, VerificationStatus::Cancelled);
+            let cancelled = record_from_parts(
+                "task-1",
+                VerificationKind::Test,
+                "pnpm test",
+                exit_code,
+                String::new(),
+                String::new(),
+                500,
+                false,
+                true,
+            );
+            assert_eq!(cancelled.status, VerificationStatus::Cancelled);
+            assert_eq!(cancelled.exit_code, exit_code);
+        }
     }
 
     #[test]
