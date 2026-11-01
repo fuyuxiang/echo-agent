@@ -36,7 +36,8 @@ export class ProcessUtils {
     }
 
     protected winTerminateProcessTree(ppid: number): void {
-        const result = cp.spawnSync('taskkill.exe', ['/f', '/t', '/pid', ppid.toString(10)], { encoding: 'utf8' });
+        // The desktop backend has no console. Cleanup must stay windowless too.
+        const result = cp.spawnSync('taskkill.exe', ['/f', '/t', '/pid', ppid.toString(10)], { encoding: 'utf8', windowsHide: true });
         if (result.error) {
             throw result.error;
         }

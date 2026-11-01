@@ -42,12 +42,15 @@ export function patchTheiaWindowlessHelpers(sourceRoot) {
 
 export function isTheiaWindowlessRuntime(runtimeRoot) {
   try {
-    return runtimeHelpers.every(relative => {
-      const source = readFileSync(join(runtimeRoot, relative), "utf8");
-      return count(source, "windowsHide: process.platform === 'win32'") === 1
-        && count(source, "detached: process.platform === 'win32'") === 1
-        && count(source, "cp.fork(") === 1;
-    });
+    const cleanup = readFileSync(join(runtimeRoot, "packages/core/lib/node/process-utils.js"), "utf8");
+    return count(cleanup, "cp.spawnSync('taskkill.exe'") === 1
+      && count(cleanup, "cp.spawnSync('taskkill.exe', ['/f', '/t', '/pid', ppid.toString(10)], { encoding: 'utf8', windowsHide: true })") === 1
+      && runtimeHelpers.every(relative => {
+        const source = readFileSync(join(runtimeRoot, relative), "utf8");
+        return count(source, "windowsHide: process.platform === 'win32'") === 1
+          && count(source, "detached: process.platform === 'win32'") === 1
+          && count(source, "cp.fork(") === 1;
+      });
   } catch {
     return false;
   }

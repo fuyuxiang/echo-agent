@@ -306,12 +306,14 @@ mod console_windows {
         },
     };
 
-    fn app_process_tree() -> HashSet<u32> {
+    type ProcessMap = HashMap<u32, (u32, String)>;
+
+    fn app_process_tree() -> (HashSet<u32>, ProcessMap) {
         let root = std::process::id();
         let mut owned = HashSet::from([root]);
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
-            return owned;
+            return (owned, HashMap::new());
         }
         let mut parents = HashMap::new();
         let mut entry = PROCESSENTRY32W {
@@ -320,19 +322,30 @@ mod console_windows {
         };
         let mut found = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
         while found {
-            parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+            let length = entry
+                .szExeFile
+                .iter()
+                .position(|&value| value == 0)
+                .unwrap_or(entry.szExeFile.len());
+            parents.insert(
+                entry.th32ProcessID,
+                (
+                    entry.th32ParentProcessID,
+                    String::from_utf16_lossy(&entry.szExeFile[..length]),
+                ),
+            );
             found = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
         }
         unsafe { CloseHandle(snapshot) };
         loop {
             let before = owned.len();
-            for (&pid, &parent) in &parents {
-                if owned.contains(&parent) {
+            for (&pid, (parent, _)) in &parents {
+                if owned.contains(parent) {
                     owned.insert(pid);
                 }
             }
             if owned.len() == before {
-                return owned;
+                return (owned, parents);
             }
         }
     }
@@ -366,6 +379,7 @@ mod console_windows {
     pub(super) struct Watch {
         stop: Arc<AtomicBool>,
         observed: Arc<Mutex<HashSet<String>>>,
+        phase: Arc<Mutex<&'static str>>,
         thread: thread::JoinHandle<()>,
     }
 
@@ -374,8 +388,10 @@ mod console_windows {
             let baseline: HashSet<_> = visible().into_keys().collect();
             let stop = Arc::new(AtomicBool::new(false));
             let observed = Arc::new(Mutex::new(HashSet::new()));
+            let phase = Arc::new(Mutex::new("cli"));
             let stop_in_thread = stop.clone();
             let observed_in_thread = observed.clone();
+            let phase_in_thread = phase.clone();
             let thread = thread::spawn(move || {
                 let mut inspected = baseline;
                 while !stop_in_thread.load(Ordering::Relaxed) {
@@ -384,13 +400,32 @@ mod console_windows {
                         .filter(|((handle, pid), _)| inspected.insert((*handle, *pid)))
                         .collect();
                     if !new_windows.is_empty() {
-                        let owned = app_process_tree();
+                        let (owned, processes) = app_process_tree();
                         for ((handle, pid), class) in new_windows {
                             if !owned.contains(&pid) {
                                 continue;
                             }
                             if let Ok(mut seen) = observed_in_thread.lock() {
-                                seen.insert(format!("{class} PID={pid} HWND={handle}"));
+                                let mut chain = Vec::new();
+                                let mut current = pid;
+                                for _ in 0..16 {
+                                    let Some((parent, executable)) = processes.get(&current) else {
+                                        break;
+                                    };
+                                    chain.push(format!("{executable}[{current}]"));
+                                    if current == std::process::id() || *parent == current {
+                                        break;
+                                    }
+                                    current = *parent;
+                                }
+                                let phase = phase_in_thread
+                                    .lock()
+                                    .map(|phase| *phase)
+                                    .unwrap_or("unknown");
+                                seen.insert(format!(
+                                    "{class} PID={pid} HWND={handle} phase={phase} processTree={}",
+                                    chain.join(" <- ")
+                                ));
                             }
                         }
                     }
@@ -400,7 +435,14 @@ mod console_windows {
             Self {
                 stop,
                 observed,
+                phase,
                 thread,
+            }
+        }
+
+        pub(super) fn set_phase(&self, value: &'static str) {
+            if let Ok(mut phase) = self.phase.lock() {
+                *phase = value;
             }
         }
 
@@ -601,6 +643,8 @@ pub async fn desktop_validation_ready(
     // executable permissions on macOS.
     #[cfg(any(windows, target_os = "macos"))]
     let ide_error = async {
+        #[cfg(windows)]
+        console_watch.set_phase("ide-startup");
         let workspace = crate::paths::echo_agent_home_dir().join("中文项目验证");
         std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
         let access = app.state::<crate::shell_fs::FilesystemAccess>();
@@ -663,6 +707,8 @@ pub async fn desktop_validation_ready(
         } else {
             Ok(())
         };
+        #[cfg(windows)]
+        console_watch.set_phase("ide-shutdown");
         app.state::<crate::theia::TheiaServer>().stop();
         result.map(|_| ()).and(frontend_result)
     }
@@ -672,6 +718,7 @@ pub async fn desktop_validation_ready(
     let ide_error: Option<String> = None;
     #[cfg(windows)]
     let visible_console_windows = {
+        console_watch.set_phase("post-shutdown");
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         console_watch.finish()
     };

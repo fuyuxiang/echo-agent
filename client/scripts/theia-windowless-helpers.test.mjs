@@ -69,6 +69,9 @@ it.each(["\n", "\r\n"])("still rejects altered or duplicated detached options wi
 
 it("rejects a staged runtime missing either worker's windowless option", () => {
   const root = fixture();
+  const cleanupPath = join(root, "packages/core/lib/node/process-utils.js");
+  mkdirSync(join(cleanupPath, ".."), { recursive: true });
+  writeFileSync(cleanupPath, "cp.spawnSync('taskkill.exe', ['/f', '/t', '/pid', ppid.toString(10)], { encoding: 'utf8', windowsHide: true });\n");
   for (const file of runtimeFiles) {
     const path = join(root, file);
     mkdirSync(join(path, ".."), { recursive: true });
@@ -76,5 +79,17 @@ it("rejects a staged runtime missing either worker's windowless option", () => {
   }
   expect(isTheiaWindowlessRuntime(root)).toBe(true);
   writeFileSync(join(root, runtimeFiles[1]), "cp.fork('worker', [], { windowsHide: true });\n");
+  expect(isTheiaWindowlessRuntime(root)).toBe(false);
+});
+
+it("rejects a runtime whose cleanup still opens a Windows console", () => {
+  const root = fixture();
+  for (const file of runtimeFiles) {
+    const path = join(root, file);
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, "const options = { windowsHide: process.platform === 'win32', detached: process.platform === 'win32' }; cp.fork('worker', [], options);\n");
+  }
+  const cleanupPath = join(root, "packages/core/lib/node/process-utils.js");
+  writeFileSync(cleanupPath, "cp.spawnSync('taskkill.exe', ['/f', '/t', '/pid', ppid.toString(10)], { encoding: 'utf8' });\n");
   expect(isTheiaWindowlessRuntime(root)).toBe(false);
 });

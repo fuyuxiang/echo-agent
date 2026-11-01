@@ -6,27 +6,24 @@ on:
     tags: ['v*']
     paths: &packaging-paths
       - '.github/workflows/desktop-validation.yml'
+      - '.gitattributes'
       - 'package.json'
-      - 'app-icon.png'
-      - 'public/app-icon.png'
       - 'pnpm-lock.yaml'
-      - 'src-tauri/Cargo.toml'
-      - 'src-tauri/Cargo.lock'
-      - 'src-tauri/tauri.conf.json'
-      - 'src-tauri/src/**'
-      - 'src-tauri/icons/**'
-      - 'scripts/build*'
-      - 'scripts/windows-packaging.ps1'
-      - 'scripts/test-windows-packaging.ps1'
-      - 'scripts/test-rust-desktop.mjs'
-      - 'scripts/lib/native-test-process.mjs'
-      - 'scripts/validate-windows-native-addons.mjs'
-      - 'scripts/stage-theia-runtime.mjs'
-      - 'scripts/theia-runtime-*'
-      - 'scripts/patch-theia-*.mjs'
-      - 'vendor/theia-platform/package.json'
-      - 'vendor/theia-platform/package-lock.json'
-      - 'vendor/theia-platform/security/**'
+      - 'pnpm-workspace.yaml'
+      - 'rust-toolchain.toml'
+      - 'tsconfig*.json'
+      - 'vite.config.*'
+      - 'index.html'
+      - 'app-icon.png'
+      - 'public/**'
+      # Validate every installer input, including platform config, embedded
+      # Runtime/IDE source and scripts included by the native validation code.
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'scripts/**'
+      - 'vendor/**'
+      - 'LICENSE'
+      - 'THIRD_PARTY_NOTICES.md'
   pull_request:
     paths: *packaging-paths
 permissions:
@@ -122,6 +119,8 @@ jobs:
           ECHO_VALIDATE_LONG_PATHS: ${{ runner.os == 'Windows' && '1' || '0' }}
       - name: Start packaged macOS WebView, IDE and native IPC
         if: runner.os == 'macOS'
+        env:
+          ECHO_DESKTOP_VALIDATION_OUTPUT: ${{ runner.temp }}/echo-packaged-desktop-diagnostics
         run: |
           mount_point="$RUNNER_TEMP/echoagent-validation"
           mkdir -p "$mount_point"
@@ -131,6 +130,8 @@ jobs:
           node scripts/validate-packaged-desktop.mjs "$mount_point/EchoAgent.app/Contents/MacOS/echoagent"
       - name: Install and start Windows WebView; check native IPC
         if: runner.os == 'Windows'
+        env:
+          ECHO_DESKTOP_VALIDATION_OUTPUT: ${{ runner.temp }}/echo-packaged-desktop-diagnostics
         shell: pwsh
         run: |
           $version = node scripts/release-version.mjs check
@@ -141,6 +142,13 @@ jobs:
           $result = Start-Process $installer.FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Installer failed: $($result.ExitCode)" }
           node scripts/validate-packaged-desktop.mjs "$installDir/echoagent.exe"
+      - name: Preserve packaged desktop startup diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-startup-diagnostics-${{ matrix.os }}
+          path: ${{ runner.temp }}/echo-packaged-desktop-diagnostics
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-validation-${{ matrix.os }}
