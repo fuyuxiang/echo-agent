@@ -64,8 +64,15 @@ if (fs.existsSync(lockPath)) {
     console.warn('No existing package-lock.json to snapshot; platform-specific entries added by npm may be incomplete.');
 }
 
-console.log('==> npm install --include=optional');
-const install = cp.spawnSync('npm', ['install', '--include=optional'], {
+const updates = process.argv.slice(2);
+if (updates.length && (updates.shift() !== '--update' || !updates.length
+    || updates.some(name => !/^(?:@[a-z0-9][a-z0-9_.-]*\/)?[a-z0-9][a-z0-9_.-]*$/i.test(name)))) {
+    console.error('Usage: node scripts/npm-install-with-platforms.js [--update package ...]');
+    process.exit(1);
+}
+const args = updates.length ? ['update', ...updates, '--include=optional'] : ['install', '--include=optional'];
+console.log(`==> npm ${args.join(' ')}`);
+const install = cp.spawnSync('npm', args, {
     stdio: 'inherit',
     shell: IS_WINDOWS,
 });

@@ -7,12 +7,140 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import tomllib
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
+SEVERITIES = ("info", "low", "moderate", "high", "critical")
+LEGACY_MINIMATCH_INTEGRITIES = {
+    "3.1.5": "sha512-VgjWUsnnT6n+NUk6eZq77zeFdpW2LWDzP6zFGrCbHXiYNul5Dzqk2HHQ5uFH2DNW5Xbp8+jVzaeNt94ssEEl4w==",
+    "5.1.9": "sha512-7o1wEA2RyMP7Iu7GNba9vc0RWWGACJOCZBJX2GJWip0ikV+wcOsgVuY9uE8CPiyQhkGFSlhuSkZPavN7u1c2Fw==",
+}
+
+
+def reviewed_npm_exception(name, version, advisory, integrities):
+    # The database range <11.0.1 also includes the old callable API. These
+    # exact artifacts have no firstPhasePreProcess/secondPhasePreProcess or
+    # optimizationLevel option, so the reported amplification cannot occur.
+    # Keep them for legacy glob/archiver consumers; modern branches are upgraded.
+    expected = LEGACY_MINIMATCH_INTEGRITIES.get(version)
+    if (name == "minimatch" and advisory == "GHSA-g3hv-75wg-m249"
+            and expected and integrities == {expected}):
+        return {
+            "reason": "This legacy release has no globparts preprocessing or optimizationLevel option involved in the advisory.",
+            "source": f"https://registry.npmjs.org/minimatch/-/minimatch-{version}.tgz",
+            "integrity": expected,
+            "regression_test": "scripts/test-dependency-patches.mjs",
+        }
+    return None
+
+
+def npm_lock_path(name):
+    return ROOT / {"frontend": "pnpm-lock.yaml", "theia-source": "vendor/theia-platform/package-lock.json",
+                   "theia-runtime": "scripts/theia-runtime-package-lock.json"}[name]
+
+
+def npm_lock_packages(name, text=None):
+    text = npm_lock_path(name).read_text() if text is None else text
+    if name != "frontend":
+        return json.loads(text)["packages"]
+    # Only the two legacy minimatch identities need reviewing in the pnpm
+    # graph. Read the packages section, never the version-only snapshots.
+    # Unsupported resolution formats provide no exemption (fail closed).
+    text = text.replace("\r\n", "\n").split("\nsnapshots:\n", 1)[0]
+    packages = {}
+    for match in re.finditer(r"^  minimatch@([^\n:]+):\n(.*?)(?=^  \S|\Z)", text, re.M | re.S):
+        version, body = match.groups()
+        integrity = re.search(r"^    resolution: \{integrity: ([^,}\s]+)\}", body, re.M)
+        key = f"minimatch@{version}"
+        if key in packages:
+            raise RuntimeError(f"Duplicate pnpm package identity: {key}")
+        packages[key] = {"name": "minimatch", "version": version,
+                         "integrity": integrity.group(1) if integrity else None}
+    return packages
+
+
+def npm_audit_report(data, packages):
+    counts = data.get("metadata", {}).get("vulnerabilities")
+    if data.get("error") or not isinstance(counts, dict):
+        raise RuntimeError(f"incomplete audit: {data.get('error', 'missing vulnerability counts')}")
+    if not all(type(counts.get(severity)) is int and counts[severity] >= 0 for severity in SEVERITIES):
+        raise RuntimeError("incomplete vulnerability counts")
+    if sum(key in data for key in ("advisories", "vulnerabilities")) != 1:
+        raise RuntimeError("ambiguous or unrecognized audit report format")
+    reported = sum(counts[severity] for severity in SEVERITIES)
+    identities = {}
+    for path, package in packages.items():
+        name = package.get("name") or path.rsplit("node_modules/", 1)[-1]
+        identities.setdefault((name, package.get("version")), set()).add(package.get("integrity"))
+    findings, reviewed = [], []
+
+    def inspect(name, version, advisory, paths):
+        url = advisory.get("url", "")
+        identifier = advisory.get("github_advisory_id") or url.rstrip("/").rsplit("/", 1)[-1]
+        row = {"package": name, "version": version, "advisory": identifier,
+               "summary": advisory.get("title", ""), "severity": advisory.get("severity"),
+               "url": url, "paths": paths}
+        review = reviewed_npm_exception(name, version, identifier, identities.get((name, version), set()))
+        (reviewed if review else findings).append(dict(row, review=review) if review else row)
+        return review is None
+
+    if isinstance(data.get("advisories"), dict):
+        # pnpm 10 uses advisories/findings; npm uses vulnerabilities/via.
+        for advisory in data["advisories"].values():
+            entries = advisory.get("findings")
+            if not entries:
+                raise RuntimeError("advisory has no affected package versions")
+            for entry in entries:
+                inspect(advisory["module_name"], entry["version"], advisory, entry.get("paths", []))
+        affected = sorted({row["package"] + "@" + row["version"] for row in findings})
+        entries_present = bool(data["advisories"])
+    elif isinstance(data.get("vulnerabilities"), dict):
+        vulnerabilities = data["vulnerabilities"]
+        affected, edges, explained = set(), {}, set()
+        for name, vulnerability in vulnerabilities.items():
+            via, nodes = vulnerability.get("via"), vulnerability.get("nodes")
+            if not isinstance(via, list) or not via or not isinstance(nodes, list) or not nodes:
+                raise RuntimeError(f"incomplete vulnerability entry: {name}")
+            edges[name] = []
+            for advisory in via:
+                if isinstance(advisory, str):
+                    if advisory not in vulnerabilities:
+                        raise RuntimeError(f"missing dependency advisory: {name} -> {advisory}")
+                    edges[name].append(advisory)
+                elif isinstance(advisory, dict):
+                    explained.add(name)
+                    for node in nodes:
+                        package = packages.get(node, {})
+                        if inspect(name, package.get("version", "unknown"), advisory, [node]):
+                            affected.add(name)
+                else:
+                    raise RuntimeError(f"invalid dependency advisory: {name}")
+        # Recompute meta-vulnerabilities after exact artifact reviews. A parent
+        # is clear only if every advisory reachable from it has been reviewed.
+        while True:
+            parents = {name for name, children in edges.items() if any(child in affected for child in children)}
+            if parents <= affected:
+                break
+            affected.update(parents)
+        while True:
+            parents = {name for name, children in edges.items() if any(child in explained for child in children)}
+            if parents <= explained:
+                break
+            explained.update(parents)
+        if explained != set(vulnerabilities):
+            raise RuntimeError("dependency advisory graph has no root security advisory")
+        affected = sorted(affected)
+        entries_present = bool(vulnerabilities)
+    else:
+        raise RuntimeError("unrecognized audit report format")
+    if bool(reported) != entries_present:
+        raise RuntimeError("vulnerability counts disagree with audit entries")
+    return {"reported_counts": counts, "affected_packages": affected,
+            "security": findings, "not_affected": reviewed}
 
 
 def reviewed_rust_exception(name, version, advisory, identities):
@@ -61,23 +189,37 @@ def npm_audits(output):
 
     def run(job):
         name, cwd, command = job
+        lock_path = npm_lock_path(name)
+        lock_bytes = lock_path.read_bytes()
+        lock_text = lock_bytes.decode("utf-8")
+        packages = npm_lock_packages(name, lock_text)
         env = dict(os.environ, npm_config_fetch_retries="1", npm_config_fetch_timeout="30000")
         result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=240)
         (output / f"{name}.json").write_text(result.stdout)
         (output / f"{name}.log").write_text(result.stderr)
+        if lock_path.read_bytes() != lock_bytes:
+            raise RuntimeError(f"{name}: lockfile changed during the audit; rerun against a stable graph")
         data = json.loads(result.stdout)
-        counts = data.get("metadata", {}).get("vulnerabilities")
-        if data.get("error") or not isinstance(counts, dict) or result.returncode not in (0, 1):
+        if result.returncode not in (0, 1):
             raise RuntimeError(f"{name}: incomplete audit: {data.get('error', result.stderr[-500:])}")
-        if not all(isinstance(counts.get(severity), int) for severity in ["info", "low", "moderate", "high", "critical"]):
-            raise RuntimeError(f"{name}: incomplete vulnerability counts")
-        findings = sum(counts.get(severity, 0) for severity in ["info", "low", "moderate", "high", "critical"])
-        print(f"{name}: {findings} affected dependency/advisory entries", flush=True)
-        for package, vulnerability in data.get("vulnerabilities", {}).items():
-            for advisory in vulnerability.get("via", []):
-                if isinstance(advisory, dict):
-                    print(f"{name}: {package}: {advisory.get('title')}: {advisory.get('url')}", flush=True)
-        return findings
+        try:
+            report = npm_audit_report(data, packages)
+            if result.returncode and not sum(report["reported_counts"][severity] for severity in SEVERITIES):
+                raise RuntimeError("audit exited unsuccessfully without reporting vulnerabilities")
+            report["lockfile"] = str(lock_path.relative_to(ROOT))
+            report["lock_sha256"] = hashlib.sha256(lock_bytes).hexdigest()
+        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+            raise RuntimeError(f"{name}: {error}") from error
+        (output / f"{name}-reviewed.json").write_text(json.dumps(report, indent=2))
+        print(f"{name}: {len(report['affected_packages'])} affected packages; "
+              f"{len(report['not_affected'])} reviewed artifact/advisory entries not affected", flush=True)
+        for row in report["security"]:
+            print(f"{name}: {row['package']} {row['version']}: {row['summary']}: {row['url']}; "
+                  f"dependency paths: {', '.join(row['paths'])}", flush=True)
+        for row in report["not_affected"]:
+            print(f"{name}: reviewed not affected: {row['package']} {row['version']}: "
+                  f"{row['advisory']}: {row['review']['reason']}", flush=True)
+        return len(report["affected_packages"])
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         return sum(executor.map(run, jobs))
@@ -173,6 +315,33 @@ def rust_audit(output):
     return len(findings)
 
 
+def write_summary(output, error=None):
+    lines = ["## Dependency security", "", "| Graph | Affected packages | Reviewed not affected |",
+             "| --- | ---: | ---: |"]
+    for name in ("frontend", "theia-source", "theia-runtime"):
+        path = output / f"{name}-reviewed.json"
+        if path.exists():
+            report = json.loads(path.read_text())
+            lines.append(f"| {name} | {len(report['affected_packages'])} | {len(report['not_affected'])} |")
+        else:
+            lines.append(f"| {name} | Not scanned | — |")
+    path = output / "rust.json"
+    if path.exists():
+        report = json.loads(path.read_text())
+        lines.append(f"| Rust | {len(report['security'])} | {len(report['not_affected'])} |")
+        lines.extend(["", f"Rust maintenance notices: {len(report['maintenance'])} (reported separately)."])
+    else:
+        lines.append("| Rust | Not scanned | — |")
+    if error:
+        lines.extend(["", f"Audit incomplete: {error}"])
+    lines.extend(["", "Raw scanner output and exact artifact reviews are attached in the dependency-security artifact.", ""])
+    summary = "\n".join(lines)
+    (output / "summary.md").write_text(summary)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+            stream.write(summary)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("kind", choices=["all", "npm", "rust"], nargs="?", default="all")
@@ -180,7 +349,14 @@ def main():
     args = parser.parse_args()
     output = args.output or Path(tempfile.mkdtemp(prefix="echo-dependency-audit-"))
     output.mkdir(parents=True, exist_ok=True)
+    # An interrupted rerun must not present a previous successful scan as new
+    # evidence. Only remove files owned by this audit, preserving other files.
+    evidence = [f"{name}{suffix}" for name in ("frontend", "theia-source", "theia-runtime")
+                for suffix in (".json", ".log", "-reviewed.json")]
+    for name in [*evidence, "rust.json", "rust-advisories.json", "rust-packages.json", "summary.md"]:
+        (output / name).unlink(missing_ok=True)
     print(f"Audit evidence: {output}", flush=True)
+    error = None
     try:
         count = 0
         if args.kind in ("all", "npm"):
@@ -188,9 +364,12 @@ def main():
         if args.kind in ("all", "rust"):
             count += rust_audit(output)
         return 1 if count else 0
-    except Exception as error:
+    except Exception as exception:
+        error = str(exception)
         print(f"Audit incomplete: {error}", flush=True)
         return 2
+    finally:
+        write_summary(output, error)
 
 
 if __name__ == "__main__":

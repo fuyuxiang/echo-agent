@@ -17,7 +17,18 @@ node scripts/npm-install-with-platforms.js
 
 The script snapshots the committed lockfile, runs `npm install --include=optional`, and restores optional entries and `libc` fields that npm stripped.
 
-Regenerate on **Node 22 (npm 10), not Node 24 (npm 11)**. npm 10 is stricter than npm 11 when validating `package-lock.json`, so a lockfile that passes on npm 10 also passes on npm 11 but not the other way around. If you regenerate on Node 24 and commit, CI on Node 22 will fail.
+Use **npm 11.21.1 or newer**, matching the repository's installation checks and CI, with Node 22.23.4+ (22.x) or 24.22.1+ (24.x). Older npm versions do not reliably install the security workspaces and overrides.
+
+For a lock-only update, set `npm_config_package_lock_only=true` and `npm_config_ignore_scripts=true` when running the platform-preserving script. Review the resulting dependency changes before installing them with `npm ci`.
+
+Security changes must reach both this lockfile and the desktop's production lock. From the desktop repository root, explicitly refresh the affected transitive packages, because a plain install can retain an older resolution after an override changes:
+
+```sh
+npm_config_package_lock_only=true npm_config_ignore_scripts=true npm_config_audit=false npm_config_fund=false node vendor/theia-platform/scripts/npm-install-with-platforms.js --update follow-redirects glob minimatch
+node scripts/update-theia-runtime-lock.mjs --update follow-redirects glob minimatch
+```
+
+The source updater preserves platform metadata during targeted updates as well as ordinary installs. Verify the result after any npm command that rewrites the source lock. The audit retains raw scanner reports and exact integrity-pinned reviews for the legacy minimatch branches; modern glob/minimatch branches must use the security fixes. Never replace the callable minimatch 3/5 API with a modern object export for legacy archiver or glob consumers.
 
 After running:
 

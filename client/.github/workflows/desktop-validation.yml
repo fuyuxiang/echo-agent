@@ -2,9 +2,29 @@ name: desktop-validation
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['v*']
+    paths: &packaging-paths
+      - '.github/workflows/desktop-validation.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/tauri.conf.json'
+      - 'scripts/build*'
+      - 'scripts/stage-theia-runtime.mjs'
+      - 'scripts/theia-runtime-*'
+      - 'scripts/patch-theia-*.mjs'
+      - 'vendor/theia-platform/package.json'
+      - 'vendor/theia-platform/package-lock.json'
+      - 'vendor/theia-platform/security/**'
+  pull_request:
+    paths: *packaging-paths
 permissions:
   contents: read
+concurrency:
+  group: desktop-validation-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   packaged-desktop:
     strategy:

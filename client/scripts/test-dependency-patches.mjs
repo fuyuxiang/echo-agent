@@ -130,6 +130,32 @@ test("npm must support reproducible workspace installs with overrides", () => {
   assert.doesNotThrow(() => assertSupportedNpmVersion("11.21.1"));
 });
 
+test("targeted lock updaters reject npm flags and paths as package names before changing the graph", () => {
+  const directory = mkdtempSync(join(tmpdir(), "echo-lock-update-inputs-"));
+  try {
+    mkdirSync(join(directory, "scripts"));
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "lock-input-fixture", private: true }));
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: {} });
+    writeFileSync(join(directory, "package-lock.json"), lock);
+    for (const name of ["theia-runtime-manifest.mjs", "node-runtime-version.mjs"]) {
+      cpSync(join("scripts", name), join(directory, "scripts", name));
+    }
+    for (const script of ["scripts/update-theia-runtime-lock.mjs", "vendor/theia-platform/scripts/npm-install-with-platforms.js"]) {
+      const target = join(directory, "scripts", script.split("/").at(-1));
+      cpSync(script, target);
+      for (const input of ["--force", "@scope/--force", "../package"]) {
+        const result = spawnSync(process.execPath, [target, "--update", input], {
+          cwd: directory, encoding: "utf8", timeout: 20000,
+          env: { ...process.env, npm_config_cache: join(directory, "cache"), npm_config_offline: "true" },
+        });
+        assert.notEqual(result.status, 0, `${script} accepted ${input}`);
+        assert.match(result.stderr, /Usage:/, result.error?.message || result.stderr);
+        assert.equal(readFileSync(join(directory, "package-lock.json"), "utf8"), lock);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("untrusted precision cannot trigger a native number-format RangeError", () => {
   for (const conversion of ["e", "f", "g"]) {
     for (const precision of ["0", "101", "9999999999999999999999999999999999999999"]) {

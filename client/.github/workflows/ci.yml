@@ -205,15 +205,19 @@ jobs:
         with:
           node-version: '22.23.4'
       - run: node scripts/verify-vendored-runtime.mjs
+        id: verify_runtime
       - name: Check Rust warnings and lints
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
       - name: Run isolated Rust unit and integration tests
+        if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: node scripts/test-rust-desktop.mjs
       - name: Verify the vendored protoc locator
+        if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
       - name: Verify authentication with the patched cryptography backend
+        if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: |
           mkdir -p "$ECHO_AGENT_HOME" "$GROK_HOME"
           unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
@@ -227,6 +231,7 @@ jobs:
           GROK_HOME: ${{ runner.temp }}/echo-auth-tests-legacy
           NO_PROXY: '*'
       - name: Validate compatible memory-safety backports
+        if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: |
           cargo test --manifest-path vendor/glib/Cargo.toml --release variant_iter
           cargo test --manifest-path vendor/lru-0.12/Cargo.toml --test security
@@ -400,7 +405,9 @@ jobs:
           PUPPETEER_SKIP_DOWNLOAD: '1'
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-      - run: node --test scripts/test-theia-archive-security.mjs scripts/test-dependency-patches.mjs scripts/test-theia-scanoss.mjs
+      - name: Verify native dependency platform metadata
+        run: node vendor/theia-platform/scripts/verify-lockfile-platforms.js
+      - run: node --test scripts/test-theia-archive-security.mjs scripts/test-dependency-patches.mjs scripts/test-dependency-runtime-security.mjs scripts/test-theia-scanoss.mjs
       - run: node scripts/check-theia-bridge.mjs
       - name: Verify AI SDK streams and SCM diffs
         working-directory: vendor/theia-platform

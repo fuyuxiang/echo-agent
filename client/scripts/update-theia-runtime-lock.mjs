@@ -11,6 +11,11 @@ const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmVersion = spawnSync(npm, ["--version"], { encoding: "utf8", shell: process.platform === "win32" });
 if (npmVersion.status !== 0) throw new Error(npmVersion.stderr || "npm is unavailable");
 assertSupportedNpmVersion(npmVersion.stdout);
+const updateArguments = process.argv.slice(2);
+if (updateArguments.length && (updateArguments.shift() !== "--update" || !updateArguments.length
+    || updateArguments.some(name => !/^(?:@[a-z0-9][a-z0-9_.-]*\/)?[a-z0-9][a-z0-9_.-]*$/i.test(name)))) {
+  throw new Error("Usage: node scripts/update-theia-runtime-lock.mjs [--update package ...]");
+}
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(root, "vendor/theia-platform");
@@ -49,7 +54,11 @@ try {
   // Preserve the previously reviewed graph while resolving changed manifests
   // and security workspaces. A fresh solve upgrades unrelated dependencies.
   copyFileSync(lock, join(temporary, "package-lock.json"));
-  const result = spawnSync(npm, ["install", "--package-lock-only", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"], {
+  // npm can retain an existing transitive version when only an override
+  // changes. Explicit updates refresh selected security fixes without solving
+  // the rest of the production graph from scratch.
+  const command = updateArguments.length ? ["update", ...updateArguments] : ["install"];
+  const result = spawnSync(npm, [...command, "--package-lock-only", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"], {
     cwd: temporary,
     stdio: "inherit",
     shell: process.platform === "win32",

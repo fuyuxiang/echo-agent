@@ -3439,10 +3439,12 @@ async fn execute_automation_run(
                 &app,
                 &state,
                 &tx,
-                &automation,
-                &cwd,
-                &record_id,
-                &resolved_model_id,
+                AutomationRunRequest {
+                    automation: &automation,
+                    cwd: &cwd,
+                    record_id: &record_id,
+                    resolved_model_id: &resolved_model_id,
+                },
                 &mut session_guard,
             ),
         )
@@ -3612,17 +3614,27 @@ async fn resume_automation_session(
         .map_err(|e| e.to_string())
 }
 
+struct AutomationRunRequest<'a> {
+    automation: &'a Automation,
+    cwd: &'a Path,
+    record_id: &'a str,
+    resolved_model_id: &'a str,
+}
+
 /// Create or resume the task's owned session and send one identified prompt.
 async fn run_automation_once(
     app: &AppHandle,
     state: &AppState,
     tx: &echo_agent_acp::AcpAgentTx,
-    automation: &Automation,
-    cwd: &Path,
-    record_id: &str,
-    resolved_model_id: &str,
+    request: AutomationRunRequest<'_>,
     session_guard: &mut Option<tokio::sync::OwnedMutexGuard<()>>,
 ) -> Result<(String, crate::bridge::CompleteEvent), String> {
+    let AutomationRunRequest {
+        automation,
+        cwd,
+        record_id,
+        resolved_model_id,
+    } = request;
     require_automation_cleanup_complete(&automation.id)?;
     crate::policy::require_feature("automations")?;
     crate::policy::require_model(resolved_model_id)?;
