@@ -84,6 +84,7 @@ jobs:
       - run: python3 -m unittest discover -s deploy/update-server -p 'test_*.py'
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
+      - run: pnpm icons:check
 
   unit:
     runs-on: ubuntu-latest
@@ -126,6 +127,43 @@ jobs:
         with:
           name: production-startup
           path: ${{ runner.temp }}/production-startup-evidence
+          if-no-files-found: ignore
+
+  app-icons:
+    name: App icons / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.22.1'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm icons:check
+      - name: Verify reproducible generation and Windows text checkouts
+        run: pnpm test:icons
+      - name: Install isolated icon review tools
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/app-icons-review-tools" --no-package-lock --ignore-scripts playwright@1.55.0
+          node "$RUNNER_TEMP/app-icons-review-tools/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Verify icon artwork and waiting lifecycle
+        run: pnpm test:ui:app-icons
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/app-icons-review-tools/node_modules/playwright/index.mjs
+          UI_REVIEW_OUTPUT: ${{ runner.temp }}/app-icons-evidence
+      - name: Preserve icon screenshots and checks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-icons-${{ matrix.os }}
+          path: ${{ runner.temp }}/app-icons-evidence
           if-no-files-found: ignore
 
   mermaid-render:

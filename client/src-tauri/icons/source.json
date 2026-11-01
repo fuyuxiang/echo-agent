@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "source": {
+    "path": "app-icon.png",
+    "sha256": "3be27b3469ffafff8f5eb4ba1d5241a0aaa0869208a42cdc7cab17dca89145b1"
+  },
+  "monochrome": {
+    "path": "src-tauri/icons/tray/mark.svg",
+    "sha256": "45fdc1d22a6afb2b1487cdd9fef89edfa7eabf171e1fcf705053f6b94d18203c"
+  },
+  "assets": {
+    "public/app-icon.png": "3be27b3469ffafff8f5eb4ba1d5241a0aaa0869208a42cdc7cab17dca89145b1",
+    "src-tauri/icons/32x32.png": "c29f585aef4fd2660656dbebb69bdfb797bf70f24fa3efdb35ebf5d8148ac91a",
+    "src-tauri/icons/128x128.png": "330a54a4803eec3814210d4df5e765588236c0292b3047670c32d4721e200dfe",
+    "src-tauri/icons/128x128@2x.png": "0797b710056fde5cc3818b79cbeb96f51b3251960559aea956fb716273576d73",
+    "src-tauri/icons/icon.icns": "50771a12da9392a7a44d06d9c5ac6e317c7a18979a3ff9d67eaf1d610e62c182",
+    "src-tauri/icons/icon.ico": "6d796c5e69ba64b8eb1b5db2cd036a14f813e18bf6e4f81157c0ea91ae49f735",
+    "src-tauri/icons/tray/macos@2x.png": "5fcdd2646b70e61f42d852bfa00c31b8cc95191200cceb4d531f97e7eb7afe9c",
+    "src-tauri/icons/tray/windows-64.png": "ef95da66d968fe26bc4b694a3f8288f80f821f56faa77e335913743b591d78f5"
+  }
+}

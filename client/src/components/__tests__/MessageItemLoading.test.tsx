@@ -95,10 +95,10 @@ describe("waiting companion lifecycle", () => {
     expect(view.container.querySelector(".execution-process--running")).not.toBeNull();
   });
 
-  it("回复期间使用流动 E，等待用户、出错和完成时保持静止", () => {
+  it("等待模型时显示应用图标与呼吸状态，等待用户、出错和完成时保持静止", () => {
     const renderMessage = (props = {}) => <ThemeProvider><MessageItem message={waiting} streaming {...props} /></ThemeProvider>;
     const view = render(renderMessage());
-    expect(view.container.querySelector(".msg__avatar img")).toBeNull();
+    expect(view.container.querySelector(".msg__avatar img")).toHaveAttribute("src", "/app-icon.png");
     expect(view.container.querySelector(".echo-mark--active")).not.toBeNull();
     for (const props of [
       { waitingForModel: false },

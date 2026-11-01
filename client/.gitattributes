@@ -2,3 +2,5 @@ patches/echo-agent-build/*.patch -whitespace
 # Preserve the imported upstream snapshot byte-for-byte; its historical files
 # intentionally contain whitespace that does not follow EchoAgent's style.
 vendor/echo-agent-build/** -whitespace
+# Template digests must stay portable across Git's Windows text conversion.
+src-tauri/icons/tray/mark.svg text eol=lf

@@ -34,8 +34,8 @@ describe("EchoMark motion lifecycle", () => {
     const removeListener = vi.spyOn(document, "removeEventListener");
     const first = render(<EchoMark active />);
     const second = render(<EchoMark active />);
-    const mark = first.container.querySelector("svg")!;
-    const other = second.container.querySelector("svg")!;
+    const mark = first.container.querySelector(".echo-mark")!;
+    const other = second.container.querySelector(".echo-mark")!;
     expect(observers).toHaveLength(1);
     const observer = observers[0];
     expect(observer.observe).toHaveBeenCalledTimes(2);
@@ -58,7 +58,7 @@ describe("EchoMark motion lifecycle", () => {
 
   it("only resumes visible marks when returning from the background", () => {
     const view = render(<><EchoMark active /><EchoMark active /></>);
-    const [visible, offscreen] = view.container.querySelectorAll("svg");
+    const [visible, offscreen] = view.container.querySelectorAll(".echo-mark");
     act(() => observers[0].intersect(visible, 1));
     vi.spyOn(document, "hidden", "get").mockReturnValue(true);
     act(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -69,19 +69,21 @@ describe("EchoMark motion lifecycle", () => {
     expect(offscreen).toHaveAttribute("data-motion", "off");
   });
 
-  it("keeps unique gradient references and stops observing a mark when its reply finishes", () => {
+  it("keeps the shared app artwork intact and stops motion when its reply finishes", () => {
     const view = render(<><EchoMark active /><EchoMark active /></>);
-    const [mark, other] = view.container.querySelectorAll("svg");
-    const gradientId = mark.querySelector("linearGradient")!.id;
-    expect(other.querySelector("linearGradient")!.id).not.toBe(gradientId);
-    expect(mark.querySelector("g")).toHaveAttribute("fill", `url(#${gradientId})`);
+    const [mark, other] = view.container.querySelectorAll(".echo-mark");
+    const artwork = mark.querySelector("img")!;
+    expect(artwork).toHaveAttribute("src", "/app-icon.png");
+    expect(artwork).toHaveAttribute("alt", "");
+    expect(artwork).toHaveAttribute("draggable", "false");
+    expect(other.querySelector("img")).toHaveAttribute("src", "/app-icon.png");
     expect(mark).toHaveAttribute("aria-hidden", "true");
     expect(mark).toHaveClass("echo-mark--active");
     act(() => observers[0].intersect(mark, 1));
     view.rerender(<><EchoMark /><EchoMark active /></>);
     expect(mark).not.toHaveClass("echo-mark--active");
     expect(mark).toHaveAttribute("data-motion", "off");
-    expect(mark.querySelector("linearGradient")!.id).toBe(gradientId);
+    expect(mark.querySelector("img")).toBe(artwork);
     expect(observers[0].observe).toHaveBeenCalledTimes(2);
     expect(observers[0].unobserve).toHaveBeenCalledWith(mark);
     act(() => observers[0].intersect(mark, 1));
@@ -90,7 +92,7 @@ describe("EchoMark motion lifecycle", () => {
 
   it("completed history needs no observer and resumes observation only when active", () => {
     const view = render(<EchoMark />);
-    const mark = view.container.querySelector("svg")!;
+    const mark = view.container.querySelector(".echo-mark")!;
     expect(observers).toHaveLength(0);
     expect(mark).toHaveAttribute("data-motion", "off");
     view.rerender(<EchoMark active />);
@@ -105,7 +107,7 @@ describe("EchoMark motion lifecycle", () => {
   it("still follows document visibility when IntersectionObserver is unavailable", () => {
     vi.stubGlobal("IntersectionObserver", undefined);
     const view = render(<EchoMark active />);
-    const mark = view.container.querySelector("svg")!;
+    const mark = view.container.querySelector(".echo-mark")!;
     expect(mark).toHaveAttribute("data-motion", "on");
     vi.spyOn(document, "hidden", "get").mockReturnValue(true);
     act(() => document.dispatchEvent(new Event("visibilitychange")));

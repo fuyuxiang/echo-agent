@@ -1,6 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- The three swept bars retain EchoAgent's E silhouette at menu-bar sizes. -->
-  <path d="M11 4h17c-1.6 4.2-4.9 6-10.5 6H9.7C7 10 5.5 11 4 12.6 4.7 7.2 6.8 4 11 4Z"/>
-  <path d="M9 13h16c-1.4 4-4.4 6-9 6H8c-2.2 0-3.8.6-5 1.8C3.3 15.8 5.2 13 9 13Z"/>
-  <path d="M7 22h12.5c4.2 0 6.7 2 8.5 6H11c-4.8 0-7.3-2.3-8-6.5 1 .4 2.4.5 4 .5Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="black">
+  <!-- Monochrome adaptation of app-icon.png: swept E, tilted orbit and satellite. -->
+  <defs>
+    <mask id="orbit-clearance" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
+      <rect width="32" height="32" fill="white"/>
+      <path d="M2.3 21.3C3.4 24.1 17.8 20.2 25 15.8" fill="none" stroke="black" stroke-width="2.8"/>
+      <circle cx="24.7" cy="15.7" r="3.4"/>
+    </mask>
+  </defs>
+  <ellipse cx="16" cy="17" rx="14.3" ry="3.7" transform="rotate(-18 16 17)" fill="none" stroke="black" stroke-width="1.15"/>
+  <g mask="url(#orbit-clearance)">
+    <path d="M26.7 6.2H14.4C9.2 6.2 6.5 9.9 6.5 15c0 1 .1 1.9.3 2.7.5-3.8 3.4-5.2 7.1-5.6l7.1-.8c3.4-.4 5-2.5 5.7-5.1Z"/>
+    <path d="M21.4 14.1h-8c-4.6 0-6.9 2.4-6.9 6.2 0 4.1 3 6 7.4 6h13.4c-.9-3.6-3.5-5.4-7.5-5.4h-7.2c-1.6 0-2.9-.3-3.6-1 1.1-.8 2.6-1.2 4.3-1.3l3.5-.2c2.5-.1 4-1.7 4.6-4.3Z"/>
+  </g>
+  <path d="M2.3 21.3C3.4 24.1 17.8 20.2 25 15.8" fill="none" stroke="black" stroke-width="1.15" stroke-linecap="round"/>
+  <circle cx="24.7" cy="15.7" r="2.5"/>
 </svg>

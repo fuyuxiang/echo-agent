@@ -7,10 +7,13 @@ on:
     paths: &packaging-paths
       - '.github/workflows/desktop-validation.yml'
       - 'package.json'
+      - 'app-icon.png'
+      - 'public/app-icon.png'
       - 'pnpm-lock.yaml'
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/Cargo.lock'
       - 'src-tauri/tauri.conf.json'
+      - 'src-tauri/icons/**'
       - 'scripts/build*'
       - 'scripts/stage-theia-runtime.mjs'
       - 'scripts/theia-runtime-*'
