@@ -11,6 +11,10 @@
 
 Windows 打包脚本的快速回归检查为 `pnpm test:windows-packaging`，无需编译安装包。CI 在 Windows PowerShell 5.1 和 PowerShell 7 下分别检查原生命令警告、失败退出码、版本输出与含方括号的项目路径。脚本在构建失败时停止，并恢复调用前的工作目录；原生命令仅输出警告且退出码为零时继续。
 
+Windows 原生构建使用 Visual Studio 2022 C++ x64 工具链、MSVC v143 Spectre-mitigated libraries 和 Windows SDK。打包脚本仅选择 VS 2022，并为 npm/node-gyp 设置一致的版本；仅安装 VS 2026 的机器会在依赖安装前得到明确提示。CI 固定使用 `windows-2022` 和 Python 3.12，避免 `windows-latest` 迁移到 VS 2026 后与锁定的 node-gyp 11 不兼容。
+
+`Windows native addons` 作业在 Node.js 22.23.4 和 24.22.1 下，使用真实 IDE 锁文件安装依赖并从源码编译 `drivelist`、`node-pty`，随后验证磁盘枚举和 ConPTY 终端生命周期。此检查与完整安装包构建均需通过。
+
 ## 更新服务升级
 
 更新服务须安装本仓库当前版本的 `deploy/update-server/publish-update.py` 和 `deploy/update-server/nginx-location.conf`。按 `deploy/update-server/install.sh` 的要求上传两个文件并执行安装脚本。安装脚本保留旧的单平台清单，并将其复制到初始清单目录；Nginx 随后通过 `stable/current` 读取清单。升级完成后，应核对三个现有更新 URL 与升级前结果一致，再发布新版本。

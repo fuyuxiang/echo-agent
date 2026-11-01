@@ -105,44 +105,12 @@ try {
     Log-Ok "protoc available: $protocVersion ($protoc)"
 
     # ---------------------------------------------------------------------------
-    # 3. MSVC environment (cargo x86_64-pc-windows-msvc needs link.exe + SDK).
-    #    Reuses the same vcvars/vswhere dance as dev.bat.
+    # 3. Use the same supported MSVC toolchain for Cargo and native IDE addons.
     # ---------------------------------------------------------------------------
     Log-Step "Locating MSVC environment"
-    $vcvars = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-    if (-not (Test-Path -LiteralPath $vcvars)) {
-        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-        if (Test-Path -LiteralPath $vswhere) {
-            $instPath = Invoke-PackagingCommand $vswhere @("-latest", "-products", "*", "-property", "installationPath")
-            if ($instPath -and (Test-Path -LiteralPath (Join-Path $instPath "VC\Auxiliary\Build\vcvars64.bat"))) {
-                $vcvars = Join-Path $instPath "VC\Auxiliary\Build\vcvars64.bat"
-            }
-        }
-    }
-    if (-not (Test-Path -LiteralPath $vcvars)) {
-        Log-Err "vcvars64.bat not found."
-        Log-Err "Install the 'Desktop development with C++' workload in Visual Studio or VS Build Tools."
-        exit 1
-    }
+    $vcvars = Initialize-PackagingMsvc
     Log-Info "Using: $vcvars"
-
-    # Run vcvars64.bat in a cmd subprocess and import its env into this session.
-    $envOut = Invoke-PackagingCommand cmd @("/c", "`"$vcvars`" >nul 2>&1 && set")
-    foreach ($line in $envOut) {
-        if ($line -match '^([^=]+)=(.*)$') {
-            Set-Item -LiteralPath "env:$($Matches[1])" -Value $Matches[2]
-        }
-    }
-    if (-not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
-        Log-Err "link.exe still not on PATH after vcvars."
-        exit 1
-    }
     Log-Ok "MSVC link.exe available: $((Get-Command link.exe).Source)"
-    if ($vcvars -match '\\2022\\') {
-        # node-gyp can otherwise select a newer Visual Studio installation that
-        # lacks the Spectre libraries required by node-pty.
-        $env:npm_config_msvs_version = "2022"
-    }
 
     # ---------------------------------------------------------------------------
     # 4. Vendored Runtime sanity check. Path dependencies in Cargo.toml resolve

@@ -15,6 +15,9 @@ on:
       - 'src-tauri/tauri.conf.json'
       - 'src-tauri/icons/**'
       - 'scripts/build*'
+      - 'scripts/windows-packaging.ps1'
+      - 'scripts/test-windows-packaging.ps1'
+      - 'scripts/validate-windows-native-addons.mjs'
       - 'scripts/stage-theia-runtime.mjs'
       - 'scripts/theia-runtime-*'
       - 'scripts/patch-theia-*.mjs'
@@ -40,7 +43,8 @@ jobs:
           - os: macos-15-intel
             arch: x86_64
             target: darwin-x86_64
-          - os: windows-latest
+          # The locked native addons require VS 2022; windows-latest uses VS 2026.
+          - os: windows-2022
             arch: x64
             target: windows-x86_64
     runs-on: ${{ matrix.os }}
@@ -56,6 +60,12 @@ jobs:
           node-version: ${{ runner.os == 'Windows' && '24.22.1' || '22.23.4' }}
           cache: pnpm
       - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
+      - uses: actions/setup-python@v7
+        if: runner.os == 'Windows'
+        id: python
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
       - uses: dtolnay/rust-toolchain@stable
       - uses: arduino/setup-protoc@v3
         with:
@@ -81,6 +91,7 @@ jobs:
         run: .\scripts\build.ps1 -AllowUnsignedPlatform
         env:
           PUPPETEER_SKIP_DOWNLOAD: '1'
+          PYTHON: ${{ steps.python.outputs.python-path }}
       - run: pnpm test:security
       - run: node vendor/theia-platform/node_modules/playwright/cli.js install chromium
       - run: node scripts/validate-theia-runtime.mjs

@@ -11,6 +11,10 @@ Release targets are Windows x86_64, macOS Apple Silicon, and macOS Intel. Linux 
 
 Run `pnpm test:windows-packaging` on Windows for a quick regression check without compiling an installer. CI checks native warnings, failure exit codes, version output, and checkout paths containing brackets in both Windows PowerShell 5.1 and PowerShell 7. The build script stops on failure and restores the caller's working directory; native warnings with a zero exit code allow it to continue.
 
+Windows native builds require Visual Studio 2022 C++ x64 tools, MSVC v143 Spectre-mitigated libraries, and the Windows SDK. Packaging selects VS 2022 explicitly and configures npm/node-gyp consistently; machines with only VS 2026 fail before dependency installation with installation guidance. CI uses `windows-2022` and Python 3.12 because the locked node-gyp 11 toolchain cannot use the VS 2026 installation now provided by `windows-latest`.
+
+The `Windows native addons` jobs install the actual IDE lockfile, compile `drivelist` and `node-pty` from source on Node.js 22.23.4 and 24.22.1, then check native drive enumeration and the ConPTY lifecycle. These checks and the full packaged validation must pass before release.
+
 ## Update server upgrade
 
 Install the current `deploy/update-server/publish-update.py` and `deploy/update-server/nginx-location.conf` on the update server using `deploy/update-server/install.sh`. The installer copies existing single-target manifests into an initial generation. Nginx then reads the manifests through `stable/current`. Verify all existing update URLs still return their previous manifests before publishing a new version.

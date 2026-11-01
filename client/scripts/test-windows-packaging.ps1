@@ -125,6 +125,63 @@ try {
     Assert-Fails { Get-PackagingReleaseVersion -Output @() } "empty or invalid output"
     Assert-Fails { Get-PackagingReleaseVersion -Output @("debug", "1.2.3") } "empty or invalid output"
 
+    # The hosted Windows image can contain VS 2026. Ask vswhere for VS 2022
+    # explicitly, including its C++ component, rather than trusting -latest.
+    $vs2022 = Join-Path $testRoot "VS[2022] with spaces"
+    $vcvars2022 = Join-Path $vs2022 "VC\Auxiliary\Build\vcvars64.bat"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $vcvars2022) -Force | Out-Null
+    Set-Content -LiteralPath $vcvars2022 -Value '@exit /b 0'
+    $locator = Join-Path $testRoot 'vswhere.ps1'
+    $locatorSource = @'
+$expected = @('-latest', '-products', '*', '-version', '[17.0,18.0)',
+    '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath')
+if (($args -join '|') -ne ($expected -join '|')) { throw "Incompatible Visual Studio query: $args" }
+Write-Output '__VS2022__'
+$global:LASTEXITCODE = 0
+'@
+    Set-Content -LiteralPath $locator -Value $locatorSource.Replace('__VS2022__', $vs2022.Replace("'", "''"))
+    $missingTools = Join-Path $testRoot 'missing-build-tools'
+    Assert-True ((Get-PackagingVcVars -VsWhere $locator -BuildTools $missingTools) -eq $vcvars2022) "Did not select the compatible C++ installation"
+    Assert-True ((Get-PackagingVcVars -VsWhere (Join-Path $testRoot 'missing-locator') -BuildTools $vs2022) -eq $vcvars2022) "Standalone VS 2022 Build Tools fallback failed"
+    Set-Content -LiteralPath $locator -Value '$global:LASTEXITCODE = 0'
+    Assert-Fails { Get-PackagingVcVars -VsWhere $locator -BuildTools $missingTools } "VS 2026 alone is incompatible"
+    Set-Content -LiteralPath $locator -Value "'first'; 'second'; `$global:LASTEXITCODE = 0"
+    Assert-Fails { Get-PackagingVcVars -VsWhere $locator -BuildTools $missingTools } "multiple installation paths"
+    Set-Content -LiteralPath $locator -Value 'exit 7'
+    Assert-Fails { Get-PackagingVcVars -VsWhere $locator -BuildTools $missingTools } "Command failed" 7
+
+    foreach ($mode in @('valid', 'wrong-version', 'missing-link')) {
+        $initializeSource = @'
+$ErrorActionPreference = 'Stop'
+. '__HELPER__'
+function Get-PackagingVcVars { 'C:\VS2022\VC\Auxiliary\Build\vcvars64.bat' }
+function cmd {
+    if ('__MODE__' -eq 'wrong-version') { 'VisualStudioVersion=18.0' }
+    else { 'VisualStudioVersion=17.14' }
+    $global:LASTEXITCODE = 0
+}
+function Get-Command { if ('__MODE__' -ne 'missing-link') { @{ Source = 'C:\VS2022\link.exe' } } }
+$env:npm_config_msvs_version = '2026'
+$env:npm_package_config_node_gyp_msvs_version = '2026'
+try {
+    $result = Initialize-PackagingMsvc
+    if ('__MODE__' -ne 'valid') { throw 'Invalid toolchain was accepted' }
+    if ($env:npm_config_msvs_version -ne '2022' -or $env:npm_package_config_node_gyp_msvs_version -ne '2022') {
+        throw 'Stale node-gyp toolchain selection was not replaced'
+    }
+    if ($result -ne 'C:\VS2022\VC\Auxiliary\Build\vcvars64.bat') { throw 'Unexpected toolchain path' }
+} catch {
+    if ('__MODE__' -eq 'wrong-version' -and $_.Exception.Message -match 'environment initialization failed') { exit 0 }
+    if ('__MODE__' -eq 'missing-link' -and $_.Exception.Message -match 'link.exe is unavailable') { exit 0 }
+    throw
+}
+exit 0
+'@
+        $initializeSource = $initializeSource.Replace('__HELPER__', (Join-Path $PSScriptRoot 'windows-packaging.ps1').Replace("'", "''")).Replace('__MODE__', $mode)
+        $result = Invoke-TestProcess $initializeSource
+        Assert-True ($result.ExitCode -eq 0) "${mode}: toolchain initialization failed: $($result.Stdout) $($result.Stderr)"
+    }
+
     # Execute the real entry point, with native fixtures stopping before protoc
     # or any costly build. The checkout name reproduces wildcard interpretation.
     $project = Join-Path $testRoot "Repo[1] with spaces"
