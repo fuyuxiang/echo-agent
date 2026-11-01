@@ -1562,6 +1562,11 @@ export async function automationRunStop(id: string): Promise<void> {
   await invoke<void>("automation_run_stop", { id });
 }
 
+/** Stop resources left by an expired run without executing the task again. */
+export async function automationRunRetryCleanup(id: string): Promise<void> {
+  await invoke<void>("automation_run_retry_cleanup", { id });
+}
+
 export async function automationRunResult(id: string): Promise<{ text: string; truncated: boolean }> {
   return invoke("automation_run_result", { id });
 }

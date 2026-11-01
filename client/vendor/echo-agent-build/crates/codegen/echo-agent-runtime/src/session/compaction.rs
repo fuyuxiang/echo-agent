@@ -408,6 +408,7 @@ pub(crate) struct AutoCompactTriggerInfo {
     pub tokens_used: u64,
     pub context_window: u64,
     pub percentage: u8,
+    pub reason: &'static str,
 }
 /// The "always fits" lossy summarization budget (~70% of window, minus tool
 /// definitions); shared by the ladder's Lossy step and the cold Lossy start.
@@ -885,7 +886,6 @@ impl SessionActor {
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
         let tokens_before = self.chat_state_handle.get_total_tokens().await;
         tracing::Span::current().record("compaction_tokens_before", tokens_before as i64);
-        self.signals_handle().record_compaction(tokens_before);
         let trigger_str = match trigger {
             echo_agent_telemetry::events::CompactionTrigger::Manual => "manual",
             echo_agent_telemetry::events::CompactionTrigger::Auto => "auto",
@@ -1702,6 +1702,20 @@ impl SessionActor {
         let new_len = compacted_history.len();
         self.chat_state_handle
             .replace_conversation_for_compaction(compacted_history);
+        // The actor round trip acknowledges the history replacement before
+        // counting it. A later hook/caller cancellation cannot erase success.
+        let applied_tokens = self.chat_state_handle.get_total_tokens().await;
+        self.signals_handle().record_compaction(tokens_before);
+        echo_agent_telemetry::unified_log::info(
+            "shell.context.compaction_applied",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({
+                "trigger": compact_source,
+                "tokens_before": tokens_before,
+                "tokens_after": applied_tokens,
+                "context_window": context_window,
+            })),
+        );
         if self.startup_hints.inherited_prefix_len.is_some() {
             let post_replace_tokens = self.chat_state_handle.get_total_tokens().await;
             if echo_agent_token_estimation::exceeds_threshold(
@@ -1842,6 +1856,7 @@ impl SessionActor {
                 tokens_used: total_tokens,
                 context_window: cw,
                 percentage,
+                reason: "threshold",
             })
         } else {
             None
@@ -1927,6 +1942,7 @@ impl SessionActor {
                 tokens_used: estimated_total,
                 context_window: cw,
                 percentage,
+                reason: "forced",
             });
         }
         if let Some(trigger_info) = self.should_auto_compact(estimated_total, context_window) {
@@ -1972,6 +1988,7 @@ impl SessionActor {
             tokens_used: estimated_total,
             context_window: cw,
             percentage,
+            reason: "preflight_overflow",
         })
     }
     /// On model change: clear sticky/other suppress and compact if the window shrank.
@@ -1998,9 +2015,11 @@ impl SessionActor {
             return Ok(());
         }
         let total_tokens = self.chat_state_handle.get_estimated_total_tokens().await;
-        let Some(trigger_info) = self.should_auto_compact(total_tokens, cfg.context_window) else {
+        let Some(mut trigger_info) = self.should_auto_compact(total_tokens, cfg.context_window)
+        else {
             return Ok(());
         };
+        trigger_info.reason = "model_window_shrunk";
         tracing::info!(
             "Proactive model-switch compact: {} ({}) -> {} ({}), {}% full",
             prev.model_slug,
@@ -2060,13 +2079,32 @@ impl SessionActor {
                 percentage: trigger_info.percentage,
             },
         );
-        self.signals_handle()
-            .record_compaction(trigger_info.tokens_used);
+        echo_agent_telemetry::unified_log::info(
+            "shell.context.compaction_started",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({
+                "reason": trigger_info.reason,
+                "tokens_used": trigger_info.tokens_used,
+                "context_window": trigger_info.context_window,
+                "usage_percent": trigger_info.percentage,
+                "threshold_percent": self.compaction.threshold_percent.get(),
+            })),
+        );
         self.send_echo_agent_notification(EchoAgentSessionUpdate::AutoCompactStarted {
             tokens_used: trigger_info.tokens_used,
             context_window: trigger_info.context_window,
             percentage: trigger_info.percentage,
-            reason: format!("Context window {}% full", trigger_info.percentage),
+            reason: match trigger_info.reason {
+                "input_budget" | "preflight_overflow" => {
+                    "本次请求超出可用输入预算，正在整理上下文".to_string()
+                }
+                "provider_context_error" => "模型拒绝了本次上下文长度，正在整理后重试".to_string(),
+                "model_family_switch" | "model_window_shrunk" => {
+                    "正在整理上下文以适配切换后的模型".to_string()
+                }
+                "forced" => "正在按请求整理上下文".to_string(),
+                _ => format!("上下文已使用 {}%，正在整理", trigger_info.percentage),
+            },
         })
         .await;
         self.maybe_pre_compaction_flush(
@@ -2105,6 +2143,13 @@ impl SessionActor {
                 let span = tracing::Span::current();
                 span.record("success", false);
                 span.record("error", e.to_string().as_str());
+                echo_agent_telemetry::unified_log::info(
+                    "shell.context.compaction_failed",
+                    Some(self.session_info.id.0.as_ref()),
+                    Some(
+                        serde_json::json!({"reason": trigger_info.reason, "error": e.to_string(), "elapsed_ms": elapsed_ms}),
+                    ),
+                );
                 let cancelled = self.compaction.cancel.is_cancelled()
                     || e.data.as_ref().and_then(|d| d.as_str()).is_some_and(|s| {
                         s.contains(crate::session::helpers::session_compact::COMPACT_CANCELLED_MSG)

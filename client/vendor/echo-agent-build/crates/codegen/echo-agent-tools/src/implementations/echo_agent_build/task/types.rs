@@ -869,6 +869,12 @@ pub enum SubagentEvent {
     Cancel(SubagentCancelRequest),
     ListActive(SubagentListActiveRequest),
     ListRunning(SubagentListRunningRequest),
+    /// Lightweight session liveness probe, including initializing and queued
+    /// children. Does not wait for a child's progress/transport to respond.
+    HasLiveChildren {
+        parent_session_id: String,
+        respond_to: oneshot::Sender<bool>,
+    },
     Completions(SubagentCompletionsRequest),
     /// Cancel children of `parent_session_id` and drop its buffered completions.
     /// `respond_to`, if set, resolves when no children remain (caller should

@@ -21,12 +21,13 @@ impl SessionActor {
                     return;
                 }
                 if !mcp_state.is_initializing() {
-                    break;
+                    drop(mcp_state);
+                    self.ensure_mcp_tools_initialized().await;
+                    continue;
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        self.ensure_mcp_tools_initialized().await;
     }
     /// Register tools from shared (inherited) MCP clients on this session's ToolBridge.
     ///

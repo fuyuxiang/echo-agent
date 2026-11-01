@@ -17,6 +17,7 @@ vi.mock("@/lib/agent-client", () => ({
   desktopPreferencesGet: vi.fn(async () => ({ closeToTray: true })),
   automationsResetSession: vi.fn(async () => ({ ...snapshot.automations[0], dedicatedSessionId: undefined })),
   automationRunStop: vi.fn(async () => {}),
+  automationRunRetryCleanup: vi.fn(async () => {}),
   automationRunResult: vi.fn(async () => ({ text: "本次结果", truncated: false })),
   automationsSave: vi.fn(async (a: unknown) => a),
   automationsDelete: vi.fn(async () => {}),
@@ -50,6 +51,7 @@ import {
   automationsRun,
   automationsResetSession,
   automationRunStop,
+  automationRunRetryCleanup,
   automationRunResult,
   automationsSave,
   automationsSnapshot,
@@ -63,6 +65,7 @@ beforeEach(() => {
   snapshot = emptySnapshot;
   vi.mocked(automationsResetSession).mockClear();
   vi.mocked(automationRunStop).mockReset().mockResolvedValue(undefined);
+  vi.mocked(automationRunRetryCleanup).mockReset().mockResolvedValue(undefined);
   vi.mocked(automationRunResult).mockReset().mockResolvedValue({ text: "本次结果", truncated: false });
   vi.mocked(automationsSnapshot).mockReset().mockImplementation(async () => snapshot);
   vi.mocked(agentListWorkspaces).mockReset().mockResolvedValue([]);
@@ -99,6 +102,90 @@ function beginRunnableEditor() {
 
 describe("自动化编辑流程与通知导航", () => {
   const ready = async () => { await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull()); openAdvanced(); };
+
+  it("超时清理中保留结果、显示进度并阻止重跑与普通停止", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [{ id: "cleanup-running", automationId: task.id, automationName: task.name,
+      status: "failed", cleanup: { status: "running" }, error: "本次运行已超时",
+      sessionId: "expired-session", startedAt: new Date().toISOString(), archived: false }];
+    render(<AutomationPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    const result = screen.getByRole("region", { name: "本次运行结果" });
+    expect(result).toHaveTextContent("已超时 · 正在清理");
+    expect(result).toHaveTextContent("本次结果");
+    expect(screen.getByRole("button", { name: "等待清理完成" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /停止本次运行|使用当前配置重试|归档记录|重试清理/ })).toBeNull();
+  });
+
+  it("重试清理只停止残留工作，防止重复点击，完成后恢复会话入口", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [{ id: "cleanup-failed", automationId: task.id, automationName: task.name,
+      status: "failed", cleanup: { status: "failed", error: "本地自动化清理超时" },
+      error: "本次运行已超时", sessionId: "expired-session", startedAt: new Date().toISOString(), archived: false }];
+    let finish!: () => void;
+    vi.mocked(automationRunRetryCleanup).mockImplementationOnce(() => new Promise(resolve => {
+      finish = () => {
+        snapshot = { ...snapshot, records: snapshot.records.map(run => ({ ...run, cleanup: { status: "completed" } })) };
+        resolve();
+      };
+    }));
+    const openSession = vi.fn();
+    render(<AutomationPanel onOpenSession={openSession} />);
+    fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    expect(screen.getByRole("button", { name: "查看完整会话" })).toBeDisabled();
+    const retry = screen.getByRole("button", { name: "重试清理" });
+    fireEvent.click(retry); fireEvent.click(retry);
+    expect(screen.getByRole("button", { name: "正在清理…" })).toBeDisabled();
+    expect(automationRunRetryCleanup).toHaveBeenCalledExactlyOnceWith("cleanup-failed");
+    expect(automationsRun).not.toHaveBeenCalled();
+    await act(async () => finish());
+    await waitFor(() => expect(screen.getByRole("region", { name: "本次运行结果" })).toHaveTextContent("后台工作已停止"));
+    expect(screen.getByRole("button", { name: "查看完整会话" })).toBeEnabled();
+    expect(snapshot.records[0].status).toBe("failed");
+    expect(snapshot.automations[0].status).toBe("ACTIVE");
+  });
+
+  it("清理失败后保留错误与重试入口，不会重新执行任务", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [{ id: "cleanup-retry", automationId: task.id, automationName: task.name,
+      status: "failed", cleanup: { status: "failed", error: "会话关闭超时" },
+      startedAt: new Date().toISOString(), archived: false }];
+    vi.mocked(automationRunRetryCleanup).mockRejectedValueOnce(new Error("会话关闭超时"));
+    const toast = vi.fn(); render(<AutomationPanel onToast={toast} />);
+    fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    fireEvent.click(screen.getByRole("button", { name: "重试清理" }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.stringContaining("清理尚未完成，可重试")));
+    expect(screen.getByRole("button", { name: "重试清理" })).toBeEnabled();
+    expect(screen.getByRole("region", { name: "本次运行结果" })).toHaveTextContent("会话关闭超时");
+    expect(automationsRun).not.toHaveBeenCalled();
+  });
+
+  it("存在较新的失败记录时，任务入口仍优先定位需要清理的旧运行", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [
+      { id: "old-cleanup", automationId: task.id, automationName: task.name, status: "failed",
+        cleanup: { status: "failed" }, startedAt: "2026-10-01T00:00:00Z", archived: false },
+      { id: "new-rejected", automationId: task.id, automationName: task.name, status: "failed",
+        error: "等待上次运行清理", startedAt: "2026-10-02T00:00:00Z", archived: false },
+    ];
+    render(<AutomationPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    expect(screen.getByRole("button", { name: "重试清理" })).toBeEnabled();
+    expect(screen.getByRole("region", { name: "本次运行结果" })).toHaveTextContent("已超时 · 清理未完成");
+  });
+
+  it("后台已停止但保存尚未完成时明确说明自动重试，不开放重跑入口", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot.records = [{ id: "cleanup-saving", automationId: task.id, automationName: task.name,
+      status: "failed", cleanup: { status: "completed" }, completionPending: true,
+      startedAt: new Date().toISOString(), archived: false }];
+    render(<AutomationPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    expect(screen.getByRole("region", { name: "本次运行结果" })).toHaveTextContent("后台工作已停止 · 状态保存中");
+    expect(screen.getByRole("region", { name: "本次运行结果" })).toHaveTextContent("系统会自动重试");
+    expect(screen.getByRole("button", { name: "等待清理完成" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /重试清理|使用当前配置重试|停止本次运行/ })).toBeNull();
+  });
 
   it.each([false, true])("管理模型返回后刷新模型与默认项，保留草稿；原先有模型=%s", async (hasModels) => {
     beginRunnableEditor();

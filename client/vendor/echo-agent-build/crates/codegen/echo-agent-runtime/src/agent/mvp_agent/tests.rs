@@ -5012,6 +5012,24 @@ fn disconnect_unloads_idle_session_without_finalize() {
         );
     });
 }
+
+#[test]
+fn disconnect_does_not_unload_while_prompt_intake_holds_the_session() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("sess-intake-disconnect");
+        let (handle, _cmd_tx, cmd_rx) = make_live_session_handle(&sid, None);
+        agent.insert_resident(&sid, handle);
+        let _observed = spawn_fake_actor(cmd_rx, false);
+        let intake = agent.dispatch_lock(&sid);
+        let guard = intake.lock().await;
+        drive_disconnect(&agent, &sid).await;
+        assert!(agent.is_resident(&sid), "disconnect cannot race an admitted prompt");
+        drop(guard);
+        drive_disconnect(&agent, &sid).await;
+        assert!(!agent.is_resident(&sid), "a later idle disconnect can reclaim the session");
+    });
+}
 /// The `IsBusy` keep-resident path. A between-turns session
 /// (`current_prompt_id = None`) whose actor answers `IsBusy = true` (queued
 /// inputs at the turn boundary) must be kept resident — NOT unloaded — and

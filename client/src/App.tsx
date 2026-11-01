@@ -1030,6 +1030,9 @@ function Shell() {
           },
           onAutomationUpdate: (event) => {
             setAutomationRefreshSignal((value) => value + 1);
+            // Cleanup progresses after execution ended. It only invalidates
+            // history; a delayed cleanup event must not settle a newer turn.
+            if (event.phase === "cleanup") return;
             if (event.sessionId && event.cwd) {
               const sessionStore = sessionsStore.getState();
               if (sessionStore.deletedSessionIds.includes(event.sessionId)) return;

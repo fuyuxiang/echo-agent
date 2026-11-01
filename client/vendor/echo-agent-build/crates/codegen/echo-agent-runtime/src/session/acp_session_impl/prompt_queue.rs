@@ -283,7 +283,7 @@ impl SessionActor {
         };
 
         // Use `running_prompt_id()` not `current_prompt_id` (cleared while front
-        // unpopped). Auto send-now only if blocked wait + empty held queue.
+        // unpopped). A blocking wait never grants permission to replace a turn.
         let running_front_id = state.running_prompt_id().map(str::to_string);
         let turn_running = running_front_id.is_some();
         let goal_active = self.goal_tracker.lock().status()
@@ -296,8 +296,10 @@ impl SessionActor {
             queued.input_origin.policy().shutdown == ShutdownPolicy::Drain
                 && Some(queued.prompt_id.as_str()) != running_front_id.as_deref()
         });
-        let auto_send_now = turn_running && blocked_in_wait && !held_user_queue;
-        let send_now = item.is_queue_editable() && (send_now || auto_send_now);
+        // Keep goal steering responsive without changing an ordinary queued
+        // message into a destructive send-now on non-goal turns.
+        let auto_goal_steering = goal_active && turn_running && blocked_in_wait && !held_user_queue;
+        let send_now = item.is_queue_editable() && (send_now || auto_goal_steering);
         let front_awaiting_commit_now = Self::front_awaiting_commit(&state);
         let cancel_running_turn =
             send_now && Self::send_now_cancels_running_turn(&state, goal_active);

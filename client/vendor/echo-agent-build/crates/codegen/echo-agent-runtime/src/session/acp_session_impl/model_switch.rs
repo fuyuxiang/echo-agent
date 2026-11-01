@@ -132,6 +132,7 @@ impl SessionActor {
             let estimated_total_tokens = self.chat_state_handle.get_estimated_total_tokens().await;
             let context_window = new_context_window.get();
             let trigger_info = compaction::AutoCompactTriggerInfo {
+                reason: "model_family_switch",
                 tokens_used: estimated_total_tokens,
                 context_window,
                 percentage: echo_agent_token_estimation::usage_percentage_u8(

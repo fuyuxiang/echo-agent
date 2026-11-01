@@ -2131,7 +2131,7 @@ async fn queue_input_send_now_during_goal_turn_merges_as_interjections_fifo() {
 }
 
 #[tokio::test]
-async fn queue_input_auto_send_now_only_inside_wait_window() {
+async fn queue_input_wait_keeps_existing_queue_order() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -2186,7 +2186,43 @@ async fn queue_input_auto_send_now_only_inside_wait_window() {
 }
 
 #[tokio::test]
-async fn queue_input_auto_send_now_when_wait_and_held_queue_empty() {
+async fn queue_input_ordinary_goal_steering_during_wait_never_cancels() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("running", "A"));
+                state.running_task = Some(running_task_stub("running"));
+                state.front_message_committed = true;
+            }
+            actor.tool_context.blocking_wait_depth.set_depth_for_test(1);
+            actor.goal_tracker.lock().create_goal(
+                "goal".into(),
+                "objective".into(),
+                None,
+                0,
+                "2026-01-01T00:00:00Z".into(),
+                None,
+            );
+            let (respond_to, _rx) = oneshot::channel();
+            assert!(
+                !actor
+                    .queue_input(queue_input_request(
+                        vec![acp::ContentBlock::Text(acp::TextContent::new("补充约束"))],
+                        "steering",
+                        respond_to
+                    ))
+                    .await
+            );
+            assert_eq!(actor.pending_interjections.drain_all().len(), 1);
+            assert_eq!(actor.state.lock().await.pending_inputs.len(), 1);
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn queue_input_wait_without_held_rows_never_replaces_turn() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -2211,7 +2247,10 @@ async fn queue_input_auto_send_now_when_wait_and_held_queue_empty() {
                     respond_to,
                 ))
                 .await;
-            assert!(cancel, "first prompt during empty-held wait must cancel");
+            assert!(
+                !cancel,
+                "an ordinary prompt must not replace a turn during a wait"
+            );
 
             let state = actor.state.lock().await;
             let order: Vec<&str> = state
@@ -2221,12 +2260,12 @@ async fn queue_input_auto_send_now_when_wait_and_held_queue_empty() {
                 .collect();
             assert_eq!(order, vec!["running", "first"]);
             assert!(
-                state
+                !state
                     .pending_inputs
                     .iter()
                     .find(|i| i.prompt_id == "first")
                     .is_some_and(|i| i.send_now),
-                "first empty-held wait prompt is send-now"
+                "the queued message must retain its explicit send-now=false intent"
             );
 
             drop(state);
@@ -2262,7 +2301,7 @@ async fn queue_input_auto_send_now_when_wait_and_held_queue_empty() {
 /// prompt must not auto-send-now / cancel the running turn just because the
 /// fallback is queue-hidden.
 #[tokio::test]
-async fn queue_input_auto_send_now_blocked_by_hidden_user_fallback() {
+async fn queue_input_wait_preserves_hidden_user_fallback() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -2324,9 +2363,9 @@ async fn queue_input_auto_send_now_blocked_by_hidden_user_fallback() {
         .await;
 }
 
-/// A foreground subagent await (its `BlockingWaitGuard`) opens the same send-now window.
+/// Foreground subagent waits obey the same queue contract as terminal waits.
 #[tokio::test]
-async fn queue_input_auto_send_now_during_foreground_subagent_await_window() {
+async fn queue_input_foreground_subagent_wait_never_replaces_turn() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -2361,8 +2400,8 @@ async fn queue_input_auto_send_now_during_foreground_subagent_await_window() {
                 ))
                 .await;
             assert!(
-                cancel,
-                "a prompt sent during a foreground subagent await must take the send-now path"
+                !cancel,
+                "a foreground subagent wait must not grant permission to replace the turn"
             );
 
             drop(wait_guard);

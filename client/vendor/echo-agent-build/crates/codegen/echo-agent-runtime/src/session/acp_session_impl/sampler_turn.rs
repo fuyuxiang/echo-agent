@@ -917,6 +917,7 @@ impl SessionActor {
                     tokens_used: total_tokens,
                     context_window: cw,
                     percentage,
+                    reason: "provider_context_error",
                 };
                 if let Err(e) = self.run_compact_only(trigger_info, false).await {
                     if Self::is_auth_compact_error(&e) {
@@ -1189,12 +1190,14 @@ impl SessionActor {
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         self.prepare_sampler_for_turn().await;
         if let Err(error) = self.bound_request(&mut request).await {
-            if self.tool_context.task_output_token_budget.is_none()
+            if matches!(error, super::document_tasks::RequestBudgetError::Exceeded)
+                && self.tool_context.task_output_token_budget.is_none()
                 && self.claim_context_recovery().await
                 && let Some(config) = self.chat_state_handle.get_sampling_config().await
             {
                 let tokens = self.chat_state_handle.get_estimated_total_tokens().await;
                 let trigger = compaction::AutoCompactTriggerInfo {
+                    reason: "input_budget",
                     tokens_used: tokens,
                     context_window: config.context_window.get(),
                     percentage: echo_agent_token_estimation::usage_percentage_u8(
@@ -1205,7 +1208,7 @@ impl SessionActor {
                 self.run_compact_only(trigger, false).await?;
                 return Ok(SamplerTurnOutcome::CompactAndResubmit);
             }
-            return Err(error);
+            return Err(error.into_acp_error());
         }
         if !budget.can_wait() {
             return match self.submit_turn_request(request).await {

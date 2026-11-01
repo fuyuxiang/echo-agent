@@ -102,7 +102,7 @@ pub(crate) async fn test_agent_with_user_message_template(
     .await
 }
 #[cfg(test)]
-async fn test_agent_from_config(
+pub(crate) async fn test_agent_from_config(
     config: echo_agent_tools::registry::types::ToolServerConfig,
     definition: echo_agent_core::AgentDefinition,
     backend: std::sync::Arc<dyn echo_agent_tools::computer::types::TerminalBackend>,

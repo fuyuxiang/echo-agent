@@ -26,6 +26,7 @@ import {
   nextRunLabel,
   orderedRuns,
   runBusy,
+  runNeedsCleanup,
   runStatusLabel,
   sessionModeLabel,
   taskStateLabel,
@@ -44,6 +45,7 @@ export function AutomationTaskDetail({
   onPause,
   onReset,
   onStop,
+  onRetryCleanup,
   onDelete,
   onArchive,
   onOpenSession,
@@ -60,6 +62,7 @@ export function AutomationTaskDetail({
   onPause: (task: Automation) => void;
   onReset: (task: Automation) => void;
   onStop: (id: string) => Promise<void>;
+  onRetryCleanup: (id: string) => Promise<void>;
   onDelete: (id: string) => void;
   onArchive: (id: string) => void;
   onOpenSession?: (sessionId: string, cwd?: string) => void;
@@ -77,7 +80,9 @@ export function AutomationTaskDetail({
   const [loading, setLoading] = useState(false);
   const [reload, setReload] = useState(0);
   const [stopping, setStopping] = useState(false);
+  const [cleaningId, setCleaningId] = useState<string>();
   const selected = runs.find((run) => run.id === selectedId) ?? runs[0];
+  const pendingCleanup = runs.find(runNeedsCleanup);
   const markdownConfig = useMemo(() => {
     const { onApplyCode: _apply, ...reading } = createMarkdownHostConfig({
       cwd: selected?.cwd,
@@ -86,7 +91,8 @@ export function AutomationTaskDetail({
     });
     return reading;
   }, [selected?.cwd, selected?.sessionId, onToast]);
-  const busy = starting || runs.some(runBusy);
+  const needsCleanup = runs.some(runNeedsCleanup);
+  const busy = starting || runs.some(runBusy) || needsCleanup;
   useEffect(() => {
     setSelectedId(initialRecordId ?? latestId);
   }, [initialRecordId, latestId]);
@@ -130,7 +136,7 @@ export function AutomationTaskDetail({
               onClick={() => onRun(task.id)}
             >
               <Play size={16} />
-              {busy ? "任务执行中" : "立即运行"}
+              {needsCleanup ? "等待清理完成" : busy ? "任务执行中" : "立即运行"}
             </button>
             <button
               type="button"
@@ -153,6 +159,12 @@ export function AutomationTaskDetail({
         )}
       </PageToolbar>
       <h1 className="atm-task-detail__title">{name}</h1>
+      {pendingCleanup && pendingCleanup.id !== selected?.id && (
+        <div className="atm-cleanup-notice" role="alert">
+          <p>此前有运行尚未完成清理，完成清理后才能再次执行任务。</p>
+          <button type="button" className="atm-text-button" onClick={() => setSelectedId(pendingCleanup.id)}>查看待清理运行</button>
+        </div>
+      )}
       {task ? (
         <>
           <div className="atm-task-detail__meta">
@@ -263,6 +275,30 @@ export function AutomationTaskDetail({
             {selected.error && (
               <p className="atm-run-result__error">{selected.error}</p>
             )}
+            {selected.cleanup && (
+              <div className="atm-cleanup-notice" role={selected.cleanup.status === "failed" ? "alert" : "status"}>
+                <p>{selected.cleanup.status === "running"
+                  ? `本次运行${selected.status === "stopped" ? "已停止" : "已超时"}，正在停止后台工作，已有结果会保留。`
+                  : selected.cleanup.status === "failed"
+                    ? "后台工作尚未确认全部停止。请重试清理，完成后可继续使用会话。"
+                    : selected.completionPending
+                      ? "后台工作已停止，正在保存清理结果。系统会自动重试，保存完成后可继续使用会话。"
+                      : "后台工作已停止，历史结果已保留。"}</p>
+                {selected.cleanup.error && <p>{selected.cleanup.error}</p>}
+                {selected.cleanup.status === "failed" && (
+                  <button type="button" className="atm-toolbar-btn" disabled={cleaningId === selected.id}
+                    title="只停止残留后台工作，不会重新执行任务"
+                    onClick={async () => {
+                      const id = selected.id;
+                      setCleaningId(id);
+                      try { await onRetryCleanup(id); } finally { setCleaningId(undefined); }
+                    }}>
+                    <RotateCcw size={14} />
+                    {cleaningId === selected.id ? "正在清理…" : "重试清理"}
+                  </button>
+                )}
+              </div>
+            )}
             {selected.needsAttention && (
               <p>本次运行需要你确认权限或补充信息，处理后才能继续。</p>
             )}
@@ -368,6 +404,8 @@ export function AutomationTaskDetail({
                 <button
                   type="button"
                   className="atm-toolbar-btn"
+                  disabled={runNeedsCleanup(selected)}
+                  title={runNeedsCleanup(selected) ? "清理完成后可打开会话" : undefined}
                   onClick={() =>
                     onOpenSession(selected.sessionId!, selected.cwd)
                   }
@@ -375,7 +413,7 @@ export function AutomationTaskDetail({
                   {selected.needsAttention ? "前往处理" : "查看完整会话"}
                 </button>
               )}
-              {runBusy(selected) && !selected.completionPending && (
+              {runBusy(selected) && !selected.cleanup && !selected.completionPending && (
                 <button
                   type="button"
                   className="atm-toolbar-btn"
@@ -394,7 +432,7 @@ export function AutomationTaskDetail({
                   {stopping ? "正在请求停止…" : selected.stopRequested ? "再次请求停止" : "停止本次运行"}
                 </button>
               )}
-              {task && selected.status === "failed" && (
+              {task && selected.status === "failed" && !runNeedsCleanup(selected) && (
                 <button
                   type="button"
                   className="atm-toolbar-btn"
@@ -404,7 +442,7 @@ export function AutomationTaskDetail({
                   使用当前配置重试
                 </button>
               )}
-              {!runBusy(selected) && !selected.archived && (
+              {!runBusy(selected) && !runNeedsCleanup(selected) && !selected.archived && (
                 <button
                   type="button"
                   className="atm-text-button"

@@ -27,6 +27,19 @@ describe("context disclosure", () => {
     await screen.findByRole("button",{name:"上下文已使用 85%"});
     expect(screen.getByText("85%")).toBeVisible();
   });
+  it("展示运行时生效阈值，并区分总体占用和分类估算", async () => {
+    vi.mocked(agentSessionInfo).mockResolvedValue({ context: {
+      used: 258126, total: 512000, usagePct: 50, autoCompactThresholdPercent: 85,
+      messageTokens: 375527, toolDefinitionsTokens: 1000, systemPromptTokens: 1000,
+    }} as never);
+    render(<ContextUsagePill sessionId="incident" />);
+    fireEvent.click(await screen.findByRole("button", { name: "上下文已使用 50%" }));
+    const dialog = screen.getByRole("dialog", { name: "上下文详情" });
+    expect(dialog).toHaveTextContent("258.1K/512.0K（50%）");
+    expect(dialog).toHaveTextContent("自动整理阈值 85%");
+    expect(dialog).toHaveTextContent("单次请求超出模型输入预算时也可能提前整理");
+    expect(dialog).toHaveTextContent("各项占比为估算");
+  });
   it("迟到的旧会话快照不会覆盖新会话", async () => {
     let resolveA!: (value: never) => void;
     vi.mocked(agentSessionInfo).mockImplementationOnce(() => new Promise(resolve => { resolveA = resolve; }));

@@ -36,6 +36,7 @@ import {
   automationsRun,
   automationsResetSession,
   automationRunStop,
+  automationRunRetryCleanup,
   desktopPreferencesGet,
   automationsSave,
   automationsSetStatus,
@@ -79,6 +80,7 @@ import {
   taskState,
   runStatusLabel,
   runBusy,
+  runNeedsCleanup,
   type TaskFilter,
 } from "./automation/task-presentation";
 import { Segmented } from "./automation/controls";
@@ -176,7 +178,7 @@ function RecordStatusIcon({ item }: { item: AutomationRunRecord }) {
       />
     );
   }
-  if (item.status === "running") {
+  if (item.status === "running" || item.cleanup?.status === "running") {
     return (
       <span
         className="atm-status-icon-spinning"
@@ -422,9 +424,7 @@ export function AutomationPanel({
   }, [refresh, refreshSignal]);
 
   const hasUnfinishedRuns =
-    snapshot?.records.some(
-      (record) => record.status === "queued" || record.status === "running",
-    ) ?? false;
+    snapshot?.records.some(runBusy) ?? false;
 
   useEffect(() => {
     // Lifecycle events are the fast path. Polling remains as recovery for an
@@ -868,8 +868,18 @@ export function AutomationPanel({
   );
   const openTask = useCallback((automation: Automation) => {
     setDetailId(automation.id);
-    setDetailRecordId(undefined);
-  }, []);
+    setDetailRecordId(snapshot?.records.find(record => record.automationId === automation.id && runNeedsCleanup(record))?.id);
+  }, [snapshot]);
+  const handleRetryCleanup = useCallback(async (recordId: string) => {
+    try {
+      await automationRunRetryCleanup(recordId);
+      await refresh(true);
+      onToast?.("后台工作已停止，已有结果已保留");
+    } catch (error) {
+      await refresh(true);
+      onToast?.(`清理尚未完成，可重试：${String(error).replace(/^Error:\s*/, "")}`);
+    }
+  }, [onToast, refresh]);
   const openRecord = useCallback((record: AutomationRunRecord) => {
     setDetailId(record.automationId);
     setDetailRecordId(record.id);
@@ -993,7 +1003,7 @@ export function AutomationPanel({
   const busyAutomationIds = useMemo(() => {
     const ids = new Set(runStartingIds);
     for (const record of snapshot?.records ?? []) {
-      if (record.status === "queued" || record.status === "running") {
+      if (runBusy(record) || runNeedsCleanup(record)) {
         ids.add(record.automationId);
       }
     }
@@ -1050,7 +1060,7 @@ export function AutomationPanel({
       items = items.filter((i) => i.needsAttention && runBusy(i) && !i.archived);
     else if (filterStatus === "running") {
       items = items.filter(
-        (i) => (i.status === "queued" || i.status === "running") && !i.archived,
+        (i) => runBusy(i) && !i.archived,
       );
     } else if (filterStatus === "archived")
       items = items.filter((i) => i.archived);
@@ -1301,6 +1311,7 @@ export function AutomationPanel({
           onPause={(task) => void handleTogglePause(task.id, task.status)}
           onReset={handleResetSession}
           onStop={handleStopRun}
+          onRetryCleanup={handleRetryCleanup}
           onDelete={handleRowDelete}
           onArchive={handleArchiveRecord}
           onOpenSession={onOpenSession}
@@ -1909,7 +1920,7 @@ function InboxRow({
   onOpenSession?: (sessionId: string, cwd?: string) => void;
   onOpenRecord: (record: AutomationRunRecord) => void;
 }) {
-  const isUnfinished = item.status === "queued" || item.status === "running";
+  const isUnfinished = runBusy(item) || runNeedsCleanup(item);
   const date = new Date(item.finishedAt || item.startedAt);
   const time = date.toLocaleTimeString([], {
     hour: "2-digit",

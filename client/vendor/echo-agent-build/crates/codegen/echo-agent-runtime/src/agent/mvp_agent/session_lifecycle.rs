@@ -448,8 +448,8 @@ impl MvpAgent {
     /// Any work in flight? Sync running-turn and parked-plan-approval checks,
     /// then an async queue probe; conservative (busy) on poison or timeout.
     ///
-    /// TODO: once the session actor can report its own aggregate activity,
-    /// including background work, move this gate inside the actor.
+    /// The actor probe also covers background commands, children, schedules,
+    /// workflows and pending user interactions.
     pub(super) async fn session_has_live_work(&self, id: &acp::SessionId) -> bool {
         let Some(handle) = self.resident_handle(id) else {
             return false;

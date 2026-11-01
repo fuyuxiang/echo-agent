@@ -288,6 +288,65 @@ async fn outstanding(backend: &ChannelBackend, prompt_id: &str) -> SubagentOutst
     response_rx.await.expect("outstanding response")
 }
 
+async fn has_live_children(backend: &ChannelBackend, parent: &str) -> bool {
+    let (respond_to, response) = oneshot::channel();
+    backend
+        .sender()
+        .send(SubagentEvent::HasLiveChildren {
+            parent_session_id: parent.into(),
+            respond_to,
+        })
+        .unwrap();
+    response.await.unwrap()
+}
+
+#[tokio::test]
+async fn session_activity_covers_initializing_queued_running_and_finished_children() {
+    let mut harness = harness_with_config(
+        true,
+        CoordinatorConfig {
+            limits: SubagentLimits {
+                max_concurrent: 1,
+                behavior: LimitBehavior::Queue,
+            },
+            ..Default::default()
+        },
+    );
+    assert!(!has_live_children(&harness.backend, "parent").await);
+    let first = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(request("first", true)).await }
+    });
+    harness.requests.recv().await.unwrap(); // Still initializing, no active child.
+    assert!(has_live_children(&harness.backend, "parent").await);
+    assert!(!has_live_children(&harness.backend, "other-parent").await);
+    let second = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(request("second", true)).await }
+    });
+    while harness.backend.registry_counts().await.queued == 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(has_live_children(&harness.backend, "parent").await);
+    harness.start.send(()).unwrap();
+    harness.started.recv().await.unwrap();
+    assert!(has_live_children(&harness.backend, "parent").await);
+    harness.finish.send(()).unwrap();
+    first.await.unwrap().unwrap();
+    harness.requests.recv().await.unwrap(); // The queued child is now initializing.
+    assert!(has_live_children(&harness.backend, "parent").await);
+    harness.start.send(()).unwrap();
+    harness.started.recv().await.unwrap();
+    harness.finish.send(()).unwrap();
+    second.await.unwrap().unwrap();
+    // Background spawn acknowledges startup before completion. Observe both
+    // completion callbacks before asserting that no child remains resident.
+    harness.completions.recv().await.unwrap();
+    harness.completions.recv().await.unwrap();
+    assert!(!has_live_children(&harness.backend, "parent").await);
+    harness.actor.abort();
+}
+
 #[tokio::test]
 async fn foreground_completion_is_delivered_inline() {
     let mut harness = harness(false, std::time::Duration::from_secs(60));

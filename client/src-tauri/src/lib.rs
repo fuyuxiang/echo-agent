@@ -1261,6 +1261,7 @@ pub fn run() {
             automations::automations_run,
             automations::automations_reset_session,
             automations::automation_run_stop,
+            automations::automation_run_retry_cleanup,
             automations::automation_run_result,
             automations::automation_records_archive,
             automations::automation_records_delete,

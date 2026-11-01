@@ -652,6 +652,11 @@ impl WorkflowManager {
         }
     }
 
+    pub(crate) fn has_live_runs(&mut self) -> bool {
+        self.reap_terminal_runs();
+        !self.active.is_empty() || !self.retiring.is_empty()
+    }
+
     pub(crate) async fn cancel_all_and_drain(
         &mut self,
         timeout: std::time::Duration,
@@ -1607,6 +1612,7 @@ mod tests {
                 < WORKFLOW_MAX_ACTIVE_RUNS_PER_SESSION
         );
         drop(done_senders);
+        assert!(!manager.has_live_runs(), "finished retiring runs must not pin an idle session");
     }
 
     #[tokio::test]

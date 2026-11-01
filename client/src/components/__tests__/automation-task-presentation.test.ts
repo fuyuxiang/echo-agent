@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildDraft } from '../automation/schedule-utils';
-import { nextRunLabel, runStatusLabel, taskState, taskStateLabel } from '../automation/task-presentation';
+import { nextRunLabel, runBusy, runNeedsCleanup, runStatusLabel, taskState, taskStateLabel } from '../automation/task-presentation';
 import type { Automation } from '@/lib/types';
 const task = (): Automation => ({ ...buildDraft(), createdAt: '2020-01-01T00:00:00Z' });
 describe('定时任务计划状态与执行状态', () => {
@@ -23,5 +23,16 @@ describe('定时任务计划状态与执行状态', () => {
     const now = new Date(2026, 9, 31, 12);
     expect(nextRunLabel(new Date(2026, 10, 1, 9).toISOString(), now)).toMatch(/^明天 09:00/);
     expect(nextRunLabel(new Date(2027, 0, 1, 9).toISOString(), now)).toMatch(/^2027\/1\/1 09:00/);
+  });
+  it('执行超时与后台清理状态独立，未完成清理阻止新执行', () => {
+    const run = { id: 'r', automationId: '', automationName: '', startedAt: '', status: 'failed', archived: false };
+    expect(runStatusLabel({ ...run, cleanup: { status: 'running' } })).toBe('已超时 · 正在清理');
+    expect(runBusy({ ...run, cleanup: { status: 'running' } })).toBe(true);
+    expect(runNeedsCleanup({ ...run, cleanup: { status: 'failed' } })).toBe(true);
+    expect(runStatusLabel({ ...run, cleanup: { status: 'failed' } })).toBe('已超时 · 清理未完成');
+    expect(runNeedsCleanup({ ...run, cleanup: { status: 'completed' } })).toBe(false);
+    expect(runBusy({ ...run, cleanup: { status: 'completed' }, completionPending: true })).toBe(true);
+    expect(runStatusLabel({ ...run, cleanup: { status: 'completed' }, completionPending: true })).toBe('后台工作已停止 · 状态保存中');
+    expect(runStatusLabel({ ...run, status: 'stopped', cleanup: { status: 'completed' } })).toBe('已停止 · 后台工作已停止');
   });
 });

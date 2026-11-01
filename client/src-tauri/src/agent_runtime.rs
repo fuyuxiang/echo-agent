@@ -1192,6 +1192,32 @@ pub async fn delete_session(tx: &AcpAgentTx, session_id: &str, cwd: Option<&str>
     Ok(())
 }
 
+/// Stop all work owned by a session and release its transports, preserving
+/// persisted history. Ordinary turn cancellation deliberately keeps background
+/// tasks alive and is insufficient for an expired automated run.
+pub async fn close_session(tx: &AcpAgentTx, session_id: &str) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct CloseResult {
+        success: bool,
+        outcome: String,
+    }
+    let result: CloseResult = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        crate::ext::call_ext(
+            tx,
+            "echo.agent/session/close",
+            crate::ext::raw_params(&serde_json::json!({"sessionId": session_id})),
+        ),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("关闭任务会话超时"))??;
+    if result.success && matches!(result.outcome.as_str(), "closed" | "notResident") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("任务会话未关闭：{}", result.outcome))
+    }
+}
+
 /// Fetch a session's context-window snapshot via EchoAgent's `echo.agent/session/info`
 /// extension method (session/handlers/session.rs). The response is the
 /// camelCase `SessionInfoResponse` — its `context` field carries
@@ -1539,6 +1565,52 @@ mod tests {
             task.await.expect("model list task").expect("model list"),
             vec!["model-a".to_string(), "model-b".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn close_session_checks_owned_cleanup_outcome() {
+        for (outcome, succeeds) in [
+            ("closed", true),
+            ("notResident", true),
+            ("superseded", false),
+        ] {
+            let (client, mut agent) = echo_agent_acp::acp_channels();
+            let task = tokio::spawn(async move { close_session(&client.tx, "expired-run").await });
+            let echo_agent_acp::AcpAgentMessage::ExtMethod(request) =
+                agent.rx.recv().await.unwrap()
+            else {
+                panic!("timeout cleanup must close the session, including background work");
+            };
+            assert_eq!(request.request.method.as_ref(), "echo.agent/session/close");
+            let params: serde_json::Value =
+                serde_json::from_str(request.request.params.get()).unwrap();
+            assert_eq!(params["sessionId"], "expired-run");
+            request
+                .response_tx
+                .send(Ok(acp::ExtResponse::new(crate::ext::raw_params(
+                    &serde_json::json!({"result": {"success": true, "outcome": outcome}}),
+                ))))
+                .unwrap();
+            assert_eq!(task.await.unwrap().is_ok(), succeeds);
+        }
+        let (client, mut agent) = echo_agent_acp::acp_channels();
+        let task = tokio::spawn(async move { close_session(&client.tx, "expired-run").await });
+        let echo_agent_acp::AcpAgentMessage::ExtMethod(request) = agent.rx.recv().await.unwrap()
+        else {
+            panic!()
+        };
+        request
+            .response_tx
+            .send(Ok(acp::ExtResponse::new(crate::ext::raw_params(
+                &serde_json::json!({"result": null, "error": "cleanup failed"}),
+            ))))
+            .unwrap();
+        assert!(task
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("cleanup failed"));
     }
 
     #[test]

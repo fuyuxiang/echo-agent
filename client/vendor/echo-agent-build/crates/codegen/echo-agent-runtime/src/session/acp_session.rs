@@ -193,6 +193,8 @@ mod turn_end_hooks;
 use turn_end_hooks::TurnEnd;
 #[path = "acp_session_impl/desktop_delivery.rs"]
 mod desktop_delivery;
+#[path = "acp_session_impl/session_activity.rs"]
+mod session_activity;
 #[path = "acp_session_impl/document_tasks.rs"]
 mod document_tasks;
 #[path = "acp_session_impl/stop_gate.rs"]

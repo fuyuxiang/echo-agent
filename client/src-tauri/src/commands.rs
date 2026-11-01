@@ -1558,6 +1558,7 @@ pub async fn agent_load_session(
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
     }
+    crate::automations::require_session_cleanup_complete(&session_id)?;
     crate::org::enforce_skill_lease();
     let cwd = {
         let filesystem = app.state::<crate::shell_fs::FilesystemAccess>();
@@ -1568,6 +1569,7 @@ pub async fn agent_load_session(
     let _permission_transition_guard = crate::permission_config::permission_transition_lock()
         .lock()
         .await;
+    crate::automations::require_session_cleanup_complete(&session_id)?;
     let permission_mode = if crate::automations::is_full_access_session(&session_id) {
         "always-approve".into()
     } else {
@@ -1735,6 +1737,7 @@ pub async fn agent_send(
     } else {
         None
     };
+    crate::automations::require_session_cleanup_complete(&session_id)?;
     if prompt_id
         .as_deref()
         .is_some_and(|value| !valid_session_id(value))
@@ -2307,6 +2310,7 @@ pub async fn agent_set_model(
     } else {
         None
     };
+    crate::automations::require_session_cleanup_complete(&session_id)?;
     state.session_workspace(&session_id)?;
     crate::policy::require_model(&model_id)?;
     require_runtime_ready(Some(&app), &state, Some(&model_id))?;

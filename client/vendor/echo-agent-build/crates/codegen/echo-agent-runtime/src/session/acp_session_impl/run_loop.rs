@@ -1560,14 +1560,14 @@ pub(super) async fn run_session(
                                 .send(PersistenceMsg::CopyFile { one_shot: respond_to });
                         }
                         SessionCommand::IsBusy { respond_to } => {
-                            // "Any work pending?" — a running turn or queued
-                            // inputs. Consulted by the leader's idle-unload
-                            // decision. Cheap: a single state lock.
-                            let busy = {
-                                let state = session.state.lock().await;
-                                state_is_busy(&state)
-                            };
-                            let _ = respond_to.send(busy);
+                            // Background work outlives a model turn. Do not
+                            // let a disconnect evict its tools or callbacks.
+                            let session = session.clone();
+                            tokio::task::spawn_local(async move {
+                                let busy = tokio::time::timeout(std::time::Duration::from_secs(1),
+                                    session.has_live_tool_work()).await.unwrap_or(true);
+                                let _ = respond_to.send(busy);
+                            });
                         }
                         SessionCommand::FlushComplete { respond_to } => {
                             // Flush the actor-owned replay buffer inline. This branch

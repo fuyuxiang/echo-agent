@@ -289,6 +289,59 @@ async fn test_check_auto_compact_needed_uses_state() {
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn incident_half_window_does_not_trigger_eighty_five_percent_compaction() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gtx, _grx) = mpsc::unbounded_channel();
+            let (ptx, _prx) = mpsc::unbounded_channel();
+            let actor = create_test_actor(258_126, 512_000, 85, gtx, ptx).await;
+            assert!(actor.check_auto_compact_needed().await.is_none());
+            actor.chat_state_handle.record_token_usage(435_199);
+            assert!(actor.check_auto_compact_needed().await.is_none());
+            actor.chat_state_handle.record_token_usage(435_200);
+            let trigger = actor.check_auto_compact_needed().await.unwrap();
+            assert_eq!(trigger.reason, "threshold");
+            assert_eq!(trigger.context_window, 512_000);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn incident_budget_overflow_is_distinct_from_output_storage_failure() {
+    use super::super::document_tasks::RequestBudgetError;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gtx, _grx) = mpsc::unbounded_channel();
+            let (ptx, _prx) = mpsc::unbounded_channel();
+            let actor = create_test_actor(1_000, 8_192, 85, gtx, ptx).await;
+            let mut request = ConversationRequest {
+                items: vec![ConversationItem::user("字".repeat(10_000))],
+                ..Default::default()
+            };
+            assert!(matches!(
+                actor.bound_request(&mut request).await,
+                Err(RequestBudgetError::Exceeded)
+            ));
+            // A file in place of the output directory causes a real storage
+            // failure. Compaction must not disguise it as a context overflow.
+            let invalid_folder = tempfile::NamedTempFile::new().unwrap();
+            actor.tool_bridge_handle().update_resource(
+                echo_agent_tools::types::resources::SessionFolder(invalid_folder.path().to_path_buf())
+            ).await;
+            request.items = vec![ConversationItem::tool_result("call", &"x".repeat(40_000))];
+            let error = actor.bound_request(&mut request).await.unwrap_err();
+            assert!(matches!(error, RequestBudgetError::Other(_)));
+            assert!(
+                error
+                    .into_acp_error()
+                    .to_string()
+                    .contains("保存工具结果失败")
+            );
+        })
+        .await;
+}
 /// Test that overriding context_window on the sampling config changes
 /// auto-compact behavior. Forked sessions must use the new model's
 /// context window, not the source session's. Without this, auto-compact
@@ -827,6 +880,7 @@ async fn e2e_auto_compact_401_suppresses_auth_and_surfaces_reauth() {
             let err = actor
                 .run_compact_only(
                     AutoCompactTriggerInfo {
+                        reason: "threshold",
                         tokens_used: 180_000,
                         context_window: 200_000,
                         percentage: 90,
@@ -1087,6 +1141,7 @@ async fn bare_manual_compact_failure_does_not_suppress_auto() {
             let result = actor
                 .run_compact_only(
                     AutoCompactTriggerInfo {
+                        reason: "threshold",
                         tokens_used: 180_000,
                         context_window: 200_000,
                         percentage: 90,
@@ -1099,6 +1154,11 @@ async fn bare_manual_compact_failure_does_not_suppress_auto() {
                 actor.compaction.auto_compact_suppressed.load(Relaxed),
                 SUPPRESS_NONE,
                 "the same deterministic failure on the AUTO path must suppress"
+            );
+            let signals = actor.signals_handle().snapshot().await.unwrap();
+            assert_eq!(
+                signals.compaction_count, 0,
+                "failed attempts are not applied compactions"
             );
         })
         .await;
@@ -1142,6 +1202,16 @@ async fn forked_prefix_released_under_pressure_and_stays_released() {
             );
             let result = actor.run_compact(None).await;
             assert!(result.is_ok(), "compaction should succeed: {result:?}");
+            assert_eq!(
+                actor
+                    .signals_handle()
+                    .snapshot()
+                    .await
+                    .unwrap()
+                    .compaction_count,
+                1,
+                "one successful replacement must count once"
+            );
             assert!(
                 actor.compaction.prefix_released.load(Relaxed),
                 "prefix must be released under pressure"

@@ -68,6 +68,17 @@ let records: AutomationRunRecord[] = [
     notificationDelivery: "通知投递未全部成功，请检查通知渠道",
   },
 ];
+const cleanupState = params.get("state")?.replace(/^cleanup-/, "");
+if (cleanupState && ["running", "failed", "completed", "saving"].includes(cleanupState)) {
+  records[0] = {
+    ...records[0], status: "failed", notificationDelivery: undefined,
+    error: "执行超过 45 分钟，本次运行已超时",
+    completionPending: cleanupState === "saving",
+    cleanup: { status: cleanupState === "saving" ? "completed" : cleanupState as "running" | "failed" | "completed",
+      ...(cleanupState === "failed" ? { error: "本地自动化清理超时，请重试清理以确认后台工作已停止" } : {}),
+    },
+  };
+}
 let sequence = 0;
 const calls: { command: string; args: unknown }[] = [];
 const resultById: Record<string, string> = {
@@ -84,6 +95,10 @@ Object.assign(window, {
     invoke: async (command: string, args: Record<string, any> = {}) => {
       calls.push({ command, args });
       switch (command) {
+        case "automation_run_retry_cleanup":
+          records = records.map(record => record.id === args.id
+            ? { ...record, cleanup: { status: "completed" } } : record);
+          return;
         case "automations_snapshot":
           return structuredClone({ automations: tasks, records });
         case "desktop_preferences_get":

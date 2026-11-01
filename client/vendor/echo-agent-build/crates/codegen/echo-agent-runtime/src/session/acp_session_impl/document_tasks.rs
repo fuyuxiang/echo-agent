@@ -11,6 +11,32 @@ struct DocumentGate {
 #[derive(Clone, Default)]
 struct ContextRecoveries(u8);
 
+/// Only an actual admission-budget overflow is recoverable by compaction.
+/// Storage/permission failures must surface unchanged instead of starting a
+/// lossy recovery that cannot fix them.
+#[derive(Debug)]
+pub(super) enum RequestBudgetError {
+    Exceeded,
+    Other(acp::Error),
+}
+
+impl From<acp::Error> for RequestBudgetError {
+    fn from(error: acp::Error) -> Self {
+        Self::Other(error)
+    }
+}
+
+impl RequestBudgetError {
+    pub(super) fn into_acp_error(self) -> acp::Error {
+        match self {
+            Self::Exceeded => acp::Error::internal_error().data(
+                "上下文超出本次输入预算。完整资料和已有进度已保留，请在当前任务中继续分批处理。",
+            ),
+            Self::Other(error) => error,
+        }
+    }
+}
+
 impl SessionActor {
     pub(super) async fn begin_document_task(
         &self,
@@ -253,7 +279,7 @@ impl SessionActor {
     pub(super) async fn bound_request(
         &self,
         request: &mut ConversationRequest,
-    ) -> Result<(), acp::Error> {
+    ) -> Result<(), RequestBudgetError> {
         let Some(config) = self.chat_state_handle.get_sampling_config().await else {
             return Ok(());
         };
@@ -289,7 +315,18 @@ impl SessionActor {
         }
         let estimated = crate::sampling::estimate_request_tokens(request);
         if estimated > available {
-            return Err(acp::Error::internal_error().data(format!("上下文超出本次输入预算（估算 {estimated}，可用 {available}）。完整资料和已有进度已保留，请在当前任务中继续分批处理；也可减少本轮附带的历史内容。")));
+            echo_agent_telemetry::unified_log::info(
+                "shell.context.input_budget_exceeded",
+                Some(self.session_info.id.0.as_ref()),
+                Some(serde_json::json!({
+                    "request_estimate": estimated,
+                    "available_input": available,
+                    "output_reserve": reserve,
+                    "context_window": window,
+                    "tracked_tokens": self.chat_state_handle.get_estimated_total_tokens().await,
+                })),
+            );
+            return Err(RequestBudgetError::Exceeded);
         }
         Ok(())
     }

@@ -2595,8 +2595,8 @@ impl MvpAgent {
     ///   on reconnect — and crucially does **not** finalize the cloud replica
     ///   (the session remains resumable via `session/load`).
     ///
-    /// The "live work" check is the coarse PR-2 stub (`session_has_live_work`);
-    /// the full `SessionActivity` signal lands in PR-4.
+    /// Probe all actor work, including background tasks, while fencing prompt
+    /// intake. Failure to acquire the fence keeps the session resident.
     pub(super) async fn handle_evict_sessions(
         &self,
         params: &serde_json::value::RawValue,
@@ -2629,24 +2629,19 @@ impl MvpAgent {
                 "kept session resident across client disconnect (attach in flight)"
             );
         }
-        let checks = to_check
-            .into_iter()
-            .map(|id| async move {
-                let measured = self.resident_handle(&id).map(|h| h.cmd_tx);
-                let busy = self.session_has_live_work(&id).await;
-                (id, busy, measured)
-            });
-        let resolved = futures::future::join_all(checks).await;
-        let mut kept_resident: usize = attaching.len();
-        let mut unloaded: usize = 0;
-        for (id, busy, measured) in resolved {
+        let checks = to_check.into_iter().map(|id| async move {
+            let intake = self.dispatch_lock(&id);
+            let Ok(_intake_guard) = intake.try_lock() else {
+                return (1usize, 0usize);
+            };
+            let measured = self.resident_handle(&id).map(|h| h.cmd_tx);
+            let busy = self.session_has_live_work(&id).await;
             if self.session_registry.is_attaching(&id) {
-                kept_resident += 1;
                 tracing::info!(
                     session_id = %id.0,
                     "kept session resident across client disconnect (attach in flight)"
                 );
-                continue;
+                return (1usize, 0usize);
             }
             let same_actor = self
                 .resident_handle(&id)
@@ -2655,33 +2650,38 @@ impl MvpAgent {
                     current.cmd_tx.same_channel(&measured)
                 });
             if !same_actor {
-                kept_resident += 1;
                 tracing::info!(
                     session_id = %id.0,
                     "kept session resident across client disconnect (actor replaced mid-check)"
                 );
-                continue;
+                return (1usize, 0usize);
             }
-            if busy {
+            let newly_running = self.resident_handle(&id).is_some_and(|handle| {
+                handle.current_prompt_id.lock().map(|id| id.is_some()).unwrap_or(true)
+            });
+            if busy || newly_running {
                 if let Some(handle) = self.resident_handle(&id) {
                     handle.set_status_line_wanted(false);
                 }
                 self.set_session_live_state(&id, SessionLiveState::Working);
-                kept_resident += 1;
                 tracing::info!(
                     session_id = %id.0,
                     "kept session resident across client disconnect (live work)"
                 );
-                continue;
+                return (1usize, 0usize);
             }
             self.request_session_shutdown(&id);
             if self.take_session(&id).is_some() {
                 self.session_registry.clear_resident(&id);
                 self.set_session_live_state(&id, SessionLiveState::Dormant);
-                unloaded += 1;
                 tracing::debug!(session_id = %id.0, "idle session unloaded to disk on disconnect");
+                return (0, 1);
             }
-        }
+            (0, 0)
+        });
+        let resolved = futures::future::join_all(checks).await;
+        let kept_resident = attaching.len() + resolved.iter().map(|(kept, _)| kept).sum::<usize>();
+        let unloaded = resolved.iter().map(|(_, unloaded)| unloaded).sum::<usize>();
         tracing::info!(kept_resident, unloaded, "client-disconnect detach complete");
         self.sweep_dead_sessions();
     }

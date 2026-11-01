@@ -18,6 +18,7 @@ import {
   nextRunLabel,
   orderedRuns,
   runBusy,
+  runNeedsCleanup,
   runStatusLabel,
   sessionModeLabel,
   taskState,
@@ -51,6 +52,7 @@ export function AutomationTaskCard({
   onToggle: (id: string, status: AutomationStatus) => void;
 }) {
   const last = orderedRuns(records)[0];
+  const needsCleanup = records.some(runNeedsCleanup);
   const ended = taskState(task, records) === "ended";
   return (
     <article
@@ -138,7 +140,7 @@ export function AutomationTaskCard({
               className="atm-task-card__result"
               onClick={() => onOpen(task)}
             >
-              {last ? "查看结果" : "查看详情"}
+              {needsCleanup ? "查看清理进度" : last ? "查看结果" : "查看详情"}
               <ChevronRight size={14} />
             </button>
           </div>
@@ -151,7 +153,7 @@ export function AutomationTaskCard({
               onClick={() => onRun(task.id)}
             >
               <Play size={15} />
-              {busy ? "执行中" : "立即运行"}
+              {needsCleanup ? "等待清理" : busy ? "执行中" : "立即运行"}
             </button>
             <button
               type="button"

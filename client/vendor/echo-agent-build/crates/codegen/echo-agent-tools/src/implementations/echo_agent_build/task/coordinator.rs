@@ -261,6 +261,24 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             SubagentEvent::ListRunning(request) => {
                 self.handle_list_running(request.parent_session_id, request.respond_to);
             }
+            SubagentEvent::HasLiveChildren {
+                parent_session_id,
+                respond_to,
+            } => {
+                let busy = self
+                    .pending
+                    .values()
+                    .any(|child| child.request.parent_session_id == parent_session_id)
+                    || self
+                        .active
+                        .values()
+                        .any(|child| child.request.parent_session_id == parent_session_id)
+                    || self
+                        .queued
+                        .iter()
+                        .any(|child| child.request.parent_session_id == parent_session_id);
+                let _ = respond_to.send(busy);
+            }
             SubagentEvent::Completions(request) => {
                 let (owned, foreign): (Vec<_>, Vec<_>) =
                     std::mem::take(&mut self.pending_completions)

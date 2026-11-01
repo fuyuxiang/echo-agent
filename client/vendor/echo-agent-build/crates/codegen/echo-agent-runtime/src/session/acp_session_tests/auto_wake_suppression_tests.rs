@@ -1644,8 +1644,8 @@ async fn set_goal_loop_active_resource_mirrors_into_gate() {
 /// the between-turn drain (`drain_between_turn_bash_completions` → `list_tasks`)
 /// can be exercised without running a real background command.
 #[derive(Debug)]
-struct OneTaskTerminal {
-    tasks: Vec<echo_agent_tools::computer::types::TaskSnapshot>,
+pub(super) struct OneTaskTerminal {
+    pub(super) tasks: Vec<echo_agent_tools::computer::types::TaskSnapshot>,
 }
 #[async_trait::async_trait]
 impl echo_agent_tools::computer::types::TerminalBackend for OneTaskTerminal {
@@ -1684,7 +1684,7 @@ impl echo_agent_tools::computer::types::TerminalBackend for OneTaskTerminal {
         self.tasks.clone()
     }
 }
-fn completed_bash_task(id: &str) -> echo_agent_tools::computer::types::TaskSnapshot {
+pub(super) fn completed_bash_task(id: &str) -> echo_agent_tools::computer::types::TaskSnapshot {
     echo_agent_tools::computer::types::TaskSnapshot {
         task_id: id.into(),
         command: "echo done".into(),

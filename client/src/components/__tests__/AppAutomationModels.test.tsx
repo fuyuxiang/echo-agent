@@ -120,6 +120,16 @@ beforeEach(() => {
 });
 
 describe("自动化会话模型同步", () => {
+  it("迟到的清理进度不会结束后续会话或覆盖模型", async () => {
+    await start(); created("model-a");
+    act(() => {
+      useSessionStore.getState().startStreaming("auto-1", "manual-followup");
+      handlers.onAutomationUpdate?.({ phase: "cleanup", automationId: "a", automationName: "每日任务",
+        recordId: "old-run", status: "failed", sessionId: "auto-1", cwd: "/workspace", currentModelId: "model-b" });
+    });
+    expect(useSessionsStore.getState().independent[0].status).toBe("working");
+    expect(useSessionsStore.getState().independent[0].currentModelId).toBe("model-a");
+  });
   it("沿用专属会话的新轮次同步实际模型，旧停止事件不能覆盖新轮次", async () => {
     await start(); created("model-a");
     act(() => handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "r-next", status: "running", sessionId: "auto-1", cwd: "/workspace", currentModelId: "model-b" }));

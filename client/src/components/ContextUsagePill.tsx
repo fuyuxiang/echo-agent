@@ -136,6 +136,10 @@ export function ContextUsagePill({ sessionId, active = false, onRefreshSignal, e
               style={{ width: `${Math.min(100, Math.max(0, (ctx.used / ctx.total) * 100))}%` }}
             />
           </div>
+          <p className="context-usage__estimate">
+            {typeof ctx.autoCompactThresholdPercent === "number" && <>自动整理阈值 {ctx.autoCompactThresholdPercent}%。</>}
+            单次请求超出模型输入预算时也可能提前整理。下方各项占比为估算。
+          </p>
           <ul className="context-usage__rows">
             {rows.map((r) => (
               <li key={r.key} className="context-usage__row">

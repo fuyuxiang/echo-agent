@@ -37,9 +37,19 @@ export function taskStateLabel(
   return task.scheduleType === "once" ? "计划已结束" : "已过有效期";
 }
 export function runBusy(run: AutomationRunRecord): boolean {
-  return run.status === "queued" || run.status === "running";
+  return run.status === "queued" || run.status === "running" || run.cleanup?.status === "running"
+    || Boolean(run.cleanup && run.completionPending);
+}
+export function runNeedsCleanup(run: AutomationRunRecord): boolean {
+  return run.cleanup?.status === "running" || run.cleanup?.status === "failed"
+    || Boolean(run.cleanup && run.completionPending);
 }
 export function runStatusLabel(run: AutomationRunRecord): string {
+  const ended = run.status === "stopped" ? "已停止" : "已超时";
+  if (run.cleanup?.status === "running") return `${ended} · 正在清理`;
+  if (run.cleanup?.status === "failed") return `${ended} · 清理未完成`;
+  if (run.cleanup?.status === "completed" && run.completionPending) return "后台工作已停止 · 状态保存中";
+  if (run.cleanup?.status === "completed") return `${ended} · 后台工作已停止`;
   if (run.completionPending) return "已结束 · 记录保存中";
   if (run.stopRequested && runBusy(run)) return "正在停止";
   if (run.waitingReason && runBusy(run)) return run.waitingReason;

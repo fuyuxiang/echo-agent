@@ -1882,6 +1882,9 @@
 .atm-run-result__state--failed > svg { color: var(--echo-status-error); }
 .atm-run-result__state--attention { color: var(--echo-status-warning); }
 .atm-run-result__error { font-size: .8125rem; line-height: 1.7; }
+.atm-cleanup-notice { margin: 12px 0; padding: 10px 12px; border-left: 3px solid var(--echo-status-warning); color: var(--atm-text-secondary); font-size: .8125rem; line-height: 1.7; overflow-wrap: anywhere; }
+.atm-cleanup-notice p { margin: 0; }
+.atm-cleanup-notice p + p { margin-top: 6px; }
 .atm-run-result__content { padding: 14px 0; min-width: 0; }
 .atm-run-result__content .markdown-body { font-size: .875rem; }
 .atm-notification-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; color: var(--atm-text-secondary); font-size: .75rem; line-height: 1.7; }

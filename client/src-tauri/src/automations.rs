@@ -201,6 +201,28 @@ pub struct AutomationExecutionSummary {
     pub permission_mode: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutomationCleanupStatus {
+    Running,
+    Failed,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRunCleanup {
+    pub status: AutomationCleanupStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl AutomationRunCleanup {
+    fn unresolved(&self) -> bool {
+        self.status != AutomationCleanupStatus::Completed
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutomationRunRecord {
@@ -221,6 +243,9 @@ pub struct AutomationRunRecord {
     pub notification_delivery: Option<String>,
     #[serde(default)]
     pub completion_pending: bool,
+    /// Execution is already terminal; resource cleanup has its own lifecycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<AutomationRunCleanup>,
     #[serde(default)]
     pub stop_requested: bool,
     /// Derived from the pending interaction registries when taking a snapshot.
@@ -305,6 +330,9 @@ enum RunUpdate<'a> {
     Queued,
     Running,
     SessionCreated(&'a str, &'a str, &'a str),
+    Cleanup {
+        session_id: &'a str,
+    },
     Failed {
         session_id: Option<&'a str>,
         error: &'a str,
@@ -341,6 +369,7 @@ fn run_update_event(
         RunUpdate::SessionCreated(session_id, _, _) => {
             ("sessionCreated", "running", Some(session_id), None)
         }
+        RunUpdate::Cleanup { session_id } => ("cleanup", "failed", Some(session_id), None),
         RunUpdate::Failed { session_id, error } => ("finished", "failed", session_id, Some(error)),
     };
     AutomationUpdateEvent {
@@ -720,6 +749,7 @@ fn prune_records(store: &mut RunRecordStore, pending_ids: &HashSet<String>) {
                 record.status.as_str(),
                 "success" | "failed" | "interrupted" | "stopped"
             ) && !pending_ids.contains(&record.id)
+                && !record_needs_cleanup(record)
         }) else {
             break;
         };
@@ -747,6 +777,7 @@ fn append_run_started(
         prompt_id: None,
         notification_delivery: None,
         completion_pending: false,
+        cleanup: None,
         stop_requested: false,
         needs_attention: false,
         waiting_reason: None,
@@ -877,6 +908,8 @@ fn terminal_status(stop_requested: bool, interrupted: bool, ok: bool) -> &'stati
     }
 }
 
+const AUTOMATION_STOPPED_MESSAGE: &str = "本次运行已停止，后续计划不受影响";
+
 fn finalize_record(
     record: &mut AutomationRunRecord,
     ok: bool,
@@ -891,7 +924,7 @@ fn finalize_record(
     record.finished_at = Some(finished_at.to_string());
     record.waiting_reason = None;
     record.error = if record.stop_requested {
-        Some("本次运行已停止，后续计划不受影响".into())
+        Some(AUTOMATION_STOPPED_MESSAGE.into())
     } else {
         (!ok).then(|| error.unwrap_or("自动化执行失败").to_string())
     };
@@ -909,6 +942,16 @@ fn record_run_finished(
     session_id: Option<&str>,
     error: Option<&str>,
 ) -> bool {
+    record_run_finished_with_cleanup(record_id, ok, session_id, error, None)
+}
+
+fn record_run_finished_with_cleanup(
+    record_id: &str,
+    ok: bool,
+    session_id: Option<&str>,
+    error: Option<&str>,
+    cleanup: Option<AutomationRunCleanup>,
+) -> bool {
     let _guard = record_access().lock().unwrap();
     if read_records()
         .ok()
@@ -925,18 +968,133 @@ fn record_run_finished(
         interrupted: false,
         ok,
         error: error.map(str::to_string),
+        cleanup,
         finished_at: Local::now().to_rfc3339(),
         completion: None,
         local_notification_id: None,
         external_claimed: false,
         external_result: None,
         restored_orphan: false,
+        cleanup_only: false,
     };
     match persist_terminal(fact) {
         Ok(completion) => completion.is_some(),
         Err(error) => {
             tracing::error!(%error, %record_id, "automation terminal pending retry");
             false
+        }
+    }
+}
+
+fn amend_cleanup_fact(fact: &mut TerminalFact, cleanup: AutomationRunCleanup) {
+    fact.cleanup = Some(cleanup);
+    if let Some(completion) = &mut fact.completion {
+        let execution_error = if completion.event.status == "stopped" {
+            Some(AUTOMATION_STOPPED_MESSAGE)
+        } else {
+            fact.error.as_deref()
+        };
+        completion.event.error = completion_error(execution_error, fact.cleanup.as_ref());
+    }
+}
+
+fn pending_terminal(record_id: &str) -> Result<Option<TerminalFact>, String> {
+    if let Some(fact) = pending_terminals().lock().unwrap().get(record_id).cloned() {
+        return Ok(Some(fact));
+    }
+    let Some(body) = read_bounded_string(&terminal_path(record_id)?, 64 * 1024)? else {
+        return Ok(None);
+    };
+    let fact: TerminalFact = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    if fact.record_id != record_id || fact.restored_orphan {
+        return Err("清理记录与运行身份不一致".into());
+    }
+    pending_terminals()
+        .lock()
+        .unwrap()
+        .insert(record_id.into(), fact.clone());
+    Ok(Some(fact))
+}
+
+fn cleanup_update_fact(
+    record: &AutomationRunRecord,
+    cleanup: AutomationRunCleanup,
+) -> TerminalFact {
+    TerminalFact {
+        record_id: record.id.clone(),
+        session_id: record.session_id.clone(),
+        prompt_id: record.prompt_id.clone(),
+        ok: record.status == "success",
+        interrupted: record.status == "interrupted",
+        error: record.error.clone(),
+        cleanup: Some(cleanup),
+        finished_at: record
+            .finished_at
+            .clone()
+            .unwrap_or_else(|| Local::now().to_rfc3339()),
+        completion: None,
+        local_notification_id: None,
+        external_claimed: true,
+        external_result: record.notification_delivery.clone(),
+        restored_orphan: false,
+        cleanup_only: true,
+    }
+}
+
+/// Update the original timeout outbox if it is still pending. A later cleanup
+/// retry updates history only and must never send the execution notification again.
+fn set_run_cleanup(record_id: &str, cleanup: AutomationRunCleanup) -> Result<(), String> {
+    let _guard = record_access().lock().unwrap();
+    // Do not hold pending_terminals while writing history: write_records uses
+    // the same mutex to protect outboxes from history retention.
+    let pending = pending_terminal(record_id)?;
+    if let Some(mut fact) = pending {
+        if fact.cleanup.is_none() {
+            return Ok(());
+        } // A different terminal fact won.
+        amend_cleanup_fact(&mut fact, cleanup);
+        pending_terminals()
+            .lock()
+            .unwrap()
+            .insert(record_id.into(), fact.clone());
+        persist_terminal(fact)?;
+        return Ok(());
+    }
+    let records = read_records()?;
+    let record = records
+        .records
+        .iter()
+        .find(|record| record.id == record_id)
+        .ok_or("运行记录不存在")?;
+    if record.cleanup.is_none() {
+        return Ok(());
+    }
+    // A completed execution's outbox may already be retired. Reuse the durable
+    // retry path for cleanup-only writes without publishing its result again.
+    persist_terminal(cleanup_update_fact(record, cleanup))?;
+    Ok(())
+}
+
+/// Reuse the publication fence so retries and cancellation callbacks cannot
+/// publish the initial timeout before its owned-session cleanup settles.
+struct TimeoutPublicationHold(Option<String>);
+
+impl TimeoutPublicationHold {
+    fn new(record_id: &str) -> Self {
+        Self(
+            publications_in_flight()
+                .lock()
+                .unwrap()
+                .insert(record_id.into())
+                .then(|| record_id.to_string()),
+        )
+    }
+}
+
+impl Drop for TimeoutPublicationHold {
+    fn drop(&mut self) {
+        if let Some(record_id) = &self.0 {
+            publications_in_flight().lock().unwrap().remove(record_id);
         }
     }
 }
@@ -965,6 +1123,8 @@ struct TerminalFact {
     #[serde(default)]
     interrupted: bool,
     error: Option<String>,
+    #[serde(default)]
+    cleanup: Option<AutomationRunCleanup>,
     finished_at: String,
     #[serde(default)]
     completion: Option<AutomationCompletion>,
@@ -976,6 +1136,8 @@ struct TerminalFact {
     external_result: Option<String>,
     #[serde(default)]
     restored_orphan: bool,
+    #[serde(default)]
+    cleanup_only: bool,
 }
 
 /// Reconcile a staged backup before any service can retry an outbox. Restored
@@ -1110,7 +1272,7 @@ fn apply_terminal_fact(records: &mut RunRecordStore, fact: &TerminalFact) -> Res
     Ok(finalize_from_fact(record, fact))
 }
 fn finalize_from_fact(record: &mut AutomationRunRecord, fact: &TerminalFact) -> bool {
-    let changed = finalize_record(
+    let mut changed = finalize_record(
         record,
         fact.ok,
         &fact.finished_at,
@@ -1120,7 +1282,24 @@ fn finalize_from_fact(record: &mut AutomationRunRecord, fact: &TerminalFact) -> 
     if changed {
         record.status = terminal_status(record.stop_requested, fact.interrupted, fact.ok).into();
     }
+    if fact.cleanup.is_some() && record.cleanup != fact.cleanup {
+        record.cleanup = fact.cleanup.clone();
+        changed = true;
+    }
+    // The durable timeout fact may gain a cleanup failure after the initial
+    // terminal write. Retry that detail without reopening or re-timing a run.
+    if !changed && record.status == "failed" && !fact.ok && record.error != fact.error {
+        record.error = fact.error.clone();
+        return true;
+    }
     changed
+}
+
+fn completion_error(error: Option<&str>, cleanup: Option<&AutomationRunCleanup>) -> Option<String> {
+    match cleanup.and_then(|cleanup| cleanup.error.as_deref()) {
+        Some(detail) => Some(format!("{}；{detail}", error.unwrap_or("本次运行已超时"))),
+        None => error.map(str::to_string),
+    }
 }
 
 fn completion_for_record(record: &AutomationRunRecord) -> AutomationCompletion {
@@ -1143,7 +1322,7 @@ fn completion_for_record(record: &AutomationRunRecord) -> AutomationCompletion {
             status: record.status.clone(),
             session_id: record.session_id.clone(),
             cwd: record.cwd.clone(),
-            error: record.error.clone(),
+            error: completion_error(record.error.as_deref(), record.cleanup.as_ref()),
         },
     }
 }
@@ -1204,6 +1383,11 @@ fn persist_terminal(fact: TerminalFact) -> Result<Option<AutomationCompletion>, 
         .unwrap()
         .insert(fact.record_id.clone(), fact.clone());
     result?;
+    if fact.cleanup_only {
+        std::fs::remove_file(terminal_path(&fact.record_id)?).map_err(|e| e.to_string())?;
+        pending_terminals().lock().unwrap().remove(&fact.record_id);
+        return Ok(None);
+    }
     active_run_prompts()
         .lock()
         .unwrap()
@@ -1290,12 +1474,14 @@ fn complete_run_prompt(
         interrupted,
         ok,
         error: error.map(str::to_string),
+        cleanup: None,
         finished_at: Local::now().to_rfc3339(),
         completion: None,
         local_notification_id: None,
         external_claimed: false,
         external_result: None,
         restored_orphan: false,
+        cleanup_only: false,
     };
     match persist_terminal(fact) {
         Ok(Some(completion)) => AutomationCompletionOutcome::Persisted(Box::new(completion)),
@@ -1420,6 +1606,20 @@ fn finish_publication(record_id: &str, delivery: &str) -> Result<(), String> {
 
 pub(crate) fn publish_automation_completion(app: &AppHandle, completion: AutomationCompletion) {
     let record_id = completion.event.record_id.clone();
+    if pending_terminals()
+        .lock()
+        .unwrap()
+        .get(&record_id)
+        .is_some_and(|fact| {
+            fact.cleanup_only
+                || fact
+                    .cleanup
+                    .as_ref()
+                    .is_some_and(|cleanup| cleanup.status == AutomationCleanupStatus::Running)
+        })
+    {
+        return;
+    }
     if !publications_in_flight()
         .lock()
         .unwrap()
@@ -1532,17 +1732,20 @@ pub fn is_full_access_session(session_id: &str) -> bool {
     full_access_sessions().lock().unwrap().contains(session_id)
 }
 
-async fn release_full_access_session(
-    app: &AppHandle,
+const AUTOMATION_CLEANUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+const AUTOMATION_PERMISSION_CLEANUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
+
+async fn restore_launch_permissions(
     tx: &echo_agent_acp::AcpAgentTx,
     session_id: &str,
-) {
+    had_full_access: bool,
+) -> Result<(), String> {
+    if !had_full_access {
+        return Ok(());
+    }
     let _guard = crate::permission_config::permission_transition_lock()
         .lock()
         .await;
-    if !is_full_access_session(session_id) {
-        return;
-    }
     let target_mode = crate::permission_config::permission_mode_for_session();
     let mut reset = Ok(());
     for _ in 0..2 {
@@ -1556,18 +1759,134 @@ async fn release_full_access_session(
             break;
         }
     }
+    reset
+}
+
+struct SessionCleanupOutcome {
+    permissions: Result<(), String>,
+    runtime: Result<(), String>,
+    native: Result<(), String>,
+}
+
+impl SessionCleanupOutcome {
+    fn result(&self) -> Result<(), String> {
+        let mut errors = Vec::new();
+        if let Err(error) = &self.runtime {
+            errors.push(format!("运行会话清理失败：{error}"));
+            if let Err(error) = &self.permissions {
+                errors.push(format!("权限恢复失败：{error}"));
+            }
+        }
+        if let Err(error) = &self.native {
+            errors.push(format!("本地自动化清理失败：{error}"));
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("；"))
+        }
+    }
+}
+
+/// A single wall-clock budget covers lock acquisition, permission reset and
+/// both stop operations. Native actions stop immediately, even if the global
+/// permission lock is occupied. Closing always runs after a bounded reset.
+async fn run_session_cleanup(
+    budget: std::time::Duration,
+    permission_budget: std::time::Duration,
+    restore: impl std::future::Future<Output = Result<(), String>>,
+    close: impl std::future::Future<Output = Result<(), String>>,
+    stop_native: impl std::future::Future<Output = Result<(), String>>,
+) -> SessionCleanupOutcome {
+    let deadline = tokio::time::Instant::now() + budget;
+    let (native, (permissions, runtime)) = tokio::join!(
+        async {
+            tokio::time::timeout_at(deadline, stop_native)
+                .await
+                .unwrap_or_else(|_| Err("停止超时，请重试清理".into()))
+        },
+        async {
+            let permissions = tokio::time::timeout_at(
+                deadline.min(tokio::time::Instant::now() + permission_budget),
+                restore,
+            )
+            .await
+            .unwrap_or_else(|_| Err("等待权限恢复超时".into()));
+            let runtime = tokio::time::timeout_at(deadline, close)
+                .await
+                .unwrap_or_else(|_| Err("关闭超时，请重试清理".into()));
+            (permissions, runtime)
+        }
+    );
+    SessionCleanupOutcome {
+        permissions,
+        runtime,
+        native,
+    }
+}
+
+fn quarantine_permission_failure(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, error: &str) {
+    let reason = format!("自动化会话权限恢复失败（{error}）；Agent 已安全停止，请重新启动");
+    if app
+        .state::<AppState>()
+        .mark_runtime_dead_if_current(tx, &reason)
+    {
+        let _ = app.emit(
+            "agent://agent-died",
+            serde_json::json!({ "reason": reason }),
+        );
+    }
+}
+
+async fn cleanup_expired_session(
+    app: &AppHandle,
+    tx: Option<&echo_agent_acp::AcpAgentTx>,
+    session_id: &str,
+) -> Result<(), String> {
+    // Revoke desktop auto-approval before waiting for any lock or transport.
+    let had_full_access = full_access_sessions().lock().unwrap().remove(session_id);
+    let outcome = run_session_cleanup(
+        AUTOMATION_CLEANUP_BUDGET,
+        AUTOMATION_PERMISSION_CLEANUP_BUDGET,
+        async {
+            match tx {
+                Some(tx) => restore_launch_permissions(tx, session_id, had_full_access).await,
+                None => Ok(()),
+            }
+        },
+        async {
+            match tx {
+                Some(tx) => crate::agent_runtime::close_session(tx, session_id)
+                    .await
+                    .map_err(|e| e.to_string()),
+                None => Ok(()),
+            }
+        },
+        crate::automation::stop_existing_session(session_id),
+    )
+    .await;
+    if outcome.runtime.is_err() {
+        if let (Err(error), Some(tx)) = (&outcome.permissions, tx) {
+            quarantine_permission_failure(app, tx, error);
+        }
+    }
+    app.state::<AppState>().forget_session_workspace(session_id);
+    outcome.result()
+}
+
+async fn release_full_access_session(
+    app: &AppHandle,
+    tx: &echo_agent_acp::AcpAgentTx,
+    session_id: &str,
+) {
+    // Ordinary completion keeps the permission transition ordering. The
+    // deadline and forced close belong to cleanup_expired_session, so a slow
+    // unrelated transition cannot turn a successful run into a Runtime stop.
+    let reset =
+        restore_launch_permissions(tx, session_id, is_full_access_session(session_id)).await;
     if let Err(error) = reset {
         tracing::warn!(%error, %session_id, "failed to restore automation session permission mode");
-        let reason = format!(
-            "自动化会话权限恢复失败（{error}）；为避免残留全权限会话，Agent 已安全停止，请重新启动"
-        );
-        let state = app.state::<AppState>();
-        if state.mark_runtime_dead_if_current(tx, &reason) {
-            let _ = app.emit(
-                "agent://agent-died",
-                serde_json::json!({ "reason": reason }),
-            );
-        }
+        quarantine_permission_failure(app, tx, &error);
     }
     full_access_sessions().lock().unwrap().remove(session_id);
 }
@@ -1607,6 +1926,41 @@ fn fail_stale_running_records() {
                 .lock()
                 .unwrap()
                 .retain(|_, id| pending.contains_key(id));
+        }
+    }
+}
+
+fn recover_interrupted_cleanups() {
+    let ids = {
+        let _guard = record_access().lock().unwrap();
+        let Ok(records) = read_records() else {
+            return;
+        };
+        records
+            .records
+            .iter()
+            .filter(|record| {
+                record
+                    .cleanup
+                    .as_ref()
+                    .is_some_and(|cleanup| cleanup.status == AutomationCleanupStatus::Running)
+                    && !publications_in_flight()
+                        .lock()
+                        .unwrap()
+                        .contains(&record.id)
+            })
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>()
+    };
+    for id in ids {
+        if let Err(error) = set_run_cleanup(
+            &id,
+            AutomationRunCleanup {
+                status: AutomationCleanupStatus::Failed,
+                error: Some("应用在清理期间中断，请重试清理以确认后台工作已停止".into()),
+            },
+        ) {
+            tracing::error!(%id, %error, "failed to recover interrupted automation cleanup");
         }
     }
 }
@@ -2106,6 +2460,13 @@ pub async fn automations_snapshot(app: AppHandle) -> Result<AutomationSnapshot, 
                 record.error =
                     Some("运行已结束，完成记录等待保存；系统正在重试，不会重复执行任务".into());
             }
+            if let Some(fact) = pending
+                .get(&record.id)
+                .filter(|fact| fact.cleanup.is_some())
+            {
+                record.completion_pending |= fact.cleanup_only || record.cleanup != fact.cleanup;
+                finalize_from_fact(record, fact);
+            }
         }
         records
     };
@@ -2248,6 +2609,123 @@ pub(crate) fn owns_session(session_id: &str) -> bool {
             .iter()
             .any(|item| item.dedicated_session_id.as_deref() == Some(session_id))
     })
+}
+
+fn record_needs_cleanup(record: &AutomationRunRecord) -> bool {
+    record
+        .cleanup
+        .as_ref()
+        .is_some_and(AutomationRunCleanup::unresolved)
+}
+
+/// Failed cleanup retains ownership, so a future retry cannot stop new work
+/// admitted into the same conversation after the expired occurrence.
+pub(crate) fn require_session_cleanup_complete(session_id: &str) -> Result<(), String> {
+    let _guard = record_access().lock().unwrap();
+    let records = read_records()?;
+    if records.records.iter().any(|record| {
+        record.session_id.as_deref() == Some(session_id) && record_needs_cleanup(record)
+    }) || pending_terminals().lock().unwrap().values().any(|fact| {
+        fact.session_id.as_deref() == Some(session_id)
+            && fact
+                .cleanup
+                .as_ref()
+                .is_some_and(AutomationRunCleanup::unresolved)
+    }) {
+        return Err(
+            "该会话的超时运行尚未完成清理，请在「定时任务 → 运行记录」中重试清理后继续".into(),
+        );
+    }
+    Ok(())
+}
+
+fn require_automation_cleanup_complete(automation_id: &str) -> Result<(), String> {
+    let _guard = record_access().lock().unwrap();
+    if read_records()?
+        .records
+        .iter()
+        .any(|record| record.automation_id == automation_id && record_needs_cleanup(record))
+        || pending_terminals().lock().unwrap().values().any(|fact| {
+            fact.cleanup
+                .as_ref()
+                .is_some_and(AutomationRunCleanup::unresolved)
+                && fact
+                    .completion
+                    .as_ref()
+                    .is_some_and(|completion| completion.event.automation_id == automation_id)
+        })
+    {
+        return Err("上次超时运行尚未完成清理，请先在运行记录中重试清理".into());
+    }
+    Ok(())
+}
+
+fn cleanup_record(id: &str) -> Result<AutomationRunRecord, String> {
+    let _guard = record_access().lock().unwrap();
+    let mut record = read_records()?
+        .records
+        .into_iter()
+        .find(|record| record.id == id)
+        .ok_or("运行记录不存在")?;
+    if let Some(fact) = pending_terminal(id)?.filter(|fact| fact.cleanup.is_some()) {
+        finalize_from_fact(&mut record, &fact);
+    }
+    Ok(record)
+}
+
+/// Retry resource cleanup only. The original execution is never dispatched again.
+#[tauri::command]
+pub async fn automation_run_retry_cleanup(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    crate::policy::require_feature("automations")?;
+    let record = cleanup_record(&id)?;
+    if !record_needs_cleanup(&record) {
+        return Ok(());
+    }
+    let session_id = record.session_id.as_deref().ok_or("未找到需要清理的会话")?;
+    let _session_guard = session_turn_lock(session_id)
+        .try_lock_owned()
+        .map_err(|_| "会话正在处理任务或清理，请稍后重试")?;
+    // Another retry may have finished between the initial read and the fence.
+    if !record_needs_cleanup(&cleanup_record(&id)?) {
+        return Ok(());
+    }
+    let hold = TimeoutPublicationHold::new(&id);
+    if let Err(error) = set_run_cleanup(
+        &id,
+        AutomationRunCleanup {
+            status: AutomationCleanupStatus::Running,
+            error: None,
+        },
+    ) {
+        // Cleanup must still stop resources if the history disk is unavailable.
+        // The previous unresolved record keeps the session admission fenced.
+        tracing::warn!(%id, %error, "cleanup start persistence pending; stopping resources anyway");
+    }
+    let mut update = completion_for_record(&record).event;
+    update.phase = "cleanup".into();
+    emit_automation_update(&app, update.clone());
+    let tx = state.tx.lock().unwrap().clone();
+    let result = cleanup_expired_session(&app, tx.as_ref(), session_id).await;
+    let saved = set_run_cleanup(
+        &id,
+        AutomationRunCleanup {
+            status: if result.is_ok() {
+                AutomationCleanupStatus::Completed
+            } else {
+                AutomationCleanupStatus::Failed
+            },
+            error: result.as_ref().err().cloned(),
+        },
+    );
+    drop(hold);
+    emit_automation_update(&app, update);
+    saved?;
+    publish_pending_completion(&app, &id);
+    result
 }
 
 fn dedicated_session_for_run(automation: &Automation) -> Result<Option<String>, String> {
@@ -2614,7 +3092,9 @@ pub fn automations_delete(app: AppHandle, id: String) -> Result<(), String> {
     crate::policy::require_feature("automations")?;
     let _record_guard = record_access().lock().unwrap();
     if read_records()?.records.iter().any(|record| {
-        record.automation_id == id && matches!(record.status.as_str(), "queued" | "running")
+        record.automation_id == id
+            && (matches!(record.status.as_str(), "queued" | "running")
+                || record_needs_cleanup(record))
     }) {
         return Err("该自动化任务正在运行，请等待完成后再删除".into());
     }
@@ -2703,6 +3183,7 @@ pub async fn automations_run(
     id: String,
 ) -> Result<String, String> {
     crate::policy::require_feature("automations")?;
+    require_automation_cleanup_complete(&id)?;
     let automation = {
         let _guard = store_access().lock().unwrap();
         read_store()?
@@ -3002,34 +3483,58 @@ async fn execute_automation_run(
         }
         Err(_) => {
             let error = format!(
-                "执行超过 {} 分钟，已取消",
+                "执行超过 {} 分钟，本次运行已超时",
                 AUTOMATION_RUN_TIMEOUT.as_secs() / 60
             );
             let session_id = record_session_id(&record_id).ok().flatten();
-            // Persist the timeout before its cancellation emits a generic
-            // stopped terminal, so delivery order cannot hide the failure.
-            let persisted = record_run_finished(&record_id, false, None, Some(&error));
+            let publication_hold = TimeoutPublicationHold::new(&record_id);
+            // The timeout wins before cancellation emits a generic stopped fact.
+            // Cleanup is separately durable so failures remain safely retryable.
+            record_run_finished_with_cleanup(
+                &record_id,
+                false,
+                session_id.as_deref(),
+                Some(&error),
+                session_id.as_ref().map(|_| AutomationRunCleanup {
+                    status: AutomationCleanupStatus::Running,
+                    error: None,
+                }),
+            );
             if let Some(session_id) = &session_id {
-                let _ = tokio::join!(
-                    crate::automation::stop_existing_session(session_id),
-                    crate::agent_runtime::cancel(&tx, session_id, "stop", None)
-                );
-                release_full_access_session(&app, &tx, session_id).await;
-                app.state::<AppState>().forget_session_workspace(session_id);
-            }
-            if persisted {
                 emit_run_update(
                     &app,
                     &automation,
                     &record_id,
                     &cwd,
-                    RunUpdate::Failed {
-                        session_id: session_id.as_deref(),
-                        error: &error,
-                    },
+                    RunUpdate::Cleanup { session_id },
                 );
-                publish_pending_completion(&app, &record_id);
+                let result = cleanup_expired_session(&app, Some(&tx), session_id).await;
+                if let Err(reason) = &result {
+                    tracing::error!(%record_id, %session_id, %reason, "automation timeout cleanup incomplete");
+                }
+                if let Err(reason) = set_run_cleanup(
+                    &record_id,
+                    AutomationRunCleanup {
+                        status: if result.is_ok() {
+                            AutomationCleanupStatus::Completed
+                        } else {
+                            AutomationCleanupStatus::Failed
+                        },
+                        error: result.err(),
+                    },
+                ) {
+                    tracing::error!(%record_id, %reason, "failed to persist timeout cleanup result");
+                }
+                emit_run_update(
+                    &app,
+                    &automation,
+                    &record_id,
+                    &cwd,
+                    RunUpdate::Cleanup { session_id },
+                );
             }
+            drop(publication_hold);
+            publish_pending_completion(&app, &record_id);
         }
     }
 }
@@ -3118,6 +3623,7 @@ async fn run_automation_once(
     resolved_model_id: &str,
     session_guard: &mut Option<tokio::sync::OwnedMutexGuard<()>>,
 ) -> Result<(String, crate::bridge::CompleteEvent), String> {
+    require_automation_cleanup_complete(&automation.id)?;
     crate::policy::require_feature("automations")?;
     crate::policy::require_model(resolved_model_id)?;
     crate::commands::require_runtime_ready(Some(app), state, Some(resolved_model_id))?;
@@ -3160,6 +3666,7 @@ async fn run_automation_once(
                 }
             }
         });
+        require_session_cleanup_complete(session_id)?;
         if !crate::sessions::persisted_session_exists(session_id)? {
             return Err("任务专属会话已不存在，请在任务详情重置会话上下文后重新运行".into());
         }
@@ -3477,7 +3984,7 @@ pub fn automation_records_archive(id: String, archived: bool) -> Result<(), Stri
         .iter_mut()
         .find(|record| record.id == id)
         .ok_or_else(|| format!("automation record {id} not found"))?;
-    if matches!(record.status.as_str(), "queued" | "running") {
+    if matches!(record.status.as_str(), "queued" | "running") || record_needs_cleanup(record) {
         return Err("运行中的记录不能归档".into());
     }
     record.archived = archived;
@@ -3494,7 +4001,7 @@ pub fn automation_records_delete(id: String) -> Result<(), String> {
         .iter()
         .find(|record| record.id == id)
         .ok_or_else(|| format!("automation record {id} not found"))?;
-    if matches!(record.status.as_str(), "queued" | "running") {
+    if matches!(record.status.as_str(), "queued" | "running") || record_needs_cleanup(record) {
         return Err("运行中的记录不能删除".into());
     }
     records.records.retain(|r| r.id != id);
@@ -3822,6 +4329,7 @@ pub fn start_scheduler(
     default_cwd: PathBuf,
 ) -> tauri::async_runtime::JoinHandle<()> {
     retry_terminal_completions(&app);
+    recover_interrupted_cleanups();
     fail_stale_running_records();
     tauri::async_runtime::spawn(async move {
         // Give the renderer time to subscribe to interaction events before a
@@ -5572,12 +6080,14 @@ mod tests {
             ok: true,
             interrupted: false,
             error: None,
+            cleanup: None,
             finished_at: "end".into(),
             completion: None,
             local_notification_id: None,
             external_claimed: false,
             external_result: None,
             restored_orphan: false,
+            cleanup_only: false,
         };
         (records, fact)
     }
@@ -5854,6 +6364,265 @@ mod tests {
         .unwrap();
         assert_eq!(fact.completion.as_ref().unwrap().event.status, "success");
         assert!(!apply_terminal_fact(&mut recovered, &fact).unwrap());
+    }
+
+    #[tokio::test]
+    async fn timeout_cleanup_closes_session_when_permission_lock_is_held() {
+        let lock = tokio::sync::Mutex::new(());
+        let _guard = lock.lock().await;
+        let closed = std::sync::atomic::AtomicBool::new(false);
+        let native_stopped = std::sync::atomic::AtomicBool::new(false);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_session_cleanup(
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_millis(10),
+                async {
+                    let _guard = lock.lock().await;
+                    Ok(())
+                },
+                async {
+                    closed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                },
+                async {
+                    native_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                },
+            ),
+        )
+        .await
+        .expect("cleanup must not wait forever for the permission lock");
+        assert!(result.permissions.is_err());
+        assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(native_stopped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            result.result().is_ok(),
+            "closed actors cannot retain launch permissions"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_cleanup_uses_one_deadline_for_all_stages() {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_session_cleanup(
+                std::time::Duration::from_millis(30),
+                std::time::Duration::from_millis(5),
+                std::future::pending(),
+                std::future::pending(),
+                std::future::pending(),
+            ),
+        )
+        .await
+        .expect("every stage, including lock acquisition, must be bounded");
+        assert!(result.permissions.is_err());
+        assert!(result.runtime.is_err());
+        assert!(result.native.is_err());
+        let error = result.result().unwrap_err();
+        assert!(error.contains("运行会话清理失败") && error.contains("本地自动化清理失败"));
+    }
+
+    #[test]
+    fn timeout_cleanup_state_survives_history_retry_and_keeps_execution_terminal() {
+        let (mut records, mut fact) = terminal_fixture();
+        fact.ok = false;
+        fact.error = Some("本次运行已超时".into());
+        fact.cleanup = Some(AutomationRunCleanup {
+            status: AutomationCleanupStatus::Running,
+            error: None,
+        });
+        persist_terminal_transition(&mut records, &mut fact, |_| Ok(()), |_| Ok(())).unwrap();
+        let finished_at = records.records[0].finished_at.clone();
+        let cleanup = AutomationRunCleanup {
+            status: AutomationCleanupStatus::Failed,
+            error: Some("本地自动化清理超时".into()),
+        };
+        amend_cleanup_fact(&mut fact, cleanup.clone());
+        let mut durable = String::new();
+        assert!(persist_terminal_transition(
+            &mut records,
+            &mut fact,
+            |fact| {
+                durable = serde_json::to_string(fact).unwrap();
+                Ok(())
+            },
+            |_| Err("history unavailable".into()),
+        )
+        .is_err());
+        records.records[0].cleanup = None;
+        let mut recovered: TerminalFact = serde_json::from_str(&durable).unwrap();
+        persist_terminal_transition(&mut records, &mut recovered, |_| Ok(()), |_| Ok(())).unwrap();
+        assert_eq!(records.records[0].cleanup, Some(cleanup));
+        assert!(record_needs_cleanup(&records.records[0]));
+        assert!(recovered
+            .completion
+            .as_ref()
+            .unwrap()
+            .event
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("清理超时"));
+        amend_cleanup_fact(
+            &mut recovered,
+            AutomationRunCleanup {
+                status: AutomationCleanupStatus::Completed,
+                error: None,
+            },
+        );
+        persist_terminal_transition(&mut records, &mut recovered, |_| Ok(()), |_| Ok(())).unwrap();
+        assert_eq!(records.records[0].status, "failed");
+        assert_eq!(records.records[0].finished_at, finished_at);
+        assert!(!record_needs_cleanup(&records.records[0]));
+        assert_eq!(
+            recovered
+                .completion
+                .as_ref()
+                .unwrap()
+                .event
+                .error
+                .as_deref(),
+            Some("本次运行已超时")
+        );
+    }
+
+    #[test]
+    fn timeout_cleanup_detail_survives_history_retry_without_reopening_run() {
+        let (mut records, mut fact) = terminal_fixture();
+        fact.ok = false;
+        fact.error = Some("本次运行已超时".into());
+        persist_terminal_transition(&mut records, &mut fact, |_| Ok(()), |_| Ok(())).unwrap();
+        let finished = records.records[0].finished_at.clone();
+        fact.error = Some("本次运行已超时；运行会话清理失败".into());
+        fact.completion.as_mut().unwrap().event.error = fact.error.clone();
+        let mut saved = String::new();
+        let result = persist_terminal_transition(
+            &mut records,
+            &mut fact,
+            |fact| {
+                saved = serde_json::to_string(fact).unwrap();
+                Ok(())
+            },
+            |_| Err("injected history write failure".into()),
+        );
+        assert!(result.is_err());
+        // Recover the amended outbox against the original timeout history.
+        records.records[0].error = Some("本次运行已超时".into());
+        let mut recovered: TerminalFact = serde_json::from_str(&saved).unwrap();
+        persist_terminal_transition(&mut records, &mut recovered, |_| Ok(()), |_| Ok(())).unwrap();
+        assert_eq!(records.records[0].error, fact.error);
+        assert_eq!(records.records[0].status, "failed");
+        assert_eq!(records.records[0].finished_at, finished);
+        assert!(!apply_terminal_fact(&mut records, &recovered).unwrap());
+    }
+
+    #[test]
+    fn timeout_cleanup_after_publication_uses_a_silent_durable_update() {
+        let (mut records, mut fact) = terminal_fixture();
+        fact.ok = false;
+        fact.error = Some("执行已超时".into());
+        fact.cleanup = Some(AutomationRunCleanup {
+            status: AutomationCleanupStatus::Failed,
+            error: Some("关闭超时".into()),
+        });
+        persist_terminal_transition(&mut records, &mut fact, |_| Ok(()), |_| Ok(())).unwrap();
+        records.records[0].notification_delivery = Some("通知已投递".into());
+        let mut update = cleanup_update_fact(
+            &records.records[0],
+            AutomationRunCleanup {
+                status: AutomationCleanupStatus::Completed,
+                error: None,
+            },
+        );
+        assert!(update.cleanup_only && update.external_claimed);
+        let mut saved = String::new();
+        assert!(persist_terminal_transition(
+            &mut records,
+            &mut update,
+            |fact| {
+                saved = serde_json::to_string(fact).unwrap();
+                Ok(())
+            },
+            |_| Err("disk unavailable".into()),
+        )
+        .is_err());
+        let mut recovered: TerminalFact = serde_json::from_str(&saved).unwrap();
+        records.records[0].cleanup = fact.cleanup.clone();
+        persist_terminal_transition(&mut records, &mut recovered, |_| Ok(()), |_| Ok(())).unwrap();
+        assert!(recovered.cleanup_only && recovered.external_claimed);
+        assert_eq!(
+            records.records[0].cleanup.as_ref().unwrap().status,
+            AutomationCleanupStatus::Completed
+        );
+        assert_eq!(
+            records.records[0].notification_delivery.as_deref(),
+            Some("通知已投递")
+        );
+        assert_eq!(records.records[0].status, "failed");
+    }
+
+    #[test]
+    fn timeout_cleanup_preserves_a_concurrent_user_stop() {
+        let (mut records, mut fact) = terminal_fixture();
+        records.records[0].stop_requested = true;
+        fact.ok = false;
+        fact.error = Some("本次运行已超时".into());
+        fact.cleanup = Some(AutomationRunCleanup {
+            status: AutomationCleanupStatus::Running,
+            error: None,
+        });
+        persist_terminal_transition(&mut records, &mut fact, |_| Ok(()), |_| Ok(())).unwrap();
+        amend_cleanup_fact(
+            &mut fact,
+            AutomationRunCleanup {
+                status: AutomationCleanupStatus::Completed,
+                error: None,
+            },
+        );
+        assert_eq!(fact.completion.as_ref().unwrap().event.status, "stopped");
+        assert_eq!(
+            fact.completion.as_ref().unwrap().event.error.as_deref(),
+            Some(AUTOMATION_STOPPED_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn timeout_cleanup_survives_retention_and_legacy_records_remain_readable() {
+        let (mut records, _) = terminal_fixture();
+        let mut legacy = serde_json::to_value(&records.records[0]).unwrap();
+        legacy.as_object_mut().unwrap().remove("cleanup");
+        let loaded: AutomationRunRecord = serde_json::from_value(legacy).unwrap();
+        assert!(loaded.cleanup.is_none());
+        records.records[0].status = "failed".into();
+        records.records[0].cleanup = Some(AutomationRunCleanup {
+            status: AutomationCleanupStatus::Failed,
+            error: Some("需重试清理".into()),
+        });
+        let retained_id = records.records[0].id.clone();
+        for i in 0..MAX_RECORDS {
+            let mut completed = loaded.clone();
+            completed.id = format!("completed-{i}");
+            completed.status = "success".into();
+            records.records.push(completed);
+        }
+        prune_records(&mut records, &HashSet::new());
+        assert_eq!(records.records.len(), MAX_RECORDS);
+        assert_eq!(
+            records.records[0].id, retained_id,
+            "cleanup ownership cannot be pruned with old history"
+        );
+    }
+
+    #[test]
+    fn timeout_cleanup_holds_publication_until_cleanup_finishes() {
+        let id = uuid::Uuid::now_v7().to_string();
+        let hold = TimeoutPublicationHold::new(&id);
+        let duplicate = TimeoutPublicationHold::new(&id);
+        drop(duplicate);
+        assert!(publications_in_flight().lock().unwrap().contains(&id));
+        drop(hold);
+        assert!(!publications_in_flight().lock().unwrap().contains(&id));
     }
 
     #[test]

@@ -41,6 +41,116 @@ fn make_http_server(name: &str, url: &str) -> acp::McpServer {
     acp::McpServer::Http(acp::McpServerHttp::new(name, url))
 }
 
+// Spawned only by the lifecycle test below, on both Windows and Unix. Using
+// the test executable avoids assuming Python/Node/a shell is installed.
+#[test]
+#[ignore]
+fn idle_stdio_fixture() {
+    if std::env::var_os("ECHO_TEST_IDLE_STDIO").is_none() {
+        return;
+    }
+    use std::io::{BufRead, Write};
+    for line in std::io::stdin().lock().lines() {
+        let message: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+        let Some(id) = message.get("id") else {
+            continue;
+        };
+        let result = match message["method"].as_str().unwrap_or_default() {
+            "initialize" => serde_json::json!({
+                "protocolVersion": message["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "idle-test", "version": "1"}
+            }),
+            "tools/list" => {
+                serde_json::json!({"tools": [{"name": "ping", "inputSchema": {"type": "object"}}]})
+            }
+            "tools/call" => serde_json::json!({"content": [{"type": "text", "text": "pong"}]}),
+            _ => serde_json::json!({}),
+        };
+        println!(
+            "{}",
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
+        );
+        std::io::stdout().flush().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn owned_stdio_teardown_reaps_twenty_four_sessions_with_external_references() {
+    for _ in 0..24 {
+        let state = Arc::new(Mutex::new(McpState::new(vec![make_stdio_server(
+            "idle-test",
+            "fixture",
+        )])));
+        assert!(state.lock().await.try_start_init());
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "servers::tests::idle_stdio_fixture",
+                "--ignored",
+                "--nocapture",
+                "--format",
+                "terse",
+            ])
+            .env("ECHO_TEST_IDLE_STDIO", "1")
+            .kill_on_drop(true);
+        echo_agent_tools::util::detach_command(&mut command);
+        let (transport, _stderr) = SafeTokioChildProcess::spawn(
+            command,
+            None,
+            "idle-test".into(),
+            echo_agent_session_events::EventWriter::noop(),
+        )
+        .await
+        .unwrap();
+        #[cfg(unix)]
+        let pid = transport.id().unwrap();
+        let client = Arc::new(McpClient::new_stdio(
+            "idle-test".into(),
+            transport,
+            None,
+            None,
+        ));
+        state
+            .lock()
+            .await
+            .owned_clients
+            .insert("idle-test".into(), client.clone());
+        let tools = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.get_tool_registrations(state.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            tools.len(),
+            1,
+            "tools must be available after every reconnect"
+        );
+        let output = client.call_tool("ping", serde_json::json!({})).await.unwrap();
+        assert!(serde_json::to_string(&output).unwrap().contains("pong"));
+        state.lock().await.finish_init();
+        state.lock().await.owned_clients.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let empty = matches!(*client.state.lock().await, ClientState::Empty);
+                #[cfg(unix)]
+                let reaped = !unix_process_exists(pid);
+                #[cfg(not(unix))]
+                let reaped = true;
+                if empty && reaped {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("owned child must be reaped while external client references survive");
+    }
+}
+
 #[test]
 fn plan_stdio_spawn_windows_resolves_bare_launcher_to_cmd_shim() {
     let args = vec!["-y".to_string(), "@scope/pkg".to_string()];

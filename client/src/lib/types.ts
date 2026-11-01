@@ -953,6 +953,7 @@ export interface AutomationRunRecord {
   waitingReason?: string;
   executionConfig?: { prompt: string; newSessionEachRun: boolean; permissionMode: AutomationPermissionMode };
   completionPending?: boolean;
+  cleanup?: { status: "running" | "failed" | "completed"; error?: string };
   notificationDelivery?: string;
   id: string;
   automationId: string;
@@ -975,7 +976,7 @@ export interface AutomationSnapshot {
 
 /** Live lifecycle notification emitted by the native automation scheduler. */
 export interface AutomationUpdateEvent {
-  phase: "queued" | "running" | "sessionCreated" | "finished" | string;
+  phase: "queued" | "running" | "sessionCreated" | "cleanup" | "finished" | string;
   automationId: string;
   automationName: string;
   recordId: string;
