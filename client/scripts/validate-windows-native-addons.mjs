@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { assertSupportedNodeVersion } from "./node-runtime-version.mjs";
+import { patchTheiaWindowlessHelpers } from "./patch-theia-windowless-helpers.mjs";
 import { patchNodePtyConsoleHelper, patchNodePtyPipeErrors, ensureNodePtyConptySourceUnmodified,
   syncNodePtyPrebuilds, markNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
 
@@ -23,6 +24,8 @@ function run(args) {
   assert.equal(result.status, 0, `Native addon command failed: ${args.join(" ")}`);
 }
 
+// Exercise the same checked-out sources and patch sequence as the IDE build.
+patchTheiaWindowlessHelpers(source);
 patchNodePtyConsoleHelper(source);
 patchNodePtyPipeErrors(source);
 ensureNodePtyConptySourceUnmodified(source);

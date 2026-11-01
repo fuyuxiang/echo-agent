@@ -88,10 +88,27 @@ jobs:
       - name: Package Windows validation build
         if: runner.os == 'Windows'
         shell: powershell
-        run: .\scripts\build.ps1 -AllowUnsignedPlatform
+        run: |
+          $buildLog = Join-Path $env:RUNNER_TEMP 'echo-windows-build.log'
+          & .\scripts\build.ps1 -AllowUnsignedPlatform *>&1 | Tee-Object -FilePath $buildLog
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) {
+            $tail = Get-Content -LiteralPath $buildLog -Tail 120 | Out-String
+            if ($tail.Length -gt 12000) { $tail = $tail.Substring($tail.Length - 12000) }
+            $message = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=Windows packaging failed::$message"
+            exit $buildExit
+          }
         env:
           PUPPETEER_SKIP_DOWNLOAD: '1'
           PYTHON: ${{ steps.python.outputs.python-path }}
+      - name: Preserve Windows packaging diagnostics
+        if: ${{ always() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packaging-diagnostics
+          path: ${{ runner.temp }}/echo-windows-build.log
+          if-no-files-found: ignore
       - run: pnpm test:security
       - run: node vendor/theia-platform/node_modules/playwright/cli.js install chromium
       - run: node scripts/validate-theia-runtime.mjs

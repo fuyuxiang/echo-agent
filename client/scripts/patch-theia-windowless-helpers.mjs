@@ -25,14 +25,18 @@ function count(source, value) {
 export function patchTheiaWindowlessHelpers(sourceRoot) {
   for (const relative of helpers) {
     const file = join(sourceRoot, relative);
-    const source = readFileSync(file, "utf8");
+    const original = readFileSync(file, "utf8");
+    // Git checks these already-patched sources out as CRLF on Windows.
+    // Compare logical lines while keeping repeated runs byte-for-byte stable.
+    const source = original.replace(/\r\n/g, "\n");
+    const detachedOptions = (source.match(/\bdetached\s*:/g) || []).length;
     if (count(source, newLines) === 1 && count(source, oldLine) === 1
-        && count(source, "detached: process.platform === 'win32'") === 1) continue;
-    if (count(source, oldLine) !== 1
-        || count(source, "detached: process.platform === 'win32'") !== 0) {
+        && detachedOptions === 1) continue;
+    if (count(source, oldLine) !== 1 || detachedOptions !== 0) {
       throw new Error(`Theia background fork changed: ${relative}; review its Windows console behavior.`);
     }
-    writeFileSync(file, source.replace(oldLine, newLines));
+    const eol = original.includes("\r\n") ? "\r\n" : "\n";
+    writeFileSync(file, original.replace(oldLine, newLines.replace(/\n/g, eol)));
   }
 }
 

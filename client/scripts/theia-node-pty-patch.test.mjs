@@ -40,12 +40,12 @@ afterEach(() => {
   }
 });
 
-it("handles early ConPTY pipe errors without terminating the backend", () => {
+it.each(["\n", "\r\n"])("handles early ConPTY pipe errors and preserves %j line endings", (eol) => {
   const browserRoot = fixture();
   const packageRoot = join(browserRoot, "node_modules/node-pty/lib");
   const agentPath = join(packageRoot, "windowsPtyAgent.js");
   const terminalPath = join(packageRoot, "windowsTerminal.js");
-  writeFileSync(agentPath, `this._inSocket.setEncoding('utf8');\n`);
+  writeFileSync(agentPath, `this._inSocket.setEncoding('utf8');${eol}`);
   writeFileSync(terminalPath, `        _this._socket = _this._agent.outSocket;
         // Not available until \`ready\` event emitted.
         _this._socket.on('ready_datapipe', function () {
@@ -72,15 +72,26 @@ it("handles early ConPTY pipe errors without terminating the backend", () => {
                 _this._close();
             });
         });
-`);
+`.replace(/\n/g, eol));
   expect(isNodePtyPipeErrorsHandled(browserRoot)).toBe(false);
   patchNodePtyPipeErrors(browserRoot);
   expect(isNodePtyPipeErrorsHandled(browserRoot)).toBe(true);
   const terminal = readFileSync(terminalPath, "utf8");
+  const agent = readFileSync(agentPath, "utf8");
+  expect(agent.replaceAll(eol, "")).not.toMatch(/[\r\n]/);
+  expect(terminal.replaceAll(eol, "")).not.toMatch(/[\r\n]/);
   expect(terminal).not.toContain("throw err;");
   expect(terminal.indexOf("_socket.on('error'")).toBeLessThan(terminal.indexOf("_socket.on('ready_datapipe'"));
   patchNodePtyPipeErrors(browserRoot);
+  expect(readFileSync(agentPath, "utf8")).toBe(agent);
   expect(readFileSync(terminalPath, "utf8")).toBe(terminal);
+  // An editor/Git newline conversion must still be recognized as patched.
+  const otherEol = eol === "\n" ? "\r\n" : "\n";
+  writeFileSync(agentPath, agent.replace(/\r\n/g, "\n").replace(/\n/g, otherEol));
+  writeFileSync(terminalPath, terminal.replace(/\r\n/g, "\n").replace(/\n/g, otherEol));
+  expect(isNodePtyPipeErrorsHandled(browserRoot)).toBe(true);
+  patchNodePtyPipeErrors(browserRoot);
+  expect(readFileSync(terminalPath, "utf8")).toBe(terminal.replace(/\r\n/g, "\n").replace(/\n/g, otherEol));
 });
 
 it("hides the node-pty console helper and preserves the IPC fork call", () => {

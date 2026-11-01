@@ -106,8 +106,8 @@ export function isNodePtyPipeErrorsHandled(browserRoot) {
   try {
     const { manifest, agent, terminal } = paths(browserRoot);
     if (JSON.parse(readFileSync(manifest, "utf8")).version !== expectedVersion) return false;
-    const agentSource = readFileSync(agent, "utf8");
-    const terminalSource = readFileSync(terminal, "utf8");
+    const agentSource = readFileSync(agent, "utf8").replace(/\r\n/g, "\n");
+    const terminalSource = readFileSync(terminal, "utf8").replace(/\r\n/g, "\n");
     return occurrences(agentSource, guardedInputSocket) === 1
       && occurrences(terminalSource, guardedTerminalSocket) === 1
       && occurrences(terminalSource, originalLateTerminalHandlers) === 0;
@@ -123,8 +123,10 @@ export function patchNodePtyPipeErrors(browserRoot) {
     throw new Error(`Unsupported node-pty version ${version}; review the Windows pipe error patch.`);
   }
   if (isNodePtyPipeErrorsHandled(browserRoot)) return;
-  const agentSource = readFileSync(agent, "utf8");
-  const terminalSource = readFileSync(terminal, "utf8");
+  const originalAgent = readFileSync(agent, "utf8");
+  const originalTerminal = readFileSync(terminal, "utf8");
+  const agentSource = originalAgent.replace(/\r\n/g, "\n");
+  const terminalSource = originalTerminal.replace(/\r\n/g, "\n");
   if (occurrences(agentSource, originalInputSocket) !== 1
       || occurrences(agentSource, guardedInputSocket) !== 0
       || occurrences(terminalSource, originalTerminalSocket) !== 1
@@ -132,9 +134,11 @@ export function patchNodePtyPipeErrors(browserRoot) {
       || occurrences(terminalSource, originalLateTerminalHandlers) !== 1) {
     throw new Error("node-pty Windows pipe handling changed; review before staging.");
   }
-  writeFileSync(agent, agentSource.replace(originalInputSocket, guardedInputSocket));
+  const agentEol = originalAgent.includes("\r\n") ? "\r\n" : "\n";
+  const terminalEol = originalTerminal.includes("\r\n") ? "\r\n" : "\n";
+  writeFileSync(agent, agentSource.replace(originalInputSocket, guardedInputSocket).replace(/\n/g, agentEol));
   writeFileSync(terminal, terminalSource.replace(originalTerminalSocket, guardedTerminalSocket)
-    .replace(originalLateTerminalHandlers, ""));
+    .replace(originalLateTerminalHandlers, "").replace(/\n/g, terminalEol));
   if (!isNodePtyPipeErrorsHandled(browserRoot)) {
     throw new Error("node-pty Windows pipe error patch verification failed.");
   }
