@@ -242,7 +242,7 @@ describe("OrganizationMemoryPanel", () => {
     expect(screen.getByLabelText("发布范围")).toHaveValue(personalScope.id);
     fireEvent.change(screen.getByLabelText("发布范围"), { target: { value: teamScope.id } });
     fireEvent.change(screen.getByPlaceholderText("写成可直接指导下一次任务的明确结论或步骤"), { target: { value: "发布前先验证回滚脚本" } });
-    fireEvent.click(screen.getByRole("button", { name: "提交审核" }));
+    fireEvent.click(screen.getByRole("button", { name: "提交并发布" }));
     await waitFor(() => expect(api.orgSubmitMemoryCandidate).toHaveBeenCalledWith(expect.objectContaining({
       targetScopeId: teamScope.id, content: "发布前先验证回滚脚本", workspaceRef: "/workspace/payments",
     })));
@@ -405,9 +405,9 @@ describe("OrganizationMemoryPanel", () => {
     }]);
 
     render(<OrganizationMemoryPanel />);
-    expect(await screen.findByText("1 条经验待审核")).toBeInTheDocument();
+    expect(await screen.findByText("1 条经验正在自动检查")).toBeInTheDocument();
     expect(screen.getByText("1 项文档正在扫描或建立索引")).toBeInTheDocument();
-    expect(screen.getByText("1 个 Skill 正在审核或扫描")).toBeInTheDocument();
+    expect(screen.getByText("1 个 Skill 正在自动检查")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "查看经验" }));
     expect(screen.getByRole("heading", { name: "经验" })).toBeInTheDocument();
@@ -419,7 +419,7 @@ describe("OrganizationMemoryPanel", () => {
     expect(screen.getByRole("heading", { name: "组织 Skills" })).toBeInTheDocument();
   });
 
-  it("经验或 Skill 待审核时持续刷新工作区状态", async () => {
+  it("经验或 Skill 自动检查时持续刷新工作区状态", async () => {
     vi.useFakeTimers();
     try {
       api.orgMemoryPromotionsMine.mockResolvedValue([{
@@ -666,6 +666,16 @@ describe("OrganizationMemoryPanel", () => {
     expect(within(dialog).getByLabelText("Skill 提交范围")).toHaveValue(personalScope.id);
     fireEvent.click(within(dialog).getByRole("button",{name:"取消"}));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("自动发布的经验保留内容待验证状态，不冒充已复核", async()=>{
+    api.orgListMemories.mockResolvedValue([{id:"reported-memory",scopeId:teamScope.id,scopeName:teamScope.name,scopeKind:"team",kind:"howto",content:"自动发布但尚未经实践验证的经验",trust:"reported",status:"active",evidence:[],confidence:0.5,hitCount:0,createdAt:1,updatedAt:1}]);
+    render(<OrganizationMemoryPanel/>);
+    await screen.findByRole("button",{name:"组织账号：Alice"});
+    fireEvent.click(screen.getByRole("button",{name:/^经验/}));
+    expect(await screen.findByText("自动发布但尚未经实践验证的经验")).toBeInTheDocument();
+    expect(screen.getByText(/内容待验证/)).toBeInTheDocument();
+    expect(screen.queryByText(/已审核/)).toBeNull();
   });
 
 });

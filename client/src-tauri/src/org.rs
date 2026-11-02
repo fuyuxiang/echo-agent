@@ -132,6 +132,7 @@ struct OrgInner {
     /// current identity is cleared. Every authenticated response carries the
     /// generation it was requested under.
     account_generation: AtomicU64,
+    reporting: Mutex<ClientReportingState>,
 }
 
 #[derive(Clone)]
@@ -224,6 +225,7 @@ impl Default for OrgState {
                 skill_epoch: AtomicU64::new(0),
                 model_epoch: AtomicU64::new(0),
                 account_generation: AtomicU64::new(0),
+                reporting: Mutex::new(ClientReportingState::default()),
             }),
         }
     }
@@ -439,6 +441,9 @@ fn with_model_state_transaction<T>(
 }
 
 fn invalidate_account_generation(inner: &OrgInner) {
+    if let Ok(mut reporting) = inner.reporting.lock() {
+        *reporting = ClientReportingState::default();
+    }
     inner.account_generation.fetch_add(1, Ordering::SeqCst);
 }
 
@@ -1618,7 +1623,7 @@ async fn sync_organization_model_config_for_context(
                 }))
             })
         };
-    with_model_state_transaction(inner, || {
+    let result = with_model_state_transaction(inner, || {
         require_current_model_epoch(
             expected_model_epoch,
             inner.model_epoch.load(Ordering::SeqCst),
@@ -1648,7 +1653,21 @@ async fn sync_organization_model_config_for_context(
                 )),
             },
         }
-    })
+    });
+    if result.is_ok()
+        && require_account_context_generation(inner, &request_context).is_ok()
+        && inner.model_epoch.load(Ordering::SeqCst) == expected_model_epoch
+    {
+        if let Ok(mut reporting) = inner.reporting.lock() {
+            if require_account_context_generation(inner, &request_context).is_ok()
+                && inner.model_epoch.load(Ordering::SeqCst) == expected_model_epoch
+            {
+                reporting.for_context(&request_context).model_revision =
+                    data.get("configRevision").and_then(Value::as_u64);
+            }
+        }
+    }
+    result
 }
 
 pub(crate) async fn mcp_json(
@@ -4373,117 +4392,137 @@ async fn sync_skills_for_context(
         Uuid::parse_str(&skill_id).map_err(|_| "invalid Skill id from organization server")?;
         Uuid::parse_str(&version_id)
             .map_err(|_| "invalid Skill version id from organization server")?;
-        if !local.installed.contains_key(&skill_id) && local.installed.len() >= MAX_MANAGED_SKILLS {
-            return Err(format!(
-                "managed Skill state exceeds {MAX_MANAGED_SKILLS} entries"
-            ));
-        }
-        let package_url = item
-            .get("packageUrl")
-            .and_then(Value::as_str)
-            .ok_or("Skill item missing package URL")?;
-        let authenticated = authenticated_response_for_context(
-            inner,
-            Method::GET,
-            package_url,
-            None,
-            Some(&account_context),
-        )
-        .await?;
-        let response = authenticated.response;
-        if !response.status().is_success() {
-            return Err(format!("download Skill: HTTP {}", response.status()));
-        }
-        let bytes =
-            read_response_bounded(response, MAX_SKILL_UPLOAD_BYTES, "managed Skill package")
-                .await?;
-        verify_skill_package(&public_key, &item, &bytes)?;
-        require_current_skill_epoch(inner, expected_epoch)?;
-        require_account_context_generation(inner, &account_context)?;
-        if active_skill_account_id(inner).await? != account_id {
-            return Err("organization account changed during Skill download".into());
-        }
-        // Package paths become executable Runtime inputs. Check both the
-        // in-process epoch and cross-process state baseline while holding the
-        // same transaction used by logout/preference/lease mutations.
-        let (package_path, install_path) = with_skill_state_transaction(inner, || {
+        let receipt_skill_id = skill_id.clone();
+        let receipt_version_id = version_id.clone();
+        let receipt_shared = item.get("scopeKind").and_then(Value::as_str) != Some("personal");
+        let installation: Result<(), String> = async {
+            if !local.installed.contains_key(&skill_id)
+                && local.installed.len() >= MAX_MANAGED_SKILLS
+            {
+                return Err(format!(
+                    "managed Skill state exceeds {MAX_MANAGED_SKILLS} entries"
+                ));
+            }
+            let package_url = item
+                .get("packageUrl")
+                .and_then(Value::as_str)
+                .ok_or("Skill item missing package URL")?;
+            let authenticated = authenticated_response_for_context(
+                inner,
+                Method::GET,
+                package_url,
+                None,
+                Some(&account_context),
+            )
+            .await?;
+            let response = authenticated.response;
+            if !response.status().is_success() {
+                return Err(format!("download Skill: HTTP {}", response.status()));
+            }
+            let bytes =
+                read_response_bounded(response, MAX_SKILL_UPLOAD_BYTES, "managed Skill package")
+                    .await?;
+            verify_skill_package(&public_key, &item, &bytes)?;
             require_current_skill_epoch(inner, expected_epoch)?;
             require_account_context_generation(inner, &account_context)?;
-            let current = match read_skill_state_strict_unlocked() {
-                Ok(state) => state,
-                Err(error) => {
-                    invalidate_skill_sync(inner);
-                    let cleanup = recover_invalid_skill_state_unlocked(&error);
-                    return Err(format!(
-                        "managed Skill state became invalid during synchronization: {error}{}",
-                        cleanup
-                            .err()
-                            .map(|cleanup| format!("; fail-closed cleanup: {cleanup}"))
-                            .unwrap_or_default()
-                    ));
-                }
-            };
-            require_skill_commit_current(
-                expected_epoch,
-                inner.skill_epoch.load(Ordering::SeqCst),
-                &account_id,
-                &current.account_id,
-                &base,
-                &current,
-            )?;
-            let package_path = cache_skill_package(&bytes, &skill_id, &version_id)?;
-            let install_path = extract_skill_package(&bytes, &skill_id, &version_id)?;
-            Ok((package_path, install_path))
-        })?;
-        let installed = InstalledSkill {
-            skill_id: skill_id.clone(),
-            version_id: version_id.clone(),
-            version: item
-                .get("version")
-                .and_then(Value::as_str)
-                .ok_or("Skill item missing version")?
-                .to_string(),
-            name: item
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(&skill_id)
-                .to_string(),
-            path: install_path.to_string_lossy().into_owned(),
-            package_path: package_path.to_string_lossy().into_owned(),
-            hash: item
-                .get("hash")
-                .and_then(Value::as_str)
-                .ok_or("Skill item missing hash")?
-                .to_string(),
-            signature_payload: item
-                .get("signaturePayload")
-                .and_then(Value::as_str)
-                .ok_or("Skill item missing signature payload")?
-                .to_string(),
-            signature: item
-                .get("signature")
-                .and_then(Value::as_str)
-                .ok_or("Skill item missing signature")?
-                .to_string(),
-            scope_kind: item
-                .get("scopeKind")
-                .and_then(Value::as_str)
-                .unwrap_or("org")
-                .to_string(),
-            mandatory: item
-                .get("mandatory")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            allow_personal_override: item
-                .get("allowPersonalOverride")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-        };
-        validate_installed_skill_fields(&skill_id, &installed)?;
-        if let Some(previous) = local.installed.insert(skill_id, installed) {
-            if previous.version_id != version_id {
-                obsolete_packages.push(previous);
+            if active_skill_account_id(inner).await? != account_id {
+                return Err("organization account changed during Skill download".into());
             }
+            // Package paths become executable Runtime inputs. Check both the
+            // in-process epoch and cross-process state baseline while holding the
+            // same transaction used by logout/preference/lease mutations.
+            let (package_path, install_path) = with_skill_state_transaction(inner, || {
+                require_current_skill_epoch(inner, expected_epoch)?;
+                require_account_context_generation(inner, &account_context)?;
+                let current = match read_skill_state_strict_unlocked() {
+                    Ok(state) => state,
+                    Err(error) => {
+                        invalidate_skill_sync(inner);
+                        let cleanup = recover_invalid_skill_state_unlocked(&error);
+                        return Err(format!(
+                            "managed Skill state became invalid during synchronization: {error}{}",
+                            cleanup
+                                .err()
+                                .map(|cleanup| format!("; fail-closed cleanup: {cleanup}"))
+                                .unwrap_or_default()
+                        ));
+                    }
+                };
+                require_skill_commit_current(
+                    expected_epoch,
+                    inner.skill_epoch.load(Ordering::SeqCst),
+                    &account_id,
+                    &current.account_id,
+                    &base,
+                    &current,
+                )?;
+                let package_path = cache_skill_package(&bytes, &skill_id, &version_id)?;
+                let install_path = extract_skill_package(&bytes, &skill_id, &version_id)?;
+                Ok((package_path, install_path))
+            })?;
+            let installed = InstalledSkill {
+                skill_id: skill_id.clone(),
+                version_id: version_id.clone(),
+                version: item
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .ok_or("Skill item missing version")?
+                    .to_string(),
+                name: item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&skill_id)
+                    .to_string(),
+                path: install_path.to_string_lossy().into_owned(),
+                package_path: package_path.to_string_lossy().into_owned(),
+                hash: item
+                    .get("hash")
+                    .and_then(Value::as_str)
+                    .ok_or("Skill item missing hash")?
+                    .to_string(),
+                signature_payload: item
+                    .get("signaturePayload")
+                    .and_then(Value::as_str)
+                    .ok_or("Skill item missing signature payload")?
+                    .to_string(),
+                signature: item
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .ok_or("Skill item missing signature")?
+                    .to_string(),
+                scope_kind: item
+                    .get("scopeKind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("org")
+                    .to_string(),
+                mandatory: item
+                    .get("mandatory")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                allow_personal_override: item
+                    .get("allowPersonalOverride")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+            };
+            validate_installed_skill_fields(&skill_id, &installed)?;
+            if let Some(previous) = local.installed.insert(skill_id, installed) {
+                if previous.version_id != version_id {
+                    obsolete_packages.push(previous);
+                }
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = installation {
+            if receipt_shared {
+                record_skill_failure(
+                    inner,
+                    &account_context,
+                    &receipt_skill_id,
+                    &receipt_version_id,
+                );
+            }
+            return Err(error);
         }
     }
     let revoked = data
@@ -4570,6 +4609,15 @@ async fn sync_skills_for_context(
         }
         Ok(())
     })?;
+    if let Ok(mut reporting) = inner.reporting.lock() {
+        if require_account_context_generation(inner, &account_context).is_ok()
+            && require_current_skill_epoch(inner, expected_epoch).is_ok()
+        {
+            let state = reporting.for_context(&account_context);
+            state.skills = Some(skill_receipts_after_commit(&base, &local));
+            state.skills_complete = true;
+        }
+    }
     Ok(json!({
         "cursor": local.cursor,
         "leaseUntil": local.lease_until,
@@ -4584,10 +4632,150 @@ pub async fn org_sync_skills(app: AppHandle, state: State<'_, OrgState>) -> Resu
     result
 }
 
+#[derive(Default)]
+struct ClientReportingState {
+    context: Option<AccountContext>,
+    model_revision: Option<u64>,
+    skills: Option<Vec<Value>>,
+    skills_complete: bool,
+}
+
+impl ClientReportingState {
+    fn for_context(&mut self, context: &AccountContext) -> &mut Self {
+        if self.context.as_ref() != Some(context) {
+            *self = Self {
+                context: Some(context.clone()),
+                ..Self::default()
+            };
+        }
+        self
+    }
+}
+
+fn skill_receipts_after_commit(base: &SkillSyncState, local: &SkillSyncState) -> Vec<Value> {
+    let mut receipts = local.installed.values().filter(|item| item.scope_kind != "personal")
+        .map(|item| json!({"skillId":item.skill_id,"versionId":item.version_id,
+            "name":item.name.chars().take(100).collect::<String>(),"version":item.version.chars().take(80).collect::<String>(),"state":"installed"}))
+        .collect::<Vec<_>>();
+    for previous in base
+        .installed
+        .values()
+        .filter(|item| item.scope_kind != "personal")
+    {
+        if !local.installed.contains_key(&previous.skill_id) {
+            receipts.push(json!({"skillId":previous.skill_id,"versionId":previous.version_id,
+                "name":previous.name.chars().take(100).collect::<String>(),"version":previous.version.chars().take(80).collect::<String>(),"state":"removed"}));
+        }
+    }
+    receipts.sort_by(|a, b| a["skillId"].as_str().cmp(&b["skillId"].as_str()));
+    receipts
+}
+
+fn record_skill_failure(
+    inner: &OrgInner,
+    context: &AccountContext,
+    skill_id: &str,
+    version_id: &str,
+) {
+    if require_account_context_generation(inner, context).is_err() {
+        return;
+    }
+    if let Ok(mut reporting) = inner.reporting.lock() {
+        if require_account_context_generation(inner, context).is_err() {
+            return;
+        }
+        let state = reporting.for_context(context);
+        let receipts = state.skills.get_or_insert_with(Vec::new);
+        receipts.retain(|item| item["skillId"] != skill_id || item["versionId"] != version_id);
+        if receipts.len() >= 1000 {
+            receipts.remove(0);
+        }
+        receipts.push(
+            json!({"skillId":skill_id,"versionId":version_id,"state":"failed",
+            "error":"技能下载、校验或安装失败，请检查客户端并重试"}),
+        );
+        state.skills_complete = false;
+    }
+}
+
+async fn send_client_heartbeat(inner: &Arc<OrgInner>) -> Result<(), String> {
+    let context = match active_account_context(inner).await {
+        Ok(context) => context,
+        Err(_) => return Ok(()),
+    };
+    let (policy_version, expires_at, reporting_supported) = {
+        let session = inner.session.lock().await;
+        require_account_context_locked(inner, &session, &context)?;
+        let bootstrap = match session.bootstrap.as_ref() {
+            Some(value) => value,
+            None => return Ok(()),
+        };
+        (
+            bootstrap["policy"]["version"].as_u64(),
+            bootstrap["policy"]["expiresAt"].as_u64().unwrap_or(0),
+            bootstrap["clientReporting"]["version"].as_u64() == Some(1),
+        )
+    };
+    if !reporting_supported {
+        return Ok(());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut payload = json!({"name":format!("Echo Agent ({})",std::env::consts::OS),
+        "version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,
+        "capabilities":["automatic-safety-publication","device-heartbeat-v1","skill-installation-receipts-v1"]});
+    if expires_at > now {
+        if let Some(version) = policy_version {
+            payload["policyVersion"] = json!(version);
+        }
+    }
+    {
+        let mut reporting = inner
+            .reporting
+            .lock()
+            .map_err(|_| "organization reporting state unavailable")?;
+        require_account_context_generation(inner, &context)?;
+        let state = reporting.for_context(&context);
+        if let Some(revision) = state.model_revision {
+            payload["configRevision"] = json!(revision);
+        }
+        if let Some(receipts) = state.skills.as_ref() {
+            payload["skills"] = json!(receipts.iter().take(1000).collect::<Vec<_>>());
+            payload["skillsComplete"] = json!(state.skills_complete && receipts.len() <= 1000);
+        }
+    }
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        authenticated_json_for_context(
+            inner,
+            Method::POST,
+            "/api/v1/client/heartbeat",
+            Some(payload),
+            &context,
+        ),
+    )
+    .await
+    .map_err(|_| "organization heartbeat timed out".to_string())??;
+    Ok(())
+}
+
 /// 应用启动后立即尝试恢复会话并同步，之后定时轮询。
 /// 无登录/离线是正常状态，只记录 debug；租约到期由独立门禁处理。
 pub fn start_background_sync(app: AppHandle) {
     let state = shared_state();
+    let reporting_state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if let Err(error) = send_client_heartbeat(&reporting_state.inner).await {
+                tracing::debug!(%error, "organization status report deferred");
+            }
+        }
+    });
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
         loop {
@@ -4909,6 +5097,7 @@ mod tests {
             skill_epoch: AtomicU64::new(0),
             model_epoch: AtomicU64::new(0),
             account_generation: AtomicU64::new(0),
+            reporting: Mutex::new(ClientReportingState::default()),
         };
         let state_path = temp.path().join(SKILL_STATE_FILE);
         assert!(with_skill_state_transaction_at(&inner, &state_path, || Ok(())).is_err());
@@ -5102,5 +5291,75 @@ mod tests {
         .unwrap();
         std::fs::write(temp.path().join("hidden.sh"), b"echo hidden").unwrap();
         assert!(verify_extracted_skill(&package, temp.path()).is_err());
+    }
+    #[test]
+    fn reporting_state_does_not_carry_receipts_across_accounts_or_generations() {
+        let a = AccountContext {
+            account_id: "a".into(),
+            generation: 1,
+        };
+        let b = AccountContext {
+            account_id: "a".into(),
+            generation: 2,
+        };
+        let c = AccountContext {
+            account_id: "b".into(),
+            generation: 2,
+        };
+        let mut state = ClientReportingState::default();
+        state.for_context(&a).model_revision = Some(8);
+        state.for_context(&a).skills = Some(vec![json!({"state":"installed"})]);
+        assert_eq!(state.for_context(&a).model_revision, Some(8));
+        assert!(state.for_context(&b).model_revision.is_none());
+        assert!(state.skills.is_none());
+        state.for_context(&b).skills_complete = true;
+        assert!(!state.for_context(&c).skills_complete);
+    }
+
+    #[test]
+    fn committed_skill_receipts_report_removal_and_exclude_personal_assets_and_paths() {
+        let mut base = SkillSyncState::default();
+        base.installed.insert(
+            "old".into(),
+            InstalledSkill {
+                skill_id: "old".into(),
+                version_id: "v1".into(),
+                scope_kind: "org".into(),
+                ..Default::default()
+            },
+        );
+        let mut local = SkillSyncState::default();
+        local.installed.insert(
+            "shared".into(),
+            InstalledSkill {
+                skill_id: "shared".into(),
+                version_id: "v2".into(),
+                scope_kind: "team".into(),
+                path: "/private/path".into(),
+                ..Default::default()
+            },
+        );
+        local.installed.insert(
+            "private".into(),
+            InstalledSkill {
+                skill_id: "private".into(),
+                scope_kind: "personal".into(),
+                ..Default::default()
+            },
+        );
+        let receipts = skill_receipts_after_commit(&base, &local);
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts
+            .iter()
+            .any(|x| x["skillId"] == "old" && x["state"] == "removed"));
+        assert!(receipts
+            .iter()
+            .any(|x| x["skillId"] == "shared" && x["state"] == "installed"));
+        assert!(!serde_json::to_string(&receipts)
+            .unwrap()
+            .contains("/private/path"));
+        assert!(!serde_json::to_string(&receipts)
+            .unwrap()
+            .contains("personal"));
     }
 }

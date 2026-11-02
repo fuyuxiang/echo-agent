@@ -69,7 +69,7 @@ export function UploadSkillModal({
     try {
       const result = await orgSubmitSkill(skill.path, scopeId);
       onToast?.(result.state === "pending"
-        ? `技能“${name}”已提交，等待组织审核`
+        ? `技能“${name}”已提交，正在自动安全检查`
         : `技能“${name}”已上传到${selectedScope?.name ?? "组织"}`);
       onClose();
     } catch (reason) {
@@ -87,7 +87,7 @@ export function UploadSkillModal({
         <div className="sk-import-head">
           <div>
             <h3>上传到组织</h3>
-            <p>将本地 Skill「{name}」打包后提交给服务器，审核通过后其他用户可安装。</p>
+            <p>将本地 Skill「{name}」打包后提交给服务器，安全检查通过后自动发布，其他成员可按组织策略安装。</p>
           </div>
           <button type="button" className="sk-import-close" onClick={onClose} disabled={busy} aria-label="关闭" data-modal-initial-focus>
             <XCloseIcon size="md" />
@@ -113,7 +113,7 @@ export function UploadSkillModal({
           {error && <div className="sk-install-error" role="alert">{error}</div>}
 
           <div className="sk-upload-note">
-            上传内容会先经过服务器安全扫描。普通成员提交到团队或组织后，需要管理员审核才会对其他用户可见。
+            上传内容会先经过服务器安全检查，通过后自动发布到所选范围。执行技能仍受客户端权限控制。
           </div>
         </div>
         <div className="sk-upload-footer">
