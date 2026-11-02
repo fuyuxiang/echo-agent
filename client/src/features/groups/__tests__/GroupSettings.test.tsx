@@ -5,7 +5,7 @@ import { groupSettings, type Group } from "../group-client";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
 vi.mock("../group-client", async original => ({ ...await original<typeof import("../group-client")>(), groupSettings: vi.fn(async () => {}) }));
-const group = (): Group => ({id:"settings",name:"旧名称",goal:"原目标",cwd:"/work",sourceSessionId:null,sourceTeamId:null,coordinatorId:"c",members:[],messages:[],works:[],decisions:[],archived:false,pinned:false,paused:false,revision:1,updatedAt:1,maxCalls:12,tokenBudget:10000});
+const group = (): Group => ({id:"settings",name:"旧名称",goal:"原目标",cwd:"/work",sourceSessionId:null,sourceTeamId:null,coordinatorId:"c",members:[],messages:[],works:[],decisions:[],archived:false,pinned:false,paused:false,revision:1,updatedAt:1});
 describe("专家团设置与外部更新", () => {
   it("已配置但不可用的模型明确显示且不能静默保存成其他模型", () => {
     const initial = group();

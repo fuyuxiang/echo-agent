@@ -377,7 +377,7 @@ async fn application_exit_activity(
     // A dispatching group may not have created its Runtime session yet.
     activity.running |= groups?
         .iter()
-        .any(|group| group.works.iter().any(|work| work.active()));
+        .any(|snapshot| snapshot.group.works.iter().any(|work| work.active()));
     activity.waiting |= !permissions.is_empty()
         || !questions.is_empty()
         || !plans.is_empty()

@@ -43,7 +43,71 @@ async fn model(
 ) -> impl IntoResponse {
     requests.lock().unwrap().push(body.clone());
     let request_text = body.get("messages").unwrap_or(&Value::Null).to_string();
-    let response = if request_text.contains("INTERJECTION_PROBE") {
+    let messages = body.get("messages").and_then(Value::as_array);
+    let latest_user = messages
+        .and_then(|messages| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| message["role"] == "user")
+        })
+        .map(|message| message["content"].to_string())
+        .unwrap_or_default();
+    let tool_reply = messages.and_then(|messages| {
+        messages
+            .iter()
+            .rev()
+            .take_while(|message| message["role"] != "user")
+            .find(|message| message["role"] == "tool")
+    });
+    let policy_probe = if latest_user.contains("GROUP_MCP_ALLOWED_PROBE") {
+        Some("echoagent__group_read_history")
+    } else if latest_user.contains("GROUP_MCP_DISCOVERY_PROBE") {
+        Some("search_tool")
+    } else if latest_user.contains("GROUP_MCP_DENIED_PROBE") {
+        Some("external__write_file")
+    } else {
+        None
+    };
+    if let Some(target) = policy_probe.filter(|_| tool_reply.is_none()) {
+        let (name, arguments) = if target == "search_tool" {
+            (
+                "search_tool",
+                json!({"query":"echoagent group_call_member","limit":10}),
+            )
+        } else {
+            ("use_tool", json!({"tool_name":target,"tool_input":{}}))
+        };
+        let call = json!({"id":format!("policy-{target}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}});
+        if body.get("stream").and_then(Value::as_bool) == Some(true) {
+            let mut delta_call = call.clone();
+            delta_call["index"] = json!(0);
+            let first = json!({"id":"policy","object":"chat.completion.chunk","created":1,"model":"mock","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[delta_call]},"finish_reason":null}]});
+            let last = json!({"id":"policy","object":"chat.completion.chunk","created":1,"model":"mock","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]});
+            return (
+                [("content-type", "text/event-stream")],
+                format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n"),
+            )
+                .into_response();
+        }
+        return Json(json!({"id":"policy","object":"chat.completion","created":1,"model":"mock","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[call]},"finish_reason":"tool_calls"}]})).into_response();
+    }
+    let response = if let Some(target) = policy_probe {
+        let result = tool_reply
+            .map(|message| message.to_string())
+            .unwrap_or_default();
+        if target == "echoagent__group_read_history" && result.contains("本群可见的目标") {
+            "READ_ONLY_TOOL_PROBE_OK"
+        } else if target == "search_tool" && result.contains("echoagent__group_call_member") {
+            "READ_ONLY_DISCOVERY_OK"
+        } else if target == "external__write_file"
+            && result.contains("not permitted in this read-only session")
+        {
+            "READ_ONLY_TOOL_DENIED_OK"
+        } else {
+            "READ_ONLY_TOOL_PROBE_FAILED"
+        }
+    } else if request_text.contains("INTERJECTION_PROBE") {
         if request_text.contains("INTERJECTION_CORRECTION") {
             "CORRECTION_APPLIED"
         } else {
@@ -213,10 +277,31 @@ paths = ["{relative_plugin}"]
                         )));
                 }
                 AcpClientMessage::RequestPermission(args) => {
+                    let request = serde_json::to_value(&args.request).unwrap();
+                    assert_ne!(
+                        request
+                            .pointer("/toolCall/rawInput/tool_name")
+                            .and_then(Value::as_str),
+                        Some("external__write_file"),
+                        "Forbidden MCP calls must be rejected before approval"
+                    );
+                    // Simulate the existing UI's explicit one-time approval for
+                    // this local read; all unrelated native actions stay denied.
+                    let outcome = if request
+                        .pointer("/toolCall/rawInput/tool_name")
+                        .and_then(Value::as_str)
+                        == Some("echoagent__group_read_history")
+                    {
+                        agent_client_protocol::RequestPermissionOutcome::Selected(
+                            agent_client_protocol::SelectedPermissionOutcome::new(
+                                agent_client_protocol::PermissionOptionId::new("allow-once"),
+                            ),
+                        )
+                    } else {
+                        agent_client_protocol::RequestPermissionOutcome::Cancelled
+                    };
                     let _ = args.response_tx.send(Ok(
-                        agent_client_protocol::RequestPermissionResponse::new(
-                            agent_client_protocol::RequestPermissionOutcome::Cancelled,
-                        ),
+                        agent_client_protocol::RequestPermissionResponse::new(outcome),
                     ));
                 }
                 _ => panic!("Native group unexpectedly requested host filesystem/terminal IO"),
@@ -322,9 +407,78 @@ paths = ["{relative_plugin}"]
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(history["result"]["isError"], false);
     assert!(history.to_string().contains("本群可见的目标"));
+    for (prompt_id, probe, expected) in [
+        (
+            "policy-discovery",
+            "GROUP_MCP_DISCOVERY_PROBE",
+            "READ_ONLY_DISCOVERY_OK",
+        ),
+        (
+            "policy-read",
+            "GROUP_MCP_ALLOWED_PROBE",
+            "READ_ONLY_TOOL_PROBE_OK",
+        ),
+        (
+            "policy-deny",
+            "GROUP_MCP_DENIED_PROBE",
+            "READ_ONLY_TOOL_DENIED_OK",
+        ),
+    ] {
+        db().unwrap()
+            .update(&gid, |group| {
+                group
+                    .works
+                    .iter_mut()
+                    .find(|item| item.id == work)
+                    .unwrap()
+                    .prompt_id = prompt_id.into();
+                Ok(())
+            })
+            .unwrap();
+        let completion = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            crate::agent_runtime::group_prompt(&tx, &sid, prompt_id, probe, &[]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let captured = chunks.lock().unwrap().clone();
+        let last_tool_result = requests
+            .lock()
+            .unwrap()
+            .last()
+            .and_then(|request| request.get("messages").and_then(Value::as_array))
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "tool")
+            })
+            .cloned();
+        assert!(
+            captured.contains(expected),
+            "Native read-only MCP probe {probe} failed ({}): {captured}; tool result: {last_tool_result:?}", completion.stop_reason
+        );
+    }
     db().unwrap()
         .update(&gid, |g| {
-            g.finish(&work, None, false);
+            g.finish_execution(&work, None, false);
+            let snapshot = g.clone().snapshot();
+            assert_eq!(
+                snapshot
+                    .requests
+                    .iter()
+                    .find(|request| request.id == "root")
+                    .unwrap()
+                    .state,
+                "delivered"
+            );
+            assert!(snapshot
+                .group
+                .messages
+                .iter()
+                .any(|message| message.kind == "assistant"
+                    && message.text.contains("原生群聊执行成功")));
             let next = g.enqueue("root-2", &member, "继续确认".into(), true, None, 0)?;
             let w = g.works.iter_mut().find(|w| w.id == next).unwrap();
             w.session_id = Some(sid.clone());
@@ -363,6 +517,14 @@ paths = ["{relative_plugin}"]
         .unwrap();
     {
         let calls = requests.lock().unwrap();
+        assert!(
+            calls.iter().any(|call| {
+                let request = call.to_string();
+                request.contains("继续确认身份")
+                    && request.contains("GROUP_ROLE_MUST_SURVIVE_RESTORE")
+            }),
+            "The restored model turn must retain the expert role"
+        );
         let role_calls = calls
             .iter()
             .filter(|request| {
@@ -375,6 +537,18 @@ paths = ["{relative_plugin}"]
             role_calls.len() >= 2,
             "Expert role was lost: {} model calls",
             calls.len()
+        );
+        assert!(
+            role_calls.iter().any(
+                |call| call
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .is_some_and(|tools| tools.iter().any(|tool| tool
+                        .pointer("/function/name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| name.ends_with("use_tool"))))
+            ),
+            "Read-only discussions must retain controlled MCP dispatch"
         );
         for call in role_calls {
             for tool in call
@@ -397,7 +571,7 @@ paths = ["{relative_plugin}"]
                 assert!(
                     !matches!(
                         name,
-                        "run_terminal_command" | "edit_file" | "write_file" | "use_tool" | "task"
+                        "run_terminal_command" | "edit_file" | "write_file" | "task"
                     ),
                     "Discussion exposed mutating tool {name}"
                 );
@@ -896,6 +1070,8 @@ async fn followup_contract(
             send(
                 g,
                 &SendInput {
+                    new_request: false,
+                    request_id: None,
                     id: root.clone(),
                     text: "INTERJECTION_PROBE".into(),
                     member_ids: vec![member.into()],
@@ -944,6 +1120,8 @@ async fn followup_contract(
             send(
                 g,
                 &SendInput {
+                    new_request: false,
+                    request_id: None,
                     id: correction.clone(),
                     text: "INTERJECTION_CORRECTION".into(),
                     member_ids: vec![member.into()],

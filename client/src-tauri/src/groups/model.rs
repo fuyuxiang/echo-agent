@@ -67,6 +67,16 @@ pub struct Message {
     pub member_ids: Vec<String>,
     #[serde(default)]
     pub stop_root_id: Option<String>,
+    #[serde(default)]
+    pub request_owner_id: Option<String>,
+    /// Manual result summaries retain the original request's inputs on every retry.
+    #[serde(default)]
+    pub source_request_id: Option<String>,
+    #[serde(default)]
+    pub assigned_work_ids: Vec<String>,
+    /// Changes only when public text or attachments change, never for tool progress.
+    #[serde(default)]
+    pub public_revision: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -102,6 +112,9 @@ pub struct Work {
     pub error: Option<String>,
     pub tokens: u64,
     pub summary: bool,
+    /// A single read-only recovery of a model turn which returned no public answer.
+    #[serde(default)]
+    pub result_repair: bool,
     #[serde(default)]
     pub seen_events: Vec<String>,
     #[serde(default)]
@@ -116,6 +129,9 @@ pub struct Work {
 }
 
 impl Work {
+    pub fn read_only(&self) -> bool {
+        self.discussion || self.summary || self.result_repair
+    }
     pub fn active(&self) -> bool {
         matches!(self.status.as_str(), "dispatching" | "running" | "stopping")
     }
@@ -172,11 +188,577 @@ pub struct Group {
     pub revision: u64,
     pub created_at: u64,
     pub updated_at: u64,
-    pub max_calls: usize,
-    pub token_budget: u64,
+}
+
+/// Public delivery is projected from the durable request, work and message records.
+/// Model completion alone is never evidence that the user received an answer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestView {
+    pub id: String,
+    pub owner_id: String,
+    pub work_id: String,
+    pub input_revision: u64,
+    pub state: String,
+    pub final_message_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSnapshot {
+    #[serde(flatten)]
+    pub group: Group,
+    #[serde(default)]
+    pub requests: Vec<RequestView>,
+    #[serde(default)]
+    pub public_seq: u64,
+    #[serde(default)]
+    pub latest_request_id: Option<String>,
 }
 
 impl Group {
+    pub fn snapshot(mut self) -> GroupSnapshot {
+        use std::collections::{HashMap, HashSet};
+        // Restore only persisted public text in the response projection. A
+        // propagated continuation result must not become another public reply.
+        let continued = self
+            .works
+            .iter()
+            .filter_map(|w| w.continuation_of.as_deref())
+            .collect::<HashSet<_>>();
+        let retained = self
+            .works
+            .iter()
+            .filter(|w| !w.output.trim().is_empty() && !continued.contains(w.id.as_str()))
+            .map(|w| {
+                (
+                    w.id.clone(),
+                    w.member_id.clone(),
+                    w.output.clone(),
+                    w.created_at,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut reply_indices = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.kind == "assistant")
+            .filter_map(|(index, m)| m.work_id.as_ref().map(|work| (work.clone(), index)))
+            .collect::<HashMap<_, _>>();
+        let activity_seq = self
+            .messages
+            .iter()
+            .filter_map(|m| m.work_id.as_ref().map(|work| (work.clone(), m.seq)))
+            .collect::<HashMap<_, _>>();
+        let fallback_seq = self.messages.iter().map(|m| m.seq).max().unwrap_or(0);
+        for (work, member, output, created) in retained {
+            if let Some(index) = reply_indices.get(&work) {
+                let message = &mut self.messages[*index];
+                if message.text.is_empty() || output.starts_with(&message.text) {
+                    message.text = output;
+                }
+            } else {
+                let message = self.post(Some(member), "assistant", output, Some(work.clone()));
+                message.id = format!("result-{work}");
+                message.seq = activity_seq.get(&work).copied().unwrap_or(fallback_seq);
+                message.created_at = created;
+                reply_indices.insert(work, self.messages.len() - 1);
+            }
+        }
+        let mut roots = Vec::new();
+        let mut by_root = HashMap::<&str, Vec<&Work>>::new();
+        for work in &self.works {
+            if !by_root.contains_key(work.root_id.as_str()) {
+                roots.push(work.root_id.as_str());
+            }
+            by_root.entry(&work.root_id).or_default().push(work);
+        }
+        let mut replies = HashMap::<&str, (usize, &Message)>::new();
+        let mut revisions = HashMap::<&str, u64>::new();
+        let owners = self
+            .messages
+            .iter()
+            .filter_map(|m| {
+                m.request_owner_id
+                    .as_ref()
+                    .map(|owner| (m.id.as_str(), owner))
+            })
+            .collect::<HashMap<_, _>>();
+        for (index, message) in self.messages.iter().enumerate() {
+            if message.kind == "assistant" && !message.text.trim().is_empty() {
+                if let Some(work) = &message.work_id {
+                    replies.insert(work, (index, message));
+                }
+            }
+            if message.kind == "user" {
+                let root = message.request_id.as_deref().unwrap_or(&message.id);
+                let revision = revisions.entry(root).or_default();
+                *revision = (*revision).max(message.seq);
+            }
+        }
+        let stopped = self
+            .messages
+            .iter()
+            .filter_map(|m| m.stop_root_id.as_deref())
+            .collect::<HashSet<_>>();
+        let requests = roots
+            .into_iter()
+            .map(|root| {
+                let works = &by_root[root];
+                let owner = owners
+                    .get(root)
+                    .map(|owner| (*owner).clone())
+                    .unwrap_or_else(|| {
+                        let initial = works
+                            .iter()
+                            .filter(|w| {
+                                w.parent_id.is_none() && w.continuation_of.is_none() && !w.summary
+                            })
+                            .collect::<Vec<_>>();
+                        if initial.len() == 1 {
+                            initial[0].member_id.clone()
+                        } else if initial.is_empty() {
+                            works[0].member_id.clone()
+                        } else {
+                            works
+                                .iter()
+                                .find(|w| w.summary)
+                                .map(|w| w.member_id.clone())
+                                .unwrap_or_else(|| self.coordinator_id.clone())
+                        }
+                    });
+                let work = works
+                    .iter()
+                    .rev()
+                    .find(|w| w.member_id == owner)
+                    .unwrap_or(&works[0]);
+                let final_message = (work.member_id == owner && work.status == "completed")
+                    .then(|| replies.get(work.id.as_str()))
+                    .flatten()
+                    .map(|(_, message)| *message);
+                let state = if works.iter().any(|w| w.status == "uncertain") {
+                    "needs_check"
+                } else if works.iter().any(|w| w.status == "stopping") {
+                    "stopping"
+                } else if works
+                    .iter()
+                    .any(|w| !w.terminal() && (w.summary || w.result_repair))
+                {
+                    "summarizing"
+                } else if works.iter().any(|w| w.active()) {
+                    "working"
+                } else if works.iter().any(|w| w.status == "waiting_children") {
+                    "waiting"
+                } else if works.iter().any(|w| w.status == "queued") {
+                    "queued"
+                } else if works
+                    .iter()
+                    .any(|w| w.member_id == owner && w.status == "cancelled")
+                    || stopped.contains(root)
+                {
+                    "stopped"
+                } else if final_message.is_some() {
+                    if works
+                        .iter()
+                        .any(|w| matches!(w.status.as_str(), "failed" | "cancelled"))
+                    {
+                        "partial"
+                    } else {
+                        "delivered"
+                    }
+                } else if works.iter().any(|w| w.status == "failed") {
+                    "failed"
+                } else {
+                    "missing_result"
+                };
+                RequestView {
+                    id: root.into(),
+                    owner_id: owner.clone(),
+                    work_id: work.id.clone(),
+                    input_revision: revisions.get(root).copied().unwrap_or(0),
+                    state: state.into(),
+                    final_message_id: if matches!(state, "delivered" | "partial") {
+                        final_message.map(|m| m.id.clone())
+                    } else {
+                        None
+                    },
+                }
+            })
+            .collect();
+        let public_seq = self.public_seq();
+        let latest_request_id = self.latest_request_id();
+        GroupSnapshot {
+            group: self,
+            requests,
+            public_seq,
+            latest_request_id,
+        }
+    }
+
+    pub fn public_seq(&self) -> u64 {
+        self.messages
+            .iter()
+            .map(|m| {
+                m.public_revision
+                    .max(if Self::public_message(m) { m.seq } else { 0 })
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn public_message(message: &Message) -> bool {
+        matches!(message.kind.as_str(), "user" | "assistant")
+            && (!message.text.trim().is_empty() || !message.attachments.is_empty())
+    }
+
+    pub fn refresh_public_revisions(&mut self, previous: &Group) {
+        let old = previous
+            .messages
+            .iter()
+            .map(|m| (m.id.as_str(), m))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut revision = self.public_seq().max(previous.public_seq());
+        for message in &mut self.messages {
+            let changed = old.get(message.id.as_str()).is_none_or(|before| {
+                before.kind != message.kind
+                    || before.text != message.text
+                    || before.attachments != message.attachments
+            });
+            if changed
+                && (Self::public_message(message)
+                    || old
+                        .get(message.id.as_str())
+                        .is_some_and(|m| Self::public_message(m)))
+            {
+                revision += 1;
+                message.public_revision = revision;
+            }
+        }
+    }
+
+    pub fn latest_request_id(&self) -> Option<String> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.kind == "user")
+            .map(|m| {
+                m.stop_root_id
+                    .clone()
+                    .or_else(|| m.request_id.clone())
+                    .unwrap_or_else(|| m.id.clone())
+            })
+            .or_else(|| self.works.last().map(|w| w.root_id.clone()))
+    }
+
+    pub fn freeze_request_owners(&mut self) {
+        let owners = self
+            .messages
+            .iter()
+            .filter(|m| m.kind == "user" && m.request_id.is_none() && m.request_owner_id.is_none())
+            .map(|m| (m.id.clone(), self.request_owner(&m.id)))
+            .collect::<std::collections::HashMap<_, _>>();
+        for message in &mut self.messages {
+            if let Some(owner) = owners.get(&message.id) {
+                message.request_owner_id = Some(owner.clone());
+            }
+        }
+    }
+
+    pub fn restore_saved_replies(&mut self) -> bool {
+        let continued = self
+            .works
+            .iter()
+            .filter_map(|work| work.continuation_of.as_deref())
+            .collect::<std::collections::HashSet<_>>();
+        let retained = self
+            .works
+            .iter()
+            .filter(|work| !work.output.trim().is_empty() && !continued.contains(work.id.as_str()))
+            .map(|work| work.id.clone())
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for work in retained {
+            changed |= self.reconcile_reply(&work);
+        }
+        changed
+    }
+
+    fn reconcile_reply(&mut self, work_id: &str) -> bool {
+        let Some(work) = self.works.iter().find(|w| w.id == work_id).cloned() else {
+            return false;
+        };
+        if work.output.trim().is_empty() {
+            return false;
+        }
+        if let Some(message) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.work_id.as_deref() == Some(work_id) && m.kind == "assistant")
+        {
+            if message.text != work.output
+                && (message.text.is_empty() || work.output.starts_with(&message.text))
+            {
+                message.text = work.output;
+                return true;
+            }
+        } else {
+            let message = self.post(
+                Some(work.member_id),
+                "assistant",
+                work.output,
+                Some(work.id.clone()),
+            );
+            message.id = format!("result-{}", work.id);
+            message.created_at = work.created_at;
+            return true;
+        }
+        false
+    }
+
+    pub fn summarize_request(&mut self, work_id: &str) -> Result<(), String> {
+        self.summarize_request_in_context(work_id, 0, |_| true)
+    }
+
+    pub fn summarize_request_in_context(
+        &mut self,
+        work_id: &str,
+        cutoff: u64,
+        permits: impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
+        let work = self
+            .works
+            .iter()
+            .find(|w| w.id == work_id)
+            .cloned()
+            .ok_or("工作不存在")?;
+        if self
+            .works
+            .iter()
+            .any(|w| w.root_id == work.root_id && !w.terminal())
+        {
+            return Err("请等待或停止当前工作后，再整理已有结果".into());
+        }
+        let mut roots = std::collections::HashSet::new();
+        let mut source_root = work.root_id.clone();
+        while roots.insert(source_root.clone()) {
+            let previous = self
+                .messages
+                .iter()
+                .find(|m| m.id == source_root)
+                .and_then(|m| m.source_request_id.clone());
+            match previous {
+                Some(root) if !roots.contains(&root) => source_root = root,
+                _ => break,
+            }
+        }
+        let inputs = self
+            .messages
+            .iter()
+            .filter(|m| {
+                m.kind == "user"
+                    && m.seq > cutoff
+                    && (roots.contains(&m.id)
+                        || m.request_id
+                            .as_ref()
+                            .is_some_and(|root| roots.contains(root)))
+                    && permits(&self.message_prompt(m))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let selected = self
+            .works
+            .iter()
+            .filter(|w| {
+                roots.contains(&w.root_id)
+                    && permits(&w.output)
+                    && (cutoff == 0
+                        || self.messages.iter().any(|m| {
+                            m.seq > cutoff
+                                && (m.work_id.as_deref() == Some(&w.id) || m.id == w.root_id)
+                        }))
+            })
+            .rev()
+            .take(24)
+            .collect::<Vec<_>>();
+        let results = selected
+            .iter()
+            .map(|w| {
+                format!(
+                    "工作 [{}] 成员 [{}] 状态 {}：{}\n{}",
+                    w.id,
+                    w.member_id,
+                    w.status,
+                    w.output.chars().take(2400).collect::<String>(),
+                    w.error
+                        .as_deref()
+                        .filter(|error| permits(error))
+                        .unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let records = self
+            .messages
+            .iter()
+            .rev()
+            .filter(|m| selected.iter().any(|w| Some(&w.id) == m.work_id.as_ref()))
+            .flat_map(|m| m.tool_calls.iter())
+            .filter(|record| permits(&record.to_string()))
+            .take(24)
+            .collect::<Vec<_>>();
+        let records = serde_json::to_string(&records)
+            .unwrap_or_default()
+            .chars()
+            .take(24000)
+            .collect::<String>();
+        let source = inputs.iter().find(|m| m.id == source_root).cloned();
+        let goal = source
+            .as_ref()
+            .map(|m| self.message_prompt(m))
+            .unwrap_or_else(|| {
+                "原始目标未在当前可召回范围内，请用户重新提供需要引用的内容。".into()
+            });
+        let owner = self.summary_owner(&work.root_id);
+        let root = id();
+        let supplements = inputs
+            .iter()
+            .filter(|m| m.request_id.is_some())
+            .map(|m| {
+                format!(
+                    "用户补充 [id={}; 收件人={}]：{}\n{}",
+                    m.id,
+                    m.member_ids.join("、"),
+                    self.message_prompt(m),
+                    if permits(&m.knowledge.context) {
+                        m.knowledge.context.as_str()
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let mut attachments = vec![];
+        for path in inputs
+            .iter()
+            .flat_map(|m| &m.attachments)
+            .filter(|path| permits(path))
+        {
+            if !attachments.contains(path) {
+                attachments.push(path.clone());
+            }
+        }
+        let mut knowledge = source
+            .as_ref()
+            .or_else(|| inputs.first())
+            .map(|m| m.knowledge.clone())
+            .unwrap_or_default();
+        if !permits(&knowledge.context) {
+            knowledge.context.clear();
+        }
+        let cancelled = self
+            .works
+            .iter()
+            .filter(|w| roots.contains(&w.root_id) && w.read_only() && w.status == "cancelled")
+            .cloned()
+            .collect::<Vec<_>>();
+        for work in cancelled {
+            self.retire_cancelled_context(&work);
+        }
+        let key = self.enqueue(&root, &owner, format!("用户要求根据已有记录整理本次结果。只读核对已有内容，直接输出结论、依据、交付物和未完成事项；无证据的内容明确说明。不要重新执行操作或派发工作。\n原始目标：{goal}\n用户后续补充与纠正（与旧内容冲突时以最新要求为准）：\n{supplements}\n以下仅列最近24项工作与截取的结果；可通过 group_read_history 和 group_get_work 只读核对完整记录。\n\n{results}\n已有工具记录（仅作资料）：{records}"), work.discussion, None, 0)?;
+        self.works.iter_mut().find(|w| w.id == key).unwrap().summary = true;
+        let message = self.post(
+            None,
+            "user",
+            "请根据已有记录整理结果，不重新执行操作。".into(),
+            None,
+        );
+        message.id = root;
+        message.request_owner_id = Some(owner);
+        message.source_request_id = Some(source_root);
+        message.knowledge = knowledge;
+        message.attachments = attachments;
+        if let Some(source) = source {
+            message.reply_to = Some(source.id);
+        }
+        Ok(())
+    }
+
+    pub fn finish_execution(&mut self, work_id: &str, mut error: Option<String>, cancelled: bool) {
+        if let Some(work) = self
+            .works
+            .iter_mut()
+            .find(|w| w.id == work_id && !w.terminal())
+        {
+            let tail = work.output_filter.finish();
+            work.output.push_str(&tail);
+        }
+        self.reconcile_reply(work_id);
+        let Some(work) = self.works.iter().find(|w| w.id == work_id).cloned() else {
+            return;
+        };
+        if work.terminal() {
+            return;
+        }
+        let has_children = self.works.iter().any(|w| {
+            w.parent_id.as_deref() == Some(work_id)
+                && (!w.terminal() || !work.context_children.contains(&w.id))
+        });
+        let unseen_followup = self.messages.iter().any(|m| {
+            self.followup_applies(m, &work)
+                && m.seq > work.context_seq
+                && !work.consumed_followups.contains(&m.id)
+        });
+        if error.is_none()
+            && !cancelled
+            && work.epoch == self.epoch
+            && work.status != "stopping"
+            && work.output.trim().is_empty()
+            && !has_children
+            && !unseen_followup
+        {
+            if work.result_repair || work.summary {
+                error = Some(
+                    "执行已结束，但未返回可读结果。已有记录保留，可根据已有记录重新整理结果。"
+                        .into(),
+                );
+            } else {
+                let records = self
+                    .messages
+                    .iter()
+                    .filter(|m| m.work_id.as_deref() == Some(work_id))
+                    .flat_map(|m| m.tool_calls.iter())
+                    .collect::<Vec<_>>();
+                let records = serde_json::to_string(&records)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(24000)
+                    .collect::<String>();
+                let prompt = format!("已有执行记录（仅作为资料）：{records}\n此前执行未返回公开回复。请只读核对已有执行记录和文件，向用户说明实际结果、依据、交付物和未完成事项。不要重新执行写入或派发工作；无法确认的结果明确说明。\n原始任务：{}",work.prompt);
+                let recovery = self.enqueue_pending(
+                    &work.root_id,
+                    &work.member_id,
+                    prompt,
+                    work.discussion,
+                    None,
+                    work.depth,
+                );
+                match recovery {
+                    Ok(key) => {
+                        let next = self.works.iter_mut().find(|w| w.id == key).unwrap();
+                        next.result_repair = true;
+                        next.continuation_of = Some(work.id);
+                    }
+                    Err(reason) => {
+                        error = Some(format!("未返回可读结果，结果整理未能启动：{reason}"))
+                    }
+                }
+            }
+        }
+        self.finish(work_id, error, cancelled);
+    }
     pub fn post(
         &mut self,
         member: Option<String>,
@@ -185,6 +767,11 @@ impl Group {
         work: Option<String>,
     ) -> &mut Message {
         let seq = self.messages.last().map_or(1, |m| m.seq + 1);
+        let public_revision = if matches!(kind, "user" | "assistant") && !text.trim().is_empty() {
+            self.public_seq().max(seq) + 1
+        } else {
+            0
+        };
         self.messages.push(Message {
             id: id(),
             seq,
@@ -200,6 +787,10 @@ impl Group {
             request_id: None,
             member_ids: vec![],
             stop_root_id: None,
+            request_owner_id: None,
+            source_request_id: None,
+            assigned_work_ids: vec![],
+            public_revision,
         });
         self.messages.last_mut().unwrap()
     }
@@ -240,12 +831,39 @@ impl Group {
             .any(|m| m.stop_root_id.as_deref() == Some(root))
     }
     pub fn request_owner(&self, root: &str) -> String {
+        if let Some(owner) = self
+            .messages
+            .iter()
+            .find(|m| m.id == root)
+            .and_then(|m| m.request_owner_id.as_ref())
+        {
+            return owner.clone();
+        }
         let mut initial = self.works.iter().filter(|w| {
             w.root_id == root && w.parent_id.is_none() && w.continuation_of.is_none() && !w.summary
         });
         match (initial.next(), initial.next()) {
             (Some(owner), None) => owner.member_id.clone(),
-            _ => self.coordinator_id.clone(),
+            (None, None) => self
+                .works
+                .iter()
+                .find(|w| w.root_id == root)
+                .map(|w| w.member_id.clone())
+                .unwrap_or_else(|| self.coordinator_id.clone()),
+            _ => self
+                .works
+                .iter()
+                .find(|w| w.root_id == root && w.summary)
+                .map(|w| w.member_id.clone())
+                .unwrap_or_else(|| self.coordinator_id.clone()),
+        }
+    }
+    pub fn summary_owner(&self, root: &str) -> String {
+        let owner = self.request_owner(root);
+        if self.members.iter().any(|m| m.id == owner && !m.removed) {
+            owner
+        } else {
+            self.coordinator_id.clone()
         }
     }
     pub fn followup_applies(&self, message: &Message, work: &Work) -> bool {
@@ -312,6 +930,11 @@ impl Group {
         } else {
             vec![]
         };
+        if self.result_only_retry(work_id) {
+            self.paused = false;
+            self.summarize_request(work_id)?;
+            return Ok(sessions);
+        }
         self.paused = false;
         let root = id();
         let source = self.messages.iter().find(|m| m.id == work.root_id).cloned();
@@ -321,6 +944,18 @@ impl Group {
         // A cancelled resident actor can still own an abandoned permission
         // interaction. Retry with a fresh actor, keeping the member's memory
         // namespace and public history. Never detach a newer or active context.
+        self.retire_cancelled_context(&work);
+        let message = self.post(None, "user", format!("检查后继续：{}", work.prompt), None);
+        message.id = root;
+        message.request_owner_id = Some(work.member_id);
+        message.attachments = attachments;
+        if let Some(source) = source {
+            message.knowledge = source.knowledge;
+        }
+        Ok(sessions)
+    }
+
+    fn retire_cancelled_context(&mut self, work: &Work) {
         if work.status == "cancelled"
             && work.session_id.is_some()
             && !self
@@ -329,22 +964,40 @@ impl Group {
                 .any(|other| other.member_id == work.member_id && other.active())
         {
             if let Some(member) = self.members.iter_mut().find(|m| m.id == work.member_id) {
-                if work.discussion && member.discussion_session_id == work.session_id {
+                if work.read_only() && member.discussion_session_id == work.session_id {
                     member.discussion_session_id = None;
                     member.discussion_seen_seq = member.history_start_seq;
-                } else if !work.discussion && member.session_id == work.session_id {
+                } else if !work.read_only() && member.session_id == work.session_id {
                     member.session_id = None;
                     member.seen_seq = member.history_start_seq;
                 }
             }
         }
-        let message = self.post(None, "user", format!("检查后继续：{}", work.prompt), None);
-        message.id = root;
-        message.attachments = attachments;
-        if let Some(source) = source {
-            message.knowledge = source.knowledge;
+    }
+    pub fn result_only_retry(&self, work_id: &str) -> bool {
+        let by_id = self
+            .works
+            .iter()
+            .map(|work| (work.id.as_str(), work))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut pending = self
+            .works
+            .iter()
+            .filter(|work| work.summary || work.result_repair)
+            .collect::<Vec<_>>();
+        let mut visited = std::collections::HashSet::new();
+        while let Some(work) = pending.pop() {
+            if !visited.insert(work.id.as_str()) {
+                continue;
+            }
+            if work.id == work_id {
+                return true;
+            }
+            if let Some(previous) = work.continuation_of.as_deref().and_then(|id| by_id.get(id)) {
+                pending.push(previous);
+            }
         }
-        Ok(sessions)
+        false
     }
     pub fn enqueue(
         &mut self,
@@ -355,34 +1008,28 @@ impl Group {
         parent: Option<String>,
         depth: u32,
     ) -> Result<String, String> {
-        if self.archived || self.paused {
+        if self.paused {
             return Err("专家团已暂停或归档，请先恢复协作".into());
+        }
+        self.enqueue_pending(root, member, prompt, discussion, parent, depth)
+    }
+
+    /// Persist already-authorized work even while dispatch is paused.
+    /// The scheduler and begin_prompt remain the only boundaries that start it.
+    pub fn enqueue_pending(
+        &mut self,
+        root: &str,
+        member: &str,
+        prompt: String,
+        discussion: bool,
+        parent: Option<String>,
+        depth: u32,
+    ) -> Result<String, String> {
+        if self.archived {
+            return Err("专家团已归档，请先恢复协作".into());
         }
         if !self.members.iter().any(|m| m.id == member && !m.removed) {
             return Err("指定成员不在本专家团中".into());
-        }
-        let calls = self.works.iter().filter(|w| w.root_id == root).count();
-        if calls >= self.max_calls || depth > 3 {
-            return Err("本次协作已达到自动调用上限，请查看结果后继续提问".into());
-        }
-        if self
-            .works
-            .iter()
-            .filter(|w| w.root_id == root && w.member_id == member)
-            .count()
-            >= 3
-        {
-            return Err("该成员已多次参与本次协作，请汇总已有结果".into());
-        }
-        if self
-            .works
-            .iter()
-            .filter(|w| w.root_id == root)
-            .map(|w| w.tokens)
-            .sum::<u64>()
-            >= self.token_budget
-        {
-            return Err("本次协作已达到 Token 预算，请调整专家团设置后继续".into());
         }
         let key = id();
         self.works.push(Work {
@@ -403,6 +1050,7 @@ impl Group {
             error: None,
             tokens: 0,
             summary: false,
+            result_repair: false,
             seen_events: vec![],
             output_filter: Default::default(),
             context_seq: 0,
@@ -459,7 +1107,12 @@ impl Group {
                 .join("\n\n");
             let previous_error = parent.error.as_deref().unwrap_or("无");
             match self.enqueue(&parent.root_id, &parent.member_id, format!("你派发的工作已结束。请结合原始目标检查结果，向请求方汇总实际交付、验证情况及未完成事项。不要重复派发已完成工作。\n原始请求：{}\n此前回合异常：{previous_error}\n\n{results}", parent.prompt), parent.discussion, None, parent.depth) {
-                Ok(next) => self.works.iter_mut().find(|w| w.id == next).unwrap().continuation_of = Some(parent.id),
+                Ok(next) => {
+                    let next = self.works.iter_mut().find(|w| w.id == next).unwrap();
+                    next.continuation_of = Some(parent.id);
+                    next.summary = parent.summary;
+                    next.result_repair = parent.result_repair;
+                }
                 Err(error) => { let w = self.works.iter_mut().find(|w| w.id == parent.id).unwrap(); w.status = "failed".into(); w.error = Some(error); self.propagate_completion(&parent.id); }
             }
         }
@@ -492,11 +1145,15 @@ impl Group {
             w.parent_id.as_deref() == Some(work_id)
                 && !self.works[index].context_children.contains(&w.id)
         });
+        let has_continuation = self
+            .works
+            .iter()
+            .any(|w| w.continuation_of.as_deref() == Some(work_id) && !w.terminal());
         let w = &mut self.works[index];
         w.error = error;
         w.status = if cancelled || old_epoch || w.status == "stopping" {
             "cancelled"
-        } else if has_children || has_any_children {
+        } else if has_children || has_any_children || has_continuation {
             "waiting_children"
         } else if w.error.is_some() {
             "failed"
@@ -515,12 +1172,13 @@ impl Group {
                     && !w.consumed_followups.contains(&m.id)
             })
         {
-            match self.enqueue(&w.root_id, &w.member_id, format!("请按用户对本次任务的最新补充与纠正检查并完成交付，避免重复执行已完成操作。\n原始请求：{}\n已有结果：{}", w.prompt, w.output), w.discussion, None, w.depth) {
+            match self.enqueue_pending(&w.root_id, &w.member_id, format!("请按用户对本次任务的最新补充与纠正检查并完成交付，避免重复执行已完成操作。\n原始请求：{}\n已有结果：{}", w.prompt, w.output), w.discussion, None, w.depth) {
                 Ok(next) => {
                     self.works[index].status = "waiting_children".into();
                     let next = self.works.iter_mut().find(|w| w.id == next).unwrap();
                     next.continuation_of = Some(w.id);
                     next.summary = w.summary;
+                    next.result_repair = w.result_repair;
                 }
                 Err(error) => { self.works[index].status = "failed".into(); self.works[index].error = Some(error); }
             }
@@ -545,7 +1203,7 @@ impl Group {
         else {
             return false;
         };
-        if work.discussion {
+        if work.read_only() {
             member.discussion_session_id = Some(session.into());
         } else {
             member.session_id = Some(session.into());
@@ -701,42 +1359,6 @@ impl Group {
         }
     }
 
-    pub fn enforce_budget(&mut self) {
-        let exhausted = self
-            .works
-            .iter()
-            .map(|w| w.root_id.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .filter(|root| {
-                self.works
-                    .iter()
-                    .filter(|w| &w.root_id == root)
-                    .map(|w| w.tokens)
-                    .sum::<u64>()
-                    >= self.token_budget
-            })
-            .collect::<std::collections::HashSet<_>>();
-        loop {
-            let pending = self
-                .works
-                .iter()
-                .filter(|w| w.status == "queued" && exhausted.contains(&w.root_id))
-                .map(|w| w.id.clone())
-                .collect::<Vec<_>>();
-            if pending.is_empty() {
-                break;
-            }
-            for id in pending {
-                self.finish(
-                    &id,
-                    Some("本次请求已达到 Token 预算，已停止后续自动派发".into()),
-                    false,
-                );
-            }
-        }
-    }
-
     pub fn ready_summaries(&mut self) {
         if self.paused || self.archived {
             return;
@@ -788,14 +1410,8 @@ impl Group {
                 .collect::<Vec<_>>()
                 .join("\n\n");
             let prompt = format!("请归纳本轮各成员的观点与结果，回应用户原始目标，说明一致结论、分歧和未完成事项。不再派发新工作。\n\n{results}");
-            match self.enqueue(
-                &root,
-                &self.coordinator_id.clone(),
-                prompt.clone(),
-                discussion,
-                None,
-                0,
-            ) {
+            let owner = self.request_owner(&root);
+            match self.enqueue(&root, &owner, prompt.clone(), discussion, None, 0) {
                 Ok(id) => self.works.iter_mut().find(|w| w.id == id).unwrap().summary = true,
                 Err(error) => {
                     // Record a failed delivery without spending another model
@@ -807,7 +1423,7 @@ impl Group {
                         .unwrap()
                         .clone();
                     failed.id = id();
-                    failed.member_id = self.coordinator_id.clone();
+                    failed.member_id = owner;
                     failed.parent_id = None;
                     failed.continuation_of = None;
                     failed.prompt = prompt;

@@ -101,6 +101,7 @@ export const MessageItem = memo(function MessageItem({
   onOpenTool,
   onOpenArtifact,
   compactIdentity = false,
+  hideIdentity = false,
   onEditResend,
   onRetry,
   retrying = false,
@@ -121,6 +122,8 @@ export const MessageItem = memo(function MessageItem({
   message: ChatMessage;
   authorName?: string;
   compactIdentity?: boolean;
+  /** The containing group message already provides the speaker and role. */
+  hideIdentity?: boolean;
   onOpenArtifact?: (artifact: SessionArtifact) => void;
   streaming: boolean;
   /** Suppress model-wait copy while a decision, cancellation or error takes priority. */
@@ -414,14 +417,14 @@ export const MessageItem = memo(function MessageItem({
   return (
     <div className={"msg msg--assistant" + (compactIdentity ? " msg--continuation" : "")}>
       <div>
-        <div className="msg__header">
+        {!hideIdentity && <div className="msg__header">
           <span className={`msg__avatar${authorName ? "" : " msg__avatar--echo"}`}>
             {authorName ? <span aria-hidden="true">{authorName.slice(0, 1)}</span> : (
               <EchoMark active={streaming && waitingForModel && !message.complete && !runtimeError} />
             )}
           </span>
           {authorName ? <span className="msg__name">{authorName}</span> : <span className="sr-only">EchoAgent</span>}
-        </div>
+        </div>}
         <div className="msg__body">
           {streaming && waitingForModel && !message.complete && message.parts.length === 0 && !hasKnowledgeTrace && (
             <LoadingRow key={`${sessionId}:${message.id}`} startedAt={message.startedAt} />

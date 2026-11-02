@@ -82,12 +82,12 @@ pub(super) fn group() -> Group {
         revision: 1,
         created_at: now(),
         updated_at: now(),
-        max_calls: 12,
-        token_budget: 100_000,
     }
 }
 fn input() -> SendInput {
     SendInput {
+        new_request: false,
+        request_id: None,
         id: id(),
         text: "请分析需求".into(),
         member_ids: vec![],
@@ -391,11 +391,10 @@ fn resumed_children_cannot_call_their_waiting_ancestors() {
 }
 
 #[test]
-fn exhausted_multi_member_delivery_has_a_visible_retryable_failure() {
+fn multi_member_delivery_queues_one_summary_without_a_call_limit() {
     let mut g = group();
     let a = g.members[1].id.clone();
     let b = g.members[2].id.clone();
-    g.max_calls = 2;
     let one = g
         .enqueue("root", &a, "分析".into(), false, None, 0)
         .unwrap();
@@ -406,8 +405,8 @@ fn exhausted_multi_member_delivery_has_a_visible_retryable_failure() {
     g.finish(&two, None, false);
     let summary = g.works.last().unwrap();
     assert!(summary.summary);
-    assert_eq!(summary.status, "failed");
-    assert!(summary.error.as_ref().unwrap().contains("成员结果已保留"));
+    assert_eq!(summary.status, "queued");
+    assert!(summary.read_only());
     g.ready_summaries();
     assert_eq!(g.works.len(), 3);
 }
@@ -452,6 +451,53 @@ fn legacy_reasoning_migration_is_atomic_and_does_not_replay_work() {
     assert_eq!(migrated.works.len(), 1);
     assert_eq!(migrated.works[0].status, "completed");
     assert_eq!(Store::open(&path).unwrap().get(&g.id).unwrap(), migrated);
+}
+
+#[test]
+fn recovered_saved_replies_are_durable_referenceable_and_never_replay_work() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("groups.sqlite");
+    let store = Store::open(&path).unwrap();
+    let mut g = group();
+    let request = input();
+    send(&mut g, &request).unwrap();
+    let work = g.works[0].id.clone();
+    g.works[0].status = "completed".into();
+    g.works[0].output = "记录中保留的真实结论".into();
+    g.post(
+        Some(g.coordinator_id.clone()),
+        "activity",
+        String::new(),
+        Some(work.clone()),
+    );
+    let old_seq = g.messages.last().unwrap().seq;
+    store.create(&g).unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "DELETE FROM group_migrations WHERE name='saved-replies-v1'",
+            [],
+        )
+        .unwrap();
+    let reopened = Store::open(&path).unwrap();
+    let restored = reopened.get(&g.id).unwrap();
+    let reply_id = format!("result-{work}");
+    let reply = restored
+        .messages
+        .iter()
+        .find(|message| message.id == reply_id)
+        .unwrap();
+    assert_eq!(reply.text, "记录中保留的真实结论");
+    assert!(reply.seq > old_seq);
+    assert_eq!(restored.works.len(), 1);
+    assert_eq!(restored.works[0].status, "completed");
+    assert_eq!(Store::open(&path).unwrap().get(&g.id).unwrap(), restored);
+    let mut followup = input();
+    followup.reply_to = Some(reply_id);
+    reopened
+        .update(&g.id, |group| send(group, &followup))
+        .unwrap();
+    assert_eq!(reopened.get(&g.id).unwrap().works.len(), 2);
 }
 
 #[test]
@@ -577,15 +623,20 @@ fn stopped_generation_never_starts_a_callback() {
     );
 }
 #[test]
-fn limits_block_runaway_work() {
+fn normal_collaboration_can_reuse_members_and_exceed_three_levels() {
     let mut g = group();
-    let c = g.coordinator_id.clone();
-    g.max_calls = 2;
-    g.enqueue("root", &c, "a".into(), false, None, 0).unwrap();
-    g.enqueue("root", &c, "b".into(), false, None, 0).unwrap();
-    assert!(g.enqueue("root", &c, "c".into(), false, None, 0).is_err());
-    assert!(g.enqueue("other", &c, "x".into(), false, None, 4).is_err());
+    let member = g.coordinator_id.clone();
+    for depth in 0..20 {
+        g.enqueue("root", &member, format!("step-{depth}"), false, None, depth)
+            .unwrap();
+    }
+    assert_eq!(g.works.len(), 20);
+    g.paused = true;
+    assert!(g
+        .enqueue("root", &member, "paused".into(), false, None, 21)
+        .is_err());
 }
+
 #[test]
 fn store_rolls_back_a_partly_invalid_multi_recipient_send() {
     let dir = tempfile::tempdir().unwrap();
@@ -730,13 +781,14 @@ fn discussion_and_plain_text_mention_routing_are_bounded() {
     g.works[0].status = "running".into();
     let member = g.members[2].id.clone();
     let target = g.members[1].id.clone();
-    assert!(mcp::call_in_group(
+    mcp::call_in_group(
         &mut g,
         &member,
         "discussion",
-        &json!({"name":"group_call_member","arguments":{"member":target,"prompt":"写入"}})
+        &json!({"name":"group_call_member","arguments":{"member":target,"prompt":"写入"}}),
     )
-    .is_err());
+    .unwrap();
+    assert!(g.works.last().unwrap().discussion);
 }
 
 #[test]
@@ -772,7 +824,6 @@ fn list_snapshot_keeps_old_active_work_when_newer_history_is_large() {
     let store = Store::open(&temporary.path().join("groups.sqlite")).unwrap();
     let mut g = group();
     let member = g.members[1].id.clone();
-    g.max_calls = 50;
     let running = g
         .enqueue("active-root", &member, "运行中".into(), false, None, 0)
         .unwrap();
@@ -885,7 +936,7 @@ fn completing_a_nested_continuation_settles_the_original_request() {
 }
 
 #[test]
-fn reaching_a_budget_settles_the_waiting_parent_and_its_queued_continuation() {
+fn large_token_usage_does_not_block_the_requester_continuation() {
     let mut g = group();
     let coordinator = g.coordinator_id.clone();
     let expert = g.members[1].id.clone();
@@ -903,14 +954,127 @@ fn reaching_a_budget_settles_the_waiting_parent_and_its_queued_continuation() {
         )
         .unwrap();
     g.finish(&parent, None, false);
-    g.works.iter_mut().find(|w| w.id == child).unwrap().tokens = g.token_budget;
+    g.works.iter_mut().find(|w| w.id == child).unwrap().tokens = 5_000_000;
     g.finish(&child, None, false);
-    g.enforce_budget();
-    assert!(g.works.iter().all(|w| w.terminal()));
+    let continuation = g
+        .works
+        .iter()
+        .find(|w| w.continuation_of.as_deref() == Some(&parent))
+        .unwrap()
+        .id
+        .clone();
+    g.finish(&continuation, None, false);
     assert_eq!(
         g.works.iter().find(|w| w.id == parent).unwrap().status,
-        "failed"
+        "completed"
     );
+}
+
+#[test]
+fn explicit_new_topics_do_not_merge_with_the_only_running_request() {
+    let mut g = group();
+    let first = input();
+    send(&mut g, &first).unwrap();
+    g.works[0].status = "running".into();
+    let mut next = input();
+    next.new_request = true;
+    send(&mut g, &next).unwrap();
+    assert_eq!(g.works.len(), 2);
+    assert_eq!(g.works[1].root_id, next.id);
+    assert!(g.messages.last().unwrap().request_id.is_none());
+}
+
+#[test]
+fn explicit_followups_can_be_saved_while_dispatch_is_paused() {
+    let mut g = group();
+    let first = input();
+    send(&mut g, &first).unwrap();
+    g.paused = true;
+    let mut correction = input();
+    correction.request_id = Some(first.id.clone());
+    send(&mut g, &correction).unwrap();
+    assert_eq!(g.works.len(), 1);
+    assert_eq!(
+        g.messages.last().unwrap().request_id.as_deref(),
+        Some(first.id.as_str())
+    );
+    let mut unrelated = input();
+    unrelated.new_request = true;
+    assert!(send(&mut g, &unrelated).is_err());
+    correction.id = id();
+    correction.member_ids = vec!["unknown-member".into()];
+    assert!(send(&mut g, &correction).is_err());
+    correction.member_ids.clear();
+    correction.request_id = Some("missing-request".into());
+    assert!(send(&mut g, &correction).is_err());
+}
+
+#[test]
+fn duplicate_member_names_require_ids_and_read_only_results_cannot_delegate() {
+    let mut g = group();
+    g.members[2].name = g.members[1].name.clone();
+    let owner = g.coordinator_id.clone();
+    g.enqueue("root", &owner, "协作".into(), true, None, 0)
+        .unwrap();
+    g.works[0].status = "running".into();
+    g.works[0].session_id = Some("discussion-owner".into());
+    let ambiguous = json!({"name":"group_call_member","arguments":{"member":g.members[1].name,"prompt":"评审"}});
+    assert!(
+        mcp::call_in_group(&mut g, &owner, "discussion-owner", &ambiguous)
+            .unwrap_err()
+            .contains("名称重复")
+    );
+    let target = g.members[1].id.clone();
+    let valid = json!({"name":"group_call_member","arguments":{"member":target,"prompt":"评审"}});
+    mcp::call_in_group(&mut g, &owner, "discussion-owner", &valid).unwrap();
+    assert!(g.works[1].discussion);
+    g.works[0].summary = true;
+    assert!(
+        mcp::call_in_group(&mut g, &owner, "discussion-owner", &valid)
+            .unwrap_err()
+            .contains("整理已有结果")
+    );
+}
+
+#[test]
+fn real_member_handoffs_can_exceed_three_levels_and_still_return_a_conclusion() {
+    let mut g = group();
+    while g.members.len() < 6 {
+        let mut member = g.members[1].clone();
+        member.id = id();
+        member.name = format!("专家{}", g.members.len());
+        g.members.push(member);
+    }
+    let members = g
+        .members
+        .iter()
+        .map(|member| member.id.clone())
+        .collect::<Vec<_>>();
+    let mut current = g
+        .enqueue("deep-request", &members[0], "交付".into(), true, None, 0)
+        .unwrap();
+    for index in 0..5 {
+        let session = format!("discussion-{index}");
+        let work = g.works.iter_mut().find(|work| work.id == current).unwrap();
+        work.status = "running".into();
+        work.session_id = Some(session.clone());
+        let result=mcp::call_in_group(&mut g,&members[index],&session,&json!({"name":"group_call_member","arguments":{"member":members[index+1],"prompt":"只读核对并返回观点"}})).unwrap();
+        g.finish(&current, None, false);
+        current = result["workId"].as_str().unwrap().into();
+    }
+    assert_eq!(g.works.last().unwrap().depth, 5);
+    g.works.last_mut().unwrap().output = "已核对依据".into();
+    g.finish_execution(&current, None, false);
+    while let Some(work) = g.works.iter().find(|work| work.status == "queued").cloned() {
+        g.works
+            .iter_mut()
+            .find(|item| item.id == work.id)
+            .unwrap()
+            .output = "可读的汇总结论".into();
+        g.finish_execution(&work.id, None, false);
+    }
+    assert!(g.works.iter().all(Work::terminal));
+    assert_eq!(g.snapshot().requests[0].state, "delivered");
 }
 
 #[test]
@@ -1707,7 +1871,7 @@ fn explicit_reply_fences_supplements_and_running_children_receive_corrections() 
 }
 
 #[test]
-fn consumed_followup_completes_without_an_extra_call_at_the_member_limit() {
+fn consumed_followup_completes_without_an_extra_call_after_multiple_continuations() {
     let mut g = group();
     let i = input();
     send(&mut g, &i).unwrap();
@@ -1795,6 +1959,17 @@ fn current_task_stop_respects_reference_and_ambiguity_without_stopping_other_req
     let mut stop = input();
     stop.text = "停止当前任务".into();
     assert!(send(&mut g, &stop).is_err());
+    let mut scoped = g.clone();
+    let mut selected_stop = input();
+    selected_stop.text = stop.text.clone();
+    selected_stop.request_id = Some(a.id.clone());
+    selected_stop.reply_to = Some(b.id.clone());
+    send(&mut scoped, &selected_stop).unwrap();
+    assert_eq!(scoped.works[0].status, "stopping");
+    assert_eq!(scoped.works[1].status, "running");
+    selected_stop.id = id();
+    selected_stop.request_id = Some("ended-request".into());
+    assert!(send(&mut scoped, &selected_stop).is_err());
     stop.reply_to = Some(a.id.clone());
     send(&mut g, &stop).unwrap();
     assert_eq!(g.works[0].status, "stopping");
@@ -2299,4 +2474,170 @@ fn permanent_group_deletion_also_removes_only_its_private_migration_backup() {
         .unwrap();
     assert_eq!(ids, vec![second.id]);
     assert!(store.get(&first.id).is_err());
+}
+
+#[test]
+fn paused_multi_recipient_supplement_is_durable_idempotent_and_dispatchable_after_resume() {
+    let mut g = group();
+    let first = input();
+    send(&mut g, &first).unwrap();
+    g.paused = true;
+    let mut supplement = input();
+    supplement.request_id = Some(first.id.clone());
+    supplement.member_ids = g.members[1..]
+        .iter()
+        .map(|member| member.id.clone())
+        .collect();
+    send(&mut g, &supplement).unwrap();
+    send(&mut g, &supplement).unwrap();
+    assert_eq!(g.works.len(), 3);
+    let message = g.messages.last().unwrap();
+    assert_eq!(message.assigned_work_ids.len(), 2);
+    assert!(g.works.iter().all(|work| work.status == "queued"));
+    g.paused = false;
+    let blocked = runtime::blocked_work(&g);
+    assert!(blocked.contains(&g.works[0].id));
+    assert!(g.works[1..].iter().all(|work| !blocked.contains(&work.id)));
+    let prepared_seq = g.messages.last().unwrap().seq;
+    for work in &mut g.works[1..] {
+        work.context_seq = prepared_seq;
+    }
+    let first_child = g.works[1].id.clone();
+    g.works[1].output = "A reviewed".into();
+    g.finish_execution(&first_child, None, false);
+    let second_child = g.works[2].id.clone();
+    g.works[2].output = "B reviewed".into();
+    g.finish_execution(&second_child, None, false);
+    assert!(!runtime::blocked_work(&g).contains(&g.works[0].id));
+}
+
+#[test]
+fn empty_result_repair_is_not_blocked_by_its_own_continuation_dependency() {
+    let mut g = group();
+    let request = input();
+    send(&mut g, &request).unwrap();
+    let original = g.works[0].id.clone();
+    g.works[0].status = "running".into();
+    g.finish_execution(&original, None, false);
+    let repair = g.works.last().unwrap();
+    assert!(repair.result_repair);
+    assert!(repair.parent_id.is_none());
+    assert_eq!(repair.continuation_of.as_deref(), Some(original.as_str()));
+    assert!(!runtime::blocked_work(&g).contains(&repair.id));
+}
+
+#[test]
+fn preview_and_snapshot_share_delivery_and_durable_public_revisions() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open(&home.path().join("groups.sqlite")).unwrap();
+    let mut g = group();
+    let request = input();
+    send(&mut g, &request).unwrap();
+    let work = g.works[0].id.clone();
+    store.create(&g).unwrap();
+    store
+        .update(&g.id, |group| {
+            group.works[0].status = "running".into();
+            group.post(
+                Some(group.coordinator_id.clone()),
+                "assistant",
+                "First part".into(),
+                Some(work.clone()),
+            );
+            Ok(())
+        })
+        .unwrap();
+    let read = store.list_snapshots().unwrap()[0].public_seq;
+    store
+        .update(&g.id, |group| {
+            group
+                .messages
+                .last_mut()
+                .unwrap()
+                .text
+                .push_str("; final conclusion");
+            group.works[0].output = group.messages.last().unwrap().text.clone();
+            group.finish_execution(&work, None, false);
+            Ok(())
+        })
+        .unwrap();
+    let full = store.get(&g.id).unwrap().snapshot();
+    let preview = store.list_snapshots().unwrap().remove(0);
+    assert!(preview.public_seq > read);
+    assert_eq!(preview.public_seq, full.public_seq);
+    assert_eq!(preview.requests[0].state, "delivered");
+    assert_eq!(preview.latest_request_id, Some(request.id));
+    store
+        .update(&g.id, |group| {
+            group
+                .post(None, "activity", String::new(), Some(work.clone()))
+                .tool_calls
+                .push(json!({"status":"completed"}));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        store.list_snapshots().unwrap()[0].public_seq,
+        full.public_seq
+    );
+    assert_eq!(
+        Store::open(&store.path).unwrap().list_snapshots().unwrap()[0].public_seq,
+        full.public_seq
+    );
+    store
+        .update(&g.id, |group| {
+            group
+                .post(None, "user", String::new(), None)
+                .attachments
+                .push("/image.png".into());
+            Ok(())
+        })
+        .unwrap();
+    assert!(store.list_snapshots().unwrap()[0].public_seq > full.public_seq);
+}
+
+#[test]
+fn presentation_migration_rebuilds_legacy_previews_without_replaying_work() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open(&home.path().join("groups.sqlite")).unwrap();
+    let mut g = group();
+    let request = input();
+    send(&mut g, &request).unwrap();
+    g.works[0].status = "completed".into();
+    g.works[0].output = "Saved conclusion".into();
+    g.restore_saved_replies();
+    store.create(&g).unwrap();
+    let connection = rusqlite::Connection::open(&store.path).unwrap();
+    connection
+        .execute(
+            "DELETE FROM group_migrations WHERE name='request-presentation-v1'",
+            [],
+        )
+        .unwrap();
+    connection.execute("UPDATE group_previews SET data=json_remove(data,'$.requests','$.publicSeq','$.latestRequestId')", []).unwrap();
+    let reopened = Store::open(&store.path).unwrap();
+    let preview = reopened.list_snapshots().unwrap().remove(0);
+    assert_eq!(preview.requests[0].state, "delivered");
+    assert_eq!(reopened.get(&g.id).unwrap().works, g.works);
+    connection
+        .execute("DELETE FROM group_previews", [])
+        .unwrap();
+    let rebuilt = Store::open(&store.path)
+        .unwrap()
+        .list_snapshots()
+        .unwrap()
+        .remove(0);
+    assert_eq!(rebuilt.requests[0].state, "delivered");
+    assert_eq!(rebuilt.latest_request_id, preview.latest_request_id);
+}
+
+#[test]
+fn all_member_mentions_are_unambiguous_even_when_member_names_are_duplicated() {
+    let mut g = group();
+    g.members[2].name = g.members[1].name.clone();
+    let mut request = input();
+    request.text = "@全体 请共同核对".into();
+    send(&mut g, &request).unwrap();
+    assert_eq!(g.works.len(), 3);
+    assert_eq!(g.messages.last().unwrap().member_ids.len(), 3);
 }

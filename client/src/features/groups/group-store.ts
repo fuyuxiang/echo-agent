@@ -1,3 +1,4 @@
+import { groupPublicSeq } from "./group-presentation";
 import { create } from "zustand";
 import { useEffect } from "react";
 import { groupCleanupAck, groupCleanupPending, groupDelete, groupList, groupSnapshot, onGroupChanged, type Group, type TeamTemplate } from "./group-client";
@@ -14,7 +15,7 @@ import { useMessageQueueStore } from "@/stores/message-queue-store";
 import { useSubagentStore } from "@/stores/subagent-store";
 import { useSessionsStore } from "@/stores/sessions-store";
 
-export interface GroupDraftOptions { targets: string[]; discussion: boolean; replyTo: string | null }
+export interface GroupDraftOptions { targets: string[]; discussion: boolean; replyTo: string | null; newTopic?: boolean; requestId?: string | null }
 interface GroupState {
   groups: Group[]; currentId: string | null; current: Group | null; error: string | null; loading: boolean;
   createFrom: { sessionId: string; team: RuntimeTeamInfo; referenceText?: string } | null;
@@ -39,6 +40,15 @@ let listGeneration = 0, selectionGeneration = 0;
 const deletedGroups = new Set<string>();
 const pendingCleanup = new Map<string, string[]>();
 let cleanupRunning: Promise<void> | null = null;
+function submissionFingerprint(value: string): string {
+  try {
+    const input = JSON.parse(value);
+    if (input && typeof input === "object" && !Array.isArray(input)) {
+      return JSON.stringify({...input,newTopic:input.newTopic ?? false,selectedRequest:input.selectedRequest ?? null});
+    }
+  } catch { /* Older callers may use an opaque fingerprint. */ }
+  return value;
+}
 export const useGroupStore = create<GroupState>((set, get) => ({
   groups: [], currentId: null, current: null, error: null, loading: false, createFrom: null, createTemplate: null, cleanupError: null,
   drafts: readDurable("echoagent.group-drafts.v1", {}, isStringMap),
@@ -47,7 +57,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
     if (deletedGroups.has(id)) throw new Error("专家团已删除，无法继续发送");
     try {
       const pending = JSON.parse(get().outbox[id] ?? "null");
-      if (pending?.fingerprint === fingerprint && typeof pending.id === "string") return pending.id;
+      if (typeof pending?.fingerprint === "string" && submissionFingerprint(pending.fingerprint) === submissionFingerprint(fingerprint) && typeof pending.id === "string") return pending.id;
     } catch { /* Replace an invalid pending record before sending. */ }
     const requestId = crypto.randomUUID();
     const outbox = { ...get().outbox, [id]: JSON.stringify({ id: requestId, fingerprint }) };
@@ -59,8 +69,8 @@ export const useGroupStore = create<GroupState>((set, get) => ({
     const outbox = { ...get().outbox }; delete outbox[id];
     writeDurable("echoagent.group-outbox.v1", outbox); set({ outbox });
   },
-  readRevisions: readDurable<Record<string, number>>("echoagent.group-read.v1", {}, (value): value is Record<string, number> => !!value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every(value => typeof value === "number" && Number.isFinite(value))),
-  markRead: (id, revision) => { if (deletedGroups.has(id)) return; if ((get().readRevisions[id] ?? 0) >= revision) return; const readRevisions = { ...get().readRevisions, [id]: revision }; if (writeDurable("echoagent.group-read.v1", readRevisions)) set({ readRevisions }); },
+  readRevisions: readDurable<Record<string, number>>("echoagent.group-read.v3", {}, (value): value is Record<string, number> => !!value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every(value => typeof value === "number" && Number.isFinite(value))),
+  markRead: (id, revision) => { if (deletedGroups.has(id)) return; if ((get().readRevisions[id] ?? 0) >= revision) return; const readRevisions = { ...get().readRevisions, [id]: revision }; if (writeDurable("echoagent.group-read.v3", readRevisions)) set({ readRevisions }); },
   forget: (id, sessionIds = []) => {
     deletedGroups.add(id);
     ++listGeneration;
@@ -71,7 +81,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
     delete drafts[id]; delete drafts[`options:${id}`]; delete outbox[id]; delete readRevisions[id];
     const receipt = [...sessions];
     pendingCleanup.set(id, receipt);
-    const writes = [writeDurable("echoagent.group-drafts.v1", drafts), writeDurable("echoagent.group-outbox.v1", outbox), writeDurable("echoagent.group-read.v1", readRevisions)];
+    const writes = [writeDurable("echoagent.group-drafts.v1", drafts), writeDurable("echoagent.group-outbox.v1", outbox), writeDurable("echoagent.group-read.v3", readRevisions)];
     const selected = state.currentId === id;
     if (selected) ++selectionGeneration;
     set({ groups: state.groups.filter(g => g.id !== id), drafts, outbox, readRevisions, ...(selected ? { currentId: null, current: null, loading: false, error: null } : {}) });
@@ -133,6 +143,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       if (!current || current.id !== id || !Array.isArray(current.messages) || !Array.isArray(current.members)) throw new Error("专家团记录未返回有效数据，请稍后重试");
       if (generation === selectionGeneration) {
         const previous = get().current;
+        current.publicSeq ??= groupPublicSeq(current);
         if (previous?.id === current.id) {
           const messages = new Map(previous.messages.map(message => [message.id, message]));
           current.messages = current.messages.map(message => {
@@ -159,7 +170,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
     const raw = get().drafts[`options:${id}`];
     if (raw) try {
       const value = JSON.parse(raw);
-      if (Array.isArray(value.targets) && value.targets.every((target: unknown) => typeof target === "string") && typeof value.discussion === "boolean" && (value.replyTo === null || typeof value.replyTo === "string")) return value;
+      if (Array.isArray(value.targets) && value.targets.every((target: unknown) => typeof target === "string") && typeof value.discussion === "boolean" && (value.replyTo === null || typeof value.replyTo === "string") && (value.newTopic === undefined || typeof value.newTopic === "boolean") && (value.requestId == null || typeof value.requestId === "string")) return value;
     } catch { /* Preserve the draft text even if its optional selection is invalid. */ }
     return { targets: [], discussion: false, replyTo: null };
   },

@@ -79,7 +79,7 @@ const groupFixture = (id = 'test-team'): Group => ({
   id, name: id, goal: '产品评审', cwd: '/workspace', sourceSessionId: null,
   sourceTeamId: null, coordinatorId: 'coordinator', members: [], messages: [],
   works: [], decisions: [], archived: false, pinned: false, paused: false,
-  updatedAt: 1, revision: 1, maxCalls: 10, tokenBudget: 100000,
+  updatedAt: 1, revision: 1,
 });
 function prepareGroup(group: Group, snapshot: () => Promise<Group>) {
   vi.mocked(invoke).mockImplementation(async command => command === 'group_snapshot' ? snapshot() : ['notification_take_pending_opens', 'coding_task_list'].includes(command) ? [] : null);

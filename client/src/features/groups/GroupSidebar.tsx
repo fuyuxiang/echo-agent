@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Pin } from "lucide-react";
 import { ChevronDownIcon } from "@/foundation/components/Icon/icons";
 import { useGroupStore } from "./group-store";
+import { groupPublicSeq } from "./group-presentation";
 import { groupStatus } from "./group-client";
 import { GroupActionButton, openGroupMenu } from "./GroupActions";
 
@@ -23,7 +24,7 @@ export function GroupSidebar({ onOpen, active = false }: { onOpen: () => void; a
     {!collapsed && <div id="sidebar-group-list" className="sidebar__group group-sidebar__list" role="region" aria-label="最近专家团" tabIndex={0}>
     {visible.slice(0, 12).map(group => <div key={group.id} className={`group-sidebar__row${active && currentId === group.id ? " is-selected" : ""}`} onContextMenu={event => openGroupMenu(group.id, event)}>
       <button type="button" className="group-sidebar__item" title={group.name} onClick={() => { void useGroupStore.getState().select(group.id); onOpen(); }}>
-        <span>{group.pinned && <Pin size={11} />}{group.name}{group.revision > (read[group.id] ?? 0) && <i className="group-unread" aria-label="有新动态" />}</span><small>{groupStatus(group)}</small>
+        <span>{group.pinned && <Pin size={11} />}{group.name}{groupPublicSeq(group) > (read[group.id] ?? 0) && <i className="group-unread" aria-label="有新动态" />}</span><small>{groupStatus(group)}</small>
       </button>
       <GroupActionButton group={group} />
     </div>)}

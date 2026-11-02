@@ -10,6 +10,8 @@ import { Sidebar } from "../../src/components/Sidebar";
 import { useGroupEvents, useGroupStore } from "../../src/features/groups/group-store";
 import { usePermissionStore } from "../../src/stores/permission-store";
 import type { Group, TeamTemplate } from "../../src/features/groups/group-client";
+import { groupRequests, groupPublicSeq } from "../../src/features/groups/group-presentation";
+import { latestGroupRequestId } from "../../src/features/groups/group-client";
 
 const theme = new URLSearchParams(location.search).get("theme") ?? "light";
 localStorage.setItem("echoagent.theme", theme);
@@ -22,7 +24,20 @@ const groups: Group[] = JSON.parse(sessionStorage.getItem("group-review") ?? "[]
 const templates: TeamTemplate[] = JSON.parse(sessionStorage.getItem("group-review-templates") ?? "[]");
 let failNextSend = false, failNextDelete = false, failNextTemplates = false;
 const cleanupReceipts = new Map<string, {groupId:string;sessionIds:string[]}>();
+const publicBodies = new Map<string, string>();
+for (const group of groups) for (const message of group.messages) publicBodies.set(message.id, JSON.stringify([message.text,message.attachments]));
+const presentation = (group: Group, preview = false): Group => {
+  const projected = {...structuredClone(group),requests:groupRequests(group),publicSeq:groupPublicSeq(group),latestRequestId:latestGroupRequestId(group)};
+  if (preview) projected.messages = projected.messages.filter(message => ["user","assistant"].includes(message.kind) && (message.text.trim() || message.attachments.length)).slice(-1);
+  return projected;
+};
 const changed = (group: Group) => {
+  let revision = groupPublicSeq(group);
+  for (const message of group.messages) {
+    const body = JSON.stringify([message.text,message.attachments]);
+    if (["user","assistant"].includes(message.kind) && (message.text.trim() || message.attachments.length) && publicBodies.get(message.id) !== body) message.publicRevision = ++revision;
+    publicBodies.set(message.id,body);
+  }
   group.revision++; group.updatedAt = Date.now();
   sessionStorage.setItem("group-review", JSON.stringify(groups));
   for (const [id, event] of listeners) if (event === "group://changed") callbacks.get(id)?.({ payload: { groupId: group.id } });
@@ -36,7 +51,7 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
     if (command === "plugin:event|listen") { listeners.set(args.handler, args.event); return args.handler; }
     if (command === "plugin:event|unlisten") { listeners.delete(args.eventId); return; }
     if (command === "agents_list") return experts;
-    if (command === "group_list") return structuredClone(groups);
+    if (command === "group_list") return groups.map(group => presentation(group,true));
     if (command === "group_cleanup_pending") return [...cleanupReceipts.values()];
     if (command === "group_cleanup_ack") { cleanupReceipts.delete(args.groupId); return; }
     if (command === "group_team_templates") {
@@ -86,11 +101,11 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
       if (args.action === "restore") decision.voided=false;
       changed(group); return;
     }
-    if (command === "group_snapshot") return structuredClone(groups.find(group => group.id === args.groupId));
+    if (command === "group_snapshot") return presentation(groups.find(group => group.id === args.groupId)!);
     if (command === "group_create") {
       const input = args.input;
       const members = ["协调员", ...input.members].map((name: string, index: number) => ({ id: crypto.randomUUID(), name, expert: index ? name : null, role: index ? `${name}负责专业分析和交付` : "组织协作、汇总交付", modelId: input.modelId, sessionId: `native-${index}`, discussionSessionId: null, generation: 0 }));
-      const group: Group = { id: crypto.randomUUID(), name: input.name, goal: input.goal, cwd: input.cwd, sourceSessionId: null, sourceTeamId: null, coordinatorId: members[0].id, members, messages: [], works: [], decisions: [], archived: false, pinned: false, paused: false, revision: 1, updatedAt: Date.now(), maxCalls: 12, tokenBudget: 100000 };
+      const group: Group = { id: crypto.randomUUID(), name: input.name, goal: input.goal, cwd: input.cwd, sourceSessionId: null, sourceTeamId: null, coordinatorId: members[0].id, members, messages: [], works: [], decisions: [], archived: false, pinned: false, paused: false, revision: 1, updatedAt: Date.now() };
       groups.push(group); changed(group); return structuredClone(group);
     }
     if (command === "group_send") {
@@ -101,13 +116,14 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
       const roots=[...new Set(group.works.filter(work => !["completed","failed","cancelled","stopping","uncertain"].includes(work.status) && work.discussion === args.input.discussion && targets.includes(work.memberId)).map(work => work.rootId))];
       const quote=group.messages.find(message => message.id === args.input.replyTo);
       const quoteRoot=quote?.requestId ?? group.works.find(work => work.id === quote?.workId)?.rootId ?? (group.works.some(work => work.rootId === quote?.id) ? quote?.id : undefined);
-      const requestId=targets.length === 1 && roots.length === 1 && (!args.input.replyTo || quoteRoot === roots[0]) ? roots[0] : undefined;
-      group.messages.push({ id: args.input.id, seq: group.messages.length + 1, kind: "user", text: args.input.text, createdAt: Date.now(), memberId: null, workId: null, replyTo: args.input.replyTo, attachments: args.input.attachments, toolCalls: [],requestId,memberIds:targets });
+      const requestId=args.input.newRequest ? undefined : args.input.requestId ?? (targets.length === 1 && roots.length === 1 && (!args.input.replyTo || quoteRoot === roots[0]) ? roots[0] : undefined);
+      group.messages.push({ id: args.input.id, seq: group.messages.length + 1, kind: "user", text: args.input.text, createdAt: Date.now(), memberId: null, workId: null, replyTo: args.input.replyTo, attachments: args.input.attachments, toolCalls: [],requestId,memberIds:targets,requestOwnerId:requestId ? null : targets.length === 1 ? targets[0] : group.coordinatorId });
       if (!requestId) for (const memberId of targets) group.works.push({ id: crypto.randomUUID(), rootId: args.input.id, parentId: null, continuationOf: null, memberId, prompt: args.input.text, status: "running", discussion: args.input.discussion, sessionId: group.members.find(member => member.id === memberId)?.sessionId ?? null, output: "", error: null, createdAt: Date.now(), tokens: 0 });
       changed(group); return;
     }
     if (command === "group_control") {
       const group = groups.find(group => group.id === args.groupId)!;
+      if (args.action === "stop_request") { for(const work of group.works) if(work.rootId === args.workId && !["completed","failed","cancelled"].includes(work.status)) work.status="cancelled"; }
       if (args.action === "stop") { group.paused = !args.workId; for (const work of group.works) if ((!args.workId || work.id === args.workId) && !["completed", "failed", "cancelled"].includes(work.status)) work.status = "cancelled"; }
       if (args.action === "retry") {
         const original = group.works.find(work => work.id === args.workId)!;
@@ -135,11 +151,29 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
     return {};
   },
 }, groupReview: {
+  concurrent: () => {
+    const group = groups.find(group => group.id === useGroupStore.getState().currentId)!;
+    const base = group.messages.find(message => message.kind === "user")!;
+    const original = group.works[0];
+    for (const [index,member] of group.members.slice(0,2).entries()) {
+      const root=`routing-${index}`;
+      group.messages.push({...base,id:root,seq:group.messages.length+1,text:`独立任务 ${index+1}`,requestId:null,requestOwnerId:member.id,workId:null});
+      const work={...original,id:`routing-work-${index}`,rootId:root,memberId:member.id,status:"running",output:"",discussion:false,error:null};
+      group.works.push(work);
+      if(index === 1) group.messages.push({...base,id:"routing-reply",seq:group.messages.length+1,kind:"assistant",memberId:member.id,text:"第二项任务的进度",requestId:null,workId:work.id});
+    }
+    changed(group);
+  },
+  appendReply: () => {
+    const group = groups.find(group => group.messages.some(message => message.id === "routing-reply"))!;
+    group.messages.find(message => message.id === "routing-reply")!.text += "；这是离开页面之后生成的最终结论";
+    changed(group);
+  },
   failTemplates: () => { failNextTemplates = true; },
   failSend: () => { failNextSend = true; },
   failDelete: () => { failNextDelete = true; },
   seedMany: (count: number) => {
-    const base: Group = groups[0] ?? {id:"seed",name:"seed",goal:"",cwd:"/review/团队工作区",sourceSessionId:null,sourceTeamId:null,coordinatorId:"c",members:[],messages:[],works:[],decisions:[],archived:false,pinned:false,paused:false,revision:1,updatedAt:1,maxCalls:12,tokenBudget:100000};
+    const base: Group = groups[0] ?? {id:"seed",name:"seed",goal:"",cwd:"/review/团队工作区",sourceSessionId:null,sourceTeamId:null,coordinatorId:"c",members:[],messages:[],works:[],decisions:[],archived:false,pinned:false,paused:false,revision:1,updatedAt:1};
     for (let index=0; index<count; index++) groups.push({...structuredClone(base),id:`seed-${index}`,name:`目录专家团 ${index}`,goal:index===count-1?"唯一目标检索关键词":"验证历史目录",messages:[],works:[],decisions:[],archived:false,pinned:false});
     changed(groups.at(-1)!);
   },

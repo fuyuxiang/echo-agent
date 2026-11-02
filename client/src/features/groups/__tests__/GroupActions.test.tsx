@@ -9,7 +9,7 @@ import { groupDelete, groupMetadata, groupList, groupSnapshot, type Group } from
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
 vi.mock("@/lib/agent-client", async original => ({ ...await original<typeof import("@/lib/agent-client")>(), agentsList: vi.fn(async () => []) }));
 vi.mock("../group-client", async original => ({ ...await original<typeof import("../group-client")>(), groupDelete: vi.fn(), groupMetadata: vi.fn(), groupList: vi.fn(), groupSnapshot: vi.fn() }));
-const makeGroup = (id: string): Group => ({id,name:id,goal:"交付",cwd:"/work",sourceSessionId:null,sourceTeamId:null,coordinatorId:"c",members:[],messages:[],works:[],decisions:[],archived:false,pinned:false,paused:false,revision:1,updatedAt:1,maxCalls:12,tokenBudget:10000});
+const makeGroup = (id: string): Group => ({id,name:id,goal:"交付",cwd:"/work",sourceSessionId:null,sourceTeamId:null,coordinatorId:"c",members:[],messages:[],works:[],decisions:[],archived:false,pinned:false,paused:false,revision:1,updatedAt:1});
 let records: Group[];
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear(); records=[makeGroup("生命周期验证组")];

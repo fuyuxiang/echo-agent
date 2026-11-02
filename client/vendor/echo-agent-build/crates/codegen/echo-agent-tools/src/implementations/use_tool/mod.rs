@@ -49,6 +49,10 @@ pub struct UseToolParams {
     /// Enable the native-tool corrective error. Default: `true`.
     #[serde(default = "default_true")]
     pub native_tool_correction: bool,
+    /// Optional session policy for exact qualified integration tool names.
+    /// Checked before local or managed gateway dispatch, including guessed names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tool_names: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -59,6 +63,7 @@ impl Default for UseToolParams {
     fn default() -> Self {
         Self {
             native_tool_correction: true,
+            allowed_tool_names: None,
         }
     }
 }
@@ -329,6 +334,17 @@ impl echo_agent_tool_runtime::Tool for UseTool {
         use crate::types::resources::{EnabledNativeToolNames, ManagedGatewayToolCatalog, Params};
 
         let resources = crate::types::tool_metadata::shared_resources(&ctx).ok();
+        if let Some(resources) = resources.as_ref() {
+            let guard = resources.lock().await;
+            if guard.get::<Params<UseToolParams>>()
+                .and_then(|params| params.0.allowed_tool_names.as_ref())
+                .is_some_and(|allowed| !allowed.contains(&input.tool_name))
+            {
+                return Err(echo_agent_tool_runtime::ToolError::invalid_arguments(
+                    format!("Integration tool '{}' is not permitted in this read-only session", input.tool_name),
+                ));
+            }
+        }
         let (gateway_source, is_native, search_tool_name) =
             if let Some(resources) = resources.as_ref() {
                 let guard = resources.lock().await;
@@ -1568,6 +1584,7 @@ mod tests {
         resources.insert(EnabledNativeToolNames(set));
         resources.insert(Params(UseToolParams {
             native_tool_correction: false,
+            ..Default::default()
         }));
         resources.into_shared()
     }

@@ -4462,21 +4462,34 @@ impl MvpAgent {
                 }
             }
             agent_definition.memory = None;
-            agent_definition.max_turns = Some(agent_definition.max_turns.unwrap_or(20).min(20));
             // All collaboration goes through persisted group work items. Native
-            // private subagents would bypass group budgets, visibility and the
+            // private subagents would bypass group visibility and the
             // member memory namespace, so disable that alternate dispatch path.
             agent_definition.allowed_subagent_types = Some(Vec::new());
             agent_definition.session_tools_denylist.get_or_insert_with(Vec::new)
                 .extend(["task", "Agent", "workflow", "workflow_start", "workflow_create", "update_goal"].into_iter().map(str::to_string));
             if group.get("readOnly").and_then(serde_json::Value::as_bool) == Some(true) {
                 agent_definition.session_tools_allowlist = Some([
-                    "read_file", "list_dir", "grep", "glob", "web_search", "web_fetch",
-                    "Read", "Glob", "Grep", "LS", "group_read_history", "group_get_work",
-                    "echoagent__group_read_history", "echoagent__group_get_work",
+                    "read_file", "list_dir", "grep", "glob", "web_search", "web_fetch", "search_tool", "use_tool",
+                    "Read", "Glob", "Grep", "LS", "group_read_history", "group_get_work", "group_call_member",
+                    "echoagent__group_read_history", "echoagent__group_get_work", "echoagent__group_call_member",
                     "local_knowledge_search", "local_knowledge_fetch", "knowledge_context", "knowledge_ask", "knowledge_search", "knowledge_fetch_document", "knowledge_fetch_doc", "knowledge_list_documents", "knowledge_list_docs", "knowledge_who_knows",
                     "echoagent_organization_memory__local_knowledge_search", "echoagent_organization_memory__local_knowledge_fetch", "echoagent_organization_memory__knowledge_context", "echoagent_organization_memory__knowledge_ask", "echoagent_organization_memory__knowledge_search", "echoagent_organization_memory__knowledge_fetch_document", "echoagent_organization_memory__knowledge_fetch_doc", "echoagent_organization_memory__knowledge_list_documents", "echoagent_organization_memory__knowledge_list_docs", "echoagent_organization_memory__knowledge_who_knows",
                 ].into_iter().map(str::to_string).collect());
+                // MCP integrations are reached through use_tool, rather than
+                // advertised as native functions. Clamp the actual leaf name
+                // before either local or gateway dispatch.
+                let allowed = agent_definition.session_tools_allowlist.as_ref().unwrap()
+                    .iter().filter(|name| name.contains("__")).cloned().collect::<Vec<_>>();
+                if !agent_definition.tool_config.tools.iter().any(|tool| tool.id.rsplit(':').next() == Some("use_tool")) {
+                    agent_definition.tool_config.tools.push((&echo_agent_tools::implementations::use_tool::UseTool).into());
+                }
+                for tool in &mut agent_definition.tool_config.tools {
+                    if tool.id.rsplit(':').next() == Some("use_tool") {
+                        tool.params.get_or_insert_with(Default::default)
+                            .insert("allowed_tool_names".into(), serde_json::json!(allowed));
+                    }
+                }
             }
         }
         let mut session_memory_config = self.memory_config.clone();

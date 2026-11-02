@@ -1341,6 +1341,24 @@ impl SessionActor {
                 return Ok(Err(denied));
             }
         }
+        // Reject tools outside the host-installed MCP ceiling before asking
+        // for approval. Allowed tools still use the ordinary permission policy.
+        // UseTool checks the same policy again at the actual dispatch boundary.
+        let bounded_mcp = if let ToolInput::UseTool(input) = &tool_input {
+            self.tool_bridge_handle()
+                .read_resource::<echo_agent_tools::types::resources::Params<echo_agent_tools::implementations::use_tool::UseToolParams>>()
+                .await
+                .and_then(|params| params.0.allowed_tool_names.map(|names| names.contains(&input.tool_name)))
+        } else {
+            None
+        };
+        if bounded_mcp == Some(false) {
+            let target = tool_input.dispatch_target_name().unwrap_or_default();
+            self.handle_tool_not_executed(&call.id, &tool_call_id,
+                format!("Integration tool '{target}' is not permitted in this read-only session"),
+            ).await?;
+            return Ok(Err(ToolLoop::Continue));
+        }
         let access_kind = AccessKind::from(&tool_input);
         let plan_gate = plan_mode_edit_gate(&self.plan_mode.lock(), &tool_input, &access_kind);
         if plan_gate != PlanEditGate::Allow {

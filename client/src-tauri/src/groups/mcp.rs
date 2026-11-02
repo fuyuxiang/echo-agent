@@ -50,19 +50,25 @@ pub(super) fn call_in_group(
             if g.paused {
                 return Err("后续派发已暂停，请等待用户恢复协作".into());
             }
-            if work.discussion {
-                return Err("讨论回合不能派发执行工作".into());
+            if work.summary || work.result_repair {
+                return Err("当前正在整理已有结果，请直接回复，不再派发工作".into());
             }
             let target = args
                 .get("member")
                 .and_then(Value::as_str)
                 .ok_or("请指定成员")?;
-            let target = g
+            let by_id = g.members.iter().find(|m| !m.removed && m.id == target);
+            let candidates = g
                 .members
                 .iter()
-                .find(|m| !m.removed && (m.id == target || m.name == target))
-                .map(|m| m.id.clone())
-                .ok_or("成员不在本专家团中")?;
+                .filter(|m| !m.removed && m.name == target)
+                .collect::<Vec<_>>();
+            let target = match (by_id, candidates.as_slice()) {
+                (Some(member), _) => member.id.clone(),
+                (None, [member]) => member.id.clone(),
+                (None, []) => return Err("成员不在本专家团中".into()),
+                _ => return Err("成员名称重复，请使用群上下文中的成员 ID".into()),
+            };
             if target == member {
                 return Err("不能向自己派发工作".into());
             }
@@ -75,7 +81,7 @@ pub(super) fn call_in_group(
                 let Some(parent) = g.works.iter().find(|w| w.id == id) else {
                     break;
                 };
-                if parent.member_id == target {
+                if parent.member_id == target && !parent.terminal() {
                     return Err("该成员正在等待此项工作，不能形成循环依赖".into());
                 }
                 cursor = parent
@@ -95,9 +101,11 @@ pub(super) fn call_in_group(
                     && w.member_id == target
                     && (w.prompt == prompt
                         || (!w.terminal()
-                            && g.messages
-                                .iter()
-                                .any(|m| m.kind == "user" && m.work_id.as_deref() == Some(&w.id))))
+                            && g.messages.iter().any(|m| {
+                                m.kind == "user"
+                                    && (m.work_id.as_deref() == Some(&w.id)
+                                        || m.assigned_work_ids.contains(&w.id))
+                            })))
             }) {
                 return Ok(json!({"workId":existing.id,"status":existing.status}));
             }
@@ -105,7 +113,7 @@ pub(super) fn call_in_group(
                 &work.root_id,
                 &target,
                 prompt.clone(),
-                false,
+                work.discussion,
                 Some(work.id.clone()),
                 work.depth + 1,
             )?;
@@ -131,7 +139,7 @@ pub(super) fn call_in_group(
                 .iter()
                 .find(|m| m.id == member)
                 .ok_or("成员不存在")?;
-            Ok(json!(runtime::history_window(g, member, after, limit, false, false)?.into_iter().map(|m|json!({"id":m.id,"seq":m.seq,"memberId":m.member_id,"text":m.text.chars().take(10000).collect::<String>()})).collect::<Vec<_>>()))
+            Ok(json!(runtime::history_window(g, member, after, limit, false, false)?.into_iter().map(|m|json!({"id":m.id,"seq":m.seq,"memberId":m.member_id,"workId":m.work_id,"kind":m.kind,"requestId":m.request_id,"text":m.text.chars().take(10000).collect::<String>()})).collect::<Vec<_>>()))
         }
         "group_get_work" => {
             let id = args.get("workId").and_then(Value::as_str).unwrap_or("");

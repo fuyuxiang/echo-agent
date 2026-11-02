@@ -288,8 +288,6 @@ pub fn group_create(
         revision: 1,
         created_at: now(),
         updated_at: now(),
-        max_calls: 12,
-        token_budget: 100_000,
     };
     if let Some(reference) = input.reference_text {
         if reference.chars().count() > 30_000 {
@@ -305,11 +303,12 @@ pub fn group_create(
 }
 
 #[tauri::command]
-pub fn group_list() -> Result<Vec<Group>, String> {
-    let mut groups = db()?.list()?;
+pub fn group_list() -> Result<Vec<GroupSnapshot>, String> {
+    let mut groups = db()?.list_snapshots()?;
     // Cards, global search and sidebar routing need metadata, not private
     // expert definitions or the complete decision revision history.
-    for group in &mut groups {
+    for snapshot in &mut groups {
+        let group = &mut snapshot.group;
         group.decisions.clear();
         for member in &mut group.members {
             member.profile = json!({});
@@ -321,8 +320,8 @@ pub fn group_list() -> Result<Vec<Group>, String> {
     Ok(groups)
 }
 #[tauri::command]
-pub fn group_snapshot(group_id: String) -> Result<Group, String> {
-    db()?.get(&group_id)
+pub fn group_snapshot(group_id: String) -> Result<GroupSnapshot, String> {
+    Ok(db()?.get(&group_id)?.snapshot())
 }
 
 #[tauri::command]
@@ -333,6 +332,10 @@ pub fn group_owner(session_id: String) -> Result<Option<String>, String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SendInput {
+    #[serde(default)]
+    pub new_request: bool,
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub id: String,
     pub text: String,
     pub member_ids: Vec<String>,
@@ -371,7 +374,7 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
         message.stop_root_id = stop_root;
         return Ok(());
     }
-    if g.paused || g.archived {
+    if g.archived {
         return Err("请先恢复专家团协作".into());
     }
     if input.knowledge.context.chars().count() > 20_000
@@ -389,6 +392,22 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
     let mut targets = input.member_ids.clone();
     if targets.is_empty() {
         targets = mentioned_targets(g, &input.text);
+        if !all_member_mention(&input.text)
+            && targets.iter().any(|id| {
+                g.members
+                    .iter()
+                    .find(|m| &m.id == id)
+                    .is_some_and(|member| {
+                        g.members
+                            .iter()
+                            .filter(|m| !m.removed && m.name == member.name)
+                            .count()
+                            > 1
+                    })
+            })
+        {
+            return Err("成员名称重复，请通过 @菜单选择具体成员后发送".into());
+        }
     }
     if targets.is_empty() {
         if let Some(reply) = input
@@ -410,6 +429,13 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
     }
     targets.sort();
     targets.dedup();
+    if targets.iter().any(|target| {
+        !g.members
+            .iter()
+            .any(|member| &member.id == target && !member.removed)
+    }) {
+        return Err("指定成员不在本专家团中".into());
+    }
     let reply = input
         .reply_to
         .as_ref()
@@ -457,7 +483,26 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
         .map(|w| w.root_id.clone())
         .collect::<std::collections::HashSet<_>>();
     // An explicit reply fences task attribution, even when the quoted task has ended.
-    let ongoing = if targets.len() == 1 {
+    let ongoing = if input.new_request {
+        None
+    } else if let Some(root) = &input.request_id {
+        if !g.works.iter().any(|w| {
+            &w.root_id == root
+                && !w.terminal()
+                && w.discussion == input.discussion
+                && w.epoch == g.epoch
+        }) {
+            return Err("所选任务已结束或模式已改变，请选择新话题后发送；输入内容已保留".into());
+        }
+        if g.messages.iter().find(|m| &m.id == root).is_some_and(|m| {
+            m.knowledge.personal != input.knowledge.personal
+                || m.knowledge.organization != input.knowledge.organization
+                || m.knowledge.organization_scope_ids != input.knowledge.organization_scope_ids
+        }) {
+            return Err("补充任务的知识来源已改变，请开始新话题，避免混用原任务上下文".into());
+        }
+        Some(root.clone())
+    } else if targets.len() == 1 {
         let candidate = match reply {
             Some(message) => g.message_request(message).filter(|root| {
                 g.works.iter().any(|w| {
@@ -483,6 +528,9 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
     } else {
         None
     };
+    if g.paused && ongoing.is_none() {
+        return Err("后续派发已暂停，请恢复派发后开始新话题；输入内容已保留".into());
+    }
     if let Some(root) = &ongoing {
         let size: usize = g
             .messages
@@ -496,39 +544,40 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
             return Err("本次任务的补充超过上下文容量，请停止后围绕最新目标继续".into());
         }
     }
-    let mut assigned_work = None;
+    let mut assigned_work_ids = vec![];
     if let Some(root) = &ongoing {
-        let target = &targets[0];
         let owner = g.request_owner(root);
-        if target != &owner
-            && !g
-                .works
-                .iter()
-                .any(|w| &w.root_id == root && &w.member_id == target && !w.terminal())
-        {
-            let parent = g
-                .works
-                .iter()
-                .rev()
-                .find(|w| &w.root_id == root && w.member_id == owner && !w.terminal());
-            let (parent, depth) = match parent {
-                Some(work) if work.status == "queued" => (
-                    work.continuation_of
-                        .clone()
-                        .or_else(|| Some(work.id.clone())),
-                    work.depth + 1,
-                ),
-                Some(work) => (Some(work.id.clone()), work.depth + 1),
-                None => (None, 0),
-            };
-            assigned_work = Some(g.enqueue(
-                root,
-                target,
-                format!("用户直接向你补充本次任务，请完成这部分并返回实际结果：\n{prompt}"),
-                input.discussion,
-                parent,
-                depth,
-            )?);
+        for target in &targets {
+            if target != &owner
+                && !g
+                    .works
+                    .iter()
+                    .any(|w| &w.root_id == root && &w.member_id == target && !w.terminal())
+            {
+                let parent = g
+                    .works
+                    .iter()
+                    .rev()
+                    .find(|w| &w.root_id == root && w.member_id == owner && !w.terminal());
+                let (parent, depth) = match parent {
+                    Some(work) if work.status == "queued" => (
+                        work.continuation_of
+                            .clone()
+                            .or_else(|| Some(work.id.clone())),
+                        work.depth + 1,
+                    ),
+                    Some(work) => (Some(work.id.clone()), work.depth + 1),
+                    None => (None, 0),
+                };
+                assigned_work_ids.push(g.enqueue_pending(
+                    root,
+                    target,
+                    format!("用户直接向你补充本次任务，请完成这部分并返回实际结果：\n{prompt}"),
+                    input.discussion,
+                    parent,
+                    depth,
+                )?);
+            }
         }
     }
     if ongoing.is_none() {
@@ -536,13 +585,22 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
             g.enqueue(&input.id, target, prompt.clone(), input.discussion, None, 0)?;
         }
     }
+    let owner = ongoing.is_none().then(|| {
+        if targets.len() == 1 {
+            targets[0].clone()
+        } else {
+            g.coordinator_id.clone()
+        }
+    });
     let message = g.post(None, "user", input.text.clone(), None);
     message.id = input.id.clone();
     message.attachments = input.attachments.clone();
     message.reply_to = input.reply_to.clone();
     message.knowledge = input.knowledge.clone();
     message.request_id = ongoing;
-    message.work_id = assigned_work;
+    message.work_id = assigned_work_ids.first().cloned();
+    message.assigned_work_ids = assigned_work_ids;
+    message.request_owner_id = owner;
     message.member_ids = targets;
     Ok(())
 }
@@ -558,6 +616,12 @@ fn stop_request_root(g: &Group, input: &SendInput) -> Result<Option<String>, Str
         .filter(|w| !w.terminal() && w.epoch == g.epoch)
         .map(|w| w.root_id.clone())
         .collect::<std::collections::HashSet<_>>();
+    if let Some(root) = &input.request_id {
+        return active
+            .contains(root)
+            .then(|| Some(root.clone()))
+            .ok_or_else(|| "所选任务已结束，没有需要停止的工作".into());
+    }
     if let Some(reply) = &input.reply_to {
         return g
             .messages
@@ -593,14 +657,20 @@ fn is_stop_text(text: &str) -> bool {
     )
 }
 
+fn all_member_mention(body: &str) -> bool {
+    let stripped = regex::Regex::new(r"(?s)```.*?```|`[^`]*`")
+        .unwrap()
+        .replace_all(body, " ");
+    regex::Regex::new(r"(?i)(?:^|\s)@(?:全体|all)(?:$|[\s，,。；;：:！!？?])")
+        .unwrap()
+        .is_match(&stripped)
+}
+
 fn mentioned_targets(group: &Group, body: &str) -> Vec<String> {
     let stripped = regex::Regex::new(r"(?s)```.*?```|`[^`]*`")
         .unwrap()
         .replace_all(body, " ");
-    if regex::Regex::new(r"(?i)(?:^|\s)@(?:全体|all)(?:$|[\s，,。；;：:！!？?])")
-        .unwrap()
-        .is_match(&stripped)
-    {
+    if all_member_mention(body) {
         return group
             .members
             .iter()
@@ -759,7 +829,39 @@ pub async fn group_control(
             }
             "pin" => g.pinned = !g.pinned,
             "stop" => sessions = g.stop_work(work_id.as_deref())?,
-            "retry" => sessions.extend(g.retry_work(work_id.as_deref().ok_or("工作不存在")?)?),
+            "stop_request" => {
+                let root = work_id.as_deref().ok_or("请指定要停止的任务")?;
+                if !g.works.iter().any(|w| w.root_id == root && !w.terminal()) {
+                    return Err("任务已结束，无需停止".into());
+                }
+                sessions = g.stop_request(root);
+                g.post(
+                    None,
+                    "system",
+                    "此项任务已停止，已有结果保留。".into(),
+                    None,
+                )
+                .stop_root_id = Some(root.into());
+            }
+            "retry" => {
+                let id = work_id.as_deref().ok_or("工作不存在")?;
+                let result_only = g.result_only_retry(id);
+                if result_only {
+                    if g.works
+                        .iter()
+                        .any(|work| work.id == id && work.status == "uncertain")
+                    {
+                        sessions.extend(g.stop_work(Some(id))?);
+                    }
+                    g.paused = false;
+                    runtime::summarize_saved_results(g, id)?;
+                } else {
+                    sessions.extend(g.retry_work(id)?);
+                }
+            }
+            "summarize" => {
+                runtime::summarize_saved_results(g, work_id.as_deref().ok_or("工作不存在")?)?
+            }
             _ => return Err("不支持的专家团操作".into()),
         }
         g.ready_callbacks();
@@ -1025,8 +1127,6 @@ pub struct SettingsInput {
     pub name: String,
     pub goal: String,
     pub coordinator_id: String,
-    pub max_calls: usize,
-    pub token_budget: u64,
     pub members: Vec<MemberSettings>,
     pub cwd: Option<String>,
 }
@@ -1099,13 +1199,8 @@ pub async fn group_settings(
         {
             return Err("协调员必须是专家团成员".into());
         }
+        g.freeze_request_owners();
         g.coordinator_id = input.coordinator_id;
-        if !(2..=50).contains(&input.max_calls) || !(1000..=2_000_000).contains(&input.token_budget)
-        {
-            return Err("调用上限应为 2–50 次，Token 预算应为 1000–2000000".into());
-        }
-        g.max_calls = input.max_calls;
-        g.token_budget = input.token_budget;
         if input.members.len() != g.members.iter().filter(|m| !m.removed).count() {
             return Err("成员配置不完整".into());
         }

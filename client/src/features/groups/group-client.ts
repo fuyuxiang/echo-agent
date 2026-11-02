@@ -4,12 +4,13 @@ import { listen } from "@tauri-apps/api/event";
 
 export interface GroupMember { removed?: boolean; id: string; name: string; expert: string | null; role: string; modelId: string; sessionId: string | null; discussionSessionId: string | null; generation: number }
 export interface GroupKnowledge { personal: boolean; organization: boolean; organizationScopeIds: string[]; context: string }
-export interface GroupMessage { memberIds?: string[]; requestId?: string | null; knowledge?: GroupKnowledge; id: string; seq: number; memberId: string | null; kind: string; text: string; createdAt: number; workId: string | null; replyTo: string | null; attachments: string[]; toolCalls: Record<string, unknown>[] }
-export interface GroupWork { id: string; rootId: string; parentId: string | null; continuationOf: string | null; memberId: string; prompt: string; status: string; discussion: boolean; sessionId: string | null; output: string; error: string | null; createdAt: number; tokens: number }
+export interface GroupMessage { publicRevision?: number; requestOwnerId?: string | null; sourceRequestId?: string | null; assignedWorkIds?: string[]; memberIds?: string[]; requestId?: string | null; knowledge?: GroupKnowledge; id: string; seq: number; memberId: string | null; kind: string; text: string; createdAt: number; workId: string | null; replyTo: string | null; attachments: string[]; toolCalls: Record<string, unknown>[] }
+export interface GroupRequest { id: string; ownerId: string; workId: string; inputRevision: number; state: "queued" | "working" | "waiting" | "summarizing" | "delivered" | "partial" | "failed" | "missing_result" | "stopped" | "stopping" | "needs_check"; finalMessageId: string | null }
+export interface GroupWork { summary?: boolean; resultRepair?: boolean; id: string; rootId: string; parentId: string | null; continuationOf: string | null; memberId: string; prompt: string; status: string; discussion: boolean; sessionId: string | null; output: string; error: string | null; createdAt: number; tokens: number }
 export interface GroupDecision { id: string; text: string; messageId: string | null; confirmed: boolean; voided?: boolean; history?: { text: string; changedAt: number; action?: string }[]; updatedAt?: number | null }
-export interface Group { id: string; name: string; goal: string; cwd: string; sourceSessionId: string | null; sourceTeamId: string | null; coordinatorId: string; members: GroupMember[]; messages: GroupMessage[]; works: GroupWork[]; decisions: GroupDecision[]; archived: boolean; pinned: boolean; paused: boolean; revision: number; updatedAt: number; maxCalls: number; tokenBudget: number }
+export interface Group { latestRequestId?: string | null; publicSeq?: number; requests?: GroupRequest[]; id: string; name: string; goal: string; cwd: string; sourceSessionId: string | null; sourceTeamId: string | null; coordinatorId: string; members: GroupMember[]; messages: GroupMessage[]; works: GroupWork[]; decisions: GroupDecision[]; archived: boolean; pinned: boolean; paused: boolean; revision: number; updatedAt: number }
 export interface CreateGroupInput { requestId?: string; coordinatorName?: string; coordinatorRole?: string; name: string; goal: string; cwd: string; modelId: string; members: string[]; sourceSessionId?: string; sourceTeamId?: string; referenceText?: string; roles?: Record<string, string>; models?: Record<string, string> }
-export interface SendGroupInput { knowledge?: GroupKnowledge; id: string; text: string; memberIds: string[]; discussion: boolean; attachments: string[]; replyTo: string | null }
+export interface SendGroupInput { newRequest?: boolean; requestId?: string | null; knowledge?: GroupKnowledge; id: string; text: string; memberIds: string[]; discussion: boolean; attachments: string[]; replyTo: string | null }
 export const groupList = () => invoke<Group[]>("group_list");
 export const groupSnapshot = (groupId: string) => invoke<Group>("group_snapshot", { groupId });
 export const groupOwner = (sessionId: string) => invoke<string | null>("group_owner", { sessionId });
@@ -26,19 +27,22 @@ export async function groupSend(groupId: string, input: SendGroupInput): Promise
   if (!isGroupStopRequest(input) && isQuotaBlocking(loadUsage(), loadQuotaConfig())) throw new Error("已达到 Token 配额，请先在“用量统计”中调整上限或策略");
   await invoke<void>("group_send", { groupId, input });
 }
-export const groupControl = (groupId: string, action: "pause" | "resume" | "stop" | "archive" | "pin" | "retry", workId?: string) => invoke<void>("group_control", { groupId, action, workId: workId ?? null });
+export const groupControl = (groupId: string, action: "pause" | "resume" | "stop" | "archive" | "pin" | "retry" | "summarize" | "stop_request", workId?: string) => invoke<void>("group_control", { groupId, action, workId: workId ?? null });
 export const groupMetadata = (groupId: string, patch: { name?: string; pinned?: boolean; archived?: boolean }) => invoke<void>("group_metadata", { groupId, name: patch.name ?? null, pinned: patch.pinned ?? null, archived: patch.archived ?? null });
 export const groupDelete = (groupId: string, stopWork: boolean) => invoke<{ sessionIds: string[] }>("group_delete", { groupId, stopWork });
 export interface GroupCleanupReceipt { groupId: string; sessionIds: string[] }
 export const groupCleanupPending = async () => await invoke<GroupCleanupReceipt[]>("group_cleanup_pending");
 export const groupCleanupAck = async (groupId: string) => { await invoke<void>("group_cleanup_ack", { groupId }); };
-export const groupSettings = (groupId: string, input: { expectedRevision?: number; name: string; goal: string; coordinatorId: string; maxCalls: number; tokenBudget: number; cwd?: string; members: { id: string; role: string; modelId: string }[] }) => invoke<void>("group_settings", { groupId, input });
+export const groupSettings = (groupId: string, input: { expectedRevision?: number; name: string; goal: string; coordinatorId: string; cwd?: string; members: { id: string; role: string; modelId: string }[] }) => invoke<void>("group_settings", { groupId, input });
 export const onGroupChanged = (callback: (groupId: string, deleted?: boolean, sessionIds?: string[]) => void) => listen<{ groupId: string; deleted?: boolean; sessionIds?: string[] }>("group://changed", event => callback(event.payload.groupId, event.payload.deleted, event.payload.sessionIds));
 
 export const terminalWork = (status: string) => ["completed", "failed", "cancelled"].includes(status);
+export function hasAllMemberMention(text: string): boolean {
+  return /(?:^|\s)@(?:全体|all)(?:$|[\s，,。；;：:！!？?])/i.test(text.replace(/```[\s\S]*?```|`[^`]*`/g, " "));
+}
 export function mentionedMembers(text: string, members: GroupMember[]): string[] {
   const body = text.replace(/```[\s\S]*?```|`[^`]*`/g, " ");
-  if (/(?:^|\s)@(?:全体|all)(?:$|[\s，,。；;：:！!？?])/i.test(body)) return members.filter(member => member.expert !== null && !member.removed).map(member => member.id);
+  if (hasAllMemberMention(text)) return members.filter(member => member.expert !== null && !member.removed).map(member => member.id);
   const spans: { start: number; end: number }[] = [], found: string[] = [];
   for (const member of members.filter(member => !member.removed).sort((a, b) => b.name.length - a.name.length)) {
     const escaped = member.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -65,6 +69,7 @@ export function groupRecipients(group: Group, text: string, explicit: string[], 
 export const workLabels: Record<string, string> = { queued: "待执行", dispatching: "正在启动", running: "执行中", waiting_children: "等待成员结果", completed: "已完成", failed: "执行失败", stopping: "正在停止", cancelled: "已停止", uncertain: "需要检查" };
 /** Supplements retain their message id but report lifecycle against their task. */
 export function latestGroupRequestId(group: Group): string | undefined {
+  if (group.latestRequestId) return group.latestRequestId;
   const user = [...group.messages].reverse().find(message => message.kind === "user");
   return user ? user.requestId ?? user.id : group.works.find(work => work.id === group.messages[group.messages.length - 1]?.workId)?.rootId;
 }
@@ -81,6 +86,12 @@ export function groupStatus(group: Group): string {
   const active = group.works.filter(work => ["running", "dispatching", "stopping"].includes(work.status)).length;
   if (active) return `${active} 人工作中`;
   if (group.works.some(work => !terminalWork(work.status))) return "等待协作";
+  const delivery = group.requests?.find(request => request.id === latestGroupRequestId(group));
+  if (delivery?.state === "failed") return "执行失败";
+  if (delivery?.state === "stopped") return "已停止";
+  if (delivery?.state === "missing_result") return "待整理结果";
+  if (delivery?.state === "partial") return "有未完成事项";
+  if (delivery?.state === "delivered") return "已回复";
   if (failedGroupWorks(group).length) return "执行失败";
   return "当前空闲";
 }

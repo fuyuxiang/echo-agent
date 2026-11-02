@@ -221,7 +221,7 @@ if (query.get("surface") === "sidebar-scroll") {
   useGroupStore.setState({ groups: Array.from({length: Math.min(12, Number(query.get("groups")) || 0)}, (_, index) => ({
     id:`sidebar-group-${index}`, name:`群聊 ${index + 1}`, goal:"侧栏协作", cwd:"/review/EchoAgent", sourceSessionId:null, sourceTeamId:null,
     coordinatorId:"coordinator", members:[], messages:[], works:[], decisions:[], archived:false, pinned:false, paused:false,
-    revision:1, updatedAt:12-index, maxCalls:12, tokenBudget:100000,
+    revision:1, updatedAt:12-index,
   })) });
   useSessionsStore.setState({
     independent: Array.from({ length: taskCount }, (_, index) => ({

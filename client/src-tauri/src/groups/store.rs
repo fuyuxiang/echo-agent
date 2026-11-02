@@ -149,6 +149,55 @@ impl Store {
                 c.execute("INSERT INTO group_migrations VALUES('public-text-v2')", [])
                     .map_err(|e| e.to_string())?;
             }
+            let replies_restored: bool = c
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM group_migrations WHERE name='saved-replies-v1')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if !replies_restored {
+                let ids = c
+                    .prepare("SELECT id FROM groups")
+                    .map_err(|e| e.to_string())?
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                for id in ids {
+                    let mut group = Self::read(&c, &id)?;
+                    let backup = serde_json::to_string(&group).map_err(|e| e.to_string())?;
+                    if group.restore_saved_replies() {
+                        c.execute("INSERT OR IGNORE INTO group_migration_backups VALUES('saved-replies-v1',?1,?2)", params![id, backup]).map_err(|e| e.to_string())?;
+                        Self::write(&c, &group, None)?;
+                    }
+                }
+                c.execute(
+                    "INSERT INTO group_migrations VALUES('saved-replies-v1')",
+                    [],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            let projected: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM group_migrations WHERE name='request-presentation-v1')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+            if !projected {
+                let ids = c
+                    .prepare("SELECT id FROM groups")
+                    .map_err(|e| e.to_string())?
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                for id in ids {
+                    let mut group = Self::read(&c, &id)?;
+                    group.freeze_request_owners();
+                    Self::write(&c, &group, None)?;
+                }
+                c.execute(
+                    "INSERT INTO group_migrations VALUES('request-presentation-v1')",
+                    [],
+                )
+                .map_err(|e| e.to_string())?;
+            }
             Ok(())
         })();
         if let Err(error) = migrate {
@@ -167,7 +216,8 @@ impl Store {
                 .map_err(|e| e.to_string())?
         };
         for data in missing {
-            let group: Group = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            let header: Group = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            let group = Self::read(&c, &header.id)?;
             Self::write_preview(&c, &group)?;
         }
         #[cfg(unix)]
@@ -221,6 +271,20 @@ impl Store {
         })
         .collect()
     }
+    pub fn list_snapshots(&self) -> Result<Vec<GroupSnapshot>, String> {
+        let c = self.connect()?;
+        let mut q = c
+            .prepare("SELECT data FROM group_previews ORDER BY updated DESC, id DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = q
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .map(|row| {
+                serde_json::from_str(&row.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+            })
+            .collect();
+        rows
+    }
     fn read(c: &Connection, id: &str) -> Result<Group, String> {
         let data: String = c
             .query_row("SELECT data FROM groups WHERE id=?", [id], |r| r.get(0))
@@ -255,7 +319,8 @@ impl Store {
         Self::read(&self.connect()?, id)
     }
     fn write_preview(c: &Connection, group: &Group) -> Result<(), String> {
-        let mut preview = group.clone();
+        let snapshot = group.clone().snapshot();
+        let mut preview = snapshot.group;
         preview.decisions.clear();
         for member in &mut preview.members {
             member.profile = serde_json::json!({});
@@ -293,7 +358,30 @@ impl Store {
                 work
             })
             .collect();
-        c.execute("INSERT INTO group_previews VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated=excluded.updated", params![preview.id,serde_json::to_string(&preview).map_err(|e| e.to_string())?,preview.updated_at]).map_err(|e| e.to_string())?;
+        let id = preview.id.clone();
+        let updated = preview.updated_at;
+        let presentation = GroupSnapshot {
+            group: preview,
+            requests: snapshot
+                .requests
+                .into_iter()
+                .filter(|request| {
+                    Some(&request.id) == snapshot.latest_request_id.as_ref()
+                        || matches!(
+                            request.state.as_str(),
+                            "working"
+                                | "waiting"
+                                | "summarizing"
+                                | "queued"
+                                | "stopping"
+                                | "needs_check"
+                        )
+                })
+                .collect(),
+            public_seq: snapshot.public_seq,
+            latest_request_id: snapshot.latest_request_id,
+        };
+        c.execute("INSERT INTO group_previews VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated=excluded.updated", params![id,serde_json::to_string(&presentation).map_err(|e| e.to_string())?,updated]).map_err(|e| e.to_string())?;
         Ok(())
     }
     fn write(c: &Connection, g: &Group, previous: Option<&Group>) -> Result<(), String> {
@@ -301,6 +389,10 @@ impl Store {
         header.messages = g
             .messages
             .iter()
+            .filter(|m| {
+                matches!(m.kind.as_str(), "user" | "assistant")
+                    && (!m.text.trim().is_empty() || !m.attachments.is_empty())
+            })
             .rev()
             .take(1)
             .cloned()
@@ -326,7 +418,7 @@ impl Store {
             })
             .collect();
         c.execute("INSERT INTO groups VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated=excluded.updated", params![g.id, serde_json::to_string(&header).map_err(|e| e.to_string())?,g.updated_at]).map_err(|e| e.to_string())?;
-        Self::write_preview(c, &header)?;
+        Self::write_preview(c, g)?;
         for m in &g.members {
             for sid in [&m.session_id, &m.discussion_session_id]
                 .into_iter()
@@ -429,6 +521,7 @@ impl Store {
         if g == previous {
             return Ok(out);
         }
+        g.refresh_public_revisions(&previous);
         g.revision += 1;
         g.updated_at = now();
         Self::write(&tx, &g, Some(&previous))?;

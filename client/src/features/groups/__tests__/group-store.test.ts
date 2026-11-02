@@ -4,7 +4,7 @@ import { groupList, groupSnapshot, groupStatus, groupRecipients, resolveGroupFor
 import { useGroupStore } from "../group-store";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../group-client", async original => ({ ...await original<typeof import("../group-client")>(), groupList: vi.fn(), groupSnapshot: vi.fn() }));
-const group = (id: string): Group => ({ id, name: id, goal: "交付", cwd: "/work", sourceSessionId: null, sourceTeamId: null, coordinatorId: "c", members: [], messages: [], works: [], decisions: [], archived: false, pinned: false, paused: false, revision: 1, updatedAt: 1, maxCalls: 12, tokenBudget: 10000 });
+const group = (id: string): Group => ({ id, name: id, goal: "交付", cwd: "/work", sourceSessionId: null, sourceTeamId: null, coordinatorId: "c", members: [], messages: [], works: [], decisions: [], archived: false, pinned: false, paused: false, revision: 1, updatedAt: 1 });
 describe("专家团状态与路由", () => {
   it("未确认保存的消息重试沿用请求 ID，确认后可以重新提问", () => {
     const first = useGroupStore.getState().requestId("a", "same message");
@@ -30,7 +30,7 @@ describe("专家团状态与路由", () => {
   });
   it("保存草稿时同时保留收件人、只读模式和引用，不覆盖正文", () => {
     useGroupStore.getState().setDraft("a", "未发送的正文");
-    const options = {targets:["expert"],discussion:true,replyTo:"source-message"};
+    const options = {targets:["expert"],discussion:true,replyTo:"source-message",newTopic:false,requestId:"original-task"};
     useGroupStore.getState().setDraftOptions("a", options);
     expect(useGroupStore.getState().draftOptions("a")).toEqual(options);
     expect(useGroupStore.getState().drafts.a).toBe("未发送的正文");
@@ -112,4 +112,24 @@ it("停止尚未确认时不能用已暂停掩盖正在停止", () => {
   const g=group("stopping");g.paused=true;g.works=[{id:"w",status:"stopping"}] as Group["works"];
   expect(groupStatus(g)).toBe("正在停止");
   g.works[0].status="cancelled";expect(groupStatus(g)).toBe("已暂停");
+});
+
+it("轻量列表沿用后端任务归属和交付状态", () => {
+  const preview=group("preview");
+  preview.latestRequestId="request";
+  preview.messages=[{id:"answer",seq:3,kind:"assistant",text:"结论",memberId:"c",workId:"work",replyTo:null,attachments:[],toolCalls:[],createdAt:1}];
+  preview.requests=[{id:"request",ownerId:"c",workId:"work",inputRevision:1,state:"delivered",finalMessageId:"answer"}];
+  expect(groupStatus(preview)).toBe("已回复");
+  for (const [state,label] of [["missing_result","待整理结果"],["partial","有未完成事项"],["stopped","已停止"],["failed","执行失败"]] as const) {
+    preview.requests[0].state=state;
+    preview.works=[{id:"failed-child",rootId:"request",memberId:"e",parentId:"work",continuationOf:null,prompt:"",status:"failed",discussion:false,sessionId:null,output:"",error:"failed",createdAt:1,tokens:0}];
+    expect(groupStatus(preview)).toBe(label);
+  }
+});
+
+it("升级后重试旧格式待发送消息沿用原请求 ID，明确新话题使用新 ID", () => {
+  const original={text:"请完成交付",attachments:[],recipients:["c"],discussion:false,reply:null,sources:[],scopes:[]};
+  useGroupStore.setState({outbox:{legacy:JSON.stringify({id:"persisted-request",fingerprint:JSON.stringify(original)})}});
+  expect(useGroupStore.getState().requestId("legacy",JSON.stringify({...original,newTopic:false,selectedRequest:null}))).toBe("persisted-request");
+  expect(useGroupStore.getState().requestId("legacy",JSON.stringify({...original,newTopic:true,selectedRequest:null}))).not.toBe("persisted-request");
 });

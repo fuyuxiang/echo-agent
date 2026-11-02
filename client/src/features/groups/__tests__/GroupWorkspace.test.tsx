@@ -1,5 +1,6 @@
+import { ThemeProvider } from "@/components/ThemeProvider";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render as renderWithoutTheme, screen, waitFor, within } from "@testing-library/react";
 import { GroupWorkspace } from "../GroupWorkspace";
 import { useGroupStore } from "../group-store";
 import { groupSend, groupMemberChange, type Group } from "../group-client";
@@ -13,12 +14,14 @@ vi.mock("@/components/MessageItem", () => ({ MessageItem: () => <div>成员回�
 let measuredWidth: number | null = null;
 vi.mock("@/lib/use-element-size", () => ({ useElementSize: (_ref: unknown, dimension: string) => dimension === "width" ? measuredWidth : null }));
 
+const render = (ui: Parameters<typeof renderWithoutTheme>[0]) => renderWithoutTheme(ui, { wrapper: ThemeProvider });
+
 const group: Group = { id:"reply-group",name:"需求协作组",goal:"验证",cwd:"/work",sourceSessionId:null,sourceTeamId:null,
   coordinatorId:"c",members:[
     {id:"c",name:"协调员",expert:null,role:"协调",modelId:"test",sessionId:"native-c",discussionSessionId:null,generation:0},
     {id:"e",name:"代码专家",expert:"代码专家",role:"编码",modelId:"test",sessionId:"native-e",discussionSessionId:null,generation:0},
   ], messages:[{id:"answer",seq:1,kind:"assistant",text:"请回复我",memberId:"e",createdAt:0,workId:null,replyTo:null,attachments:[],toolCalls:[]}],
-  works:[],decisions:[],archived:false,pinned:false,paused:false,revision:1,updatedAt:1,maxCalls:12,tokenBudget:100000 };
+  works:[],decisions:[],archived:false,pinned:false,paused:false,revision:1,updatedAt:1 };
 
 beforeEach(() => {
   localStorage.clear(); vi.clearAllMocks(); measuredWidth = null;
@@ -78,4 +81,51 @@ it("清除成员记忆失败保留确认框，允许原地重试", async () => {
   fireEvent.click(within(dialog).getByRole("button",{name:"清除成员记忆"}));
   await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
   expect(groupMemberChange).toHaveBeenCalledTimes(2);
+});
+
+it("同名成员必须明确选择，反复发送不会静默选择第一个成员", async () => {
+  const current=structuredClone(group);
+  current.members.forEach(member => { member.name="同名专家"; });
+  useGroupStore.setState({current,drafts:{},outbox:{}});
+  render(<GroupWorkspace cwd="/work" models={[{id:"test",label:"测试"}]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} />);
+  fireEvent.change(screen.getByPlaceholderText(/说明目标，或输入 @选择成员/),{target:{value:"@同名专家 请核对"}});
+  fireEvent.click(screen.getByRole("button",{name:"发送"}));
+  await screen.findByText("成员名称重复，请通过 @菜单选择具体成员后发送");
+  fireEvent.click(screen.getByRole("button",{name:"发送"}));
+  expect(groupSend).not.toHaveBeenCalled();
+});
+
+it("选择任务 A 后回复任务 B，同步切换归属并保留指定收件人", async () => {
+  const current = structuredClone(group);
+  const work = (id: string, rootId: string, memberId: string) => ({id, rootId, memberId, parentId:null, continuationOf:null, prompt:rootId, status:"running", discussion:false, sessionId:null, output:"", error:null, createdAt:1, tokens:0});
+  current.works = [work("work-a", "request-a", "c"), work("work-b", "request-b", "e")];
+  current.messages = [
+    {...current.messages[0], id:"request-a", kind:"user", memberId:null, text:"任务 A", workId:null},
+    {...current.messages[0], id:"request-b", seq:2, kind:"user", memberId:null, text:"任务 B", workId:null},
+    {...current.messages[0], id:"answer-b", seq:3, text:"任务 B 的进度", workId:"work-b"},
+  ];
+  useGroupStore.setState({current, drafts:{}, outbox:{}});
+  render(<GroupWorkspace cwd="/work" models={[{id:"test",label:"测试"}]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} />);
+  fireEvent.change(screen.getByRole("combobox", {name:"消息归属"}), {target:{value:"request-a"}});
+  fireEvent.click(screen.getByRole("button", {name:"回复代码专家"}));
+  expect(screen.getByRole("combobox", {name:"消息归属"})).toHaveValue("request-b");
+  fireEvent.change(screen.getByRole("combobox", {name:"消息归属"}), {target:{value:"request-a"}});
+  expect(document.querySelector(".group-reply")).toBeNull();
+  expect(screen.getByRole("combobox", {name:"消息归属"})).toHaveValue("request-a");
+  fireEvent.change(screen.getByRole("combobox", {name:"消息归属"}), {target:{value:"new"}});
+  fireEvent.click(screen.getByRole("button", {name:"回复代码专家"}));
+  expect(screen.getByRole("combobox", {name:"消息归属"})).toHaveValue("request-b");
+  fireEvent.change(screen.getByPlaceholderText(/说明目标，或输入 @选择成员/), {target:{value:"请修正任务 B"}});
+  fireEvent.click(screen.getByRole("button", {name:"发送"}));
+  await waitFor(() => expect(groupSend).toHaveBeenCalledWith(group.id, expect.objectContaining({requestId:"request-b", newRequest:false, memberIds:["e"], replyTo:"answer-b"})));
+});
+
+it("同名成员仍可通过 @全体 明确发送给全部专家", async () => {
+  const current=structuredClone(group);
+  current.members.forEach(member => { member.name="同名专家"; });
+  useGroupStore.setState({current,drafts:{},outbox:{}});
+  render(<GroupWorkspace cwd="/work" models={[{id:"test",label:"测试"}]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} />);
+  fireEvent.change(screen.getByPlaceholderText(/说明目标，或输入 @选择成员/),{target:{value:"@全体 请共同核对"}});
+  fireEvent.click(screen.getByRole("button",{name:"发送"}));
+  await waitFor(() => expect(groupSend).toHaveBeenCalledWith(group.id,expect.objectContaining({memberIds:["e"]})));
 });
