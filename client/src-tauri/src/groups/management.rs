@@ -90,7 +90,7 @@ pub async fn group_member_change(
                     .unwrap_or_else(|| snapshot.members[0].model_id.clone()),
             }
         };
-        crate::commands::require_runtime_ready(Some(&app), &state, Some(&model))?;
+        crate::commands::ensure_runtime_ready(&app, &state, Some(&model)).await?;
         crate::policy::require_model(&model)?;
         parsed.permission_mode = Default::default();
         parsed.memory = None;

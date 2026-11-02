@@ -86,6 +86,7 @@
 .org-memory .org-skill-card__publish { margin-left:auto; padding:6px 0; border:0; background:transparent; color:var(--echo-text-medium); }
 .org-skill-card__managed { display:flex; align-items:center; gap:5px; color:var(--echo-text-weak); font-size:.75rem; }
 .org-workspace .org-submissions,.org-workspace .org-document-submissions { padding:0; border:0; }
+.org-submission-guidance { margin:0; padding:12px 18px; color:var(--echo-text-secondary); font-size:.75rem; line-height:1.7; overflow-wrap:anywhere; }
 .org-workspace .org-submissions h3 { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
 .org-workspace .org-submissions>div { grid-template-columns:minmax(0,1fr) auto; padding:17px 18px; gap:7px 12px; font-size:.8125rem; }
 .org-workspace .org-submissions>div>span:first-child { overflow-wrap:anywhere; line-height:1.7; }
@@ -173,3 +174,12 @@
 .org-submission-detail summary>span,.org-submission-detail p { font-size:.8125rem; line-height:1.7; overflow-wrap:anywhere; white-space:pre-wrap; }
 .org-workspace .org-submission-detail summary small { display:inline-block; margin-top:5px; color:var(--echo-brand); font-size:.6875rem; }
 .org-workspace .org-state--revoked,.org-workspace .org-state--withdrawn { background:var(--echo-bg-tertiary); color:var(--echo-text-weak); }
+
+/* Short windows with large text must keep the resource list reachable. Keep
+   section navigation fixed and give the remaining content one scroll owner. */
+@media (max-height:680px) {
+  @container organization (max-width:620px) {
+    .org-workspace .org-memory__content { overflow-y:auto; }
+    .org-workspace .org-resource-scroll { flex:none; overflow:visible; }
+  }
+}

@@ -242,7 +242,7 @@ describe("OrganizationMemoryPanel", () => {
     expect(screen.getByLabelText("发布范围")).toHaveValue(personalScope.id);
     fireEvent.change(screen.getByLabelText("发布范围"), { target: { value: teamScope.id } });
     fireEvent.change(screen.getByPlaceholderText("写成可直接指导下一次任务的明确结论或步骤"), { target: { value: "发布前先验证回滚脚本" } });
-    fireEvent.click(screen.getByRole("button", { name: "提交并发布" }));
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
     await waitFor(() => expect(api.orgSubmitMemoryCandidate).toHaveBeenCalledWith(expect.objectContaining({
       targetScopeId: teamScope.id, content: "发布前先验证回滚脚本", workspaceRef: "/workspace/payments",
     })));
@@ -405,9 +405,9 @@ describe("OrganizationMemoryPanel", () => {
     }]);
 
     render(<OrganizationMemoryPanel />);
-    expect(await screen.findByText("1 条经验正在自动检查")).toBeInTheDocument();
+    expect(await screen.findByText("1 条经验待处理")).toBeInTheDocument();
     expect(screen.getByText("1 项文档正在扫描或建立索引")).toBeInTheDocument();
-    expect(screen.getByText("1 个 Skill 正在自动检查")).toBeInTheDocument();
+    expect(screen.getByText("1 个 Skill 待处理")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "查看经验" }));
     expect(screen.getByRole("heading", { name: "经验" })).toBeInTheDocument();
@@ -419,7 +419,7 @@ describe("OrganizationMemoryPanel", () => {
     expect(screen.getByRole("heading", { name: "组织 Skills" })).toBeInTheDocument();
   });
 
-  it("经验或 Skill 自动检查时持续刷新工作区状态", async () => {
+  it("经验或 Skill 处理时持续刷新工作区状态", async () => {
     vi.useFakeTimers();
     try {
       api.orgMemoryPromotionsMine.mockResolvedValue([{
@@ -676,6 +676,61 @@ describe("OrganizationMemoryPanel", () => {
     expect(await screen.findByText("自动发布但尚未经实践验证的经验")).toBeInTheDocument();
     expect(screen.getByText(/内容待验证/)).toBeInTheDocument();
     expect(screen.queryByText(/已审核/)).toBeNull();
+  });
+
+  it("旧服务器未声明发布方式时使用兼容提示", async () => {
+    render(<OrganizationMemoryPanel />);
+    await screen.findByRole("button", { name: "组织账号：Alice" });
+    fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
+    fireEvent.click(screen.getByRole("button", { name: "提交经验" }));
+    expect(screen.getByRole("button", { name: "提交" })).toBeInTheDocument();
+    expect(screen.queryByText(/安全检查通过后自动发布/)).toBeNull();
+  });
+
+  it.each([
+    ["pending", undefined, "待组织处理"],
+    ["pending", "passed", "检查通过，待组织处理"],
+    ["pending", "queued", "等待安全检查"],
+    ["pending", "scanning", "安全检查中"],
+    ["pending", "failed", "安全检查未通过"],
+    ["approved", "scanning", "已通过"],
+    ["rejected", "queued", "已拒绝"],
+    ["withdrawn", "passed", "已撤回"],
+    ["revoked", "passed", "已撤销"],
+  ])("Skill 提交状态 %s / %s 显示 %s", async (state, scanStatus, label) => {
+    api.orgSkillSubmissionsMine.mockResolvedValue([{
+      id: "submission", name: "待检查技能", state, scanStatus,
+      scopeId: teamScope.id, scopeName: teamScope.name, scopeKind: "team", createdAt: 1,
+    }]);
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^Skills/ }));
+    fireEvent.click(screen.getByRole("button", { name: "我的提交" }));
+    expect(await screen.findByText(label, { selector: ".org-state" })).toBeInTheDocument();
+    expect(screen.queryByText("安全检查与发布中")).toBeNull();
+    if (state === "pending") {
+      expect(screen.getByRole("note")).toHaveTextContent("需要人工审核时，请联系组织管理员");
+    } else {
+      expect(screen.queryByRole("note")).toBeNull();
+    }
+  });
+
+  it.each([
+    ["pending", undefined, "待组织处理"],
+    ["pending", "passed", "检查通过，待组织处理"],
+    ["pending", "failed", "安全检查未通过"],
+    ["rejected", "scanning", "已拒绝"],
+    ["approved", "queued", "已发布"],
+  ])("文档提交状态 %s / %s 显示 %s", async (state, scanStatus, label) => {
+    api.orgDocumentSubmissionsMinePage.mockResolvedValue({ items: [{
+      submissionId: "document-submission", title: "提交文档", state, scanStatus,
+      scopeId: teamScope.id, scopeName: teamScope.name, scopeKind: "team", createdAt: 1,
+    }], total: 1, page: 1, size: 20 });
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    fireEvent.click(screen.getByRole("button", { name: "我的提交" }));
+    expect(await screen.findByText(label, { selector: ".org-state" })).toBeInTheDocument();
   });
 
 });

@@ -475,7 +475,9 @@ function Shell() {
   useEffect(() => {
     if (!init?.ok) return;
     void useOrgSessionStore.getState().hydrate()
-      .then(() => Promise.all([internalReload("skills"), internalReload("models")]))
+      .then((session) => session?.loggedIn
+        ? Promise.all([internalReload("skills"), internalReload("models")])
+        : undefined)
       .catch(() => {});
   }, [init?.ok]);
 

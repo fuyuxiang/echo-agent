@@ -337,12 +337,62 @@ fn model_config_revision_of(config: &Value) -> String {
     // would permanently lock chat after an unrelated save.
     for key in ["model", "models", "model_providers"] {
         if let Some(value) = table.and_then(|table| table.get(key)) {
-            relevant.insert(key.to_string(), value.clone());
+            let mut value = value.clone();
+            if key == "model_providers" {
+                if let Some(providers) = value.as_table_mut() {
+                    for (_, provider) in providers
+                        .iter_mut()
+                        .filter(|(_, value)| is_organization_managed(value))
+                    {
+                        if let Some(provider) = provider.as_table_mut() {
+                            // Renewing an offline lease or a display timestamp
+                            // does not change Runtime model credentials/routing.
+                            provider.remove(SYNCED_AT_KEY);
+                            provider.remove(LEASE_UNTIL_KEY);
+                        }
+                    }
+                }
+            }
+            relevant.insert(key.to_string(), value);
         }
     }
     let encoded = toml::to_string(&Value::Table(relevant)).unwrap_or_default();
     let digest = Sha256::digest(encoded.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn organization_model_config_revision() -> Option<String> {
+    let config = read_config();
+    let provider = config
+        .get("model_providers")?
+        .get(ORGANIZATION_PROVIDER_ID)?;
+    let lease = provider.get(LEASE_UNTIL_KEY)?.as_integer()?;
+    if lease <= chrono::Utc::now().timestamp_millis() || !is_organization_managed(provider) {
+        return None;
+    }
+    let mut owned = Value::Table(Map::new());
+    let providers = ensure_table(&mut owned, "model_providers").ok()?;
+    providers.insert(ORGANIZATION_PROVIDER_ID.into(), provider.clone());
+    let models = ensure_table(&mut owned, "model").ok()?;
+    if let Some(configured) = config.get("model").and_then(Value::as_table) {
+        models.extend(
+            configured
+                .iter()
+                .filter(|(_, value)| is_organization_model(value))
+                .map(|(id, value)| (id.clone(), value.clone())),
+        );
+    }
+    Some(model_config_revision_of(&owned))
+}
+
+pub(crate) fn has_organization_model_config() -> bool {
+    let config = read_config();
+    ["model", "model_providers"].iter().any(|key| {
+        config
+            .get(*key)
+            .and_then(Value::as_table)
+            .is_some_and(|entries| entries.values().any(is_organization_managed))
+    })
 }
 
 /// Read config.toml as a TOML value, or an empty table if missing/corrupt.
@@ -3042,6 +3092,43 @@ default = ""
     }
 
     // --- model_config_revision ---
+
+    #[test]
+    fn organization_lease_renewal_does_not_reload_unrelated_personal_models() {
+        let mut config: Value = r#"
+[model_providers.personal]
+api_key = "personal-key"
+[model.personal]
+model_provider = "personal"
+"#
+        .parse()
+        .unwrap();
+        let mut downloaded = OrganizationModelConfig {
+            provider: "openai".into(),
+            model: "shared".into(),
+            base_url: "https://org.example.com/v1".into(),
+            api_key: "org-key".into(),
+            lease_until: 2_000,
+        };
+        apply_organization_model_config(&mut config, &downloaded).unwrap();
+        let before = model_config_revision_of(&config);
+        downloaded.lease_until = 3_000;
+        apply_organization_model_config(&mut config, &downloaded).unwrap();
+        assert_eq!(model_config_revision_of(&config), before);
+        downloaded.api_key = "rotated-org-key".into();
+        apply_organization_model_config(&mut config, &downloaded).unwrap();
+        assert_ne!(model_config_revision_of(&config), before);
+        assert_eq!(
+            config["model_providers"]["personal"]["api_key"].as_str(),
+            Some("personal-key")
+        );
+        remove_organization_model_config_from(&mut config);
+        assert!(config["model"].get("personal").is_some());
+        assert_eq!(
+            config["model_providers"]["personal"]["api_key"].as_str(),
+            Some("personal-key")
+        );
+    }
 
     /// `internal/reload_models` reloads the whole `[models]` table, so a filter
     /// edit must move the revision. Otherwise a stale Runtime catalog could be

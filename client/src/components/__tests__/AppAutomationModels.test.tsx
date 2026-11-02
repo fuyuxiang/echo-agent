@@ -82,6 +82,7 @@ import { useProjectsStore } from "@/stores/projects-store";
 import { usePermissionStore } from "@/stores/permission-store";
 import { useQuestionStore } from "@/stores/question-store";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
+import { resetOrgSessionMirror } from "@/stores/org-session-store";
 
 let handlers: Parameters<typeof client.subscribeAgentEvents>[0];
 const auth = { ready: true, runtimeReady: true, synchronized: true, providers: ["model-a", "model-b"], runtimeModels: ["model-a", "model-b"], defaultModelId: "model-b" };
@@ -96,6 +97,7 @@ async function start() {
   await act(async () => {});
 }
 beforeEach(() => {
+  resetOrgSessionMirror();
   useAutomationEditorStore.getState().close();
   vi.clearAllMocks();
   localStorage.clear();
@@ -120,6 +122,26 @@ beforeEach(() => {
 });
 
 describe("自动化会话模型同步", () => {
+  it("未登录组织时启动不额外重载个人模型和技能", async () => {
+    await start();
+    expect(client.internalReload).not.toHaveBeenCalled();
+    created("model-a");
+    fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+    expect(await screen.findByRole("button", { name: "追问" })).toBeEnabled();
+  });
+
+  it("组织恢复失败不影响个人模型会话，也不额外重载 Runtime", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "org_session") throw new Error("organization offline");
+      return command === "notification_take_pending_opens" ? [] : null;
+    });
+    await start();
+    created("model-a");
+    fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+    expect(await screen.findByRole("button", { name: "追问" })).toBeEnabled();
+    expect(client.internalReload).not.toHaveBeenCalled();
+  });
+
   it("迟到的清理进度不会结束后续会话或覆盖模型", async () => {
     await start(); created("model-a");
     act(() => {

@@ -163,6 +163,13 @@ const orgDocumentSamples = orgEmpty?[]:orgMany?Array.from({length:126},(_,index)
 let orgPromotionSamples = Array.from({length:orgMany?111:0},(_,index)=>({id:`promotion-${index}`,payloadType:"memory",payload:{kind:"howto",content:`经验提交 ${index+1}：记录任务处理和交付步骤。`},source:"user",state:"approved",createdAt:1,...orgScopeSample(index)}));
 const orgSkillSubmissionSamples = Array.from({length:orgMany?113:0},(_,index)=>({id:`skill-submission-${index}`,name:`接口诊断提交 ${index+1}`,version:"1.2.0",state:"approved",scanStatus:"passed",createdAt:1,...orgScopeSample(index)}));
 const orgDocumentSubmissionSamples = Array.from({length:orgMany?121:0},(_,index)=>({id:`doc-submission-${index}`,title:`交付报告 ${index+1}.md`,sourceType:"md",byteSize:100,state:"approved",scanStatus:"passed",createdAt:1,...orgScopeSample(index)}));
+if (query.get("orgPending") === "1") {
+  for (const samples of [orgSkillSubmissionSamples, orgDocumentSubmissionSamples]) {
+    samples.slice(0, 3).forEach((item, index) => Object.assign(item, {
+      state: "pending", scanStatus: index === 0 ? "passed" : index === 1 ? undefined : "scanning",
+    }));
+  }
+}
 if (["conversation", "conversation-layout", "workbench", "queue"].includes(query.get("surface") ?? "")) {
   const chat = useSessionStore.getState();
   chat.setSession("review-conversation");
@@ -557,7 +564,7 @@ Object.assign(window, {
           if(args.resource === "summary")return {
             memories:orgMemorySamples.length,documents:orgDocumentSamples.length,documentReady:orgDocumentSamples.filter(item=>item.status==="ready").length,documentProcessing:0,
             skills:orgSkillSamples.length,skillInstalled:orgSkillSamples.filter(item=>item.enabled).length,skillMandatory:orgSkillSamples.filter(item=>item.mandatory).length,
-            memoryPending:orgPromotionSamples.filter(item=>item.state==="pending").length,documentPending:0,skillPending:0,
+            memoryPending:orgPromotionSamples.filter(item=>item.state==="pending").length,documentPending:orgDocumentSubmissionSamples.filter(item=>item.state==="pending").length,skillPending:orgSkillSubmissionSamples.filter(item=>item.state==="pending").length,
           };
           const source: any[] = args.resource === "memories" ? orgMemorySamples : args.resource === "documents" ? orgDocumentSamples : args.resource === "skills" ? orgSkillSamples : args.resource === "memory-submissions" ? orgPromotionSamples : args.resource === "document-submissions" ? orgDocumentSubmissionSamples : orgSkillSubmissionSamples;
           const items=source.filter(item=>(!args.scopeId || item.scopeId===args.scopeId) && (!args.query || JSON.stringify(item).includes(args.query)) && (!args.filter ||

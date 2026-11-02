@@ -259,7 +259,7 @@ async fn execute(
         .ok_or("成员不存在")?;
     let state = app.state::<crate::commands::AppState>();
     crate::policy::require_feature("sessions")?;
-    crate::commands::require_runtime_ready(Some(app), &state, Some(&member.model_id))?;
+    crate::commands::ensure_runtime_ready(app, &state, Some(&member.model_id)).await?;
     crate::policy::require_model(&member.model_id)?;
     let root = app
         .state::<crate::shell_fs::FilesystemAccess>()

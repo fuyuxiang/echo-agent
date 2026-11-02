@@ -3638,7 +3638,7 @@ async fn run_automation_once(
     require_automation_cleanup_complete(&automation.id)?;
     crate::policy::require_feature("automations")?;
     crate::policy::require_model(resolved_model_id)?;
-    crate::commands::require_runtime_ready(Some(app), state, Some(resolved_model_id))?;
+    crate::commands::ensure_runtime_ready(app, state, Some(resolved_model_id)).await?;
     if !cwd.is_dir() {
         return Err(format!("自动化工作空间不存在：{}", cwd.display()));
     }
@@ -4162,7 +4162,7 @@ fn recover_queued_dispatches(
 /// Scheduler tick. Fires any automation whose `next_run_at` has passed.
 pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, default_cwd: &Path) {
     let state = app.state::<AppState>();
-    if let Err(error) = crate::commands::require_runtime_ready(Some(app), &state, None) {
+    if let Err(error) = crate::commands::ensure_runtime_ready(app, &state, None).await {
         tracing::debug!(%error, "automation scheduler paused while Agent Runtime is not ready");
         return;
     }

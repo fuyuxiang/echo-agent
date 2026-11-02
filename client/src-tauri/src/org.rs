@@ -115,11 +115,15 @@ struct OrgSession {
 struct OrgInner {
     client: reqwest::Client,
     session: AsyncMutex<OrgSession>,
+    refresh_lock: Mutex<(u64, Arc<AsyncMutex<()>>)>,
+    app: OnceLock<AppHandle>,
     /// Serializes the network/download portion of managed-Skill syncs. State
     /// transactions use a separate bounded file lock so logout never waits on
     /// a potentially slow organization server.
     skill_sync: AsyncMutex<()>,
     skill_state_transaction: Mutex<()>,
+    skill_reporting_gate: Arc<AsyncMutex<()>>,
+    skill_reporting_cache: Mutex<Option<SkillReportingCache>>,
     model_state_transaction: Mutex<()>,
     /// Invalidates work that started under an earlier account or preference.
     /// Package activation and the final commit both check this while holding
@@ -219,8 +223,12 @@ impl Default for OrgState {
                     requires_reauthentication,
                     ..Default::default()
                 }),
+                refresh_lock: Mutex::new((0, Arc::new(AsyncMutex::new(())))),
+                app: OnceLock::new(),
                 skill_sync: AsyncMutex::new(()),
                 skill_state_transaction: Mutex::new(()),
+                skill_reporting_gate: Arc::new(AsyncMutex::new(())),
+                skill_reporting_cache: Mutex::new(None),
                 model_state_transaction: Mutex::new(()),
                 skill_epoch: AtomicU64::new(0),
                 model_epoch: AtomicU64::new(0),
@@ -238,6 +246,9 @@ pub fn shared_state() -> OrgState {
 }
 
 pub(crate) fn enforce_organization_model_lease() -> Result<bool, String> {
+    if !crate::providers::has_organization_model_config() {
+        return Ok(false);
+    }
     let state = shared_state();
     with_model_state_transaction(&state.inner, || {
         crate::providers::enforce_organization_model_lease()
@@ -245,6 +256,9 @@ pub(crate) fn enforce_organization_model_lease() -> Result<bool, String> {
 }
 
 async fn enforce_model_for_current_session(inner: &Arc<OrgInner>) -> Result<bool, String> {
+    if !crate::providers::has_organization_model_config() {
+        return Ok(false);
+    }
     // Keep the session identity stable until the model transaction finishes.
     // Otherwise an old bootstrap failure could observe "signed out", wait for
     // a concurrent login, and then delete that new account's configuration.
@@ -370,6 +384,10 @@ fn with_skill_state_transaction_at<T>(
 
 fn invalidate_skill_sync(inner: &OrgInner) {
     inner.skill_epoch.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut reporting) = inner.reporting.lock() {
+        reporting.skills_epoch = None;
+        reporting.skills_complete = false;
+    }
 }
 
 fn require_current_skill_epoch(inner: &OrgInner, expected: u64) -> Result<(), String> {
@@ -487,7 +505,7 @@ pub(crate) fn notify_models_changed(app: &AppHandle, reason: &str) {
         // requires the future to be Send on Windows/Tauri).
         let tx = runtime.tx.lock().unwrap().clone();
         let reload_result = if let Some(tx) = tx {
-            crate::commands::reload_models_and_sync(&app, &runtime, &tx).await
+            crate::commands::reconcile_models_and_sync(&app, &runtime, &tx).await
         } else {
             Err("agent not initialized".to_string())
         };
@@ -608,21 +626,31 @@ pub async fn org_local_kb_sources_set(
 
 pub(crate) async fn local_knowledge_allowed() -> bool {
     let state = shared_state();
-    let has_credential = {
-        let session = state.inner.session.lock().await;
-        session_has_credential(&session)
-    };
-    if !has_credential {
+    let session = state.inner.session.lock().await;
+    local_knowledge_allowed_for_session(&session, now_millis())
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn local_knowledge_allowed_for_session(session: &OrgSession, now: u64) -> bool {
+    if !session_has_credential(session) {
         return true;
     }
-    match update_bootstrap(&state.inner).await {
-        Ok(bootstrap) => bootstrap
-            .get("policy")
-            .and_then(|policy| policy.get("allowLocalKnowledge"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        Err(_) => false,
-    }
+    // Bootstrap is signature-verified before entering the session. Local work
+    // must not perform a network request, nor disable the organization bridge
+    // merely because an unrelated personal search happened while offline.
+    session.bootstrap.as_ref().is_some_and(|bootstrap| {
+        let policy = &bootstrap["policy"];
+        policy["expiresAt"]
+            .as_u64()
+            .is_some_and(|expires| expires > now)
+            && policy["allowLocalKnowledge"].as_bool().unwrap_or(false)
+    })
 }
 
 #[tauri::command]
@@ -1289,6 +1317,54 @@ async fn refresh(
     rejected_access: &str,
     expected: &AccountContext,
 ) -> Result<(), String> {
+    refresh_with_writer(inner, rejected_access, expected, credential_write).await
+}
+
+async fn refresh_with_writer<F>(
+    inner: &Arc<OrgInner>,
+    rejected_access: &str,
+    expected: &AccountContext,
+    persist: F,
+) -> Result<(), String>
+where
+    F: Fn(&str, &str) -> Result<(), String> + Send + 'static,
+{
+    // A heartbeat can time out while the server rotates a refresh token. Own
+    // the complete rotation in a task so cancelling its caller cannot discard
+    // the only usable replacement credential.
+    let inner = inner.clone();
+    let rejected_access = rejected_access.to_owned();
+    let expected = expected.clone();
+    tokio::spawn(
+        async move { refresh_serialized(&inner, &rejected_access, &expected, persist).await },
+    )
+    .await
+    .map_err(|error| format!("organization credential refresh interrupted: {error}"))?
+}
+
+async fn refresh_serialized<F>(
+    inner: &Arc<OrgInner>,
+    rejected_access: &str,
+    expected: &AccountContext,
+    persist: F,
+) -> Result<(), String>
+where
+    F: Fn(&str, &str) -> Result<(), String>,
+{
+    let refresh_lock = {
+        let mut gate = inner
+            .refresh_lock
+            .lock()
+            .map_err(|_| "organization refresh lock unavailable")?;
+        require_account_context_generation(inner, expected)?;
+        if gate.0 != expected.generation {
+            *gate = (expected.generation, Arc::new(AsyncMutex::new(())));
+        }
+        gate.1.clone()
+    };
+    // A slow response under the previous account must not hold up a newly
+    // signed-in account. Only callers in this identity generation share a gate.
+    let _refresh_guard = refresh_lock.lock().await;
     let (profile, refresh_token, prior_access) = {
         let session = inner.session.lock().await;
         require_account_context_locked(inner, &session, expected)?;
@@ -1313,6 +1389,7 @@ async fn refresh(
     let response = inner
         .client
         .post(endpoint(&profile.server_url, "/api/v1/auth/refresh"))
+        .timeout(std::time::Duration::from_secs(30))
         .json(&json!({ "refreshToken": refresh_token }))
         .send()
         .await
@@ -1326,7 +1403,23 @@ async fn refresh(
                 if require_account_context_locked(inner, &session, expected).is_err() {
                     return Err("organization account changed while refresh was in flight".into());
                 }
+                if session.access_token != prior_access
+                    || session.refresh_token.as_deref() != Some(refresh_token.as_str())
+                {
+                    return Ok(());
+                }
                 let cleanup = clear_local_session(inner, &mut session, Some(&profile), true);
+                drop(session);
+                drop(_refresh_guard);
+                if let Some(app) = inner.app.get() {
+                    // Revocation affects organization-owned assets. Always
+                    // acknowledge the new local catalog, even though further
+                    // organization polling now stops for this signed-out user.
+                    notify_models_changed(app, "credential-revoked");
+                    notify_skills_changed(app, "credential-revoked");
+                    notify_session_changed(app, "credential-revoked").await;
+                    crate::org_mcp::reconcile_all_sessions(app).await;
+                }
                 return Err(match cleanup {
                     Ok(()) => error,
                     Err(cleanup_error) => {
@@ -1354,7 +1447,7 @@ async fn refresh(
         // tokens back, even though both requests used the same account.
         return Ok(());
     }
-    credential_write(&credential_account(&profile), &next_refresh)?;
+    persist(&credential_account(&profile), &next_refresh)?;
     session.access_token = Some(access);
     session.refresh_token = Some(next_refresh);
     session.requires_reauthentication = false;
@@ -1664,6 +1757,8 @@ async fn sync_organization_model_config_for_context(
             {
                 reporting.for_context(&request_context).model_revision =
                     data.get("configRevision").and_then(Value::as_u64);
+                reporting.for_context(&request_context).model_fingerprint =
+                    crate::providers::organization_model_config_revision();
             }
         }
     }
@@ -3837,7 +3932,7 @@ fn validate_installed_skill_fields(key: &str, item: &InstalledSkill) -> Result<(
     Ok(())
 }
 
-fn validate_skill_state(state: &SkillSyncState) -> Result<(), String> {
+fn validate_skill_state_fields(state: &SkillSyncState) -> Result<(), String> {
     if state.account_id.chars().count() > 256
         || state.account_id.chars().any(char::is_control)
         || (!state.revision.is_empty() && Uuid::parse_str(&state.revision).is_err())
@@ -3855,6 +3950,11 @@ fn validate_skill_state(state: &SkillSyncState) -> Result<(), String> {
     for (key, item) in &state.installed {
         validate_installed_skill_fields(key, item)?;
     }
+    Ok(())
+}
+
+fn validate_skill_state(state: &SkillSyncState) -> Result<(), String> {
+    validate_skill_state_fields(state)?;
     if state.installed.is_empty() {
         return Ok(());
     }
@@ -3967,6 +4067,7 @@ fn write_runtime_skill_config(state: &SkillSyncState) -> Result<(), String> {
     // Sidecar 和 config.toml 都属于用户可编辑文件。每次注入 Runtime
     // 前重新验证服务端签名，不信任 sidecar 里的 mandatory/覆盖值。
     validate_skill_state(state)?;
+    let (paths, enforced) = runtime_skill_config_values(state);
     crate::providers::update_config(|config| {
         let root = config.as_table_mut().ok_or("config root is not a table")?;
         let skills = root
@@ -3974,30 +4075,6 @@ fn write_runtime_skill_config(state: &SkillSyncState) -> Result<(), String> {
             .or_insert_with(|| toml::Value::Table(Default::default()))
             .as_table_mut()
             .ok_or("[skills] is not a table")?;
-        // Runtime only understands a flat Server scope, so collapse same-name
-        // packages here. Normally personal > team > org. A mandatory/non-
-        // overridable enterprise package wins over an unlocked personal package;
-        // between protected packages the broader organization policy wins.
-        let mut winners = std::collections::BTreeMap::<String, &InstalledSkill>::new();
-        for candidate in state.installed.values() {
-            winners
-                .entry(candidate.name.clone())
-                .and_modify(|current| {
-                    if skill_precedes(candidate, current) {
-                        *current = candidate;
-                    }
-                })
-                .or_insert(candidate);
-        }
-        let paths = winners
-            .values()
-            .map(|item| toml::Value::String(item.path.clone()))
-            .collect();
-        let enforced = winners
-            .values()
-            .filter(|item| item.mandatory || !item.allow_personal_override)
-            .map(|item| toml::Value::String(item.name.clone()))
-            .collect();
         skills.insert("server_skill_dirs".into(), toml::Value::Array(paths));
         skills.insert(
             "server_enforced_skill_names".into(),
@@ -4005,6 +4082,64 @@ fn write_runtime_skill_config(state: &SkillSyncState) -> Result<(), String> {
         );
         Ok(())
     })
+}
+
+fn runtime_skill_config_values(state: &SkillSyncState) -> (Vec<toml::Value>, Vec<toml::Value>) {
+    // Resolve collisions exactly as the Runtime injection does. Reporting must
+    // acknowledge the same configuration, including protected organization rules.
+    let mut winners = std::collections::BTreeMap::<String, &InstalledSkill>::new();
+    for candidate in state.installed.values() {
+        winners
+            .entry(candidate.name.clone())
+            .and_modify(|current| {
+                if skill_precedes(candidate, current) {
+                    *current = candidate;
+                }
+            })
+            .or_insert(candidate);
+    }
+    (
+        winners
+            .values()
+            .map(|item| toml::Value::String(item.path.clone()))
+            .collect(),
+        winners
+            .values()
+            .filter(|item| item.mandatory || !item.allow_personal_override)
+            .map(|item| toml::Value::String(item.name.clone()))
+            .collect(),
+    )
+}
+
+fn has_managed_skill_artifacts_at(home: &Path) -> bool {
+    if [
+        home.join(SKILL_STATE_FILE),
+        home.join("skills").join("organization"),
+    ]
+    .iter()
+    .any(|path| std::fs::symlink_metadata(path).is_ok())
+    {
+        return true;
+    }
+    // Recover orphaned organization injections even if the sidecar was deleted.
+    // Do not create state directories or config locks for a first-time personal
+    // user. Ordinary user/project Skill paths are outside our ownership.
+    let Ok(text) = std::fs::read_to_string(home.join("config.toml")) else {
+        return false;
+    };
+    let Ok(config) = text.parse::<toml::Value>() else {
+        return false;
+    };
+    config
+        .get("skills")
+        .and_then(|skills| skills.get("server_skill_dirs"))
+        .and_then(toml::Value::as_array)
+        .is_some_and(|values| {
+            values
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .any(|path| Path::new(path).starts_with(home.join("skills").join("organization")))
+        })
 }
 
 fn recover_invalid_skill_state_unlocked(load_error: &str) -> Result<SkillSyncState, String> {
@@ -4128,6 +4263,9 @@ fn deactivate_managed_skills(inner: &OrgInner) -> Result<(), String> {
     // finishes an already locked package write (which this cleanup then
     // purges), or observes the new epoch before its next write/commit.
     invalidate_skill_sync(inner);
+    if !has_managed_skill_artifacts_at(&crate::paths::echo_agent_home_dir()) {
+        return Ok(());
+    }
     with_skill_state_transaction(inner, || {
         let mut errors = Vec::new();
         if let Err(error) = load_or_recover_skill_state_unlocked() {
@@ -4155,6 +4293,9 @@ fn deactivate_managed_skills(inner: &OrgInner) -> Result<(), String> {
 }
 
 pub fn enforce_skill_lease() {
+    if !has_managed_skill_artifacts_at(&crate::paths::echo_agent_home_dir()) {
+        return;
+    }
     let state = shared_state();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -4193,6 +4334,9 @@ pub fn enforce_skill_lease() {
             }
             if let Err(error) = write_json_private(&skill_state_path(), &local) {
                 errors.push(format!("persist expired managed Skill state: {error}"));
+            }
+            if errors.is_empty() {
+                record_skills_cleared(&state.inner);
             }
             return if errors.is_empty() {
                 Ok(())
@@ -4518,6 +4662,7 @@ async fn sync_skills_for_context(
                 record_skill_failure(
                     inner,
                     &account_context,
+                    expected_epoch,
                     &receipt_skill_id,
                     &receipt_version_id,
                 );
@@ -4567,7 +4712,7 @@ async fn sync_skills_for_context(
     if active_skill_account_id(inner).await? != account_id {
         return Err("organization account changed before Skill commit".into());
     }
-    with_skill_state_transaction(inner, || {
+    let commit = with_skill_state_transaction(inner, || {
         require_current_skill_epoch(inner, expected_epoch)?;
         require_account_context_generation(inner, &account_context)?;
         let persisted_profile = read_json::<OrgProfile>(&profile_path())?;
@@ -4608,7 +4753,11 @@ async fn sync_skills_for_context(
             remove_installed_package(item);
         }
         Ok(())
-    })?;
+    });
+    if let Err(error) = commit {
+        record_skill_commit_failure(inner, &account_context, expected_epoch, &base, &local);
+        return Err(error);
+    }
     if let Ok(mut reporting) = inner.reporting.lock() {
         if require_account_context_generation(inner, &account_context).is_ok()
             && require_current_skill_epoch(inner, expected_epoch).is_ok()
@@ -4616,6 +4765,8 @@ async fn sync_skills_for_context(
             let state = reporting.for_context(&account_context);
             state.skills = Some(skill_receipts_after_commit(&base, &local));
             state.skills_complete = true;
+            state.skills_epoch = Some(expected_epoch);
+            state.skills_revision = Some(local.revision.clone());
         }
     }
     Ok(json!({
@@ -4636,8 +4787,11 @@ pub async fn org_sync_skills(app: AppHandle, state: State<'_, OrgState>) -> Resu
 struct ClientReportingState {
     context: Option<AccountContext>,
     model_revision: Option<u64>,
+    model_fingerprint: Option<String>,
     skills: Option<Vec<Value>>,
     skills_complete: bool,
+    skills_epoch: Option<u64>,
+    skills_revision: Option<String>,
 }
 
 impl ClientReportingState {
@@ -4674,27 +4828,406 @@ fn skill_receipts_after_commit(base: &SkillSyncState, local: &SkillSyncState) ->
 fn record_skill_failure(
     inner: &OrgInner,
     context: &AccountContext,
+    expected_epoch: u64,
     skill_id: &str,
     version_id: &str,
 ) {
-    if require_account_context_generation(inner, context).is_err() {
+    if require_account_context_generation(inner, context).is_err()
+        || require_current_skill_epoch(inner, expected_epoch).is_err()
+    {
         return;
     }
     if let Ok(mut reporting) = inner.reporting.lock() {
-        if require_account_context_generation(inner, context).is_err() {
+        if require_account_context_generation(inner, context).is_err()
+            || require_current_skill_epoch(inner, expected_epoch).is_err()
+        {
             return;
         }
         let state = reporting.for_context(context);
-        let receipts = state.skills.get_or_insert_with(Vec::new);
-        receipts.retain(|item| item["skillId"] != skill_id || item["versionId"] != version_id);
-        if receipts.len() >= 1000 {
-            receipts.remove(0);
-        }
-        receipts.push(
-            json!({"skillId":skill_id,"versionId":version_id,"state":"failed",
-            "error":"技能下载、校验或安装失败，请检查客户端并重试"}),
+        append_skill_failure(
+            state,
+            skill_id,
+            version_id,
+            "技能下载、校验或安装失败，请检查客户端并重试",
         );
         state.skills_complete = false;
+        state.skills_epoch = Some(expected_epoch);
+        state.skills_revision = None;
+    }
+}
+
+fn append_skill_failure(
+    state: &mut ClientReportingState,
+    skill_id: &str,
+    version_id: &str,
+    error: &str,
+) {
+    let receipts = state.skills.get_or_insert_with(Vec::new);
+    receipts.retain(|item| item["skillId"] != skill_id || item["versionId"] != version_id);
+    if receipts.len() >= 1000 {
+        receipts.remove(0);
+    }
+    receipts
+        .push(json!({"skillId":skill_id,"versionId":version_id,"state":"failed","error":error}));
+}
+
+fn record_skill_commit_failure(
+    inner: &OrgInner,
+    context: &AccountContext,
+    expected_epoch: u64,
+    base: &SkillSyncState,
+    local: &SkillSyncState,
+) {
+    if let Ok(mut reporting) = inner.reporting.lock() {
+        if require_account_context_generation(inner, context).is_err()
+            || require_current_skill_epoch(inner, expected_epoch).is_err()
+        {
+            return;
+        }
+        let state = reporting.for_context(context);
+        // A failed transaction is incomplete even when it only renewed the
+        // lease. Unchanged, previously installed versions did not fail an
+        // installation; retain their receipts subject to fresh local evidence.
+        state.skills_complete = false;
+        state.skills_epoch = Some(expected_epoch);
+        state.skills_revision = None;
+        for item in local.installed.values().filter(|item| {
+            item.scope_kind != "personal" && base.installed.get(&item.skill_id) != Some(*item)
+        }) {
+            append_skill_failure(
+                state,
+                &item.skill_id,
+                &item.version_id,
+                "技能安装或更新未完成，请重试同步",
+            );
+        }
+        for item in base.installed.values().filter(|item| {
+            item.scope_kind != "personal" && !local.installed.contains_key(&item.skill_id)
+        }) {
+            append_skill_failure(
+                state,
+                &item.skill_id,
+                &item.version_id,
+                "技能移除未完成，请重试同步",
+            );
+        }
+    }
+}
+
+fn record_skills_cleared(inner: &OrgInner) {
+    if let Ok(mut reporting) = inner.reporting.lock() {
+        if let Some(receipts) = reporting.skills.as_mut() {
+            for item in receipts {
+                item["state"] = json!("removed");
+                if let Some(item) = item.as_object_mut() {
+                    item.remove("error");
+                }
+            }
+        }
+        reporting.skills_complete = true;
+        reporting.skills_epoch = Some(inner.skill_epoch.load(Ordering::SeqCst));
+        reporting.skills_revision = None;
+    }
+}
+
+struct ReportingEvidence<'a> {
+    model_fingerprint: Option<String>,
+    models_applied: bool,
+    skills: Option<&'a SkillSyncState>,
+    skill_epoch: u64,
+    now: u64,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct SkillArtifactStamp {
+    path: PathBuf,
+    directory: bool,
+    len: u64,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+    #[cfg(windows)]
+    identity: (u64, u64, u32),
+}
+
+#[derive(Clone)]
+struct SkillReportingCache {
+    context: AccountContext,
+    epoch: u64,
+    local: SkillSyncState,
+    artifacts: Vec<SkillArtifactStamp>,
+    valid: bool,
+}
+
+fn skill_artifact_stamp(path: &Path) -> Result<SkillArtifactStamp, String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !(metadata.is_file() || metadata.is_dir()) {
+        return Err("managed Skill reporting encountered an unsafe filesystem entry".into());
+    }
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    #[cfg(windows)]
+    use std::os::windows::fs::MetadataExt;
+    Ok(SkillArtifactStamp {
+        path: path.to_path_buf(),
+        directory: metadata.is_dir(),
+        len: metadata.len(),
+        modified: metadata.modified().map_err(|error| error.to_string())?,
+        #[cfg(unix)]
+        identity: (
+            metadata.dev(),
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ),
+        #[cfg(windows)]
+        identity: (
+            metadata.creation_time(),
+            metadata.last_write_time(),
+            metadata.file_attributes(),
+        ),
+    })
+}
+
+fn collect_skill_artifact_stamps(
+    path: &Path,
+    depth: usize,
+    remaining: &mut usize,
+    stamps: &mut Vec<SkillArtifactStamp>,
+) -> Result<(), String> {
+    if depth > MAX_MANAGED_SKILL_DEPTH || *remaining == 0 {
+        return Err("managed Skill reporting exceeds the filesystem inspection limit".into());
+    }
+    *remaining -= 1;
+    let stamp = skill_artifact_stamp(path)?;
+    let directory = stamp.directory;
+    stamps.push(stamp);
+    if directory {
+        for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            collect_skill_artifact_stamps(&entry.path(), depth + 1, remaining, stamps)?;
+        }
+    }
+    Ok(())
+}
+
+fn skill_inventory_stamps(
+    home: &Path,
+    local: &SkillSyncState,
+) -> Result<Vec<SkillArtifactStamp>, String> {
+    let mut stamps = Vec::new();
+    let root = home.join("skills").join("organization");
+    if !local.installed.is_empty() {
+        for path in [home.join("skills"), root.clone(), root.join(".packages")] {
+            let stamp = skill_artifact_stamp(&path)?;
+            if !stamp.directory {
+                return Err("managed Skill root must be a directory".into());
+            }
+            stamps.push(stamp);
+        }
+    }
+    for item in local.installed.values() {
+        let family = root.join(&item.skill_id);
+        let version = family.join(&item.version_id);
+        let package_family = root.join(".packages").join(&item.skill_id);
+        let package = package_family.join(format!("{}.zip", item.version_id));
+        if item.path != version.to_string_lossy() || item.package_path != package.to_string_lossy()
+        {
+            return Err("managed Skill reporting paths are not canonical".into());
+        }
+        for path in [family, package_family] {
+            let stamp = skill_artifact_stamp(&path)?;
+            if !stamp.directory {
+                return Err("managed Skill family must be a directory".into());
+            }
+            stamps.push(stamp);
+        }
+        let package_stamp = skill_artifact_stamp(&package)?;
+        if package_stamp.directory {
+            return Err("managed Skill package must be a file".into());
+        }
+        stamps.push(package_stamp);
+        let mut remaining = MAX_MANAGED_SKILL_FILES * (MAX_MANAGED_SKILL_DEPTH + 1);
+        collect_skill_artifact_stamps(&version, 0, &mut remaining, &mut stamps)?;
+    }
+    stamps.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(stamps)
+}
+
+fn skill_runtime_config_matches(local: &SkillSyncState, config: &toml::Value) -> bool {
+    let (paths, enforced) = runtime_skill_config_values(local);
+    [
+        ("server_skill_dirs", paths),
+        ("server_enforced_skill_names", enforced),
+    ]
+    .into_iter()
+    .all(
+        |(key, expected)| match config.get("skills").and_then(|skills| skills.get(key)) {
+            None => expected.is_empty(),
+            Some(actual) => actual.as_array() == Some(&expected),
+        },
+    )
+}
+
+fn skill_reporting_snapshot_at(
+    inner: &OrgInner,
+    context: &AccountContext,
+    home: &Path,
+    now: u64,
+    verify: impl FnOnce(&SkillSyncState) -> Result<(), String>,
+) -> Result<SkillSyncState, String> {
+    let epoch = inner.skill_epoch.load(Ordering::SeqCst);
+    require_account_context_generation(inner, context)?;
+    let path = home.join(SKILL_STATE_FILE);
+    // Atomic sidecar replacement permits a bounded read without taking the
+    // mutation lock. Never trust this snapshot until all evidence agrees.
+    let local = read_json_or_default_if_missing::<SkillSyncState>(&path)?;
+    validate_skill_state_fields(&local)?;
+    if (!local.account_id.is_empty() && local.account_id != context.account_id)
+        || (!local.installed.is_empty() && local.lease_until <= now)
+    {
+        return Err(
+            "managed Skill reporting inventory is expired or belongs to another account".into(),
+        );
+    }
+    let artifacts = skill_inventory_stamps(home, &local)?;
+    let cached = inner
+        .skill_reporting_cache
+        .lock()
+        .map_err(|_| "Skill reporting cache unavailable")?
+        .as_ref()
+        .filter(|cache| {
+            cache.context == *context
+                && cache.epoch == epoch
+                && cache.local == local
+                && cache.artifacts == artifacts
+        })
+        .map(|cache| cache.valid);
+    let valid = match cached {
+        Some(valid) => valid,
+        None => {
+            // Full cryptographic and byte validation runs only for a changed
+            // inventory/file set, outside both mutation and reporting locks.
+            let valid = verify(&local).is_ok();
+            if artifacts != skill_inventory_stamps(home, &local)? {
+                return Err("managed Skill files changed during reporting verification".into());
+            }
+            *inner
+                .skill_reporting_cache
+                .lock()
+                .map_err(|_| "Skill reporting cache unavailable")? = Some(SkillReportingCache {
+                context: context.clone(),
+                epoch,
+                local: local.clone(),
+                artifacts,
+                valid,
+            });
+            valid
+        }
+    };
+    if !valid {
+        return Err("managed Skill reporting verification failed".into());
+    }
+    let config_text =
+        read_file_bounded(&home.join("config.toml"), 8 * 1024 * 1024, "Runtime config")?;
+    let config = std::str::from_utf8(&config_text)
+        .map_err(|error| error.to_string())?
+        .parse::<toml::Value>()
+        .map_err(|error| error.to_string())?;
+    if !skill_runtime_config_matches(&local, &config)
+        || read_json_or_default_if_missing::<SkillSyncState>(&path)? != local
+    {
+        return Err(
+            "managed Skill inventory or Runtime configuration changed before reporting".into(),
+        );
+    }
+    require_current_skill_epoch(inner, epoch)?;
+    require_account_context_generation(inner, context)?;
+    Ok(local)
+}
+
+async fn skill_reporting_snapshot(
+    inner: &Arc<OrgInner>,
+    context: &AccountContext,
+) -> Option<SkillSyncState> {
+    let worker_inner = inner.clone();
+    let context = context.clone();
+    run_skill_reporting_check(inner, move || {
+        skill_reporting_snapshot_at(
+            &worker_inner,
+            &context,
+            &crate::paths::echo_agent_home_dir(),
+            now_millis(),
+            validate_skill_state,
+        )
+    })
+    .await
+}
+
+async fn run_skill_reporting_check(
+    inner: &Arc<OrgInner>,
+    inspect: impl FnOnce() -> Result<SkillSyncState, String> + Send + 'static,
+) -> Option<SkillSyncState> {
+    let guard = inner.skill_reporting_gate.clone().try_lock_owned().ok()?;
+    let task = tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        inspect()
+    });
+    // A first-time verification can outlive this heartbeat. It fills the cache
+    // in the background; a separate gate prevents overlapping verification jobs.
+    tokio::time::timeout(std::time::Duration::from_secs(2), task)
+        .await
+        .ok()?
+        .ok()?
+        .ok()
+}
+
+fn append_client_receipts(
+    payload: &mut Value,
+    state: &ClientReportingState,
+    context: &AccountContext,
+    evidence: ReportingEvidence<'_>,
+) {
+    // Evidence is captured before locking reporting. A concurrent sync may
+    // already have published a newer receipt; never erase it using an older
+    // heartbeat snapshot. Mismatching receipts are simply not acknowledged.
+    if evidence.models_applied && state.model_fingerprint == evidence.model_fingerprint {
+        if let Some(revision) = state.model_revision {
+            payload["configRevision"] = json!(revision);
+        }
+    }
+    let inventory_current = evidence.skills.is_some_and(|local| {
+        (local.account_id.is_empty() || local.account_id == context.account_id)
+            && (local.installed.is_empty() || local.lease_until > evidence.now)
+            && state
+                .skills_revision
+                .as_ref()
+                .is_none_or(|revision| revision == &local.revision)
+    }) && state.skills_epoch == Some(evidence.skill_epoch);
+    if let Some(receipts) = state.skills.as_ref() {
+        // Failed/removed receipts remain useful after invalidation. Never
+        // renew a stale "installed" assertion after local lease cleanup.
+        let total = receipts.len();
+        let receipts = receipts
+            .iter()
+            .filter(|item| {
+                item["state"] != "installed"
+                    || (inventory_current
+                        && evidence.skills.is_some_and(|local| {
+                            item["skillId"]
+                                .as_str()
+                                .and_then(|id| local.installed.get(id))
+                                .is_some_and(|installed| {
+                                    Some(installed.version_id.as_str())
+                                        == item["versionId"].as_str()
+                                })
+                        }))
+            })
+            .take(1000)
+            .collect::<Vec<_>>();
+        payload["skillsComplete"] =
+            json!(state.skills_complete && inventory_current && total <= 1000);
+        payload["skills"] = json!(receipts);
     }
 }
 
@@ -4719,6 +5252,25 @@ async fn send_client_heartbeat(inner: &Arc<OrgInner>) -> Result<(), String> {
     if !reporting_supported {
         return Ok(());
     }
+    // Capture disk/runtime evidence before taking the reporting mutex. State
+    // mutations acquire the transaction lock first and must not deadlock with
+    // a heartbeat taking those locks in the opposite order.
+    let skill_epoch = inner.skill_epoch.load(Ordering::SeqCst);
+    let has_skill_receipts = inner
+        .reporting
+        .lock()
+        .ok()
+        .is_some_and(|state| state.skills.is_some());
+    let skill_snapshot = if has_skill_receipts {
+        skill_reporting_snapshot(inner, &context).await
+    } else {
+        None
+    };
+    let model_fingerprint = crate::providers::organization_model_config_revision();
+    let models_applied = inner.app.get().is_some_and(|app| {
+        app.state::<crate::commands::AppState>()
+            .model_config_is_current()
+    });
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -4738,13 +5290,18 @@ async fn send_client_heartbeat(inner: &Arc<OrgInner>) -> Result<(), String> {
             .map_err(|_| "organization reporting state unavailable")?;
         require_account_context_generation(inner, &context)?;
         let state = reporting.for_context(&context);
-        if let Some(revision) = state.model_revision {
-            payload["configRevision"] = json!(revision);
-        }
-        if let Some(receipts) = state.skills.as_ref() {
-            payload["skills"] = json!(receipts.iter().take(1000).collect::<Vec<_>>());
-            payload["skillsComplete"] = json!(state.skills_complete && receipts.len() <= 1000);
-        }
+        append_client_receipts(
+            &mut payload,
+            state,
+            &context,
+            ReportingEvidence {
+                model_fingerprint,
+                models_applied,
+                skills: skill_snapshot.as_ref(),
+                skill_epoch,
+                now,
+            },
+        );
     }
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -4765,6 +5322,7 @@ async fn send_client_heartbeat(inner: &Arc<OrgInner>) -> Result<(), String> {
 /// 无登录/离线是正常状态，只记录 debug；租约到期由独立门禁处理。
 pub fn start_background_sync(app: AppHandle) {
     let state = shared_state();
+    let _ = state.inner.app.set(app.clone());
     let reporting_state = state.clone();
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -4785,6 +5343,14 @@ pub fn start_background_sync(app: AppHandle) {
                 session_has_credential(&session)
             };
             if !has_credential {
+                // Recover organization models left by an interrupted logout or
+                // a missing refresh credential. Personal-only installations
+                // take the no-op fast path and never acquire an org lock.
+                match enforce_model_for_current_session(&state.inner).await {
+                    Ok(true) => notify_models_changed(&app, "signed-out-cleanup"),
+                    Ok(false) => {}
+                    Err(error) => tracing::warn!(%error, "organization model cleanup deferred"),
+                }
                 continue;
             }
             if let Err(error) = update_bootstrap(&state.inner).await {
@@ -5091,8 +5657,12 @@ mod tests {
         let inner = OrgInner {
             client: reqwest::Client::new(),
             session: AsyncMutex::new(OrgSession::default()),
+            refresh_lock: Mutex::new((0, Arc::new(AsyncMutex::new(())))),
+            app: OnceLock::new(),
             skill_sync: AsyncMutex::new(()),
             skill_state_transaction: Mutex::new(()),
+            skill_reporting_gate: Arc::new(AsyncMutex::new(())),
+            skill_reporting_cache: Mutex::new(None),
             model_state_transaction: Mutex::new(()),
             skill_epoch: AtomicU64::new(0),
             model_epoch: AtomicU64::new(0),
@@ -5361,5 +5931,617 @@ mod tests {
         assert!(!serde_json::to_string(&receipts)
             .unwrap()
             .contains("personal"));
+    }
+    fn test_org_inner(server_url: &str) -> Arc<OrgInner> {
+        Arc::new(OrgInner {
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            session: AsyncMutex::new(OrgSession {
+                profile: Some(OrgProfile {
+                    server_url: server_url.into(),
+                    username: "test".into(),
+                    user_id: Uuid::now_v7().to_string(),
+                    device_id: Uuid::now_v7().to_string(),
+                }),
+                access_token: Some("access-old".into()),
+                refresh_token: Some("refresh-old".into()),
+                ..Default::default()
+            }),
+            refresh_lock: Mutex::new((0, Arc::new(AsyncMutex::new(())))),
+            app: OnceLock::new(),
+            skill_sync: AsyncMutex::new(()),
+            skill_state_transaction: Mutex::new(()),
+            skill_reporting_gate: Arc::new(AsyncMutex::new(())),
+            skill_reporting_cache: Mutex::new(None),
+            model_state_transaction: Mutex::new(()),
+            skill_epoch: AtomicU64::new(0),
+            model_epoch: AtomicU64::new(0),
+            account_generation: AtomicU64::new(0),
+            reporting: Mutex::new(ClientReportingState::default()),
+        })
+    }
+
+    async fn answer_refresh(
+        listener: tokio::net::TcpListener,
+        received: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+        status: u16,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        loop {
+            let mut chunk = [0; 1024];
+            let count = stream.read(&mut chunk).await.unwrap();
+            assert!(count > 0);
+            bytes.extend_from_slice(&chunk[..count]);
+            if let Some(header_end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= header_end + 4 + length {
+                    break;
+                }
+            }
+        }
+        let _ = received.send(());
+        release.await.unwrap();
+        let body = if status == 200 {
+            r#"{"code":0,"data":{"accessToken":"access-new","refreshToken":"refresh-new"}}"#
+        } else {
+            r#"{"code":401,"msg":"expired"}"#
+        };
+        let response = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        stream.write_all(response.as_bytes()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_share_one_refresh_rotation() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inner = test_org_inner(&format!("http://{}", listener.local_addr().unwrap()));
+        let context = active_account_context(&inner).await.unwrap();
+        let (received, started) = tokio::sync::oneshot::channel();
+        let (release, proceed) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(answer_refresh(listener, received, proceed, 200));
+        let saved = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut callers = Vec::new();
+        for _ in 0..2 {
+            let inner = inner.clone();
+            let context = context.clone();
+            let saved = saved.clone();
+            callers.push(tokio::spawn(async move {
+                refresh_with_writer(&inner, "access-old", &context, move |_, token| {
+                    saved.lock().unwrap().push(token.to_string());
+                    Ok(())
+                })
+                .await
+            }));
+        }
+        started.await.unwrap();
+        release.send(()).unwrap();
+        for caller in callers {
+            caller.await.unwrap().unwrap();
+        }
+        server.await.unwrap();
+        assert_eq!(*saved.lock().unwrap(), vec!["refresh-new"]);
+        assert_eq!(
+            inner.session.lock().await.access_token.as_deref(),
+            Some("access-new")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_heartbeat_cannot_lose_rotated_refresh_credential() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inner = test_org_inner(&format!("http://{}", listener.local_addr().unwrap()));
+        let context = active_account_context(&inner).await.unwrap();
+        let (received, started) = tokio::sync::oneshot::channel();
+        let (release, proceed) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(answer_refresh(listener, received, proceed, 200));
+        let (persisted, saved) = tokio::sync::oneshot::channel();
+        let persisted = Mutex::new(Some(persisted));
+        let caller_inner = inner.clone();
+        let caller = tokio::spawn(async move {
+            refresh_with_writer(&caller_inner, "access-old", &context, move |_, token| {
+                persisted
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(token.to_owned())
+                    .unwrap();
+                Ok(())
+            })
+            .await
+        });
+        started.await.unwrap();
+        caller.abort();
+        release.send(()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), saved)
+                .await
+                .unwrap()
+                .unwrap(),
+            "refresh-new"
+        );
+        assert_eq!(
+            inner.session.lock().await.refresh_token.as_deref(),
+            Some("refresh-new")
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn late_refresh_failure_does_not_clear_newer_same_account_credentials() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inner = test_org_inner(&format!("http://{}", listener.local_addr().unwrap()));
+        let context = active_account_context(&inner).await.unwrap();
+        let (received, started) = tokio::sync::oneshot::channel();
+        let (release, proceed) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(answer_refresh(listener, received, proceed, 401));
+        let caller_inner = inner.clone();
+        let caller = tokio::spawn(async move {
+            refresh_with_writer(&caller_inner, "access-old", &context, |_, _| {
+                panic!("stale response must not write credentials")
+            })
+            .await
+        });
+        started.await.unwrap();
+        {
+            let mut session = inner.session.lock().await;
+            session.access_token = Some("access-new".into());
+            session.refresh_token = Some("refresh-new".into());
+        }
+        release.send(()).unwrap();
+        caller.await.unwrap().unwrap();
+        assert_eq!(
+            inner.session.lock().await.refresh_token.as_deref(),
+            Some("refresh-new")
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn slow_old_account_refresh_does_not_block_or_overwrite_new_account() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inner = test_org_inner(&format!("http://{}", listener.local_addr().unwrap()));
+        let context = active_account_context(&inner).await.unwrap();
+        let (received, started) = tokio::sync::oneshot::channel();
+        let (release, proceed) = tokio::sync::oneshot::channel();
+        let old_server = tokio::spawn(answer_refresh(listener, received, proceed, 200));
+        let old_inner = inner.clone();
+        let old_request = tokio::spawn(async move {
+            refresh_with_writer(&old_inner, "access-old", &context, |_, _| {
+                panic!("old account must not persist credentials")
+            })
+            .await
+        });
+        started.await.unwrap();
+        let next = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        {
+            let mut session = inner.session.lock().await;
+            invalidate_account_generation(&inner);
+            session.profile.as_mut().unwrap().server_url =
+                format!("http://{}", next.local_addr().unwrap());
+        }
+        let next_context = active_account_context(&inner).await.unwrap();
+        let (received, _) = tokio::sync::oneshot::channel();
+        let (continue_next, proceed_next) = tokio::sync::oneshot::channel();
+        let next_server = tokio::spawn(answer_refresh(next, received, proceed_next, 200));
+        continue_next.send(()).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            refresh_with_writer(&inner, "access-old", &next_context, |_, _| Ok(())),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        release.send(()).unwrap();
+        assert!(old_request.await.unwrap().is_err());
+        assert_eq!(
+            inner.session.lock().await.refresh_token.as_deref(),
+            Some("refresh-new")
+        );
+        old_server.await.unwrap();
+        next_server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn heartbeat_skips_signed_out_users_and_legacy_servers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inner = test_org_inner(&format!("http://{}", listener.local_addr().unwrap()));
+        inner.session.lock().await.bootstrap =
+            Some(json!({"policy":{},"clientReporting":{"version":2}}));
+        send_client_heartbeat(&inner).await.unwrap();
+        *inner.session.lock().await = OrgSession::default();
+        send_client_heartbeat(&inner).await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn personal_knowledge_uses_verified_cached_policy_without_network() {
+        let mut session = OrgSession::default();
+        assert!(local_knowledge_allowed_for_session(&session, 100));
+        session.profile = Some(OrgProfile::default());
+        session.refresh_token = Some("credential".into());
+        assert!(!local_knowledge_allowed_for_session(&session, 100));
+        session.bootstrap = Some(json!({"policy":{"expiresAt":200,"allowLocalKnowledge":true}}));
+        assert!(local_knowledge_allowed_for_session(&session, 100));
+        assert!(!local_knowledge_allowed_for_session(&session, 200));
+        session.bootstrap.as_mut().unwrap()["policy"]["allowLocalKnowledge"] = json!(false);
+        assert!(!local_knowledge_allowed_for_session(&session, 100));
+        session.refresh_token = None;
+        assert!(local_knowledge_allowed_for_session(&session, 100));
+    }
+
+    #[test]
+    fn personal_only_installation_has_no_managed_skill_artifacts() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(!has_managed_skill_artifacts_at(home.path()));
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[skills]\npaths = ['/personal/skill']\nserver_skill_dirs = ['/another/service']\n",
+        )
+        .unwrap();
+        assert!(!has_managed_skill_artifacts_at(home.path()));
+        std::fs::write(home.path().join(SKILL_STATE_FILE), "{}").unwrap();
+        assert!(has_managed_skill_artifacts_at(home.path()));
+    }
+
+    #[test]
+    fn receipts_require_live_local_inventory_and_runtime_model_acknowledgement() {
+        let context = AccountContext {
+            account_id: "account".into(),
+            generation: 0,
+        };
+        let mut local = SkillSyncState {
+            account_id: "account".into(),
+            revision: "r1".into(),
+            lease_until: 200,
+            ..Default::default()
+        };
+        local
+            .installed
+            .insert("shared".into(), installed("shared", "team", false));
+        let mut state = ClientReportingState {
+            context: Some(context.clone()),
+            model_revision: Some(7),
+            model_fingerprint: Some("model-a".into()),
+            skills: Some(skill_receipts_after_commit(
+                &SkillSyncState::default(),
+                &local,
+            )),
+            skills_complete: true,
+            skills_epoch: Some(0),
+            skills_revision: Some("r1".into()),
+        };
+        let mut payload = json!({});
+        append_client_receipts(
+            &mut payload,
+            &mut state,
+            &context,
+            ReportingEvidence {
+                model_fingerprint: Some("model-a".into()),
+                models_applied: false,
+                skills: Some(&local),
+                skill_epoch: 0,
+                now: 100,
+            },
+        );
+        assert!(payload.get("configRevision").is_none());
+        assert_eq!(payload["skills"][0]["state"], "installed");
+        let mut payload = json!({});
+        append_client_receipts(
+            &mut payload,
+            &mut state,
+            &context,
+            ReportingEvidence {
+                model_fingerprint: None,
+                models_applied: true,
+                skills: Some(&local),
+                skill_epoch: 1,
+                now: 201,
+            },
+        );
+        assert!(payload.get("configRevision").is_none());
+        assert_eq!(payload["skills"], json!([]));
+        assert_eq!(payload["skillsComplete"], false);
+        assert_eq!(state.model_revision, Some(7));
+    }
+
+    #[tokio::test]
+    async fn skill_failures_invalidate_full_success_and_obsolete_syncs_cannot_report() {
+        let inner = test_org_inner("http://127.0.0.1:1");
+        let context = active_account_context(&inner).await.unwrap();
+        record_skill_failure(&inner, &context, 0, "shared", "v2");
+        {
+            let state = inner.reporting.lock().unwrap();
+            assert_eq!(state.skills.as_ref().unwrap()[0]["state"], "failed");
+            assert!(!state.skills_complete);
+        }
+        invalidate_skill_sync(&inner);
+        record_skill_failure(&inner, &context, 0, "obsolete", "v1");
+        assert_eq!(
+            inner
+                .reporting
+                .lock()
+                .unwrap()
+                .skills
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
+        );
+        record_skills_cleared(&inner);
+        let state = inner.reporting.lock().unwrap();
+        assert_eq!(state.skills.as_ref().unwrap()[0]["state"], "removed");
+        assert!(state.skills_complete);
+    }
+
+    #[tokio::test]
+    async fn commit_failure_preserves_healthy_versions_and_reports_only_attempted_changes() {
+        let inner = test_org_inner("http://127.0.0.1:1");
+        let context = active_account_context(&inner).await.unwrap();
+        let mut base = SkillSyncState {
+            account_id: context.account_id.clone(),
+            lease_until: 200,
+            ..Default::default()
+        };
+        for id in ["updated", "healthy", "removed"] {
+            base.installed
+                .insert(id.into(), installed(id, "team", false));
+        }
+        {
+            let mut reporting = inner.reporting.lock().unwrap();
+            let state = reporting.for_context(&context);
+            state.skills = Some(skill_receipts_after_commit(
+                &SkillSyncState::default(),
+                &base,
+            ));
+            state.skills_complete = true;
+        }
+        let mut local = base.clone();
+        local.installed.get_mut("updated").unwrap().version_id = "v2".into();
+        local.installed.remove("removed");
+        local
+            .installed
+            .insert("private".into(), installed("private", "personal", false));
+        record_skill_commit_failure(&inner, &context, 0, &base, &local);
+        let reporting = inner.reporting.lock().unwrap();
+        let receipts = reporting.skills.as_ref().unwrap();
+        let receipt = |id: &str, version: &str| {
+            receipts
+                .iter()
+                .find(|item| item["skillId"] == id && item["versionId"] == version)
+                .unwrap()
+        };
+        assert_eq!(receipt("healthy", "v1")["state"], "installed");
+        assert_eq!(receipt("updated", "v1")["state"], "installed");
+        assert_eq!(receipt("updated", "v2")["state"], "failed");
+        assert!(receipt("removed", "v1")["error"]
+            .as_str()
+            .unwrap()
+            .contains("移除"));
+        assert!(!receipts.iter().any(|item| item["skillId"] == "private"));
+        let mut payload = json!({});
+        append_client_receipts(
+            &mut payload,
+            &reporting,
+            &context,
+            ReportingEvidence {
+                model_fingerprint: None,
+                models_applied: false,
+                skills: Some(&base),
+                skill_epoch: 0,
+                now: 100,
+            },
+        );
+        assert_eq!(payload["skillsComplete"], false);
+        assert!(payload["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["skillId"] == "healthy" && item["state"] == "installed"));
+        let expected_receipts = receipts.clone();
+        drop(reporting);
+        invalidate_skill_sync(&inner);
+        record_skill_commit_failure(&inner, &context, 0, &base, &local);
+        assert_eq!(
+            inner.reporting.lock().unwrap().skills.as_ref().unwrap(),
+            &expected_receipts
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_lease_renewal_does_not_invent_installation_failures() {
+        let inner = test_org_inner("http://127.0.0.1:1");
+        let context = active_account_context(&inner).await.unwrap();
+        let mut base = SkillSyncState::default();
+        base.installed
+            .insert("healthy".into(), installed("healthy", "org", false));
+        {
+            let mut reporting = inner.reporting.lock().unwrap();
+            let state = reporting.for_context(&context);
+            state.skills = Some(skill_receipts_after_commit(
+                &SkillSyncState::default(),
+                &base,
+            ));
+            state.skills_complete = true;
+        }
+        let mut renewal = base.clone();
+        renewal.lease_until = 300;
+        record_skill_commit_failure(&inner, &context, 0, &base, &renewal);
+        let state = inner.reporting.lock().unwrap();
+        assert!(!state.skills_complete);
+        assert_eq!(state.skills.as_ref().unwrap()[0]["state"], "installed");
+    }
+
+    fn seed_reporting_inventory(home: &Path, context: &AccountContext) -> SkillSyncState {
+        let skill_id = Uuid::now_v7().to_string();
+        let version_id = Uuid::now_v7().to_string();
+        let root = home.join("skills").join("organization");
+        let path = root.join(&skill_id).join(&version_id);
+        let package_path = root
+            .join(".packages")
+            .join(&skill_id)
+            .join(format!("{version_id}.zip"));
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::create_dir_all(package_path.parent().unwrap()).unwrap();
+        std::fs::write(path.join("SKILL.md"), "original").unwrap();
+        std::fs::write(&package_path, "cached package").unwrap();
+        let mut local = SkillSyncState {
+            account_id: context.account_id.clone(),
+            revision: Uuid::now_v7().to_string(),
+            lease_until: 200,
+            ..Default::default()
+        };
+        local.installed.insert(
+            skill_id.clone(),
+            InstalledSkill {
+                skill_id,
+                version_id,
+                name: "reporting-test".into(),
+                scope_kind: "org".into(),
+                path: path.to_string_lossy().into_owned(),
+                package_path: package_path.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        );
+        write_json_private(&home.join(SKILL_STATE_FILE), &local).unwrap();
+        let (paths, enforced) = runtime_skill_config_values(&local);
+        let mut config: toml::Value =
+            "[skills]\nserver_skill_dirs=[]\nserver_enforced_skill_names=[]\n"
+                .parse()
+                .unwrap();
+        config["skills"]["server_skill_dirs"] = toml::Value::Array(paths);
+        config["skills"]["server_enforced_skill_names"] = toml::Value::Array(enforced);
+        std::fs::write(home.join("config.toml"), toml::to_string(&config).unwrap()).unwrap();
+        local
+    }
+
+    #[tokio::test]
+    async fn heartbeat_reuses_file_evidence_without_holding_mutation_locks() {
+        let inner = test_org_inner("http://127.0.0.1:1");
+        let context = active_account_context(&inner).await.unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let local = seed_reporting_inventory(home.path(), &context);
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let verify = |_: &SkillSyncState| {
+            checks.fetch_add(1, Ordering::SeqCst);
+            assert!(inner.skill_state_transaction.try_lock().is_ok());
+            assert!(inner.reporting.try_lock().is_ok());
+            Ok(())
+        };
+        assert_eq!(
+            skill_reporting_snapshot_at(&inner, &context, home.path(), 100, verify).unwrap(),
+            local
+        );
+        skill_reporting_snapshot_at(&inner, &context, home.path(), 101, |_| {
+            panic!("unchanged packages must not be read again")
+        })
+        .unwrap();
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        let path = Path::new(&local.installed.values().next().unwrap().path).join("SKILL.md");
+        std::fs::write(&path, "modified content").unwrap();
+        assert!(
+            skill_reporting_snapshot_at(&inner, &context, home.path(), 102, |_| {
+                checks.fetch_add(1, Ordering::SeqCst);
+                Err("modified installed file".into())
+            })
+            .is_err()
+        );
+        assert!(
+            skill_reporting_snapshot_at(&inner, &context, home.path(), 103, |_| panic!(
+                "unchanged failure should be cached"
+            ))
+            .is_err()
+        );
+        assert_eq!(checks.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn slow_reporting_verification_is_bounded_and_cannot_overlap() {
+        let inner = test_org_inner("http://127.0.0.1:1");
+        let (release, wait) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        let result = run_skill_reporting_check(&inner, move || {
+            wait.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            Ok(SkillSyncState::default())
+        })
+        .await;
+        assert!(result.is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(run_skill_reporting_check(&inner, || panic!(
+            "a timed-out worker still owns the gate"
+        ))
+        .await
+        .is_none());
+        assert!(inner.skill_state_transaction.try_lock().is_ok());
+        release.send(()).unwrap();
+        let gate = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            inner.skill_reporting_gate.clone().lock_owned(),
+        )
+        .await
+        .unwrap();
+        drop(gate);
+        assert!(
+            run_skill_reporting_check(&inner, || Ok(SkillSyncState::default()))
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn heartbeat_rejects_changed_config_expired_lease_and_concurrent_invalidation() {
+        let inner = test_org_inner("http://127.0.0.1:1");
+        let context = active_account_context(&inner).await.unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let local = seed_reporting_inventory(home.path(), &context);
+        skill_reporting_snapshot_at(&inner, &context, home.path(), 100, |_| Ok(())).unwrap();
+        let config_path = home.path().join("config.toml");
+        let config = std::fs::read(&config_path).unwrap();
+        std::fs::write(&config_path, "[skills]\nserver_skill_dirs=[]\n").unwrap();
+        assert!(
+            skill_reporting_snapshot_at(&inner, &context, home.path(), 101, |_| panic!(
+                "config change does not require package IO"
+            ))
+            .is_err()
+        );
+        std::fs::write(&config_path, config).unwrap();
+        assert!(
+            skill_reporting_snapshot_at(&inner, &context, home.path(), 200, |_| panic!(
+                "expired inventory must not be verified"
+            ))
+            .is_err()
+        );
+        invalidate_skill_sync(&inner);
+        assert!(
+            skill_reporting_snapshot_at(&inner, &context, home.path(), 102, |_| {
+                invalidate_skill_sync(&inner);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(
+            skill_reporting_snapshot_at(&inner, &context, home.path(), 103, |_| {
+                let mut changed = local.clone();
+                changed.revision = Uuid::now_v7().to_string();
+                write_json_private(&home.path().join(SKILL_STATE_FILE), &changed).unwrap();
+                Ok(())
+            })
+            .is_err()
+        );
     }
 }

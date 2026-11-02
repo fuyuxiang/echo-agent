@@ -998,7 +998,7 @@ pub async fn memory_dream(
     session_id: String,
 ) -> Result<bool, String> {
     require_live_session(&state, &session_id)?;
-    crate::commands::require_runtime_ready(Some(&app), &state, None)?;
+    crate::commands::ensure_runtime_ready(&app, &state, None).await?;
     let tx = state
         .tx
         .lock()

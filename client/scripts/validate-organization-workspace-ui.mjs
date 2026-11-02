@@ -93,7 +93,7 @@ try {
   await page.getByRole('button',{name:'提交经验',exact:true}).click();
   await form.waitFor();
   assert.equal(await form.getByRole('textbox',{name:'经验内容',exact:true}).inputValue(),'发布前检查回滚脚本');
-  await form.getByRole('button',{name:'提交审核',exact:true}).click();
+  await form.getByRole('button',{name:'提交',exact:true}).click();
   await form.waitFor({state:'hidden'});
   console.log('interaction: install');
   await page.locator('.org-memory__nav button').filter({hasText:'Skills'}).click();
@@ -127,7 +127,7 @@ try {
     activePage=modalPage;
     modalPage.setDefaultTimeout(15000);
     modalPage.setDefaultNavigationTimeout(45000);
-    await modalPage.goto(`${base}&orgState=many&collapsed=1`);
+    await modalPage.goto(`${base}&orgState=many&orgPending=1&collapsed=1`);
     await modalPage.getByLabel('组织知识概况').waitFor();
     await modalPage.addStyleTag({content:'html{font-size:22px!important}'});
     await modalPage.locator('.org-memory__nav button').filter({hasText:'经验'}).click();
@@ -135,7 +135,7 @@ try {
     const form=modalPage.getByRole('dialog',{name:'提交经验',exact:true});
     const box=await form.locator('.org-editor-dialog').boundingBox();
     assert(box.x>=0&&box.y>=0&&box.x+box.width<=width+1&&box.y+box.height<=height+1,`${width}: memory editor exceeds viewport`);
-    assert(await form.getByRole('button',{name:'提交审核',exact:true}).isVisible());
+    assert(await form.getByRole('button',{name:'提交',exact:true}).isVisible());
     await modalPage.screenshot({path:join(output,`memory-editor-${width}.png`)});
     await modalPage.keyboard.press('Escape');
     await form.waitFor({state:'hidden'});
@@ -145,6 +145,20 @@ try {
     const skillBox=await skillDialog.locator('.org-document-modal__confirm').boundingBox();
     assert(skillBox.x>=0&&skillBox.y>=0&&skillBox.x+skillBox.width<=width+1&&skillBox.y+skillBox.height<=height+1,`${width}: skill scope dialog exceeds viewport`);
     await modalPage.screenshot({path:join(output,`skill-dialog-${width}.png`)});
+    await modalPage.keyboard.press('Escape');
+    for (const label of ['文档', 'Skills']) {
+      await modalPage.locator('.org-memory__nav button').filter({hasText:label}).click();
+      await modalPage.getByRole('button',{name:'我的提交',exact:true}).click();
+      await modalPage.getByText('检查通过，待组织处理',{exact:true}).waitFor();
+      assert.equal(await modalPage.getByRole('note').count(),1,'pending publication guidance should appear once');
+      assert(await modalPage.getByRole('note').innerText().then(text=>text.includes('请联系组织管理员')));
+      assert.equal(await modalPage.getByText('安全检查与发布中',{exact:true}).count(),0);
+      assert(await modalPage.locator('.org-workspace').evaluate(root=>root.scrollWidth<=root.clientWidth+2),`${width} ${label}: pending states overflow`);
+      await modalPage.getByText('检查通过，待组织处理',{exact:true}).scrollIntoViewIfNeeded();
+      const stateBox=await modalPage.getByText('检查通过，待组织处理',{exact:true}).boundingBox();
+      assert(stateBox.y>=0&&stateBox.y+stateBox.height<=height,`${width} ${label}: pending state is not readable`);
+      await modalPage.screenshot({path:join(output,`pending-${label==='Skills'?'skills':'documents'}-${width}.png`)});
+    }
     await modalPage.close();
   }
   assert.deepEqual(errors,[]);

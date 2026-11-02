@@ -237,6 +237,22 @@ impl AppState {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    pub(crate) fn model_config_is_current(&self) -> bool {
+        let revision = crate::providers::model_config_revision();
+        let sender = self.tx.lock().unwrap();
+        let runtime = self.runtime_models.lock().unwrap();
+        runtime.initialized
+            && runtime.last_error.is_none()
+            && runtime.auth_method_id.is_some()
+            && runtime.revision.as_deref() == Some(revision.as_str())
+            && sender.as_ref().is_some_and(|sender| {
+                runtime
+                    .sender
+                    .as_ref()
+                    .is_some_and(|snapshot| sender.same_channel(snapshot))
+            })
+    }
+
     pub(crate) fn mark_runtime_models_initializing_if_current(
         &self,
         sender: &echo_agent_acp::AcpAgentTx,
@@ -469,10 +485,35 @@ fn auth_status(state: &AppState) -> AuthStatus {
 
 fn auth_status_with_runtime_reload(app: &tauri::AppHandle, state: &AppState) -> AuthStatus {
     let status = auth_status(state);
-    if state.take_runtime_model_reload_pending() {
+    if state.take_runtime_model_reload_pending()
+        || (!status.synchronized && state.runtime_models.lock().unwrap().initialized)
+    {
         crate::org::notify_models_changed(app, "lease-expired-readiness-check");
     }
     status
+}
+
+/// Reconcile local model changes before rejecting an otherwise usable task.
+/// This never contacts the organization service: personal models can recover
+/// after organization revocation using only the local Runtime catalog.
+pub(crate) async fn ensure_runtime_ready(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    requested_model: Option<&str>,
+) -> Result<(), String> {
+    let status = auth_status(state);
+    if validate_runtime_ready(&status, requested_model).is_ok() {
+        return Ok(());
+    }
+    let tx = state.tx.lock().unwrap().clone();
+    let can_reconcile = state.init_outcome.lock().unwrap().is_some()
+        || state.runtime_models.lock().unwrap().initialized;
+    if !status.synchronized && can_reconcile {
+        if let Some(tx) = tx {
+            reconcile_models_and_sync(app, state, &tx).await?;
+        }
+    }
+    require_runtime_ready(Some(app), state, requested_model)
 }
 
 /// Resolve Auto to a live configured model. An explicit user preference wins;
@@ -731,7 +772,39 @@ pub(crate) async fn reload_models_and_sync(
     state: &AppState,
     tx: &echo_agent_acp::AcpAgentTx,
 ) -> Result<(), String> {
+    sync_runtime_models(Some(app), state, tx, ModelReloadMode::Always).await
+}
+
+/// Background reconciliation can coalesce identical local updates. Explicit
+/// refreshes always reach the Runtime, which also loads managed/requirements
+/// layers that are not represented by the desktop's user-config fingerprint.
+pub(crate) async fn reconcile_models_and_sync(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    tx: &echo_agent_acp::AcpAgentTx,
+) -> Result<(), String> {
+    sync_runtime_models(Some(app), state, tx, ModelReloadMode::IfChanged).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModelReloadMode {
+    Always,
+    IfChanged,
+}
+
+async fn sync_runtime_models(
+    app: Option<&tauri::AppHandle>,
+    state: &AppState,
+    tx: &echo_agent_acp::AcpAgentTx,
+    mode: ModelReloadMode,
+) -> Result<(), String> {
     let _reload_guard = state.model_reload_lock.lock().await;
+    if mode == ModelReloadMode::IfChanged
+        && state.is_runtime_current(tx)
+        && state.model_config_is_current()
+    {
+        return Ok(());
+    }
     if !state.mark_runtime_models_initializing_if_current(tx) {
         return Err("Agent Runtime 已在模型刷新期间重启，请重试。".into());
     }
@@ -810,10 +883,12 @@ pub(crate) async fn reload_models_and_sync(
                                             "Agent Runtime 已在模型刷新期间重启，请重试。".into()
                                         );
                                     }
-                                    let _ = app.emit(
-                                        "agent://models-update",
-                                        serde_json::json!({ "source": "runtime-ready" }),
-                                    );
+                                    if let Some(app) = app {
+                                        let _ = app.emit(
+                                            "agent://models-update",
+                                            serde_json::json!({ "source": "runtime-ready" }),
+                                        );
+                                    }
                                     return Ok(());
                                 }
                                 Ok(Err(error)) => {
@@ -1311,7 +1386,7 @@ pub async fn agent_new_session(
         .await;
     let permission_mode =
         crate::permission_config::resolve_new_session_permission_mode(permission_mode.as_deref())?;
-    require_runtime_ready(Some(&app), &state, model_id.as_deref())?;
+    ensure_runtime_ready(&app, &state, model_id.as_deref()).await?;
     let tx = state
         .tx
         .lock()
@@ -1744,7 +1819,7 @@ pub async fn agent_send(
     {
         return Err("消息 ID 无效或过长".into());
     }
-    require_runtime_ready(Some(&app), &state, None)?;
+    ensure_runtime_ready(&app, &state, None).await?;
     state.session_workspace(&session_id)?;
     let workspace = trusted_existing_session_cwd(
         &state,
@@ -2313,7 +2388,7 @@ pub async fn agent_set_model(
     crate::automations::require_session_cleanup_complete(&session_id)?;
     state.session_workspace(&session_id)?;
     crate::policy::require_model(&model_id)?;
-    require_runtime_ready(Some(&app), &state, Some(&model_id))?;
+    ensure_runtime_ready(&app, &state, Some(&model_id)).await?;
     let tx = state
         .tx
         .lock()
@@ -3474,6 +3549,76 @@ mod tests {
         assert!(!state.runtime_models.lock().unwrap().initialized);
         assert!(state.take_runtime_model_reload_pending());
         assert!(!state.take_runtime_model_reload_pending());
+    }
+
+    #[tokio::test]
+    async fn explicit_model_refresh_reloads_even_when_user_config_is_unchanged() {
+        let state = std::sync::Arc::new(AppState::default());
+        let (client, mut agent) = echo_agent_acp::acp_channels();
+        *state.tx.lock().unwrap() = Some(client.tx.clone());
+        state.mark_runtime_models_synced(
+            &client.tx,
+            crate::providers::model_config_revision(),
+            vec!["old-managed-model".into()],
+            "echoagent.api_key".into(),
+        );
+        sync_runtime_models(None, &state, &client.tx, ModelReloadMode::IfChanged)
+            .await
+            .unwrap();
+        assert!(
+            agent.rx.try_recv().is_err(),
+            "background reconciliation should coalesce"
+        );
+
+        // A managed/requirements layer may have changed while config.toml did
+        // not. The explicit request must obtain a fresh catalog and auth ACK.
+        let refresh_state = state.clone();
+        let tx = client.tx.clone();
+        let refresh = tokio::spawn(async move {
+            sync_runtime_models(None, &refresh_state, &tx, ModelReloadMode::Always).await
+        });
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), agent.rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let echo_agent_acp::AcpAgentMessage::ExtMethod(arguments) = message else {
+            panic!("expected model reload");
+        };
+        assert_eq!(
+            arguments.request.method.as_ref(),
+            "echo.agent/internal/reload_models"
+        );
+        assert!(!refresh.is_finished());
+        arguments.response_tx.send(Ok(agent_client_protocol::ExtResponse::new(crate::ext::raw_params(
+            &serde_json::json!({"models":1,"authMethodId":"echoagent.api_key","authReady":true}),
+        )))).unwrap();
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), agent.rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let echo_agent_acp::AcpAgentMessage::ExtMethod(arguments) = message else {
+            panic!("expected fresh catalog");
+        };
+        assert_eq!(arguments.request.method.as_ref(), "echo.agent/models/list");
+        let catalog = agent_client_protocol::SessionModelState::new(
+            "new-managed-model",
+            vec![agent_client_protocol::ModelInfo::new(
+                "new-managed-model",
+                "Updated managed model",
+            )],
+        );
+        arguments
+            .response_tx
+            .send(Ok(agent_client_protocol::ExtResponse::new(
+                crate::ext::raw_params(&serde_json::json!({"result":catalog})),
+            )))
+            .unwrap();
+        refresh.await.unwrap().unwrap();
+        assert_eq!(
+            state.runtime_models.lock().unwrap().model_ids,
+            vec!["new-managed-model"]
+        );
+        assert!(state.model_config_is_current());
     }
 
     /// A retired runtime's thread exit must not report the replacement as dead.

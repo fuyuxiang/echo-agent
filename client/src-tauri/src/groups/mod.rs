@@ -109,7 +109,7 @@ pub struct CreateInput {
 }
 
 #[tauri::command]
-pub fn group_create(
+pub async fn group_create(
     app: tauri::AppHandle,
     state: State<'_, crate::commands::AppState>,
     input: CreateInput,
@@ -150,7 +150,7 @@ pub fn group_create(
     )? {
         return Ok(existing);
     }
-    crate::commands::require_runtime_ready(Some(&app), &state, Some(&input.model_id))?;
+    crate::commands::ensure_runtime_ready(&app, &state, Some(&input.model_id)).await?;
     crate::policy::require_model(&input.model_id)?;
     let definitions = crate::agents_store::team_agents()?;
     let name = text(&input.name, 80, "专家团名称")?;
@@ -209,7 +209,7 @@ pub fn group_create(
                 echo_agent_core::config::ModelOverride::Override(model) => model.clone(),
                 _ => input.model_id.clone(),
             });
-        crate::commands::require_runtime_ready(Some(&app), &state, Some(&effective_model))?;
+        crate::commands::ensure_runtime_ready(&app, &state, Some(&effective_model)).await?;
         crate::policy::require_model(&effective_model)?;
         parsed.permission_mode = Default::default();
         parsed.memory = None;
@@ -715,7 +715,7 @@ pub async fn group_send(
     mut input: SendInput,
 ) -> Result<(), String> {
     if !is_stop_request(&input) {
-        crate::commands::require_runtime_ready(Some(&app), &state, None)?;
+        crate::commands::ensure_runtime_ready(&app, &state, None).await?;
     }
     let _dispatch = tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -1160,7 +1160,7 @@ pub async fn group_settings(
         })
         .transpose()?;
     for m in &input.members {
-        crate::commands::require_runtime_ready(Some(&app), &state, Some(&m.model_id))?;
+        crate::commands::ensure_runtime_ready(&app, &state, Some(&m.model_id)).await?;
         crate::policy::require_model(&m.model_id)?;
     }
     db()?.update(&group_id, |g| {
