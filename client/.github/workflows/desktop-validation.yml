@@ -74,6 +74,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          # Keep compiled dependencies when a later installer/desktop check fails.
+          cache-on-failure: 'true'
       - name: Enable Windows long paths for IDE validation
         if: runner.os == 'Windows'
         shell: pwsh
@@ -82,9 +84,43 @@ jobs:
       - run: pnpm test
       - name: Package macOS validation build
         if: runner.os == 'macOS'
-        run: bash scripts/build.sh --allow-unsigned-platform
+        run: |
+          diagnostics="$RUNNER_TEMP/echo-macos-packaging-diagnostics"
+          mkdir -p "$diagnostics"
+          {
+            sw_vers
+            uname -m
+            printf 'CI=%s\nTAURI_BUNDLER_DMG_IGNORE_CI=%s\n' "${CI:-}" "${TAURI_BUNDLER_DMG_IGNORE_CI:-}"
+            df -h . "$RUNNER_TEMP"
+            hdiutil info
+          } > "$diagnostics/environment-before.log" 2>&1 || true
+          set +e
+          bash scripts/build.sh --allow-unsigned-platform 2>&1 | tee "$diagnostics/build.log"
+          build_status=("${PIPESTATUS[@]}")
+          set -e
+          build_exit="${build_status[0]}"
+          if [[ "$build_exit" -eq 0 && "${build_status[1]}" -ne 0 ]]; then
+            build_exit="${build_status[1]}"
+          fi
+          {
+            df -h . "$RUNNER_TEMP"
+            du -sh src-tauri/target/release/bundle src-tauri/resources/theia
+            hdiutil info
+          } > "$diagnostics/environment-after.log" 2>&1 || true
+          bundle_script="src-tauri/target/release/bundle/dmg/bundle_dmg.sh"
+          if [[ -f "$bundle_script" ]]; then
+            cp "$bundle_script" "$diagnostics/bundle_dmg.sh"
+          fi
+          exit "$build_exit"
         env:
           PUPPETEER_SKIP_DOWNLOAD: '1'
+      - name: Preserve macOS packaging diagnostics
+        if: ${{ always() && runner.os == 'macOS' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-packaging-diagnostics-${{ matrix.arch }}
+          path: ${{ runner.temp }}/echo-macos-packaging-diagnostics
+          if-no-files-found: ignore
       - name: Package Windows validation build
         if: runner.os == 'Windows'
         shell: powershell

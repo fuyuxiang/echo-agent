@@ -193,3 +193,92 @@ describe("Windows installer version gate", () => {
     expect(() => readPeVersion(bytes.subarray(0, 0x280))).toThrow(/truncated|outside/);
   });
 });
+
+function macosPackagingProject() {
+  const root = path.join(temporaryDirectory(), "checkout with spaces");
+  const bin = path.join(root, "bin");
+  const scripts = path.join(root, "scripts");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(scripts);
+  fs.mkdirSync(path.join(root, "runner-temp"));
+  fs.copyFileSync(new URL("./build.sh", import.meta.url), path.join(scripts, "build.sh"));
+  fs.symlinkSync(process.execPath, path.join(bin, "node"));
+  for (const name of ["verify-vendored-runtime.mjs", "validate-theia-git-runtime.mjs"]) {
+    fs.writeFileSync(path.join(scripts, name), "");
+  }
+  fs.writeFileSync(path.join(scripts, "release-version.mjs"), 'console.log("1.2.3");');
+  const command = (name, body) => fs.writeFileSync(path.join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+  const arch = process.arch === "arm64" ? "arm64" : "x86_64";
+  const rustHost = arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
+  command("uname", `case "$1" in -s) echo Darwin;; -m) echo ${arch};; esac`);
+  command("sysctl", "exit 1");
+  command("cargo", "echo 'cargo 1.0.0'");
+  command("rustc", `if [[ "$1" == '-vV' ]]; then echo 'host: ${rustHost}'; else echo 'rustc 1.0.0'; fi`);
+  command("protoc", "exit 0");
+  command("sw_vers", "echo 'macOS test fixture'");
+  command("hdiutil", "echo 'test disk image state'");
+  command("pnpm", `
+printf '%s\\n' "$*" >> "$ECHO_TEST_PACKAGE_COMMANDS"
+case "$*" in
+  'tauri build --no-bundle') exit "$ECHO_TEST_COMPILE_EXIT";;
+  'tauri bundle --bundles dmg --verbose')
+    echo 'hdiutil: test packaging diagnostic' >&2
+    exit "$ECHO_TEST_BUNDLE_EXIT";;
+  '--version') echo '10.0.0';;
+esac`);
+  const env = {
+    ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    ECHO_TEST_COMPILE_EXIT: "0", ECHO_TEST_BUNDLE_EXIT: "0",
+    ECHO_TEST_PACKAGE_COMMANDS: path.join(root, "commands.log"),
+    RUNNER_TEMP: path.join(root, "runner-temp"),
+  };
+  const run = (args, extraEnv = {}) => spawnSync("bash", args, {
+    cwd: root, env: { ...env, ...extraEnv }, encoding: "utf8", timeout: 10_000,
+  });
+  return { root, bin, scripts, run, commands: () => fs.readFileSync(env.ECHO_TEST_PACKAGE_COMMANDS, "utf8").trim().split("\n").filter(line => line.startsWith("tauri ")) };
+}
+
+describe.skipIf(process.platform === "win32")("macOS packaging failure diagnostics", () => {
+  it("preserves compilation failure and never attempts to package an older binary", () => {
+    const project = macosPackagingProject();
+    const result = project.run(["scripts/build.sh"], { ECHO_TEST_COMPILE_EXIT: "41" });
+    expect(result.status, result.stdout + result.stderr).toBe(41);
+    expect(project.commands()).toEqual(["tauri build --no-bundle"]);
+  });
+
+  it("preserves a DMG failure, exposes its diagnostic and compiles only once", () => {
+    const project = macosPackagingProject();
+    const result = project.run(["scripts/build.sh"], { ECHO_TEST_BUNDLE_EXIT: "64" });
+    expect(result.status, result.stdout + result.stderr).toBe(64);
+    expect(project.commands()).toEqual(["tauri build --no-bundle", "tauri bundle --bundles dmg --verbose"]);
+    expect(result.stderr).toContain("hdiutil: test packaging diagnostic");
+    expect(result.stdout).toContain("without recompiling");
+  });
+
+  it("still rejects a successful bundler that did not produce the expected installer", () => {
+    const project = macosPackagingProject();
+    const result = project.run(["scripts/build.sh"]);
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout).toContain("Expected Tauri DMG not found");
+  });
+
+  it.each([
+    { buildExit: 64, logExit: 0 }, { buildExit: 0, logExit: 0 },
+    { buildExit: 0, logExit: 23 }, { buildExit: 64, logExit: 23 },
+  ])("preserves build=$buildExit and log=$logExit failures while saving diagnostics", ({ buildExit, logExit }) => {
+    const project = macosPackagingProject();
+    fs.writeFileSync(path.join(project.scripts, "build.sh"), `echo 'internal DMG error' >&2\nexit ${buildExit}\n`);
+    if (logExit) {
+      fs.writeFileSync(path.join(project.bin, "tee"), `#!/bin/bash\ncat > "$1"\nexit ${logExit}\n`, { mode: 0o755 });
+    }
+    const workflow = fs.readFileSync(new URL("../.github/workflows/desktop-validation.yml", import.meta.url), "utf8");
+    const runBlock = workflow.match(/- name: Package macOS validation build\n[\s\S]*?        run: \|\n([\s\S]*?)        env:/)?.[1];
+    expect(runBlock).toBeTruthy();
+    const result = project.run(["-e", "-o", "pipefail", "-c", runBlock.replace(/^          /gm, "")]);
+    expect(result.status, result.stdout + result.stderr).toBe(buildExit || logExit);
+    const diagnostics = path.join(project.root, "runner-temp", "echo-macos-packaging-diagnostics");
+    expect(fs.readFileSync(path.join(diagnostics, "build.log"), "utf8")).toContain("internal DMG error");
+    expect(fs.readFileSync(path.join(diagnostics, "environment-before.log"), "utf8")).toContain("test disk image state");
+    expect(fs.readFileSync(path.join(diagnostics, "environment-after.log"), "utf8")).toContain("test disk image state");
+  });
+});

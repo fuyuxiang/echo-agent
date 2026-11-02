@@ -156,12 +156,22 @@ node scripts/validate-theia-git-runtime.mjs
 log_ok "Vendored Theia IDE and Node runtime staged"
 
 # ---------------------------------------------------------------------------
-# 5. Build the platform installer. The override disables updater signing here;
-#    the controlled release machine creates and signs canonical updater files.
+# 5. Build the application, then package it separately. Tauri only exposes
+#    bundle_dmg.sh output at verbose level; keep that enabled for packaging
+#    without flooding the compilation log with every rustc invocation.
+#    The controlled release machine creates and signs updater files later.
 # ---------------------------------------------------------------------------
-log_step "Building .dmg (pnpm tauri build --bundles dmg)"
+log_step "Building application (pnpm tauri build --no-bundle)"
 BUILD_RC=0
-pnpm tauri build --bundles dmg || BUILD_RC=$?
+pnpm tauri build --no-bundle || BUILD_RC=$?
+if [[ $BUILD_RC -eq 0 ]]; then
+    log_step "Building .dmg (pnpm tauri bundle --bundles dmg --verbose)"
+    pnpm tauri bundle --bundles dmg --verbose || BUILD_RC=$?
+    if [[ $BUILD_RC -ne 0 ]]; then
+        log_err "Application compilation succeeded, but installer packaging failed."
+        log_info "To diagnose or retry packaging in this workspace without recompiling: pnpm tauri bundle --bundles dmg --verbose"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # 6. Verify the app and give the installer one canonical public name.
