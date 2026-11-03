@@ -19,3 +19,7 @@
 @import "./permissions.css";
 @import "./toast.css";
 @import "./task-details.css";
+
+@import "./document-workbench.css";
+@import "./attachment-preview.css";
+@import "./meeting-workbench.css";

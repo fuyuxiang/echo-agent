@@ -1,11 +1,8 @@
-import { modelChoiceLabel } from "@/lib/model-presentation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CircleStop,
-  Clock3,
   Copy,
   Download,
-  FileAudio,
   FileText,
   Headphones,
   Loader2,
@@ -13,14 +10,18 @@ import {
   MonitorPlay,
   Pause,
   Play,
-  RefreshCw,
   Sparkles,
   Trash2,
-  Upload,
+  PanelLeft,
+  Plus,
+  MoreHorizontal,
+  Search,
+  Pencil,
+  ArrowDown,
 } from "lucide-react";
 import { copyShareText } from "@/lib/share";
 import { meetingDrafts, type MeetingDraftConflict } from "@/lib/meeting-drafts";
-import { filesystemPickFiles } from "@/lib/agent-client";
+import { meetingTranscriptionIssue } from '@/lib/meeting-transcription-error';
 import {
   formatMeetingDuration,
   meetingCaptureSupport,
@@ -28,20 +29,21 @@ import {
   isMiniMaxMeetingModel,
   meetingExport,
   meetingGet,
-  meetingImportAudio,
   meetingJobActive,
   meetingList,
-  meetingOpenAudio,
   meetingProcess,
   meetingRecorder,
   meetingRegenerateMinutes,
   meetingUpdate,
+  meetingRestoreMinutes,
   type MeetingRecord,
   type RecordingSource,
   type CaptureSupport,
   type TranscriptSegment,
 } from "@/lib/meeting-minutes";
-import { useMeetingTranscriptionCapability } from "@/lib/use-meeting-transcription-capability";
+import { PageToolbar } from "./PageToolbar";
+import { MeetingAudioPlayer, type MeetingSeek, type MeetingPlayerHandle } from "./MeetingAudioPlayer";
+import { MeetingTranscriptPassage } from "./MeetingTranscriptPassage";
 import type { ModelOption } from "./ModelSelector";
 import { Markdown } from "./markdown/Markdown";
 
@@ -52,7 +54,7 @@ interface MeetingMinutesPanelProps {
   onOpenModelSettings?: () => void;
 }
 
-type DetailTab = "minutes" | "transcript" | "audio";
+type DetailTab = "minutes" | "transcript";
 
 const STATUS_LABELS: Record<string, string> = {
   recording: "录音中",
@@ -75,11 +77,7 @@ const SOURCE_LABELS: Record<RecordingSource, string> = {
   system: "系统声音",
   both: "麦克风 + 系统声音",
 };
-const SOURCE_SHORT_LABELS: Record<RecordingSource, string> = {
-  microphone: "麦克风",
-  system: "系统音",
-  both: "混合录音",
-};
+
 
 function errorText(error: unknown): string {
   return String(error).replace(/^Error:\s*/, "");
@@ -100,7 +98,7 @@ export function MeetingMinutesPanel({
   onToast,
   onOpenModelSettings,
 }: MeetingMinutesPanelProps) {
-  const [chosenModelId, setChosenModelId] = useState<string | null>(null);
+  const tabPrefix = useId().replace(/:/g, "");
   const [selected, setSelected] = useState<MeetingRecord | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const meetingModels = models.filter((model) => model.providerId
@@ -108,12 +106,9 @@ export function MeetingMinutesPanel({
     && model.providerId !== "echoagent-ojlab"
     && !model.id.startsWith("echoagent-ojlab/")
     && isMiniMaxMeetingModel(model));
-  const selectedModel = meetingModels.find((model) => model.id === chosenModelId)
-    ?? (!showCreate ? meetingModels.find((model) => model.id === selected?.modelId && model.providerId === selected.providerId) : undefined)
+  const selectedModel = (!showCreate ? meetingModels.find((model) => model.id === selected?.modelId && model.providerId === selected.providerId) : undefined)
     ?? meetingModels.find((model) => model.id === modelId)
     ?? meetingModels[0];
-  const connection = useMeetingTranscriptionCapability(selectedModel, models);
-  const capable = connection.available;
   const [records, setRecords] = useState<MeetingRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
@@ -128,13 +123,28 @@ export function MeetingMinutesPanel({
   const [tab, setTab] = useState<DetailTab>("minutes");
   const [busy, setBusy] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [connectionError,setConnectionError]=useState('');
   const [, setDraftRevision] = useState(0);
   const [draftTranscript, setDraftTranscript] = useState<TranscriptSegment[]>([]);
   const [recorder, setRecorder] = useState(meetingRecorder.current());
   const [activeJobs, setActiveJobs] = useState<Record<string, boolean | undefined>>({});
-  const [recordingSource, setRecordingSource] = useState<RecordingSource>("microphone");
+  const [recordingSource, setRecordingSource] = useState<RecordingSource>(() => { try { const stored = localStorage.getItem("echo.meeting.recording-source"); if (stored === "system" || stored === "both") return stored; } catch { /* use microphone */ } return "microphone"; });
   const [captureSupport, setCaptureSupport] = useState<CaptureSupport | null>(null);
   const [captureError, setCaptureError] = useState<string | null>(null);
+  const [libraryOpen, setLibraryOpen] = useState(true);
+  const [listQuery, setListQuery] = useState("");
+  const [query, setQuery] = useState("");
+  const [editingTranscript, setEditingTranscript] = useState(false);
+  const [seekRequest, setSeekRequest] = useState<MeetingSeek>();
+  const playerControl = useRef<MeetingPlayerHandle | null>(null);
+  const seekSequence = useRef(0);
+  const [playPosition, setPlayPosition] = useState(-1);
+  const [follow, setFollow] = useState(true);
+  const [menu, setMenu] = useState<"export" | "more" | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const workbenchRef = useRef<HTMLDivElement>(null);
+  const rowRefs = useRef(new Map<number, HTMLDivElement>());
+  const tabTouched = useRef(false);
 
   const applyRecord = useCallback((record: MeetingRecord) => {
     const transcript = meetingDrafts.transcript(record);
@@ -150,7 +160,7 @@ export function MeetingMinutesPanel({
   }, []);
 
   useEffect(() => {
-    void meetingCaptureSupport().then(setCaptureSupport).catch(() => setCaptureSupport({ systemAudio: false, detail: "无法检测系统声音采集能力" }));
+    void meetingCaptureSupport().then(support => { setCaptureSupport(support); if (!support.systemAudio) setRecordingSource("microphone"); }).catch(() => { setCaptureSupport({ systemAudio: false, detail: "无法检测系统声音采集能力" }); setRecordingSource("microphone"); });
     void meetingRecorder.syncNative().catch(() => undefined);
   }, []);
 
@@ -178,6 +188,7 @@ export function MeetingMinutesPanel({
       if (target) {
         const record = next.find((item) => item.id === target) ?? await meetingGet(target);
         if (expectedSelectedId !== undefined && selectedIdRef.current !== expectedSelectedId) return;
+        if (!selectedIdRef.current) setTab(record.minutes ? "minutes" : "transcript");
         selectedIdRef.current = record.id;
         setSelectedId(record.id);
         applyRecord(record);
@@ -207,6 +218,7 @@ export function MeetingMinutesPanel({
         selectedIdRef.current = snapshot.meeting.id;
         setSelectedId(snapshot.meeting.id);
         applyRecord(snapshot.meeting);
+        if (!snapshot.active && snapshot.meeting.minutes && !tabTouched.current) setTab("minutes");
       }
       void refreshJobState(snapshot.meeting);
       setRecords((current) => {
@@ -217,78 +229,63 @@ export function MeetingMinutesPanel({
   }), [applyRecord, refreshJobState]);
 
   useEffect(() => {
-    const processing = selected && NATIVE_JOB_STATUSES.includes(selected.status);
+    const processing = selected && (NATIVE_JOB_STATUSES.includes(selected.status) || recorder.processingIds?.includes(selected.id));
     const selectedJobActive = selected ? activeJobs[selected.id] : false;
-    if ((!processing || selectedJobActive === false) && !busy?.startsWith("process:")) return;
+    if ((!processing || selectedJobActive === false && !recorder.processingIds?.includes(selected?.id ?? "")) && !busy?.startsWith("process:")) return;
     const timer = window.setInterval(() => {
       if (!selectedId) return;
       void meetingGet(selectedId).then((record) => {
         if (selectedIdRef.current !== record.id) return;
         applyRecord(record);
+        if (record.minutes && !tabTouched.current && !editingMinutes && !editingTranscript) setTab("minutes");
         setRecords((current) => current.map((item) => item.id === record.id ? record : item));
         void refreshJobState(record);
       }).catch(() => {});
     }, 1_500);
     return () => window.clearInterval(timer);
-  }, [activeJobs, applyRecord, busy, refreshJobState, selected, selectedId]);
+  }, [activeJobs[selectedId ?? ""], applyRecord, busy, refreshJobState, selected?.id, selected?.status, selectedId, recorder.processingIds, editingMinutes, editingTranscript]);
 
   const chooseRecord = async (record: MeetingRecord) => {
-    setChosenModelId(null);
     setShowCreate(false);
     setEditingMinutes(false);
+    setEditingTranscript(false); setMenu(null); setQuery(""); setPlayPosition(-1); setSeekRequest(undefined); tabTouched.current = false;
     selectedIdRef.current = record.id;
     setSelectedId(record.id);
     applyRecord(record);
     void refreshJobState(record);
-    setTab(record.minutes ? "minutes" : record.transcript.length > 0 ? "transcript" : "audio");
+    setTab(record.minutes ? "minutes" : "transcript");
   };
 
-  const requireProvider = (requireSpeech = true) => {
-    if (selectedModel?.providerId && (!requireSpeech || capable)) {
+  const requireProvider = () => {
+    if (selectedModel?.providerId) {
       return { modelId: selectedModel.id, providerId: selectedModel.providerId };
     }
-    onToast?.(selectedModel ? connection.error ?? "正在检测转写接口，请稍后重试" : "请先配置 MiniMax 模型");
-    if (!selectedModel) onOpenModelSettings?.();
+    setConnectionError('尚未配置可用的录音转写连接。请在模型设置中配置支持转写的 MiniMax 连接，再重试；本机录音和原文会保留。');
+    onToast?.('请先配置可用的录音转写连接，本机录音已保留');
     return null;
   };
 
+  useEffect(()=>{if(selectedModel?.providerId)setConnectionError('');},[selectedModel?.id,selectedModel?.providerId]);
+  const retryTranscription=async()=>{
+    const binding=requireProvider();if(!binding)return;
+    setBusy('retry-transcription');
+    try{await meetingRecorder.retryTranscription(binding);setConnectionError('');}
+    catch(error){setConnectionError(errorText(error));onToast?.(`重试转写失败：${errorText(error)}`);}
+    finally{setBusy(null);}
+  };
+
   const startRecording = async () => {
-    const provider = requireProvider();
-    if (!provider) return;
     setBusy("start");
     setCaptureError(null);
     try {
-      const record = await meetingRecorder.start(title, provider.modelId, provider.providerId, recordingSource);
+      const record = await meetingRecorder.start(title, selectedModel?.id ?? "", selectedModel?.providerId ?? "", recordingSource);
       await refreshList(record.id);
-      setTab("audio");
+      setTab("transcript"); setShowCreate(false); setLibraryOpen(false); setFollow(true); tabTouched.current = false;
+      try { localStorage.setItem("echo.meeting.recording-source", recordingSource); } catch { /* recording remains usable in private storage */ }
     } catch (error) {
       await refreshList(null);
       setCaptureError(errorText(error));
       onToast?.(`开始录音失败：${errorText(error)}`);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const importAudio = async () => {
-    const provider = requireProvider();
-    if (!provider) return;
-    const [source] = await filesystemPickFiles({
-      title: "选择会议录音",
-      extensions: ["wav", "aiff", "flac", "alac", "m4a", "mp3", "aac", "ogg"],
-      multiple: false,
-      maxFiles: 1,
-    });
-    if (!source) return;
-    setBusy("import");
-    try {
-      const record = await meetingImportAudio(source, title, provider.modelId, provider.providerId);
-      await refreshList(record.id);
-      setTitle(defaultMeetingTitle());
-      setTab("audio");
-    } catch (error) {
-      await refreshList(null);
-      onToast?.(`导入录音失败：${errorText(error)}`);
     } finally {
       setBusy(null);
     }
@@ -346,7 +343,7 @@ export function MeetingMinutesPanel({
     }
     // Existing text only needs the chat connection; an unavailable ASR route
     // must not prevent users from recovering or regenerating their minutes.
-    const provider = requireProvider(false);
+    const provider = requireProvider();
     if (!provider) return;
     setBusy("regenerate");
     try {
@@ -370,6 +367,8 @@ export function MeetingMinutesPanel({
       meetingDrafts.savedTranscript(record, submitted);
       await refreshList(record.id, record.id);
       onToast?.("校对已保存，请重新生成会议纪要");
+      setEditingTranscript(false);
+      return record;
     } catch (error) {
       await refreshList(selected.id, selected.id);
       onToast?.(`保存转写失败：${errorText(error)}`);
@@ -396,6 +395,7 @@ export function MeetingMinutesPanel({
       meetingDrafts.savedMinutes(record, submitted);
       if (selectedIdRef.current === record.id) setEditingMinutes(false);
       await refreshList(record.id, record.id);
+      return record;
     } catch (error) {
       await refreshList(selected.id, selected.id);
       onToast?.(`保存纪要失败：${errorText(error)}`);
@@ -411,14 +411,11 @@ export function MeetingMinutesPanel({
     onToast?.(copied ? "会议纪要已复制" : "复制失败，请使用导出保存会议纪要");
   };
 
-  const openAudio = async (id: string) => {
-    try { await meetingOpenAudio(id); }
-    catch (error) { onToast?.(`打开录音失败：${errorText(error)}`); }
-  };
-
   const doExport = async (kind: "audio" | "minutes" | "minutes_docx" | "minutes_pdf" | "transcript" | "srt") => {
     if (!selected) return;
     try {
+      if (kind.startsWith("minutes") && hasMinutesDraft && !await saveMinutes()) return;
+      if ((kind === "transcript" || kind === "srt") && hasTranscriptDraft && !await saveTranscript()) return;
       const path = await meetingExport(selected.id, kind);
       if (path) onToast?.(`已导出“${path.split(/[\\/]/).pop()}”`);
     } catch (error) {
@@ -443,131 +440,62 @@ export function MeetingMinutesPanel({
     }
   };
 
-  const completedChunks = selected?.chunks.filter((chunk) => chunk.status === "completed").length ?? 0;
-  const processingProgress = selected?.chunks.length
-    ? Math.round(completedChunks / selected.chunks.length * 100)
-    : 0;
   const recordingThis = recorder.active && recorder.meeting?.id === selected?.id;
+  const processingThis = Boolean(selected && (recorder.processingIds?.includes(selected.id) || NATIVE_JOB_STATUSES.includes(selected.status) && activeJobs[selected.id] !== false));
   const selectedJobActive = selected ? activeJobs[selected.id] : false;
-  const interruptedProcessing = Boolean(
-    selected
-    && ["transcribing", "summarizing"].includes(selected.status)
-    && selectedJobActive === false,
-  );
-  const interruptedImport = Boolean(
-    selected?.status === "importing" && selectedJobActive === false,
-  );
-  const speakerNames = useMemo(
-    () => [...new Set(draftTranscript.map((segment) => segment.speaker))],
-    [draftTranscript],
-  );
+  const readOnly = recordingThis || processingThis || busy !== null || selectedJobActive === undefined;
+  const needsTranscription = Boolean(selected && (selected.recordedSamples > 0 && !selected.transcript.length || ["recorded", "partial", "failed", "interrupted", "importing", "transcribing"].includes(selected.status) || selected.chunks.some(chunk => chunk.status !== "completed")));
+  const seekTo = useCallback((time: number, autoplay: boolean) => {
+    setTab("transcript"); setQuery(""); setPlayPosition(time); setFollow(true);
+    const request = { time, autoplay, sequence: ++seekSequence.current };
+    playerControl.current?.seek(request);
+    setSeekRequest(request);
+    tabTouched.current = true;
+  }, []);
+  const activeSegment = selected?.transcript.find(segment => playPosition >= segment.start && playPosition < segment.end)?.id;
+  useEffect(() => {
+    if (!follow || editingTranscript || tab !== "transcript") return;
+    const target = recordingThis ? selected?.transcript[selected.transcript.length - 1]?.id : activeSegment;
+    if (target !== undefined) rowRefs.current.get(target)?.scrollIntoView?.({ block: "nearest" });
+  }, [follow, editingTranscript, tab, recordingThis, selected?.transcript, activeSegment]);
+  useEffect(() => {
+    if (recorder.active) setLibraryOpen(false);
+  }, [recorder.active]);
+  useEffect(() => {
+    if (!workbenchRef.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(entries => { if (entries[0]?.contentRect.width < 780) setLibraryOpen(false); });
+    observer.observe(workbenchRef.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (recorder.processingIds) void refreshList();
+  }, [recorder.processingIds, refreshList]);
 
-  return (
-    <div className="meeting-panel">
-      <header className="meeting-panel__header">
-        <div>
-          <h1>录音转写</h1>
-          <p>录音保存在本机；转写服务就绪后，可生成、校对和导出转写文本与会议纪要。</p>
-        </div>
-        <div className={`meeting-panel__provider${capable ? " is-ready" : ""}`}>
-          <span>{capable ? "转写接口已就绪" : !selectedModel ? "需要配置 MiniMax 模型" : connection.state === "checking" ? "正在检测转写接口" : "转写接口不可用"}</span>
-          {!selectedModel && <button type="button" onClick={onOpenModelSettings}>配置模型</button>}
-          {selectedModel && connection.state === "unavailable" && <button type="button" onClick={connection.retry}>重新检测</button>}
-        </div>
-      </header>
+  const minutesMarkup = useMemo(() => (selected?.minutes ?? "").replace(/\[(\d{2}:\d{2}:\d{2})\](?!\()/g, (match, stamp: string) => {
+    const parts = stamp.split(":").map(Number);
+    const time = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (!selected?.transcript.some(segment => time >= Math.floor(segment.start) && time <= Math.ceil(segment.end))) return match;
+    return `[${stamp}](#meeting-time-${time})`;
+  }), [selected?.minutes, selected?.transcript]);
+  const transcriptRows = useMemo(() => (editingTranscript ? draftTranscript : selected?.transcript ?? []).filter(segment => !query || `${segment.speaker} ${segment.text}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [editingTranscript, draftTranscript, selected?.transcript, query]);
+  const changeRef = useRef(changeTranscript); changeRef.current = changeTranscript;
+  const changeText = useCallback((id: number, text: string) => changeRef.current(current => current.map(item => item.id === id ? { ...item, text } : item)), []);
+  const changeSpeaker = useCallback((speaker: string, name: string) => changeRef.current(current => current.map(item => item.speaker === speaker ? { ...item, speaker: name } : item)), []);
+  const registerRow = useCallback((id: number, node: HTMLDivElement | null) => { if (node) rowRefs.current.set(id, node); else rowRefs.current.delete(id); }, []);
+  const beginCreate = () => { setShowCreate(true); setLibraryOpen(false); setMenu(null); setCaptureError(null); };
+  const switchTab = (next: DetailTab) => { setTab(next); setMenu(null); tabTouched.current = true; };
+  const exportedDraft = tab === "minutes" ? hasMinutesDraft : hasTranscriptDraft;
+  const transcriptionIssue=meetingTranscriptionIssue(recorder.transcription?.error);
 
-      {selected && !recorder.active && (
-        <div className="meeting-panel__create-compact">
-          <span>正在查看「{selected.title}」</span>
-          <button type="button" aria-expanded={showCreate} aria-controls={showCreate ? "meeting-create-form" : undefined} onClick={() => { setChosenModelId(null); setShowCreate((value) => !value); }}>
-            {showCreate ? "收起新建区" : "新建录音或导入文件"}
-          </button>
-        </div>
-      )}
-
-      {(!selected || recorder.active || showCreate) && <section id="meeting-create-form" className="meeting-panel__create">
-        <div className="meeting-source" aria-label="录音来源">
-          <div className="meeting-source__heading"><strong>录制哪些声音</strong><span>选择这次会议需要保留的音频</span></div>
-          <div className="meeting-source__options" role="group" aria-label="录音来源">
-            {([
-              { id: "microphone" as const, title: "麦克风", detail: "记录你说的话", Icon: Mic },
-              { id: "system" as const, title: "系统声音", detail: "记录电脑播放的声音", Icon: MonitorPlay },
-              { id: "both" as const, title: "两者都录", detail: "同时记录双方声音", Icon: Headphones },
-            ]).map(({ id, title: label, detail, Icon }) => (
-              <button key={id} className={`meeting-source__option${recordingSource === id ? " is-selected" : ""}`} type="button"
-                aria-pressed={recordingSource === id} onClick={() => { setRecordingSource(id); setCaptureError(null); }}
-                disabled={recorder.active || busy !== null || (id !== "microphone" && !captureSupport?.systemAudio)}>
-                <span className="meeting-source__icon"><Icon size={19} strokeWidth={1.8} /></span>
-                <span className="meeting-source__copy"><strong>{label}</strong><small>{detail}</small></span>
-                <span className="meeting-source__check" aria-hidden="true" />
-              </button>
-            ))}
-          </div>
-          <p className="meeting-source__hint">
-            {recordingSource === "both" ? "建议佩戴耳机，避免扬声器声音再次被麦克风收录。" : recordingSource === "system" ? "录制当前默认播放设备的声音；切换扬声器后请重新开始录音。" : "只录制麦克风，适合面对面会议或个人口述。"}
-            {recordingSource !== "microphone" && captureSupport?.detail && ` ${captureSupport.detail}。`}
-            {!captureSupport?.systemAudio && captureSupport?.detail && ` ${captureSupport.detail}。`}
-          </p>
-        </div>
-        <label>
-          <span>会议模型</span>
-          <select aria-label="会议模型" value={selectedModel?.id ?? ""} onChange={(event) => setChosenModelId(event.target.value)} disabled={recorder.active || busy !== null}>
-            {meetingModels.length === 0 && <option value="">请先配置 MiniMax 模型</option>}
-            {meetingModels.map((model) => <option key={model.id} value={model.id}>{modelChoiceLabel(model, meetingModels)}</option>)}
-          </select>
-        </label>
-        <label>
-          <span>会议名称</span>
-          <input value={title} maxLength={100} onChange={(event) => setTitle(event.target.value)} disabled={recorder.active} />
-        </label>
-        <button className="meeting-primary" type="button" onClick={() => void startRecording()} disabled={!capable || recorder.active || busy !== null}>
-          {busy === "start" ? <Loader2 className="meeting-spin" size={17} /> : recordingSource === "microphone" ? <Mic size={17} /> : <MonitorPlay size={17} />}
-          开始录音
-        </button>
-        <button className="meeting-secondary" type="button" onClick={() => void importAudio()} disabled={!capable || recorder.active || busy !== null}>
-          {busy === "import" ? <Loader2 className="meeting-spin" size={17} /> : <Upload size={17} />}
-          导入录音
-        </button>
-        {captureError && <small className="meeting-panel__connection-error" role="alert">录音未开始：{captureError}</small>}
-        {connection.state === "unavailable" && <small className="meeting-panel__connection-error" role="alert">{connection.error}</small>}
-        <small className={`meeting-panel__privacy${selectedModel?.insecureHttp ? " is-insecure" : ""}`}>
-          录音默认仅保存在本机；开始前请确认已获得参会者同意。转写时向所选服务上传不超过 7 分钟的分片。
-          {selectedModel?.insecureHttp && " 此连接使用 HTTP，录音和 API Key 将通过明文网络传输。"}
-        </small>
-      </section>}
-
-      {recorder.active && recorder.meeting && (
-        <section className="meeting-recorder" aria-live="polite">
-          <div className="meeting-recorder__pulse" style={{ transform: `scale(${0.8 + recorder.level * 0.5})` }}>{recorder.source === "microphone" ? <Mic size={20} /> : <MonitorPlay size={20} />}</div>
-          <div className="meeting-recorder__main">
-            <strong>{recorder.pendingSave ? "录音已停止，等待保存" : recorder.error ? recorder.source === "microphone" ? "录音已暂停，请处理保存问题" : "录音已中断，请结束并保存" : recorder.paused ? "录音已暂停" : "正在录音并自动保存"}</strong>
-            <span>{recorder.meeting.title} · {recorder.source ? SOURCE_LABELS[recorder.source] : "录音"} · {formatMeetingDuration(recorder.meeting.durationSeconds)}</span>
-            {recorder.error && <em>{recorder.error}</em>}
-          </div>
-          <button className="meeting-secondary" type="button" onClick={() => void togglePause()} disabled={busy !== null || recorder.pendingSave || (Boolean(recorder.error) && recorder.source !== "microphone")}>
-            {recorder.paused ? <Play size={16} /> : <Pause size={16} />}{recorder.paused ? recorder.error && !recorder.pendingSave ? "重试并继续" : "继续" : "暂停"}
-          </button>
-          <button className="meeting-danger" type="button" onClick={() => void stopRecording()} disabled={busy !== null}>
-            {busy === "stop" ? <Loader2 className="meeting-spin" size={16} /> : <CircleStop size={16} />}{recorder.pendingSave ? "重试保存" : "结束并保存"}
-          </button>
-        </section>
-      )}
-
-      <div className="meeting-panel__body">
-        <aside className="meeting-list">
-          <div className="meeting-list__heading"><span>最近会议</span><button type="button" aria-label="刷新会议列表" onClick={() => void refreshList()}><RefreshCw size={14} /></button></div>
-          {loadError && <div className="meeting-empty is-error">{loadError}</div>}
-          {!loadError && records.length === 0 && <div className="meeting-empty"><FileAudio size={30} /><span>还没有会议记录</span></div>}
-          {records.map((record) => (
-            <button key={record.id} type="button" className={`meeting-list__item${selectedId === record.id ? " is-active" : ""}`} onClick={() => void chooseRecord(record)}>
-              <span className="meeting-list__title">{record.title}</span>
-              <span className="meeting-list__meta"><Clock3 size={12} />{formatMeetingDuration(record.durationSeconds)} · {STATUS_LABELS[record.status] ?? record.status}{record.captureSource && record.captureSource !== "imported" ? ` · ${SOURCE_SHORT_LABELS[record.captureSource]}` : ""}</span>
-              {record.status === "recording" && <i />}
-            </button>
-          ))}
-        </aside>
-
-        <main className="meeting-detail">
+  return <div ref={workbenchRef} className={`meeting-workbench${libraryOpen ? " meeting-workbench--library" : ""}`}>
+    <PageToolbar className="meeting-workbench__toolbar">
+      <button type="button" className="meeting-icon-button" aria-label={libraryOpen ? "收起录音列表" : "展开录音列表"} aria-expanded={libraryOpen} aria-controls="meeting-library" onClick={() => setLibraryOpen(value => !value)}><PanelLeft size={18} /></button>
+      <h1>录音转写</h1>
+      {recorder.active && !recordingThis && <button type="button" onClick={() => recorder.meeting && void chooseRecord(recorder.meeting)}>返回正在录音</button>}
+      <button type="button" className="meeting-primary meeting-workbench__new" onClick={beginCreate} disabled={recorder.active || busy === "start"}><Plus size={16} />新建录音</button>
+    </PageToolbar>
+    {loadError && <div className="meeting-workbench__notice" role="alert">录音列表读取失败：{loadError}<button type="button" onClick={() => void refreshList()}>重试</button></div>}
+    {connectionError && <div className="meeting-workbench__notice" role="alert"><span>{connectionError}</span>{onOpenModelSettings && <button type="button" onClick={onOpenModelSettings}>检查模型连接</button>}</div>}
           {meetingDrafts.persistenceError() && <div className="meeting-error" role="alert">
             {meetingDrafts.persistenceError()}
             <button type="button" onClick={() => {
@@ -587,58 +515,72 @@ export function MeetingMinutesPanel({
               }}>保留恢复副本并重新开始</button>
             </details>}
           </div>}
-          {!selected && <div className="meeting-detail__empty"><Mic size={42} /><h2>记录每一次重要讨论</h2><p>开始录音或导入已有音频。两小时以上会议会在本地自动分段处理。</p></div>}
-          {selected && (
-            <>
-              <header className="meeting-detail__header">
-                <div>
-                  <h2>{selected.title}</h2>
-                  <p>{new Date(selected.createdAt).toLocaleString("zh-CN")} · {formatMeetingDuration(selected.durationSeconds)} · {STATUS_LABELS[selected.status] ?? selected.status}{selected.captureSource && selected.captureSource !== "imported" ? ` · ${SOURCE_LABELS[selected.captureSource]}` : ""}</p>
-                </div>
-                <div className="meeting-detail__actions">
-                  <button type="button" onClick={() => void openAudio(selected.id)}><Play size={14} />系统播放器</button>
-                  <button type="button" onClick={() => void doExport("audio")}><Download size={14} />下载录音</button>
-                  <button className="is-danger" type="button" onClick={() => void removeMeeting()} disabled={NATIVE_JOB_STATUSES.includes(selected.status) && selectedJobActive !== false} aria-label="删除会议记录"><Trash2 size={14} /></button>
-                </div>
-              </header>
 
-              {!recordingThis && <div className="meeting-callout meeting-processing-model">
-                <label>
-                  <span>本次处理模型</span>
-                  <select aria-label="本次处理模型" value={selectedModel?.id ?? ""} onChange={(event) => setChosenModelId(event.target.value)} disabled={busy !== null || (NATIVE_JOB_STATUSES.includes(selected.status) && selectedJobActive !== false)}>
-                    {meetingModels.length === 0 && <option value="">请先配置 MiniMax 模型</option>}
-                    {meetingModels.map((model) => <option key={model.id} value={model.id}>{modelChoiceLabel(model, meetingModels)}</option>)}
-                  </select>
-                </label>
-                <small className={`meeting-panel__privacy${selectedModel?.insecureHttp ? " is-insecure" : ""}`}>
-                  {selected.modelId && !meetingModels.some((model) => model.id === selected.modelId && model.providerId === selected.providerId) && "原会议连接已不可用，请确认本次处理模型。"}
-                  {selectedModel ? ` 转写及纪要将使用「${modelChoiceLabel(selectedModel, meetingModels)}」，开始处理后保存此选择。` : "请配置模型后重试，已保存的录音和转写仍可导出。"}
-                  {selectedModel?.insecureHttp && " 此连接使用 HTTP，录音和 API Key 将通过明文网络传输。"}
-                  {connection.state === "unavailable" && ` ${connection.error}${selected.transcript.length ? "；已有转写仍可用于生成纪要。" : ""}`}
-                </small>
-              </div>}
-
-              {(["recording", "paused", "recorded", "partial", "failed"].includes(selected.status) || interruptedProcessing
-                || selectedJobActive === false && selected.chunks.some((chunk) => chunk.status !== "completed")) && !recordingThis && selected.recordedSamples > 0 && (
-                <div className="meeting-callout">
-                  <div><Sparkles size={20} /><span><strong>{interruptedProcessing ? "上次处理已中断" : "录音已安全保存"}</strong><small>{interruptedProcessing ? "已完成的分片仍保存在本机，可以从断点继续。" : "将按 7 分钟切片转写，完成后自动生成会议纪要。"}</small></span></div>
-                  <button className="meeting-primary" type="button" onClick={() => void processMeeting(selected)} disabled={busy !== null}>{interruptedProcessing ? "继续处理" : "开始转写并生成纪要"}</button>
-                </div>
-              )}
-
-              {NATIVE_JOB_STATUSES.includes(selected.status) && selectedJobActive !== false && (
-                <div className="meeting-progress">
-                  <div><Loader2 className="meeting-spin" size={18} /><span>{selected.status === "importing" ? "正在导入并转换录音…" : selected.status === "summarizing" ? "正在生成会议纪要…" : `正在转写录音… ${processingProgress}%`}</span></div>
-                  <div className="meeting-progress__bar"><i style={{ width: `${selected.status === "summarizing" ? 95 : processingProgress}%` }} /></div>
-                  <small>可以离开此页面，录音和已完成的转写不会丢失。</small>
-                </div>
-              )}
-
-              {interruptedImport && <div className="meeting-error">录音导入被意外中断，请删除这条未完成记录后重新导入。</div>}
-
-              {selected.error && <div className="meeting-error">{selected.error}</div>}
-
-              {transcriptConflict && <div className="meeting-draft-notice" role="alert">
+    <div className="meeting-workbench__body">
+      {libraryOpen && <aside className="meeting-library" id="meeting-library" aria-label="录音列表">
+        <div className="meeting-library__heading"><strong>录音列表</strong><span>{records.length}</span></div>
+        <label className="meeting-search"><Search size={15} /><input aria-label="搜索录音" placeholder="搜索录音名称" value={listQuery} onChange={event => setListQuery(event.target.value)} /></label>
+        <div className="meeting-library__items">
+          {records.filter(record => record.title.toLocaleLowerCase().includes(listQuery.toLocaleLowerCase())).map(record => <button type="button" key={record.id} className={`meeting-library__item${selected?.id === record.id && !showCreate ? " is-selected" : ""}`} aria-current={selected?.id === record.id && !showCreate ? "true" : undefined} onClick={() => void chooseRecord(record)}>
+            <strong>{record.title}</strong><span>{formatMeetingDuration(record.durationSeconds)} · {recorder.processingIds?.includes(record.id) ? "正在整理" : STATUS_LABELS[record.status] ?? record.status}</span><small>{new Date(record.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
+          </button>)}
+          {!records.length && <p className="meeting-muted">录音会自动保存在这里</p>}
+          {!!records.length && !records.some(record => record.title.toLocaleLowerCase().includes(listQuery.toLocaleLowerCase())) && <p className="meeting-muted">没有找到匹配的录音</p>}
+        </div>
+      </aside>}
+      <section className="meeting-workbench__detail" aria-label="当前录音">
+        {(showCreate || !selected) && !recorder.active ? <div className="meeting-start">
+          <h2>{records.length ? "新建录音" : "记录讨论，专注交流"}</h2><p className="meeting-muted">录制时按短句显示文字，结束后自动整理纪要。</p>
+          <fieldset className="meeting-start__sources"><legend>录制哪些声音</legend>
+            {([
+              { id: "microphone" as const, label: "麦克风", detail: "面对面会议、个人口述", Icon: Mic },
+              { id: "system" as const, label: "电脑声音", detail: "电脑播放的声音", Icon: MonitorPlay },
+              { id: "both" as const, label: "两者都录", detail: "线上会议，记录双方", Icon: Headphones },
+            ]).map(({ id, label, detail, Icon }) => <button type="button" key={id} className={`meeting-start__source${recordingSource === id ? " is-selected" : ""}`} aria-pressed={recordingSource === id} disabled={busy === "start" || id !== "microphone" && !captureSupport?.systemAudio} onClick={() => { setRecordingSource(id); setCaptureError(null); }}><Icon size={19} /><strong>{label}</strong><small>{detail}</small></button>)}
+          </fieldset>
+          <p className="meeting-muted">{recordingSource === "both" ? "建议佩戴耳机，避免声音重复收录。" : recordingSource === "system" ? "录制当前默认播放设备的声音。" : "使用当前默认麦克风。"}{captureSupport?.detail && ` ${captureSupport.detail}。`}</p>
+          <p className="meeting-muted">音频保存在本机，转写需要联网并向现有服务发送录音片段。</p>
+          {!selectedModel && <p className="meeting-muted">尚未配置转写连接，可以先录音，配置后再补转。{onOpenModelSettings && <button type="button" onClick={onOpenModelSettings}>配置转写连接</button>}</p>}
+          {captureError && <p className="meeting-error-text" role="alert">录音未开始：{captureError}</p>}
+          <div className="meeting-start__actions"><button type="button" className="meeting-primary" disabled={busy === "start" || recordingSource !== "microphone" && !captureSupport?.systemAudio} onClick={() => void startRecording()}>{busy === "start" ? <Loader2 size={16} className="meeting-spin" /> : <Mic size={16} />}开始录音</button>{selected && <button type="button" disabled={busy === "start"} onClick={() => setShowCreate(false)}>返回录音</button>}</div>
+        </div> : selected && <>
+          <header className="meeting-workbench__record-header">
+            <div><h2>{selected.title}</h2><p className="meeting-muted">{new Date(selected.createdAt).toLocaleString("zh-CN")} · {recordingThis ? SOURCE_LABELS[recorder.source ?? "microphone"] : `${formatMeetingDuration(selected.durationSeconds)} · ${STATUS_LABELS[selected.status] ?? selected.status}`}</p></div>
+            {recordingThis ? <span className="meeting-live-status" role="status">{recorder.pendingSave ? "等待保存" : recorder.paused ? "已暂停" : "录音中"} · {recorder.transcription?.state === "unavailable" ? "转写等待恢复" : recorder.transcription?.state === "recognizing" ? "正在识别短句" : "实时转写"}</span> : <div className="meeting-workbench__record-actions">
+              <button type="button" onClick={() => void (tab === "minutes" ? copyMinutes() : copyShareText((editingTranscript ? draftTranscript : selected.transcript).map(segment => `${segment.speaker}: ${segment.text}`).join("\n")).then(ok => onToast?.(ok ? "原文已复制" : "复制失败，请重试")))} disabled={tab === "minutes" && !selected.minutes}><Copy size={14} />复制</button>
+              <button type="button" aria-expanded={menu === "export"} onClick={() => setMenu(value => value === "export" ? null : "export")}><Download size={14} />{exportedDraft ? "保存并导出" : "导出"}</button>
+              <button type="button" className="meeting-icon-button" aria-label="更多录音操作" aria-expanded={menu === "more"} onClick={() => setMenu(value => value === "more" ? null : "more")}><MoreHorizontal size={18} /></button>
+            </div>}
+          </header>
+          {menu === "export" && <div className="meeting-workbench__menu" aria-label="导出选项">
+            {selected.minutes && <>{(["minutes_docx", "minutes_pdf", "minutes"] as const).map((kind, index) => <button key={kind} type="button" disabled={readOnly || hasTranscriptDraft || !!minutesConflict} onClick={() => void doExport(kind)}>{["Word", "PDF", "Markdown"][index]}</button>)}</>}
+            <button type="button" disabled={readOnly || !selected.transcript.length || !!transcriptConflict} onClick={() => void doExport("transcript")}>原文 TXT</button><button type="button" disabled={readOnly || !selected.transcript.length || !!transcriptConflict} onClick={() => void doExport("srt")}>字幕 SRT</button><button type="button" disabled={!selected.recordedSamples} onClick={() => void doExport("audio")}>音频</button>
+            {hasTranscriptDraft && <span className="meeting-muted">原文尚有校对草稿，请保存原文并更新纪要后再导出纪要。</span>}
+          </div>}
+          {menu === "more" && <div className="meeting-workbench__menu" aria-label="更多录音操作">
+            <button type="button" disabled={readOnly} onClick={() => { const next = window.prompt("录音名称", selected.title); if (next?.trim()) void meetingUpdate(selected.id, { title: next.trim() }).then(record => { applyRecord(record); void refreshList(record.id, record.id); }).catch(error => onToast?.(errorText(error))); }}>重命名</button>
+            <button type="button" disabled={readOnly || hasTranscriptDraft || needsTranscription || !selected.transcript.length} onClick={() => { if (!selected.minutes || window.confirm("重新生成会保留当前纪要和本地草稿，可在更多操作中恢复。继续生成？")) void regenerate(); }}>重新生成纪要</button>
+            {selected.previousMinutes && <button type="button" disabled={readOnly || hasMinutesDraft} onClick={() => void meetingRestoreMinutes(selected.id).then(applyRecord).catch(error => onToast?.(errorText(error)))}>恢复上次纪要</button>}
+            <button type="button" className="meeting-error-text" disabled={readOnly} onClick={() => void removeMeeting()}><Trash2 size={14} />删除录音</button>
+          </div>}
+          {!recordingThis && <nav className="meeting-tabs" aria-label="会议内容">
+            <div role="tablist" aria-label="会议内容" onKeyDown={event => { if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return; event.preventDefault(); const next = event.key === "Home" ? "minutes" : event.key === "End" ? "transcript" : tab === "minutes" ? "transcript" : "minutes"; switchTab(next); event.currentTarget.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus(); }}><button type="button" role="tab" data-tab="minutes" id={`${tabPrefix}-minutes`} aria-controls={`${tabPrefix}-content`} aria-selected={tab === "minutes"} className={tab === "minutes" ? "is-active" : ""} onClick={() => switchTab("minutes")}>会议纪要</button><button type="button" role="tab" data-tab="transcript" id={`${tabPrefix}-transcript`} aria-controls={`${tabPrefix}-content`} aria-selected={tab === "transcript"} className={tab === "transcript" ? "is-active" : ""} onClick={() => switchTab("transcript")}>转写原文</button></div>
+            <div className="meeting-tabs__actions">{tab === "transcript" && <label className="meeting-search"><Search size={14} /><input aria-label="查找原文" placeholder="查找原文" value={query} onChange={event => setQuery(event.target.value)} /></label>}
+              {tab === "minutes" ? <button type="button" disabled={readOnly || hasTranscriptDraft || !!minutesConflict || !selected.minutes} onClick={() => setEditingMinutes(true)}><Pencil size={14} />编辑纪要</button> : <button type="button" disabled={readOnly || !!transcriptConflict || !selected.transcript.length} onClick={() => setEditingTranscript(true)}><Pencil size={14} />校对原文</button>}
+            </div>
+          </nav>}
+          {recordingThis && recorder.transcription?.state === "unavailable" && <div className="meeting-workbench__notice" role="status">
+            <span>{transcriptionIssue.message}</span>
+            {transcriptionIssue.settings && onOpenModelSettings && <button type="button" onClick={onOpenModelSettings}>检查模型连接</button>}
+            <button type="button" disabled={busy!==null||recorder.pendingSave} onClick={()=>void retryTranscription()}>{busy==='retry-transcription'?'正在重试…':'重试转写'}</button>
+            {recorder.transcription.error && <details><summary>原因详情</summary><p>{recorder.transcription.error}</p></details>}
+          </div>}
+          {recordingThis && recorder.error && <div className="meeting-workbench__notice meeting-error-text" role="alert">{recorder.error}</div>}
+          {processingThis && <div className="meeting-workbench__notice" role="status"><Loader2 size={15} className="meeting-spin" />{selected.status === "summarizing" ? "音频与原文已保存，正在整理纪要…" : "录音已保存，正在补齐转写并整理纪要…"}可以先查看原文或离开页面。</div>}
+          {!recordingThis && !processingThis && (selected.error || needsTranscription) && <div className="meeting-workbench__notice" role="status"><span>{selected.status === "recorded" && !selected.error ? "录音已保存，尚有内容需要转写。" : "上次处理未完成，已保存的音频与文字仍可使用。"}</span><button type="button" disabled={busy !== null} onClick={() => void (!needsTranscription && selected.transcript.length ? regenerate() : processMeeting(selected))}>{selected.status === "recorded" && !selected.error ? "继续转写并整理纪要" : "重试未完成部分"}</button>{(!selectedModel || meetingTranscriptionIssue(selected.error).settings) && onOpenModelSettings && <button type="button" onClick={onOpenModelSettings}>检查模型连接</button>}{selected.error && <details><summary>错误详情</summary><p>{selected.error}</p></details>}</div>}
+          {hasTranscriptDraft && tab === "minutes" && <div className="meeting-workbench__notice" role="status">原文校对尚未保存，请先保存校对并更新纪要。</div>}
+          {selected.minutesStale && !processingThis && <div className="meeting-workbench__notice" role="status">当前纪要需要根据原文核对或更新。<button type="button" disabled={readOnly || hasTranscriptDraft || hasMinutesDraft || needsTranscription} onClick={() => void regenerate()}>更新纪要</button></div>}
+                        {transcriptConflict && <div className="meeting-draft-notice" role="alert">
                 <p>最新转写与原校对草稿有冲突。已保留原草稿，确认前不会覆盖已保存内容。
                   {!transcriptConflict.canKeep && " 部分段落已重新划分，请先复制原草稿，再选择使用最新转写并重新校对。"}</p>
                 <div>
@@ -674,88 +616,28 @@ export function MeetingMinutesPanel({
                 </div>
               </div>}
 
-              <nav className="meeting-tabs" aria-label="会议内容">
-                <button type="button" className={tab === "minutes" ? "is-active" : ""} onClick={() => setTab("minutes")}>会议纪要</button>
-                <button type="button" className={tab === "transcript" ? "is-active" : ""} onClick={() => setTab("transcript")}>完整转写 <span>{selected.transcript.length || ""}</span></button>
-                <button type="button" className={tab === "audio" ? "is-active" : ""} onClick={() => setTab("audio")}>录音</button>
-              </nav>
 
-              <div className="meeting-tab-content">
-                {tab === "minutes" && (
-                  selected.minutes || editingMinutes ? (
-                    <div className="meeting-minutes">
-                      <div className="meeting-content-toolbar">
-                        <button type="button" onClick={() => void copyMinutes()}><Copy size={14} />复制</button>
-                        <button type="button" disabled={hasMinutesDraft || hasTranscriptDraft || busy !== null} onClick={() => void doExport("minutes_docx")}><Download size={14} />导出 Word</button>
-                        <button type="button" disabled={hasMinutesDraft || hasTranscriptDraft || busy !== null} onClick={() => void doExport("minutes_pdf")}><Download size={14} />导出 PDF</button>
-                        <button type="button" disabled={hasMinutesDraft || hasTranscriptDraft || busy !== null} onClick={() => void doExport("minutes")}><Download size={14} />导出 Markdown</button>
-                        <button type="button" onClick={() => {
-                          setDraftMinutes(meetingDrafts.minutes(selected).value);
-                          setEditingMinutes(true);
-                        }} disabled={busy !== null || selectedJobActive !== false || !!minutesConflict || hasTranscriptDraft}>编辑纪要</button>
-                        <button type="button" onClick={() => void regenerate()} disabled={busy !== null || editingMinutes || hasTranscriptDraft}><RefreshCw size={14} />重新生成</button>
-                      </div>
-                      {hasTranscriptDraft && <p className="meeting-draft-hint" role="status">转写校对尚未保存；请先保存并重新生成纪要，再导出最新内容。</p>}
-                      {hasMinutesDraft && !minutesConflict && <p className="meeting-draft-hint" role="status">{meetingDrafts.persistenceError() ? "纪要草稿尚未保存在此设备。" : "纪要草稿已保存在此设备，重启后可继续。"}请保存后再导出；{editingMinutes ? "正在编辑草稿。" : "预览显示已保存内容。"}</p>}
-                      {editingMinutes ? (
-                        <div className="meeting-minutes__editor">
-                          <textarea aria-label="编辑会议纪要" rows={18} value={draftMinutes} disabled={busy !== null || selectedJobActive !== false || hasTranscriptDraft} onChange={(event) => {
-                            setDraftMinutes(event.target.value);
-                            meetingDrafts.editMinutes(selected, event.target.value);
-                            setHasMinutesDraft(meetingDrafts.hasMinutes(selected.id));
-                          }} />
-                          <button className="meeting-primary" type="button" onClick={() => void saveMinutes()} disabled={busy !== null || selectedJobActive !== false || !!minutesConflict || hasTranscriptDraft || !draftMinutes.trim()}>保存纪要</button>
-                          <button type="button" onClick={() => setEditingMinutes(false)} disabled={busy !== null}>返回预览（保留草稿）</button>
-                        </div>
-                      ) : <Markdown complete markdownTheme="loose">{selected.minutes ?? ""}</Markdown>}
-                    </div>
-                  ) : (
-                    <div className="meeting-tab-empty"><Sparkles size={34} /><h3>尚未生成会议纪要</h3><p>{hasTranscriptDraft ? "请先在完整转写中保存校对，再生成会议纪要。" : "完成录音转写后，会自动整理结论、待办、风险和未决问题。"}</p>{selected.transcript.length > 0 && <button className="meeting-primary" type="button" disabled={busy !== null || hasTranscriptDraft} onClick={() => void regenerate()}>生成会议纪要</button>}</div>
-                  )
-                )}
-
-                {tab === "transcript" && (
-                  draftTranscript.length > 0 ? (
-                    <div className="meeting-transcript">
-                      <div className="meeting-content-toolbar">
-                        <span>{speakerNames.length} 位说话人 · 可直接校对</span>
-                        <button type="button" disabled={hasTranscriptDraft || busy !== null} onClick={() => void doExport("transcript")}><Download size={14} />TXT</button>
-                        <button type="button" disabled={hasTranscriptDraft || busy !== null} onClick={() => void doExport("srt")}><Download size={14} />SRT</button>
-                        <button className="meeting-primary" type="button" onClick={() => void saveTranscript()} disabled={busy !== null || !!transcriptConflict || selectedJobActive !== false}>保存校对</button>
-                      </div>
-                      {hasTranscriptDraft && !transcriptConflict && <p className="meeting-draft-hint" role="status">{meetingDrafts.persistenceError() ? "校对草稿尚未保存在此设备。" : "校对草稿已保存在此设备，重启后可继续。"}保存后即可导出最新转写。</p>}
-                      <div className="meeting-transcript__rows">
-                        {draftTranscript.map((segment, index) => (
-                          <div className="meeting-transcript__row" key={`${segment.id}-${index}`}>
-                            <button type="button" className="meeting-transcript__time" title="在系统播放器中打开录音" onClick={() => void openAudio(selected.id)}>{formatMeetingDuration(segment.start)}</button>
-                            <input aria-label={`第 ${index + 1} 段说话人`} disabled={busy !== null || !!transcriptConflict || selectedJobActive !== false} value={segment.speaker} onChange={(event) => {
-                              const previous = segment.speaker;
-                              const next = event.target.value;
-                              changeTranscript((current) => current.map((item) => item.speaker === previous ? { ...item, speaker: next } : item));
-                            }} />
-                            <textarea aria-label={`第 ${index + 1} 段转写`} disabled={busy !== null || !!transcriptConflict || selectedJobActive !== false} value={segment.text} rows={Math.max(1, Math.ceil(segment.text.length / 60))} onChange={(event) => changeTranscript((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item))} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="meeting-tab-empty"><FileText size={34} /><h3>尚未生成转写</h3><p>录音保存在本地，开始转写后才会上传分片到所选服务。</p></div>
-                  )
-                )}
-
-                {tab === "audio" && (
-                  <div className="meeting-audio">
-                    <div className="meeting-audio__icon"><FileAudio size={36} /></div>
-                    <div><h3>完整录音已保存在本地</h3><p>{selected.originalFileName ? `原始文件：${selected.originalFileName} · ` : ""}标准化副本：16 kHz 单声道 WAV · {formatMeetingDuration(selected.durationSeconds)}</p></div>
-                    <button className="meeting-secondary" type="button" onClick={() => void openAudio(selected.id)}><Play size={15} />打开播放</button>
-                    <button className="meeting-primary" type="button" onClick={() => void doExport("audio")}><Download size={15} />下载录音</button>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </main>
-      </div>
+          <div className="meeting-tab-content" id={`${tabPrefix}-content`} role={recordingThis ? "log" : "tabpanel"} aria-labelledby={recordingThis ? undefined : `${tabPrefix}-${tab}`} aria-live={recordingThis ? "polite" : undefined} aria-relevant="additions text" ref={contentRef} onWheel={() => setFollow(false)} onTouchMove={() => setFollow(false)} onPointerDown={event => { if (event.target === event.currentTarget) setFollow(false); }}>
+            {tab === "minutes" && !recordingThis ? selected.minutes || editingMinutes ? <div className="meeting-minutes">
+              {editingMinutes ? <div className="meeting-minutes__editor"><textarea aria-label="编辑会议纪要" rows={18} value={draftMinutes} disabled={readOnly || !!minutesConflict} onChange={event => { setDraftMinutes(event.target.value); meetingDrafts.editMinutes(selected, event.target.value); setHasMinutesDraft(meetingDrafts.hasMinutes(selected.id)); }} />
+                <p className="meeting-muted" role="status">{meetingDrafts.persistenceError() ? "草稿尚未保存，请重试保存。" : "草稿自动保存在此设备，保存后更新正式纪要。"}</p><div className="meeting-edit-actions"><button type="button" className="meeting-primary" disabled={readOnly || !!minutesConflict || !draftMinutes.trim()} onClick={() => void saveMinutes()}>保存纪要</button><button type="button" onClick={() => setEditingMinutes(false)}>返回阅读（保留草稿）</button></div>
+              </div> : <><Markdown complete markdownTheme="loose" config={{ onLinkClick: ({ href }) => { const match = /^#meeting-time-(\d+)$/.exec(href); if (match) { seekTo(Number(match[1]), false); return false; } } }}>{minutesMarkup}</Markdown>{hasMinutesDraft && <p className="meeting-muted">有尚未应用的纪要草稿。<button type="button" onClick={() => setEditingMinutes(true)}>继续编辑</button></p>}</>}
+            </div> : <div className="meeting-workbench__empty"><Sparkles size={28} /><h3>{processingThis ? "正在整理会议纪要" : "尚未生成会议纪要"}</h3><p>{processingThis ? "原文和录音已保留，可以切换到转写原文查看。" : selected.transcript.length ? "根据已有原文整理摘要、结论与待办。" : "录音已保存，可以先回听，再重试转写。"}</p>{!processingThis && <button type="button" className="meeting-primary" disabled={readOnly || hasTranscriptDraft} onClick={() => void (!needsTranscription && selected.transcript.length ? regenerate() : processMeeting(selected))}>{selected.transcript.length ? "生成会议纪要" : "转写并生成纪要"}</button>}</div> : <div className="meeting-transcript">
+              {editingTranscript && <div className="meeting-edit-actions"><span className="meeting-muted" role="status">{meetingDrafts.persistenceError() ? "草稿尚未保存" : "校对草稿已保存在此设备"}</span><button type="button" className="meeting-primary" disabled={readOnly || !!transcriptConflict} onClick={() => void saveTranscript()}>保存校对</button><button type="button" onClick={() => setEditingTranscript(false)}>返回阅读（保留草稿）</button></div>}
+              {!editingTranscript && hasTranscriptDraft && <p className="meeting-muted">有尚未应用的原文校对草稿。<button type="button" disabled={readOnly} onClick={() => setEditingTranscript(true)}>继续校对</button></p>}
+              {transcriptRows.map((segment, index) => <MeetingTranscriptPassage key={segment.id} segment={segment} index={index} active={activeSegment === segment.id && !recordingThis} editing={editingTranscript} disabled={readOnly || !!transcriptConflict} recording={recorder.active} register={registerRow} onSeek={seekTo} onText={changeText} onSpeaker={changeSpeaker} />)}
+              {!transcriptRows.length && <div className="meeting-workbench__empty"><FileText size={28} /><h3>{query ? "没有匹配的原文" : recordingThis ? "正在聆听" : "尚无转写内容"}</h3><p>{recordingThis ? "开始说话后，文字会按短句出现在这里。" : "音频仍保存在本机，可以回听或重试转写。"}</p></div>}
+              {recordingThis && !recorder.paused && <p className="meeting-transcript__pending" role="status">{recorder.transcription?.state === "recognizing" ? "正在识别最近一段语音…" : "等待下一段语音，文字按短句更新"}</p>}
+            </div>}
+          </div>
+          {!follow && (recordingThis || playPosition >= 0 && tab === "transcript") && <button type="button" className="meeting-follow" onClick={() => setFollow(true)}><ArrowDown size={14} />{recordingThis ? "回到最新" : "跟随播放"}</button>}
+          {recordingThis && <footer className="meeting-recording-controls" aria-label="录音控制">
+            <div><strong>{formatMeetingDuration(recorder.meeting?.durationSeconds ?? 0)}</strong><meter aria-label="输入电平" min="0" max="1" value={recorder.level} /><span className="meeting-muted">{recorder.pendingSave ? "等待保存" : recorder.error ? "保存需要处理" : recorder.meeting?.recordedSamples ? "音频持续保存在本机" : "正在收音"}</span></div>
+            <div>{!recorder.pendingSave && <button type="button" disabled={busy !== null || Boolean(recorder.error) && recorder.source !== "microphone"} onClick={() => void togglePause()}>{recorder.paused ? <Play size={15} /> : <Pause size={15} />}{recorder.paused ? "继续录音" : "暂停录音"}</button>}<button type="button" className="meeting-primary" disabled={busy !== null} onClick={() => void stopRecording()}>{busy === "stop" ? <Loader2 size={15} className="meeting-spin" /> : <CircleStop size={15} />}{recorder.pendingSave ? "重试保存" : "结束录音"}</button></div>
+          </footer>}
+          {!recorder.active && selected.recordedSamples > 0 && <MeetingAudioPlayer key={selected.id} control={playerControl} record={selected} request={seekRequest} onPosition={setPlayPosition} onToast={onToast} />}
+        </>}
+      </section>
     </div>
-  );
+  </div>;
 }

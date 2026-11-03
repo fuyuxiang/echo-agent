@@ -1,3 +1,4 @@
+import { documentEditPrompt, forgetDocumentSessions } from "@/lib/document-workspace";
 import type { CodingTurnOptions } from "./lib/agent-client";
 import { codingApi } from "./features/coding/lib/tauri-api";
 import { useTaskStore } from "./features/coding/store/task-store";
@@ -919,7 +920,7 @@ function Shell() {
                 sessionStore.getState().startStreaming(p.sessionId, queuedPromptId);
                 void agentSend(
                   p.sessionId,
-                  next.text,
+                  next.documentEdit ? documentEditPrompt(next.documentEdit, next.text) : next.text,
                   next.attachments,
                   next.text,
                   queuedPromptId,
@@ -1634,6 +1635,7 @@ function Shell() {
       if (!claimed) return false;
       sendText = claimed.text;
       sendAttachments = claimed.attachments ?? [];
+      if (claimed.documentEdit) promptTextOverride = documentEditPrompt(claimed.documentEdit, claimed.text);
     }
     try {
       // A conversation created from the project node may intentionally be
@@ -1870,6 +1872,7 @@ function Shell() {
 
     const promptId = createAgentPromptId();
     let sendText = text;
+    let promptText = text;
     let sendAttachments = attachments;
     if (queueItemId) {
       const claimed = useMessageQueueStore.getState().claimById(
@@ -1880,6 +1883,7 @@ function Shell() {
       if (!claimed) return false;
       sendText = claimed.text;
       sendAttachments = claimed.attachments ?? [];
+      promptText = claimed.documentEdit ? documentEditPrompt(claimed.documentEdit, claimed.text) : claimed.text;
     }
     const codingTask = useTaskStore.getState().task;
     const coding: CodingTurnOptions | undefined = codingTask?.sessionId === sessionId ? {
@@ -1893,7 +1897,7 @@ function Shell() {
     // so the composer can clear immediately, just like a normal admitted turn.
     void agentSendNow(
       sessionId,
-      sendText,
+      promptText,
       sendAttachments,
       sendText,
       promptId,
@@ -2276,6 +2280,7 @@ function Shell() {
     const summary = findSessionSummary(sessionId);
     const cwd = summary?.cwd || explicitCwd;
     const result = await agentDeleteSession(sessionId, cwd);
+    forgetDocumentSessions(sessionId);
     // Leave while the catalog still identifies this as the current session;
     // `remove` also clears currentSessionId and would otherwise strand its transcript.
     clearDeletedSessionState(sessionId);
@@ -3247,7 +3252,7 @@ function Shell() {
         <SidebarResizeHandle layout={sidebarLayout} />
         <main className="app__main">
           <PageChromeProvider macOS={IS_MACOS} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} onNewTask={handleNewSession}>
-          {(!currentSessionId || placeholderView) && !codingWorkspaceActive && !(init?.ok && !initError && ["项目", "组织", "专家·技能·连接器", "专家团", "技能", "连接器", "插件", "自动化", "知识库"].includes(placeholderView ?? "")) && (
+          {(!currentSessionId || placeholderView) && !codingWorkspaceActive && !(init?.ok && !initError && ["项目", "组织", "专家·技能·连接器", "专家团", "技能", "连接器", "插件", "自动化", "知识库", "录音转写"].includes(placeholderView ?? "")) && (
             <header className="main-page-controls" data-tauri-drag-region>
               <SessionNavigation sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} onNewTask={handleNewSession} />
             </header>

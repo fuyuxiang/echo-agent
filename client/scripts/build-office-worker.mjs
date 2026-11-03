@@ -35,4 +35,9 @@ await copyFile(
   resolve(root, "node_modules/@pdf-lib/fontkit/package.json"),
   resolve(licenseDirectory, "pdf-lib-fontkit-package.json"),
 );
+for (const [source, target] of [
+  ["@tiptap/react/LICENSE.md", "tiptap-LICENSE.md"],
+  ["@tiptap/pm/LICENSE", "tiptap-pm-LICENSE"],
+  ["@tiptap/pm/THIRD_PARTY_LICENSES.md", "prosemirror-THIRD_PARTY_LICENSES.md"],
+]) await copyFile(resolve(root, "node_modules", source), resolve(licenseDirectory, target));
 console.log(`Built office worker: ${output}`);

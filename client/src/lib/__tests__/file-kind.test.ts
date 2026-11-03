@@ -25,6 +25,13 @@ describe("detectPreviewKind", () => {
     expect(detectPreviewKind("notes.txt")).toBe("text");
     expect(detectPreviewKind("data.csv")).toBe("text");
   });
+  it("previews accepted source, text and data formats consistently with the composer", () => {
+    expect(detectPreviewKind("component.vue")).toBe("code");
+    for (const path of ["data.tsv", "references.bib", "document.tex", "settings.cfg", "schema.graphql"]) {
+      expect(detectPreviewKind(path)).toBe("text");
+    }
+    expect(detectPreviewKind("notes.mdown")).toBe("markdown");
+  });
   it("pdf/audio/video", () => {
     expect(detectPreviewKind("doc.pdf")).toBe("pdf");
     expect(detectPreviewKind("song.mp3")).toBe("audio");

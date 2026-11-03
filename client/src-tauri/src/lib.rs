@@ -53,6 +53,8 @@ mod native_review_model;
 mod native_review_scope;
 mod notifications;
 mod office_mcp;
+mod document_store;
+mod document_workspace;
 mod org;
 mod org_mcp;
 mod paths;
@@ -859,7 +861,11 @@ pub fn run() {
         let identifier = custom_profile_identifier(&context.config().identifier, &home, validation);
         context.config_mut().identifier = identifier;
     }
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("meeting-audio", |context, request, responder| {
+            let main_window = context.webview_label() == "main";
+            std::thread::spawn(move || responder.respond(meeting_minutes::audio::respond(request, main_window)));
+        });
     // Tauri requires single-instance to be the first registered plugin. A
     // second launch focuses the resident window (which may be tray-hidden)
     // instead of creating another WebView against the same profile.
@@ -1153,6 +1159,7 @@ pub fn run() {
             expert_avatar::expert_avatar,
             // Safe, bounded previews for local chat image attachments.
             attachment_preview::attachment_thumbnail,
+            attachment_preview::attachment_preview_data,
             // Persist clipboard file blobs under app_data_dir and
             // hand back a path so the existing attachments pipeline (multimodal
             // send, thumbnails, ACP metadata) keeps working.
@@ -1160,6 +1167,10 @@ pub fn run() {
             attachment_blob::discard_attachment_blob,
             // Durable long-form recording, MiniMax ASR, minutes and exports.
             meeting_minutes::meeting_create,
+            meeting_minutes::live::meeting_transcribe_live,
+            meeting_minutes::live::meeting_set_transcription_connection,
+            meeting_minutes::live::meeting_restore_minutes,
+            meeting_minutes::audio::meeting_audio_token,
             meeting_capture::meeting_capture_support,
             meeting_capture::meeting_capture_start,
             meeting_capture::meeting_capture_status,
@@ -1178,6 +1189,12 @@ pub fn run() {
             meeting_minutes::meeting_job_active,
             meeting_minutes::meeting_export,
             document_export::document_export,
+            document_workspace::document_workspace_open,
+            document_workspace::document_workspace_save,
+            document_workspace::document_workspace_publish,
+            document_workspace::document_workspace_import,
+            document_workspace::document_workspace_restore,
+            document_workspace::document_workspace_export,
             meeting_minutes::meeting_delete,
             meeting_minutes::meeting_open_audio,
             // EchoAgent admin: memory / search / rewind / commands / plan / tasks / reload

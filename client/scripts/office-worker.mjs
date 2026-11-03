@@ -9,6 +9,8 @@ import pptxgen from "pptxgenjs";
 import { PDFDocument, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { createStructuredWorkbook, createStructuredPresentation } from "./office-structured.mjs";
+import { renderDocument, documentBlocks } from "./office-document.mjs";
+import { markdownToDocument, normalizeDocument } from "../src/lib/document-model.ts";
 
 const [outputPath, fontPath] = process.argv.slice(2);
 if (!outputPath || !fontPath) throw new Error("Missing output or font path");
@@ -123,7 +125,8 @@ function blocks(items = tokens, depth = 0) {
   return out;
 }
 
-const content = blocks();
+const editableDocument = request.document ? normalizeDocument(request.document) : format === 'docx' ? markdownToDocument(markdown) : null;
+const content = request.document ? documentBlocks(editableDocument) : blocks();
 
 function docxTextRuns(value, options = {}) {
   return String(value).split("\n").map((line, index) => new TextRun({
@@ -219,13 +222,18 @@ async function createPdf() {
     y -= after;
   };
   const drawTable = (rows) => {
-    const columns = Math.max(1, ...rows.map((row) => row.length));
+    const span = cell => typeof cell === 'object' && cell !== null ? cell.colspan ?? 1 : 1;
+    const columns = Math.max(1, ...rows.map(row => row.reduce((width, cell) => width + span(cell), 0)));
     const columnWidth = (right - left) / columns;
     const lineHeight = 13.5;
     for (const [rowIndex, row] of rows.entries()) {
-      const cells = Array.from({ length: columns }, (_, index) =>
-        wrap(row[index] ?? "", 9, columnWidth - 16));
-      const maxLines = Math.max(1, ...cells.map((lines) => lines.length));
+      let column=0;
+      const cells = row.map(cell => {
+        const width=span(cell), start=column;column+=width;
+        const text=typeof cell==='object' && cell!==null ? cell.text : cell;
+        return {start,lines:wrap(text ?? '',9,columnWidth*width-16)};
+      });
+      const maxLines = Math.max(1, ...cells.map(cell => cell.lines.length));
       let offset = 0;
       while (offset < maxLines) {
         const available = Math.floor((y - 66 - 16) / lineHeight);
@@ -241,14 +249,14 @@ async function createPdf() {
           thickness: 0.6, color: rgb(0.75, 0.80, 0.84) });
         page.drawLine({ start: { x: left, y: top - height }, end: { x: right, y: top - height },
           thickness: 0.6, color: rgb(0.75, 0.80, 0.84) });
-        for (let column = 0; column <= columns; column++) {
-          const x = left + column * columnWidth;
+        for (const boundary of new Set([0,...cells.map(cell=>cell.start),column,columns])) {
+          const x = left + boundary * columnWidth;
           page.drawLine({ start: { x, y: top }, end: { x, y: top - height },
             thickness: 0.6, color: rgb(0.75, 0.80, 0.84) });
         }
-        cells.forEach((lines, column) => {
+        cells.forEach(({lines,start}) => {
           lines.slice(offset, offset + linesThisPage).forEach((line, index) => {
-            if (line) page.drawText(line, { x: left + column * columnWidth + 8,
+            if (line) page.drawText(line, { x: left + start * columnWidth + 8,
               y: top - 14 - index * lineHeight, size: 9, font, color: ink });
           });
         });
@@ -374,7 +382,10 @@ async function createPptx() {
 
 if (format === "xlsx" && request.workbook) await createStructuredWorkbook(request.workbook, outputPath);
 else if (format === "pptx" && request.slides) await createStructuredPresentation(title, request.slides, outputPath);
-else if (format === "docx") await createDocx();
+else if (format === "docx") {
+  if (!request.document && !editableDocument.content.some(node => node.type === "heading" && node.attrs?.level === 1)) editableDocument.content.unshift({type:"heading", attrs:{level:1}, content:[{type:"text",text:title}]});
+  await renderDocument(editableDocument, title, outputPath);
+}
 else if (format === "pdf") await createPdf();
 else if (format === "xlsx") await createXlsx();
 else await createPptx();

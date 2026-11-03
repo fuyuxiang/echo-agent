@@ -319,9 +319,16 @@ fn verified_receipt_at(
     Ok(entry.receipt)
 }
 
+pub(crate) fn has_export_path(session: &str, path: &Path) -> Result<bool, String> {
+    Ok(read_at(&crate::paths::echo_agent_home_dir(), session)?.iter().any(|entry| {
+        dunce::canonicalize(&entry.receipt.path).is_ok_and(|recorded| recorded == path)
+    }))
+}
+
 pub(crate) fn forget_session(session: &str) -> Result<(), String> {
     let _guard = WRITES.lock().map_err(|_| "成果存储锁已损坏")?;
     let path = store_path(&crate::paths::echo_agent_home_dir(), session)?;
+    crate::document_store::forget_session(&crate::paths::echo_agent_home_dir(), session)?;
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

@@ -4,11 +4,19 @@ const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("../tauri-kb-reader", () => ({ isTauriAvailable: () => true }));
 import { indexTaskArtifacts, registerDocumentArtifact, loadTaskArtifacts, loadSessionDocumentArtifacts, authorizeDocumentArtifact } from "../artifact-catalog";
-import { exportOfficeDocument } from "../document-export";
+import { exportOfficeDocument, officeReceiptFromRawOutput, officeInputFromToolCall } from "../document-export";
 import { mergeSessionArtifacts } from "../session-artifacts";
 import type { ChatMessage } from "@/stores/session-store";
 const receipt = { path: "/synthetic/export.docx", format: "docx" as const, byteSize: 123, sha256: "a".repeat(64) };
 beforeEach(() => { mocks.invoke.mockReset(); localStorage.clear(); });
+
+it("Agent updates use validated native receipts while reads never register outputs", () => {
+  const output = {type:"MCP",server_name:"echoagent-office",tool_name:"office_document_update",is_error:false,output:{OkayOutput:JSON.stringify({...receipt,revision:4})}};
+  expect(officeReceiptFromRawOutput(output)).toMatchObject(receipt);
+  expect(officeReceiptFromRawOutput({...output,tool_name:"office_document_read"})).toBeNull();
+  expect(officeReceiptFromRawOutput({...output,is_error:true})).toBeNull();
+  expect(officeInputFromToolCall({toolCallId:"u",kind:"mcp_tool",title:"use_tool",status:"completed",content:[],rawInput:{tool_name:"echoagent-office__office_document_update",tool_input:{path:receipt.path,expectedRevision:3}}})).toEqual({path:receipt.path,expectedRevision:3});
+});
 
 it("a delayed canonicalization cannot erase a newer manually exported artifact", async () => {
   let resolve!: (value: { canonicalPath: string }) => void;

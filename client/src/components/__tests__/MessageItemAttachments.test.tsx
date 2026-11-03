@@ -9,6 +9,10 @@ const { openLocalPath, attachmentThumbnail } = vi.hoisted(() => ({
   attachmentThumbnail: vi.fn().mockResolvedValue("jpeg-base64"),
 }));
 vi.mock("@/lib/agent-client", () => ({ openLocalPath, attachmentThumbnail }));
+vi.mock("@/lib/attachment-preview", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/attachment-preview")>(),
+  loadAttachmentPreview: vi.fn().mockResolvedValue("data:image/png;base64,original-image"),
+}));
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 
 const message: ChatMessage = {
@@ -51,9 +55,11 @@ describe("MessageItem user attachments", () => {
     expect(screen.getByText("请优化这份方案")).toBeInTheDocument();
   });
 
-  it("点击文档卡片使用系统默认应用打开", async () => {
+  it("点击文档卡片先在应用内预览，并保留系统打开入口", async () => {
     renderMessage();
     fireEvent.click(screen.getByRole("button", { name: /打开附件 AI数据集平台/ }));
+    await screen.findByRole("dialog", { name: "AI数据集平台-数据回流方案.docx" });
+    fireEvent.click(screen.getByRole("button", { name: "用系统应用打开" }));
     await waitFor(() => {
       expect(openLocalPath).toHaveBeenCalledWith(
         "/tmp/AI数据集平台-数据回流方案.docx",
@@ -72,7 +78,7 @@ describe("MessageItem user attachments", () => {
     );
   });
 
-  it("图片附件懒加载原生缩略图并保留点击打开", async () => {
+  it("图片附件懒加载缩略图，点击后预览原图", async () => {
     const imageMessage: ChatMessage = {
       ...message,
       attachments: ["/tmp/screenshot.PNG"],
@@ -91,8 +97,9 @@ describe("MessageItem user attachments", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "打开附件 screenshot.PNG" }));
+    await screen.findByRole("dialog", { name: "screenshot.PNG" });
     await waitFor(() => {
-      expect(openLocalPath).toHaveBeenCalledWith("/tmp/screenshot.PNG", "/tmp");
+      expect(screen.getByRole("img", { name: "screenshot.PNG" })).toHaveAttribute("src", "data:image/png;base64,original-image");
     });
   });
 

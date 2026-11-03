@@ -214,6 +214,7 @@ function QueueRow({
           >
             {item.text || "仅附件消息"}
           </button>
+          {item.documentEdit && <span className="queue-row__attachment">文档：{item.documentEdit.title}</span>}
           {item.recovery === "uncertain" && <span className="queue-panel__hint">发送结果待确认</span>}
           {item.sendError && <span className="queue-panel__hint" role="status">{item.sendError}</span>}
           {(item.attachments?.length ?? 0) > 0 && (

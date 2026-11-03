@@ -17,6 +17,8 @@ import {
   previewKindLabel,
   codeLanguage,
 } from "@/lib/file-kind";
+import { DocumentCanvas } from "./DocumentCanvas";
+import { importDocxDocument, type ImportedDocument } from "@/lib/docx-document";
 import type { ZipReader } from "@/lib/doc-preview";
 import {
   extractDocxFromZip,
@@ -122,6 +124,7 @@ export function FilePreview({ filename, content, onCopyText, docExtractor }: Fil
   // 调用方也可注入自定义 docExtractor 覆盖。
   if (kind === "docx" || kind === "pptx" || kind === "sheet") {
     let text: string | null = null;
+    let structured: ImportedDocument | null = null;
     let sheets: Array<{ name: string; rows: string[][] }> | undefined;
     try {
       const zip = docExtractor?.(filename) ?? defaultDocExtractor(content);
@@ -131,6 +134,7 @@ export function FilePreview({ filename, content, onCopyText, docExtractor }: Fil
         sheets = extracted?.sheets;
       } else if (zip) {
         text = (kind === "docx" ? extractDocxFromZip(zip) : extractPptxFromZip(zip))?.text ?? null;
+        if (kind === "docx") { try { structured = importDocxDocument(zip); } catch { /* Keep readable text for unsupported structures. */ } }
       }
     } catch {
       // Imported documents and custom extractors are untrusted. A corrupt or
@@ -142,6 +146,7 @@ export function FilePreview({ filename, content, onCopyText, docExtractor }: Fil
         kind={kind}
         text={text}
         sheets={sheets}
+        structured={structured}
         onCopyText={onCopyText}
       />
     );
@@ -323,12 +328,14 @@ function DocPreview({
   kind,
   text,
   sheets,
+  structured,
   onCopyText,
 }: {
   filename: string;
   kind: "docx" | "pptx" | "sheet";
   text: string | null;
   sheets?: Array<{ name: string; rows: string[][] }>;
+  structured?: ImportedDocument | null;
   onCopyText?: FilePreviewCopyHandler;
 }) {
   const { status, copy } = usePreviewCopy(text ?? "", filename, onCopyText);
@@ -360,6 +367,8 @@ function DocPreview({
         </div>
       ) : !text.trim() ? (
         <div className="file-preview__placeholder" role="note"><FileText size={28} aria-hidden="true" /><span>未提取到可阅读的文本</span><span className="file-preview__detail">文档可能为空，或仅包含图片。请用系统应用查看原件。</span></div>
+      ) : structured ? (
+        <><DocumentCanvas document={structured.document} />{structured.limitations.length > 0 && <p className="file-preview__detail">此预览未呈现{structured.limitations.join("、")}，完整排版请查看原件。</p>}</>
       ) : kind === "sheet" && sheets && sheets.length > 0 ? (
         <div className="file-preview__doc-body">
           {sheets.map((s, si) => (

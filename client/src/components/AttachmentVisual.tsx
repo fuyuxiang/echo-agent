@@ -89,14 +89,16 @@ function load(path: string): Promise<string> {
  * for missing or unreadable local files. Non-image attachments now show
  * an icon that matches their file category (Code → FileCode, Data → FileSpreadsheet,
  * Document → FileText) so users can scan a multi-file list at a glance. */
-export function AttachmentVisual({ path }: { path: string }) {
+export function AttachmentVisual({ path, showStatus = false }: { path: string; showStatus?: boolean }) {
   const kind = classifyAttachment(path);
   const image = kind === AttachmentKind.Image;
   const Icon = iconForKind(kind);
   const [src, setSrc] = useState(() => image ? cache.get(path) : undefined);
+  const [failed, setFailed] = useState(false);
   const wrapperRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
+    setFailed(false);
     if (!image) {
       setSrc(undefined);
       return;
@@ -114,7 +116,7 @@ export function AttachmentVisual({ path }: { path: string }) {
       if (started) return;
       started = true;
       void load(path).then((url) => {
-        if (active && url) setSrc(url);
+        if (active) { if (url) setSrc(url); else setFailed(true); }
       });
     };
     const element = wrapperRef.current;
@@ -151,6 +153,7 @@ export function AttachmentVisual({ path }: { path: string }) {
     <span
       ref={wrapperRef}
       className="msg__attachment-icon msg__attachment-icon--image"
+      data-thumbnail-state={src ? "ready" : failed ? "error" : "loading"}
       aria-hidden="true"
     >
       {src ? (
@@ -162,10 +165,11 @@ export function AttachmentVisual({ path }: { path: string }) {
           onError={() => {
             cache.delete(path);
             setSrc(undefined);
+            setFailed(true);
           }}
         />
       ) : (
-        <ImageIcon size={22} strokeWidth={1.7} />
+        <><ImageIcon size={22} strokeWidth={1.7} />{showStatus && <span className="composer-attachments__thumbnail-status">{failed ? "点击查看原图" : "加载中…"}</span>}</>
       )}
     </span>
   );

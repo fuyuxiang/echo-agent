@@ -11,6 +11,7 @@ export interface DocumentExportReceipt {
 }
 
 const OFFICE_CREATE_TOOL = "echoagent-office__office_create";
+const OFFICE_UPDATE_TOOL = "echoagent-office__office_document_update";
 
 function recordInput(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -19,15 +20,15 @@ function recordInput(value: unknown): Record<string, unknown> | null {
 
 export function isOfficeCreateTool(toolCall: ToolCallView): boolean {
   return toolCall.officeReceipt != null
-    || recordInput(toolCall.rawInput)?.tool_name === OFFICE_CREATE_TOOL
-    || /echoagent-office__office_create/i.test(`${toolCall.kind} ${toolCall.title}`);
+    || [OFFICE_CREATE_TOOL, OFFICE_UPDATE_TOOL].includes(String(recordInput(toolCall.rawInput)?.tool_name))
+    || /echoagent-office__(?:office_create|office_document_update)/i.test(`${toolCall.kind} ${toolCall.title}`);
 }
 
 /** Runtime discovery wraps an Office call in use_tool; direct MCP calls stay flat. */
 export function officeInputFromToolCall(toolCall: ToolCallView): Record<string, unknown> | null {
   if (!isOfficeCreateTool(toolCall)) return null;
   const input = recordInput(toolCall.rawInput);
-  return input?.tool_name === OFFICE_CREATE_TOOL ? recordInput(input.tool_input) : input;
+  return [OFFICE_CREATE_TOOL, OFFICE_UPDATE_TOOL].includes(String(input?.tool_name)) ? recordInput(input?.tool_input) : input;
 }
 
 function validReceipt(value: unknown): DocumentExportReceipt | null {
@@ -54,7 +55,9 @@ export function officeReceiptFromRawOutput(raw: unknown): DocumentExportReceipt 
     || output.is_error === true
     || output.server_name !== "echoagent-office"
     || (output.tool_name !== "office_create"
-      && output.tool_name !== "echoagent-office__office_create")) return null;
+      && output.tool_name !== "echoagent-office__office_create"
+      && output.tool_name !== "office_document_update"
+      && output.tool_name !== OFFICE_UPDATE_TOOL)) return null;
   const details = output.output;
   if (!details || typeof details !== "object") return null;
   const text = (details as Record<string, unknown>).OkayOutput;

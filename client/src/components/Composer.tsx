@@ -35,6 +35,8 @@ import {
 } from "@/lib/slash-commands";
 import { atTokenAtCursor, replaceAtToken } from "@/lib/at-commands";
 import { InputAddMenu } from "./InputAddMenu";
+import { AttachmentList } from "./AttachmentList";
+import { ExpandedDraftEditor } from "./ExpandedDraftEditor";
 import { useMeetingTranscriptionCapability } from "@/lib/use-meeting-transcription-capability";
 import { KnowledgePicker } from "./KnowledgePicker";
 import {
@@ -43,9 +45,10 @@ import {
   type AutomationMode,
 } from "@/lib/automation-client";
 import {
-  registerAsrProvider,
   getActiveAsr,
   createWebSpeechAsrProvider,
+  type AsrStop,
+  type SpeechRecognitionLike,
 } from "@/lib/voice-contract";
 import type { AgentEntry } from "@/lib/types";
 import {
@@ -313,6 +316,7 @@ export function Composer({
   const [stopping, setStopping] = useState(false);
   const stopPendingRef = useRef<number | null>(null);
   const [attachments, setAttachments] = useState<string[]>([]);
+  const [expandedDraft, setExpandedDraft] = useState<{ scope?: string; selection: [number, number] } | null>(null);
   const [automationSupport, setAutomationSupport] = useState<AutomationCapabilities | null>(null);
   const automationModeAvailable = Boolean(onAutomationModeChange);
   const attachmentsRef = useRef<string[]>([]);
@@ -508,10 +512,22 @@ export function Composer({
   }, [activeExpertName, sceneTag]);
   const hasRefs = blockList.length > 0;
   const [listening, setListening] = useState(false);
-  const recognitionRef = useRef<VoiceRecognition | null>(null);
+  const recognitionRef = useRef<AsrStop | null>(null);
+  const voiceSessionRef = useRef(0);
   const mountedRef = useRef(true);
   const onDraftChangeRef = useRef(onDraftChange);
   const ref = useRef<HTMLTextAreaElement>(null);
+
+  const cancelVoice = () => {
+    voiceSessionRef.current += 1;
+    const stopRecognition = recognitionRef.current;
+    recognitionRef.current = null;
+    if (mountedRef.current) setListening(false);
+    try {
+      if (stopRecognition?.abort) stopRecognition.abort();
+      else stopRecognition?.();
+    } catch { /* The draft already owns the visible transcript. */ }
+  };
 
   useEffect(() => {
     if (!automationModeAvailable || !("__TAURI_INTERNALS__" in window)) return;
@@ -578,10 +594,8 @@ export function Composer({
     const changedScope = draftScopeRef.current !== scope;
     if (changedScope) {
       scopeEpochRef.current += 1;
-      const recognition = recognitionRef.current;
-      if (recognition?.abort) recognition.abort(); else recognition?.stop();
-      recognitionRef.current = null;
-      setListening(false);
+      setExpandedDraft(null);
+      cancelVoice();
       ownedAttachmentPathsRef.current.clear();
       attachmentSizesRef.current.clear();
       histRef.current = createInputHistory();
@@ -618,7 +632,9 @@ export function Composer({
       updateText(initialText);
       setCursorPos(initialText.length);
       onInitialTextConsumed?.();
-      requestAnimationFrame(() => ref.current?.focus());
+      requestAnimationFrame(() => {
+        if (!document.activeElement?.closest('[aria-modal="true"]')) ref.current?.focus();
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialText]);
@@ -643,113 +659,84 @@ export function Composer({
     setCursorPos(next.length);
     requestAnimationFrame(() => {
       const el = ref.current;
-      if (!el) return;
+      if (!el || document.activeElement?.closest('[aria-modal="true"]')) return;
       el.focus();
       el.selectionStart = el.selectionEnd = next.length;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalTextNonce]);
 
-  // Voice input uses the provider-agnostic ASR registry, with Web Speech as
-  // the built-in browser implementation.
-  const toggleVoice = async () => {
-    if (listening) {
-      recognitionRef.current?.stop();
+  // A logical dictation may span several native recognition sessions.
+  const toggleVoice = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current();
+      return;
+    }
+    const provider = getActiveAsr() ?? (webSpeechAsr.isAvailable() ? webSpeechAsr : null);
+    if (!provider) {
+      onToast?.("当前环境不支持语音输入");
       return;
     }
     const epoch = scopeEpochRef.current;
-    // 优先走 provider-agnostic 注册表(对齐 EchoAgent asr:* 契约):外部 provider
-    // 注册后优先级更高；非桌面环境回落到内建 Web Speech。
-    ensureWebSpeechAsrRegistered();
-    const provider = getActiveAsr();
-    if (provider) {
-      const baseText = text;
-      const separator = baseText && !/\s$/.test(baseText) ? " " : "";
-      let committedText = "";
-      const stop = provider.listen("zh-CN", {
-        onInterim: (interim) => {
-          if (!isCurrentDraftEpoch(epoch)) return;
-          updateText(`${baseText}${separator}${committedText}${interim}`);
+    const voiceSession = ++voiceSessionRef.current;
+    const baseText = textRef.current;
+    const separator = baseText && !/\s$/.test(baseText) ? " " : "";
+    let committedText = "";
+    let ended = false;
+    const isCurrentVoice = () => !ended && isCurrentDraftEpoch(epoch) && voiceSessionRef.current === voiceSession;
+    const finish = () => {
+      if (!isCurrentVoice()) return;
+      ended = true;
+      recognitionRef.current = null;
+      setListening(false);
+    };
+    setListening(true);
+    try {
+      const stopRecognition = provider.listen("zh-CN", {
+        onInterim: interim => {
+          if (isCurrentVoice()) updateText(`${baseText}${separator}${committedText}${interim}`);
         },
-        onFinal: (finalDelta) => {
-          if (!isCurrentDraftEpoch(epoch)) return;
+        onFinal: finalDelta => {
+          if (!isCurrentVoice()) return;
           committedText += finalDelta;
           updateText(`${baseText}${separator}${committedText}`);
         },
-        onError: (reason) => {
-          if (!isCurrentDraftEpoch(epoch)) return;
-          setListening(false);
-          const msg = reason === "not-allowed" || reason === "service-not-allowed"
+        onError: reason => {
+          if (!isCurrentVoice()) return;
+          ended = true;
+          cancelVoice();
+          const message = reason === "not-allowed" || reason === "service-not-allowed"
             ? "未授予麦克风或语音识别权限"
             : reason === "audio-capture"
               ? "未检测到可用麦克风"
               : reason === "no-speech"
-                ? "没有检测到语音，请重试"
-                : `语音识别错误：${reason}`;
-          onToast?.(msg);
+                ? "没有检测到语音，已结束语音输入，点击麦克风可重试"
+                : reason === "start-failed"
+                  ? "无法启动语音识别，请重试"
+                  : `语音识别错误：${reason}`;
+          onToast?.(message);
         },
-        onEnd: () => { if (isCurrentDraftEpoch(epoch)) setListening(false); },
+        onEnd: finish,
       });
-      // 用 recognitionRef 持有 stop 句柄,与既有「再次点击停止」逻辑兼容。
-      recognitionRef.current = {
-        lang: "zh-CN",
-        interimResults: true,
-        continuous: false,
-        start: () => {},
-        stop,
-      } as VoiceRecognition;
-      setListening(true);
-      return;
-    }
-    const Ctor = getSpeechRecognitionCtor();
-    if (!Ctor) {
-      onToast?.("当前环境不支持语音输入");
-      return;
-    }
-    const rec = new Ctor();
-    rec.lang = "zh-CN";
-    rec.interimResults = true;
-    rec.continuous = false;
-    const baseText = text;
-    const separator = baseText && !/\s$/.test(baseText) ? " " : "";
-    let committedText = "";
-    rec.onresult = (event: SpeechRecognitionEventLike) => {
-      if (!isCurrentDraftEpoch(epoch)) return;
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const r = event.results[i];
-        if (r.isFinal) committedText += r[0].transcript;
-        else interim += r[0].transcript;
-      }
-      // Replace the trailing interim segment on every update; finalized text
-      // is accumulated separately and therefore cannot be duplicated.
-      updateText(`${baseText}${separator}${committedText}${interim}`);
-    };
-    rec.onerror = (e: SpeechRecognitionErrorEventLike) => {
-      if (!isCurrentDraftEpoch(epoch)) return;
-      setListening(false);
-      const msg = e.error === "not-allowed"
-        ? "未授予麦克风权限"
-        : `语音识别错误：${e.error}`;
-      onToast?.(msg);
-    };
-    rec.onend = () => { if (isCurrentDraftEpoch(epoch)) setListening(false); };
-    recognitionRef.current = rec;
-    try {
-      rec.start();
-      setListening(true);
+      // Providers may synchronously fail/end inside listen(). Never overwrite
+      // that terminal state with a stale stop handle or a listening indicator.
+      if (isCurrentVoice()) recognitionRef.current = stopRecognition;
+      else if (stopRecognition.abort) stopRecognition.abort();
+      else stopRecognition();
     } catch {
-      onToast?.("无法启动语音识别");
+      if (isCurrentVoice()) {
+        finish();
+        onToast?.("无法启动语音识别，请重试");
+      }
     }
   };
 
   useEffect(() => {
-    return () => {
-      const recognition = recognitionRef.current;
-      if (recognition?.abort) recognition.abort();
-      else recognition?.stop();
-    };
-  }, []);
+    if (!apiReady || awaitingQuestion || disabled) cancelVoice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiReady, awaitingQuestion, disabled]);
+
+  useEffect(() => () => cancelVoice(), []);
 
   // Drag-hover state drives the drop overlay. The actual path collection is
   // driven by Tauri's native onDragDropEvent below — the DOM-level
@@ -938,12 +925,16 @@ export function Composer({
   };
   const submissionLock = useRef<number | null>(null);
 
-  const captureSubmission = (): DraftSubmission => ({
-    scope: draftScopeRef.current,
-    scopeEpoch: scopeEpochRef.current,
-    revision: draftScopeRef.current === undefined ? 0 : draftRevision(draftScopeRef.current),
-    localRevision: localRevisionRef.current,
-  });
+  const captureSubmission = (): DraftSubmission => {
+    // Submit exactly the visible draft; late dictation must not repopulate it.
+    cancelVoice();
+    return {
+      scope: draftScopeRef.current,
+      scopeEpoch: scopeEpochRef.current,
+      revision: draftScopeRef.current === undefined ? 0 : draftRevision(draftScopeRef.current),
+      localRevision: localRevisionRef.current,
+    };
+  };
 
   const finishAcceptedSubmission = (submittedText: string, submission: DraftSubmission) => {
     const { scope } = submission;
@@ -1249,30 +1240,12 @@ export function Composer({
           </div>
         )}
 
-        {/* Attachment chips */}
-        {attachments.length > 0 && (
-          <div className="composer-attachments">
-            {attachments.map((path) => (
-              <span key={path} className="composer-attachments__chip" title={path}>
-                <span className="composer-attachments__chip-name">
-                  {path.replace(/\\/g, "/").split("/").pop()}
-                </span>
-                <button
-                  type="button"
-                  className="composer-attachments__chip-remove"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    discardOwnedAttachments([path]);
-                    updateAttachments((prev) => prev.filter((p) => p !== path));
-                  }}
-                  aria-label="移除附件"
-                >
-                  <X size={12} strokeWidth={2} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        <AttachmentList key={draftKey ?? "unsaved"} paths={attachments} cwd={cwd} sizes={attachmentSizesRef.current}
+          onRemove={path => {
+            discardOwnedAttachments([path]);
+            updateAttachments(prev => prev.filter(item => item !== path));
+            if (attachments.length === 1) ref.current?.focus({ preventScroll: true });
+          }} />
 
         {/* "操作类型"黑色标签(首页选中能力分类后插入,× 可删除) */}
         {sceneTag && (
@@ -1412,6 +1385,11 @@ export function Composer({
             }
           }}
         />
+        {(text.length > 400 || text.split("\n").length > 8) && <button type="button" className="composer-expand-draft"
+          disabled={!apiReady || awaitingQuestion || disabled} onClick={event => {
+            event.stopPropagation();
+            setExpandedDraft({ scope: draftKey === undefined ? undefined : String(draftKey), selection: [ref.current?.selectionStart ?? 0, ref.current?.selectionEnd ?? 0] });
+          }}>展开编辑</button>}
         {/* Slash-command autocomplete */}
         {slashCommandsEnabled && apiReady && !streaming && (
           <SlashCommands
@@ -1556,9 +1534,10 @@ export function Composer({
             }}
             disabled={!apiReady || awaitingQuestion || disabled}
             aria-label="语音输入"
+            aria-pressed={listening}
             title={listening ? "正在聆听…点击停止" : "语音输入"}
           >
-            <Mic size={16} />
+            {listening ? <Square size={16} /> : <Mic size={16} />}
           </button>
           <button type="button"
             className={"echo-composer__send" + (stopAction ? " echo-composer__send--stop" : streaming ? " echo-composer__send--queue" : !hasDraft ? " echo-composer__send--empty" : "")}
@@ -1578,6 +1557,14 @@ export function Composer({
           </div>
         </div>
       </section>
+      {expandedDraft && expandedDraft.scope === (draftKey === undefined ? undefined : String(draftKey)) && <ExpandedDraftEditor
+        value={text} onChange={value => { updateText(value); histCursorRef.current = histRef.current.items.length; }}
+        onPaste={handlePaste} disabled={!apiReady || awaitingQuestion || disabled} selection={expandedDraft.selection} returnFocus={ref.current}
+        onClose={selection => {
+          setExpandedDraft(null);
+          ref.current?.setSelectionRange(...selection);
+          setCursorPos(selection[0]);
+        }} />}
       {/* EchoAgent: meta 行在白卡外下方,透明背景,与卡片间距4px(仅首页) */}
       {showMeta && !permissionInline && (
         <div className="echo-composer-meta">
@@ -1608,33 +1595,9 @@ export function Composer({
   );
 }
 
-// ---------- SpeechRecognition minimal typing ----------
-// The browser SpeechRecognition API isn't in the TS DOM lib by default, and
-// vendor prefixes vary. We type only the surface we use and resolve the ctor
-// defensively at runtime.
-interface SpeechRecognitionResultLike {
-  isFinal: boolean;
-  0: { transcript: string };
-}
-interface SpeechRecognitionEventLike {
-  resultIndex: number;
-  results: ArrayLike<SpeechRecognitionResultLike>;
-}
-interface SpeechRecognitionErrorEventLike {
-  error: string;
-}
-interface VoiceRecognition {
-  lang: string;
-  interimResults: boolean;
-  continuous: boolean;
-  start: () => void;
-  stop: () => void;
-  abort?: () => void;
-  onresult: (e: SpeechRecognitionEventLike) => void;
-  onerror: (e: SpeechRecognitionErrorEventLike) => void;
-  onend: () => void;
-}
-type VoiceRecognitionCtor = new () => VoiceRecognition;
+// Web Speech is the built-in fallback. Explicitly registered providers always
+// take precedence, including on the first use of voice input.
+type VoiceRecognitionCtor = new () => SpeechRecognitionLike;
 
 function getSpeechRecognitionCtor(): VoiceRecognitionCtor | null {
   if (typeof window === "undefined") return null;
@@ -1645,27 +1608,11 @@ function getSpeechRecognitionCtor(): VoiceRecognitionCtor | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
-/**
- * 注册内建 Web Speech ASR provider 到 voice-contract 注册表(provider-agnostic,
- * 对齐 EchoAgent `asr:*` 契约)。外部 provider(如云端 STT)注册后会因其更高
- * 优先级而被优先使用。仅在首次调用时注册一次。
- */
-let webSpeechAsrRegistered = false;
-function ensureWebSpeechAsrRegistered(): void {
-  if (webSpeechAsrRegistered) return;
-  webSpeechAsrRegistered = true;
-  const Ctor = getSpeechRecognitionCtor();
-  if (!Ctor) return;
-  registerAsrProvider(
-    createWebSpeechAsrProvider({
-      isAvailable: () => getSpeechRecognitionCtor() !== null,
-      createRecognition: (lang) => {
-        const rec = new Ctor();
-        rec.lang = lang;
-        rec.interimResults = true;
-        rec.continuous = false;
-        return rec as never;
-      },
-    }),
-  );
-}
+const webSpeechAsr = createWebSpeechAsrProvider({
+  isAvailable: () => getSpeechRecognitionCtor() !== null,
+  createRecognition: () => {
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) throw new Error("Speech recognition is unavailable");
+    return new Ctor();
+  },
+});

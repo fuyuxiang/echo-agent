@@ -1,3 +1,4 @@
+import type { DocumentEditContext } from "@/lib/document-workspace";
 /**
  * 消息队列 store —— 对齐 EchoAgent `session:enqueueMessage/getMessageQueue/...`。
  *
@@ -33,6 +34,7 @@ export interface QueueItem {
   /** Local paths that must travel with this queued prompt. */
   attachments?: string[];
   coding?: CodingQueuedContext;
+  documentEdit?: DocumentEditContext;
   status: QueueItemStatus;
   recovery?: "queued" | "uncertain";
   sendError?: string;
@@ -48,7 +50,7 @@ type QueueMap = Record<string, QueueItem[]>;
 interface QueueState {
   queues: QueueMap;
   /** 入队一条(追加到末尾,默认 queued)。返回新 item 的 id。 */
-  enqueue: (sessionId: string, text: string, attachments?: string[], coding?: CodingQueuedContext) => string;
+  enqueue: (sessionId: string, text: string, attachments?: string[], coding?: CodingQueuedContext, documentEdit?: DocumentEditContext) => string;
   /** 编辑某条文本。 */
   update: (sessionId: string, id: string, text: string) => boolean;
   /** 删除某条。 */
@@ -94,10 +96,16 @@ function queueOf(map: QueueMap, sessionId: string): QueueItem[] {
 const OUTBOX_KEY = "echoagent.outbox.v1";
 function validQueues(value: unknown): value is QueueMap {
   return !!value && typeof value === "object" && !Array.isArray(value)
-    && Object.values(value).every((items) => Array.isArray(items) && items.every((item) =>
+    && Object.entries(value).every(([sessionId, items]) => Array.isArray(items) && items.every((item) =>
       item && typeof item.id === "string" && typeof item.text === "string"
       && ["queued", "paused", "sending"].includes(item.status) && Number.isFinite(item.createdAt)
       && (item.promptId === undefined || typeof item.promptId === "string")
+      && (item.documentEdit === undefined || (item.documentEdit
+        && item.documentEdit.sessionId === sessionId
+        && typeof item.documentEdit.path === "string" && item.documentEdit.path.length > 0
+        && typeof item.documentEdit.title === "string"
+        && Number.isSafeInteger(item.documentEdit.revision) && item.documentEdit.revision > 0
+        && typeof item.documentEdit.selectedText === "string"))
       && (item.attachments === undefined || (Array.isArray(item.attachments) && item.attachments.every((p: unknown) => typeof p === "string")))));
 }
 function restoredQueues(): QueueMap {
@@ -117,13 +125,15 @@ function commitQueues(queues: QueueMap, set: (state: { queues: QueueMap }) => vo
 
 export const useMessageQueueStore = create<QueueState>((set, get) => ({
   queues: restoredQueues(),
-  enqueue: (sessionId, text, attachments = [], coding) => {
+  enqueue: (sessionId, text, attachments = [], coding, documentEdit) => {
+    if (documentEdit && documentEdit.sessionId !== sessionId) throw new Error("文档修改上下文与任务不一致");
     const id = newId();
     const item: QueueItem = {
       id,
       text,
       attachments: [...new Set(attachments)],
       ...(coding ? {coding} : {}),
+      ...(documentEdit ? {documentEdit} : {}),
       status: "queued",
       createdAt: Date.now(),
     };

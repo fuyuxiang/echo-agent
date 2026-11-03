@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   registerTtsProvider,
   registerAsrProvider,
@@ -12,6 +12,7 @@ import {
   nextAsrStatus,
   type TtsProvider,
   type AsrProvider,
+  type SpeechRecognitionLike,
 } from "../voice-contract";
 
 describe("voice-contract — 注册表", () => {
@@ -63,7 +64,28 @@ describe("voice-contract — 注册表", () => {
 });
 
 describe("createWebSpeechAsrProvider", () => {
-  beforeEach(resetVoiceRegistry);
+  beforeEach(() => { resetVoiceRegistry(); vi.useFakeTimers(); });
+  afterEach(() => vi.useRealTimers());
+
+  function setup() {
+    const recognitions: SpeechRecognitionLike[] = [];
+    const provider = createWebSpeechAsrProvider({
+      isAvailable: () => true,
+      createRecognition: () => {
+        const rec: SpeechRecognitionLike = {
+          lang: "", continuous: false, interimResults: false,
+          start: vi.fn(), stop: vi.fn(), abort: vi.fn(),
+          onresult: null, onerror: null, onend: null,
+        };
+        recognitions.push(rec);
+        return rec;
+      },
+    });
+    const handlers = { onInterim: vi.fn(), onFinal: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
+    const stop = provider.listen("zh-CN", handlers);
+    return { recognitions, handlers, stop };
+  }
+  const finalResult = (text: string) => ({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: text } }] });
 
   it("listen 把中间/最终结果回调出去,并返回 stop", () => {
     let started = false;
@@ -112,11 +134,124 @@ describe("createWebSpeechAsrProvider", () => {
     });
     expect(onFinal).toHaveBeenLastCalledWith("世界");
 
-    fakeRec.onend!();
-    expect(onEnd).toHaveBeenCalled();
-
     stop();
     expect(fakeRec.stop).toHaveBeenCalled();
+    fakeRec.onend!();
+    expect(onEnd).toHaveBeenCalledOnce();
+  });
+
+  it("uses continuous dictation and stays active across an engine session boundary", () => {
+    const { recognitions, handlers, stop } = setup();
+    const first = recognitions[0];
+    expect(first).toMatchObject({ lang: "zh-CN", continuous: true, interimResults: true });
+    first.onresult?.(finalResult("第一句。"));
+    first.onend?.();
+    expect(handlers.onEnd).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(250);
+    recognitions[1].onresult?.(finalResult("第二句。"));
+    expect(handlers.onFinal.mock.calls).toEqual([["第一句。"], ["第二句。"]]);
+    expect(handlers.onEnd).not.toHaveBeenCalled();
+    stop.abort?.();
+  });
+
+  it("recovers from no-speech without ending dictation or reporting a transient error", () => {
+    const { recognitions, handlers, stop } = setup();
+    recognitions[0].onerror?.({ error: "no-speech" });
+    recognitions[0].onend?.();
+    vi.advanceTimersByTime(250);
+    expect(recognitions).toHaveLength(2);
+    expect(handlers.onError).not.toHaveBeenCalled();
+    expect(handlers.onEnd).not.toHaveBeenCalled();
+    recognitions[1].onresult?.(finalResult("停顿后的第二句"));
+    expect(handlers.onFinal).toHaveBeenCalledWith("停顿后的第二句");
+    stop.abort?.();
+  });
+
+  it("stopping between sessions cancels a pending restart", () => {
+    const { recognitions, handlers, stop } = setup();
+    recognitions[0].onend?.();
+    stop();
+    stop();
+    vi.runAllTimers();
+    expect(recognitions).toHaveLength(1);
+    expect(handlers.onEnd).toHaveBeenCalledOnce();
+  });
+
+  it("explicit stop accepts the last finalized words and never restarts", () => {
+    const { recognitions, handlers, stop } = setup();
+    const rec = recognitions[0];
+    stop(); stop();
+    expect(rec.stop).toHaveBeenCalledOnce();
+    rec.onresult?.(finalResult("最后一句"));
+    rec.onend?.();
+    vi.runAllTimers();
+    expect(handlers.onFinal).toHaveBeenCalledWith("最后一句");
+    expect(handlers.onEnd).toHaveBeenCalledOnce();
+    expect(recognitions).toHaveLength(1);
+  });
+
+  it("ignores repeated final snapshots and callbacks from a disconnected session", () => {
+    const { recognitions, handlers, stop } = setup();
+    const first = recognitions[0];
+    const lateResult = first.onresult!;
+    const lateEnd = first.onend!;
+    first.onresult?.(finalResult("第一句"));
+    first.onresult?.(finalResult("第一句"));
+    first.onend?.();
+    vi.advanceTimersByTime(250);
+    lateResult(finalResult("迟到结果")); lateEnd();
+    expect(handlers.onFinal.mock.calls).toEqual([["第一句"]]);
+    expect(recognitions).toHaveLength(2);
+    stop.abort?.();
+  });
+
+  it("keeps an unfinished interim when the engine disconnects before finalizing it", () => {
+    const { recognitions, handlers, stop } = setup();
+    recognitions[0].onresult?.({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: "尚未定稿的句子" } }] });
+    recognitions[0].onend?.();
+    expect(handlers.onFinal).toHaveBeenCalledWith("尚未定稿的句子");
+    stop.abort?.();
+    vi.runAllTimers();
+    expect(recognitions).toHaveLength(1);
+  });
+
+  it.each(["not-allowed", "service-not-allowed", "audio-capture", "network", "aborted"])("stops on terminal error %s without retrying", error => {
+    const { recognitions, handlers } = setup();
+    const rec = recognitions[0];
+    const lateEnd = rec.onend!;
+    rec.onerror?.({ error }); lateEnd();
+    vi.runAllTimers();
+    expect(rec.abort).toHaveBeenCalledOnce();
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith(error);
+    expect(handlers.onEnd).toHaveBeenCalledOnce();
+    expect(recognitions).toHaveLength(1);
+  });
+
+  it("bounds consecutive empty sessions instead of looping forever", () => {
+    const { recognitions, handlers } = setup();
+    for (let i = 0; i < 10 && !handlers.onEnd.mock.calls.length; i++) {
+      const rec = recognitions[recognitions.length - 1];
+      rec.onerror?.({ error: "no-speech" });
+      rec.onend?.();
+      vi.runAllTimers();
+    }
+    expect(recognitions.length).toBeGreaterThan(1);
+    expect(recognitions.length).toBeLessThan(10);
+    expect(handlers.onError).toHaveBeenCalledExactlyOnceWith("no-speech");
+    expect(handlers.onEnd).toHaveBeenCalledOnce();
+  });
+
+  it("abort releases the microphone and ignores all late callbacks", () => {
+    const { recognitions, handlers, stop } = setup();
+    const rec = recognitions[0];
+    const lateResult = rec.onresult!;
+    stop.abort?.(); stop.abort?.();
+    lateResult(finalResult("取消后的迟到结果"));
+    vi.runAllTimers();
+    expect(rec.abort).toHaveBeenCalledOnce();
+    expect(handlers.onFinal).not.toHaveBeenCalled();
+    expect(handlers.onEnd).toHaveBeenCalledOnce();
+    expect(recognitions).toHaveLength(1);
   });
 
   it("start 抛错时回调 onError", () => {
@@ -136,8 +271,10 @@ describe("createWebSpeechAsrProvider", () => {
       }),
     });
     const onError = vi.fn();
-    provider.listen("en", { onError });
+    const onEnd = vi.fn();
+    provider.listen("en", { onError, onEnd });
     expect(onError).toHaveBeenCalledWith("start-failed");
+    expect(onEnd).toHaveBeenCalledOnce();
   });
 
   it("isAvailable 透传依赖谓词", () => {

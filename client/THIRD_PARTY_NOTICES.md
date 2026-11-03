@@ -169,3 +169,13 @@ The bundled Office worker uses the npm packages `docx`, `exceljs`, `jszip`, `ppt
 staged into `office/licenses/` in the app resources during the build; remaining
 MIT license metadata for `@pdf-lib/fontkit` is staged there from its published
 package manifest. Exact package versions are pinned in `pnpm-lock.yaml`.
+
+## Tiptap and ProseMirror
+
+- Source: https://github.com/ueberdosis/tiptap and https://github.com/ProseMirror
+- Tiptap version: `3.32.2`; exact dependency versions are in `pnpm-lock.yaml`.
+- Integration: the document editor uses the MIT-licensed Tiptap React,
+  StarterKit, table and text alignment extensions and ProseMirror packages.
+- Copyright: Tiptap GmbH and the respective ProseMirror contributors.
+- Published Tiptap, wrapper and third-party license files are copied from the
+  installed packages into `office/licenses/` during the application build.

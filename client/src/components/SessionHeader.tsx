@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { PanelRight } from "lucide-react";
 import { SidebarToggleIcon, EchoNewTaskIcon } from "@/foundation/components/Icon/icons";
 import { TopbarTitle } from "./TopbarTitle";
@@ -53,12 +53,36 @@ export function SessionHeader({ sessionId, title, onRename, actions, summary, ac
   leading?: ReactNode;
   historyDisabled?: boolean;
 }) {
-  return <header className="main-topbar session-header" data-tauri-drag-region>
-    <div className="session-header__navigation"><SessionNavigation {...navigation} />{leading}</div>
+  const headerRef = useRef<HTMLElement>(null);
+  const navigationRef = useRef<HTMLDivElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const header = headerRef.current;
+    const navigation = navigationRef.current;
+    const actions = actionsRef.current;
+    if (!header || !navigation || !actions) return;
+    // Reserve the wider side on both sides of the title, including macOS's
+    // traffic-light inset. Tool changes must not shift or overlap the title.
+    const measure = () => {
+      const bounds = header.getBoundingClientRect();
+      const left = navigation.getBoundingClientRect();
+      const right = actions.getBoundingClientRect();
+      const space = Math.ceil(Math.max(left.width ? left.right - bounds.left : 0, bounds.right - right.left) + 12);
+      header.style.setProperty("--session-header-side-space", `${space}px`);
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    [header, navigation, actions].forEach(element => observer?.observe(element));
+    return () => observer?.disconnect();
+  }, []);
+
+  return <header ref={headerRef} className="main-topbar session-header" data-tauri-drag-region>
+    <div ref={navigationRef} className="session-header__navigation"><SessionNavigation {...navigation} />{leading}</div>
     <div className="session-header__identity" data-tauri-drag-region>
       {onRename ? <TopbarTitle key={sessionId} title={title} onRename={onRename} /> : <span className="main-topbar__title" title={title}>{title}</span>}
     </div>
-    <div className="session-header__actions">
+    <div ref={actionsRef} className="session-header__actions">
       {summary.hasPlan && <button type="button" className="session-header__context"
         aria-label={summary.planTotal ? `查看执行计划，已完成 ${summary.planCompleted}/${summary.planTotal} 步` : "查看执行计划"}
         aria-expanded={activeView === "plan"} aria-controls="session-workspace" onClick={() => onView("plan")}>

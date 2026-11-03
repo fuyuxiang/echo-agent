@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { meetingTranscriptionIssue } from './meeting-transcription-error';
 
 export type MeetingStatus =
   | "recording"
@@ -65,6 +66,9 @@ export interface MeetingRecord {
   minutes?: string;
   chunks: MeetingChunk[];
   error?: string;
+  live?: { processedSamples: number; error?: string };
+  minutesStale?: boolean;
+  previousMinutes?: string;
 }
 
 export interface MeetingEditBase {
@@ -187,6 +191,20 @@ export function meetingOpenAudio(meetingId: string): Promise<void> {
   return invoke("meeting_open_audio", { meetingId });
 }
 
+export async function meetingAudioUrl(meetingId: string): Promise<string> {
+  const token = await invoke<string>("meeting_audio_token", { meetingId });
+  return convertFileSrc(`${meetingId}/${token}`, "meeting-audio");
+}
+
+export function meetingRestoreMinutes(meetingId: string): Promise<MeetingRecord> {
+  return invoke("meeting_restore_minutes", { meetingId });
+}
+
+export interface LiveReply { record: MeetingRecord; waiting: boolean }
+export function meetingTranscribeLive(meetingId: string, finalize = false): Promise<LiveReply> {
+  return invoke("meeting_transcribe_live", { meetingId, finalize });
+}
+
 export function formatMeetingDuration(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds));
   return [Math.floor(value / 3600), Math.floor((value % 3600) / 60), value % 60]
@@ -202,6 +220,8 @@ interface RecorderSnapshot {
   error: string | null;
   source: RecordingSource | null;
   pendingSave: boolean;
+  transcription?: { state: "connecting" | "listening" | "recognizing" | "unavailable"; error?: string };
+  processingIds?: string[];
 }
 
 type RecorderListener = (snapshot: RecorderSnapshot) => void;
@@ -231,6 +251,15 @@ class MeetingRecorder {
   private exitPreparing = false;
   private stopOperation: Promise<MeetingRecord> | null = null;
   private pauseOperation: Promise<void> | null = null;
+  private liveTimer: number | null = null;
+  private liveRequest: Promise<LiveReply> | null = null;
+  private retryAt = 0;
+  private liveFailures = 0;
+  private retryLive = () => {
+    if(meetingTranscriptionIssue(this.snapshot.transcription?.error).settings)return;
+    this.retryAt = 0; void this.transcribeNext();
+  };
+  private completionJobs = new Map<string, Promise<void>>();
   private snapshot: RecorderSnapshot = {
     meeting: null,
     active: false,
@@ -252,6 +281,18 @@ class MeetingRecorder {
   }
 
   private publish(update: Partial<RecorderSnapshot>) {
+    const current = this.snapshot.meeting;
+    if (update.meeting && current?.id === update.meeting.id) {
+      const next = { ...update.meeting };
+      if (current.recordedSamples > next.recordedSamples) {
+        next.recordedSamples = current.recordedSamples;
+        next.durationSeconds = current.durationSeconds;
+      }
+      if ((current.live?.processedSamples ?? 0) > (next.live?.processedSamples ?? 0) || this.snapshot.active && ["recording", "paused"].includes(next.status) && (current.live?.processedSamples ?? 0) === (next.live?.processedSamples ?? 0)) {
+        next.live = current.live; next.transcript = current.transcript; next.transcriptText = current.transcriptText;
+      }
+      update = { ...update, meeting: next };
+    }
     this.snapshot = { ...this.snapshot, ...update };
     for (const listener of this.listeners) listener(this.snapshot);
   }
@@ -287,8 +328,6 @@ class MeetingRecorder {
 
   private async startRecording(title: string, modelId: string, providerId: string, source: RecordingSource, attempt: { cancelled: boolean }): Promise<MeetingRecord> {
     this.publish({ error: null });
-    // A connection may have changed since the panel's readiness check.
-    await meetingCheckConnection(modelId, providerId);
     this.ensureStartAllowed(attempt);
     if (source !== "microphone") {
       let meeting: MeetingRecord | null = null;
@@ -298,6 +337,7 @@ class MeetingRecorder {
         const status = await meetingCaptureStart(meeting.id, source);
         this.publish({ meeting, active: true, paused: status.paused, level: status.level, error: status.error ?? null, source, pendingSave: status.pendingSave ?? false });
         this.startNativePolling();
+        this.startLiveTranscription();
         return meeting;
       } catch (error) {
         if (meeting) await meetingDelete(meeting.id).catch(() => undefined);
@@ -325,7 +365,8 @@ class MeetingRecorder {
       const context = new AudioContext();
       const source = context.createMediaStreamSource(stream);
       // ScriptProcessor remains the most consistently available PCM callback
-      // in WKWebView and WebView2. Small five-second native writes bound memory.
+      // in WKWebView and WebView2. One-second native writes bound memory and
+      // make durable audio available promptly for incremental recognition.
       const processor = context.createScriptProcessor(4096, source.channelCount || 1, 1);
       processor.onaudioprocess = (event) => this.consume(event.inputBuffer);
       source.connect(processor);
@@ -341,7 +382,11 @@ class MeetingRecorder {
       this.aggregate = 0;
       this.aggregateCount = 0;
       this.uploadChain = Promise.resolve();
+      for (const track of (stream.getAudioTracks?.() ?? stream.getTracks())) track.addEventListener?.("ended", () => {
+        if (this.snapshot.active && !this.snapshot.pendingSave && this.stream === stream) this.publish({ paused: true, level: 0, error: "麦克风已断开，已录音频仍保留；请结束并保存后重新录音" });
+      });
       this.publish({ meeting, active: true, paused: false, level: 0, error: null, source: "microphone" });
+      this.startLiveTranscription();
       return meeting;
     } catch (error) {
       stream.getTracks().forEach((track) => track.stop());
@@ -361,6 +406,76 @@ class MeetingRecorder {
     const source = meeting.captureSource === "both" ? "both" : "system";
     this.publish({ meeting, active: true, paused: status.paused, level: status.level, error: status.error ?? null, source, pendingSave: status.pendingSave ?? false });
     this.startNativePolling();
+    this.startLiveTranscription();
+  }
+
+  private startLiveTranscription() {
+    if (this.liveTimer !== null) window.clearInterval(this.liveTimer);
+    this.liveRequest = null; // A previous recording's tail has its own completion job.
+    this.retryAt = 0; this.liveFailures = 0;
+    window.addEventListener("online", this.retryLive);
+    this.publish({ transcription: { state: "connecting" } });
+    this.liveTimer = window.setInterval(() => void this.transcribeNext(), 500);
+  }
+
+  async retryTranscription(binding?: MeetingModelBinding): Promise<void> {
+    const meeting=this.snapshot.meeting;
+    if(!meeting || !this.snapshot.active || this.snapshot.pendingSave)throw new Error('当前录音已结束，请在录音详情中继续处理');
+    await this.liveRequest?.catch(()=>{});
+    if(this.snapshot.meeting?.id!==meeting.id || !this.snapshot.active)throw new Error('录音状态已变化，请重新打开当前录音');
+    if(binding){
+      const updated=await invoke<MeetingRecord>('meeting_set_transcription_connection',{meetingId:meeting.id,...binding});
+      if(this.snapshot.meeting?.id!==meeting.id || !this.snapshot.active)return;
+      this.publish({meeting:updated});
+    }
+    this.retryAt=0;this.liveFailures=0;
+    this.publish({transcription:{state:'connecting'}});
+    await this.transcribeNext();
+  }
+
+  private async transcribeNext() {
+    const meeting = this.snapshot.meeting;
+    if (!meeting || !this.snapshot.active || this.liveRequest || Date.now() < this.retryAt || this.snapshot.pendingSave) return;
+    if (meeting.recordedSamples <= (meeting.live?.processedSamples ?? 0)) return;
+    const request = meetingTranscribeLive(meeting.id);
+    this.liveRequest = request;
+    this.publish({ transcription: { state: "recognizing" } });
+    try {
+      const reply = await request;
+      if (this.snapshot.meeting?.id !== meeting.id) return;
+      if (reply?.record) this.publish({ meeting: reply.record, transcription: { state: "listening" } });
+      this.liveFailures = 0;
+    } catch (error) {
+      if (this.snapshot.meeting?.id !== meeting.id) return;
+      this.liveFailures += 1;
+      this.retryAt = meetingTranscriptionIssue(String(error)).settings ? Infinity : Date.now() + Math.min(20_000, 1000 * 2 ** Math.min(this.liveFailures, 4));
+      this.publish({ transcription: { state: "unavailable", error: String(error).replace(/^Error:\s*/, "") } });
+    } finally { if (this.liveRequest === request) this.liveRequest = null; }
+  }
+
+  private saved(record: MeetingRecord) {
+    if (this.liveTimer !== null) window.clearInterval(this.liveTimer);
+    this.liveTimer = null;
+    window.removeEventListener("online", this.retryLive);
+    if (this.exitPreparing || this.completionJobs.has(record.id)) return;
+    const pending = this.liveRequest;
+    const job = Promise.resolve().then(async () => {
+      await pending?.catch(() => undefined);
+      // Drain the tail; a long offline backlog uses the durable batch recovery.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const latest = await meetingGet(record.id);
+        if (!latest || (latest.live?.processedSamples ?? 0) >= latest.recordedSamples) break;
+        try { const reply = await meetingTranscribeLive(record.id, true); if (reply?.waiting) break; }
+        catch { break; }
+      }
+      await meetingProcess(record.id);
+    }).catch(() => undefined).finally(async () => {
+      this.completionJobs.delete(record.id);
+      const latest = await meetingGet(record.id).catch(() => null);
+      this.publish({ processingIds: [...this.completionJobs.keys()], ...(latest && this.snapshot.meeting?.id === record.id && !this.snapshot.active ? { meeting: latest } : {}) });
+    });
+    this.completionJobs.set(record.id, job);
+    this.publish({ processingIds: [...this.completionJobs.keys()] });
   }
 
   private startNativePolling() {
@@ -374,7 +489,7 @@ class MeetingRecorder {
     try {
       const status = await meetingCaptureStatus();
       if (!status || status.meetingId !== this.snapshot.meeting?.id) return;
-      this.publish({ paused: status.paused, level: status.level, error: status.error ?? null, pendingSave: status.pendingSave ?? false });
+      this.publish({ paused: status.paused || !status.active && Boolean(status.error), level: status.level, error: status.error ?? null, pendingSave: status.pendingSave ?? false });
       if (status.recordedSamples !== this.snapshot.meeting.recordedSamples) {
         const meeting = await meetingGet(status.meetingId);
         if (this.snapshot.active && this.snapshot.meeting?.id === status.meetingId) this.publish({ meeting });
@@ -413,7 +528,7 @@ class MeetingRecorder {
       }
     }
     this.publish({ level: Math.min(1, peak * 2.5) });
-    if (this.pending.length >= 16_000 * 5) this.flush();
+    if (this.pending.length >= 16_000) this.flush();
   }
 
   private flush() {
@@ -501,6 +616,7 @@ class MeetingRecorder {
         const completed = await meetingCaptureStop(meeting.id);
         this.stopNativePolling();
         this.publish({ meeting: completed, active: false, paused: false, level: 0, error: null, source: null, pendingSave: false });
+        this.saved(completed);
         return completed;
       } catch (error) {
         const status = await meetingCaptureStatus().catch(() => null);
@@ -534,6 +650,7 @@ class MeetingRecorder {
       }
       const completed = await meetingFinishRecording(meeting.id);
       this.publish({ meeting: completed, active: false, paused: false, level: 0, source: null, pendingSave: false, error: null });
+      this.saved(completed);
       return completed;
     } catch (error) {
       this.publish({ level: 0, error: String(error).replace(/^Error:\s*/, "") });

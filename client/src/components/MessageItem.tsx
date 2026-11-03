@@ -20,17 +20,15 @@ import { EchoMark } from "./EchoMark";
 import { ExecutionProcess } from "./ExecutionProcess";
 import { ActionMenu } from "./ActionMenu";
 import { FeedbackDialog } from "./FeedbackDialog";
-import { AttachmentVisual } from "./AttachmentVisual";
+import { AttachmentList } from "./AttachmentList";
 import { useTheme } from "./ThemeProvider";
 import { useFeedbackStore, type FeedbackRating } from "@/stores/feedback-store";
 import type { ChatMessage, ToolCallView } from "@/stores/session-store";
 import { openLocalPath } from "@/lib/agent-client";
 import {
   attachmentBasename,
-  isImageAttachment,
   stripInjectedUserContext,
 } from "@/lib/user-message";
-import { friendlyAttachmentError } from "@/lib/attachment-errors";
 import { highlightSegments } from "@/lib/extract-text";
 import { copyShareText } from "@/lib/share";
 import { exportOfficeDocument, type OfficeFormat } from "@/lib/document-export";
@@ -344,40 +342,7 @@ export const MessageItem = memo(function MessageItem({
       <div className="msg msg--user">
         <div>
           <div className={"msg__bubble" + (attachments.length ? " msg__bubble--with-attachments" : "")}>
-            {attachments.length > 0 && (
-              <div className="msg__attachments" role="list" aria-label="附件">
-                {attachments.map((path) => {
-                  const name = attachmentBasename(path);
-                  const image = isImageAttachment(path);
-                  const extension = name.includes(".")
-                    ? name.slice(name.lastIndexOf(".") + 1).toUpperCase()
-                    : "FILE";
-                  return (
-                    <div key={path} className="msg__attachment-item" role="listitem">
-                      <button
-                        type="button"
-                        className={"msg__attachment" + (image ? " msg__attachment--image" : "")}
-                        title={path}
-                        aria-label={`打开附件 ${name}`}
-                        onClick={() => {
-                          void openLocalPath(path, cwd).catch((error) => {
-                            onToast?.(friendlyAttachmentError(error, path));
-                          });
-                        }}
-                      >
-                        <AttachmentVisual path={path} />
-                        <span className="msg__attachment-copy">
-                          <span className="msg__attachment-name">{name}</span>
-                          <span className="msg__attachment-type">
-                            {extension} {image ? "图片" : "文件"}
-                          </span>
-                        </span>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <AttachmentList key={`${sessionId ?? ""}:${message.id}`} paths={attachments} cwd={cwd} variant="message" />
             {message.parts.map((p, i) => {
               if (p.kind !== "text") return null;
               const visibleText = stripInjectedUserContext(p.text);

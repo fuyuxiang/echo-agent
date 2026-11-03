@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   meetingList: vi.fn(),
   captureSupport: vi.fn(),
   recorderStart: vi.fn(),
+  retryTranscription: vi.fn(),
   meetingGet: vi.fn(),
   meetingUpdate: vi.fn(),
   meetingJobActive: vi.fn(),
@@ -33,9 +34,12 @@ vi.mock("@/lib/meeting-minutes", () => ({
     subscribe: (listener: (snapshot: unknown) => void) => { mocks.listener = listener; return () => { mocks.listener = null; }; },
     syncNative: vi.fn().mockResolvedValue(undefined),
     start: mocks.recorderStart,
+    retryTranscription: mocks.retryTranscription,
   },
   formatMeetingDuration: () => "00:00:00",
 }));
+
+vi.mock("../MeetingAudioPlayer", () => ({ MeetingAudioPlayer: () => null }));
 
 import { MeetingMinutesPanel } from "../MeetingMinutesPanel";
 import { meetingDrafts } from "@/lib/meeting-drafts";
@@ -48,92 +52,92 @@ const models = [
   { id: "echoagent-ojlab/MiniMax-M3", label: "内置 MiniMax", providerId: "echoagent-ojlab", providerKind: "custom", source: "builtin" as const },
 ];
 
-describe("MeetingMinutesPanel connection capability", () => {
+describe("MeetingMinutesPanel recording first workflow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.removeItem("echo.meeting.recording-source");
     mocks.meetingList.mockResolvedValue([]);
-    mocks.checkConnection.mockResolvedValue(undefined);
-    mocks.captureSupport.mockResolvedValue({ systemAudio: true, detail: "首次使用需授权" });
+    mocks.checkConnection.mockRejectedValue(new Error("离线"));
+    mocks.captureSupport.mockResolvedValue({ systemAudio: true });
+    mocks.meetingJobActive.mockResolvedValue(false);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
   });
-
-  it("uses the actual transcription check for personal and organization compatible gateways", async () => {
+  it("does not expose import or service configuration and permits local recording offline", async () => {
     render(<MeetingMinutesPanel modelId={models[0].id} models={models} />);
-
-    await waitFor(() => expect(mocks.checkConnection).toHaveBeenCalledWith(models[0].id, "personal"));
-    expect(await screen.findByText("转写接口已就绪")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "开始录音" })).toBeEnabled();
-    expect(screen.queryByRole("option", { name: "内置 MiniMax" })).toBeNull();
-
-    fireEvent.change(screen.getByRole("combobox", { name: "会议模型" }), { target: { value: models[1].id } });
-    await waitFor(() => expect(mocks.checkConnection).toHaveBeenCalledWith(models[1].id, "echoagent-organization"));
-    expect(await screen.findByText(/录音和 API Key 将通过明文网络传输/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "开始录音" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "开始录音" })).toBeEnabled();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("button", { name: /导入/ })).toBeNull();
+    expect(mocks.checkConnection).not.toHaveBeenCalled();
   });
-
-  it("keeps recording disabled and explains an unavailable speech endpoint", async () => {
-    mocks.checkConnection.mockRejectedValue(new Error("当前连接没有 /speech_to_text 转写接口"));
-    render(<MeetingMinutesPanel modelId={models[0].id} models={models.slice(0, 1)} />);
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("当前连接没有 /speech_to_text 转写接口");
-    expect(screen.getByRole("button", { name: "开始录音" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "重新检测" })).toBeInTheDocument();
+  it("can record without any configured model", async () => {
+    mocks.recorderStart.mockResolvedValue({ id: "local", title: "离线录音", transcript: [], chunks: [], status: "recording", recordedSamples: 0 });
+    mocks.meetingList.mockResolvedValue([]);
+    render(<MeetingMinutesPanel models={[]} />);
+    fireEvent.click(await screen.findByRole("button", { name: "开始录音" }));
+    await waitFor(() => expect(mocks.recorderStart).toHaveBeenCalledWith(expect.any(String), "", "", "microphone"));
   });
-
-  it("passes the selected mixed audio source to the recorder", async () => {
-    const record = { id: "record-1", title: "测试会议", status: "recording", transcript: [], chunks: [], recordedSamples: 0, durationSeconds: 0 };
+  it('provides a settings route without blocking local recording when no connection exists',async()=>{
+    const settings=vi.fn();render(<MeetingMinutesPanel models={[]} onOpenModelSettings={settings}/>);
+    fireEvent.click(await screen.findByRole('button',{name:'配置转写连接'}));
+    expect(settings).toHaveBeenCalledOnce();expect(screen.getByRole('button',{name:'开始录音'})).toBeEnabled();
+  });
+  it('shows the real credential error and retries a repaired binding while recording',async()=>{
+    const settings=vi.fn();mocks.retryTranscription.mockResolvedValue(undefined);
+    render(<MeetingMinutesPanel models={models} modelId={models[0].id} onOpenModelSettings={settings}/>);
+    await screen.findByRole('button',{name:'开始录音'});
+    await act(async()=>mocks.listener?.({active:true,paused:false,level:.1,source:'both',error:null,
+      transcription:{state:'unavailable',error:'会议模型 API Key 未配置或已失效'},
+      meeting:{id:'live-settings',title:'正在录音',modelId:'',providerId:'',status:'recording',createdAt:0,recordedSamples:64000,durationSeconds:4,transcript:[],chunks:[]}}));
+    expect(screen.getByText(/转写连接需要处理/)).toBeInTheDocument();
+    expect(screen.getByText('会议模型 API Key 未配置或已失效')).toBeInTheDocument();
+    expect(screen.queryByText(/网络恢复后会补转/)).toBeNull();
+    fireEvent.click(screen.getByRole('button',{name:'检查模型连接'}));expect(settings).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button',{name:'重试转写'}));
+    await waitFor(()=>expect(mocks.retryTranscription).toHaveBeenCalledWith({modelId:models[0].id,providerId:'personal'}));
+  });
+  it("passes the mixed audio source and current compatible binding without a model selector", async () => {
+    const record = { id: "record-1", title: "测试会议", status: "recording", transcript: [], chunks: [], recordedSamples: 0 };
     mocks.recorderStart.mockResolvedValue(record);
-    mocks.meetingGet.mockResolvedValue(record);
-    render(<MeetingMinutesPanel modelId={models[0].id} models={models.slice(0, 1)} />);
-
+    render(<MeetingMinutesPanel modelId={models[0].id} models={models} />);
     const both = await screen.findByRole("button", { name: /两者都录/ });
-    await waitFor(() => expect(both).toBeEnabled());
-    fireEvent.click(both);
-    expect(both).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText(/建议佩戴耳机/)).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: "开始录音" })).toBeEnabled());
+    await waitFor(() => expect(both).toBeEnabled()); fireEvent.click(both);
     fireEvent.click(screen.getByRole("button", { name: "开始录音" }));
     await waitFor(() => expect(mocks.recorderStart).toHaveBeenCalledWith(expect.any(String), models[0].id, "personal", "both"));
   });
-
-  it("shows the saved meeting connection instead of the global model and uses a replacement for retry", async () => {
-    const record = { id: "failed-model-binding", title: "需要恢复的会议", createdAt: 0, status: "failed", modelId: models[1].id, providerId: models[1].providerId, transcript: [], chunks: [], recordedSamples: 16000, durationSeconds: 1 };
-    mocks.meetingList.mockResolvedValue([record]);
-    mocks.meetingProcess.mockResolvedValue({ ...record, status: "completed" });
+  it("retains a saved valid binding for retry", async () => {
+    const record = { id: "failed-binding", title: "需要恢复的会议", createdAt: 0, status: "failed", modelId: models[1].id, providerId: models[1].providerId, transcript: [], chunks: [], recordedSamples: 16000, durationSeconds: 1 };
+    mocks.meetingList.mockResolvedValue([record]); mocks.meetingProcess.mockResolvedValue(record);
     render(<MeetingMinutesPanel modelId={models[0].id} models={models} />);
-    const selector = await screen.findByRole("combobox", { name: "本次处理模型" });
-    expect(selector).toHaveValue(models[1].id);
-    expect(screen.getByText(/录音和 API Key 将通过明文网络传输/)).toBeInTheDocument();
-    fireEvent.change(selector, { target: { value: models[0].id } });
-    await waitFor(() => expect(screen.getByText("转写接口已就绪")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "开始转写并生成纪要" }));
-    await waitFor(() => expect(mocks.meetingProcess).toHaveBeenCalledWith(record.id, { modelId: models[0].id, providerId: "personal" }));
+    fireEvent.click(await screen.findByRole("button", { name: "重试未完成部分" }));
+    await waitFor(() => expect(mocks.meetingProcess).toHaveBeenCalledWith(record.id, { modelId: models[1].id, providerId: models[1].providerId }));
   });
-
-  it("allows a deleted meeting connection to be replaced when regenerating minutes", async () => {
-    const record = { id: "deleted-model-binding", title: "连接删除后的会议", createdAt: 0, status: "completed", modelId: "deleted/MiniMax", providerId: "deleted", minutes: "# 原纪要", transcript: [{ id: 0, start: 0, end: 1, text: "已有转写", speaker: "说话人1" }], chunks: [], recordedSamples: 16000, durationSeconds: 1 };
-    mocks.meetingList.mockResolvedValue([record]);
-    mocks.meetingRegenerateMinutes.mockResolvedValue(record);
+  it("falls back to the current compatible binding when the saved connection was deleted", async () => {
+    const record = { id: "deleted-binding", title: "连接已删除", createdAt: 0, status: "completed", modelId: "deleted/MiniMax", providerId: "deleted", minutes: "# 原纪要", transcript: [{ id: 0, start: 0, end: 1, text: "已有转写", speaker: "说话人1" }], chunks: [], recordedSamples: 16000, durationSeconds: 1 };
+    mocks.meetingList.mockResolvedValue([record]); mocks.meetingRegenerateMinutes.mockResolvedValue(record);
     render(<MeetingMinutesPanel modelId={models[0].id} models={models} />);
-    const selector = await screen.findByRole("combobox", { name: "本次处理模型" });
-    expect(screen.getByText(/原会议连接已不可用，请确认本次处理模型/)).toBeInTheDocument();
-    fireEvent.change(selector, { target: { value: models[1].id } });
-    await waitFor(() => expect(screen.getByText("转写接口已就绪")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "重新生成" }));
-    await waitFor(() => expect(mocks.meetingRegenerateMinutes).toHaveBeenCalledWith(record.id, { modelId: models[1].id, providerId: "echoagent-organization" }));
+    await screen.findByRole("heading", { name: record.title });
+    fireEvent.click(screen.getByRole("button", { name: "更多录音操作" }));
+    fireEvent.click(screen.getByRole("button", { name: "重新生成纪要" }));
+    await waitFor(() => expect(mocks.meetingRegenerateMinutes).toHaveBeenCalledWith(record.id, { modelId: models[0].id, providerId: "personal" }));
   });
-
-  it("can generate minutes from saved text when the speech route is unavailable", async () => {
-    const record = { id: "chat-only-minutes", title: "已有转写会议", createdAt: 0, status: "transcribed", modelId: models[0].id, providerId: "personal", transcript: [{ id: 0, start: 0, end: 1, text: "已有转写", speaker: "说话人1" }], chunks: [], recordedSamples: 16000, durationSeconds: 1 };
-    mocks.meetingList.mockResolvedValue([record]);
-    mocks.meetingRegenerateMinutes.mockResolvedValue(record);
-    mocks.checkConnection.mockRejectedValue(new Error("当前连接没有转写接口"));
-    render(<MeetingMinutesPanel modelId={models[0].id} models={models.slice(0, 1)} />);
-    await screen.findByText(/已有转写仍可用于生成纪要/);
+  it("generates minutes from saved text without a speech capability probe", async () => {
+    const record = { id: "text-only", title: "已有原文", createdAt: 0, status: "transcribed", transcript: [{ id: 0, start: 0, end: 1, text: "已有转写", speaker: "说话人1" }], chunks: [], recordedSamples: 16000, durationSeconds: 1 };
+    mocks.meetingList.mockResolvedValue([record]); mocks.meetingRegenerateMinutes.mockResolvedValue(record);
+    render(<MeetingMinutesPanel modelId={models[0].id} models={models} />);
+    await screen.findByRole("heading", { name: record.title });
+    fireEvent.click(screen.getByRole("tab", { name: "会议纪要" }));
     fireEvent.click(screen.getByRole("button", { name: "生成会议纪要" }));
     await waitFor(() => expect(mocks.meetingRegenerateMinutes).toHaveBeenCalledWith(record.id, { modelId: models[0].id, providerId: "personal" }));
   });
+  it("resumes an unfinished saved recording before generating a summary of its partial transcript", async () => {
+    const record = { id: "exit-recovery", title: "退出后恢复", createdAt: 0, status: "recorded", transcript: [{ id:0,start:0,end:4,speaker:"S1",text:"仅识别了前半段" }], live: { processedSamples:64000 }, chunks: [], recordedSamples:128000, durationSeconds:8 };
+    mocks.meetingList.mockResolvedValue([record]);mocks.meetingProcess.mockResolvedValue(record);
+    render(<MeetingMinutesPanel models={models}/>);
+    fireEvent.click(await screen.findByRole("button",{name:"继续转写并整理纪要"}));
+    await waitFor(()=>expect(mocks.meetingProcess).toHaveBeenCalledWith(record.id,expect.any(Object)));
+    expect(mocks.meetingRegenerateMinutes).not.toHaveBeenCalled();
+  });
 });
-
 
 describe("meeting content preservation", () => {
   const historic = { id: "historic", title: "历史会议", createdAt: 0, status: "completed", minutes: "# 原纪要", transcript: [{ id: 0, start: 0, end: 1, text: "原转写", speaker: "说话人1" }], chunks: [], recordedSamples: 16000, durationSeconds: 1 };
@@ -141,12 +145,18 @@ describe("meeting content preservation", () => {
     vi.clearAllMocks();
     mocks.meetingList.mockResolvedValue([historic]);
     mocks.checkConnection.mockResolvedValue(undefined);
+    mocks.meetingJobActive.mockResolvedValue(false);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     mocks.captureSupport.mockResolvedValue({ systemAudio: true });
   });
   it("retains historical selection and unsaved transcription during recorder updates", async () => {
     render(<MeetingMinutesPanel models={models.slice(0, 1)} />);
     await screen.findByRole("heading", { name: "历史会议" });
-    fireEvent.click(screen.getByRole("button", { name: /完整转写/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "转写原文" }));
+    if (!screen.queryByRole("textbox", { name: "第 1 段转写" })) {
+      const edit = screen.getByRole("button", { name: "校对原文" });
+      await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+    }
     fireEvent.change(screen.getByRole("textbox", { name: "第 1 段转写" }), { target: { value: "校对草稿" } });
     act(() => mocks.listener?.({ meeting: { ...historic, id: "active", title: "活动会议", status: "recording" }, active: true, paused: false, level: 0.8, error: null, source: "microphone" }));
     expect(screen.getByRole("heading", { name: "历史会议" })).toBeInTheDocument();
@@ -212,16 +222,25 @@ describe("meeting content preservation", () => {
     mocks.meetingUpdate.mockResolvedValue({ ...completed, minutes: undefined });
     render(<MeetingMinutesPanel models={models.slice(0, 1)} />);
     await screen.findByRole("heading", { name: partial.title });
-    await screen.findByText("转写接口已就绪");
-    fireEvent.click(screen.getByRole("button", { name: /完整转写/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "转写原文" }));
+    if (!screen.queryByRole("textbox", { name: "第 1 段转写" })) {
+      const edit = screen.getByRole("button", { name: "校对原文" });
+      await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+    }
     fireEvent.change(screen.getByRole("textbox", { name: "第 1 段转写" }), { target: { value: "人工校对" } });
-    fireEvent.click(screen.getByRole("button", { name: "开始转写并生成纪要" }));
+    fireEvent.click(screen.getByRole("button", { name: "重试未完成部分" }));
     await screen.findByText("新纪要");
-    expect(screen.getByRole("button", { name: "导出 Word" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^(保存并导出|导出)$/ }));
+    expect(screen.getByRole("button", { name: "Word" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "更多录音操作" }));
+    expect(screen.getByRole("button", { name: "重新生成纪要" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "编辑纪要" })).toBeDisabled();
-    expect(screen.getByText(/转写校对尚未保存/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /完整转写/ }));
+    expect(screen.getByText(/原文校对尚未保存/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "转写原文" }));
+    if (!screen.queryByRole("textbox", { name: "第 1 段转写" })) {
+      const edit = screen.getByRole("button", { name: "校对原文" });
+      await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+    }
     expect(screen.getByRole("textbox", { name: "第 1 段转写" })).toHaveValue("人工校对");
     expect(screen.getByRole("textbox", { name: "第 2 段转写" })).toHaveValue("新增转写");
     fireEvent.click(screen.getByRole("button", { name: "保存校对" }));
@@ -238,7 +257,7 @@ describe("meeting content preservation", () => {
     ] }]);
     render(<MeetingMinutesPanel models={models.slice(0, 1)} />);
     await screen.findByRole("heading", { name: historic.title });
-    await waitFor(() => expect(screen.getByRole("button", { name: "开始转写并生成纪要" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "重试未完成部分" })).toBeEnabled());
   });
 
   it("重新生成纪要后显示新预览和草稿冲突，明确选择后才编辑旧草稿", async () => {
@@ -252,15 +271,17 @@ describe("meeting content preservation", () => {
     await screen.findByRole("heading", { name: original.title });
     fireEvent.click(screen.getByRole("button", { name: "编辑纪要" }));
     fireEvent.change(screen.getByRole("textbox", { name: "编辑会议纪要" }), { target: { value: "旧版人工纪要" } });
-    expect(screen.getByRole("button", { name: "导出 Word" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "返回预览（保留草稿）" }));
-    fireEvent.click(screen.getByRole("button", { name: "重新生成" }));
+    fireEvent.click(screen.getByRole("button", { name: /^(保存并导出|导出)$/ }));
+    expect(screen.getByRole("button", { name: "Word" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "返回阅读（保留草稿）" }));
+    fireEvent.click(screen.getByRole("button", { name: "更多录音操作" }));
+    fireEvent.click(screen.getByRole("button", { name: "重新生成纪要" }));
     await screen.findByText("最新纪要");
     expect(screen.getByRole("alert")).toHaveTextContent("原纪要草稿已保留");
     expect(screen.getByRole("button", { name: "编辑纪要" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "保留原草稿并编辑" }));
     expect(screen.getByRole("textbox", { name: "编辑会议纪要" })).toHaveValue("旧版人工纪要");
-    fireEvent.click(screen.getByRole("button", { name: "返回预览（保留草稿）" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回阅读（保留草稿）" }));
     expect(screen.getByText("最新纪要")).toBeInTheDocument();
   });
 
@@ -274,7 +295,11 @@ describe("meeting content preservation", () => {
     });
     render(<MeetingMinutesPanel models={models.slice(0, 1)} />);
     await screen.findByRole("heading", { name: original.title });
-    fireEvent.click(screen.getByRole("button", { name: /完整转写/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "转写原文" }));
+    if (!screen.queryByRole("textbox", { name: "第 1 段转写" })) {
+      const edit = screen.getByRole("button", { name: "校对原文" });
+      await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+    }
     fireEvent.change(screen.getByRole("textbox", { name: "第 1 段转写" }), { target: { value: "人工校对" } });
     fireEvent.click(screen.getByRole("button", { name: "保存校对" }));
     await screen.findByText(/最新转写与原校对草稿有冲突/);
@@ -292,7 +317,11 @@ describe("meeting content preservation", () => {
     mocks.meetingUpdate.mockReturnValueOnce(new Promise((_, reject) => { failSave = reject; }));
     render(<MeetingMinutesPanel models={models.slice(0, 1)} />);
     await screen.findByRole("heading", { name: historic.title });
-    fireEvent.click(screen.getByRole("button", { name: /完整转写/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "转写原文" }));
+    if (!screen.queryByRole("textbox", { name: "第 1 段转写" })) {
+      const edit = screen.getByRole("button", { name: "校对原文" });
+      await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+    }
     const input = screen.getByRole("textbox", { name: "第 1 段转写" });
     fireEvent.change(input, { target: { value: "不能丢失的校对" } });
     fireEvent.click(screen.getByRole("button", { name: "保存校对" }));

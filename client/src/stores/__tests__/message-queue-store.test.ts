@@ -49,6 +49,17 @@ describe("message-queue-store — 入队与读取", () => {
   it("空会话返回空数组", () => {
     expect(useMessageQueueStore.getState().getQueue("nope")).toEqual([]);
   });
+
+  it("文档修改指令保留当前文档上下文并拒绝跨任务入队", () => {
+    const documentEdit = {sessionId:"s1",path:"/work/作息表.docx",title:"作息表",revision:3,selectedText:"6:30 起床"};
+    const s = useMessageQueueStore.getState();
+    const id = s.enqueue("s1", "改成七点半", [], undefined, documentEdit);
+    s.update("s1", id, "改成八点");
+    expect(s.claimById("s1", id, "turn")?.documentEdit).toEqual(documentEdit);
+    expect(JSON.parse(localStorage.getItem("echoagent.outbox.v1")!).data.s1[0].documentEdit).toEqual(documentEdit);
+    expect(() => s.enqueue("s2", "修改", [], undefined, documentEdit)).toThrow("任务不一致");
+    expect(s.getQueue("s2")).toEqual([]);
+  });
 });
 
 describe("message-queue-store — 编辑/删除/重排", () => {

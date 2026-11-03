@@ -29,6 +29,8 @@ export interface TtsProvider {
 }
 
 /** ASR provider 接口。 */
+export type AsrStop = (() => void) & { abort?: () => void };
+
 export interface AsrProvider {
   id: string;
   /**
@@ -37,7 +39,8 @@ export interface AsrProvider {
    *  - onFinal:最终结果
    *  - onError:出错
    *  - onEnd:会话结束(无论正常/异常)
-   * 返回一个 stop 函数(停止监听)。
+   * 返回一个 stop 函数(结束听写，允许收齐最后的识别结果)。
+   * 可选的 stop.abort 用于离开输入框时立即取消，不再返回结果。
    */
   listen(
     lang: string,
@@ -47,7 +50,7 @@ export interface AsrProvider {
       onError?: (reason: string) => void;
       onEnd?: () => void;
     },
-  ): () => void;
+  ): AsrStop;
   /** 是否可用。 */
   isAvailable(): boolean;
 }
@@ -96,7 +99,7 @@ export function listProviderIds(): { tts: string[]; asr: string[] } {
 // ---------- 内建 Web Speech provider(默认,可被外部 provider 覆盖)----------
 
 /** 最小 SpeechRecognition 构造器形状(避免耦合 DOM 类型)。 */
-interface SpeechRecognitionLike {
+export interface SpeechRecognitionLike {
   lang: string;
   interimResults: boolean;
   continuous: boolean;
@@ -109,7 +112,7 @@ interface SpeechRecognitionLike {
 }
 interface SpeechRecognitionEventLike {
   resultIndex: number;
-  results: Array<{ isFinal: boolean; 0: { transcript: string } }>;
+  results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
 }
 interface SpeechRecognitionErrorEventLike {
   error: string;
@@ -130,34 +133,89 @@ export function createWebSpeechAsrProvider(deps: {
     id: "web-speech-asr",
     isAvailable: deps.isAvailable,
     listen(lang, handlers) {
-      const rec = deps.createRecognition(lang);
-      rec.onresult = (event) => {
-        let interim = "";
-        let finalDelta = "";
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const r = event.results[i];
-          if (r.isFinal) finalDelta += r[0].transcript;
-          else interim += r[0].transcript;
-        }
-        if (interim) handlers.onInterim?.(interim);
-        // Report only newly-finalized text. Returning the cumulative transcript
-        // makes consumers append old words again on every result event.
-        if (finalDelta) handlers.onFinal?.(finalDelta);
+      let recognition: SpeechRecognitionLike | null = null;
+      let restartTimer: ReturnType<typeof setTimeout> | undefined;
+      let listening = true;
+      let ended = false;
+      let emptyRounds = 0;
+      const detach = (rec: SpeechRecognitionLike) => {
+        rec.onresult = rec.onerror = rec.onend = null;
       };
-      rec.onerror = (e) => handlers.onError?.(e.error);
-      rec.onend = () => handlers.onEnd?.();
-      try {
-        rec.start();
-      } catch {
-        handlers.onError?.("start-failed");
-      }
-      return () => {
+      const finish = (reason?: string) => {
+        if (ended) return;
+        ended = true;
+        listening = false;
+        clearTimeout(restartTimer);
+        const rec = recognition;
+        recognition = null;
+        if (rec) {
+          detach(rec);
+          try { if (rec.abort) rec.abort(); else rec.stop(); } catch { /* already stopped */ }
+        }
+        if (reason) handlers.onError?.(reason);
+        handlers.onEnd?.();
+      };
+      const startRound = () => {
+        if (!listening || ended) return;
         try {
-          rec.stop();
+          const rec = deps.createRecognition(lang);
+          recognition = rec;
+          rec.lang = lang;
+          rec.continuous = true;
+          rec.interimResults = true;
+          const finalized = new Set<number>();
+          let interim = "";
+          let hasSpeech = false;
+          rec.onresult = (event) => {
+            if (ended || recognition !== rec) return;
+            interim = "";
+            let finalDelta = "";
+            for (let i = 0; i < event.results.length; i++) {
+              const result = event.results[i];
+              if (!result.isFinal) interim += result[0].transcript;
+              else if (!finalized.has(i)) {
+                finalized.add(i);
+                finalDelta += result[0].transcript;
+              }
+            }
+            if (interim || finalDelta) { hasSpeech = true; emptyRounds = 0; }
+            if (finalDelta) handlers.onFinal?.(finalDelta);
+            if (!ended && recognition === rec) handlers.onInterim?.(interim);
+          };
+          rec.onerror = (event) => {
+            if (ended || recognition !== rec) return;
+            // Silence is an engine session boundary, not the user's stop
+            // command. Permission, device and network errors are terminal.
+            if (event.error !== "no-speech") finish(event.error);
+          };
+          rec.onend = () => {
+            if (ended || recognition !== rec) return;
+            detach(rec);
+            recognition = null;
+            // Some engines disconnect before finalizing their last interim.
+            // Keep that visible text when continuing into the next session.
+            if (interim) handlers.onFinal?.(interim);
+            if (!listening) { finish(); return; }
+            if (!hasSpeech && ++emptyRounds > 3) { finish("no-speech"); return; }
+            // Continuous mode can still end at an engine-imposed boundary.
+            // Restart without ending the logical dictation or resetting UI.
+            restartTimer = setTimeout(startRound, 250);
+          };
+          rec.start();
         } catch {
-          /* noop */
+          finish("start-failed");
         }
       };
+      startRound();
+      const stop: AsrStop = () => {
+        if (!listening || ended) return;
+        listening = false;
+        clearTimeout(restartTimer);
+        if (!recognition) { finish(); return; }
+        try { recognition.stop(); } catch { finish(); }
+      };
+      stop.abort = () => finish();
+      return stop;
     },
   };
 }

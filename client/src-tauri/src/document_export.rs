@@ -32,6 +32,8 @@ pub struct DocumentExportRequest {
     pub(crate) workbook: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) slides: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) document: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -167,7 +169,7 @@ pub(crate) fn validate_output(path: &Path, format: &str) -> Result<(u64, String)
     Ok((metadata.len(), format!("{:x}", hasher.finalize())))
 }
 
-fn install_output(source: &Path, destination: &Path, overwrite: bool) -> Result<(), String> {
+pub(crate) fn install_output(source: &Path, destination: &Path, overwrite: bool) -> Result<(), String> {
     let parent = destination.parent().ok_or("无效的保存目录")?;
     let stage = tempfile::Builder::new()
         .prefix(".echo-office-stage-")
@@ -207,7 +209,7 @@ fn install_output(source: &Path, destination: &Path, overwrite: bool) -> Result<
     Ok(())
 }
 
-async fn generate(
+pub(crate) async fn generate(
     app: &AppHandle,
     request: &DocumentExportRequest,
     output: &Path,
@@ -262,7 +264,7 @@ pub async fn export(
     export_for_session(app, request, None).await
 }
 
-async fn export_for_session(
+pub(crate) async fn export_for_session(
     app: &AppHandle,
     request: DocumentExportRequest,
     session_id: Option<&str>,
@@ -293,7 +295,11 @@ pub(crate) fn validate_request(request: &DocumentExportRequest) -> Result<(), St
     if !valid_format(&request.format) {
         return Err("不支持的导出格式".into());
     }
-    let structured = request.workbook.is_some() || request.slides.is_some();
+    let structured = request.workbook.is_some() || request.slides.is_some() || request.document.is_some();
+    if let Some(document) = &request.document {
+        if !matches!(request.format.as_str(), "docx" | "pdf") { return Err("可编辑文档仅支持 Word 或 PDF 导出".into()); }
+        crate::document_store::validate(document)?;
+    }
     if (request.markdown.trim().is_empty() && !structured)
         || serde_json::to_vec(request)
             .map_err(|e| e.to_string())?
@@ -361,6 +367,8 @@ async fn export_to_path_for_session(
     } else {
         destination
     };
+    let document_lock = crate::document_workspace::document_lock(destination)?;
+    let _document_guard = document_lock.lock().await;
     let temp = match policy {
         OutputPolicy::Create { .. } => tempfile::Builder::new()
             .prefix(".echo-office-")
@@ -399,6 +407,14 @@ async fn export_to_path_for_session(
             crate::session_artifacts::record(session, receipt.clone(), &request.title)
         {
             tracing::warn!(%error, "export receipt staged; history will verify published output");
+        }
+    }
+    if receipt.format == "docx" {
+        let source = output.with_file_name("output.docx.document.json");
+        let source = crate::shell_fs::read_regular_file_bounded(&source, 2 * 1024 * 1024)?;
+        let model = serde_json::from_slice(&source).map_err(|error| format!("文档已生成，但编辑稿无法读取：{error}"))?;
+        if let Some(session) = session_id {
+            crate::document_workspace::register_generated(session, destination, &request.title, model, &receipt.sha256, receipt.byte_size)?;
         }
     }
     Ok(receipt)

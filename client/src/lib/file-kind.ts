@@ -7,6 +7,7 @@
  * `binary`(显示占位 + 文件名 + 大小);markdown/image/code/text 可本地直接渲染。
  */
 import { basenameOf, extOf } from "./drop-utils";
+import { AttachmentKind, classifyAttachment } from "./user-message";
 
 export type PreviewKind =
   | "markdown"
@@ -22,7 +23,7 @@ export type PreviewKind =
   | "binary";
 
 const IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"];
-const MARKDOWN_EXTS = [".md", ".markdown", ".mdx"];
+const MARKDOWN_EXTS = [".md", ".markdown", ".mdown", ".mdx"];
 const CODE_EXTS = [
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
   ".json", ".py", ".rs", ".go", ".java", ".kt", ".c", ".h", ".cpp", ".hpp",
@@ -59,6 +60,11 @@ export function detectPreviewKind(filename: string): PreviewKind {
   if (inSet(ext, DOCX_EXTS)) return "docx";
   if (inSet(ext, PPTX_EXTS)) return "pptx";
   if (inSet(ext, SHEET_EXTS)) return "sheet";
+  // Composer and preview must agree on readable source/text/data attachments,
+  // including Vue, TeX, TSV and config formats outside the syntax-label map.
+  const attachmentKind = classifyAttachment(filename);
+  if (attachmentKind === AttachmentKind.Code) return "code";
+  if (attachmentKind === AttachmentKind.Text || attachmentKind === AttachmentKind.Data) return "text";
   return "binary";
 }
 

@@ -168,7 +168,7 @@ try {
     .filter(([name]) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
     .map(([, file]) => file.async("string")))).join("\n");
   for (const [label, expected] of fidelityRows) {
-    assert.ok(fidelityDocxXml.includes(xmlText(expected)), `DOCX changed ${label}`);
+    assert.ok(officeXmlText(fidelityDocxXml, "w").includes(expected), `DOCX changed ${label}`);
     assert.ok(fidelityPdfText.includes(expected), `PDF changed ${label}`);
     assert.ok(fidelitySlides.includes(xmlText(expected)), `PPTX changed ${label}`);
   }

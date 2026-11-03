@@ -7862,48 +7862,6 @@ button.diff__path {
   outline: 2px solid var(--echo-brand, #00c29a);
   outline-offset: 1px;
 }
-.composer-attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 0;
-  margin-bottom: 8px;
-}
-.composer-attachments__chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 4px 3px 8px;
-  background: var(--echo-bg-tertiary);
-  border: 1px solid var(--echo-border-default);
-  border-radius: var(--echo-radius-full, 999px);
-  font-size: 0.75rem;
-  color: var(--echo-text-strong);
-  max-width: 200px;
-}
-.composer-attachments__chip-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.composer-attachments__chip-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: none;
-  background: transparent;
-  border-radius: 50%;
-  cursor: pointer;
-  color: var(--echo-text-medium);
-  flex-shrink: 0;
-}
-.composer-attachments__chip-remove:hover {
-  background: var(--echo-bg-active);
-  color: var(--echo-text-strong);
-}
-
 /* ========================================================================
  * Context Menu — right-click session actions
  * ====================================================================== */

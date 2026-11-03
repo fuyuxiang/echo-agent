@@ -33,7 +33,7 @@ export function MeetingRecordingIndicator({
     try {
       await meetingRecorder.stop();
       onOpen(snapshot.meeting?.modelId);
-      onToast?.("录音已保存，可以开始转写");
+      onToast?.("录音已保存，正在补齐转写并自动整理纪要");
     } catch (error) {
       onToast?.(`结束录音失败：${String(error).replace(/^Error:\s*/, "")}`);
     } finally {

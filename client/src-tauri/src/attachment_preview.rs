@@ -1,4 +1,4 @@
-//! Safe, bounded thumbnails for local chat attachments.
+//! Safe, bounded thumbnails and on-demand originals for local chat attachments.
 //!
 //! The frontend deliberately does not expose arbitrary local paths through
 //! Tauri's asset protocol. Instead it requests a small JPEG for image formats
@@ -123,9 +123,131 @@ pub async fn attachment_thumbnail(
     .await
 }
 
+fn preview_data_sync(source: &Path) -> Result<String, String> {
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "pdf" | "docx" | "pptx" | "xlsx" | "xls"
+    ) {
+        return Err("此文件类型请用系统应用打开".into());
+    }
+    let bytes = crate::shell_fs::read_regular_file_bounded(source, MAX_SOURCE_BYTES)?;
+    if supported_extension(source) {
+        // Inspect headers before handing an original to the WebView. A tiny
+        // compressed source must not expand into an unbounded browser bitmap.
+        let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+            .with_guessed_format()
+            .map_err(|_| "无法识别图片格式".to_string())?;
+        let (width, height) = reader
+            .into_dimensions()
+            .map_err(|_| "无法读取图片，文件可能已损坏".to_string())?;
+        if width == 0
+            || height == 0
+            || width > MAX_IMAGE_DIMENSION
+            || height > MAX_IMAGE_DIMENSION
+            || u64::from(width) * u64::from(height) * 4 > MAX_DECODE_ALLOC
+        {
+            return Err("图片尺寸过大，请用系统应用查看原图".into());
+        }
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// Full originals are loaded only by an explicit preview gesture. Use the
+/// same native file grant, regular-file checks and 20 MiB admission cap as
+/// attachments, without broadening the generic binary-reader policy.
+#[tauri::command]
+pub async fn attachment_preview_data(
+    access: State<'_, crate::shell_fs::FilesystemAccess>,
+    path: String,
+) -> Result<String, String> {
+    let source = access.require_authorized_file(Path::new(&path))?;
+    tokio::task::spawn_blocking(move || preview_data_sync(&source))
+        .await
+        .map_err(|error| format!("附件预览任务失败：{error}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_preview_preserves_image_bytes_above_one_megabyte() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("original.PNG");
+        image::RgbaImage::from_pixel(4, 2, image::Rgba([12, 34, 56, 128]))
+            .save(&path)
+            .unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.resize(1024 * 1024 + 128, 0);
+        std::fs::write(&path, &bytes).unwrap();
+        let encoded = preview_data_sync(&path).unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn preview_rejects_oversized_unsupported_and_corrupt_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.pdf");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_SOURCE_BYTES + 1)
+            .unwrap();
+        assert!(preview_data_sync(&path).is_err());
+        let path = temp.path().join("script.exe");
+        std::fs::write(&path, b"binary").unwrap();
+        assert!(preview_data_sync(&path).unwrap_err().contains("系统应用"));
+        let path = temp.path().join("broken.png");
+        std::fs::write(&path, b"not an image").unwrap();
+        assert!(preview_data_sync(&path).is_err());
+    }
+
+    #[test]
+    fn document_preview_preserves_original_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        for extension in ["pdf", "docx", "pptx", "xlsx", "xls"] {
+            let path = temp.path().join(format!("document.{extension}"));
+            std::fs::write(&path, b"document bytes").unwrap();
+            let encoded = preview_data_sync(&path).unwrap();
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .unwrap(),
+                b"document bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn original_preview_rejects_excessive_image_dimensions() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wide.png");
+        image::RgbaImage::new(MAX_IMAGE_DIMENSION + 1, 1)
+            .save(&path)
+            .unwrap();
+        assert!(preview_data_sync(&path).unwrap_err().contains("尺寸过大"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn original_preview_rejects_a_source_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("original.pdf");
+        let source = temp.path().join("link.pdf");
+        std::fs::write(&target, b"original").unwrap();
+        std::os::unix::fs::symlink(&target, &source).unwrap();
+        assert!(preview_data_sync(&source).is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"original");
+    }
 
     #[tokio::test]
     async fn creates_a_bounded_jpeg_and_reuses_the_cache() {

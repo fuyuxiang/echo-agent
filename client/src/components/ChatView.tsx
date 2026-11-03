@@ -1,3 +1,4 @@
+import { documentEditPrompt, documentSession, type DocumentEditContext } from "@/lib/document-workspace";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import { SessionWorkspaceDirectory, SessionWorkspaceWarning } from "./SessionWorkspace";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, type ReactNode } from "react";
@@ -134,6 +135,7 @@ export function ChatView({
     text: string,
     attachments?: string[],
     queueItemId?: string,
+    promptTextOverride?: string,
   ) => boolean | void | Promise<boolean | void>;
   /** Atomically replace the active turn with this user message. */
   onSendNow?: (
@@ -645,6 +647,18 @@ export function ChatView({
       onToast?.(`${action}失败：${friendlyError(error)}`);
     });
   }, [messages, onToast, performRetry, requestConfirmation]);
+
+  const [documentEdit, setDocumentEdit] = useState<DocumentEditContext | null>(null);
+  const activeDocumentEdit = documentEdit?.sessionId === sessionId ? documentEdit : null;
+  useEffect(() => { setDocumentEdit(null); }, [sessionId]);
+  const sendDocumentMessage = async (text: string, attachments: string[] = []) => {
+    if (!activeDocumentEdit) return onSend(text, attachments);
+    await documentSession(activeDocumentEdit.sessionId, activeDocumentEdit.path).flush();
+    if (useSessionStore.getState().sessionId !== activeDocumentEdit.sessionId) return false;
+    const accepted = await onSend(text, attachments, undefined, documentEditPrompt(activeDocumentEdit, text));
+    if (accepted !== false) setDocumentEdit(null);
+    return accepted;
+  };
 
   // ---- Phase 2/3: tool detail + artifacts side panel ----
   const panelOpen = workspaceView !== null;
@@ -1195,6 +1209,11 @@ export function ChatView({
               onSendNow={streaming ? onSendNow : onSend}
             />
           )}
+          {activeDocumentEdit && <div className="chatview__document-context">
+            <span title={activeDocumentEdit.path}>正在修改：{activeDocumentEdit.title}{activeDocumentEdit.selectedText ? " · 已选中部分内容" : " · 全文"}</span>
+            <button type="button" onClick={() => { handleSelectArtifact({id:activeDocumentEdit.path,path:activeDocumentEdit.path,kind:"file",title:activeDocumentEdit.title,toolCallId:"",status:"completed"}); }}>查看文档</button>
+            <button type="button" aria-label="取消文档修改上下文" onClick={() => setDocumentEdit(null)}>取消</button>
+          </div>}
           <Composer
             streaming={streaming}
             sendDisabled={!workspace.available || workspace.busy || replacingTurn || continuationPending}
@@ -1202,7 +1221,7 @@ export function ChatView({
             apiReady={apiReady}
             setupHint={setupHint}
             onOpenSettings={onOpenSettings}
-            onSend={onSend}
+            onSend={sendDocumentMessage}
             sendNowPending={sendNowPending}
             awaitingQuestion={awaitingQuestion || awaitingDecision || awaitingPlan}
             onEnqueue={
@@ -1214,8 +1233,18 @@ export function ChatView({
                     const current = useSessionStore.getState();
                     if (current.sessionId !== sessionId || cancelRequests.current.has(sessionId)
                       || current.control || current.error) return false;
-                    if (!current.streaming) return onSend(text, attachments);
-                    useMessageQueueStore.getState().enqueue(sessionId, text, attachments);
+                    if (!current.streaming) return sendDocumentMessage(text, attachments);
+                    if (activeDocumentEdit) return (async () => {
+                      await documentSession(activeDocumentEdit.sessionId, activeDocumentEdit.path).flush();
+                      const latest = useSessionStore.getState();
+                      if (latest.sessionId !== sessionId || cancelRequests.current.has(sessionId)
+                        || latest.control || latest.error) return false;
+                      if (!latest.streaming) return sendDocumentMessage(text, attachments);
+                      useMessageQueueStore.getState().enqueue(sessionId, text, attachments, undefined, activeDocumentEdit);
+                      setDocumentEdit(null);
+                    })();
+                    useMessageQueueStore.getState().enqueue(sessionId, text, attachments, undefined, activeDocumentEdit ?? undefined);
+                    if (activeDocumentEdit) setDocumentEdit(null);
                   }
                 : undefined
             }
@@ -1259,6 +1288,13 @@ export function ChatView({
       </div>
 
       <ToolSidePanel key={sessionId}
+        documentAgentDisabled={!workspace.available || workspace.busy || streaming || awaitingQuestion || awaitingDecision || awaitingPlan || !apiReady || replacingTurn || continuationPending}
+        onEditDocument={context => {
+          if (context.sessionId !== sessionId) return;
+          setDocumentEdit(context);
+          closeWorkspace();
+          requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".chatview .echo-composer__input")?.focus());
+        }}
         detailsRef={detailsRef}
         details={<section className="chatview__runtime-view" aria-label="任务工作视图">
 
