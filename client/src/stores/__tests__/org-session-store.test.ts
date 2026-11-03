@@ -89,6 +89,29 @@ describe("org-session-store", () => {
     expect(useOrgSessionStore.getState().boundaryRevision).toBe(revision + 1);
   });
 
+  it("策略续期及字段顺序不改变权限边界，实际限制变化仍隔离旧数据", () => {
+    const session = {
+      loggedIn: true, serverUrl: "https://memory.example.com",
+      bootstrap: {
+        apiVersion: 1,
+        user: { id: "u1", username: "alice", displayName: "Alice", role: "member" as const, clearance: 1 },
+        scopes: [{ id: "team-1", kind: "team" as const, name: "团队" }],
+        policy: { version: 1, issuedAt: 10, expiresAt: 20, allowSkillSubmission: true, limits: { a: 1, b: 2 } },
+        serverTime: 10,
+      },
+    };
+    useOrgSessionStore.getState().setSession(session);
+    const revision = useOrgSessionStore.getState().boundaryRevision;
+    useOrgSessionStore.getState().setSession({ ...session, bootstrap: { ...session.bootstrap,
+      policy: { limits: { b: 2, a: 1 }, allowSkillSubmission: true, expiresAt: 40, issuedAt: 30, version: 1 },
+    } });
+    expect(useOrgSessionStore.getState().boundaryRevision).toBe(revision);
+    useOrgSessionStore.getState().setSession({ ...session, bootstrap: { ...session.bootstrap,
+      policy: { ...session.bootstrap.policy, allowSkillSubmission: false },
+    } });
+    expect(useOrgSessionStore.getState().boundaryRevision).toBe(revision + 1);
+  });
+
   it("统一判定组织知识能力并绑定服务器与账号身份", () => {
     useOrgSessionStore.setState({
       hydrated: true,

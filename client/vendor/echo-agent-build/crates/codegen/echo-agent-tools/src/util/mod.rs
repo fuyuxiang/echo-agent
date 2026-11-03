@@ -8,6 +8,7 @@ pub mod git_detect;
 pub mod hash;
 pub mod image_compress;
 pub mod image_validate;
+pub(crate) mod knowledge_result;
 pub mod mcp_truncate;
 pub mod path_suggestions;
 pub mod process_safety;

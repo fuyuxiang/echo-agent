@@ -24,6 +24,7 @@ import {
 } from "@/lib/session-control";
 import { terminalSessionStatus } from "@/lib/turn-status";
 import { officeReceiptFromRawOutput, type DocumentExportReceipt } from "@/lib/document-export";
+import { knowledgeToolContent } from "@/lib/knowledge-tool-output";
 
 /**
  * A single chat message in the transcript the UI renders.
@@ -1614,7 +1615,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
                 ? typeof updateMeta?.agentTimestampMs === "number" ? updateMeta.agentTimestampMs : isReplay ? undefined : Date.now()
                 : undefined,
               content: [
-                ...normalizeToolCallContent(raw.content),
+                ...(knowledgeToolContent(raw.rawOutput ?? raw.raw_output) ?? normalizeToolCallContent(raw.content)),
                 ...(officeReceipt ? [{ type: "text" as const, text: JSON.stringify(officeReceipt) }] : []),
               ],
               rawInput: boundedRawInput(raw.rawInput ?? raw.raw_input),
@@ -1659,6 +1660,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
             }
             const officeReceipt = officeReceiptFromRawOutput(raw.rawOutput ?? raw.raw_output);
             const documentProgress = documentProgressFromRawOutput(raw.rawOutput ?? raw.raw_output);
+            const knowledgeContent = knowledgeToolContent(raw.rawOutput ?? raw.raw_output);
+            if (knowledgeContent) deltaFields.content = knowledgeContent;
             if (documentProgress) deltaFields.documentProgress = documentProgress;
             if (officeReceipt) {
               deltaFields.officeReceipt = officeReceipt;

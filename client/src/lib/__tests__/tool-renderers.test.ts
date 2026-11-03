@@ -81,6 +81,16 @@ describe("Runtime tool identity", () => {
     expect(detectToolCallRenderer(tc("other", { tool_name: "echoagent-live-info__weather_forecast" }, "查询天气信息"))).toBe("default");
     expect(detectToolCallRenderer({ ...tc("read"), toolName: "unrecognized_tool" })).toBe("read");
   });
+
+  it("组织工具的历史精确标题可识别，发现工具的查询与描述不会冒充知识结果", () => {
+    expect(detectToolCallRenderer(tc("other", undefined, "echoagent_organization_memory__knowledge_ask"))).toBe("knowledge");
+    expect(detectToolCallRenderer(tc("other", undefined, 'Search tools: "knowledge_ask organization knowledge question"'))).toBe("default");
+    expect(detectToolCallRenderer({ ...tc("other", { variant: "SearchTool", query: "knowledge_ask" }, 'Search tools: "knowledge_ask"'), toolName: "search_tool" })).toBe("default");
+    expect(detectToolCallRenderer(tc("other", undefined, "查找 knowledge_ask 可用工具"))).toBe("default");
+    expect(detectToolCallRenderer(tc("other", undefined, "search_knowledge_ask_docs"))).toBe("default");
+    expect(detectToolCallRenderer(tc("other", undefined, "another_server__knowledge_ask"))).toBe("default");
+    expect(detectToolCallRenderer(tc("organization_memory", undefined, "历史组织检索"))).toBe("knowledge");
+  });
 });
 
 describe("rendererLabel / rendererIcon", () => {

@@ -1204,6 +1204,10 @@ pub struct MCPOutput {
     tool_name: String,
     server_name: String,
     output: MCPOutputDetails,
+    /// Bounded host knowledge presentation data, captured before MCP text is
+    /// truncated for model context. Omitted for all other integration tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reconnect_attempted: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1220,10 +1224,12 @@ pub struct MCPOutput {
 }
 impl MCPOutput {
     pub fn okay_output(tool_name: String, server_name: String, output: String) -> Self {
+        let ui_result = crate::util::knowledge_result::for_ui(&server_name, &tool_name, &output);
         Self {
             tool_name,
             server_name,
             output: MCPOutputDetails::OkayOutput(output),
+            ui_result,
             reconnect_attempted: false,
             auth_retry_attempted: false,
             is_timeout: false,
@@ -1236,6 +1242,7 @@ impl MCPOutput {
             tool_name,
             server_name,
             output: MCPOutputDetails::Error(error),
+            ui_result: None,
             reconnect_attempted: false,
             auth_retry_attempted: false,
             is_timeout: false,

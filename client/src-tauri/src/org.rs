@@ -2700,6 +2700,7 @@ pub async fn org_preview_document(
 #[tauri::command]
 pub async fn org_download_document(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, OrgState>,
     resource_id: String,
     submission: bool,
@@ -2719,13 +2720,15 @@ pub async fn org_download_document(
         suggested_name
     };
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.dialog()
+    let dialog = app
+        .dialog()
         .file()
         .set_title("保存组织文档")
         .set_file_name(&suggested_name)
-        .save_file(move |selection| {
-            let _ = sender.send(selection);
-        });
+        .set_parent(&window);
+    dialog.save_file(move |selection| {
+        let _ = sender.send(selection);
+    });
     let Some(selection) = receiver
         .await
         .map_err(|_| "保存对话框意外关闭".to_owned())?

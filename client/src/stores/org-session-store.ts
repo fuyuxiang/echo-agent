@@ -14,6 +14,22 @@ interface OrgSessionState {
 let hydrationInFlight: Promise<OrgSession | null> | null = null;
 let sessionMutation = 0;
 
+/** Signed lease timestamps change on every healthy renewal. Only authorization
+ * semantics may invalidate a user's in-flight work and cached resource views. */
+function authorizationPolicy(policy: Record<string, unknown> | undefined): unknown {
+  if (!policy) return null;
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object") return Object.fromEntries(
+      Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, entry]) => [key, canonical(entry)]),
+    );
+    return value;
+  };
+  return canonical(Object.fromEntries(Object.entries(policy)
+    .filter(([key]) => key !== "issuedAt" && key !== "expiresAt")));
+}
+
 export function organizationSessionBoundary(session: OrgSession | null): string {
   if (!session?.loggedIn) return "signed-out";
   const user = session.user ?? session.bootstrap?.user;
@@ -24,7 +40,7 @@ export function organizationSessionBoundary(session: OrgSession | null): string 
     user?.clearance,
     session.bootstrap?.scopes?.map((scope) => [scope.id, scope.kind, scope.canPublishDocuments])
       .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
-    session.bootstrap?.policy,
+    authorizationPolicy(session.bootstrap?.policy),
   ]);
 }
 

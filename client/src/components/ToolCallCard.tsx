@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ToolCallView } from "@/stores/session-store";
 import { documentProgressCount, documentProgressLabel } from "@/lib/document-progress";
 import { isOfficeCreateTool, officeInputFromToolCall, officeReceiptFromToolCall } from "@/lib/document-export";
@@ -120,7 +120,7 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false, executionEnd
 }
 
 function isSilentOrganizationSkip(tc: ToolCallView): boolean {
-  if (!isOrganizationKnowledgeTool(tc.kind) || tc.status !== "completed") return false;
+  if (detectToolCallRenderer(tc) !== "knowledge" || tc.status !== "completed") return false;
   return tc.content.some((content) => {
     if (content.type !== "text") return false;
     const value = parseOrganizationResult(content.text);
@@ -179,21 +179,22 @@ export function ToolCallDetailBody({
   }>;
   const officeTool = isOfficeCreateTool(tc);
   const officeReceipt = officeReceiptFromToolCall(tc);
-  const parsedOrganizationResult = isOrganizationKnowledgeTool(tc.kind)
+  const renderer = detectToolCallRenderer(tc);
+  const parsedOrganizationResult = useMemo(() => renderer === "knowledge"
     ? parseOrganizationResult(texts[0]?.text)
-    : null;
+    : null, [renderer, texts[0]?.text]);
   const organizationResult = parsedOrganizationResult
     && isKnowledgeContextResult(parsedOrganizationResult)
     ? parsedOrganizationResult
     : null;
-  const personalResult = isPersonalKnowledgeTool(tc.kind)
+  const personalResult = renderer === "personal-knowledge"
     ? parseOrganizationResult(texts[0]?.text)
     : null;
 
   return (
     <div className="tool-detail">
       <div className="tool-detail__meta">
-        <span className="toolcall__kind">{officeTool ? "文档" : prettyKind(tc.kind)}</span>
+        <span className="toolcall__kind">{officeTool ? "文档" : renderer === "knowledge" ? "知识检索" : renderer === "personal-knowledge" ? "个人知识" : prettyKind(tc.kind)}</span>
         <span className={"tool-detail__status tool-detail__status--" + (pendingResult ? "pending" : tc.status)}>
           {pendingResult ? "结果待确认" : tc.status === "completed"
             ? "已完成"
@@ -202,7 +203,7 @@ export function ToolCallDetailBody({
               : "运行中"}
         </span>
       </div>
-      <h3 className="tool-detail__title">{officeTool ? "生成办公文档" : tc.title}</h3>
+      <h3 className="tool-detail__title">{officeTool ? "生成办公文档" : renderer === "knowledge" ? "组织知识" : renderer === "personal-knowledge" ? "个人知识库" : tc.title}</h3>
       {tc.documentProgress && (
         <div className="document-read-progress" role="status" aria-label="资料读取进度">
           <span>{documentProgressLabel(tc.documentProgress)}</span>
@@ -288,15 +289,6 @@ export function ToolCallDetailBody({
   );
 }
 
-function isOrganizationKnowledgeTool(kind: string): boolean {
-  if (/local_knowledge_(search|fetch)/i.test(kind)) return false;
-  return /knowledge_(context|ask|feedback|search|fetch|list|who|submit)|organization_memory/i.test(kind);
-}
-
-function isPersonalKnowledgeTool(kind: string): boolean {
-  return /local_knowledge_(search|fetch)/i.test(kind);
-}
-
 function isKnowledgeContextResult(value: Record<string, unknown>): boolean {
   return [
     "answer", "evidence", "chunks", "citations", "memories",
@@ -321,6 +313,20 @@ function OrganizationKnowledgeResult({ value }: { value: Record<string, unknown>
   const [loadingCitation, setLoadingCitation] = useState<string | null>(null);
   const [interactionError, setInteractionError] = useState<string | null>(null);
   const [feedbackSent, setFeedbackSent] = useState(false);
+  const [feedbackSending, setFeedbackSending] = useState(false);
+  const resultGeneration = useRef(0);
+  const citationRequest = useRef(0);
+  const feedbackPending = useRef(false);
+  useEffect(() => {
+    resultGeneration.current += 1;
+    setPreview(null);
+    setLoadingCitation(null);
+    setInteractionError(null);
+    setFeedbackSent(false);
+    setFeedbackSending(false);
+    feedbackPending.current = false;
+    return () => { resultGeneration.current += 1; };
+  }, [value]);
   const rawEvidence = Array.isArray(value.evidence)
     ? value.evidence
     : Array.isArray(value.chunks)
@@ -353,32 +359,45 @@ function OrganizationKnowledgeResult({ value }: { value: Record<string, unknown>
       : undefined;
     if (!docId) return;
     const id = String(source.chunkId ?? source.id ?? `${docId}-${index}`);
+    const request = ++citationRequest.current;
     if (preview?.id === id) {
       setPreview(null);
+      setLoadingCitation(null);
       return;
     }
     setInteractionError(null);
     setLoadingCitation(id);
+    const generation = resultGeneration.current;
+    const current = () => generation === resultGeneration.current && request === citationRequest.current;
     try {
       const document = await orgFetchDocument(docId, page);
-      setPreview({ id, text: document.text });
+      if (current()) setPreview({ id, text: document.text });
     } catch (error) {
-      setInteractionError(`引用原文读取失败：${String(error).replace(/^Error:\s*/, "")}`);
+      if (current()) setInteractionError(`引用原文读取失败：${String(error).replace(/^Error:\s*/, "")}`);
     } finally {
-      setLoadingCitation(null);
+      if (current()) setLoadingCitation(null);
     }
   };
   const sendFeedback = async (feedback: "helpful" | "not_helpful" | "wrong") => {
-    if (!qaEventId || feedbackSent) return;
+    if (!qaEventId || feedbackSent || feedbackPending.current) return;
+    feedbackPending.current = true;
+    setFeedbackSending(true);
     setInteractionError(null);
+    const generation = resultGeneration.current;
     try {
       await orgQaFeedback(qaEventId, feedback);
-      setFeedbackSent(true);
+      if (generation === resultGeneration.current) setFeedbackSent(true);
     } catch (error) {
-      setInteractionError(`反馈提交失败：${String(error).replace(/^Error:\s*/, "")}`);
+      if (generation === resultGeneration.current) setInteractionError(`反馈提交失败：${String(error).replace(/^Error:\s*/, "")}`);
+    } finally {
+      if (generation === resultGeneration.current) {
+        feedbackPending.current = false;
+        setFeedbackSending(false);
+      }
     }
   };
   return <div className="org-tool-result">
+    {value._displayTruncated === true && <p role="note">结果较长，当前展示部分内容；可查看引用原文，或缩小查询范围后重试。</p>}
     <div className="org-tool-result__summary">
       {sufficient !== null && <span className={sufficient ? "is-good" : "is-warning"}>{sufficient ? "证据充分" : "证据有缺口"}</span>}
       {confidence !== null && <span>置信度 {Math.round(confidence * 100)}%</span>}
@@ -397,7 +416,7 @@ function OrganizationKnowledgeResult({ value }: { value: Record<string, unknown>
       const id = String(source.chunkId ?? source.id ?? `${docId}-${index}`);
       return <article key={id}><header><span>{String(source.docTitle ?? source.title ?? source.doc ?? `依据 ${index + 1}`)}</span>{(source.stale === true) && <em>可能过时</em>}</header><small>{String(citation.heading ?? source.heading ?? "")}{citation.page != null || source.page != null ? ` · 第 ${String(citation.page ?? source.page)} 页` : ""}</small><p>{clipEvidence(String(source.text ?? source.quote ?? ""))}</p>{docId && <button type="button" className="org-tool-result__source-button" disabled={loadingCitation === id} onClick={() => void openEvidence(source, index)}>{loadingCitation === id ? "正在读取…" : preview?.id === id ? "收起原文" : "查看原文"}</button>}{preview?.id === id && <pre className="org-tool-result__source-preview">{preview.text}</pre>}</article>;
     })}</div>}
-    {qaEventId && <div className="org-tool-result__feedback" aria-label="组织知识回答反馈">{feedbackSent ? <span>感谢反馈，已记录</span> : <><span>这些组织知识有帮助吗？</span><button type="button" onClick={() => void sendFeedback("helpful")}>有帮助</button><button type="button" onClick={() => void sendFeedback("not_helpful")}>没帮助</button><button type="button" onClick={() => void sendFeedback("wrong")}>引用有误</button></>}</div>}
+    {qaEventId && <div className="org-tool-result__feedback" aria-label="组织知识回答反馈" aria-busy={feedbackSending}>{feedbackSent ? <span role="status">感谢反馈，已记录</span> : <><span>{feedbackSending ? "正在提交反馈…" : "这些组织知识有帮助吗？"}</span><button type="button" disabled={feedbackSending} onClick={() => void sendFeedback("helpful")}>有帮助</button><button type="button" disabled={feedbackSending} onClick={() => void sendFeedback("not_helpful")}>没帮助</button><button type="button" disabled={feedbackSending} onClick={() => void sendFeedback("wrong")}>引用有误</button></>}</div>}
     {interactionError && <div className="org-tool-result__error" role="alert">{interactionError}</div>}
   </div>;
 }
@@ -419,7 +438,9 @@ function PersonalKnowledgeResult({
   const fetchedPath = typeof value.path === "string" ? value.path : null;
   const fetchedText = typeof value.text === "string" ? value.text : null;
   if (items.length === 0 && !fetchedPath && !fetchedText) {
-    return <p className="tool-detail__empty">个人知识库未找到匹配内容</p>;
+    return <p className="tool-detail__empty">{value._displayTruncated === true
+      ? "个人知识库结果过大，未能完整展示，请缩小查询范围后重试。"
+      : "个人知识库未找到匹配内容"}</p>;
   }
   return <div className="personal-kb-tool-result">
     {items.map((item, index) => {
@@ -448,7 +469,10 @@ function PersonalKnowledgeResult({
         {path && <small>{path}</small>}
       </button>;
     })}
-    {fetchedPath && <div className="personal-kb-tool-result__path">{fetchedPath}</div>}
+    {value._displayTruncated === true && <p role="note">结果较长，当前展示部分内容；可打开源文件，或缩小查询范围后重试。</p>}
+    {fetchedPath && (onOpenPath
+      ? <button type="button" className="personal-kb-tool-result__item" onClick={() => onOpenPath(fetchedPath)}><strong>打开源文件</strong><small>{fetchedPath}</small></button>
+      : <div className="personal-kb-tool-result__path">{fetchedPath}</div>)}
     {fetchedText && <pre className="toolcall__text">{fetchedText}</pre>}
   </div>;
 }

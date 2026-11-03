@@ -7,6 +7,7 @@
  * 纯函数,便于单测。渲染组件按 renderer 选择不同布局。
  */
 import type { ToolCallView } from "@/stores/session-store";
+import { knowledgeToolSource } from "./knowledge-tool-output";
 
 export type ToolRenderer =
   | "default" // 通用紧凑行(既有 ToolCallCard)
@@ -49,14 +50,16 @@ const RENDERER_MAP: Array<{ test: RegExp; renderer: ToolRenderer }> = [
   { test: /^(echoagent__)?(team_status|status)$/i, renderer: "team-status" },
   { test: /^(agent_mail|send_mail|email)$/i, renderer: "agent-mail" },
   { test: /^(specialist|expert_list)$/i, renderer: "specialist" },
-  { test: /local_knowledge_(search|fetch)/i, renderer: "personal-knowledge" },
-  { test: /knowledge_(context|ask|feedback|search|fetch|list|who|submit)|organization_memory/i, renderer: "knowledge" },
 ];
 
 /** 按 kind 判定渲染器类型。 */
 export function detectToolRenderer(kind: string): ToolRenderer {
   const k = (kind || "").trim();
   if (!k) return "unknown";
+  const knowledge = knowledgeToolSource(k);
+  if (knowledge) return knowledge === "personal" ? "personal-knowledge" : "knowledge";
+  // Older ACP histories used these exact kind labels rather than tool names.
+  if (/^(organization_memory|knowledge_fetch|knowledge_list|knowledge_who)$/i.test(k)) return "knowledge";
   for (const { test, renderer } of RENDERER_MAP) {
     if (test.test(k)) return renderer;
   }
@@ -76,14 +79,17 @@ function toolTargetName(tool: ToolCallView): string | undefined {
 
 /** Shared by the activity heading and tool card, including real MCP calls. */
 export function detectToolCallRenderer(tool: ToolCallView): ToolRenderer {
+  if (isToolDiscovery(tool)) return "default";
   const name = toolTargetName(tool);
   if (name) {
     const renderer = detectToolRenderer(name);
     if (renderer !== "default" && renderer !== "unknown") return renderer;
   }
-  // Legacy live-info calls carry their exact tool identity in the title.
+  // Legacy calls carry an exact tool identity in the title. A discovery query
+  // or human description mentioning a tool is not a call to that tool.
   const titleRenderer = detectToolRenderer(tool.title);
-  if (titleRenderer === "search" || titleRenderer === "weather") return titleRenderer;
+  if (titleRenderer === "search" || titleRenderer === "weather"
+    || (["knowledge", "personal-knowledge"].includes(titleRenderer) && /^[\w.-]+$/.test(tool.title.trim()))) return titleRenderer;
   return detectToolRenderer(tool.kind);
 }
 
@@ -221,7 +227,9 @@ export function summarizeTool(tc: ToolCallView, renderer: ToolRenderer): string 
     }
     case "knowledge":
     case "personal-knowledge": {
-      const query = raw?.task ?? raw?.query ?? raw?.question ?? raw?.topic;
+      const input = raw?.tool_input && typeof raw.tool_input === "object"
+        ? raw.tool_input as Record<string, unknown> : raw;
+      const query = input?.task ?? input?.query ?? input?.question ?? input?.topic;
       return typeof query === "string" ? query.slice(0, 80) : tc.title;
     }
     case "search": {

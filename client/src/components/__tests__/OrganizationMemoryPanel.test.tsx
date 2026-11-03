@@ -711,6 +711,26 @@ describe("OrganizationMemoryPanel", () => {
     expect(screen.getByLabelText("经验内容")).toHaveValue("发布前检查回滚脚本");
   });
 
+  it("真实策略签发时间续期保留经验草稿、当前视图及搜索，权限收紧时清除", async () => {
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "灰度" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交经验" }));
+    fireEvent.change(screen.getByLabelText("经验内容"), { target: { value: "灰度后再正式发布" } });
+    const previous = useOrgSessionStore.getState().session!;
+    act(() => useOrgSessionStore.getState().setSession({ ...previous, bootstrap: {
+      ...previous.bootstrap!, policy: { ...previous.bootstrap!.policy, issuedAt: 30, expiresAt: 40 },
+    } }));
+    expect(screen.getByRole("dialog", { name: "提交经验" })).toBeInTheDocument();
+    expect(screen.getByLabelText("经验内容")).toHaveValue("灰度后再正式发布");
+    expect(screen.getByRole("searchbox")).toHaveValue("灰度");
+    act(() => useOrgSessionStore.getState().setSession({ ...previous, bootstrap: {
+      ...previous.bootstrap!, policy: { ...previous.bootstrap!.policy, allowPersonalCloud: false },
+    } }));
+    expect(screen.queryByRole("dialog", { name: "提交经验" })).toBeNull();
+  });
+
   it("新筛选失败不会把旧范围结果冒充当前结果，重试可恢复", async () => {
     const original=api.orgLibraryQuery.getMockImplementation()!;
     let failed=false;

@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { resetOrgSessionMirror, useOrgSessionStore } from "@/stores/org-session-store";
+import { registerKbProvider, resetKbRegistry } from "../knowledge-base";
 import {
   agentCancel,
   invalidateAgentKnowledgeSourceSync,
@@ -26,6 +27,7 @@ const invokeMock = vi.mocked(invoke);
 
 describe("agentSend attachment contract", () => {
   beforeEach(() => {
+    resetKbRegistry();
     invalidateAgentKnowledgeSourceSync();
     resetOrgSessionMirror();
     useOrgSessionStore.setState({
@@ -75,6 +77,35 @@ describe("agentSend attachment contract", () => {
       retrievals: {},
       turnTraces: {},
     });
+  });
+
+  it.each([
+    { name: "组织状态仍在恢复", hydrated: false, session: null },
+    { name: "从未登录组织", hydrated: true, session: { loggedIn: false } },
+    { name: "组织服务不可用", hydrated: true, session: { loggedIn: true, organizationMemoryEnabled: false } },
+  ])("$name 时普通消息仍直接发送，不等待或请求组织服务", async ({ hydrated, session }) => {
+    useOrgSessionStore.setState({ hydrated, session });
+    await agentSend("ordinary-user", "普通问题");
+    expect(invokeMock).toHaveBeenCalledWith("agent_send", expect.objectContaining({ text: "普通问题" }));
+    expect(invokeMock).toHaveBeenCalledWith("agent_set_knowledge_sources", expect.objectContaining({
+      personal: false, organization: false, organizationScopeIds: [],
+    }));
+    expect(invokeMock.mock.calls.some(([command]) => command.startsWith("org_"))).toBe(false);
+  });
+
+  it("没有组织账号也能把本地知识注入消息并正常发送", async () => {
+    useOrgSessionStore.getState().setSession({ loggedIn: false });
+    registerKbProvider({ id: "local", label: "本地资料", isEnabled: () => true,
+      list: () => [{ id: "note", title: "本地说明", snippet: "发布前检查备份。" }] });
+    useKnowledgeStore.getState().setSessionSources("personal-user", ["personal"]);
+    invokeMock.mockImplementation(command => Promise.resolve(command === "agent_set_knowledge_sources"
+      ? { personalSelected: true, organizationSelected: false, personalAttached: true, organizationAttached: false }
+      : undefined));
+    await agentSend("personal-user", "本地说明", [], "本地说明", "local-prompt");
+    expect(invokeMock).toHaveBeenCalledWith("agent_send", expect.objectContaining({
+      text: expect.stringContaining("<echoagent_personal_knowledge>"), displayText: "本地说明",
+    }));
+    expect(invokeMock.mock.calls.some(([command]) => command.startsWith("org_"))).toBe(false);
   });
 
   it("分离传递模型正文、附件和用户可见正文", async () => {

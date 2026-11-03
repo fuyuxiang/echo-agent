@@ -824,6 +824,7 @@ fn validated_external_url(url: &str) -> Result<url::Url, String> {
 #[tauri::command]
 pub async fn filesystem_pick_directory(
     app: tauri::AppHandle,
+    window: tauri::Window,
     access: State<'_, FilesystemAccess>,
     suggested_path: Option<String>,
 ) -> Result<Option<String>, String> {
@@ -831,7 +832,8 @@ pub async fn filesystem_pick_directory(
     let mut dialog = app
         .dialog()
         .file()
-        .set_title("选择 EchoAgent 可访问的文件夹");
+        .set_title("选择 EchoAgent 可访问的文件夹")
+        .set_parent(&window);
     if let Some(suggested) = suggested_path {
         let path = PathBuf::from(suggested.trim());
         let directory = if path.is_dir() {
@@ -866,6 +868,7 @@ pub async fn filesystem_pick_directory(
 #[tauri::command]
 pub async fn filesystem_pick_files(
     app: tauri::AppHandle,
+    window: tauri::Window,
     access: State<'_, FilesystemAccess>,
     title: Option<String>,
     extensions: Option<Vec<String>>,
@@ -881,7 +884,7 @@ pub async fn filesystem_pick_files(
     if extensions.len() > 32 {
         return Err("文件类型过滤器不能超过 32 项".into());
     }
-    let mut dialog = app.dialog().file().set_title(title);
+    let mut dialog = app.dialog().file().set_title(title).set_parent(&window);
     let extensions = extensions
         .into_iter()
         .map(|extension| {

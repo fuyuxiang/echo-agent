@@ -875,6 +875,9 @@ async fn tools_call(
                 16,
                 Some(&["personal", "team", "org"]),
             )? {
+                // Constrain the authorization context as well as document
+                // recall so older servers apply this to memories too.
+                input["scopes"] = kinds.clone();
                 input["filters"] = json!({ "scope_kinds": kinds });
             }
             crate::org::mcp_json(Method::POST, "/api/v1/retrieve", Some(input)).await?
@@ -1107,20 +1110,41 @@ fn optional_string_bounded<'a>(
     Ok(Some(text))
 }
 
-fn validated_string_array<'a>(
-    value: &'a Value,
+fn validated_string_array(
+    value: &Value,
     key: &str,
     max_items: usize,
     max_chars: usize,
     allowed: Option<&[&str]>,
-) -> Result<Option<&'a Value>, String> {
+) -> Result<Option<Value>, String> {
     let Some(raw) = value.get(key) else {
         return Ok(None);
     };
     if raw.is_null() {
         return Ok(None);
     }
-    let items = raw
+    // Schema-blind model gateways can serialize an explicit list as JSON text
+    // or XML's {item: ...} wrapper. Normalize only these unambiguous forms;
+    // every resulting item still passes the same bounds and scope allowlist.
+    let normalized = match raw {
+        Value::String(encoded) => {
+            let max_encoded_bytes = max_items.saturating_mul(max_chars.saturating_mul(6) + 8) + 2;
+            if encoded.len() > max_encoded_bytes {
+                return Err(format!("{key} encoded array exceeds the size limit"));
+            }
+            serde_json::from_str::<Value>(encoded)
+                .map_err(|_| format!("{key} must be an array of strings"))?
+        }
+        Value::Object(wrapper) if wrapper.len() == 1 && wrapper.contains_key("item") => {
+            match &wrapper["item"] {
+                Value::String(item) => json!([item]),
+                Value::Array(items) => json!(items),
+                _ => return Err(format!("{key} must be an array of strings")),
+            }
+        }
+        _ => raw.clone(),
+    };
+    let items = normalized
         .as_array()
         .ok_or_else(|| format!("{key} must be an array"))?;
     if items.len() > max_items {
@@ -1140,7 +1164,7 @@ fn validated_string_array<'a>(
             return Err(format!("{key} contains an unsupported value"));
         }
     }
-    Ok(Some(raw))
+    Ok(Some(normalized))
 }
 
 fn has_disallowed_control(text: &str) -> bool {
@@ -1511,6 +1535,80 @@ pub(crate) async fn reconcile_all_sessions(app: &AppHandle) {
 mod tests {
     use super::*;
 
+    async fn truncate_test_output(
+        output: echo_agent_tools::types::output::ToolOutput,
+    ) -> echo_agent_tools::types::output::ToolOutput {
+        use echo_agent_tools::types::context::TruncationConfig;
+        use echo_agent_tools::types::resources::{Resources, SessionFolder, TruncationCfg};
+        use echo_agent_tools::util::mcp_truncate::{truncate_tool_output, McpTruncateContext};
+        let folder = tempfile::tempdir().unwrap();
+        let mut config = TruncationConfig::default();
+        config
+            .per_tool_max_output_bytes
+            .insert("use_tool".into(), 20_000);
+        let mut resources = Resources::new();
+        resources.insert(TruncationCfg(config));
+        resources.insert(SessionFolder(folder.path().to_path_buf()));
+        let mut context = echo_agent_tool_runtime::ToolCallContext::default();
+        context.extensions.insert(resources.into_shared());
+        let truncation = McpTruncateContext::from_tool_ctx(&context, "use_tool").await;
+        truncate_tool_output(output, &truncation).await
+    }
+
+    #[tokio::test]
+    async fn knowledge_ui_receipt_survives_model_truncation_and_history_roundtrip() {
+        use echo_agent_tools::types::output::{MCPOutput, MCPOutputDetails, ToolOutput};
+        for (tool, value) in [
+            (
+                "knowledge_ask",
+                json!({"answer":"答案", "qaEventId":"qa-1",
+                "citations":[{"docId":"doc-1", "quote":"依据".repeat(5_000)}]}),
+            ),
+            (
+                "local_knowledge_fetch",
+                json!({"path":"/notes/个人说明.md", "text":"原文".repeat(5_000)}),
+            ),
+        ] {
+            let output = ToolOutput::MCP(MCPOutput::okay_output(
+                tool.into(),
+                MCP_SERVER_NAME.into(),
+                value.to_string(),
+            ));
+            let bounded = truncate_test_output(output).await;
+            let prompt_text = bounded.to_prompt_format();
+            let back: ToolOutput =
+                serde_json::from_value(serde_json::to_value(bounded).unwrap()).unwrap();
+            let ToolOutput::MCP(mcp) = back else {
+                panic!("expected MCP");
+            };
+            let MCPOutputDetails::OkayOutput(text) = mcp.output() else {
+                panic!("expected success");
+            };
+            assert!(text.contains("[MCP output truncated:"));
+            assert_eq!(
+                &prompt_text, text,
+                "presentation receipt must not enter model context"
+            );
+            assert_eq!(mcp.ui_result, Some(value));
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_mcp_keeps_existing_text_budget_and_omits_knowledge_data() {
+        use echo_agent_tools::types::output::{MCPOutput, ToolOutput};
+        let output = ToolOutput::MCP(MCPOutput::okay_output(
+            "knowledge_ask".into(),
+            "another-server".into(),
+            "x".repeat(30_000),
+        ));
+        let encoded = serde_json::to_value(truncate_test_output(output).await).unwrap();
+        assert!(encoded.get("ui_result").is_none());
+        assert!(encoded["output"]["OkayOutput"]
+            .as_str()
+            .unwrap()
+            .contains("[MCP output truncated:"));
+    }
+
     #[tokio::test]
     async fn requires_process_token_and_lists_tools() {
         assert!(AUTH_HEADER.eq_ignore_ascii_case(header::AUTHORIZATION.as_str()));
@@ -1707,6 +1805,52 @@ mod tests {
             None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn model_gateway_list_encodings_preserve_scope_validation() {
+        let kinds = |raw: Value| {
+            validated_string_array(
+                &json!({"scope_kinds": raw}),
+                "scope_kinds",
+                3,
+                16,
+                Some(&["personal", "team", "org"]),
+            )
+        };
+        for raw in [
+            json!(["team", "org"]),
+            json!({"item":["team", "org"]}),
+            json!("[\"team\",\"org\"]"),
+        ] {
+            assert_eq!(kinds(raw).unwrap(), Some(json!(["team", "org"])));
+        }
+        assert_eq!(
+            kinds(json!({"item":"personal"})).unwrap(),
+            Some(json!(["personal"]))
+        );
+        for raw in [
+            json!("team,org"),
+            json!("team"),
+            json!({"item":"admin"}),
+            json!({"item":["org"],"extra":"team"}),
+            json!({"item":{"item":"org"}}),
+            json!("[\"admin\"]"),
+            json!([1]),
+            json!(["org", "org", "org", "org"]),
+            json!(" ".repeat(1000)),
+        ] {
+            assert!(kinds(raw).is_err());
+        }
+        for raw in [
+            json!({"item":["x".repeat(257)]}),
+            json!("[\"bad\\u0000id\"]"),
+        ] {
+            assert!(
+                validated_string_array(&json!({"scope_ids":raw}), "scope_ids", 100, 256, None)
+                    .is_err()
+            );
+        }
     }
 
     #[test]
