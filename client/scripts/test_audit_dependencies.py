@@ -1,10 +1,12 @@
 """Keep reviewed audit exceptions exact and visible in the saved evidence."""
 import importlib.util
+import copy
 from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
 import tempfile
+import shutil
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -37,6 +39,68 @@ def npm_fixture(version="3.1.5", identifier=MINIMATCH_ADVISORY):
 
 
 class NpmAuditReviewTests(unittest.TestCase):
+    def deepmerge_fixture(self):
+        advisory = {"title": "prototype poisoning", "severity": "low",
+                    "url": "https://github.com/advisories/GHSA-gcqx-w48m-w2h4"}
+        data = {"metadata": {"vulnerabilities": counts(2)}, "vulnerabilities": {
+            "deepmerge": {"via": [advisory], "nodes": ["node_modules/deepmerge", "security/deepmerge"]},
+            "@theia/application-package": {"via": ["deepmerge"], "nodes": ["node_modules/@theia/application-package"]},
+        }}
+        packages = {"node_modules/deepmerge": {"resolved": "security/deepmerge", "link": True},
+                    "security/deepmerge": {"version": "4.3.1+echo.1"}}
+        return data, packages
+
+    def test_verified_backport_clears_only_its_advisory_and_dependent_findings(self):
+        data, packages = self.deepmerge_fixture()
+        report = audit.npm_audit_report(data, packages, audit.verified_npm_backports())
+        self.assertEqual(report["affected_packages"], [])
+        self.assertEqual(report["reported_counts"], counts(2))
+        self.assertEqual(len(report["not_affected"]), 2)
+        for row in report["not_affected"]:
+            self.assertEqual(row["version"], "4.3.1+echo.1")
+            self.assertEqual(row["review"]["patch_sha256"], audit.DEEPMERGE_BACKPORT_HASHES)
+        data["vulnerabilities"]["@theia/application-package"]["via"].append({
+            "url": "https://github.com/advisories/GHSA-independent", "title": "separate finding"})
+        self.assertEqual(audit.npm_audit_report(data, packages, audit.verified_npm_backports())["affected_packages"],
+                         ["@theia/application-package"])
+
+    def test_registry_copies_other_advisories_and_changed_workspace_identities_still_fail(self):
+        backports = audit.verified_npm_backports()
+        original, packages = self.deepmerge_fixture()
+        self.assertEqual(len(audit.npm_audit_report(original, packages)["affected_packages"]), 2)
+        for change in ("advisory", "version", "link", "destination", "registry-copy"):
+            data, graph = copy.deepcopy((original, packages))
+            if change == "advisory":
+                data["vulnerabilities"]["deepmerge"]["via"][0]["url"] = "https://github.com/advisories/GHSA-another"
+            elif change == "version":
+                graph["security/deepmerge"]["version"] = "4.3.1"
+            elif change == "link":
+                graph["node_modules/deepmerge"]["link"] = False
+            elif change == "destination":
+                graph["node_modules/deepmerge"]["resolved"] = "security/another"
+            else:
+                node = "node_modules/other/node_modules/deepmerge"
+                graph[node] = {"version": "4.3.1+echo.1", "resolved": "https://registry.npmjs.org/deepmerge.tgz"}
+                data["vulnerabilities"]["deepmerge"]["nodes"].append(node)
+            with self.subTest(change=change):
+                self.assertEqual(len(audit.npm_audit_report(data, graph, backports)["affected_packages"]), 2)
+
+    def test_changed_backport_bytes_or_provenance_cannot_be_reviewed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "vendor/theia-platform/security/deepmerge"
+            shutil.copytree(audit.ROOT / "vendor/theia-platform/security/deepmerge", source)
+            with patch.object(audit, "ROOT", root):
+                self.assertIn("deepmerge", audit.verified_npm_backports())
+                (source / "index.js").write_text("unreviewed contents")
+                with self.assertRaisesRegex(RuntimeError, "changed without review"):
+                    audit.verified_npm_backports()
+                provenance = json.loads((source / "SOURCE.json").read_text())
+                provenance["patchedSha256"]["index.js"] = audit.hashlib.sha256(b"unreviewed contents").hexdigest()
+                (source / "SOURCE.json").write_text(json.dumps(provenance))
+                with self.assertRaisesRegex(RuntimeError, "identity changed without review"):
+                    audit.verified_npm_backports()
+
     def test_only_the_exact_advisory_and_official_legacy_artifacts_are_reviewed(self):
         for version, integrity in audit.LEGACY_MINIMATCH_INTEGRITIES.items():
             review = audit.reviewed_npm_exception("minimatch", version, MINIMATCH_ADVISORY, {integrity})

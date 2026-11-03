@@ -247,19 +247,41 @@ async fn call_tool(app: &AppHandle, session_id: &str, params: &Value) -> Result<
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     if matches!(name, "office_document_read" | "office_document_update") {
         let args = params.get("arguments").ok_or("缺少文档参数")?;
-        let path = args.get("path").and_then(Value::as_str).ok_or("缺少文档路径")?;
+        let path = args
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or("缺少文档路径")?;
         if name == "office_document_read" {
             let opened = crate::document_workspace::open_for_session(app, session_id, path).await?;
-            let doc = opened.document.ok_or("该文件尚无可编辑稿，请先在成果面板中创建可编辑副本")?;
-            return Ok(json!({"path":doc.path,"title":doc.title,"revision":doc.revision,
-                "exportedRevision":doc.exported_revision,"externalChange":doc.external_change,"document":doc.document}));
+            let doc = opened
+                .document
+                .ok_or("该文件尚无可编辑稿，请先在成果面板中创建可编辑副本")?;
+            return Ok(
+                json!({"path":doc.path,"title":doc.title,"revision":doc.revision,
+                "exportedRevision":doc.exported_revision,"externalChange":doc.external_change,"document":doc.document}),
+            );
         }
-        let revision = args.get("expectedRevision").and_then(Value::as_u64).ok_or("必须提供读取时的 expectedRevision")?;
+        let revision = args
+            .get("expectedRevision")
+            .and_then(Value::as_u64)
+            .ok_or("必须提供读取时的 expectedRevision")?;
         let document = args.get("document").cloned().ok_or("缺少文档内容")?;
-        let saved = crate::document_workspace::save_for_session(app, session_id, path, revision, document, "Agent 修改").await?;
-        let published = crate::document_workspace::publish_for_session(app, session_id, path, saved.revision).await?;
-        return Ok(json!({"path":published.path,"format":"docx","byteSize":published.byte_size,
-            "sha256":published.file_sha256,"revision":published.revision}));
+        let saved = crate::document_workspace::save_for_session(
+            app,
+            session_id,
+            path,
+            revision,
+            document,
+            "Agent 修改",
+        )
+        .await?;
+        let published =
+            crate::document_workspace::publish_for_session(app, session_id, path, saved.revision)
+                .await?;
+        return Ok(
+            json!({"path":published.path,"format":"docx","byteSize":published.byte_size,
+            "sha256":published.file_sha256,"revision":published.revision}),
+        );
     }
     if params.get("name").and_then(Value::as_str) != Some("office_create") {
         return Err("未知的办公文档工具".into());

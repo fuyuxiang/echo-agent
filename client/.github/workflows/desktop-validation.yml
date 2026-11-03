@@ -160,8 +160,8 @@ jobs:
         run: |
           mount_point="$RUNNER_TEMP/echoagent-validation"
           mkdir -p "$mount_point"
-          trap 'hdiutil detach "$mount_point" -quiet || true' EXIT
           dmg="src-tauri/target/release/bundle/dmg/EchoAgent-v$(node scripts/release-version.mjs check)-${{ matrix.target }}.dmg"
+          trap 'node scripts/macos-dmg.mjs detach "$dmg" "$mount_point" || true' EXIT
           hdiutil attach -readonly -nobrowse -quiet -mountpoint "$mount_point" "$dmg"
           node scripts/validate-packaged-desktop.mjs "$mount_point/EchoAgent.app/Contents/MacOS/echoagent"
       - name: Install and start Windows WebView; check native IPC

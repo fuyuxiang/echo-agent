@@ -166,10 +166,12 @@ BUILD_RC=0
 pnpm tauri build --no-bundle || BUILD_RC=$?
 if [[ $BUILD_RC -eq 0 ]]; then
     log_step "Building .dmg (pnpm tauri bundle --bundles dmg --verbose)"
-    pnpm tauri bundle --bundles dmg --verbose || BUILD_RC=$?
+    node scripts/macos-dmg.mjs bundle \
+        "$PROJECT_ROOT/src-tauri/target/release/bundle/macos" \
+        "EchoAgent_${APP_VERSION}_${TAURI_DMG_ARCH}.dmg" || BUILD_RC=$?
     if [[ $BUILD_RC -ne 0 ]]; then
         log_err "Application compilation succeeded, but installer packaging failed."
-        log_info "To diagnose or retry packaging in this workspace without recompiling: pnpm tauri bundle --bundles dmg --verbose"
+        log_info "To diagnose or retry packaging without recompiling: node scripts/macos-dmg.mjs bundle \"$PROJECT_ROOT/src-tauri/target/release/bundle/macos\" \"EchoAgent_${APP_VERSION}_${TAURI_DMG_ARCH}.dmg\""
     fi
 fi
 
@@ -180,10 +182,16 @@ BUNDLE_DIR="$PROJECT_ROOT/src-tauri/target/release/bundle/dmg"
 CANONICAL_DMG=""
 DMG_MOUNT_POINT=""
 DMG_MOUNTED=0
+DMG_CLEANUP_ATTEMPTED=0
 cleanup_dmg_mount() {
     if [[ -n "$DMG_MOUNT_POINT" ]]; then
         if [[ $DMG_MOUNTED -eq 1 ]]; then
-            if ! hdiutil detach "$DMG_MOUNT_POINT" >/dev/null; then
+            # An EXIT trap must not restart an exhausted recovery loop.
+            if [[ $DMG_CLEANUP_ATTEMPTED -eq 1 ]]; then
+                return 1
+            fi
+            DMG_CLEANUP_ATTEMPTED=1
+            if ! node "$PROJECT_ROOT/scripts/macos-dmg.mjs" detach "$DEFAULT_DMG" "$DMG_MOUNT_POINT"; then
                 log_err "Could not unmount DMG: $DMG_MOUNT_POINT"
                 return 1
             fi

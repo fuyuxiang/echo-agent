@@ -33,6 +33,8 @@ mod desktop_tray;
 mod desktop_tray_model;
 mod desktop_validation;
 mod document_export;
+mod document_store;
+mod document_workspace;
 mod expert_avatar;
 mod ext;
 mod groups;
@@ -53,8 +55,6 @@ mod native_review_model;
 mod native_review_scope;
 mod notifications;
 mod office_mcp;
-mod document_store;
-mod document_workspace;
 mod org;
 mod org_mcp;
 mod paths;
@@ -70,8 +70,8 @@ mod recording_recovery;
 mod recovery_policy;
 mod resource_identity;
 mod session_artifacts;
-mod session_creation;
 mod session_continuation;
+mod session_creation;
 mod session_title;
 mod session_workspace;
 mod sessions;
@@ -861,11 +861,15 @@ pub fn run() {
         let identifier = custom_profile_identifier(&context.config().identifier, &home, validation);
         context.config_mut().identifier = identifier;
     }
-    let builder = tauri::Builder::default()
-        .register_asynchronous_uri_scheme_protocol("meeting-audio", |context, request, responder| {
+    let builder = tauri::Builder::default().register_asynchronous_uri_scheme_protocol(
+        "meeting-audio",
+        |context, request, responder| {
             let main_window = context.webview_label() == "main";
-            std::thread::spawn(move || responder.respond(meeting_minutes::audio::respond(request, main_window)));
-        });
+            std::thread::spawn(move || {
+                responder.respond(meeting_minutes::audio::respond(request, main_window))
+            });
+        },
+    );
     // Tauri requires single-instance to be the first registered plugin. A
     // second launch focuses the resident window (which may be tray-hidden)
     // instead of creating another WebView against the same profile.

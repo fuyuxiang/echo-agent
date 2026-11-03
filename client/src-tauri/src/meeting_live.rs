@@ -92,7 +92,9 @@ fn slice_pcm(id: &str, start: u64, count: u64) -> Result<Vec<i16>, String> {
     file.read_exact(&mut bytes)
         .map_err(|e| format!("读取已保存录音失败：{e}"))?;
     Ok(bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|v| i16::from_le_bytes([v[0], v[1]]))
         .collect())
 }

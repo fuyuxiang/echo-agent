@@ -127,12 +127,11 @@ pub(crate) fn respond(request: Request<Vec<u8>>, main_window: bool) -> Response<
             .unwrap();
     };
     let mut bytes = Vec::new();
-    if request.method() == "GET" {
-        if file.seek(SeekFrom::Start(start)).is_err()
-            || file.take(end - start + 1).read_to_end(&mut bytes).is_err()
-        {
-            return failure(StatusCode::INTERNAL_SERVER_ERROR);
-        }
+    if request.method() == "GET"
+        && (file.seek(SeekFrom::Start(start)).is_err()
+            || file.take(end - start + 1).read_to_end(&mut bytes).is_err())
+    {
+        return failure(StatusCode::INTERNAL_SERVER_ERROR);
     }
     let mut response = Response::builder()
         .status(if partial { 206 } else { 200 })

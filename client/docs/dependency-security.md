@@ -2,6 +2,12 @@
 
 依赖维护需要同时验证漏洞修复、调用方兼容性和最终安装包。审计通过只能说明所扫描的版本图未报告漏洞，不能代替编译、功能测试或桌面验收。
 
+## 2026-11-03 修复依据
+
+桌面、Agent workspace 和 Markdown fuzz workspace 的 `pulldown-cmark` 均升级至 0.13.6，workspace 的最低依赖版本同步调整，修复 [RUSTSEC-2026-0433](https://rustsec.org/advisories/RUSTSEC-2026-0433.html)。当前解析配置没有启用公告所述的 `ENABLE_WIKILINKS`，仍升级依赖以消除潜在调用风险，不为旧版本添加审计例外。
+
+`deepmerge 4.3.1+echo.1` 的原型污染回移补丁通过 npm workspace 选用。审计只认可 GHSA-gcqx-w48m-w2h4、精确版本、`security/deepmerge` 链接和已固定的四个文件 SHA-256；扫描前后都重新验证内容。原始 registry 副本、改动后的补丁、其他公告和独立的传递依赖告警仍阻断。原始扫描计数、命中路径与补丁依据保留在审计产物中。
+
 ## 2026-10-27 修复依据
 
 桌面和 Agent workspace 的锁文件均使用 `zstd 0.14.3`、`zstd-safe 8.2.0`、`zstd-sys 2.1.2+zstd.1.5.7`，处理 RUSTSEC-2026-0391、RUSTSEC-2026-0395 至 0406 和 RUSTSEC-2026-0410。直接依赖门槛同时调整为 `zstd 0.14.3`、`tonic 0.14.7` 和 `async-compression 0.4.51`，使传递依赖也选用修复版本。修复边界见 [zstd 公告](https://rustsec.org/advisories/RUSTSEC-2026-0391.html)、[zstd-safe 公告](https://rustsec.org/advisories/RUSTSEC-2026-0395.html)和 [zstd-sys 公告](https://rustsec.org/advisories/RUSTSEC-2026-0410.html)。`block-buffer 0.12.0` 升至上游修复版 `0.12.1`。
@@ -38,6 +44,7 @@ VSIX 开发工具通过 `@azure/identity` 引用 MSAL。当前最新 Identity 4.
 | Markdown fuzz workspace | `vendor/echo-agent-build/crates/codegen/echo-agent-markdown/fuzz/Cargo.toml`、同目录 `Cargo.lock` | 在该独立 workspace 中更新 Cargo 锁文件 |
 | Nucleo 独立 workspace 与基准程序 | `vendor/nucleo/Cargo.toml`、同目录 `Cargo.lock` | 用该 manifest 更新锁文件并验证；桌面构建使用桌面锁文件，不能据此遗漏独立锁文件的审计 |
 | 独立原生验收 harness | `scripts/desktop-native-check/Cargo.toml`、同目录 `Cargo.lock` | `pnpm test:desktop-native`；复用原生模块并有独立锁文件，须独立纳入审计 |
+| 文档编辑验收 harness | `scripts/document-workspace-check/Cargo.toml`、同目录 `Cargo.lock` | `pnpm test:document-workspace`；文档存储与导出的独立 Rust 依赖图同样纳入审计 |
 | 桌面恢复 harness | `scripts/stability-check/Cargo.toml`、同目录 `Cargo.lock` | `pnpm test:stability` 与 `pnpm test:stability:native`；独立依赖图同样纳入 Rust 审计 |
 
 `scripts/theia-runtime-manifest.mjs` 将 Theia 根配置的版本门槛、overrides、`allowScripts` 和安全补丁 workspaces 带入生产依赖图，并移除应用自身的构建脚本和开发依赖。`allowScripts` 保留原生依赖安装所需的明确许可，也保留明确禁止执行的条目，避免生产安装偏离源码的执行策略。npm 默认会对未审阅的脚本发出警告；严格模式会拒绝未审阅的依赖。回归测试用本地安装包验证许可的安装脚本执行、禁止的脚本不执行；本地安装包使用源地址作为许可键，registry 依赖则使用可信包名。修改 Theia 依赖、overrides 或本地补丁包的依赖后，应重新运行 `pnpm ide:lock`，不能只更新源码锁文件。
@@ -52,6 +59,7 @@ VSIX 开发工具通过 `@azure/identity` 引用 MSAL。当前最新 Identity 4.
 | `vendor/lru-0.12/`、`vendor/lru-0.16/` | 分别基于 lru 0.12.5、0.16.4；修复析构可能 panic 时的节点脱链顺序，并为旧版本回移迭代器共享键引用修复。Agent workspace 和 fuzz workspace 各自配置 patch。 |
 | `vendor/theia-platform/security/braces/` | 基于 braces 3.0.3，限制嵌套解析和调用方提供的 AST 遍历深度。通过 npm workspace 链接选用。 |
 | `vendor/theia-platform/security/sprintf-js/` | 基于 sprintf-js 1.0.3，在原生数字格式化前限制精度和填充长度，保留合法格式行为。通过 npm workspace 链接选用。 |
+| `vendor/theia-platform/security/deepmerge/` | 基于 deepmerge 4.3.1，在复制 target 和合并 source 时拒绝原型污染键，包括空原型对象；保留数组、symbol 与自定义合并行为。通过 npm workspace 链接选用。 |
 
 上游引用与公告以各目录的 `SOURCE.json` 为准。修改补丁时，先确认安全边界与回归用例，再更新对应的 `patchedSha256`；不能为了使审计通过而仅重写摘要。上游有可替代修复时，应验证兼容性后移除本地副本、patch/workspace 配置及关联断言。
 
@@ -114,7 +122,7 @@ python3 scripts/audit-dependencies.py npm --output /tmp/echo-npm-audit
 python3 scripts/audit-dependencies.py rust --output /tmp/echo-rust-audit
 ```
 
-不指定输出目录时会创建系统临时目录。npm 部分并行审计前端、Theia 源码和重建的 IDE 生产依赖图；Rust 部分向 OSV 查询六个锁文件中的 registry 包版本，保留公告、包清单和分类结果。`test:security` 对照 Git 跟踪清单检查锁文件覆盖，避免新增 harness 被漏审。本地补丁通过来源摘要及配置检查验证，不以全局忽略公告替代修复。
+不指定输出目录时会创建系统临时目录。npm 部分并行审计前端、Theia 源码和重建的 IDE 生产依赖图；Rust 部分向 OSV 查询七个锁文件中的 registry 包版本，保留公告、包清单和分类结果。`test:security` 对照 Git 跟踪清单检查锁文件覆盖，避免新增 harness 被漏审。本地补丁通过来源摘要及配置检查验证，不以全局忽略公告替代修复。
 
 - 退出码 `0`：本次扫描完成且没有安全发现。
 - 退出码 `1`：扫描完成但发现需处理的安全问题。

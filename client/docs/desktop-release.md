@@ -11,6 +11,8 @@
 
 Windows 打包脚本的快速回归检查为 `pnpm test:windows-packaging`，无需编译安装包。CI 在 Windows PowerShell 5.1 和 PowerShell 7 下分别检查原生命令警告、失败退出码、版本输出与含方括号的项目路径。脚本在构建失败时停止，并恢复调用前的工作目录；原生命令仅输出警告且退出码为零时继续。
 
+macOS 的 DMG 打包通过 `scripts/macos-dmg.mjs` 记录本次创建的临时映像。卸载遇到占用或 DiskArbitration 超时，会在每次重新核对映像身份后重试；最多三次普通卸载及一次强制卸载，每次限时 60 秒。身份不符、清单读取失败及其他错误立即失败。该处理同样用于安装包检查后的卸载，不修改系统工具，也不卸载其他映像。快速回归检查为 `node --test scripts/test-macos-dmg.mjs`。若仍需重试已有应用的打包，可运行 `node scripts/macos-dmg.mjs bundle "$PWD/src-tauri/target/release/bundle/macos" "EchoAgent_0.3.11_x64.dmg"`（Apple Silicon 改为 `aarch64`，版本按实际调整），无需重新编译应用。
+
 Windows 原生构建使用 Visual Studio 2022 C++ x64 工具链、MSVC v143 Spectre-mitigated libraries 和 Windows SDK。打包脚本仅选择 VS 2022，并为 npm/node-gyp 设置一致的版本；仅安装 VS 2026 的机器会在依赖安装前得到明确提示。CI 固定使用 `windows-2022` 和 Python 3.12，避免 `windows-latest` 迁移到 VS 2026 后与锁定的 node-gyp 11 不兼容。
 
 `Windows native addons` 作业在 Node.js 22.23.4 和 24.22.1 下，使用真实 IDE 锁文件安装依赖并从源码编译 `drivelist`、`node-pty`，随后验证磁盘枚举和 ConPTY 终端生命周期。此检查与完整安装包构建均需通过。

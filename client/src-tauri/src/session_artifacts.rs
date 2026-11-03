@@ -320,9 +320,11 @@ fn verified_receipt_at(
 }
 
 pub(crate) fn has_export_path(session: &str, path: &Path) -> Result<bool, String> {
-    Ok(read_at(&crate::paths::echo_agent_home_dir(), session)?.iter().any(|entry| {
-        dunce::canonicalize(&entry.receipt.path).is_ok_and(|recorded| recorded == path)
-    }))
+    Ok(read_at(&crate::paths::echo_agent_home_dir(), session)?
+        .iter()
+        .any(|entry| {
+            dunce::canonicalize(&entry.receipt.path).is_ok_and(|recorded| recorded == path)
+        }))
 }
 
 pub(crate) fn forget_session(session: &str) -> Result<(), String> {

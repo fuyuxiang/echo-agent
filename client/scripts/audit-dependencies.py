@@ -19,6 +19,47 @@ LEGACY_MINIMATCH_INTEGRITIES = {
     "3.1.5": "sha512-VgjWUsnnT6n+NUk6eZq77zeFdpW2LWDzP6zFGrCbHXiYNul5Dzqk2HHQ5uFH2DNW5Xbp8+jVzaeNt94ssEEl4w==",
     "5.1.9": "sha512-7o1wEA2RyMP7Iu7GNba9vc0RWWGACJOCZBJX2GJWip0ikV+wcOsgVuY9uE8CPiyQhkGFSlhuSkZPavN7u1c2Fw==",
 }
+DEEPMERGE_BACKPORT_HASHES = {
+    "index.d.ts": "146ba4b99c5feb82663e17a671bf9f53bb39c704cd76345d6c5a801c26372f44",
+    "license.txt": "6cfc4687cb2f2d86f4a77e6b526290d3878e5e512f3fec2f4cb36a9cb36f798b",
+    "package.json": "a04ab1d7f6de8fe562c71eaebbdd2467de97c011d867a9debc95e7472838cf4b",
+    "index.js": "683b14383fb9af364f6a28a14db2390b900f3e666aa63c55a64617f9b9a67bea",
+}
+
+
+def verified_npm_backports():
+    """Review immutable local patch contents, never an entire package or version range."""
+    source = ROOT / "vendor/theia-platform/security/deepmerge"
+    provenance = json.loads((source / "SOURCE.json").read_text())
+    if (provenance.get("advisory") != "GHSA-gcqx-w48m-w2h4"
+            or provenance.get("patchedSha256") != DEEPMERGE_BACKPORT_HASHES):
+        raise RuntimeError("Deepmerge security backport identity changed without review")
+    for file, expected in DEEPMERGE_BACKPORT_HASHES.items():
+        if hashlib.sha256((source / file).read_bytes()).hexdigest() != expected:
+            raise RuntimeError(f"Security backport changed without review: deepmerge/{file}")
+    return {"deepmerge": {
+        "version": "4.3.1+echo.1", "advisory": "GHSA-gcqx-w48m-w2h4",
+        "workspace": "security/deepmerge", "patch_sha256": dict(DEEPMERGE_BACKPORT_HASHES),
+        "reason": "The verified local backport rejects prototype-poisoning keys in both operands, including null-prototype objects.",
+        "source": "vendor/theia-platform/security/deepmerge/SOURCE.json",
+        "regression_test": "scripts/test-dependency-patches.mjs",
+    }}
+
+
+def reviewed_npm_backport(name, advisory, paths, packages, backports):
+    review = backports.get(name)
+    if not review or review["advisory"] != advisory or not paths:
+        return None
+    workspace = review["workspace"]
+    link = f"node_modules/{name}"
+    if packages.get(link) != {"resolved": workspace, "link": True}:
+        return None
+    package = packages.get(workspace, {})
+    if package.get("version") != review["version"] or package.get("name", name) != name:
+        return None
+    if any(path not in (link, workspace) for path in paths):
+        return None
+    return review
 
 
 def reviewed_npm_exception(name, version, advisory, integrities):
@@ -63,7 +104,7 @@ def npm_lock_packages(name, text=None):
     return packages
 
 
-def npm_audit_report(data, packages):
+def npm_audit_report(data, packages, backports=None):
     counts = data.get("metadata", {}).get("vulnerabilities")
     if data.get("error") or not isinstance(counts, dict):
         raise RuntimeError(f"incomplete audit: {data.get('error', 'missing vulnerability counts')}")
@@ -84,7 +125,11 @@ def npm_audit_report(data, packages):
         row = {"package": name, "version": version, "advisory": identifier,
                "summary": advisory.get("title", ""), "severity": advisory.get("severity"),
                "url": url, "paths": paths}
-        review = reviewed_npm_exception(name, version, identifier, identities.get((name, version), set()))
+        review = reviewed_npm_backport(name, identifier, paths, packages, backports or {})
+        if review:
+            row["version"] = review["version"]
+        else:
+            review = reviewed_npm_exception(name, version, identifier, identities.get((name, version), set()))
         (reviewed if review else findings).append(dict(row, review=review) if review else row)
         return review is None
 
@@ -170,6 +215,7 @@ def request(url, payload=None):
 
 
 def npm_audits(output):
+    backports = verified_npm_backports()
     for name in ["braces", "sprintf-js", "deepmerge"]:
         source = ROOT / "vendor/theia-platform/security" / name
         provenance = json.loads((source / "SOURCE.json").read_text())
@@ -203,7 +249,10 @@ def npm_audits(output):
         if result.returncode not in (0, 1):
             raise RuntimeError(f"{name}: incomplete audit: {data.get('error', result.stderr[-500:])}")
         try:
-            report = npm_audit_report(data, packages)
+            # Recheck contents after the scanner, just as we do the lockfile.
+            if verified_npm_backports() != backports:
+                raise RuntimeError("Security backport changed during the audit")
+            report = npm_audit_report(data, packages, backports)
             if result.returncode and not sum(report["reported_counts"][severity] for severity in SEVERITIES):
                 raise RuntimeError("audit exited unsuccessfully without reporting vulnerabilities")
             report["lockfile"] = str(lock_path.relative_to(ROOT))
@@ -226,7 +275,8 @@ def npm_audits(output):
 
 
 def rust_audit(output):
-    manifests = ["scripts/desktop-native-check/Cargo.lock", "scripts/stability-check/Cargo.lock",
+    manifests = ["scripts/desktop-native-check/Cargo.lock", "scripts/document-workspace-check/Cargo.lock",
+                 "scripts/stability-check/Cargo.lock",
                  "src-tauri/Cargo.lock", "vendor/echo-agent-build/Cargo.lock",
                  "vendor/echo-agent-build/crates/codegen/echo-agent-markdown/fuzz/Cargo.lock",
                  "vendor/nucleo/Cargo.lock"]

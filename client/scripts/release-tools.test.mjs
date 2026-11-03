@@ -202,6 +202,7 @@ function macosPackagingProject() {
   fs.mkdirSync(scripts);
   fs.mkdirSync(path.join(root, "runner-temp"));
   fs.copyFileSync(new URL("./build.sh", import.meta.url), path.join(scripts, "build.sh"));
+  fs.copyFileSync(new URL("./macos-dmg.mjs", import.meta.url), path.join(scripts, "macos-dmg.mjs"));
   fs.symlinkSync(process.execPath, path.join(bin, "node"));
   for (const name of ["verify-vendored-runtime.mjs", "validate-theia-git-runtime.mjs"]) {
     fs.writeFileSync(path.join(scripts, name), "");

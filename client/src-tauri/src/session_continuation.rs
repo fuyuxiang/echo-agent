@@ -45,22 +45,19 @@ pub struct ContinuationResult {
 }
 
 fn collect_prompt_ids(value: &serde_json::Value, ids: &mut HashSet<String>) {
-    match value {
-        serde_json::Value::Object(object) => {
-            for (key, value) in object {
-                if matches!(key.as_str(), "promptId" | "prompt_id") {
-                    if let Some(id) = value
-                        .as_str()
-                        .filter(|id| !id.is_empty() && id.len() <= 256)
-                    {
-                        ids.insert(id.into());
-                    }
-                } else if matches!(key.as_str(), "meta" | "_meta" | "update" | "params") {
-                    collect_prompt_ids(value, ids);
+    if let serde_json::Value::Object(object) = value {
+        for (key, value) in object {
+            if matches!(key.as_str(), "promptId" | "prompt_id") {
+                if let Some(id) = value
+                    .as_str()
+                    .filter(|id| !id.is_empty() && id.len() <= 256)
+                {
+                    ids.insert(id.into());
                 }
+            } else if matches!(key.as_str(), "meta" | "_meta" | "update" | "params") {
+                collect_prompt_ids(value, ids);
             }
         }
-        _ => {}
     }
 }
 
@@ -193,10 +190,8 @@ async fn continue_session(
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     };
-    if existing.is_none() {
-        if !points.iter().any(|p| p.prompt_index == origin.prompt_index) {
-            return Err("该历史轮次已变化，请刷新会话后重试".into());
-        }
+    if existing.is_none() && !points.iter().any(|p| p.prompt_index == origin.prompt_index) {
+        return Err("该历史轮次已变化，请刷新会话后重试".into());
     }
     // Reserve provenance first. A retry repairs the same child even if the copy
     // completed but the response/sidecar copy was interrupted.
