@@ -144,6 +144,8 @@ const orgDocuments = [
 ];
 const orgMany = query.get("orgState") === "many";
 const orgEmpty = query.get("orgState") === "empty";
+const orgKeywordOnly = query.get("orgKeywordOnly") === "1";
+const orgSemanticPartial = query.get("orgSemanticPartial") === "1";
 let orgLoggedIn = true;
 const orgLibraryCalls: unknown[] = [];
 Object.assign(window, { orgLibraryCalls });
@@ -160,6 +162,7 @@ let orgSkillSamples = Array.from({length:orgMany?67:0},(_,index)=>({
   description:"检查需求、实现与交付结果的一致性，生成可以继续使用的验证报告。",version:"1.2.0",mandatory:index%5===0,enabled:index%5===0||index%2===0,allowPersonalOverride:true,updatedAt:1,...orgScopeSample(index),
 }));
 const orgDocumentSamples = orgEmpty?[]:orgMany?Array.from({length:126},(_,index)=>({...orgDocuments[index%3],id:`document-${index}`,title:`${index+1}. ${index===125?"末页记录：":""}${orgDocuments[index%3].title}`,ownerId:index%2?"review-user":"other-user",...orgScopeSample(index)})):orgDocuments;
+if (orgKeywordOnly || orgSemanticPartial) orgDocumentSamples.slice(0, 1).forEach(item => Object.assign(item, {ftsStatus:"ready",vectorStatus:"degraded",chunkCount:33,vectorChunkCount:orgSemanticPartial?32:0}));
 let orgPromotionSamples = Array.from({length:orgMany?111:0},(_,index)=>({id:`promotion-${index}`,payloadType:"memory",payload:{kind:"howto",content:`经验提交 ${index+1}：记录任务处理和交付步骤。`},source:"user",state:"approved",createdAt:1,...orgScopeSample(index)}));
 const orgSkillSubmissionSamples = Array.from({length:orgMany?113:0},(_,index)=>({id:`skill-submission-${index}`,name:`接口诊断提交 ${index+1}`,version:"1.2.0",state:"approved",scanStatus:"passed",createdAt:1,...orgScopeSample(index)}));
 const orgDocumentSubmissionSamples = Array.from({length:orgMany?121:0},(_,index)=>({id:`doc-submission-${index}`,title:`交付报告 ${index+1}.md`,sourceType:"md",byteSize:100,state:"approved",scanStatus:"passed",createdAt:1,...orgScopeSample(index)}));
@@ -563,12 +566,14 @@ Object.assign(window, {
           orgLibraryCalls.push({...args});
           if(args.resource === "summary")return {
             memories:orgMemorySamples.length,documents:orgDocumentSamples.length,documentReady:orgDocumentSamples.filter(item=>item.status==="ready").length,documentProcessing:0,
+            documentKeywordOnly:orgDocumentSamples.filter((item:any)=>item.vectorStatus==="degraded"&&item.vectorChunkCount===0).length,
+            documentSemanticPartial:orgDocumentSamples.filter((item:any)=>item.vectorStatus==="degraded"&&item.vectorChunkCount>0).length,
             skills:orgSkillSamples.length,skillInstalled:orgSkillSamples.filter(item=>item.enabled).length,skillMandatory:orgSkillSamples.filter(item=>item.mandatory).length,
             memoryPending:orgPromotionSamples.filter(item=>item.state==="pending").length,documentPending:orgDocumentSubmissionSamples.filter(item=>item.state==="pending").length,skillPending:orgSkillSubmissionSamples.filter(item=>item.state==="pending").length,
           };
           const source: any[] = args.resource === "memories" ? orgMemorySamples : args.resource === "documents" ? orgDocumentSamples : args.resource === "skills" ? orgSkillSamples : args.resource === "memory-submissions" ? orgPromotionSamples : args.resource === "document-submissions" ? orgDocumentSubmissionSamples : orgSkillSubmissionSamples;
           const items=source.filter(item=>(!args.scopeId || item.scopeId===args.scopeId) && (!args.query || JSON.stringify(item).includes(args.query)) && (!args.filter ||
-            (args.resource==="memories"?item.kind===args.filter:args.resource==="skills"?args.filter==="installed"?item.enabled:args.filter==="mandatory"?item.mandatory:!item.enabled:args.resource==="documents"?item.status===args.filter:item.state===args.filter)));
+            (args.resource==="memories"?item.kind===args.filter:args.resource==="skills"?args.filter==="installed"?item.enabled:args.filter==="mandatory"?item.mandatory:!item.enabled:args.resource==="documents"?args.filter==="keywordOnly"?item.vectorStatus==="degraded"&&item.vectorChunkCount===0:args.filter==="semanticPartial"?item.vectorStatus==="degraded"&&item.vectorChunkCount>0:item.status===args.filter:item.state===args.filter)));
           return {items:items.slice(((args.page??1)-1)*(args.size??20),(args.page??1)*(args.size??20)),total:items.length,page:args.page??1,size:args.size??20};
         }
         case "org_logout": orgLoggedIn=false;return;

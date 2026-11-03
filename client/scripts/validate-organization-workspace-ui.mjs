@@ -161,6 +161,25 @@ try {
     }
     await modalPage.close();
   }
+  for (const mode of [
+    { parameter: 'orgKeywordOnly', filter: 'keywordOnly', label: '可检索 · 关键词模式', note: '语义检索暂不可用' },
+    { parameter: 'orgSemanticPartial', filter: 'semanticPartial', label: '可检索 · 部分语义可用', note: '部分内容支持语义检索' },
+  ]) for (const [width,height] of [[390,760],[1440,900]]) {
+    const degradedPage=await browser.newPage({viewport:{width,height}});
+    activePage=degradedPage;
+    degradedPage.setDefaultTimeout(15000);
+    await degradedPage.goto(`${base}&orgState=many&${mode.parameter}=1&collapsed=1`);
+    await degradedPage.getByRole('note').filter({hasText:mode.note}).waitFor();
+    await degradedPage.locator('.org-memory__nav button').filter({hasText:'文档'}).click();
+    await degradedPage.getByText(mode.label,{exact:true}).waitFor();
+    await degradedPage.getByRole('combobox',{name:'文档状态'}).selectOption(mode.filter);
+    await degradedPage.getByText('共 1 项',{exact:true}).waitFor();
+    assert.equal(await degradedPage.getByRole('button',{name:'查看',exact:true}).count(),1);
+    assert.equal(await degradedPage.getByRole('button',{name:'下载',exact:true}).count(),1);
+    assert(await degradedPage.locator('.org-workspace').evaluate(root=>root.scrollWidth<=root.clientWidth+2),`${width}: ${mode.filter} overflows`);
+    await degradedPage.screenshot({path:join(output,`${mode.filter}-${width}.png`)});
+    await degradedPage.close();
+  }
   assert.deepEqual(errors,[]);
   writeFileSync(join(output,'evidence.json'),JSON.stringify(evidence,null,2));
   console.log(JSON.stringify({output,layouts:evidence.length,flows:'fixed navigation and toolbar / independent scroll and query / full search / paginated submissions / draft / install / menu focus / logout / retry'}));

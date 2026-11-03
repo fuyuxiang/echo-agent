@@ -144,6 +144,80 @@ describe("OrganizationMemoryPanel", () => {
     expect(onStartConversation).toHaveBeenCalledOnce();
   });
 
+  it("语义索引降级时说明可用能力并显示关键词检索状态", async () => {
+    api.orgListDocuments.mockResolvedValue({ items: [{ ...document("d1", "降级文档", personalScope.id, personalScope.name),
+      ftsStatus: "ready", vectorStatus: "degraded", vectorChunkCount: 0 }], total: 1, page: 1, size: 20 });
+    const summary = api.orgLibrarySummary.getMockImplementation()!;
+    api.orgLibrarySummary.mockImplementation(async () => ({ ...await summary(), documentKeywordOnly: 1, documentSemanticPartial: 0 }));
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    expect(screen.getByRole("note")).toHaveTextContent("语义检索暂不可用");
+    fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    expect(screen.getByText("可检索 · 关键词模式")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "关键词检索" })).toHaveValue("keywordOnly");
+    fireEvent.change(screen.getByLabelText("文档状态"), { target: { value: "keywordOnly" } });
+    await waitFor(() => expect(api.orgLibraryQuery).toHaveBeenCalledWith("documents", expect.objectContaining({ filter: "keywordOnly" })));
+  });
+
+  it("部分向量可用时保留语义能力说明，查看和下载仍可用", async () => {
+    api.orgListDocuments.mockResolvedValue({ items: [{ ...document("partial", "部分索引文档", personalScope.id, personalScope.name),
+      ftsStatus: "ready", vectorStatus: "degraded", chunkCount: 33, vectorChunkCount: 32 }], total: 1, page: 1, size: 20 });
+    const summary = api.orgLibrarySummary.getMockImplementation()!;
+    api.orgLibrarySummary.mockImplementation(async () => ({ ...await summary(), documentKeywordOnly: 0, documentSemanticPartial: 1 }));
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    expect(screen.getByRole("note")).toHaveTextContent("部分内容支持语义检索");
+    expect(screen.queryByText(/语义检索暂不可用/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    expect(screen.getByText("可检索 · 部分语义可用")).toHaveAttribute("title", "部分内容支持语义检索，全文仍可通过关键词搜索。");
+    expect(screen.getByRole("button", { name: "查看" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "下载" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("文档状态"), { target: { value: "semanticPartial" } });
+    await waitFor(() => expect(api.orgLibraryQuery).toHaveBeenCalledWith("documents", expect.objectContaining({ filter: "semanticPartial" })));
+  });
+
+  it("旧服务未返回向量覆盖情况时使用保守说明", async () => {
+    api.orgListDocuments.mockResolvedValue({ items: [{ ...document("legacy", "旧服务文档", personalScope.id, personalScope.name),
+      ftsStatus: "ready", vectorStatus: "degraded" }], total: 1, page: 1, size: 20 });
+    const summary = api.orgLibrarySummary.getMockImplementation()!;
+    api.orgLibrarySummary.mockImplementation(async () => ({ ...await summary(), documentKeywordOnly: 1 }));
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    expect(screen.getByRole("note")).toHaveTextContent("语义索引尚未完整");
+    expect(screen.queryByText(/语义检索暂不可用/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    expect(screen.getByText("可检索 · 语义索引待完善")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "语义索引待完善" })).toHaveValue("keywordOnly");
+    expect(screen.queryByRole("option", { name: "部分语义可用" })).toBeNull();
+  });
+
+  it.each(["keywordOnly", "semanticPartial"])("%s 索引恢复后保留可见筛选，清空筛选恢复完整列表", async (filter) => {
+    let recovered = false;
+    const item = document("recovered", "已恢复文档", personalScope.id, personalScope.name);
+    api.orgLibraryQuery.mockImplementation(async (resource, query) => {
+      const items = resource === "documents" && (!recovered || !query.filter) ? [item] : [];
+      return { items, total: items.length, page: 1, size: 20 };
+    });
+    api.orgLibrarySummary.mockImplementation(async () => ({ memories: 0, documents: 1, documentReady: 1, documentProcessing: 0,
+      documentKeywordOnly: !recovered && filter === "keywordOnly" ? 1 : 0,
+      documentSemanticPartial: !recovered && filter === "semanticPartial" ? 1 : 0,
+      skills: 0, skillInstalled: 0, skillMandatory: 0, memoryPending: 0, documentPending: 0, skillPending: 0 }));
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    fireEvent.change(screen.getByLabelText("文档状态"), { target: { value: filter } });
+    await waitFor(() => expect(api.orgLibraryQuery).toHaveBeenCalledWith("documents", expect.objectContaining({ filter })));
+    recovered = true;
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await screen.findByText("没有找到匹配的内容");
+    await waitFor(() => expect(screen.queryByRole("note")).toBeNull());
+    expect(screen.getByLabelText("文档状态")).toHaveValue(filter);
+    expect(screen.getByRole("option", { name: filter === "keywordOnly" ? "关键词检索" : "部分语义可用" })).toHaveValue(filter);
+    fireEvent.click(screen.getByRole("button", { name: "清空筛选" }));
+    expect(await screen.findByText("已恢复文档")).toBeInTheDocument();
+    expect(screen.getByLabelText("文档状态")).toHaveValue("");
+  });
+
   it("原生登录事件先于 IPC 返回时仍加载工作区及写入范围", async () => {
     const signedIn = await api.orgSession();
     api.orgSession.mockResolvedValue({ loggedIn: false, serverUrl: signedIn.serverUrl, username: "alice" });

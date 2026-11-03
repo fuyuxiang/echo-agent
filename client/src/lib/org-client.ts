@@ -47,6 +47,10 @@ export interface OrgDocument {
   sourceType: string;
   status: "pending" | "parsing" | "chunking" | "embedding" | "ready" | "failed" | "archived";
   failReason?: string | null;
+  ftsStatus?: string;
+  vectorStatus?: string;
+  /** Number of document chunks with a stored vector; absent on older servers. */
+  vectorChunkCount?: number;
   byteSize: number;
   scopeId: string;
   scopeKind: OrgScopeKind;
@@ -70,6 +74,8 @@ export interface OrgLibraryQuery { scopeId: string; query: string; filter: strin
 export interface OrgLibraryPage<T> { items: T[]; total: number; page: number; size: number }
 export interface OrgLibrarySummary {
   memories: number; documents: number; documentReady: number; documentProcessing: number;
+  documentKeywordOnly?: number;
+  documentSemanticPartial?: number;
   skills: number; skillInstalled: number; skillMandatory: number;
   memoryPending: number; documentPending: number; skillPending: number;
 }
