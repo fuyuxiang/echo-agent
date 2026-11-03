@@ -298,9 +298,46 @@ impl JsonlStorageAdapter {
             self.read_chat_history_sync(self.chat_file(source_info), chat_format_version)?;
 
         if let Some(target_idx) = options.target_prompt_index {
-            // +1: the cut keeps the target prompt inclusive.
-            let keep = conversation_truncate_for_prompt(&chat_to_copy, target_idx + 1);
-            chat_to_copy.truncate(keep);
+            let updates = self.updates_file(source_info);
+            if options.fresh_title
+                && crate::session::helpers::replay::find_latest_compaction_checkpoint(&updates)?
+                    .is_some()
+            {
+                // A current compacted summary can describe work AFTER the cut.
+                // Use the same checkpoint-aware reconstruction as rewind.
+                let replay = crate::session::helpers::replay::replay_to_prompt_with_context(
+                    &updates,
+                    &self.session_dir(source_info),
+                    target_idx + 1,
+                )?;
+                if replay.prompt_index_reached != target_idx + 1 {
+                    return Err(io::Error::other(
+                        "无法完整恢复所选历史轮次，请刷新会话后重试",
+                    ));
+                }
+                if matches!(
+                    replay.conversation.first(),
+                    Some(ConversationItem::System(_))
+                ) {
+                    chat_to_copy = replay.conversation;
+                } else {
+                    let mut prefix = Vec::new();
+                    if let Some(system @ ConversationItem::System(_)) = chat_to_copy.first() {
+                        prefix.push(system.clone());
+                        if let Some(original) = replay.original_user_info {
+                            prefix.push(ConversationItem::user(original));
+                        } else if let Some(user @ ConversationItem::User(_)) = chat_to_copy.get(1) {
+                            prefix.push(user.clone());
+                        }
+                    }
+                    prefix.extend(replay.conversation);
+                    chat_to_copy = prefix;
+                }
+            } else {
+                // +1: the cut keeps the target prompt inclusive.
+                let keep = conversation_truncate_for_prompt(&chat_to_copy, target_idx + 1);
+                chat_to_copy.truncate(keep);
+            }
         }
 
         if options.fork_filter {
@@ -361,7 +398,7 @@ impl JsonlStorageAdapter {
 
         // A fork_filter copy (subagent context bootstrap) starts the child with
         // an empty replay transcript, so the source updates are never read.
-        let copied_updates = if options.fork_filter {
+        let mut copied_updates = if options.fork_filter {
             std::fs::write(self.updates_file(target_info), b"")?;
             CopiedUpdates::default()
         } else {
@@ -372,6 +409,22 @@ impl JsonlStorageAdapter {
                 options.target_prompt_index,
             )?
         };
+        if options.fresh_title && !options.copy_plan_state {
+            // Retain historical events, then explicitly end their authority over
+            // the child's current plan. Omitting plan.json alone cannot do this:
+            // clients restore the active plan from the replay stream.
+            let reset = SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+                target_info.id.clone(),
+                acp::SessionUpdate::Plan(acp::Plan::new(Vec::new())),
+            )));
+            let envelope = SessionUpdateEnvelope::from_update(&reset).map_err(invalid_data)?;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(self.updates_file(target_info))?;
+            serde_json::to_writer(&mut file, &envelope).map_err(invalid_data)?;
+            file.write_all(b"\n")?;
+            copied_updates.count += 1;
+        }
         let checkpoint_files = copied_updates.checkpoint_files;
         let num_messages = copied_updates.count;
 
@@ -506,7 +559,11 @@ fn fork_summary(
         previous_cwd: source.previous_cwd,
         pending_cwd_switch_reminder: None,
         cwd_switch_bookkeeping_generation: counters.cwd_switch_bookkeeping_generation,
-        session_summary: source.session_summary,
+        session_summary: if options.fresh_title {
+            String::new()
+        } else {
+            source.session_summary
+        },
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         num_messages: counters.num_messages,
@@ -541,9 +598,13 @@ fn fork_summary(
         // Fresh local echo_agent_home, not inherited from source: the fork lives on this machine.
         echo_agent_home: crate::session::persistence::echo_agent_home_string(),
         last_active_at: source.last_active_at,
-        generated_title: source.generated_title,
+        generated_title: if options.fresh_title {
+            None
+        } else {
+            source.generated_title
+        },
         // A fork keeps the parent's title, so its manual-ness rides along.
-        title_is_manual: source.title_is_manual,
+        title_is_manual: !options.fresh_title && source.title_is_manual,
         worktree_label: source.worktree_label,
         agent_name: source.agent_name,
         sandbox_profile: source.sandbox_profile,

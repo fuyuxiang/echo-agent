@@ -1285,12 +1285,17 @@ pub async fn rewind_points(
     let v: serde_json::Value = call_ext(&tx, "echo.agent/rewind/points", params)
         .await
         .map_err(|e| e.to_string())?;
+    let mut points = parse_rewind_points(v)?;
+    points.truncate(MAX_ADMIN_RESULTS);
+    Ok(points)
+}
+
+pub(crate) fn parse_rewind_points(v: serde_json::Value) -> Result<Vec<RewindPoint>, String> {
     validate_admin_response(&v)?;
     // Response shape: array or { points: [...] }.
     let arr = rewind_point_values(&v)?;
     let points = arr
         .iter()
-        .take(MAX_ADMIN_RESULTS)
         .map(|item| {
             serde_json::from_value::<RewindPoint>(item.clone())
                 .map_err(|error| format!("Agent Runtime 返回了无效的可恢复位置：{error}"))
@@ -1416,8 +1421,16 @@ pub async fn rewind_execute(
     mode: Option<String>,
     force: Option<bool>,
 ) -> Result<RewindExecution, String> {
+    let _history_guard = crate::session_continuation::history_mutation_guard(&session_id)?;
     require_live_session(&state, &session_id)?;
     crate::commands::trusted_existing_session_cwd(&state, &filesystem, &session_id, None)?;
+    if crate::meta::read_state()
+        .session_continuations
+        .get(&session_id)
+        .is_some_and(|origin| target_prompt_index <= origin.prompt_index)
+    {
+        return Err("继承的历史仅供查看，请返回原对话回溯，或从该位置接续新对话".into());
+    }
     let tx = state
         .tx
         .lock()

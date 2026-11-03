@@ -5,10 +5,13 @@ import { Play } from "lucide-react";
 import { TasksPanel } from "./TasksPanel";
 import { useSessionStore, type ChatMessage, type ToolCallView } from "@/stores/session-store";
 import { useSessionsStore } from "@/stores/sessions-store";
+import { useContinuationStore } from "@/stores/continuation-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { hydrateKnowledgeTraces } from "@/lib/knowledge-traces-client";
 import { createMarkdownHostConfig } from "@/lib/markdown-host";
-import { rewindExecute, rewindPoints, setCodingMode } from "@/lib/agent-client";
+import { rewindExecute, rewindPoints, setCodingMode, sessionContinue, type ContinuationRequest } from "@/lib/agent-client";
+import { continuationTargets, inheritedMessageIds, continuationAnchor, latestContinuationTarget } from "@/lib/session-continuation";
+import { ConversationOrigin, ContinuationLinks } from "./ConversationContinuation";
 import {
   collectSessionArtifacts,
   findToolCall,
@@ -44,7 +47,7 @@ import { formatAgentError, friendlyError } from "@/lib/error-format";
 import { useSubagentStore } from "@/stores/subagent-store";
 import { stoppedTaskLabel, type SessionControl, type SessionControlAction } from "@/lib/session-control";
 import type { ModelOption } from "./ModelSelector";
-import type { AgentEntry } from "@/lib/types";
+import type { AgentEntry, SessionSummary, ContinuationTarget, ConversationNavigationRequest } from "@/lib/types";
 import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { isGlobalShortcutBlocked } from "@/lib/keyboard-scope";
@@ -100,6 +103,8 @@ export function ChatView({
   onRetrySend,
   onRewound,
   onForked,
+  onOpenContinuationSession,
+  conversationNavigation,
   onToast,
   onSelectExpert,
   onOpenSubagentSession,
@@ -149,10 +154,12 @@ export function ChatView({
   onPrepareRetry?: (sessionId: string) => boolean | Promise<boolean>;
   /** Submit the exact prompt removed by a successful answer replacement. */
   onRetrySend?: (request: MessageRetrySendRequest) => boolean | Promise<boolean>;
-  /** Rewind rewrote backend history — reload the transcript. */
+  /** Reload persisted history after a rewind or a stale continuation target. */
   onRewound?: (sessionId: string) => void | Promise<void>;
   /** Fork created a new session id — navigate to it. */
-  onForked?: (newSessionId: string, sourceSessionId: string, sourceCwd?: string) => void;
+  onForked?: (newSessionId: string, sourceSessionId: string, sourceCwd?: string, summary?:SessionSummary) => void | Promise<void>;
+  onOpenContinuationSession?: (sessionId:string, target?:ContinuationTarget) => void;
+  conversationNavigation?: ConversationNavigationRequest | null;
   /** Surface transient feedback from the rewind/fork toolbar. */
   onToast?: (msg: string) => void;
   onSelectExpert?: (agent: AgentEntry) => void;
@@ -219,6 +226,29 @@ export function ChatView({
   const jumpHighlightTimerRef = useRef<number | null>(null);
   const questions = useMemo(() => buildQuestionHistory(messages), [messages]);
   const conversationTurns = useMemo(() => buildConversationTurns(messages, questions), [messages, questions]);
+  const catalog = useSessionsStore(state => state.independent);
+  const deletedSessions = useSessionsStore(state => state.deletedSessionIds);
+  const sessionSummary = catalog.find(row => row.sessionId === sessionId);
+  const origin = sessionSummary?.continuation;
+  const inheritedIds = useMemo(() => inheritedMessageIds(messages, origin), [messages, origin]);
+  const forkTargets = useMemo(() => continuationTargets(messages), [messages]);
+  const messageIndices = useMemo(() => new Map(messages.map((message,index) => [message.id,index])), [messages]);
+  const continuationLinks = useMemo(() => {
+    const byMessage = new Map<string, SessionSummary[]>();
+    for (const child of catalog) {
+      if (child.continuation?.parentSessionId !== sessionId) continue;
+      const anchor = continuationAnchor(messages, {promptIndex:child.continuation.promptIndex, promptId:child.continuation.promptId ?? undefined});
+      if (anchor) byMessage.set(anchor, [...(byMessage.get(anchor) ?? []),child]);
+    }
+    return byMessage;
+  }, [catalog, messages, sessionId]);
+  const expandedHistories = useRef(new Set<string>());
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  useLayoutEffect(() => { setHistoryExpanded(Boolean(sessionId && expandedHistories.current.has(sessionId))); }, [sessionId]);
+  const expandHistory = useCallback((expanded:boolean) => {
+    if (sessionId) { if (expanded) expandedHistories.current.add(sessionId); else expandedHistories.current.delete(sessionId); }
+    setHistoryExpanded(expanded);
+  }, [sessionId]);
   const closeFind = useCallback(() => {
     setFindOpen(false);
     setFindQuery("");
@@ -229,7 +259,8 @@ export function ChatView({
   const openFind = useCallback(() => {
     closeQuestionHistory();
     setFindOpen(true);
-  }, [closeQuestionHistory]);
+    expandHistory(true);
+  }, [closeQuestionHistory, expandHistory]);
   const findHitIds = useMemo(
     () => [...new Set(findOccurrences.map((occurrence) => occurrence.messageId))],
     [findOccurrences],
@@ -266,7 +297,7 @@ export function ChatView({
   if (visitedRuntime.current.session !== sessionId) visitedRuntime.current = {session: sessionId, views: new Set()};
   const currentRuntime = runtimePanelKey(workspaceView);
   if (currentRuntime) visitedRuntime.current.views.add(currentRuntime);
-  const [historyAction, setHistoryAction] = useState<"rewind" | "fork" | null>(null);
+  const [historyAction, setHistoryAction] = useState<"rewind" | null>(null);
   const historyDisabled = !workspace.available || workspace.busy || modelLoading || historyIsBusy({ streaming, sendNowPending, control });
   const modelLoadingRef = useRef(modelLoading);
   modelLoadingRef.current = modelLoading;
@@ -277,7 +308,8 @@ export function ChatView({
   }, [historyDisabled]);
   const canExecuteHistory = useCallback(() => {
     const current = useSessionStore.getState();
-    return workspace.available && !workspace.busy && current.sessionId === sessionId && !modelLoadingRef.current && !historyIsBusy(current);
+    return workspace.available && !workspace.busy && current.sessionId === sessionId && !modelLoadingRef.current && !historyIsBusy(current)
+      && !useContinuationStore.getState().pending[sessionId ?? ""];
   }, [sessionId, workspace.available, workspace.busy]);
   const [automationModeChanging, setAutomationModeChanging] = useState(false);
   const terminalMessage = [...messages].reverse().find(message => message.role === "assistant"
@@ -329,6 +361,7 @@ export function ChatView({
     }
   }, [sessionId, cancelling, control?.phase, onCancel, onToast]);
   const continueTask = async () => {
+    if (sessionId && useContinuationStore.getState().pending[sessionId]) return;
     if (!sessionId || streaming || sendNowPending || replacingTurn || cancellationPending || !workspace.available || workspace.busy || continuingRef.current.has(sessionId) || !apiReady || modelLoading || awaitingQuestion || awaitingDecision || awaitingPlan) return;
     if (automationMode === "computer_use" && automation.status && !automation.status.task?.scope) return;
     setHistoryAction(null);
@@ -393,9 +426,64 @@ export function ChatView({
   const retryBlocked = historyDisabled || Boolean(awaitingDecision || awaitingQuestion || planApproval?.sessionId === sessionId);
   const retryBlockedRef = useRef(retryBlocked);
   retryBlockedRef.current = retryBlocked;
+  const continuationOperations = useRef(new Map<string, {request:ContinuationRequest; pending:boolean; refreshing?:boolean; error?:string}>());
+  const [, refreshContinuation] = useState(0);
+  const continuationOperation = sessionId ? continuationOperations.current.get(sessionId) : undefined;
+  const sharedContinuationPending = useContinuationStore(state => Boolean(sessionId && state.pending[sessionId]));
+  const continuationPending = Boolean(continuationOperation?.pending || sharedContinuationPending);
+  const continuationFeedback = sharedContinuationPending && !continuationOperation?.refreshing
+    ? {pending:true,refreshing:false,error:undefined} : continuationOperation;
+  const continuationDisabled = retryBlocked || continuationPending || !onForked;
+  const startContinuation = async (target?:ContinuationTarget, retry = false) => {
+    if (!sessionId || !cwd || !onForked || !canExecuteHistory() || retryBlockedRef.current
+      || useContinuationStore.getState().pending[sessionId] || continuationOperations.current.get(sessionId)?.pending) return;
+    const sourceId = sessionId;
+    target ??= latestContinuationTarget(useSessionStore.getState().messages);
+    const request = retry && continuationOperations.current.get(sourceId)?.request || {
+      requestId:crypto.randomUUID(), targetPromptIndex:target?.promptIndex, sourcePromptId:target?.promptId,
+    };
+    const effectiveTarget = request.targetPromptIndex === undefined ? undefined : {promptIndex:request.targetPromptIndex,promptId:request.sourcePromptId};
+    if (effectiveTarget && !continuationAnchor(useSessionStore.getState().messages, effectiveTarget)) {
+      continuationOperations.current.set(sourceId,{request,pending:false,error:"该历史轮次已被回溯或删除，请关闭此提示并选择新的接续位置"});
+      refreshContinuation(value => value + 1);
+      return;
+    }
+    continuationOperations.current.set(sourceId, { request, pending:true });
+    refreshContinuation(value => value + 1);
+    try {
+      const result = await sessionContinue(sourceId, cwd, request);
+      await onForked(result.session.sessionId, sourceId, cwd, result.session);
+      continuationOperations.current.delete(sourceId);
+      if (result.warnings.length) onToast?.(result.warnings.join("；"));
+    } catch (error) {
+      continuationOperations.current.set(sourceId, {request, pending:false, error:friendlyError(error)});
+      if (useSessionStore.getState().sessionId !== sourceId) onToast?.(`创建接续对话失败：${friendlyError(error)}`);
+    } finally { refreshContinuation(value => value + 1); }
+  };
+  const refreshContinuationSource = async () => {
+    if (!sessionId || !onRewound || !canExecuteHistory() || retryBlockedRef.current) return;
+    const sourceId = sessionId;
+    const operation = continuationOperations.current.get(sourceId);
+    if (!operation || operation.pending) return;
+    continuationOperations.current.set(sourceId, {...operation,pending:true,refreshing:true});
+    useContinuationStore.getState().setPending(sourceId,true);
+    refreshContinuation(value => value + 1);
+    try {
+      await onRewound(sourceId);
+      continuationOperations.current.delete(sourceId);
+      onToast?.("原对话已刷新，请重新选择接续位置");
+    } catch (error) {
+      continuationOperations.current.set(sourceId, {...operation,pending:false,refreshing:false,
+        error:`刷新原对话失败：${friendlyError(error)}；请再次刷新或关闭此提示`});
+    } finally {
+      useContinuationStore.getState().setPending(sourceId,false);
+      refreshContinuation(value => value + 1);
+    }
+  };
   useEffect(() => { if (retryBlocked) dismissRetry(); }, [retryBlocked, dismissRetry]);
   const performRetry = useCallback(async (kind: MessageRetryKind) => {
-    if (!sessionId || streaming || retryBlockedRef.current || retryingSessionsRef.current.has(sessionId)) return;
+    if (!sessionId || streaming || retryBlockedRef.current || retryingSessionsRef.current.has(sessionId)
+      || useContinuationStore.getState().pending[sessionId]) return;
     const targetSessionId = sessionId;
     // Find the last user message text.
     const lastUserIndex = messages.map((message) => message.role).lastIndexOf("user");
@@ -424,6 +512,7 @@ export function ChatView({
           ?? (current.sessionId === targetSessionId ? current.messages : undefined);
         const currentUser = currentMessages?.[currentMessages.map((message) => message.role).lastIndexOf("user")];
         if (current.sessionId === targetSessionId && retryBlockedRef.current
+          || useContinuationStore.getState().pending[targetSessionId]
           || transcript?.streamingMessageId || transcript?.pendingSendNowPromptId
           || transcript?.control?.phase === "pausing" || transcript?.control?.phase === "stopping"
           || currentMessages && currentUser?.id !== lastUserMsg.id) {
@@ -722,6 +811,7 @@ export function ChatView({
   }, [transitionWorkspace]);
 
   const jumpToQuestion = useCallback((messageId: string) => {
+    if (inheritedIds.has(messageId)) expandHistory(true);
     const row = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>("[data-msg-id]") ?? [])
       .find((node) => node.dataset.msgId === messageId);
     closeQuestionHistory();
@@ -729,13 +819,40 @@ export function ChatView({
     pauseFollowing();
     if (jumpHighlightTimerRef.current !== null) window.clearTimeout(jumpHighlightTimerRef.current);
     setJumpTargetId(messageId);
-    row.focus({ preventScroll: true });
-    row.scrollIntoView?.({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+    const align = () => {
+      if (useSessionStore.getState().sessionId !== sessionId) return;
+      row.focus({ preventScroll: true });
+      row.scrollIntoView?.({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+    };
+    if (inheritedIds.has(messageId) && !historyExpanded) requestAnimationFrame(align); else align();
     jumpHighlightTimerRef.current = window.setTimeout(() => {
       setJumpTargetId(null);
       jumpHighlightTimerRef.current = null;
     }, 2200);
-  }, [closeQuestionHistory, pauseFollowing, scrollRef]);
+  }, [closeQuestionHistory, pauseFollowing, scrollRef, inheritedIds, expandHistory, sessionId, historyExpanded]);
+
+  const handledConversationNavigation = useRef<number>();
+  useEffect(() => {
+    if (!conversationNavigation || conversationNavigation.sessionId !== sessionId || modelLoading
+      || handledConversationNavigation.current === conversationNavigation.sequence) return;
+    if (conversationNavigation.focusComposer) {
+      handledConversationNavigation.current = conversationNavigation.sequence;
+      scrollToBottom();
+      scrollRef.current?.closest(".chatview")?.querySelector<HTMLTextAreaElement>(".echo-composer__input")?.focus({preventScroll:true});
+      return;
+    }
+    if (!conversationNavigation.target) return;
+    const anchor = continuationAnchor(messages, conversationNavigation.target);
+    if (!anchor) {
+      if (messages.length) {
+        handledConversationNavigation.current = conversationNavigation.sequence;
+        onToast?.("原接续位置已被回溯或删除，已打开原对话");
+      }
+      return;
+    }
+    handledConversationNavigation.current = conversationNavigation.sequence;
+    jumpToQuestion(anchor);
+  }, [conversationNavigation, sessionId, modelLoading, messages, jumpToQuestion, onToast, scrollRef, scrollToBottom]);
 
   const restoredSequenceRef = useRef<number | null>(null);
   const restoreFrameRef = useRef<number | null>(null);
@@ -860,7 +977,7 @@ export function ChatView({
         {controlPhase === "stopping" && "正在停止任务…"}
         {controlPhase === "stopped" && stoppedTaskLabel(stoppedCategory)}
       </span>
-      {controlPhase === "paused" && !continuationNeedsScope && <button type="button" className="btn btn--ghost" disabled={continuing || streaming || sendNowPending || replacingTurn || !workspace.available || workspace.busy || !apiReady || modelLoading || awaitingQuestion || awaitingDecision || awaitingPlan}
+      {controlPhase === "paused" && !continuationNeedsScope && <button type="button" className="btn btn--ghost" disabled={continuing || streaming || sendNowPending || replacingTurn || continuationPending || !workspace.available || workspace.busy || !apiReady || modelLoading || awaitingQuestion || awaitingDecision || awaitingPlan}
         onClick={() => void continueTask()}><Play size={14} />{continuing ? "正在继续…" : "继续任务"}</button>}
     </div>
   ) : null;
@@ -877,6 +994,86 @@ export function ChatView({
     return () => cancelAnimationFrame(frame);
   }, [attentionRequest, modelLoading, awaitingPlan, planOpen, sessionId]);
 
+  const renderTimelineNode = (node: (typeof timeline)[number]) => {
+                // 时间线分隔符(对齐 EchoAgent message-timeline):日期/模型切换分隔。
+                // 当前 ChatMessage 无 modelId/createdAt,无分隔符时仅渲染消息节点。
+                if (node.kind === "date-divider") {
+                  return (
+                    <div key={node.key} className="timeline-divider timeline-divider--date">
+                      {node.label}
+                    </div>
+                  );
+                }
+                if (node.kind === "model-divider") {
+                  return (
+                    <div key={node.key} className="timeline-divider timeline-divider--model">
+                      {node.label}
+                    </div>
+                  );
+                }
+                const m = node.message;
+                const idx = messageIndices.get(m.id) ?? node.index;
+                // 重试只对最后一条 assistant 消息开放（重试中间消息没有语义）。
+                const isLastAssistant =
+                  m.role === "assistant" && idx === messages.length - 1;
+                // 会话内查找:命中容器高亮(当前命中更深一层)。
+                const findCls = findOpen && isFindHit(findHitIds, m.id)
+                  ? m.id === findActive?.messageId
+                    ? " msg-wrap--find-current"
+                    : " msg-wrap--find-hit"
+                  : "";
+                return (
+                  <div key={`${sessionId}:${m.id}`} className={"msg-wrap" + findCls + (m.id === jumpTargetId ? " msg-wrap--jump-target" : "")} data-msg-id={m.id} tabIndex={-1}>
+                    <MessageItem
+                      message={m}
+                      streaming={streaming && m.id === streamingMessageId}
+                      waitingForModel={!awaitingDecision && !awaitingPlan && !awaitingQuestion && !controlPhase && !error}
+                      waitingReason={streaming && m.id === streamingMessageId
+                        ? awaitingQuestion ? "等待你补充信息" : awaitingPlan ? "等待你确认计划" : awaitingDecision ? "等待你批准操作" : undefined
+                        : undefined}
+                      markdownConfig={markdownConfig}
+                      cwd={cwd}
+                      sessionId={sessionId ?? undefined}
+                      onToast={onToast}
+                      onOpenTool={handleOpenTool}
+                      onOpenArtifact={handleSelectArtifact}
+                      findQuery={findOpen ? findQuery : undefined}
+                      onEditResend={inheritedIds.has(m.id) ? undefined : handleEditResend}
+                      onContinueInNewConversation={forkTargets.has(m.id) && onForked ? () => { void startContinuation(forkTargets.get(m.id)); } : undefined}
+                      continuationDisabled={continuationDisabled || replacingTurn}
+                      continuationDisabledReason={continuationPending ? "正在创建新对话，请稍候" : continuationDisabled || replacingTurn ? "请等待当前执行和待处理操作结束后再继续" : undefined}
+                      autoExpandProcess={false}
+                      runtimeError={isLastAssistant ? inlineRuntimeError : undefined}
+                      suppressStoppedNotice={isLastAssistant && Boolean(taskFeedback)}
+                      turnFeedback={m.id === feedbackTarget ? taskFeedback : undefined}
+                      onOpenModelSettings={onOpenSettings}
+                      onOpenSecuritySettings={onOpenSecuritySettings}
+                      onContinueExecution={isLastAssistant && !inheritedIds.has(m.id) ? async (prompt) => {
+                        const live = useSessionStore.getState();
+                        if (!sessionId || live.sessionId !== sessionId || live.messages[live.messages.length - 1]?.id !== m.id || live.streaming || retryBlockedRef.current || modelLoading
+                          || !apiReady || !workspace.available || workspace.busy || replacingTurn || sendNowPending
+                          || live.control?.phase === "pausing" || live.control?.phase === "stopping"
+                          || awaitingDecision || awaitingQuestion || awaitingPlan) return false;
+                        return onSend(prompt, []);
+                      } : undefined}
+                      compactIdentity={m.role === "assistant" && messages[idx - 1]?.role === "assistant"}
+                      latest={isLastAssistant}
+                      retrying={isLastAssistant && Boolean(sessionId && retryingSessions.has(sessionId))}
+                      retryDisabled={retryBlocked || !apiReady || modelLoading || replacingTurn || sendNowPending || continuationPending}
+                      retryDisabledReason={continuationPending ? "正在创建新对话，请稍候" : !workspace.available || workspace.busy ? "请先恢复本任务的工作目录，再重试回复" : !apiReady ? "请先配置可用模型" : modelLoading ? "正在同步模型，请稍候" : undefined}
+                      onRetry={
+                        isLastAssistant && !inheritedIds.has(m.id) && !streaming && m.complete && !taskFeedback
+                          ? handleRetry
+                          : undefined
+                      }
+                    />
+                    <ContinuationLinks sessions={continuationLinks.get(m.id) ?? []}
+                      onOpen={onOpenContinuationSession} />
+                  </div>
+                );
+
+  };
+
   return (
     <>
     {sessionId && <SessionHeader key={sessionId} sessionId={sessionId} title={title || "新任务"}
@@ -886,8 +1083,8 @@ export function ChatView({
         stopping: cancellationPending,
         stopDisabled: sendNowPending || replacingTurn,
         onRewind: hasContent ? () => setHistoryAction("rewind") : undefined,
-        onFork: hasContent ? () => setHistoryAction("fork") : undefined,
-      }} historyDisabled={historyDisabled || replacingTurn}
+        onFork: hasContent && onForked ? () => { void startContinuation(); } : undefined,
+      }} historyDisabled={historyDisabled || replacingTurn || continuationPending || retryBlocked}
       summary={{ searchable, hasContent, changeCount: changes.totalFiles, artifactCount: artifacts.length,
         hasPlan: hasVisiblePlan, planCompleted: plan?.entries.filter(e => e.status === "completed").length ?? 0,
         planTotal: plan?.entries.length ?? 0, subagentCount,
@@ -903,6 +1100,14 @@ export function ChatView({
     <div className={"chatview" + (panelOpen ? " chatview--with-panel" : "")}>
       <div className="chatview__main">
         {notice}
+        {continuationFeedback && <div className="conversation-continuation-feedback" role={continuationFeedback.pending ? "status" : "alert"}>
+          <span>{continuationFeedback.pending ? continuationFeedback.refreshing ? "正在刷新原对话…" : "正在创建新对话…" : `创建接续对话失败：${continuationFeedback.error}`}</span>
+          {!continuationFeedback.pending && <>
+            <button type="button" disabled={retryBlocked} onClick={() => { void startContinuation(undefined, true); }}>重试创建</button>
+            {onRewound && <button type="button" disabled={retryBlocked} onClick={() => { void refreshContinuationSource(); }}>刷新原对话</button>}
+            <button type="button" onClick={() => { if (sessionId) continuationOperations.current.delete(sessionId); refreshContinuation(value => value + 1); }}>关闭</button>
+          </>}
+        </div>}
         {!modelLoading && <SessionWorkspaceWarning workspace={workspace} onNewTask={onNewTask} />}
         {traceLoadError && <div className="chatview__error-banner" role="alert">
           <span>{traceLoadError}</span>
@@ -939,83 +1144,19 @@ export function ChatView({
         />
 
         <div className="chatview__scroll-shell">
-          <ConversationNavigator key={sessionId} turns={conversationTurns} scrollRef={scrollRef} contentRef={contentRef}
+          <ConversationNavigator key={sessionId} turns={historyExpanded ? conversationTurns : conversationTurns.filter(turn => !inheritedIds.has(turn.id))} scrollRef={scrollRef} contentRef={contentRef}
             onSelect={jumpToQuestion} onDirectory={trigger => { questionHistoryTriggerRef.current = trigger; closeFind(); setQuestionHistoryOpen(true); }} />
           <div className="chatview__scroll" ref={scrollRef}>
             <div className="chatview__inner" ref={contentRef}>
-              {timeline.map((node) => {
-                // 时间线分隔符(对齐 EchoAgent message-timeline):日期/模型切换分隔。
-                // 当前 ChatMessage 无 modelId/createdAt,无分隔符时仅渲染消息节点。
-                if (node.kind === "date-divider") {
-                  return (
-                    <div key={node.key} className="timeline-divider timeline-divider--date">
-                      {node.label}
-                    </div>
-                  );
-                }
-                if (node.kind === "model-divider") {
-                  return (
-                    <div key={node.key} className="timeline-divider timeline-divider--model">
-                      {node.label}
-                    </div>
-                  );
-                }
-                const m = node.message;
-                const idx = node.index;
-                // 重试只对最后一条 assistant 消息开放（重试中间消息没有语义）。
-                const isLastAssistant =
-                  m.role === "assistant" && idx === messages.length - 1;
-                // 会话内查找:命中容器高亮(当前命中更深一层)。
-                const findCls = findOpen && isFindHit(findHitIds, m.id)
-                  ? m.id === findActive?.messageId
-                    ? " msg-wrap--find-current"
-                    : " msg-wrap--find-hit"
-                  : "";
-                return (
-                  <div key={`${sessionId}:${m.id}`} className={"msg-wrap" + findCls + (m.id === jumpTargetId ? " msg-wrap--jump-target" : "")} data-msg-id={m.id} tabIndex={-1}>
-                    <MessageItem
-                      message={m}
-                      streaming={streaming && m.id === streamingMessageId}
-                      waitingForModel={!awaitingDecision && !awaitingPlan && !awaitingQuestion && !controlPhase && !error}
-                      waitingReason={streaming && m.id === streamingMessageId
-                        ? awaitingQuestion ? "等待你补充信息" : awaitingPlan ? "等待你确认计划" : awaitingDecision ? "等待你批准操作" : undefined
-                        : undefined}
-                      markdownConfig={markdownConfig}
-                      cwd={cwd}
-                      sessionId={sessionId ?? undefined}
-                      onToast={onToast}
-                      onOpenTool={handleOpenTool}
-                      onOpenArtifact={handleSelectArtifact}
-                      findQuery={findOpen ? findQuery : undefined}
-                      onEditResend={handleEditResend}
-                      autoExpandProcess={false}
-                      runtimeError={isLastAssistant ? inlineRuntimeError : undefined}
-                      suppressStoppedNotice={isLastAssistant && Boolean(taskFeedback)}
-                      turnFeedback={m.id === feedbackTarget ? taskFeedback : undefined}
-                      onOpenModelSettings={onOpenSettings}
-                      onOpenSecuritySettings={onOpenSecuritySettings}
-                      onContinueExecution={isLastAssistant ? async (prompt) => {
-                        const live = useSessionStore.getState();
-                        if (!sessionId || live.sessionId !== sessionId || live.messages[live.messages.length - 1]?.id !== m.id || live.streaming || retryBlockedRef.current || modelLoading
-                          || !apiReady || !workspace.available || workspace.busy || replacingTurn || sendNowPending
-                          || live.control?.phase === "pausing" || live.control?.phase === "stopping"
-                          || awaitingDecision || awaitingQuestion || awaitingPlan) return false;
-                        return onSend(prompt, []);
-                      } : undefined}
-                      compactIdentity={m.role === "assistant" && messages[idx - 1]?.role === "assistant"}
-                      latest={isLastAssistant}
-                      retrying={isLastAssistant && Boolean(sessionId && retryingSessions.has(sessionId))}
-                      retryDisabled={retryBlocked || !apiReady || modelLoading || replacingTurn || sendNowPending}
-                      retryDisabledReason={!workspace.available || workspace.busy ? "请先恢复本任务的工作目录，再重试回复" : !apiReady ? "请先配置可用模型" : modelLoading ? "正在同步模型，请稍候" : undefined}
-                      onRetry={
-                        isLastAssistant && !streaming && m.complete && !taskFeedback
-                          ? handleRetry
-                          : undefined
-                      }
-                    />
-                  </div>
-                );
-              })}
+              {sessionSummary && <ConversationOrigin session={sessionSummary} catalog={catalog} deleted={deletedSessions}
+                expanded={historyExpanded} onToggle={() => { pauseFollowing(); if (historyExpanded) closeFind(); expandHistory(!historyExpanded); }} onOpen={onOpenContinuationSession} />}
+              {origin ? <>
+                <div id="conversation-inherited-history" hidden={!historyExpanded}>
+                  {buildTimeline(messages.filter(message => inheritedIds.has(message.id))).map(renderTimelineNode)}
+                </div>
+                <div className="conversation-continuation-boundary">从这里开始新对话</div>
+                {buildTimeline(messages.filter(message => !inheritedIds.has(message.id))).map(renderTimelineNode)}
+              </> : timeline.map(renderTimelineNode)}
               {!feedbackTarget && taskFeedback}
               {automation.error && automationMode !== "default" && <div className="chatview__error-banner" role="alert">
                 <span>任务状态暂时无法同步：{automation.error}</span>
@@ -1050,13 +1191,13 @@ export function ChatView({
               sessionId={sessionId}
               streaming={streaming}
               sendNowPending={sendNowPending}
-              awaitingQuestion={awaitingQuestion || awaitingDecision || awaitingPlan || replacingTurn || cancellationPending}
+              awaitingQuestion={awaitingQuestion || awaitingDecision || awaitingPlan || replacingTurn || cancellationPending || continuationPending}
               onSendNow={streaming ? onSendNow : onSend}
             />
           )}
           <Composer
             streaming={streaming}
-            sendDisabled={!workspace.available || workspace.busy || replacingTurn}
+            sendDisabled={!workspace.available || workspace.busy || replacingTurn || continuationPending}
             disabled={control?.phase === "pausing" || control?.phase === "stopping"}
             apiReady={apiReady}
             setupHint={setupHint}
@@ -1184,10 +1325,11 @@ export function ChatView({
         findToolCall={(id) => findToolCall(messages, id)}
       />
       {retryDialog}
-      {sessionId && historyAction && !historyDisabled && !replacingTurn && <RewindBar key={sessionId} sessionId={sessionId} cwd={cwd}
+      {sessionId && historyAction && !historyDisabled && !replacingTurn && <RewindBar key={sessionId} sessionId={sessionId}
+        minPromptIndex={origin ? origin.promptIndex + 1 : undefined}
         canExecute={canExecuteHistory}
         action={historyAction} onActionDone={() => { if (useSessionStore.getState().sessionId === sessionId) setHistoryAction(null); }} onRewound={onRewound}
-        onForked={onForked} onToast={onToast} />}
+        onToast={onToast} />}
     </div>
     </>
   );

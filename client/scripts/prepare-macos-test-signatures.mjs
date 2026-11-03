@@ -28,7 +28,8 @@ export function ownedTestExecutables(messages, workspace, targetDirectory) {
       `Refuse application binary: ${JSON.stringify({ name: message.target.name, kind: message.target.kind, src: message.target.src_path, executable: message.executable })}`);
     paths.add(message.executable);
   }
-  assert(paths.size > 0 && paths.size <= 16, 'Unexpected test artifact count');
+  // Library + main harness + 15 integration harnesses, including session_continuation.
+  assert(paths.size > 0 && paths.size <= 17, 'Unexpected test artifact count');
   return [...paths];
 }
 

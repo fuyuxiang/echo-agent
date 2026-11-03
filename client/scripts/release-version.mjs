@@ -188,7 +188,18 @@ function usage() {
   );
 }
 
-if (import.meta.main) {
+// Older Node releases omit import.meta.main. Resolve both paths so invoking
+// this script through a checkout symlink still works without running on import.
+const isMain = import.meta.main ?? (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
   try {
     const [command, argument, ...extra] = process.argv.slice(2);
     if (extra.length > 0) {

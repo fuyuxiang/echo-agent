@@ -59,7 +59,7 @@ try {
   await page.goto(`${base}&theme=light&platform=mac`);
   await page.getByRole("button",{name:"任务操作",exact:true}).click();
   const taskMenu = page.getByRole("menu",{name:"当前会话操作",exact:true});
-  assert.deepEqual(await taskMenu.getByRole("menuitem").evaluateAll(items => items.map(item => item.getAttribute("aria-label") ?? item.textContent)), ["查找当前会话","回溯…","分叉…","导出整个会话…"]);
+  assert.deepEqual(await taskMenu.getByRole("menuitem").evaluateAll(items => items.map(item => item.getAttribute("aria-label") ?? item.textContent)), ["查找当前会话","回溯…","在新对话中继续","导出整个会话…"]);
   await page.screenshot({path:join(output,"current-conversation-tools.png")});
   await page.keyboard.press("Escape");
   await page.getByRole("button",{name:"编辑标题",exact:true}).click();

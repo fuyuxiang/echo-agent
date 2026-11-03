@@ -1,4 +1,28 @@
 /* Session chrome is owned here; the obsolete utility toolbar has been removed. */
+.conversation-origin { margin:0 0 22px; color:var(--echo-text-medium); font-size:.8125rem; }
+.conversation-origin__source { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap; min-width:0; }
+.conversation-origin__source > svg { align-self:center; flex:none; }
+.conversation-origin__link { padding:0; border:0; background:transparent; color:var(--echo-color-text-brand-default); text-align:left; font:inherit; cursor:pointer; max-width:100%; overflow-wrap:anywhere; }
+.conversation-origin__link:hover { text-decoration:underline; }
+.conversation-origin__meta { font-size:.75rem; }
+.conversation-origin__history { display:flex; align-items:center; gap:5px; border:0; border-radius:6px; background:transparent; color:inherit; font:inherit; margin:8px 0 0 -6px; padding:5px 6px; cursor:pointer; min-height:32px; }
+.conversation-origin__history:hover { background:var(--echo-bg-hover); }
+.conversation-origin__workspace { margin:5px 0 0; font-size:.75rem; line-height:1.6; }
+.conversation-continuation-boundary { display:flex; align-items:center; gap:12px; color:var(--echo-text-medium); font-size:.75rem; margin:16px 0 24px; }
+.conversation-continuation-boundary:before, .conversation-continuation-boundary:after { content:""; flex:1; height:1px; background:var(--echo-border-default); }
+.conversation-continuations { font-size:.75rem; color:var(--echo-text-medium); margin:10px 0 16px; }
+.conversation-continuations summary { cursor:pointer; width:fit-content; max-width:100%; border-radius:5px; padding:4px 0; }
+.conversation-continuations summary > svg { vertical-align:middle; margin:0 4px; }
+.conversation-continuations button { display:flex; align-items:center; gap:7px; border:0; border-radius:6px; padding:6px 8px; margin:2px 0; max-width:100%; color:var(--echo-color-text-brand-default); background:transparent; font:inherit; text-align:left; cursor:pointer; }
+.conversation-continuations button:hover { background:var(--echo-bg-hover); }
+.conversation-continuations button span { min-width:0; overflow-wrap:anywhere; }
+.conversation-continuations button svg { flex:none; }
+.conversation-continuation-feedback { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 16px; font-size:.8125rem; color:var(--echo-text-medium); }
+.conversation-continuation-feedback span { flex:1; min-width:120px; overflow-wrap:anywhere; }
+.conversation-continuation-feedback button { border:0; border-radius:6px; background:var(--echo-bg-hover); color:inherit; padding:5px 8px; font:inherit; cursor:pointer; }
+.sidebar__continuation-icon { display:inline-flex; flex:none; color:var(--echo-text-medium); }
+.conversation-origin button:focus-visible, .conversation-continuations button:focus-visible, .conversation-continuations summary:focus-visible, .conversation-continuation-feedback button:focus-visible { outline:2px solid var(--echo-brand); outline-offset:2px; }
+@media(pointer:coarse) { .conversation-origin button, .conversation-continuations button, .conversation-continuations summary, .conversation-continuation-feedback button { min-height:44px; } }
 .main-topbar {
   flex: 0 0 56px;
   height: 56px;

@@ -1795,6 +1795,7 @@ pub async fn agent_send(
     document_tool_bridge: Option<bool>,
     review: Option<crate::coding_review_runtime::ReviewRequest>,
 ) -> Result<(), String> {
+    let _history_guard = crate::session_continuation::history_mutation_guard(&session_id)?;
     if mode
         .as_deref()
         .is_some_and(|mode| !matches!(mode, "ask" | "plan" | "agent"))
@@ -2475,6 +2476,7 @@ pub(crate) async fn delete_session_data(
     session_id: &str,
     cwd: Option<&str>,
 ) -> Result<SessionDeleteResult, String> {
+    let _history_guard = crate::session_continuation::history_mutation_guard(session_id)?;
     if !valid_session_id(session_id) {
         return Err("会话 ID 无效或过长".into());
     }

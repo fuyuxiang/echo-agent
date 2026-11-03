@@ -69,6 +69,7 @@ mod recovery_policy;
 mod resource_identity;
 mod session_artifacts;
 mod session_creation;
+mod session_continuation;
 mod session_title;
 mod session_workspace;
 mod sessions;
@@ -1196,6 +1197,7 @@ pub fn run() {
             agent_admin::rewind_points,
             agent_admin::rewind_execute,
             agent_admin::session_fork,
+            session_continuation::session_continue,
             agent_admin::commands_list,
             agent_admin::prompt_history,
             agent_admin::tasks_list,

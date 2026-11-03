@@ -195,7 +195,12 @@ pub fn knowledge_trace_save(
     )
 }
 
-fn clone_at(home: &Path, source: &str, target: &str) -> Result<(), String> {
+fn clone_filtered_at(
+    home: &Path,
+    source: &str,
+    target: &str,
+    retained: Option<&std::collections::HashSet<String>>,
+) -> Result<(), String> {
     let _guard = WRITES.lock().map_err(|_| "知识来源存储锁已损坏")?;
     let from = trace_root(home, source)?;
     let to = trace_root(home, target)?;
@@ -203,7 +208,11 @@ fn clone_at(home: &Path, source: &str, target: &str) -> Result<(), String> {
         return Ok(());
     }
     if to.exists() {
-        return Err("分叉知识来源目录已存在，原记录未覆盖".into());
+        return if retained.is_some() {
+            Ok(())
+        } else {
+            Err("分叉知识来源目录已存在，原记录未覆盖".into())
+        };
     }
     let stage = tempfile::Builder::new()
         .prefix(".fork-")
@@ -228,10 +237,30 @@ fn clone_at(home: &Path, source: &str, target: &str) -> Result<(), String> {
         if hash(&record.prompt_id) != stem {
             return Err("原会话知识来源标识无效，原记录已保留".into());
         }
+        if retained.is_some_and(|ids| !ids.contains(&record.prompt_id)) {
+            continue;
+        }
         std::fs::hard_link(entry.path(), stage.path().join(name)).map_err(|e| e.to_string())?;
     }
     std::fs::rename(stage.path(), &to).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn clone_at(home: &Path, source: &str, target: &str) -> Result<(), String> {
+    clone_filtered_at(home, source, target, None)
+}
+
+pub(crate) fn clone_session_filtered(
+    source: &str,
+    target: &str,
+    retained: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    clone_filtered_at(
+        &crate::paths::echo_agent_home_dir(),
+        source,
+        target,
+        Some(retained),
+    )
 }
 
 pub(crate) fn clone_session(source: &str, target: &str) -> Result<(), String> {
@@ -251,6 +280,30 @@ pub(crate) fn forget_session(session: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn partial_continuation_copies_only_retained_turns_and_retry_is_idempotent() {
+        let home = tempfile::tempdir().unwrap();
+        save_at(
+            home.path(),
+            "source",
+            "kept",
+            serde_json::json!({"selectedSources":[]}),
+        )
+        .unwrap();
+        save_at(
+            home.path(),
+            "source",
+            "later",
+            serde_json::json!({"selectedSources":[]}),
+        )
+        .unwrap();
+        let ids = std::collections::HashSet::from(["kept".into()]);
+        clone_filtered_at(home.path(), "source", "child", Some(&ids)).unwrap();
+        clone_filtered_at(home.path(), "source", "child", Some(&ids)).unwrap();
+        let records = load_page_at(home.path(), "child", None).unwrap();
+        assert!(records.traces.contains_key("kept"));
+        assert!(!records.traces.contains_key("later"));
+    }
     #[test]
     fn fork_sources_keep_original_evidence_after_source_changes_and_deletion() {
         let home = tempfile::tempdir().unwrap();

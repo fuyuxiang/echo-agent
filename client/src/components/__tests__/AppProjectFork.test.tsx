@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useKnowledgeStore } from "@/stores/knowledge-store";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
@@ -83,6 +84,7 @@ function completeFork() {
 }
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear();
+  useKnowledgeStore.setState({sessionSources:{},sessionOrganizationScopeIds:{}});
   vi.mocked(client.agentDeleteSession).mockResolvedValue({ memorySummariesDeleted: 1, memoryCleanupWarning: null });
   useSessionsStore.setState(useSessionsStore.getInitialState()); useSessionStore.setState(useSessionStore.getInitialState());
   useProjectsStore.setState({ ...useProjectsStore.getInitialState(), projects: [] });
@@ -216,6 +218,30 @@ describe("App deletion feedback", () => {
 });
 
 describe("project fork continuation", () => {
+  it("继承知识来源和组织范围，后续修改互不影响", async () => {
+    await start();
+    useKnowledgeStore.getState().setSessionSources("source",["personal","organization"]);
+    useKnowledgeStore.getState().setSessionOrganizationScopeIds("source",["project-a"]);
+    completeFork();
+    await waitFor(()=>expect(useKnowledgeStore.getState().sessionSources.fork).toEqual(["personal","organization"]));
+    expect(useKnowledgeStore.getState().sessionOrganizationScopeIds.fork).toEqual(["project-a"]);
+    useKnowledgeStore.getState().setSessionOrganizationScopeIds("fork",["project-b"]);
+    expect(useKnowledgeStore.getState().sessionOrganizationScopeIds.source).toEqual(["project-a"]);
+  });
+  it("已创建但首次加载失败时保留会话，清理半截回放后重新打开", async () => {
+    await start();
+    vi.mocked(client.agentLoadSession).mockImplementationOnce(async () => {
+      useSessionStore.getState().setMessages([{id:"partial",role:"user",complete:true,parts:[{kind:"text",text:"半截回放"}]}]);
+      throw new Error("暂时断开");
+    });
+    completeFork();
+    const reopen = await screen.findByRole("button",{name:"重新打开"});
+    expect(useSessionsStore.getState().independent.filter(row=>row.sessionId === "fork")).toHaveLength(1);
+    expect(useSessionStore.getState().transcripts.fork?.messages ?? []).toHaveLength(0);
+    fireEvent.click(reopen);
+    await waitFor(()=>expect(vi.mocked(client.agentLoadSession).mock.calls.filter(([id])=>id === "fork")).toHaveLength(2));
+    expect(useSessionStore.getState().transcripts.fork?.suppressReplay).toBe(false);
+  });
   it("回复预检失败后刷新目录状态，并保留已有历史", async () => {
     await start();
     await waitFor(() => expect(Number(screen.getByTestId("task-refresh").textContent)).toBeGreaterThan(0));
@@ -231,7 +257,7 @@ describe("project fork continuation", () => {
   it.each([true, false])("inherits pending=%s without cloning work items; next turn follows that exact contract", async (pending) => {
     await start(pending); const before = structuredClone(useProjectsStore.getState().projects[0]); completeFork();
     await waitFor(() => expect(useProjectsStore.getState().projects[0].conversations).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sessionId: "fork", title: "项目源标题", modelId: "model-a", pendingProjectContext: pending }),
+      expect.objectContaining({ sessionId: "fork", title: "项目源标题 · 新方向", modelId: "model-a", pendingProjectContext: pending }),
     ])));
     await waitFor(() => expect(client.projectsSave).toHaveBeenCalled());
     await waitFor(() => expect(useSessionsStore.getState().currentSessionId).toBe("fork"));
@@ -254,7 +280,7 @@ describe("project fork continuation", () => {
     await waitFor(() => expect(useSessionsStore.getState().currentSessionId).toBe("fork"));
     expect(useSessionsStore.getState().independent.some((item) => item.sessionId === "fork")).toBe(true);
     expect(useProjectsStore.getState().projects[0].conversations.map((item) => item.sessionId)).toEqual(["source"]);
-    expect(await screen.findByText(/分叉已创建.*独立会话.*移入项目/)).toBeInTheDocument();
+    expect(await screen.findByText(/接续对话已创建.*独立会话.*移入项目/)).toBeInTheDocument();
     expect(client.agentLoadSession).toHaveBeenCalledWith("fork", "/workspace");
   });
 

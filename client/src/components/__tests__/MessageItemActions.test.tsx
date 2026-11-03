@@ -36,6 +36,17 @@ function openReplyItem(name: string, click = true) {
 }
 
 describe("assistant message actions", () => {
+  it("回复菜单可以从当前轮次在新对话中继续，并说明禁用原因", () => {
+    const onContinue = vi.fn();
+    const view = renderMessage(completedMessage, {onContinueInNewConversation:onContinue});
+    openReplyItem("在新对话中继续");
+    expect(onContinue).toHaveBeenCalledOnce();
+    view.unmount();
+    renderMessage(completedMessage, {onContinueInNewConversation:onContinue,continuationDisabled:true,continuationDisabledReason:"等待执行结束"});
+    const item = openReplyItem("在新对话中继续", false);
+    expect(item).toBeDisabled();
+    expect(item).toHaveAttribute("title","等待执行结束");
+  });
   it("只有未闭合推理标签时不提供复制或导出内部文本的入口", () => {
     renderMessage({ id: "reasoning-only", role: "assistant", complete: true, parts: [{ kind: "text", text: "<analysis>内部内容" }] });
     expect(screen.queryByRole("button", { name: "复制纯文本" })).toBeNull();

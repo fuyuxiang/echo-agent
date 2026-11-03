@@ -631,7 +631,9 @@ async fn handle_add_local_workspace(agent: &MvpAgent, args: &acp::ExtRequest) ->
 
 /// Reload skills for ALL active sessions. Called by the skills file watcher
 async fn handle_reload_skills(agent: &MvpAgent) -> ExtResult {
-    let reloaded = agent.reload_skills_all_sessions_checked().await
+    let reloaded = agent
+        .reload_skills_all_sessions_checked()
+        .await
         .map_err(|error| acp::Error::internal_error().data(error))?;
     ExtMethodResult::success(serde_json::json!({ "reloaded": reloaded }))
         .to_ext_response()
@@ -1010,6 +1012,29 @@ async fn handle_session_fork(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRes
     use crate::session::fork::{ForkSessionRequest, fork_session};
 
     let request: ForkSessionRequest = parse_params(args)?;
+    if request.fresh_continuation {
+        if let Some(handle) =
+            agent.resident_handle(&acp::SessionId::new(request.source_session_id.clone()))
+        {
+            if handle.is_busy().await {
+                return Err(
+                    acp::Error::invalid_request().data("请等待当前执行结束后再创建接续对话")
+                );
+            }
+            // A completed reply can still be queued in the persistence actor.
+            // Copy only after its conversation and replay log reach disk.
+            let (respond_to, ack) = tokio::sync::oneshot::channel();
+            handle
+                .persistence_tx
+                .send(PersistenceMsg::FlushAndAck { respond_to })
+                .map_err(|_| acp::Error::internal_error().data("无法保存原会话，请稍后重试"))?;
+            tokio::time::timeout(std::time::Duration::from_secs(15), ack)
+                .await
+                .map_err(|_| acp::Error::internal_error().data("保存原会话超时，请稍后重试"))?
+                .map_err(|_| acp::Error::internal_error().data("原会话保存已中断"))?
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        }
+    }
 
     let agent_id = agent_id();
     let response = fork_session(request, &agent_id, Some(agent.auth_manager.clone()))

@@ -17,6 +17,7 @@ import {
   agentSetSessionArchived,
 } from "@/lib/agent-client";
 import type { SessionSummary, SessionStatus } from "@/lib/types";
+import { GitFork } from "lucide-react";
 import { isWaitingForUser } from "@/lib/turn-status";
 import {
   EchoNewTaskIcon,
@@ -868,6 +869,8 @@ export function Sidebar({
         >
           <span className="sidebar__conv-line">
             <span className="sidebar__conv-heading">
+              {(s.continuation || s.sessionKind === "fork") && <span className="sidebar__continuation-icon" role="img" aria-label="接续对话"
+                title={s.continuation ? `接续自 ${allSessions.find(row => row.sessionId === s.continuation?.parentSessionId)?.title || s.continuation.parentTitle}` : "接续对话"}><GitFork size={13} aria-hidden="true" /></span>}
               <span className="sidebar__conv-title">{sessionTitle}</span>
               {s.pinned && <PinFilledIcon size="sm" className="sidebar__conv-pin" />}
               {s.status !== "awaiting_permission" && <SessionStatusIndicator status={s.status} />}

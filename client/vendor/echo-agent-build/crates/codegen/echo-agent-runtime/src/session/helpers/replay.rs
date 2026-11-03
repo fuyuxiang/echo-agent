@@ -11,8 +11,9 @@ use std::path::Path;
 use crate::extensions::notification::{
     CompactionCheckpointFile, CompactionCheckpointInfo, SessionUpdate as EchoAgentSessionUpdate,
 };
-use crate::sampling::ConversationItem;
+use crate::sampling::{AssistantItem, ContentPart, ConversationItem, ToolCall};
 use crate::session::storage::{SessionUpdate, UpdatesIterator};
+use std::collections::{HashMap, HashSet};
 
 /// Result of replaying updates.jsonl up to a target prompt index.
 #[derive(Debug)]
@@ -94,6 +95,25 @@ pub fn replay_to_prompt(
     session_dir: &Path,
     target_prompt_index: usize,
 ) -> io::Result<ReplayResult> {
+    replay_to_prompt_impl(updates_path, session_dir, target_prompt_index, false)
+}
+
+/// Continuation snapshots retain tool calls/results and inline images as model
+/// context, in addition to the text used by the existing rewind path.
+pub fn replay_to_prompt_with_context(
+    updates_path: &Path,
+    session_dir: &Path,
+    target_prompt_index: usize,
+) -> io::Result<ReplayResult> {
+    replay_to_prompt_impl(updates_path, session_dir, target_prompt_index, true)
+}
+
+fn replay_to_prompt_impl(
+    updates_path: &Path,
+    session_dir: &Path,
+    target_prompt_index: usize,
+    preserve_context: bool,
+) -> io::Result<ReplayResult> {
     let Some(iter) = UpdatesIterator::open(updates_path)? else {
         return Ok(ReplayResult {
             conversation: vec![],
@@ -104,6 +124,9 @@ pub fn replay_to_prompt(
     };
 
     let mut state = ReplayState::new(target_prompt_index);
+    if preserve_context {
+        state.context = Some(ReplayContext::default());
+    }
 
     for update_result in iter {
         let update = match update_result {
@@ -157,6 +180,15 @@ pub fn replay_to_prompt(
         state.prompt_counter = target_prompt_index;
     }
 
+    if preserve_context {
+        crate::sampling::repair_dangling_tool_calls(
+            &mut state.conversation,
+            crate::sampling::DanglingToolCallReason::HarnessHalted {
+                class: "incomplete_history",
+            },
+        );
+        crate::session::storage::jsonl::strip_invalid_images(&mut state.conversation);
+    }
     Ok(ReplayResult {
         conversation: state.conversation,
         prompt_index_reached: state.prompt_counter,
@@ -218,6 +250,24 @@ struct ReplayState {
 
     /// The original User(user_info) text from before the first compaction.
     original_user_info: Option<String>,
+    context: Option<ReplayContext>,
+}
+
+#[derive(Default)]
+struct ReplayContext {
+    user_parts: Vec<ContentPart>,
+    tool_calls: Vec<ToolCall>,
+    known_tools: HashMap<String, ToolCall>,
+    completed_tools: HashSet<String>,
+}
+
+fn image_part(image: &agent_client_protocol::ImageContent) -> Option<ContentPart> {
+    let url = if !image.data.is_empty() {
+        format!("data:{};base64,{}", image.mime_type, image.data)
+    } else {
+        image.uri.clone()?
+    };
+    Some(ContentPart::Image { url: url.into() })
 }
 
 impl ReplayState {
@@ -236,6 +286,7 @@ impl ReplayState {
             checkpoint_base_len: 0,
             checkpoint_prompt_index: 0,
             original_user_info: None,
+            context: None,
         }
     }
 
@@ -261,20 +312,52 @@ impl ReplayState {
                     _ => {}
                 }
             }
-            SessionUpdate::Acp(notification) => {
-                match &notification.update {
-                    agent_client_protocol::SessionUpdate::UserMessageChunk(chunk) => {
-                        return Ok(self.handle_user_chunk(chunk));
-                    }
-                    agent_client_protocol::SessionUpdate::AgentMessageChunk(chunk) => {
-                        self.handle_agent_chunk(chunk);
-                    }
-                    _ => {
-                        // Other ACP updates (ToolCall, StatusUpdate, etc.)
-                        // don't affect prompt counting — skipped in replay.
-                    }
+            SessionUpdate::Acp(notification) => match &notification.update {
+                agent_client_protocol::SessionUpdate::UserMessageChunk(chunk) => {
+                    return Ok(self.handle_user_chunk(chunk));
                 }
-            }
+                agent_client_protocol::SessionUpdate::AgentMessageChunk(chunk) => {
+                    self.handle_agent_chunk(chunk);
+                }
+                agent_client_protocol::SessionUpdate::ToolCall(call) if self.context.is_some() => {
+                    let name = notification
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get("echo.agent/tool"))
+                        .and_then(|identity| identity.get("name"))
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| {
+                            call.meta
+                                .as_ref()
+                                .and_then(|meta| meta.get("echo.agent/tool"))
+                                .and_then(|identity| identity.get("name"))
+                                .and_then(serde_json::Value::as_str)
+                        })
+                        .unwrap_or_else(|| {
+                            // Older logs only store a human title. It must not
+                            // become an invalid provider function name.
+                            if !call.title.is_empty()
+                                && call.title.len() <= 64
+                                && call
+                                    .title
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                            {
+                                &call.title
+                            } else {
+                                "historical_tool"
+                            }
+                        })
+                        .to_string();
+                    self.handle_tool_call(call, name);
+                }
+                agent_client_protocol::SessionUpdate::ToolCallUpdate(call)
+                    if self.context.is_some() =>
+                {
+                    self.handle_tool_update(call);
+                }
+                _ => {}
+            },
         }
         Ok(ReplayAction::Continue)
     }
@@ -425,6 +508,9 @@ impl ReplayState {
             self.current_user_prompt_index = None;
             self.current_agent_text.clear();
             self.has_pending_agent = false;
+            if let Some(context) = &mut self.context {
+                *context = ReplayContext::default();
+            }
 
             tracing::debug!(
                 prompt_counter = self.prompt_counter,
@@ -457,6 +543,9 @@ impl ReplayState {
         self.current_agent_text.clear();
         self.has_pending_agent = false;
         self.in_user_message = false;
+        if let Some(context) = &mut self.context {
+            *context = ReplayContext::default();
+        }
 
         if self.prompt_counter <= marker_target {
             return;
@@ -523,6 +612,7 @@ impl ReplayState {
 
         if !self.in_user_message {
             self.flush_pending_agent();
+            self.begin_context_turn(chunk_prompt_index);
             self.in_user_message = true;
             self.current_user_text.clear();
             self.current_user_prompt_index = chunk_prompt_index;
@@ -531,6 +621,7 @@ impl ReplayState {
         {
             // New run: promptIndex changed, or transition between marked/unmarked.
             self.flush_pending_user();
+            self.begin_context_turn(chunk_prompt_index);
             self.in_user_message = true;
             self.current_user_text.clear();
             self.current_user_prompt_index = chunk_prompt_index;
@@ -540,6 +631,22 @@ impl ReplayState {
 
         if let agent_client_protocol::ContentBlock::Text(t) = &chunk.content {
             self.current_user_text.push_str(&t.text);
+        }
+
+        if let Some(context) = &mut self.context {
+            match &chunk.content {
+                agent_client_protocol::ContentBlock::Text(text) => {
+                    context.user_parts.push(ContentPart::Text {
+                        text: text.text.clone().into(),
+                    })
+                }
+                agent_client_protocol::ContentBlock::Image(image) => {
+                    if let Some(part) = image_part(image) {
+                        context.user_parts.push(part);
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Note: we do NOT early-stop when prompt_counter > target because a
@@ -564,6 +671,17 @@ impl ReplayState {
         if let agent_client_protocol::ContentBlock::Text(t) = &chunk.content {
             self.current_agent_text.push_str(&t.text);
             self.has_pending_agent = true;
+        }
+    }
+
+    fn begin_context_turn(&mut self, prompt_index: Option<usize>) {
+        // Provider tool ids can be reused in a later turn. Unnumbered host
+        // inserts inside a numbered turn do not start a new identity scope.
+        if (prompt_index.is_some() || !self.seen_prompt_index_marker)
+            && let Some(context) = &mut self.context
+        {
+            context.known_tools.clear();
+            context.completed_tools.clear();
         }
     }
 
@@ -594,34 +712,175 @@ impl ReplayState {
     }
 
     fn flush_pending_user(&mut self) {
-        if self.current_user_text.is_empty() {
+        let parts = self
+            .context
+            .as_mut()
+            .map(|context| std::mem::take(&mut context.user_parts));
+        if self.current_user_text.is_empty() && parts.as_ref().is_none_or(Vec::is_empty) {
             self.current_user_prompt_index = None;
             return;
         }
         let text = std::mem::take(&mut self.current_user_text);
         let pi = self.current_user_prompt_index.take();
+        let mut item = match parts {
+            Some(parts) => ConversationItem::user_with_parts(parts),
+            None => ConversationItem::user(text),
+        };
         if let Some(pi) = pi {
-            let mut item = ConversationItem::user(text);
             item.set_prompt_index(pi);
-            self.conversation.push(item);
             self.prompt_counter += 1;
         } else if !self.seen_prompt_index_marker {
-            self.conversation.push(ConversationItem::user(text));
             self.prompt_counter += 1;
-        } else {
-            // Mid-turn phantom after markers: keep text, do not count.
-            self.conversation.push(ConversationItem::user(text));
         }
+        self.conversation.push(item);
     }
 
     fn flush_pending_agent(&mut self) {
-        if self.has_pending_agent {
+        let tool_calls = self
+            .context
+            .as_mut()
+            .map(|context| std::mem::take(&mut context.tool_calls))
+            .unwrap_or_default();
+        if self.has_pending_agent || !tool_calls.is_empty() {
             self.conversation
-                .push(ConversationItem::assistant(std::mem::take(
-                    &mut self.current_agent_text,
-                )));
+                .push(ConversationItem::Assistant(AssistantItem {
+                    content: std::mem::take(&mut self.current_agent_text).into(),
+                    tool_calls,
+                    model_id: None,
+                    model_fingerprint: None,
+                    reasoning_effort: None,
+                }));
             self.has_pending_agent = false;
         }
+    }
+
+    fn handle_tool_call(&mut self, call: &agent_client_protocol::ToolCall, name: String) {
+        if self.in_user_message {
+            self.flush_pending_user();
+            self.in_user_message = false;
+        }
+        let id = call.tool_call_id.0.to_string();
+        let context = self.context.as_mut().unwrap();
+        if !context.known_tools.contains_key(&id) {
+            let tool = ToolCall {
+                id: id.clone().into(),
+                name,
+                arguments: call
+                    .raw_input
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "{}".into())
+                    .into(),
+            };
+            context.known_tools.insert(id.clone(), tool.clone());
+            context.tool_calls.push(tool);
+        }
+        self.finish_tool(
+            &id,
+            Some(call.status),
+            Some(&call.content),
+            call.raw_output.as_ref(),
+        );
+    }
+
+    fn handle_tool_update(&mut self, call: &agent_client_protocol::ToolCallUpdate) {
+        let id = call.tool_call_id.0.to_string();
+        if !self.context.as_ref().unwrap().known_tools.contains_key(&id) {
+            return;
+        }
+        if let Some(raw_input) = &call.fields.raw_input {
+            let arguments: std::sync::Arc<str> = raw_input.to_string().into();
+            let context = self.context.as_mut().unwrap();
+            if let Some(tool) = context.known_tools.get_mut(&id) {
+                tool.arguments = arguments.clone();
+            }
+            let mut pending = false;
+            for tool in &mut context.tool_calls {
+                if tool.id.as_ref() == id {
+                    tool.arguments = arguments.clone();
+                    pending = true;
+                }
+            }
+            if !pending {
+                // Only the current call may be enriched. A provider can reuse
+                // the same id later without rewriting an earlier turn's input.
+                for item in self.conversation.iter_mut().rev() {
+                    if let ConversationItem::Assistant(assistant) = item {
+                        if let Some(tool) = assistant
+                            .tool_calls
+                            .iter_mut()
+                            .find(|tool| tool.id.as_ref() == id)
+                        {
+                            tool.arguments = arguments.clone();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        self.finish_tool(
+            &id,
+            call.fields.status,
+            call.fields.content.as_deref(),
+            call.fields.raw_output.as_ref(),
+        );
+    }
+
+    fn finish_tool(
+        &mut self,
+        id: &str,
+        status: Option<agent_client_protocol::ToolCallStatus>,
+        content: Option<&[agent_client_protocol::ToolCallContent]>,
+        raw: Option<&serde_json::Value>,
+    ) {
+        let already_completed = self.context.as_ref().unwrap().completed_tools.contains(id);
+        if !matches!(
+            status,
+            Some(
+                agent_client_protocol::ToolCallStatus::Completed
+                    | agent_client_protocol::ToolCallStatus::Failed
+            )
+        ) && !(status.is_none() && already_completed)
+        {
+            return;
+        }
+        let context = self.context.as_mut().unwrap();
+        if !context.known_tools.contains_key(id) {
+            return;
+        }
+        let first_result = context.completed_tools.insert(id.into());
+        // Emit pending calls before their results, keeping parallel results
+        // adjacent even if commentary arrived while another call was pending.
+        if first_result && !context.tool_calls.is_empty() {
+            self.flush_pending_agent();
+        }
+        let mut text = String::new();
+        let mut images = Vec::new();
+        for block in content.unwrap_or_default() {
+            if let agent_client_protocol::ToolCallContent::Content(value) = block {
+                match &value.content {
+                    agent_client_protocol::ContentBlock::Text(value) => text.push_str(&value.text),
+                    agent_client_protocol::ContentBlock::Image(value) => {
+                        if let Some(part) = image_part(value) {
+                            images.push(part);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let has_text_update = raw.is_some() || !text.is_empty();
+        let text = raw.map(ToString::to_string).unwrap_or(text);
+        if !first_result {
+            if let Some(ConversationItem::ToolResult(previous)) = self.conversation.iter_mut().rev()
+                .find(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == id)) {
+                if has_text_update { previous.content = text.into(); }
+                if !images.is_empty() { previous.images = images; }
+            }
+            return;
+        }
+        self.conversation
+            .push(ConversationItem::tool_result_with_images(id, text, images));
     }
 }
 

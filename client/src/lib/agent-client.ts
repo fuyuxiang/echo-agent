@@ -7,6 +7,7 @@
  * payloads are the types in ./types.ts.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { useContinuationStore } from "@/stores/continuation-store";
 import { modelDisplayName } from "./model-presentation";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
@@ -1366,6 +1367,33 @@ export async function rewindExecute(
 /** Fork a session: copy history to a new session id. Returns the new id. */
 export async function sessionFork(sessionId: string, cwd?: string): Promise<string> {
   return invoke<string>("session_fork", { sessionId, cwd: cwd ?? null });
+}
+
+export interface ContinuationRequest {
+  requestId: string;
+  targetPromptIndex?: number;
+  sourcePromptId?: string;
+}
+export interface ContinuationResult { session: SessionSummary; warnings: string[]; }
+const pendingContinuations = new Map<string, Promise<ContinuationResult>>();
+/** The same request id is reused on retry; only one copy may run per source. */
+export function sessionContinue(sessionId: string, cwd: string, request: ContinuationRequest): Promise<ContinuationResult> {
+  const pending = pendingContinuations.get(sessionId);
+  if (pending) return pending;
+  if (useContinuationStore.getState().pending[sessionId]) {
+    return Promise.reject(new Error("正在更新对话历史，请稍候再创建接续对话"));
+  }
+  useContinuationStore.getState().setPending(sessionId,true);
+  const promise = invoke<ContinuationResult>("session_continue", {
+    sessionId, cwd, requestId: request.requestId,
+    targetPromptIndex: request.targetPromptIndex ?? null,
+    sourcePromptId: request.sourcePromptId ?? null,
+  }).finally(() => { if (pendingContinuations.get(sessionId) === promise) {
+    pendingContinuations.delete(sessionId);
+    useContinuationStore.getState().setPending(sessionId,false);
+  } });
+  pendingContinuations.set(sessionId, promise);
+  return promise;
 }
 
 // ---------- slash commands + prompt history ----------

@@ -12,6 +12,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   Volume2,
+  GitFork,
 } from "lucide-react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { LoadingRow } from "./LoadingRow";
@@ -104,6 +105,9 @@ export const MessageItem = memo(function MessageItem({
   hideIdentity = false,
   onEditResend,
   onRetry,
+  onContinueInNewConversation,
+  continuationDisabled = false,
+  continuationDisabledReason,
   retrying = false,
   retryDisabled = false,
   retryDisabledReason,
@@ -148,6 +152,9 @@ export const MessageItem = memo(function MessageItem({
   onEditResend?: (text: string, attachments: string[]) => void;
   /** Retry the latest turn using semantics derived from whether it used tools. */
   onRetry?: (kind: MessageRetryKind) => void;
+  onContinueInNewConversation?: () => void;
+  continuationDisabled?: boolean;
+  continuationDisabledReason?: string;
   /** Prevent duplicate retry gestures and expose progress in the local action. */
   retrying?: boolean;
   retryDisabled?: boolean;
@@ -528,6 +535,9 @@ export const MessageItem = memo(function MessageItem({
                   </button>)}
                 </> : <>
                   <div className="action-menu__heading">当前回复</div>
+                  {onContinueInNewConversation && <button type="button" role="menuitem" className="topbar-actions__item"
+                    disabled={continuationDisabled} title={continuationDisabledReason ?? "保留截至这轮回复的上下文，在新对话中探索其他方向"}
+                    onClick={() => { close(true); onContinueInNewConversation(); }}><GitFork size={15} />在新对话中继续</button>}
                   {hasAnswerText && <>
                     <button type="button" role="menuitem" className="topbar-actions__item" data-chat-copy="true" onClick={() => { close(true); void copyText(plainText, "plain"); }}><Copy size={14} />复制纯文本</button>
                     <button type="button" role="menuitem" className="topbar-actions__item" data-chat-copy="true" onClick={() => { close(true); void copyText(markdownText, "markdown"); }}><FileCode2 size={14} />复制 Markdown</button>

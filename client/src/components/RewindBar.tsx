@@ -1,11 +1,10 @@
 /**
- * 会话历史操作 — 从会话菜单打开回溯时间线或分叉确认。
+ * 会话回溯 — 从会话菜单打开回溯时间线。
  *
- * 两个能力：
+ * 回溯能力：
  *  - Rewind（回溯）：调 `echo.agent/rewind/{points,execute}`，回到指定 prompt 索引。
  *    支持 Runtime 规范 mode: conversation_only（仅回退对话）/
  *    files_only（仅文件）/ all（全量，含对话+文件+记忆）。
- *  - Fork（分叉）：调 `echo.agent/session/fork`，复制会话到新 id 探索不同方向。
  *
  * 增强点（对齐 EchoAgent）：
  *  - 时间线视图：每个回溯点显示时间、prompt 预览、assistant 回复预览、工具调用徽章。
@@ -17,14 +16,12 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import {
   rewindExecute,
   rewindPoints,
-  sessionFork,
 } from "@/lib/agent-client";
 import type { RewindMode, RewindPoint } from "@/lib/types";
 import { friendlyError } from "@/lib/error-format";
 import {
   ClockIcon,
   ChevronDownIcon,
-  GitBranchIcon,
 } from "@/foundation/components/Icon/icons";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { useAppDialog } from "./AppDialog";
@@ -44,24 +41,22 @@ const MODE_TITLES: Record<RewindMode, string> = {
 interface RewindBarProps {
   /** Recheck live session state immediately before a history mutation. */
   canExecute?: () => boolean;
-  action?: "rewind" | "fork";
+  minPromptIndex?: number;
+  action?: "rewind";
   onActionDone?: () => void;
   sessionId: string;
-  cwd?: string;
-  onForked?: (newSessionId: string, sourceSessionId: string, sourceCwd?: string) => void;
   onRewound?: (sessionId: string) => void | Promise<void>;
   onToast?: (msg: string) => void;
 }
 
 export function RewindBar({
   sessionId,
-  cwd,
-  onForked,
   onRewound,
   onToast,
   action,
   onActionDone,
   canExecute,
+  minPromptIndex,
 }: RewindBarProps) {
   const [open, setOpen] = useState(action === "rewind");
   const [points, setPoints] = useState<RewindPoint[]>([]);
@@ -84,7 +79,7 @@ export function RewindBar({
     return false;
   };
   const dialogRef = useModalFocus<HTMLDivElement>(open, () => { if (!busy) closeTimeline(); });
-  const { requestConfirmation, confirm, dialog } = useAppDialog(sessionId);
+  const { requestConfirmation, dialog } = useAppDialog(sessionId);
 
   const loadPoints = useCallback(async () => {
     const targetSessionId = sessionId;
@@ -134,6 +129,10 @@ export function RewindBar({
 
   const handleRewind = async (idx: number) => {
     if (!canStartAction()) return;
+    if (minPromptIndex !== undefined && idx < minPromptIndex) {
+      onToast?.("继承的历史仅供查看，请返回原对话或从该位置接续新对话");
+      return;
+    }
     const targetSessionId = sessionId;
     const targetMode = selectedMode;
     setBusy(true);
@@ -150,35 +149,6 @@ export function RewindBar({
     }
   };
 
-  const handleFork = async () => {
-    if (!canStartAction()) return;
-    const targetSessionId = sessionId;
-    const targetCwd = cwd;
-    const accepted = await confirm({
-      title: "分叉此会话？",
-      description: "当前会话将复制为一个新会话，原会话与其内容会完整保留。",
-      confirmLabel: "创建分叉",
-    });
-    if (!accepted || activeSessionRef.current !== targetSessionId) { onActionDone?.(); return; }
-    if (!canStartAction()) return;
-    setBusy(true);
-    try {
-      const newId = await sessionFork(targetSessionId, targetCwd);
-
-      onForked?.(newId, targetSessionId, targetCwd);
-    } catch (error) { onToast?.(`分叉失败：${friendlyError(error)}`); }
-    finally {
-      if (activeSessionRef.current === targetSessionId) { setBusy(false); onActionDone?.(); }
-    }
-  };
-
-  const launchedFork = useRef(false);
-  useEffect(() => {
-    if (action !== "fork" || launchedFork.current) return;
-    launchedFork.current = true;
-    void handleFork();
-  }, [action]);
-
   const confirmRewind = (point: RewindPoint) => requestConfirmation({
     title: `确认回溯（${MODE_LABELS[selectedMode]}）？`,
     description: <>
@@ -192,8 +162,7 @@ export function RewindBar({
 
   return (
     <div className={action ? "session-history-actions" : "rewind-bar"}>
-      {action === "fork" && busy && <span role="status">正在创建会话分叉…</span>}
-      {!action && <><button
+      {!action && <button
         type="button"
         className="rewind-bar__btn"
         onClick={() => setOpen((v) => !v)}
@@ -205,16 +174,7 @@ export function RewindBar({
       >
         <ClockIcon size="sm" /> 回溯
         <ChevronDownIcon size="sm" />
-      </button>
-      <button
-        type="button"
-        className="rewind-bar__btn"
-        onClick={handleFork}
-        disabled={busy}
-        title="分叉此会话"
-      >
-        <GitBranchIcon size="sm" /> 分叉
-      </button></>}
+      </button>}
 
       {open && createPortal(
         <div className="workbench-dialog-overlay" onMouseDown={event => { if (event.currentTarget === event.target && !busy) closeTimeline(); }}>
@@ -327,9 +287,10 @@ export function RewindBar({
                     type="button"
                     className="rewind-bar__timeline-action"
                     onClick={() => confirmRewind(p)}
-                    disabled={busy}
+                    disabled={busy || minPromptIndex !== undefined && p.promptIndex < minPromptIndex}
+                    title={minPromptIndex !== undefined && p.promptIndex < minPromptIndex ? "继承的历史仅供查看，请返回原对话回溯，或从该位置接续新对话" : undefined}
                   >
-                    回溯到此处（{MODE_LABELS[selectedMode]}）
+                    {minPromptIndex !== undefined && p.promptIndex < minPromptIndex ? "继承的历史（只读）" : `回溯到此处（${MODE_LABELS[selectedMode]}）`}
                   </button>
                 </div>
               </li>

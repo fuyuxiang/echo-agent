@@ -71,6 +71,14 @@ pub struct SessionSummary {
     /// Last renderer-observed turn lifecycle status (EchoAgent-only state).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<crate::meta::SessionContinuation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(default)]
+    pub parent_missing: bool,
+    #[serde(skip)]
+    has_generated_title: bool,
 }
 
 /// Subset of EchoAgent's `Summary` struct (see `echo-agent-runtime/src/session/persistence.rs:790`).
@@ -89,6 +97,8 @@ struct SummaryFile {
     generated_title: Option<String>,
     #[serde(default)]
     title_is_manual: Option<bool>,
+    #[serde(default)]
+    parent_session_id: Option<String>,
     /// May live at the top level OR inside `info.id` — we read both.
     #[serde(default)]
     session_id: Option<String>,
@@ -300,9 +310,19 @@ fn to_session_summary(
     session_dir: &Path,
     summary: SummaryFile,
     cwd: String,
+    continuations: &std::collections::HashMap<String, crate::meta::SessionContinuation>,
 ) -> Option<SessionSummary> {
     let session_id = authoritative_session_id(session_dir, &summary)?;
+    let has_generated_title = summary
+        .generated_title
+        .as_ref()
+        .is_some_and(|title| !title.trim().is_empty());
     let title = display_title(&summary)
+        .or_else(|| {
+            continuations
+                .get(&session_id)
+                .map(|origin| origin.temporary_title.clone())
+        })
         .or_else(|| recover_title_from_updates(session_dir))
         .unwrap_or_else(|| "未命名会话".into());
     let updated_at = summary
@@ -332,6 +352,10 @@ fn to_session_summary(
         expert_avatar: None,
         permission_mode: "ask".into(),
         status: None,
+        continuation: None,
+        parent_session_id: summary.parent_session_id.and_then(safe_session_id),
+        parent_missing: false,
+        has_generated_title,
     })
 }
 
@@ -373,10 +397,22 @@ fn apply_metadata_from_state(
     let archived = state.archived_set();
     let experts = state.expert_map();
     let statuses = state.session_status_map();
+    let existing_ids: std::collections::HashSet<_> =
+        out.iter().map(|entry| entry.session_id.clone()).collect();
     // Keep the historical default (hide archived), while allowing the archive
     // view to request the same authoritative rows with `archived: true`.
     apply_archive_visibility(out, &archived, include_archived);
     for entry in out.iter_mut() {
+        entry.continuation = state.session_continuations.get(&entry.session_id).cloned();
+        entry.parent_missing = entry
+            .continuation
+            .as_ref()
+            .is_some_and(|origin| !existing_ids.contains(&origin.parent_session_id));
+        if !entry.has_generated_title {
+            if let Some(origin) = &entry.continuation {
+                entry.title = origin.temporary_title.clone();
+            }
+        }
         entry.pinned = Some(pinned.contains(&entry.session_id));
         if let Some(binding) = experts.get(&entry.session_id) {
             entry.expert_id = Some(bounded_text(binding.expert_id.clone(), MAX_EXPERT_ID_CHARS));
@@ -428,6 +464,7 @@ fn list_sessions_from_root(
     include_archived: bool,
 ) -> Vec<SessionSummary> {
     let mut out = Vec::new();
+    let continuations = crate::meta::read_state().session_continuations;
     let requested_canonical = canonical_workspace(cwd);
     let output_cwd = requested_canonical
         .as_ref()
@@ -483,7 +520,9 @@ fn list_sessions_from_root(
                     continue;
                 }
             }
-            if let Some(summary) = to_session_summary(&sess_path, s, output_cwd.clone()) {
+            if let Some(summary) =
+                to_session_summary(&sess_path, s, output_cwd.clone(), &continuations)
+            {
                 out.push(summary);
             }
         }
@@ -533,6 +572,7 @@ pub(crate) fn list_all_sessions_from_root(
     sessions_root: &Path,
 ) -> Result<Vec<SessionSummary>, String> {
     let mut out = Vec::new();
+    let continuations = crate::meta::read_state().session_continuations;
     let mut visited_sessions = 0_usize;
 
     let cwd_dirs = match std::fs::read_dir(sessions_root) {
@@ -582,7 +622,9 @@ pub(crate) fn list_all_sessions_from_root(
             let output_cwd = canonical
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_else(|| bounded_text(raw_cwd, MAX_CWD_CHARS));
-            if let Some(summary) = to_session_summary(&session_path, summary, output_cwd) {
+            if let Some(summary) =
+                to_session_summary(&session_path, summary, output_cwd, &continuations)
+            {
                 out.push(summary);
             }
         }
@@ -980,6 +1022,10 @@ mod tests {
             expert_avatar: None,
             permission_mode: "ask".into(),
             status: None,
+            continuation: None,
+            parent_session_id: None,
+            parent_missing: false,
+            has_generated_title: false,
         }
     }
 
@@ -1027,7 +1073,8 @@ mod tests {
             r#"{"session_id":"child-session","session_kind":"subagent","generated_title":"child"}"#,
         );
 
-        let row = to_session_summary(&session_dir, parsed, "/tmp".into()).unwrap();
+        let row =
+            to_session_summary(&session_dir, parsed, "/tmp".into(), &Default::default()).unwrap();
         assert!(row.hidden);
         assert_eq!(row.session_kind.as_deref(), Some("subagent"));
     }
@@ -1041,7 +1088,7 @@ mod tests {
             summary(r#"{"session_id":"visible-child","session_kind":"subagent","hidden":false}"#);
 
         assert!(
-            !to_session_summary(&session_dir, parsed, "/tmp".into())
+            !to_session_summary(&session_dir, parsed, "/tmp".into(), &Default::default())
                 .unwrap()
                 .hidden
         );
@@ -1148,7 +1195,7 @@ mod tests {
             }"#,
         );
         assert_eq!(
-            to_session_summary(&session_dir, parsed, "/tmp".into())
+            to_session_summary(&session_dir, parsed, "/tmp".into(), &Default::default())
                 .unwrap()
                 .title,
             "帮我写一个关于秋天的文章"

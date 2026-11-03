@@ -113,7 +113,7 @@ describe("TopbarActions", () => {
     render(<TopbarActions sessionId="session-1" title="测试会话" onFind={vi.fn()} onRewind={vi.fn()} onFork={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "任务操作" }));
     expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map(item => item.getAttribute("aria-label") ?? item.textContent)).toEqual([
-      "查找当前会话", "回溯…", "分叉…", "导出整个会话…",
+      "查找当前会话", "回溯…", "在新对话中继续", "导出整个会话…",
     ]);
   });
 
@@ -194,11 +194,11 @@ describe("session menu migration", () => {
     const select = (name: string) => { fireEvent.click(screen.getByRole("button", { name: "任务操作" })); fireEvent.click(screen.getByRole("menuitem", { name })); };
     select("查找当前会话"); expect(onFind).toHaveBeenCalledOnce();
     select("回溯…"); expect(onRewind).toHaveBeenCalledOnce();
-    select("分叉…"); expect(onFork).toHaveBeenCalledOnce();
+    select("在新对话中继续"); expect(onFork).toHaveBeenCalledOnce();
     view.rerender(<TopbarActions sessionId="scope-a" title="A" onRewind={onRewind} onFork={onFork} historyDisabled />);
     fireEvent.click(screen.getByRole("button", { name: "任务操作" }));
     expect(screen.getByRole("menuitem", { name: "回溯…" })).toBeDisabled();
-    expect(screen.getByRole("menuitem", { name: "分叉…" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "在新对话中继续" })).toBeDisabled();
     view.rerender(<TopbarActions sessionId="scope-b" title="B" />);
     expect(screen.queryByRole("menu")).toBeNull();
   });

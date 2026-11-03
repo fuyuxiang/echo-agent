@@ -7,7 +7,9 @@ use crate::remote::BackendClient;
 const FORK_LOG: &str = "echo_agent_fork";
 use crate::session::export::ExportedMetadata;
 use crate::session::info::Info;
-use crate::session::storage::{CopySessionOptions, JsonlStorageAdapter};
+use crate::session::storage::{
+    CopySessionOptions, JsonlStorageAdapter, SessionUpdate, StorageAdapter, UpdatesIterator,
+};
 use crate::util::echo_agent_home::echo_agent_home;
 use agent_client_protocol as acp;
 use std::io;
@@ -28,6 +30,12 @@ pub struct ForkSessionRequest {
     pub new_model_id: Option<String>,
     #[serde(default)]
     pub target_prompt_index: Option<usize>,
+    /// Desktop continuations start fresh execution state and generate their own title.
+    #[serde(default)]
+    pub fresh_continuation: bool,
+    /// Stable identity of the selected source turn, checked after persistence flush.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_prompt_id: Option<String>,
     /// Override `session_kind` in the forked summary. Defaults to `"fork"`.
     /// Worktree forks set this to `"worktree"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +67,103 @@ pub struct ForkSessionResponse {
 /// a constant 36 chars regardless of how many fork rounds occur.
 fn generate_fork_session_id(_source_id: &str) -> String {
     uuid::Uuid::now_v7().to_string()
+}
+
+fn prompt_id_matches(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    expected: &str,
+) -> bool {
+    meta.is_some_and(|meta| {
+        ["promptId", "prompt_id"]
+            .iter()
+            .any(|key| meta.get(*key).and_then(serde_json::Value::as_str) == Some(expected))
+    })
+}
+
+/// Inspect only the selected live turn. Rewind markers can reuse an index for
+/// different content, so finding an old prompt id anywhere in the log is unsafe.
+/// Keep constant memory even for sessions with large tool outputs or many turns.
+pub fn source_prompt_matches(
+    updates: impl Iterator<Item = std::io::Result<SessionUpdate>>,
+    target: usize,
+    expected: &str,
+) -> std::io::Result<bool> {
+    let target_turn = target
+        .checked_add(1)
+        .ok_or_else(|| io::Error::other("历史轮次超出范围"))?;
+    let mut turns = 0usize;
+    let mut seen_marker = false;
+    let mut in_user = false;
+    let mut current_index = None;
+    let mut found = false;
+    for update in updates {
+        let update = match update {
+            Ok(update) => update,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                in_user = false;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        match update {
+            SessionUpdate::EchoAgent(notification) => {
+                in_user = false;
+                if let crate::extensions::notification::SessionUpdate::RewindMarker {
+                    target_prompt_index,
+                    ..
+                } = notification.update
+                {
+                    turns = turns.min(target_prompt_index);
+                    if target_prompt_index <= target {
+                        found = false;
+                    }
+                } else if turns == target_turn {
+                    found |= prompt_id_matches(
+                        notification
+                            .meta
+                            .as_ref()
+                            .and_then(serde_json::Value::as_object),
+                        expected,
+                    );
+                }
+            }
+            SessionUpdate::Acp(notification) => {
+                let chunk_meta = match &notification.update {
+                    agent_client_protocol::SessionUpdate::UserMessageChunk(chunk)
+                    | agent_client_protocol::SessionUpdate::AgentMessageChunk(chunk)
+                    | agent_client_protocol::SessionUpdate::AgentThoughtChunk(chunk) => {
+                        chunk.meta.as_ref()
+                    }
+                    _ => None,
+                };
+                let is_user = matches!(
+                    notification.update,
+                    agent_client_protocol::SessionUpdate::UserMessageChunk(_)
+                ) && !chunk_meta.is_some_and(|meta| {
+                    meta.get("hostTurn").and_then(serde_json::Value::as_bool) == Some(true)
+                });
+                if is_user {
+                    let index = chunk_meta
+                        .and_then(|meta| meta.get("promptIndex"))
+                        .and_then(serde_json::Value::as_u64);
+                    seen_marker |= index.is_some();
+                    let new_run = !in_user || seen_marker && index != current_index;
+                    if new_run && (!seen_marker || index.is_some()) {
+                        turns += 1;
+                    }
+                    in_user = true;
+                    current_index = index;
+                } else {
+                    in_user = false;
+                }
+                if turns == target_turn {
+                    found |= prompt_id_matches(notification.meta.as_ref(), expected)
+                        || prompt_id_matches(chunk_meta, expected);
+                }
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Fork a saved session to a new working directory.
@@ -97,16 +202,43 @@ pub async fn fork_session(
         parent_session_id: Some(request.source_session_id.clone()),
         new_model_id: request.new_model_id.clone(),
         target_prompt_index: request.target_prompt_index,
+        fresh_title: request.fresh_continuation,
+        copy_plan_state: !request.fresh_continuation,
+        copy_plan_mode_state: !request.fresh_continuation,
+        copy_signals: !request.fresh_continuation,
+        copy_tool_state: !request.fresh_continuation,
+        copy_announcement_state: !request.fresh_continuation,
         session_kind: request.session_kind.clone(),
         source_workspace_dir: request.source_workspace_dir.clone(),
         // Carry the parent's compaction segment archive into the fork so the
         // child retains pre-compaction history (the live summary is already
         // copied via chat_history.jsonl).
-        copy_compaction_segments: true,
+        // Raw archives may contain later turns than a desktop history cut.
+        // Its retained replay and checkpoints already preserve the chosen context.
+        copy_compaction_segments: !request.fresh_continuation,
         ..Default::default()
     };
 
+    let expected_prompt_id = request
+        .source_prompt_id
+        .clone()
+        .filter(|_| request.fresh_continuation);
     let result = tokio::task::spawn_blocking(move || {
+        if let Some(expected) = expected_prompt_id {
+            let target = options
+                .target_prompt_index
+                .ok_or_else(|| io::Error::other("接续请求缺少历史轮次"))?;
+            let path = storage
+                .updates_file_path(&source_info)
+                .ok_or_else(|| io::Error::other("无法核对所选历史轮次"))?;
+            let updates = UpdatesIterator::open(&path)?
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "原对话历史不存在"))?;
+            if !source_prompt_matches(updates, target, &expected)? {
+                return Err(io::Error::other(
+                    "该历史轮次已被回溯或替换，请重新加载原对话后选择接续位置",
+                ));
+            }
+        }
         storage.copy_session_data_sync(&source_info, &target_info, options)
     })
     .await

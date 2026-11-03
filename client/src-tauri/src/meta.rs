@@ -87,6 +87,19 @@ pub struct SessionLifecycle {
     pub updated_at: String,
 }
 
+/// Durable provenance, independent of the parent's later edits or deletion.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContinuation {
+    pub parent_session_id: String,
+    pub parent_title: String,
+    pub prompt_index: u32,
+    pub prompt_id: Option<String>,
+    pub inherited_turn_count: u32,
+    pub temporary_title: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EchoAgentState {
     /// Schema version for forward compatibility.
@@ -117,6 +130,8 @@ pub struct EchoAgentState {
     /// Last lifecycle state: session_id → SessionLifecycle.
     #[serde(default)]
     pub session_statuses: HashMap<String, SessionLifecycle>,
+    #[serde(default)]
+    pub session_continuations: HashMap<String, SessionContinuation>,
 }
 
 impl Default for EchoAgentState {
@@ -131,6 +146,7 @@ impl Default for EchoAgentState {
             session_workspaces: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
             session_statuses: HashMap::new(),
+            session_continuations: HashMap::new(),
         }
     }
 }
@@ -227,6 +243,7 @@ fn validate_state(state: &EchoAgentState) -> Result<(), String> {
         || state.session_workspaces.len() > MAX_SESSION_ENTRIES
         || state.session_desktop_tasks.len() > MAX_SESSION_ENTRIES
         || state.session_statuses.len() > MAX_SESSION_ENTRIES
+        || state.session_continuations.len() > MAX_SESSION_ENTRIES
     {
         return Err("会话元数据条目超过安全上限".into());
     }
@@ -270,7 +287,61 @@ fn validate_state(state: &EchoAgentState) -> Result<(), String> {
         }
         validate_lifecycle(lifecycle)?;
     }
+    for (id, origin) in &state.session_continuations {
+        validate_continuation(id, origin)?;
+    }
     Ok(())
+}
+
+fn validate_continuation(id: &str, origin: &SessionContinuation) -> Result<(), String> {
+    if !valid_session_id(id)
+        || !valid_session_id(&origin.parent_session_id)
+        || id == origin.parent_session_id
+        || !valid_field(&origin.parent_title, 512, false)
+        || !valid_field(&origin.temporary_title, 512, false)
+        || origin
+            .prompt_id
+            .as_deref()
+            .is_some_and(|id| !valid_session_id(id))
+        || origin.inherited_turn_count == 0
+        || chrono::DateTime::parse_from_rfc3339(&origin.created_at).is_err()
+    {
+        return Err("接续对话来源格式无效".into());
+    }
+    Ok(())
+}
+
+pub fn save_continuation(
+    id: &str,
+    origin: SessionContinuation,
+    source: &str,
+    cwd: &Path,
+) -> Result<(), String> {
+    validate_continuation(id, &origin)?;
+    update_state_at(&state_path(), |state| {
+        if state.session_continuations.contains_key(id) {
+            return Ok(((), false));
+        }
+        state
+            .session_continuations
+            .insert(id.into(), origin.clone());
+        if let Some(binding) = state.expert_sessions.get(source).cloned() {
+            state.expert_sessions.insert(id.into(), binding);
+        }
+        if let Some(mode) = state.session_agent_modes.get(source).cloned() {
+            state.session_agent_modes.insert(id.into(), mode);
+        }
+        let mode = state
+            .session_permission_modes
+            .get(source)
+            .cloned()
+            .unwrap_or_else(|| "ask".into());
+        state.session_permission_modes.insert(id.into(), mode);
+        state
+            .session_workspaces
+            .insert(id.into(), cwd.to_string_lossy().into_owned());
+        Ok(((), true))
+    })
 }
 
 fn sanitize_state(mut state: EchoAgentState) -> EchoAgentState {
@@ -326,6 +397,18 @@ fn sanitize_state(mut state: EchoAgentState) -> EchoAgentState {
         for key in keys.into_iter().skip(MAX_SESSION_ENTRIES) {
             state.session_agent_modes.remove(&key);
         }
+    }
+    state
+        .session_continuations
+        .retain(|id, origin| validate_continuation(id, origin).is_ok());
+    let mut keys = state
+        .session_continuations
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.sort();
+    for key in keys.into_iter().skip(MAX_SESSION_ENTRIES) {
+        state.session_continuations.remove(&key);
     }
     state
         .session_desktop_tasks
@@ -814,6 +897,7 @@ fn clear_session_metadata_at(path: &Path, session_id: &str) -> Result<bool, Stri
         changed |= state.session_workspaces.remove(session_id).is_some();
         changed |= state.session_desktop_tasks.remove(session_id).is_some();
         changed |= state.session_statuses.remove(session_id).is_some();
+        changed |= state.session_continuations.remove(session_id).is_some();
         Ok((changed, changed))
     })
 }
@@ -828,6 +912,35 @@ pub fn clear_session_metadata(session_id: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deleting_parent_keeps_child_provenance_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let origin = SessionContinuation {
+            parent_session_id: "parent".into(),
+            parent_title: "原对话".into(),
+            prompt_index: 1,
+            prompt_id: Some("p1".into()),
+            inherited_turn_count: 2,
+            temporary_title: "原对话 · 新方向".into(),
+            created_at: "2026-11-03T00:00:00Z".into(),
+        };
+        update_state_at(&path, |state| {
+            state
+                .session_continuations
+                .insert("child".into(), origin.clone());
+            Ok(((), true))
+        })
+        .unwrap();
+        clear_session_metadata_at(&path, "parent").unwrap();
+        let restored = read_state_from(&path, true).unwrap();
+        assert_eq!(restored.session_continuations["child"], origin);
+        clear_session_metadata_at(&path, "child").unwrap();
+        assert!(read_state_from(&path, true)
+            .unwrap()
+            .session_continuations
+            .is_empty());
+    }
 
     #[test]
     fn workspace_binding_survives_reload_and_rejects_retargeting() {
@@ -876,6 +989,7 @@ mod tests {
             session_workspaces: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
             session_statuses: HashMap::new(),
+            session_continuations: HashMap::new(),
         };
         let set = state.pinned_set();
         assert_eq!(set.len(), 2); // deduplicated
@@ -895,6 +1009,7 @@ mod tests {
             session_workspaces: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
             session_statuses: HashMap::new(),
+            session_continuations: HashMap::new(),
         };
         let set = state.archived_set();
         assert_eq!(set.len(), 2);
@@ -929,6 +1044,7 @@ mod tests {
                     updated_at: "2026-09-14T08:00:00Z".into(),
                 },
             )]),
+            session_continuations: HashMap::new(),
         };
         let json = serde_json::to_string(&state).unwrap();
         let parsed: EchoAgentState = serde_json::from_str(&json).unwrap();

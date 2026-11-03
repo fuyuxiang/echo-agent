@@ -36,6 +36,8 @@ import {
 } from "./lib/model-selection";
 import { useSessionStore } from "./stores/session-store";
 import { useSessionsStore } from "./stores/sessions-store";
+import { useContinuationStore } from "./stores/continuation-store";
+import { latestContinuationTarget } from "./lib/session-continuation";
 import { useDesktopTray } from "./lib/use-desktop-tray";
 import { TrayActionCancelled } from "./lib/desktop-tray-connection";
 import { reconcileSessionCatalog } from "./lib/session-catalog";
@@ -66,7 +68,8 @@ import {
   agentSetModel,
   agentSetSessionExpert,
   agentAuthStatus,
-  sessionFork,
+  sessionContinue,
+  type ContinuationRequest,
   setCodingMode,
   togglePlanMode,
   providersList,
@@ -84,7 +87,7 @@ import {
   type InitResult,
   type WorkspaceInfo,
 } from "./lib/agent-client";
-import type { AgentEntry, SessionSummary } from "./lib/types";
+import type { AgentEntry, SessionSummary, ContinuationTarget, ConversationNavigationRequest } from "./lib/types";
 import { buildCodingWorkflowPrompt } from "./features/coding/lib/workflow";
 import { CodingTaskRuntimeManager } from "./features/coding/lib/coding-task-runtime";
 import { codingQueueOwner, settleCodingQueueTurn } from "./features/coding/lib/coding-followup";
@@ -328,6 +331,9 @@ function Shell() {
   const [subagentTrail, setSubagentTrail] = useState<SubagentReturnPoint[]>([]);
   const [subagentScrollRestore, setSubagentScrollRestore] = useState<SubagentScrollRestore | null>(null);
   const subagentRestoreSequenceRef = useRef(0);
+  const [conversationNavigation, setConversationNavigation] = useState<ConversationNavigationRequest | null>(null);
+  const conversationNavigationSequence = useRef(0);
+  const slashContinuationRequests = useRef(new Map<string, ContinuationRequest>());
   const [creatingSession, setCreatingSession] = useState(false);
   const [newTaskMode, setNewTaskMode] = useState<AutomationMode>("default");
   const [homeSendError, setHomeSendError] = useState<string | null>(null);
@@ -1589,6 +1595,10 @@ function Shell() {
     if (!text.trim() && attachments.length === 0) return false;
     if (!currentSessionId) return handleSendNew(text, attachments);
     const sessionId = currentSessionId;
+    if (useContinuationStore.getState().pending[sessionId]) {
+      showToast("正在创建接续对话，请稍候再发送");
+      return false;
+    }
     if (hasPendingQuestionForSession(sessionId)) {
       showToast("请先回答当前问题");
       return false;
@@ -1697,6 +1707,7 @@ function Shell() {
   };
 
   const handlePrepareRetry = async (sessionId: string): Promise<boolean> => {
+    if (useContinuationStore.getState().pending[sessionId]) return false;
     if (sessionStore.getState().transcripts[sessionId]?.streamingMessageId) return false;
     if (modelSwitching || sessionLoading) {
       showToast(sessionLoading ? "正在加载会话，请稍候" : "正在切换模型，请稍候");
@@ -1734,6 +1745,7 @@ function Shell() {
     promptText,
     attachments,
   }: MessageRetrySendRequest): boolean => {
+    if (useContinuationStore.getState().pending[sessionId]) return false;
     const accepted = beginAgentTurn({
       sessionId,
       promptText,
@@ -2651,51 +2663,79 @@ function Shell() {
 
   // Fork copies the session to a new id — jump to it so the user sees the
   // branch they just created (and it appears in the sidebar).
-  const handleForked = async (newId: string, sourceSessionId: string, sourceCwd?: string) => {
+  const continuationNavigationGeneration = selectionGenerationRef.current;
+  const handleForked = async (newId: string, sourceSessionId: string, sourceCwd?: string, summary?:SessionSummary) => {
     const source = findSessionSummary(sourceSessionId);
     const cwd = source?.cwd ?? sourceCwd;
     if (!cwd) {
-      showToast("分叉已创建，但缺少工作区信息，请刷新会话列表");
+      showToast("接续对话已创建，但缺少工作目录信息，请刷新会话列表");
       void refreshSessionCatalog();
       return;
     }
     const modelId = resolveSessionModelId(models, source?.currentModelId);
     const fork: SessionSummary = {
       sessionId: newId,
-      title: source?.title || "分叉会话",
+      title: `${source?.title || "原对话"} · 新方向`,
       cwd,
       currentModelId: modelId,
       permissionMode: source?.permissionMode ?? "ask",
+      ...summary,
     };
     // The Runtime fork already exists. A failed project save must retain it
     // as a recoverable task rather than report that creating the fork failed.
     sessionsStore.getState().upsert(fork);
+    const knowledge = useKnowledgeStore.getState();
+    if (knowledge.sessionSources[newId] === undefined) {
+      knowledge.setSessionSources(newId, [...(knowledge.sessionSources[sourceSessionId] ?? [])]);
+    }
+    if (knowledge.sessionOrganizationScopeIds[newId] === undefined) {
+      knowledge.setSessionOrganizationScopeIds(newId, [...(knowledge.sessionOrganizationScopeIds[sourceSessionId] ?? [])]);
+    }
     try {
-      await useProjectsStore.getState().associateForkWithSourceProject(sourceSessionId, fork);
+      const projects = useProjectsStore.getState();
+      if (!projects.projects.some(project => project.conversations.some(row => row.sessionId === newId))) {
+        await projects.associateForkWithSourceProject(sourceSessionId, fork);
+      }
     } catch (error) {
       const linked = useProjectsStore.getState().projects.some((project) =>
         project.conversations.some((conversation) => conversation.sessionId === newId),
       );
       showToast(linked
-        ? `分叉已创建并保留，项目关联尚未确认保存。请在项目页重试保存：${friendlyError(error)}`
-        : `分叉已创建并保留为独立会话，关联项目失败。可在会话菜单“移入项目…”重试：${friendlyError(error)}`, 7000);
+        ? `接续对话已创建并保留，项目关联尚未确认保存。请在项目页重试保存：${friendlyError(error)}`
+        : `接续对话已创建并保留为独立会话，关联项目失败。可在会话菜单“移入项目…”重试：${friendlyError(error)}`, 7000);
     }
     // A slow fork must not hijack a conversation the user selected meanwhile.
-    if (sessionsStore.getState().currentSessionId !== sourceSessionId) return;
-    setPlaceholderView(null);
-    sessionsStore.getState().setCurrent(newId);
-    sessionStore.getState().setSession(newId);
-    void agentLoadSession(newId, cwd)
-      .then(() => {
-        if (sessionsStore.getState().currentSessionId === newId) {
-          setTaskRefreshSignal((value) => value + 1);
-        }
-      })
-      .catch((e) => {
-        if (sessionsStore.getState().currentSessionId === newId) {
-          sessionStore.getState().setError(friendlyError(e));
-        }
-      });
+    if (sessionsStore.getState().currentSessionId !== sourceSessionId
+      || selectionGenerationRef.current !== continuationNavigationGeneration) return;
+    const hadHistory = Boolean(sessionStore.getState().transcripts[newId]?.messages.length);
+    try {
+      await handleSelectSession(newId, cwd, false, true);
+      if (sessionsStore.getState().currentSessionId === newId) setConversationNavigation({sessionId:newId, sequence:++conversationNavigationSequence.current, focusComposer:true});
+    } catch (error) {
+      // A failed first replay is a partial cache, never authoritative history.
+      // Reopening must read all persisted chunks instead of suppressing them.
+      if (!hadHistory) {
+        sessionStore.getState().dropSessionCache(newId);
+        if (sessionStore.getState().sessionId === newId) sessionStore.getState().setError(friendlyError(error));
+      }
+      showActionToast(`新对话已创建并保留，暂时无法载入：${friendlyError(error)}`, [
+        {label:"重新打开", onClick:() => { void handleSelectSession(newId, cwd); }},
+      ], 7000);
+    }
+  };
+
+  const handleOpenContinuationSession = async (id:string, target?:ContinuationTarget) => {
+    const sourceId = sessionsStore.getState().currentSessionId;
+    try {
+      await handleSelectSession(id, undefined, false, true);
+      if (sessionsStore.getState().currentSessionId === id) setConversationNavigation({sessionId:id, sequence:++conversationNavigationSequence.current, target});
+    } catch (error) {
+      if (sessionsStore.getState().currentSessionId === sourceId || sessionsStore.getState().currentSessionId === id) {
+        if (findSessionSummary(id)?.archived) {
+          showActionToast("关联对话已归档，请先恢复后查看", [{label:"管理归档",onClick:()=>openSettings("archived")}],6000);
+        } else showToast(`无法打开关联对话：${friendlyError(error)}`, 6000);
+      }
+    }
   };
 
   /** Execute commands owned by the desktop shell. Runtime commands and Skills
@@ -2870,11 +2910,25 @@ function Shell() {
         const source = findSessionSummary(sessionId);
         const cwd = source?.cwd;
         if (!cwd) {
-          showToast("无法分叉：当前会话缺少工作区信息");
+          showToast("无法接续：当前会话缺少工作目录信息");
           return false;
         }
-        const newId = await sessionFork(sessionId, cwd);
-        handleForked(newId, sessionId, cwd);
+        const live = sessionStore.getState();
+        const permission = Boolean(usePermissionStore.getState().queues[sessionId]?.length || usePermissionStore.getState().queues.__global?.length);
+        const question = Boolean(useQuestionStore.getState().queues[sessionId]?.length || useQuestionStore.getState().queues.__global?.length);
+        if (live.streaming || live.sendNowPending || live.control?.phase === "pausing" || live.control?.phase === "stopping"
+          || live.planApproval?.sessionId === sessionId || permission || question || loadingSession?.sessionId === sessionId) {
+          showToast("请等待当前执行和待处理操作结束后再继续"); return false;
+        }
+        const target = latestContinuationTarget(live.messages);
+        const previous = slashContinuationRequests.current.get(sessionId);
+        const request = previous && previous.targetPromptIndex === target?.promptIndex && previous.sourcePromptId === target?.promptId
+          ? previous : {requestId:crypto.randomUUID(),targetPromptIndex:target?.promptIndex,sourcePromptId:target?.promptId};
+        slashContinuationRequests.current.set(sessionId, request);
+        const result = await sessionContinue(sessionId, cwd, request);
+        await handleForked(result.session.sessionId, sessionId, cwd, result.session);
+        slashContinuationRequests.current.delete(sessionId);
+        if (result.warnings.length) showToast(result.warnings.join("；"), 7000);
 
         return true;
       }
@@ -3299,6 +3353,8 @@ function Shell() {
                   onRetrySend={handleRetrySend}
                   onRewound={handleRewound}
                   onForked={handleForked}
+                  onOpenContinuationSession={(id, target) => { void handleOpenContinuationSession(id, target); }}
+                  conversationNavigation={conversationNavigation}
                   onToast={showToast}
                   onSelectExpert={handleStartWithExpert}
                   onOpenSubagentSession={handleOpenSubagentSession}

@@ -11,7 +11,7 @@ import { SearchOverlay } from "../../src/components/SearchOverlay";
 import "../../src/styles/index.css";
 // Development-only visual fixture. Native calls use isolated in-memory data;
 // this module is never imported by the production entry point.
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { SidebarLayoutContext, useAppSidebarLayout } from "../../src/lib/sidebar-layout";
 import { SidebarResizeHandle } from "../../src/components/SidebarResizeHandle";
@@ -320,6 +320,17 @@ if (["workbench", "coding-question"].includes(query.get("surface") ?? "")) {
   if (state === "failed") chat.setError("隔离验收：本轮任务失败，可以重试。");
   if (state === "collaboration") useSubagentStore.getState().applyEvent({ sessionId: "review-conversation", subagentId: "review-child", childSessionId: "review-child", phase: "spawned", description: "核对交付文档", status: "running" });
 }
+if (query.has("continuation")) {
+  const chat = useSessionStore.getState();
+  chat.setSession("review-conversation");
+  chat.setMessages([0,1,2].flatMap(index => [
+    {id:`continuation-user-${index}`,role:"user" as const,complete:true,promptIndex:index,promptId:`continuation-turn-${index}`,
+      parts:[{kind:"text" as const,text:["帮我优化登录页的体验","弹窗与独立页面怎么选？","继续完善独立页面方案"][index]}]},
+    {id:`continuation-answer-${index}`,role:"assistant" as const,complete:true,promptId:`continuation-turn-${index}`,
+      parts:[{kind:"text" as const,text:["可以先确定登录流程、异常提示和验证码的体验。","建议先用独立页面，方便处理验证码和第三方登录。如果希望保留当前浏览状态，也可以继续探索弹窗方案。","后续的独立页面方案：保留输入内容，并明确展示登录失败的原因。"][index]}]},
+  ]));
+  useSessionsStore.getState().upsert({sessionId:"review-conversation",title:"登录页交互优化",cwd:"/Users/review/项目/EchoAgent/一个很长的任务工作目录/desktop-client"});
+}
 const browserTaskOverrides = new Map<string, Record<string, unknown>>();
 let automationApprovalResolved = false;
 const workbenchCalls: unknown[] = [];
@@ -358,6 +369,16 @@ Object.assign(window, {
         case "agent_set_session_pinned": return args.pinned;
         case "agent_set_session_archived": return args.archived;
         case "session_fork": return "review-forked-session";
+        case "session_continue": {
+          if (query.get("delayContinuation") === "1") await new Promise<void>(resolve => { (window as any).releaseContinuation = resolve; });
+          const calls = (window as any).continuationAttempts = ((window as any).continuationAttempts ?? 0) + 1;
+          if (query.get("rejectContinuation") === "1" && calls === 1) throw new Error("隔离验收：临时复制失败");
+          const source = useSessionsStore.getState().independent.find(row => row.sessionId === args.sessionId)!;
+          const index = args.targetPromptIndex ?? 2;
+          return { session:{sessionId:args.requestId,title:`${source.title} · 新方向`,cwd:args.cwd,currentModelId:source.currentModelId,
+            parentSessionId:args.sessionId,continuation:{parentSessionId:args.sessionId,parentTitle:source.title,promptIndex:index,promptId:args.sourcePromptId,
+              inheritedTurnCount:index+1,temporaryTitle:`${source.title} · 新方向`,createdAt:new Date().toISOString()}},warnings:[]};
+        }
         case "rewind_points": return [{promptIndex: 0, promptPreview: "评审投影仪性能与内存泄漏"}];
         case "rewind_execute": return { targetPromptIndex: args.targetPromptIndex };
 
@@ -611,6 +632,8 @@ Object.assign(window, {
 
 function ConversationLayoutFixture() {
   const [searchOpen, setSearchOpen] = useState(false);
+  const [conversationNavigation, setConversationNavigation] = useState<import("../../src/lib/types").ConversationNavigationRequest | null>(null);
+  const navigationSequence = useRef(0);
   const sessionId = useSessionStore((state) => state.sessionId);
   const entry = useSessionsStore(state => state.independent.find(item => item.sessionId === sessionId));
   const layout = useAppSidebarLayout();
@@ -639,12 +662,33 @@ function ConversationLayoutFixture() {
           navigation={{ sidebarCollapsed: layout.collapsed, onToggleSidebar: () => layout.setCollapsed(!layout.collapsed), onNewTask: () => { (window as any).workbenchNewTask = true; } }}
           onNewTask={() => { (window as any).workbenchNewTask = true; }}
           onReloadWorkspace={async () => { (window as any).workspaceReloaded = true; }}
+          onRewound={query.get("continuation") === "1" ? async id => {
+            (window as any).workbenchCalls.push({command:"review_reload",args:{sessionId:id}});
+            if (query.get("delayRefresh") === "1") await new Promise<void>(resolve => { (window as any).releaseRefresh = resolve; });
+          } : undefined}
           modelId={query.has("composerModel") ? "review/MiniMax-M3.1-Flash" : undefined}
           models={query.has("composerModel") ? [{id:"review/MiniMax-M3.1-Flash",label:"MiniMax-M3.1-Flash"}] : undefined}
           onModelChange={query.has("composerModel") ? () => {} : undefined}
           cwd={query.get("surface") === "workbench" ? "/Users/review/项目/EchoAgent/一个很长的任务工作目录/desktop-client" : undefined}
           title={entry?.title ?? "聊天布局回归"}
           onRename={async title => { if (sessionId) useSessionsStore.getState().upsert({ sessionId, title }); }}
+          onForked={(id, sourceId, _cwd, summary) => {
+            if (!summary) return;
+            const source = useSessionStore.getState().transcripts[sourceId]?.messages ?? useSessionStore.getState().messages;
+            let inherited = true;
+            const copied = source.filter(message => {if (message.role === "user") inherited = (message.promptIndex ?? 0) <= (summary.continuation?.promptIndex ?? 2); return inherited;});
+            useSessionsStore.getState().upsert(summary);
+            useSessionsStore.getState().setCurrent(id);
+            useSessionStore.getState().setSession(id);
+            useSessionStore.getState().setMessages(copied);
+            setConversationNavigation({sessionId:id,sequence:++navigationSequence.current,focusComposer:true});
+          }}
+          onOpenContinuationSession={(id,target) => {
+            useSessionStore.getState().setSession(id);
+            useSessionsStore.getState().setCurrent(id);
+            setConversationNavigation({sessionId:id,target,sequence:++navigationSequence.current});
+          }}
+          conversationNavigation={conversationNavigation}
         />
       </main>
     </div></SidebarLayoutContext.Provider>

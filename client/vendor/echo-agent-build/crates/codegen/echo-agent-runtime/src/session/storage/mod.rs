@@ -738,6 +738,8 @@ pub struct CopySessionResult {
 /// Options for copying session data during fork
 #[derive(Debug, Clone)]
 pub struct CopySessionOptions {
+    /// A user-visible continuation receives a title from its first new prompt.
+    pub fresh_title: bool,
     /// Parent session ID to set in the forked session's summary.
     pub parent_session_id: Option<String>,
     /// Model ID override for the forked session (None = keep source model).
@@ -801,6 +803,7 @@ pub struct CopySessionOptions {
 impl Default for CopySessionOptions {
     fn default() -> Self {
         Self {
+            fresh_title: false,
             parent_session_id: None,
             new_model_id: None,
             target_prompt_index: None,

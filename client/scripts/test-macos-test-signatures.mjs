@@ -15,6 +15,11 @@ for (const [name, change] of [
   ['neighbor directory prefix', { executable: '/repo/src-tauri/target-other/bin/test' }],
 ]) test(`rejects ${name}`, () => assert.throws(() => select([{ ...base, ...change }])));
 test('does not treat absent build results as ready for signing', () => assert.throws(() => select([])));
+test('accepts the continuation integration harness within the bounded artifact count', () => {
+  const artifacts=Array.from({length:17},(_,i)=>({...base,executable:`${base.executable}-${i}`}));
+  assert.equal(select(artifacts).length,17);
+  assert.throws(()=>select([...artifacts,{...base,executable:`${base.executable}-extra`}]));
+});
 
 test('accepts Cargo main.rs test harness in deps, while refusing ordinary application path', () => {
   const binary = { ...base, executable: '/repo/src-tauri/target/debug/deps/echoagent-0123456789abcdef',

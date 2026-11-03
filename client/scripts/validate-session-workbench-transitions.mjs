@@ -16,7 +16,7 @@ export async function validateWorkbenchTransitions(page, base, output) {
   });
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  for (const action of ["rewind", "fork"]) {
+  for (const action of ["rewind"]) {
     await page.goto(`${base}&state=files`);
     await sessionAction(action === "rewind" ? "回溯…" : "分叉…");
     if (action === "rewind") {

@@ -409,6 +409,27 @@ export interface SessionSummary {
    *  terminal state was not captured; consumers must not present it as proven
    *  task completion. */
   status?: SessionStatus;
+  parentSessionId?: string;
+  parentMissing?: boolean;
+  continuation?: SessionContinuation;
+}
+
+export interface SessionContinuation {
+  parentSessionId: string;
+  parentTitle: string;
+  promptIndex: number;
+  promptId?: string | null;
+  inheritedTurnCount: number;
+  temporaryTitle: string;
+  createdAt: string;
+}
+
+export interface ContinuationTarget { promptIndex: number; promptId?: string; }
+export interface ConversationNavigationRequest {
+  sessionId: string;
+  sequence: number;
+  target?: ContinuationTarget;
+  focusComposer?: boolean;
 }
 
 /** Payload of the `agent://summary` event — a freshly generated or renamed

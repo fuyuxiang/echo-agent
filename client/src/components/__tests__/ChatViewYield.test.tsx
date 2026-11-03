@@ -5,6 +5,7 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
+import { useContinuationStore } from "@/stores/continuation-store";
 import type { Plan } from "@/lib/types";
 
 const automationState = vi.hoisted(() => ({ status: null as import("@/lib/automation-client").AutomationStatus | null,
@@ -15,6 +16,7 @@ vi.mock("@/lib/use-session-automation", () => ({ useSessionAutomation: (id: stri
   isActive: () => true, refresh: vi.fn(async () => {}), reconnect: vi.fn(), setStatus: vi.fn(), removeApproval: vi.fn(),
 }) }));
 beforeEach(() => { automationState.status = null; automationState.approvals = []; automationState.error = null; });
+beforeEach(() => useContinuationStore.setState({pending:{}}));
 const artifactMocks = vi.hoisted(() => ({ load: vi.fn(async () => [] as import("@/lib/session-artifacts").SessionArtifact[]) }));
 const workspaceMock = vi.hoisted(() => ({ missing: false }));
 vi.mock("@/lib/use-session-workspace", async original => {
@@ -121,6 +123,7 @@ vi.mock("@/lib/agent-client", async () => {
   }
   // 个别需要特定返回。
   mod.sessionFork = vi.fn(async () => "new-fork");
+  mod.sessionContinue = vi.fn(async () => ({session:{sessionId:"new-fork", title:"新方向", cwd:"/bound/workspace"},warnings:[]}));
   mod.rewindExecute = vi.fn(asyncEmpty);
   mod.rewindPoints = vi.fn(asyncArr);
   mod.setCodingMode = vi.fn(asyncEmpty);
@@ -147,7 +150,7 @@ vi.mock("@/lib/automation-client", async (importOriginal) => ({
 import { automationResume, automationPause } from "@/lib/automation-client";
 import { ChatView } from "../ChatView";
 import { ThemeProvider } from "../ThemeProvider";
-import { rewindExecute, rewindPoints, sessionFork, setCodingMode, commandsList } from "@/lib/agent-client";
+import { rewindExecute, rewindPoints, sessionFork, sessionContinue, setCodingMode, commandsList } from "@/lib/agent-client";
 import { useSubagentStore } from "@/stores/subagent-store";
 
 function workspaceItem(name: string) {
@@ -181,6 +184,7 @@ function renderChat() {
 
 const baseProps = {
   onSend: vi.fn(),
+  onForked: vi.fn(),
   onPrepareRetry: vi.fn(async () => true),
   onRetrySend: vi.fn((_request: import("@/lib/message-retry").MessageRetrySendRequest): boolean | Promise<boolean> => true),
   onCancel: vi.fn(),
@@ -225,6 +229,8 @@ describe("ChatView pause/yield/resume 闭环", () => {
     baseProps.onRetrySend.mockClear().mockReturnValue(true);
     baseProps.onCancel.mockReset();
     baseProps.onToast.mockClear();
+    baseProps.onForked.mockClear();
+    vi.mocked(sessionContinue).mockClear();
     storeState.discardMessagesFrom.mockClear();
     scrollIntoViewMock.mockClear();
     vi.mocked(rewindExecute).mockReset().mockResolvedValue({ targetPromptIndex: 0 });
@@ -1199,6 +1205,8 @@ describe("自动化任务恢复", () => {
     setStore({sessionId:"s1",messages:[],streaming:false,streamingMessageId:null,error:null,plan:null,agentMode:"computer_use",control:undefined});
     baseProps.onSend.mockReset();
     baseProps.onToast.mockClear();
+    baseProps.onForked.mockClear();
+    vi.mocked(sessionContinue).mockClear();
     vi.mocked(automationResume).mockReset().mockResolvedValue(undefined as never);
     vi.mocked(automationPause).mockReset().mockResolvedValue(undefined as never);
     artifactMocks.load.mockReset().mockResolvedValue([]);
@@ -1346,17 +1354,83 @@ describe("session workbench entry paths", () => {
     await waitFor(()=>expect(rewindExecute).toHaveBeenCalledWith("workbench",3,"files_only",true));
     expect(onRewound).toHaveBeenCalledWith("workbench");
   });
-  it("分叉取消后可以重新进入，确认后沿用原工作目录导航", async () => {
+  it("接续直接创建并沿用原目录，不需要重复确认", async () => {
     const onForked=vi.fn();
     render(<ThemeProvider><ChatView {...baseProps} cwd="/bound/workspace" onForked={onForked} /></ThemeProvider>);
-    sessionItem("分叉…");
-    fireEvent.click(screen.getByRole("button",{name:"取消"}));
-    await waitFor(()=>expect(screen.queryByRole("dialog",{name:"分叉此会话？"})).toBeNull());
-    expect(sessionFork).not.toHaveBeenCalled();
-    sessionItem("分叉…");
-    fireEvent.click(screen.getByRole("button",{name:"创建分叉"}));
-    await waitFor(()=>expect(onForked).toHaveBeenCalledWith("new-fork","workbench","/bound/workspace"));
-    expect(sessionFork).toHaveBeenCalledWith("workbench","/bound/workspace");
+    sessionItem("在新对话中继续");
+    expect(screen.queryByRole("dialog",{name:"分叉此会话？"})).toBeNull();
+    await waitFor(()=>expect(onForked).toHaveBeenCalledWith("new-fork","workbench","/bound/workspace", expect.objectContaining({sessionId:"new-fork"})));
+    expect(sessionContinue).toHaveBeenCalledWith("workbench","/bound/workspace", expect.objectContaining({requestId:expect.any(String)}));
+  });
+
+  it("接续创建失败后重试复用请求标识，避免重复会话", async () => {
+    vi.mocked(sessionContinue).mockRejectedValueOnce(new Error("暂时不可用"));
+    render(<ThemeProvider><ChatView {...baseProps} cwd="/bound/workspace" /></ThemeProvider>);
+    sessionItem("在新对话中继续");
+    expect(await screen.findByRole("alert")).toHaveTextContent("暂时不可用");
+    const first = vi.mocked(sessionContinue).mock.calls[vi.mocked(sessionContinue).mock.calls.length - 1]?.[2];
+    fireEvent.click(screen.getByRole("button", {name:"重试创建"}));
+    await waitFor(()=>expect(baseProps.onForked).toHaveBeenCalled());
+    expect(vi.mocked(sessionContinue).mock.calls[vi.mocked(sessionContinue).mock.calls.length - 1]?.[2]).toEqual(first);
+  });
+
+  it("接续位置失效后可刷新原对话，保留草稿并重新选择接续位置", async () => {
+    vi.mocked(sessionContinue).mockRejectedValueOnce(new Error("该历史轮次已被回溯或替换"));
+    let finish!: () => void;
+    const onRewound = vi.fn(() => new Promise<void>(resolve => {finish = resolve;}));
+    render(<ThemeProvider><ChatView {...baseProps} cwd="/bound/workspace" onRewound={onRewound} /></ThemeProvider>);
+    sessionItem("在新对话中继续");
+    await screen.findByRole("button", {name:"刷新原对话"});
+    const requests = vi.mocked(sessionContinue).mock.calls;
+    const firstRequest = requests[requests.length - 1]?.[2];
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input,{target:{value:"保留的草稿"}});
+    fireEvent.click(screen.getByRole("button", {name:"刷新原对话"}));
+    expect(onRewound).toHaveBeenCalledWith("workbench");
+    expect(screen.getByText("正在刷新原对话…")).toBeVisible();
+    expect(useContinuationStore.getState().pending.workbench).toBe(true);
+    expect(input).toBeEnabled();
+    fireEvent.keyDown(input,{key:"Enter",code:"Enter"});
+    expect(baseProps.onSend).not.toHaveBeenCalled();
+    await act(async () => finish());
+    expect(useContinuationStore.getState().pending.workbench).toBeUndefined();
+    expect(input).toHaveValue("保留的草稿");
+    expect(screen.queryByRole("alert")).toBeNull();
+    sessionItem("在新对话中继续");
+    await waitFor(()=>expect(baseProps.onForked).toHaveBeenCalled());
+    expect(requests[requests.length - 1]?.[2].requestId).not.toBe(firstRequest?.requestId);
+  });
+
+  it("刷新接续来源失败后释放操作锁，并允许再次刷新", async () => {
+    vi.mocked(sessionContinue).mockRejectedValueOnce(new Error("接续位置失效"));
+    const onRewound = vi.fn().mockRejectedValueOnce(new Error("读取历史失败")).mockResolvedValueOnce(undefined);
+    render(<ThemeProvider><ChatView {...baseProps} cwd="/bound/workspace" onRewound={onRewound} /></ThemeProvider>);
+    sessionItem("在新对话中继续");
+    fireEvent.click(await screen.findByRole("button",{name:"刷新原对话"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("刷新原对话失败：读取历史失败");
+    expect(useContinuationStore.getState().pending.workbench).toBeUndefined();
+    fireEvent.click(screen.getByRole("button",{name:"刷新原对话"}));
+    await waitFor(()=>expect(screen.queryByRole("alert")).toBeNull());
+    expect(onRewound).toHaveBeenCalledTimes(2);
+    expect(useContinuationStore.getState().pending.workbench).toBeUndefined();
+  });
+
+  it("接续快照期间禁止重新生成，跨入口同步状态在 React 提交前也有效", async () => {
+    baseProps.onPrepareRetry.mockClear();
+    setStore({messages:[
+      {id:"u-entry",role:"user",complete:true,promptIndex:0,parts:[{kind:"text",text:"完成交付"}]},
+      {id:"a-entry",role:"assistant",complete:true,parts:[{kind:"text",text:"交付完成"}]},
+    ]});
+    render(<ThemeProvider><ChatView {...baseProps} cwd="/bound/workspace" /></ThemeProvider>);
+    const retry = screen.getByRole("button",{name:"重新生成"});
+    act(() => {
+      useContinuationStore.getState().setPending("workbench",true);
+      fireEvent.click(retry);
+    });
+    await waitFor(()=>expect(retry).toBeDisabled());
+    expect(retry).toHaveAttribute("title","正在创建新对话，请稍候");
+    expect(rewindExecute).not.toHaveBeenCalled();
+    expect(baseProps.onPrepareRetry).not.toHaveBeenCalled();
   });
 
   const busyStates = [
@@ -1366,11 +1440,11 @@ describe("session workbench entry paths", () => {
     ["正在停止", { control: { action: "stop", phase: "stopping", requestedAt: 1 } }, false],
     ["加载会话或模型", {}, true],
   ] as const;
-  describe.each(["rewind", "fork"] as const)("%s 确认的状态失效", action => {
+  describe.each(["rewind"] as const)("%s 确认的状态失效", action => {
     it.each(busyStates)("%s 时立即关闭，任务稳定后也不复活旧确认", async (_label, patch, loading) => {
       vi.mocked(rewindPoints).mockResolvedValue([{ promptIndex: 0, promptPreview: "待回溯步骤" }]);
       const view = renderChat();
-      sessionItem(action === "rewind" ? "回溯…" : "分叉…");
+      sessionItem(action === "rewind" ? "回溯…" : "在新对话中继续");
       if (action === "rewind") fireEvent.click(await screen.findByRole("button", { name: /回溯到此处/ }));
       expect(screen.getByRole("button", { name: action === "rewind" ? "确认回溯" : "创建分叉" })).toBeEnabled();
       setStore(patch);
@@ -1379,7 +1453,7 @@ describe("session workbench entry paths", () => {
       expect(screen.queryByRole("button", { name: "创建分叉" })).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "任务操作" }));
       expect(screen.getByRole("menuitem", { name: "回溯…" })).toBeDisabled();
-      expect(screen.getByRole("menuitem", { name: "分叉…" })).toBeDisabled();
+      expect(screen.getByRole("menuitem", { name: "在新对话中继续" })).toBeDisabled();
       setStore({ streaming: false, sendNowPending: false, control: undefined });
       view.rerender(<ThemeProvider><ChatView {...baseProps} /></ThemeProvider>);
       await act(async () => {});

@@ -16,27 +16,17 @@ vi.mock("@/lib/agent-client", () => ({
 const { rewindExecute, rewindPoints, sessionFork } = await import("@/lib/agent-client");
 
 describe("RewindBar wiring", () => {
+  it("接续会话只能回溯自己的新内容，继承历史保持只读", async () => {
+    render(<RewindBar sessionId="child" minPromptIndex={1} />);
+    fireEvent.click(screen.getByRole("button",{name:/回溯/}));
+    expect(await screen.findByRole("button",{name:"继承的历史（只读）"})).toBeDisabled();
+    expect(rewindExecute).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(rewindPoints).mockReset().mockResolvedValue([
       { promptIndex: 0, promptPreview: "first prompt", timestamp: "2026-01-01T00:00:00Z" },
     ]);
-  });
-
-  it("分叉成功后进入新对话，不重复弹成功提示", async () => {
-    const onForked = vi.fn();
-    const onToast = vi.fn();
-    render(
-      <RewindBar sessionId="s1" onForked={onForked} onToast={onToast} />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: /分叉/ }));
-    fireEvent.click(screen.getByRole("button", { name: "创建分叉" }));
-    await waitFor(() => expect(onForked).toHaveBeenCalledWith(
-      "forked-session-id-1234",
-      "s1",
-      undefined,
-    ));
-    expect(onToast).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -89,24 +79,14 @@ describe("RewindBar wiring", () => {
     expect(screen.getByText("session B")).toBeInTheDocument();
   });
 
-  it("切换会话时作废旧分叉确认，不操作上一会话", async () => {
-    const { rerender } = render(<RewindBar sessionId="A" />);
-    fireEvent.click(screen.getByRole("button", { name: /分叉/ }));
-    expect(screen.getByRole("dialog", { name: "分叉此会话？" })).toBeInTheDocument();
-
-    rerender(<RewindBar sessionId="B" />);
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "分叉此会话？" })).toBeNull());
-    expect(sessionFork).not.toHaveBeenCalled();
-  });
-
-  it.each(["rewind", "fork"] as const)("%s 确认前实时检查执行条件，不使用打开时的旧状态", async action => {
+  it.each(["rewind"] as const)("%s 确认前实时检查执行条件，不使用打开时的旧状态", async action => {
     let allowed = true;
     const onActionDone = vi.fn();
     render(<RewindBar sessionId="s1" action={action} canExecute={() => allowed} onActionDone={onActionDone} />);
     if (action === "rewind") fireEvent.click(await screen.findByRole("button", { name: /回溯到此处/ }));
     // The live session can change before React has committed another render.
     allowed = false;
-    fireEvent.click(screen.getByRole("button", { name: action === "rewind" ? "确认回溯" : "创建分叉" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认回溯" }));
     await waitFor(() => expect(onActionDone).toHaveBeenCalled());
     expect(rewindExecute).not.toHaveBeenCalled();
     expect(sessionFork).not.toHaveBeenCalled();

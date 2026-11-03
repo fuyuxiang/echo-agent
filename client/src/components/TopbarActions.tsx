@@ -48,7 +48,7 @@ export function TopbarActions({ sessionId, title, onToast,
           {onStop && (onFind || onRewind || onFork || hasContent) && <div role="separator" className="action-menu__separator" />}
           {onFind && <button type="button" role="menuitem" className="topbar-actions__item" aria-label="查找当前会话" aria-expanded={findOpen} onClick={() => invoke(onFind)}><Search size={15} />查找当前会话<span className="action-menu__meta">⌘ / Ctrl F</span></button>}
           {onRewind && <button type="button" role="menuitem" className="topbar-actions__item" disabled={historyDisabled} onClick={() => invoke(onRewind)} title="将文件或对话恢复到历史节点"><History size={15} />回溯…</button>}
-          {onFork && <button type="button" role="menuitem" className="topbar-actions__item" disabled={historyDisabled} onClick={() => invoke(onFork)} title="复制当前完整会话并创建分支"><GitFork size={15} />分叉…</button>}
+          {onFork && <button type="button" role="menuitem" className="topbar-actions__item" disabled={historyDisabled} onClick={() => invoke(onFork)} title={historyDisabled ? "请等待当前执行和待处理操作结束后再继续" : "保留截至当前进度的上下文，在新对话中继续"}><GitFork size={15} />在新对话中继续</button>}
           {hasContent && <>
             {(onFind || onRewind || onFork) && <div role="separator" className="action-menu__separator" />}
             <button type="button" role="menuitem" className="topbar-actions__item" onClick={() => {
