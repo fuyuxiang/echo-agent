@@ -399,6 +399,7 @@ function Shell() {
   const promptedUpdateVersionRef = useRef<string | null>(null);
   const newSessionPendingRef = useRef(false);
   const selectionGenerationRef = useRef(0);
+  const handleProjectNavigation = useCallback(() => { selectionGenerationRef.current += 1; }, []);
   const sessionCatalogGenerationRef = useRef(0);
   const modelCatalogGenerationRef = useRef(0);
   const memoryCommandsInFlightRef = useRef(new Set<string>());
@@ -1499,6 +1500,30 @@ function Shell() {
     return false;
   };
 
+  const captureTaskCreation = () => ({
+    selection: ++selectionGenerationRef.current,
+    knowledge: useKnowledgeStore.getState(),
+    organization: useOrgSessionStore.getState().boundaryRevision,
+  });
+  const assertTaskCreationKnowledge = (creation: ReturnType<typeof captureTaskCreation>) => {
+    if (creation.knowledge.defaultSources.includes("organization")
+      && useOrgSessionStore.getState().boundaryRevision !== creation.organization) {
+      throw new Error("组织账号或权限已改变，本次消息尚未发送，请核对知识来源后重试");
+    }
+  };
+  const bindCreatedTaskKnowledge = (sessionId: string, creation: ReturnType<typeof captureTaskCreation>) => {
+    assertTaskCreationKnowledge(creation);
+    useKnowledgeStore.getState().bindSessionSources(sessionId, true, creation.knowledge);
+  };
+
+  const discardUnstartedTask = async (sessionId: string, cwd: string) => {
+    try { await agentDeleteSession(sessionId, cwd); }
+    catch (error) {
+      console.warn("[EchoAgent] failed to clean up an unstarted task", error);
+      showToast("本次消息尚未发送，空任务清理失败，可稍后从任务列表删除", 6000);
+    }
+  };
+
   const handleSendNew = async (text: string, attachments: string[] = []): Promise<boolean> => {
     // Composer also locks its button while this promise is pending, but this
     // app-level guard survives a view remount and protects every programmatic
@@ -1508,6 +1533,7 @@ function Shell() {
     if (!modelId) return false;
     if (!ensureQuotaAllowsSend()) return false;
     newSessionPendingRef.current = true;
+    const creation = captureTaskCreation();
     const requestedMode = newTaskMode;
     let cwd = newSessionTargetCwd;
     const pendingExpert = usePendingExpertStore.getState().expert;
@@ -1530,10 +1556,17 @@ function Shell() {
         const saved = await agentSetSessionExpert(sessionId, pendingExpert.expertId, pendingExpert.name, "local", pendingExpert.avatarLocal, pendingExpert.definitionPath, pendingExpert.definitionRaw);
         if (!saved) throw new Error("专家身份未能保存，请重试；本次消息尚未发送");
       }
-      useKnowledgeStore.getState().bindSessionSources(sessionId, true);
-      setCurrentModelId(modelId);
-      sessionsStore.getState().setCurrent(sessionId);
-      setPlaceholderView(null);
+      bindCreatedTaskKnowledge(sessionId, creation);
+      // Creation may outlive the home composer. Keep the admitted task scoped
+      // to its own transcript without taking the user away from newer navigation.
+      const foreground = selectionGenerationRef.current === creation.selection;
+      if (foreground) {
+        setCurrentModelId(modelId);
+        sessionsStore.getState().setCurrent(sessionId);
+        setPlaceholderView(null);
+        usePermissionModeStore.getState().resetHomeMode();
+        sessionStore.getState().setSession(sessionId);
+      }
       sessionsStore.getState().upsert({
         sessionId,
         title: deriveTitle(text),
@@ -1542,8 +1575,6 @@ function Shell() {
         currentModelId: modelId,
         permissionMode: draftPermissionMode,
       });
-      usePermissionModeStore.getState().resetHomeMode();
-      sessionStore.getState().setSession(sessionId);
 
       // Check for pending expert — inject persona invisibly.
       const pending = pendingExpert;
@@ -1561,10 +1592,11 @@ function Shell() {
         promptText: textForAgent,
         displayText: text,
         attachments,
+        allowBackgroundSession: !foreground,
       });
       if (!accepted) return false;
       if (pending && usePendingExpertStore.getState().expert === pending) usePendingExpertStore.getState().clear();
-      setNewTaskMode("default");
+      if (foreground) setNewTaskMode("default");
       setHomeSendError(null);
       return true;
     } catch (e) {
@@ -1794,12 +1826,17 @@ function Shell() {
     const permissionMode = permissionState.capabilityStatus?.locked
       ? permissionState.capabilityStatus.permissionMode
       : permissionState.homeMode;
+    const creation = captureTaskCreation();
     let sessionId: string | undefined;
     try {
       sessionId = await agentNewSession(root, modelId, permissionMode);
-      useKnowledgeStore.getState().bindSessionSources(sessionId, true);
-      setCurrentModelId(modelId);
-      sessionsStore.getState().setCurrent(sessionId);
+      bindCreatedTaskKnowledge(sessionId, creation);
+      if (selectionGenerationRef.current === creation.selection) {
+        setCurrentModelId(modelId);
+        sessionsStore.getState().setCurrent(sessionId);
+        sessionStore.getState().setSession(sessionId);
+        setPlaceholderView("代码开发");
+      }
       sessionsStore.getState().upsert({
         sessionId,
         title: `代码开发：${deriveTitle(requirement)}`,
@@ -1808,8 +1845,7 @@ function Shell() {
         currentModelId: modelId,
         permissionMode,
       });
-      sessionStore.getState().setSession(sessionId);
-      setPlaceholderView("代码开发");
+
       // Persist the task/session ownership before the first Agent token can be
       // produced. Otherwise a very fast turn can finish before the workbench
       // knows which task should receive its Git sync event.
@@ -1817,6 +1853,8 @@ function Shell() {
       // Persist the initial user-selected session intent; following turns pass
       // their explicit mode without creating a different conversation.
       await setCodingMode(sessionId, coding.mode ?? "agent");
+      // Runtime binding and mode acknowledgement can outlive an account change.
+      assertTaskCreationKnowledge(creation);
       const promptText = promptTextOverride ?? buildCodingWorkflowPrompt(requirement, contextPaths);
       const accepted = beginAgentTurn({
         sessionId,
@@ -1824,13 +1862,16 @@ function Shell() {
         displayText: requirement,
         coding,
         attachments: coding.attachments,
+        allowBackgroundSession: true,
       });
-      if (!accepted) throw new Error("代码开发会话未能获得前台焦点");
-      usePermissionModeStore.getState().resetHomeMode();
+      if (!accepted) throw new Error("代码开发会话未能接收任务");
+      if (selectionGenerationRef.current === creation.selection) usePermissionModeStore.getState().resetHomeMode();
       return sessionId;
     } catch (error) {
       if (sessionId) {
-        sessionsStore.getState().upsert({ sessionId, status: "failed" });
+        if (sessionsStore.getState().independent.some(entry => entry.sessionId === sessionId)) {
+          sessionsStore.getState().upsert({ sessionId, status: "failed" });
+        } else await discardUnstartedTask(sessionId, root);
       }
       showToast(`启动代码开发失败：${friendlyError(error)}`, 6000);
       return undefined;
@@ -2122,6 +2163,7 @@ function Shell() {
   };
 
   const handleSelectCodingWorkspace = (newCwd: string) => {
+    if (newCwd !== codingCwd) selectionGenerationRef.current += 1;
     // The first IDE may use the active/default cwd without having an entry in
     // recent Coding projects yet. Keep that displayed source when switching
     // to a new worktree so it remains reachable and survives restart.
@@ -2151,6 +2193,7 @@ function Shell() {
   };
 
   const handleCloseCodingWorkspace = (cwd: string) => {
+    if (cwd === activeCodingWorkspaceCwd || cwd === codingWorkspaceCwd) selectionGenerationRef.current += 1;
     setCodingWorkspaces((current) => {
       const next = current.filter((w) => w.cwd !== cwd);
       if (cwd === activeCodingWorkspaceCwd) {
@@ -2996,12 +3039,14 @@ function Shell() {
       ? previous : { context, requestId: crypto.randomUUID(), pending: false };
     request.pending = true;
     requests.set(project.id, request);
+    // A duplicate click does not take navigation ownership from its pending task.
+    const creation = captureTaskCreation();
     try {
       const cwd = project.cwd || await agentPrepareTaskWorkspace(request.requestId);
       await agentsValidateReferences(cwd, project.experts);
       const sessionId = await agentNewSession(cwd, modelId);
       requests.delete(project.id);
-      return { sessionId, cwd };
+      return { sessionId, cwd, creation };
     } finally {
       request.pending = false;
     }
@@ -3015,18 +3060,23 @@ function Shell() {
     if (!modelId) return;
     if (!ensureQuotaAllowsSend()) return;
     let startedSessionId: string | undefined;
+    let startedSessionCwd: string | undefined;
     try {
-      setPlaceholderView(null);
       const created = await createProjectSession(project, modelId);
       if (!created) return;
-      const { sessionId, cwd } = created;
+      const { sessionId, cwd, creation } = created;
       startedSessionId = sessionId;
-      useKnowledgeStore.getState().bindSessionSources(sessionId, true);
+      startedSessionCwd = cwd;
+      bindCreatedTaskKnowledge(sessionId, creation);
       if (!project.defaultModelId) {
         useProjectsStore.getState().updateConfig(project.id, { defaultModelId: modelId });
       }
-      setCurrentModelId(modelId);
-      sessionsStore.getState().setCurrent(sessionId);
+      if (selectionGenerationRef.current === creation.selection) {
+        setPlaceholderView(null);
+        setCurrentModelId(modelId);
+        sessionsStore.getState().setCurrent(sessionId);
+        sessionStore.getState().setSession(sessionId);
+      }
       sessionsStore.getState().upsert({
         sessionId,
         title: project.name,
@@ -3035,7 +3085,6 @@ function Shell() {
         currentModelId: modelId,
         permissionMode: "ask",
       });
-      sessionStore.getState().setSession(sessionId);
       // Register the session as a project conversation.
       useProjectsStore.getState().addConversation(project.id, {
         sessionId,
@@ -3044,12 +3093,11 @@ function Shell() {
         modelId,
       });
       const seed = `开始「${project.name}」项目，请先根据项目配置确认目标、约束和下一步。`;
-      const promptId = createAgentPromptId();
-      sessionStore.getState().pushUser(seed);
-      sessionStore.getState().startStreaming(undefined, promptId);
-      await agentSend(sessionId, buildProjectPrompt(project, seed), [], seed, promptId);
+      beginAgentTurn({ sessionId, promptText: buildProjectPrompt(project, seed), displayText: seed, allowBackgroundSession: true });
     } catch (e) {
-      if (startedSessionId) {
+      if (startedSessionId && !sessionsStore.getState().independent.some(entry => entry.sessionId === startedSessionId)) {
+        if (startedSessionCwd) await discardUnstartedTask(startedSessionId, startedSessionCwd);
+      } else if (startedSessionId) {
         applySessionScopedFailure({
           failedSessionId: startedSessionId,
           currentSessionId: sessionStore.getState().sessionId,
@@ -3084,12 +3132,14 @@ function Shell() {
     if (!modelId) return;
     if (message && !ensureQuotaAllowsSend()) return;
     let startedSessionId: string | undefined;
+    let startedSessionCwd: string | undefined;
     try {
       const created = await createProjectSession(project, modelId);
       if (!created) return undefined;
-      const { sessionId, cwd } = created;
+      const { sessionId, cwd, creation } = created;
       startedSessionId = sessionId;
-      useKnowledgeStore.getState().bindSessionSources(sessionId, true);
+      startedSessionCwd = cwd;
+      bindCreatedTaskKnowledge(sessionId, creation);
       if (!project.defaultModelId && !requestedModelId) {
         useProjectsStore.getState().updateConfig(projectId, { defaultModelId: modelId });
       }
@@ -3104,10 +3154,13 @@ function Shell() {
         modelId,
       });
 
-      // Navigate to chat view.
-      setPlaceholderView(null);
-      setCurrentModelId(modelId);
-      sessionsStore.getState().setCurrent(sessionId);
+      // Open only if this creation still owns the navigation intent.
+      if (selectionGenerationRef.current === creation.selection) {
+        setPlaceholderView(null);
+        setCurrentModelId(modelId);
+        sessionsStore.getState().setCurrent(sessionId);
+        sessionStore.getState().setSession(sessionId);
+      }
       sessionsStore.getState().upsert({
         sessionId,
         title,
@@ -3116,20 +3169,18 @@ function Shell() {
         currentModelId: modelId,
         permissionMode: "ask",
       });
-      sessionStore.getState().setSession(sessionId);
 
       if (message) {
         // Every new runtime session needs the project contract; previous
         // project conversations do not share an ACP context window.
         const prompt = buildProjectPrompt(project, message);
-        const promptId = createAgentPromptId();
-        sessionStore.getState().pushUser(message);
-        sessionStore.getState().startStreaming(undefined, promptId);
-        await agentSend(sessionId, prompt, attachments, message, promptId);
+        beginAgentTurn({ sessionId, promptText: prompt, displayText: message, attachments, allowBackgroundSession: true });
       }
       return sessionId;
     } catch (e) {
-      if (startedSessionId) {
+      if (startedSessionId && !sessionsStore.getState().independent.some(entry => entry.sessionId === startedSessionId)) {
+        if (startedSessionCwd) await discardUnstartedTask(startedSessionId, startedSessionCwd);
+      } else if (startedSessionId) {
         applySessionScopedFailure({
           failedSessionId: startedSessionId,
           currentSessionId: sessionStore.getState().sessionId,
@@ -3176,6 +3227,8 @@ function Shell() {
     codingModelId: activeSessionModelId ?? newSessionModelId,
     projectModels: models,
     projectDefaultModelId: newSessionModelId,
+    onProjectNavigate: handleProjectNavigation,
+    codingActive: codingWorkspaceActive,
     meetingModelId: meetingLaunchModelId ?? activeSessionModelId ?? newSessionModelId,
     meetingModels: models,
     onOpenMeetingMinutes: (modelId?: string) => {
@@ -3185,6 +3238,7 @@ function Shell() {
     onOpenModelSettings: () => openSettings("model"),
     onClientSlashCommand: handleClientSlashCommand,
     onExitCodingWorkspace: () => {
+      selectionGenerationRef.current += 1;
       setPlaceholderView(null);
       setSidebarCollapsed(false);
     },

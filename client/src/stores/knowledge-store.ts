@@ -57,7 +57,8 @@ interface KnowledgeState extends PersistedKnowledgePreferences {
   setDefaultOrganizationScopeIds: (scopeIds: string[]) => void;
   setSessionOrganizationScopeIds: (sessionId: string, scopeIds: string[]) => void;
   forgetSession: (sessionId: string) => boolean;
-  bindSessionSources: (sessionId: string, consumeDefault?: boolean) => KnowledgeSource[];
+  bindSessionSources: (sessionId: string, consumeDefault?: boolean,
+    selection?: Pick<PersistedKnowledgePreferences, "defaultSources" | "defaultOrganizationScopeIds">) => KnowledgeSource[];
   setSourceCount: (count: number) => void;
   beginTurnTrace: (
     sessionId: string,
@@ -271,21 +272,24 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     });
     return saved;
   },
-  bindSessionSources: (sessionId, consumeDefault = false) => {
+  bindSessionSources: (sessionId, consumeDefault = false, selection) => {
     const state = get();
+    const submitted = selection ?? state;
     const existing = state.sessionSources[sessionId];
     if (existing) return existing;
-    const sources = consumeDefault ? normalizeSources(state.defaultSources) : [];
+    const sources = consumeDefault ? normalizeSources(submitted.defaultSources) : [];
     const sessionSources = { ...state.sessionSources, [sessionId]: sources };
     const sessionOrganizationScopeIds = {
       ...state.sessionOrganizationScopeIds,
-      [sessionId]: consumeDefault ? normalizeScopeIds(state.defaultOrganizationScopeIds) : [],
+      [sessionId]: consumeDefault ? normalizeScopeIds(submitted.defaultOrganizationScopeIds) : [],
     };
     boundSessionPreferences(sessionSources, sessionOrganizationScopeIds);
     // A Home composer selection applies to the task being created, not every
     // future task. New tasks therefore return to the privacy-first default.
-    const defaultSources = consumeDefault ? [] : state.defaultSources;
-    const defaultOrganizationScopeIds = consumeDefault ? [] : state.defaultOrganizationScopeIds;
+    const consumeCurrent = consumeDefault && state.defaultSources === submitted.defaultSources
+      && state.defaultOrganizationScopeIds === submitted.defaultOrganizationScopeIds;
+    const defaultSources = consumeCurrent ? [] : state.defaultSources;
+    const defaultOrganizationScopeIds = consumeCurrent ? [] : state.defaultOrganizationScopeIds;
     persistPreferences({
       defaultSources,
       defaultOrganizationScopeIds,

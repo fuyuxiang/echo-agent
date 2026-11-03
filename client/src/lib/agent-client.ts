@@ -480,6 +480,20 @@ export interface CodingTurnOptions {
   attachments?: string[];
 }
 
+/** Knowledge preparation may await native checkpoints, retrieval and disk I/O.
+ * An organization turn must keep the identity admitted before those awaits. */
+function guardKnowledgeSend(sessionId: string, promptId?: string): () => void {
+  const sources = useKnowledgeStore.getState().bindSessionSources(sessionId);
+  const boundary = sources.includes("organization") ? useOrgSessionStore.getState().boundaryRevision : undefined;
+  return () => {
+    if (boundary === undefined || boundary === useOrgSessionStore.getState().boundaryRevision) return;
+    invalidateAgentKnowledgeSourceSync(sessionId);
+    const message = "组织账号或权限已改变，本次消息尚未发送，请核对知识来源后重试";
+    useKnowledgeStore.getState().beginTurnTrace(sessionId, promptId, sources, { state: "unavailable", message });
+    throw new Error(message);
+  };
+}
+
 /** Send a user prompt; streamed updates arrive via the events below. */
 export async function agentSend(
   sessionId: string,
@@ -489,17 +503,22 @@ export async function agentSend(
   promptId?: string,
   coding?: CodingTurnOptions,
 ): Promise<void> {
+  const assertKnowledgeBoundary = guardKnowledgeSend(sessionId, promptId);
   if (coding?.workspace && coding.taskId && promptId) {
     await invoke("coding_checkpoint_start",{root:coding.workspace,taskId:coding.taskId,runId:promptId});
+    assertKnowledgeBoundary();
   }
   await synchronizeKnowledgeSources(sessionId, promptId);
+  assertKnowledgeBoundary();
   const prepared = await preparePromptWithPersonalKnowledge(
     sessionId,
     text,
     displayText,
     promptId,
   );
+  assertKnowledgeBoundary();
   await persistKnowledgeTrace(sessionId, promptId);
+  assertKnowledgeBoundary();
   await invoke<void>("agent_send", {
     sessionId,
     text: prepared.promptText,
@@ -522,14 +541,18 @@ export async function agentSendNow(
   promptId?: string,
   coding?: CodingTurnOptions,
 ): Promise<void> {
+  const assertKnowledgeBoundary = guardKnowledgeSend(sessionId, promptId);
   await synchronizeKnowledgeSources(sessionId, promptId);
+  assertKnowledgeBoundary();
   const prepared = await preparePromptWithPersonalKnowledge(
     sessionId,
     text,
     displayText,
     promptId,
   );
+  assertKnowledgeBoundary();
   await persistKnowledgeTrace(sessionId, promptId);
+  assertKnowledgeBoundary();
   await invoke<void>("agent_send", {
     sessionId,
     text: prepared.promptText,

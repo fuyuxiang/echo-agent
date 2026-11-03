@@ -196,9 +196,14 @@ describe("Theia workbench", () => {
       width: 1200, right: 1200, left: 0, top: 0, bottom: 800, height: 800, x: 0, y: 0,
       toJSON: () => ({}),
     });
-    fireEvent.pointerDown(splitter);
-    fireEvent.pointerMove(window, { clientX: 700 });
-    fireEvent.pointerUp(window);
+    const pointer = (type: string, clientX: number) => {
+      const event = new Event(type, { bubbles: true });
+      Object.assign(event, { clientX, pointerId: 1, button: 0, buttons: type === "pointerup" ? 0 : 1, isPrimary: true });
+      return event;
+    };
+    fireEvent(splitter, pointer("pointerdown", 770));
+    fireEvent(window, pointer("pointermove", 700));
+    fireEvent(window, pointer("pointerup", 700));
     expect(splitter).toHaveAttribute("aria-valuenow", "500");
     expect(window.localStorage.getItem("echo-agent-panel-width")).toBe("500");
     vi.spyOn(workbench, "getBoundingClientRect").mockReturnValue({
@@ -206,8 +211,9 @@ describe("Theia workbench", () => {
       toJSON: () => ({}),
     });
     fireEvent.doubleClick(splitter);
-    expect(splitter).toHaveAttribute("aria-valuemax", "380");
-    expect(splitter).toHaveAttribute("aria-valuenow", "380");
+    // Reserve the splitter's 8px as well as the IDE's 320px reading width.
+    expect(splitter).toHaveAttribute("aria-valuemax", "372");
+    expect(splitter).toHaveAttribute("aria-valuenow", "372");
     expect(screen.queryByRole("tablist", { name: "开发任务面板" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "任务描述" })).toBeInTheDocument();
     expect(agent.lastElementChild).toHaveClass("echo-theia-agent__composer");

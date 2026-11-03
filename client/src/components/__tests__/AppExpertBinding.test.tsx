@@ -42,6 +42,8 @@ import * as client from "@/lib/agent-client";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useProjectsStore } from "@/stores/projects-store";
+import { useKnowledgeStore } from "@/stores/knowledge-store";
+import { resetOrgSessionMirror, useOrgSessionStore } from "@/stores/org-session-store";
 
 
 import { usePendingExpertStore } from "@/stores/pending-expert-store";
@@ -50,6 +52,8 @@ beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear();
   useSessionsStore.setState(useSessionsStore.getInitialState()); useSessionStore.setState(useSessionStore.getInitialState());
   useProjectsStore.setState({ ...useProjectsStore.getInitialState(), projects: [] }); usePendingExpertStore.getState().clear();
+  useKnowledgeStore.setState({ defaultSources: [], defaultOrganizationScopeIds: [], sessionSources: {}, sessionOrganizationScopeIds: {} });
+  resetOrgSessionMirror();
   vi.mocked(client.agentInit).mockResolvedValue({ ok:true,cwd:"/workspace",auth } as never);
   vi.mocked(client.agentAuthStatus).mockResolvedValue(auth);
   vi.mocked(client.providersList).mockResolvedValue({providers:[],models:[{modelId:"model-a",name:"Model A",providerId:"p"}]} as never);
@@ -61,6 +65,60 @@ beforeEach(() => {
 async function start() { render(<App />); await screen.findByText("首页"); await waitFor(()=>expect(client.providersList).toHaveBeenCalled()); await act(async()=>{}); }
 
 describe("expert task persistent binding admission", () => {
+  it("组织恢复请求持续等待时，个人模型任务仍可初始化并发送", async () => {
+    vi.mocked(invoke).mockImplementation(async command => {
+      if (command === "org_session") return new Promise(() => {});
+      return command === "notification_take_pending_opens" ? [] : null;
+    });
+    await start();
+    fireEvent.click(screen.getByRole("button", { name: "发送专家任务" }));
+    await waitFor(() => expect(client.agentSend).toHaveBeenCalledWith(
+      "new-session", "my unsent task", [], "my unsent task", expect.any(String),
+    ));
+    expect(client.internalReload).not.toHaveBeenCalled();
+  });
+  it("创建期间保留发送时的知识来源，后续首页选择不会被消费", async () => {
+    let complete!: (id: string) => void;
+    vi.mocked(client.agentNewSession).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    await start();
+    act(() => useKnowledgeStore.getState().setDefaultSources(["personal"]));
+    fireEvent.click(screen.getByRole("button", { name: "发送专家任务" }));
+    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalled());
+    act(() => useKnowledgeStore.getState().setDefaultSources(["organization"]));
+    await act(async () => { complete("snapshot-task"); });
+    expect(useKnowledgeStore.getState().sessionSources["snapshot-task"]).toEqual(["personal"]);
+    expect(useKnowledgeStore.getState().defaultSources).toEqual(["organization"]);
+  });
+  it("组织来源任务创建期间发生身份变化，保留输入且不在新身份下发送", async () => {
+    let complete!: (id: string) => void;
+    vi.mocked(client.agentNewSession).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    await start();
+    act(() => useKnowledgeStore.getState().setDefaultSources(["organization"]));
+    fireEvent.click(screen.getByRole("button", { name: "发送专家任务" }));
+    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalled());
+    act(() => useOrgSessionStore.getState().clearSession());
+    await act(async () => { complete("obsolete-org-task"); });
+    expect(client.agentSend).not.toHaveBeenCalled();
+    expect(client.agentDeleteSession).toHaveBeenCalledWith("obsolete-org-task", expect.any(String));
+    expect(useSessionsStore.getState().currentSessionId).toBeNull();
+    expect(screen.getAllByRole("alert").some(alert => alert.textContent?.includes("组织账号或权限已改变"))).toBe(true);
+  });
+  it("创建期间打开历史会话，迟到的新任务在后台发送且不抢走页面", async () => {
+    let complete!: (id: string) => void;
+    vi.mocked(client.agentNewSession).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    vi.mocked(client.agentListAllSessions).mockResolvedValue([{ sessionId: "history-A", title: "History", cwd: "/workspace/A", currentModelId: "model-a" }]);
+    await start();
+    fireEvent.click(screen.getByRole("button", { name: "发送专家任务" }));
+    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "打开历史 A" }));
+    await waitFor(() => expect(useSessionsStore.getState().currentSessionId).toBe("history-A"));
+    await act(async () => { complete("late-new-session"); });
+    await waitFor(() => expect(client.agentSend).toHaveBeenCalled());
+    expect(vi.mocked(client.agentSend).mock.calls.slice(-1)[0]?.[0]).toBe("late-new-session");
+    expect(useSessionsStore.getState().currentSessionId).toBe("history-A");
+    expect(useSessionStore.getState().sessionId).toBe("history-A");
+    expect(useSessionStore.getState().transcripts["late-new-session"].messages.some(message => message.parts.some(part => part.kind === "text" && part.text === "my unsent task"))).toBe(true);
+  });
   it("waits for the native binding ACK before showing the task or sending its persona", async () => {
     let resolve!: (value:boolean)=>void;
     vi.mocked(client.agentSetSessionExpert).mockImplementationOnce(()=>new Promise<boolean>(accept=>{resolve=accept;}));

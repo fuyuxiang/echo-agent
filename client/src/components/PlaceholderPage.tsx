@@ -88,6 +88,8 @@ interface PlaceholderPageProps {
   onCloseCodingWorkspace?: (cwd: string) => void;
   /** Coding Workspace Agent/runtime integration. */
   codingApiReady?: boolean;
+  /** Retained Code surfaces stop transient interactions while another page is active. */
+  codingActive?: boolean;
   codingModels?: ModelOption[];
   codingModelId?: string;
   onOpenModelSettings?: () => void;
@@ -116,6 +118,7 @@ interface PlaceholderPageProps {
   sessionId?: string;
   /** 项目页：进入项目（新建会话并注入说明）。 */
   onStartProject?: (project: ProjectMeta) => void;
+  onProjectNavigate?: () => void;
   /** 项目页：在项目中新建对话（创建真实 EchoAgent 会话）。 */
   onStartProjectConversation?: (
     projectId: string,
@@ -155,6 +158,7 @@ export function PlaceholderPage({
   activeCodingWorkspaceCwd,
   onCloseCodingWorkspace,
   codingApiReady,
+  codingActive,
   codingModels,
   codingModelId,
   onOpenModelSettings,
@@ -168,6 +172,7 @@ export function PlaceholderPage({
   onCorrectCodingRun,
   sessionId,
   onStartProject,
+  onProjectNavigate,
   onStartProjectConversation,
   projectModels,
   projectDefaultModelId,
@@ -191,6 +196,7 @@ export function PlaceholderPage({
           onSelectWorkspace={onSelectWorkspace}
           onToast={onToast}
           onStartProject={onStartProject}
+          onNavigate={onProjectNavigate}
           onStartProjectConversation={onStartProjectConversation}
           models={projectModels}
           defaultModelId={projectDefaultModelId}
@@ -244,6 +250,7 @@ export function PlaceholderPage({
     return (
       <DeferredPanel>
         <CodingWorkbench
+          active={codingActive}
           cwd={cwd}
           workspaces={workspaces}
           onSelectWorkspace={onSelectWorkspace}

@@ -46,6 +46,8 @@ interface ProjectsPanelProps {
   onSelectWorkspace?: (cwd: string) => void;
   onToast?: (msg: string) => void;
   onStartProject?: (project: ProjectMeta) => void;
+  /** Internal project navigation supersedes pending task-opening requests. */
+  onNavigate?: () => void;
   /** Start a new conversation within a project (creates a real EchoAgent session). */
   onStartProjectConversation?: (
     projectId: string,
@@ -87,6 +89,7 @@ export function ProjectsPanel({
   cwd,
   onToast,
   onStartProject,
+  onNavigate,
   onStartProjectConversation,
   onOpenSession,
   onRenameSession,
@@ -118,14 +121,18 @@ export function ProjectsPanel({
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const picker = useProjectPickerOptions(cwd);
   const { requestInput, dialog } = useAppDialog(openId);
+  const navigateProject = useCallback((id: string | null) => {
+    onNavigate?.();
+    setOpenId(id);
+  }, [onNavigate]);
 
   // Auto-open a project when navigated from the sidebar.
   useEffect(() => {
     if (activeProjectId) {
-      setOpenId(activeProjectId);
+      navigateProject(activeProjectId);
       setActiveProjectId(null);
     }
-  }, [activeProjectId, setActiveProjectId]);
+  }, [activeProjectId, setActiveProjectId, navigateProject]);
 
   const filtered = projects.filter((p) =>
     p.name.toLowerCase().includes(query.toLowerCase()),
@@ -137,7 +144,7 @@ export function ProjectsPanel({
       <>
         <ProjectDetailView
           project={openProject}
-          onBack={() => setOpenId(null)}
+          onBack={() => navigateProject(null)}
           onToast={onToast}
           onStartConversation={onStartProjectConversation}
           onOpenSession={onOpenSession}
@@ -223,7 +230,7 @@ export function ProjectsPanel({
               <ProjectCard
                 key={p.id}
                 project={p}
-                onEnter={() => setOpenId(p.id)}
+                onEnter={() => navigateProject(p.id)}
                 onStart={() => onStartProject?.(p)}
                 onRename={() => handleRename(p)}
                 onDelete={() => setDeleteTarget(p)}
@@ -256,7 +263,7 @@ export function ProjectsPanel({
           onCancel={() => setCreate(null)}
           onConfirm={(saved) => {
             setCreate(null);
-            setOpenId(saved.id);
+            navigateProject(saved.id);
           }}
           cwd={cwd}
           picker={picker}

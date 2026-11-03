@@ -2816,6 +2816,9 @@ button.knowledge-trace__item:hover {
   cursor: ew-resize;
   z-index: 2;
 }
+.tool-side-panel--resizing { cursor: col-resize; user-select: none; }
+.tool-side-panel--resizing iframe { pointer-events: none; }
+
 .tool-side-panel__edge-sash:hover,
 .tool-side-panel__edge-sash:active {
   background: var(--echo-brand);

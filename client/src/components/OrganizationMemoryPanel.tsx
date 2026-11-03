@@ -219,9 +219,13 @@ export function OrganizationMemoryPanel({
   const mirroredSession = useOrgSessionStore((state) => state.session);
   const mirrorOrgSession = useOrgSessionStore((state) => state.setSession);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(busy);
-  busyRef.current = busy;
+  const [busy, updateBusy] = useState(false);
+  const busyRef = useRef(false);
+  const setBusy = useCallback((value: boolean) => {
+    // React state alone cannot reject two submissions in the same event turn.
+    busyRef.current = value;
+    updateBusy(value);
+  }, []);
   const [uploadProgress, setUploadProgress] = useState<{
     label: string;
     completed: number;
@@ -261,8 +265,9 @@ export function OrganizationMemoryPanel({
   const workspaceGeneration = useRef(0);
   const workspaceLoad = useRef<{ boundary: number; promise: Promise<void> } | null>(null);
   const previewGeneration = useRef(0);
+  const mounted = useRef(true);
   const currentBoundary = () => useOrgSessionStore.getState().boundaryRevision;
-  const isCurrentBoundary = (revision: number) => currentBoundary() === revision;
+  const isCurrentBoundary = (revision: number) => mounted.current && currentBoundary() === revision;
   const closePreview = () => {
     previewGeneration.current += 1;
     setPreview(null);
@@ -270,6 +275,9 @@ export function OrganizationMemoryPanel({
   };
 
   const clearWorkspace = useCallback(() => {
+    setBusy(false);
+    setUploadProgress(null);
+    setError(null);
     setWorkspaceLoaded(false);
     setWorkspaceUnavailable(false);
     workspaceGeneration.current += 1;
@@ -298,7 +306,7 @@ export function OrganizationMemoryPanel({
     setMemoryValidUntil("");
     setPassword("");
     setTab("overview");
-  }, [library.clear]);
+  }, [library.clear, setBusy]);
 
   useEffect(() => {
     if (mirroredSession) setSession(mirroredSession);
@@ -349,9 +357,13 @@ export function OrganizationMemoryPanel({
     }
   }), [clearWorkspace, loadWorkspace]);
 
-  useEffect(() => () => {
-    workspaceGeneration.current += 1;
-    previewGeneration.current += 1;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      workspaceGeneration.current += 1;
+      previewGeneration.current += 1;
+    };
   }, []);
 
   useEffect(() => {
@@ -414,10 +426,12 @@ export function OrganizationMemoryPanel({
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     const boundary = currentBoundary();
+    if (busyRef.current) return;
     setBusy(true);
     setError(null);
     try {
       const next = await orgLogin(serverUrl, username, password);
+      if (!mounted.current) return;
       if (!isCurrentBoundary(boundary)
         && organizationSessionBoundary(useOrgSessionStore.getState().session) !== organizationSessionBoundary(next)) return;
       setSession(next);
@@ -425,15 +439,16 @@ export function OrganizationMemoryPanel({
       setPassword("");
       await loadWorkspace();
     } catch (reason) {
-      setError(String(reason).replace(/^Error:\s*/, ""));
+      if (isCurrentBoundary(boundary)) setError(String(reason).replace(/^Error:\s*/, ""));
     } finally {
-      setBusy(false);
-      setLoading(false);
+      if (isCurrentBoundary(boundary)) setBusy(false);
+      if (isCurrentBoundary(boundary)) setLoading(false);
     }
   };
 
   const refreshWorkspace = async () => {
     const boundary = currentBoundary();
+    if (busyRef.current) return;
     setBusy(true);
     setError(null);
     try {
@@ -451,9 +466,9 @@ export function OrganizationMemoryPanel({
       }
       await loadWorkspace(true);
     } catch (reason) {
-      setError(String(reason));
+      if (isCurrentBoundary(boundary)) setError(String(reason));
     } finally {
-      setBusy(false);
+      if (isCurrentBoundary(boundary)) setBusy(false);
     }
   };
 
@@ -464,6 +479,7 @@ export function OrganizationMemoryPanel({
   };
 
   const handleLogout = async () => {
+    if (busyRef.current) return;
     setBusy(true);
     setError(null);
     // Hide the previous user's workspace immediately. Native logout clears its
@@ -474,12 +490,14 @@ export function OrganizationMemoryPanel({
       username: username.trim() || session?.user?.username,
       requiresReauthentication: false,
     });
+    const boundary = currentBoundary();
+    setBusy(true);
     try {
       await orgLogout();
     } catch (reason) {
-      setError(String(reason));
+      if (isCurrentBoundary(boundary)) setError(String(reason));
     } finally {
-      setBusy(false);
+      if (isCurrentBoundary(boundary)) setBusy(false);
     }
   };
 
@@ -497,7 +515,7 @@ export function OrganizationMemoryPanel({
       if (!isCurrentBoundary(boundary) || !paths || paths.length === 0) return;
       await uploadDocumentsInBatch(paths.map((path) => ({ path })), uploadScope.id);
     } catch (reason) {
-      setError(`选择文档失败：${String(reason).replace(/^Error:\s*/, "")}`);
+      if (isCurrentBoundary(boundary)) setError(`选择文档失败：${String(reason).replace(/^Error:\s*/, "")}`);
     }
   };
 
@@ -516,7 +534,7 @@ export function OrganizationMemoryPanel({
       }
       setFolderBatch({ folder, files: result.items, skipped: result.skipped, totalBytes: result.totalBytes, scopeId: uploadScope.id, scopeName: uploadScope.name });
     } catch (reason) {
-      setError(`扫描文件夹失败：${String(reason).replace(/^Error:\s*/, "")}`);
+      if (isCurrentBoundary(boundary)) setError(`扫描文件夹失败：${String(reason).replace(/^Error:\s*/, "")}`);
     }
   };
 
@@ -535,6 +553,7 @@ export function OrganizationMemoryPanel({
 
   const uploadDocumentsInBatch = async (files: Array<{ path: string; title?: string }>, scopeId: string) => {
     const boundary = currentBoundary();
+    if (busyRef.current) return;
     setBusy(true);
     setError(null);
     setUploadProgress({ label: "正在上传文档", completed: 0, total: files.length });
@@ -573,13 +592,13 @@ export function OrganizationMemoryPanel({
       }
       setUploadProgress({ label: "正在刷新列表", completed: files.length, total: files.length });
       await loadWorkspace(true);
-      setFolderBatch(null);
+      if (isCurrentBoundary(boundary)) setFolderBatch(null);
     } catch (reason) {
       const refreshError = `刷新列表失败：${String(reason).replace(/^Error:\s*/, "")}`;
-      setError(batchError ? `${batchError}\n${refreshError}` : refreshError);
+      if (isCurrentBoundary(boundary)) setError(batchError ? `${batchError}\n${refreshError}` : refreshError);
     } finally {
-      setUploadProgress(null);
-      setBusy(false);
+      if (isCurrentBoundary(boundary)) setUploadProgress(null);
+      if (isCurrentBoundary(boundary)) setBusy(false);
     }
   };
 
@@ -651,30 +670,36 @@ export function OrganizationMemoryPanel({
   };
 
   const downloadDocument = async (id: string, name: string, submission: boolean) => {
+    const boundary = currentBoundary();
     setError(null);
     try {
       const saved = await orgDownloadDocument(id, submission, name);
-      if (saved) onToast?.(`已下载“${saved.split(/[\\/]/).pop()}”`);
-    } catch (reason) { setError(`下载失败：${String(reason).replace(/^Error:\s*/, "")}`); }
+      if (isCurrentBoundary(boundary) && saved) onToast?.(`已下载“${saved.split(/[\\/]/).pop()}”`);
+    } catch (reason) { if (isCurrentBoundary(boundary)) setError(`下载失败：${String(reason).replace(/^Error:\s*/, "")}`); }
   };
 
   const removeOwnDocument = async () => {
     if (!removeTarget) return;
+    const boundary = currentBoundary();
+    if (busyRef.current) return;
     setBusy(true);
     setError(null);
     try {
       if (removeTarget.submission) await orgRemoveOwnSubmission(removeTarget.id);
       else await orgArchiveDocument(removeTarget.id);
+      if (!isCurrentBoundary(boundary)) return;
       setRemoveTarget(null);
       setPreview(null);
       onToast?.("已停止共享此文档，服务器上的原件仍保留");
       await loadWorkspace(true);
-    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
+    } catch (reason) { if (isCurrentBoundary(boundary)) setError(String(reason)); } finally { if (isCurrentBoundary(boundary)) setBusy(false); }
   };
 
   const submitMemoryCandidate = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!writeScope || !memoryContent.trim()) return;
+    const boundary = currentBoundary();
+    if (busyRef.current) return;
     setBusy(true);
     setError(null);
     try {
@@ -689,6 +714,7 @@ export function OrganizationMemoryPanel({
           ? new Date(`${memoryValidUntil}T23:59:59`).getTime()
           : undefined,
       });
+      if (!isCurrentBoundary(boundary)) return;
       setMemoryContent("");
       setMemoryRationale("");
       setMemoryOutcome("");
@@ -698,15 +724,16 @@ export function OrganizationMemoryPanel({
       onToast?.("经验已提交，可在“我的提交”中查看检查与发布进度");
       await loadWorkspace(true);
     } catch (reason) {
-      setError(String(reason));
+      if (isCurrentBoundary(boundary)) setError(String(reason));
     } finally {
-      setBusy(false);
+      if (isCurrentBoundary(boundary)) setBusy(false);
     }
   };
 
   const pickAndUploadSkill = async () => {
-    if (!uploadScope) return;
+    if (!uploadScope || busyRef.current) return;
     const boundary = currentBoundary();
+    setBusy(true);
     setError(null);
     let paths: string[];
     try {
@@ -717,11 +744,14 @@ export function OrganizationMemoryPanel({
         extensions: ["zip"],
       });
     } catch (reason) {
-      setError(`选择 Skill ZIP 失败：${String(reason).replace(/^Error:\s*/, "")}`);
+      if (isCurrentBoundary(boundary)) {
+        setError(`选择 Skill ZIP 失败：${String(reason).replace(/^Error:\s*/, "")}`);
+        setBusy(false);
+      }
       return;
     }
-    if (!isCurrentBoundary(boundary) || !paths || paths.length === 0) return;
-    setBusy(true);
+    if (!isCurrentBoundary(boundary)) return;
+    if (!paths || paths.length === 0) { setBusy(false); return; }
     setUploadProgress({ label: "正在上传 Skill", completed: 0, total: paths.length });
     let batchError: string | null = null;
     try {
@@ -760,10 +790,10 @@ export function OrganizationMemoryPanel({
       await loadWorkspace(true);
     } catch (reason) {
       const refreshError = `刷新列表失败：${String(reason).replace(/^Error:\s*/, "")}`;
-      setError(batchError ? `${batchError}\n${refreshError}` : refreshError);
+      if (isCurrentBoundary(boundary)) setError(batchError ? `${batchError}\n${refreshError}` : refreshError);
     } finally {
-      setUploadProgress(null);
-      setBusy(false);
+      if (isCurrentBoundary(boundary)) setUploadProgress(null);
+      if (isCurrentBoundary(boundary)) setBusy(false);
     }
   };
 
@@ -782,55 +812,69 @@ export function OrganizationMemoryPanel({
       return;
     }
     if (!isCurrentBoundary(boundary) || !path) return;
+    if (busyRef.current) return;
     setBusy(true);
     try {
       await orgNewDocumentVersion(document.id, path);
+      if (!isCurrentBoundary(boundary)) return;
       onToast?.("新版本已上传，处理完成后会自动替换旧版本");
       await loadWorkspace(true);
-    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
+    } catch (reason) { if (isCurrentBoundary(boundary)) setError(String(reason)); } finally { if (isCurrentBoundary(boundary)) setBusy(false); }
   };
 
   const publishDocument = async (document: OrgDocument) => {
     if (!publishScope) return;
+    const boundary = currentBoundary();
+    if (busyRef.current) return;
     setBusy(true);
     try {
       const result = await orgPublishDocument(document.id, publishScope);
+      if (!isCurrentBoundary(boundary)) return;
       onToast?.(result.state === "pending" ? "已生成副本，等待安全扫描" : "文档副本已发布");
       setPublishDocumentTarget(null);
       await loadWorkspace(true);
-    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
+    } catch (reason) { if (isCurrentBoundary(boundary)) setError(String(reason)); } finally { if (isCurrentBoundary(boundary)) setBusy(false); }
   };
 
   const toggleSkill = async (skill: OrgSkill) => {
+    const boundary = currentBoundary();
+    if (busyRef.current) return;
     setBusy(true);
     try {
       await orgSetSkillPreference(skill.skillId, !skill.enabled);
+      if (!isCurrentBoundary(boundary)) return;
       await loadWorkspace(true);
-    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
+    } catch (reason) { if (isCurrentBoundary(boundary)) setError(String(reason)); } finally { if (isCurrentBoundary(boundary)) setBusy(false); }
   };
 
   const publishSkill = async (skill: OrgSkill) => {
     if (!publishScope) return;
+    const boundary = currentBoundary();
+    if (busyRef.current) return;
     setBusy(true);
     try {
       const result = await orgPublishSkill(skill.skillId, publishScope);
+      if (!isCurrentBoundary(boundary)) return;
       onToast?.(result.state === "pending" ? "技能副本已提交安全检查" : "技能副本已发布");
       setSkillDialog(null);
       await loadWorkspace(true);
-    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
+    } catch (reason) { if (isCurrentBoundary(boundary)) setError(String(reason)); } finally { if (isCurrentBoundary(boundary)) setBusy(false); }
   };
 
   const syncSkills = async () => {
+    const boundary = currentBoundary();
+    if (busyRef.current) return;
     setBusy(true);
     setError(null);
     try {
       const result = await orgSyncSkills();
+      if (!isCurrentBoundary(boundary)) return;
       onToast?.(`已更新 ${result.installed.length} 个技能`);
       await loadWorkspace(true);
     } catch (reason) {
-      setError(String(reason));
+      if (isCurrentBoundary(boundary)) setError(String(reason));
     } finally {
-      setBusy(false);
+      if (isCurrentBoundary(boundary)) setBusy(false);
     }
   };
 
@@ -985,13 +1029,13 @@ export function OrganizationMemoryPanel({
           {showMemoryForm && <div ref={memoryFormRef} tabIndex={-1} className="org-document-modal" role="dialog" aria-modal="true" aria-label="提交经验">
             <div className="org-editor-dialog"><header><h3>提交经验</h3><button type="button" aria-label="关闭经验表单" disabled={busy} onClick={() => setShowMemoryForm(false)}><X size={18} /></button></header>
               <form onSubmit={submitMemoryCandidate}><div className="org-memory-form">
-                <label>发布范围<select data-modal-initial-focus value={writeScope} onChange={event => setWriteScope(event.target.value)} required>{scopes.map(scope => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>
-                <label>类型<select value={memoryKind} onChange={event => setMemoryKind(event.target.value as OrgMemoryKind)}>{Object.entries(memoryKindLabel).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                <label className="org-memory-form__wide">经验内容<textarea aria-label="经验内容" required maxLength={2000} rows={4} value={memoryContent} onChange={event => setMemoryContent(event.target.value)} placeholder="写成可直接指导下一次任务的明确结论或步骤" /></label>
-                <label className="org-memory-form__wide">为什么有效（可选）<textarea maxLength={2000} rows={2} value={memoryRationale} onChange={event => setMemoryRationale(event.target.value)} placeholder="背景、适用条件或决策依据" /></label>
-                <label>结果（可选）<input maxLength={2000} value={memoryOutcome} onChange={event => setMemoryOutcome(event.target.value)} placeholder="例如：构建时间下降 30%" /></label>
-                <label>项目/工作空间（可选）<input maxLength={1000} value={memoryWorkspace} onChange={event => setMemoryWorkspace(event.target.value)} placeholder="用于项目定向召回" /></label>
-                <label>有效期（可选）<input type="date" value={memoryValidUntil} onChange={event => setMemoryValidUntil(event.target.value)} /></label>
+                <label>发布范围<select disabled={busy} data-modal-initial-focus value={writeScope} onChange={event => setWriteScope(event.target.value)} required>{scopes.map(scope => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>
+                <label>类型<select disabled={busy} value={memoryKind} onChange={event => setMemoryKind(event.target.value as OrgMemoryKind)}>{Object.entries(memoryKindLabel).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label className="org-memory-form__wide">经验内容<textarea disabled={busy} aria-label="经验内容" required maxLength={2000} rows={4} value={memoryContent} onChange={event => setMemoryContent(event.target.value)} placeholder="写成可直接指导下一次任务的明确结论或步骤" /></label>
+                <label className="org-memory-form__wide">为什么有效（可选）<textarea disabled={busy} maxLength={2000} rows={2} value={memoryRationale} onChange={event => setMemoryRationale(event.target.value)} placeholder="背景、适用条件或决策依据" /></label>
+                <label>结果（可选）<input disabled={busy} maxLength={2000} value={memoryOutcome} onChange={event => setMemoryOutcome(event.target.value)} placeholder="例如：构建时间下降 30%" /></label>
+                <label>项目/工作空间（可选）<input disabled={busy} maxLength={1000} value={memoryWorkspace} onChange={event => setMemoryWorkspace(event.target.value)} placeholder="用于项目定向召回" /></label>
+                <label>有效期（可选）<input disabled={busy} type="date" value={memoryValidUntil} onChange={event => setMemoryValidUntil(event.target.value)} /></label>
                 {error && <div className="org-memory-form__wide"><OrganizationError reason={error} /></div>}
               </div><footer><button type="button" disabled={busy} onClick={() => setShowMemoryForm(false)}>取消</button><button className="org-memory__primary" disabled={busy || !memoryContent.trim() || !writeScope}>{busy ? "提交中…" : "提交"}</button></footer></form>
             </div>

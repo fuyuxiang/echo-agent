@@ -2040,6 +2040,21 @@ fn session_view(session: &OrgSession) -> OrgSessionView {
     }
 }
 
+/// Login starts without an authenticated AccountContext. Its response still
+/// belongs to the account generation at dispatch, including a signed-out one.
+/// Keep this check under the session lock before credentials or managed files
+/// are changed, just like authenticated response commits.
+async fn login_session_for_generation(
+    inner: &OrgInner,
+    generation: u64,
+) -> Result<tokio::sync::MutexGuard<'_, OrgSession>, String> {
+    let session = inner.session.lock().await;
+    if inner.account_generation.load(Ordering::SeqCst) != generation {
+        return Err("organization login was superseded by another account change".into());
+    }
+    Ok(session)
+}
+
 #[tauri::command]
 pub async fn org_login(
     app: AppHandle,
@@ -2060,6 +2075,7 @@ pub async fn org_login(
     }
     let server_url = normalize_server_url(&server_url)?;
     let device_id = Uuid::now_v7().to_string();
+    let generation = state.inner.account_generation.load(Ordering::SeqCst);
     let response = state
         .inner
         .client
@@ -2108,7 +2124,7 @@ pub async fn org_login(
     // fails (bad password, offline server, malformed response). Switch the
     // local security boundary only after the new identity is authenticated.
     let login_context = {
-        let mut session = state.inner.session.lock().await;
+        let mut session = login_session_for_generation(&state.inner, generation).await?;
         let previous_profile = session.profile.clone();
         // A sync may still be in flight under the previous account. Invalidate
         // it and purge while the session lock prevents a new old-account
@@ -5961,6 +5977,33 @@ mod tests {
             account_generation: AtomicU64::new(0),
             reporting: Mutex::new(ClientReportingState::default()),
         })
+    }
+
+    #[tokio::test]
+    async fn delayed_login_cannot_restore_credentials_after_logout_or_account_switch() {
+        for signed_in in [false, true] {
+            let inner = test_org_inner("https://memory.example.com");
+            let dispatched = inner.account_generation.load(Ordering::SeqCst);
+            let mut current = inner.session.lock().await;
+            // Simulate the authoritative logout/account-switch commit while
+            // the login response is waiting for the same session lock.
+            let waiting = {
+                let inner = inner.clone();
+                tokio::spawn(async move {
+                    let mut session = login_session_for_generation(&inner, dispatched).await?;
+                    session.refresh_token = Some("late-login-credential".into());
+                    Ok::<_, String>(())
+                })
+            };
+            invalidate_account_generation(&inner);
+            current.refresh_token = signed_in.then(|| "new-account-credential".into());
+            drop(current);
+            assert!(waiting.await.unwrap().is_err());
+            assert_eq!(
+                inner.session.lock().await.refresh_token.as_deref(),
+                signed_in.then_some("new-account-credential")
+            );
+        }
     }
 
     async fn answer_refresh(

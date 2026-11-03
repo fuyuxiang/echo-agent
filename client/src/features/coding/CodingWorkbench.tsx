@@ -104,6 +104,7 @@ import { TaskSwitcher } from "./shell/TaskSwitcher";
 import { useTaskStore } from "./store/task-store";
 
 interface CodingWorkbenchProps {
+  active?: boolean;
   cwd?: string;
   workspaces?: { cwd: string }[];
   onSelectWorkspace?: (cwd: string) => void;
@@ -178,6 +179,7 @@ function absoluteWorkspacePath(root: string, path: string): string {
  * execution, verification, review and delivery in one persistent workspace.
  */
 export function CodingWorkbench({
+  active = true,
   cwd = "",
   workspaces = [],
   onSelectWorkspace,
@@ -317,6 +319,7 @@ export function CodingWorkbench({
     setTheiaAgentOpen,
     agentWidth,
     agentMaximumWidth,
+    agentResizing,
     resetAgentWidth,
     theiaDirtyCount,
     setTheiaDirtyCount,
@@ -330,7 +333,7 @@ export function CodingWorkbench({
     openTheiaFile,
     startAgentResize,
     resizeAgentByKey,
-  } = useTheiaWorkbenchBridge(cwd, messages, onToast);
+  } = useTheiaWorkbenchBridge(cwd, messages, onToast, active);
   const visibleDirtyCount = theiaDirtyCount ?? 0;
   const [theiaVerificationOutput, setTheiaVerificationOutput] = useState("");
   const [selectedVerification, setSelectedVerification] =
@@ -2154,7 +2157,7 @@ export function CodingWorkbench({
   return (
     <div
       ref={workbenchRef}
-      className={`coding-workbench coding-workbench--theia${theiaAgentOpen ? "" : " coding-workbench--agent-closed"}`}
+      className={`coding-workbench coding-workbench--theia${theiaAgentOpen ? "" : " coding-workbench--agent-closed"}${agentResizing ? " coding-workbench--resizing" : ""}`}
       style={{ "--echo-agent-width": `${agentWidth}px` } as CSSProperties}
     >
       <header className="coding-workbench__topbar" data-tauri-drag-region>
@@ -2817,8 +2820,7 @@ export function CodingWorkbench({
             }
           }}
           onPointerDown={(event) => {
-            event.preventDefault();
-            startAgentResize();
+            startAgentResize(event);
           }}
         />
       )}

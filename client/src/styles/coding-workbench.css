@@ -251,6 +251,15 @@
   outline: none;
 }
 
+.coding-workbench--resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.coding-workbench--resizing iframe {
+  pointer-events: none;
+}
+
 .echo-theia-agent__heading {
   display: flex;
   flex: 0 0 40px;

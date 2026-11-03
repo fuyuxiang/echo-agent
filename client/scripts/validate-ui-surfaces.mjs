@@ -141,7 +141,7 @@ page.setDefaultNavigationTimeout(60000);
         await page.getByRole("button", { name: /两者都录/ }).click();
         assert.equal(await page.getByRole("button", { name: /两者都录/ }).getAttribute("aria-pressed"), "true");
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "meeting: horizontal page overflow");
-        const cards = await page.locator(".meeting-source__option").evaluateAll(elements => elements.map(element => {
+        const cards = await page.locator(".meeting-start__source").evaluateAll(elements => elements.map(element => {
           const box = element.getBoundingClientRect();
           return { left: box.left, right: box.right, width: box.width };
         }));

@@ -22,6 +22,7 @@ import { ProjectDetailView } from "../../src/components/ProjectDetailView";
 import { WorkbenchIdentity } from "../../src/features/coding/shell/WorkbenchIdentity";
 import { ProjectSwitcher } from "../../src/features/coding/shell/ProjectSwitcher";
 import { TaskSwitcher } from "../../src/features/coding/shell/TaskSwitcher";
+import { useTheiaWorkbenchBridge } from "../../src/features/coding/hooks/useTheiaWorkbenchBridge";
 import { TheiaAgentComposer } from "../../src/features/coding/agent/TheiaAgentComposer";
 import { AgentPane } from "../../src/features/coding/agent/AgentPane";
 import type { CodingTask } from "../../src/features/coding/lib/types";
@@ -743,13 +744,49 @@ function CodingQuestionReview() {
   </div>;
 }
 
-function CodingSidebarReview({ children }: { children: React.ReactNode }) {
+function CodingLayoutReview({ cwd, onCwdChange, active = true }: { cwd: string; onCwdChange: (cwd: string) => void; active?: boolean }) {
+  const bridge = useTheiaWorkbenchBridge(cwd, [], undefined, active);
+    const coding = <div className="app--macos" style={{ height: "100%" }}><div ref={bridge.workbenchRef} className={`coding-workbench coding-workbench--theia${bridge.agentResizing ? " coding-workbench--resizing" : ""}`}
+      style={{ "--echo-agent-width": `${bridge.agentWidth}px` } as React.CSSProperties}>
+    <header className="coding-workbench__topbar"><WorkbenchIdentity onExit={() => {}}>
+      <ProjectSwitcher activeCwd={cwd} projects={[{ cwd: "/review/EchoAgent" }, { cwd: "/review/一个名称很长但仍然可以完整查看路径的项目" }]} onSelect={onCwdChange} onRemove={() => {}} onOpenFolder={() => {}} />
+    </WorkbenchIdentity><div /></header>
+    <main className="echo-theia-workspace"><iframe title="调整宽度测试 IDE" className="echo-theia__frame" srcDoc="<!doctype html><html><body style='color:#999;font:14px sans-serif'>隔离 IDE 文档 · 拖动经过这里</body></html>" /></main>
+    <div className="echo-theia-agent__splitter" role="separator" tabIndex={0} aria-label="调整 Agent 面板宽度" aria-orientation="vertical" aria-valuenow={bridge.agentWidth} aria-valuemin={300} aria-valuemax={bridge.agentMaximumWidth}
+      onPointerDown={bridge.startAgentResize} onDoubleClick={bridge.resetAgentWidth}
+      onKeyDown={event => { if (["ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); bridge.resizeAgentByKey(event.key); } }} />
+    <aside className="echo-theia-agent"><div className="echo-theia-agent__heading">
+      <TaskSwitcher
+        tasks={[
+          { id: "task-1", name: "修复代码开发页面菜单遮挡问题", phase: "delivered", updatedAt: "2026-09-29T10:00:00Z" },
+          { id: "task-2", name: "完成任务报告并检查回归测试", phase: "stopped", updatedAt: "2026-09-29T09:00:00Z" },
+          { id: "task-3", name: "继续进行中任务的开发", phase: "implementing", updatedAt: "2026-09-29T08:00:00Z" },
+        ]}
+        activeId={null}
+        onSelect={() => {}}
+        onNew={() => {}}
+        onRename={() => {}}
+        onDelete={() => {}}
+      />
+    </div><div className="echo-theia-agent__content" /><TheiaAgentComposer workspaceRoot={cwd} task={null} sessionId={null}
+      models={[{ id:"review/model", label:"评审模型", providerId:"review", providerKind:"custom" }]}
+      modelId="review/model" contextPaths={[]} apiReady starting={false} sending={false} streaming={false}
+      onModelChange={() => {}} onStart={() => {}} onSend={() => {}} onRemoveContext={() => {}} onDraftContextPaths={() => {}} />
+    </aside>
+    </div></div>;
+  return coding;
+}
+
+function CodingSidebarReview({ cwd, onCwdChange }: { cwd: string; onCwdChange: (cwd: string) => void }) {
   const layout = useAppSidebarLayout();
+  const [active, setActive] = useState(true);
   return <div className="app app--macos app--coding"><SidebarLayoutContext.Provider value={layout.context}>
     <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "")}>
-      <Sidebar activeNav="代码开发" onNewSession={() => {}} onSelect={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => {}} />
+      <Sidebar activeNav={active ? "代码开发" : "新建任务"} onNewSession={() => setActive(false)} onSelect={() => {}} onNavigate={label => setActive(label === "代码开发")} onOpenSettings={() => {}} onOpenSearch={() => {}} />
       <SidebarResizeHandle layout={layout} />
-      <main className="app__main">{children}</main>
+      <main className="app__main"><div className="app__coding-surface" hidden={!active}>
+        <CodingLayoutReview cwd={cwd} onCwdChange={onCwdChange} active={active} />
+      </div>{!active && <div>首页</div>}</main>
     </div>
   </SidebarLayoutContext.Provider></div>;
 }
@@ -894,32 +931,8 @@ function Fixture() {
     <div style={{ position: "absolute", left: "46%", top: "63%" }}><PermissionPicker /></div>
   </div>;
   if (surface === "coding") {
-    const coding = <div className="app--macos" style={{ height: "100%" }}><div className="coding-workbench coding-workbench--theia">
-    <header className="coding-workbench__topbar"><WorkbenchIdentity onExit={() => {}}>
-      <ProjectSwitcher activeCwd={cwd} projects={[{ cwd: "/review/EchoAgent" }, { cwd: "/review/一个名称很长但仍然可以完整查看路径的项目" }]} onSelect={setCwd} onRemove={() => {}} onOpenFolder={() => {}} />
-    </WorkbenchIdentity><div /></header>
-    <main className="echo-theia-workspace" />
-    <div className="echo-theia-agent__splitter" role="separator" tabIndex={0} aria-label="调整 Agent 面板宽度" aria-orientation="vertical" />
-    <aside className="echo-theia-agent"><div className="echo-theia-agent__heading">
-      <TaskSwitcher
-        tasks={[
-          { id: "task-1", name: "修复代码开发页面菜单遮挡问题", phase: "delivered", updatedAt: "2026-09-29T10:00:00Z" },
-          { id: "task-2", name: "完成任务报告并检查回归测试", phase: "stopped", updatedAt: "2026-09-29T09:00:00Z" },
-          { id: "task-3", name: "继续进行中任务的开发", phase: "implementing", updatedAt: "2026-09-29T08:00:00Z" },
-        ]}
-        activeId={null}
-        onSelect={() => {}}
-        onNew={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
-      />
-    </div><div className="echo-theia-agent__content" /><TheiaAgentComposer workspaceRoot={cwd} task={null} sessionId={null}
-      models={[{ id:"review/model", label:"评审模型", providerId:"review", providerKind:"custom" }]}
-      modelId="review/model" contextPaths={[]} apiReady starting={false} sending={false} streaming={false}
-      onModelChange={() => {}} onStart={() => {}} onSend={() => {}} onRemoveContext={() => {}} onDraftContextPaths={() => {}} />
-    </aside>
-    </div></div>;
-    return query.get("codingShell") === "1" ? <CodingSidebarReview>{coding}</CodingSidebarReview> : coding;
+    const coding = <CodingLayoutReview cwd={cwd} onCwdChange={setCwd} />;
+    return query.get("codingShell") === "1" ? <CodingSidebarReview cwd={cwd} onCwdChange={setCwd} /> : coding;
   }
   return <SettingsPanel open initialModelId={query.get("initialModelId") ?? undefined} initialSection={(surface === "weixin-connected" || surface === "weixin-offline" || surface === "weixin-unconnected" ? "weixin-channel" : surface) as SettingsSectionId} cwd={surface === "personal-memory" ? "/Users/fuyuxiang/Documents/EchoAgent" : undefined} onClose={() => {}} />;
 }

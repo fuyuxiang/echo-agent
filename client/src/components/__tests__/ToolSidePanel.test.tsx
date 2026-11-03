@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { ToolSidePanel, type ToolSidePanelMode } from "../ToolSidePanel";
 import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout";
@@ -29,6 +29,70 @@ function renderPanel(
     />,
   );
 }
+
+describe("ToolSidePanel resize lifecycle", () => {
+  let viewport: number;
+  beforeEach(() => {
+    viewport = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1920 });
+    localStorage.clear();
+    vi.mocked(invoke).mockReset().mockResolvedValue([]);
+  });
+  afterEach(() => Object.defineProperty(window, "innerWidth", { configurable: true, value: viewport }));
+  const pointer = (type: string, x: number) => {
+    const event = new Event(type, { bubbles: true });
+    Object.assign(event, { pointerId: 1, clientX: x, button: 0, buttons: type === "pointerup" ? 0 : 1, isPrimary: true });
+    return event;
+  };
+  it.each(["blur", "Escape", "pointercancel", "unmount"])("%s cancels the preview and removes drag listeners", reason => {
+    const view = renderPanel();
+    const handle = view.container.querySelector(".tool-side-panel__edge-sash")!;
+    fireEvent(handle, pointer("pointerdown", 1000));
+    fireEvent(window, pointer("pointermove", 900));
+    expect(view.container.querySelector("aside")).toHaveStyle({ width: "520px" });
+    if (reason === "unmount") view.unmount();
+    else if (reason === "Escape") fireEvent.keyDown(window, { key: "Escape" });
+    else fireEvent(window, reason === "blur" ? new Event("blur") : pointer(reason, 900));
+    fireEvent(window, pointer("pointermove", 800));
+    if (reason !== "unmount") expect(view.container.querySelector("aside")).toHaveStyle({ width: "420px" });
+    expect(localStorage.getItem("tool-side-panel-width")).toBe("420");
+  });
+  it("persists only the final release coordinate", () => {
+    const view = renderPanel();
+    fireEvent(view.container.querySelector(".tool-side-panel__edge-sash")!, pointer("pointerdown", 1000));
+    fireEvent(window, pointer("pointermove", 900));
+    expect(localStorage.getItem("tool-side-panel-width")).toBe("420");
+    fireEvent(window, pointer("pointerup", 860));
+    expect(view.container.querySelector("aside")).toHaveStyle({ width: "560px" });
+    expect(localStorage.getItem("tool-side-panel-width")).toBe("560");
+  });
+  it("resource-list separator commits independently and supports keyboard resizing", () => {
+    localStorage.setItem("tool-side-panel-width", "700");
+    renderPanel();
+    const nav = screen.getByRole("separator", { name: "调整资源列表宽度" });
+    fireEvent(nav, pointer("pointerdown", 500));
+    fireEvent(window, pointer("pointermove", 520));
+    expect(nav).toHaveAttribute("aria-valuenow", "200");
+    expect(localStorage.getItem("tool-side-panel-nav-width")).toBe("180");
+    fireEvent(window, pointer("pointerup", 525));
+    expect(localStorage.getItem("tool-side-panel-nav-width")).toBe("205");
+    fireEvent.keyDown(nav, { key: "ArrowLeft" });
+    expect(nav).toHaveAttribute("aria-valuenow", "185");
+    expect(localStorage.getItem("tool-side-panel-width")).toBe("700");
+  });
+  it.each(["hidden", "session", "view"])("%s changes cancel an owned drag", reason => {
+    const props = { open: true, mode: "artifacts" as ToolSidePanelMode, artifacts: [], sessionId: "resize-owner",
+      onClose: vi.fn(), onSelectTool: vi.fn(), onSelectArtifact: vi.fn(), onOpenArtifacts: vi.fn() };
+    const view = render(<ToolSidePanel {...props} />);
+    fireEvent(screen.getByRole("separator", { name: "调整工作面板宽度" }), pointer("pointerdown", 1000));
+    fireEvent(window, pointer("pointermove", 900));
+    view.rerender(<ToolSidePanel {...props} open={reason !== "hidden"} sessionId={reason === "session" ? "new-owner" : props.sessionId}
+      mode={reason === "view" ? "plan" : props.mode} />);
+    fireEvent(window, pointer("pointermove", 800));
+    expect(view.container.querySelector("aside")).toHaveStyle({ width: "420px" });
+    expect(localStorage.getItem("tool-side-panel-width")).toBe("420");
+  });
+});
 
 describe("ToolSidePanel navigation collapse", () => {
   beforeEach(() => {

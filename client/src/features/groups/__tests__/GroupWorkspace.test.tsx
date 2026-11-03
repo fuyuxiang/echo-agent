@@ -1,14 +1,14 @@
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render as renderWithoutTheme, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderWithoutTheme, screen, waitFor, within } from "@testing-library/react";
 import { GroupWorkspace } from "../GroupWorkspace";
 import { useGroupStore } from "../group-store";
-import { groupSend, groupMemberChange, type Group } from "../group-client";
+import { groupSend, groupMemberChange, groupControl, type Group } from "../group-client";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
 vi.mock("@/lib/agent-client", async original => ({ ...await original<typeof import("@/lib/agent-client")>(), agentsList: vi.fn(async () => []) }));
-vi.mock("../group-client", async original => ({ ...await original<typeof import("../group-client")>(), groupSend: vi.fn(async () => {}), groupMemberChange: vi.fn(async () => {}) }));
+vi.mock("../group-client", async original => ({ ...await original<typeof import("../group-client")>(), groupSend: vi.fn(async () => {}), groupMemberChange: vi.fn(async () => {}), groupControl: vi.fn(async () => {}) }));
 vi.mock("@/components/MessageItem", () => ({ MessageItem: () => <div>成员回答</div> }));
 
 let measuredWidth: number | null = null;
@@ -29,6 +29,19 @@ beforeEach(() => {
   useGroupStore.setState({current:structuredClone(group),currentId:group.id,groups:[structuredClone(group)],drafts:{},outbox:{},error:null});
 });
 afterEach(cleanup);
+
+it("停止请求未完成时返回列表，迟到结果不重新打开原专家团", async () => {
+  let finish!: () => void;
+  vi.mocked(groupControl).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  useGroupStore.setState({ current: { ...structuredClone(group), paused: true } });
+  render(<GroupWorkspace cwd="/work" models={[{id:"test",label:"测试"}]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "恢复派发" }));
+  await waitFor(() => expect(groupControl).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("button", { name: "返回专家团列表" }));
+  expect(useGroupStore.getState().currentId).toBeNull();
+  await act(async () => { finish(); });
+  expect(useGroupStore.getState().currentId).toBeNull();
+});
 
 it("回复收件人可改为协调员，引用保留，发送对象与界面一致", async () => {
   render(<GroupWorkspace cwd="/work" models={[{id:"test",label:"测试"}]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} />);

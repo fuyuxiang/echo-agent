@@ -267,6 +267,8 @@ export function ToolSidePanel({
       MAX_NAV_WIDTH,
     );
   });
+  const [resizePreview, setResizePreview] = useState<{ kind: "panel" | "nav"; width: number } | null>(null);
+  const resizeCleanup = useRef<(() => void) | null>(null);
   const [documentEditing, setDocumentEditing] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const fullView = maximized || documentEditing || viewportWidth < 1180 || panelMaxWidth < 380;
@@ -280,7 +282,7 @@ export function ToolSidePanel({
     return () => registerPanel?.(null);
   }, [open, fullView, registerPanel]);
 
-  const renderedPanelWidth = clamp(width, MIN_WIDTH, panelMaxWidth);
+  const renderedPanelWidth = clamp(resizePreview?.kind === "panel" ? resizePreview.width : width, MIN_WIDTH, panelMaxWidth);
   const availablePanelWidth = fullView ? measuredWidth || viewportWidth : renderedPanelWidth;
   useLayoutEffect(() => {
     const panel = panelRef.current;
@@ -295,7 +297,28 @@ export function ToolSidePanel({
     MIN_NAV_WIDTH,
     Math.min(MAX_NAV_WIDTH, availablePanelWidth - MIN_MAIN_WIDTH - NAV_SASH_WIDTH),
   );
-  const renderedNavWidth = clamp(navWidth, MIN_NAV_WIDTH, navMaxWidth);
+  const renderedNavWidth = clamp(resizePreview?.kind === "nav" ? resizePreview.width : navWidth, MIN_NAV_WIDTH, navMaxWidth);
+  useEffect(() => () => resizeCleanup.current?.(), [open, fullView, view, sessionId, cwd]);
+  const beginResize = (event: React.PointerEvent<HTMLDivElement>, kind: "panel" | "nav") => {
+    if (resizeCleanup.current) return;
+    const panel = kind === "panel";
+    resizeCleanup.current = startPanelResize(event, panel ? renderedPanelWidth : renderedNavWidth,
+      panel ? MIN_WIDTH : MIN_NAV_WIDTH, panel ? panelMaxWidth : navMaxWidth, panel ? -1 : 1,
+      next => setResizePreview({ kind, width: next }), panel ? setWidth : setNavWidth,
+      () => { resizeCleanup.current = null; setResizePreview(null); });
+  };
+  const resizeByKey = (event: React.KeyboardEvent<HTMLDivElement>, kind: "panel" | "nav") => {
+    if (resizeCleanup.current) return;
+    const panel = kind === "panel", minimum = panel ? MIN_WIDTH : MIN_NAV_WIDTH;
+    const maximum = panel ? panelMaxWidth : navMaxWidth;
+    const current = panel ? renderedPanelWidth : renderedNavWidth;
+    const delta = event.key === "ArrowLeft" ? (panel ? 20 : -20) : (panel ? -20 : 20);
+    const next = event.key === "Home" ? (panel ? DEFAULT_WIDTH : DEFAULT_NAV_WIDTH)
+      : event.key === "End" ? maximum : current + delta;
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    (panel ? setWidth : setNavWidth)(clamp(next, minimum, maximum));
+  };
 
   // 窗口缩放后重新约束面板，避免持久化尺寸在小窗口中挤坏布局。
   useEffect(() => {
@@ -391,9 +414,11 @@ export function ToolSidePanel({
   const closeContentButton = singleCurrentTab && !showToolDetail && !runtimeView
     ? <button type="button" className="tool-side-panel__icon-btn" aria-label={`关闭标签 ${singleCurrentTab.label}`} data-tip="关闭当前内容" onClick={closeSingleContent}><CloseIcon size="sm" /></button>
     : null;
-  return <aside id="session-workspace" hidden={!open} ref={panelRef} className={"tool-side-panel task-details" + (fullView ? " tool-side-panel--maximized" : "")}
+  return <aside id="session-workspace" hidden={!open} ref={panelRef} className={"tool-side-panel task-details" + (fullView ? " tool-side-panel--maximized" : "") + (resizePreview ? " tool-side-panel--resizing" : "")}
     style={fullView ? undefined : { width: `${renderedPanelWidth}px` }} aria-label="工作区面板">
-    {!fullView && <div className="tool-side-panel__edge-sash" onPointerDown={e => startResizeEdge(e, renderedPanelWidth, panelMaxWidth, setWidth)} />}
+    {!fullView && <div className="tool-side-panel__edge-sash" role="separator" tabIndex={0} aria-orientation="vertical"
+      aria-label="调整工作面板宽度" aria-valuemin={MIN_WIDTH} aria-valuemax={panelMaxWidth} aria-valuenow={renderedPanelWidth}
+      onPointerDown={event => beginResize(event, "panel")} onKeyDown={event => resizeByKey(event, "panel")} />}
     <div className="task-details__shell">
       <header className="tool-side-panel__header">
         <ViewSelector view={view} views={views} onChange={handleViewChange} />
@@ -426,7 +451,9 @@ export function ToolSidePanel({
           value.listScroll = {...value.listScroll, [view]: value.scroll};
           if (sessionId) sessionSelections.set(sessionId, value);
         }}><div ref={listContentRef}>{list}</div></div>
-        {split && <div className="tool-side-panel__sash" onPointerDown={e => startResizeNav(e, renderedNavWidth, navMaxWidth, setNavWidth)} />}
+        {split && <div className="tool-side-panel__sash" role="separator" tabIndex={0} aria-orientation="vertical"
+          aria-label="调整资源列表宽度" aria-valuemin={MIN_NAV_WIDTH} aria-valuemax={navMaxWidth} aria-valuenow={renderedNavWidth}
+          onPointerDown={event => beginResize(event, "nav")} onKeyDown={event => resizeByKey(event, "nav")} />}
         <div hidden={listView && !split && showList} ref={bodyRef} onScroll={e => {
           const value = selectionRef.current.value;
           value.bodyScroll = {...value.bodyScroll, [view]:e.currentTarget.scrollTop};
@@ -911,63 +938,50 @@ function writeStoredDimension(key: string, value: number): void {
   }
 }
 
-/** 启动左列宽度拖拽（pointer 事件，松开时持久化由外层 effect 处理）。 */
-function startResizeNav(
-  e: React.PointerEvent<HTMLDivElement>,
-  currentWidth: number,
-  maxWidth: number,
-  setWidth: (w: number) => void,
-) {
-  e.preventDefault();
-  const startX = e.clientX;
-  const pointerId = e.pointerId;
-  const onMove = (ev: PointerEvent) => {
-    if (ev.pointerId !== pointerId) return;
-    const delta = ev.clientX - startX;
-    const next = Math.min(
-      Math.max(currentWidth + delta, MIN_NAV_WIDTH),
-      maxWidth,
-    );
-    setWidth(next);
+/** Preview is transient; only a matching pointer release commits a preference. */
+function startPanelResize(
+  event: React.PointerEvent<HTMLDivElement>, currentWidth: number,
+  minimum: number, maximum: number, direction: number,
+  preview: (width: number) => void, commit: (width: number) => void, done: () => void,
+): (() => void) | null {
+  if (event.button !== 0 || event.isPrimary === false) return null;
+  event.preventDefault();
+  const handle = event.currentTarget, pointerId = event.pointerId, startX = event.clientX;
+  const widthAt = (x: number) => clamp(currentWidth + direction * (x - startX), minimum, maximum);
+  let finished = false;
+  const finish = (next?: PointerEvent) => {
+    if (finished || next && next.pointerId !== pointerId) return;
+    finished = true;
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", finish);
+    window.removeEventListener("pointercancel", finish);
+    window.removeEventListener("blur", cancel);
+    window.removeEventListener("resize", cancel);
+    window.removeEventListener("keydown", key, true);
+    handle.removeEventListener("lostpointercapture", finish);
+    if (next?.type === "pointerup") commit(widthAt(next.clientX));
+    done();
+    if (handle.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId);
   };
-  const onEnd = (ev: PointerEvent) => {
-    if (ev.pointerId !== pointerId) return;
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", onEnd);
-    window.removeEventListener("pointercancel", onEnd);
+  const cancel = () => finish();
+  const move = (next: PointerEvent) => {
+    if (next.pointerId !== pointerId) return;
+    if (next.buttons === 0) { cancel(); return; }
+    preview(widthAt(next.clientX));
   };
-  window.addEventListener("pointermove", onMove);
-  window.addEventListener("pointerup", onEnd);
-  window.addEventListener("pointercancel", onEnd);
-}
-
-/** 启动全宽拖拽（面板左边缘，向左拖增大宽度）。 */
-function startResizeEdge(
-  e: React.PointerEvent<HTMLDivElement>,
-  currentWidth: number,
-  maxWidth: number,
-  setWidth: (w: number) => void,
-) {
-  e.preventDefault();
-  const startX = e.clientX;
-  const pointerId = e.pointerId;
-  const onMove = (ev: PointerEvent) => {
-    if (ev.pointerId !== pointerId) return;
-    // 向左拖（delta 负）→ 宽度变大。
-    const delta = ev.clientX - startX;
-    const next = Math.min(
-      Math.max(currentWidth - delta, MIN_WIDTH),
-      maxWidth,
-    );
-    setWidth(next);
+  const key = (next: KeyboardEvent) => {
+    if (next.key !== "Escape") return;
+    next.preventDefault(); next.stopPropagation(); cancel();
   };
-  const onEnd = (ev: PointerEvent) => {
-    if (ev.pointerId !== pointerId) return;
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", onEnd);
-    window.removeEventListener("pointercancel", onEnd);
-  };
-  window.addEventListener("pointermove", onMove);
-  window.addEventListener("pointerup", onEnd);
-  window.addEventListener("pointercancel", onEnd);
+  preview(currentWidth);
+  handle.focus({ preventScroll: true });
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", finish);
+  window.addEventListener("pointercancel", finish);
+  window.addEventListener("blur", cancel);
+  window.addEventListener("resize", cancel);
+  window.addEventListener("keydown", key, true);
+  handle.addEventListener("lostpointercapture", finish);
+  try { handle.setPointerCapture(pointerId); } catch { /* Window listeners support older WebViews. */ }
+  return cancel;
 }

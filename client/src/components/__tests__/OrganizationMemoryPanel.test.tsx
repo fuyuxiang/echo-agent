@@ -276,6 +276,47 @@ describe("OrganizationMemoryPanel", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it.each(["success", "failure"])("切换账号后旧提交的 %s 不影响新账号草稿或忙碌状态", async outcome => {
+    let finish!: () => void;
+    api.orgSubmitMemoryCandidate.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finish = () => outcome === "success" ? resolve({ promotionId: "old", state: "pending" }) : reject(new Error("Alice 的旧提交失败"));
+    }));
+    const onToast = vi.fn();
+    render(<OrganizationMemoryPanel onToast={onToast} />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
+    fireEvent.click(screen.getByRole("button", { name: "提交经验" }));
+    fireEvent.change(screen.getByLabelText("经验内容"), { target: { value: "Alice 经验" } });
+    fireEvent.submit(screen.getByLabelText("经验内容").closest("form")!);
+    await waitFor(() => expect(api.orgSubmitMemoryCandidate).toHaveBeenCalledTimes(1));
+    const previous = useOrgSessionStore.getState().session!;
+    act(() => useOrgSessionStore.getState().setSession({ ...previous,
+      user: { ...previous.user!, id: "u2", username: "bob", displayName: "Bob" },
+    }));
+    await screen.findByRole("button", { name: "组织账号：Bob" });
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
+    expect(screen.getByRole("button", { name: "提交经验" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "提交经验" }));
+    fireEvent.change(screen.getByLabelText("经验内容"), { target: { value: "Bob 的新草稿" } });
+    await act(async () => { finish(); });
+    expect(screen.getByLabelText("经验内容")).toHaveValue("Bob 的新草稿");
+    expect(screen.queryByText("Alice 的旧提交失败")).toBeNull();
+    expect(onToast).not.toHaveBeenCalled();
+  });
+
+  it("同一帧重复提交只创建一条经验", async () => {
+    api.orgSubmitMemoryCandidate.mockReturnValue(new Promise(() => {}));
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button", { name: /^经验/ }));
+    fireEvent.click(screen.getByRole("button", { name: "提交经验" }));
+    fireEvent.change(screen.getByLabelText("经验内容"), { target: { value: "只创建一次" } });
+    const form = screen.getByLabelText("经验内容").closest("form")!;
+    act(() => { fireEvent.submit(form); fireEvent.submit(form); });
+    expect(api.orgSubmitMemoryCandidate).toHaveBeenCalledTimes(1);
+  });
+
   it("退出后丢弃迟到的工作区恢复，重新登录失败不展示旧文档", async () => {
     let resolveDocuments!: (value: { items: ReturnType<typeof document>[]; total: number; page: number; size: number }) => void;
     api.orgListDocuments.mockReturnValue(new Promise((resolve) => { resolveDocuments = resolve; }));
