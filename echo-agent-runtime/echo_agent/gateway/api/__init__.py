@@ -99,6 +99,7 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     app.router.add_delete(f"{prefix}/cron/{{id}}", cron_api.delete_job)
     app.router.add_post(f"{prefix}/cron/{{id}}/trigger", cron_api.trigger_job)
     app.router.add_get(f"{prefix}/cron/{{id}}/runs", cron_api.get_runs)
+    app.router.add_get(f"{prefix}/cron/{{id}}/runs/{{run_id}}/report", cron_api.download_report)
 
     app.router.add_get(f"{prefix}/logs", logs_api.list_logs)
     app.router.add_get(f"{prefix}/analytics/tokens", analytics_api.token_usage)

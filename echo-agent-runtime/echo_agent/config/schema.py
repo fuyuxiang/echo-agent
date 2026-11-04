@@ -4493,6 +4493,14 @@ class AgentBehaviorConfig(_Base):
             "desc_en": "Maximum iterations of the agent main loop",
         },
     )
+    artifact_completion_iterations: int = Field(
+        default=12, ge=0, le=24,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/inference_stage.py",
+            "desc_zh": "长报告在主循环预算后可用于产物收尾的额外轮次（不允许继续检索，0 禁用）",
+            "desc_en": "Extra artifact-only closing iterations after the main loop budget (0 disables)",
+        },
+    )
     max_output_continuations: int = Field(
         default=3, ge=0, le=10,
         json_schema_extra={

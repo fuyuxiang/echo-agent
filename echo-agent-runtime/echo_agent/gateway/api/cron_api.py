@@ -351,6 +351,21 @@ class CronAPI:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"runs": runs})
 
+    async def download_report(self, request: web.Request) -> web.StreamResponse:
+        guard = self._guard_write(request, "cron_report_download")
+        if guard is not None:
+            return guard
+        job = self._scheduler().get_job(request.match_info["id"])
+        run = next((r for r in job.run_history if r.get("run_id") == request.match_info["run_id"]), None) if job else None
+        from echo_agent.gateway.api.deliveries import DeliveriesAPI
+        from urllib.parse import quote
+
+        path = DeliveriesAPI(self._server)._local_file(run.get("report_file", "")) if run and run.get("report_file") else None
+        if path is None:
+            return web.json_response({"error": "saved report is unavailable"}, status=404)
+        return web.FileResponse(path, headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}",
+                                               "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
     def _job_to_dict(self, job: ScheduledJob) -> dict:
         return {
             "id": job.id,

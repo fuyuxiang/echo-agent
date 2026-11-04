@@ -623,6 +623,15 @@ class Scheduler:
             ]
         return []
 
+    async def record_artifact(self, job_id: str, run_id: str, fields: dict[str, Any]) -> None:
+        job = self._jobs.get(job_id)
+        run = next((r for r in job.run_history if r.get("run_id") == run_id), None) if job else None
+        if run is None:
+            return
+        run.update(fields)
+        await self._save_async()
+        await self._emit("cron_run", job)
+
     async def record_delivery(self, job_id: str, run_id: str, delivery: dict[str, Any]) -> None:
         job = self._jobs.get(job_id)
         run = next((r for r in job.run_history if r.get("run_id") == run_id), None) if job else None
@@ -675,6 +684,8 @@ class Scheduler:
             return
         run = candidates[0]
         run["execution_status"] = status
+        if run.get("generation_status") == "generating":
+            run["generation_status"] = "incomplete"
         if run.get("delivery_status") == "awaiting_context":
             status = "delivery_pending"
             error = next((d["error"] for d in run.get("deliveries", []) if d.get("status") == "awaiting_context"), error)

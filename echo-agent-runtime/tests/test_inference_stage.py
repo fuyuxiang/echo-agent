@@ -813,6 +813,48 @@ class TestInferenceStageLengthTruncation:
 
 class TestArtifactOutputContract:
     @pytest.mark.asyncio
+    async def test_waiting_for_weixin_is_terminal_without_regenerating_or_claiming_delivery(self):
+        provider = AsyncMock()
+        provider.chat_stream_with_retry.return_value = LLMResponse(content="", finish_reason="tool_calls", tool_calls=[
+            ToolCallRequest(id="delivery", name="artifact_deliver", arguments={"artifact_id": "a" * 32})])
+        tools = MagicMock()
+        tools.get.return_value = None
+        tools.execute = AsyncMock(return_value=ToolResult(success=False, error="conversation rejected", error_kind="business",
+            metadata={"delivery_pending": True, "recovery_action": "send_message", "delivered": False}))
+        stage, _ = _make_stage(provider=provider, tools=tools)
+        session = _make_session()
+        session.metadata = {}
+        ctx = _make_ctx(session=session, tool_defs=[{"function": {"name": "artifact_deliver"}}])
+        ctx.artifact_required = True
+        result = await stage.run(ctx)
+        assert result.termination_reason == "delivery_pending" and result.task_incomplete
+        assert "已生成并保存" in result.response_text and "自动补发" in result.response_text
+        assert provider.chat_stream_with_retry.await_count == 1
+        assert "_artifact_continuation" not in session.metadata
+        stage._circuit_breaker.record_failure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_artifact_closing_budget_preserves_tools_and_blocks_more_research(self):
+        names = ["artifact_create", "artifact_append", "web_fetch", "artifact_finalize", "artifact_deliver"]
+        provider = AsyncMock()
+        provider.chat_stream_with_retry.side_effect = [LLMResponse(content="", finish_reason="tool_calls", tool_calls=[
+            ToolCallRequest(id=str(i), name=name, arguments={})]) for i, name in enumerate(names)]
+        tools = MagicMock()
+        tools.get.return_value = None
+        tools.execute = AsyncMock(return_value=ToolResult(output="ok"))
+        stage, _ = _make_stage(provider=provider, tools=tools, max_iterations=4)
+        session = _make_session()
+        session.metadata = {}
+        ctx = _make_ctx(session=session, tool_defs=[{"function": {"name": name}} for name in names])
+        ctx.artifact_required = True
+        result = await stage.run(ctx)
+        assert not result.task_incomplete and "交付" in result.response_text
+        assert provider.chat_stream_with_retry.await_count == 5
+        assert [call.args[0] for call in tools.execute.await_args_list] == [n for n in names if n != "web_fetch"]
+        for call in provider.chat_stream_with_retry.call_args_list[1:]:
+            assert all(t["function"]["name"] != "web_fetch" for t in call.kwargs["tools"])
+
+    @pytest.mark.asyncio
     async def test_chat_only_answer_cannot_complete_required_artifact(self):
         provider = AsyncMock()
         provider.chat_stream_with_retry = AsyncMock(

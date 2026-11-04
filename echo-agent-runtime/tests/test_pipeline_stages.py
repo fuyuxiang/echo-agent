@@ -373,6 +373,22 @@ class TestContextStage:
 
 class TestResponseStage:
     @pytest.mark.asyncio
+    async def test_pending_report_is_saved_without_republishing_failure_notice(self):
+        stage = ResponseStage(config=MagicMock(), sessions=AsyncMock(), memory=MagicMock(), provider=MagicMock(),
+            consolidation_worker=MagicMock(), default_model="m", spawn_fn=MagicMock(),
+            clear_memory_snapshot_fn=AsyncMock(), memory_enabled=False)
+        source = InboundEvent.text_message(channel="weixin", sender_id="cron", chat_id="c1", text="日报")
+        session = Session(key="weixin:c1")
+        stream = AsyncMock()
+        ctx = PipelineContext(event=source, session=session, trace_id="pending", publish_response=True, stream_publisher=stream)
+        result = await stage.finalize(ctx, InferenceResult(response_text="报告已保存，恢复后自动补发。",
+            task_incomplete=True, termination_reason="delivery_pending"))
+        assert result.outbound_sent and result.delivery_result is None
+        assert result.termination_reason == "delivery_pending"
+        assert session.messages[-1]["content"] == result.response_text
+        stream.finalize.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_finalize_saves_session(self):
         sessions = AsyncMock()
         sessions.save = AsyncMock()

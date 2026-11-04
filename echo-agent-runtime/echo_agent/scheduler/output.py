@@ -6,10 +6,12 @@ import hashlib
 import json
 import os
 import tempfile
+import re
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from urllib.parse import urlsplit
 
 from loguru import logger
 
@@ -39,6 +41,116 @@ class ScheduledOutputs:
         run_id = str(source.metadata.get("run_id") or "")
         run = next((r for r in job.run_history if r.get("run_id") == run_id), None) if job else None
         return job, run
+
+    async def artifact_progress(self, source, tool, manifest) -> None:
+        """Persist generation separately from transport, before attempting a send."""
+        if source.event_type != EventType.CRON or not isinstance(manifest, dict) or not manifest.get("artifact_id"):
+            return
+        job = self.scheduler.get_job(str(source.metadata.get("job_id") or ""))
+        run = next((r for r in job.run_history if r.get("run_id") == source.metadata.get("run_id")), None) if job else None
+        if job is None or run is None:
+            return
+        fields = {"artifact_id": manifest["artifact_id"], "report_title": manifest.get("title", ""),
+                  "report_bytes": manifest.get("total_bytes", 0),
+                  "generation_status": "ready" if manifest.get("state") == "finalized" else "generating"}
+        if manifest.get("state") == "finalized" and tool is not None:
+            try:
+                path, _ = await tool._store.finalized_path(source.session_key, manifest["artifact_id"])
+                fields.update(await self._archive(job, run, path))
+                fields["archive_error"] = ""
+            except (OSError, ValueError):
+                logger.exception("Could not archive scheduled report for {}", job.id)
+                fields["archive_error"] = "report_archive_failed"
+        await self.scheduler.record_artifact(job.id, run["run_id"], fields)
+        if fields["generation_status"] == "ready":
+            await self._history(job, run, "pending_delivery")
+
+    async def _archive(self, job, run, source: Path) -> dict:
+        relative = job.payload.get("report_history_path")
+        # Always retain a workspace-relative download reference, even for jobs
+        # without an optional report journal.
+        source = source.resolve()
+        if not source.is_relative_to(self.workspace):
+            raise ValueError("report must be inside the workspace")
+        fields = {"report_file": str(source.relative_to(self.workspace))}
+        if not relative:
+            return fields
+        history = (self.workspace / relative).resolve()
+        if not history.is_relative_to(self.workspace) or history.suffix != ".json":
+            raise ValueError("report history must be a JSON file inside the workspace")
+        zone = ZoneInfo(job.timezone) if job.timezone else None
+        day = datetime.fromtimestamp(run["ts"] / 1000, tz=zone).date().isoformat()
+        path = history.parent / "reports" / (day + source.suffix)
+        if not path.resolve().is_relative_to(self.workspace):
+            raise ValueError("report archive escaped the workspace")
+        content = source.read_bytes()
+        async with self._history_lock:
+            # A later rerun must not replace a report already linked to a
+            # receipt. Preserve the requested daily path for the first report.
+            if path.exists() and path.read_bytes() != content:
+                path = path.with_name(f"{day}-{run['run_id'][:12]}{source.suffix}")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=".report-", dir=path.parent)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+        fields["report_file"] = str(path.relative_to(self.workspace))
+        if source.suffix.lower() in {".md", ".txt"}:
+            text = content.decode("utf-8")
+            fields["report_sections"] = re.findall(r"^#{2,4}\s+(.+)$", text, re.M)[:40]
+            fields["report_sources"] = list(dict.fromkeys(re.findall(r"https?://[^\s<>\)\]\"']+", text)))[:100]
+            fields["report_items"] = []
+            for section in re.finditer(r"^####\s+\d+[.、]\s+(.+)\n([\s\S]*?)(?=^#{1,4}\s|\Z)", text, re.M):
+                urls = list(dict.fromkeys(re.findall(r"https?://[^\s<>\)\]\"']+", section[2])))[:20]
+                fields["report_items"].append({"name": section[1].strip(), "sources": urls})
+                if len(fields["report_items"]) >= 40:
+                    break
+        return fields
+
+    @staticmethod
+    def _reconcile_items(data, run, day, delivered):
+        """Recover dedup facts from the saved report, never fabricate research.
+
+        Detailed research fields remain model-owned. For existing technology
+        journals we can still preserve names, exact source links and receipt-
+        backed push dates when the model did not finish updating its index.
+        """
+        technologies = data.get("technologies")
+        if not isinstance(technologies, list):
+            return
+
+        def paper(value):
+            match = re.search(r"(?:arxiv:|arxiv\.org/(?:abs|pdf)/)(\d{4}\.\d{4,5})", str(value), re.I)
+            return match[1] if match else ""
+
+        for item in run.get("report_items", []):
+            sources = item["sources"]
+            paper_id = next((paper(url) for url in sources if paper(url)), "")
+            existing = next((t for t in technologies if isinstance(t, dict) and (
+                t.get("name") == item["name"] or
+                paper_id and paper_id in {paper(t.get("paper_id")), paper(t.get("official_url"))}
+            )), None)
+            if existing is None:
+                existing = {"name": item["name"], "first_seen": day, "sources": sources,
+                            "extracted_from_report": run.get("report_file", "")}
+                if sources:
+                    existing["official_url"] = next((u for u in sources if paper(u)), sources[0])
+                    repos = [u for u in sources if u.lower().startswith("https://github.com/") or u.lower().startswith("http://github.com/")]
+                    if repos:
+                        existing["repo"] = urlsplit(repos[0]).path.strip("/")
+                if paper_id:
+                    existing["paper_id"] = "arXiv:" + paper_id
+                technologies.append(existing)
+            if delivered and str(existing.get("last_pushed") or "") <= day:
+                existing["last_pushed"] = day
+                existing.pop("pending_push_date", None)
+            elif not delivered and str(existing.get("last_pushed") or "") < day:
+                existing["pending_push_date"] = day
 
     async def prepare(self, event) -> None:
         source_id = str(event.metadata.get("_inbound_event_id") or "")
@@ -83,6 +195,16 @@ class ScheduledOutputs:
             if part:
                 event.metadata["_artifact_part"] = part
                 event.metadata["_artifact_parts"] = event.metadata.get("scheduled_parts", part)
+            # Also reconcile legacy/pending outputs after an upgrade. The
+            # immutable outbound file is the source of truth, never LLM prose.
+            file = next((b.url for b in event.content if b.type.value == "file" and b.url), "")
+            if file and not run.get("report_file"):
+                try:
+                    fields = await self._archive(job, run, Path(file))
+                    fields.update(artifact_id=artifact_id, generation_status="ready")
+                    await self.scheduler.record_artifact(job.id, run["run_id"], fields)
+                except (OSError, ValueError):
+                    logger.exception("Could not archive pending scheduled output for {}", job.id)
         await self._history(job, run, "success" if run.get("delivery_status") == "delivered" else "pending_delivery")
 
     async def record(self, event, result) -> None:
@@ -215,25 +337,41 @@ class ScheduledOutputs:
             try:
                 data = json.loads(path.read_text()) if path.exists() else {}
                 reports = data.setdefault("reports", [])
-                report = next((r for r in reports if r.get("date") == day), None)
+                report = next((r for r in reports if r.get("date") == day and r.get("run_id") in (None, run["run_id"])), None)
                 if report is None:
                     report = {"date": day}
                     reports.append(report)
                 report.update(status=status, job_id=job.id, run_id=run["run_id"],
                               delivery_status=run.get("delivery_status", "pending"))
+                for source_key, report_key in (("report_file", "file"), ("report_title", "title"),
+                                               ("report_sections", "sections"), ("report_sources", "sources")):
+                    if run.get(source_key):
+                        report[report_key] = run[source_key]
                 delivered = status == "success"
+                self._reconcile_items(data, run, day, delivered)
+                day_delivered = delivered or any(r.get("date") == day and r.get("status") == "success" for r in reports)
                 acknowledged_at = max((item.get("updated_at_ms", run["ts"]) for item in run.get("deliveries", [])), default=run["ts"])
                 report["pushed_at"] = datetime.fromtimestamp(acknowledged_at / 1000, tz=zone).astimezone(zone).isoformat() if delivered else None
                 for technology in data.get("technologies", []):
-                    if not delivered and technology.get("last_pushed") == day:
+                    if not day_delivered and technology.get("last_pushed") == day:
                         technology["last_pushed"] = None
                         technology["pending_push_date"] = day
-                    elif delivered and (technology.get("pending_push_date") == day or technology.get("first_seen") == day):
+                    elif (delivered and (technology.get("pending_push_date") == day or technology.get("first_seen") == day)
+                          and str(technology.get("last_pushed") or "") <= day):
                         technology["last_pushed"] = day
                         technology.pop("pending_push_date", None)
                 meta = data.setdefault("meta", {})
-                if str(meta.get("last_run", ""))[:10] <= day:
+                previous_ms = meta.get("last_run_ms", 0)
+                if not previous_ms and meta.get("last_run"):
+                    try:
+                        previous_ms = datetime.fromisoformat(meta["last_run"]).timestamp() * 1000
+                    except (ValueError, TypeError):
+                        previous_ms = 0
+                if previous_ms <= run["ts"]:
                     meta["last_run_status"] = status
+                    meta["last_run"] = datetime.fromtimestamp(run["ts"] / 1000, tz=zone).astimezone(zone).isoformat()
+                    meta["last_run_ms"] = run["ts"]
+                meta["reports_count"] = len(reports)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
                 try:

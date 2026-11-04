@@ -1,17 +1,27 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { useApi } from "../hooks/use-api";
 import { dateTime } from "../lib/datetime";
+import { apiDownload } from "../lib/api";
+import { runMutation } from "../stores/toast";
+import { useWsSubscribe } from "../hooks/use-ws";
+import { useIsAdmin } from "../stores/capabilities";
 import type { CronJob } from "../pages/Cron";
 
 interface CronRun {
+  run_id?: string;
   ts: number;
   status: string;
   error: string | null;
   run_count: number;
   delivery_status?: string;
   recovered_ts?: number;
+  generation_status?: string;
+  report_file?: string;
+  report_title?: string;
+  archive_error?: string;
+  deliveries?: { recovery_action?: string }[];
 }
 
 /**
@@ -25,7 +35,24 @@ interface CronRun {
  */
 export function CronRunsDrawer({ job, onClose }: { job: CronJob; onClose: () => void }) {
   const { t } = useTranslation(["cron", "common"]);
-  const { data, loading, error } = useApi<{ runs: CronRun[] }>(`/cron/${job.id}/runs?limit=100`);
+  const canDownload = useIsAdmin() !== false;
+  const [downloading, setDownloading] = useState(false);
+  const { data, loading, error, refetch } = useApi<{ runs: CronRun[] }>(`/cron/${job.id}/runs?limit=100`);
+  useWsSubscribe(["cron"], () => { void refetch(); }, ["cron_run"]);
+
+  const download = async (run: CronRun) => {
+    if (downloading || !canDownload) return;
+    setDownloading(true);
+    try { await runMutation(async () => {
+    const blob = await apiDownload(`/cron/${encodeURIComponent(job.id)}/runs/${encodeURIComponent(run.run_id!)}/report`);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.download = run.report_file!.split("/").pop()!;
+    document.body.appendChild(link); link.click(); link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, { error: t("reportDownloadFailed") }); }
+    finally { setDownloading(false); }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -83,11 +110,20 @@ export function CronRunsDrawer({ job, onClose }: { job: CronJob; onClose: () => 
                 <div className="text-xs text-gray-500">
                   {t("runCount", { count: run.run_count })}
                 </div>
-                {run.error && (
-                  <div className="text-xs bg-red-50 text-red-700 rounded p-2 whitespace-pre-wrap break-words">
-                    <span className="font-medium">{t("runError")}: </span>{run.error}
-                  </div>
-                )}
+                {run.generation_status && <p className="text-xs text-gray-600">
+                  {t("generationStatus")}: {t(`generationOutcome.${run.generation_status}`, { defaultValue: run.generation_status })}
+                </p>}
+                {run.status === "delivery_pending" && <div role="status" className="text-xs rounded bg-amber-50 p-2 text-amber-900">
+                  {t(run.deliveries?.some(d => d.recovery_action === "relogin") ? "restoreLoginHint" : "restoreMessageHint")}
+                </div>}
+                {run.generation_status === "incomplete" && <p className="text-xs text-amber-800">{t("draftSavedHint")}</p>}
+                {run.error && <details className="text-xs whitespace-pre-wrap break-words text-gray-600">
+                  <summary className="cursor-pointer">{t("runError")}</summary>{run.error}
+                </details>}
+                {run.archive_error && <p className="text-xs text-amber-800">{t("archiveFailedHint")}</p>}
+                {run.report_file && run.run_id && <button className="text-xs text-blue-700 underline"
+                  disabled={downloading || !canDownload} title={canDownload ? undefined : t("common:adminOnly")}
+                  onClick={() => void download(run)}>{t("downloadReport")}</button>}
                 {run.delivery_status && <p className="text-xs text-gray-600">
                   {t("deliveryStatus")}: {t(`deliveryOutcome.${run.delivery_status}`, { defaultValue: run.delivery_status })}
                 </p>}

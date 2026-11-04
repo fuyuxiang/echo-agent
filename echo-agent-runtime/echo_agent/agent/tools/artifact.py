@@ -50,6 +50,15 @@ def _receipt_is_deferred(receipt: object) -> bool:
     return isinstance(detail, dict) and detail.get("deferred") is True
 
 
+def _delivery_failure(receipt, error: str, *, scheduled: bool = False) -> ToolResult:
+    detail = getattr(receipt, "detail", {}) or {}
+    pending = detail.get("recovery_action") in {"send_message", "relogin"} and not detail.get("delivery_unknown")
+    return ToolResult(success=False, error=error,
+                      error_kind="business" if pending else "dependency",
+                      metadata={"delivery_pending": pending and scheduled, "recovery_action": detail.get("recovery_action", ""),
+                                "error_code": detail.get("error_code", ""), "delivered": False})
+
+
 class ArtifactCreateTool(Tool):
     name = "artifact_create"
     description = (
@@ -84,11 +93,13 @@ class ArtifactCreateTool(Tool):
 
 
 class ArtifactAppendTool(Tool):
+    replay_safe = True
     name = "artifact_append"
     description = (
         "Append one UTF-8 text chunk to a draft artifact. Chunks must use consecutive sequence "
         "numbers starting at 0. Call exactly one artifact_append per assistant turn, then wait "
-        "for its result before generating the next chunk. Identical retries are idempotent."
+        "for its result before generating the next chunk. Use next_sequence from the result; "
+        "oversized chunks are safely split. Identical retries are idempotent."
     )
     capabilities = ("artifact.write",)
     risk_level = "write"
@@ -118,12 +129,14 @@ class ArtifactAppendTool(Tool):
             return _ok(await self._store.append(
                 _session(ctx), params["artifact_id"], sequence=int(params["sequence"]),
                 content=params["content"], expected_bytes=int(expected) if expected is not None else None,
+                split_oversized=True,
             ))
         except (ArtifactError, OSError, KeyError, TypeError, ValueError) as exc:
             return _failure(exc)
 
 
 class ArtifactValidateTool(Tool):
+    replay_safe = True
     name = "artifact_validate"
     description = (
         "Deterministically inspect a draft or finalized artifact: UTF-8 bytes, characters, Chinese "
@@ -148,6 +161,7 @@ class ArtifactValidateTool(Tool):
 
 
 class ArtifactFinalizeTool(Tool):
+    replay_safe = True
     name = "artifact_finalize"
     description = (
         "Verify all chunks, validate the document, atomically materialize it, and make it read-only "
@@ -172,6 +186,7 @@ class ArtifactFinalizeTool(Tool):
 
 
 class ArtifactDeliverTool(Tool):
+    replay_safe = True
     name = "artifact_deliver"
     description = (
         "Deliver a finalized artifact to the current conversation as an attachment. It cannot send "
@@ -325,11 +340,8 @@ class ArtifactDeliverTool(Tool):
                 detail = getattr(receipt, "error", "") or getattr(
                     getattr(receipt, "stage", None), "value", "failed",
                 )
-                return ToolResult(
-                    success=False,
-                    error=f"artifact text fallback failed at part {index}/{total}: {detail}",
-                    error_kind="dependency",
-                )
+                return _delivery_failure(receipt, f"artifact text fallback failed at part {index}/{total}: {detail}",
+                                         scheduled=event.metadata.get("scheduled_output") is True)
             if not _receipt_is_deferred(receipt):
                 await self._store.record_delivery(
                     ctx.session_key,
@@ -400,11 +412,8 @@ class ArtifactDeliverTool(Tool):
                     detail = getattr(receipt, "error", "") or getattr(
                         getattr(receipt, "stage", None), "value", "failed",
                     )
-                    return ToolResult(
-                        success=False,
-                        error=f"artifact delivery failed: {detail}",
-                        error_kind="dependency",
-                    )
+                    return _delivery_failure(receipt, f"artifact delivery failed: {detail}",
+                                             scheduled=event.metadata.get("scheduled_output") is True)
                 if not _receipt_is_deferred(receipt):
                     await self._store.record_delivery(
                         session_key,

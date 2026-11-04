@@ -1942,7 +1942,12 @@ class AgentLoop:
                 # a reply but left the task incomplete. Fault the terminal state so
                 # neither cron history nor the board shows an undelivered or
                 # half-done turn as done.
-                if not delivered:
+                if result.termination_reason == "delivery_pending":
+                    await self._record_cron_outcome(event, "completed")
+                    await self._record_task_outcome(event, "incomplete")
+                    await self._mark_turn_terminal(event.event_id, "incomplete", response_text=response_text,
+                                                   error="delivery_pending")
+                elif not delivered:
                     # IM 追问发送失败时撤销待答绑定，不能把下一条消息当作未送达问题的答案。
                     if result.termination_reason == "awaiting_clarification":
                         self.clarify.clear_im_pending(event.session_key)

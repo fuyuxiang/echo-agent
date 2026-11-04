@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from echo_agent.agent.tools.artifact import ArtifactDeliverTool
+from echo_agent.agent.tools.artifact import ArtifactAppendTool, ArtifactDeliverTool
 from echo_agent.agent.tools import discover_tools
 from echo_agent.artifacts import ArtifactError, ArtifactStore
 from echo_agent.artifacts.sweeper import sweep
@@ -22,6 +22,60 @@ def _store(tmp_path, *, max_chunk_chars=12000, max_artifact_mb=1):
         tmp_path, "data/artifacts", max_chunk_chars=max_chunk_chars,
         max_artifact_mb=max_artifact_mb, allowed_extensions=[".md", ".txt", ".json", ".csv"],
     )
+
+
+@pytest.mark.asyncio
+async def test_oversized_model_append_splits_losslessly_and_replays_after_restart(tmp_path):
+    store = _store(tmp_path, max_chunk_chars=3000)
+    created = await store.create("cron:one", filename="report.md")
+    ctx = ToolExecutionContext(session_key="cron:one")
+    content = "技术资料\n" * 700
+    params = {"artifact_id": created["artifact_id"], "sequence": 0, "content": content, "expected_bytes": 0}
+    result = await ArtifactAppendTool(store).execute(params, ctx)
+    assert result.success and result.metadata["auto_split"]
+    assert result.metadata["next_sequence"] == 2
+    store = _store(tmp_path, max_chunk_chars=3000)
+    replay = await ArtifactAppendTool(store).execute(params, ctx)
+    assert replay.success and replay.metadata["idempotent_replay"]
+    await store.finalize(ctx.session_key, created["artifact_id"])
+    path, manifest = await store.finalized_path(ctx.session_key, created["artifact_id"])
+    assert path.read_text() == content
+    assert all(c["characters"] <= 3000 for c in manifest["chunks"])
+
+
+@pytest.mark.asyncio
+async def test_split_append_resumes_a_crash_between_chunks_without_accepting_interleaved_writes(tmp_path, monkeypatch):
+    store = _store(tmp_path, max_chunk_chars=5)
+    created = await store.create("cron:one", filename="report.txt")
+    original = store._append_locked
+    calls = 0
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("disk temporarily unavailable")
+        return original(*args, **kwargs)
+    monkeypatch.setattr(store, "_append_locked", fail_second)
+    with pytest.raises(OSError):
+        await store.append("cron:one", created["artifact_id"], sequence=0, content="ABCDEFGHIJK", split_oversized=True)
+    store = _store(tmp_path, max_chunk_chars=5)
+    with pytest.raises(ArtifactError, match="unfinished"):
+        await store.append("cron:one", created["artifact_id"], sequence=1, content="other")
+    result = await store.append("cron:one", created["artifact_id"], sequence=0, content="ABCDEFGHIJK", expected_bytes=0, split_oversized=True)
+    assert result["next_sequence"] == 3
+    await store.finalize("cron:one", created["artifact_id"])
+    path, _ = await store.finalized_path("cron:one", created["artifact_id"])
+    assert path.read_text() == "ABCDEFGHIJK"
+
+
+@pytest.mark.asyncio
+async def test_split_append_checks_whole_request_quota_before_writing(tmp_path):
+    store = _store(tmp_path, max_chunk_chars=3000)
+    created = await store.create("cron:quota", filename="report.md")
+    with pytest.raises(ArtifactError, match="quota"):
+        await store.append("cron:quota", created["artifact_id"], sequence=0, content="字" * 400000, split_oversized=True)
+    _, manifest = store._load("cron:quota", created["artifact_id"])
+    assert manifest["next_sequence"] == 0 and not manifest.get("append_batches")
 
 
 @pytest.mark.asyncio

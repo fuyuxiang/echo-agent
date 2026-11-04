@@ -214,7 +214,11 @@ class ResponseStage:
         # Finalize streaming
         outbound_sent = False
         receipt = None
-        if ctx.publish_response and ctx.stream_publisher:
+        if result.termination_reason == "delivery_pending":
+            # The durable report already owns the pending send. Do not enqueue
+            # an undeliverable failure summary or claim a platform receipt.
+            outbound_sent = True
+        elif ctx.publish_response and ctx.stream_publisher:
             if result.task_incomplete:
                 status = (
                     "interrupted"

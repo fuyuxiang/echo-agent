@@ -35,6 +35,7 @@ class PipelineContext:
     # Originating event of this artifact workflow. Preserved across a validated
     # continuation turn so multipart delivery resumes from its last receipt.
     artifact_intent_id: str = ""
+    artifact_completion: bool = False
     execution_plan: Plan | None = None
     plan_run_id: str = ""
     intro_text: str = ""

@@ -144,6 +144,9 @@ class Tool(ABC):
     and the execute method.
     """
 
+    # Tools with durable idempotency may safely verify/replay an identical call.
+    replay_safe = False
+
     name: str = ""
     description: str = ""
     parameters: dict[str, Any] = {}

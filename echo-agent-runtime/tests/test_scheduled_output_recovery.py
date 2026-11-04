@@ -68,6 +68,97 @@ async def refresh(runtime):
 
 
 @pytest.mark.asyncio
+async def test_finalization_archives_before_send_and_history_contains_report_sources(runtime):
+    from echo_agent.artifacts.store import ArtifactStore
+    from echo_agent.agent.tools.artifact import ArtifactFinalizeTool, ArtifactDeliverTool
+    from echo_agent.tools import ToolExecutionContext
+    from echo_agent.gateway.api.cron_api import CronAPI
+
+    r = runtime
+    store = ArtifactStore(r.tmp_path, "artifacts", max_chunk_chars=3000, max_artifact_mb=1, allowed_extensions=[".md"])
+    created = await store.create(r.source.session_key, filename="report.md", title="日报")
+    artifact = created["artifact_id"]
+    text = "# 日报\n\n## 新技术\n\n### 技术一\nhttps://example.com/paper\n"
+    await store.append(r.source.session_key, artifact, sequence=0, content=text)
+    finalized = await store.finalize(r.source.session_key, artifact)
+    await r.outputs.artifact_progress(r.source, ArtifactFinalizeTool(store), finalized)
+    run = r.job.run_history[-1]
+    assert run["generation_status"] == "ready"
+    assert (r.tmp_path / run["report_file"]).read_text() == text
+    history = json.loads((r.tmp_path / "reports/history.json").read_text())
+    assert history["reports"][0]["status"] == "pending_delivery"
+    assert history["reports"][0]["sources"] == ["https://example.com/paper"]
+    assert history["meta"]["reports_count"] == 1 and history["meta"]["last_run"]
+    tool = ArtifactDeliverTool(store, r.bus.publish_outbound, lambda _: r.channel)
+    result = await tool.execute({"artifact_id": artifact}, ToolExecutionContext(
+        session_key=r.source.session_key, channel="weixin", chat_id="user", inbound_event_id=r.source.event_id))
+    assert not result.success and not result.is_infra_failure and result.metadata["delivery_pending"]
+    assert not result.metadata["delivered"]
+    await r.scheduler.record_run_outcome(r.job.id, "completed", run_id=run["run_id"])
+    assert run["status"] == "delivery_pending" and run["execution_status"] == "completed"
+    server = SimpleNamespace(_workspace=r.tmp_path, _agent_loop=SimpleNamespace(scheduler=r.scheduler),
+                             _require_admin_token=lambda *a, **kw: None)
+    api = CronAPI(server)
+    request = MagicMock(match_info={"id": r.job.id, "run_id": run["run_id"]})
+    download = await api.download_report(request)
+    assert download.status == 200 and download._path.read_text() == text
+    assert download.headers["Cache-Control"] == "no-store"
+    run["report_file"] = "/etc/passwd"
+    assert (await api.download_report(request)).status == 404
+
+
+@pytest.mark.asyncio
+async def test_archive_never_overwrites_an_earlier_daily_report(runtime):
+    r = runtime
+    first = r.job.run_history[-1]
+    a = await r.outputs._archive(r.job, first, r.report)
+    second = {**first, "run_id": "different-run"}
+    r.report.write_text("A newer report")
+    b = await r.outputs._archive(r.job, second, r.report)
+    assert a["report_file"] != b["report_file"]
+    assert (r.tmp_path / a["report_file"]).read_text() == "A real, finalized report"
+    assert (r.tmp_path / b["report_file"]).read_text() == "A newer report"
+
+
+@pytest.mark.asyncio
+async def test_report_supplies_missing_dedup_entries_with_receipt_backed_dates(runtime):
+    r = runtime
+    run = r.job.run_history[-1]
+    run.update(report_items=[{"name": "Paper One", "sources": ["https://arxiv.org/abs/2610.12345"]}],
+               report_file="reports/report.md")
+    path = r.tmp_path / "reports/history.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"technologies": []}))
+    await r.outputs._history(r.job, run, "pending_delivery")
+    item = json.loads(path.read_text())["technologies"][0]
+    assert "last_pushed" not in item and item["pending_push_date"]
+    assert item["paper_id"] == "arXiv:2610.12345"
+    await r.outputs._history(r.job, run, "success")
+    data = json.loads(path.read_text())
+    assert len(data["technologies"]) == 1
+    assert data["technologies"][0]["last_pushed"] == data["reports"][0]["date"]
+
+
+@pytest.mark.asyncio
+async def test_late_history_does_not_clear_newer_delivery_or_overwrite_same_day_run(runtime):
+    r = runtime
+    old = r.job.run_history[-1]
+    new = {**old, "run_id": "newer", "ts": old["ts"] + 1000}
+    await r.outputs._history(r.job, new, "success")
+    path = r.tmp_path / "reports/history.json"
+    data = json.loads(path.read_text())
+    day = data["reports"][0]["date"]
+    data["technologies"] = [{"name": "old-paper", "first_seen": day, "last_pushed": "2099-01-01"}]
+    path.write_text(json.dumps(data))
+    await r.outputs._history(r.job, old, "success")
+    await r.outputs._history(r.job, old, "pending_delivery")
+    data = json.loads(path.read_text())
+    assert len(data["reports"]) == 2
+    assert data["meta"]["last_run_ms"] == new["ts"] and data["meta"]["last_run_status"] == "success"
+    assert data["technologies"][0]["last_pushed"] == "2099-01-01"
+
+
+@pytest.mark.asyncio
 async def test_missing_context_retains_report_and_fresh_message_recovers_exactly_once(runtime):
     r = runtime
     event = r.outbound()

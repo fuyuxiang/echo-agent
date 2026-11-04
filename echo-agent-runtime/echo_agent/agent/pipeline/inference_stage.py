@@ -34,6 +34,8 @@ from echo_agent.cost.budget import BudgetExceeded
 from echo_agent.models.provider import LLMResponse
 from echo_agent.models.router import RouteDecision
 
+_ARTIFACT_TOOLS = frozenset({"artifact_create", "artifact_append", "artifact_validate", "artifact_finalize", "artifact_deliver"})
+
 if TYPE_CHECKING:
     from echo_agent.agent.approval_gate import ApprovalGate
     from echo_agent.agent.cognitive_emitter import CognitiveEmitter
@@ -100,6 +102,7 @@ class _LoopResult:
     # The turn carried an artifact output contract but never successfully
     # delivered one. Plain prose must not masquerade as task completion.
     artifact_incomplete: bool = False
+    delivery_pending: bool = False
     # Provider ended with finish_reason="length" and the bounded recovery did
     # not produce a clean replacement. Partial text is deliverable, but the task
     # and plan remain incomplete/resumable.
@@ -128,6 +131,7 @@ class _BatchCounters:
     successful_tools: set[str] = field(default_factory=set)
     # 仅成功的 IM clarify 设置，失败/CLI 结果不能提前终止推理。
     im_clarification_text: str = ""
+    delivery_pending: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -191,6 +195,8 @@ class InferenceStage:
         self._circuit_breaker = circuit_breaker
         self._default_model = default_model
         self._max_iterations = max_iterations
+        raw_closing = getattr(config.agent, "artifact_completion_iterations", 12)
+        self._artifact_completion_iterations = raw_closing if isinstance(raw_closing, int) else 12
         raw_continuations = getattr(config.agent, "max_output_continuations", 3)
         raw_overlap = getattr(config.agent, "continuation_overlap_chars", 2000)
         self._max_output_continuations = (
@@ -543,6 +549,7 @@ class InferenceStage:
             and not loop_result.awaiting_clarification
             and not loop_result.output_truncated
             and not loop_result.artifact_incomplete
+            and not loop_result.delivery_pending
             and not ctx.artifact_required
             and self._planner is not None
             and ctx.execution_plan is not None
@@ -646,6 +653,7 @@ class InferenceStage:
                     or loop_result.output_truncated
                     or loop_result.content_filtered
                     or loop_result.artifact_incomplete
+                    or loop_result.delivery_pending
                     or plan_failed
                 )
                 if loop_result.awaiting_clarification:
@@ -687,11 +695,13 @@ class InferenceStage:
                 or loop_result.output_truncated
                 or loop_result.content_filtered
                 or loop_result.artifact_incomplete
+                or loop_result.delivery_pending
                 or loop_result.awaiting_clarification
                 or plan_failed
             ),
             output_truncated=loop_result.output_truncated,
             termination_reason=(
+                "delivery_pending" if loop_result.delivery_pending else
                 "awaiting_clarification" if loop_result.awaiting_clarification else
                 "interrupted" if loop_result.interrupted else
                 "output_truncated" if loop_result.output_truncated else
@@ -739,6 +749,7 @@ class InferenceStage:
         output_truncated = False
         awaiting_clarification = False
         artifact_contract_retries = 0
+        delivery_pending = False
 
         # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
@@ -763,7 +774,21 @@ class InferenceStage:
             "stream" if self._can_retract_draft(event.channel) else "buffer"
         )
 
-        for iteration in range(self._max_iterations):
+        # Research keeps its original budget. A bounded closing phase is only
+        # available to actual artifact workflows and cannot run general tools.
+        iteration_limit = self._max_iterations + (self._artifact_completion_iterations if ctx.artifact_required else 0)
+        for iteration in range(iteration_limit):
+            if iteration >= self._max_iterations and not counters.successful_tools.intersection(_ARTIFACT_TOOLS):
+                break
+            if ctx.artifact_required and iteration >= max(1, self._max_iterations - 6):
+                if not ctx.artifact_completion:
+                    messages.append({"role": "user", "content": (
+                        "[System: finish report] Research time is complete. Use only artifact tools now. "
+                        "Finish the remaining report sections from verified material, append them, validate, "
+                        "finalize, and deliver. Follow next_sequence from every append result. "
+                        "Do not start another report or repeat research."
+                    )})
+                ctx.artifact_completion = True
             # Cooperative interrupt checkpoint. A Ctrl+C interrupt frame set this
             # flag on a lock-free path; stop cleanly at the iteration boundary so
             # session history, memory writes and tool side effects are never left
@@ -789,9 +814,11 @@ class InferenceStage:
                 if t.get("function", {}).get("name") not in unavailable
             ] if unavailable else tool_defs
 
+            if ctx.artifact_completion:
+                active_tool_defs = [t for t in active_tool_defs if t.get("function", {}).get("name") in _ARTIFACT_TOOLS]
             if force_no_tools:
                 active_tool_defs = []
-            elif iteration == self._max_iterations - 1 and iteration > 0 and active_tool_defs:
+            elif not ctx.artifact_required and iteration == self._max_iterations - 1 and iteration > 0 and active_tool_defs:
                 # Final-answer forcing: the last iteration must produce a
                 # conclusion instead of yet another tool round. Without this,
                 # exhausting the loop discards the entire turn's work and the
@@ -967,7 +994,7 @@ class InferenceStage:
                 ):
                     if (
                         artifact_contract_retries < self._max_output_continuations
-                        and iteration + 1 < self._max_iterations
+                        and iteration + 1 < iteration_limit
                     ):
                         artifact_contract_retries += 1
                         response_text = ""
@@ -1005,7 +1032,7 @@ class InferenceStage:
                     )
                     if (
                         continuation_attempts < self._max_output_continuations
-                        and iteration + 1 < self._max_iterations
+                        and iteration + 1 < iteration_limit
                     ):
                         continuation_attempts += 1
                         continuation_active = True
@@ -1030,7 +1057,7 @@ class InferenceStage:
                     loop_exhausted = False
                     output_truncated = True
                     break
-                if not empty_truncation_retried and iteration + 1 < self._max_iterations:
+                if not empty_truncation_retried and iteration + 1 < iteration_limit:
                     # Nothing recoverable — retry once without tools, asking
                     # for a bounded plain-text conclusion. One extra call
                     # salvages the whole turn's collected context. Requires a
@@ -1089,7 +1116,7 @@ class InferenceStage:
                 ):
                     if (
                         artifact_contract_retries < self._max_output_continuations
-                        and iteration + 1 < self._max_iterations
+                        and iteration + 1 < iteration_limit
                     ):
                         artifact_contract_retries += 1
                         response_text = ""
@@ -1168,6 +1195,13 @@ class InferenceStage:
                 response_text = ""
                 loop_exhausted = False
                 break
+            if counters.delivery_pending:
+                response_text = ("报告已生成并保存。请重新登录微信，恢复后将自动补发。"
+                                 if counters.delivery_pending.get("recovery_action") == "relogin" else
+                                 "报告已生成并保存。请给微信机器人发送一条消息，恢复会话后将自动补发。")
+                delivery_pending = True
+                loop_exhausted = False
+                break
             if ctx.artifact_required and "artifact_deliver" in counters.successful_tools:
                 # Delivery is the artifact contract's terminal side effect. Do
                 # not spend another model call merely to phrase a summary: that
@@ -1201,7 +1235,7 @@ class InferenceStage:
             response_text = "I encountered an issue processing your request. Please try again or rephrase your question."
 
         if isinstance(getattr(session, "metadata", None), dict):
-            if ctx.artifact_required and "artifact_deliver" not in counters.successful_tools:
+            if ctx.artifact_required and not delivery_pending and "artifact_deliver" not in counters.successful_tools:
                 session.metadata["_artifact_continuation"] = {
                     "version": 1,
                     "trace_id": trace_id,
@@ -1238,6 +1272,7 @@ class InferenceStage:
             errored=errored,
             content_filtered=content_filtered,
             artifact_incomplete=artifact_incomplete,
+            delivery_pending=delivery_pending,
             output_truncated=output_truncated,
             should_review_skills=counters.should_review_skills,
             should_review_memory=counters.should_review_memory,
@@ -1303,6 +1338,11 @@ class InferenceStage:
         # ---- Phase A: serial decision (approval / repeat / pre-hook) ----
         for tool_index, tool_call in enumerate(response.tool_calls):
             d = _Decision(tool_call=tool_call, index=tool_index, verdict="RUN")
+            if ctx.artifact_completion and tool_call.name not in _ARTIFACT_TOOLS:
+                d.verdict = "DEFERRED"
+                d.blocked_message = "Research budget is complete. Finish and deliver the existing artifact; this tool did not run."
+                decisions.append(d)
+                continue
             if awaiting_answer:
                 d.verdict = "DEFERRED"
                 d.blocked_message = "Deferred until the user answers the clarification; this tool did not run."
@@ -1664,6 +1704,12 @@ class InferenceStage:
             counters.total_tool_calls += 1
             counters.skill_iters += 1
             counters.memory_iters += 1
+
+            if tool_call.name == "artifact_deliver" and result.metadata.get("delivery_pending") is True:
+                counters.delivery_pending = dict(result.metadata)
+            outputs = getattr(self._bus, "scheduled_outputs", None)
+            if result.success and tool_call.name in _ARTIFACT_TOOLS and outputs is not None:
+                await outputs.artifact_progress(event, self._tools.get(tool_call.name), result.metadata)
 
             # Per-tool circuit breaker. Only infrastructure failures (timeout/
             # dependency/internal) count toward opening the circuit — validation

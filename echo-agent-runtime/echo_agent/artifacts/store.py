@@ -199,10 +199,11 @@ class ArtifactStore:
         sequence: int,
         content: str,
         expected_bytes: int | None = None,
+        split_oversized: bool = False,
     ) -> dict[str, Any]:
         if sequence < 0:
             raise ArtifactError("sequence must be non-negative")
-        if len(content) > self.max_chunk_chars:
+        if len(content) > self.max_chunk_chars and not split_oversized:
             raise ArtifactError(
                 f"chunk has {len(content)} characters; maximum is {self.max_chunk_chars}; split it"
             )
@@ -210,52 +211,87 @@ class ArtifactStore:
         digest = hashlib.sha256(payload).hexdigest()
         async with self._lock(session_key, artifact_id):
             directory, manifest = self._load(session_key, artifact_id)
-            if manifest.get("state") != "draft":
-                raise ArtifactError("artifact is finalized and cannot be changed")
-            next_sequence = int(manifest.get("next_sequence", 0))
-            chunks = manifest.get("chunks") or []
-            if sequence < next_sequence:
-                prior = next((item for item in chunks if int(item.get("sequence", -1)) == sequence), None)
-                if prior and prior.get("sha256") == digest:
-                    result = self.public_manifest(manifest)
-                    result["idempotent_replay"] = True
-                    return result
-                raise ArtifactError("sequence was already written with different content")
-            if sequence > next_sequence:
-                raise ArtifactError(f"out-of-order chunk: expected sequence {next_sequence}")
-            total_bytes = int(manifest.get("total_bytes", 0))
-            if expected_bytes is not None and expected_bytes != total_bytes:
-                raise ArtifactError(f"offset mismatch: expected_bytes={expected_bytes}, actual={total_bytes}")
-            if total_bytes + len(payload) > self.max_bytes:
-                raise ArtifactError("artifact size quota exceeded")
+            # One model call is a logical append. Journal its complete intent
+            # before splitting so a crash between physical chunks can resume
+            # the same call without dropping or duplicating any text.
+            batches = manifest.get("append_batches", {})
+            if any(not item["complete"] and key != str(sequence) for key, item in batches.items()):
+                raise ArtifactError("retry the unfinished split append before writing another chunk")
+            batch = batches.get(str(sequence))
+            if batch is not None or len(content) > self.max_chunk_chars:
+                if batch is None:
+                    if manifest.get("state") != "draft":
+                        raise ArtifactError("artifact is finalized and cannot be changed")
+                    if sequence != manifest["next_sequence"]:
+                        raise ArtifactError(f"out-of-order chunk: expected sequence {manifest['next_sequence']}")
+                    if expected_bytes is not None and expected_bytes != manifest["total_bytes"]:
+                        raise ArtifactError("offset mismatch before split append")
+                    if manifest["total_bytes"] + len(payload) > self.max_bytes:
+                        raise ArtifactError("artifact size quota exceeded")
+                    batch = {"sha256": digest, "size": self.max_chunk_chars, "complete": False}
+                    manifest.setdefault("append_batches", {})[str(sequence)] = batch
+                    self._atomic_json(directory / "manifest.json", manifest)
+                elif batch["sha256"] != digest:
+                    raise ArtifactError("sequence was already written with different content")
+                if batch["complete"]:
+                    return {**self.public_manifest(manifest), "idempotent_replay": True, "auto_split": True}
+                size = batch["size"]
+                for index, offset in enumerate(range(0, len(content), size)):
+                    self._append_locked(directory, manifest, sequence + index, content[offset:offset + size])
+                batch["complete"] = True
+                self._atomic_json(directory / "manifest.json", manifest)
+                return {**self.public_manifest(manifest), "auto_split": True}
+            return self._append_locked(directory, manifest, sequence, content, expected_bytes)
 
-            chunk_path = directory / "chunks" / f"{sequence:08d}.part"
-            if chunk_path.exists():
-                existing = chunk_path.read_bytes()
-                if hashlib.sha256(existing).hexdigest() != digest:
-                    raise ArtifactError("chunk journal conflict")
-            else:
-                fd = os.open(chunk_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(payload)
-                    handle.flush()
-                    os.fsync(handle.fileno())
+    def _append_locked(self, directory, manifest, sequence, content, expected_bytes=None):
+        payload = content.encode("utf-8")
+        digest = hashlib.sha256(payload).hexdigest()
+        if manifest.get("state") != "draft":
+            raise ArtifactError("artifact is finalized and cannot be changed")
+        next_sequence = int(manifest.get("next_sequence", 0))
+        chunks = manifest.get("chunks") or []
+        if sequence < next_sequence:
+            prior = next((item for item in chunks if int(item.get("sequence", -1)) == sequence), None)
+            if prior and prior.get("sha256") == digest:
+                result = self.public_manifest(manifest)
+                result["idempotent_replay"] = True
+                return result
+            raise ArtifactError("sequence was already written with different content")
+        if sequence > next_sequence:
+            raise ArtifactError(f"out-of-order chunk: expected sequence {next_sequence}")
+        total_bytes = int(manifest.get("total_bytes", 0))
+        if expected_bytes is not None and expected_bytes != total_bytes:
+            raise ArtifactError(f"offset mismatch: expected_bytes={expected_bytes}, actual={total_bytes}")
+        if total_bytes + len(payload) > self.max_bytes:
+            raise ArtifactError("artifact size quota exceeded")
 
-            chunks.append({
-                "sequence": sequence,
-                "bytes": len(payload),
-                "characters": len(content),
-                "sha256": digest,
-            })
-            manifest.update({
-                "next_sequence": sequence + 1,
-                "total_bytes": total_bytes + len(payload),
-                "total_characters": int(manifest.get("total_characters", 0)) + len(content),
-                "chunks": chunks,
-                "updated_at": _utc_now(),
-            })
-            self._atomic_json(directory / "manifest.json", manifest)
-            return self.public_manifest(manifest)
+        chunk_path = directory / "chunks" / f"{sequence:08d}.part"
+        if chunk_path.exists():
+            existing = chunk_path.read_bytes()
+            if hashlib.sha256(existing).hexdigest() != digest:
+                raise ArtifactError("chunk journal conflict")
+        else:
+            fd = os.open(chunk_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+        chunks.append({
+            "sequence": sequence,
+            "bytes": len(payload),
+            "characters": len(content),
+            "sha256": digest,
+        })
+        manifest.update({
+            "next_sequence": sequence + 1,
+            "total_bytes": total_bytes + len(payload),
+            "total_characters": int(manifest.get("total_characters", 0)) + len(content),
+            "chunks": chunks,
+            "updated_at": _utc_now(),
+        })
+        self._atomic_json(directory / "manifest.json", manifest)
+        return self.public_manifest(manifest)
 
     def _draft_text(self, directory: Path, manifest: dict[str, Any]) -> str:
         pieces: list[str] = []

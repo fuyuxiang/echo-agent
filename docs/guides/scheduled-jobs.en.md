@@ -1,5 +1,9 @@
 # Scheduled Jobs
 
+Report generation and delivery are tracked separately. Finalized scheduled reports are archived by the Runtime and can be downloaded from run history even while Weixin requires a fresh message or sign-in. Restoring the conversation resumes delivery without rerunning research. Waiting for delivery does not trigger repeated generation or finalization.
+
+Long reports enter a bounded artifact-only closing phase near the execution limit. Oversized appends are split automatically, with the complete append intent journaled so retrying after an interrupted write neither loses nor duplicates text. Unfinished drafts remain distinguishable from complete, downloadable reports.
+
 **Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
 
 Echo Agent includes a built-in scheduling system that allows you to create, manage, and monitor periodic tasks using the cronjob tool. This guide covers the complete usage of the scheduling system.
