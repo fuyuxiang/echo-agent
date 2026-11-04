@@ -35,6 +35,14 @@
     "active": true,
     "createUpdaterArtifacts": false,
     "targets": ["msi", "nsis"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "template": "windows/installer.nsi",
+        "installerHooks": "windows/install-path.nsh"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

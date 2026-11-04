@@ -123,9 +123,8 @@ export interface PlanApprovalRequest {
  * existing reader keeps working unchanged).
  *
  * `suppressReplay` is set when we switch back to a session we already have a
- * cached transcript for: the cache IS the truth, so the history replay that
- * `agentLoadSession` re-streams must be ignored for the message-streaming
- * cases (otherwise turns merge and historical usage overwrites the live one).
+ * cached transcript for. Only historical events are suppressed; live updates
+ * must keep arriving while a history request is in flight.
  */
 export interface SessionTranscript {
   messages: ChatMessage[];
@@ -154,6 +153,9 @@ export interface SessionTranscript {
   completedPromptIds?: string[];
   /** Public completion effects (queue/status) run once, even after durable completion. */
   handledPromptCompletionIds?: string[];
+  /** An admitted background turn is waiting for its canonical user echo.
+   * Older runtimes do not attach promptId to that first echo. */
+  awaitingUserEchoPromptId?: string;
   suppressReplay: boolean;
   /** Prompt ids whose pause/stop was explicitly resumed. Late duplicate
    * terminal events for these turns must not re-arm the control state. */
@@ -204,6 +206,8 @@ interface SessionState {
   rejectSendNow: (promptId: string, sessionId?: string) => void;
   /** Finalize metadata; return whether this is a new completion of the current turn. */
   markComplete: (p: PromptComplete) => boolean;
+  /** End a background turn without claiming the later public completion. */
+  finalizeTurn: (p: PromptComplete) => boolean;
   /** Arm a pause/stop barrier before sending the native cancel notification. */
   requestControl: (
     sessionId: string,
@@ -232,6 +236,9 @@ interface SessionState {
   /** Re-enable replay ingestion for a session once its agentLoadSession call
    *  has finished (so a *new* turn's updates aren't suppressed). */
   clearReplaySuppression: (id?: string) => void;
+  /** Begin/end the one owned native replay; refocusing must not fence its tail. */
+  beginHistoryReplay: (id: string) => void;
+  finishHistoryReplay: (id: string) => void;
   /** Finish only a replay-created, unterminated historical tail after
    *  agentLoadSession returns. A process exit can leave the durable log at a
    *  tool_call with no turn_completed event; that must not look live forever.
@@ -747,7 +754,7 @@ function normalizeUserChunk(update: Record<string, unknown>): ReplayedUserChunk 
   };
 }
 
-function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk, livePromptId?: string): SessionTranscript {
+function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk, promptId?: string, isReplay = false): SessionTranscript {
   const messages = [...transcript.messages];
 
   // A prompt may replay as text followed by one or more image blocks. Merge
@@ -807,10 +814,13 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk,
   // Background admission arrives before the canonical user echo. Keep its
   // identified placeholder active (and stoppable) with the user before it.
   const placeholder = messages[placeholderIndex];
-  if (livePromptId && placeholder?.promptId === livePromptId
-    && !placeholder.complete && placeholder.parts.length === 0) {
+  const admittedEcho = promptId
+    ? placeholder?.promptId === promptId
+    : !isReplay && Boolean(transcript.awaitingUserEchoPromptId)
+      && transcript.awaitingUserEchoPromptId === placeholder?.promptId;
+  if (placeholder && admittedEcho && !placeholder.complete) {
     messages.splice(placeholderIndex, 0, user);
-    return { ...transcript, messages, executionStageTitle: undefined };
+    return { ...transcript, messages, awaitingUserEchoPromptId: undefined };
   }
   // A new replayed user turn closes the previous assistant turn.
   const completed = completeStreamingAssistant({ ...transcript, messages });
@@ -913,6 +923,18 @@ function mirrorOf(t: SessionTranscript | undefined) {
 }
 
 export const useSessionStore = create<SessionState>((set, get) => {
+  // Identity belongs to the cached projection, not the selected page or the
+  // transport subscription. Weak ownership releases the ledger on cache drop;
+  // no high-water mark may discard valid out-of-order events.
+  const eventLedgers = new WeakMap<SessionTranscript, Set<string>>();
+  // Loading an empty history must not manufacture a transcript. Keep replay
+  // ownership separate from the projection, including while focus changes.
+  const historyReplays = new Set<string>();
+  const rememberEvent = (transcript: SessionTranscript, id: string) => {
+    let ledger = eventLedgers.get(transcript);
+    if (!ledger) eventLedgers.set(transcript, ledger = new Set());
+    ledger.add(id);
+  };
   /**
    * Apply a pure reducer to one session's transcript and, if that session is
    * the focused one, refresh the top-level mirror in the same `set` call so
@@ -930,6 +952,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
       };
       const next = reducer(prev);
       if (next === prev) return s;
+      const ledger = eventLedgers.get(prev);
+      if (ledger) eventLedgers.set(next, ledger);
       const transcripts = { ...s.transcripts, [sid]: next };
       // If we mutated the focused session, keep the mirror in lock-step.
       if (sid === s.sessionId) {
@@ -937,6 +961,85 @@ export const useSessionStore = create<SessionState>((set, get) => {
       }
       return { transcripts };
     });
+
+  const completeTurn = (p: PromptComplete, publicCompletion: boolean): boolean => {
+    // Route by the complete's own sessionId so a background session finishing
+    // after we switched away finalizes ITS transcript (clearing its streaming
+    // flag) instead of clobbering the focused one.
+    const target = (p as { sessionId?: string }).sessionId ?? get().sessionId;
+    const targetTranscript = target ? get().transcripts[target] : undefined;
+    const requested = targetTranscript?.control;
+    const requestedAction = p.stopReason === "cancelled" ? requested?.action : undefined;
+    const activeMessage = targetTranscript?.messages.find(
+      (message) => message.id === targetTranscript.streamingMessageId,
+    );
+    const activePromptId = targetTranscript?.pendingSendNowPromptId ?? activeMessage?.promptId;
+    const isDismissedControl = !!p.promptId
+      && !!targetTranscript?.dismissedControlPromptIds.includes(p.promptId);
+    const targetsOlderTurn = !!p.promptId && !!activePromptId && p.promptId !== activePromptId;
+    const alreadyHandled = !!p.promptId && !!targetTranscript?.handledPromptCompletionIds?.includes(p.promptId);
+    // A scheduler fallback must never overwrite the richer public outcome.
+    if (!publicCompletion && alreadyHandled) return false;
+    const unscopedReplacementCompletion = !p.promptId && p.cancelTrigger === "send_now"
+      && !!activePromptId && !targetTranscript?.pendingSendNowPromptId;
+    const preserveCurrentControl = isDismissedControl || targetsOlderTurn || alreadyHandled
+      || unscopedReplacementCompletion;
+    const terminalAction = preserveCurrentControl
+      ? undefined
+      : p.cancelTrigger === "pause" || p.cancelTrigger === "stop"
+        ? p.cancelTrigger
+        : requestedAction ?? (terminalSessionStatus(p) === "stopped" ? "stop" : undefined);
+    if (target && !preserveCurrentControl) {
+      if (terminalAction) {
+        persistSessionControl(target, {
+          action: terminalAction,
+          phase: terminalAction === "pause" ? "paused" : "stopped",
+          ...(p.promptId ? { promptId: p.promptId } : {}),
+          requestedAt: requested?.requestedAt ?? Date.now(),
+        });
+      } else if (p.cancelTrigger !== "send_now") {
+        persistSessionControl(target);
+      }
+    }
+    applyToTranscript(target, (t) => {
+      // Durable history may already contain the more precise terminal reason.
+      const completed = !publicCompletion && p.promptId && t.completedPromptIds?.includes(p.promptId)
+        ? t
+        : completeStreamingAssistant(t, {
+            promptId: p.promptId,
+            stopReason: p.stopReason,
+            cancelTrigger: p.cancelTrigger,
+            cancellationCategory: p.cancellationCategory,
+            agentResult: p.agentResult,
+          });
+      const control: SessionControl | undefined = preserveCurrentControl
+        ? completed.control
+        : terminalAction
+          ? {
+              action: terminalAction,
+              phase: terminalAction === "pause" ? "paused" : "stopped",
+              ...(p.promptId ? { promptId: p.promptId } : {}),
+              requestedAt: requested?.requestedAt ?? Date.now(),
+            }
+          : p.cancelTrigger === "send_now"
+            ? completed.control
+            : undefined;
+      const preservePendingSendNow = preserveCurrentControl
+        || (p.stopReason === "cancelled" && p.cancelTrigger === "send_now");
+      return {
+        ...completed,
+        control,
+        pendingSendNowPromptId: preservePendingSendNow
+          ? completed.pendingSendNowPromptId
+          : null,
+        usage: preserveCurrentControl ? t.usage : { ...t.usage, ...p.usage },
+        handledPromptCompletionIds: publicCompletion
+          ? rememberRecentId(t.handledPromptCompletionIds, p.promptId)
+          : t.handledPromptCompletionIds,
+      };
+    });
+    return !preserveCurrentControl;
+  };
 
   return {
     sessionId: null,
@@ -978,11 +1081,16 @@ export const useSessionStore = create<SessionState>((set, get) => {
           // Mode acknowledgements can seed a new session before it is focused.
           // Metadata alone is not cached history: suppressing that empty
           // transcript would discard every live chunk of its first turn.
-          const suppressReplay = t.messages.length > 0;
+          // A second visit may join a partially delivered history request.
+          // Its remaining events still belong to the original replay owner.
+          const suppressReplay = historyReplays.has(id) ? t.suppressReplay : t.messages.length > 0;
           if (t.suppressReplay !== suppressReplay) {
+            const next = { ...t, suppressReplay };
+            const ledger = eventLedgers.get(t);
+            if (ledger) eventLedgers.set(next, ledger);
             transcripts = {
               ...s.transcripts,
-              [id]: { ...t, suppressReplay },
+              [id]: next,
             };
           }
         }
@@ -1028,6 +1136,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
           control: undefined,
           executionStageTitle: undefined,
           streamingMessageId: id,
+          awaitingUserEchoPromptId: promptId && t.messages[t.messages.length - 1]?.role !== "user"
+            ? promptId : undefined,
           messages: [...t.messages, placeholder],
         };
       });
@@ -1150,77 +1260,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
       });
     },
 
-    markComplete: (p) => {
-      // Route by the complete's own sessionId so a background session finishing
-      // after we switched away finalizes ITS transcript (clearing its streaming
-      // flag) instead of clobbering the focused one.
-      const target = (p as { sessionId?: string }).sessionId ?? get().sessionId;
-      const targetTranscript = target ? get().transcripts[target] : undefined;
-      const requested = targetTranscript?.control;
-      const requestedAction = p.stopReason === "cancelled" ? requested?.action : undefined;
-      const activeMessage = targetTranscript?.messages.find(
-        (message) => message.id === targetTranscript.streamingMessageId,
-      );
-      const activePromptId = targetTranscript?.pendingSendNowPromptId ?? activeMessage?.promptId;
-      const isDismissedControl = !!p.promptId
-        && !!targetTranscript?.dismissedControlPromptIds.includes(p.promptId);
-      const targetsOlderTurn = !!p.promptId && !!activePromptId && p.promptId !== activePromptId;
-      const alreadyHandled = !!p.promptId && !!targetTranscript?.handledPromptCompletionIds?.includes(p.promptId);
-      const unscopedReplacementCompletion = !p.promptId && p.cancelTrigger === "send_now"
-        && !!activePromptId && !targetTranscript?.pendingSendNowPromptId;
-      const preserveCurrentControl = isDismissedControl || targetsOlderTurn || alreadyHandled
-        || unscopedReplacementCompletion;
-      const terminalAction = preserveCurrentControl
-        ? undefined
-        : p.cancelTrigger === "pause" || p.cancelTrigger === "stop"
-          ? p.cancelTrigger
-          : requestedAction ?? (terminalSessionStatus(p) === "stopped" ? "stop" : undefined);
-      if (target && !preserveCurrentControl) {
-        if (terminalAction) {
-          persistSessionControl(target, {
-            action: terminalAction,
-            phase: terminalAction === "pause" ? "paused" : "stopped",
-            ...(p.promptId ? { promptId: p.promptId } : {}),
-            requestedAt: requested?.requestedAt ?? Date.now(),
-          });
-        } else if (p.cancelTrigger !== "send_now") {
-          persistSessionControl(target);
-        }
-      }
-      applyToTranscript(target, (t) => {
-        const completed = completeStreamingAssistant(t, {
-          promptId: p.promptId,
-          stopReason: p.stopReason,
-          cancelTrigger: p.cancelTrigger,
-          cancellationCategory: p.cancellationCategory,
-          agentResult: p.agentResult,
-        });
-        const control: SessionControl | undefined = preserveCurrentControl
-          ? completed.control
-          : terminalAction
-            ? {
-                action: terminalAction,
-                phase: terminalAction === "pause" ? "paused" : "stopped",
-                ...(p.promptId ? { promptId: p.promptId } : {}),
-                requestedAt: requested?.requestedAt ?? Date.now(),
-              }
-            : p.cancelTrigger === "send_now"
-              ? completed.control
-              : undefined;
-        const preservePendingSendNow = preserveCurrentControl
-          || (p.stopReason === "cancelled" && p.cancelTrigger === "send_now");
-        return {
-          ...completed,
-          control,
-          pendingSendNowPromptId: preservePendingSendNow
-            ? completed.pendingSendNowPromptId
-            : null,
-          usage: preserveCurrentControl ? t.usage : { ...t.usage, ...p.usage },
-          handledPromptCompletionIds: rememberRecentId(t.handledPromptCompletionIds, p.promptId),
-        };
-      });
-      return !preserveCurrentControl;
-    },
+    markComplete: (p) => completeTurn(p, true),
+    finalizeTurn: (p) => completeTurn(p, false),
 
     failAllStreaming: (reason = "error", agentResult) =>
       set((state) => {
@@ -1235,17 +1276,17 @@ export const useSessionStore = create<SessionState>((set, get) => {
               return [sessionId, transcript];
             }
             changed = true;
-            return [
-              sessionId,
-              {
-                ...completeStreamingAssistant(transcript, {
-                  stopReason: reason,
-                  agentResult,
-                }),
-                pendingSendNowPromptId: null,
-                planApprovals: [],
-              },
-            ];
+            const next = {
+              ...completeStreamingAssistant(transcript, {
+                stopReason: reason,
+                agentResult,
+              }),
+              pendingSendNowPromptId: null,
+              planApprovals: [],
+            };
+            const ledger = eventLedgers.get(transcript);
+            if (ledger) eventLedgers.set(next, ledger);
+            return [sessionId, next];
           }),
         );
         if (!changed) return state;
@@ -1304,6 +1345,20 @@ export const useSessionStore = create<SessionState>((set, get) => {
         }
         return { transcripts };
       }),
+
+    beginHistoryReplay: (id) => {
+      historyReplays.add(id);
+      if (!get().transcripts[id]) return;
+      applyToTranscript(id, (t) => ({
+        ...t,
+        suppressReplay: t.messages.length > 0,
+      }));
+    },
+
+    finishHistoryReplay: (id) => {
+      historyReplays.delete(id);
+      get().clearReplaySuppression(id);
+    },
 
     clearReplaySuppression: (id) => {
       const target = id ?? get().sessionId;
@@ -1455,6 +1510,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
         "plan_approval_request",
       ]);
       const updateMeta = (u as unknown as { _meta?: Record<string, unknown> })._meta;
+      const eventId = typeof updateMeta?.eventId === "string" && updateMeta.eventId.length <= 4096
+        ? updateMeta.eventId : undefined;
       const isReplay = updateMeta?.isReplay === true;
       const toolTimestamp = typeof updateMeta?.agentTimestampMs === "number" && Number.isFinite(updateMeta.agentTimestampMs)
         ? updateMeta.agentTimestampMs : isReplay ? undefined : Date.now();
@@ -1470,6 +1527,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         : undefined;
 
       const applySessionUpdate = (tr: SessionTranscript): SessionTranscript => {
+        if (eventId && eventLedgers.get(tr)?.has(eventId)) return tr;
         // Admission can race Pause: keep this turn's canonical identity and
         // transport context even after its visible stream has been fenced.
         // Never append messages, resume work or accept another prompt's echo.
@@ -1489,7 +1547,12 @@ export const useSessionStore = create<SessionState>((set, get) => {
             attachments: mergePaths(user.attachments, chunk.attachments) };
           return { ...tr, messages };
         }
-        if (tr.suppressReplay && REPLAY_SUPPRESSED.has(t)) return tr;
+        if (isReplay && tr.suppressReplay && REPLAY_SUPPRESSED.has(t)) {
+          // The cached projection already represents this replay prefix. Keep
+          // its ids fenced after the load ends as well (late duplicate delivery).
+          if (eventId) rememberEvent(tr, eventId);
+          return tr;
+        }
         const activePromptId = tr.pendingSendNowPromptId
           ?? tr.messages.find(message => message.id === tr.streamingMessageId)?.promptId;
         if (!isReplay && updatePromptId && CONTROL_SUPPRESSED.has(t) && t !== "tool_call_update"
@@ -1542,7 +1605,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           case "user_message_chunk": {
             const chunk = normalizeUserChunk(u as unknown as Record<string, unknown>);
             if (chunk.hidden || (!chunk.text && chunk.attachments.length === 0)) return tr;
-            return activatePendingSendNow(applyUserChunk(tr, chunk, isReplay ? undefined : updatePromptId));
+            return activatePendingSendNow(applyUserChunk(tr, chunk, updatePromptId, isReplay));
           }
           case "agent_message_chunk": {
             const delta = extractDelta((u as { content?: unknown }).content);
@@ -1781,6 +1844,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
       applyToTranscript(target, tr => {
         const previousMessage = tr.messages.find(message => message.id === tr.streamingMessageId);
         const next = applySessionUpdate(tr);
+        if (next !== tr && eventId) rememberEvent(tr, eventId);
         if (next === tr || isReplay || !next.streamingMessageId
           || !["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"].includes(t)) return next;
         const index = next.messages.findIndex(message => message.id === next.streamingMessageId);

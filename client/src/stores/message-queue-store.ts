@@ -220,7 +220,7 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
       settled = q[idx];
       const next = settlement === "retry"
         ? q.map((it, itemIndex) => itemIndex === idx
-          ? { ...it, status: "queued" as const, promptId: undefined }
+          ? { ...it, status: "queued" as const, promptId: undefined, recovery: undefined, sendError: undefined }
           : it)
         : q.filter((_, itemIndex) => itemIndex !== idx);
       const queues = { ...s.queues };

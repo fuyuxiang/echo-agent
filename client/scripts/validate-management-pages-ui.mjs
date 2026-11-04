@@ -57,7 +57,7 @@ try {
           .querySelector(".page-toolbar")
           .getBoundingClientRect();
         const navigation = [
-          ...document.querySelectorAll(".page-toolbar__navigation"),
+          ...document.querySelectorAll(".window-sidebar-navigation"),
         ].filter((element) => element.getBoundingClientRect().width > 0);
         const overflow = [...document.querySelectorAll(".app__main *")]
           .filter((element) => {
@@ -84,6 +84,10 @@ try {
           overflow,
           blankHeader: !!document.querySelector(".main-page-controls"),
           navigationLeft: navigation[0]?.getBoundingClientRect().left,
+          windowToggle: (() => {
+            const { x, y, width, height } = document.querySelector(".window-sidebar-toggle").getBoundingClientRect();
+            return { x, y, width, height };
+          })(),
         };
       });
       assert(!geometry.blankHeader, `${surface}: empty window header remains`);
@@ -93,12 +97,13 @@ try {
       );
       assert.equal(
         geometry.navigation,
-        collapsed ? 1 : 0,
+        1,
         `${surface}: window controls must appear once`,
       );
+      assert.deepEqual(geometry.windowToggle, { x: 120, y: 44, width: 32, height: 32 }, `${surface}: window toggle must use the same coordinates on every page`);
       if (collapsed)
         assert(
-          geometry.navigationLeft >= 84,
+          geometry.windowToggle.y >= 44,
           `${surface}: native traffic lights overlap navigation`,
         );
       assert.deepEqual(
@@ -119,9 +124,15 @@ try {
   for (const surface of surfaces) {
     await navigationPage.goto(`${baseUrl}/__ui-review?surface=${surface}&platform=mac&collapsed=1`);
     await navigationPage.getByRole("button", { name: "展开侧边栏", exact: true }).waitFor();
+    const toggle = navigationPage.locator(".window-sidebar-toggle");
+    const before = await toggle.boundingBox();
+    const original = await toggle.elementHandle();
     await navigationPage.getByRole("button", { name: "展开侧边栏", exact: true }).click();
     await navigationPage.locator(".app__body:not(.app__body--collapsed)").waitFor();
     assert.equal(await navigationPage.locator(".page-toolbar__navigation").count(), 0, `${surface}: duplicate controls after expanding sidebar`);
+    assert.deepEqual(await toggle.boundingBox(), before, `${surface}: toggle moves while expanding`);
+    assert.ok(await toggle.evaluate((element, original) => element === original, original), `${surface}: toggle replaced while expanding`);
+    await original.dispose();
   }
   for (const platform of ["mac", "other"]) for (const width of [1280, 768]) for (const surface of ["collapsed-project", "collapsed-capabilities"]) {
     await navigationPage.setViewportSize({ width, height: 760 });

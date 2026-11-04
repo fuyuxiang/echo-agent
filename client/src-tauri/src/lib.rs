@@ -9,6 +9,8 @@ mod agent_config;
 mod agent_runtime;
 mod agents_store;
 mod app_updater;
+#[cfg(any(windows, test))]
+mod windows_install;
 mod attachment_blob;
 mod attachment_preview;
 mod automation;

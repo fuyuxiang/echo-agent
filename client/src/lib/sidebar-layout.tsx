@@ -16,6 +16,8 @@ export const SidebarLayoutContext = createContext<{
   resizing: boolean;
   expandSidebar: () => void;
   toggleSidebar: () => void;
+  windowNavigationMounted?: boolean;
+  setWindowNavigationMounted?: (mounted: boolean) => void;
 } | null>(null);
 
 function clampWidth(value: number) {
@@ -55,6 +57,7 @@ export function useAppSidebarLayout() {
   const [previewWidth, setPreviewWidth] = useState<number | null>(null);
   const [resizing, setResizing] = useState(false);
   const [panelMinimum, setPanelMinimum] = useState(0);
+  const [windowNavigationMounted, setWindowNavigationMounted] = useState(false);
   const closePanelRef = useRef<(() => void) | undefined>();
   const expandFocusRef = useRef(false);
   const bounds = sidebarBounds(containerWidth, panelMinimum);
@@ -98,7 +101,7 @@ export function useAppSidebarLayout() {
         ?? bodyRef.current.querySelector<HTMLElement>("[data-sidebar-resize]");
       restore?.focus({ preventScroll: true });
     } else if (!collapsed && expandFocusRef.current) {
-      bodyRef.current?.querySelector<HTMLElement>('.sidebar button[aria-label="收起侧边栏"]')?.focus({ preventScroll: true });
+      bodyRef.current?.querySelector<HTMLElement>('button[aria-label="收起侧边栏"]')?.focus({ preventScroll: true });
       expandFocusRef.current = false;
     }
   }, [collapsed]);
@@ -123,8 +126,8 @@ export function useAppSidebarLayout() {
   );
   const expandSidebar = useCallback(() => setCollapsed(false), [setCollapsed]);
   const toggleSidebar = useCallback(() => setCollapsed(value => !value), [setCollapsed]);
-  const context = useMemo(() => ({ panelMaxWidth, registerPanel, collapsed, resizing, expandSidebar, toggleSidebar }),
-    [panelMaxWidth, registerPanel, collapsed, resizing, expandSidebar, toggleSidebar]);
+  const context = useMemo(() => ({ panelMaxWidth, registerPanel, collapsed, resizing, expandSidebar, toggleSidebar, windowNavigationMounted, setWindowNavigationMounted }),
+    [panelMaxWidth, registerPanel, collapsed, resizing, expandSidebar, toggleSidebar, windowNavigationMounted]);
   return {
     bodyRef, context, collapsed, setCollapsed, width, preferredWidth,
     maxWidth: bounds.maxWidth, restoreMaxWidth, commitWidth, setPreviewWidth, resizing, setResizing,

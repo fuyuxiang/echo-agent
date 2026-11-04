@@ -60,6 +60,8 @@ import {
   agentSendNow,
   agentCancel,
   agentLoadSession,
+  agentReloadSession,
+  agentSessionLoadInFlight,
   agentListAllSessions,
   agentListSessions,
   agentListWorkspaces,
@@ -1099,6 +1101,31 @@ function Shell() {
                 ...(admitNewPrompt || !isControlledSessionStatus(existing?.status) ? { status } : {}),
                 updatedAt: new Date().toISOString(),
               });
+              // Launch/transport failures may have no public prompt-complete
+              // event. Close only the identified occurrence, keeping a visible
+              // terminal bubble instead of leaving an empty live placeholder.
+              if (event.phase === "finished" && finishedPromptId
+                && (event.status === "failed" || event.status === "stopped")) {
+                const transcriptStore = useSessionStore.getState();
+                const completion = {
+                  sessionId: event.sessionId,
+                  promptId: finishedPromptId,
+                  stopReason: event.status === "failed" ? "error" : "cancelled",
+                  agentResult: event.error,
+                };
+                const settled = transcriptStore.finalizeTurn(completion);
+                if (settled) {
+                  // A transport failure can omit the public completion entirely.
+                  // Retain queued input for an explicit retry without consuming
+                  // the public rail's later metadata/usage acknowledgement.
+                  const queue = useMessageQueueStore.getState();
+                  queue.holdSending(event.sessionId, finishedPromptId, true, event.error);
+                  queue.pauseQueued(event.sessionId);
+                }
+                if (settled && event.error && transcriptStore.sessionId === event.sessionId) {
+                  useSessionStore.getState().setError(event.error, { sessionId: event.sessionId, promptId: finishedPromptId });
+                }
+              }
             }
           },
           onQuestion: (q) => {
@@ -1227,10 +1254,10 @@ function Shell() {
               const status = findSessionSummary(entry.sessionId)?.status;
               // A host crash can leave history without a terminal event. A
               // healthy Runtime may still own a live turn during UI recovery.
-              if (!isAgentOwnedActiveStatus(status)) {
+              if (!agentSessionLoadInFlight(entry.sessionId) && !isAgentOwnedActiveStatus(status)) {
                 sessionStore.getState().finalizeIncompleteReplay(entry.sessionId, historyLoaded && status === "completed");
               }
-              sessionStore.getState().clearReplaySuppression(entry.sessionId);
+              if (!agentSessionLoadInFlight(entry.sessionId)) sessionStore.getState().clearReplaySuppression(entry.sessionId);
             }
             if (disposed) return;
             if (sessionsStore.getState().currentSessionId === entry.sessionId && !sessionsStore.getState().deletedSessionIds.includes(entry.sessionId)) {
@@ -2488,10 +2515,8 @@ function Shell() {
     // the first configured model: that would only change the picker, not the
     // backend session, and could route the next prompt to stale runtime settings.
     setCurrentModelId(selectedModelId);
-    // The runtime replay is the authority for lifecycle history. Clear the
-    // in-memory projection so rewind/deletion and stale cached sessions cannot
-    // leave ghost subagents; replay immediately reconstructs the durable list.
-    useSubagentStore.getState().clearSession(sessionId);
+    // The native replay owner clears derived history once. Repeated navigation
+    // may join that load after it has already restored part of the child list.
     // setSession no longer wipes the transcript — it just moves focus. If we
     // already have a cached transcript for this session it arms replay
     // suppression so EchoAgent's history re-stream can't duplicate/merge it; if we
@@ -2533,14 +2558,14 @@ function Shell() {
       // Historical replay can omit its terminal turn update. A replay-created
       // assistant must not keep the Composer in a running state after load.
       // Cached live turns are protected by finalizeIncompleteReplay itself.
-      sessionStore.getState().finalizeIncompleteReplay(
+      if (!agentSessionLoadInFlight(sessionId)) sessionStore.getState().finalizeIncompleteReplay(
         sessionId,
         historyLoaded && findSessionSummary(sessionId)?.status === "completed",
       );
       setLoadingSession((pending) => pending?.generation === generation ? null : pending);
       // Replay window is over: a *new* turn's updates for this session must be
       // ingested again. (No-op when there was no cached transcript to suppress.)
-      sessionStore.getState().clearReplaySuppression(sessionId);
+      if (!agentSessionLoadInFlight(sessionId)) sessionStore.getState().clearReplaySuppression(sessionId);
     }
   };
 
@@ -2682,7 +2707,6 @@ function Shell() {
   // drop it and reload from EchoAgent so the UI matches the rolled-back state.
   const handleRewound = async (rewoundSessionId: string) => {
     const entry = findSessionSummary(rewoundSessionId);
-    sessionStore.getState().dropSessionCache(rewoundSessionId);
     const focused = sessionsStore.getState().currentSessionId === rewoundSessionId;
     if (!entry?.cwd) {
       const error = new Error("无法重载会话：缺少工作区信息");
@@ -2693,9 +2717,8 @@ function Shell() {
     // background without stealing focus so the retry remains complete and the
     // next visit cannot suppress a partial cache as authoritative history.
     if (focused) sessionStore.getState().setSession(rewoundSessionId);
-    useSubagentStore.getState().clearSession(rewoundSessionId);
     try {
-      await agentLoadSession(rewoundSessionId, entry.cwd);
+      await agentReloadSession(rewoundSessionId, entry.cwd);
       if (sessionsStore.getState().currentSessionId === rewoundSessionId) {
         setTaskRefreshSignal((value) => value + 1);
       }
@@ -2705,7 +2728,7 @@ function Shell() {
       }
       throw error;
     } finally {
-      sessionStore.getState().clearReplaySuppression(rewoundSessionId);
+      if (!agentSessionLoadInFlight(rewoundSessionId)) sessionStore.getState().clearReplaySuppression(rewoundSessionId);
     }
   };
 

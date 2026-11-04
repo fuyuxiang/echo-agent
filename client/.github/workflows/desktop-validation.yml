@@ -164,7 +164,7 @@ jobs:
           trap 'node scripts/macos-dmg.mjs detach "$dmg" "$mount_point" || true' EXIT
           hdiutil attach -readonly -nobrowse -quiet -mountpoint "$mount_point" "$dmg"
           node scripts/validate-packaged-desktop.mjs "$mount_point/EchoAgent.app/Contents/MacOS/echoagent"
-      - name: Install and start Windows WebView; check native IPC
+      - name: Verify Windows install paths, repair, shortcuts and native IPC
         if: runner.os == 'Windows'
         env:
           ECHO_DESKTOP_VALIDATION_OUTPUT: ${{ runner.temp }}/echo-packaged-desktop-diagnostics
@@ -174,10 +174,7 @@ jobs:
           $installer = Get-Item "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/EchoAgent-v$version-windows-x86_64-setup.exe"
           node scripts/inspect-windows-installer.mjs $installer.FullName $version
           if ($LASTEXITCODE -ne 0) { throw 'Windows installer embedded version check failed' }
-          $installDir = Join-Path $env:RUNNER_TEMP 'EchoAgent中文路径验证'
-          $result = Start-Process $installer.FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
-          if ($result.ExitCode -ne 0) { throw "Installer failed: $($result.ExitCode)" }
-          node scripts/validate-packaged-desktop.mjs "$installDir/echoagent.exe"
+          ./scripts/validate-windows-installer.ps1 -Installer $installer.FullName
       - name: Preserve packaged desktop startup diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

@@ -1736,12 +1736,10 @@
 }
 /* 知识库面板(对齐 EchoAgent knowledge-base-panel) */
 .kb-panel {
-  border: 1px solid var(--echo-border-default);
-  border-radius: 10px;
-  background: var(--echo-bg-primary);
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   font-size: 0.75rem;
-  margin: 8px 0;
 }
 .kb-panel__head {
   display: flex;

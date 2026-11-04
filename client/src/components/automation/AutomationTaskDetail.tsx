@@ -12,7 +12,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import type { Automation, AutomationRunRecord } from "@/lib/types";
-import { automationRunResult } from "@/lib/agent-client";
+import { useRunPreview } from "./use-run-preview";
 import { Markdown } from "@/components/Markdown";
 import { modelDisplayName } from "@/lib/model-presentation";
 import { createMarkdownHostConfig } from "@/lib/markdown-host";
@@ -72,16 +72,10 @@ export function AutomationTaskDetail({
   const runs = orderedRuns(records);
   const latestId = runs[0]?.id;
   const [selectedId, setSelectedId] = useState(initialRecordId ?? latestId);
-  const [result, setResult] = useState<{
-    text: string;
-    truncated: boolean;
-  } | null>(null);
-  const [resultError, setResultError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [reload, setReload] = useState(0);
   const [stopping, setStopping] = useState(false);
   const [cleaningId, setCleaningId] = useState<string>();
   const selected = runs.find((run) => run.id === selectedId) ?? runs[0];
+  const { result, error: resultError, loading, retry } = useRunPreview(selected);
   const pendingCleanup = runs.find(runNeedsCleanup);
   const markdownConfig = useMemo(() => {
     const { onApplyCode: _apply, ...reading } = createMarkdownHostConfig({
@@ -96,29 +90,6 @@ export function AutomationTaskDetail({
   useEffect(() => {
     setSelectedId(initialRecordId ?? latestId);
   }, [initialRecordId, latestId]);
-  useEffect(() => {
-    let active = true;
-    setResult(null);
-    setResultError("");
-    if (!selected?.sessionId) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    void automationRunResult(selected.id)
-      .then((value) => {
-        if (active) setResult(value);
-      })
-      .catch((error) => {
-        if (active) setResultError(String(error).replace(/^Error:\s*/, ""));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [selected?.id, selected?.status, selected?.finishedAt, reload]);
   const name = task?.name ?? runs[0]?.automationName ?? "定时任务";
   return (
     <div className="atm-task-detail">
@@ -233,7 +204,6 @@ export function AutomationTaskDetail({
       <section
         className="atm-run-result"
         aria-label="本次运行结果"
-        aria-live="polite"
       >
         <h2>
           {selected && selected.id !== latestId
@@ -254,9 +224,12 @@ export function AutomationTaskDetail({
           <>
             <div
               className={`atm-run-result__state atm-run-result__state--${selected.needsAttention ? "attention" : selected.status}`}
+              role="status"
             >
               {selected.status === "success" ? (
                 <CheckCircle2 size={18} />
+              ) : runBusy(selected) && !selected.needsAttention ? (
+                <Clock3 size={18} />
               ) : (
                 <AlertCircle size={18} />
               )}
@@ -302,31 +275,35 @@ export function AutomationTaskDetail({
             {selected.needsAttention && (
               <p>本次运行需要你确认权限或补充信息，处理后才能继续。</p>
             )}
-            {loading ? (
+            {result?.progress && result.progress.totalTools > 0 && (
+              <div className="atm-run-progress" role="status" aria-label="本次执行进度">
+                <span>已处理 {result.progress.completedTools + result.progress.failedTools}/{result.progress.totalTools} 项操作
+                  {result.progress.failedTools > 0 ? ` · ${result.progress.failedTools} 项失败` : ""}</span>
+                {runBusy(selected) && result.progress.activeTool && <span>正在：{result.progress.activeTool}</span>}
+                {runBusy(selected) && result.progress.lastActivityAt && <span>最近进展：<time dateTime={new Date(result.progress.lastActivityAt).toISOString()}>{new Date(result.progress.lastActivityAt).toLocaleTimeString("zh-CN", { hour12: false })}</time></span>}
+              </div>
+            )}
+            {runBusy(selected) && selected.sessionId && <p className="atm-task-detail__muted">执行内容自动更新，可查看实时过程。</p>}
+            {resultError && (
+              <div role="alert">
+                <p>读取执行内容失败：{resultError}。已显示的内容会保留。</p>
+                <button type="button" className="atm-toolbar-btn" onClick={retry}>重新读取结果</button>
+              </div>
+            )}
+            {loading && !result ? (
               <p className="atm-task-detail__muted" role="status">
                 正在读取本次结果…
               </p>
-            ) : resultError ? (
-              <div role="alert">
-                <p>{resultError}</p>
-                <button
-                  type="button"
-                  className="atm-toolbar-btn"
-                  onClick={() => setReload((value) => value + 1)}
-                >
-                  重新读取结果
-                </button>
-              </div>
             ) : result?.text ? (
               <div className="atm-run-result__content">
                 <Markdown config={markdownConfig} complete={!runBusy(selected)}>
                   {result.text}
                 </Markdown>
               </div>
-            ) : (
+            ) : !resultError && (
               <p className="atm-task-detail__muted">
                 {runBusy(selected)
-                  ? "结果生成中，可进入会话查看实时过程。"
+                  ? selected.sessionId ? "任务正在执行，尚未生成文本内容。" : "正在等待执行准备完成，开始后会自动显示进度。"
                   : selected.status === "success"
                     ? "本次运行未留下可直接展示的文本结果，可查看完整会话。"
                     : "本次没有可展示的结果，可查看错误说明或完整会话。"}
@@ -410,7 +387,7 @@ export function AutomationTaskDetail({
                     onOpenSession(selected.sessionId!, selected.cwd)
                   }
                 >
-                  {selected.needsAttention ? "前往处理" : "查看完整会话"}
+                  {selected.needsAttention ? "前往处理" : runBusy(selected) ? "查看实时过程" : "查看完整会话"}
                 </button>
               )}
               {runBusy(selected) && !selected.cleanup && !selected.completionPending && (

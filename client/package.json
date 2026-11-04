@@ -34,7 +34,7 @@
     "test:task-recovery": "node scripts/test-browser-inputs.mjs && node scripts/validate-task-recovery-ui.mjs",
     "test:ui:organization": "node scripts/validate-organization-workspace-ui.mjs",
     "test:ui:management-pages": "node scripts/validate-management-pages-ui.mjs",
-    "test:ui:scheduled-tasks": "node scripts/validate-scheduled-tasks-ui.mjs",
+    "test:ui:scheduled-tasks": "node scripts/validate-scheduled-tasks-ui.mjs && node scripts/validate-scheduled-transcript-ui.mjs",
     "test:ui:brand-palette": "node scripts/validate-brand-palette-ui.mjs",
     "test:ui:settings": "node scripts/validate-settings-navigation-ui.mjs && node scripts/validate-notification-settings-ui.mjs && node scripts/validate-settings-controls-ui.mjs",
     "test:ui:tool-modes": "node scripts/validate-unified-tool-modes-ui.mjs",

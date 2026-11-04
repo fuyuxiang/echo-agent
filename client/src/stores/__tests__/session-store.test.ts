@@ -1208,7 +1208,7 @@ describe("session-store transcripts", () => {
     );
 
     // 回放重发的历史 chunk 必须被丢弃,不能合并/重复。
-    s.applyUpdate(chunk("REPLAYED", "A"));
+    s.applyUpdate({ ...chunk("REPLAYED", "A"), _meta: { isReplay: true } });
     expect(textOf(1)).toBe("real");
 
     // load 结束后清除抑制,真正的新一轮 update 才能进入。

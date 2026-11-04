@@ -8,7 +8,7 @@ export function WorkbenchIdentity({ onExit, children }: { onExit: () => void; ch
   const sidebarLayout = useContext(SidebarLayoutContext);
   return (
     <div className="coding-workbench__topbar-left" data-tauri-drag-region>
-      {sidebarLayout?.collapsed && (
+      {sidebarLayout?.collapsed && !sidebarLayout.windowNavigationMounted && (
         <button type="button" className="coding-icon-btn" onClick={sidebarLayout.toggleSidebar}
           aria-expanded={false} aria-controls="app-sidebar"
           aria-label="展开侧边栏"

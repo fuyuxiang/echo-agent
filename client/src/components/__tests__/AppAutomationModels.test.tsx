@@ -82,6 +82,7 @@ import { useProjectsStore } from "@/stores/projects-store";
 import { usePermissionStore } from "@/stores/permission-store";
 import { useQuestionStore } from "@/stores/question-store";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
+import { useSubagentStore } from "@/stores/subagent-store";
 import { resetOrgSessionMirror } from "@/stores/org-session-store";
 
 let handlers: Parameters<typeof client.subscribeAgentEvents>[0];
@@ -106,6 +107,7 @@ beforeEach(() => {
   usePermissionStore.getState().clearAll();
   useQuestionStore.getState().clearAll();
   useMessageQueueStore.setState({ queues: {} });
+  useSubagentStore.setState({ bySession: {} });
   recorder.current.mockReturnValue({ meeting: null, active: false, pendingSave: false });
   useProjectsStore.setState({
     ...useProjectsStore.getInitialState(),
@@ -192,6 +194,152 @@ describe("自动化会话模型同步", () => {
     expect(useSessionStore.getState().transcripts["auto-1"].control?.promptId).toBe("p-next");
   });
 
+  it("旧 Runtime 无轮次身份的用户回显保留后台任务的过程和结果", async () => {
+    await start();
+    act(() => {
+      handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "legacy-run", promptId: "legacy-prompt", status: "running", sessionId: "auto-1", cwd: "/workspace" });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "执行定时任务", _meta: { promptIndex: 0 } }, _meta: { eventId: "auto-1-1" } });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "唯一任务结论" }, _meta: { promptId: "legacy-prompt", eventId: "auto-1-2" } });
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "legacy-prompt", stopReason: "end_turn" });
+    });
+    const messages = useSessionStore.getState().transcripts["auto-1"].messages;
+    expect(messages.map(message => message.role)).toEqual(["user", "assistant"]);
+    expect(messages[1]).toMatchObject({ complete: true, parts: [{ kind: "text", text: "唯一任务结论" }] });
+    expect(useSessionsStore.getState().independent[0].status).toBe("completed");
+  });
+
+  it("启动或传输失败没有公开完成事件时结束占位并展示错误", async () => {
+    await start();
+    act(() => {
+      handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "failed-run", promptId: "failed-prompt", status: "running", sessionId: "auto-1", cwd: "/workspace" });
+      useSessionStore.getState().setSession("auto-1");
+      handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "failed-run", status: "failed", sessionId: "auto-1", cwd: "/workspace", error: "模型连接已中断" });
+    });
+    expect(useSessionStore.getState().streaming).toBe(false);
+    expect(useSessionStore.getState().messages[0]).toMatchObject({ promptId: "failed-prompt", stopReason: "error", complete: true });
+    expect(useSessionStore.getState().error).toBe("模型连接已中断");
+    expect(useSessionsStore.getState().independent[0].status).toBe("failed");
+  });
+
+  it.each(["failed", "stopped"] as const)("%s 兜底立即暂停队列，没有公开完成事件也保留后台错误", async status => {
+    await start();
+    act(() => {
+      handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "fallback-run", promptId: "fallback-prompt", status: "running", sessionId: "auto-1", cwd: "/workspace" });
+      useMessageQueueStore.getState().enqueue("auto-1", "保留等待确认", ["/tmp/任务资料.docx"]);
+      handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "fallback-run", promptId: "fallback-prompt", status, sessionId: "auto-1", cwd: "/workspace", error: "连接中断的具体原因" });
+    });
+    expect(useSessionStore.getState().sessionId).not.toBe("auto-1");
+    expect(useSessionStore.getState().transcripts["auto-1"].messages[0]).toMatchObject({
+      complete: true, agentResult: "连接中断的具体原因",
+    });
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([
+      { text: "保留等待确认", status: "paused", attachments: ["/tmp/任务资料.docx"] },
+    ]);
+    act(() => {
+      useSessionStore.getState().startStreaming("auto-1", "later-prompt");
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "later-prompt", stopReason: "end_turn" });
+    });
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["failed", "automation-first"], ["failed", "public-first"],
+    ["stopped", "automation-first"], ["stopped", "public-first"],
+  ] as const)("%s 的 %s 顺序保留正式终态、用量和队列暂停", async (status, order) => {
+    await start();
+    act(() => {
+      handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "ordered-run", promptId: "ordered-prompt", status: "running", sessionId: "auto-1", cwd: "/workspace" });
+      const queue = useMessageQueueStore.getState();
+      queue.enqueue("auto-1", "本轮已发送");
+      queue.claimNext("auto-1", "ordered-prompt");
+      queue.enqueue("auto-1", "暂不自动发送");
+      const fallback = () => handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "ordered-run", promptId: "ordered-prompt", status, sessionId: "auto-1", cwd: "/workspace", error: "调度器简要原因" });
+      const complete = () => handlers.onComplete?.({
+        sessionId: "auto-1", promptId: "ordered-prompt",
+        stopReason: status === "failed" ? "rate_limit" : "cancelled",
+        ...(status === "stopped" ? { cancelTrigger: "stop" } : {}),
+        agentResult: "Runtime 的准确结束原因", usage: { promptTokens: 123, completionTokens: 45 },
+      });
+      if (order === "automation-first") {
+        fallback();
+        expect(useSessionStore.getState().transcripts["auto-1"].handledPromptCompletionIds ?? []).not.toContain("ordered-prompt");
+        expect(queue.getQueue("auto-1").every(item => item.status === "paused")).toBe(true);
+        complete();
+      } else {
+        complete(); fallback();
+        expect(useSessionStore.getState().transcripts["auto-1"].messages[0]).toMatchObject({
+          stopReason: status === "failed" ? "rate_limit" : "cancelled", agentResult: "Runtime 的准确结束原因",
+        });
+      }
+      fallback(); complete();
+    });
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    expect(transcript.usage).toMatchObject({ promptTokens: 123, completionTokens: 45 });
+    expect(transcript.messages[0]).toMatchObject({
+      stopReason: status === "failed" ? "rate_limit" : "cancelled", agentResult: "Runtime 的准确结束原因",
+    });
+    expect(useMessageQueueStore.getState().getQueue("auto-1").every(item => item.status === "paused")).toBe(true);
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("历史加载期间再次打开会话保留完整消息和子任务，切换其他会话=%s", async switchAway => {
+    const actual = await vi.importActual<typeof import("@/lib/agent-client")>("@/lib/agent-client");
+    await start();
+    created("model-a");
+    useSessionsStore.getState().upsert({ sessionId: "other", cwd: "/workspace", title: "其他任务" });
+    let finish!: (model: string) => void;
+    vi.mocked(client.agentLoadSession).mockImplementation(actual.agentLoadSession);
+    vi.mocked(invoke).mockImplementation(async command => {
+      if (command === "agent_load_session") {
+        handlers.onSubagent?.({ sessionId: "auto-1", phase: "spawned", subagentId: "historical-child", description: "核查资料", isReplay: true });
+        handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "历史任务", _meta: { promptIndex: 0 } }, _meta: { eventId: "history-user", isReplay: true } });
+        handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "前半段" }, _meta: { eventId: "history-prefix", promptId: "history-prompt", isReplay: true } });
+        return await new Promise(resolve => { finish = resolve as typeof finish; });
+      }
+      return command === "notification_take_pending_opens" ? [] : null;
+    });
+    fireEvent.click(screen.getByText("打开自动化"));
+    await waitFor(() => expect(useSubagentStore.getState().getForSession("auto-1")).toHaveLength(1));
+    if (switchAway) {
+      // Navigate without creating a second native replay in this fixture.
+      act(() => { useSessionsStore.getState().setCurrent("other"); useSessionStore.getState().setSession("other"); });
+    }
+    fireEvent.click(screen.getByText("打开自动化"));
+    await waitFor(() => expect(client.agentLoadSession).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      handlers.onSubagent?.({ sessionId: "auto-1", phase: "finished", subagentId: "historical-child", status: "completed", output: "核查证据", isReplay: true });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "后半段" }, _meta: { eventId: "history-suffix", promptId: "history-prompt", isReplay: true } });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "turn_completed", prompt_id: "history-prompt", stop_reason: "end_turn", _meta: { eventId: "history-complete", isReplay: true } });
+      finish("model-a");
+    });
+    expect(useSubagentStore.getState().getForSession("auto-1")).toMatchObject([
+      { description: "核查资料", status: "completed", output: "核查证据" },
+    ]);
+    expect(useSessionStore.getState().transcripts["auto-1"].messages).toMatchObject([
+      { role: "user" }, { role: "assistant", complete: true, parts: [{ kind: "text", text: "前半段后半段" }] },
+    ]);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "agent_load_session")).toHaveLength(1);
+    expect(useSessionStore.getState().transcripts["auto-1"].suppressReplay).toBe(false);
+  });
+
+  it("停止兜底等待正式结果，迟到的失败保留输入并消除发送待确认状态", async () => {
+    await start();
+    act(() => {
+      handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "uncertain-run", promptId: "uncertain-prompt", status: "running", sessionId: "auto-1", cwd: "/workspace" });
+      const queue = useMessageQueueStore.getState();
+      queue.enqueue("auto-1", "本轮完整要求", ["/tmp/原始资料.docx"]);
+      queue.claimNext("auto-1", "uncertain-prompt");
+      handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "uncertain-run", promptId: "uncertain-prompt", status: "stopped", sessionId: "auto-1", cwd: "/workspace", error: "等待正式结果" });
+      expect(queue.getQueue("auto-1")).toMatchObject([{ status: "paused", recovery: "uncertain", promptId: "uncertain-prompt" }]);
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "uncertain-prompt", stopReason: "error", agentResult: "执行失败的准确原因" });
+    });
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{
+      text: "本轮完整要求", attachments: ["/tmp/原始资料.docx"], status: "paused",
+      recovery: undefined, promptId: undefined, sendError: undefined,
+    }]);
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
   it("运行完成通知迟到时不能覆盖后续手动追问的状态", async () => {
     await start(); created("model-a");
     act(() => {
@@ -199,6 +347,24 @@ describe("自动化会话模型同步", () => {
       handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "r", promptId: "scheduled", status: "success", sessionId: "auto-1", cwd: "/workspace" });
     });
     expect(useSessionsStore.getState().independent[0].status).toBe("working");
+  });
+
+  it("旧自动化失败通知不暂停新追问的队列，也不覆盖新轮次错误", async () => {
+    await start();
+    act(() => {
+      handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "old-run", promptId: "old-prompt", status: "running", sessionId: "auto-1", cwd: "/workspace" });
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "old-prompt", stopReason: "end_turn" });
+      useSessionStore.getState().pushUser("新的手动任务", [], "auto-1");
+      useSessionStore.getState().startStreaming("auto-1", "manual-followup");
+      useSessionsStore.getState().upsert({ sessionId: "auto-1", status: "working" });
+      useMessageQueueStore.getState().enqueue("auto-1", "新任务的下一步");
+      handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "old-run", promptId: "old-prompt", status: "failed", sessionId: "auto-1", cwd: "/workspace", error: "旧轮次的迟到错误" });
+    });
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    expect(transcript.messages.find(message => message.id === transcript.streamingMessageId)).toMatchObject({ promptId: "manual-followup", complete: false });
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{ text: "新任务的下一步", status: "queued" }]);
+    expect(useSessionsStore.getState().independent[0].status).toBe("working");
+    expect(useSessionStore.getState().error).toBeNull();
   });
 
   it.each(["pause", "stop"] as const)("入场事件迟到时不能解除用户对同一轮次的 %s", async (action) => {

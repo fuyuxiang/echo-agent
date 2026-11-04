@@ -306,7 +306,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
       )}
       {!sourcesError && !sourcesLoading && sources.length === 0 && (
         <div className="kb-panel__empty-state">
-          <div className="kb-panel__empty-icon"><FolderOpen size={30} strokeWidth={1.7} /></div>
+          <div className="kb-panel__empty-icon" aria-hidden="true"><FolderOpen size={30} strokeWidth={1.7} /></div>
           <h2>还没有添加知识源</h2>
           <p>选择一个存放资料的本地文件夹，添加后即可在这里搜索内容，并在任务中引用来源。</p>
           {isTauriAvailable() ? (
@@ -386,6 +386,13 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           aria-label="搜索知识库"
         />
       </div>}
+      {sources.length > 0 && !currentQuery && (
+        <div className="kb-panel__search-hint">
+          <Search size={28} strokeWidth={1.5} aria-hidden="true" />
+          <h2>搜索你的资料</h2>
+          <p>输入关键词，查找已添加知识源中的内容。</p>
+        </div>
+      )}
       {sources.length > 0 && currentQuery && (
         <>
           {searchError && !searching && (

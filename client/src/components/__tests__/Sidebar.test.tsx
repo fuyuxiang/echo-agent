@@ -5,7 +5,8 @@ import { Sidebar } from "../Sidebar";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { resetOrgSessionMirror, useOrgSessionStore } from "@/stores/org-session-store";
-import { SidebarLayoutContext } from "@/lib/sidebar-layout";
+import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout";
+import { PageChromeProvider, PageToolbar } from "../PageToolbar";
 import { SIDEBAR_MENU_STORAGE_KEY } from "@/lib/sidebar-menu";
 import type { SessionStatus } from "@/lib/types";
 import { agentDeleteSession } from "@/lib/agent-client";
@@ -29,6 +30,21 @@ const base = {
   onPlaceholder: vi.fn(),
   activeNav: "新建任务",
 };
+
+function WindowShell({ page, onNewTask = () => {} }: { page: string; onNewTask?: () => void }) {
+  const layout = useAppSidebarLayout();
+  return <SidebarLayoutContext.Provider value={layout.context}>
+    <div ref={layout.bodyRef} className={`app__body${layout.collapsed ? " app__body--collapsed" : ""}`}>
+      <Sidebar {...base} onToggleCollapse={undefined} onNewSession={onNewTask} />
+      <main>
+        <PageChromeProvider sidebarCollapsed={layout.collapsed} onToggleSidebar={layout.context.toggleSidebar} onNewTask={onNewTask}>
+          <PageToolbar key={page}>{page}</PageToolbar>
+        </PageChromeProvider>
+        <button onClick={layout.context.toggleSidebar}>外部切换侧栏</button>
+      </main>
+    </div>
+  </SidebarLayoutContext.Provider>;
+}
 
 describe("Sidebar", () => {
   afterEach(() => vi.useRealTimers());
@@ -83,12 +99,14 @@ describe("Sidebar", () => {
   it.each(["collapsed", "resizing"] as const)("侧栏 %s 时关闭更多浮层并阻止重新展开", async (state) => {
     const layout = { collapsed: false, resizing: false, panelMaxWidth: 600, registerPanel: vi.fn(), expandSidebar: vi.fn(), toggleSidebar: vi.fn() };
     const { rerender } = render(<SidebarLayoutContext.Provider value={layout}><Sidebar {...base} /></SidebarLayoutContext.Provider>);
-    await userEvent.hover(screen.getByRole("button", { name: /更多/ }));
+    const more = screen.getByRole("button", { name: /更多/ });
+    await userEvent.hover(more);
     expect(screen.getByRole("menu", { name: "更多功能" })).toBeInTheDocument();
     rerender(<SidebarLayoutContext.Provider value={{ ...layout, [state]: true }}><Sidebar {...base} /></SidebarLayoutContext.Provider>);
     expect(screen.queryByRole("menu", { name: "更多功能" })).not.toBeInTheDocument();
-    fireEvent.mouseEnter(screen.getByRole("button", { name: /更多/ }));
-    fireEvent.keyDown(screen.getByRole("button", { name: /更多/ }), { key: "ArrowDown" });
+    // Ignore late events from the old trigger after it leaves the accessibility tree.
+    fireEvent.mouseEnter(more);
+    fireEvent.keyDown(more, { key: "ArrowDown" });
     expect(screen.queryByRole("menu", { name: "更多功能" })).not.toBeInTheDocument();
   });
 
@@ -394,6 +412,41 @@ describe("Sidebar", () => {
     render(<SidebarLayoutContext.Provider value={layout}><Sidebar {...base} onToggleCollapse={undefined} /></SidebarLayoutContext.Provider>);
     fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
     expect(toggleSidebar).toHaveBeenCalledOnce();
+  });
+
+  it("窗口开关在收起、页面切换和连续键盘操作后保留同一按钮与焦点", async () => {
+    const user = userEvent.setup();
+    const { container, rerender } = render(<WindowShell page="项目" />);
+    const toggle = screen.getByRole("button", { name: "收起侧边栏" });
+    const brand = container.querySelector(".window-sidebar-brand");
+    expect(brand).toHaveTextContent("EchoAgent");
+    expect(container.querySelector(".sidebar__logo-row")).toBeNull();
+    toggle.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "展开侧边栏" })).toBe(toggle);
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelector(".window-sidebar-brand")).toBe(brand);
+    expect(container.querySelectorAll(".sidebar__logo")).toHaveLength(1);
+    expect(container.querySelector(".page-toolbar__navigation")).toBeNull();
+    rerender(<WindowShell page="知识库" />);
+    expect(screen.getByRole("button", { name: "展开侧边栏" })).toBe(toggle);
+    expect(toggle).toHaveFocus();
+    await user.keyboard("{Enter}{Enter}{Enter}");
+    expect(screen.getByRole("button", { name: "收起侧边栏" })).toBe(toggle);
+    expect(toggle).toHaveFocus();
+    expect(container.querySelectorAll(".window-sidebar-toggle")).toHaveLength(1);
+    expect(container.querySelector(".window-sidebar-brand")).toBe(brand);
+  });
+
+  it("从侧栏内部收起时将焦点交给窗口开关，并保留新建任务入口", () => {
+    const onNewTask = vi.fn();
+    render(<WindowShell page="项目" onNewTask={onNewTask} />);
+    screen.getByRole("button", { name: "搜索全部任务" }).focus();
+    fireEvent.click(screen.getByRole("button", { name: "外部切换侧栏" }));
+    expect(screen.getByRole("button", { name: "展开侧边栏" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
+    expect(onNewTask).toHaveBeenCalledOnce();
   });
 
   it("搜索按钮触发 onOpenSearch,设置按钮触发 onOpenSettings", () => {

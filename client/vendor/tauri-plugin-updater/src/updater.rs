@@ -443,6 +443,11 @@ impl Updater {
                         log::error!(
                             "update endpoint did not respond with a successful status code"
                         );
+                        // Preserve HTTP status (for example 410) for the host UI.
+                        // Continue trying any configured fallback endpoints.
+                        if let Err(error) = res.error_for_status() {
+                            last_error = Some(error.into());
+                        }
                     }
                 }
                 Err(err) => {
@@ -709,9 +714,14 @@ impl Update {
         let current_args = &self.current_exe_args()[1..];
         let msi_args;
         let nsis_args;
+        let nsis_install_dir;
 
         let installer_args: Vec<&OsStr> = match &updater_type {
             WindowsUpdaterType::Nsis { .. } => {
+                // The running application's validated location is authoritative.
+                // A stale registry entry must not redirect an update into Temp.
+                // /D= is an unquoted, terminal NSIS argument (spaces included).
+                nsis_install_dir = crate::nsis_install::install_dir_arg(&self.extract_path)?;
                 nsis_args = current_args
                     .iter()
                     .map(escape_nsis_current_exe_arg)
@@ -725,6 +735,7 @@ impl Update {
                     .chain(once(OsStr::new("/ARGS")))
                     .chain(nsis_args.iter().map(OsStr::new))
                     .chain(self.installer_args())
+                    .chain(once(nsis_install_dir.as_os_str()))
                     .collect()
             }
             WindowsUpdaterType::Msi { path, .. } => {

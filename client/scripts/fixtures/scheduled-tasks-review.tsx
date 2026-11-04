@@ -84,10 +84,26 @@ const calls: { command: string; args: unknown }[] = [];
 const resultById: Record<string, string> = {
   old: "## 今日简报\n\n已整理 5 条值得关注的进展。\n\n本次结果已生成，通知未送达不影响执行结果。",
 };
+const progressById: Record<string, import("../../src/lib/agent-client").AutomationRunResult["progress"]> = {};
+let failNextResult = false;
+if (params.get("state") === "live-preview") {
+  records[0] = { ...records[0], status: "running", sessionId: undefined, notificationDelivery: undefined };
+  resultById.old = "";
+}
 Object.assign(window, {
   scheduledReview: {
     calls,
     snapshot: () => structuredClone({ tasks, records }),
+    advance: (phase: "admitted" | "progress" | "read-error" | "completed") => {
+      if (phase === "read-error") { failNextResult = true; return; }
+      records[0] = { ...records[0], sessionId: "session-old", status: phase === "completed" ? "success" : "running",
+        ...(phase === "completed" ? { finishedAt: new Date().toISOString() } : {}) };
+      if (phase !== "admitted") {
+        resultById.old = phase === "completed" ? "## 唯一最终结论\n\n本次任务已完成，结果只展示一次。" : "已核实第一项来源，正在整理报告。";
+        progressById.old = { totalTools: 2, completedTools: phase === "completed" ? 2 : 1, failedTools: 0,
+          ...(phase !== "completed" ? { activeTool: "核实剩余资料并整理报告" } : {}), lastActivityAt: Date.now() };
+      }
+    },
   },
   __TAURI_INTERNALS__: {
     transformCallback: () => 1,
@@ -206,7 +222,8 @@ Object.assign(window, {
           return structuredClone(task);
         }
         case "automation_run_result":
-          return { text: resultById[args.id] || "", truncated: false };
+          if (failNextResult) { failNextResult = false; throw new Error("暂时无法读取执行内容"); }
+          return { text: resultById[args.id] || "", truncated: false, progress: progressById[args.id] };
         case "automation_run_stop":
           records = records.map((run) =>
             run.id === args.id

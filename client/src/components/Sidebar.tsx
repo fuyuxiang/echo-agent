@@ -39,6 +39,7 @@ import { MoveToProjectDialog } from "./MoveToProjectDialog";
 import { useAppDialog } from "./AppDialog";
 import { GroupSidebar } from "@/features/groups/GroupSidebar";
 import { SidebarMenuCustomizer } from "./SidebarMenuCustomizer";
+import { WindowSidebarNavigation } from "./WindowSidebarNavigation";
 
 /** Compact, locale-friendly relative time for the sidebar row tail. */
 function relativeTime(iso: string, now: number): string {
@@ -531,7 +532,7 @@ export function Sidebar({
   onSelect: (sessionId: string, cwd?: string) => void;
   onNavigate: (label: string) => void;
   onOpenSettings: () => void;
-  /** Collapse the sidebar; an expand affordance is rendered over the main area. */
+  /** Collapse the sidebar; the window-owned control also restores it. */
   onToggleCollapse?: () => void;
   /** Open the session search overlay. */
   onOpenSearch: () => void;
@@ -555,6 +556,11 @@ export function Sidebar({
 }) {
   const sidebarLayout = useContext(SidebarLayoutContext);
   const collapseSidebar = onToggleCollapse ?? sidebarLayout?.toggleSidebar;
+  const registerWindowNavigation = sidebarLayout?.setWindowNavigationMounted;
+  useLayoutEffect(() => {
+    registerWindowNavigation?.(true);
+    return () => registerWindowNavigation?.(false);
+  }, [registerWindowNavigation]);
   const [menuLayout, setMenuLayout] = useState(loadSidebarMenuLayout);
   const [customizingMenu, setCustomizingMenu] = useState(false);
   const menuReturnFocus = useRef<HTMLButtonElement | null>(null);
@@ -950,14 +956,20 @@ export function Sidebar({
   }, 0);
 
   return (
-    <aside id="app-sidebar" ref={sidebarRef} className="sidebar">
-      {/* Windows shares one row for branding and tools; macOS keeps its traffic-light safe area. */}
+    <>
+    {registerWindowNavigation && <WindowSidebarNavigation
+      collapsed={sidebarLayout?.collapsed ?? false}
+      onToggle={() => sidebarLayout?.collapsed ? sidebarLayout.expandSidebar() : collapseSidebar?.()}
+      onNewTask={onNewSession}
+    />}
+    <aside id="app-sidebar" ref={sidebarRef} className="sidebar" aria-hidden={sidebarLayout?.collapsed || undefined}>
+      {/* The window header owns branding when mounted; isolated sidebars keep their fallback. */}
       <div className={"sidebar__toolbar" + (IS_WINDOWS ? " sidebar__toolbar--branded" : "")} {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
-        {IS_WINDOWS && (
+        {!registerWindowNavigation && IS_WINDOWS && (
           <span className="sidebar__logo sidebar__toolbar-brand"><span className="sidebar__logo-echo">Echo</span><span className="sidebar__logo-agent">Agent</span></span>
         )}
         <div className="sidebar__toolbar-actions" role="group" aria-label="侧边栏工具">
-          {collapseSidebar && <button
+          {!registerWindowNavigation && collapseSidebar && <button
             type="button"
             className="sidebar__icon-btn"
             aria-label="收起侧边栏"
@@ -1021,7 +1033,7 @@ export function Sidebar({
           </div>
         </div>
       </div>
-      {!IS_WINDOWS && (
+      {!registerWindowNavigation && !IS_WINDOWS && (
         <div className="sidebar__logo-row" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
           <div className="sidebar__logo-col" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
             <span className="sidebar__logo"><span className="sidebar__logo-echo">Echo</span><span className="sidebar__logo-agent">Agent</span></span>
@@ -1285,5 +1297,6 @@ export function Sidebar({
       )}
       {dialog}
     </aside>
+    </>
   );
 }

@@ -49,7 +49,8 @@ import type {
 } from "./types";
 
 import type { QuestionRequest } from "@/stores/question-store";
-import type { PlanApprovalRequest } from "@/stores/session-store";
+import { useSessionStore, type PlanApprovalRequest } from "@/stores/session-store";
+import { useSubagentStore } from "@/stores/subagent-store";
 import { isUpstreamBrandedModelId } from "@/lib/model-branding";
 import { preparePromptWithPersonalKnowledge } from "@/lib/knowledge-context";
 import { hydrateKnowledgeTraces, persistKnowledgeTrace } from "@/lib/knowledge-traces-client";
@@ -185,7 +186,50 @@ export async function agentSessionWorkspaceStatus(sessionId: string, cwd: string
 
 // Loading replays history through agent://update and returns the runtime's
 // actual session model. Never substitute the global default for this value.
-export async function agentLoadSession(sessionId: string, cwd: string): Promise<string | null> {
+const sessionLoads = new Map<string, { cwd: string; promise: Promise<string | null> }>();
+
+export function agentSessionLoadInFlight(sessionId: string): boolean {
+  return sessionLoads.has(sessionId);
+}
+
+export function agentLoadSession(sessionId: string, cwd: string): Promise<string | null> {
+  const pending = sessionLoads.get(sessionId);
+  if (pending) {
+    return pending.cwd === cwd ? pending.promise
+      : Promise.reject(new Error("会话正在加载，请使用该会话绑定的工作目录重试"));
+  }
+  // Register ownership before touching stores or invoking native replay. Any
+  // reentrant navigation then joins the same projection and request.
+  const promise = Promise.resolve().then(() => loadSessionHistory(sessionId, cwd)).finally(() => {
+    if (sessionLoads.get(sessionId)?.promise === promise) {
+      sessionLoads.delete(sessionId);
+      useSessionStore.getState().finishHistoryReplay(sessionId);
+    }
+  });
+  sessionLoads.set(sessionId, { cwd, promise });
+  return promise;
+}
+
+/** Rewind invalidates the projection. An older replay must finish before the
+ * cache is discarded, otherwise joining its promise would leave an empty chat. */
+export async function agentReloadSession(sessionId: string, cwd: string): Promise<string | null> {
+  for (let pending = sessionLoads.get(sessionId); pending; pending = sessionLoads.get(sessionId)) {
+    if (pending.cwd !== cwd) throw new Error("会话正在加载，请使用该会话绑定的工作目录重试");
+    try {
+      await pending.promise;
+    } catch {
+      // A failed old snapshot does not prevent reading the rewritten history.
+    }
+  }
+  useSessionStore.getState().dropSessionCache(sessionId);
+  return agentLoadSession(sessionId, cwd);
+}
+
+async function loadSessionHistory(sessionId: string, cwd: string): Promise<string | null> {
+  useSessionStore.getState().beginHistoryReplay(sessionId);
+  // Only the owner of a new replay clears its derived child list. Callers
+  // joining an existing request must keep the events already delivered.
+  useSubagentStore.getState().clearSession(sessionId);
   // A load can recreate the resident Runtime session, so any renderer-side MCP
   // acknowledgement for the previous resident instance is stale.
   invalidateAgentKnowledgeSourceSync(sessionId);
@@ -1618,7 +1662,19 @@ export async function automationRunRetryCleanup(id: string): Promise<void> {
   await invoke<void>("automation_run_retry_cleanup", { id });
 }
 
-export async function automationRunResult(id: string): Promise<{ text: string; truncated: boolean }> {
+export interface AutomationRunResult {
+  text: string;
+  truncated: boolean;
+  progress?: {
+    totalTools: number;
+    completedTools: number;
+    failedTools: number;
+    activeTool?: string;
+    lastActivityAt?: number;
+  };
+}
+
+export async function automationRunResult(id: string): Promise<AutomationRunResult> {
   return invoke("automation_run_result", { id });
 }
 

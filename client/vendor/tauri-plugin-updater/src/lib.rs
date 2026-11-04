@@ -24,6 +24,8 @@ mod commands;
 mod config;
 mod error;
 mod updater;
+#[cfg(any(windows, test))]
+mod nsis_install;
 
 pub use config::Config;
 pub use error::{Error, Result};

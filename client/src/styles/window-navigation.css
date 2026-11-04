@@ -1,0 +1,84 @@
+/* Coordinates belong to the window, independently of sidebar width or page. */
+.app__body {
+  --window-navigation-left: 120px;
+  --window-navigation-space: 200px;
+}
+
+/* A native window row sits above one shared brand-and-tools row on both OSes.
+ * Windows already renders TitleBar. macOS uses its native overlay controls. */
+.app--macos .app__body:has(> .window-sidebar-navigation) {
+  margin-block-start: 32px;
+}
+
+.window-native-drag-region {
+  display: none;
+}
+
+.app--macos .window-native-drag-region {
+  display: block;
+  position: fixed;
+  inset: 0 0 auto;
+  height: 32px;
+  z-index: 22;
+  -webkit-app-region: drag;
+}
+
+.app--macos .app__body:has(> .window-sidebar-navigation) .sidebar-resize {
+  top: 0;
+}
+
+.window-sidebar-navigation {
+  position: absolute;
+  top: 12px;
+  left: 20px;
+  z-index: 22;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.window-sidebar-brand {
+  flex: 0 0 92px;
+  width: 92px;
+  max-width: 92px;
+  margin-inline-end: 4px;
+  font-size: min(1rem, 16px);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.window-sidebar-navigation .main-topbar__btn {
+  flex: 0 0 32px;
+  padding: 0;
+  -webkit-app-region: no-drag;
+}
+
+.window-sidebar-navigation .main-topbar__btn:focus-visible {
+  outline: 2px solid var(--echo-focus-ring);
+  outline-offset: -2px;
+}
+
+/* Keep all three tools adjacent to the same fixed anchor as the toggle. */
+.app__body:has(> .window-sidebar-navigation) .sidebar__toolbar-actions {
+  position: absolute;
+  top: 12px;
+  left: calc(var(--window-navigation-left) + 36px);
+}
+
+/* The filter menu opens below the compact group and stays inside the window. */
+.app__body:has(> .window-sidebar-navigation) .task-filter-popover {
+  right: auto;
+  left: min(0px, calc(100vw - var(--window-navigation-left) - 72px - 220px - 12px));
+  max-width: calc(100vw - 24px);
+}
+
+/* Reserve space inside existing page headers for the persistent brand and tools. */
+.app__body--collapsed:has(> .window-sidebar-navigation) :is(
+  .main-page-controls,
+  .main-topbar,
+  .page-toolbar--window-navigation,
+  .coding-workbench__topbar
+) {
+  padding-inline-start: var(--window-navigation-space);
+}

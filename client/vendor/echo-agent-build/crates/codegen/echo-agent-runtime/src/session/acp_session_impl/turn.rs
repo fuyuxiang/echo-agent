@@ -143,6 +143,13 @@ fn user_echo_mode(prompt_id: &str, input_origin: &InputOrigin) -> UserEchoMode {
     }
 }
 
+fn user_echo_notification_meta(mut meta: serde_json::Value, prompt_id: &str) -> serde_json::Value {
+    // The turn scope guard is installed after the user echo. Stamp the exact
+    // admitted identity here so background clients can retain their live turn.
+    meta["promptId"] = serde_json::json!(prompt_id);
+    meta
+}
+
 /// Return whether the supplied arguments are structurally distinctive for an
 /// advertised input schema.
 ///
@@ -466,7 +473,7 @@ impl SessionActor {
             )))
             .meta(Some(chunk_meta)),
         );
-        let notification_meta = self.build_notification_meta();
+        let notification_meta = user_echo_notification_meta(self.build_notification_meta(), prompt_id);
         let notification = acp::SessionNotification::new(self.session_info.id.clone(), update)
             .meta(notification_meta.as_object().cloned());
         let _ = self
@@ -887,7 +894,7 @@ impl SessionActor {
             let update = acp::SessionUpdate::UserMessageChunk(
                 acp::ContentChunk::new(block.clone()).meta(user_chunk_meta.clone()),
             );
-            let notification_meta = self.build_notification_meta();
+            let notification_meta = user_echo_notification_meta(self.build_notification_meta(), prompt_id);
             let notification = acp::SessionNotification::new(self.session_info.id.clone(), update)
                 .meta(notification_meta.as_object().cloned());
             if echo_mode == UserEchoMode::PersistOnly {
@@ -3652,7 +3659,18 @@ mod identical_tool_call_run_tests {
 }
 #[cfg(test)]
 mod user_echo_broadcast_tests {
-    use super::{InputOrigin, PromptOrigin, UserEchoMode, user_echo_mode};
+    use super::{InputOrigin, PromptOrigin, UserEchoMode, user_echo_mode, user_echo_notification_meta};
+
+    #[test]
+    fn background_echo_preserves_event_identity_and_binds_the_admitted_prompt() {
+        let meta = user_echo_notification_meta(
+            serde_json::json!({ "eventId": "session-42", "agentTimestampMs": 1234 }),
+            "scheduled-prompt",
+        );
+        assert_eq!(meta["promptId"], "scheduled-prompt");
+        assert_eq!(meta["eventId"], "session-42");
+        assert_eq!(meta["agentTimestampMs"], 1234);
+    }
     fn origin(prompt_id: &str) -> InputOrigin {
         InputOrigin::new(PromptOrigin::from_prompt_id(prompt_id))
     }

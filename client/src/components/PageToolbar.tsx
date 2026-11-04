@@ -1,4 +1,5 @@
 import { createContext, useContext, type ReactNode } from "react";
+import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 import {
   SessionNavigation,
   type SessionNavigationProps,
@@ -38,10 +39,12 @@ export function PageToolbar({
   children: ReactNode;
 }) {
   const { nested, macOS, ...navigation } = useContext(PageChromeContext);
-  const hasNavigation = !nested && navigation.sidebarCollapsed;
+  const layout = useContext(SidebarLayoutContext);
+  const windowNavigation = !nested && layout?.collapsed && layout.windowNavigationMounted;
+  const hasNavigation = !nested && navigation.sidebarCollapsed && !windowNavigation;
   return (
     <header
-      className={`page-toolbar ${className}${hasNavigation && macOS ? " page-toolbar--native-controls" : ""}`}
+      className={`page-toolbar ${className}${hasNavigation && macOS ? " page-toolbar--native-controls" : ""}${windowNavigation ? " page-toolbar--window-navigation" : ""}`}
       data-tauri-drag-region
     >
       {hasNavigation && (

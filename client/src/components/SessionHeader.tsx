@@ -1,4 +1,5 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useContext, useLayoutEffect, useRef, type ReactNode } from "react";
+import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 import { PanelRight } from "lucide-react";
 import { SidebarToggleIcon, EchoNewTaskIcon } from "@/foundation/components/Icon/icons";
 import { TopbarTitle } from "./TopbarTitle";
@@ -24,7 +25,8 @@ export interface SessionNavigationProps {
 }
 
 export function SessionNavigation({ sidebarCollapsed, onToggleSidebar, onNewTask }: SessionNavigationProps) {
-  if (!sidebarCollapsed) return null;
+  const layout = useContext(SidebarLayoutContext);
+  if (!sidebarCollapsed || layout?.windowNavigationMounted) return null;
   return <>
     {onToggleSidebar && <button type="button" className="main-topbar__btn" aria-label="展开侧边栏"
       aria-expanded={false} aria-controls="app-sidebar" onClick={onToggleSidebar} data-tip="展开侧边栏">
@@ -68,7 +70,7 @@ export function SessionHeader({ sessionId, title, onRename, actions, summary, ac
       const bounds = header.getBoundingClientRect();
       const left = navigation.getBoundingClientRect();
       const right = actions.getBoundingClientRect();
-      const space = Math.ceil(Math.max(left.width ? left.right - bounds.left : 0, bounds.right - right.left) + 12);
+      const space = Math.ceil(Math.max(parseFloat(getComputedStyle(header).paddingInlineStart) || 0, left.width ? left.right - bounds.left : 0, bounds.right - right.left) + 12);
       header.style.setProperty("--session-header-side-space", `${space}px`);
     };
     measure();

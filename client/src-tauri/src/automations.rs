@@ -2839,6 +2839,20 @@ pub async fn automation_run_stop(
 pub struct AutomationRunResult {
     text: String,
     truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progress: Option<AutomationRunProgress>,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AutomationRunProgress {
+    total_tools: usize,
+    completed_tools: usize,
+    failed_tools: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_activity_at: Option<i64>,
 }
 
 /// Read only the prompt recorded by the native scheduler. A later follow-up in
@@ -2853,8 +2867,12 @@ fn result_from_reader(
     let mut text = String::new();
     let mut truncated = false;
     let mut seen = HashSet::new();
+    let mut tools: HashMap<String, (String, String, usize)> = HashMap::new();
+    let mut progress = AutomationRunProgress::default();
+    let mut processed_events = 0;
+    let mut output_full = false;
     if prompt_id.is_none() {
-        return Ok(AutomationRunResult { text, truncated });
+        return Ok(AutomationRunResult { text, truncated, progress: None });
     }
     let mut line = Vec::new();
     loop {
@@ -2914,24 +2932,39 @@ fn result_from_reader(
         let kind = update
             .get("sessionUpdate")
             .and_then(serde_json::Value::as_str);
-        if !matches!(kind, Some("agent_message_chunk" | "tool_call")) {
+        if !matches!(kind, Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update")) {
             continue;
         }
         if let Some(event) = meta
             .and_then(|m| m.get("eventId"))
             .and_then(serde_json::Value::as_str)
         {
-            if seen.len() >= MAX_RESULT_EVENTS {
-                truncated = true;
-                break;
-            }
             if !seen.insert(<[u8; 32]>::from(Sha256::digest(event.as_bytes()))) {
                 continue;
             }
         }
-        let mut output_full = false;
+        if processed_events >= MAX_RESULT_EVENTS {
+            truncated = true;
+            break;
+        }
+        processed_events += 1;
+        if let Some(timestamp) = meta.and_then(|m| m.get("agentTimestampMs")).and_then(serde_json::Value::as_i64) {
+            progress.last_activity_at = Some(progress.last_activity_at.unwrap_or(timestamp).max(timestamp));
+        }
+        if matches!(kind, Some("tool_call" | "tool_call_update")) {
+            if let Some(id) = update.get("toolCallId").or_else(|| update.get("tool_call_id")).and_then(serde_json::Value::as_str).filter(|id| !id.is_empty() && id.len() <= 4096) {
+                let tool = tools.entry(id.to_string()).or_insert_with(|| ("执行操作".into(), "in_progress".into(), processed_events));
+                if let Some(title) = update.get("title").and_then(serde_json::Value::as_str).filter(|s| !s.trim().is_empty()) {
+                    tool.0 = title.chars().take(160).collect();
+                }
+                if let Some(status) = update.get("status").and_then(serde_json::Value::as_str) {
+                    tool.1 = status.to_string();
+                }
+                tool.2 = processed_events;
+            }
+        }
         match kind {
-            Some("agent_message_chunk") => {
+            Some("agent_message_chunk") if !output_full => {
                 if let Some(chunk) = update
                     .get("content")
                     .and_then(|c| c.get("text"))
@@ -2947,7 +2980,7 @@ fn result_from_reader(
                     }
                 }
             }
-            Some("tool_call") if !text.is_empty() && !text.ends_with("\n\n") => {
+            Some("tool_call") if !output_full && !text.is_empty() && !text.ends_with("\n\n") => {
                 if text.len() + 2 <= MAX_RESULT_BYTES {
                     text.push_str("\n\n");
                 } else {
@@ -2957,13 +2990,16 @@ fn result_from_reader(
             }
             _ => {}
         }
-        if output_full {
-            break;
-        }
     }
+    progress.total_tools = tools.len();
+    progress.completed_tools = tools.values().filter(|(_, status, _)| status == "completed").count();
+    progress.failed_tools = tools.values().filter(|(_, status, _)| status == "failed").count();
+    progress.active_tool = tools.values().filter(|(_, status, _)| status != "completed" && status != "failed")
+        .max_by_key(|(_, _, order)| order).map(|(title, _, _)| title.clone());
     Ok(AutomationRunResult {
         text: text.trim().into(),
         truncated,
+        progress: Some(progress),
     })
 }
 
@@ -2993,6 +3029,7 @@ fn read_run_result(id: &str) -> Result<AutomationRunResult, String> {
         return Ok(AutomationRunResult {
             text: String::new(),
             truncated: false,
+            progress: None,
         });
     };
     let paths = echo_agent_runtime::session::persistence::session_history_paths(
@@ -5908,6 +5945,29 @@ mod tests {
         assert!(result.truncated);
         assert!(result.text.len() <= 128 * 1024);
         assert!(result.text.is_char_boundary(result.text.len()));
+    }
+
+    #[test]
+    fn run_progress_tracks_tool_updates_once_and_never_leaks_another_occurrence() {
+        let row = |prompt: &str, event: &str, timestamp: i64, update: serde_json::Value| {
+            serde_json::json!({ "params": { "_meta": { "promptId": prompt, "eventId": event, "agentTimestampMs": timestamp }, "update": update } }).to_string()
+        };
+        let start = row("p1", "start", 100, serde_json::json!({ "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "检索资料", "status": "in_progress" }));
+        let finished = row("p1", "finished", 200, serde_json::json!({ "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed" }));
+        let lines = [start.clone(), finished.clone(), start, finished,
+            row("p1", "failed", 300, serde_json::json!({ "sessionUpdate": "tool_call", "toolCallId": "t2", "title": "失效来源", "status": "failed" })),
+            row("p1", "active", 400, serde_json::json!({ "sessionUpdate": "tool_call", "toolCallId": "t3", "title": "整理报告", "status": "in_progress" })),
+            row("p2", "unrelated", 900, serde_json::json!({ "sessionUpdate": "tool_call", "toolCallId": "other", "title": "其他运行" })),
+            row("p1", "thought", 450, serde_json::json!({ "sessionUpdate": "agent_thought_chunk", "content": { "text": "private reasoning" } })),
+        ].join("\n");
+        let result = result_from_updates(lines.as_bytes(), Some("p1"));
+        assert!(result.text.is_empty());
+        let progress = result.progress.unwrap();
+        assert_eq!(progress.total_tools, 3);
+        assert_eq!(progress.completed_tools, 1);
+        assert_eq!(progress.failed_tools, 1);
+        assert_eq!(progress.active_tool.as_deref(), Some("整理报告"));
+        assert_eq!(progress.last_activity_at, Some(450));
     }
 
     #[test]

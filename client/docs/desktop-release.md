@@ -11,6 +11,12 @@
 
 Windows 打包脚本的快速回归检查为 `pnpm test:windows-packaging`，无需编译安装包。CI 在 Windows PowerShell 5.1 和 PowerShell 7 下分别检查原生命令警告、失败退出码、版本输出与含方括号的项目路径。脚本在构建失败时停止，并恢复调用前的工作目录；原生命令仅输出警告且退出码为零时继续。
 
+Windows NSIS 默认安装在当前用户的 `%LOCALAPPDATA%\EchoAgent`，不要求管理员权限。自定义的长期目录会在升级时保留；Temp、系统临时目录、浏览器缓存及指向这些目录的 junction 不可作为安装位置。安装器在维护页面之前、目录选择之后和复制文件之前校验路径。旧版本若记录到了临时目录，即使清理缓存后旧卸载程序已丢失，新安装包也会恢复到固定目录、更新安装注册信息及快捷方式，保留任务和设置。已存在的开机启动项会更新程序路径，保留参数和启用状态。应用内升级显式传入已校验的目录，`/D=` 保持为最后一个未加引号的参数。受影响用户可直接运行修复后的完整安装包；如果客户端本体已被清除，无法依赖应用内更新恢复。
+
+`scripts/validate-windows-installer.ps1` 只能在没有旧产品记录的一次性 Windows GitHub Actions runner 上运行。它检查默认安装、中文含空格目录及升级、残留 Temp 注册与缺失卸载程序恢复、临时目录与 junction 拒绝、快捷方式、保留用户数据，以及清理测试缓存后的真实 WebView/IPC/IDE 启动。不要在日常 Windows 用户账户中把测试安装目录放到 Temp，也不要让验收脚本复用正式用户的产品注册记录。安装模板基于锁定的 Tauri CLI 2.11.4；升级 CLI 时需同步审查 `src-tauri/windows/installer.nsi`。
+
+客户端更新地址保持为 `https://123.56.188.16:8787/desktop-updates/stable/<target>-<arch>.json`。HTTP 410 表示服务当前没有提供可用的更新路由，客户端会明确提示检查发布服务；不会把它当成“已是最新版”，也不会根据响应正文擅自切换服务地址。
+
 macOS 的 DMG 打包通过 `scripts/macos-dmg.mjs` 记录本次创建的临时映像。卸载遇到占用或 DiskArbitration 超时，会在每次重新核对映像身份后重试；最多三次普通卸载及一次强制卸载，每次限时 60 秒。身份不符、清单读取失败及其他错误立即失败。该处理同样用于安装包检查后的卸载，不修改系统工具，也不卸载其他映像。快速回归检查为 `node --test scripts/test-macos-dmg.mjs`。若仍需重试已有应用的打包，可运行 `node scripts/macos-dmg.mjs bundle "$PWD/src-tauri/target/release/bundle/macos" "EchoAgent_0.3.11_x64.dmg"`（Apple Silicon 改为 `aarch64`，版本按实际调整），无需重新编译应用。
 
 Windows 原生构建使用 Visual Studio 2022 C++ x64 工具链、MSVC v143 Spectre-mitigated libraries 和 Windows SDK。打包脚本仅选择 VS 2022，并为 npm/node-gyp 设置一致的版本；仅安装 VS 2026 的机器会在依赖安装前得到明确提示。CI 固定使用 `windows-2022` 和 Python 3.12，避免 `windows-latest` 迁移到 VS 2026 后与锁定的 node-gyp 11 不兼容。

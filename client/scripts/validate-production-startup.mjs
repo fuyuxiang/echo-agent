@@ -80,11 +80,22 @@ try {
     const failure = [...(root?.querySelectorAll("h1") || [])]
       .find(heading => ["启动未完成", "界面启动失败"].includes(heading.textContent.trim()));
     if (failure) throw new Error(root.innerText);
-    return !!root?.querySelector("#app-sidebar .sidebar__logo") && !!root?.querySelector(".app__main");
+    return !!root?.querySelector(".window-sidebar-brand") && !!root?.querySelector(".app__main");
   });
   await page.locator("#app-sidebar").waitFor({ state: "visible" });
   await page.locator(".app__main").waitFor({ state: "visible" });
-  assert.equal(await page.locator("#app-sidebar .sidebar__logo").innerText(), "EchoAgent");
+  const brand = page.locator(".window-sidebar-brand");
+  assert.equal(await brand.count(), 1, "Production shell must own exactly one window brand");
+  assert.equal(await brand.innerText(), "EchoAgent");
+  const toggle = page.locator(".window-sidebar-toggle");
+  const anchor = await toggle.boundingBox();
+  await toggle.click();
+  await page.locator("#app-sidebar").waitFor({ state: "hidden" });
+  assert.ok(await brand.isVisible(), "Collapsing the sidebar must retain the window brand");
+  assert.deepEqual(await toggle.boundingBox(), anchor, "Production navigation must not move while collapsing");
+  await toggle.click();
+  await page.locator("#app-sidebar").waitFor({ state: "visible" });
+  assert.deepEqual(await toggle.boundingBox(), anchor, "Production navigation must not move while expanding");
   await page.waitForLoadState("networkidle", { timeout: 10000 });
   assertNoErrors();
   report.passed = true;

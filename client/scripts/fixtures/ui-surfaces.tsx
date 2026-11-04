@@ -33,6 +33,7 @@ import { useQuestionStore } from "../../src/stores/question-store";
 import { questionReviewRequest } from "./question-review";
 import { ChatView } from "../../src/components/ChatView";
 import { Sidebar } from "../../src/components/Sidebar";
+import { TitleBar } from "../../src/components/TitleBar";
 import { SessionNavigation } from "../../src/components/SessionHeader";
 import { PageChromeProvider } from "../../src/components/PageToolbar";
 import { AutomationEditPage } from "../../src/components/automation/AutomationEditPage";
@@ -183,7 +184,32 @@ if (["conversation", "conversation-layout", "workbench", "queue"].includes(query
       attachments: index === 19 ? ["/review/中文附件.docx"] : [], status: "queued", createdAt: Date.now(),
     })) } });
   }
-  for (const prompt of [
+  if (query.has("scheduledReplay")) {
+    const sessionId = "review-conversation";
+    const promptId = "scheduled-prompt";
+    const events = [
+      { sessionUpdate: "user_message_chunk", content: { type: "text", text: "核实资料后生成本次定时任务报告。", _meta: { promptIndex: 0 } }, _meta: { eventId: "scheduled-user" } },
+      { sessionUpdate: "tool_call", toolCallId: "scheduled-tool", title: "核实定时任务资料", status: "in_progress", _meta: { eventId: "scheduled-tool-start", promptId } },
+      { sessionUpdate: "tool_call_update", toolCallId: "scheduled-tool", status: "completed", _meta: { eventId: "scheduled-tool-done", promptId } },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "## 本次唯一结论\n\n已核实资料，定时任务执行完成。" }, _meta: { eventId: "scheduled-answer", promptId } },
+      { sessionUpdate: "turn_completed", prompt_id: promptId, stop_reason: "end_turn", _meta: { eventId: "scheduled-complete", promptId } },
+    ];
+    const emit = (index: number, replay = false) => chat.applyUpdate({ ...events[index], __sessionId: sessionId,
+      _meta: { ...events[index]._meta, isReplay: replay } } as Parameters<typeof chat.applyUpdate>[0]);
+    chat.setSession("review-other");
+    chat.startStreaming(sessionId, promptId);
+    emit(0); // Legacy canonical echo deliberately has no promptId.
+    chat.setSession(sessionId); // A cached history load must not suppress live progress.
+    Object.assign(window, { scheduledTranscriptReview: {
+      progress: () => { emit(1); emit(2); emit(3); },
+      complete: () => {
+        emit(4);
+        chat.clearReplaySuppression(sessionId);
+        useSessionsStore.getState().upsert({ sessionId, status: "completed" });
+      },
+      replay: () => { for (let copy = 0; copy < 6; copy++) events.forEach((_, index) => emit(index, true)); },
+    } });
+  } else for (const prompt of [
     "评审投影仪性能与内存泄漏，先看一下实现结构。",
     "这个服务端的启动方式是什么？",
     "手机扫码连接投影 IP 时，局域网发现怎么实现？",
@@ -631,6 +657,12 @@ Object.assign(window, {
   __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
 });
 
+function ReviewWindowChrome() {
+  return query.get("windowChrome") === "1" && query.get("platform") === "other"
+    ? <TitleBar hideMenus onPlaceholder={() => {}} />
+    : null;
+}
+
 function ConversationLayoutFixture() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [conversationNavigation, setConversationNavigation] = useState<import("../../src/lib/types").ConversationNavigationRequest | null>(null);
@@ -639,9 +671,10 @@ function ConversationLayoutFixture() {
   const entry = useSessionsStore(state => state.independent.find(item => item.sessionId === sessionId));
   const layout = useAppSidebarLayout();
   return <div className={"app" + (query.get("platform") === "mac" ? " app--macos" : "")}>
+    <ReviewWindowChrome />
     <SidebarLayoutContext.Provider value={layout.context}>
     <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "")}>
-      <Sidebar activeNav="新建任务" onNewSession={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => setSearchOpen(true)}
+      <Sidebar activeNav="新建任务" onNewSession={() => { (window as any).workbenchNewTask = true; }} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => setSearchOpen(true)}
         onSelect={(id) => { useSessionStore.getState().setSession(id); useSessionsStore.setState({ currentSessionId: id }); }} />
       <SidebarResizeHandle layout={layout} />
       <main className="app__main">
@@ -703,8 +736,9 @@ function HomeReviewFixture() {
   const layout = useAppSidebarLayout();
   const [cwd, setCwd] = useState(query.has("automaticWorkspace") ? "" : "/review/EchoAgent");
   return <div className={"app" + (query.get("platform") === "mac" ? " app--macos" : "")}><SidebarLayoutContext.Provider value={layout.context}>
+    <ReviewWindowChrome />
     <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "") + (layout.resizing ? " app__body--sidebar-resizing" : "")}>
-      <Sidebar activeNav="新建任务" onNewSession={() => {}} onSelect={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => setSearchOpen(true)} />
+      <Sidebar activeNav="新建任务" onNewSession={() => { (window as any).workbenchNewTask = true; }} onSelect={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => setSearchOpen(true)} />
       <SidebarResizeHandle layout={layout} />
       <main className="app__main">
         <header className="main-page-controls" data-tauri-drag-region>
@@ -796,6 +830,7 @@ function ManagementReviewFixture({ surface }: { surface: string }) {
   useEffect(() => { layout.setCollapsed(query.get("collapsed") === "1"); }, []);
   const label = surface === "projects" ? "项目" : surface === "organization-shell" ? "组织" : surface === "management-experts" ? "专家·技能·连接器" : surface === "management-knowledge" ? "知识库" : "自动化";
   return <div className={`app${query.get("platform") === "mac" ? " app--macos" : ""}`}><SidebarLayoutContext.Provider value={layout.context}>
+    <ReviewWindowChrome />
     <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "") + (layout.resizing ? " app__body--sidebar-resizing" : "")}>
       <Sidebar activeNav={label} onNewSession={() => {}} onSelect={() => {}} onNavigate={() => {}} onOpenSettings={() => {}} onOpenSearch={() => {}} onToggleCollapse={() => layout.setCollapsed(true)} />
       <SidebarResizeHandle layout={layout} />
@@ -921,7 +956,7 @@ function Fixture() {
       setRecoverySent(text);
       if (query.has("recovery")) useSessionStore.getState().startStreaming("review-conversation", "recovery-followup");
       return true;
-    }} onCancel={() => {}} title="评审投影仪性能与内存泄漏" /></main>
+    }} onCancel={() => {}} title={query.has("scheduledReplay") ? "定时任务执行报告" : "评审投影仪性能与内存泄漏"} /></main>
     {recoverySent && query.has("recovery") && <p role="note" style={{position:"absolute",top:0,left:0,maxWidth:"100%",background:"var(--echo-bg-secondary)",fontSize:12,padding:8}}>{recoverySent}</p>}
   </div>;
   if (["projects", "organization-shell", "automation-templates", "management-experts", "management-knowledge", "management-schedules"].includes(surface)) return <ManagementReviewFixture surface={surface} />;

@@ -292,7 +292,7 @@ export function PlaceholderPage({
   if (label === "知识库") {
     return (
       <DeferredPanel>
-        <div className="placeholder-page placeholder-page--panel knowledge-page">
+        <div className="placeholder-page knowledge-page">
           <KnowledgeBasePanel
             onOpen={(id, url) => {
               const target = url ?? id;

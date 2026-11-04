@@ -261,11 +261,37 @@ try {
   assert(await templates.getByRole("textbox", { name: "任务要求", exact: true }).inputValue());
   assert.equal(await templates.evaluate(() => window.scheduledReview.calls.filter(call => ["automations_save", "automations_run"].includes(call.command)).length), 0, "template choice prepares a draft without saving or running");
   await templates.close();
+  for (const [theme, width, font] of [["light", 1280, 16], ["dark", 1024, 22]]) {
+    const live = await browser.newPage({ viewport: { width, height: 800 } });
+    const errors = []; live.on("pageerror", error => errors.push(error.message));
+    await live.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?state=live-preview&theme=${theme}`);
+    await live.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
+    await live.getByRole("button", { name: "每日 AI 新闻简报", exact: true }).click();
+    await live.getByText("正在等待执行准备完成，开始后会自动显示进度。").waitFor();
+    await live.evaluate(() => window.scheduledReview.advance("admitted"));
+    await live.getByRole("button", { name: "查看实时过程", exact: true }).waitFor();
+    await live.evaluate(() => window.scheduledReview.advance("progress"));
+    await live.getByText("已核实第一项来源，正在整理报告。", { exact: true }).waitFor();
+    assert.match(await live.getByLabel("本次执行进度").innerText(), /已处理 1\/2/);
+    assert.equal(await live.locator(".atm-task-detail").evaluate(el => el.scrollWidth > el.clientWidth + 1), false);
+    await live.screenshot({ path: join(output, `live-progress-${theme}.png`) });
+    await live.evaluate(() => window.scheduledReview.advance("read-error"));
+    await live.getByRole("alert").filter({ hasText: "读取执行内容失败" }).waitFor();
+    assert(await live.getByText("已核实第一项来源，正在整理报告。", { exact: true }).isVisible(), "read failure erased partial content");
+    await live.evaluate(() => window.scheduledReview.advance("completed"));
+    await live.getByRole("heading", { name: "唯一最终结论", exact: true }).waitFor();
+    await live.getByRole("button", { name: "查看完整会话", exact: true }).waitFor();
+    assert.equal(await live.getByRole("heading", { name: "唯一最终结论", exact: true }).count(), 1);
+    assert.equal(await live.getByText("已核实第一项来源，正在整理报告。", { exact: true }).count(), 0);
+    await live.screenshot({ path: join(output, `live-completed-${theme}.png`) });
+    assert.deepEqual(errors, []);
+    await live.close();
+  }
   writeFileSync(
     join(output, "evidence.json"),
     JSON.stringify(evidence, null, 2),
   );
-  console.log(JSON.stringify({ output, layouts: evidence.length, extraFlows: ["pending-approval/stop/future-plan", "create/unsaved/default-session/no-auto-run", "direct-template/back/prefilled-draft/no-auto-run"] }));
+  console.log(JSON.stringify({ output, layouts: evidence.length, extraFlows: ["pending-approval/stop/future-plan", "create/unsaved/default-session/no-auto-run", "direct-template/back/prefilled-draft/no-auto-run", "late-admission/live-progress/read-failure/final-result"] }));
 } finally {
   await browser?.close();
   await server.close();

@@ -21,6 +21,7 @@ describe("UpdateDialog installation failures", () => {
 
   it.each([
     ["check", "服务器版本已变更，请重新确认更新", "检查更新失败"],
+    ["check", "更新服务返回 HTTP 410，暂时无法检查更新。请联系管理员检查 123.56.188.16:8787 的客户端更新发布路由，然后重试。", "检查更新失败"],
     ["download", "更新下载或签名校验失败", "下载更新失败"],
     ["install", "更新安装失败：目标不可写", "安装更新失败"],
   ])("点击安装后准确展示 %s 阶段错误，并允许重新检查", async (stage, message, heading) => {
