@@ -20,6 +20,8 @@ import { TerminalWidget } from '@theia/terminal/lib/browser/base/terminal-widget
 import { echoHostBridge } from './echo-host-bridge';
 import { ECHO_EDITOR_CAPABILITIES } from './echo-editor-protocol';
 import { EchoEditorBridge } from './echo-editor-bridge';
+import { MonacoThemeRegistry } from '@theia/monaco/lib/browser/textmate/monaco-theme-registry';
+import { applyEchoTheme } from './echo-theme';
 
 @injectable()
 export class EchoFrontendContribution implements FrontendApplicationContribution {
@@ -38,6 +40,8 @@ export class EchoFrontendContribution implements FrontendApplicationContribution
     protected readonly workspace: WorkspaceService;
     @inject(ThemeService)
     protected readonly themes: ThemeService;
+    @inject(MonacoThemeRegistry)
+    protected readonly monacoThemes: MonacoThemeRegistry;
     @inject(CorePreferences)
     protected readonly corePreferences: CorePreferences;
     @inject(TerminalService)
@@ -66,7 +70,7 @@ export class EchoFrontendContribution implements FrontendApplicationContribution
             } else if (message.type === 'echo/open-preview' && typeof message.url === 'string') {
                 void this.commands.executeCommand('mini-browser.openUrl', message.url);
             } else if (message.type === 'echo/set-theme' && (message.theme === 'light' || message.theme === 'dark')) {
-                this.themes.setCurrentTheme(message.theme, false);
+                applyEchoTheme(this.themes, this.monacoThemes, message.theme, message.colors, message.commentColor, message.syntaxColors);
             } else if (message.type === 'echo/save-all' && typeof message.id === 'string' && this.shell) {
                 void this.editorBridge.whenIdle().then(() => this.shell!.saveAll()).then(() => {
                     this.reportDirtyState();

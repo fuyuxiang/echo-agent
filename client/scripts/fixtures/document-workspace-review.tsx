@@ -54,7 +54,7 @@ function Review(){
   const [artifact,setArtifact]=useState<SessionArtifact>({id:path,path,kind:'file',title:'家庭亲子作息表',toolCallId:'',status:'completed'});
   const [context,setContext]=useState<DocumentEditContext|null>(null);
   const [toast,setToast]=useState('');
-  return <div className="app" data-theme={new URLSearchParams(location.search).get('theme') ?? 'light'} style={{height:'100%',display:'flex',flexDirection:'row'}}>
+  return <div className="app" style={{height:'100%',display:'flex',flexDirection:'row'}}>
     <main className="app__main" style={{position:'relative'}}><div className="chatview"><div className="chatview__main" style={{padding:32}}><h2>文档修订任务</h2><p>检查作息安排，并继续调整文档。</p>{context&&<div role="status" data-testid="document-context">正在修改：{context.title}<textarea aria-label="修改要求" placeholder="描述你希望调整的内容"/></div>}{toast&&<div role="status">{toast}</div>}</div>
     <ToolSidePanel open mode="artifacts" artifacts={[artifact]} previewPath={artifact.path} previewRequestId={1} cwd="/review" sessionId="document-review"
       onClose={()=>{}} onSelectTool={()=>{}} onSelectArtifact={setArtifact} onOpenArtifacts={()=>{}} onToast={setToast} onEditDocument={next=>{setContext(next);Object.assign(window,{documentEditContext:next});}}/>

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
+import { inspectRenderedColors } from "./ui-color-audit.mjs";
 
 const output = reviewOutput(mkdtempSync(join(tmpdir(), "echo-composer-feedback-")));
 const server = await createUiReviewServer(0, { freezeMotion: false });
@@ -30,6 +31,9 @@ try {
       await input.waitFor();
       await input.click();
       assert.equal(await input.evaluate(e => getComputedStyle(e).outlineStyle), "none", "Textarea stacks a second focus ring");
+      assert.equal(await page.locator(".echo-composer").evaluate(e => getComputedStyle(e).outlineStyle), "solid", "The compound composer must own a visible focus ring");
+      const focus = (await page.evaluate(inspectRenderedColors)).controls.filter(control => control.role === "focus" && control.selector.includes("echo-composer"));
+      assert(focus.length > 0 && focus.every(control => control.ratio >= 3), "The actual composer focus paint must reach 3:1");
       assert.equal(await input.inputValue(), "", "Placeholder became actual draft content");
       await input.press("Tab");
       assert.equal(await page.evaluate(() => getComputedStyle(document.activeElement).outlineStyle), "solid", "Toolbar keyboard focus lost its fallback indicator");

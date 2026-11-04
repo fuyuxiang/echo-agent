@@ -10,8 +10,41 @@ const globalCss = readCss("global.css");
 const tokensCss = readCss("tokens.css");
 const visualPolishCss = readCss("visual-polish.css");
 
-function darkBlocks(css: string): string[] {
-  return [...css.matchAll(/\[data-theme=dark\],[\s\S]*?\n\}/g)].map((match) => match[0]);
+function themeColors(theme: "light" | "dark") {
+  const selector = theme === "dark" ? ':root[data-theme="dark"]' : ':root,';
+  const start = tokensCss.indexOf(selector);
+  const body = tokensCss.slice(tokensCss.indexOf("{", start) + 1, tokensCss.indexOf("}", start));
+  const tokens = Object.fromEntries([...body.matchAll(/(--echo-[\w-]+):\s*([^;]+);/g)].map(match => [match[1], match[2].trim()]));
+  const resolveToken = (name: string, seen = new Set<string>()): string => {
+    if (seen.has(name)) throw new Error(`Circular theme token: ${name}`);
+    seen.add(name);
+    const value = tokens[`--echo-${name}`];
+    if (!value) throw new Error(`Missing ${theme} role: ${name}`);
+    const alias = value.match(/^var\(--echo-([\w-]+)\)$/);
+    return alias ? resolveToken(alias[1], seen) : value;
+  };
+  return resolveToken;
+}
+function contrast(a: string, b: string) {
+  const luminance = (hex: string) => {
+    expect(hex).toMatch(/^#[\da-f]{6}$/i);
+    return [1, 3, 5].map(index => Number.parseInt(hex.slice(index, index + 2), 16) / 255)
+      .map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4)
+      .reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+  };
+  const [low, high] = [luminance(a), luminance(b)].sort((x, y) => x - y);
+  return (high + .05) / (low + .05);
+}
+
+function composite(foreground: string, background: string) {
+  expect(foreground).toMatch(/^#[\da-f]{8}$/i);
+  const alpha = parseInt(foreground.slice(7, 9), 16) / 255;
+  expect(alpha).toBeGreaterThan(0);
+  expect(alpha).toBeLessThan(1);
+  return "#" + [1, 3, 5].map(index => Math.round(
+    parseInt(foreground.slice(index, index + 2), 16) * alpha
+    + parseInt(background.slice(index, index + 2), 16) * (1 - alpha),
+  ).toString(16).padStart(2, "0")).join("");
 }
 
 function sourceFiles(dir: string): string[] {
@@ -23,13 +56,45 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe("theme token contract", () => {
-  it("深色主题保留深色主表面和可见边框、图标", () => {
-    const [base, components] = darkBlocks(tokensCss);
-
-    expect(base).toContain("--echo-bg-primary: var(--echo-palette-gray-3);");
-    expect(base).toContain("--echo-border-default: color-mix(in srgb, var(--echo-palette-white-100) 10%, transparent);");
-    expect(components).toContain("--echo-icon-strong: color-mix(in srgb, var(--echo-palette-white-100) 96%, transparent);");
-  });
+  for (const theme of ["light", "dark"] as const) {
+    it(`${theme}: action, selection and status pairs remain readable on their own surfaces`, () => {
+      const color = themeColors(theme);
+      expect(color("button-primary-bg")).not.toBe(color("control-selected-bg"));
+      // Line and character decorations overlap. Check syntax against both
+      // actual composites, and the boundary that identifies the changed range.
+      for (const [kind, status] of [["added", "success"], ["removed", "error"]]) {
+        const line = composite(color(`code-diff-${kind}-bg`), color("surface-content"));
+        const characters = composite(color(`code-diff-${kind}-text-bg`), line);
+        const overlapping = composite(color(`code-diff-${kind}-text-bg`), characters);
+        expect(characters).not.toBe(line);
+        for (const background of [line, characters, overlapping]) {
+          for (const foreground of [
+            theme === "dark" ? "#569CD6" : "#0000FF",
+            theme === "dark" ? "#CE9178" : "#A31515",
+            theme === "dark" ? "#9CDCFE" : "#001080",
+            color("code-comment"), color("code-type"), color("code-number"), color("code-constant"),
+          ]) expect(contrast(foreground, background), `${theme}: ${kind} syntax on ${background}`).toBeGreaterThanOrEqual(4.5);
+          expect(contrast(color(`status-${status}`), background)).toBeGreaterThanOrEqual(3);
+        }
+      }
+      for (const [fg, bg] of [
+        ["code-comment", "surface-content"], ["code-type", "code-match-bg"], ["code-number", "code-match-bg"], ["button-primary-fg", "button-primary-bg"], ["button-primary-fg", "button-primary-bg-hover"],
+        ["button-primary-fg", "button-primary-bg-active"], ["control-selected-fg", "control-selected-bg"],
+        ["control-selected-fg", "control-selected-bg-hover"], ["control-selected-fg", "control-selected-bg-active"],
+        ["status-success", "status-success-surface"], ["status-warning", "status-warning-soft"],
+        ["status-error", "status-error-soft"], ["status-info", "status-info-soft"],
+        ["status-purple", "status-purple-soft"], ["status-pink", "status-pink-soft"],
+      ]) expect(contrast(color(fg), color(bg)), `${theme}: ${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+      for (const surface of ["surface-canvas", "surface-sidebar", "surface-content", "surface-raised", "surface-conversation"]) {
+        for (const text of ["text-strong", "text-medium", "text-weak"]) {
+          expect(contrast(color(text), color(surface)), `${theme}: ${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+        }
+        expect(contrast(color("border-control"), color(surface)), `${theme}: functional control boundary`).toBeGreaterThanOrEqual(3);
+        expect(contrast(color("focus-ring"), color(surface)), `${theme}: keyboard focus`).toBeGreaterThanOrEqual(3);
+      }
+      expect(color("control-disabled-bg")).not.toBe(color("button-primary-bg"));
+    });
+  }
 
   it("全局兼容层不再覆盖核心主题令牌", () => {
     for (const token of [

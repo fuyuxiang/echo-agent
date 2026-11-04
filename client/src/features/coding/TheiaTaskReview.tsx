@@ -1,9 +1,36 @@
-import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode, type ComponentProps } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import { Check, ExternalLink, LoaderCircle, X } from "lucide-react";
 import { codingApi } from "./lib/tauri-api";
 import { useCodingActionScope } from "./hooks/useCodingActionScope";
-import { prepareLocalMonaco } from "./lib/local-monaco";
+import { prepareLocalMonaco, syncLocalMonacoTheme } from "./lib/local-monaco";
+
+/** The React adapter disposes models before its diff widget. Own these two
+ * read-only models so widget teardown finishes before their disposal. */
+function ReviewDiffEditor(props: ComponentProps<typeof DiffEditor>) {
+  const [prefix] = useState(() => `inmemory://echo-review/${crypto.randomUUID()}`);
+  const disposeModels = useRef<(() => void) | null>(null);
+  const lifetime = useRef(0);
+  useEffect(() => {
+    const epoch = ++lifetime.current;
+    return () => {
+      const dispose = disposeModels.current;
+      queueMicrotask(() => { if (lifetime.current === epoch) dispose?.(); });
+    };
+  }, []);
+  return <DiffEditor {...props}
+    originalModelPath={`${prefix}/original`} modifiedModelPath={`${prefix}/modified`}
+    keepCurrentOriginalModel keepCurrentModifiedModel
+    beforeMount={(monaco) => {
+      disposeModels.current = () => {
+        for (const part of ["original", "modified"]) {
+          const model = monaco.editor.getModel(monaco.Uri.parse(`${prefix}/${part}`));
+          if (model && !model.isDisposed()) model.dispose();
+        }
+      };
+      props.beforeMount?.(monaco);
+    }} />;
+}
 
 class DiffEditorBoundary extends Component<{ children: ReactNode; onError: (error: Error) => void }, { failed: boolean }> {
   state = { failed: false };
@@ -67,6 +94,7 @@ export function TheiaTaskReview({ root, taskId, path, onClose, onOpenFile, onRev
 
   useEffect(() => {
     const observer = new MutationObserver(() => {
+      syncLocalMonacoTheme();
       setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "vs-dark" : "vs");
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
@@ -158,11 +186,11 @@ export function TheiaTaskReview({ root, taskId, path, onClose, onOpenFile, onRev
       {diff && !diff.binary && !editorError && editorReady && <DiffEditorBoundary key={editorScope} onError={(reason) => {
         if (isCurrent()) setEditorFailure({ scope: editorScope, message: reason.message });
       }}>
-        <DiffEditor
+        <ReviewDiffEditor
           original={diff.original}
           modified={diff.modified}
           language={reviewLanguage(path)}
-          theme={theme}
+          theme={theme === "vs-dark" ? "echo-dark" : "echo-light"}
           loading="正在显示文本差异…"
           onMount={() => setEditorMountedScope(editorScope)}
           options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, automaticLayout: true }}

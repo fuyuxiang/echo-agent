@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /** CSS @import reads files outside Vite's load hooks. A physical HEAD snapshot
  * keeps nested styles and assets consistent. HEAD fixtures retain entry order. */
-export function createUiReviewBaseline(root = process.cwd()) {
+export function createUiReviewBaseline(root = process.cwd(), { currentFixtures = false } = {}) {
   root = resolve(root);
   const directory = mkdtempSync(join(tmpdir(), "echo-ui-review-head-"));
   const close = () => rmSync(directory, { recursive: true, force: true });
@@ -17,6 +17,9 @@ export function createUiReviewBaseline(root = process.cwd()) {
     execFileSync("tar", ["-x", "-C", directory], { input: archive });
     const sourcePath = (path) => {
       const name = relative(root, path);
+      // New acceptance scenarios can exercise HEAD production components with
+      // exactly the same controlled data and interactions as the working tree.
+      if (currentFixtures && /^scripts[/\\]fixtures[/\\]/.test(name)) return null;
       return /^(src|scripts[/\\]fixtures)[/\\]/.test(name) ? name : null;
     };
     return {

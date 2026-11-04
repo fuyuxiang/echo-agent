@@ -83,6 +83,12 @@ final class NativeColorReview: NSObject, WKNavigationDelegate, WKScriptMessageHa
             assert(scheme===theme && typeof accent==='string' && accent.length>0 && accent!=='auto','Native color scheme and accent must resolve');
             const input=document.querySelector('input[aria-label="名称"]');
             input.focus();
+            if(active){
+              window.nativeColorKeyboardReady=false;
+              window.webkit.messageHandlers.nativeColor.postMessage({keyboardFocus:true});
+              await wait(()=>window.nativeColorKeyboardReady);
+              input.focus();
+            }
             if(active)assert(document.activeElement===input && input.matches(':focus-visible'),'Native input must actually have visible keyboard focus');
             const focused=capture();
             report({theme,active,viewport:[innerWidth,innerHeight],scheme,accent,checked:check.checked,original,toggled,focused});
@@ -92,6 +98,16 @@ final class NativeColorReview: NSObject, WKNavigationDelegate, WKScriptMessageHa
     }
     func userContentController(_ controller:WKUserContentController,didReceive message:WKScriptMessage) {
         guard let data=message.body as? [String:Any] else {fail("Invalid native result")}
+        if data["keyboardFocus"] as? Bool == true {
+            // DOM click() switches WebKit to pointer modality. Send a real Tab
+            // through this owned window before asserting keyboard focus-visible.
+            window.makeFirstResponder(view)
+            for type in [NSEvent.EventType.keyDown, NSEvent.EventType.keyUp] {
+                if let event=NSEvent.keyEvent(with:type,location:.zero,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,characters:"\t",charactersIgnoringModifiers:"\t",isARepeat:false,keyCode:48) { window.sendEvent(event) }
+            }
+            view.evaluateJavaScript("window.nativeColorKeyboardReady=true") { _,error in if let error=error {self.fail(String(describing:error))} }
+            return
+        }
         if let error=data["error"] {fail(String(describing:error))}
         results.append(data)
         view.takeSnapshot(with:nil) { image,error in

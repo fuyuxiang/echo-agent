@@ -1,4 +1,4 @@
-/* Settings use the same teal action palette as the project workspace.
+/* Settings use the same semantic action palette as the project workspace.
  * Features own layout; shared controls own button and field appearance. */
 .settings-modal {
   --echo-button-danger-border: var(--echo-button-secondary-border);

@@ -1,6 +1,6 @@
 /* ---------- markdown body (EchoAgent-aligned) ---------- */
 :root {
-  --md-hljs-comment: #008000;
+  --md-hljs-comment: var(--echo-code-comment, #4E6A58);
   --md-hljs-keyword: #0000ff;
   --md-hljs-string: #a31515;
   --md-hljs-number: #146c49;
@@ -24,7 +24,7 @@
   --md-blockquote-fg: var(--echo-text-medium, rgba(0, 0, 0, 0.65));
 }
 [data-theme="dark"] {
-  --md-hljs-comment: #6a9955;
+  --md-hljs-comment: var(--echo-code-comment, #9CB893);
   --md-hljs-keyword: #569cd6;
   --md-hljs-string: #ce9178;
   --md-hljs-number: #b5cea8;

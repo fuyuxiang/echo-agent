@@ -3,6 +3,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffec
 import { invoke } from "@tauri-apps/api/core";
 import { Code2, LoaderCircle, RotateCw } from "lucide-react";
 import { useAppDialog } from "@/components/AppDialog";
+import { readEditorThemeColors, readEditorCommentColor, readEditorSyntaxColors } from "@/lib/editor-theme";
 import { registerWorkspaceEditor, type DocumentSnapshot, type EditOperation, type ApplyResult, type EditorContextSnapshot } from "./lib/workspace-editor";
 import { idePath, relativeToWorkspace } from "./lib/windows-path";
 
@@ -222,7 +223,7 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
 
   useEffect(() => {
     if (status !== "ready" || !baseUrl) return;
-    frameRef.current?.contentWindow?.postMessage({ type: "echo/set-theme", token, theme }, new URL(baseUrl).origin);
+    frameRef.current?.contentWindow?.postMessage({ type: "echo/set-theme", token, theme, colors: readEditorThemeColors(), commentColor: readEditorCommentColor(), syntaxColors: readEditorSyntaxColors() }, new URL(baseUrl).origin);
   }, [baseUrl, status, theme, token]);
 
   useEffect(() => {

@@ -66,7 +66,8 @@ try {
           }
           return [{...item,opacity,complexForeground,rects}];
         });
-      }),colors.manual);
+      }),[...colors.manual, ...colors.text.filter(item => ["h2.capability-page__title", "p.capability-page__description", "span.echo-button__content"].includes(item.selector))]
+        .filter((item,index,items) => items.findIndex(other => other.selector === item.selector && other.text === item.text) === index));
       // Hide glyph paint only: inherited color, backgrounds, native boundaries,
       // geometry and currentColor icons retain their original computed values.
       await page.addStyleTag({content:"*{ -webkit-text-fill-color:transparent!important;text-shadow:none!important } *::placeholder{-webkit-text-fill-color:transparent!important}"});
@@ -81,7 +82,7 @@ try {
           if (measured<minimum) { minimum=measured; darkestBackdrop=bg; }
         }
         if (!pixels) continue;
-        evidence.push({spec,theme,width,height,font,selector:sample.selector,text:sample.text,color:sample.color,threshold:sample.threshold,minimum:+minimum.toFixed(3),worstBackdrop:darkestBackdrop,pixels});
+        evidence.push({spec,theme,width,height,font,selector:sample.selector,text:sample.text,color:sample.color,threshold:sample.threshold,minimum,worstBackdrop:darkestBackdrop,pixels});
       }
       if (surface === "color-system") assert(evidence.some(item=>item.spec===spec && item.theme===theme && item.width===width && item.font===font && item.text==="团队交付工作区"),"The selected label must be sampled outside its native arrow");
       assert.deepEqual(errors,[],`${spec}/${theme}: browser errors`);
@@ -91,7 +92,7 @@ try {
   writeFileSync(join(output,"evidence.json"),JSON.stringify({evidence,manual},null,2));
   assert(evidence.length>0,"Raster samples must exercise real complex backgrounds");
   for (const selector of ["h2.capability-page__title","p.capability-page__description","span.echo-button__content"]) {
-    assert(evidence.some(e=>e.selector===selector),`Illustrated project header must be sampled: ${selector}`);
+    assert(evidence.some(e=>e.selector===selector),`Project header must be raster-sampled even after replacing its decorative gradient: ${selector}`);
   }
   assert.deepEqual(evidence.filter(e=>e.minimum<e.threshold),[],"Complex-background text contrast failures");
   console.log(JSON.stringify({observations:evidence.length,minimum:Math.min(...evidence.map(e=>e.minimum)),pixels:evidence.reduce((n,e)=>n+e.pixels,0),manual:manual.length,output}));

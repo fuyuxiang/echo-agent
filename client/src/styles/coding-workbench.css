@@ -1,5 +1,14 @@
 /* Echo Code's Theia host, task surfaces and shared workspace controls. */
 
+/* Keep range markers below glyphs. Monaco's default boxes put vertical edges
+ * through the first/last character, and frame entire lines unnecessarily. */
+.echo-theia-review .monaco-diff-editor :is(.line-insert, .line-delete) { border: 0; }
+.echo-theia-review .monaco-diff-editor :is(.char-insert, .char-delete):not(.diff-range-empty) {
+  border-top: 0;
+  border-left: 0;
+  border-right: 0;
+}
+
 .coding-workbench {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2588,13 +2597,9 @@
   place-items: center;
   border: 1px solid color-mix(in srgb, var(--echo-brand) 16%, var(--echo-border-subtle));
   border-radius: 13px;
-  background: linear-gradient(
-    145deg,
-    color-mix(in srgb, var(--echo-brand) 13%, var(--echo-bg-primary)),
-    color-mix(in srgb, var(--echo-brand) 5%, var(--echo-bg-primary))
-  );
+  background: var(--echo-control-selected-bg);
   color: var(--echo-brand);
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--echo-brand) 10%, transparent);
+  box-shadow: none;
 }
 
 .coding-agent__intro strong {

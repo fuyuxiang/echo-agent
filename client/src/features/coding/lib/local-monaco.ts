@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { loader } from "@monaco-editor/react";
+import { readEditorThemeColors, readEditorCommentColor, readEditorSyntaxColors } from "../../../lib/editor-theme";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import HtmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
@@ -7,6 +8,24 @@ import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import TypeScriptWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 
 let preparing: Promise<void> | null = null;
+let localMonaco: typeof import("monaco-editor") | null = null;
+
+/** Refresh host surfaces and the syntax roles that need stronger contrast. */
+export function syncLocalMonacoTheme(): void {
+  if (!localMonaco) return;
+  const dark = document.documentElement.dataset.theme === "dark";
+  const comment = readEditorCommentColor();
+  const syntax = readEditorSyntaxColors();
+  localMonaco.editor.defineTheme(dark ? "echo-dark" : "echo-light", {
+    base: dark ? "vs-dark" : "vs", inherit: true,
+    rules: [
+      ...(comment ? [{ token: "comment", foreground: comment.slice(1) }] : []),
+      ...(syntax.type ? [{ token: "type", foreground: syntax.type.slice(1) }] : []),
+      ...(syntax.constant ? [{ token: "constant", foreground: syntax.constant.slice(1) }] : []),
+      ...(syntax.number ? ["number", "attribute.value.number", "attribute.value.unit"].map(token => ({ token, foreground: syntax.number.slice(1) })) : []),
+    ], colors: readEditorThemeColors(),
+  });
+}
 
 /** Use the locked, bundled editor and same-origin workers before mounting React. */
 export function prepareLocalMonaco(): Promise<void> {
@@ -29,10 +48,13 @@ export function prepareLocalMonaco(): Promise<void> {
       // its remote AMD default, which the desktop's script-src 'self' rejects.
       loader.config({ monaco });
       await loader.init();
+      localMonaco = monaco;
     }).catch((error: unknown) => {
       preparing = null;
       throw error;
     });
   }
-  return preparing;
+  // A previous review can have closed before the host changed theme. Reusing
+  // the loaded editor must still register the currently resolved host colours.
+  return preparing.then(syncLocalMonacoTheme);
 }

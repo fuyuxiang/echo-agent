@@ -53,16 +53,16 @@ body {
  */
 :root {
   color-scheme: light;
-  --echo-brand: var(--echo-color-text-brand-default, #007d64);
-  --echo-brand-hover: var(--echo-color-text-brand-hover, #40d1b3);
+  --echo-brand: var(--echo-color-text-brand-default);
+  --echo-brand-hover: var(--echo-color-text-brand-hover);
   --echo-accent: var(--echo-brand);
   --echo-color-primary: var(--echo-brand);
   --echo-text-primary: var(--echo-text-strong);
   --echo-text-secondary: var(--echo-text-medium);
   --echo-text-light: var(--echo-text-weak);
   --echo-text-brand: var(--echo-color-text-brand-default);
-  --echo-bg-elevated: var(--echo-bg-primary);
-  --echo-bg-input: var(--echo-bg-primary);
+  --echo-bg-elevated: var(--echo-surface-raised);
+  --echo-bg-input: var(--echo-surface-content);
   --echo-border: var(--echo-border-default);
   --echo-border-soft: var(--echo-border-weak);
   --echo-danger: var(--echo-status-error);

@@ -3,8 +3,8 @@
 .meeting-workbench button:hover:not(:disabled) { background: var(--echo-bg-hover); }
 .meeting-workbench button:disabled { opacity: .48; cursor: not-allowed; }
 .meeting-workbench button:focus-visible, .meeting-workbench input:focus-visible, .meeting-workbench select:focus-visible, .meeting-workbench textarea:focus-visible { outline: 2px solid var(--echo-accent); outline-offset: 2px; }
-.meeting-workbench .meeting-primary { background: var(--echo-brand); color: var(--echo-text-inverse, #fff); border-color: var(--echo-brand); }
-.meeting-workbench .meeting-primary:hover:not(:disabled) { background: var(--echo-brand-hover, var(--echo-brand)); }
+.meeting-workbench .meeting-primary { background: var(--echo-button-primary-bg); color: var(--echo-button-primary-fg); border-color: transparent; }
+.meeting-workbench .meeting-primary:hover:not(:disabled) { background: var(--echo-button-primary-bg-hover); color: var(--echo-button-primary-fg); }
 .meeting-workbench .meeting-icon-button { width: 32px; flex: 0 0 32px; padding: 5px; border-color: transparent; }
 .meeting-workbench__toolbar { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 10px 20px; min-height: 54px; border-bottom: 1px solid var(--echo-border); }
 .meeting-workbench__toolbar h1 { margin: 0; font-size: 1rem; font-weight: 600; white-space: nowrap; }
@@ -62,7 +62,10 @@
 .meeting-player audio { display: none; }
 .meeting-player__controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .meeting-player__time { font-size: .75rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.meeting-workbench .meeting-player__play { border-radius: 50%; width: 34px; height: 34px; padding: 7px; color: var(--echo-text-inverse, #fff); background: var(--echo-brand); border-color: var(--echo-brand); }
+.meeting-workbench .meeting-player__play { border-radius: 50%; width: 34px; height: 34px; padding: 7px; color: var(--echo-button-primary-fg); background: var(--echo-button-primary-bg); border-color: transparent; }
+.meeting-workbench :is(.meeting-primary, .meeting-player__play):active:not(:disabled) { background: var(--echo-button-primary-bg-active); color: var(--echo-button-primary-fg); }
+.meeting-workbench .meeting-player__play:hover:not(:disabled) { background: var(--echo-button-primary-bg-hover); }
+.meeting-workbench :is(.meeting-primary, .meeting-player__play):disabled { background: var(--echo-control-disabled-bg); color: var(--echo-control-disabled-fg); border-color: var(--echo-border-default); opacity: 1; }
 .meeting-player__controls > button:not(.meeting-player__play) { border-color: transparent; padding: 5px; }
 .meeting-player select { font: inherit; font-size: .75rem; padding: 4px; max-width: 80px; color: var(--echo-text-primary); background: var(--echo-bg-primary); border: 1px solid var(--echo-border); border-radius: 6px; }
 .meeting-player__progress { display: block; width: 100%; margin: 8px 0 0; height: 12px; accent-color: var(--echo-brand); cursor: pointer; }

@@ -98,6 +98,38 @@ try {
   assert.deepEqual(await toggle.boundingBox(), anchor, "Production navigation must not move while expanding");
   await page.waitForLoadState("networkidle", { timeout: 10000 });
   assertNoErrors();
+  // Hold the real built JavaScript while the actual HTML/CSS paints. This
+  // distinguishes pre-React theme initialization from a later provider fix.
+  report.themeStartup = [];
+  for (const [preference, system, expected] of [["light", "dark", "light"], ["dark", "light", "dark"], ["system", "light", "light"], ["system", "dark", "dark"]]) {
+    const themed = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: system });
+    await themed.addInitScript(preference => localStorage.setItem("echoagent.theme", preference), preference);
+    let heldScripts = 0;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await themed.route(/\.js(?:\?|$)/, async route => { heldScripts++; await gate; await route.continue(); });
+    const startup = await themed.newPage();
+    const startupErrors = [];
+    startup.on("pageerror", error => startupErrors.push(error.message));
+    try {
+      await startup.goto(`http://127.0.0.1:${server.address().port}/`, { waitUntil: "commit" });
+      await startup.locator(".echo-startup-fallback").waitFor({ state: "attached" });
+      const initial = await startup.evaluate(() => ({
+        theme: document.documentElement.dataset.theme, scheme: document.documentElement.style.colorScheme,
+        background: getComputedStyle(document.body).backgroundColor, mounted: !!document.querySelector(".window-sidebar-brand"),
+      }));
+      assert.equal(initial.theme, expected); assert.equal(initial.scheme, expected);
+      assert.equal(initial.background, expected === "dark" ? "rgb(17, 19, 24)" : "rgb(247, 248, 250)");
+      assert(heldScripts > 0, "The real module requests must be held before capturing the first frame");
+      assert.equal(initial.mounted, false, "The first-frame assertion must run before React mounts");
+      await startup.screenshot({ path: join(output, `first-frame-${preference}-${system}.png`) });
+      release();
+      await startup.locator(".window-sidebar-brand").waitFor();
+      assert.equal(await startup.evaluate(() => document.documentElement.dataset.theme), expected);
+      assert.deepEqual(startupErrors, []);
+      report.themeStartup.push({ preference, system, expected, initial });
+    } finally { release(); await themed.close(); }
+  }
   report.passed = true;
 } catch (error) {
   report.error = error.stack || String(error);

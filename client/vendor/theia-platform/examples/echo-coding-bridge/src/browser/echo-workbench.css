@@ -1,13 +1,13 @@
-body.echo-embedded {
-    --theia-statusBar-background: #f6f8f9;
-    --theia-statusBar-foreground: #59636c;
-    --theia-statusBar-border: #e5e9eb;
-}
+/* UI colours, including the status bar, come from echo/set-theme's resolved
+ * host roles through Theia's colour registry. Do not mask that registry here. */
 
-body.theia-dark.echo-embedded {
-    --theia-statusBar-background: #202a2e;
-    --theia-statusBar-foreground: #bbc6c8;
-    --theia-statusBar-border: #354248;
+/* Match the host review's bottom-only character markers without painting
+ * vertical borders through syntax glyphs. Empty ranges keep their caret. */
+body.echo-embedded .monaco-diff-editor :is(.line-insert, .line-delete) { border: 0; }
+body.echo-embedded .monaco-diff-editor :is(.char-insert, .char-delete):not(.diff-range-empty) {
+    border-top: 0;
+    border-left: 0;
+    border-right: 0;
 }
 
 .echo-editor-empty {

@@ -253,7 +253,7 @@ export function ImportSkillModal({
     }}>
       <div
         ref={dialogRef}
-        className="sk-import sk-import--managed"
+        className={`sk-import sk-import--managed${items.length ? " sk-import--inspected" : ""}`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

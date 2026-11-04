@@ -928,7 +928,7 @@ export function AgentSettingsPanel() {
   const [subagentDepth, setSubagentDepth] = useState<number | null>(null);
   const [subagentDraft, setSubagentDraft] = useState<string>("");
   const [savingRuntime, setSavingRuntime] = useState(false);
-  const [runtimeMsg, setRuntimeMsg] = useState<string | null>(null);
+  const [runtimeMsg, setRuntimeMsg] = useState<{ kind: "success" | "error" | "invalid"; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -960,7 +960,7 @@ export function AgentSettingsPanel() {
     if (subagentDepth === null || loadError) return;
     const requestedDepth = Number(subagentDraft);
     if (!Number.isInteger(requestedDepth) || requestedDepth < 1 || requestedDepth > 10) {
-      setRuntimeMsg("子代理最大层级须为 1 到 10 的整数");
+      setRuntimeMsg({ kind: "invalid", text: "子代理最大层级须为 1 到 10 的整数" });
       return;
     }
     setSavingRuntime(true);
@@ -969,9 +969,9 @@ export function AgentSettingsPanel() {
       const clamped = await subagentsConfigSave(requestedDepth);
       setSubagentDepth(clamped);
       setSubagentDraft(String(clamped));
-      setRuntimeMsg(`子代理深度已保存为 ${clamped}（重启 Agent 后生效）`);
+      setRuntimeMsg({ kind: "success", text: `子代理深度已保存为 ${clamped}（重启 Agent 后生效）` });
     } catch (e) {
-      setRuntimeMsg(`保存失败：${String(e).replace(/^Error:\s*/, "")}`);
+      setRuntimeMsg({ kind: "error", text: `保存失败：${String(e).replace(/^Error:\s*/, "")}` });
     } finally {
       setSavingRuntime(false);
     }
@@ -1016,7 +1016,9 @@ export function AgentSettingsPanel() {
                 aria-label="子代理最大层级"
                 className="settings-input settings-input--narrow"
                 value={subagentDraft}
-                onChange={(e) => setSubagentDraft(e.target.value)}
+                onChange={(e) => { setSubagentDraft(e.target.value); setRuntimeMsg(null); }}
+                aria-invalid={runtimeMsg?.kind === "invalid" || undefined}
+                aria-describedby={runtimeMsg ? "subagent-depth-feedback" : undefined}
                 disabled={savingRuntime || loading || subagentDepth === null || !!loadError}
               />
               <button
@@ -1037,7 +1039,7 @@ export function AgentSettingsPanel() {
           </div>
 
           {runtimeMsg && (
-            <p className="settings-msg settings-msg--info">{runtimeMsg}</p>
+            <p id="subagent-depth-feedback" className={`settings-msg settings-msg--${runtimeMsg.kind === "success" ? "success" : "error"}`} role={runtimeMsg.kind === "success" ? "status" : "alert"}>{runtimeMsg.text}</p>
           )}
       </SettingsGroup>
 

@@ -155,11 +155,11 @@ const DATE_OPTIONS: { value: string | null; label: string }[] = [
   { value: "last30days",   label: "最近 30 天" },
 ];
 
-/** Green checkmark shown on the selected filter option. */
+/** The selected filter owns its checkmark foreground in both themes. */
 function CheckIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path fill="#00C29A" transform="translate(2.676 3.976)"
+      <path fill="currentColor" transform="translate(2.676 3.976)"
         d="M11.3137 0.9428L4.2426 8.0139L0 3.7712L0.9428 2.8284L4.2426 6.1283L10.3709 0L11.3137 0.9428Z" />
     </svg>
   );

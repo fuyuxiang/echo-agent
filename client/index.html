@@ -47,8 +47,8 @@
       }
 
       body {
-        background-color: var(--echo-bg-primary, #fcfdfc);
-        color: var(--echo-text-strong, #242927);
+        background-color: var(--echo-surface-canvas, #F7F8FA);
+        color: var(--echo-text-strong, #20242E);
         font-family: var(
           --vscode-font-family,
           -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -60,22 +60,22 @@
       }
 
       html[data-theme="dark"] body {
-        background-color: var(--echo-bg-primary, #1d2220);
-        color: var(--echo-text-strong, #e6eae8);
+        background-color: var(--echo-surface-canvas, #111318);
+        color: var(--echo-text-strong, #E8ECF3);
       }
 
       .echo-startup-fallback {
         height: 100%;
         display: grid;
         place-items: center;
-        background: var(--echo-bg-primary, #fcfdfc);
-        color: var(--echo-text-medium, #505954);
+        background: var(--echo-surface-canvas, #F7F8FA);
+        color: var(--echo-text-medium, #5F6877);
         font-size: 14px;
       }
 
       html[data-theme="dark"] .echo-startup-fallback {
-        background: var(--echo-bg-primary, #1d2220);
-        color: var(--echo-text-medium, #b4bdb8);
+        background: var(--echo-surface-canvas, #111318);
+        color: var(--echo-text-medium, #B2BBCB);
       }
 
       ::-webkit-scrollbar {

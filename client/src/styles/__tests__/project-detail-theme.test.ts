@@ -27,11 +27,14 @@ describe("project detail theme contract", () => {
   });
 
   it("keeps project primary controls legible in both themes", () => {
-    for (const selector of [".pd-invite", ".pd-btn--primary", ".pd-pill--on"]) {
+    for (const selector of [".pd-invite", ".pd-btn--primary"]) {
       const block = rule(selector);
       expect(block).toContain("background: var(--echo-button-primary-bg);");
       expect(block).toContain("color: var(--echo-button-primary-fg);");
     }
+
+    expect(rule(".pd-pill--on")).toContain("background: var(--echo-control-selected-bg);");
+    expect(rule(".pd-pill--on")).toContain("color: var(--echo-control-selected-fg);");
 
     // 项目 composer 改用首页 `<Composer>` 后,发送按钮由 Composer 提供(.echo-composer__send);
     // 发送操作和普通主操作使用同一组品牌前景、背景；空输入仍保持中性禁用态。

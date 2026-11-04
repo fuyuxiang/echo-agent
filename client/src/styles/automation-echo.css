@@ -1829,6 +1829,8 @@
 .atm-task-filter span { font-variant-numeric: tabular-nums; }
 .atm-task-filter[aria-pressed="true"] { background: var(--echo-brand-soft); color: var(--echo-brand); }
 .atm-task-filter:hover { background: var(--atm-surface-hover); }
+.atm-task-filter[aria-pressed="true"]:hover { background: var(--echo-control-selected-bg-hover); }
+.atm-task-filter[aria-pressed="true"]:active { background: var(--echo-control-selected-bg-active); }
 .atm-task-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; flex: none; }
 .atm-task-card { display: flex; flex-direction: column; min-width: 0; padding: 20px; border: 1px solid var(--atm-border); border-radius: 14px; background: var(--atm-surface); box-shadow: 0 2px 8px #142f2708; }
 .atm-task-card.is-selected { border-color: var(--echo-brand); }

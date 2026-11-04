@@ -109,7 +109,10 @@
     .app-dialog__button, .atm-create-btn, .atm-detail-btn, .meeting-primary,
     .meeting-secondary, .meeting-danger,
     .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save, .coding-primary-btn):is(:disabled, [aria-disabled="true"]) {
-  opacity: .5;
+  background: var(--echo-control-disabled-bg);
+  color: var(--echo-control-disabled-fg);
+  border-color: var(--echo-border-default);
+  opacity: 1;
   cursor: not-allowed;
 }
 :is(.echo-button--small, .echo-button--compact, .form-button--compact, .settings-btn--compact, .btn--compact, .browser-preview__go, .plan-panel__add-btn, .plan-panel__row-edit-save) {
@@ -179,6 +182,11 @@ select.form-control {
 }
 /* Composer's enclosing card and the IDE separator render their own focus.
  * Keep every other control on the fallback ring, including toolbar buttons. */
+.echo-composer:has(.echo-composer__input:focus-visible),
+.echo-theia-agent__composer-box:has(.echo-theia-agent__input:focus-visible) {
+  outline: 2px solid var(--echo-focus-ring);
+  outline-offset: 2px;
+}
 @media (forced-colors: active) {
   .echo-composer:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
   .echo-theia-agent__composer-box:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }

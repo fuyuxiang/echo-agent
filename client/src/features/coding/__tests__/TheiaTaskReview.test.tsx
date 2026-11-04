@@ -7,7 +7,7 @@ const { prepareLocalMonaco, editorState } = vi.hoisted(() => ({
   prepareLocalMonaco: vi.fn(async (): Promise<void> => undefined),
   editorState: { fail: false, automaticMount: true, onMount: null as (() => void) | null },
 }));
-vi.mock("../lib/local-monaco", () => ({ prepareLocalMonaco }));
+vi.mock("../lib/local-monaco", () => ({ prepareLocalMonaco, syncLocalMonacoTheme: vi.fn() }));
 
 const invoke = vi.fn(async (command: string, _args?: unknown): Promise<unknown> => {
   if (command === "coding_changeset_diff") {

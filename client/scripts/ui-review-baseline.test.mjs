@@ -43,5 +43,10 @@ it("compiles nested CSS imports from HEAD and preserves the HEAD fixture entry o
   expect(() => baseline.plugin.resolveId("/src/styles/new.css")).toThrow("Baseline stylesheet is absent");
   expect(() => baseline.plugin.load(join(root,"src/new-feature.tsx"))).toThrow("Baseline source is absent");
   expect(baseline.plugin.resolveId("some-package/styles.css")).toBeNull();
+  const sharedFixture = createUiReviewBaseline(root, { currentFixtures: true });
+  cleanups.push(sharedFixture.close);
+  expect(sharedFixture.plugin.load(join(root,"scripts/fixtures/review.tsx"))).toBeNull();
+  expect(sharedFixture.plugin.load(join(root,"src/styles/index.css"))).toContain(".head-entry");
+  expect(sharedFixture.plugin.load(join(root,"src/styles/index.css"))).not.toContain("working");
   baseline.close(); expect(existsSync(baseline.directory)).toBe(false);
 });

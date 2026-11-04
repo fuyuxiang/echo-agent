@@ -21,6 +21,9 @@ async function inspect(page, context) {
     const probe = document.createElement("span"); root.append(probe);
     const token = (property, value) => { probe.style[property] = value; return getComputedStyle(probe)[property]; };
     const palette = {
+      disabled: token("backgroundColor", "var(--echo-control-disabled-bg)"),
+      disabledForeground: token("color", "var(--echo-control-disabled-fg)"),
+      disabledBorder: token("borderTopColor", "var(--echo-border-default)"),
       primary: token("backgroundColor", "var(--echo-button-primary-bg)"),
       secondary: token("backgroundColor", "var(--echo-button-secondary-bg)"),
       border: token("borderTopColor", "var(--echo-button-secondary-border)"),
@@ -39,10 +42,10 @@ async function inspect(page, context) {
       const primary = /(?:settings-btn|form-button|echo-button|btn)--primary/.test(element.className);
       const danger = /(?:settings-btn|form-button|echo-button|btn)--danger(?:\s|$)/.test(element.className);
       const selected = element.matches('.notify-panel__btn[aria-checked="true"]');
-      const expectedBackground = ghost ? "rgba(0, 0, 0, 0)" : primary ? palette.primary : selected ? palette.selected : palette.secondary;
+      const expectedBackground = element.disabled ? palette.disabled : ghost ? "rgba(0, 0, 0, 0)" : primary ? palette.primary : selected ? palette.selected : palette.secondary;
       return { name: (element.getAttribute("aria-label") || element.textContent).trim(), classes:element.className,
         background:css.backgroundColor, expectedBackground, border:css.borderTopColor,
-        expectedBorder:ghost || primary ? "rgba(0, 0, 0, 0)" : palette.border,
+        expectedBorder:element.disabled ? palette.disabledBorder : ghost || primary ? "rgba(0, 0, 0, 0)" : palette.border,
         color:css.color, danger, expectedDanger:palette.danger, radius:css.borderTopLeftRadius,
         fontSize:css.fontSize, fontFamily:css.fontFamily, height:element.getBoundingClientRect().height, opacity:css.opacity, disabled:element.disabled,
         clipped:element.scrollWidth > element.clientWidth + 2,
@@ -71,10 +74,13 @@ async function inspect(page, context) {
     assert.equal(button.radius,controls.palette.radius,`${label}: radius`);
     assert.equal(button.fontSize,controls.palette.fontSize,`${label}: typography`);
     assert.equal(button.fontFamily,controls.palette.fontFamily,`${label}: font family`);
-    if(button.danger) assert.equal(button.color,button.expectedDanger,`${label}: danger foreground`);
+    if(button.danger && !button.disabled) assert.equal(button.color,button.expectedDanger,`${label}: danger foreground`);
     assert(!button.clipped,`${label}: clipped label`);
     assert(button.height >= 31.5, `${label}: insufficient target height`);
-    if(button.disabled) assert.equal(button.opacity,"0.5",`${label}: disabled state`);
+    if(button.disabled) {
+      assert.equal(button.opacity,"1",`${label}: disabled state uses neutral colors without inherited fading`);
+      assert.equal(button.color,controls.palette.disabledForeground,`${label}: neutral disabled foreground`);
+    }
   }
   for (const field of controls.fields) {
     if(!field.focused && !field.invalid) assert.equal(field.border,controls.palette.fieldBorder,`${JSON.stringify(context)} ${field.name}: field border`);
@@ -192,7 +198,7 @@ try {
     assert.equal(await field.evaluate(element=>getComputedStyle(element).outlineStyle),"solid",`${theme}: field focus missing`);
     await page.close();
   }
-  // Settings must keep the project workspace's existing teal action palette.
+  // Settings and project actions share the same semantic primary pair.
   const page=await browser.newPage({viewport:{width:1440,height:1000}});
   await page.goto(`${base}/__ui-review?surface=projects`,{waitUntil:"networkidle"});
   assertButtonBackgrounds(await inspectButtonBackgrounds(page,"light"),"Project palette after settings changes");

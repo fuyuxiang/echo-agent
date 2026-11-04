@@ -67,13 +67,14 @@ export function inspectRenderedColors() {
     if (!direct && !placeholder && !value) continue;
     const s = placeholder ? getComputedStyle(e, "::placeholder") : style(e);
     const complex = [];
+    if (e.closest(".monaco-diff-editor .view-lines")) complex.push("layered-editor-background: use editor-paint-audit");
     for (let p = e; p; p = p.parentElement) if (style(p).backgroundImage !== "none" || style(p).filter !== "none" || style(p).mixBlendMode !== "normal") complex.push(label(p));
     const fg = [...rgba(s.color)];
     if (placeholder) fg[3] *= Number(s.opacity);
     const background = pixel(e, [0, 0, 0, 0]);
     const foreground = pixel(e, fg);
     const threshold = parseFloat(s.fontSize) >= 24 || (parseFloat(s.fontSize) >= 18.667 && parseInt(s.fontWeight) >= 700) ? 3 : 4.5;
-    const item = { selector: label(e), text: String(placeholder || value || direct).slice(0, 90), color: s.color, foreground: foreground.slice(0, 3).map(Math.round), background: background.slice(0, 3).map(Math.round), ratio: +ratio(foreground, background).toFixed(3), threshold, placeholder: !!placeholder };
+    const item = { selector: label(e), text: String(placeholder || value || direct).slice(0, 90), color: s.color, foreground: foreground.slice(0, 3).map(Math.round), background: background.slice(0, 3).map(Math.round), ratio: ratio(foreground, background), threshold, placeholder: !!placeholder };
     if (e.closest(":disabled,[aria-disabled=true]") || e.matches("label:has(input:disabled)")) disabled.push(item);
     else if (complex.length) manual.push({ ...item, complex });
     else text.push(item);
@@ -84,15 +85,34 @@ export function inspectRenderedColors() {
     const s = style(e);
     const background = pixel(e, [0, 0, 0, 0]);
     const boundaryColor = e.matches(".echo-switch") ? s.boxShadow.includes("inset") ? style(e.querySelector(".echo-switch-thumb")).backgroundColor : s.backgroundColor : s.borderTopColor;
-    controls.push({selector:label(e),role:"boundary",ratio:+ratio(pixel(e,rgba(boundaryColor)), e.matches(".echo-switch") ? pixel(e.parentElement,[0,0,0,0]) : background).toFixed(3),threshold:3});
-    if (s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0) controls.push({selector:label(e),role:"focus",ratio:+ratio(pixel(e.parentElement,rgba(s.outlineColor)),pixel(e.parentElement,[0,0,0,0])).toFixed(3),threshold:3});
+    controls.push({selector:label(e),role:"boundary",ratio:ratio(pixel(e,rgba(boundaryColor)), e.matches(".echo-switch") ? pixel(e.parentElement,[0,0,0,0]) : background),threshold:3});
+    if (s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0) controls.push({selector:label(e),role:"focus",ratio:ratio(pixel(e.parentElement,rgba(s.outlineColor)),pixel(e.parentElement,[0,0,0,0])),threshold:3});
+  }
+  for (const e of document.querySelectorAll(".echo-composer,.echo-theia-agent__composer-box")) {
+    if (!visible(e)) continue;
+    const s = style(e);
+    if (s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0) controls.push({selector:label(e),role:"focus",ratio:ratio(pixel(e.parentElement,rgba(s.outlineColor)),pixel(e.parentElement,[0,0,0,0])),threshold:3});
   }
   for (const e of document.querySelectorAll('svg [fill*="--echo-status-"],.meeting-recorder__pulse svg,.meeting-global-recorder__dot svg')) {
     if (!visible(e) || e.closest(":disabled,[aria-disabled=true]")) continue;
     const s = style(e), filled = s.fill !== "none";
     const paint = [...rgba(filled ? s.fill : s.stroke)];
     paint[3] *= Number(filled ? s.fillOpacity : s.strokeOpacity);
-    controls.push({selector:label(e),role:"status-icon",ratio:+ratio(pixel(e,paint),pixel(e,[0,0,0,0])).toFixed(3),threshold:3});
+    controls.push({selector:label(e),role:"status-icon",ratio:ratio(pixel(e,paint),pixel(e,[0,0,0,0])),threshold:3});
+  }
+  // Essential selection marks and action glyphs need their actual SVG paint,
+  // not just the containing button's label or border.
+  for (const svg of document.querySelectorAll(".knowledge-picker__checkbox svg,.proj-picker-check--on svg,.task-filter-menu__option-check svg,.meeting-player__play svg,.echo-composer__send svg")) {
+    if (!visible(svg) || svg.closest(":disabled,[aria-disabled=true]")) continue;
+    for (const e of svg.querySelectorAll("path,polyline,polygon,line,circle,rect")) {
+      const s = style(e);
+      const fill = s.fill !== "none" && rgba(s.fill)[3] > 0;
+      const stroke = s.stroke !== "none" && parseFloat(s.strokeWidth) > 0;
+      if (!fill && !stroke) continue;
+      const paint = [...rgba(fill ? s.fill : s.stroke)];
+      paint[3] *= Number(fill ? s.fillOpacity : s.strokeOpacity);
+      controls.push({selector:label(svg.parentElement),role:svg.closest(".meeting-player__play,.echo-composer__send") ? "action-icon" : "selection-mark",ratio:ratio(pixel(e,paint),pixel(e,[0,0,0,0])),threshold:3});
+    }
   }
   return { text, failures: text.filter(x => x.ratio < x.threshold), controls, controlFailures: controls.filter(x => x.ratio < x.threshold), disabled, manual };
 }

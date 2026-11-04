@@ -11,8 +11,8 @@ const output = reviewOutput(join(tmpdir(),"echo-color-audit",baseline ? "before"
 const server = await createUiReviewServer(0, { baseline });
 const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review`;
 const selected = process.argv.find(arg => arg.startsWith("--surface="))?.slice(10);
-const surfaces = ["home", "home:unconfigured", "home:loading", "home:error", "conversation", "search", "browser-toolbar", "capabilities", "page:技能", "page:连接器", "page:插件", "page:项目", "collapsed-project", "page:自动化", "automation-edit", "page:知识库", "organization", "organization-login", "meeting", "coding", "model", "general", "personalize", "memory", "personal-memory", "agent-settings", "shortcuts", "usage", "cloud-storage", "data", "archived", "security", "help", "agent-mail", "notify-channels", "weixin-unconnected", "weixin-connected", "weixin-offline", "modal-long", "modal-error", "about", "feedback", "update", "results", "details", "trust", "execution", "runtime", "queue", "controls", "page:技能:error", "page:连接器:error", "page:插件:error", "trust:error", "execution:complete", "execution:error", "results:code", "results:diagram", "projects", "management-experts", "management-knowledge", "management-schedules", "organization-shell", "expert-entry", "workspace-picker", "permission-picker", "toast", "content-menus", "coding-question", ...(baseline ? [] : ["color-system"])].filter(spec => !selected || selected.split(",").includes(spec)).sort((a,b) => selected ? selected.split(",").indexOf(a) - selected.split(",").indexOf(b) : 0);
-const screenshots = new Set(["home", "conversation", "page:连接器", "page:技能", "page:项目", "organization", "coding", "general", "modal-error", "execution", "controls", "meeting", "color-system"]);
+const surfaces = ["workbench", "home", "home:unconfigured", "home:loading", "home:error", "conversation", "search", "browser-toolbar", "capabilities", "page:技能", "page:连接器", "page:插件", "page:项目", "collapsed-project", "page:自动化", "automation-edit", "page:知识库", "organization", "organization-login", "meeting", "coding", "model", "general", "personalize", "memory", "personal-memory", "agent-settings", "shortcuts", "usage", "cloud-storage", "data", "archived", "security", "help", "agent-mail", "notify-channels", "weixin-unconnected", "weixin-connected", "weixin-offline", "modal-long", "modal-error", "about", "feedback", "update", "results", "details", "trust", "execution", "runtime", "queue", "controls", "page:技能:error", "page:连接器:error", "page:插件:error", "trust:error", "execution:complete", "execution:error", "results:code", "results:diagram", "projects", "management-experts", "management-knowledge", "management-schedules", "organization-shell", "expert-entry", "workspace-picker", "permission-picker", "toast", "content-menus", "coding-question", ...(baseline ? [] : ["color-system"])].filter(spec => !selected || selected.split(",").includes(spec)).sort((a,b) => selected ? selected.split(",").indexOf(a) - selected.split(",").indexOf(b) : 0);
+const screenshots = new Set(["home", "conversation", "page:连接器", "page:技能", "page:项目", "organization", "coding", "general", "modal-error", "execution", "controls", "meeting", "color-system", "model", "organization-shell", "management-schedules", "workspace-picker", "content-menus", "search"]);
 const scenarios = process.argv.includes("--full") ? [[1024,680,11], [1024,680,18], [1280,800,13], [1920,1080,11], [1920,1080,18]] : [[1280,800,13]];
 const evidence = [];
 let browser;
@@ -24,8 +24,8 @@ try {
   await reference.setContent('<body style="background:white"><span id="opaque" style="color:black">reference</span><span id="alpha" style="color:rgba(0,0,0,.5)">alpha</span><div style="opacity:.5"><span id="group" style="color:black">group</span></div><button disabled>disabled</button><span style="opacity:0">hidden</span><span style="background:linear-gradient(white,gray)">gradient</span></body>');
   const known = await reference.evaluate(inspectRenderedColors);
   assert.equal(known.text.find(e => e.selector === "span#opaque").ratio,21);
-  assert.equal(known.text.find(e => e.selector === "span#alpha").ratio,3.977);
-  assert.equal(known.text.find(e => e.selector === "span#group").ratio,3.977);
+  assert(Math.abs(known.text.find(e => e.selector === "span#alpha").ratio - 3.976653024912438) < 1e-10);
+  assert(Math.abs(known.text.find(e => e.selector === "span#group").ratio - 3.976653024912438) < 1e-10);
   assert.equal(known.disabled.length,1);
   assert.equal(known.manual.length,1);
   assert.ok(!known.text.some(e => e.text === "hidden"));
@@ -40,12 +40,18 @@ try {
   await reference.setContent('<body style="background:white"><span class="meeting-recorder__pulse"><svg width="20" height="20" fill="none" stroke="white"><path d="M1 1L19 19" /></svg></span><span class="meeting-global-recorder__dot"><svg width="14" height="14" fill="none" stroke="white"><path d="M1 1L13 13" /></svg></span></body>');
   const invisibleIcons = await reference.evaluate(inspectRenderedColors);
   assert.equal(invisibleIcons.controlFailures.filter(item=>item.role==="status-icon" && item.ratio===1).length,2,"Both recording glyphs must be checked even when they use currentColor strokes");
+  await reference.setContent('<body style="background:white"><span style="color:color(srgb 0 0 0 / .53466)">临界文字</span><span class="knowledge-picker__checkbox" style="color:white"><svg width="20" height="20" fill="none" stroke="currentColor"><path d="M1 1L19 19" /></svg></span></body>');
+  const negative = await reference.evaluate(inspectRenderedColors);
+  const borderline = negative.failures.find(item => item.text === "临界文字");
+  assert(borderline && borderline.ratio < 4.5 && Number(borderline.ratio.toFixed(3)) === 4.5, "A below-threshold ratio that rounds to 4.500 must still fail");
+  assert(negative.controlFailures.some(item => item.role === "selection-mark" && item.ratio === 1), "Invisible selected glyphs must fail independently of their text");
   await reference.close();
   if (!baseline && surfaces.includes("color-system")) {
     // The ordinary grid freezes motion. Exercise the real recording animation
     // separately, including its dimmest midpoint and reduced-motion behavior.
     const motionServer = await createUiReviewServer(0,{freezeMotion:false});
     const motionPage = await browser.newPage({viewport:{width:1280,height:800}});
+    motionPage.setDefaultNavigationTimeout(90000);
     try {
       for (const theme of ["light","dark"]) {
         await motionPage.emulateMedia({reducedMotion:"no-preference"});
@@ -130,7 +136,18 @@ try {
         evidence.push({spec,theme,width,height,font,state:"approved-paused-queue",...await page.evaluate(inspectRenderedColors)});
       }
       if (process.argv.includes("--open-overlays")) {
-        const capture = async state => evidence.push({spec,theme,width,height,font,state,...await page.evaluate(inspectRenderedColors)});
+        const capture = async state => {
+          evidence.push({spec,theme,width,height,font,state,...await page.evaluate(inspectRenderedColors)});
+          if (font === 13 || width === 1024 && font === 18) await page.screenshot({path:join(output,`${spec.replace(":","-")}-${state}-${theme}-${width}-${font}.png`)});
+        };
+        if (surface === "workbench") {
+          await page.getByRole("button", {name:"筛选任务",exact:true}).click();
+          await page.getByRole("menu", {name:"任务筛选",exact:true}).waitFor();
+          const glyphs = await page.evaluate(inspectRenderedColors);
+          assert(glyphs.controls.filter(control=>control.role==="selection-mark").length >= 2, "Both sidebar filter marks must be measured");
+          await capture("sidebar-selected-filter");
+          await page.keyboard.press("Escape");
+        }
         if (surface === "workspace-picker") {
           await page.locator(".workspace-picker__trigger").click();
           await page.getByRole("menu",{name:"选择工作目录",exact:true}).waitFor();
