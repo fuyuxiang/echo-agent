@@ -604,6 +604,9 @@ body.vscode-dark {
   --echo-size-control-sm: max(32px, 2rem);
   --echo-size-control-md: max(36px, 2.25rem);
   --echo-size-control-lg: max(40px, 2.5rem);
+  /* Window chrome keeps a stable desktop hit target and alignment while text
+   * controls above follow the reading-size preference. */
+  --echo-size-icon-button: 32px;
   --echo-icon-size-sm: 12px;
   --echo-icon-size-md: 16px;
   --echo-icon-size-lg: 20px;

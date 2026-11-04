@@ -16,6 +16,7 @@ export interface DocumentSnapshot {
   phase: 'loading'|'ready'|'dirty'|'saving'|'conflict'|'error'; message: string; publishing: boolean;
   syncError: string;
   operation: 'restore'|'copy'|'reload'|null;
+  failure: 'read'|'save'|null;
 }
 const sessions = new Map<string, DocumentSession>();
 function changed(sessionId: string) {
@@ -23,7 +24,7 @@ function changed(sessionId: string) {
 }
 /** Save queues outlive the panel: switching files must not drop a pending edit. */
 export class DocumentSession {
-  private state: DocumentSnapshot = {opened:null,record:null,draft:null,phase:'loading',message:'',publishing:false,syncError:'',operation:null};
+  private state: DocumentSnapshot = {opened:null,record:null,draft:null,phase:'loading',message:'',publishing:false,syncError:'',operation:null,failure:null};
   private listeners = new Set<() => void>();
   private dirty = false;
   private saveTimer?: ReturnType<typeof setTimeout>;
@@ -41,7 +42,7 @@ export class DocumentSession {
   }
   subscribe = (listener: () => void) => {this.listeners.add(listener);return () => {this.listeners.delete(listener);};};
   snapshot = () => this.state;
-  private update(patch: Partial<DocumentSnapshot>) {if(this.disposed)return;this.state={...this.state,...patch};this.listeners.forEach(listener=>listener());}
+  private update(patch: Partial<DocumentSnapshot>) {if(this.disposed)return;this.state={...this.state,...patch,...(patch.phase && patch.phase!=='error'?{failure:null}:{})};this.listeners.forEach(listener=>listener());}
   private retainRecovery() {
     if (this.disposed || !this.state.record || !this.state.draft) return;
     try { localStorage.setItem(this.recoveryKey,JSON.stringify({revision:this.state.record.revision,document:this.state.draft})); }
@@ -101,7 +102,7 @@ export class DocumentSession {
       const synchronized=record && record.exportedRevision>=record.revision;
       if(synchronized)this.publishFailures=0;
       this.update({opened,record,draft,phase:conflict?'conflict':this.dirty?'dirty':'ready',message:conflict?'已恢复上次未保存的编辑，但文档已有更新。请另存副本或读取最新稿。':'',syncError:synchronized?'':this.state.syncError});
-    } catch(error) {this.update({phase:'error',message:String(error).replace(/^Error:\s*/,'')});}
+    } catch(error) {this.update({phase:'error',failure:'read',message:String(error).replace(/^Error:\s*/,'')});}
     finally {
       this.refreshing=false;
       if(discardLocal)this.update({operation:null});
@@ -149,7 +150,7 @@ export class DocumentSession {
         this.schedulePublish();
       } catch(error) {
         const message=String(error).replace(/^Error:\s*/,'');
-        this.update({phase:message.includes('DOCUMENT_CONFLICT:')?'conflict':'error',message:message.replace('DOCUMENT_CONFLICT:','')});
+        this.update({phase:message.includes('DOCUMENT_CONFLICT:')?'conflict':'error',failure:'save',message:message.replace('DOCUMENT_CONFLICT:','')});
         this.retainRecovery();throw error;
       }
     })();

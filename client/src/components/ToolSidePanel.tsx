@@ -462,7 +462,7 @@ export function ToolSidePanel({
           <div hidden={!runtimeView || showToolDetail}>{details}</div>
           {browserVisited.current && <div className="task-details__browser" hidden={view !== "browser" || showToolDetail}><BrowserPreview url={browserUrl ?? ""} onUrlChange={setBrowserUrl} /></div>}
           {(!listView || split || !showList) && ((!runtimeView && view !== "browser") || showToolDetail) && (showToolDetail ? toolCall ? <ToolCallDetailBody tc={toolCall} executionEnded={toolExecutionEnded} onOpenPath={path => onSelectArtifact({id:path,path,kind:toolCall.kind,title:toolCall.title,toolCallId:toolCall.toolCallId,status:toolCall.status})} /> : <p className="tool-side-panel__empty">选择操作查看详情</p> : <MainContent key={sessionId} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={setDocumentEditing} onOpenArtifact={onSelectArtifact} view={view} artifacts={artifacts} sessionId={sessionId} cwd={cwd} previewPath={previewPath}
-            selectedArtifactId={selectedArtifactId} selectedFilePath={selectedFilePath} browserUrl={browserUrl}
+            active={open} selectedArtifactId={selectedArtifactId} selectedFilePath={selectedFilePath} browserUrl={browserUrl}
             onArtifactSelect={a => { const tc = findToolCall?.(a.toolCallId); if (tc) onSelectTool(tc); else onToast?.("关联工具记录已不可用，可继续预览文件内容"); }}
             onBrowserUrlChange={setBrowserUrl} onOpenOs={path => openLocalPath(path,{cwd,type:"file",onToast,revealFile:false})} onToast={onToast} />)}
         </div>
@@ -593,7 +593,7 @@ function ChangesNavList({
 // ---------- 主内容：按视图渲染详情 ----------
 
 function MainContent({
-  onEditDocument, documentAgentDisabled, onEditModeChange, onOpenArtifact,
+  active, onEditDocument, documentAgentDisabled, onEditModeChange, onOpenArtifact,
   view,
   artifacts,
   sessionId,
@@ -611,6 +611,7 @@ function MainContent({
   documentAgentDisabled?: boolean;
   onEditModeChange?: (editing: boolean) => void;
   onOpenArtifact?: (artifact: SessionArtifact) => void;
+  active: boolean;
   view: WorkspaceView;
   artifacts: SessionArtifact[];
   sessionId?: string;
@@ -638,7 +639,7 @@ function MainContent({
       return <p className="tool-side-panel__empty">选择文件查看内容</p>;
     }
     return (
-      <ArtifactFilePreview key={`${sessionId}:${path}`} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} path={path} cwd={cwd} sessionId={sessionId}
+      <ArtifactFilePreview active={active} key={`${sessionId}:${path}`} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} path={path} cwd={cwd} sessionId={sessionId}
           artifact={artifacts.find(item => artifactFileKey(item.path, cwd) === artifactFileKey(path, cwd))} onToast={onToast} onOpenOs={() => onOpenOs(path)} />
     );
   }
@@ -648,7 +649,7 @@ function MainContent({
       return <p className="tool-side-panel__empty">在左侧选择文件查看变更</p>;
     }
     return (
-      <ArtifactFilePreview key={`${sessionId}:${path}`} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} path={path} cwd={cwd} sessionId={sessionId}
+      <ArtifactFilePreview active={active} key={`${sessionId}:${path}`} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} path={path} cwd={cwd} sessionId={sessionId}
           artifact={artifacts.find(item => artifactFileKey(item.path, cwd) === artifactFileKey(path, cwd))} onToast={onToast} onOpenOs={() => onOpenOs(path)} />
     );
   }
@@ -675,7 +676,7 @@ function MainContent({
             查看关联工具
           </button>
         )}
-        <ArtifactFilePreview key={`${sessionId}:${path}`} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} path={path} cwd={cwd} sessionId={sessionId}
+        <ArtifactFilePreview active={active} key={`${sessionId}:${path}`} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} path={path} cwd={cwd} sessionId={sessionId}
           artifact={artifacts.find(item => artifactFileKey(item.path, cwd) === artifactFileKey(path, cwd))} onToast={onToast} onOpenOs={() => onOpenOs(path)} />
       </div>
     );
@@ -692,7 +693,7 @@ type PreviewState =
   | { type: "error"; message: string; canOpen: boolean };
 
 function ArtifactFilePreview({
-  onEditDocument, documentAgentDisabled, onEditModeChange, onOpenArtifact,
+  active, onEditDocument, documentAgentDisabled, onEditModeChange, onOpenArtifact,
   path,
   cwd,
   sessionId,
@@ -705,6 +706,7 @@ function ArtifactFilePreview({
   documentAgentDisabled?: boolean;
   onEditModeChange?: (editing: boolean) => void;
   onOpenArtifact?: (artifact: SessionArtifact) => void;
+  active: boolean;
   cwd?: string;
   sessionId?: string;
   artifact?: SessionArtifact;
@@ -816,7 +818,7 @@ function ArtifactFilePreview({
       )}
       {state.type === "ready" && sessionId && (kind === "docx" || kind === "markdown") ? (
         <Suspense fallback={<p className="tool-side-panel__empty">正在打开文档工作区…</p>}>
-          <DocumentWorkbench key={`${sessionId}:${path}`} path={path} sessionId={sessionId} cwd={cwd} content={state.content}
+          <DocumentWorkbench active={active} key={`${sessionId}:${path}`} path={path} sessionId={sessionId} cwd={cwd} content={state.content}
             onToast={onToast} onAskAgent={onEditDocument} agentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} onReload={() => setRetry(value => value + 1)} />
         </Suspense>
       ) : state.type === "ready" && (

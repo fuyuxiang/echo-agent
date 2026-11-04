@@ -8,6 +8,7 @@ const output = reviewOutput(mkdtempSync(join(tmpdir(), "echo-coding-composer-ui-
 const server = await createUiReviewServer(0, { fixture: "/scripts/fixtures/coding-composer-review.tsx" });
 const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review`;
 const layouts = [];
+const planLayouts = [];
 let browser;
 try {
   browser = await (await reviewChromium()).launch({ headless: true, executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
@@ -154,6 +155,35 @@ try {
     assert.equal(await recovery.count(),0);
     await settings.close();
   }
+  for (const width of [300, 410]) for (const font of [13, 18]) for (const theme of ["light", "dark"]) {
+    const page = await browser.newPage({ viewport: { width: 1024, height: 680 } });
+    const errors = []; page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`${base}?width=${width}&font=${font}&theme=${theme}&state=plan-interrupted`);
+    const plan = page.getByRole("textbox", { name: "编辑开发计划", exact: true });
+    await plan.waitFor();
+    assert.equal(await plan.inputValue(), "");
+    const execute = page.getByRole("button", { name: "执行最终计划", exact: true });
+    assert.equal(await execute.isDisabled(), true);
+    const notice = page.getByRole("status").filter({ hasText: "本轮计划未完整生成" });
+    await notice.waitFor();
+    const geometry = await page.locator(".coding-editable-plan").evaluate(element => ({
+      width: element.clientWidth, scrollWidth: element.scrollWidth,
+      viewportOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+    }));
+    assert(geometry.scrollWidth <= geometry.width + 1 && !geometry.viewportOverflow, "Interrupted plan must wrap within the Agent pane");
+    await page.locator(".coding-editable-plan").screenshot({ path: join(output, `plan-interrupted-${width}-${font}-${theme}.png`) });
+    const draft = "1. 读取当前文件\n2. 保留用户修改并完成验证";
+    await plan.fill(draft);
+    assert.match(await notice.textContent(), /你的草稿已保留，请核对后执行/);
+    await execute.click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="提交记录"]').textContent.startsWith("1 次"));
+    assert((await page.getByLabel("提交记录").textContent()).endsWith(draft), "Execution must receive the user's exact plan");
+    assert.deepEqual(errors, []);
+    planLayouts.push({ width, font, theme, ...geometry, incompletePlanBlocked: true, editedPlanReceived: true });
+    await page.close();
+  }
+  writeFileSync(join(output, "plan-layouts.json"), JSON.stringify(planLayouts, null, 2));
   writeFileSync(join(output, "layouts.json"), JSON.stringify(layouts, null, 2));
+  console.log(`Passed ${planLayouts.length} interrupted-plan layouts and exact edited-plan submission checks.`);
   console.log(`Passed ${layouts.length} single-row layouts, context/model/permission menus, growing drafts, live font-size changes, keyboard/button submission and blocked states. Visual/interaction fixture only; native IPC is isolated, no model calls. Evidence: ${output}`);
 } finally { await browser?.close(); await server.close(); }

@@ -14,6 +14,43 @@
     && value.includes('UNSAVED_A01')
     && /^\s*exports\s*\.\s*double\s*=\s*n\s*=>\s*n\s*\*\s*2\s*;\s*$/.test(
       value.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n\u2028\u2029]*/g,' '));
+  // A real Plan can clarify whether the known dirty buffer should be saved.
+  // The answer authorizes no tool: all subsequent reads/edits/commands still
+  // pass the existing exact-path and candidate-content guards below.
+  const scopedSaveQuestion = (request, mode) => mode === 'plan'
+    && Array.isArray(request?.questions) && request.questions.length >= 1 && request.questions.length <= 3
+    && request.questions.every(item => {
+      if(typeof item?.question!=='string'||item.question.length>600)return false;
+      const options=Array.isArray(item.options)?item.options:[];
+      if(options.length>8||options.some(option=>typeof option?.description!=='string'||option.description.length>600))return false;
+      const details=[item.question,...options.map(option=>option.description)].join('\n');
+      const files=details.match(/\b[\w.-]+\.cjs\b/g)??[];
+      if(files.some(file=>!['double.cjs','test.cjs'].includes(file)))return false;
+      const save=details.includes('double.cjs') && files.every(file=>file==='double.cjs')
+        && /UNSAVED_A01|未保存|缓冲区/.test(details) && /保存|落盘|磁盘/.test(item.question);
+      const validation=/允许运行命令.*校验/.test(item.question)
+        && Array.isArray(item.options)&&item.options.length===2
+        && item.options.every(option=>typeof option?.description==='string'&&option.description.length<=600)
+        && item.options.some(option=>option.description.includes('node --test test.cjs')&&option.description.includes('node --check double.cjs'));
+      return save||validation;
+    });
+  // Runtime search_tool reads the local ToolIndex schema snapshot; it does not
+  // invoke the discovered tool. Keep UseTool/MCPTool denied and retain every
+  // existing file, version, replacement-candidate and command check.
+  const scopedDiscovery = (input, mode) => mode==='agent' && input?.variant==='SearchTool'
+    && Object.keys(input).every(key=>['variant','query','limit'].includes(key))
+    && typeof input.query==='string' && input.query.length>0 && input.query.length<=160
+    && (input.query==='local check run project verification'
+      || /\b(editor|document|buffer|search_replace)\b/i.test(input.query)
+        && input.query.toLowerCase().split(/[ _-]+/).every(word=>['editor','save','document','buffer','write','file','read','edit','search','replace','workspace','text','content','dirty','version','bridge','tool','tools'].includes(word)))
+    && (input.limit==null || Number.isInteger(input.limit)&&input.limit>=1&&input.limit<=15);
+  // Read-only inspection can include any of the four fixed fixture files.
+  // Mutation remains restricted to the safe double.cjs replacement below.
+  const scopedRead = (path, root) => typeof path==='string'
+    && ['double.cjs','package.json','test.cjs','completion.cjs'].some(name=>path===name||path===`${root}/${name}`);
+  const scopedSessionPlanRead = (path, dataHome, workspace, sessionId, mode) => ['plan','agent'].includes(mode)
+    && typeof sessionId==='string' && /^[A-Za-z0-9-]{1,128}$/.test(sessionId)
+    && path===`${dataHome}/sessions/${encodeURIComponent(workspace)}/${sessionId}/plan.md`;
   const report = { version: 1, environment: 'macOS WKWebView + production React/Runtime/Theia + real configured model',
     checks: [], errors: [], steps: [], passed: false, home, cwd, modelId,
     mode:scope.inlineOnly===true?'inline-only':'full-journey' };
@@ -32,7 +69,8 @@
   };
   const text = (element, value) => {
     element.focus();
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(element, value);
+    const prototype=element.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, value);
     element.dispatchEvent(new Event('input', { bubbles: true }));
   };
   const inline = [];
@@ -86,6 +124,11 @@
     await wait(()=>document.activeElement===frame,'Actual parent focus entered the editor iframe');
   };
   const focusInlineInput=async()=>{
+    const back=document.querySelector('button[aria-label="返回编辑器"]');
+    if(back) {
+      back.click();
+      await wait(()=>!document.querySelector('.echo-theia-review'),'Actual editor pane uncovered before Tab');
+    }
     await focusEditorFrame();
     const target=await frameAction('tab_focus_target');
     assert(target.path===`${cwd}/completion.cjs`,'Native focus target is outside the fixed completion file');
@@ -137,15 +180,25 @@
   };
   const permissions = async (sessionId,mode) => {
     const interactions=await call('agent_list_pending_interactions',{sessionId});
-    assert(!interactions.questions?.length&&!interactions.planApprovals?.length&&!interactions.folderTrustRequests?.length,'Unexpected model question/plan/trust outside fixed journey');
+    assert(!interactions.planApprovals?.length&&!interactions.folderTrustRequests?.length,'Unexpected plan/trust outside fixed journey');
+    for(const request of interactions.questions??[]) {
+      assert(request.sessionId===sessionId&&scopedSaveQuestion(request,mode),'Unexpected question outside the fixed buffer-save decision');
+      const card=document.querySelector('.question-inline');
+      const answer=card?.querySelector('.question-inline__custom-input');
+      if(answer&&!answer.disabled) {
+        text(answer,'请先展示可编辑的两步计划，当前不批准执行，也不扩大权限。本轮只规划、不写磁盘、不运行命令。用户修订后点击执行最终计划才确认保存 n * 2 和 UNSAVED_A01 到 double.cjs，之后由用户运行本地检查；不改其他文件。');
+        (await wait(()=>button(card,'下一步')??button(card,'提交'),'Scoped clarification next or submit')).click();
+        (report.clarifications??=[]).push({sessionId,requestId:request.requestId,via:'production QuestionInlineCard',decision:'Plan remains read-only; save known buffer only after final-plan approval'});
+      }
+    }
     for(const request of interactions.permissions??[]) {
       let raw=request.rawInput;if(typeof raw==='string'){try{raw=JSON.parse(raw);}catch{raw=null;}}
       assert(request.sessionId===sessionId,'Permission belongs to another session');
-      const names={read_file:'ReadFile',grep:'Grep',glob:'Glob',list_dir:'ListDir',search_replace:'SearchReplace',write:'Write',bash:'Bash',run_terminal_command:'Bash',todo_write:'TodoWrite'};
+      const names={read_file:'ReadFile',grep:'Grep',glob:'Glob',list_dir:'ListDir',search_replace:'SearchReplace',write:'Write',bash:'Bash',run_terminal_command:'Bash',todo_write:'TodoWrite',ask_user_question:'AskUserQuestion',search_tool:'SearchTool'};
       if(typeof raw?.tool_name==='string')raw={...raw.tool_input,variant:names[raw.tool_name.split(/:|__/).pop().toLowerCase()]};
       const path=raw?.file_path??raw?.target_file??raw?.path;
       const owned=['double.cjs',`${cwd}/double.cjs`].includes(path);
-      const harmlessRead=raw?.variant==='ReadFile'&&typeof path==='string'&&(owned||['package.json','test.cjs',`${cwd}/package.json`,`${cwd}/test.cjs`].includes(path));
+      const harmlessRead=raw?.variant==='ReadFile'&&(scopedRead(path,cwd)||scopedSessionPlanRead(path,home,cwd,sessionId,mode));
       const scopedPath=value=>value==null||['.','./',cwd,`${cwd}/`,'double.cjs','test.cjs','package.json','completion.cjs',`${cwd}/double.cjs`,`${cwd}/test.cjs`,`${cwd}/package.json`,`${cwd}/completion.cjs`].includes(value);
       const safePattern=value=>typeof value==='string'&&value.length>0&&value.length<=512&&!/[\x00\r\n]/.test(value);
       const safeGlob=value=>value==null||typeof value==='string'&&value.length<=128&&!value.startsWith('/')&&!value.includes('..')&&!/[\x00\r\n]/.test(value);
@@ -153,6 +206,8 @@
         ||raw?.variant==='Glob'&&scopedPath(raw.path)&&safeGlob(raw.pattern??raw.glob_pattern)&&typeof(raw.pattern??raw.glob_pattern)==='string'
         ||raw?.variant==='ListDir'&&scopedPath(raw.target_directory??raw.path);
       const harmlessTodos=mode==='agent'&&raw?.variant==='TodoWrite'&&Array.isArray(raw.todos)&&raw.todos.length<=8&&raw.todos.every(item=>item&&typeof item.id==='string'&&(item.content==null||typeof item.content==='string')&&(item.status==null||['pending','in_progress','completed','cancelled'].includes(item.status)));
+      const clarification=raw?.variant==='AskUserQuestion'&&scopedSaveQuestion(raw,mode);
+      const discovery=scopedDiscovery(raw,mode);
       let edit=false;
       if(mode==='agent'&&owned&&['SearchReplace','Write'].includes(raw?.variant)) {
         const before=(await frameAction('state')).text;
@@ -161,7 +216,7 @@
         edit=safeSource(candidate);
       }
       const command=mode==='agent'&&raw?.variant==='Bash'&&['npm test','npm run test','npm run lint','node --test test.cjs','node --check double.cjs'].includes(raw.command)&&!raw.is_background&&(raw.cwd==null||raw.cwd===cwd);
-      if(!harmlessRead&&!harmlessSearch&&!harmlessTodos&&!edit&&!command) {await call('agent_resolve_permission',{requestId:request.requestId,optionId:null,cancelled:true});throw new Error(`Unexpected model permission denied: ${raw?.variant??'unknown'}`);}
+      if(!harmlessRead&&!harmlessSearch&&!harmlessTodos&&!clarification&&!discovery&&!edit&&!command) {await call('agent_resolve_permission',{requestId:request.requestId,optionId:null,cancelled:true});throw new Error(`Unexpected model permission denied: ${raw?.variant??'unknown'}`);}
       const allow=button(document.getElementById(`permission-${request.requestId}`),'允许一次');if(allow)allow.click();
     }
   };
@@ -232,9 +287,13 @@
       assert(await call('read_text_file',{path:`${cwd}/double.cjs`,cwd,maxBytes:4096})===original,'Ask changed or saved disk');
       const afterAsk=await frameAction('state');assert(afterAsk.dirty&&afterAsk.text===dirty.text,'Ask lost the unsaved buffer');
       record('A01-real-unsaved-ask',{sessionId:report.sessionId,taskId:report.taskId,version:dirty.version,selection:dirty.selection,diskUnchanged:true,bufferPreserved:true});
-      await send('只读规划把 double.cjs 中 double(n) 修成 n 的两倍，保留未保存注释，仅给两步方案，不写工程、不运行命令。','plan');
+      await send('只读规划把 double.cjs 中 double(n) 修成 n 的两倍，仅给两步方案。后续用户批准最终计划后，需要将 n * 2 和 UNSAVED_A01 注释一起保存到 double.cjs；验证由用户随后点击本地检查完成。本轮不写工程、不保存文件、不运行命令；这些范围已确定。','plan');
       assert(await call('read_text_file',{path:`${cwd}/double.cjs`,cwd,maxBytes:4096})===original,'Plan modified disk');
       const editable=await wait(()=>document.querySelector('textarea[aria-label="编辑开发计划"]'),'Actual editable Plan');
+      assert(document.querySelectorAll('textarea[aria-label="编辑开发计划"]').length===1,'Actual Plan editor must be unique');
+      assert(editable.value.trim().length>0,'Completed Plan response did not populate its editor');
+      assert(!/^\s*<(think|thinking|reasoning|analysis)(?:\s|>)/i.test(editable.value),'Internal process was copied into the Plan editor');
+      report.generatedPlan={characters:editable.value.length,editorCount:1,reasoningEnvelopeExcluded:true};
       const finalPlan='仅修改 double.cjs：先读取当前编辑器内容，再用 search_replace 将 n + 1 改成 n * 2，保留 UNSAVED_A01 注释。不要改其他文件、安装依赖、使用 Git、联网或委派；不要切换模式或调用 todo_write；本轮不执行命令，检查由用户随后触发。完成后说明修改。';
       text(editable,finalPlan);
       const agentPriorRuns=(await call('coding_checkpoint_list',{root:cwd,taskId:report.taskId})).map(entry=>entry.runId);
@@ -269,13 +328,36 @@
       assert(diff.originalReadOnly&&diff.modifiedUri.includes('double.cjs'),'Actual Diff left side must be read-only and right side the workspace URI');
       record('A04-real-diff',{file:'double.cjs',source:'actual Theia MonacoDiffEditor',...diff});
       document.querySelector('button[aria-label="返回编辑器"]')?.click();
+      await frameAction('open');
+      const beforeUserEdit=await call('coding_delivery_report',{root:cwd,taskId:report.taskId});
+      assert(beforeUserEdit.gates.find(gate=>gate.id==='verification_freshness')?.status==='satisfied','Original check receipts were not current before the user edit');
+      const afterUserEdit=await frameAction('verification_edit');
+      assert(afterUserEdit.dirty&&afterUserEdit.text.includes('USER_AFTER_CHECKS'),'Actual user edit did not change the buffer');
+      assert(await call('read_text_file',{path:`${cwd}/double.cjs`,cwd,maxBytes:4096})===afterUserEdit.previousText,'Dirty user edit unexpectedly changed disk');
+      (await wait(()=>button(document.querySelector('.coding-session-actions'),'检查'),'Reopen actual verification panel')).click();
+      await wait(()=>[...document.querySelectorAll('.coding-verification')].filter(element=>visible(element)&&element.textContent.includes('已过期')).length>=2,'Dirty buffer invalidates both visible check receipts');
+      await frameAction('save');
+      assert(await call('read_text_file',{path:`${cwd}/double.cjs`,cwd,maxBytes:4096})===afterUserEdit.text,'Actual editor save did not persist the user edit');
+      const afterUserReport=await call('coding_delivery_report',{root:cwd,taskId:report.taskId});
+      const freshness=afterUserReport.gates.find(gate=>gate.id==='verification_freshness');
+      report.verificationInvalidation={afterFreshness:freshness,firstCheckId:first.id,secondCheckId:second.id};
+      assert(freshness?.status==='not_satisfied',`Saved content must invalidate old verification: received ${freshness?.status??'missing'}`);
+      assert(afterUserReport.verifications.some(record=>record.id===first.id&&record.status==='passed')&&afterUserReport.verifications.some(record=>record.id===second.id&&record.status==='passed'),'Invalidation erased or rewrote historical receipts');
+      await wait(()=>[...document.querySelectorAll('.coding-verification')].filter(element=>visible(element)&&element.textContent.includes('已过期')).length>=2,'Saved content keeps old check receipts visibly expired');
+      record('A08-verification-invalidated-by-user-edit',{file:'double.cjs',source:'actual Theia buffer edit/save + backend delivery report + production check panel',firstCheckId:first.id,secondCheckId:second.id,beforeFreshness:'satisfied',afterFreshness:freshness,historyPreserved:true,dirtyAndSavedStatesVisiblyExpired:true});
       const beforeSwitch=await frameAction('open');
       const originalTask=await call('coding_task_get',{root:cwd,taskId:report.taskId});
       const switchProject=async target=>{
+        const previousFrame=document.querySelector('.echo-theia__frame');
+        assert(visible(previousFrame),'Current project editor must be visible before switching');
         (await wait(()=>document.querySelector('button[aria-label="切换项目"]'),'Actual project switcher')).click();
         const select=await wait(()=>[...document.querySelectorAll('.coding-project-switcher__select')].find(element=>visible(element)&&element.querySelector('small')?.textContent===target),'Actual target project entry');
         select.click();
-        await wait(()=>document.querySelector('button[aria-label="切换项目"]')?.title.includes(target)&&!document.querySelector('.echo-theia__cover'),'Actual project startup',90000);
+        await wait(()=>{
+          const frame=document.querySelector('.echo-theia__frame');
+          return document.querySelector('button[aria-label="切换项目"]')?.title.includes(target)
+            && frame!==previousFrame&&visible(frame)&&!document.querySelector('.echo-theia__cover');
+        },'Actual new project iframe and ready bridge',90000);
       };
       await switchProject(`${home}/workspaces/other`);
       const other=await frameAction('open_other');

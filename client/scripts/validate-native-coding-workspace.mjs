@@ -209,7 +209,7 @@ try {
   assert(result.receivedEditorSnapshot?.sessionId===report.sessionId,'Missing actual Runtime received dirty/selected editor snapshot evidence');
   assert(result.servedTheia,'Missing hash of the actual served native Theia bundle');
   result.editedPlanReceived=inspectFinalPlan(home,report);
-  for(const id of ['A01-real-unsaved-ask','A03-A04-real-plan-agent','A07-two-real-checks','A04-real-diff','A12-two-real-projects','A17-real-inline'])assert(report.checks.some(check=>check.id===id&&check.result==='passed'),`Missing real native receipt: ${id}`);
+  for(const id of ['A01-real-unsaved-ask','A03-A04-real-plan-agent','A07-two-real-checks','A04-real-diff','A08-verification-invalidated-by-user-edit','A12-two-real-projects','A17-real-inline'])assert(report.checks.some(check=>check.id===id&&check.result==='passed'),`Missing real native receipt: ${id}`);
   assert(hash(readFileSync(join(fixture.other,'other.cjs')))===fixture.otherHash,'The other workspace was modified');
   for(const file of ['package.json','test.cjs','completion.cjs'])assert.equal(readFileSync(join(fixture.cwd,file),'utf8'),fixture.files[file],`Unrelated original file changed: ${file}`);
   assert(safeSource(readFileSync(join(fixture.cwd,'double.cjs'),'utf8')),'Refusing to execute generated code outside the fixed assignment');

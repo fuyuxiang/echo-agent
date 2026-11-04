@@ -4,6 +4,7 @@ import { RunHistory } from "./panels/RunHistory";
 import type { CodingTurnOptions } from "@/lib/agent-client";
 import type { EditorContextSnapshot } from "./lib/workspace-editor";
 import { EditablePlan } from "./agent/EditablePlan";
+import { codingPlanResult } from "./lib/plan-result";
 import type { CodingIntent } from "./lib/workflow";
 import { ExternalToolRecovery } from "./panels/ExternalToolRecovery";
 import {
@@ -273,6 +274,7 @@ export function CodingWorkbench({
     activeSessionId ? state.transcripts[activeSessionId] : undefined,
   );
   const messages = transcript?.messages ?? [];
+  const planResult = codingPlanResult(messages);
   const streaming = useSessionStore((state) =>
     activeSessionId
       ? Boolean(state.transcripts[activeSessionId]?.streamingMessageId)
@@ -3015,21 +3017,10 @@ export function CodingWorkbench({
         }} />}
         {planVisible && task && (
           <EditablePlan
-            key={`${cwd}:${task.id}`}
+            key={`plan:${cwd}:${task.id}`}
             scope={`${cwd}:${task.id}`}
-            initial={
-              intent === "plan"
-                ? (messages
-                    .filter(
-                      (message) =>
-                        message.role === "assistant" && message.complete,
-                    )
-                    .slice(-1)[0]
-                    ?.parts.filter((part) => part.kind === "text")
-                    .map((part) => ("text" in part ? part.text : ""))
-                    .join("\n") ?? "")
-                : ""
-            }
+            initial={planResult.text}
+            interrupted={planResult.status === "interrupted"}
             busy={streaming || sending}
             onExecute={async (finalPlan) => {
               const accepted = await sendFollowup(
@@ -3069,7 +3060,7 @@ export function CodingWorkbench({
           />
         )}
         <TheiaAgentComposer
-          key={`${cwd}:${task?.id ?? "new"}`}
+          key={`composer:${cwd}:${task?.id ?? "new"}`}
           workspaceRoot={cwd}
           task={task}
           sessionId={activeSessionId}

@@ -29,6 +29,12 @@ export function syncLocalMonacoTheme(): void {
 
 /** Use the locked, bundled editor and same-origin workers before mounting React. */
 export function prepareLocalMonaco(): Promise<void> {
+  // Reopening a loaded editor refreshes its colours without replacing the
+  // shared initialization promise returned to concurrent callers.
+  if (localMonaco) {
+    try { syncLocalMonacoTheme(); }
+    catch (error) { return Promise.reject(error); }
+  }
   if (!preparing) {
     const scope = globalThis as typeof globalThis & {
       MonacoEnvironment?: import("monaco-editor").Environment;
@@ -49,12 +55,12 @@ export function prepareLocalMonaco(): Promise<void> {
       loader.config({ monaco });
       await loader.init();
       localMonaco = monaco;
+      syncLocalMonacoTheme();
     }).catch((error: unknown) => {
       preparing = null;
+      localMonaco = null;
       throw error;
     });
   }
-  // A previous review can have closed before the host changed theme. Reusing
-  // the loaded editor must still register the currently resolved host colours.
-  return preparing.then(syncLocalMonacoTheme);
+  return preparing;
 }

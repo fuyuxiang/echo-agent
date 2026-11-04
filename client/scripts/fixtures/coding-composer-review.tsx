@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ThemeProvider } from "../../src/components/ThemeProvider";
 import { TheiaAgentComposer } from "../../src/features/coding/agent/TheiaAgentComposer";
+import { EditablePlan } from "../../src/features/coding/agent/EditablePlan";
 import { TaskSwitcher } from "../../src/features/coding/shell/TaskSwitcher";
 import { ProjectChecksEditor } from "../../src/features/coding/panels/ProjectChecksEditor";
 import { ExternalToolRecovery } from "../../src/features/coding/panels/ExternalToolRecovery";
@@ -76,6 +77,8 @@ function Review() {
         <output aria-label="提交记录">{sent.length} 次提交{sent.length > 0 && `：${sent[sent.length - 1]}`}</output>
         {toast && <p role="status">{toast}</p>}
       </div>
+      {state === "plan-interrupted" && <EditablePlan scope="review-interrupted-plan" initial="" interrupted busy={busy}
+        onExecute={async text => { await send(text); return true; }} onSave={text => setToast(`已保存计划：${text}`)} />}
       <TheiaAgentComposer workspaceRoot="/isolated/review" task={task} sessionId={task?.sessionId ?? null}
         models={state === "unconfigured" ? [] : models} modelId={state === "unconfigured" ? undefined : modelId}
         contextPaths={context} apiReady={state !== "unconfigured"} starting={!task && busy} sending={false} streaming={state === "streaming"}

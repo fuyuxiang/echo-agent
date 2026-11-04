@@ -106,6 +106,61 @@ describe("QuestionInlineCard", () => {
     expect(screen.getByRole("button", { name: "取消" })).toBeDisabled();
   });
 
+  it("retains the current question and its answers across task switches and remounts", async () => {
+    const next = { ...request, requestId: "question-2", sessionId: "session-2", timeout: 30 };
+    const first = { ...request, timeout: 30, questions: [request.questions[0], {
+      ...request.questions[0], id: "q-2", question: "Delivery?",
+    }] };
+    useQuestionStore.getState().clearAll();
+    useQuestionStore.getState().request(first);
+    useQuestionStore.getState().request(next);
+    clientMocks.list.mockResolvedValue({ ...pending(), questions: [first, next] });
+    const view = render(<QuestionInlineCard sessionId="session-1" />);
+    fireEvent.click(screen.getByRole("button", { name: /React/ }));
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "补充回答" }), { target: { value: "保留这份交付说明" } });
+    view.rerender(<QuestionInlineCard sessionId="session-2" />);
+    expect(screen.getByRole("textbox", { name: "补充回答" })).toHaveValue("");
+    view.rerender(<QuestionInlineCard sessionId="session-1" />);
+    expect(screen.getByRole("heading", { name: "Delivery?" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "补充回答" })).toHaveValue("保留这份交付说明");
+    view.unmount();
+    render(<QuestionInlineCard sessionId="session-1" />);
+    expect(screen.getByRole("textbox", { name: "补充回答" })).toHaveValue("保留这份交付说明");
+    fireEvent.click(screen.getByRole("button", { name: "上一题" }));
+    expect(screen.getByRole("button", { name: /React/ })).toHaveAttribute("aria-pressed", "true");
+    expect(clientMocks.resolve).not.toHaveBeenCalled();
+  });
+
+  it("does not restart a question's deadline after leaving and reopening the card", async () => {
+    vi.useFakeTimers();
+    useQuestionStore.getState().clearAll();
+    useQuestionStore.getState().request(request);
+    const view = render(<QuestionInlineCard sessionId="session-1" />);
+    view.unmount();
+    await act(async () => { vi.advanceTimersByTime(2_100); });
+    render(<QuestionInlineCard sessionId="session-1" />);
+    expect(screen.getByText(/已超时/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "提交" })).toBeDisabled();
+    expect(clientMocks.resolve).not.toHaveBeenCalled();
+  });
+
+  it("does not submit a second answer while an unmounted card awaits its ACK", async () => {
+    let finish!: (value: boolean) => void;
+    clientMocks.resolve.mockImplementation(() => new Promise<boolean>(resolve => { finish = resolve; }));
+    useQuestionStore.getState().clearAll();
+    useQuestionStore.getState().request({ ...request, timeout: 30 });
+    const view = render(<QuestionInlineCard sessionId="session-1" />);
+    fireEvent.click(screen.getByRole("button", { name: /React/ }));
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    view.unmount();
+    render(<QuestionInlineCard sessionId="session-1" />);
+    expect(screen.getByRole("button", { name: "取消" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(clientMocks.resolve).toHaveBeenCalledTimes(1);
+    await act(async () => { finish(true); });
+  });
+
   it("removes the card when the backend closes the reverse request", async () => {
     render(<QuestionInlineCard sessionId="session-1" />);
     await waitFor(() => expect(clientMocks.closed).toBeTypeOf("function"));

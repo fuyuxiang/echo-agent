@@ -5,6 +5,7 @@ import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-
 import { inspectButtonBackgrounds, assertButtonBackgrounds } from "./ui-button-audit.mjs";
 import { assertSettingsActionsSeparated } from "./ui-settings-audit.mjs";
 import { inspectRenderedColors } from "./ui-color-audit.mjs";
+import { assertPrimaryAction } from "./ui-primary-action-audit.mjs";
 
 // Read the working tree, never HEAD: this is post-change acceptance evidence.
 assert.notEqual(process.env.UI_REVIEW_BASELINE, "1", "Post-change validation must use the working tree");
@@ -28,16 +29,8 @@ const surfaces = process.argv.includes("--controls-only") ? ["page:技能", "pag
   "modal-long", "modal-error", "about", "feedback", "update", "results", "details", "trust", "execution", "runtime", "queue",
   "weixin-connected", "weixin-offline",
 ];
-function checkBrandAction({ background, color }, label) {
-  const rgb = value => value.match(/[\d.]+/g).slice(0, 3).map(channel => Number(channel) * (value.startsWith("color(srgb") ? 255 : 1));
-  const luminance = value => rgb(value).map(channel => {
-    const c = channel / 255;
-    return c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4;
-  }).reduce((sum, channel, index) => sum + channel * [.2126, .7152, .0722][index], 0);
-  const [r, g, b] = rgb(background);
-  assert.ok(g > r + 10 && g > b, `${label}: primary action lost its mint identity`);
-  const levels = [luminance(background), luminance(color)].sort((a, b) => b - a);
-  assert.ok((levels[0] + .05) / (levels[1] + .05) >= 4.5, `${label}: primary label contrast is below 4.5:1`);
+function checkBrandAction(control, label, theme, state = "default") {
+  assertPrimaryAction(control, { label, theme, state });
 }
 async function checkSearch(page) {
   const input = page.locator(".capability-search input");
@@ -164,7 +157,7 @@ try {
     }));
     assert.equal(metrics.length,6);
     for(const metric of metrics) assert.deepEqual(metric,metrics[0],`Button aliases drift at ${scenario}`);
-    for(const metric of metrics) checkBrandAction(metric, `Primary alias at ${scenario}`);
+    for(const metric of metrics) checkBrandAction(metric, `Primary alias at ${scenario}`, theme);
     const save=page.getByRole("button",{name:"保存这段较长的说明"});
     const initial=await save.boundingBox();
     const expectedState = async name => save.evaluate((element, name) => {
@@ -173,10 +166,10 @@ try {
     },name);
     await save.hover();
     assert.equal(await save.evaluate(e=>getComputedStyle(e).backgroundColor),await expectedState("--button-hover"),"Hover loses primary semantics");
-    checkBrandAction(await save.evaluate(e=>({background:getComputedStyle(e).backgroundColor,color:getComputedStyle(e).color})), "Hovered primary");
+    checkBrandAction(await save.evaluate(e=>({background:getComputedStyle(e).backgroundColor,color:getComputedStyle(e).color})), "Hovered primary", theme, "hover");
     await page.mouse.down();
     assert.equal(await save.evaluate(e=>getComputedStyle(e).backgroundColor),await expectedState("--button-active"),"Active loses primary semantics");
-    checkBrandAction(await save.evaluate(e=>({background:getComputedStyle(e).backgroundColor,color:getComputedStyle(e).color})), "Pressed primary");
+    checkBrandAction(await save.evaluate(e=>({background:getComputedStyle(e).backgroundColor,color:getComputedStyle(e).color})), "Pressed primary", theme, "pressed");
     await page.mouse.up();
     assert.equal(await save.getAttribute("aria-busy"),"true");
     assert.deepEqual(await save.boundingBox(),initial,"Loading changes button geometry");

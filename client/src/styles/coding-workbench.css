@@ -3437,6 +3437,7 @@
 .coding-context-preview{padding:16px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono,monospace)}
 .coding-editable-plan{padding:10px;border-top:1px solid var(--echo-border-default);max-height:40%;overflow:auto;flex-shrink:0}
 .coding-editable-plan textarea{width:100%;box-sizing:border-box;resize:vertical;background:var(--echo-bg-primary);color:inherit;border:1px solid var(--echo-border-control);padding:8px;font:inherit;line-height:1.5}
+.coding-editable-plan__notice{margin:8px 0;color:var(--echo-text-medium);font-size:.8125rem;line-height:1.6;overflow-wrap:anywhere}
 .coding-editable-plan>div{display:flex;gap:8px;padding-top:6px}
 .coding-check-config,.coding-run-history{padding:12px;flex-shrink:0;font-size:.75rem;overflow-wrap:anywhere}
 .coding-check-config fieldset{min-width:0;border:1px solid var(--echo-border-default);border-radius:6px;margin:10px 0;padding:10px;display:grid;gap:8px}

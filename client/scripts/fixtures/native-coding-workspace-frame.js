@@ -222,6 +222,13 @@
           control().pushUndoStop();
           control().setSelection({startLineNumber:1,startColumn:1,endLineNumber:2,endColumn:15});
           await waitFor(() => state().dirty === true);
+        } else if(message.action==='verification_edit') {
+          const before=state();
+          if(before.path!==`${scope.home}/workspaces/default/double.cjs`||before.dirty||!before.text.includes('n * 2')||!before.text.includes('UNSAVED_A01')||before.text.includes('USER_AFTER_CHECKS'))throw new Error('Unexpected verified buffer');
+          control().pushUndoStop();
+          control().executeEdits('native-user-after-checks',[{range:control().getModel().getFullModelRange(),text:before.text+'// USER_AFTER_CHECKS\n',forceMoveMarkers:true}]);
+          control().pushUndoStop();await waitFor(()=>state().dirty===true);
+          value={...state(),previousText:before.text};
         } else if (message.action === 'save') {
           const saveable = editor.saveable ?? editor.editor.document;
           if (typeof saveable.save !== 'function') throw new Error('The real editor does not support save');

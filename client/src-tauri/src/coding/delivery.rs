@@ -508,6 +508,24 @@ pub fn build_report(root: &Path, task_id: &str) -> Result<DeliveryReport, String
     let problems = diagnostics::load_snapshot(root, task_id);
     let current_records = verification::current_records(root, task_id, &set);
     let mut gates = evaluate_gates(&current_records, &set, &task.acceptance_criteria, &problems);
+    // Filtering expired receipts must not turn existing verification history
+    // into "not applicable" and silently remove the freshness delivery gate.
+    // Legacy checkpoints predate revision binding and retain the compatibility
+    // semantics of ChangeSet::verification_is_current without rewriting history.
+    if set.baseline_mode.is_some()
+        && !set.changes.is_empty()
+        && !records.is_empty()
+        && current_records.is_empty()
+    {
+        if let Some(gate) = gates
+            .iter_mut()
+            .find(|gate| gate.id == GateId::VerificationFreshness)
+        {
+            gate.status = GateStatus::NotSatisfied;
+            gate.summary = "历史验证不对应当前内容或检查配置，请重新运行验证".into();
+            gate.evidence = vec![format!("保留 {} 项历史验证记录", records.len())];
+        }
+    }
     let tdd_evidence = tdd::load(root, task_id);
     let tdd_required = tdd::needs_test_first(root, &task, &set);
     let green = tdd::green_record(&tdd_evidence, &records, &set)
@@ -1566,6 +1584,148 @@ mod tests {
             ),
             vec!["docs/user-notes.md".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn delivery_report_rejects_expired_checks_without_rewriting_history() {
+        for configuration_changed in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            std::fs::write(root.join("source.txt"), "original\n").unwrap();
+            let task = task::create_task(root, "Current checks", "edit source").unwrap();
+            changeset::capture_filesystem_baseline(root, &task.id).unwrap();
+            std::fs::write(root.join("source.txt"), "verified edit\n").unwrap();
+            let set = changeset::sync_changes(root, &task.id).await.unwrap();
+            let mut check = record(VerificationKind::Test, "fixture check", 0);
+            check.task_id = task.id.clone();
+            check.content_revision = Some(set.content_revision());
+            check.configuration_revision = Some(verification::configuration_revision(root));
+            verification::append_record(root, &check).unwrap();
+            changeset::mark_verification_started(root, &task.id).unwrap();
+            changeset::mark_verified_revision(root, &task.id).unwrap();
+            let history = store::task_dir(root, &task.id).join("verifications.jsonl");
+            let original_history = std::fs::read(&history).unwrap();
+            let freshness = |report: &DeliveryReport| {
+                report
+                    .gates
+                    .iter()
+                    .find(|gate| gate.id == GateId::VerificationFreshness)
+                    .unwrap()
+                    .status
+            };
+            assert_eq!(
+                freshness(&build_report(root, &task.id).unwrap()),
+                GateStatus::Satisfied
+            );
+            if configuration_changed {
+                store::write_json(
+                    &store::workspace_dir(root).join("verification-config.json"),
+                    &verification::VerificationProjectConfig {
+                        checks: vec![verification::ConfiguredCheck {
+                            id: "new-check".into(),
+                            kind: VerificationKind::Test,
+                            command: "fixture check".into(),
+                            label: "Changed check".into(),
+                            cwd: ".".into(),
+                            env: BTreeMap::new(),
+                            timeout_secs: Some(10),
+                            auto_run: false,
+                        }],
+                    },
+                )
+                .unwrap();
+            } else {
+                std::fs::write(root.join("source.txt"), "user saved another edit\n").unwrap();
+            }
+            changeset::sync_changes(root, &task.id).await.unwrap();
+            let report = build_report(root, &task.id).unwrap();
+            assert_eq!(freshness(&report), GateStatus::NotSatisfied,
+                "expired checks must block, including after configuration_changed={configuration_changed}");
+            assert!(!report.deliverable);
+            assert_eq!(report.verifications.len(), 1);
+            assert_eq!(report.verifications[0].id, check.id);
+            assert_eq!(report.verifications[0].status, VerificationStatus::Passed);
+            assert_eq!(std::fs::read(&history).unwrap(), original_history);
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_unbound_history_keeps_delivery_compatibility_without_rewriting_data() {
+        let (directory, task) = commit_fixture().await;
+        let root = directory.path();
+        std::fs::write(root.join("a.txt"), "legacy task edit\n").unwrap();
+        let set = changeset::sync_changes(root, &task.id).await.unwrap();
+        let checkpoint = store::task_dir(root, &task.id).join("changeset.json");
+        let mut legacy = serde_json::to_value(&set).unwrap();
+        for field in [
+            "baselineMode",
+            "verifiedRevision",
+            "verificationStartedRevision",
+        ] {
+            legacy.as_object_mut().unwrap().remove(field);
+        }
+        store::write_json(&checkpoint, &legacy).unwrap();
+        let mut check =
+            serde_json::to_value(record(VerificationKind::Test, "legacy test", 0)).unwrap();
+        check["taskId"] = serde_json::json!(task.id);
+        for field in [
+            "contentRevision",
+            "configurationRevision",
+            "workspaceTree",
+            "cwd",
+        ] {
+            check.as_object_mut().unwrap().remove(field);
+        }
+        let history = store::task_dir(root, &task.id).join("verifications.jsonl");
+        store::append_jsonl(&history, &check).unwrap();
+        let original_history = std::fs::read(&history).unwrap();
+        changeset::sync_changes(root, &task.id).await.unwrap();
+        let original_checkpoint = std::fs::read(&checkpoint).unwrap();
+        let legacy_set = changeset::load(root, &task.id);
+        assert!(legacy_set.baseline_mode.is_none());
+        assert!(legacy_set.verification_is_current());
+        assert!(verification::current_records(root, &task.id, &legacy_set).is_empty());
+        let report = build_report(root, &task.id).unwrap();
+        assert_eq!(
+            report
+                .gates
+                .iter()
+                .find(|gate| gate.id == GateId::VerificationFreshness)
+                .unwrap()
+                .status,
+            GateStatus::NotApplicable
+        );
+        assert!(report.deliverable);
+        assert_eq!(report.verifications.len(), 1);
+        assert_eq!(report.verifications[0].status, VerificationStatus::Passed);
+        assert_eq!(std::fs::read(&history).unwrap(), original_history);
+        assert_eq!(std::fs::read(&checkpoint).unwrap(), original_checkpoint);
+    }
+
+    #[tokio::test]
+    async fn version_bound_task_does_not_accept_unbound_historical_checks() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("source.txt"), "original\n").unwrap();
+        let task = task::create_task(root, "New task", "edit source").unwrap();
+        changeset::capture_filesystem_baseline(root, &task.id).unwrap();
+        std::fs::write(root.join("source.txt"), "edited\n").unwrap();
+        changeset::sync_changes(root, &task.id).await.unwrap();
+        let mut check = record(VerificationKind::Test, "old unbound check", 0);
+        check.task_id = task.id.clone();
+        verification::append_record(root, &check).unwrap();
+        let report = build_report(root, &task.id).unwrap();
+        assert_eq!(
+            report
+                .gates
+                .iter()
+                .find(|gate| gate.id == GateId::VerificationFreshness)
+                .unwrap()
+                .status,
+            GateStatus::NotSatisfied
+        );
+        assert!(!report.deliverable);
+        assert_eq!(report.verifications[0].status, VerificationStatus::Passed);
     }
 
     #[test]

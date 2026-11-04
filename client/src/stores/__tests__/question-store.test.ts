@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   useQuestionStore,
   selectQuestionForSession,
   hasPendingQuestionForSession,
   type QuestionRequest,
+  questionScope,
 } from "../question-store";
 
 const resetStore = () => useQuestionStore.getState().clearAll();
@@ -117,6 +118,37 @@ describe("question-store", () => {
     store.clearSession("s1");
     expect(useQuestionStore.getState().queues.s1).toBeUndefined();
     expect(useQuestionStore.getState().queues.s2).toHaveLength(1);
+  });
+
+  it("排队和重复快照不延长提问期限，迟到回答不能重新打开请求", () => {
+    const store = useQuestionStore.getState();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      store.request({ ...makeQuestion("r1", "s1"), timeout: 2 });
+      clock.mockReturnValue(2_000);
+      store.request({ ...makeQuestion("r1", "s1"), timeout: 2 });
+      expect(useQuestionStore.getState().queues.s1[0].expiresAt).toBe(3_000);
+      clock.mockReturnValue(3_000);
+      expect(store.beginAnswer("s1", "r1")).toBe(false);
+      store.dismiss("r1", "s1");
+      store.finishAnswer("s1", "r1", "迟到失败");
+      expect(useQuestionStore.getState().responses).toEqual({});
+    } finally { clock.mockRestore(); }
+  });
+
+  it("清理一个任务的回答草稿不会影响另一个任务或待确认提交", () => {
+    const store = useQuestionStore.getState();
+    store.request(makeQuestion("r1", "s1"));
+    store.request(makeQuestion("r2", "s2"));
+    store.updateResponse("s1", "r1", response => ({ ...response, customInputs: { q1: "任务一" } }));
+    store.updateResponse("s2", "r2", response => ({ ...response, customInputs: { q1: "任务二" } }));
+    expect(store.beginAnswer("s2", "r2")).toBe(true);
+    expect(store.beginAnswer("s2", "r2")).toBe(false);
+    store.clearSession("s1");
+    expect(useQuestionStore.getState().responses[questionScope("s1", "r1")]).toBeUndefined();
+    expect(useQuestionStore.getState().responses[questionScope("s2", "r2")]).toMatchObject({ customInputs: { q1: "任务二" }, resolving: true });
+    store.finishAnswer("s2", "r2", "连接未确认");
+    expect(store.beginAnswer("s2", "r2")).toBe(true);
   });
 });
 

@@ -85,8 +85,8 @@
 }
 /* Transparent icon buttons — no background until hover (EchoAgent style). */
 .main-topbar__btn {
-  width: 32px;
-  height: 32px;
+  width: var(--echo-size-icon-button);
+  height: var(--echo-size-icon-button);
   border: none;
   background: none;
   cursor: pointer;
@@ -3551,11 +3551,22 @@ button.diff__path {
 }
 .question-inline__icon { flex: none; }
 .question-inline__title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
   flex: 1;
   min-width: 28px;
   font-size: .8125rem;
-  font-weight: 500;
-  white-space: nowrap;
+  font-weight: 600;
+  color: var(--echo-text-strong);
+  overflow-wrap: anywhere;
+}
+.question-inline__summary {
+  font-size: .6875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--echo-text-weak);
 }
 .question-inline__progress { display: flex; align-items: center; flex: none; gap: 8px; }
 .question-inline__navigation { display: flex; align-items: center; flex: none; gap: 2px; }
@@ -3572,11 +3583,11 @@ button.diff__path {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: var(--echo-size-icon-button);
+  height: var(--echo-size-icon-button);
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--echo-radius-control);
   background: transparent;
   color: var(--echo-text-weak);
   cursor: pointer;

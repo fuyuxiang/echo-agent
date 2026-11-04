@@ -3,7 +3,9 @@ import { Check, ChevronLeft, ChevronRight, Clock3, MessageCircleQuestion, Pencil
 import {
   useQuestionStore,
   selectQuestionForSession,
+  questionScope,
   type QuestionItem,
+  type QuestionResponse,
 } from "@/stores/question-store";
 import {
   agentListPendingInteractions,
@@ -11,32 +13,25 @@ import {
   onQuestionClosedEvent,
 } from "@/lib/agent-client";
 
+const EMPTY_RESPONSE: QuestionResponse = { selections: {}, customInputs: {}, activeIndex: 0, resolving: false, error: null };
+
 /** Inline, session-scoped UI for the blocking AskUserQuestion ExtMethod. */
 export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) {
   const head = useQuestionStore(selectQuestionForSession(sessionId));
+  const pendingCount = useQuestionStore(state => sessionId ? state.queues[sessionId]?.length ?? 0 : 0);
   const dismiss = useQuestionStore((state) => state.dismiss);
-  const [selections, setSelections] = useState<Record<string, string[]>>({});
-  const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const response = useQuestionStore(state => head ? state.responses[questionScope(head.sessionId, head.requestId)] : undefined) ?? EMPTY_RESPONSE;
+  const updateResponse = useQuestionStore(state => state.updateResponse);
+  const { selections, customInputs, activeIndex, resolving: busy, error } = response;
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
   const requestScope = head ? `${head.sessionId}:${head.requestId}` : null;
-  const currentScopeRef = useRef(requestScope);
-  currentScopeRef.current = requestScope;
-  const resolvingScopesRef = useRef(new Set<string>());
   const questionId = useId();
   const bodyRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const focusOnStepRef = useRef(false);
 
   useEffect(() => {
-    setSelections({});
-    setCustomInputs({});
-    setActiveIndex(0);
     focusOnStepRef.current = false;
-    setBusy(requestScope !== null && resolvingScopesRef.current.has(requestScope));
-    setError(null);
   }, [requestScope]);
 
   useEffect(() => {
@@ -48,19 +43,19 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
   }, [activeIndex, requestScope]);
 
   useEffect(() => {
-    if (!head || head.timeout == null) {
+    if (!head || head.expiresAt == null) {
       setRemainingSeconds(null);
       return;
     }
 
-    const deadline = Date.now() + Math.max(0, head.timeout) * 1_000;
+    const deadline = head.expiresAt;
     const update = () => {
       setRemainingSeconds(Math.max(0, Math.ceil((deadline - Date.now()) / 1_000)));
     };
     update();
     const timer = window.setInterval(update, 250);
     return () => window.clearInterval(timer);
-  }, [head?.requestId, head?.timeout]);
+  }, [head?.sessionId, head?.requestId, head?.expiresAt]);
 
   useEffect(() => {
     if (!head) return;
@@ -100,27 +95,24 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
   }, [dismiss, head?.requestId, head?.sessionId]);
 
   const handleSelect = useCallback((question: QuestionItem, label: string) => {
-    setSelections((previous) => {
-      if (!question.multiSelect) {
-        return { ...previous, [question.id]: previous[question.id]?.[0] === label ? [] : [label] };
-      }
-      const selected = previous[question.id] ?? [];
-      const next = selected.includes(label)
+    if (!head) return;
+    updateResponse(head.sessionId, head.requestId, previous => {
+      const selected = previous.selections[question.id] ?? [];
+      const next = !question.multiSelect ? selected[0] === label ? [] : [label] : selected.includes(label)
         ? selected.filter((item) => item !== label)
         : [...selected, label];
-      return { ...previous, [question.id]: next };
+      return { ...previous, selections: { ...previous.selections, [question.id]: next },
+        customInputs: question.multiSelect ? previous.customInputs : { ...previous.customInputs, [question.id]: "" } };
     });
-    if (!question.multiSelect) {
-      setCustomInputs((previous) => ({ ...previous, [question.id]: "" }));
-    }
-  }, []);
+  }, [head, updateResponse]);
 
   const handleCustomInput = useCallback((question: QuestionItem, value: string) => {
-    setCustomInputs((previous) => ({ ...previous, [question.id]: value }));
-    if (!question.multiSelect && value.trim()) {
-      setSelections((previous) => ({ ...previous, [question.id]: [] }));
-    }
-  }, []);
+    if (!head) return;
+    updateResponse(head.sessionId, head.requestId, previous => ({ ...previous,
+      customInputs: { ...previous.customInputs, [question.id]: value },
+      selections: !question.multiSelect && value.trim() ? { ...previous.selections, [question.id]: [] } : previous.selections,
+    }));
+  }, [head, updateResponse]);
 
   if (!head) return null;
 
@@ -163,24 +155,19 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
   };
 
   const resolve = async (payload: Parameters<typeof agentResolveQuestion>[1]) => {
-    if (!requestScope || resolvingScopesRef.current.has(requestScope) || remainingSeconds === 0) return;
+    if (remainingSeconds === 0 || !useQuestionStore.getState().beginAnswer(head.sessionId, head.requestId)) return;
     const requestId = head.requestId;
     const ownerSessionId = head.sessionId;
-    resolvingScopesRef.current.add(requestScope);
-    setBusy(true);
-    setError(null);
+    let failure: string | undefined;
     try {
       const acknowledged = await agentResolveQuestion(requestId, payload);
       if (!acknowledged) throw new Error("后端未找到该提问请求，请重试");
       dismiss(requestId, ownerSessionId);
     } catch (cause) {
       console.error("resolve question failed", cause);
-      if (currentScopeRef.current === requestScope) {
-        setError(String(cause).replace(/^Error:\s*/, ""));
-      }
+      failure = String(cause).replace(/^Error:\s*/, "");
     } finally {
-      resolvingScopesRef.current.delete(requestScope);
-      if (currentScopeRef.current === requestScope) setBusy(false);
+      useQuestionStore.getState().finishAnswer(ownerSessionId, requestId, failure);
     }
   };
 
@@ -190,11 +177,12 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
     (selections[question.id]?.length ?? 0) > 0 || Boolean(customInputs[question.id]?.trim())
   );
   const lastQuestion = questionIndex === head.questions.length - 1;
+  const answeredCount = head.questions.filter(item => (selections[item.id]?.length ?? 0) > 0 || customInputs[item.id]?.trim()).length;
   const expired = remainingSeconds === 0;
   const navigate = (index: number) => {
     if (busy || expired || index < 0 || index >= head.questions.length || index === questionIndex) return;
     focusOnStepRef.current = true;
-    setActiveIndex(index);
+    updateResponse(head.sessionId, head.requestId, previous => ({ ...previous, activeIndex: index }));
   };
   const advance = () => {
     if (lastQuestion) void resolve({ outcome: "accepted", ...buildAccepted() });
@@ -222,7 +210,13 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
     >
       <div className="question-inline__head">
         <MessageCircleQuestion size={17} className="question-inline__icon" aria-hidden="true" />
-        <span className="question-inline__title" title={head.title}>问题</span>
+        <span className="question-inline__title" title={head.title}>
+          需要你回答
+          <span className="question-inline__summary" aria-live="polite" aria-atomic="true">
+            {busy ? "等待任务确认" : `已填写 ${answeredCount}/${head.questions.length}`}
+            {pendingCount > 1 && ` · ${pendingCount} 项待处理`}
+          </span>
+        </span>
         <div className="question-inline__progress">
           {remainingSeconds != null && !expired && (
             <span className="question-inline__timeout" title={`剩余 ${remainingSeconds} 秒`}>

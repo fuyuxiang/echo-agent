@@ -16,7 +16,8 @@ if(!scenario?.startsWith('markdown'))records[path]??=initial;
 const calls:{command:string;args:any}[]=[];
 const commit=()=>localStorage.setItem('document-review-records',JSON.stringify(records));
 const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value));
-const review={calls,records,delayRestore:false,failPublication:false,releaseRestore:null as null|(()=>void),agentUpdate:(path:string,text:string)=>{
+const review={calls,records,delayRestore:false,delayCopy:false,delayDraftSave:false,failPublication:false,failDraftSave:false,
+  releaseRestore:null as null|(()=>void),releaseCopy:null as null|(()=>void),releaseDraftSave:null as null|(()=>void),agentUpdate:(path:string,text:string)=>{
   const record=records[path];record.history.push({revision:record.revision,document:clone(record.document),actor:record.actor,savedAt:record.savedAt});
   record.document=JSON.parse(JSON.stringify(record.document).replaceAll('6:30',text).replaceAll('7:00',text));record.revision++;record.exportedRevision=record.revision;record.actor='Agent 修改';record.savedAt=Date.now();commit();
 }};
@@ -31,6 +32,8 @@ Object.assign(window,{documentReview:review,__TAURI_INTERNALS__:{transformCallba
   if(command==='read_text_file')return markdownContent;
   if(command==='document_workspace_open')return clone({document:record ?? null,path:args.path,fileSha256:record?.fileSha256 ?? 'a'.repeat(64),byteSize:record?.byteSize ?? 100});
   if(command==='document_workspace_save'){
+    if(review.delayDraftSave)await new Promise<void>(resolve=>{review.releaseDraftSave=()=>{review.releaseDraftSave=null;resolve();};});
+    if(review.failDraftSave)throw new Error('编辑稿暂时不可写，修改仍保留在本地');
     if(record.revision!==args.expectedRevision)throw new Error('DOCUMENT_CONFLICT:文档已有新修改');
     record.history.push({revision:record.revision,document:clone(record.document),actor:record.actor,savedAt:record.savedAt});
     record.document=clone(args.document);record.revision++;record.savedAt=Date.now();record.actor='手动编辑';commit();return clone(record);
@@ -43,6 +46,7 @@ Object.assign(window,{documentReview:review,__TAURI_INTERNALS__:{transformCallba
     record.document=clone(version.document);record.history.push({revision:record.revision,document:previous,actor:record.actor,savedAt:record.savedAt});record.revision++;record.actor='恢复历史';commit();return clone(record);
   }
   if(command==='document_workspace_import'){
+    if(review.delayCopy)await new Promise<void>(resolve=>{review.releaseCopy=()=>{review.releaseCopy=null;resolve();};});
     const next={...clone(record ?? initial),id:'copy',path:'/review/家庭亲子作息表-可编辑副本.docx',document:clone(args.document),revision:1,exportedRevision:1,history:[]};records[next.path]=next;commit();return clone(next);
   }
   if(command==='document_workspace_export')return {path:`/review/当前版本.${args.format}`,format:args.format,sha256:'b'.repeat(64),byteSize:100};
@@ -54,10 +58,12 @@ function Review(){
   const [artifact,setArtifact]=useState<SessionArtifact>({id:path,path,kind:'file',title:'家庭亲子作息表',toolCallId:'',status:'completed'});
   const [context,setContext]=useState<DocumentEditContext|null>(null);
   const [toast,setToast]=useState('');
+  const [panelOpen,setPanelOpen]=useState(true);
   return <div className="app" style={{height:'100%',display:'flex',flexDirection:'row'}}>
     <main className="app__main" style={{position:'relative'}}><div className="chatview"><div className="chatview__main" style={{padding:32}}><h2>文档修订任务</h2><p>检查作息安排，并继续调整文档。</p>{context&&<div role="status" data-testid="document-context">正在修改：{context.title}<textarea aria-label="修改要求" placeholder="描述你希望调整的内容"/></div>}{toast&&<div role="status">{toast}</div>}</div>
-    <ToolSidePanel open mode="artifacts" artifacts={[artifact]} previewPath={artifact.path} previewRequestId={1} cwd="/review" sessionId="document-review"
-      onClose={()=>{}} onSelectTool={()=>{}} onSelectArtifact={setArtifact} onOpenArtifacts={()=>{}} onToast={setToast} onEditDocument={next=>{setContext(next);Object.assign(window,{documentEditContext:next});}}/>
+    {!panelOpen&&<button type="button" onClick={()=>setPanelOpen(true)}>打开文档工作区</button>}
+    <ToolSidePanel open={panelOpen} mode="artifacts" artifacts={[artifact]} previewPath={artifact.path} previewRequestId={1} cwd="/review" sessionId="document-review"
+      onClose={()=>setPanelOpen(false)} onSelectTool={()=>{}} onSelectArtifact={next=>{setArtifact(next);setPanelOpen(true);}} onOpenArtifacts={()=>{}} onToast={setToast} onEditDocument={next=>{setContext(next);setPanelOpen(false);Object.assign(window,{documentEditContext:next});}}/>
     </div></main></div>;
 }
 createRoot(document.getElementById('root')!).render(<Review/>);

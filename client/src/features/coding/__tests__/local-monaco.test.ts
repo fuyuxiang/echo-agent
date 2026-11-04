@@ -12,7 +12,7 @@ vi.mock("monaco-editor/esm/vs/language/css/css.worker?worker", () => ({ default:
 vi.mock("monaco-editor/esm/vs/language/html/html.worker?worker", () => ({ default: workers.html }));
 vi.mock("monaco-editor/esm/vs/language/json/json.worker?worker", () => ({ default: workers.json }));
 vi.mock("monaco-editor/esm/vs/language/typescript/ts.worker?worker", () => ({ default: workers.typescript }));
-vi.mock("monaco-editor", () => ({ editor: { createDiffEditor: vi.fn() } }));
+vi.mock("monaco-editor", () => ({ editor: { createDiffEditor: vi.fn(), defineTheme: vi.fn() } }));
 
 describe("local Monaco loading", () => {
   const scope = globalThis as typeof globalThis & { MonacoEnvironment?: import("monaco-editor").Environment };
@@ -20,6 +20,7 @@ describe("local Monaco loading", () => {
     vi.resetModules();
     vi.clearAllMocks();
     delete scope.MonacoEnvironment;
+    document.documentElement.dataset.theme = "light";
   });
   afterEach(() => { vi.restoreAllMocks(); delete scope.MonacoEnvironment; });
 
@@ -53,5 +54,21 @@ describe("local Monaco loading", () => {
     await expect(prepareLocalMonaco()).rejects.toThrow("本地编辑器初始化失败");
     await expect(prepareLocalMonaco()).resolves.toBeUndefined();
     expect(loader.config).toHaveBeenCalledTimes(2);
+  });
+
+  it("重新打开时更新当前主题，并保持单次初始化和共享 Promise", async () => {
+    const { loader } = await import("@monaco-editor/react");
+    const config = vi.spyOn(loader, "config");
+    const { editor } = await import("monaco-editor");
+    const { prepareLocalMonaco } = await import("../lib/local-monaco");
+    const first = prepareLocalMonaco();
+    expect(prepareLocalMonaco()).toBe(first);
+    await first;
+    expect(editor.defineTheme).toHaveBeenLastCalledWith("echo-light", expect.objectContaining({ base: "vs" }));
+    document.documentElement.dataset.theme = "dark";
+    expect(prepareLocalMonaco()).toBe(first);
+    await first;
+    expect(editor.defineTheme).toHaveBeenLastCalledWith("echo-dark", expect.objectContaining({ base: "vs-dark" }));
+    expect(config).toHaveBeenCalledOnce();
   });
 });

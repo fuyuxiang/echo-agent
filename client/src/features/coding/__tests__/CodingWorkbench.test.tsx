@@ -93,7 +93,7 @@ import { useAiDraftStore } from "../store/ai-draft-store";
 import { useTaskStore } from "../store/task-store";
 import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
-import { useSessionStore } from "@/stores/session-store";
+import { useSessionStore, type ChatMessage } from "@/stores/session-store";
 import { codingQueueId } from "../lib/coding-followup";
 import { useCodingRuntimeStore } from "../lib/coding-task-runtime";
 
@@ -121,6 +121,8 @@ describe("Theia workbench", () => {
     useCodingRuntimeStore.setState({documentCancellationReady:true,documentCancellations:{},stopping:{}});
     window.history.replaceState({}, "", "/");
     window.localStorage.removeItem("echo-agent-panel-width");
+    window.localStorage.removeItem("echo-coding-intent-v1:/repo:verification-task");
+    window.localStorage.removeItem("echo-coding-plan-v1:/repo:verification-task");
     invoke.mockReset();
     invoke.mockImplementation(async (command: string, args?: unknown): Promise<unknown> => {
     if (command === "coding_document_editor_attach") return (args as {root:string} | undefined)?.root;
@@ -260,6 +262,56 @@ describe("Theia workbench", () => {
     expect(screen.getByRole("textbox", { name: "补充开发要求" })).toHaveValue("请处理边界情况");
     await user.click(screen.getByRole("button", { name: "检查" }));
     expect(screen.getByRole("textbox", { name: "补充开发要求" })).toHaveValue("请处理边界情况");
+  });
+
+  it("adopts only the public completed Plan response, never the previous Ask or its reasoning", async () => {
+    const sessionId="plan-result-session";
+    useTaskStore.setState({root:"/repo",task:verificationTask({phase:"implementing",sessionId})});
+    localStorage.setItem("echo-coding-intent-v1:/repo:verification-task","plan");
+    localStorage.removeItem("echo-coding-plan-v1:/repo:verification-task");
+    useSessionStore.getState().setSession(sessionId);
+    const ask={id:"ask",role:"user" as const,complete:true,agentText:"[回声代码 · ask]\n解释",parts:[{kind:"text" as const,text:"解释"}]};
+    const previous={id:"ask-answer",role:"assistant" as const,complete:true,parts:[{kind:"text" as const,text:"<think>Previous internal process</think>Ask answer"}]};
+    const setMessages=(messages: ChatMessage[])=>act(()=>useSessionStore.setState(state=>({transcripts:{...state.transcripts,[sessionId]:{...state.transcripts[sessionId],messages}}})));
+    setMessages([ask,previous]);
+    render(<CodingWorkbench cwd="/repo" sessionId={sessionId} models={[]} />);
+    const field=await screen.findByRole("textbox",{name:"编辑开发计划"});
+    expect(field).toHaveValue("");
+    expect(screen.getAllByRole("textbox",{name:"编辑开发计划"})).toHaveLength(1);
+    const plan={...ask,id:"plan",agentText:"[回声代码 · plan · 继续当前会话]\n规划"};
+    setMessages([ask,previous,plan,{...previous,id:"planning",complete:false,parts:[{kind:"text",text:"<think>Streaming process"}]}]);
+    expect(field).toHaveValue("");
+    setMessages([ask,previous,plan,{...previous,id:"planning",parts:[{kind:"text",text:"<think>Plan internal process</think>1. 读取\n2. 修改并验证"}]}]);
+    await waitFor(()=>expect(field).toHaveValue("1. 读取\n2. 修改并验证"));
+    expect(screen.getAllByRole("textbox",{name:"编辑开发计划"})).toHaveLength(1);
+    fireEvent.change(field,{target:{value:"用户修订的最终计划"}});
+    setMessages([ask,previous,plan,{...previous,id:"planning",parts:[{kind:"text",text:"迟到的新方案"}]}]);
+    expect(field).toHaveValue("用户修订的最终计划");
+  });
+
+  it.each(["plan", "agent"].flatMap(intent => ["cancelled", "error", "max_tokens"].map(stopReason => ({ intent, stopReason }))))(
+    "does not offer an interrupted $stopReason Plan when the next intent is $intent", async ({ intent, stopReason }) => {
+    const sessionId = "interrupted-plan-session";
+    useTaskStore.setState({root:"/repo", task:verificationTask({phase:"stopped", sessionId})});
+    localStorage.setItem("echo-coding-intent-v1:/repo:verification-task", intent);
+    localStorage.setItem("echo-coding-plan-v1:/repo:verification-task", JSON.stringify({
+      kind:"echo-coding-plan-draft", text:"Stale automatic plan", edited:false,
+    }));
+    useSessionStore.getState().setSession(sessionId);
+    const messages: ChatMessage[] = [
+      {id:"plan",role:"user",complete:true,agentText:"[回声代码 · plan]\n规划",parts:[{kind:"text",text:"规划"}]},
+      {id:"partial",role:"assistant",complete:true,stopReason,parts:[{kind:"text",text:"1. 修改数据库\n2. ",phase:"partial_answer"}]},
+    ];
+    useSessionStore.setState(state => ({transcripts:{...state.transcripts,[sessionId]:{...state.transcripts[sessionId],messages}}}));
+    render(<CodingWorkbench cwd="/repo" sessionId={sessionId} models={[]} />);
+    if (intent !== "plan") {
+      fireEvent.click(screen.getByText("更多", { selector: ".coding-session-actions summary" }));
+      fireEvent.click(screen.getByRole("button", { name: "会话计划" }));
+    }
+    expect(await screen.findByRole("textbox",{name:"编辑开发计划"})).toHaveValue("");
+    expect(screen.getByText(/本轮计划未完整生成/)).toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"执行最终计划"})).toBeDisabled();
+    expect(screen.getByRole("button",{name:"保存到工程…"})).toBeDisabled();
   });
 
   it("disables queued manual sends throughout verification and explains when they become available", async () => {
