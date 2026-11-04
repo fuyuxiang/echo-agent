@@ -12,6 +12,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult, WorkerToolOutcome
+from echo_agent.cost.budget import BudgetExceeded
 from echo_agent.models.provider import LLMProvider, ToolCallRequest
 
 
@@ -55,9 +56,12 @@ class WorkerExecutor:
         provider: LLMProvider,
         model_router: Any | None = None,
         default_model: str = "",
+        cost_tracker: Any | None = None,
     ):
         self._provider = provider
         self._default_model = default_model
+        self._router = model_router
+        self._cost_tracker = cost_tracker
 
     async def run(
         self,
@@ -74,6 +78,7 @@ class WorkerExecutor:
         model: str = "",
         timeout_seconds: float = 300.0,
         on_progress: ProgressCallback | None = None,
+        channel: str = "",
     ) -> WorkerResult:
         """Run a worker agent loop until completion or limits reached.
 
@@ -117,6 +122,7 @@ class WorkerExecutor:
                     state=state,
                     on_progress=on_progress,
                     task_index=task_index,
+                    channel=channel,
                 ),
                 timeout=timeout_seconds,
             )
@@ -129,6 +135,18 @@ class WorkerExecutor:
                 tool_calls=result["tool_calls"],
                 duration_seconds=time.monotonic() - started,
                 model=effective_model,
+            )
+        except BudgetExceeded as e:
+            return WorkerResult(
+                task_index=task_index,
+                status="failed",
+                output=state["last_content"],
+                error=str(e),
+                iterations=state["iterations"],
+                tool_calls=state["tool_calls"],
+                duration_seconds=time.monotonic() - started,
+                model=effective_model,
+                metadata={"termination_reason": "budget_halted"},
             )
         except asyncio.TimeoutError:
             return WorkerResult(
@@ -198,6 +216,7 @@ class WorkerExecutor:
         state: dict[str, Any],
         on_progress: ProgressCallback | None = None,
         task_index: int = 0,
+        channel: str = "",
     ) -> dict[str, Any]:
         repeat_tracker: dict[str, int] = {}
         consecutive_failures = 0
@@ -211,8 +230,17 @@ class WorkerExecutor:
             ))
 
             if len(messages) > self._MAX_MESSAGES:
-                system_msg = messages[0]
-                messages[:] = [system_msg] + messages[-(self._MAX_MESSAGES - 1):]
+                # Retain the original goal and align the retained suffix to its
+                # assistant owner. A plain message-count slice can begin with
+                # an orphan tool result, rejected by strict model providers.
+                start = max(2, len(messages) - max(1, self._MAX_MESSAGES - 2))
+                while start > 2 and messages[start].get("role") == "tool":
+                    start -= 1
+                # A complete recent tool batch may exceed the soft message cap.
+                messages[:] = messages[:2] + messages[start:]
+
+            if self._cost_tracker is not None:
+                self._cost_tracker.enforce()
 
             response = await self._provider.chat_with_retry(
                 messages=messages,
@@ -221,6 +249,16 @@ class WorkerExecutor:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
+
+            if self._cost_tracker is not None and response.usage:
+                providers = self._router.registered_providers() if self._router is not None else {}
+                provider_name = next(
+                    (name for name, provider in providers.items() if provider is self._provider), "default",
+                )
+                await self._cost_tracker.record(
+                    response.model or model or self._provider.get_default_model(),
+                    response.usage, provider_name, channel=channel,
+                )
 
             if response.finish_reason in {"error", "length", "content_filter"}:
                 return {

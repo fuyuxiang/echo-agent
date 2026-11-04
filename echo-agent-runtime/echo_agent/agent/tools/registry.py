@@ -92,6 +92,7 @@ class ToolRegistry:
     ):  # SpillPolicy;用 Any 避免 registry 依赖 spill 包
         self._tools: dict[str, Tool] = {}
         self._replay_cache: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
+        self._inflight_replay_keys: set[str] = set()
         self._execution_log: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_EXECUTION_LOG)
         self._lock = asyncio.Lock()
         # Durable JSONL audit trail — the in-memory deque alone evaporates on
@@ -286,15 +287,31 @@ class ToolRegistry:
             trace_id=uuid.uuid4().hex[:12],
         )
 
-        if tool.execution_mode(params) == "side_effect" and exec_ctx.idempotency_key:
+        reservation = ""
+        if tool.execution_mode(params) == "side_effect" and exec_ctx.idempotency_key and not tool.replay_safe:
             effective_key = f"{replay_scope}:{exec_ctx.idempotency_key}" if replay_scope else exec_ctx.idempotency_key
             async with self._lock:
                 cached = self._replay_cache.get(effective_key)
-            if cached and not exec_ctx.is_replay and not tool.replay_safe:
-                # Honour explicit replay requests; otherwise refuse to repeat
-                # a side-effecting call with the same idempotency key.
-                logger.warning("Replay prevented for tool={} key={}", name, effective_key[:16])
-                return ToolResult(success=False, error=f"Replay prevented for '{name}'")
+                if effective_key in self._inflight_replay_keys or (cached and not exec_ctx.is_replay):
+                    logger.warning("Replay prevented for tool={} key={}", name, effective_key[:16])
+                    return ToolResult(success=False, error=f"Replay prevented for '{name}'")
+                # Claim before the first execution await: caching only completed
+                # results allows simultaneous callers to perform the same effect.
+                self._inflight_replay_keys.add(effective_key)
+                reservation = effective_key
+
+        try:
+            return await self._execute_admitted(name, resolved_name, tool, params, exec_ctx, replay_scope)
+        finally:
+            # No await here: cancellation must release the in-memory claim too.
+            # This does not assert that a cancelled external effect was undone.
+            if reservation:
+                self._inflight_replay_keys.discard(reservation)
+
+    async def _execute_admitted(
+        self, name: str, resolved_name: str, tool: Tool, params: dict[str, Any],
+        exec_ctx: ToolExecutionContext, replay_scope: str,
+    ) -> ToolResult:
 
         log_entry = {
             "tool": name,

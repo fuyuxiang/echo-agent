@@ -7,6 +7,7 @@
   "empty": "No documents",
   "uploadSuccess": "Uploaded",
   "uploadFailed": "Upload failed",
+  "uploadPartial": "Accepted {{count}} document(s); skipped unsupported files: {{files}}",
   "rebuildTriggered": "Rebuild triggered",
   "rebuildFailed": "Rebuild failed",
   "deleteSuccess": "Deleted",

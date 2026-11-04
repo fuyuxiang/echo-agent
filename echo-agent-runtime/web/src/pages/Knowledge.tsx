@@ -2,7 +2,7 @@ import { useApi } from "../hooks/use-api";
 import { useWsSubscribe } from "../hooks/use-ws";
 import { apiFetch, apiUpload } from "../lib/api";
 import { relativeTime } from "../lib/datetime";
-import { runMutation } from "../stores/toast";
+import { runMutation, toast } from "../stores/toast";
 import { useIsAdmin } from "../stores/capabilities";
 import { Loadable } from "../components/Loadable";
 import { useConfirm } from "../components/ConfirmDialog";
@@ -73,7 +73,10 @@ export function Knowledge() {
     const ok = await runMutation(async () => {
       const form = new FormData();
       Array.from(files).forEach((file) => form.append("file", file, file.name));
-      await apiUpload("/knowledge/upload?background=true", form);
+      const result = await apiUpload<{ uploaded: string[]; rejected?: string[] }>("/knowledge/upload?background=true", form);
+      if (result.rejected?.length) {
+        toast.info(t("uploadPartial", { count: result.uploaded.length, files: result.rejected.join(", ") }));
+      }
     }, { success: t("jobQueued"), error: t("uploadFailed") });
     if (ok) {
       if (fileRef.current) fileRef.current.value = "";
@@ -123,7 +126,7 @@ export function Knowledge() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-4">
         <button
           onClick={() => fileRef.current?.click()}
           disabled={!canWrite || !!activeJob}
@@ -188,9 +191,9 @@ export function Knowledge() {
         {(d) => (
           <div className="space-y-2">
             {d.documents.map((doc) => (
-              <div key={doc.path} className="flex items-center justify-between bg-white border rounded p-3">
-                <div>
-                  <div className="text-sm font-medium">{doc.path}</div>
+              <div key={doc.path} className="flex items-center justify-between gap-3 bg-white border rounded p-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium break-all">{doc.path}</div>
                   <div className="text-xs text-gray-400">{(doc.size / 1024).toFixed(1)} KB</div>
                 </div>
                 <button
@@ -198,7 +201,7 @@ export function Knowledge() {
                   disabled={!canWrite || !!activeJob}
                   aria-label={t("deleteDocAria", { path: doc.path })}
                   title={canWrite ? undefined : t("common:adminOnly")}
-                  className="text-red-400 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-red-400"
+                  className="shrink-0 text-red-400 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-red-400"
                 >
                   <Trash2 size={16} />
                 </button>

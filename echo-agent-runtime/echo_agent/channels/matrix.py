@@ -365,27 +365,20 @@ class MatrixChannel(BaseChannel):
 
         if msgtype == "m.text":
             text = content.get("body", "")
-        elif msgtype == "m.image":
+        elif msgtype in {"m.image", "m.file", "m.audio"}:
             mxc = content.get("url", "")
+            name = content.get("filename") or content.get("body", "")
+            mime_type = content.get("info", {}).get("mimetype", "")
             if mxc:
-                local_path = await self._download_matrix_media(mxc)
+                local_path = await self._download_matrix_media(mxc, filename=name, mime_type=mime_type)
                 if local_path:
-                    media.append({"type": "image", "url": local_path})
+                    media.append({"type": {"m.image": "image", "m.file": "file", "m.audio": "audio"}[msgtype],
+                                  "url": local_path, "name": name, "mime_type": mime_type})
             text = content.get("body", "")
-        elif msgtype == "m.file":
-            mxc = content.get("url", "")
-            if mxc:
-                local_path = await self._download_matrix_media(mxc)
-                if local_path:
-                    media.append({"type": "file", "url": local_path})
-            text = content.get("body", "")
-        elif msgtype == "m.audio":
-            mxc = content.get("url", "")
-            if mxc:
-                local_path = await self._download_matrix_media(mxc)
-                if local_path:
-                    media.append({"type": "audio", "url": local_path})
-            text = content.get("body", "")
+            if not media:
+                text = "\n".join(part for part in (
+                    text, "[附件未读取：下载失败、链接无效或加密附件不受支持。请提供文字内容。]",
+                ) if part)
 
         if not text and not media:
             return True
@@ -404,7 +397,7 @@ class MatrixChannel(BaseChannel):
         )
         return event is not None
 
-    async def _download_matrix_media(self, mxc_url: str) -> str | None:
+    async def _download_matrix_media(self, mxc_url: str, *, filename: str = "", mime_type: str = "") -> str | None:
         """Download a Matrix media file by converting mxc:// to an authenticated HTTP URL."""
         parts = mxc_url.removeprefix("mxc://").split("/", 1)
         if len(parts) != 2:
@@ -427,4 +420,5 @@ class MatrixChannel(BaseChannel):
                 return b""
             return data
 
-        return await self._resolve_media_to_cache(mxc_url, "matrix", fetch)
+        return await self._resolve_media_to_cache(mxc_url, "matrix", fetch,
+                                                  suffix=self._media_suffix(filename, mime_type))

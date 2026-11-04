@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import deepcopy
+import hashlib
+import json
 from typing import Any, TYPE_CHECKING
 
 from loguru import logger
@@ -38,6 +41,10 @@ class ProcessResult:
 # Channels whose traffic is synthetic (evaluation/benchmark/test harnesses) and
 # must never pollute long-term memory. Their session keys look like "eval:...".
 _NON_PERSISTING_CHANNELS = frozenset({"eval", "test", "benchmark"})
+
+
+def _review_message_digest(message: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(message, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _is_ephemeral_session(session_key: str, channel: str) -> bool:
@@ -204,9 +211,27 @@ class ResponseStage:
             if review_key not in self._memory_review_inflight:
                 self._memory_review_inflight.add(review_key)
                 from echo_agent.agent.background import Tier
+                # Consolidated history already has its own extraction path.
+                # Review only the bounded current window, and do not send a
+                # previously successful batch again on every nudge.
+                limit = getattr(getattr(self._config, "session", None), "max_history_messages", 500)
+                if not isinstance(limit, int) or isinstance(limit, bool):
+                    limit = 500
+                cursor = session.metadata.get("_memory_review_cursor", {})
+                reviewed_index = 0
+                if isinstance(cursor, dict) and cursor.get("context_key") == review_key:
+                    index = cursor.get("index")
+                    if (type(index) is int and 0 < index <= len(session.messages)
+                            and cursor.get("digest") == _review_message_digest(session.messages[index - 1])):
+                        reviewed_index = index
+                history = session.get_history(max_messages=max(1, limit))
+                # Compression can rewrite the tail. Trust a cursor only while
+                # its anchored message still occupies the saved position.
+                window_start = len(session.messages) - len(history)
+                review_messages = deepcopy(history[max(0, reviewed_index - window_start):])
                 self._spawn_fn(
                     lambda: self._memory_review_factory(
-                        ctx.messages, event.session_key, event.memory_scope, review_key,
+                        review_messages, event.session_key, event.memory_scope, review_key,
                     ),
                     tier=Tier.DURABLE,
                 )
@@ -339,6 +364,25 @@ class ResponseStage:
         memory_scope: str = "", context_key: str = "",
     ) -> None:
         from echo_agent.memory.reviewer import MemoryReviewer
+        from echo_agent.models.model_windows import resolve_context_window
+        from echo_agent.session.context_epoch import conversation_context_key
+
+        scope = memory_scope or session_key
+        # Legacy extension calls may review detached text without an epoch.
+        # Only a captured session snapshot can own a persisted history cursor.
+        reviewed_message = messages[-1] if messages and context_key else None
+        revision_fn = getattr(self._memory, "forget_revision", None)
+        revision = revision_fn(scope) if revision_fn is not None else None
+
+        async def can_write() -> bool:
+            if not self._memory_enabled or (self._config is not None and not self._config.memory.enabled):
+                return False
+            if context_key:
+                session = await self._sessions.get(session_key)
+                if session is None or conversation_context_key(session_key, session) != context_key:
+                    return False
+            return revision_fn is None or revision_fn(scope) == revision
+
         # R1 Task8:优先用 loop 注入的单例 service;缺省(旧构造/测试)才就近兜底。
         service = self._memory_service
         if service is None:
@@ -349,11 +393,20 @@ class ResponseStage:
                 flush_fn=getattr(self._memory, "flush_pending_embeds", None),
                 allow_env_writes=self._config.memory.allow_model_environment_writes,
             )
+        captured_windows = getattr(getattr(self._config, "models", None), "model_windows", {})
+        default_window = getattr(getattr(self._config, "session", None), "context_window_tokens", 0)
+        review_window = resolve_context_window(
+            self._default_model,
+            captured_windows=captured_windows if isinstance(captured_windows, dict) else {},
+            config_default=default_window if type(default_window) is int else 0,
+        )
         reviewer = MemoryReviewer(
             provider=self._provider,
             service=service,
             model=self._default_model,
             session_key=memory_scope or session_key,
+            can_write=can_write,
+            context_window=review_window,
         )
         # NB: exceptions propagate on purpose. This runs as a DURABLE factory, so
         # a raise lets the scheduler retry; swallowing it here would both hide
@@ -374,7 +427,19 @@ class ResponseStage:
         # review — whose nudge counters stay elevated — is re-dispatched (and
         # thus re-flagged) by a later turn rather than left stuck forever.
         try:
+            filter_history = getattr(self._memory, "filter_consolidation_messages", None)
+            if filter_history is not None:
+                filtered = filter_history(messages, scope)
+                if isinstance(filtered, list):
+                    if messages and not filtered:
+                        await self._reset_memory_nudge_counters(
+                            session_key, context_key=context_key, can_reset=can_write, reviewed_message=reviewed_message,
+                        )
+                        return
+                    messages = filtered
             actions = await reviewer.review(messages)
+            if reviewer.failed is True:
+                raise RuntimeError("Memory extraction failed; pending review retained for retry")
             if actions:
                 logger.info("Background memory review: {}", "; ".join(actions))
                 await self._clear_memory_snapshot(context_key or session_key)
@@ -382,7 +447,9 @@ class ResponseStage:
             # here (not at the inference-stage trigger) so a failed/retried
             # review never loses the pending batch. Re-acquire under the session
             # lock so this does not race the next turn's own metadata write.
-            await self._reset_memory_nudge_counters(session_key)
+            await self._reset_memory_nudge_counters(
+                session_key, context_key=context_key, can_reset=can_write, reviewed_message=reviewed_message,
+            )
         finally:
             self._memory_review_inflight.discard(context_key or session_key)
 
@@ -408,7 +475,10 @@ class ResponseStage:
                 messages, session_key, memory_scope,
             )
 
-    async def _reset_memory_nudge_counters(self, session_key: str) -> None:
+    async def _reset_memory_nudge_counters(
+        self, session_key: str, *, context_key: str = "", can_reset=None,
+        reviewed_message: dict[str, Any] | None = None,
+    ) -> None:
         """Zero the memory-review nudge counters for ``session_key`` and persist.
 
         Serialized against the turn loop via the per-session lock so a
@@ -433,18 +503,46 @@ class ResponseStage:
             lock = await acquire(session_key)
             async with lock:
                 session = await get_or_create(session_key)
+                if context_key:
+                    from echo_agent.session.context_epoch import conversation_context_key
+                    if conversation_context_key(session_key, session) != context_key:
+                        return
+                if can_reset is not None and not await can_reset():
+                    return
                 old = (
                     session.metadata.get("_nudge_turns_memory", 0),
                     session.metadata.get("_nudge_tool_iters_memory", 0),
                 )
-                session.metadata["_nudge_turns_memory"] = 0
-                session.metadata["_nudge_tool_iters_memory"] = 0
+                old_cursor = session.metadata.get("_memory_review_cursor")
+                reviewed_index = 0
+                if reviewed_message is not None:
+                    reviewed_index = next((index + 1 for index in range(len(session.messages) - 1, -1, -1)
+                                           if session.messages[index] == reviewed_message), 0)
+                    if not reviewed_index:
+                        # History was rewritten during review; do not claim an
+                        # uncertain boundary or acknowledge newer pending work.
+                        return
+                newer = session.messages[reviewed_index:] if reviewed_message is not None else []
+                # A later turn may finish while the LLM is reviewing. Preserve
+                # its pending counts instead of acknowledging unseen work.
+                session.metadata["_nudge_turns_memory"] = min(old[0], sum(m.get("role") == "user" for m in newer))
+                session.metadata["_nudge_tool_iters_memory"] = min(old[1], sum(bool(m.get("tool_calls")) for m in newer))
+                if reviewed_message is not None:
+                    session.metadata["_memory_review_cursor"] = {
+                        "context_key": context_key or session_key, "index": reviewed_index,
+                        "digest": _review_message_digest(reviewed_message),
+                        "timestamp": reviewed_message.get("timestamp", ""),
+                    }
                 try:
                     await self._sessions.save(session)
                 except Exception as e:
                     # 回滚内存值,保持内存/磁盘一致,下一 turn 仍会重新触发 review。
                     session.metadata["_nudge_turns_memory"] = old[0]
                     session.metadata["_nudge_tool_iters_memory"] = old[1]
+                    if old_cursor is None:
+                        session.metadata.pop("_memory_review_cursor", None)
+                    else:
+                        session.metadata["_memory_review_cursor"] = old_cursor
                     logger.warning(
                         "Memory nudge counter save failed for {}; counters restored "
                         "in-memory, next turn will re-trigger: {}",

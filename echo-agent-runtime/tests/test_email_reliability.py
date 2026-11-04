@@ -330,6 +330,64 @@ async def test_search_result_at_watermark_is_not_refetched(tmp_path):
     assert ch._last_seen_uid == 500
 
 
+@pytest.mark.asyncio
+async def test_uidvalidity_change_resets_watermark_without_losing_new_mail(tmp_path):
+    state_path = tmp_path / "data" / "email_state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text('{"last_seen_uid": 500, "uid_validity": 1}', encoding="utf-8")
+    ch = _channel(tmp_path)
+    conn = _conn_with({
+        "SEARCH": [_make_uid_response(b"1")],
+        "FETCH": [_make_fetch_response(b"1", _raw_email())],
+    })
+    conn.response.return_value = ("UIDVALIDITY", [b"2"])
+    with patch("imaplib.IMAP4_SSL", return_value=conn):
+        messages = await _call_fetch(ch)
+    assert [message.uid for message in messages] == [1]
+    assert "UID 1:*" in conn.uid.call_args_list[0].args
+    await ch._process_fetched(messages)
+    state = json.loads(state_path.read_text())
+    assert state["last_seen_uid"] == 1
+    assert state["uid_validity"] == 2
+
+
+@pytest.mark.asyncio
+async def test_email_redelivery_keeps_stable_native_identity(tmp_path):
+    bus = MessageBus()
+    bus.publish_inbound = AsyncMock(return_value=True)
+    ch = _channel(tmp_path, bus)
+    conn = _conn_with({
+        "SEARCH": [_make_uid_response(b"21")],
+        "FETCH": [_make_fetch_response(b"21", _raw_email())],
+    })
+    conn.response.return_value = ("UIDVALIDITY", [b"9"])
+    with patch("imaplib.IMAP4_SSL", return_value=conn):
+        messages = await _call_fetch(ch)
+    await ch._process_fetched(messages)
+    first = bus.publish_inbound.call_args.args[0]
+    # Simulate a crash/retry between queue admission and durable watermark save.
+    await ch._process_fetched(messages)
+    second = bus.publish_inbound.call_args.args[0]
+    assert first.event_id == second.event_id
+    assert first.session_key == second.session_key == "email:alice@example.com"
+
+
+@pytest.mark.asyncio
+async def test_mailbox_account_change_does_not_reuse_another_accounts_watermark(tmp_path):
+    ch = _channel(tmp_path)
+    conn = _conn_with({"SEARCH": [_make_uid_response()]})
+    conn.response.return_value = ("UIDVALIDITY", [b"9"])
+    ch._last_seen_uid = 500
+    with patch("imaplib.IMAP4_SSL", return_value=conn):
+        await _call_fetch(ch)
+    ch._save_state()
+    config = _config(tmp_path)
+    config.username = "different@example.com"
+    # The constructor must compare against the actual account configuration.
+    other = EmailChannel(config, MessageBus())
+    assert other._last_seen_uid == 0
+
+
 # ── helper ──────────────────────────────────────────────────────────────────
 
 

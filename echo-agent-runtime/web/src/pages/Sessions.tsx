@@ -88,6 +88,10 @@ export function Sessions() {
 
   useWsSubscribe(["sessions"], (event) => {
     refetch();
+    if (event.type === "dashboard_reconnected") {
+      if (selected) void loadHistory(selected);
+      return;
+    }
     const payload = event.payload as Partial<TurnRun>;
     if (selected && payload?.session_key === selected) {
       loadTurns(selected);
@@ -95,10 +99,11 @@ export function Sessions() {
         loadHistory(selected);
       }
     }
-  }, ["session_turn_updated", "session_reset"]);
+  }, ["session_turn_updated", "session_reset", "dashboard_reconnected"]);
 
   const resetSession = async () => {
     if (!selected) return;
+    const sequence = seqRef.current;
     const ok = await confirm({ title: t("resetTitle"), message: t("resetMessage", { key: selected }),
       confirmLabel: t("reset"), destructive: true });
     if (!ok) return;
@@ -106,7 +111,10 @@ export function Sessions() {
       () => apiFetch(`/sessions/${encodeURIComponent(selected)}`, { method: "DELETE" }),
       { success: t("resetSuccess"), error: t("resetFailed") },
     );
-    if (done) loadHistory(selected);
+    if (done) {
+      void refetch();
+      if (sequence === seqRef.current) void loadHistory(selected);
+    }
   };
 
   const sessions = data?.sessions ?? [];

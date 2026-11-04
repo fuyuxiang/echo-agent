@@ -6,6 +6,7 @@ import asyncio
 import email
 import email.mime.text
 import imaplib
+import hashlib
 import json
 import re
 import smtplib
@@ -37,6 +38,7 @@ class _FetchedEmail:
     subject: str = ""
     body: str = ""
     publish: bool = False
+    mailbox_epoch: str = "legacy"
 
 
 class EmailChannel(BaseChannel):
@@ -50,6 +52,10 @@ class EmailChannel(BaseChannel):
         # don't re-fetch (and potentially re-publish) messages we've already
         # processed. See _fetch_imap for the IMAP protocol details.
         self._last_seen_uid: int = 0
+        self._uid_validity: int | None = None
+        self._mailbox_key = hashlib.sha256(json.dumps([
+            config.imap_host.lower(), config.imap_port, config.username, "INBOX",
+        ]).encode()).hexdigest()
         self._state_path = self._resolve_state_path()
         self._subject_map: dict[str, str] = {}
         self._load_state()
@@ -65,7 +71,13 @@ class EmailChannel(BaseChannel):
         try:
             if self._state_path.is_file():
                 data = json.loads(self._state_path.read_text(encoding="utf-8"))
+                if data.get("mailbox_key", self._mailbox_key) != self._mailbox_key:
+                    logger.info("Email account changed; starting a new mailbox checkpoint")
+                    return
                 self._last_seen_uid = int(data.get("last_seen_uid", 0) or 0)
+                validity = data.get("uid_validity")
+                if isinstance(validity, int) and not isinstance(validity, bool) and validity > 0:
+                    self._uid_validity = validity
         except Exception as e:
             logger.warning("Email state file unreadable ({}); starting fresh", e)
             self._last_seen_uid = 0
@@ -74,8 +86,11 @@ class EmailChannel(BaseChannel):
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+            state = {"last_seen_uid": self._last_seen_uid}
+            if self._uid_validity is not None:
+                state.update(uid_validity=self._uid_validity, mailbox_key=self._mailbox_key)
             tmp.write_text(
-                json.dumps({"last_seen_uid": self._last_seen_uid}),
+                json.dumps(state),
                 encoding="utf-8",
             )
             tmp.replace(self._state_path)
@@ -164,6 +179,8 @@ class EmailChannel(BaseChannel):
                     chat_id=message.from_addr,
                     text=message.body,
                     metadata={"subject": message.subject, "uid": str(message.uid)},
+                    event_id=self._native_event_id(message.from_addr,
+                        f"{self._mailbox_key}:{message.mailbox_epoch}:{message.uid}"),
                 )
                 if accepted is None:
                     logger.warning(
@@ -208,7 +225,22 @@ class EmailChannel(BaseChannel):
             else:
                 conn = imaplib.IMAP4(self.config.imap_host, self.config.imap_port)
             conn.login(self.config.username, self.config.password)
-            conn.select("INBOX")
+            status, _ = conn.select("INBOX", readonly=True)
+            if status not in ("OK", b"OK"):
+                raise RuntimeError("IMAP INBOX selection failed")
+            # A UID is stable only within UIDVALIDITY. Mailbox recreation must
+            # not leave all new, low-numbered messages below an old watermark.
+            response = conn.response("UIDVALIDITY")
+            if isinstance(response, tuple) and len(response) == 2 and isinstance(response[1], list):
+                raw_validity = response[1][0] if response[1] else None
+                if isinstance(raw_validity, (str, bytes)) and raw_validity.isdigit():
+                    validity = int(raw_validity)
+                    if validity > 0 and validity != self._uid_validity:
+                        if self._uid_validity is not None:
+                            watermark = self._last_seen_uid = 0
+                            logger.info("Email UIDVALIDITY changed; resetting mailbox checkpoint")
+                        self._uid_validity = validity
+                        self._save_state()
             _, data = conn.uid("SEARCH", None, f"UID {watermark + 1}:*")
             uids = data[0].split() if data[0] else []
             uid_values: list[int] = []
@@ -248,6 +280,7 @@ class EmailChannel(BaseChannel):
                         subject=subject,
                         body=body,
                         publish=bool(body),
+                        mailbox_epoch=str(self._uid_validity) if self._uid_validity is not None else "legacy",
                     ))
                 except Exception as e:
                     # MIME parsing is deterministic for a given raw message. A

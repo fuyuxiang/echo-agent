@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { Sessions } from "./Sessions";
 import { Channels } from "./Channels";
 import { ConfirmProvider } from "../components/ConfirmDialog";
@@ -38,6 +38,27 @@ describe("Sessions 页", () => {
       return { messages: [{ role: "user", content: "你好" }], has_more: false } as never;
     });
   }
+
+  it("a late reset response cannot switch back from the newly selected session", async () => {
+    let complete!: (value: unknown) => void;
+    vi.spyOn(api, "apiFetch").mockImplementation(async (path, options) => {
+      if (path.startsWith("/sessions?")) return SESSIONS as never;
+      if (options?.method === "DELETE") return await new Promise<unknown>((resolve) => { complete = resolve; }) as never;
+      if (path.includes("/turns?")) return { turns: [] } as never;
+      return { messages: [{ role: "user", content: path.includes("feishu") ? "first session" : "second session" }], has_more: false } as never;
+    });
+    renderSessions();
+    fireEvent.click(await screen.findByText("feishu:oc 1"));
+    await screen.findByText("first session");
+    fireEvent.click(screen.getByRole("button", { name: /重置会话/ }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "重置会话" }));
+    await waitFor(() => expect(complete).toBeTypeOf("function"));
+    fireEvent.click(screen.getByText("cli:local"));
+    await screen.findByText("second session");
+    await act(async () => complete({ status: "reset" }));
+    expect(screen.getByText("second session")).toBeInTheDocument();
+    expect(screen.queryByText("first session")).not.toBeInTheDocument();
+  });
 
   it("点击会话按编码后的 key 拉取历史", async () => {
     const spy = mockApi();

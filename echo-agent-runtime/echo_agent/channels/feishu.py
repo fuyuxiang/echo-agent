@@ -224,11 +224,15 @@ class FeishuChannel(BaseChannel):
                     if local_path:
                         media.append({"type": "image", "url": local_path})
                     else:
-                        logger.warning("Feishu image download failed, skipping: {}", image_key[:30])
+                        logger.warning("Feishu image download failed: {}", image_key[:30])
             except json.JSONDecodeError as e:
                 # Do not log the malformed message body: it may contain private
                 # content. The message id and parser reason are sufficient.
                 logger.debug("Feishu image metadata is invalid for message {}: {}", msg_id, e)
+            if not media:
+                text = "[附件未读取：图片下载失败或链接无效。请重新上传或提供文字内容。]"
+        elif msg_type:
+            text = f"[附件未读取：当前通道不支持 {msg_type} 类型。请提供文字内容。]"
 
         if not text and not media:
             return True

@@ -948,6 +948,7 @@ def _qqbot_channel():
     cfg = MagicMock()
     cfg.app_id = "x"
     cfg.app_secret = "y"
+    cfg.allow_from = []
     cfg.sandbox = False
     cfg.markdown_support = False
     cfg.media_enabled = False

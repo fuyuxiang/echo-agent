@@ -280,32 +280,39 @@ class WhatsAppChannel(BaseChannel):
             text = img.get("caption", "")
             media_id = img.get("id", "")
             if media_id:
-                local_path = await self._download_whatsapp_media(media_id)
+                local_path = await self._download_whatsapp_media(media_id, mime_type=img.get("mime_type", ""))
                 if local_path:
-                    media.append({"type": "image", "url": local_path})
+                    media.append({"type": "image", "url": local_path, "mime_type": img.get("mime_type", "")})
         elif msg_type == "document":
             doc = msg.get("document", {})
             text = doc.get("caption", "")
             media_id = doc.get("id", "")
             if media_id:
-                local_path = await self._download_whatsapp_media(media_id)
+                local_path = await self._download_whatsapp_media(media_id,
+                    filename=doc.get("filename", ""), mime_type=doc.get("mime_type", ""))
                 if local_path:
-                    media.append({"type": "file", "url": local_path})
+                    media.append({"type": "file", "url": local_path,
+                                  "name": doc.get("filename", ""), "mime_type": doc.get("mime_type", "")})
         elif msg_type == "audio":
             audio = msg.get("audio", {})
             media_id = audio.get("id", "")
             if media_id:
-                local_path = await self._download_whatsapp_media(media_id)
+                local_path = await self._download_whatsapp_media(media_id, mime_type=audio.get("mime_type", ""))
                 if local_path:
-                    media.append({"type": "audio", "url": local_path})
+                    media.append({"type": "audio", "url": local_path, "mime_type": audio.get("mime_type", "")})
         elif msg_type == "video":
             video = msg.get("video", {})
             text = video.get("caption", "")
             media_id = video.get("id", "")
             if media_id:
-                local_path = await self._download_whatsapp_media(media_id)
+                local_path = await self._download_whatsapp_media(media_id, mime_type=video.get("mime_type", ""))
                 if local_path:
-                    media.append({"type": "video", "url": local_path})
+                    media.append({"type": "video", "url": local_path, "mime_type": video.get("mime_type", "")})
+
+        if msg_type in {"image", "document", "audio", "video"} and not media:
+            text = "\n".join(part for part in (
+                text, "[附件未读取：下载失败或链接无效。请重新上传或提供文字内容。]",
+            ) if part)
 
         if not text and not media:
             return True
@@ -345,7 +352,7 @@ class WhatsAppChannel(BaseChannel):
         self._seen_message_ids[message_id] = now
         return False
 
-    async def _download_whatsapp_media(self, media_id: str) -> str | None:
+    async def _download_whatsapp_media(self, media_id: str, *, filename: str = "", mime_type: str = "") -> str | None:
         """Download a WhatsApp media file via the two-step Graph API flow."""
         async def fetch() -> bytes:
             if not self._session:
@@ -365,7 +372,8 @@ class WhatsAppChannel(BaseChannel):
                 return b""
             return data
 
-        return await self._resolve_media_to_cache(media_id, "whatsapp", fetch)
+        return await self._resolve_media_to_cache(media_id, "whatsapp", fetch,
+                                                  suffix=self._media_suffix(filename, mime_type))
 
     async def _health(self, request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "channel": self.name})

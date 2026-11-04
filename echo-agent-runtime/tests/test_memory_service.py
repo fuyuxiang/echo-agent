@@ -124,3 +124,78 @@ async def test_service_add_same_key_appends_version(tmp_path):
     assert r.ok is True and r.entry.version == 2
     live = [e for e in store._entries.values() if e.key == "home" and not e.is_superseded]
     assert len(live) == 1 and live[0].content == "上海"
+
+
+@pytest.mark.asyncio
+async def test_admin_correction_cannot_be_overwritten_by_background_extraction(tmp_path):
+    svc, store = _svc(tmp_path)
+    ctx = ActorContext(actor="admin", memory_scope="owner")
+    entry = store.add(MemoryEntry(key="drink", content="coffee", source_session="owner"))
+    corrected = await svc.replace(ctx, entry.id, content="tea", source="admin", override=True)
+    assert corrected.ok
+    await svc.add(ActorContext(actor="reviewer", memory_scope="owner"), type=MemoryType.USER,
+                  key="drink", content="coffee", source="model_inferred")
+    active = [e for e in store.list_all(session_key="owner") if not e.is_superseded]
+    assert [e.content for e in active] == ["tea"]
+
+
+@pytest.mark.asyncio
+async def test_forgotten_fact_cannot_be_recreated_by_retried_extraction_after_reopen(tmp_path):
+    svc, store = _svc(tmp_path)
+    entry = store.add(MemoryEntry(key="drink", content="coffee", source_session="owner"))
+    assert (await svc.remove(ActorContext(actor="admin", memory_scope="owner"), entry.id, override=True)).ok
+    # A restarted worker may re-extract the old history; the barrier must live
+    # with the authoritative data, rather than only in a coroutine-local flag.
+    svc, store = _svc(tmp_path)
+    for actor, source in [("reviewer", "model_inferred"), ("consolidation", "consolidated")]:
+        result = await svc.add(ActorContext(actor=actor, memory_scope="owner"), type=MemoryType.USER,
+                               key="drink", content="coffee", source=source)
+        assert not result.ok
+    assert store.list_all(session_key="owner") == []
+    assert store.search_scored("coffee", session_key="owner") == []
+    assert "coffee" not in store.get_snapshot(session_key="owner")
+
+
+@pytest.mark.asyncio
+async def test_forget_barrier_preserves_other_scopes_and_explicit_new_user_request(tmp_path):
+    svc, store = _svc(tmp_path)
+    entry = store.add(MemoryEntry(key="drink", content="coffee", source_session="owner"))
+    await svc.remove(ActorContext(actor="admin", memory_scope="owner"), entry.id, override=True)
+    other = await svc.add(ActorContext(actor="reviewer", memory_scope="other"), type=MemoryType.USER,
+                          key="drink", content="coffee", source="model_inferred")
+    explicit = await svc.add(ActorContext(actor="model", memory_scope="owner"), type=MemoryType.USER,
+                             key="drink", content="tea", source="user_stated")
+    assert other.ok and explicit.ok
+    assert store.find_by_key("drink", session_key="owner").content == "tea"
+
+
+@pytest.mark.asyncio
+async def test_reviewer_cannot_replace_another_key_with_forgotten_content(tmp_path):
+    svc, store = _svc(tmp_path)
+    forgotten = store.add(MemoryEntry(key="drink", content="User prefers tea.", source_session="owner"))
+    note = store.add(MemoryEntry(key="note", content="Unrelated note.", source_session="owner"))
+    await svc.remove(ActorContext(actor="admin", memory_scope="owner"), forgotten.id, override=True)
+    result = await svc.replace(ActorContext(actor="reviewer", memory_scope="owner"), note.id,
+                               content="User prefers tea.", source="model_inferred")
+    assert not result.ok and result.reason == "rejected_forgotten"
+    assert store.get(note.id).content == "Unrelated note."
+
+
+@pytest.mark.asyncio
+async def test_reviewer_key_normalization_cannot_bypass_forget(tmp_path):
+    svc, store = _svc(tmp_path)
+    entry = store.add(MemoryEntry(key="drink", content="tea", source_session="owner"))
+    await svc.remove(ActorContext(actor="admin", memory_scope="owner"), entry.id, override=True)
+    result = await svc.add(ActorContext(actor="consolidation", memory_scope="owner"), type=MemoryType.USER,
+                           key=" drink ", content="A paraphrase of the old tea preference", source="consolidated")
+    assert not result.ok and result.reason == "rejected_forgotten"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor", ["model", "reviewer", "consolidation"])
+async def test_normalized_global_tag_cannot_bypass_environment_gate(tmp_path, actor):
+    svc, store = _svc(tmp_path)
+    result = await svc.add(ActorContext(actor=actor, memory_scope="owner"), type=MemoryType.USER,
+                           key="private", content="private preference", tags=[" global "], source="model_inferred")
+    assert not result.ok and result.reason == "rejected_env"
+    assert store.list_all() == []

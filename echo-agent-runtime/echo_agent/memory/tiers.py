@@ -84,6 +84,7 @@ class EpisodicManager:
         entity_ids: list[str] | None = None,
         importance: float = 0.5,
         message_range: tuple[int, int] = (0, 0),
+        created_at: str = "",
     ) -> Episode:
         # Idempotency: a real (non-zero) message_range uniquely identifies the
         # compressed span, so a retry/concurrent consolidation of the same span
@@ -119,7 +120,7 @@ class EpisodicManager:
             message_range_end=message_range[1],
             entity_ids=entity_ids or [],
             importance=importance,
-            created_at=datetime.now().isoformat(),
+            created_at=created_at or datetime.now().isoformat(),
         )
         # 非 (0,0) 区间受唯一索引 uq_episodes_span 保护:并发同区间用 INSERT OR IGNORE
         # 抢锁,只有真正写入的那次才 embed。冲突方回查既有行返回,跳过 _embed_summary
@@ -324,6 +325,7 @@ class SemanticManager:
     async def promote_from_episodic(
         self, episode: Episode, extracted_facts: list[dict[str, Any]],
         memory_scope: str = "",
+        can_commit=None,
     ) -> list[MemoryEntry]:
         """Promote extracted facts from an episode to semantic memory.
 
@@ -344,6 +346,8 @@ class SemanticManager:
 
         promoted: list[MemoryEntry] = []
         for fact in extracted_facts:
+            if can_commit is not None and not await can_commit():
+                break
             try:
                 fact_type = MemoryType(fact.get("type", "user"))
             except ValueError:

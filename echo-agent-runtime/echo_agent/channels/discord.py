@@ -262,11 +262,17 @@ class DiscordChannel(BaseChannel):
                 self._resume_url = ""
             raise
 
-        async for msg in self._ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                await self._handle_ws_message(json.loads(msg.data))
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                break
+        try:
+            async for msg in self._ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    # Admission is serial so the resume cursor stays ordered;
+                    # bound it below the heartbeat interval if local egress stalls.
+                    await asyncio.wait_for(self._handle_ws_message(json.loads(msg.data)), timeout=10)
+                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    break
+        finally:
+            if not self._ws.closed:
+                await self._ws.close()
 
         close_code = self._ws.close_code if self._ws else None
         if close_code == 4008:
@@ -279,8 +285,6 @@ class DiscordChannel(BaseChannel):
     async def _handle_ws_message(self, data: dict[str, Any]) -> None:
         op = data.get("op")
         seq = data.get("s")
-        if seq is not None:
-            self._seq = seq
         t = data.get("t")
         d = data.get("d", {})
 
@@ -306,7 +310,12 @@ class DiscordChannel(BaseChannel):
                 self._bot_id = str(user.get("id", ""))
                 logger.info("Discord ready as {}", user.get("username", ""))
             elif t == "MESSAGE_CREATE":
-                await self._on_message(d)
+                if await self._on_message(d) is False:
+                    # Resume from the last accepted event, rather than
+                    # acknowledging a message rejected by local backpressure.
+                    if self._ws and not self._ws.closed:
+                        await self._ws.close()
+                    return
         elif op == 7:  # RECONNECT
             if self._ws and not self._ws.closed:
                 await self._ws.close()
@@ -316,12 +325,16 @@ class DiscordChannel(BaseChannel):
                 await self._ws.close()
         elif op == 11:  # HEARTBEAT ACK
             self._heartbeat_ack_received = True
+        if seq is not None:
+            self._seq = seq
 
-    async def _on_message(self, d: dict[str, Any]) -> None:
+    async def _on_message(self, d: dict[str, Any]) -> bool:
         author = d.get("author", {})
         if author.get("bot"):
-            return
+            return True
         sender_id = str(author.get("id", ""))
+        if not self.is_allowed(sender_id):
+            return True
         channel_id = str(d.get("channel_id", ""))
         content = d.get("content", "")
         guild_id = d.get("guild_id")
@@ -330,7 +343,7 @@ class DiscordChannel(BaseChannel):
             if f"<@{self._bot_id}>" not in content and f"<@!{self._bot_id}>" not in content:
                 ref = d.get("referenced_message")
                 if not (ref and str(ref.get("author", {}).get("id", "")) == self._bot_id):
-                    return
+                    return True
             content = content.replace(f"<@{self._bot_id}>", "").replace(f"<@!{self._bot_id}>", "").strip()
 
         media: list[dict[str, str]] = []
@@ -349,7 +362,7 @@ class DiscordChannel(BaseChannel):
 
         # Allow messages with only attachments (no text content)
         if not content and not media:
-            return
+            return True
 
         # 引用上下文：Discord 在 referenced_message 带上被引用消息，解析其原文/作者
         # 交给 pipeline 统一注入（reply_to_id 仍是本条消息的出站锚点）。
@@ -366,7 +379,7 @@ class DiscordChannel(BaseChannel):
             )
             reply_to_is_own = str(ref_author.get("id", "")) == self._bot_id
 
-        await self._handle_message(
+        accepted = await self._handle_message(
             sender_id=sender_id,
             chat_id=channel_id,
             text=content,
@@ -380,6 +393,7 @@ class DiscordChannel(BaseChannel):
             is_group=bool(guild_id),
             event_id=self._native_event_id(channel_id, d.get("id")),
         )
+        return accepted is not None
 
     async def _heartbeat_loop(self) -> None:
         try:

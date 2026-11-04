@@ -507,6 +507,7 @@ class ContextStage:
 
         context_key = conversation_context_key(event.session_key, session)
         ephemeral = _is_ephemeral_session(event.session_key, event.channel)
+        memory_context_version = self._scope_version_fn(event.memory_scope) if self._scope_version_fn else 0
         working_ctx = ""
         if context_key in self._working_memories:
             working_ctx = self._working_memories[context_key].get_context()
@@ -536,7 +537,11 @@ class ContextStage:
                         episodes = await self._episodic.get_session_episodes(
                             context_key, self._narrative_episode_count
                         )
-                        narrative_summaries = [e.summary for e in episodes if e.summary]
+                        episode_visible = getattr(self._memory, "is_episode_visible", None)
+                        narrative_summaries = [
+                            e.summary for e in episodes if e.summary
+                            and (episode_visible is None or episode_visible(e, event.memory_scope))
+                        ]
                     except Exception as e:
                         logger.debug("Narrative episode prefetch failed: {}", e)
                 snapshot, snapshot_ids = self._memory.get_snapshot_with_ids(
@@ -555,6 +560,7 @@ class ContextStage:
             memory_ctx = build_memory_context(
                 self._memory,
                 snapshot=snapshot,
+                session_key=event.memory_scope,
                 working_memory=working_ctx,
                 allow_env_writes=self._config.memory.allow_model_environment_writes,
             )
@@ -700,6 +706,7 @@ class ContextStage:
                 if mem_items and self._cog is not None:
                     await self._emit_memory_recalled(event, mem_items)
 
+        memory_part_count = len(retrieval_parts)
         if self._knowledge:
             # Knowledge is ACL-filtered per user (KnowledgeIndex.search filters
             # by allowed_users). A cached knowledge_context is only trustworthy
@@ -806,6 +813,7 @@ class ContextStage:
                 artifact_intent_id = str(
                     artifact_resume_state.get("source_event_id") or artifact_intent_id
                 )
+        control_notes: list[str] = []
         if artifact_required:
             if resume_artifact:
                 instruction = (
@@ -821,6 +829,7 @@ class ContextStage:
                     "then deliver it. Keep the final chat answer to a short summary and delivery status; "
                     "do not paste the full document into one model response."
                 )
+            control_notes.append(instruction)
             last_content = messages[-1]["content"]
             if isinstance(last_content, list):
                 last_content[0]["text"] += f"\n\n{instruction}"
@@ -842,6 +851,7 @@ class ContextStage:
                 "Continue exactly after the saved tail below without repeating it, and finish the answer.\n"
                 f"<saved_tail>{tail}</saved_tail>"
             )
+            control_notes.append(resume_instruction)
             last_content = messages[-1]["content"]
             if isinstance(last_content, list):
                 last_content[0]["text"] += f"\n\n{resume_instruction}"
@@ -913,6 +923,46 @@ class ContextStage:
                             logger.debug("Plan run persistence failed: {}", e)
             except Exception as e:
                 logger.debug("Planning failed, proceeding without plan: {}", e)
+
+        if (self._memory_enabled and not ephemeral and self._scope_version_fn is not None
+                and self._scope_version_fn(event.memory_scope) != memory_context_version):
+            # This check must follow EVERY await, including planning and plan
+            # persistence. Plans derived from the old context are not resumed.
+            if execution_plan is not None and plan_run_id and self._plan_run_store is not None:
+                await self._plan_run_store.update(plan_run_id, execution_plan, status="failed")
+            execution_plan, plan_run_id = None, ""
+            snapshot, snapshot_ids = self._memory.get_snapshot_with_ids(session_key=event.memory_scope)
+            memory_ctx = build_memory_context(
+                self._memory, snapshot=snapshot, session_key=event.memory_scope,
+                working_memory=working_ctx, allow_env_writes=self._config.memory.allow_model_environment_writes,
+            )
+            system_prompt = self._context_builder.build_system_prompt(
+                memory_context=memory_ctx, skills_context=skills_ctx,
+                capabilities=capabilities_ctx, channel=event.channel,
+            )
+            if extension is not None:
+                system_prompt += extension.system_instructions
+            current = self._memory.search_scored(
+                retrieval_query, limit=5, session_key=event.memory_scope, audience=Audience.RETRIEVAL,
+            )
+            current = filter_recall_by_snapshot(current, snapshot_ids)
+            fresh_parts = (["Relevant memory:\n" + "\n".join(f"- {r.key}: {r.content}" for r, _ in current)]
+                           if current else [])
+            retrieval = "\n\n".join(fresh_parts + retrieval_parts[memory_part_count:])
+            messages = self._context_builder.build_messages(
+                history=history, current_message=user_message, media=resolved_media,
+                channel=event.channel, chat_id=event.chat_id,
+                system_prompt=system_prompt, retrieval_context=retrieval,
+                history_image_ttl_minutes=session_cfg.history_image_ttl_minutes,
+                history_image_limit=session_cfg.history_image_limit,
+                history_image_skip_if_current=session_cfg.history_image_skip_if_current,
+            )
+            for note in control_notes:
+                content = messages[-1]["content"]
+                if isinstance(content, list):
+                    content[0]["text"] += f"\n\n{note}"
+                else:
+                    messages[-1]["content"] = f"{content}\n\n{note}"
 
         return PipelineContext(
             event=event,

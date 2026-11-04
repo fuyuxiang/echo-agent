@@ -592,11 +592,17 @@ class QQBotChannel(BaseChannel):
             self._gateway_url = None
             raise
 
-        async for msg in self._ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                await self._handle_ws_message(json.loads(msg.data))
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                break
+        try:
+            async for msg in self._ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    # Commit resume sequence only after ordered local admission.
+                    # A stalled busy notice must not starve heartbeat handling.
+                    await asyncio.wait_for(self._handle_ws_message(json.loads(msg.data)), timeout=10)
+                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    break
+        finally:
+            if not self._ws.closed:
+                await self._ws.close()
 
         close_code = self._ws.close_code if self._ws else None
         if close_code:
@@ -617,8 +623,6 @@ class QQBotChannel(BaseChannel):
     async def _handle_ws_message(self, data: dict[str, Any]) -> None:
         op = data.get("op")
         s = data.get("s")
-        if isinstance(s, int) and (self._seq is None or s > self._seq):
-            self._seq = s
         t = data.get("t")
         d = data.get("d", {})
 
@@ -649,11 +653,20 @@ class QQBotChannel(BaseChannel):
                 self._heartbeat_ack_received = True
                 logger.info("QQBot session resumed")
             elif t in ("AT_MESSAGE_CREATE", "MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"):
-                self._spawn_msg_task(self._on_channel_message(d))
+                if await self._on_channel_message(d) is False:
+                    if self._ws and not self._ws.closed:
+                        await self._ws.close()
+                    return
             elif t == "GROUP_AT_MESSAGE_CREATE":
-                self._spawn_msg_task(self._on_group_message(d))
+                if await self._on_group_message(d) is False:
+                    if self._ws and not self._ws.closed:
+                        await self._ws.close()
+                    return
             elif t in ("C2C_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"):
-                self._spawn_msg_task(self._on_c2c_message(d))
+                if await self._on_c2c_message(d) is False:
+                    if self._ws and not self._ws.closed:
+                        await self._ws.close()
+                    return
         elif op == 7:  # RECONNECT
             logger.info("QQBot: server requested reconnect")
             if self._ws and not self._ws.closed:
@@ -666,25 +679,40 @@ class QQBotChannel(BaseChannel):
                 await self._ws.close()
         elif op == 11:  # HEARTBEAT ACK
             self._heartbeat_ack_received = True
+        if isinstance(s, int) and (self._seq is None or s > self._seq):
+            self._seq = s
 
     # ── Event handlers ───────────────────────────────────────────────────────
 
-    async def _on_channel_message(self, d: dict[str, Any]) -> None:
+    async def _accept_native_message(self, msg_id: str, **kwargs: Any) -> bool:
+        try:
+            accepted = await self._handle_message(**kwargs)
+        except (Exception, asyncio.CancelledError):
+            self._seen_messages.pop(msg_id, None)
+            raise
+        if accepted is None:
+            self._seen_messages.pop(msg_id, None)
+            return False
+        return True
+
+    async def _on_channel_message(self, d: dict[str, Any]) -> bool:
         author = d.get("author") or {}
         if author.get("bot"):
-            return
+            return True
         sender_id = str(author.get("id", ""))
+        if not self.is_allowed(sender_id):
+            return True
         channel_id = str(d.get("channel_id", ""))
         content = str(d.get("content", "")).strip()
         msg_id = str(d.get("id", ""))
         if not msg_id or self._is_duplicate(msg_id):
-            return
+            return True
         content = _AT_MENTION_RE.sub("", content).strip()
         media = _extract_attachments(d)
         if not content and not media:
-            return
+            return True
         self._set_chat_type(channel_id, "channel")
-        await self._handle_message(
+        return await self._accept_native_message(msg_id,
             sender_id=sender_id, chat_id=channel_id, text=content,
             media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "channel", "guild_id": d.get("guild_id", "")},
@@ -692,20 +720,22 @@ class QQBotChannel(BaseChannel):
             event_id=self._native_event_id(channel_id, msg_id),
         )
 
-    async def _on_group_message(self, d: dict[str, Any]) -> None:
+    async def _on_group_message(self, d: dict[str, Any]) -> bool:
         author = d.get("author") or {}
         sender_id = str(author.get("member_openid", author.get("id", "")))
+        if not self.is_allowed(sender_id):
+            return True
         group_id = str(d.get("group_openid", d.get("group_id", "")))
         content = str(d.get("content", "")).strip()
         msg_id = str(d.get("id", ""))
         if not msg_id or self._is_duplicate(msg_id):
-            return
+            return True
         content = _AT_MENTION_RE.sub("", content).strip()
         media = _extract_attachments(d)
         if not content and not media:
-            return
+            return True
         self._set_chat_type(group_id, "group")
-        await self._handle_message(
+        return await self._accept_native_message(msg_id,
             sender_id=sender_id, chat_id=group_id, text=content,
             media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "group"},
@@ -713,18 +743,20 @@ class QQBotChannel(BaseChannel):
             event_id=self._native_event_id(group_id, msg_id),
         )
 
-    async def _on_c2c_message(self, d: dict[str, Any]) -> None:
+    async def _on_c2c_message(self, d: dict[str, Any]) -> bool:
         author = d.get("author") or {}
         sender_id = str(author.get("user_openid", author.get("id", "")))
+        if not self.is_allowed(sender_id):
+            return True
         content = str(d.get("content", "")).strip()
         msg_id = str(d.get("id", ""))
         if not msg_id or self._is_duplicate(msg_id):
-            return
+            return True
         media = _extract_attachments(d)
         if not content and not media:
-            return
+            return True
         self._set_chat_type(sender_id, "c2c")
-        await self._handle_message(
+        return await self._accept_native_message(msg_id,
             sender_id=sender_id, chat_id=sender_id, text=content,
             media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "c2c"},

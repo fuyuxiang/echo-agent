@@ -59,6 +59,16 @@ def _tokenize(text: str) -> list[str]:
     return tokens
 
 
+def _valid_manifest(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(path, str) and isinstance(stamp, list) and len(stamp) == 2 and all(
+            type(number) in (int, float) and (type(number) is int or math.isfinite(number))
+            for number in stamp
+        )
+        for path, stamp in value.items()
+    )
+
+
 def _extract_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not text.startswith("---\n"):
         return {}, text
@@ -254,7 +264,25 @@ class KnowledgeIndex:
                 data = json.loads(self.index_path.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
                     raise ValueError("index root is not an object")
-                chunks = list(data.get("chunks", []))
+                chunks = data.get("chunks", [])
+                if not isinstance(chunks, list):
+                    raise ValueError("index chunks are not an array")
+                for chunk in chunks:
+                    if not isinstance(chunk, dict) or not isinstance(chunk.get("id"), str) or not chunk["id"]:
+                        raise ValueError("index chunk has no valid identity")
+                    if any(not isinstance(chunk.get(key, ""), str) for key in ("path", "title", "text")):
+                        raise ValueError("index chunk has invalid text fields")
+                    terms = chunk.get("terms", {})
+                    if not isinstance(terms, dict) or any(
+                        not isinstance(term, str) or type(count) is not int or count < 0
+                        for term, count in terms.items()
+                    ):
+                        raise ValueError("index chunk has invalid term counts")
+                    if not isinstance(chunk.get("metadata", {}), dict):
+                        raise ValueError("index chunk metadata is not an object")
+                raw_manifest = data.get("manifest")
+                if raw_manifest is not None and not _valid_manifest(raw_manifest):
+                    raise ValueError("index manifest has invalid file timestamps/sizes")
             except (json.JSONDecodeError, ValueError, OSError, UnicodeDecodeError) as e:
                 # A half-written or truncated index (power loss mid-save, full
                 # disk) used to raise straight out of here. ensure_ready() is
@@ -271,7 +299,6 @@ class KnowledgeIndex:
                 self._loaded = True
                 return
             self._chunks = chunks
-            raw_manifest = data.get("manifest")
             self._manifest = raw_manifest if isinstance(raw_manifest, dict) else {}
             if data.get("format") != _INDEX_FORMAT or any(
                 "content_hash" not in c for c in self._chunks
@@ -645,6 +672,10 @@ class KnowledgeIndex:
             return {}
         manifest = data.get("manifest")
         if isinstance(manifest, dict):
+            if not _valid_manifest(manifest):
+                # Invalid derived metadata cannot decide corpus freshness.
+                # Returning an empty snapshot forces a rebuild from source.
+                return {}
             return manifest
         return None
 

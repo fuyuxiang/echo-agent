@@ -20,8 +20,8 @@ export function useWsSubscribe(
   eventTypes: string[],
 ) {
   const token = useAuthStore((s) => s.token);
+  const generation = useAuthStore((s) => s.generation);
   const authRequired = useAuthRequired();
-  const logout = useAuthStore((s) => s.logout);
 
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
@@ -35,7 +35,7 @@ export function useWsSubscribe(
   useEffect(() => {
     if ((authRequired !== false && !token) || channelList.length === 0) return;
 
-    if (authRequired === false) dashboardWS.openMode = true;
+    dashboardWS.openMode = authRequired === false;
 
     // Register listeners first: with a warm socket, events can arrive on the
     // same tick as subscribe().
@@ -44,25 +44,9 @@ export function useWsSubscribe(
     );
     const release = dashboardWS.subscribe(token || "", channelList);
 
-    // The token the socket authenticated with is no longer accepted; drop it
-    // and route to login rather than letting the socket retry indefinitely.
-    const onAuthFailure = () => {
-      logout();
-      // Authentication failure can happen from any page, including consumers
-      // rendered outside a Router (tests, embedded views). Updating browser
-      // history keeps the hook Router-independent while still notifying a
-      // mounted BrowserRouter through the standard popstate event.
-      window.history.replaceState(null, "", "/login");
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    };
-    dashboardWS.onAuthFailure = onAuthFailure;
-
     return () => {
-      // Only clear the slot if it is still ours — a second subscriber may have
-      // installed its own handler after us.
-      if (dashboardWS.onAuthFailure === onAuthFailure) dashboardWS.onAuthFailure = null;
       unsubs.forEach((u) => u());
       release();
     };
-  }, [token, authRequired, channelList, typeList, logout]);
+  }, [token, generation, authRequired, channelList, typeList]);
 }

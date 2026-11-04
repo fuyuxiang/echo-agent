@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { Login } from "./Login";
 import * as api from "../lib/api";
@@ -30,6 +30,18 @@ afterEach(() => {
 });
 
 describe("Login 页", () => {
+  it("a superseded login request cannot roll back a newer identity", async () => {
+    let reject!: (error: unknown) => void;
+    vi.spyOn(api, "apiFetch").mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+    submit("pending-old-login");
+    await act(async () => {
+      useAuthStore.getState().setToken("newer-login");
+      reject(new DOMException("Authentication changed", "AbortError"));
+    });
+    expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe("newer-login");
+    expect(useAuthStore.getState().token).toBe("newer-login");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
   it("用 /stats 校验令牌 —— 与 dashboard 其余页面同一道闸门", async () => {
     const spy = vi.spyOn(api, "apiFetch").mockResolvedValue({});
 

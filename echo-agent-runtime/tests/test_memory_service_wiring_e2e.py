@@ -15,7 +15,7 @@ import pytest
 
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.loader import load_config
-from echo_agent.models.provider import LLMProvider
+from echo_agent.models.provider import LLMProvider, LLMResponse
 
 
 def _make_loop(tmp_path):
@@ -25,6 +25,7 @@ def _make_loop(tmp_path):
     config = load_config(overrides={"workspace": str(tmp_path)})
     config.memory.enabled = True
     config.memory.vector_enabled = False  # 关向量走关键词模式,免加载本地模型
+    config.memory.rerank_enabled = False
     config.memory.contradiction_detection = True
     config.memory.reflection_enabled = True
     config.knowledge.enabled = False
@@ -36,7 +37,7 @@ def _make_loop(tmp_path):
     provider = MagicMock(spec=LLMProvider)
     provider.supports_embed = MagicMock(return_value=False)
     provider.get_default_model = MagicMock(return_value="stub")
-    provider.chat_with_retry = AsyncMock()
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="No memory changes needed."))
 
     storage = SQLiteBackend(tmp_path / "wiring.db")
     loop = AgentLoop(

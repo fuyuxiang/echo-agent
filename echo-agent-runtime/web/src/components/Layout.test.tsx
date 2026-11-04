@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
+import { useState } from "react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { Layout } from "./Layout";
 import { useCapabilitiesStore } from "../stores/capabilities";
@@ -51,6 +52,20 @@ afterEach(() => {
 });
 
 describe("Layout 登录闸门", () => {
+  it("switching token clears page state without requiring navigation", async () => {
+    vi.spyOn(api, "apiFetch").mockResolvedValue({ admin: false, authRequired: true });
+    useAuthStore.getState().setToken("old-admin");
+    function PrivatePage() {
+      const [value, setValue] = useState("");
+      return <input aria-label="private draft" value={value} onChange={(e) => setValue(e.target.value)} />;
+    }
+    render(<MemoryRouter><Routes><Route element={<Layout />}>
+      <Route index element={<PrivatePage />} />
+    </Route></Routes></MemoryRouter>);
+    fireEvent.change(screen.getByLabelText("private draft"), { target: { value: "old private draft" } });
+    await act(async () => useAuthStore.getState().setToken("new-api"));
+    expect(screen.getByLabelText("private draft")).toHaveValue("");
+  });
   it("open 模式（authRequired=false）空 token 也能进入 dashboard", async () => {
     vi.spyOn(api, "apiFetch").mockResolvedValue({ admin: true, authRequired: false });
 

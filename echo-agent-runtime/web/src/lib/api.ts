@@ -44,19 +44,49 @@ export function getToken(): string {
  */
 let onUnauthorized: (() => void) | null = null;
 
+// A token can be removed and then reused while a request is in flight. Keep a
+// generation as well as the token so responses from that earlier login expire.
+let authGeneration = 0;
+export function invalidateApiRequests() {
+  authGeneration += 1;
+}
+
+function requestIdentity() {
+  const token = getToken();
+  const generation = authGeneration;
+  return {
+    token,
+    assertCurrent() {
+      if (generation !== authGeneration || token !== getToken()) {
+        throw new DOMException("Authentication changed", "AbortError");
+      }
+    },
+  };
+}
+
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }
 
+/** Shared by HTTP and the app's persistent dashboard socket. */
+export function handleUnauthorized() {
+  if (location.pathname !== "/login") {
+    sessionStorage.setItem(RETURN_TO_STORAGE_KEY, location.pathname + location.search);
+  }
+  onUnauthorized?.();
+}
+
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const identity = requestIdentity();
   const resp = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${getToken()}`,
+      Authorization: `Bearer ${identity.token}`,
       ...options.headers,
     },
   });
+  identity.assertCurrent();
   if (resp.status === 401) {
     // Clear the session through the store rather than assigning to
     // window.location: a hard navigation reloads the whole SPA and only
@@ -64,52 +94,56 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     // localStorage on init. Clearing state lets Layout's <Navigate> route to
     // /login in-app, and remembering the current location makes the trip back
     // land where the user was instead of always on the overview.
-    if (location.pathname !== "/login") {
-      sessionStorage.setItem(RETURN_TO_STORAGE_KEY, location.pathname + location.search);
-    }
-    onUnauthorized?.();
+    handleUnauthorized();
     throw new Error("Unauthorized");
   }
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: resp.statusText }));
+    identity.assertCurrent();
     throw new Error(err.error || resp.statusText);
   }
-  return resp.json();
+  const data = await resp.json();
+  identity.assertCurrent();
+  return data;
 }
 
 export async function apiUpload<T = unknown>(path: string, body: FormData): Promise<T> {
+  const identity = requestIdentity();
   const resp = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${getToken()}` },
+    headers: { Authorization: `Bearer ${identity.token}` },
     body,
   });
+  identity.assertCurrent();
   if (resp.status === 401) {
-    if (location.pathname !== "/login") {
-      sessionStorage.setItem(RETURN_TO_STORAGE_KEY, location.pathname + location.search);
-    }
-    onUnauthorized?.();
+    handleUnauthorized();
     throw new Error("Unauthorized");
   }
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: resp.statusText }));
+    identity.assertCurrent();
     throw new Error(err.error || resp.statusText);
   }
-  return resp.json();
+  const data = await resp.json();
+  identity.assertCurrent();
+  return data;
 }
 
 /** Download with the same header authentication as the rest of the dashboard. */
 export async function apiDownload(path: string): Promise<Blob> {
-  const resp = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
+  const identity = requestIdentity();
+  const resp = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${identity.token}` } });
+  identity.assertCurrent();
   if (resp.status === 401) {
-    if (location.pathname !== "/login") {
-      sessionStorage.setItem(RETURN_TO_STORAGE_KEY, location.pathname + location.search);
-    }
-    onUnauthorized?.();
+    handleUnauthorized();
     throw new Error("Unauthorized");
   }
   if (!resp.ok) {
     const error = await resp.json().catch(() => ({ error: resp.statusText }));
+    identity.assertCurrent();
     throw new Error(error.error || resp.statusText);
   }
-  return resp.blob();
+  const data = await resp.blob();
+  identity.assertCurrent();
+  return data;
 }

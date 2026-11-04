@@ -523,6 +523,7 @@ class AgentLoop:
         self._memory_snapshot_ids: "OrderedDict[str, frozenset[str]]" = OrderedDict()
         self._memory_snapshot_meta: dict[str, tuple[str, int]] = {}
         self._scope_versions: dict[str, int] = {}
+        self._global_memory_version = 0
         self._retrieval_cache: OrderedDict[str, Any] = OrderedDict()
         self._max_cached_sessions = 200
         from echo_agent.agent.background import BackgroundScheduler
@@ -543,7 +544,6 @@ class AgentLoop:
         self._native_tools_deferred = bool(config.plugins.required)
         if not self._native_tools_deferred:
             self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
-            self._setup_delegation()
 
         # Pipeline stages
         self._circuit_breaker = ToolCircuitBreaker(
@@ -594,6 +594,8 @@ class AgentLoop:
             pricing_overrides=config.cost.pricing_overrides,
         )
         self.tools.set_skill_usage_recorder(self._cost_tracker.record_skill)
+        if not self._native_tools_deferred:
+            self._setup_delegation()
         self._inference_stage = InferenceStage(
             config=config,
             bus=bus,
@@ -791,6 +793,7 @@ class AgentLoop:
             max_worker_iterations=self.config.multi_agent.max_iterations,
             default_model=self._default_model,
             progress_enabled=self.config.channels.send_progress,
+            cost_tracker=self._cost_tracker,
         )
         self.tools.register(delegate_tool)
 
@@ -808,6 +811,7 @@ class AgentLoop:
             model_router=self.router,
             default_model=self._default_model,
             max_iterations=self.config.multi_agent.max_iterations,
+            cost_tracker=self._cost_tracker,
         )
         self.tools.register(spawn_tool)
         logger.info("Delegation enabled with {} worker templates", len(worker_registry.list()))
@@ -1195,6 +1199,7 @@ class AgentLoop:
             embed_timeout=config.memory.embed_timeout_seconds,
             visibility_fn=self.memory.is_visible_in_session,
             episode_search_fn=_episode_search if episodic_mgr is not None else None,
+            episode_visible_fn=self.memory.is_episode_visible,
             is_unresolved_fn=self.memory.is_unresolved,
             min_similarity=config.memory.rrf_min_similarity,
             rerank_fn=rerank_fn,
@@ -1594,7 +1599,9 @@ class AgentLoop:
                     del self._memory_snapshot_meta[k]
 
     def _scope_version(self, scope: str) -> int:
-        return self._scope_versions.get(scope, 0)
+        # Both counters only increase. Include global changes even for a scope
+        # with no cached snapshot yet, and for reads already in flight.
+        return getattr(self, "_global_memory_version", 0) + self._scope_versions.get(scope, 0)
 
     async def _clear_memory_snapshot(self, session_key: str) -> None:
         async with self._state_lock:
@@ -1610,6 +1617,7 @@ class AgentLoop:
         仍全局 clear。"""
         async with self._state_lock:
             if global_scope:
+                self._global_memory_version = getattr(self, "_global_memory_version", 0) + 1
                 self._memory_snapshots.clear()
                 self._memory_snapshot_ids.clear()
                 self._memory_snapshot_meta.clear()

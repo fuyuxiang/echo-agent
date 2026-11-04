@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { apiFetch } from "../lib/api";
+import { dashboardWS } from "../lib/ws";
 
 /**
  * GET a path and expose the request as loading / error / data.
@@ -52,7 +53,8 @@ export function useApi<T>(path: string | null) {
 
   useEffect(() => {
     refetch();
-    return () => { abortRef.current?.abort(); };
+    const stop = dashboardWS.on("dashboard_reconnected", () => { void refetch(); });
+    return () => { stop(); abortRef.current?.abort(); };
   }, [refetch]);
 
   return { data, loading, error, refetch };

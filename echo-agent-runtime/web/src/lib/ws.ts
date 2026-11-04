@@ -1,6 +1,8 @@
 import { useAuthStore } from "../stores/auth";
+import { handleUnauthorized } from "./api";
 
 type Listener = (event: { type: string; payload: unknown }) => void;
+type ConnectionState = "idle" | "connecting" | "connected" | "disconnected";
 
 /** Backoff schedule for reconnects, in ms. A fixed 3s retry meant a stale
  *  token (server sends auth_error then closes) span a reconnect every 3s
@@ -33,6 +35,7 @@ export class DashboardWS {
   /** channels the *server* has been told about on the current socket */
   private sentChannels: Set<string> = new Set();
   private token = "";
+  private authGeneration = 0;
   private authFailed = false;
   /** true once auth_ok arrived on the current socket — the server rejects
    *  subscribe frames sent before that, so channel sync has to wait. */
@@ -40,6 +43,20 @@ export class DashboardWS {
   /** sockets we closed on purpose; their onclose must not trigger a reconnect */
   private retired: WeakSet<WebSocket> = new WeakSet();
   private idleTimer: number | null = null;
+  private hasConnected = false;
+  private connectionState: ConnectionState = "idle";
+  private stateListeners = new Set<() => void>();
+  getConnectionState = () => this.connectionState;
+  subscribeConnectionState = (listener: () => void) => {
+    this.stateListeners.add(listener);
+    return () => { this.stateListeners.delete(listener); };
+  };
+
+  private setConnectionState(state: ConnectionState) {
+    if (state === this.connectionState) return;
+    this.connectionState = state;
+    this.stateListeners.forEach((listener) => listener());
+  }
   /** When true the server requires no token; reconnect even with an empty one. */
   openMode = false;
 
@@ -59,10 +76,12 @@ export class DashboardWS {
   subscribe(token: string, channels: string[]): () => void {
     // A different token means a different identity — drop the old socket so we
     // never keep streaming under stale credentials.
-    if (this.token && this.token !== token) {
+    const authGeneration = useAuthStore.getState().generation;
+    if (this.ws && (this.token !== token || this.authGeneration !== authGeneration)) {
       this.reset();
     }
     this.token = token;
+    this.authGeneration = authGeneration;
     this.authFailed = false;
     this.cancelIdleClose();
 
@@ -110,16 +129,23 @@ export class DashboardWS {
       return;
     }
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const authGeneration = this.authGeneration;
+    const token = this.token;
+    const isCurrent = () => this.ws === ws && !this.retired.has(ws)
+      && useAuthStore.getState().generation === authGeneration;
     const ws = new WebSocket(`${protocol}//${location.host}/ws/dashboard`);
     this.ws = ws;
     this.authed = false;
+    this.setConnectionState("connecting");
 
     ws.onopen = () => {
+      if (!isCurrent()) return;
       this.sentChannels = new Set();
-      ws.send(JSON.stringify({ type: "auth", token: this.token }));
+      ws.send(JSON.stringify({ type: "auth", token }));
     };
 
     ws.onmessage = (ev) => {
+      if (!isCurrent()) return;
       let data: { type?: string; payload?: unknown };
       try {
         data = JSON.parse(ev.data);
@@ -130,6 +156,11 @@ export class DashboardWS {
         this.attempt = 0;
         this.authed = true;
         this.syncChannels();
+        this.setConnectionState("connected");
+        if (this.hasConnected) {
+          this.listeners.get("dashboard_reconnected")?.forEach((fn) => fn({ type: "dashboard_reconnected", payload: {} }));
+        }
+        this.hasConnected = true;
         return;
       }
       if (data.type === "auth_error") {
@@ -152,6 +183,7 @@ export class DashboardWS {
       this.ws = null;
       this.authed = false;
       this.sentChannels = new Set();
+      this.setConnectionState("disconnected");
       if (this.authFailed) return;
       if (this.channelRefs.size === 0) return;
       if (!useAuthStore.getState().token && !this.openMode) return;
@@ -204,6 +236,8 @@ export class DashboardWS {
     this.cancelIdleClose();
     this.attempt = 0;
     this.authed = false;
+    this.hasConnected = false;
+    this.setConnectionState("idle");
     this.sentChannels = new Set();
     const ws = this.ws;
     this.ws = null;
@@ -222,3 +256,11 @@ export class DashboardWS {
 }
 
 export const dashboardWS = new DashboardWS();
+
+// Authentication belongs to the shared transport's lifetime. Page effects
+// must not replace or clear it when another subscriber is still mounted.
+dashboardWS.onAuthFailure = () => {
+  handleUnauthorized();
+  window.history.replaceState(null, "", "/login");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+};

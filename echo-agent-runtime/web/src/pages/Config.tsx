@@ -37,6 +37,7 @@ export function Config() {
   const { data, loading, error, refetch } = useApi<ConfigResponse>(isAdmin === true ? "/config" : null);
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const managed = (path: string) => !!data?._meta?.managed_paths?.some(
     (item) => path === item || path.startsWith(`${item}.`) || item.startsWith(`${path}.`),
   );
@@ -48,7 +49,7 @@ export function Config() {
   const fieldLabel = (path: string) => labels[path] ? t(`fields.${labels[path]}`) : path;
 
   useEffect(() => {
-    if (!data) return;
+    if (!data || dirty) return;
     setDraft({
       locale: data.ui?.locale ?? "auto",
       logLevel: data.observability?.log_level ?? "INFO",
@@ -60,9 +61,12 @@ export function Config() {
       dailyBudget: String(data.cost?.daily_budget_usd ?? 0),
       softThreshold: String(data.cost?.soft_threshold_ratio ?? 0.8),
     });
-  }, [data]);
+  }, [data, dirty]);
 
-  const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }));
+  const set = <K extends keyof Draft>(key: K, value: Draft[K]) => {
+    setDirty(true);
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -88,7 +92,7 @@ export function Config() {
       }),
       { success: t("saveSuccess"), error: t("saveFailed") },
     );
-      if (ok) refetch();
+      if (ok) { await refetch(); setDirty(false); }
     } finally { setSaving(false); }
   };
 

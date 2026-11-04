@@ -6,6 +6,8 @@ import { useWsSubscribe } from "./use-ws";
 import { dashboardWS } from "../lib/ws";
 import { useAuthStore } from "../stores/auth";
 import { useCapabilitiesStore } from "../stores/capabilities";
+import { ConnectionStatus } from "../components/ConnectionStatus";
+import { RETURN_TO_STORAGE_KEY } from "../lib/api";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -70,6 +72,47 @@ afterEach(() => {
 });
 
 describe("useWsSubscribe", () => {
+  it("keeps authentication handling after a page unsubscribes from the shell socket", () => {
+    vi.useFakeTimers();
+    try {
+      function Shell({ page }: { page: boolean }) {
+        return <><ConnectionStatus />{page && <Probe onEvent={() => {}} />}</>;
+      }
+      const { rerender } = render(<Shell page />);
+      act(() => FakeWebSocket.instances[0].handshake());
+      rerender(<Shell page={false} />);
+      window.history.replaceState(null, "", "/config?tab=memory");
+      act(() => FakeWebSocket.instances[0].close());
+      act(() => vi.advanceTimersByTime(1000));
+      const generation = useAuthStore.getState().generation;
+      act(() => FakeWebSocket.instances[1].emit("auth_error", {}));
+      expect(useAuthStore.getState().token).toBeNull();
+      expect(useAuthStore.getState().generation).toBe(generation + 1);
+      expect(location.pathname).toBe("/login");
+      expect(sessionStorage.getItem(RETURN_TO_STORAGE_KEY)).toBe("/config?tab=memory");
+    } finally {
+      window.history.replaceState(null, "", "/");
+      sessionStorage.clear();
+      vi.useRealTimers();
+    }
+  });
+  it("notifies subscribers after reconnect so missed state can be fetched", () => {
+    vi.useFakeTimers();
+    try {
+      const recovered = vi.fn();
+      function ReconnectingPage() {
+        useWsSubscribe(["tasks"], recovered, ["dashboard_reconnected"]);
+        return null;
+      }
+      render(<ReconnectingPage />);
+      act(() => FakeWebSocket.instances[0].handshake());
+      expect(recovered).not.toHaveBeenCalled();
+      act(() => FakeWebSocket.instances[0].close());
+      act(() => vi.advanceTimersByTime(1000));
+      act(() => FakeWebSocket.instances[1].handshake());
+      expect(recovered).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
   it("StrictMode 双挂载只开一条连接,事件不重复", () => {
     const onEvent = vi.fn();
     render(

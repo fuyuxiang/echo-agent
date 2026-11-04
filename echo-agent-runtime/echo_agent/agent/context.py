@@ -151,7 +151,7 @@ def build_recalled_memory_block(raw_context: str) -> str:
 
 def build_memory_context(
     memory_store: Any,
-    snapshot: str = "",
+    snapshot: str | None = None,
     session_key: str = "",
     working_memory: str = "",
     allow_env_writes: bool = True,
@@ -165,8 +165,11 @@ def build_memory_context(
     context_parts: list[str] = []
     if working_memory:
         context_parts.append(f"## Active Context\n\n{_sanitize_memory_content(working_memory)}")
-    if snapshot:
-        context_parts.append(_sanitize_memory_content(snapshot))
+    if snapshot is not None:
+        # Empty is an authoritative scoped result. Falling back here used to
+        # fetch an unscoped snapshot and expose another user's memories.
+        if snapshot:
+            context_parts.append(_sanitize_memory_content(snapshot))
     elif memory_store is not None:
         try:
             snap = memory_store.get_snapshot(session_key=session_key)

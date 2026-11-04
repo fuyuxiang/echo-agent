@@ -180,7 +180,7 @@ class WebhookChannel(BaseChannel):
 
         try:
             data = json.loads(body)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return web.json_response({"error": "invalid json"}, status=400)
         if not isinstance(data, dict):
             return web.json_response({"error": "json body must be an object"}, status=400)
@@ -188,10 +188,15 @@ class WebhookChannel(BaseChannel):
         sender_id = str(data.get("sender_id", "webhook"))
         chat_id = str(data.get("chat_id", "webhook"))
         text = data.get("text", data.get("content", ""))
-        if not text:
+        if not isinstance(text, str) or not text.strip():
             return web.json_response({"error": "missing text"}, status=400)
 
         wait = data.get("wait", False)
+        if not isinstance(wait, bool):
+            return web.json_response({"error": "wait must be a boolean"}, status=400)
+        metadata = data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            return web.json_response({"error": "metadata must be an object"}, status=400)
 
         try:
             header_key = normalize_idempotency_key(
@@ -212,7 +217,7 @@ class WebhookChannel(BaseChannel):
                 sender_id=sender_id,
                 chat_id=chat_id,
                 text=text,
-                metadata=data.get("metadata", {}),
+                metadata=metadata,
             )
         except PermissionError:
             return web.json_response({"error": "forbidden"}, status=403)

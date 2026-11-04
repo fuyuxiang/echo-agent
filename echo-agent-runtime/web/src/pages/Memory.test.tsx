@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { Memory } from "./Memory";
 import { ConfirmProvider } from "../components/ConfirmDialog";
 import * as api from "../lib/api";
@@ -8,7 +8,7 @@ const ENTRY = {
   id: "m1",
   content: "用户偏好简体中文",
   type: "preference",
-  tier: "working",
+  tier: "semantic",
   importance: 0.75,
   created_at: "2026-07-27T09:00:00Z",
 };
@@ -38,11 +38,58 @@ afterEach(() => {
 });
 
 describe("Memory 页", () => {
-  it("默认拉工作记忆,重要度读 importance 字段", async () => {
+  it("explains that deleting a superseded version preserves the current fact", async () => {
+    const spy = mockApi();
+    spy.mockImplementation(async (path) => path.startsWith("/memory?")
+      ? { entries: [{ ...ENTRY, superseded_by: "new-version" }], total: 1 } as never : {} as never);
+    renderMemory();
+    expect(await screen.findByText("已被新版本替代")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "删除该记忆条目" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/当前版本、其他会话摘要和后续学习不受影响/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/旧历史将无法自动重新保存/)).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory/m1?override=true", { method: "DELETE" }));
+  });
+  it("a cleared search cannot be restored by its late response", async () => {
+    let complete!: (value: unknown) => void;
+    const spy = mockApi();
+    renderMemory();
+    fireEvent.change(await screen.findByLabelText(/语义搜索/), { target: { value: "偏好" } });
+    fireEvent.click(screen.getByRole("button", { name: "执行搜索" }));
+    await screen.findByText("语义层命中");
+    const normal = spy.getMockImplementation()!;
+    spy.mockImplementation((path, options) => path === "/memory/search"
+      ? new Promise((resolve) => { complete = resolve; }) as never : normal(path, options));
+    fireEvent.click(screen.getByRole("button", { name: "执行搜索" }));
+    fireEvent.click(screen.getByRole("button", { name: /清除搜索/ }));
+    await act(async () => complete({ results: [{ entry: ENTRY, score: 1 }] }));
+    expect(screen.queryByText(/正在查看搜索结果/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "情景记忆" })).toBeEnabled();
+  });
+
+  it("only the latest submitted search may update the results", async () => {
+    const pending: Array<(value: unknown) => void> = [];
+    const spy = mockApi();
+    const normal = spy.getMockImplementation()!;
+    spy.mockImplementation((path, options) => path === "/memory/search"
+      ? new Promise((resolve) => { pending.push(resolve); }) as never : normal(path, options));
+    renderMemory();
+    const input = await screen.findByLabelText(/语义搜索/);
+    fireEvent.change(input, { target: { value: "old query" } });
+    fireEvent.click(screen.getByRole("button", { name: "执行搜索" }));
+    fireEvent.change(input, { target: { value: "new query" } });
+    fireEvent.click(screen.getByRole("button", { name: "执行搜索" }));
+    await act(async () => pending[1]({ results: [{ entry: { ...ENTRY, content: "new result" }, score: 1 }] }));
+    await act(async () => pending[0]({ results: [{ entry: { ...ENTRY, content: "old result" }, score: 1 }] }));
+    expect(screen.getByText("new result")).toBeInTheDocument();
+    expect(screen.queryByText("old result")).not.toBeInTheDocument();
+  });
+  it("默认展示持久化语义记忆,重要度读 importance 字段", async () => {
     const spy = mockApi();
     renderMemory();
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory?tier=working&limit=50&offset=0", expect.anything()));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory?tier=semantic&limit=50&offset=0&include_all=true", expect.anything()));
     expect(await screen.findByText("用户偏好简体中文")).toBeInTheDocument();
     // 之前读的是后端不存在的 weight,这里恒显示 "-"。
     expect(screen.getByText(/重要度: 0.75/)).toBeInTheDocument();
@@ -55,7 +102,7 @@ describe("Memory 页", () => {
     await screen.findByText("用户偏好简体中文");
     fireEvent.click(screen.getByRole("button", { name: "情景记忆" }));
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory?tier=episodic&limit=50&offset=0", expect.anything()));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory?tier=episodic&limit=50&offset=0&include_all=true", expect.anything()));
   });
 
   it("搜索带 all_scopes 全局检索,并解包 {entry,score}", async () => {
@@ -89,7 +136,7 @@ describe("Memory 页", () => {
   });
 
   it("清除搜索回到分层浏览", async () => {
-    mockApi();
+    const spy = mockApi();
     renderMemory();
 
     fireEvent.change(await screen.findByLabelText(/语义搜索/), { target: { value: "偏好" } });
@@ -101,6 +148,7 @@ describe("Memory 页", () => {
     expect(await screen.findByText("用户偏好简体中文")).toBeInTheDocument();
     expect(screen.getByLabelText(/语义搜索/)).toHaveValue("");
     expect(screen.getByRole("button", { name: "情景记忆" })).toBeEnabled();
+    await waitFor(() => expect(spy.mock.calls.filter(([path]) => path.startsWith("/memory?")).length).toBeGreaterThan(1));
   });
 
   it("空关键词搜索直接退出搜索态,不发请求", async () => {
@@ -119,7 +167,7 @@ describe("Memory 页", () => {
     renderMemory();
 
     fireEvent.click(await screen.findByRole("button", { name: "删除该记忆条目" }));
-    expect(await screen.findByText(/不可撤销/)).toBeInTheDocument();
+    expect(await screen.findByText(/旧历史将无法自动重新保存/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
 
     await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory/m1?override=true", { method: "DELETE" }));

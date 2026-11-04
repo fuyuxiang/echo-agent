@@ -20,6 +20,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -318,6 +319,7 @@ class MemoryStore:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._user_file = memory_dir / "user_memory.json"
         self._env_file = memory_dir / "env_memory.json"
+        self._forgotten_file = memory_dir / "forgotten_memory.json"
         # HISTORY.md 已随旧设计退役(见 consolidator 说明),不再持有其路径。
         self._long_term_file = memory_dir / "MEMORY.md"
         self._max_user = max_user
@@ -1258,7 +1260,13 @@ class MemoryStore:
                 self._queue_embed(entry, old_vec_id=entry.embedding_id)
             return entry
 
-    def delete(self, entry_id: str) -> bool:
+    def delete(self, entry_id: str, *, forget: bool = False) -> bool:
+        """Delete a record; only an explicit forget also fences old extraction.
+
+        Maintenance removes superseded versions and expired facts through this
+        same method. Those physical deletions must not prohibit learning the
+        still-active key or invalidate unrelated episode summaries.
+        """
         self._warn_if_direct("delete", entry_id)
         entry = self._entries.get(entry_id)
         if not entry:
@@ -1270,6 +1278,11 @@ class MemoryStore:
             entry = self._entries.get(entry_id)
             if not entry:
                 return False
+            # Land the negative record first. A crash between these writes may
+            # retain the original fact, but can never report a deleted fact and
+            # subsequently recreate it from an old reviewer/consolidator batch.
+            if forget:
+                self._remember_forgotten(entry)
             self._entries.pop(entry_id, None)
             self._unindex_entry(entry)
             self._save_type(entry.type)
@@ -1278,6 +1291,95 @@ class MemoryStore:
         # exist (best-effort, outside the file lock).
         self._cleanup_deleted(entry)
         return True
+
+    def _forget_fingerprints(self, entry: MemoryEntry, *, global_scope: bool = False) -> set[str]:
+        scope = entry.source_session or ""
+        if global_scope or "global" in _normalize_tags(entry.tags) or (entry.type == MemoryType.ENVIRONMENT and self._scope_policy == "legacy"):
+            scope = "*"
+        values = {("content", re.sub(r"\s+", " ", entry.content.strip()).casefold())}
+        if entry.key.strip():
+            values.add(("key", entry.key.strip()))
+        return {
+            hashlib.sha256(json.dumps([entry.type.value, scope, kind, value], ensure_ascii=False).encode()).hexdigest()
+            for kind, value in values
+        }
+
+    @staticmethod
+    def _forget_scope(scope: str) -> str:
+        return hashlib.sha256(scope.encode()).hexdigest()
+
+    def _load_forget_state(self) -> tuple[set[str], dict[str, float]]:
+        if not self._forgotten_file.exists():
+            return set(), {}
+        # Fail closed on a damaged barrier: silently rebuilding it as empty
+        # would grant stale background work permission to resurrect old facts.
+        data = json.loads(self._forgotten_file.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            data = {"fingerprints": data, "episode_cutoffs": {}}
+        if not isinstance(data, dict):
+            raise ValueError("Invalid forgotten-memory barrier; restore it before automatic writes")
+        fingerprints, cutoffs = data.get("fingerprints"), data.get("episode_cutoffs")
+        if (not isinstance(fingerprints, list) or any(not isinstance(item, str) for item in fingerprints)
+                or not isinstance(cutoffs, dict)
+                or any(not isinstance(value, (int, float)) for value in cutoffs.values())):
+            raise ValueError("Invalid forgotten-memory barrier; restore it before automatic writes")
+        return set(fingerprints), cutoffs
+
+    def is_forgotten(self, entry: MemoryEntry) -> bool:
+        """Whether automatic extraction would recreate a forgotten key/fact.
+
+        Only digests are retained, scoped exactly like the structured entries.
+        Explicit user-stated writes can intentionally remember the key again.
+        """
+        fingerprints, _ = self._load_forget_state()
+        candidates = self._forget_fingerprints(entry) | self._forget_fingerprints(entry, global_scope=True)
+        return bool(candidates & fingerprints)
+
+    def is_episode_visible(self, episode: Any, scope: str) -> bool:
+        """Older summaries may retain a forgotten fact verbatim or paraphrased.
+
+        Keep them available for audit, but exclude pre-forget summaries from
+        ordinary recall for the affected scope. Structured unrelated facts stay
+        usable; new episodes can still be recalled.
+        """
+        try:
+            cutoff = self.forget_revision(scope)
+            if not cutoff:
+                return True
+            return datetime.fromisoformat(episode.created_at).timestamp() > cutoff
+        except (TypeError, ValueError, OSError):
+            return False
+
+    def forget_revision(self, scope: str) -> float:
+        _, cutoffs = self._load_forget_state()
+        return max(cutoffs.get(self._forget_scope(scope), 0), cutoffs.get(self._forget_scope("*"), 0))
+
+    def filter_consolidation_messages(self, messages: list[dict], scope: str) -> list[dict]:
+        """Do not rebuild an apparently new episode from pre-forget history."""
+        cutoff = self.forget_revision(scope)
+        if not cutoff:
+            return messages
+        filtered = []
+        for message in messages:
+            try:
+                if datetime.fromisoformat(message.get("timestamp", "")).timestamp() > cutoff:
+                    filtered.append(message)
+            except (TypeError, ValueError):
+                # Unknown-age historical input cannot safely bypass a forget.
+                continue
+        return filtered
+
+    def _remember_forgotten(self, entry: MemoryEntry) -> None:
+        with self._file_lock(self._forgotten_file):
+            fingerprints, cutoffs = self._load_forget_state()
+            fingerprints |= self._forget_fingerprints(entry)
+            scope = entry.source_session or "*"
+            if "global" in entry.tags or (entry.type == MemoryType.ENVIRONMENT and self._scope_policy == "legacy"):
+                scope = "*"
+            cutoffs[self._forget_scope(scope)] = time.time()
+            _atomic_write_text(self._forgotten_file, json.dumps({
+                "fingerprints": sorted(fingerprints), "episode_cutoffs": cutoffs,
+            }))
 
     def _run_cleanup_coro(self, coro_factory: "Callable[[], Any]") -> None:
         """Drive a best-effort cleanup coroutine on the running loop if there is
@@ -1527,10 +1629,15 @@ class MemoryStore:
         normalized_key = key.strip()
         if not normalized_key:
             return None
-        for entry in self._filtered_entries(mem_type, session_key, audience=audience):
-            if entry.key == normalized_key:
-                return entry
-        return None
+        matches = [entry for entry in self._filtered_entries(mem_type, session_key, audience=audience)
+                   if entry.key == normalized_key]
+        # Administrative reads may include lineage. Key-based correction and
+        # forgetting must still target the current version, not whichever old
+        # record happened to be loaded first from JSON.
+        return max(matches, key=lambda entry: (
+            not entry.is_superseded, entry.tier != MemoryTier.ARCHIVAL,
+            entry.version, entry.updated_at or "", entry.id,
+        ), default=None)
 
     def find_by_content_matches(
         self,

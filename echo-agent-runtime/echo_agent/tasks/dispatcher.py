@@ -130,6 +130,12 @@ class TaskDispatcher:
                 for t in pending:
                     t.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
+        # A coroutine cancelled before its first instruction cannot run its
+        # finally block. All owned dispatches are now joined, so their admission
+        # markers must not suppress queued tasks when this dispatcher restarts.
+        self._inflight.clear()
+        self._pending_release.clear()
+        self._stop_renew.clear()
         logger.info("Task dispatcher stopped")
 
     async def _tick_loop(self) -> None:
@@ -153,8 +159,10 @@ class TaskDispatcher:
             dtask.add_done_callback(self._dispatch_tasks.discard)
 
     async def _dispatch(self, task: Any) -> None:
-        await self._sem.acquire()
+        acquired = False
         try:
+            await self._sem.acquire()
+            acquired = True
             session_key = f"task:{task.id}"
             attempt_id = uuid.uuid4().hex
             event = InboundEvent(
@@ -261,7 +269,8 @@ class TaskDispatcher:
             self._pending_release.pop(task.id, None)
             self._stop_renew.discard(task.id)
             self._inflight.discard(task.id)
-            self._sem.release()
+            if acquired:
+                self._sem.release()
 
     async def _on_task_terminal(self, task_id: str, status: Any) -> None:
         """Terminal listener (registered on TaskManager): unblock the dispatch

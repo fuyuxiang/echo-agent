@@ -53,6 +53,7 @@ class HybridRetriever:
         visibility_fn: Callable[["MemoryEntry", str], bool] | None = None,
         episode_search_fn: Callable[[str, str, int], Awaitable[list[Episode]]] | None = None,
         episode_candidate_limit: int = 10,
+        episode_visible_fn: Callable[[Episode, str], bool] | None = None,
         is_unresolved_fn: Callable[[str], bool] | None = None,
         min_similarity: float = 0.25,
         rerank_fn: Callable[[str, list[str]], Awaitable[list[float] | None]] | None = None,
@@ -75,6 +76,7 @@ class HybridRetriever:
         # of episodes only appearing on the inline sync-miss path.
         self._episode_search_fn = episode_search_fn
         self._episode_candidate_limit = max(1, int(episode_candidate_limit))
+        self._episode_visible_fn = episode_visible_fn
         # Latency budget for the embedding round-trip (configurable via
         # memory.embedTimeoutSeconds). Retrieval runs on the user-facing
         # critical path of every message; vector similarity is an enhancement,
@@ -155,6 +157,8 @@ class HybridRetriever:
         ep_proxies: dict[str, Episode] = {}
         if episodes:
             for ep in episodes:
+                if self._episode_visible_fn is not None and not self._episode_visible_fn(ep, memory_scope):
+                    continue
                 proxy = _EpisodicProxy(
                     id=f"ep:{ep.id}", key="episode", content=ep.summary or "",
                     tags=[], _episode=ep,
@@ -241,14 +245,25 @@ class HybridRetriever:
         # Quota: memory <=5, episode <=3
         result: list[tuple[MemoryEntry | Episode, float]] = []
         mem_count = ep_count = 0
+        # Embedding/reranking yielded to other writers. Re-read the authority so
+        # a deletion, correction or lifecycle change cannot return stale text.
+        current_entries = {entry.id: entry for entry in self._entries_fn()}
         for item, score in scored:
             if isinstance(item, Episode):
+                if self._episode_visible_fn is not None and not self._episode_visible_fn(item, memory_scope):
+                    continue
                 if ep_count < 3:
                     result.append((item, score))
                     ep_count += 1
             else:
+                current = current_entries.get(item.id)
+                if (current is None or current.content != item.content
+                        or not is_eligible(current, Audience.RETRIEVAL, is_unresolved_fn=self._is_unresolved_fn)
+                        or (memory_scope and self._visibility_fn is not None
+                            and not self._visibility_fn(current, memory_scope))):
+                    continue
                 if mem_count < 5:
-                    result.append((item, score))
+                    result.append((current, score))
                     mem_count += 1
             if mem_count + ep_count >= limit:
                 break

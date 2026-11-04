@@ -60,13 +60,14 @@ export function Kanban() {
   useWsSubscribe(
     ["tasks"],
     (ev) => {
+      if (ev.type === "dashboard_reconnected") { void fetchTasks(); return; }
       const task = ev.payload as TaskCard;
       if (!task || !task.id) return;
       if (task.board_id && task.board_id !== "default") return;
       if (ev.type === "task_created") addLocal(task);
       else updateLocal(task.id, task); // transitioned / updated
     },
-    ["task_created", "task_transitioned", "task_updated"],
+    ["task_created", "task_transitioned", "task_updated", "dashboard_reconnected"],
   );
 
   const columns = useMemo(
@@ -113,7 +114,8 @@ export function Kanban() {
     }
     const previousStatus = task.status;
     updateLocal(taskId, { status: targetColumn }); // 乐观更新
-    transitionTask(taskId, targetColumn).catch(() => {
+    transitionTask(taskId, targetColumn).catch((error) => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       updateLocal(taskId, { status: previousStatus }); // 失败回滚
     });
   };
@@ -260,7 +262,8 @@ function useCardActions(task: TaskCard) {
     try {
       await transitionTask(task.id, to);
       toast.success(okMsg);
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       updateLocal(task.id, { status: prev }); // 失败回滚(错误提示已由 transitionTask 弹出)
     }
   };
@@ -272,7 +275,8 @@ function useCardActions(task: TaskCard) {
     try {
       await retryTask(task.id);
       toast.success(i18n.t("kanban:toast.requeued"));
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       updateLocal(task.id, { status: prev }); // 失败回滚(错误提示已由 retryTask 弹出)
     }
   };
@@ -340,7 +344,7 @@ function KanbanCard({ task, onOpenDetail }: { task: TaskCard; onOpenDetail: (id:
         className="cursor-grab active:cursor-grabbing text-left w-full"
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="text-sm font-medium flex-1">{task.title}</div>
+          <div className="text-sm font-medium flex-1 min-w-0 break-words [overflow-wrap:anywhere]">{task.title}</div>
           <span className="text-[10px] text-gray-400 shrink-0 mt-0.5" title={t("priorityTitle")}>P{task.priority}</span>
         </div>
         {detail && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{detail}</div>}

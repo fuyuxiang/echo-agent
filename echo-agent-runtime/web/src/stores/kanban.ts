@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { apiFetch } from "../lib/api";
 import { toast } from "./toast";
 import i18n from "../i18n";
+import { useAuthStore } from "./auth";
 
 export interface TaskCard {
   id: string;
@@ -165,6 +166,8 @@ function mergeSnapshot(
   return [...authoritative, ...arrivedDuringRequest];
 }
 
+let fetchGeneration = 0;
+
 export const useKanbanStore = create<KanbanState>((set, get) => ({
   tasks: [],
   loading: false,
@@ -173,20 +176,23 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   dirtyIds: new Set<string>(),
 
   fetchTasks: async () => {
+    const generation = ++fetchGeneration;
     const idsAtRequestStart = new Set(get().tasks.map((t) => t.id));
     set({ loading: true, dirtyIds: new Set<string>(), fetchError: null });
     try {
       const data = await apiFetch<{ tasks: TaskCard[] }>("/tasks?board_id=default");
+      if (generation !== fetchGeneration) return;
       set((s) => ({
         tasks: mergeSnapshot(s.tasks, data.tasks ?? [], idsAtRequestStart, s.dirtyIds),
         loaded: true,
       }));
     } catch (e) {
+      if (generation !== fetchGeneration || (e instanceof DOMException && e.name === "AbortError")) return;
       const msg = e instanceof Error ? e.message : String(e);
       toast.error(i18n.t("kanban:toast.loadFailed", { error: msg }));
       set({ fetchError: msg });
     } finally {
-      set({ loading: false });
+      if (generation === fetchGeneration) set({ loading: false });
     }
   },
 
@@ -204,6 +210,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
         dirtyIds: new Set(s.dirtyIds).add(id),
       }));
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") throw e;
       toast.error(i18n.t("kanban:toast.transitionFailed", { error: e instanceof Error ? e.message : String(e) }));
       throw e;
     }
@@ -223,6 +230,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
         dirtyIds: new Set(s.dirtyIds).add(id),
       }));
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") throw e;
       toast.error(i18n.t("kanban:toast.retryFailed", { error: e instanceof Error ? e.message : String(e) }));
       throw e;
     }
@@ -243,6 +251,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
       }));
       return true;
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return false;
       toast.error(i18n.t("kanban:toast.createFailed", { error: e instanceof Error ? e.message : String(e) }));
       return false;
     }
@@ -263,6 +272,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
       }));
       return true;
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return false;
       toast.error(i18n.t("kanban:toast.updateFailed", { error: e instanceof Error ? e.message : String(e) }));
       return false;
     }
@@ -284,3 +294,11 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
     });
   },
 }));
+
+// This store outlives routed pages. Expire both its snapshot and any older
+// fetch when credentials change, even if the next request is slow or fails.
+useAuthStore.subscribe((state, previous) => {
+  if (state.generation === previous.generation && state.token === previous.token) return;
+  fetchGeneration += 1;
+  useKanbanStore.setState({ tasks: [], loaded: false, loading: false, fetchError: null, dirtyIds: new Set() });
+});

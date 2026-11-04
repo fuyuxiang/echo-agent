@@ -150,6 +150,49 @@ describe("DashboardWS 连接复用", () => {
 });
 
 describe("DashboardWS 重连", () => {
+  it("ignores old login events immediately, before React can resubscribe", () => {
+    const ws = new DashboardWS();
+    const seen = vi.fn();
+    const rejected = vi.fn();
+    ws.on("task_updated", seen);
+    ws.onAuthFailure = rejected;
+    ws.subscribe("t1", ["tasks"]);
+    FakeWebSocket.instances[0].handshake();
+    useAuthStore.getState().setToken("t2");
+    FakeWebSocket.instances[0].emit("task_updated", { id: "private" });
+    FakeWebSocket.instances[0].emit("auth_error", {});
+    expect(seen).not.toHaveBeenCalled();
+    expect(rejected).not.toHaveBeenCalled();
+  });
+
+  it("retired sockets cannot deliver old identity events or reject the new login", () => {
+    const ws = new DashboardWS();
+    const seen = vi.fn();
+    const rejected = vi.fn();
+    ws.on("task_updated", seen);
+    ws.onAuthFailure = rejected;
+    ws.subscribe("t1", ["tasks"]);
+    const old = FakeWebSocket.instances[0];
+    old.handshake();
+    ws.subscribe("t2", ["tasks"]);
+    const current = FakeWebSocket.instances[1];
+    current.handshake();
+    old.emit("task_updated", { id: "old-private-task" });
+    old.emit("auth_error", {});
+    expect(seen).not.toHaveBeenCalled();
+    expect(rejected).not.toHaveBeenCalled();
+    expect(current.readyState).toBe(FakeWebSocket.OPEN);
+  });
+
+  it("a retired connecting socket cannot send the new token on late open", () => {
+    const ws = new DashboardWS();
+    ws.subscribe("t1", ["tasks"]);
+    const old = FakeWebSocket.instances[0];
+    ws.subscribe("t2", ["tasks"]);
+    old.onopen?.();
+    expect(old.sent).toEqual([]);
+  });
+
   it("断线后按退避重连,并恢复全部频道", () => {
     const ws = new DashboardWS();
     ws.subscribe("t1", ["tasks"]);

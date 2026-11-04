@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { useWsSubscribe } from "../hooks/use-ws";
@@ -22,6 +22,7 @@ interface MemoryEntry {
   importance: number;
   created_at: string;
   tags?: string[];
+  superseded_by?: string;
 }
 
 // 搜索接口返回 {results:[{entry, score}]},与 list 的 {entries:[...]} 结构不同。
@@ -33,13 +34,15 @@ interface SearchResult {
 export function Memory() {
   const { t } = useTranslation(["memory", "common"]);
   const confirm = useConfirm();
-  const [tier, setTier] = useState<string>("working");
+  const [tier, setTier] = useState<string>("semantic");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MemoryEntry[] | null>(null);
   const [offset, setOffset] = useState(0);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [editTags, setEditTags] = useState("");
+  const searchSequence = useRef(0);
+  const activeQuery = useRef("");
 
   // 这个页面整体是跨主体视图:列表不带 session_key、搜索用 all_scopes,两者服务端
   // 都要求 admin token(普通 api token 只能读自己 scope 内的记忆)。探测到明确不是
@@ -49,35 +52,43 @@ export function Memory() {
   const canReadAll = isAdmin !== false;
 
   const { data, loading, error, refetch } = useApi<{ entries: MemoryEntry[]; total: number }>(
-    canReadAll ? `/memory?tier=${tier}&limit=50&offset=${offset}` : null
+    canReadAll ? `/memory?tier=${tier}&limit=50&offset=${offset}&include_all=true` : null
   );
 
   const searching = searchResults !== null;
 
   useWsSubscribe(["memory"], () => {
-    if (!searching) refetch();
-  }, ["memory_changed"]);
+    if (activeQuery.current) void searchMemory(activeQuery.current);
+    else refetch();
+  }, ["memory_changed", "dashboard_reconnected"]);
 
   // 搜索是全局的(all_scopes: true),与 tier 分层正交。此前切 tier 会静默清掉搜索
   // 结果、而搜索框里的关键词还留着,用户无法判断当前看的是哪一种视图。改为:搜索
   // 激活时 tier 页签禁用并显式提示“正在看搜索结果”,清除搜索才回到分层浏览。
-  const handleSearch = async () => {
+  const searchMemory = async (query: string) => {
     if (!canReadAll) return;
-    if (!searchQuery.trim()) { setSearchResults(null); return; }
+    const sequence = ++searchSequence.current;
+    activeQuery.current = query.trim();
+    if (!query.trim()) { setSearchResults(null); void refetch(); return; }
     await runMutation(async () => {
       // 管理端全局检索:后端要求带 session_key 或 all_scopes=true(布尔),否则 400。
       const res = await apiFetch<{ results: SearchResult[] }>("/memory/search", {
         method: "POST",
-        body: JSON.stringify({ query: searchQuery, limit: 20, all_scopes: true }),
+        body: JSON.stringify({ query, limit: 20, all_scopes: true }),
       });
       // 解包 {entry, score} → MemoryEntry[](按相关度已由后端排序)。
-      setSearchResults(res.results.map((r) => r.entry));
+      if (sequence === searchSequence.current) setSearchResults(res.results.map((r) => r.entry));
     }, { error: t("searchFailed") });
   };
 
+  const handleSearch = () => searchMemory(searchQuery);
+
   const clearSearch = () => {
+    searchSequence.current += 1;
+    activeQuery.current = "";
     setSearchQuery("");
     setSearchResults(null);
+    void refetch();
   };
 
   const startEdit = (entry: MemoryEntry) => {
@@ -99,6 +110,7 @@ export function Memory() {
       { success: t("updateSuccess"), error: t("updateFailed") },
     );
     if (ok) {
+      searchSequence.current += 1;
       setEditingId(null);
       if (searchResults) {
         setSearchResults((current) => current?.map((item) => item.id === entry.id
@@ -111,7 +123,9 @@ export function Memory() {
   const handleDelete = async (entry: MemoryEntry) => {
     const confirmed = await confirm({
       title: t("deleteConfirmTitle"),
-      message: t("deleteConfirmMessage", { content: entry.content.slice(0, 120) }),
+      message: t(entry.superseded_by ? "deleteVersionConfirmMessage" : "deleteConfirmMessage", {
+        content: entry.content.slice(0, 120),
+      }),
       confirmLabel: t("common:delete"),
       destructive: true,
     });
@@ -120,6 +134,7 @@ export function Memory() {
       success: t("deleteSuccess"), error: t("deleteFailed"),
     });
     if (ok) {
+      searchSequence.current += 1;
       // 搜索结果视图下本地剔除,列表视图下重新拉取。
       if (searchResults) setSearchResults((prev) => prev?.filter((e) => e.id !== entry.id) ?? null);
       else refetch();
@@ -131,7 +146,7 @@ export function Memory() {
       {entries.length === 0 && <div className="text-gray-400 text-center py-8">{t("empty")}</div>}
       {entries.map((entry) => (
         <div key={entry.id} className="bg-white border rounded-lg p-4 flex justify-between items-start gap-3">
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             {editingId === entry.id ? <div className="space-y-2">
               <textarea value={editContent} onChange={(event) => setEditContent(event.target.value)} rows={4}
                 className="w-full border rounded p-2 text-sm" aria-label={t("editContent")} />
@@ -141,6 +156,7 @@ export function Memory() {
             <div className="text-xs text-gray-400 mt-1">
               {entry.type} · {t("importance")}: {entry.importance?.toFixed(2) ?? "-"} ·{" "}
               {relativeTime(entry.created_at, t("unknownTime"))}
+              {entry.superseded_by && <span className="ml-2 text-amber-700">{t("superseded")}</span>}
               {searching && entry.tier && <> · {t(`tier.${entry.tier}`, { defaultValue: entry.tier })}</>}
             </div>
           </div>

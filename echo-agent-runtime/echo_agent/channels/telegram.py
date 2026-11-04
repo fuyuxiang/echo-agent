@@ -321,18 +321,26 @@ class TelegramChannel(BaseChannel):
                 return True
 
         media: list[dict[str, str]] = []
+        unreadable: list[str] = []
         for kind in ("photo", "document", "audio", "video", "voice"):
             if kind in msg:
                 file_obj = msg[kind][-1] if kind == "photo" else msg[kind]
                 file_id = file_obj.get("file_id", "")
                 if not file_id:
+                    unreadable.append(kind)
                     continue
                 media_type = {"photo": "image", "document": "file", "voice": "audio"}.get(kind, kind)
                 local_path = await self._download_telegram_file(file_id)
                 if local_path:
-                    media.append({"type": media_type, "url": local_path})
+                    media.append({"type": media_type, "url": local_path,
+                                  "name": file_obj.get("file_name", ""), "mime_type": file_obj.get("mime_type", "")})
                 else:
-                    logger.warning("Telegram file download failed, skipping: {}", file_id[:30])
+                    unreadable.append(file_obj.get("file_name") or kind)
+                    logger.warning("Telegram file download failed: {}", file_id[:30])
+
+        if unreadable:
+            notice = "[附件未读取：" + "、".join(unreadable) + "。请重新上传或提供文字内容。]"
+            text = "\n".join(part for part in (text, notice) if part)
 
         if not text and not media:
             return True

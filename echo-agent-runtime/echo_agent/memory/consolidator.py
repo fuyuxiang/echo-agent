@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Awaitable, Callable
 
 from loguru import logger
@@ -150,6 +151,7 @@ class MemoryConsolidator:
         self, session_key: str, messages: list[dict[str, Any]],
         *, chunk_already_consolidated: bool = False, memory_scope: str = "",
         range_start: int = 0,
+        can_commit: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict[str, int]:
         """Sleep-time consolidation pipeline:
         1. Create episode from messages
@@ -161,6 +163,26 @@ class MemoryConsolidator:
         stats = {"episodes": 0, "promoted": 0, "contradictions": 0, "resolved": 0, "archived": 0, "forgotten": 0,
                  "fact_extract_errors": 0, "reflection_errors": 0, "transient_facts_filtered": 0}
         promoted: list = []
+        # Forgetting can happen while either LLM call is in flight. Fence this
+        # batch against that persisted revision, and exclude older transcript
+        # spans on a later retry/restart so they cannot produce a fresh summary.
+        original_guard = can_commit
+        revision = self.store.forget_revision(memory_scope)
+        source_time = datetime.now().isoformat()
+        range_end = range_start + len(messages)
+        filtered_messages = self.store.filter_consolidation_messages(messages, memory_scope)
+        if messages and not filtered_messages:
+            return stats
+        if filtered_messages:
+            range_start += next(i for i, message in enumerate(messages) if message is filtered_messages[0])
+        messages = filtered_messages
+
+        async def can_commit() -> bool:
+            if original_guard is not None and not await original_guard():
+                return False
+            # The epoch guard can yield to a forget operation. Read the
+            # persisted revision after that await, immediately before writing.
+            return self.store.forget_revision(memory_scope) == revision
 
         # Step 1: Create episode
         if self._episodic_manager and messages:
@@ -170,12 +192,17 @@ class MemoryConsolidator:
                 summary_result = await self.consolidate_chunk(messages, memory_scope)
             if summary_result:
                 summary_text = await self._generate_episode_summary(messages)
+                if can_commit is not None and not await can_commit():
+                    return {**stats, "stale": 1}
                 episode = await self._episodic_manager.create_episode(
                     session_key=session_key,
                     messages=messages,
                     summary=summary_text,
-                    message_range=(range_start, range_start + len(messages)),
+                    message_range=(range_start, range_end),
+                    created_at=source_time,
                 )
+                if not self.store.is_episode_visible(episode, memory_scope):
+                    return {**stats, "stale": 1}
                 stats["episodes"] = 1
 
                 # Step 2: Promote to semantic
@@ -197,6 +224,8 @@ class MemoryConsolidator:
                             tool_choice={"type": "function", "function": {"name": "save_facts"}},
                         )
                         facts = self._parse_extracted_facts(response)
+                        if can_commit is not None and not await can_commit():
+                            return {**stats, "stale": 1}
                         durable_facts = [
                             fact for fact in facts
                             if not is_transient_task_state(fact, assumed_source="consolidated")
@@ -208,7 +237,10 @@ class MemoryConsolidator:
                                 len(facts) - len(durable_facts),
                             )
                         if durable_facts:
-                            promoted = await self._semantic_manager.promote_from_episodic(episode, durable_facts, memory_scope=memory_scope)
+                            options = {"can_commit": can_commit} if can_commit is not None else {}
+                            promoted = await self._semantic_manager.promote_from_episodic(
+                                episode, durable_facts, memory_scope=memory_scope, **options,
+                            )
                             stats["promoted"] = len(promoted)
                     except Exception as e:
                         # Single-step degradation: keep the rest of the sleep
@@ -216,6 +248,9 @@ class MemoryConsolidator:
                         # is observable (test/monitoring) rather than silent.
                         stats["fact_extract_errors"] += 1
                         logger.warning("Fact extraction failed: {}", e)
+
+        if can_commit is not None and not await can_commit():
+            return {**stats, "stale": 1}
 
         # Step 3: Run contradiction detection on newly promoted entries.
         # When auto-resolution is enabled, same-key conflicts are resolved by
@@ -262,7 +297,7 @@ class MemoryConsolidator:
         # append-only and grows without bound.
         if self._episodic_manager and self._episode_retention_days > 0:
             try:
-                from datetime import datetime, timedelta
+                from datetime import timedelta
                 cutoff = (datetime.now() - timedelta(days=self._episode_retention_days)).isoformat()
                 await self._episodic_manager._storage.execute_sql(
                     "DELETE FROM memory_episodes WHERE created_at < ?", (cutoff,),

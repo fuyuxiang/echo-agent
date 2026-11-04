@@ -63,9 +63,11 @@ class VectorIndex:
 
     @staticmethod
     def _normalize(arr: np.ndarray) -> np.ndarray:
-        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        # Accumulate in float64: a finite float32 embedding can overflow while
+        # squaring, silently turning its normalized row into all zeroes.
+        norms = np.linalg.norm(arr.astype(np.float64), axis=1, keepdims=True)
         norms[norms == 0] = 1.0
-        return arr / norms
+        return (arr / norms).astype(np.float32)
 
     async def initialize(self) -> None:
         async with self._lock:
@@ -86,11 +88,14 @@ class VectorIndex:
             emb = row.get("embedding")
             if emb is None:
                 continue
-            arr = np.frombuffer(emb, dtype=np.float32)
-            if arr.shape[0] == 0:
-                # Corrupted/zero-byte blob: never adopt 0 as the index
-                # dimension (a later vstack would crash startup); route the
-                # entry through the re-embed queue instead.
+            try:
+                arr = np.frombuffer(emb, dtype=np.float32)
+            except (TypeError, ValueError):
+                self._stale_source_ids.add(row.get("source_id", ""))
+                continue
+            if arr.size == 0 or not np.isfinite(arr).all():
+                # A damaged row must neither block healthy rows at startup nor
+                # establish the auto dimension. Re-embed only its source.
                 self._stale_source_ids.add(row.get("source_id", ""))
                 continue
             if self._dimensions == 0:
@@ -116,6 +121,9 @@ class VectorIndex:
             if arr.shape[1] == 0:
                 logger.warning("Rejected empty embedding for {}", memory_id)
                 return ""
+            if not np.isfinite(arr).all():
+                logger.warning("Rejected non-finite embedding for {}", memory_id)
+                return ""
             if self._dimensions == 0:
                 self._dimensions = arr.shape[1]
             if arr.shape[1] != self._dimensions:
@@ -140,10 +148,10 @@ class VectorIndex:
     async def search(self, query_embedding: list[float], limit: int = 10) -> list[tuple[str, float]]:
         """Search for similar vectors. Returns (source_id, score) pairs."""
         async with self._lock:
-            if self._matrix is None or self.count == 0:
+            if self._matrix is None or self.count == 0 or limit <= 0:
                 return []
             arr = np.array(query_embedding, dtype=np.float32).reshape(1, -1)
-            if arr.shape[1] != self._dimensions:
+            if arr.shape[1] != self._dimensions or not np.isfinite(arr).all():
                 return []
             query = self._normalize(arr)[0]
             scores = self._matrix @ query

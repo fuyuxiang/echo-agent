@@ -222,6 +222,7 @@ class DelegateTool(Tool):
         max_worker_iterations: int = 12,
         default_model: str = "",
         progress_enabled: bool = True,
+        cost_tracker: Any | None = None,
     ):
         self._provider = provider
         self._tool_registry = tool_registry
@@ -238,6 +239,7 @@ class DelegateTool(Tool):
             provider=provider,
             model_router=model_router,
             default_model=default_model,
+            cost_tracker=cost_tracker,
         )
 
     def execution_mode(self, params: dict[str, Any]) -> str:
@@ -260,6 +262,8 @@ class DelegateTool(Tool):
             logger.warning("Truncated delegation to {} parallel workers", self._max_parallel)
 
         available_tools = set(self._tool_registry.ready_tool_names) - WORKER_BLOCKED_TOOLS
+        if ctx and ctx.allowed_tools:
+            available_tools.intersection_update(ctx.allowed_tools)
         started = time.monotonic()
         total = len(tasks)
         activity = ctx.activity if ctx and self._progress_enabled else None
@@ -298,6 +302,7 @@ class DelegateTool(Tool):
                 max_iterations=max_iter,
                 timeout_seconds=self.timeout_seconds / max(1, len(tasks)),
                 on_progress=_record_progress if activity is not None else None,
+                channel=ctx.channel if ctx else "",
             ))
 
         results = await asyncio.gather(*workers, return_exceptions=True)
@@ -335,6 +340,7 @@ class DelegateTool(Tool):
         return ToolResult(
             success=all_success,
             output=output,
+            error=output if not all_success else "",
             metadata={
                 "worker_count": len(worker_results),
                 "total_duration": round(total_duration, 2),
@@ -461,6 +467,7 @@ class SpawnTool(Tool):
         default_model: str = "",
         max_iterations: int = 12,
         timeout_seconds: float = 300.0,
+        cost_tracker: Any | None = None,
     ):
         self._provider = provider
         self._bus = bus
@@ -470,10 +477,12 @@ class SpawnTool(Tool):
         self._default_model = default_model
         self._max_iterations = max_iterations
         self._timeout_seconds = timeout_seconds
+        self._cost_tracker = cost_tracker
         self._executor = WorkerExecutor(
             provider=provider,
             model_router=model_router,
             default_model=default_model,
+            cost_tracker=cost_tracker,
         )
         self._tasks: dict[str, asyncio.Task] = {}
         self._closing = False
@@ -512,11 +521,13 @@ class SpawnTool(Tool):
         # clear defensively for tasks cancelled before their coroutine starts.
         self._tasks.clear()
 
-    def _worker_tools(self) -> tuple[set[str], list[dict[str, Any]]]:
+    def _worker_tools(self, ctx: ToolExecutionContext | None = None) -> tuple[set[str], list[dict[str, Any]]]:
         """Resolve the tool set and schemas the background worker may use."""
         if not self._tool_registry:
             return set(), []
         allowed = set(self._tool_registry.ready_tool_names) - SPAWN_BLOCKED_TOOLS
+        if ctx and ctx.allowed_tools:
+            allowed.intersection_update(ctx.allowed_tools)
         tool_defs = [
             schema for schema in self._tool_registry.get_ready_definitions()
             if schema.get("function", {}).get("name") in allowed
@@ -544,15 +555,22 @@ class SpawnTool(Tool):
         # No tool registry wired (e.g. multi-agent disabled path): fall back to a
         # plain completion so the tool still answers, but say so honestly.
         if not self._tool_registry or not self._approval_gate:
+            if self._cost_tracker is not None:
+                self._cost_tracker.enforce()
             resp = await asyncio.wait_for(self._provider.chat_with_retry(messages=[
                 {"role": "system", "content": "You are a background agent. Complete the task and provide a concise result."},
                 {"role": "user", "content": f"{task}\n\n{context}".strip()},
-            ]), timeout=self._timeout_seconds)
+            ], model=self._default_model or None), timeout=self._timeout_seconds)
+            if self._cost_tracker is not None and resp.usage:
+                await self._cost_tracker.record(
+                    resp.model or self._default_model or self._provider.get_default_model(),
+                    resp.usage, "default", channel=ctx.channel if ctx else "",
+                )
             if resp.finish_reason in {"error", "length", "content_filter"}:
                 return f"[failed] Model did not complete (finish_reason={resp.finish_reason})\n{resp.content or ''}"
             return resp.content or "(no response)"
 
-        allowed_tools, tool_defs = self._worker_tools()
+        allowed_tools, tool_defs = self._worker_tools(ctx)
         tool_executor = build_worker_tool_executor(
             tool_registry=self._tool_registry,
             approval_gate=self._approval_gate,
@@ -580,6 +598,7 @@ class SpawnTool(Tool):
             tool_executor=tool_executor,
             max_iterations=self._max_iterations,
             timeout_seconds=self._timeout_seconds,
+            channel=ctx.channel if ctx else "",
         )
         output = worker_result.output or "(no result)"
         if worker_result.status != "completed":

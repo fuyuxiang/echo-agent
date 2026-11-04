@@ -1825,16 +1825,22 @@ class InferenceStage:
         last_response: LLMResponse | None = None
         last_decision: RouteDecision | None = None
         for provider_name, provider, decision in self._router.route_candidates(task_type, content):
-            response = await provider.chat_stream_with_retry(
-                messages=messages,
-                tools=tools,
-                model=decision.model,
-                on_delta=routed_delta if on_delta else None,
-                on_reasoning=routed_reasoning if on_reasoning else None,
-                max_tokens=decision.max_tokens,
-                temperature=decision.temperature,
-                draft_policy=draft_policy,
-            )
+            if not self._router.admit_provider(provider_name):
+                continue
+            try:
+                response = await provider.chat_stream_with_retry(
+                    messages=messages,
+                    tools=tools,
+                    model=decision.model,
+                    on_delta=routed_delta if on_delta else None,
+                    on_reasoning=routed_reasoning if on_reasoning else None,
+                    max_tokens=decision.max_tokens,
+                    temperature=decision.temperature,
+                    draft_policy=draft_policy,
+                )
+            except BaseException:
+                self._router.release_provider_probe(provider_name)
+                raise
             last_response = response
             last_decision = decision
             if response.finish_reason != "error":
@@ -1849,12 +1855,7 @@ class InferenceStage:
 
         if last_response and last_decision:
             return last_response, last_decision
-        response = await self._provider.chat_stream_with_retry(
-            messages=messages,
-            tools=tools,
-            model=self._default_model or None,
-            on_delta=on_delta,
-            on_reasoning=routed_reasoning if on_reasoning else None,
-            draft_policy=draft_policy,
-        )
-        return response, RouteDecision(provider_name="default", model=self._default_model, reason="router empty")
+        return LLMResponse(
+            content="No model provider is currently available; providers may be in cooldown or disabled.",
+            finish_reason="error",
+        ), RouteDecision(model=self._default_model, reason="router empty")

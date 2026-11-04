@@ -113,7 +113,9 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
     try {
       await transitionTask(detail.id, status);
       toast.success(success);
-    } catch { updateLocal(detail.id, { status: previous }); }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) updateLocal(detail.id, { status: previous });
+    }
     finally { setActionBusy(false); }
   };
 
@@ -121,7 +123,9 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
     const previous = detail.status;
     setActionBusy(true); updateLocal(detail.id, { status: "queued" });
     try { await retryTask(detail.id); toast.success(t("toast.requeued")); }
-    catch { updateLocal(detail.id, { status: previous }); }
+    catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) updateLocal(detail.id, { status: previous });
+    }
     finally { setActionBusy(false); }
   };
 
@@ -139,7 +143,8 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
       await transitionTask(detail.id, "cancelled");
       toast.success(t("toast.cancelled"));
       onClose();
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       updateLocal(detail.id, { status: prev }); // error toast already raised
     }
   };
@@ -154,7 +159,7 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
-          <h2 id="task-detail-title" className="font-semibold text-base flex-1">{detail.title}</h2>
+          <h2 id="task-detail-title" className="font-semibold text-base flex-1 min-w-0 break-words [overflow-wrap:anywhere]">{detail.title}</h2>
           <div className="flex items-center gap-1 shrink-0">
             {!editing && canWrite && (
               <button

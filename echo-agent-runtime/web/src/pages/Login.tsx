@@ -37,13 +37,13 @@ export function Login() {
     try {
       await apiFetch("/stats");
       navigate(consumeReturnTo(), { replace: true });
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       if (prev !== null) {
-        localStorage.setItem(TOKEN_STORAGE_KEY, prev);
+        setStoreToken(prev);
       } else {
-        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        useAuthStore.getState().logout();
       }
-      useAuthStore.setState({ token: prev });
       setError(t("invalidToken"));
     } finally {
       setSubmitting(false);

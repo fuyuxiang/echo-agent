@@ -8,6 +8,7 @@ the session, ensuring no concurrent mutation.
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -81,10 +82,16 @@ class ConsolidationWorker:
             session_lock = await self._sessions.acquire(session_key)
             async with session_lock:
                 session = await self._sessions.get_or_create(session_key)
+                from echo_agent.session.context_epoch import conversation_context_key
+                snapshot_context = conversation_context_key(session_key, session)
                 start = session.last_consolidated
-                chunk = [dict(m) for m in session.messages[start:]]
+                chunk = deepcopy(session.messages[start:])
                 if not chunk:
                     return
+
+            async def can_commit() -> bool:
+                current = await self._sessions.get_or_create(session_key)
+                return conversation_context_key(session_key, current) == snapshot_context
 
             # Align the boundary on the snapshot: never consolidate up to a
             # trailing tool-call chain (its results may still be pending).
@@ -134,7 +141,12 @@ class ConsolidationWorker:
                     stats = await self._consolidator.sleep_consolidate(
                         conversation_key, trimmed, chunk_already_consolidated=chunk_ok,
                         memory_scope=memory_scope, range_start=start,
+                        can_commit=can_commit,
                     )
+                    if stats.get("stale") or not await can_commit():
+                        return
+                    if stats.get("fact_extract_errors") or stats.get("reflection_errors"):
+                        raise RuntimeError("Memory consolidation incomplete; retaining history for retry")
                     if any(v > 0 for v in stats.values()):
                         logger.info("Sleep consolidation for {}: {}", session_key, stats)
                 except Exception as e:
@@ -148,7 +160,8 @@ class ConsolidationWorker:
                 session_lock = await self._sessions.acquire(session_key)
                 async with session_lock:
                     session = await self._sessions.get_or_create(session_key)
-                    if self._snapshot_still_valid(session, start, chunk, boundary):
+                    if (conversation_context_key(session_key, session) == snapshot_context
+                            and self._snapshot_still_valid(session, start, chunk, boundary)):
                         session.last_consolidated = start + boundary
                         await self._sessions.save(session)
                     else:
@@ -189,6 +202,6 @@ class ConsolidationWorker:
         for offset in range(boundary):
             snap = chunk[offset]
             live = session.messages[start + offset]
-            if live.get("role") != snap.get("role") or live.get("content") != snap.get("content"):
+            if live != snap:
                 return False
         return True

@@ -189,7 +189,7 @@ class ModelRouter:
             candidates.append((provider_name, provider, decision))
 
         for provider_name, provider in self._providers.items():
-            if not self._provider_available(provider_name):
+            if not self._provider_available(provider_name, consume_probe=False):
                 continue
             default_model = provider.get_default_model() if hasattr(provider, "get_default_model") else ""
             key = (provider_name, default_model)
@@ -228,7 +228,7 @@ class ModelRouter:
             entry = self._find_healthy_provider_entry(
                 route.model, preferred_provider=route.provider
             )
-            if entry:
+            if entry and self.admit_provider(entry[0]):
                 _, provider = entry
                 return provider, (route.model or fallback_model)
         return fallback_provider, fallback_model
@@ -328,33 +328,47 @@ class ModelRouter:
         *,
         preferred_provider: str = "",
     ) -> tuple[str, LLMProvider] | None:
-        if preferred_provider and preferred_provider in self._providers and self._provider_available(preferred_provider):
+        if (preferred_provider and preferred_provider in self._providers
+                and self._provider_available(preferred_provider, consume_probe=False)):
             return preferred_provider, self._providers[preferred_provider]
         for pc in self._config.providers:
-            if not pc.name or pc.name not in self._providers or not self._provider_available(pc.name):
+            if (not pc.name or pc.name not in self._providers
+                    or not self._provider_available(pc.name, consume_probe=False)):
                 continue
             if self._provider_config_supports_model(pc.name, model):
                 return pc.name, self._providers[pc.name]
         for name, provider in self._providers.items():
-            if not self._provider_available(name):
+            if not self._provider_available(name, consume_probe=False):
                 continue
             default = provider.get_default_model() if hasattr(provider, "get_default_model") else ""
             if not model or not default or model == default or model.lower().startswith(default.split("/")[0].lower()):
                 return name, provider
         if not model:
             for name, provider in self._providers.items():
-                if self._provider_available(name):
+                if self._provider_available(name, consume_probe=False):
                     return name, provider
         return None
 
-    def _provider_available(self, provider_name: str) -> bool:
+    def admit_provider(self, provider_name: str) -> bool:
+        """Reserve a recovery probe immediately before an actual model call."""
+        return self._provider_available(provider_name)
+
+    def release_provider_probe(self, provider_name: str) -> None:
+        """A cancelled attempt carries no health verdict and releases its slot."""
+        health = self._health.get(provider_name)
+        if health is not None and health.status == HealthStatus.HALF_OPEN:
+            health.half_open_allowance = min(
+                health.half_open_allowance + 1, health.HALF_OPEN_MAX_PROBES,
+            )
+
+    def _provider_available(self, provider_name: str, *, consume_probe: bool = True) -> bool:
         health = self._health.get(provider_name)
         if health is None:
             return provider_name in self._providers
         # Promote out of cooldown when the window has passed before answering.
         if health.refresh_if_recovered():
             self._schedule_save_health()
-        if health.status == HealthStatus.HALF_OPEN:
+        if health.status == HealthStatus.HALF_OPEN and consume_probe:
             # Hand out a bounded number of probe tickets instead of opening
             # the floodgates on a provider that may still be down.
             return health.take_probe_ticket()
@@ -445,4 +459,8 @@ class ModelRouter:
                 failure_count=info.get("failure_count", 0),
                 last_error=info.get("last_error", ""),
                 cooldown_until=cooldown_until,
+                # Probe owners do not survive a process restart. A persisted
+                # HALF_OPEN state must receive fresh bounded tickets instead
+                # of loading the dataclass default of zero and remaining stuck.
+                half_open_allowance=ProviderHealth.HALF_OPEN_MAX_PROBES if status == HealthStatus.HALF_OPEN else 0,
             )

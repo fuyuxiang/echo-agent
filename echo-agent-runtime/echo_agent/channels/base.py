@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import asyncio
 import json
+import mimetypes
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -320,7 +321,7 @@ class BaseChannel(ABC):
 
         content_blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
         for item in (media or []):
-            name = item.get("name", "")
+            name = item.get("name") or item.get("filename", "")
             meta: dict[str, Any] = {}
             if name:
                 meta["name"] = name
@@ -408,6 +409,14 @@ class BaseChannel(ABC):
     _media_cache_root: Path | None = None
     _max_media_download_bytes: int = 25 * 1024 * 1024  # 25 MB default
     _STREAM_CHUNK_SIZE: int = 64 * 1024  # 64 KB chunks for streaming downloads
+
+    @staticmethod
+    def _media_suffix(name: str = "", mime_type: str = "", default: str = ".jpg") -> str:
+        """Keep local cache formats usable by document and audio extractors."""
+        suffix = Path(name).suffix.lower()
+        if suffix and len(suffix) <= 12 and suffix[1:].isalnum():
+            return suffix
+        return mimetypes.guess_extension(mime_type.split(";", 1)[0]) or default
 
     @classmethod
     async def _fetch_with_limit(

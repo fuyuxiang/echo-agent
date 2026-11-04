@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { apiFetch, getToken, TOKEN_STORAGE_KEY, RETURN_TO_STORAGE_KEY, setUnauthorizedHandler } from "./api";
+import { apiFetch, apiUpload, apiDownload, getToken, invalidateApiRequests, TOKEN_STORAGE_KEY, RETURN_TO_STORAGE_KEY, setUnauthorizedHandler } from "./api";
 
 const originalFetch = globalThis.fetch;
 
@@ -85,5 +85,49 @@ describe("apiFetch 其他错误", () => {
     } as unknown as Response);
 
     await expect(apiFetch("/tasks")).rejects.toThrow("Internal Server Error");
+  });
+});
+
+describe("identity changes during a request", () => {
+  it("expires the earlier login even when the same token is reused", async () => {
+    let respond!: (response: Response) => void;
+    globalThis.fetch = vi.fn(() => new Promise<Response>((resolve) => { respond = resolve; }));
+    localStorage.setItem(TOKEN_STORAGE_KEY, "same-token");
+    const pending = apiFetch("/config");
+    invalidateApiRequests();
+    respond(jsonResponse({ private: "old data" }));
+    await expect(pending).rejects.toThrow("Authentication changed");
+  });
+  for (const [name, request] of [
+    ["JSON", () => apiFetch("/tasks")],
+    ["upload", () => apiUpload("/knowledge/upload", new FormData())],
+    ["download", () => apiDownload("/export")],
+  ] as const) {
+    it(`${name}: an old 401 cannot log out the new token`, async () => {
+      let respond!: (response: Response) => void;
+      globalThis.fetch = vi.fn(() => new Promise<Response>((resolve) => { respond = resolve; }));
+      const unauthorized = vi.fn();
+      setUnauthorizedHandler(unauthorized);
+      localStorage.setItem(TOKEN_STORAGE_KEY, "old-admin");
+      const pending = request();
+      localStorage.setItem(TOKEN_STORAGE_KEY, "new-api");
+      respond(jsonResponse({}, 401));
+      await expect(pending).rejects.toThrow();
+      expect(unauthorized).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem(RETURN_TO_STORAGE_KEY)).toBeNull();
+    });
+  }
+
+  it("discards privileged data when the token changes while JSON is being read", async () => {
+    let read!: (body: unknown) => void;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: () => new Promise((resolve) => { read = resolve; }),
+    });
+    localStorage.setItem(TOKEN_STORAGE_KEY, "old-admin");
+    const pending = apiFetch("/config");
+    await Promise.resolve();
+    localStorage.setItem(TOKEN_STORAGE_KEY, "new-api");
+    read({ private: "old admin data" });
+    await expect(pending).rejects.toThrow();
   });
 });

@@ -176,12 +176,15 @@ class MemoryService:
             pinned=pinned,
         )
         try:
+            if self._forgotten_denied(ctx, entry, source):
+                return self._reject(ctx, "add", "", type, source, "rejected_forgotten")
             with self._service_write():
                 stored = self._store.add(entry)
         except ValueError:
             return self._reject(ctx, "add", "", type, source, "invalid")
         # ⑥⑦ flush→失效 ⑧ 审计
-        await self._finalize(ctx, "add", stored.id, type, source, "", True)
+        await self._finalize(ctx, "add", stored.id, type, source, "", True,
+                             global_scope=self._is_global(stored))
         return WriteResult(ok=True, entry=stored)
 
     async def replace(
@@ -209,6 +212,10 @@ class MemoryService:
         # ③ ENV 门禁
         if self._env_denied(ctx.actor, target.type, target.tags):
             return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_env")
+        candidate = MemoryEntry(type=target.type, key=target.key, content=content,
+                                tags=target.tags if tags is None else tags, source_session=target.source_session)
+        if self._forgotten_denied(ctx, candidate, source):
+            return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_forgotten")
         # ④ provenance:低于目标优先级则拒。R4:与 add 路径(_merge_locked→
         # _spawn_blocked_contradiction)对齐,拒前先把被拒内容记为可裁决的
         # contradiction(落真实 pending 条目,不进召回),交 reflection 消费;
@@ -247,16 +254,23 @@ class MemoryService:
         # ①⑤ 校验+写入:内容校验由 store.update 内部完成(唯一校验源),
         # 非法内容抛 ValueError→转 invalid。
         try:
+            # An operator's explicit correction has the same authority as a
+            # user-stated fact. Keep the incoming "admin" guard above (override
+            # is still required) while preserving that authority on disk.
+            if ctx.actor == "admin" and override:
+                source = "user_stated"
             with self._service_write():
                 updated = self._store.update(entry_id, content=content, tags=tags, source=source)
         except ValueError:
             return self._reject(ctx, "replace", entry_id, target.type, source, "invalid")
         if updated is None:
             return self._reject(ctx, "replace", entry_id, target.type, source, "invalid")
-        await self._finalize(ctx, "replace", entry_id, target.type, source, "", True)
+        await self._finalize(ctx, "replace", entry_id, target.type, source, "", True,
+                             global_scope=self._is_global(target) or self._is_global(updated))
         return WriteResult(ok=True, entry=updated)
 
-    async def remove(self, ctx: ActorContext, entry_id: str, *, override: bool = False) -> WriteResult:
+    async def remove(self, ctx: ActorContext, entry_id: str, *, override: bool = False,
+                     source: str | None = None) -> WriteResult:
         """删除既有条目,走完整八步写序(含 provenance 守卫)。
 
         override=True 时跳过第④步 provenance(admin 通道显式越权)。
@@ -265,6 +279,11 @@ class MemoryService:
         if target is None:
             return self._reject(ctx, "remove", entry_id, None, "", "invalid")
         derived = _ACTOR_SOURCE.get(ctx.actor, "legacy")
+        # Match add/replace's constrained provenance vocabulary: an explicit
+        # user request can forget their own stated fact. Background reviewers
+        # cannot claim this authority; ordinary model removal stays inferred.
+        if ctx.actor == "model" and source == "user_stated":
+            derived = "user_stated"
         # ② scope 门禁
         scope_rej = self._scope_gate(target.type, ctx)
         if scope_rej:
@@ -279,11 +298,14 @@ class MemoryService:
         if not override and ctx.actor != "maintenance" and not provenance_guard(derived, target):
             return self._reject(ctx, "remove", entry_id, target.type, derived, "rejected_provenance")
         # ⑤ 写入
+        explicit_forget = (not getattr(target, "is_superseded", False) and
+                           (ctx.actor == "admin" or (ctx.actor == "model" and source == "user_stated")))
         with self._service_write():
-            ok = self._store.delete(entry_id)
+            ok = self._store.delete(entry_id, forget=explicit_forget)
         if not ok:
             return self._reject(ctx, "remove", entry_id, target.type, derived, "invalid")
-        await self._finalize(ctx, "remove", entry_id, target.type, derived, "", True)
+        await self._finalize(ctx, "remove", entry_id, target.type, derived, "", True,
+                             global_scope=self._is_global(target))
         return WriteResult(ok=True, entry=target)
 
     async def promote(
@@ -330,7 +352,8 @@ class MemoryService:
             return self._reject(ctx, "maintenance_update", entry_id, target.type, source or "", "invalid")
         if updated is None:
             return self._reject(ctx, "maintenance_update", entry_id, target.type, source or "", "invalid")
-        await self._finalize(ctx, "maintenance_update", entry_id, target.type, source or "", "", True)
+        await self._finalize(ctx, "maintenance_update", entry_id, target.type, source or "", "", True,
+                             global_scope=self._is_global(target) or self._is_global(updated))
         return WriteResult(ok=True, entry=updated)
 
     async def mark_superseded(self, ctx: ActorContext, entry_id: str, superseded_by: str) -> WriteResult:
@@ -342,7 +365,8 @@ class MemoryService:
             ok = self._store.mark_superseded(entry_id, superseded_by)
         if not ok:
             return self._reject(ctx, "mark_superseded", entry_id, target.type, "", "invalid")
-        await self._finalize(ctx, "mark_superseded", entry_id, target.type, "", "", True)
+        await self._finalize(ctx, "mark_superseded", entry_id, target.type, "", "", True,
+                             global_scope=self._is_global(target))
         return WriteResult(ok=True, entry=self._store.get(entry_id))
 
     async def set_tier(self, ctx: ActorContext, entry_id: str, tier: MemoryTier) -> WriteResult:
@@ -354,7 +378,8 @@ class MemoryService:
             ok = self._store.set_tier(entry_id, tier)
         if not ok:
             return self._reject(ctx, "set_tier", entry_id, target.type, "", "invalid")
-        await self._finalize(ctx, "set_tier", entry_id, target.type, "", "", True)
+        await self._finalize(ctx, "set_tier", entry_id, target.type, "", "", True,
+                             global_scope=self._is_global(target))
         return WriteResult(ok=True, entry=self._store.get(entry_id))
 
     # ── 门禁 ───────────────────────────────────────────────────────────────
@@ -372,9 +397,24 @@ class MemoryService:
             return False
         if actor not in _ENV_RESTRICTED_ACTORS:
             return False
-        return mem_type == MemoryType.ENVIRONMENT or "global" in (tags or [])
+        return mem_type == MemoryType.ENVIRONMENT or any(
+            isinstance(tag, str) and tag.strip() == "global" for tag in (tags or [])
+        )
+
+    def _forgotten_denied(self, ctx: ActorContext, entry: MemoryEntry, source: str) -> bool:
+        if not isinstance(entry.key, str) or not isinstance(entry.content, str):
+            return False  # Let the store's canonical validator reject the input.
+        forgotten = getattr(self._store, "is_forgotten", None)
+        return (ctx.actor in {"model", "reviewer", "consolidation", "reflection"}
+                and source != "user_stated" and forgotten is not None and forgotten(entry) is True)
 
     # ── 失效 + flush + 审计 ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_global(entry: MemoryEntry) -> bool:
+        return entry.type == MemoryType.ENVIRONMENT or any(
+            isinstance(tag, str) and tag.strip() == "global" for tag in (getattr(entry, "tags", None) or [])
+        )
 
     async def _finalize(
         self,
@@ -385,6 +425,8 @@ class MemoryService:
         source: str,
         reason: str,
         ok: bool,
+        *,
+        global_scope: bool = False,
     ) -> None:
         """⑥⑦ 失效前先 flush,再 invalidate;⑧ 追加审计。"""
         # ⑦ flush 在失效前
@@ -395,7 +437,7 @@ class MemoryService:
                 logger.warning("MemoryService flush failed: {}", e)
         # ⑥ 失效:USER→(scope, False);ENV/裁决→(scope, True)
         if self._invalidate_fn is not None:
-            global_scope = mem_type != MemoryType.USER
+            global_scope = global_scope or mem_type != MemoryType.USER
             try:
                 await self._invalidate_fn(ctx.memory_scope, global_scope)
             except Exception as e:

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useKanbanStore } from "./kanban";
 import * as api from "../lib/api";
 import type { TaskCard } from "./kanban";
+import { useAuthStore } from "./auth";
 
 function task(id: string, overrides: Partial<TaskCard> = {}): TaskCard {
   return {
@@ -37,6 +38,13 @@ afterEach(() => {
 });
 
 describe("fetchTasks 合并服务端快照", () => {
+  it("logout clears the previous identity's cached tasks", () => {
+    useAuthStore.getState().setToken("old-admin");
+    useKanbanStore.setState({ tasks: [task("private-task")], loaded: true });
+    useAuthStore.getState().logout();
+    expect(useKanbanStore.getState().tasks).toEqual([]);
+    expect(useKanbanStore.getState().loaded).toBe(false);
+  });
   it("task_created 先到时,迟到的创建响应不重复插卡或覆盖新状态", async () => {
     let release: (value: { task: TaskCard }) => void = () => {};
     vi.spyOn(api, "apiFetch").mockImplementation(

@@ -121,6 +121,19 @@ async def test_tool_remove_still_blocks_user_stated(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_tool_explicit_user_forget_can_remove_user_stated_fact(tmp_path):
+    tool, store = _tool(tmp_path)
+    ctx = ToolExecutionContext(session_key="s", memory_scope="scope1")
+    await tool.execute({"action": "add", "key": "drink", "content": "tea", "source": "user_stated"}, ctx)
+    result = await tool.execute({"action": "remove", "key": "drink", "source": "user_stated"}, ctx)
+    assert result.success
+    assert store.list_all(session_key="scope1") == []
+    # The next automatic review is still bound by the persisted forget barrier.
+    result = await tool.execute({"action": "add", "key": "drink", "content": "tea"}, ctx)
+    assert not result.success
+
+
+@pytest.mark.asyncio
 async def test_tool_add_new_key_succeeds(tmp_path):
     tool, store = _tool(tmp_path)
     ctx = ToolExecutionContext(session_key="s", memory_scope="scope1")

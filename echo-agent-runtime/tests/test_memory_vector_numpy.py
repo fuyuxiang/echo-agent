@@ -117,3 +117,42 @@ async def test_no_faiss_import():
     import echo_agent.memory.vectors as v
     import inspect
     assert "import faiss" not in inspect.getsource(v)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blob", [b"bad", b"", b"\x00\x00\xc0\x7f", b"\x00\x00\x80\x7f"])
+async def test_corrupt_vector_does_not_block_healthy_rows_or_adopt_dimensions(storage, blob):
+    import numpy as np
+
+    await storage.store_vector("bad", "damaged-memory", blob, {}, model=MODEL, dim=1)
+    good = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32).tobytes()
+    await storage.store_vector("good", "healthy-memory", good, {}, model=MODEL, dim=4)
+    vi = VectorIndex(storage, model_id=MODEL)
+    await vi.initialize()
+
+    assert vi.dimensions == 4
+    assert vi.stale_source_ids == {"damaged-memory"}
+    assert await vi.search([1.0, 0.0, 0.0, 0.0]) == [("healthy-memory", 1.0)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("embedding", [[float("nan"), 0, 0, 0], [float("inf"), 0, 0, 0]])
+async def test_nonfinite_provider_vectors_are_rejected_before_persistence(index, storage, embedding):
+    assert await index.add("bad-provider-result", embedding) == ""
+    assert await storage.load_vectors_all() == []
+    assert index.count == 0
+
+
+@pytest.mark.asyncio
+async def test_invalid_query_does_not_return_nan_scores(index):
+    await index.add("healthy", [1.0, 0, 0, 0])
+    assert await index.search([float("nan"), 0, 0, 0]) == []
+    assert await index.search([1, 0, 0, 0], limit=0) == []
+    assert await index.search([1, 0, 0, 0], limit=-1) == []
+
+
+@pytest.mark.asyncio
+async def test_large_finite_embeddings_keep_cosine_similarity(index):
+    await index.add("large", [3e38, 0, 0, 0])
+    results = await index.search([3e38, 0, 0, 0])
+    assert results == [("large", pytest.approx(1.0))]

@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Config } from "./Config";
 import * as api from "../lib/api";
 import { useCapabilitiesStore } from "../stores/capabilities";
+import { dashboardWS } from "../lib/ws";
 
 /**
  * The contract this page now depends on: /config is admin-guarded end to end,
@@ -19,6 +20,25 @@ afterEach(() => {
 });
 
 describe("Config 页", () => {
+  it("reconnect refreshes server metadata without replacing an unsaved draft", async () => {
+    let reconnect!: (event: { type: string; payload: unknown }) => void;
+    vi.spyOn(dashboardWS, "on").mockImplementation((type, listener) => {
+      if (type === "dashboard_reconnected") reconnect = listener;
+      return () => {};
+    });
+    const spy = vi.spyOn(api, "apiFetch").mockImplementation(async (path) => {
+      if (path === "/capabilities") return { admin: true } as never;
+      return { memory: { enabled: false } } as never;
+    });
+    render(<Config />);
+    const toggle = await screen.findByRole("switch", { name: "认知记忆" });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    await act(async () => reconnect({ type: "dashboard_reconnected", payload: {} }));
+    await waitFor(() => expect(spy.mock.calls.filter(([path]) => path === "/config")).toHaveLength(2));
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+  });
   it("admin 令牌下拉取并展示配置 JSON", async () => {
     const spy = vi.spyOn(api, "apiFetch").mockImplementation(async (path: string) => {
       if (path === "/capabilities") return { admin: true } as never;

@@ -79,7 +79,7 @@ class MemoryTool(Tool):
                 "type": "string",
                 "enum": ["user_stated", "model_inferred"],
                 "description": (
-                    "Provenance of this memory (for add/replace). Use 'user_stated' ONLY "
+                    "Provenance of this memory operation (for add/replace/remove). Use 'user_stated' ONLY "
                     "when the user explicitly asked to remember this or directly stated "
                     "the fact; otherwise omit (defaults to 'model_inferred')."
                 ),
@@ -284,7 +284,10 @@ class MemoryTool(Tool):
             return ToolResult(success=False, error=f"No matching memory found for key='{key}' old_text='{old_text}'")
 
         # provenance 守卫(据 model actor 的派生来源)、门禁、失效、审计全在 service.remove 内。
-        res = await self._service.remove(actor_ctx, entry.id)
+        if params.get("source") == "user_stated":
+            res = await self._service.remove(actor_ctx, entry.id, source="user_stated")
+        else:
+            res = await self._service.remove(actor_ctx, entry.id)
         if not res.ok:
             return self._map_reject(res, "remove", entry.key)
         return ToolResult(success=True, output=f"Memory removed: [{entry.type.value}] {entry.key}")
@@ -313,6 +316,11 @@ class MemoryTool(Tool):
             return ToolResult(
                 success=False,
                 error=f"Cannot write memory without a resolved scope: {key}",
+            )
+        if reason == "rejected_forgotten":
+            return ToolResult(
+                success=False,
+                error="This fact was forgotten. Save it again only on an explicit user request (source=user_stated).",
             )
         # invalid / 其他:内容校验失败或目标缺失。
         return ToolResult(success=False, error=f"Memory {op} failed for '{key}' ({reason})")

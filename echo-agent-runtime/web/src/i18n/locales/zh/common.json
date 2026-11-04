@@ -1,6 +1,8 @@
 {
   "loadFailed": "加载失败：{{error}}",
   "loading": "加载中...",
+  "liveConnecting": "正在连接实时更新，当前数据可能尚未更新。",
+  "liveDisconnected": "实时更新已断开，正在自动重连；当前数据可能尚未更新。",
   "noData": "暂无数据",
   "refresh": "刷新",
   "delete": "删除",

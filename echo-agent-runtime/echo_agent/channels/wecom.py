@@ -164,16 +164,20 @@ class WeComChannel(BaseChannel):
 
         if not text and not media:
             return web.Response(text="success")
+        if not self.is_allowed(from_user):
+            return web.Response(text="success")
 
         native_id = root.findtext("MsgId", "")
         if not native_id and msg_type == "event" and root.findtext("CreateTime", ""):
             native_id = root.findtext("CreateTime", "") + ":" + root.findtext("Event", "")
-        await self._handle_message(
+        accepted = await self._handle_message(
             sender_id=from_user, chat_id=from_user, text=text,
             media=media or None,
             metadata={"msg_type": msg_type},
             event_id=self._native_event_id(from_user, native_id),
         )
+        if accepted is None:
+            return web.Response(status=503, text="Runtime busy; retry later")
         return web.Response(text="success")
 
     async def _refresh_token(self) -> None:

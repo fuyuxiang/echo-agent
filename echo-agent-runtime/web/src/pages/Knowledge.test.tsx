@@ -4,6 +4,7 @@ import { Knowledge } from "./Knowledge";
 import { ConfirmProvider } from "../components/ConfirmDialog";
 import * as api from "../lib/api";
 import { useCapabilitiesStore } from "../stores/capabilities";
+import { useToastStore } from "../stores/toast";
 
 const DOCS = {
   documents: [
@@ -40,6 +41,19 @@ afterEach(() => {
 });
 
 describe("Knowledge 页", () => {
+  it("reports unsupported files from a partially successful upload", async () => {
+    mockApi(true);
+    const upload = vi.spyOn(api, "apiUpload").mockResolvedValue({
+      uploaded: ["accepted.md"], rejected: ["rejected.exe"], job: { status: "queued" },
+    });
+    useToastStore.setState({ toasts: [] });
+    const { container } = renderKnowledge();
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: {
+      files: [new File(["ok"], "accepted.md"), new File(["bad"], "rejected.exe")],
+    } });
+    await waitFor(() => expect(upload).toHaveBeenCalled());
+    await waitFor(() => expect(useToastStore.getState().toasts.some((toast) => toast.message.includes("rejected.exe"))).toBe(true));
+  });
   it("状态行读的是后端真实字段,不再恒为 0", async () => {
     mockApi(true);
     renderKnowledge();

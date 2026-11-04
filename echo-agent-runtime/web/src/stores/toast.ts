@@ -51,6 +51,7 @@ export async function runMutation(
     if (opts.success) toast.success(opts.success);
     return true;
   } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") return false;
     const detail = e instanceof Error ? e.message : String(e);
     toast.error(opts.error ? `${opts.error}：${detail}` : detail);
     return false;

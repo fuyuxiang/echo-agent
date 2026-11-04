@@ -7,6 +7,7 @@
   "empty": "暂无文档",
   "uploadSuccess": "上传成功",
   "uploadFailed": "上传失败",
+  "uploadPartial": "已接收 {{count}} 篇文档；已跳过不支持的文件：{{files}}",
   "rebuildTriggered": "已触发重建",
   "rebuildFailed": "重建失败",
   "deleteSuccess": "已删除",

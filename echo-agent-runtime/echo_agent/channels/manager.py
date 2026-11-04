@@ -50,6 +50,8 @@ _CHANNEL_REGISTRY: dict[str, type[BaseChannel]] = {
 
 
 _STREAM_CURSOR = " ..."
+_CHANNEL_START_TIMEOUT = 30.0
+_CHANNEL_STOP_TIMEOUT = 10.0
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
 _THINK_CLOSE_RE = re.compile(r"^.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -745,16 +747,16 @@ class ChannelManager:
                 raise ValueError(f"channel '{name}' is disabled")
             if existing is not None:
                 try:
-                    await asyncio.wait_for(existing.stop(), timeout=10)
+                    await asyncio.wait_for(existing.stop(), timeout=_CHANNEL_STOP_TIMEOUT)
                 finally:
                     self.bus.unsubscribe_outbound(name, existing.send)
                     self._channels.pop(name, None)
             channel = self._build_channel(name)
             try:
-                await channel.start()
-            except Exception:
+                await asyncio.wait_for(channel.start(), timeout=_CHANNEL_START_TIMEOUT)
+            except (Exception, asyncio.CancelledError):
                 try:
-                    await channel.stop()
+                    await asyncio.wait_for(channel.stop(), timeout=_CHANNEL_STOP_TIMEOUT)
                 except Exception as cleanup_error:
                     logger.debug("Channel {} cleanup after failed start also failed: {}", name, cleanup_error)
                 finally:
@@ -772,7 +774,7 @@ class ChannelManager:
             if channel is None:
                 return False
             try:
-                await asyncio.wait_for(channel.stop(), timeout=10)
+                await asyncio.wait_for(channel.stop(), timeout=_CHANNEL_STOP_TIMEOUT)
             finally:
                 self.bus.unsubscribe_outbound(name, channel.send)
                 self._channels.pop(name, None)
@@ -795,7 +797,8 @@ class ChannelManager:
                 await self.start_channel(name)
             except Exception as e:
                 logger.error("Failed to start channel {}: {}", name, e)
-        self._cleanup_task = asyncio.create_task(self._ttl_cleanup_loop())
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._ttl_cleanup_loop())
 
     async def stop_all(self) -> None:
         if self._cleanup_task:
@@ -809,7 +812,7 @@ class ChannelManager:
             self._cleanup_task = None
         for name, channel in list(self._channels.items()):
             try:
-                await asyncio.wait_for(channel.stop(), timeout=10)
+                await asyncio.wait_for(channel.stop(), timeout=_CHANNEL_STOP_TIMEOUT)
                 logger.info("Channel {} stopped", name)
             except asyncio.TimeoutError:
                 logger.warning("Channel {} stop timed out", name)

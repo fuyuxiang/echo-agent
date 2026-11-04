@@ -1,6 +1,8 @@
 {
   "loadFailed": "Load failed: {{error}}",
   "loading": "Loading...",
+  "liveConnecting": "Connecting live updates… Displayed data may be out of date.",
+  "liveDisconnected": "Live updates disconnected. Reconnecting automatically; displayed data may be out of date.",
   "noData": "No data",
   "refresh": "Refresh",
   "delete": "Delete",

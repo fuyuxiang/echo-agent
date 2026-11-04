@@ -3,9 +3,11 @@ import { useAuthStore } from "../stores/auth";
 import { useAuthRequired } from "../stores/capabilities";
 import { Sidebar } from "./Sidebar";
 import { RouteErrorBoundary } from "./ErrorBoundary";
+import { ConnectionStatus } from "./ConnectionStatus";
 
 export function Layout() {
   const token = useAuthStore((s) => s.token);
+  const generation = useAuthStore((s) => s.generation);
   const authRequired = useAuthRequired();
 
   // An empty token is legitimate in the supported open / no-token mode, so
@@ -22,10 +24,11 @@ export function Layout() {
   return (
     <div className="flex h-screen bg-gray-50">
       <Sidebar />
-      <main className="flex-1 overflow-auto p-6">
+      <main className="flex-1 min-w-0 overflow-auto p-6">
+        <ConnectionStatus />
         {/* Scoped to the page, not the shell: a page that throws must not take
             the sidebar (and thus the way out of it) down with it. */}
-        <RouteErrorBoundary>
+        <RouteErrorBoundary key={`${generation}:${token ?? ""}`}>
           <Outlet />
         </RouteErrorBoundary>
       </main>

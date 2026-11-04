@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from urllib.parse import urlsplit
 from typing import Any
 
 import aiohttp
@@ -275,12 +276,15 @@ class SlackChannel(BaseChannel):
             url = f.get("url_private", "")
             if url:
                 mimetype = f.get("mimetype", "")
+                name = f.get("name", "")
                 kind = "image" if mimetype.startswith("image") else "file"
-                local_path = await self._download_slack_file(url)
+                local_path = await self._download_slack_file(url, filename=name, mime_type=mimetype)
                 if local_path:
-                    media.append({"type": kind, "url": local_path})
+                    media.append({"type": kind, "url": local_path, "name": name, "mime_type": mimetype})
                 else:
-                    media.append({"type": kind, "url": url})
+                    text = "\n".join(part for part in (
+                        text, f"[附件未读取：{name or kind} 下载失败。请重新上传或提供文字内容。]",
+                    ) if part)
 
         if not text and not media:
             return True
@@ -300,7 +304,7 @@ class SlackChannel(BaseChannel):
         )
         return inbound is not None
 
-    async def _download_slack_file(self, url: str) -> str | None:
+    async def _download_slack_file(self, url: str, *, filename: str = "", mime_type: str = "") -> str | None:
         """Download a Slack file using the bot token for authentication."""
         async def fetch() -> bytes:
             if not self._session:
@@ -316,7 +320,8 @@ class SlackChannel(BaseChannel):
                 raise RuntimeError("Slack returned HTML login page instead of file")
             return data
 
-        return await self._resolve_media_to_cache(url, "slack", fetch)
+        suffix = self._media_suffix(filename or urlsplit(url).path, mime_type)
+        return await self._resolve_media_to_cache(url, "slack", fetch, suffix=suffix)
 
     async def _get_ws_url(self) -> str | None:
         result = await self._api("apps.connections.open", token=self._app_token)

@@ -36,12 +36,14 @@ Inspect the original content before replacing it:
 Inspect the entry before removing matching content:
 
 ```json
-{"action":"remove","target":"user","old_text":"The project uses PostgreSQL 16"}
+{"action":"remove","target":"user","old_text":"The project uses PostgreSQL 16","source":"user_stated"}
 ```
 
 `list` lists visible facts. `list_contradictions` lists pending conflicts; `resolve_contradiction` takes `contradiction_id` and `winner_id`. See the [tool reference](../reference/tools.en.md#memory). There are no `memory store/delete/status` CLI commands or public `mode` parameter for selecting an internal retriever.
 
 Writes pass scope, ENV admission, source-precedence and content checks. Failures report a reason. Successful removal invalidates retrieval and snapshot caches; a rejected removal is not a successful deletion.
+
+An explicit forget request (`source=user_stated` in the tool, or an administrator deleting a current entry) persists a barrier that prevents old history from automatically recreating the fact after retries or restart. Earlier episode summaries leave ordinary recall for the affected scope; the original conversation history remains. An explicit request can remember the fact again. Cleanup of expired records or superseded versions only reclaims storage: it does not create a user-forget barrier, hide other episode summaries, or prohibit further learning.
 
 ## Identity and scope
 
@@ -52,6 +54,8 @@ Dashboard Memory is an administrator's cross-subject view for browsing, filterin
 ## Extraction, consolidation and forgetting
 
 After a non-evaluation reply, ResponseStage checks unconsolidated message count and schedules a snapshot through the DURABLE background queue when the threshold is met. `sleep_consolidation` controls the Episode/fact/reflection stages of that work; it is not a separate idle-seconds timer. Only successful consolidation with a still-matching history advances `last_consolidated`; failure preserves the boundary for retry.
+
+Background review reads only unconsolidated, not-yet-reviewed messages in the configured current history window, including the final answer. Long inputs are processed in bounded batches and historical tool records are quoted as reference data. Any failed batch leaves the snapshot pending. Successful progress is saved with the session; turns arriving during review retain their pending counts. Session reset fences old jobs, and both global and per-subject memory changes invalidate old context still being built.
 
 Extraction/review decides what is worth retaining. `eligibility.py` decides which entries a particular reading audience may see, using tier, provenance and task-state rules. Decay, reinforcement and conflict resolution follow their configuration and source rules; archival status does not promise permanent storage of essential facts.
 
