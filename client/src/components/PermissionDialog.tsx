@@ -11,8 +11,8 @@ import { permissionPresentation } from "@/lib/permission-presentation";
 
 const ENABLE_ALWAYS_APPROVE_OPTION_ID = "enable-always-approve";
 
-function optionPresentation(option: PermissionOption): { label: string; description?: string } {
-  if (option.optionId === ENABLE_ALWAYS_APPROVE_OPTION_ID) return { label: "本任务免审批", description: "仅限当前任务，需再次确认" };
+function optionPresentation(option: PermissionOption, groupScope = false): { label: string; description?: string } {
+  if (option.optionId === ENABLE_ALWAYS_APPROVE_OPTION_ID) return { label: groupScope ? "本专家团免审批" : "本任务免审批", description: groupScope ? "协调员与全部成员共用，需再次确认" : "仅限当前任务，需再次确认" };
   if (option.kind === "allow") return { label: "允许一次" };
   if (option.kind === "deny") return { label: "拒绝本次" };
   const title = option.title.trim();
@@ -31,7 +31,8 @@ function optionPresentation(option: PermissionOption): { label: string; descript
 }
 
 /** A task-owned decision at the composer edge; persistent grants stay secondary. */
-export function PermissionInlineCard({ sessionId }: { sessionId: string | null }) {
+export function PermissionInlineCard({ sessionId, groupScope = false }: { sessionId: string | null; groupScope?: boolean }) {
+  const scope = groupScope ? "本专家团" : "本任务";
   const head = usePermissionStore(selectPermissionForSession(sessionId));
   const count = usePermissionStore(s => sessionId ? s.queues[sessionId]?.length ?? 0 : 0);
   const dismiss = usePermissionStore(s => s.dismiss);
@@ -127,7 +128,7 @@ export function PermissionInlineCard({ sessionId }: { sessionId: string | null }
         const result = await permissionModeSet(request.sessionId, "always-approve");
         modeChanged = true;
         const status = permissionModeStatusFromEvent(result);
-        if (status) usePermissionModeStore.getState().setStatus(status);
+        if (status?.sessionId) usePermissionModeStore.getState().setStatus(status);
         useSessionsStore.getState().upsert({ sessionId: request.sessionId, permissionMode: result.permissionMode ?? "always-approve" });
       }
       const acknowledged = await agentResolvePermission(request.requestId, { optionId: option?.optionId, cancelled });
@@ -135,7 +136,7 @@ export function PermissionInlineCard({ sessionId }: { sessionId: string | null }
       dismiss(request.requestId, request.sessionId);
     } catch (e) {
       const message = String(e).replace(/^Error:\s*/, "");
-      if (isCurrent()) setError(modeChanged ? `已开启本任务免审批，但当前操作尚未批准：${message}` : message);
+      if (isCurrent()) setError(modeChanged ? `已开启${scope}免审批，但当前操作尚未批准：${message}` : message);
     } finally {
       pendingRef.current.delete(request.requestId);
       if (isCurrent()) setResolvingId(null);
@@ -170,10 +171,10 @@ export function PermissionInlineCard({ sessionId }: { sessionId: string | null }
         </details>}
         {error && <p className="perm-inline__error" role="alert">{error}</p>}
       </div>
-      {confirmingAlways && enableAlways ? <div className="perm-inline__confirm" role="alertdialog" aria-label="确认本任务免审批"
+      {confirmingAlways && enableAlways ? <div className="perm-inline__confirm" role="alertdialog" aria-label={`确认${scope}免审批`}
         onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelConfirmation(); } }}>
-        <strong>允许本任务后续免审批？</strong>
-        <span>将允许当前操作，并自动批准本任务后续的命令和文件修改。网页与电脑操作仍遵守各自的授权规则。</span>
+        <strong>允许{scope}后续免审批？</strong>
+        <span>{groupScope ? "将允许当前操作，并为协调员与全部成员开启免审批，设置会保留到你再次修改。只读讨论、组织策略及网页与电脑操作的授权限制仍生效。其他待审批请求仍需单独确认。" : "将允许当前操作，并自动批准本任务后续的命令和文件修改。网页与电脑操作仍遵守各自的授权规则。"}</span>
         <div className="perm-inline__confirm-actions">
           <button ref={confirmCancelRef} type="button" className="perm-inline__action" onClick={cancelConfirmation}>取消</button>
           <button type="button" className="perm-inline__action perm-inline__action--allow" onClick={() => void resolve(enableAlways)}>确认并允许</button>
@@ -211,7 +212,7 @@ export function PermissionInlineCard({ sessionId }: { sessionId: string | null }
           }
         }}>
         {moreOptions.map(option => {
-          const copy = optionPresentation(option);
+          const copy = optionPresentation(option, groupScope);
           return (
             <button key={option.optionId} type="button" role="menuitem"
               className={option.optionId === ENABLE_ALWAYS_APPROVE_OPTION_ID ? "permission-options__elevated" : undefined}

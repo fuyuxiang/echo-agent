@@ -5,6 +5,7 @@ import { UpdateDialog } from "../../src/components/UpdateDialog";
 import { useUpdateStore } from "../../src/stores/update-store";
 import { DesignSystemReview } from "./design-system-review";
 import { ColorSystemReview } from "./color-system-review";
+import { QueueAdmissionReview } from "./queue-admission-review";
 import { ToastReview } from "./toast-review";
 import { ContentMenusReview } from "./content-menus-review";
 import { SearchOverlay } from "../../src/components/SearchOverlay";
@@ -58,6 +59,7 @@ import { useSessionStore } from "../../src/stores/session-store";
 import { useSessionsStore } from "../../src/stores/sessions-store";
 import { useProjectsStore } from "../../src/stores/projects-store";
 import { useGroupStore } from "../../src/features/groups/group-store";
+import { GroupWorkspace } from "../../src/features/groups/GroupWorkspace";
 import { useMessageQueueStore } from "../../src/stores/message-queue-store";
 
 const query = new URLSearchParams(location.search);
@@ -90,6 +92,20 @@ let notificationEntries: import("../../src/lib/types").NotificationEntry[] = que
 ] : [];
 
 let automationFlowTask: Automation = { ...buildDraft(undefined, "/review/EchoAgent"), id: "review-automation", name: "保留草稿与通知导航验收任务", prompt: "整理交付报告", status: "PAUSED", createdAt: "2026-10-17T00:00:00Z" };
+const collectionAudit = query.get("collectionAudit") === "1";
+if (collectionAudit) {
+  useProjectsStore.setState({ projects: ["产品需求全流程", "市场调研与竞品分析", "团队知识库"].map((name, index) => ({
+    id: `collection-project-${index}`, name, createdAt: new Date().toISOString(),
+    instructions: "整理项目资料，持续跟进任务、讨论与交付成果。", cwd: "/review/EchoAgent",
+    connectors: [], experts: [], skills: [], plans: [], tasks: [], assets: [], members: [], conversations: [],
+  })) });
+  useGroupStore.setState({ current: null, currentId: null, loading: false, groups: ["产品评审专家团", "内容创作团队", "数据分析工作组"].map((name, index) => ({
+    id: `collection-group-${index}`, name, goal: "汇集不同专业视角，围绕共同目标持续协作与交付。",
+    cwd: "/review/EchoAgent/一个很长的工作目录用于核对卡片中的路径展示", sourceSessionId: null, sourceTeamId: null,
+    coordinatorId: "coordinator", members: ["协调员", "业务分析师", "代码专家", "文档助手"].map((name, i) => ({ id: `member-${i}`, name, role: "协作", expert: i ? name : null, sessionId: null, discussionSessionId: null, modelId: "", generation: 0 })),
+    messages: [], works: [], decisions: [], archived: false, pinned: false, paused: false, revision: 1, updatedAt: 3 - index,
+  })) });
+}
 let automationFlowRemoved = query.get("state") === "removed";
 if (query.get("surface") === "automation-flow" && automationFlowRemoved) {
   useAutomationEditorStore.getState().begin(draftFromAutomation(automationFlowTask), automationFlowTask);
@@ -486,7 +502,7 @@ Object.assign(window, {
         case "notification_mark_all_read": notificationEntries = notificationEntries.map(entry => ({ ...entry, read: true })); return;
         case "notification_clear": notificationEntries = []; return;
         case "subagents_config_get": return { maxDepth: 2 };
-        case "automations_snapshot": return { automations: query.get("surface") === "management-schedules" ? [{ ...automationFlowTask, name: "每日 AI 新闻推送", prompt: "关注当天 AI 领域的重要动态，筛选值得关注的信息，整理来源与关键结论。", status: "ACTIVE", nextRunAt: new Date(Date.now() + 3600000).toISOString() }] : query.get("surface") === "automation-flow" && !automationFlowRemoved ? [automationFlowTask] : [], records: [] };
+        case "automations_snapshot": return { automations: collectionAudit ? ["每日行业简报", "每周交付报告", "资料归档与检查"].map((name, index) => ({ ...automationFlowTask, id: `collection-task-${index}`, name, prompt: "整理重要动态与项目进展，保留来源并汇总关键结论。", status: index === 1 ? "PAUSED" : "ACTIVE", nextRunAt: new Date(Date.now() + 3600000).toISOString() })) : query.get("surface") === "management-schedules" ? [{ ...automationFlowTask, name: "每日 AI 新闻推送", prompt: "关注当天 AI 领域的重要动态，筛选值得关注的信息，整理来源与关键结论。", status: "ACTIVE", nextRunAt: new Date(Date.now() + 3600000).toISOString() }] : query.get("surface") === "automation-flow" && !automationFlowRemoved ? [automationFlowTask] : [], records: [] };
         case "automations_save": {
           if (query.get("surface") !== "automation-flow") throw new Error("This fixture does not save automations");
           if (args.automation.id && automationFlowRemoved) throw new Error("原自动化任务已被移除");
@@ -834,7 +850,7 @@ function CodingSidebarReview({ cwd, onCwdChange }: { cwd: string; onCwdChange: (
 function ManagementReviewFixture({ surface }: { surface: string }) {
   const layout = useAppSidebarLayout();
   useEffect(() => { layout.setCollapsed(query.get("collapsed") === "1"); }, []);
-  const label = surface === "projects" ? "项目" : surface === "organization-shell" ? "组织" : surface === "management-experts" ? "专家·技能·连接器" : surface === "management-knowledge" ? "知识库" : "自动化";
+  const label = surface === "resource-groups" ? "专家团" : surface === "projects" ? "项目" : surface === "organization-shell" ? "组织" : surface === "management-experts" ? "专家·技能·连接器" : surface === "management-knowledge" ? "知识库" : "自动化";
   return <div className={`app${query.get("platform") === "mac" ? " app--macos" : ""}`}><SidebarLayoutContext.Provider value={layout.context}>
     <ReviewWindowChrome />
     <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "") + (layout.resizing ? " app__body--sidebar-resizing" : "")}>
@@ -842,7 +858,7 @@ function ManagementReviewFixture({ surface }: { surface: string }) {
       <SidebarResizeHandle layout={layout} />
       <main className="app__main">
         <PageChromeProvider macOS={query.get("platform") === "mac"} sidebarCollapsed={layout.collapsed} onToggleSidebar={() => layout.setCollapsed(false)} onNewTask={() => {}}>
-          <PlaceholderPage label={label} cwd="/review/EchoAgent" onOpenAutomationSettings={() => {}} onStartOrganizationConversation={() => {}} />
+          {surface === "resource-groups" ? <GroupWorkspace cwd="/review/EchoAgent" models={[]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} /> : <PlaceholderPage label={label} cwd="/review/EchoAgent" onOpenAutomationSettings={() => {}} onStartOrganizationConversation={() => {}} />}
         </PageChromeProvider>
       </main>
     </div>
@@ -862,6 +878,7 @@ function Fixture() {
   ));
   if (surface === "browser-toolbar") return <div className="tool-side-panel" style={{width:"min(100%, 520px)",height:"100%"}}><BrowserPreview url="" /></div>;
   if (surface === "about") return <AboutDialog open onClose={() => {}} />;
+  if (surface === "queue-admission") return <QueueAdmissionReview />;
   if (surface === "feedback") return <FeedbackDialog open sessionId="review" messageId="review" rating="up" onClose={() => {}} />;
   if (surface === "update") return <UpdateDialog open onClose={() => {}} />;
   if (surface === "controls") return <DesignSystemReview />;
@@ -965,7 +982,7 @@ function Fixture() {
     }} onCancel={() => {}} title={query.has("scheduledReplay") ? "定时任务执行报告" : "评审投影仪性能与内存泄漏"} /></main>
     {recoverySent && query.has("recovery") && <p role="note" style={{position:"absolute",top:0,left:0,maxWidth:"100%",background:"var(--echo-bg-secondary)",fontSize:12,padding:8}}>{recoverySent}</p>}
   </div>;
-  if (["projects", "organization-shell", "automation-templates", "management-experts", "management-knowledge", "management-schedules"].includes(surface)) return <ManagementReviewFixture surface={surface} />;
+  if (["resource-groups", "projects", "organization-shell", "automation-templates", "management-experts", "management-knowledge", "management-schedules"].includes(surface)) return <ManagementReviewFixture surface={surface} />;
   if (surface === "organization" || surface === "organization-login") return <div style={{ height: "100%", overflow: "auto" }}><OrganizationMemoryPanel onStartConversation={() => {}} /></div>;
   if (surface === "meeting") return <MeetingMinutesPanel modelId="review/MiniMax-M3" models={[{ id: "review/MiniMax-M3", label: "MiniMax M3", providerId: "review", providerKind: "custom", source: "personal" }]} />;
   if (surface === "permission-picker") return <div style={{ position: "relative", height: "100%", background: "var(--echo-bg-secondary)" }}>

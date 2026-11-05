@@ -1,4 +1,4 @@
-import { ResourceList, ResourceRow } from "./ResourceList";
+import { ResourceList, ResourceMenu, ResourceRow } from "./ResourceList";
 import { TemplateCard } from "./TemplateCard";
 import { avatarTextColor } from "../lib/avatar-color";
 /** Expert management uses shared resource rows; creation uses shared template choices.
@@ -110,8 +110,6 @@ const ASSISTANT_TEMPLATES = [
     category: "分析",
   },
 ];
-
-type StatusVariant = "working" | "idle" | "abnormal";
 
 interface AssistantsPanelProps {
   onUseAssistant?: (agent: AgentEntry) => void;
@@ -240,8 +238,6 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
     a.name.toLowerCase().includes(query) ||
     (a.description ?? "").toLowerCase().includes(query));
 
-  const getStatusVariant = useCallback((_agent: AgentEntry): StatusVariant => "idle", []);
-
   if (profileAgent) {
     return (
       <>
@@ -269,7 +265,7 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
           <AddCircleIcon size="sm" /><span>创建专家</span>
         </button>
       </>}
-      summary={loading && userAssistants.length === 0 ? "正在读取专家…" : loadError && userAssistants.length === 0 ? "专家列表未加载" : `${userAssistants.length} 个专家`}>
+      summary={loading && userAssistants.length === 0 ? "正在读取专家…" : loadError && userAssistants.length === 0 ? "专家列表未加载" : undefined}>
       <div className="colleagues-panel colleagues-panel--dashboard">
         <div className="colleagues-panel-section">
           {/* My Assistants Cards */}
@@ -287,19 +283,14 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
           )}
 
           {filteredAssistants.length > 0 && (
-            <ResourceList aria-label="已创建专家">
+            <ResourceList collectionKey="experts" summary={`${filteredAssistants.length} 个专家`} aria-label="已创建专家">
               {filteredAssistants.map((agent) => {
-                const statusVariant = getStatusVariant(agent);
                 return <ResourceRow key={agent.path}>
                   <button type="button" className="colleague-card-profile-main resource-row__main"
                     onClick={() => setProfileAgent(agent)} aria-label={`查看专家 ${agent.name} 详情`}>
-                    <ColleagueAvatar index={agent.avatar} name={agent.name} size={36} status={statusVariant} />
+                    <ColleagueAvatar index={agent.avatar} name={agent.name} size={36} />
                     <span className="resource-row__body">
-                      <span className="resource-row__title">{agent.name}
-                        <span className={`colleague-card-status-pill colleague-card-status-pill--${statusVariant}`}>
-                          {statusVariant === "working" ? "工作中" : statusVariant === "idle" ? "空闲" : "异常"}
-                        </span>
-                      </span>
+                      <span className="resource-row__title">{agent.name}</span>
                       <span className="resource-row__description resource-clamp">{agent.description || "（无描述）"}</span>
                       <span className="resource-row__meta">
                         {agent.modelTags?.map((t) => MODEL_TAGS.find(m => m.key === t)?.label ?? t).join(" · ") || "通用专家"}
@@ -310,12 +301,10 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
                     <button type="button" className="capability-button" onClick={() => onUseAssistant?.(agent)} aria-label={`与${agent.name}对话`}>
                       <ChatBubbleIcon size="sm" /><span>对话</span>
                     </button>
-                    <button type="button" className="capability-button" onClick={() => openEdit(agent)} aria-label={`编辑专家 ${agent.name}`}>
-                      <EditToolIcon size="sm" /><span>编辑</span>
-                    </button>
-                    <button type="button" className="capability-button resource-action--danger" onClick={() => handleDelete(agent)} aria-label={`删除专家 ${agent.name}`} title="删除专家">
-                      <DeleteIcon size="sm" />
-                    </button>
+                    <ResourceMenu label={`专家 ${agent.name}`} actions={[
+                      { label: `编辑专家 ${agent.name}`, text: "编辑专家", onSelect: () => openEdit(agent) },
+                      { label: `删除专家 ${agent.name}`, text: "删除专家", danger: true, onSelect: () => handleDelete(agent) },
+                    ]} />
                   </div>
                 </ResourceRow>;
               })}
@@ -685,17 +674,16 @@ function CreateColleagueDialog({
 }
 
 // ============================================================
-// ColleagueAvatar (with status indicator)
+// ColleagueAvatar
 // ============================================================
 
 function ColleagueAvatar({
-  index, name, size = 40, overrideColor, status,
+  index, name, size = 40, overrideColor,
 }: {
   index?: number;
   name: string;
   size?: number;
   overrideColor?: string;
-  status?: StatusVariant;
 }) {
   const initial = (name || "?").charAt(0).toUpperCase();
   const presetIndex = (index ?? 0) - 1;
@@ -710,9 +698,6 @@ function ColleagueAvatar({
       >
         {initial}
       </div>
-      {status && (
-        <span className={`colleague-avatar-dot colleague-avatar-dot--${status}`} />
-      )}
     </div>
   );
 }

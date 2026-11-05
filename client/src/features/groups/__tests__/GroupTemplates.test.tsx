@@ -6,6 +6,7 @@ import { GroupTeams, TemplatePicker } from "../GroupManagement";
 import { GroupWorkspace } from "../GroupWorkspace";
 import { groupCreate, groupDeleteTeam, groupTemplates, type TeamTemplate } from "../group-client";
 import { useGroupStore } from "../group-store";
+import { readGroupCreationDraft } from "../group-creation-draft";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
 vi.mock("@/lib/agent-client", async original => ({ ...await original<typeof import("@/lib/agent-client")>(), agentsList: vi.fn() }));
@@ -23,7 +24,7 @@ beforeEach(() => {
   vi.mocked(agentsList).mockResolvedValue(experts);
   vi.mocked(groupDeleteTeam).mockResolvedValue(undefined);
   vi.mocked(groupCreate).mockRejectedValue(new Error("验收中保留表单"));
-  useGroupStore.setState({ groups: [], current: null, currentId: null, createTemplate: null, createFrom: null, loading: false, error: null });
+  useGroupStore.setState({ groups: [], current: null, currentId: null, createTemplate: null, createFrom: null, loading: false, error: null, drafts: {}, outbox: {} });
 });
 afterEach(cleanup);
 const mountWorkspace = () => render(<GroupWorkspace cwd="/work" modelId="default-model" models={[
@@ -182,4 +183,90 @@ it("ignores a late creation response after leaving and reuses the request identi
   fireEvent.click(screen.getByRole("button", {name: "返回专家团"}));
   await act(async () => { resolve({id:"late"} as Awaited<ReturnType<typeof groupCreate>>); });
   expect(useGroupStore.getState().currentId).not.toBe("late");
+});
+
+it("名称可以自动建议，创建草稿在离开后恢复，取消会清除草稿", async () => {
+  let view = mountWorkspace();
+  fireEvent.click(screen.getByRole("button",{name:"创建专家团"}));
+  await screen.findByRole("checkbox",{name:/代码专家/});
+  fireEvent.click(screen.getByRole("checkbox",{name:/代码专家/}));
+  fireEvent.change(screen.getByRole("textbox",{name:"协作目标"}),{target:{value:"保留创建中的目标"}});
+  fireEvent.click(screen.getByRole("button",{name:"创建并进入专家团"}));
+  await waitFor(()=>expect(groupCreate).toHaveBeenCalledWith(expect.objectContaining({name:"代码专家协作组",goal:"保留创建中的目标"})));
+  view.unmount();
+  view = mountWorkspace();
+  expect(screen.getByRole("textbox",{name:"协作目标"})).toHaveValue("保留创建中的目标");
+  expect(await screen.findByRole("checkbox",{name:/代码专家/})).toBeChecked();
+  fireEvent.click(screen.getByRole("button",{name:"取消"}));
+  expect(useGroupStore.getState().drafts["create:pending"]).toBeUndefined();
+  expect(screen.getByRole("button",{name:"创建专家团"})).toBeInTheDocument();
+});
+
+it("模板创建草稿恢复用户修改，重试沿用已持久化的创建请求标识", async () => {
+  vi.mocked(groupTemplates).mockResolvedValue([template]);
+  useGroupStore.setState({ createTemplate: template });
+  let view = mountWorkspace();
+  fireEvent.click(screen.getByRole("button",{name:"创建专家团"}));
+  await screen.findByRole("checkbox",{name:/代码专家/});
+  fireEvent.change(screen.getByRole("textbox",{name:"协作目标"}),{target:{value:"修改后的模板目标"}});
+  fireEvent.click(screen.getByRole("button",{name:"创建并进入专家团"}));
+  await waitFor(()=>expect(groupCreate).toHaveBeenCalledOnce());
+  const requestId = vi.mocked(groupCreate).mock.calls[0][0].requestId;
+  view.unmount();
+  view = mountWorkspace();
+  expect(screen.getByRole("textbox",{name:"协作目标"})).toHaveValue("修改后的模板目标");
+  await screen.findByRole("checkbox",{name:/代码专家/});
+  fireEvent.click(screen.getByRole("button",{name:"创建并进入专家团"}));
+  await waitFor(()=>expect(groupCreate).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(groupCreate).mock.calls[1][0].requestId).toBe(requestId);
+});
+
+it("来源创建在重启后恢复引用正文与原请求身份，迟到成功不会重复建群", async () => {
+  useGroupStore.setState({ createFrom: { sessionId: "source-session", team: { teamId: "来源团队", description: "来源目标", members: ["代码专家"], roles: { "代码专家": "检查边界" } }, referenceText: "必须支持离线登录" } });
+  const first = mountWorkspace();
+  await screen.findByRole("checkbox", { name: /代码专家/ });
+  fireEvent.click(screen.getByText("引用来源对话", { exact: true }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "把下列内容共享给成员" }));
+  fireEvent.click(screen.getByRole("button", { name: "创建并进入专家团" }));
+  await screen.findByText("验收中保留表单");
+  const input = vi.mocked(groupCreate).mock.calls[0][0];
+  first.unmount();
+  // Simulate a fresh renderer: the durable draft survives, transient source state does not.
+  useGroupStore.setState({ createFrom: null, createTemplate: null });
+  mountWorkspace();
+  await screen.findByRole("checkbox", { name: /代码专家/ });
+  expect(screen.getByRole("checkbox", { name: "把下列内容共享给成员" })).toBeChecked();
+  expect(screen.getByText("必须支持离线登录")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "创建并进入专家团" }));
+  await waitFor(() => expect(groupCreate).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(groupCreate).mock.calls[1][0]).toEqual(input);
+});
+
+it("旧版来源草稿从已提交输入恢复引用，缺失正文时要求重新引用或明确取消", async () => {
+  const input = { sourceSessionId: "old-session", sourceTeamId: "old-team", referenceText: "旧版引用正文" };
+  const draft = { scope: "source:old-session:old-team", name: "旧团队", goal: "目标", directory: "/work", model: "default-model", selected: ["代码专家"], reference: true, requestKey: JSON.stringify(input) };
+  useGroupStore.setState({ drafts: { "create:pending": JSON.stringify(draft) } });
+  const view = mountWorkspace();
+  await screen.findByRole("checkbox", { name: /代码专家/ });
+  expect(screen.getByText("旧版引用正文")).toBeInTheDocument();
+  view.unmount();
+  useGroupStore.setState({ drafts: { "create:pending": JSON.stringify({ ...draft, requestKey: "" }) } });
+  mountWorkspace();
+  await screen.findByRole("checkbox", { name: /代码专家/ });
+  fireEvent.click(screen.getByRole("button", { name: "创建并进入专家团" }));
+  expect(groupCreate).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent("此前草稿未保存引用正文");
+  fireEvent.click(screen.getByRole("checkbox", { name: "把下列内容共享给成员" }));
+  fireEvent.click(screen.getByRole("button", { name: "创建并进入专家团" }));
+  await waitFor(() => expect(groupCreate).toHaveBeenCalledOnce());
+  expect(vi.mocked(groupCreate).mock.calls[0][0]).toMatchObject({ sourceSessionId: "old-session", sourceTeamId: "old-team" });
+  expect(vi.mocked(groupCreate).mock.calls[0][0].referenceText).toBeUndefined();
+});
+
+it("来源团队省略可选说明和职责时，未提交草稿仍能完整恢复引用", () => {
+  const draft = { scope: "source:s:t", name: "团队", goal: "", directory: "/work", model: "default-model", selected: ["代码专家"], reference: true,
+    source: { sessionId: "s", team: { teamId: "t", members: ["代码专家"] }, referenceText: "不可丢失的来源正文" } };
+  const saved = readGroupCreationDraft(JSON.stringify(draft));
+  expect(saved?.source?.referenceText).toBe("不可丢失的来源正文");
+  expect(saved?.source?.team).toMatchObject({ description: "", roles: {} });
 });

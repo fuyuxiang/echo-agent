@@ -74,7 +74,7 @@ describe('extension navigation preserves the live management context', () => {
       expect(screen.getByRole('button', { name: '专家团' })).toHaveAttribute('aria-current', 'page');
       fireEvent.click(screen.getByRole('button', { name: '插件' }));
     }
-    fireEvent.click(await screen.findByRole('button', { name: '已启用' }));
+    fireEvent.click(await screen.findByRole('button', { name: '禁用插件 本地插件' }));
     await waitFor(() => expect(client.pluginsAction).toHaveBeenCalledWith('source', { type: 'disable', pluginId: 'user/demo' }));
     expect(useSessionsStore.getState().currentSessionId).toBe('source');
     expect(useSessionStore.getState().messages).toEqual(before);

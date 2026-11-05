@@ -1,4 +1,4 @@
-import { ResourceDescription, ResourceIcon, ResourceList, ResourceRow } from "./ResourceList";
+import { ResourceDescription, ResourceIcon, ResourceList, ResourceMenu, ResourceRow } from "./ResourceList";
 /**
  * 插件面板 - 对接 EchoAgent 的 echo.agent/plugins/list + echo.agent/plugins/action
  *
@@ -15,7 +15,6 @@ import {
   SkillIcon,
   AgentToolIcon,
   McpIcon,
-  DeleteIcon,
 } from "@/foundation/components/Icon/icons";
 import { pluginsAction, pluginsList } from "@/lib/agent-client";
 import { openLocalPath } from "@/lib/markdown-host";
@@ -165,7 +164,7 @@ export function PluginsPanel({ sessionId, onToast }: PluginsPanelProps) {
       }
       summary={loadError && plugins.length === 0
           ? "插件列表未加载"
-          : loading && plugins.length === 0 ? "正在读取插件…" : `${plugins.length} 个插件 · ${enabledCount} 启用 · ${trustedCount} 受信任`}>
+          : loading && plugins.length === 0 ? "正在读取插件…" : undefined}>
 
 
       <div className="plugins-panel__list">
@@ -181,7 +180,7 @@ export function PluginsPanel({ sessionId, onToast }: PluginsPanelProps) {
         {plugins.length > 0 && visible.length === 0 && (
           <CapabilityEmptyState icon={<PuzzlePieceIcon size="lg" />} title={`没有找到与「${search}」匹配的插件`} onClear={() => setSearch("")} />
         )}
-        {visible.length > 0 && <ResourceList aria-label="已安装插件">{visible.map((p) => (
+        {visible.length > 0 && <ResourceList collectionKey="plugins" summary={query ? `${visible.length} 个匹配插件` : `${plugins.length} 个插件 · ${enabledCount} 启用 · ${trustedCount} 受信任`} aria-label="已安装插件">{visible.map((p) => (
           <ResourceRow
             key={p.id ?? p.name}
             className={`plugins-panel__item ${p.enabled ? "" : "plugins-panel__item--muted"}`}
@@ -219,11 +218,10 @@ export function PluginsPanel({ sessionId, onToast }: PluginsPanelProps) {
               </div>
             </div>
             <div className="plugins-panel__item-actions resource-row__actions">
-              {(p.management?.uninstallable || p.management?.removable) && <button type="button" className="capability-button plugins-panel__remove" aria-label={`${p.management.uninstallable ? "卸载" : "移除"}插件 ${p.name}`} disabled={loading || busy !== null} onClick={() => removePlugin(p)}><DeleteIcon size="sm" />{p.management.uninstallable ? "卸载" : "移除"}</button>}
-              {!p.management?.uninstallable && !p.management?.removable && p.root && <button type="button" className="capability-button" disabled={busy !== null} onClick={() => { void openLocalPath(p.root!, { revealFile: true }).catch(error => onToast?.(`无法打开插件来源：${String(error)}`)); }}>来源目录</button>}
               <button
                 type="button"
                 aria-pressed={p.enabled}
+                aria-label={`${p.enabled ? "禁用" : "启用"}插件 ${p.name}`}
                 className={`plugins-panel__toggle ${p.enabled ? "plugins-panel__toggle--on" : ""}`}
                 onClick={() => handleToggle(p)}
                 disabled={loading || busy !== null}
@@ -231,6 +229,10 @@ export function PluginsPanel({ sessionId, onToast }: PluginsPanelProps) {
               >
                 {busy === (p.id ?? p.name) ? "…" : p.enabled ? "已启用" : "已禁用"}
               </button>
+              <ResourceMenu label={`插件 ${p.name}`} disabled={loading || busy !== null} actions={[
+                ...(p.root ? [{ label: "来源目录", onSelect: () => { void openLocalPath(p.root!, { revealFile: true }).catch(error => onToast?.(`无法打开插件来源：${String(error)}`)); } }] : []),
+                ...(p.management?.uninstallable || p.management?.removable ? [{ label: `${p.management.uninstallable ? "卸载" : "移除"}插件 ${p.name}`, text: p.management.uninstallable ? "卸载插件" : "移除插件", danger: true, onSelect: () => removePlugin(p) }] : []),
+              ]} />
             </div>
           </ResourceRow>
         ))}</ResourceList>}

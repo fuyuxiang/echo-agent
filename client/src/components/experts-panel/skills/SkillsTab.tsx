@@ -1,8 +1,7 @@
-import { ResourceIcon, ResourceList, ResourceRow } from "../../ResourceList";
+import { ResourceDescription, ResourceIcon, ResourceList, ResourceMenu, ResourceRow } from "../../ResourceList";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Upload } from "lucide-react";
 import {
-  AddCircleIcon, RefreshCwIcon, PuzzlePieceIcon, DeleteIcon,
+  AddCircleIcon, RefreshCwIcon, PuzzlePieceIcon,
 } from "@/foundation/components/Icon/icons";
 import {
   skillsList, skillsRemove, skillsToggle, skillsUninstallPackage, internalReload,
@@ -68,7 +67,7 @@ function RuntimeSkillRow({
         <ResourceIcon><PuzzlePieceIcon size="md" /></ResourceIcon>
         <div className="sk-inst-info">
           <div className="sk-card-name resource-row__title">{name}</div>
-          <p className="sk-card-desc resource-row__description resource-clamp">{skill.description || "（无描述）"}</p>
+          <ResourceDescription text={skill.description || "（无描述）"} label={`技能「${name}」的说明`} className="sk-card-desc" />
           <div className="sk-inst-meta resource-row__meta">
             <span>{skillSourceLabel(skill)}</span>
             {organizationManaged && <span>组织托管</span>}
@@ -93,16 +92,11 @@ function RuntimeSkillRow({
         />
         <span className="sk-toggle-track"><span className="sk-toggle-thumb" /></span>
       </label>
-      {onUpload && skill.path && !organizationManaged && (
-        <button type="button" className="sk-inst-upload" title="上传到组织"
-          aria-label={`上传${name}到组织`}
-          onClick={() => onUpload(skill)}><Upload size={16} /></button>
-      )}
-      {onRemove && removablePath && !organizationManaged && (
-        <button type="button" className="sk-inst-del" title="移除"
-          aria-label={`移除技能 ${name}`}
-          onClick={() => onRemove(skill)}><DeleteIcon size="sm" /></button>
-      )}
+      <span className="resource-switch-status">{mandatory ? "组织强制" : organizationManaged ? skill.enabled ? "已安装" : "未安装" : skill.enabled ? "已启用" : "已停用"}</span>
+      <ResourceMenu label={`技能 ${name}`} actions={[
+        ...(onUpload && skill.path && !organizationManaged ? [{ label: `上传${name}到组织`, text: "上传到组织", onSelect: () => onUpload(skill) }] : []),
+        ...(onRemove && removablePath && !organizationManaged ? [{ label: `移除技能 ${name}`, text: "移除技能", danger: true, onSelect: () => onRemove(skill) }] : []),
+      ]} />
       </div>
     </ResourceRow>
   );
@@ -255,7 +249,7 @@ export function SkillsTab({ pills, onToast, cwd }: Props) {
             <AddCircleIcon size="sm" /><span>添加技能</span>
           </button>
         </>}
-        summary={loading && skills.length === 0 ? "正在读取技能…" : error && skills.length === 0 ? "技能列表未加载" : `${skills.length} 个技能 · ${skills.filter(skill => skill.enabled).length} 个已启用`}>
+        summary={loading && skills.length === 0 ? "正在读取技能…" : error && skills.length === 0 ? "技能列表未加载" : undefined}>
 
         {error && (
           <CapabilityError onRetry={() => void refreshAndReload()} retrying={loading}>
@@ -271,7 +265,7 @@ export function SkillsTab({ pills, onToast, cwd }: Props) {
         ) : visible.length === 0 ? (
           <CapabilityEmptyState icon={<PuzzlePieceIcon size="lg" />} title={`没有找到与「${search}」匹配的技能`} onClear={() => setSearch("")} />
         ) : (
-          <ResourceList className="sk-inst-list" aria-label="已安装技能">
+          <ResourceList collectionKey="skills" summary={`${visible.length} 个技能 · ${visible.filter(skill => skill.enabled).length} 个已启用`} className="sk-inst-list" aria-label="已安装技能">
             {visible.map((skill) => (
               <RuntimeSkillRow key={skill.name + (skill.path ?? "")} skill={skill}
                 onToggle={handleToggle} onRemove={handleRemove} onUpload={setUploadSkill} />

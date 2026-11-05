@@ -85,16 +85,19 @@ describe("统一扩展管理的真实页面交互", () => {
     expect(api.agentsSave).not.toHaveBeenCalled();
   });
 
-  it("专家列表的对话和编辑直接可用，删除仍需确认", async () => {
+  it("专家卡片可对话，通过更多菜单编辑，删除仍需确认", async () => {
     const onUse = vi.fn();
     render(<AssistantsPanel onUseAssistant={onUse} />);
     fireEvent.click(await screen.findByRole("button", { name: "与测试专家对话" }));
     expect(onUse).toHaveBeenCalledWith(expert);
-    fireEvent.click(screen.getByRole("button", { name: "编辑专家 测试专家" }));
+    expect(screen.queryByText("空闲")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "专家 测试专家更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "编辑专家 测试专家" }));
     const editor = await screen.findByRole("dialog", { name: "编辑 测试专家" });
     expect(within(editor).getByRole("textbox", { name: "专家名称" })).toHaveValue(expert.name);
     fireEvent.click(within(editor).getByRole("button", { name: "取消" }));
-    fireEvent.click(screen.getByRole("button", { name: "删除专家 测试专家" }));
+    fireEvent.click(screen.getByRole("button", { name: "专家 测试专家更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除专家 测试专家" }));
     const confirmation = await screen.findByRole("alertdialog");
     expect(api.agentsDelete).not.toHaveBeenCalled();
     fireEvent.click(within(confirmation).getByRole("button", { name: "取消" }));
@@ -126,6 +129,18 @@ describe("统一扩展管理的真实页面交互", () => {
     fireEvent.click(await screen.findByRole("checkbox", { name: "停用 MCP 服务 测试连接器" }));
     await waitFor(() => expect(api.mcpToggle).toHaveBeenCalledWith(undefined, "review", false));
     expect(useSessionStore.getState().sessionId).toBeNull();
+  });
+
+  it("待启动的连接器不会被显示为零工具故障，地址收进详情后仍可搜索", async () => {
+    render(<ConnectorsTab pills={null} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索连接器" }), { target: { value: "review-tool" } });
+    const name = await screen.findByText("测试连接器");
+    expect(screen.getByText("待会话启动")).toBeInTheDocument();
+    expect(screen.queryByText("0 个工具")).toBeNull();
+    expect(screen.queryByText("review-tool")).toBeNull();
+    fireEvent.click(name);
+    expect(screen.getByText("review-tool")).toBeInTheDocument();
+    expect(screen.getByText("创建会话后将完成握手并列出工具")).toBeInTheDocument();
   });
 
   it("配置入口保留已有内容，拒绝无效 JSON，保存后可回到连接器列表", async () => {

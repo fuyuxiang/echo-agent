@@ -4,7 +4,7 @@ beforeEach(() => { localStorage.clear(); vi.resetModules(); });
 afterEach(() => vi.restoreAllMocks());
 
 describe("draft and outbox recovery", () => {
-  it("restores text, attachments and queue order; in-flight sends stay uncertain", async () => {
+  it.each(["sending", "accepted"])("restores text, attachments and queue order; %s prompts stay uncertain", async status => {
     const { useMessageQueueStore } = await import("@/stores/message-queue-store");
     const { useSessionsStore } = await import("@/stores/sessions-store");
     const { saveDraftAttachments } = await import("../draft-attachments");
@@ -13,6 +13,7 @@ describe("draft and outbox recovery", () => {
     const id = useMessageQueueStore.getState().enqueue("s1", "修改文件", ["/work/a.txt"]);
     useMessageQueueStore.getState().enqueue("s1", "核对结果");
     useMessageQueueStore.getState().claimById("s1", id, "prompt-1");
+    if (status === "accepted") useMessageQueueStore.getState().acknowledgePrompt("s1", "prompt-1");
     vi.resetModules();
     const recovered = (await import("@/stores/message-queue-store")).useMessageQueueStore;
     expect((await import("@/stores/sessions-store")).useSessionsStore.getState().drafts.s1).toBe("尚未发送的长需求");

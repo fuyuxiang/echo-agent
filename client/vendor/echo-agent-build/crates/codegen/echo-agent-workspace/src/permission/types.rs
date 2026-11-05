@@ -300,6 +300,9 @@ pub enum PermissionCommand {
     /// exclusive with YOLO at the handle level; enabling auto clears yolo
     /// and vice versa when applied by the actor.
     SetAutoMode(bool),
+    /// Interactive collaboration keeps classifier blocks actionable in the UI.
+    /// Explicit policy denials remain binding and never enter this path.
+    SetPromptOnAutoDeny(bool),
     /// Install or replace the permission classifier used in auto mode.
     SetClassifier(Option<std::sync::Arc<dyn super::auto_mode::PermissionClassifier>>),
     /// Recent transcript turns for classifier context (compacted by caller).

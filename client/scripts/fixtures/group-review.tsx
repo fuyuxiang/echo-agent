@@ -104,8 +104,10 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
     if (command === "group_snapshot") return presentation(groups.find(group => group.id === args.groupId)!);
     if (command === "group_create") {
       const input = args.input;
+      const existing = groups.find(group => group.id === input.requestId || input.sourceSessionId && input.sourceTeamId && group.sourceSessionId === input.sourceSessionId && group.sourceTeamId === input.sourceTeamId);
+      if (existing) return structuredClone(existing);
       const members = ["协调员", ...input.members].map((name: string, index: number) => ({ id: crypto.randomUUID(), name, expert: index ? name : null, role: index ? `${name}负责专业分析和交付` : "组织协作、汇总交付", modelId: input.modelId, sessionId: `native-${index}`, discussionSessionId: null, generation: 0 }));
-      const group: Group = { id: crypto.randomUUID(), name: input.name, goal: input.goal, cwd: input.cwd, sourceSessionId: null, sourceTeamId: null, coordinatorId: members[0].id, members, messages: [], works: [], decisions: [], archived: false, pinned: false, paused: false, revision: 1, updatedAt: Date.now() };
+      const group: Group = { id: input.requestId ?? crypto.randomUUID(), name: input.name, goal: input.goal, cwd: input.cwd, sourceSessionId: input.sourceSessionId ?? null, sourceTeamId: input.sourceTeamId ?? null, coordinatorId: members[0].id, members, messages: input.referenceText ? [{ id: crypto.randomUUID(), seq: 1, kind: "reference", text: input.referenceText, createdAt: Date.now(), memberId: null, workId: null, replyTo: null, attachments: [], toolCalls: [] }] : [], works: [], decisions: [], archived: false, pinned: false, paused: false, revision: 1, updatedAt: Date.now() };
       groups.push(group); changed(group); return structuredClone(group);
     }
     if (command === "group_send") {
@@ -117,7 +119,7 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
       const quote=group.messages.find(message => message.id === args.input.replyTo);
       const quoteRoot=quote?.requestId ?? group.works.find(work => work.id === quote?.workId)?.rootId ?? (group.works.some(work => work.rootId === quote?.id) ? quote?.id : undefined);
       const requestId=args.input.newRequest ? undefined : args.input.requestId ?? (targets.length === 1 && roots.length === 1 && (!args.input.replyTo || quoteRoot === roots[0]) ? roots[0] : undefined);
-      group.messages.push({ id: args.input.id, seq: group.messages.length + 1, kind: "user", text: args.input.text, createdAt: Date.now(), memberId: null, workId: null, replyTo: args.input.replyTo, attachments: args.input.attachments, toolCalls: [],requestId,memberIds:targets,requestOwnerId:requestId ? null : targets.length === 1 ? targets[0] : group.coordinatorId });
+      group.messages.push({ id: args.input.id, seq: group.messages.length + 1, kind: "user", text: args.input.text, createdAt: Date.now(), memberId: null, workId: null, replyTo: args.input.replyTo, attachments: args.input.attachments, toolCalls: [],requestId,sourceRequestId:args.input.sourceRequestId,sourceAttachmentPaths:args.input.sourceAttachmentPaths,memberIds:targets,requestOwnerId:requestId ? null : targets.length === 1 ? targets[0] : group.coordinatorId });
       if (!requestId) for (const memberId of targets) group.works.push({ id: crypto.randomUUID(), rootId: args.input.id, parentId: null, continuationOf: null, memberId, prompt: args.input.text, status: "running", discussion: args.input.discussion, sessionId: group.members.find(member => member.id === memberId)?.sessionId ?? null, output: "", error: null, createdAt: Date.now(), tokens: 0 });
       changed(group); return;
     }
@@ -126,10 +128,12 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
       if (args.action === "stop_request") { for(const work of group.works) if(work.rootId === args.workId && !["completed","failed","cancelled"].includes(work.status)) work.status="cancelled"; }
       if (args.action === "stop") { group.paused = !args.workId; for (const work of group.works) if ((!args.workId || work.id === args.workId) && !["completed", "failed", "cancelled"].includes(work.status)) work.status = "cancelled"; }
       if (args.action === "retry") {
+        group.paused = false;
         const original = group.works.find(work => work.id === args.workId)!;
+        if(original.status === "uncertain") original.status = "cancelled";
         const root = crypto.randomUUID();
-        group.messages.push({id:root,seq:group.messages.length+1,kind:"user",text:`检查后继续：${original.prompt}`,createdAt:Date.now(),memberId:null,workId:null,replyTo:null,attachments:[],toolCalls:[]});
-        group.works.push({...original,id:crypto.randomUUID(),rootId:root,status:"running",error:null,createdAt:Date.now()});
+        group.messages.push({id:root,seq:group.messages.length+1,kind:"user",text:`检查后继续：${original.prompt}`,createdAt:Date.now(),memberId:null,workId:null,replyTo:null,attachments:[],toolCalls:[],sourceRequestId:original.rootId,requestOwnerId:original.memberId});
+        group.works.push({...original,id:crypto.randomUUID(),rootId:root,status:"running",error:null,output:"",createdAt:Date.now()});
       }
       if (args.action === "resume") { group.paused = false; group.archived = false; }
       if (args.action === "pause") group.paused = true;
@@ -141,6 +145,11 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
     if (command === "agent_resolve_permission") return true;
     if (command === "agent_list_pending_interactions") return { permissions: [], questions: [], planApprovals: [], folderTrustRequests: [] };
     if (command === "automation_capability_status") return { supported: true, permissionMode: "ask", locked: false };
+    if (command === "group_permission_mode_get" || command === "group_permission_mode_set") {
+      const group = groups.find(group => group.id === args.groupId)!;
+      if (command === "group_permission_mode_set") { group.permissionMode=args.mode; changed(group); }
+      return { permissionMode:group.permissionMode ?? "ask", configuredPermissionMode:group.permissionMode ?? "ask", autoModeAvailable:true, alwaysApproveAvailable:true, locked:false, runtimeSyncState:"synced", runtimeAppliedMode:group.permissionMode ?? "ask", remainingPending:0 };
+    }
     if (command === "permission_mode_get") return { permissionMode: "ask", locked: false };
     if (command === "plugin:dialog|open") return ["/review/需求说明.md"];
     if (command === "subagents_config_get") return { maxDepth: 1 };
@@ -167,6 +176,22 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
   appendReply: () => {
     const group = groups.find(group => group.messages.some(message => message.id === "routing-reply"))!;
     group.messages.find(message => message.id === "routing-reply")!.text += "；这是离开页面之后生成的最终结论";
+    changed(group);
+  },
+  interrupt: () => {
+    const group = groups.find(group => group.id === useGroupStore.getState().currentId)!;
+    const root = latestGroupRequestId(group);
+    for (const work of group.works.filter(work => work.rootId === root && work.status === "running")) {
+      work.status = "uncertain"; work.output = "中断前保留的阶段结果";
+      group.messages.push({id:crypto.randomUUID(),seq:group.messages.length+1,kind:"assistant",text:work.output,memberId:work.memberId,workId:work.id,createdAt:Date.now(),replyTo:null,attachments:[],toolCalls:[]});
+    }
+    group.paused = true;
+    changed(group);
+  },
+  seedAttachments: (count: number) => {
+    const group = groups.find(group => group.id === useGroupStore.getState().currentId)!;
+    const root = group.messages.find(message => message.id === latestGroupRequestId(group))!;
+    root.attachments = Array.from({ length: count }, (_, index) => `/review/资料-${index}.txt`);
     changed(group);
   },
   failTemplates: () => { failNextTemplates = true; },
@@ -199,11 +224,12 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
 } });
 function Review() {
   const [label, setLabel] = useState("专家团");
+  const groupChatOpen = useGroupStore(state => !!state.current);
   useGroupEvents(true);
   useEffect(() => { useGroupStore.setState({ current: null, currentId: null }); }, []);
   const content = label === "专家团" ? (
-    <CapabilitySection active={label} onNavigate={setLabel}>
-      <GroupWorkspace cwd="/review/团队工作区" modelId="local/mock" models={[{ id: "local/mock", label: "本地验收模型" }]} workspaces={[{ cwd: "/review/团队工作区", sessionCount: 1 }]} onToast={() => {}} onOpenSettings={() => {}} />
+    <CapabilitySection active={label} onNavigate={setLabel} hideNavigation={groupChatOpen}>
+      <GroupWorkspace onOpenExperts={() => setLabel("专家·技能·连接器")} cwd="/review/团队工作区" modelId="local/mock" models={[{ id: "local/mock", label: "本地验收模型" }]} workspaces={[{ cwd: "/review/团队工作区", sessionCount: 1 }]} onToast={() => {}} onOpenSettings={() => {}} />
     </CapabilitySection>
   ) : <PlaceholderPage label={label} onNavigate={setLabel} />;
   if (new URLSearchParams(location.search).get("groupShell") !== "1") return content;

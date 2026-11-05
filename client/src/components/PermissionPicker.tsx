@@ -8,6 +8,7 @@
  *
  * 首页选择只属于即将创建的任务；已有会话通过 sessionId
  * 定向同步，绝不影响其他任务。
+ * 专家团通过 groupId 管理整个协作范围，独立于首页和成员单个会话。
  */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -17,7 +18,8 @@ import {
   CheckIcon,
 } from "@/foundation/components/Icon/icons";
 import { permissionModeGet, permissionModeSet } from "@/lib/agent-client";
-import type { PermissionMode } from "@/lib/agent-client";
+import type { PermissionMode, PermissionModeStatus } from "@/lib/agent-client";
+import { groupPermissionModeGet, groupPermissionModeSet } from "@/features/groups/group-client";
 import { useAnchoredFloating } from "@/lib/use-anchored-floating";
 import {
   permissionModeStatusFromEvent,
@@ -51,6 +53,9 @@ export function PermissionPicker({
   triggerLabel,
   sessionId,
   compact = false,
+  groupId,
+  groupPermissionMode,
+  disabled = false,
 }: {
   onToast?: (msg: string) => void;
   /** 覆盖触发按钮文字（如本地助理页固定显示「默认权限」）；缺省显示当前模式名。 */
@@ -59,13 +64,25 @@ export function PermissionPicker({
   sessionId?: string;
   /** Icon trigger for narrow editor composers; the current mode stays in its accessible name and tooltip. */
   compact?: boolean;
+  /** A persistent collaboration scope, independent of Home and single tasks. */
+  groupId?: string;
+  groupPermissionMode?: PermissionMode;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [confirmingAlways, setConfirmingAlways] = useState(false);
   const homeMode = usePermissionModeStore((state) => state.homeMode);
-  const status = usePermissionModeStore((state) => sessionId
+  const taskStatus = usePermissionModeStore((state) => sessionId
     ? state.statuses[sessionId] ?? null
     : state.capabilityStatus);
+  const [groupStatus, setGroupStatus] = useState<PermissionModeStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
+  const status = groupId ? groupStatus : taskStatus;
+  // Managed policy/capability broadcasts also apply to already-open groups.
+  const groupCapabilityRefresh = groupId ? taskStatus : null;
+  const scope = groupId ? "本专家团" : "本任务";
+  const scopeKey = groupId ? `group:${groupId}` : sessionId;
   const setHomeMode = usePermissionModeStore((state) => state.setHomeMode);
   const setStatus = usePermissionModeStore((state) => state.setStatus);
   const catalogMode = useSessionsStore((state) => sessionId
@@ -80,8 +97,10 @@ export function PermissionPicker({
   const alwaysOptionRef = useRef<HTMLButtonElement>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const requestRef = useRef(0);
-  const activeSessionRef = useRef(sessionId);
-  activeSessionRef.current = sessionId;
+  const activeScopeRef = useRef(scopeKey);
+  activeScopeRef.current = scopeKey;
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   const { style: popoverStyle, placement } = useAnchoredFloating(
     triggerRef,
     popoverRef,
@@ -103,15 +122,23 @@ export function PermissionPicker({
     : status?.permissionMode;
   const mode: PermissionMode = status?.locked
     ? status.permissionMode
+    : groupId
+      ? runtimeMode ?? groupPermissionMode ?? "ask"
     : sessionId
       ? runtimeMode ?? catalogMode ?? "ask"
       : homeMode;
 
   useEffect(() => {
     const request = ++requestRef.current;
-    permissionModeGet(sessionId)
+    if (groupId) { setGroupStatus(null); setError(null); }
+    (groupId ? groupPermissionModeGet(groupId) : permissionModeGet(sessionId))
       .then((status) => {
         if (requestRef.current !== request) return;
+        if (groupId) {
+          const normalized = permissionModeStatusFromEvent(status);
+          if (!normalized) throw new Error("专家团权限状态无效，请重试");
+          setGroupStatus(normalized); return;
+        }
         setStatus(status);
         if (sessionId) {
           useSessionsStore.getState().upsert({
@@ -128,13 +155,14 @@ export function PermissionPicker({
           }
         }
       })
-      .catch(() => {
+      .catch((error) => {
+        if (groupId && requestRef.current === request) setError(`读取权限失败：${String(error).replace(/^Error:\s*/, "")}`);
         /* 读不到就用默认 ask */
       });
     return () => {
       if (requestRef.current === request) requestRef.current += 1;
     };
-  }, [sessionId, setHomeMode, setStatus]);
+  }, [groupId, groupPermissionMode, groupCapabilityRefresh, sessionId, setHomeMode, setStatus, refresh]);
 
   const closePicker = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -152,7 +180,8 @@ export function PermissionPicker({
   useEffect(() => {
     closePicker(false);
     setBusy(false);
-  }, [sessionId, closePicker]);
+    setError(null);
+  }, [scopeKey, closePicker]);
 
   // A portalled popover is not a DOM child of the trigger, so both trees
   // participate in outside-click and Escape handling.
@@ -193,11 +222,11 @@ export function PermissionPicker({
         ?? menu?.querySelector<HTMLButtonElement>('[role="menuitemradio"]:not(:disabled)'))?.focus();
     });
     return () => cancelAnimationFrame(frame);
-  }, [open]);
+  }, [open, groupStatus]);
 
   const applySelection = useCallback(
     async (next: PermissionMode) => {
-      const desiredMode = sessionId
+      const desiredMode = sessionId || groupId
         ? status?.configuredPermissionMode ?? mode
         : mode;
       if (
@@ -210,34 +239,39 @@ export function PermissionPicker({
       }
       // An earlier capability read must not overwrite the result of the
       // user's newer write when it eventually resolves.
-      if (sessionId) requestRef.current += 1;
+      if (sessionId || groupId) requestRef.current += 1;
       setBusy(true);
+      setError(null);
       try {
-        if (!sessionId) {
+        if (!sessionId && !groupId) {
           setHomeMode(next);
           closePicker(true);
           return;
         }
-        const result = await permissionModeSet(sessionId, next);
+        const result = groupId ? await groupPermissionModeSet(groupId, next) : await permissionModeSet(sessionId!, next);
         const normalizedStatus = permissionModeStatusFromEvent(result);
-        if (normalizedStatus) setStatus(normalizedStatus);
-        useSessionsStore.getState().upsert({
-          sessionId,
+        if (normalizedStatus && !groupId) setStatus(normalizedStatus);
+        if (!groupId) useSessionsStore.getState().upsert({
+          sessionId: sessionId!,
           permissionMode: result.permissionMode ?? next,
         });
-        if (activeSessionRef.current !== sessionId) return;
+        if (!mountedRef.current || activeScopeRef.current !== scopeKey) return;
+        if (normalizedStatus && groupId) setGroupStatus(normalizedStatus);
         closePicker(true);
         const remaining = result?.remainingPending ?? 0;
         if (remaining > 0) onToast?.(`仍有 ${remaining} 项操作等待你确认`);
+        else if (groupId) onToast?.("已更新本专家团权限，协调员与全部成员共用此设置");
       } catch (e) {
-        if (activeSessionRef.current === sessionId) {
-          onToast?.(`权限模式切换失败：${String(e).replace(/^Error:\s*/, "")}`);
+        if (mountedRef.current && activeScopeRef.current === scopeKey) {
+          const message = `权限模式切换失败：${String(e).replace(/^Error:\s*/, "")}`;
+          setError(message);
+          onToast?.(message);
         }
       } finally {
-        if (activeSessionRef.current === sessionId) setBusy(false);
+        if (mountedRef.current && activeScopeRef.current === scopeKey) setBusy(false);
       }
     },
-    [closePicker, mode, onToast, sessionId, setHomeMode, setStatus, status],
+    [closePicker, mode, onToast, sessionId, groupId, scopeKey, setHomeMode, setStatus, status],
   );
 
   const select = useCallback((next: PermissionMode) => {
@@ -249,6 +283,7 @@ export function PermissionPicker({
   }, [applySelection, mode]);
 
   const current = MODES.find((m) => m.id === mode) ?? MODES[0];
+  const modeLabel = (item: (typeof MODES)[number]) => item.id === "always-approve" ? `${scope}免审批` : item.label;
   const autoUnavailable = status?.autoModeAvailable === false;
   const alwaysUnavailable = status?.alwaysApproveAvailable === false;
   const runtimeUnavailable = Boolean(sessionId) && status?.runtimeSyncState === "offline";
@@ -263,12 +298,12 @@ export function PermissionPicker({
       return status?.autoModeUnavailableReason ?? "自动判断当前不可用";
     }
     if (item.id === "always-approve" && alwaysUnavailable) {
-      return status?.alwaysApproveUnavailableReason ?? "本任务免审批当前不可用";
+      return status?.alwaysApproveUnavailableReason ?? `${scope}免审批当前不可用`;
     }
-    return item.desc;
+    return item.id === "auto" && groupId ? "低风险自动批准，风险操作交给你确认" : item.desc;
   };
   const modeDisabled = (item: (typeof MODES)[number]) =>
-    busy ||
+    busy || disabled || Boolean(groupId && !groupStatus) ||
     runtimeUnavailable ||
     (item.id === "auto" && autoUnavailable) ||
     (item.id === "always-approve" && alwaysUnavailable) ||
@@ -279,23 +314,24 @@ export function PermissionPicker({
       <button
         ref={triggerRef}
         type="button"
+        disabled={disabled}
         className="echo-composer-meta__btn permission-picker__trigger"
         data-mode-id={current.id}
         onClick={() => {
           if (open) closePicker(false);
-          else setOpen(true);
+          else { if (groupId && groupStatus) setRefresh(value => value + 1); setOpen(true); }
         }}
         onKeyDown={(event) => {
-          if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); setOpen(true); }
+          if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); if (!open && groupId && groupStatus) setRefresh(value => value + 1); setOpen(true); }
         }}
-        aria-label={triggerLabel ?? current.label}
-        title={`权限模式 · ${current.label} · ${modeDescription(current)}${syncWarning ? ` · ${syncWarning}` : ""}`}
+        aria-label={triggerLabel ?? (groupId ? `专家团权限：${modeLabel(current)}` : modeLabel(current))}
+        title={`权限模式 · ${modeLabel(current)} · ${modeDescription(current)}${error || syncWarning ? ` · ${error ?? syncWarning}` : ""}`}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? popoverId : undefined}
       >
         <current.icon className="permission-picker__trigger-icon" size={14} aria-hidden="true" />
-        {!compact && <span className="permission-picker__label">{triggerLabel ?? current.label}</span>}
+        {!compact && <span className="permission-picker__label">{triggerLabel ?? modeLabel(current)}</span>}
         {!compact && <ChevronDownIcon size="sm" />}
       </button>
       {open && typeof document !== "undefined" && createPortal(
@@ -304,7 +340,8 @@ export function PermissionPicker({
           id={popoverId}
           className="permission-picker__popover permission-picker__popover--modes"
           role="menu"
-          aria-label="本任务权限"
+          aria-busy={busy}
+          aria-label={`${scope}权限`}
           style={popoverStyle}
           data-placement={placement ?? undefined}
           onClick={(event) => event.stopPropagation()}
@@ -318,6 +355,9 @@ export function PermissionPicker({
             items[next]?.focus();
           }}
         >
+          {error && <div className="permission-picker__status" role="alert">{error}{groupId && !groupStatus && <button type="button" className="groups-text-button" onClick={() => setRefresh(value => value + 1)}>重试读取权限</button>}</div>}
+          {groupId && !groupStatus && !error && <div className="permission-picker__status" role="status">正在读取专家团权限…</div>}
+          {groupId && busy && <div className="permission-picker__status" role="status">正在同步协调员与成员权限…</div>}
           {(syncWarning || status?.lockedReason) && (
             <div className="permission-picker__status" role="status">
               {syncWarning ?? status?.lockedReason}
@@ -343,7 +383,7 @@ export function PermissionPicker({
                 <m.icon className="permission-picker__mode-icon" size={19} aria-hidden="true" />
                 <span className="permission-picker__mode-copy">
                 <span className="permission-picker__mode-label">
-                  {m.label}
+                  {modeLabel(m)}
                   {((m.id === "auto" && autoUnavailable) ||
                     (m.id === "always-approve" && alwaysUnavailable)) ? "（不可用）" : ""}
                 </span>
@@ -353,12 +393,12 @@ export function PermissionPicker({
               </button>
             ))}
           </div>
-          <div className="permission-picker__scope">仅限当前任务</div>
+          <div className="permission-picker__scope">{groupId ? "仅限当前专家团，协调员与全部成员共用。只读讨论始终保持只读。" : "仅限当前任务"}</div>
           {confirmingAlways && (
             <div
               className="permission-picker__confirm"
               role="alertdialog"
-              aria-label="确认本任务免审批"
+              aria-label={`确认${scope}免审批`}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   event.preventDefault();
@@ -367,8 +407,8 @@ export function PermissionPicker({
                 }
               }}
             >
-              <strong>允许本任务免审批？</strong>
-              <span>后续命令和文件修改将自动批准。网页与电脑操作仍遵守各自的授权规则，现有请求仍需单独确认。</span>
+              <strong>允许{scope}免审批？</strong>
+              <span>{groupId ? "协调员与全部成员后续的命令和文件修改将自动批准，设置会保留到你再次修改。只读讨论、组织策略及网页与电脑操作的授权限制仍生效。现有请求仍需单独确认。" : "后续命令和文件修改将自动批准。网页与电脑操作仍遵守各自的授权规则，现有请求仍需单独确认。"}</span>
               <div className="permission-picker__confirm-actions">
                 <button ref={confirmCancelRef} type="button" className="btn btn--ghost" disabled={busy} onClick={cancelAlwaysConfirmation}>取消</button>
                 <button type="button" className="btn btn--danger" disabled={busy} onClick={() => void applySelection("always-approve")}>

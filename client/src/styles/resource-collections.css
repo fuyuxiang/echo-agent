@@ -1,6 +1,20 @@
-/* Resource management has two presentations: rows for existing resources,
- * compact choices for creation templates. Both use the same typography and spacing.
- * Lists deliberately allow overflow so action menus and focus rings stay visible. */
+/* Resource collections share typography, controls and responsive geometry.
+ * Keep overflow visible for focus rings; menus render in a viewport-aware portal. */
+.resource-collection { container: resource-collection / inline-size; min-width: 0; width: 100%; }
+.resource-collection__toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.resource-collection__count { color: var(--echo-text-weak); font-size: var(--echo-resource-meta-size); }
+.resource-view { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--echo-border-default); border-radius: var(--echo-radius-control); background: var(--echo-bg-secondary); }
+.resource-view button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 4px 10px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--echo-text-medium); font: inherit; font-size: var(--echo-resource-meta-size); cursor: pointer; }
+.resource-view button[aria-pressed="true"] { background: var(--echo-bg-primary); border-color: var(--echo-border-default); color: var(--echo-color-text-brand-default); }
+.resource-view button:hover { color: var(--echo-color-text-brand-default); }
+.resource-view button:focus-visible, .resource-more:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 2px; }
+.resource-view svg { flex: none; }
+.resource-more { display: inline-flex; align-items: center; justify-content: center; width: var(--echo-size-control-md); height: var(--echo-size-control-md); padding: 0; border: 1px solid var(--echo-border-default); border-radius: var(--echo-radius-control); background: var(--echo-bg-primary); color: var(--echo-text-medium); cursor: pointer; }
+.resource-more:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.resource-more:disabled { opacity: .5; cursor: default; }
+.resource-menu button { overflow-wrap: anywhere; white-space: normal; }
+.resource-switch-status { font-size: var(--echo-resource-meta-size); color: var(--echo-text-medium); }
+
 .resource-list {
   container: resource-list / inline-size; display: flex; flex-direction: column; gap: 0; min-width: 0;
   border: 1px solid var(--echo-border-default); border-radius: var(--echo-radius-card);
@@ -75,7 +89,7 @@ button.resource-row__main { padding: 0; border: 0; background: transparent; colo
 .resource-row .mcp-item-meta { gap: 5px; font-size: var(--echo-resource-meta-size); }
 .resource-row .mcp-state { display: inline-flex; align-items: center; gap: 6px; }
 .resource-row .mcp-item-details { padding: 0 var(--echo-resource-padding) var(--echo-resource-padding); border-bottom-left-radius: inherit; border-bottom-right-radius: inherit; }
-.resource-list.mcp-list { gap: 0; }
+
 .resource-list .plugins-panel__item--muted { opacity: 1; }
 .resource-row .sk-inst-meta > span { max-width: 100%; padding: 0; background: transparent; font-size: var(--echo-resource-meta-size); line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
 .resource-row .sk-inst-meta > .sk-inst-meta--mandatory { color: var(--echo-color-text-brand-default); }
@@ -99,3 +113,44 @@ button.resource-row__main { padding: 0; border: 0; background: transparent; colo
 }
 
 .resource-list > .atm-task-card { min-height: 112px; align-items: flex-start; }
+
+/* Cards are the default. The compact variant keeps operational controls in one row. */
+.resource-list[data-view="cards"] { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; border: 0; border-radius: 0; background: transparent; align-items: stretch; }
+.resource-list[data-view="cards"] > .resource-row { border: 1px solid var(--echo-border-default); border-radius: var(--echo-radius-card); background: var(--echo-bg-primary); transition: border-color .15s, background-color .15s; }
+.resource-list[data-view="cards"] > .resource-row:hover { border-color: var(--echo-border-strong); background: var(--echo-bg-hover); }
+.resource-list[data-view="cards"][data-layout="grid"] > .resource-row { flex-direction: column; align-items: stretch; justify-content: space-between; min-height: 180px; gap: 16px; }
+.resource-list[data-view="cards"][data-layout="grid"] .resource-row__main { flex: none; width: 100%; align-items: flex-start; }
+.resource-list[data-view="cards"][data-layout="grid"] .resource-row__actions { flex-basis: auto; width: 100%; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--echo-border-default); }
+.resource-list[data-view="cards"] > .resource-row.is-selected { background: var(--echo-control-selected-bg); border-color: var(--echo-brand); }
+.resource-list[data-view="cards"] .resource-row__actions > .capability-button:first-child { margin-right: auto; color: var(--echo-color-text-brand-default); }
+.resource-list[data-view="cards"][data-layout="grid"] .plugins-panel__item { display: grid; grid-template-columns: var(--echo-resource-icon-size) minmax(0, 1fr); grid-template-rows: 1fr auto; align-items: start; gap: 12px; }
+.resource-list[data-view="cards"] .plugins-panel__item-content { grid-column: 2; }
+.resource-list[data-view="cards"] .plugins-panel__item-actions { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; }
+.resource-list[data-view="cards"] .project-card2__more-wrap { flex: none; }
+.resource-list[data-view="cards"] .project-card2__main { text-align: left; }
+.resource-list[data-view="cards"] .project-card2__body { min-width: 0; }
+.resource-list[data-view="cards"] .project-card2__sub { color: var(--echo-text-weak); }
+.resource-list[data-view="cards"] .group-action-trigger { position: static; }
+.resource-list[data-view="cards"] .group-card--managed .resource-row__meta > span:first-child { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.resource-row .mcp-detail-target { overflow-wrap: anywhere; white-space: pre-wrap; min-width: 0; }
+@container resource-collection (min-width: 40rem) {
+  .resource-list[data-view="cards"][data-layout="grid"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container resource-collection (min-width: 62rem) {
+  .resource-list[data-view="cards"][data-layout="grid"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container resource-collection (max-width: 39.999rem) {
+  .resource-list > .resource-row { flex-wrap: wrap; }
+  .resource-list > .resource-row > .resource-row__main { flex-basis: 100%; }
+  .resource-list .resource-row__actions { flex-basis: 100%; }
+  .resource-list .mcp-item { flex-wrap: wrap; }
+  .resource-list .mcp-item-main { flex-basis: 100%; }
+}
+@media (pointer: coarse) {
+  .resource-view button, .resource-more { min-height: 44px; min-width: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .resource-list[data-view="cards"] > .resource-row { transition: none; }
+}
+
+.resource-list[data-view="cards"] .sk-inst-row .resource-switch-status { margin-right: auto; }

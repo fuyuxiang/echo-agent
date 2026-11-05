@@ -205,8 +205,8 @@ export function ProjectsPanel({
   return (
     <CapabilityPage title="项目" className="project-management"
       description="集中管理项目资料、任务对话和交付成果"
-      metadata={<><span>已创建 {projects.length} 个项目</span><span>提供 {FROM_TEMPLATES.length} 个常用模板</span></>}
-      illustration={<img src={heroImg} width={2172} height={724} alt="项目工作台插画" draggable={false} />}
+      metadata={projects.length === 0 ? <span>提供 {FROM_TEMPLATES.length} 个常用模板</span> : undefined}
+      illustration={projects.length === 0 ? <img src={heroImg} width={2172} height={724} alt="项目工作台插画" draggable={false} /> : undefined}
       search={{ value: query, onChange: setQuery, label: "搜索项目" }}
       actions={<Button ref={createButtonRef} variant="primary" onClick={() => setCreate({})}><AddIcon size="sm" />新建项目</Button>}>
       {persistError && (
@@ -226,7 +226,7 @@ export function ProjectsPanel({
             description={projects.length === 0 ? "点击“新建项目”，或从下方模板创建。" : "试试其他项目名称。"}
             onClear={query ? () => setQuery("") : undefined} />
         ) : (
-          <ResourceList className="project-grid" aria-label="我的项目">
+          <ResourceList collectionKey="projects" className="project-grid" aria-label="我的项目">
             {filtered.map((p) => (
               <ProjectCard
                 key={p.id}
@@ -467,25 +467,30 @@ function ProjectCard({
         <ResourceIcon><ProjectGlyph /></ResourceIcon>
         <span className="project-card2__body">
           <span className="project-card2__name resource-row__title">{project.name}</span>
+          <span className="resource-row__description resource-clamp">{project.instructions || "集中管理任务、资料与交付成果"}</span>
+          <span className="resource-row__meta"><span>{project.tasks.length} 个任务</span><span>{project.assets.length} 份资料</span><span>{project.conversations.length} 个对话</span></span>
           <span className="project-card2__sub resource-row__meta">{addedLabel(project.createdAt)}</span>
         </span>
       </button>
-      <div className="project-card2__more-wrap">
-        <button
-          ref={triggerRef}
-          type="button"
-          className="project-card2__more"
-          aria-label="更多操作"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (menuOpen) closeMenu();
-            else setMenuOpen(true);
-          }}
-        >
-          <MoreDotsIcon size="sm" />
-        </button>
+      <div className="resource-row__actions">
+        <button type="button" className="capability-button" onClick={onEnter} aria-label={`打开项目 ${project.name}`}>进入项目</button>
+        <div className="project-card2__more-wrap">
+          <button
+            ref={triggerRef}
+            type="button"
+            className="project-card2__more"
+            aria-label="更多操作"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (menuOpen) closeMenu();
+              else setMenuOpen(true);
+            }}
+          >
+            <MoreDotsIcon size="sm" />
+          </button>
+        </div>
       </div>
       {menuOpen && typeof document !== "undefined" && createPortal(
         <div

@@ -25,6 +25,7 @@ import {
 import { terminalSessionStatus } from "@/lib/turn-status";
 import { officeReceiptFromRawOutput, type DocumentExportReceipt } from "@/lib/document-export";
 import { knowledgeToolContent } from "@/lib/knowledge-tool-output";
+import { settleQueuedPrompt, useMessageQueueStore } from "./message-queue-store";
 
 /**
  * A single chat message in the transcript the UI renders.
@@ -1855,7 +1856,32 @@ export const useSessionStore = create<SessionState>((set, get) => {
         messages[index] = { ...messages[index], lastActivityAt: Date.now() };
         return { ...next, messages };
       });
-      return get().transcripts[target] !== previousTranscript;
+      const updated = get().transcripts[target];
+      const applied = updated !== previousTranscript;
+      // Optimistic pushUser/startStreaming and an IPC return value are not
+      // native admission. Only live, applied progress for this exact active
+      // prompt can retire its pending-send UI. Older runtimes can correlate a
+      // user echo through the placeholder activated by applyUserChunk above.
+      const active = updated?.messages.find(message => message.id === updated.streamingMessageId);
+      const admittedPromptId = updatePromptId || (t === "user_message_chunk" ? active?.promptId : undefined);
+      if (applied && !isReplay && admittedPromptId && !updated?.control
+        && !updated?.pendingSendNowPromptId && active?.promptId === admittedPromptId && !active.complete
+        && ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"].includes(t)) {
+        useMessageQueueStore.getState().acknowledgePrompt(target, admittedPromptId);
+      }
+      if (applied && t === "turn_completed") {
+        const raw = u as unknown as Record<string, unknown>;
+        const beforePromptId = previousTranscript?.pendingSendNowPromptId
+          ?? previousTranscript?.messages.find(message => message.id === previousTranscript.streamingMessageId)?.promptId;
+        const newlyCompleted = beforePromptId && updated?.completedPromptIds?.includes(beforePromptId)
+          && !previousTranscript?.completedPromptIds?.includes(beforePromptId) ? beforePromptId : undefined;
+        const promptId = boundedString(raw.prompt_id ?? raw.promptId ?? updatePromptId, 4_096) || newlyCompleted || "";
+        settleQueuedPrompt({ sessionId: target, promptId,
+          stopReason: boundedString(raw.stop_reason ?? raw.stopReason, 128),
+          cancellationCategory: boundedString(updateMeta?.cancellationCategory, 128),
+          pauseWaiting: !isReplay && beforePromptId === promptId });
+      }
+      return applied;
     },
 
     setMessages: (msgs) => {

@@ -267,6 +267,7 @@ function Shell() {
 
   const [initError, setInitError] = useState<string | null>(null);
   useGroupEvents(!!init?.ok);
+  const groupChatOpen = useGroupStore(state => !!state.current);
   const [initAttempt, setInitAttempt] = useState(0);
   const [exitPreparing, setExitPreparing] = useState(false);
   const runtimeRecoveryRequested = useRef(false);
@@ -839,10 +840,10 @@ function Shell() {
             );
             const summary = findSessionSummary(p.sessionId);
             const queuePolicy = queueTerminalPolicy(p.stopReason, p.cancellationCategory);
-            // Retain the legacy coding identity before completion can discard
+            // Retain the legacy prompt identity before completion can discard
             // an empty assistant placeholder.
             const before = sessionStore.getState().transcripts[p.sessionId];
-            const codingPromptId = p.promptId || before?.messages.find(
+            const completedPromptId = p.promptId || before?.messages.find(
               message => message.id === before.streamingMessageId,
             )?.promptId;
             // Completion is routed by session id in the transcript store. This
@@ -854,11 +855,11 @@ function Shell() {
             // A scoped old event may settle its own row. An unscoped event
             // rejected by the transcript must never consume a replacement row.
             if (p.promptId || completedCurrentTurn) {
-              settleCodingQueueTurn({ ...p, promptId: codingPromptId ?? "" });
-              useMessageQueueStore.getState().settleSending(
+              settleCodingQueueTurn({ ...p, promptId: completedPromptId ?? "" });
+              if (completedPromptId) useMessageQueueStore.getState().settleSending(
                 p.sessionId,
                 queuePolicy.settlement,
-                p.promptId || undefined,
+                completedPromptId,
               );
             }
             // An old/duplicate terminal event may enrich its own message, but
@@ -1986,12 +1987,14 @@ function Shell() {
         agentResult: detail,
       });
       if (queueItemId) {
-        // Restore the same row in place: its id and relative order are stable.
-        useMessageQueueStore.getState().settleSending(sessionId, "retry", promptId);
+        // Keep the same row for explicit recovery. A rejected replacement must
+        // not silently retry when the still-running previous turn completes.
+        useMessageQueueStore.getState().holdSending(sessionId, promptId, promptWasAdmitted, detail);
       } else if (!promptWasAdmitted) {
         // A direct composer send that never reached Runtime still needs a safe
         // retry path. Once admitted, duplicating it would repeat side effects.
         useMessageQueueStore.getState().enqueue(sessionId, sendText, sendAttachments);
+        useMessageQueueStore.getState().pauseQueued(sessionId);
       }
       if (latest.sessionId === sessionId) latest.setError(detail, { sessionId, promptId });
       const stillWorking = useSessionStore.getState().transcripts[sessionId];
@@ -3381,8 +3384,8 @@ function Shell() {
           ) : codingWorkspaceActive ? null : (
             <Suspense fallback={<div className="app__notice" role="status">正在加载界面…</div>}>
               {placeholderView === "专家团" ? (
-                <CapabilitySection active="专家团" onNavigate={handleNavigate}>
-                  <GroupWorkspace cwd={newSessionTargetCwd} modelId={newSessionModelId} models={models} workspaces={workspaces} onToast={showToast} onOpenSettings={() => openSettings("model")} onOpenKnowledgeBase={() => handleNavigate("知识库")} onOpenOrganization={() => handleNavigate("组织")} />
+                <CapabilitySection active="专家团" onNavigate={handleNavigate} hideNavigation={groupChatOpen}>
+                  <GroupWorkspace onOpenExperts={() => handleNavigate("专家·技能·连接器")} cwd={newSessionTargetCwd} modelId={newSessionModelId} models={models} workspaces={workspaces} onToast={showToast} onOpenSettings={() => openSettings("model")} onOpenKnowledgeBase={() => handleNavigate("知识库")} onOpenOrganization={() => handleNavigate("组织")} />
                 </CapabilitySection>
               ) : placeholderView ? (
                 <PlaceholderPage

@@ -90,7 +90,7 @@ export function GroupTeams({ onBack, onUse, onCreate }: { onBack: () => void; on
         </div>
       </section>;
     })}</div>
-    {!loading && !teams.length && !error && <div className="groups-empty"><Users size={32} /><h2>把合适的协作组合留下来</h2><p>在专家团的操作菜单或成员页选择“保存为模板”，下次就可以直接复用。会话团队可从对应会话创建专家团。</p><button className="btn btn--primary" onClick={onCreate}><Plus size={16} />创建专家团</button></div>}
+    {!loading && !teams.length && !error && <div className="groups-empty"><Users size={32} /><h2>把合适的协作组合留下来</h2><p>在专家团的操作菜单或群设置中选择“保存为模板”，下次就可以直接复用。会话团队可从对应会话创建专家团。</p><button className="btn btn--primary" onClick={onCreate}><Plus size={16} />创建专家团</button></div>}
     {dialog.dialog}
   </CapabilityPage>;
 }
@@ -121,13 +121,13 @@ export function DecisionList({ group, onChanged, onError }: { group: Group; onCh
     finally { setBusy(false); }
   };
   if (!group.decisions.length) return null;
-  return <section className="group-decisions"><h3>决定记录</h3><label className="groups-muted"><input type="checkbox" checked={showVoided} onChange={event => { setShowVoided(event.target.checked); setCount(20); }} />显示已作废决定</label>
-    {!records.length && <p className="groups-muted">暂无有效决定。</p>}
+  return <section className="group-decisions"><h3>群约定</h3><label className="groups-muted"><input type="checkbox" checked={showVoided} onChange={event => { setShowVoided(event.target.checked); setCount(20); }} />显示已作废约定</label>
+    {!records.length && <p className="groups-muted">暂无有效群约定。</p>}
     {records.slice(0, count).map(decision => <div className={`group-decision${decision.voided ? " is-voided" : ""}`} key={decision.id}><p>{decision.text}</p><small>{decision.voided ? "已作废 · 后续工作不再采用" : decision.confirmed ? "已由你确认" : "待你确认"}</small><div className="group-decision__actions">
-      {!decision.confirmed && !decision.voided && <button className="groups-text-button" disabled={busy} onClick={async () => { setBusy(true); try { await groupDecision(group.id, "", "", decision.id); onChanged(); } catch (error) { onError(String(error)); } finally { setBusy(false); } }}>确认为专家团决定</button>}
-      {!decision.voided && <><button className="groups-text-button" disabled={busy} onClick={() => dialog.requestInput({ title: "更正决定", description: "更正后用于后续工作，原内容会保留在修改记录中。", fields: [{ name: "text", label: "决定内容", defaultValue: decision.text, multiline: true, required: true, maxLength: 2000 }], confirmLabel: "保存更正", action: values => change(decision.id, "edit", values.text.trim()) })}>更正</button><button className="groups-text-button" disabled={busy} onClick={() => dialog.requestConfirmation({ title: "作废这条决定？", description: "后续工作不再采用，原内容仍保留以便查阅。正在执行的工作不会因此自动停止。", confirmLabel: "作废决定", action: () => change(decision.id, "void") })}>作废</button></>}
-      {decision.voided && <button className="groups-text-button" disabled={busy} onClick={() => dialog.requestConfirmation({ title: "恢复这条决定？", description: decision.text, confirmLabel: "确认恢复", action: () => change(decision.id, "restore") })}>恢复决定</button>}
+      {!decision.confirmed && !decision.voided && <button className="groups-text-button" disabled={busy} onClick={async () => { setBusy(true); try { await groupDecision(group.id, "", "", decision.id); onChanged(); } catch (error) { onError(String(error)); } finally { setBusy(false); } }}>确认为群约定</button>}
+      {!decision.voided && <><button className="groups-text-button" disabled={busy} onClick={() => dialog.requestInput({ title: "更正群约定", description: "更正后用于后续工作，原内容会保留在修改记录中。", fields: [{ name: "text", label: "约定内容", defaultValue: decision.text, multiline: true, required: true, maxLength: 2000 }], confirmLabel: "保存更正", action: values => change(decision.id, "edit", values.text.trim()) })}>更正</button><button className="groups-text-button" disabled={busy} onClick={() => dialog.requestConfirmation({ title: "作废这条群约定？", description: "后续工作不再采用，原内容仍保留以便查阅。正在执行的工作不会因此自动停止。", confirmLabel: "作废约定", action: () => change(decision.id, "void") })}>作废</button></>}
+      {decision.voided && <button className="groups-text-button" disabled={busy} onClick={() => dialog.requestConfirmation({ title: "恢复这条群约定？", description: decision.text, confirmLabel: "确认恢复", action: () => change(decision.id, "restore") })}>恢复约定</button>}
     </div>{!!decision.history?.length && <details className="group-reference"><summary>修改记录（{decision.history.length}）</summary>{decision.history.map((version, index) => <p key={index}><small>{version.action === "void" ? "作废" : version.action === "restore" ? "恢复" : "更正前"} · {new Date(version.changedAt).toLocaleString()}</small><br />{version.text}</p>)}</details>}</div>)}
-    {records.length > count && <button className="groups-text-button" onClick={() => setCount(value => value + 20)}>加载更多决定（{Math.min(count, records.length)} / {records.length}）</button>}{dialog.dialog}
+    {records.length > count && <button className="groups-text-button" onClick={() => setCount(value => value + 20)}>加载更多约定（{Math.min(count, records.length)} / {records.length}）</button>}{dialog.dialog}
   </section>;
 }

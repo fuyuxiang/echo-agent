@@ -1,3 +1,4 @@
+import { QueuePanel } from "../QueuePanel";
 import { useAutomationEditorStore } from "@/stores/automation-editor-store";
 import { buildDraft } from "../automation/schedule-utils";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -55,6 +56,9 @@ vi.mock("../Sidebar", () => ({ Sidebar: ({
 // Keep the real shell, event handlers and stores; expose its composer contract.
 vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("../ChatView").ChatView>) => (
   <div>
+    {useSessionStore.getState().sessionId && <QueuePanel sessionId={useSessionStore.getState().sessionId!}
+      streaming={useSessionStore.getState().streaming} sendNowPending={useSessionStore.getState().sendNowPending}
+      onSendNow={useSessionStore.getState().streaming ? props.onSendNow : props.onSend} />}
     <span data-testid="model">{props.modelId ?? "unknown"}</span>
     {!props.apiReady && <div role="status">{props.setupHint}</div>}
     <button disabled={!props.apiReady} onClick={() => props.onSend("继续解释")}>追问</button>
@@ -68,7 +72,7 @@ vi.mock("@/lib/agent-client", async (original) => ({
   agentListAllSessions: vi.fn(async () => []), agentListWorkspaces: vi.fn(async () => []),
   agentPrepareTaskWorkspace: vi.fn(async () => "/workspace/Tasks/project-task"),
   agentLoadSession: vi.fn(), agentNewSession: vi.fn(async () => "project-session"),
-  agentSend: vi.fn(async () => {}), agentSetModel: vi.fn(async () => {}),
+  agentSendNow: vi.fn(() => new Promise<void>(() => {})), agentSend: vi.fn(async () => {}), agentSetModel: vi.fn(async () => {}),
   projectsSave: vi.fn(async () => {}),
   internalReload: vi.fn(async () => {}), subscribeAgentEvents: vi.fn(),
 }));
@@ -116,6 +120,7 @@ beforeEach(() => {
   vi.mocked(client.agentInit).mockResolvedValue({ ok: true, cwd: "/workspace", auth } as never);
   vi.mocked(client.agentAuthStatus).mockResolvedValue(auth);
   vi.mocked(client.providersList).mockResolvedValue({ providers: [], models: [{ modelId: "model-a", name: "模型 A", providerId: "p" }, { modelId: "model-b", name: "模型 B", providerId: "p" }] } as never);
+  vi.mocked(client.agentSendNow).mockImplementation(() => new Promise<void>(() => {}));
   vi.mocked(client.agentLoadSession).mockResolvedValue("model-a");
   vi.mocked(client.agentListAllSessions).mockResolvedValue([]);
   vi.mocked(client.subscribeAgentEvents).mockImplementation(async (value) => { handlers = value; return () => {}; });
@@ -322,7 +327,7 @@ describe("自动化会话模型同步", () => {
     expect(useSessionStore.getState().transcripts["auto-1"].suppressReplay).toBe(false);
   });
 
-  it("停止兜底等待正式结果，迟到的失败保留输入并消除发送待确认状态", async () => {
+  it("停止兜底等待正式结果，迟到的失败保留输入并要求确认重发", async () => {
     await start();
     act(() => {
       handlers.onAutomationUpdate?.({ phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "uncertain-run", promptId: "uncertain-prompt", status: "running", sessionId: "auto-1", cwd: "/workspace" });
@@ -335,7 +340,7 @@ describe("自动化会话模型同步", () => {
     });
     expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{
       text: "本轮完整要求", attachments: ["/tmp/原始资料.docx"], status: "paused",
-      recovery: undefined, promptId: undefined, sendError: undefined,
+      recovery: "failed", promptId: "uncertain-prompt", sendError: expect.stringContaining("执行失败"),
     }]);
     expect(client.agentSend).not.toHaveBeenCalled();
   });
@@ -1063,5 +1068,124 @@ describe("自动化会话模型同步", () => {
     await act(async () => onNotificationOpen?.());
     await waitFor(() => expect(client.agentLoadSession).toHaveBeenCalledWith("auto-1", "/workspace"));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("notification_mark_read", { id: 42 }));
+  });
+});
+
+
+describe("队列发送与原生接收确认", () => {
+  async function sendReplacement(next = false) {
+    await start(); created("model-a");
+    fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+    await screen.findByTestId("model");
+    act(() => {
+      useSessionStore.getState().pushUser("上一轮", [], "auto-1");
+      useSessionStore.getState().startStreaming("auto-1", "previous");
+      useMessageQueueStore.getState().enqueue("auto-1", "1123", ["/tmp/附件.docx"]);
+      if (next) useMessageQueueStore.getState().enqueue("auto-1", "下一条");
+    });
+    fireEvent.click(within(screen.getAllByRole("listitem")[0]).getByRole("button", { name: "中断当前回复并立即发送这条" }));
+    expect(client.agentSendNow).toHaveBeenCalledOnce();
+    return vi.mocked(client.agentSendNow).mock.calls[0][4]!;
+  }
+  const admit = (promptId: string) => handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "user_message_chunk",
+    content: { type: "text", text: "1123" }, _meta: { promptId } });
+
+  it.each(["before", "after"])("接收后立即隐藏整块队列，旧轮 %s 完成不会误删或重复发送", async order => {
+    const promptId = await sendReplacement();
+    expect(screen.getByText("待发送队列(1)")).toBeInTheDocument();
+    expect(useMessageQueueStore.getState().getQueue("auto-1")[0].status).toBe("sending");
+    act(() => {
+      const old = () => handlers.onComplete?.({ sessionId: "auto-1", promptId: "previous", stopReason: "cancelled", cancelTrigger: "send_now" });
+      if (order === "before") old();
+      admit(promptId);
+      if (order === "after") old();
+    });
+    expect(screen.queryByRole("list", { name: "待发送队列" })).toBeNull();
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{ text: "1123", status: "accepted", promptId }]);
+    expect(client.agentSend).not.toHaveBeenCalled();
+    act(() => handlers.onComplete?.({ sessionId: "auto-1", promptId, stopReason: "end_turn" }));
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toHaveLength(0);
+    expect(client.agentSendNow).toHaveBeenCalledOnce();
+  });
+
+  it("剩余消息继续显示，当前轮结束之前不会自动续发，下一条接收后也会隐藏", async () => {
+    const promptId = await sendReplacement(true);
+    act(() => admit(promptId));
+    expect(screen.getByText("待发送队列(1)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "编辑消息：1123" })).toBeNull();
+    expect(screen.getByRole("button", { name: "编辑消息：下一条" })).toBeInTheDocument();
+    expect(client.agentSend).not.toHaveBeenCalled();
+    act(() => handlers.onComplete?.({ sessionId: "auto-1", promptId, stopReason: "end_turn" }));
+    expect(client.agentSend).toHaveBeenCalledOnce();
+    const nextPromptId = vi.mocked(client.agentSend).mock.calls[0][4]!;
+    act(() => handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "下一条" }, _meta: { promptId: nextPromptId } }));
+    expect(screen.queryByRole("list", { name: "待发送队列" })).toBeNull();
+    act(() => {
+      handlers.onComplete?.({ sessionId: "auto-1", promptId, stopReason: "end_turn" });
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: nextPromptId, stopReason: "end_turn" });
+    });
+    expect(client.agentSend).toHaveBeenCalledOnce();
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toHaveLength(0);
+  });
+
+  it("原生接收前拒绝保留原条目并暂停，旧轮结束不会偷偷重试", async () => {
+    let reject!: (error: Error) => void;
+    vi.mocked(client.agentSendNow).mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; }));
+    await sendReplacement();
+    await act(async () => reject(new Error("接收失败")));
+    expect(screen.getByText("待发送队列(1)")).toBeInTheDocument();
+    expect(useMessageQueueStore.getState().getQueue("auto-1")[0]).toMatchObject({ text: "1123", status: "paused", recovery: undefined, attachments: ["/tmp/附件.docx"] });
+    act(() => handlers.onComplete?.({ sessionId: "auto-1", promptId: "previous", stopReason: "end_turn" }));
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
+  it("接收后执行失败保留完整内容并要求确认，不能自动重发", async () => {
+    const promptId = await sendReplacement(true);
+    act(() => { admit(promptId); handlers.onComplete?.({ sessionId: "auto-1", promptId, stopReason: "error" }); });
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([
+      { text: "1123", status: "paused", recovery: "failed", attachments: ["/tmp/附件.docx"] },
+      { text: "下一条", status: "paused" },
+    ]);
+    expect(screen.getByText("执行失败，等待确认")).toBeInTheDocument();
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
+  it("空闲时从队列发送也要等原生确认再隐藏，不能以乐观气泡代替确认", async () => {
+    await start(); created("model-a");
+    fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+    await screen.findByTestId("model");
+    act(() => { useMessageQueueStore.getState().enqueue("auto-1", "1123"); });
+    fireEvent.click(screen.getByRole("button", { name: "立即发送" }));
+    await waitFor(() => expect(client.agentSend).toHaveBeenCalledOnce());
+    const promptId = vi.mocked(client.agentSend).mock.calls[0][4]!;
+    expect(useMessageQueueStore.getState().getQueue("auto-1")[0].status).toBe("sending");
+    expect(screen.getByText("待发送队列(1)")).toBeInTheDocument();
+    act(() => admit(promptId));
+    expect(screen.queryByRole("list", { name: "待发送队列" })).toBeNull();
+    act(() => handlers.onComplete?.({ sessionId: "auto-1", promptId, stopReason: "end_turn" }));
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toHaveLength(0);
+  });
+
+  it("旧运行记录排在队尾时，无身份的旧取消完成也只能释放旧条目", async () => {
+    await start(); created("model-a");
+    fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+    await screen.findByTestId("model");
+    const queue = useMessageQueueStore.getState();
+    let replacement!: string;
+    act(() => {
+      replacement = queue.enqueue("auto-1", "1123");
+      const old = queue.enqueue("auto-1", "之前已接收的消息");
+      queue.claimById("auto-1", old, "previous");
+      queue.acknowledgePrompt("auto-1", "previous");
+      useSessionStore.getState().pushUser("之前已接收的消息", [], "auto-1");
+      useSessionStore.getState().startStreaming("auto-1", "previous");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "中断当前回复并立即发送这条" }));
+    const promptId = vi.mocked(client.agentSendNow).mock.calls[0][4]!;
+    act(() => handlers.onComplete?.({ sessionId: "auto-1", promptId: "", stopReason: "cancelled", cancelTrigger: "send_now" }));
+    expect(queue.getQueue("auto-1")).toMatchObject([{ id: replacement, status: "sending", promptId }]);
+    act(() => admit(promptId));
+    expect(queue.getQueue("auto-1")[0].status).toBe("accepted");
+    expect(screen.queryByRole("list", { name: "待发送队列" })).toBeNull();
   });
 });

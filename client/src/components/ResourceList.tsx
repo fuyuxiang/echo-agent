@@ -1,8 +1,62 @@
-import { forwardRef, useId, useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
+import { Children, forwardRef, useEffect, useId, useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
+import { LayoutGrid, List, MoreHorizontal } from "lucide-react";
+import { ActionMenu } from "./ActionMenu";
+
+type ResourceView = "cards" | "list";
+type CollectionKey = "projects" | "experts" | "groups" | "skills" | "connectors" | "plugins" | "automations";
+function savedView(key: string, fallback: ResourceView): ResourceView {
+  try {
+    const value = localStorage.getItem(key);
+    return value === "cards" || value === "list" ? value : fallback;
+  } catch { return fallback; }
+}
 
 /** Shared collection chrome. Features retain ownership of actions and state. */
-export function ResourceList({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div role="list" {...props} className={`resource-list ${className}`} />;
+export function ResourceList({ className = "", collectionKey, layout = "grid", summary, children, ...props }:
+  HTMLAttributes<HTMLDivElement> & { collectionKey?: CollectionKey; layout?: "grid" | "compact"; summary?: ReactNode }) {
+  const storageKey = `echo.resource-view.${collectionKey}`;
+  const [view, setView] = useState<ResourceView>(() => savedView(storageKey, "cards"));
+  useEffect(() => {
+    setView(savedView(storageKey, "cards"));
+    const sync = (event: StorageEvent) => {
+      if (event.key === storageKey || event.key === null) setView(savedView(storageKey, "cards"));
+    };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, [storageKey]);
+  const label = props["aria-label"] || "资源";
+  return <div className="resource-collection">
+    {collectionKey && <div className="resource-collection__toolbar">
+      <span className="resource-collection__count">{summary ?? `${Children.count(children)} 项`}</span>
+      <div className="resource-view" role="group" aria-label={`${label}显示方式`}>
+        {(["cards", "list"] as const).map(value => <button key={value} type="button"
+          aria-label={value === "cards" ? "卡片视图" : "列表视图"} aria-pressed={view === value}
+          onClick={() => {
+            setView(value);
+            try { localStorage.setItem(storageKey, value); } catch { /* The current view still works when storage is unavailable. */ }
+          }}>
+          {value === "cards" ? <LayoutGrid size={15} aria-hidden="true" /> : <List size={15} aria-hidden="true" />}
+          <span>{value === "cards" ? "卡片" : "列表"}</span>
+        </button>)}
+      </div>
+    </div>}
+    <div role="list" {...props} data-view={collectionKey ? view : "list"} data-layout={layout}
+      className={`resource-list ${className}`}>{children}</div>
+  </div>;
+}
+
+/** Reuse the app's portalled, keyboard-accessible menu so cards never clip actions. */
+export function ResourceMenu({ label, actions, disabled = false }: { label: string; disabled?: boolean; actions: {
+  label: string; text?: string; onSelect: () => void; danger?: boolean; disabled?: boolean;
+}[] }) {
+  if (!actions.length) return null;
+  return <ActionMenu label={`${label}更多操作`} menuLabel={`${label}操作菜单`} busy={disabled}
+    trigger={<MoreHorizontal size={18} aria-hidden="true" />} triggerClassName="resource-more"
+    menuClassName="topbar-actions__menu resource-menu">
+    {({ close }) => actions.map(action => <button key={action.label} type="button" role="menuitem"
+      aria-label={action.label} className={`topbar-actions__item${action.danger ? " resource-action--danger" : ""}`}
+      disabled={action.disabled} onClick={() => { close(true); action.onSelect(); }}>{action.text || action.label}</button>)}
+  </ActionMenu>;
 }
 
 export const ResourceRow = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(

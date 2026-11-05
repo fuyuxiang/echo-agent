@@ -285,14 +285,16 @@ impl Store {
             .collect();
         rows
     }
-    fn read(c: &Connection, id: &str) -> Result<Group, String> {
+    fn read_header(c: &Connection, id: &str) -> Result<Group, String> {
         let data: String = c
             .query_row("SELECT data FROM groups WHERE id=?", [id], |r| r.get(0))
             .optional()
             .map_err(|e| e.to_string())?
             .ok_or("专家团不存在")?;
-        let mut g: Group =
-            serde_json::from_str(&data).map_err(|e| format!("专家团配置损坏：{e}"))?;
+        serde_json::from_str(&data).map_err(|e| format!("专家团配置损坏：{e}"))
+    }
+    fn read(c: &Connection, id: &str) -> Result<Group, String> {
+        let mut g = Self::read_header(c, id)?;
         let mut q = c
             .prepare("SELECT data FROM messages WHERE group_id=? ORDER BY seq")
             .map_err(|e| e.to_string())?;
@@ -318,6 +320,23 @@ impl Store {
     pub fn get(&self, id: &str) -> Result<Group, String> {
         Self::read(&self.connect()?, id)
     }
+    pub fn header(&self, id: &str) -> Result<Group, String> {
+        Self::read_header(&self.connect()?, id)
+    }
+    /// Approval checks must not hydrate the group's entire message/work log.
+    pub fn permission_mode(&self, id: &str) -> Result<String, String> {
+        let mode: Option<Option<String>> = self
+            .connect()?
+            .query_row(
+                "SELECT json_extract(data,'$.permissionMode') FROM groups WHERE id=?",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        mode.ok_or_else(|| "专家团不存在".to_string())
+            .map(|mode| mode.unwrap_or_else(|| "ask".into()))
+    }
     fn write_preview(c: &Connection, group: &Group) -> Result<(), String> {
         let snapshot = group.clone().snapshot();
         let mut preview = snapshot.group;
@@ -334,6 +353,7 @@ impl Store {
                 message.text = message.text.chars().take(160).collect();
                 message.tool_calls.clear();
                 message.attachments.clear();
+                message.source_attachment_paths = None;
                 message.knowledge = Knowledge::default();
                 message
             })

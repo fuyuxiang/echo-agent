@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import {
   useMessageQueueStore,
-  queueTerminalPolicy,
+  isQueueItemInFlight,
   type QueueItem,
   type CodingQueuedContext,
 } from "@/stores/message-queue-store";
@@ -9,6 +9,7 @@ import { useSessionStore } from "@/stores/session-store";
 import {
   codingAdmissionKey,
   codingQueueId,
+  settleCodingQueueTurn,
   useCodingAdmissionStore,
   type QueuedAdmissionResult,
 } from "../lib/coding-followup";
@@ -59,13 +60,12 @@ export function useCodingFollowupQueue(options: Options) {
     queueId,
   };
 
-  // Local admission is not a native acknowledgement. Keep the outbox row until
-  // its exact prompt completes; failures remain paused and editable after restart.
+  // Native admission hides the row, but ownership lasts until the exact prompt
+  // completes. Both sending and accepted rows prevent another queued dispatch.
   useEffect(() => {
     if (!queueId) return;
-    const store = useMessageQueueStore.getState();
     for (const item of queue) {
-      if (item.status !== "sending" || !item.promptId) continue;
+      if (!isQueueItemInFlight(item) || !item.promptId) continue;
       const terminal = messages?.find(
         (message) =>
           message.role === "assistant" &&
@@ -74,19 +74,10 @@ export function useCodingFollowupQueue(options: Options) {
           message.stopReason,
       );
       if (!terminal) continue;
-      if (
-        queueTerminalPolicy(terminal.stopReason!, terminal.cancellationCategory)
-          .failed
-      )
-        store.holdSending(
-          queueId,
-          item.promptId,
-          true,
-          "本轮执行失败，请检查任务记录后再恢复。",
-        );
-      else store.settleSending(queueId, "consume", item.promptId);
+      settleCodingQueueTurn({ sessionId: options.sessionId!, promptId: item.promptId,
+        stopReason: terminal.stopReason!, cancellationCategory: terminal.cancellationCategory });
     }
-  }, [messages, queue, queueId]);
+  }, [messages, queue, queueId, options.sessionId]);
 
   const dispatch = useCallback(async (itemId?: string) => {
     const owner = current.current;
@@ -100,7 +91,7 @@ export function useCodingFollowupQueue(options: Options) {
     const store = useMessageQueueStore.getState();
     const rows = store.getQueue(key);
     if (
-      rows.some((item) => item.status === "sending") ||
+      rows.some(isQueueItemInFlight) ||
       (!itemId &&
         rows.some((item) => item.recovery === "uncertain" || item.sendError))
     )
@@ -163,7 +154,7 @@ export function useCodingFollowupQueue(options: Options) {
     },
     [],
   );
-  const sending = queue.some((item) => item.status === "sending");
+  const sending = queue.some(isQueueItemInFlight);
   return {
     queueId,
     enqueue,

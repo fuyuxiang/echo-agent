@@ -60,7 +60,10 @@ async fn model(
             .take_while(|message| message["role"] != "user")
             .find(|message| message["role"] == "tool")
     });
-    let policy_probe = if latest_user.contains("GROUP_MCP_ALLOWED_PROBE") {
+    let permission_classifier = body.to_string().contains("shouldBlock");
+    let policy_probe = if permission_classifier {
+        None
+    } else if latest_user.contains("GROUP_MCP_ALLOWED_PROBE") {
         Some("echoagent__group_read_history")
     } else if latest_user.contains("GROUP_MCP_DISCOVERY_PROBE") {
         Some("search_tool")
@@ -92,7 +95,9 @@ async fn model(
         }
         return Json(json!({"id":"policy","object":"chat.completion","created":1,"model":"mock","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[call]},"finish_reason":"tool_calls"}]})).into_response();
     }
-    let response = if let Some(target) = policy_probe {
+    let response = if permission_classifier {
+        r#"{"shouldBlock":true,"reason":"isolated test requires user approval"}"#
+    } else if let Some(target) = policy_probe {
         let result = tool_reply
             .map(|message| message.to_string())
             .unwrap_or_default();
@@ -232,6 +237,8 @@ paths = ["{relative_plugin}"]
     } = handle;
     let chunks = Arc::new(Mutex::new(String::new()));
     let captured = chunks.clone();
+    let approvals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let recorded_approvals = approvals.clone();
     let dispatcher = tokio::spawn(async move {
         use echo_agent_acp::AcpClientMessage;
         while let Some(message) = rx.recv().await {
@@ -277,6 +284,7 @@ paths = ["{relative_plugin}"]
                         )));
                 }
                 AcpClientMessage::RequestPermission(args) => {
+                    recorded_approvals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let request = serde_json::to_value(&args.request).unwrap();
                     assert_ne!(
                         request
@@ -367,6 +375,7 @@ paths = ["{relative_plugin}"]
                 member_id: &member,
                 generation: 0,
                 discussion: true,
+                permission_mode: "ask",
                 existing: None,
             },
         ),
@@ -460,6 +469,78 @@ paths = ["{relative_plugin}"]
             "Native read-only MCP probe {probe} failed ({}): {captured}; tool result: {last_tool_result:?}", completion.stop_reason
         );
     }
+    // Reconnect the same resident actor through all three modes. Auto's very
+    // first classifier block must reach approval; bypass must not weaken the
+    // read-only leaf allowlist; Ask must clear both native bypass flags again.
+    for (index, mode) in ["auto", "always-approve", "ask"].into_iter().enumerate() {
+        crate::agent_runtime::group_session(
+            &tx,
+            crate::agent_runtime::GroupSessionRequest {
+                cwd: workspace.path(),
+                model: "group-test/mock",
+                profile: &profile,
+                group_id: &gid,
+                member_id: &member,
+                generation: 0,
+                discussion: true,
+                permission_mode: mode,
+                existing: Some(&sid),
+            },
+        )
+        .await
+        .unwrap();
+        let before = approvals.load(std::sync::atomic::Ordering::SeqCst);
+        let prompt = format!("permission-mode-{index}");
+        db().unwrap()
+            .update(&gid, |group| {
+                group
+                    .works
+                    .iter_mut()
+                    .find(|item| item.id == work)
+                    .unwrap()
+                    .prompt_id = prompt.clone();
+                Ok(())
+            })
+            .unwrap();
+        let output_start = chunks.lock().unwrap().len();
+        crate::agent_runtime::group_prompt(&tx, &sid, &prompt, "GROUP_MCP_ALLOWED_PROBE", &[])
+            .await
+            .unwrap();
+        assert!(
+            chunks.lock().unwrap()[output_start..].contains("READ_ONLY_TOOL_PROBE_OK"),
+            "mode {mode} must finish the actual tool after approval"
+        );
+        assert_eq!(
+            approvals.load(std::sync::atomic::Ordering::SeqCst) - before,
+            if mode == "always-approve" { 0 } else { 1 },
+            "mode {mode}"
+        );
+        if mode == "always-approve" {
+            db().unwrap()
+                .update(&gid, |group| {
+                    group
+                        .works
+                        .iter_mut()
+                        .find(|item| item.id == work)
+                        .unwrap()
+                        .prompt_id = "bypass-readonly-deny".into();
+                    Ok(())
+                })
+                .unwrap();
+            let output_start = chunks.lock().unwrap().len();
+            crate::agent_runtime::group_prompt(
+                &tx,
+                &sid,
+                "bypass-readonly-deny",
+                "GROUP_MCP_DENIED_PROBE",
+                &[],
+            )
+            .await
+            .unwrap();
+            assert!(chunks.lock().unwrap()[output_start..].contains("READ_ONLY_TOOL_DENIED_OK"));
+            assert_eq!(approvals.load(std::sync::atomic::Ordering::SeqCst), before);
+        }
+    }
     db().unwrap()
         .update(&gid, |g| {
             g.finish_execution(&work, None, false);
@@ -507,6 +588,7 @@ paths = ["{relative_plugin}"]
             member_id: &member,
             generation: 0,
             discussion: true,
+            permission_mode: "ask",
             existing: Some(&sid),
         },
     )
@@ -592,6 +674,7 @@ paths = ["{relative_plugin}"]
             member_id: &executor,
             generation: 0,
             discussion: false,
+            permission_mode: "ask",
             existing: None,
         },
     )
@@ -711,6 +794,7 @@ paths = ["{relative_plugin}"]
         member_id: &executor,
         generation: 0,
         discussion: false,
+        permission_mode: "ask",
         existing: None,
     };
     let memory_sid = memory_probe(&tx, probe, "memory-1").await;
@@ -744,6 +828,7 @@ paths = ["{relative_plugin}"]
             member_id: &executor,
             generation: 0,
             discussion: false,
+            permission_mode: "ask",
             existing: Some(&memory_sid),
         },
         "memory-restored",
@@ -787,6 +872,7 @@ paths = ["{relative_plugin}"]
             member_id: &executor,
             generation: 0,
             discussion: false,
+            permission_mode: "ask",
             existing: None,
         },
         "memory-corrected",
@@ -820,6 +906,7 @@ paths = ["{relative_plugin}"]
             member_id: &executor,
             generation: 0,
             discussion: false,
+            permission_mode: "ask",
             existing: None,
         },
         "memory-forgotten",
@@ -845,6 +932,7 @@ paths = ["{relative_plugin}"]
             member_id: &member,
             generation: 0,
             discussion: true,
+            permission_mode: "ask",
             existing: None,
         },
         "memory-other-member",
@@ -1071,6 +1159,8 @@ async fn followup_contract(
                 g,
                 &SendInput {
                     new_request: false,
+                    source_request_id: None,
+                    source_attachment_paths: None,
                     request_id: None,
                     id: root.clone(),
                     text: "INTERJECTION_PROBE".into(),
@@ -1121,6 +1211,8 @@ async fn followup_contract(
                 g,
                 &SendInput {
                     new_request: false,
+                    source_request_id: None,
+                    source_attachment_paths: None,
                     request_id: None,
                     id: correction.clone(),
                     text: "INTERJECTION_CORRECTION".into(),

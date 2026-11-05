@@ -15,10 +15,11 @@ import { useMessageQueueStore } from "@/stores/message-queue-store";
 import { useSubagentStore } from "@/stores/subagent-store";
 import { useSessionsStore } from "@/stores/sessions-store";
 
-export interface GroupDraftOptions { targets: string[]; discussion: boolean; replyTo: string | null; newTopic?: boolean; requestId?: string | null }
+export interface GroupDraftOptions { targets: string[]; discussion: boolean; replyTo: string | null; newTopic?: boolean; requestId?: string | null; newRound?: boolean; sourceAttachments?: { requestId: string; paths: string[] } }
+export interface GroupCreationSource { sessionId: string; team: Pick<RuntimeTeamInfo, "teamId" | "description" | "members" | "roles"> & Partial<RuntimeTeamInfo>; referenceText?: string }
 interface GroupState {
   groups: Group[]; currentId: string | null; current: Group | null; error: string | null; loading: boolean;
-  createFrom: { sessionId: string; team: RuntimeTeamInfo; referenceText?: string } | null;
+  createFrom: GroupCreationSource | null;
   createTemplate: TeamTemplate | null;
   drafts: Record<string, string>;
   outbox: Record<string, string>;
@@ -33,6 +34,7 @@ interface GroupState {
   refresh: () => Promise<void>; select: (id: string | null) => Promise<void>;
   fromTeam: (sessionId: string, team: RuntimeTeamInfo, referenceText?: string) => void;
   setDraft: (id: string, text: string) => void;
+  clearCreationDraft: () => void;
   draftOptions: (id: string) => GroupDraftOptions;
   setDraftOptions: (id: string, options: GroupDraftOptions) => void;
 }
@@ -166,11 +168,18 @@ export const useGroupStore = create<GroupState>((set, get) => ({
     const drafts = { ...get().drafts, [id]: text };
     if (writeDurable("echoagent.group-drafts.v1", drafts)) set({ drafts });
   },
+  clearCreationDraft: () => {
+    const drafts = { ...get().drafts };
+    delete drafts["create:pending"];
+    if (writeDurable("echoagent.group-drafts.v1", drafts)) set({ drafts });
+  },
   draftOptions: (id) => {
     const raw = get().drafts[`options:${id}`];
     if (raw) try {
       const value = JSON.parse(raw);
-      if (Array.isArray(value.targets) && value.targets.every((target: unknown) => typeof target === "string") && typeof value.discussion === "boolean" && (value.replyTo === null || typeof value.replyTo === "string") && (value.newTopic === undefined || typeof value.newTopic === "boolean") && (value.requestId == null || typeof value.requestId === "string")) return value;
+      if (Array.isArray(value.targets) && value.targets.every((target: unknown) => typeof target === "string") && typeof value.discussion === "boolean" && (value.replyTo === null || typeof value.replyTo === "string") && (value.newTopic === undefined || typeof value.newTopic === "boolean") && (value.requestId == null || typeof value.requestId === "string")
+        && (value.newRound === undefined || typeof value.newRound === "boolean")
+        && (value.sourceAttachments === undefined || (value.sourceAttachments && typeof value.sourceAttachments.requestId === "string" && Array.isArray(value.sourceAttachments.paths) && value.sourceAttachments.paths.every((path: unknown) => typeof path === "string")))) return value;
     } catch { /* Preserve the draft text even if its optional selection is invalid. */ }
     return { targets: [], discussion: false, replyTo: null };
   },

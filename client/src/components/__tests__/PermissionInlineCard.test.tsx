@@ -76,6 +76,21 @@ describe("PermissionInlineCard", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /^本任务免审批/ }));
   };
 
+  it("专家团授权明确作用于全部成员，确认后才切换并批准当前操作", async () => {
+    setPermissionMode.mockResolvedValueOnce({permissionMode:"always-approve",configuredPermissionMode:"always-approve",autoModeAvailable:true,alwaysApproveAvailable:true,locked:false,runtimeSyncState:"synced"});
+    render(<PermissionInlineCard sessionId="session-1" groupScope />);
+    openOptions();
+    fireEvent.click(screen.getByRole("menuitem",{name:/^本专家团免审批/}));
+    const confirm=screen.getByRole("alertdialog",{name:"确认本专家团免审批"});
+    expect(confirm).toHaveTextContent("协调员与全部成员");
+    expect(confirm).toHaveTextContent("其他待审批请求仍需单独确认");
+    expect(setPermissionMode).not.toHaveBeenCalled();
+    fireEvent.click(within(confirm).getByRole("button",{name:"确认并允许"}));
+    await waitFor(()=>expect(resolvePermission).toHaveBeenCalledWith("permission-1",{optionId:"enable-always-approve",cancelled:false}));
+    expect(setPermissionMode).toHaveBeenCalledWith("session-1","always-approve");
+    expect(usePermissionModeStore.getState().capabilityStatus).toBeNull();
+  });
+
   it("默认只突出单次批准和拒绝，长期授权留在下拉中", () => {
     render(<PermissionInlineCard sessionId="session-1" />);
     expect(screen.getByText("是否允许运行这条命令？")).toBeInTheDocument();

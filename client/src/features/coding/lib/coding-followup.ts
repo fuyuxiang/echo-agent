@@ -1,3 +1,4 @@
+import { codingQueueOwner } from "@/lib/queue-owner";
 import { beginAgentTurn } from "@/lib/agent-turn";
 import { useSessionStore } from "@/stores/session-store";
 import { usePermissionStore } from "@/stores/permission-store";
@@ -52,31 +53,7 @@ export const MANUAL_FOLLOWUP_PHASES: TaskPhase[] = [
   "repairing",
 ];
 
-export function codingQueueId(
-  root: string,
-  taskId?: string,
-  sessionId?: string | null,
-): string | null {
-  return taskId && sessionId
-    ? `coding:${JSON.stringify([root, taskId, sessionId])}`
-    : null;
-}
-
-export function codingQueueOwner(
-  key: string,
-): { root: string; taskId: string; sessionId: string } | null {
-  if (!key.startsWith("coding:")) return null;
-  try {
-    const owner: unknown = JSON.parse(key.slice(7));
-    return Array.isArray(owner) &&
-      owner.length === 3 &&
-      owner.every((value) => typeof value === "string" && value.length > 0)
-      ? { root: owner[0], taskId: owner[1], sessionId: owner[2] }
-      : null;
-  } catch {
-    return null;
-  }
-}
+export { codingQueueId, codingQueueOwner } from "@/lib/queue-owner";
 
 /** Legacy identity fallback requires the transcript before an empty turn is discarded. */
 export function settleCodingQueueTurn(completion: PromptComplete): void {
@@ -102,12 +79,9 @@ export function settleCodingQueueTurn(completion: PromptComplete): void {
         completion.cancellationCategory,
       ).failed
     ) {
-      store.holdSending(
-        key,
-        promptId,
-        true,
-        "本轮执行失败，请检查任务记录后再恢复。",
-      );
+      if (items.some(item => item.promptId === promptId && (item.status === "accepted" || item.recovery === "uncertain" || item.recovery === "failed"))) {
+        store.settleSending(key, "retry", promptId);
+      } else store.holdSending(key, promptId, true, "本轮执行失败，请检查任务记录后再恢复。");
     } else store.settleSending(key, "consume", promptId);
   }
 }

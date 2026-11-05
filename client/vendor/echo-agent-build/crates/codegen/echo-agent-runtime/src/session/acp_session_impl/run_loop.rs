@@ -1393,6 +1393,7 @@ pub(super) async fn run_session(
                         SessionCommand::SetPermissionMode {
                             yolo_mode,
                             auto_mode,
+                            prompt_on_auto_deny,
                             respond_to,
                         } => {
                             let auto_mode = auto_mode
@@ -1404,6 +1405,7 @@ pub(super) async fn run_session(
                             session.permissions.set_auto_mode(false);
                             session.permissions.set_llm_side_query_wired(false);
                             session.permissions.set_yolo_mode(false);
+                            session.permissions.set_prompt_on_auto_deny(prompt_on_auto_deny);
                             if yolo_mode {
                                 session.permissions.set_yolo_mode(true);
                             } else if auto_mode {

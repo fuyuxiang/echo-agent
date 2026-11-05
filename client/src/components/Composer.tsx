@@ -1,5 +1,5 @@
 import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { draftAttachments, saveDraftAttachments } from "@/lib/draft-attachments";
 import { draftRevision, useDraftRevision } from "@/lib/draft-lifecycle";
 import { useStorageHealth } from "@/lib/durable-ui-state";
@@ -123,6 +123,7 @@ export function Composer({
   showMeta = false,
   showDisclaimer = false,
   permissionInline = false,
+  permissionControl,
   // Model picker
   modelId,
   modelSummary,
@@ -216,6 +217,8 @@ export function Composer({
   showDisclaimer?: boolean;
   /** 把权限选择器放进卡片内 footer（+ 之后），匹配 EchoAgent 本地助理页；为 true 时不再渲染卡片外 meta 行。 */
   permissionInline?: boolean;
+  /** A container-owned approval scope, e.g. a whole expert group. */
+  permissionControl?: ReactNode;
   /** Currently selected model id (shown on the model trigger). */
   modelId?: string;
   /** Label when a container manages several member models outside this input. */
@@ -1491,9 +1494,7 @@ export function Composer({
               )}
             </span>
           )}
-          {permissionInline && (
-            <PermissionPicker onToast={onToast} sessionId={commandSessionId} />
-          )}
+          {permissionInline && (permissionControl ?? <PermissionPicker onToast={onToast} sessionId={commandSessionId} />)}
           <KnowledgePicker
             sessionId={knowledgeSessionId}
             deferRuntimeSync={knowledgeDeferred}

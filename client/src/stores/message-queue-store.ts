@@ -10,13 +10,19 @@ import type { DocumentEditContext } from "@/lib/document-workspace";
  */
 import { create } from "zustand";
 import { readDurable, writeDurable } from "@/lib/durable-ui-state";
+import { queueBelongsToSession } from "@/lib/queue-owner";
 
-export type QueueItemStatus = "queued" | "paused" | "sending";
-type EditableQueueItemStatus = Exclude<QueueItemStatus, "sending">;
+export type QueueItemStatus = "queued" | "paused" | "sending" | "accepted";
+type EditableQueueItemStatus = "queued" | "paused";
 export type SendingSettlement = "consume" | "retry";
 
+/** Accepted prompts remain internally owned until completion, but are no longer pending sends. */
+export function isQueueItemInFlight(item: QueueItem): boolean {
+  return item.status === "sending" || item.status === "accepted";
+}
+
 export interface QueueTerminalPolicy {
-  /** How an in-flight queue item should leave the `sending` state. */
+  /** How the owned queue item is settled after a terminal event. */
   settlement: SendingSettlement;
   /** Whether this terminal event may advance the queue. */
   autoAdvance: boolean;
@@ -36,7 +42,7 @@ export interface QueueItem {
   coding?: CodingQueuedContext;
   documentEdit?: DocumentEditContext;
   status: QueueItemStatus;
-  recovery?: "queued" | "uncertain";
+  recovery?: "queued" | "uncertain" | "failed";
   sendError?: string;
   /** Prompt correlation id while this exact row is owned by an Agent turn. */
   promptId?: string;
@@ -66,8 +72,10 @@ interface QueueState {
   claimNext: (sessionId: string, promptId?: string) => QueueItem | null;
   /** Atomically reserve a specific row selected by the user. */
   claimById: (sessionId: string, id: string, promptId: string) => QueueItem | null;
-  /** Settle the in-flight row owned by a terminal Agent event. Consumed items
-   *  leave the queue; retryable failures return to `queued`. */
+  /** Native admission, scoped by both session and prompt; never inferred from an optimistic bubble. */
+  acknowledgePrompt: (sessionId: string, promptId: string) => void;
+  /** Settle the exact row owned by a terminal Agent event. Consumed items
+   *  leave the queue; admitted failures remain paused for explicit recovery. */
   settleSending: (
     sessionId: string,
     settlement: SendingSettlement,
@@ -75,7 +83,7 @@ interface QueueState {
   ) => QueueItem | null;
   /** Preserve one uncertain dispatch for explicit review, without affecting other tasks. */
   holdSending: (sessionId: string, promptId: string, uncertain?: boolean, message?: string) => void;
-  /** Return all process-owned in-flight rows to a retryable state. */
+  /** Pause all process-owned in-flight rows for review after reconnecting. */
   retryAllSending: () => void;
   /** 取下一条 active(非 paused)项并从队列移除;无则返回 null。 */
   shiftNext: (sessionId: string) => QueueItem | null;
@@ -98,7 +106,7 @@ function validQueues(value: unknown): value is QueueMap {
   return !!value && typeof value === "object" && !Array.isArray(value)
     && Object.entries(value).every(([sessionId, items]) => Array.isArray(items) && items.every((item) =>
       item && typeof item.id === "string" && typeof item.text === "string"
-      && ["queued", "paused", "sending"].includes(item.status) && Number.isFinite(item.createdAt)
+      && ["queued", "paused", "sending", "accepted"].includes(item.status) && Number.isFinite(item.createdAt)
       && (item.promptId === undefined || typeof item.promptId === "string")
       && (item.documentEdit === undefined || (item.documentEdit
         && item.documentEdit.sessionId === sessionId
@@ -112,7 +120,7 @@ function restoredQueues(): QueueMap {
   const queues = readDurable<QueueMap>(OUTBOX_KEY, {}, validQueues);
   return Object.fromEntries(Object.entries(queues).map(([id, items]) => [id, items.map((item) => ({
     ...item, status: "paused" as const,
-    recovery: item.recovery ?? (item.status === "sending" ? "uncertain" as const : "queued" as const),
+    recovery: item.recovery ?? (isQueueItemInFlight(item) ? "uncertain" as const : "queued" as const),
   }))]));
 }
 
@@ -146,11 +154,13 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
     const { queues } = get();
     const q = queueOf(queues, sessionId);
     if (!q.some((it) => it.id === id)) return true;
+    if (q.some(it => it.id === id && isQueueItemInFlight(it))) return false;
     return commitQueues({ ...queues, [sessionId]: q.map((it) => it.id === id ? { ...it, text } : it) }, set);
   },
   remove: (sessionId, id) => {
     const q = queueOf(get().queues, sessionId);
     if (!q.some((it) => it.id === id)) return true;
+    if (q.some(it => it.id === id && isQueueItemInFlight(it))) return false;
     const next = q.filter((it) => it.id !== id);
     const queues = { ...get().queues };
     if (next.length === 0) delete queues[sessionId];
@@ -161,6 +171,7 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
     const { queues } = get();
     const q = queueOf(queues, sessionId);
     if (from < 0 || from >= q.length || q.length === 0) return true;
+    if (isQueueItemInFlight(q[from])) return false;
     const clampedTo = Math.max(0, Math.min(to, q.length - 1));
     if (from === clampedTo) return true;
     const next = [...q];
@@ -172,6 +183,7 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
     const { queues } = get();
     const q = queueOf(queues, sessionId);
     if (!q.some((it) => it.id === id)) return true;
+    if (q.some(it => it.id === id && isQueueItemInFlight(it))) return false;
     return commitQueues({ ...queues, [sessionId]: q.map((it) => it.id === id
       ? { ...it, status, promptId: undefined, recovery: undefined, sendError: undefined } : it) }, set);
   },
@@ -209,18 +221,38 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
     return { queues: { ...state.queues, [sessionId]: queue.map(item => item.status === "queued"
       ? { ...item, status: "paused" as const } : item) } };
   }),
+  acknowledgePrompt: (sessionId, promptId) => {
+    if (!sessionId || !promptId) return;
+    set(state => {
+      let changed = false;
+      const queues = { ...state.queues };
+      for (const [key, items] of Object.entries(queues)) {
+        if (!queueBelongsToSession(key, sessionId)
+          || !items.some(item => item.status === "sending" && item.promptId === promptId)) continue;
+        queues[key] = items.map(item => item.status === "sending" && item.promptId === promptId
+          ? { ...item, status: "accepted" as const } : item);
+        changed = true;
+      }
+      // Native acceptance cannot be rolled back by a disk error. The subscriber
+      // persists this state; an older `sending` snapshot still recovers paused.
+      return changed ? { queues } : state;
+    });
+  },
   settleSending: (sessionId, settlement, promptId) => {
     let settled: QueueItem | null = null;
     set((s) => {
       const q = queueOf(s.queues, sessionId);
       const idx = q.findIndex((it) => (
-        (it.status === "sending" || (it.recovery === "uncertain" && !!promptId)) && (!promptId || it.promptId === promptId)
+        (isQueueItemInFlight(it) || ((it.recovery === "uncertain" || it.recovery === "failed") && !!promptId)) && (!promptId || it.promptId === promptId)
       ));
       if (idx === -1) return s;
       settled = q[idx];
       const next = settlement === "retry"
         ? q.map((it, itemIndex) => itemIndex === idx
-          ? { ...it, status: "queued" as const, promptId: undefined, recovery: undefined, sendError: undefined }
+          ? it.status === "accepted" || it.recovery === "uncertain" || it.recovery === "failed"
+            ? { ...it, status: "paused" as const, recovery: "failed" as const,
+              sendError: "执行失败，等待确认" }
+            : { ...it, status: "queued" as const, promptId: undefined, recovery: undefined, sendError: undefined }
           : it)
         : q.filter((_, itemIndex) => itemIndex !== idx);
       const queues = { ...s.queues };
@@ -232,10 +264,13 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
   },
   holdSending: (sessionId, promptId, uncertain = true, message) => set(state => {
     const queue = queueOf(state.queues, sessionId);
-    if (!queue.some(item => item.status === "sending" && item.promptId === promptId)) return state;
-    const next = queue.map(item => item.status === "sending" && item.promptId === promptId
-      ? {...item, status: "paused" as const, recovery: uncertain ? "uncertain" as const : undefined,
-        promptId: uncertain ? promptId : undefined, sendError: message} : item);
+    if (!queue.some(item => isQueueItemInFlight(item) && item.promptId === promptId)) return state;
+    const next = queue.map(item => {
+      if (!isQueueItemInFlight(item) || item.promptId !== promptId) return item;
+      const needsReview = uncertain || item.status === "accepted";
+      return { ...item, status: "paused" as const, recovery: needsReview ? "uncertain" as const : undefined,
+        promptId: needsReview ? promptId : undefined, sendError: message };
+    });
     const queues = {...state.queues, [sessionId]:next};
     writeDurable(OUTBOX_KEY, queues);
     return {queues};
@@ -247,7 +282,7 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
         Object.entries(state.queues).map(([sessionId, items]) => [
           sessionId,
           items.map((item) => {
-            if (item.status !== "sending") return item;
+            if (!isQueueItemInFlight(item)) return item;
             changed = true;
             return { ...item, status: "paused" as const, recovery: "uncertain" as const };
           }),
@@ -283,6 +318,24 @@ useMessageQueueStore.subscribe((state, previous) => {
 
 export function hasActiveItems(q: QueueItem[]): boolean {
   return q.some((it) => it.status === "queued");
+}
+
+/** Durable terminal updates can arrive before the public completion callback.
+ * Release exact ownership on either rail; only App's once-only public handler
+ * advances the queue. An old prompt must not pause a newer turn's follow-ups. */
+export function settleQueuedPrompt(completion: {
+  sessionId: string; promptId: string; stopReason: string; cancellationCategory?: string; pauseWaiting?: boolean;
+}): void {
+  if (!completion.sessionId || !completion.promptId || !completion.stopReason) return;
+  const store = useMessageQueueStore.getState();
+  const policy = queueTerminalPolicy(completion.stopReason, completion.cancellationCategory);
+  for (const [key, items] of Object.entries(store.queues)) {
+    if (!queueBelongsToSession(key, completion.sessionId)
+      || !items.some(item => item.promptId === completion.promptId
+        && (isQueueItemInFlight(item) || item.recovery === "uncertain" || item.recovery === "failed"))) continue;
+    store.settleSending(key, policy.settlement, completion.promptId);
+    if (completion.pauseWaiting && !policy.autoAdvance) store.pauseQueued(key);
+  }
 }
 
 /**

@@ -48,6 +48,15 @@ it("恢复历史保留的正文，纯工具记录仍然可以在详情中访问"
   expect(groupRequests(current)[0].state).toBe("delivered");
 });
 
+it("工作详情保留历史自动拦截的状态和继续入口，避免显示为已完成", () => {
+  const onControl=vi.fn();
+  const current=group({works:[work({status:"completed",output:"请放行"})],messages:[message({text:"请放行",toolCalls:[{toolCallId:"blocked",status:"failed",rawOutput:"Auto mode blocked this action."}]})]});
+  render(<GroupWorkList group={current} busy={false} onControl={onControl} onOpenTool={()=>{}} />);
+  expect(screen.getByText("有操作被拦截")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button",{name:"检查后继续"}));
+  expect(onControl).toHaveBeenCalledWith("retry","work");
+});
+
 it("续跑回传的相同结果只显示一次，避免重复头像", () => {
   const current=group({works:[work({status:"completed",output:"最终结论"}),work({id:"continuation",continuationOf:"work",status:"completed",output:"最终结论"})],messages:[message({id:"answer",workId:"continuation",text:"最终结论"})]});
   expect(publicGroupMessages(current)).toHaveLength(1);
@@ -116,4 +125,27 @@ it("恢复旧草稿时引用优先于过时的任务选择，新话题仍保持�
   const requests=groupRequests(current);
   expect(groupRequestTarget(current,requests,"other-request",false,"reply")).toBe("request");
   expect(groupRequestTarget(current,requests,"other-request",true,"reply")).toBeNull();
+});
+
+it("明确只讨论约束和群通知具有确定的发送行为", async () => {
+  const { groupDiscussionOnly, groupRecipients } = await import("../group-client");
+  expect(groupDiscussionOnly("先回答，不要修改代码")).toBe(true);
+  expect(groupDiscussionOnly("discussion only: review this plan")).toBe(true);
+  expect(groupDiscussionOnly("请展示 `不要修改代码` 这段示例")).toBe(false);
+  const second = {...member,id:"other",name:"架构专家"};
+  const current = group({coordinatorId:"c",members:[{...member,id:"c",expert:null},member,second]});
+  expect(groupRecipients(current,"@全体 通知：交付日期改到周五",[member.id,second.id],null)).toEqual([member.id,second.id]);
+  expect(groupRecipients(current,"@全体 请各自评审方案",[],null)).toEqual([member.id,second.id]);
+});
+
+it("准备后未成功启动的补充不会被误标为已纳入处理", async () => {
+  const { followupReceipt } = await import("../group-presentation");
+  const supplement = message({id:"supplement",seq:5,kind:"user",memberId:null,requestId:"request",memberIds:[member.id],text:"最新要求"});
+  const current = group({works:[work({status:"failed",contextSeq:5})],messages:[supplement]});
+  expect(followupReceipt(current,supplement)).toBe("补充已保存在本次任务记录中");
+  expect(followupReceipt({...current,paused:true,works:[work({status:"uncertain",contextSeq:5})]},supplement)).toBe("补充已保存，等待核对执行状态");
+});
+
+it("未确认的执行停止显示思考活动，等待用户核对", () => {
+  expect(groupActivity(group({works:[work({status:"uncertain",output:"保留的阶段内容"})]}))).toBe("");
 });

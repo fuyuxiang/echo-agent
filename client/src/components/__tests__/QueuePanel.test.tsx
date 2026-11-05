@@ -101,7 +101,7 @@ describe("QueuePanel", () => {
     ).toEqual(["b", "a"]);
   });
 
-  it("立即发送:接纳后保留原条目，直到对应轮次完成", async () => {
+  it("立即发送:本地提交仍显示发送中，原生确认后隐藏，完成后释放内部记录", async () => {
     const s = useMessageQueueStore.getState();
     const id = s.enqueue("s1", "马上发");
     const onSendNow = vi.fn((_text: string, _attachments?: string[], queueItemId?: string) => {
@@ -118,10 +118,60 @@ describe("QueuePanel", () => {
         promptId: "prompt-1",
       });
     });
+    expect(screen.getByText("待发送队列(1)")).toBeInTheDocument();
+    act(() => useMessageQueueStore.getState().acknowledgePrompt("s1", "prompt-1"));
+    expect(screen.queryByRole("list", { name: "待发送队列" })).toBeNull();
+    expect(useMessageQueueStore.getState().getQueue("s1")[0]).toMatchObject({ id, status: "accepted" });
     act(() => {
       useMessageQueueStore.getState().settleSending("s1", "consume", "prompt-1");
     });
     expect(useMessageQueueStore.getState().getQueue("s1")).toHaveLength(0);
+  });
+
+  it("隐藏的已接收记录不占待发送计数，重排和删除仍精确作用于可见消息", () => {
+    const queue = useMessageQueueStore.getState();
+    const first = queue.enqueue("s1", "已接收一");
+    queue.enqueue("s1", "a");
+    const middle = queue.enqueue("s1", "已接收二");
+    queue.enqueue("s1", "b");
+    for (const id of [first, middle]) {
+      queue.claimById("s1", id, id);
+      queue.acknowledgePrompt("s1", id);
+    }
+    render(<QueuePanel sessionId="s1" streaming onSendNow={vi.fn()} />);
+    expect(screen.getByText("待发送队列(2)")).toBeInTheDocument();
+    expect(screen.queryByText("已接收一")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "上移" })[0]).toBeDisabled();
+    fireEvent.click(screen.getAllByRole("button", { name: "上移" })[1]);
+    expect(queue.getQueue("s1").filter(item => item.status === "queued").map(item => item.text)).toEqual(["b", "a"]);
+    expect(screen.getAllByRole("listitem")[0]).toHaveTextContent("1b");
+    fireEvent.click(screen.getAllByRole("button", { name: "下移" })[0]);
+    expect(queue.getQueue("s1").filter(item => item.status === "queued").map(item => item.text)).toEqual(["a", "b"]);
+    fireEvent.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    expect(screen.getByText("待发送队列(1)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    expect(screen.queryByRole("list", { name: "待发送队列" })).toBeNull();
+    expect(queue.getQueue("s1").map(item => item.id)).toEqual([first, middle]);
+  });
+
+  it("接收后执行失败会保留内容，取消确认不会重发，确认后才恢复", () => {
+    const queue = useMessageQueueStore.getState();
+    const id = queue.enqueue("s1", "可能已经改过文件");
+    queue.claimById("s1", id, "failed-prompt");
+    queue.acknowledgePrompt("s1", "failed-prompt");
+    queue.settleSending("s1", "retry", "failed-prompt");
+    const send = vi.fn();
+    render(<QueuePanel sessionId="s1" onSendNow={send} />);
+    expect(screen.getByText("执行失败，等待确认")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "恢复" }));
+    expect(screen.getByRole("dialog", { name: "确认再次发送这条消息？" })).toHaveTextContent("可能已经完成部分操作");
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(queue.getQueue("s1")[0].status).toBe("paused");
+    expect(send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "恢复" }));
+    fireEvent.click(screen.getByRole("button", { name: "已检查，允许再次发送" }));
+    expect(queue.getQueue("s1")[0]).toMatchObject({ id, status: "queued", promptId: undefined, recovery: undefined });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("运行时拒绝或发送失败时保留队列项", async () => {

@@ -239,7 +239,9 @@ esac`);
   return { root, bin, scripts, run, commands: () => fs.readFileSync(env.ECHO_TEST_PACKAGE_COMMANDS, "utf8").trim().split("\n").filter(line => line.startsWith("tauri ")) };
 }
 
-describe.skipIf(process.platform === "win32")("macOS packaging failure diagnostics", () => {
+// Each packaging subprocess has a 10s deadline; allow its parent test to collect
+// the exit status and diagnostics when other CI jobs are using the same runner.
+describe.skipIf(process.platform === "win32")("macOS packaging failure diagnostics", { timeout: 15_000 }, () => {
   it("preserves compilation failure and never attempts to package an older binary", () => {
     const project = macosPackagingProject();
     const result = project.run(["scripts/build.sh"], { ECHO_TEST_COMPILE_EXIT: "41" });

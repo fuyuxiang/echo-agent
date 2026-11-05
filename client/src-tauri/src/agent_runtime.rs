@@ -614,6 +614,7 @@ pub(crate) struct GroupSessionRequest<'a> {
     pub member_id: &'a str,
     pub generation: u64,
     pub discussion: bool,
+    pub permission_mode: &'a str,
     pub existing: Option<&'a str>,
 }
 
@@ -629,9 +630,10 @@ pub(crate) async fn group_session(
         member_id,
         generation,
         discussion,
+        permission_mode,
         existing,
     } = request;
-    let mut meta = permission_mode_meta("ask");
+    let mut meta = permission_mode_meta(permission_mode);
     meta.insert("modelId".into(), serde_json::json!(model));
     meta.insert("agentProfile".into(), profile.clone());
     meta.insert(
@@ -654,7 +656,7 @@ pub(crate) async fn group_session(
             ]),
         ));
     }
-    if let Some(sid) = existing {
+    let sid = if let Some(sid) = existing {
         crate::sessions::require_migrated_model(sid, cwd).map_err(|error| anyhow!(error))?;
         let req =
             acp::LoadSessionRequest::new(acp::SessionId::new(sid.to_string()), cwd.to_path_buf())
@@ -663,7 +665,7 @@ pub(crate) async fn group_session(
         let _: acp::LoadSessionResponse = acp_send(req, tx)
             .await
             .map_err(|e| anyhow!("恢复群成员会话失败：{e:?}"))?;
-        Ok(sid.into())
+        sid.to_string()
     } else {
         let req = acp::NewSessionRequest::new(cwd.to_path_buf())
             .mcp_servers(servers)
@@ -671,8 +673,23 @@ pub(crate) async fn group_session(
         let response: acp::NewSessionResponse = acp_send(req, tx)
             .await
             .map_err(|e| anyhow!("创建群成员会话失败：{e:?}"))?;
-        Ok(response.session_id.0.to_string())
+        response.session_id.0.to_string()
+    };
+    // Explicitly apply both ON and OFF, including resident reconnects. The
+    // native manager may have seeded Auto from compatibility settings before
+    // this point; metadata alone cannot prove the selected mode took effect.
+    if let Err(error) = crate::permission_config::sync_group_session_permission_modes(
+        tx,
+        &[sid.clone()],
+        permission_mode,
+    )
+    .await
+    {
+        crate::groups::retain_unready_session(&sid, group_id, member_id);
+        return Err(anyhow!("成员权限同步失败，尚未开始执行：{error}"));
     }
+    crate::permission_config::mark_session_permission_mode_synced(&sid, permission_mode);
+    Ok(sid)
 }
 
 #[cfg(test)]

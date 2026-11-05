@@ -62,7 +62,7 @@ describe("PluginsPanel load states", () => {
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     expect(await screen.findByText("新加入的本地插件")).toBeInTheDocument();
     expect(pluginsAction).toHaveBeenLastCalledWith("local-session", { type: "reload" });
-    expect(screen.getByRole("button", { name: "已禁用" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "启用插件 新加入的本地插件" })).toBeEnabled();
   });
 
   it("a failed local reload keeps the previous plugins available and reports the error", async () => {
@@ -73,7 +73,7 @@ describe("PluginsPanel load states", () => {
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("重新扫描失败");
     expect(screen.getByText("保留插件")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "已启用" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "禁用插件 保留插件" })).toBeEnabled();
   });
 
 });
@@ -84,7 +84,8 @@ it("managed package removal lists affected plugins and retries refresh without u
   vi.mocked(pluginsList).mockResolvedValueOnce({plugins:[plugin]}).mockResolvedValue({plugins:[]});
   vi.mocked(pluginsAction).mockResolvedValueOnce({status:"success"}).mockRejectedValueOnce(new Error("重新加载失败")).mockResolvedValue({status:"success"});
   render(<PluginsPanel sessionId="managed-session" />);
-  fireEvent.click(await screen.findByRole("button",{name:"卸载插件 代码评审"}));
+  fireEvent.click(await screen.findByRole("button",{name:"插件 代码评审更多操作"}));
+  fireEvent.click(screen.getByRole("menuitem",{name:"卸载插件 代码评审"}));
   const dialog=screen.getByRole("alertdialog");
   expect(dialog).toHaveTextContent("文档检查");
   fireEvent.click(screen.getByRole("button",{name:"卸载插件"}));
@@ -103,7 +104,8 @@ it("卸载后的迟到列表不能覆盖切换后的会话，包括切换回同�
     .mockResolvedValueOnce({plugins:[{id:"current",name:"当前列表",enabled:true}]});
   vi.mocked(pluginsAction).mockResolvedValue({status:"success"});
   const {rerender}=render(<PluginsPanel sessionId="old" />);
-  fireEvent.click(await screen.findByRole("button",{name:"卸载插件 旧插件"}));
+  fireEvent.click(await screen.findByRole("button",{name:"插件 旧插件更多操作"}));
+  fireEvent.click(screen.getByRole("menuitem",{name:"卸载插件 旧插件"}));
   fireEvent.click(screen.getByRole("button",{name:"卸载插件"}));
   await waitFor(()=>expect(finish).toBeTypeOf("function"));
   rerender(<PluginsPanel sessionId="new" />);
@@ -122,7 +124,8 @@ it("从无任务开始卸载时，自动创建会话不会关闭失败重试弹�
   vi.mocked(pluginsAction).mockImplementationOnce(()=>new Promise((_,fail)=>{reject=fail;}));
   const {rerender}=render(<PluginsPanel />);
   vi.mocked(ensureSession).mockImplementation(async()=>{rerender(<PluginsPanel sessionId="auto-session" />);return "auto-session";});
-  fireEvent.click(await screen.findByRole("button",{name:"卸载插件 自动会话插件"}));
+  fireEvent.click(await screen.findByRole("button",{name:"插件 自动会话插件更多操作"}));
+  fireEvent.click(screen.getByRole("menuitem",{name:"卸载插件 自动会话插件"}));
   fireEvent.click(screen.getByRole("button",{name:"卸载插件"}));
   await waitFor(()=>expect(reject).toBeTypeOf("function"));
   await act(async()=>reject(new Error("安装目录暂时不可写")));

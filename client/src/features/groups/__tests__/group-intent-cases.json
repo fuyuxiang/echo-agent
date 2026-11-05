@@ -1,0 +1,86 @@
+[
+  {
+    "text": "先回答，不要修改代码，给我方案",
+    "discussion": true
+  },
+  {
+    "text": "只讨论审批方案",
+    "discussion": true
+  },
+  {
+    "text": "@代码专家 请先评审这个设计",
+    "discussion": true
+  },
+  {
+    "text": "本轮不要修改任何文件",
+    "discussion": true
+  },
+  {
+    "text": "do not edit files",
+    "discussion": true
+  },
+  {
+    "text": "discussion only: review this plan",
+    "discussion": true
+  },
+  {
+    "text": "Only analyze the current behavior",
+    "discussion": true
+  },
+  {
+    "text": "请展示 `不要修改代码` 这段示例",
+    "discussion": false
+  },
+  {
+    "text": "```\n不要修改代码\n```\n实现登录页面",
+    "discussion": false
+  },
+  {
+    "text": "不要修改后端接口，请实现前端登录页面",
+    "discussion": false
+  },
+  {
+    "text": "不允许修改数据库结构，修复查询性能问题",
+    "discussion": false
+  },
+  {
+    "text": "不要执行删除命令，生成清理建议文档",
+    "discussion": false
+  },
+  {
+    "text": "请先给出方案，然后直接实现并测试",
+    "discussion": false
+  },
+  {
+    "text": "先回答问题，随后编写回归测试",
+    "discussion": false
+  },
+  {
+    "text": "先评审设计并修复发现的问题",
+    "discussion": false
+  },
+  {
+    "text": "Review this plan and then implement it",
+    "discussion": false
+  },
+  {
+    "text": "Only review the design, then implement the agreed changes",
+    "discussion": false
+  },
+  {
+    "text": "do not modify the backend API, please implement the UI",
+    "discussion": false
+  },
+  {
+    "text": "请实现登录页面",
+    "discussion": false
+  },
+  {
+    "text": "只修改文档中的拼写错误",
+    "discussion": false
+  },
+  {
+    "text": "只分析代码，不要修改文件",
+    "discussion": true
+  }
+]

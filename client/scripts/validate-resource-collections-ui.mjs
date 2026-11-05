@@ -20,6 +20,7 @@ try {
   for (const theme of ["light", "dark"]) {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`${base}?surface=capabilities&label=${encodeURIComponent("插件")}&extensionState=populated&pluginDescriptions=1&theme=${theme}`);
+    await page.getByRole("button", { name: "列表视图", exact: true }).click();
     const rows = page.locator(".resource-list > .resource-row");
     const long = rows.nth(0), short = rows.nth(1), responsive = rows.nth(2);
     const expand = long.getByRole("button", { name: "展开插件「需求评审 01」的说明", exact: true });
@@ -70,43 +71,63 @@ try {
     assert(await responsive.locator(".resource-description__text").evaluate(element => element === document.activeElement), "removing an unnecessary toggle keeps focus at its text");
   }
   const extensionLayouts = await validateExtensionLayouts(page, output);
-  for (const [width, font, theme] of [[1280, 16, "light"], [1280, 16, "dark"], [1024, 22, "dark"], [768, 22, "light"], [390, 16, "light"], [350, 22, "dark"]]) {
+  const surfaces = [
+    ["projects", "项目", "grid"], ["capabilities", "专家·技能·连接器", "grid"],
+    ["resource-groups", "专家团", "grid"], ["capabilities", "技能", "grid"],
+    ["capabilities", "连接器", "compact"], ["capabilities", "插件", "grid"],
+    ["management-schedules", "定时任务", "compact"],
+  ];
+  for (const [width, font, theme, collapsed] of [[1280, 16, "light", 1], [1280, 16, "dark", 0], [1024, 22, "dark", 1], [768, 22, "light", 1], [390, 16, "light", 1], [350, 22, "dark", 1]]) {
     await page.setViewportSize({ width, height: 900 });
-    for (const label of ["专家·技能·连接器", "技能", "连接器", "插件"]) {
-      await page.goto(`${base}?surface=capabilities&label=${encodeURIComponent(label)}&extensionState=populated&theme=${theme}`);
+    for (const [surface, label, layout] of surfaces) {
+      const url = `${base}?surface=${surface}&label=${encodeURIComponent(label)}&collapsed=${collapsed}&collectionAudit=1&extensionState=populated&theme=${theme}`;
+      await page.goto(url);
       await page.locator(".resource-list .resource-row").first().waitFor();
       await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
-      const geometry = await page.locator(".resource-list").first().evaluate(list => {
-        const bounds = list.getBoundingClientRect();
-        const rows = [...list.querySelectorAll(":scope > .resource-row")].map(row => {
-          const box = row.getBoundingClientRect();
-          const styles = getComputedStyle(row);
-          const actions = row.querySelector(".resource-row__actions");
-          const actionBox = actions?.getBoundingClientRect();
-          const main = row.querySelector(".resource-row__main,.plugins-panel__item-content,.mcp-item-main");
-          const mainBox = main?.getBoundingClientRect();
-          const icon = row.querySelector(".resource-icon,.colleague-avatar");
-          return {
-            left: box.left, right: box.right, top: box.top, bottom: box.bottom,
-            padding: styles.padding, shadow: styles.boxShadow,
-            overflow: row.scrollWidth > row.clientWidth + 1,
-            iconWidth: icon?.getBoundingClientRect().width,
-            actionsFit: !actionBox || actionBox.left >= box.left && actionBox.right <= box.right + 1,
-            actionsOverlap: !!(actionBox && mainBox && actionBox.width && mainBox.right > actionBox.left + 1 && mainBox.bottom > actionBox.top + 1 && mainBox.top < actionBox.bottom - 1),
-          };
+      for (const view of ["cards", "list"]) {
+        const toggle = page.getByRole("button", { name: view === "cards" ? "卡片视图" : "列表视图", exact: true });
+        await toggle.focus();
+        await page.keyboard.press("Enter");
+        assert(await toggle.evaluate(el => el === document.activeElement), "changing views retains keyboard focus");
+        const geometry = await page.locator(".resource-list").first().evaluate(list => {
+          const bounds = list.getBoundingClientRect();
+          const rows = [...list.querySelectorAll(":scope > .resource-row")].map(row => {
+            const box = row.getBoundingClientRect();
+            const actions = row.querySelector(".resource-row__actions");
+            const actionBox = actions?.getBoundingClientRect();
+            const mainBox = row.querySelector(".resource-row__main,.plugins-panel__item-content,.mcp-item-main,.atm-task-card__body")?.getBoundingClientRect();
+            return {
+              left: box.left, right: box.right, top: box.top, bottom: box.bottom,
+              overflow: row.scrollWidth > row.clientWidth + 1,
+              actionsFit: !actionBox || actionBox.left >= box.left && actionBox.right <= box.right + 1,
+              actionsOverlap: !!(actionBox && mainBox && actionBox.width && mainBox.right > actionBox.left + 1 && mainBox.bottom > actionBox.top + 1 && mainBox.top < actionBox.bottom - 1),
+            };
+          });
+          return { left: bounds.left, right: bounds.right, columns: getComputedStyle(list).gridTemplateColumns.split(" ").length,
+            width: bounds.width, overflow: document.documentElement.scrollWidth > innerWidth + 1 || list.scrollWidth > list.clientWidth + 1, rows };
         });
-        return { left: bounds.left, right: bounds.right, overflow: document.documentElement.scrollWidth > innerWidth + 1 || list.scrollWidth > list.clientWidth + 1, rows };
-      });
-      assert(!geometry.overflow, `${label}/${width}/${font}: collection overflow`);
-      assert.equal(geometry.rows.length, 3);
-      for (const [index, row] of geometry.rows.entries()) {
-        assert(!row.overflow && row.actionsFit && !row.actionsOverlap, `${label}/${width}/${font}: controls overlap or overflow: ${JSON.stringify(row)}`);
-        assert.equal(row.shadow, "none", `${label}: static rows have no card shadows`);
-        assert(Math.abs(row.left - geometry.left) <= 1 && Math.abs(row.right - geometry.right) <= 1, `${label}: rows fill the list width`);
-        if (index) assert(row.top >= geometry.rows[index - 1].bottom - 1, `${label}: resources form one vertical list`);
+        const context = `${label}/${view}/${width}/${font}/${theme}`;
+        assert(!geometry.overflow, `${context}: collection overflow`);
+        assert.equal(geometry.rows.length, 3, `${context}: preserve every resource`);
+        for (const [index, row] of geometry.rows.entries()) {
+          assert(!row.overflow && row.actionsFit && !row.actionsOverlap, `${context}: controls overlap or overflow: ${JSON.stringify(row)}`);
+          assert(row.left >= geometry.left - 1 && row.right <= geometry.right + 1, `${context}: card stays inside collection`);
+          for (const other of geometry.rows.slice(0, index)) assert(row.left >= other.right - 1 || row.right <= other.left + 1 || row.top >= other.bottom - 1, `${context}: cards overlap`);
+          if (view === "list" || layout === "compact") assert(Math.abs(row.left - geometry.left) <= 1 && Math.abs(row.right - geometry.right) <= 1, `${context}: operational rows fill width`);
+        }
+        if (view === "cards" && layout === "grid" && geometry.width >= 40 * font) assert(geometry.columns >= 2, `${context}: available space produces a grid`);
+        evidence.push({ surface, label, view, width, font, theme, ...geometry });
+        await page.screenshot({ path: join(output, `resources-${label}-${view}-${width}-${font}-${theme}.png`) });
       }
-      evidence.push({ label, width, font, theme, ...geometry });
-      await page.screenshot({ path: join(output, `resources-${label}-${width}-${font}-${theme}.png`) });
+      await page.reload();
+      await page.locator('.resource-list[data-view="list"]').waitFor();
+      await page.getByRole("button", { name: "卡片视图", exact: true }).click();
+      await page.reload();
+      await page.locator('.resource-list[data-view="cards"]').waitFor();
+      if (label === "项目") assert.equal(await page.locator(".capability-page__illustration").count(), 0, "populated projects use the compact heading");
+      if (label === "专家·技能·连接器") assert.equal(await page.locator(".colleague-avatar-dot,.colleague-card-status-pill").count(), 0, "expert definitions have no invented live status");
+      if (label === "连接器") assert.equal(await page.locator(".mcp-item-main").filter({ hasText: "0 个工具" }).count(), 0, "unloaded connectors do not imply tool discovery failure");
+      if (label === "定时任务") assert.equal(await page.getByRole("listitem", { name: "定时任务 每周交付报告", exact: true }).locator(".atm-task-card__next").count(), 0, "paused tasks have no next execution promise");
     }
   }
   // Expert, project and automation templates use the production TemplateCard.

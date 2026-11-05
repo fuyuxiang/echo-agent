@@ -96,7 +96,17 @@ jobs:
           node-version: '22.23.4'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      - name: Run frontend and script unit tests
+        id: unit_tests
+        run: pnpm test --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit="${{ runner.temp }}/echo-unit-tests.xml"
+      - name: Preserve unit test report
+        if: ${{ always() && (steps.unit_tests.outcome == 'success' || steps.unit_tests.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results-linux
+          path: ${{ runner.temp }}/echo-unit-tests.xml
+          if-no-files-found: ignore
+          retention-days: 7
       - run: pnpm test:scripts
       - run: pnpm office:test
 

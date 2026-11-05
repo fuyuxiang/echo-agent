@@ -1,5 +1,5 @@
 import type { Group, GroupMessage, GroupRequest } from "./group-client";
-import { terminalWork } from "./group-client";
+import { terminalWork, groupWorkAutoBlocked } from "./group-client";
 
 export function resultOnlyWorkIds(group: Group): Set<string> {
   const works = new Map(group.works.map(work => [work.id, work]));
@@ -58,7 +58,7 @@ export function groupRequests(group: Group): GroupRequest[] {
       : works.some(work => work.status === "waiting_children") ? "waiting"
       : works.some(work => work.status === "queued") ? "queued"
       : works.some(work => work.memberId === ownerId && work.status === "cancelled") ? "stopped"
-      : final ? works.some(work => ["failed","cancelled"].includes(work.status)) ? "partial" : "delivered"
+      : final ? works.some(work => ["failed","cancelled"].includes(work.status) || groupWorkAutoBlocked(group, work.id)) ? "partial" : "delivered"
       : works.some(work => work.status === "failed") ? "failed" : "missing_result";
     return { id, ownerId, workId: work.id, inputRevision: Math.max(0, ...group.messages.filter(message => message.id === id || message.requestId === id).map(message => message.seq)), state, finalMessageId: ["delivered", "partial"].includes(state) ? final?.id ?? null : null };
   });
@@ -69,6 +69,40 @@ export const requestLabels: Record<GroupRequest["state"], string> = {
   delivered: "已回复", partial: "已回复，仍有未完成事项", failed: "未能交付结果",
   missing_result: "缺少可读结果", stopped: "已停止", stopping: "正在停止", needs_check: "需要检查",
 };
+
+export const activeRequest = (request: GroupRequest) => ["queued", "working", "waiting", "summarizing", "stopping"].includes(request.state);
+
+export function messageRequestId(group: Group, message: GroupMessage): string | null {
+  return message.requestId ?? group.works.find(work => work.id === message.workId)?.rootId
+    ?? (group.works.some(work => work.rootId === message.id) ? message.id : null);
+}
+
+const requestTitles = new WeakMap<GroupMessage[], Map<string, string>>();
+export function requestTitle(group: Group, id: string): string {
+  let titles = requestTitles.get(group.messages);
+  if (!titles) {
+    titles = new Map(group.messages.filter(message => message.kind === "user")
+      .map(message => [message.id, message.text.trim().replace(/\s+/g, " ").slice(0, 80)]));
+    requestTitles.set(group.messages, titles);
+  }
+  return titles.get(id) || "协作任务";
+}
+
+/** Receipts reflect native context preparation/consumption, never a model claim. */
+export function followupReceipt(group: Group, message: GroupMessage): string | null {
+  if (!message.requestId) return null;
+  const works = group.works.filter(work => work.rootId === message.requestId);
+  const owner = groupRequests(group).find(request => request.id === message.requestId)?.ownerId;
+  const direct = message.memberIds?.length && !message.memberIds.includes(owner ?? "") ? message.memberIds : null;
+  const relevant = works.filter(work => !direct || direct.includes(work.memberId));
+  const consumed = relevant.some(work => work.consumedFollowups?.includes(message.id)
+    || (work.contextSeq ?? 0) >= message.seq && ["running", "waiting_children", "completed"].includes(work.status));
+  if (consumed) return "已纳入处理";
+  if (relevant.some(work => work.status === "uncertain")) return "补充已保存，等待核对执行状态";
+  if (works.length && works.every(work => terminalWork(work.status))) return "补充已保存在本次任务记录中";
+  if (group.paused) return "补充已保存，恢复派发后处理";
+  return "补充已保存，等待处理";
+}
 
 export function groupRequestTarget(group: Group, requests: GroupRequest[], selected: string | null, newTopic: boolean, replyTo: string | null, discussion?: boolean): string | null {
   const modes = new Map(group.works.map(work => [work.rootId,work.discussion]));
@@ -86,6 +120,7 @@ export function groupRequestTarget(group: Group, requests: GroupRequest[], selec
 }
 
 export function groupActivity(group: Group): string {
+  if (group.works.some(work => work.status === "uncertain")) return "";
   const works = group.works.filter(work => !terminalWork(work.status));
   if (!works.length) return "";
   if (group.paused) return "已暂停后续派发，正在执行的工作会继续完成";

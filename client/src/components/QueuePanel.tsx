@@ -51,6 +51,9 @@ export function QueuePanel({
   const { requestConfirmation, dialog } = useAppDialog(sessionId);
   const [sendingBySession, setSendingBySession] = useState<Record<string, string>>({});
   const sendingId = sendingBySession[sessionId] ?? null;
+  // Accepted prompts are tracked for completion/recovery, not counted as
+  // waiting messages. Keep original indices when moving visible neighbours.
+  const waiting = queue.map((item, index) => ({ item, index })).filter(({ item }) => item.status !== "accepted");
   const [saveError, setSaveError] = useState<{ sessionId: string; message: string } | null>(null);
   const mutate = (action: () => boolean) => {
     const saved = action();
@@ -58,38 +61,40 @@ export function QueuePanel({
     return saved;
   };
 
-  if (queue.length === 0) return null;
+  if (waiting.length === 0) return null;
 
   return (
     <div className="queue-panel" role="list" aria-label="待发送队列">
       <div className="queue-panel__head">
-        <span>待发送队列({queue.length})</span>
-        <span className="queue-panel__hint">{hint ?? (queue.every(item => item.status === "paused")
+        <span>待发送队列({waiting.length})</span>
+        <span className="queue-panel__hint">{hint ?? (waiting.every(({ item }) => item.status === "paused")
           ? "队列已暂停，恢复条目后可发送"
           : streaming ? "当前任务完成后按顺序发送；立即发送会中断当前执行，已有结果保留"
           : "选择一条消息发送，其他未暂停的消息将按顺序接续")}</span>
       </div>
       {dialog}
       {saveError?.sessionId === sessionId && <p role="alert" className="queue-panel__error">{saveError.message}</p>}
-      {queue.some((item) => item.recovery) && <p role="status" className="queue-panel__hint">部分消息已暂停。请检查任务记录后逐条恢复。</p>}
-      {queue.map((item, idx) => (
+      {waiting.some(({ item }) => item.recovery && item.recovery !== "failed") && <p role="status" className="queue-panel__hint">部分消息已暂停。请检查任务记录后逐条恢复。</p>}
+      {waiting.map(({ item, index }, idx) => (
         <QueueRow
           key={`${sessionId}:${item.id}`}
           sessionId={sessionId}
           item={item}
           index={idx}
-          total={queue.length}
+          total={waiting.length}
           onRemove={() => mutate(() => remove(sessionId, item.id))}
-          onUp={() => mutate(() => reorder(sessionId, idx, idx - 1))}
-          onDown={() => mutate(() => reorder(sessionId, idx, idx + 1))}
+          onUp={() => mutate(() => reorder(sessionId, index, waiting[idx - 1]?.index ?? index))}
+          onDown={() => mutate(() => reorder(sessionId, index, waiting[idx + 1]?.index ?? index))}
           onTogglePause={() => {
-            if (item.recovery === "uncertain") {
-              requestConfirmation({ title: "确认再次发送这条消息？", description: "上次执行未能确认成功，可能已经部分执行。请先查看任务记录。继续会再次发送，可能重复修改文件或其他操作。", confirmLabel: "已检查，允许再次发送", action: async () => { mutate(() => setStatus(sessionId, item.id, "queued")); } });
+            if (item.recovery === "uncertain" || item.recovery === "failed") {
+              requestConfirmation({ title: "确认再次发送这条消息？", description: item.recovery === "failed"
+                ? "这条消息的执行失败，可能已经完成部分操作。请先查看任务记录。继续会再次发送，可能重复修改文件或其他操作。"
+                : "上次执行未能确认成功，可能已经部分执行。请先查看任务记录。继续会再次发送，可能重复修改文件或其他操作。", confirmLabel: "已检查，允许再次发送", action: async () => { mutate(() => setStatus(sessionId, item.id, "queued")); } });
             } else { mutate(() => setStatus(sessionId, item.id, item.status === "paused" ? "queued" : "paused")); }
           }}
           onCommitEdit={(text) => mutate(() => update(sessionId, item.id, text))}
           sendLabel={
-            sendingId === item.id || (streaming && sendNowPending)
+            sendingId === item.id
               ? "发送中"
               : streaming
                 ? "立即发送"
@@ -216,6 +221,7 @@ function QueueRow({
           </button>
           {item.documentEdit && <span className="queue-row__attachment">文档：{item.documentEdit.title}</span>}
           {item.recovery === "uncertain" && <span className="queue-panel__hint">发送结果待确认</span>}
+          {item.recovery === "failed" && !item.sendError && <span className="queue-panel__hint">执行失败，等待确认</span>}
           {item.sendError && <span className="queue-panel__hint" role="status">{item.sendError}</span>}
           {(item.attachments?.length ?? 0) > 0 && (
             <span className="queue-row__attachments" aria-label="队列附件">

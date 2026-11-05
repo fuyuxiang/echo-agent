@@ -447,6 +447,7 @@ pub enum SessionCommand {
     SetPermissionMode {
         yolo_mode: bool,
         auto_mode: bool,
+        prompt_on_auto_deny: bool,
         respond_to: oneshot::Sender<(bool, bool)>,
     },
     ResetPermissionState,

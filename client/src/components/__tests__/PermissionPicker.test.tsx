@@ -5,6 +5,12 @@ import userEvent from "@testing-library/user-event";
 const mocks = vi.hoisted(() => ({
   permissionModeGet: vi.fn(),
   permissionModeSet: vi.fn(),
+  groupPermissionModeGet: vi.fn(),
+  groupPermissionModeSet: vi.fn(),
+}));
+vi.mock("@/features/groups/group-client", () => ({
+  groupPermissionModeGet: (...args: unknown[]) => mocks.groupPermissionModeGet(...args),
+  groupPermissionModeSet: (...args: unknown[]) => mocks.groupPermissionModeSet(...args),
 }));
 
 vi.mock("@/lib/agent-client", () => ({
@@ -86,6 +92,8 @@ describe("PermissionPicker", () => {
   beforeEach(() => {
     mocks.permissionModeGet.mockReset().mockResolvedValue(modeStatus());
     mocks.permissionModeSet.mockReset();
+    mocks.groupPermissionModeGet.mockReset().mockResolvedValue(modeStatus());
+    mocks.groupPermissionModeSet.mockReset().mockImplementation(async (_id, mode) => modeStatus(undefined, {permissionMode:mode, configuredPermissionMode:mode, runtimeAppliedMode:mode}));
     usePermissionModeStore.setState({
       homeMode: "ask",
       statuses: {},
@@ -93,6 +101,90 @@ describe("PermissionPicker", () => {
     });
     usePermissionStore.setState({ queues: {}, closedRequestIds: [] });
     useSessionsStore.setState({ independent: [], pendingSessionPatches: {} });
+  });
+
+  it("专家团权限只写专家团，离线也可保存且不会修改首页或单个任务", async () => {
+    usePermissionModeStore.setState({homeMode:"always-approve"});
+    mocks.groupPermissionModeGet.mockResolvedValue(modeStatus(undefined, {runtimeSyncState:"offline"}));
+    const user = userEvent.setup();
+    render(<PermissionPicker groupId="group-a" groupPermissionMode="ask" />);
+    await waitFor(() => expect(mocks.groupPermissionModeGet).toHaveBeenCalledWith("group-a"));
+    await user.click(screen.getByRole("button", {name:"专家团权限：请求批准"}));
+    expect(screen.getByRole("menu", {name:"本专家团权限"})).toHaveTextContent("只读讨论始终保持只读");
+    await user.click(screen.getByRole("menuitemradio", {name:/^自动判断/}));
+    expect(mocks.groupPermissionModeSet).toHaveBeenCalledWith("group-a","auto");
+    expect(mocks.permissionModeSet).not.toHaveBeenCalled();
+    expect(mocks.permissionModeGet).not.toHaveBeenCalled();
+    expect(usePermissionModeStore.getState().homeMode).toBe("always-approve");
+    expect(usePermissionModeStore.getState().capabilityStatus).toBeNull();
+    expect(screen.getByRole("button", {name:"专家团权限：自动判断"})).toBeInTheDocument();
+  });
+
+  it("专家团免审批明确确认全部成员及长期范围，切换失败保留原模式并可重试", async () => {
+    mocks.groupPermissionModeSet.mockRejectedValueOnce(new Error("成员同步失败"));
+    const user = userEvent.setup();
+    render(<PermissionPicker groupId="group-a" />);
+    await user.click(screen.getByRole("button",{name:"专家团权限：请求批准"}));
+    await user.click(screen.getByRole("menuitemradio",{name:/^本专家团免审批/}));
+    const confirm=screen.getByRole("alertdialog",{name:"确认本专家团免审批"});
+    expect(confirm).toHaveTextContent("协调员与全部成员");
+    expect(confirm).toHaveTextContent("设置会保留到你再次修改");
+    expect(mocks.groupPermissionModeSet).not.toHaveBeenCalled();
+    await user.click(within(confirm).getByRole("button",{name:"确认开启"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("成员同步失败");
+    expect(screen.getByRole("button",{name:"专家团权限：请求批准"})).toBeInTheDocument();
+    await user.click(screen.getByRole("button",{name:"确认开启"}));
+    expect(await screen.findByRole("button",{name:"专家团权限：本专家团免审批"})).toBeInTheDocument();
+  });
+
+  it("专家团读取失败时禁止猜测权限并提供重试，组织锁定后禁用选择", async () => {
+    mocks.groupPermissionModeGet.mockRejectedValueOnce(new Error("暂时不可用"))
+      .mockResolvedValueOnce(modeStatus(undefined,{locked:true,lockedReason:"组织锁定为请求批准"}));
+    const user=userEvent.setup();
+    render(<PermissionPicker groupId="group-a" />);
+    await user.click(screen.getByRole("button",{name:"专家团权限：请求批准"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("暂时不可用");
+    expect(screen.getByRole("menuitemradio",{name:/^自动判断/})).toBeDisabled();
+    await user.click(screen.getByRole("button",{name:"重试读取权限"}));
+    await screen.findByText("组织锁定为请求批准");
+    expect(screen.getAllByRole("menuitemradio").every(item=>(item as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it("快速切换专家团时丢弃旧读写响应", async () => {
+    let finish!: (value: PermissionModeStatus) => void;
+    mocks.groupPermissionModeSet.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+    const user=userEvent.setup();
+    const view=render(<PermissionPicker groupId="group-a" />);
+    await user.click(screen.getByRole("button",{name:"专家团权限：请求批准"}));
+    await user.click(screen.getByRole("menuitemradio",{name:/^自动判断/}));
+    view.rerender(<PermissionPicker groupId="group-b" />);
+    await act(async()=>{finish(modeStatus(undefined,{permissionMode:"auto",configuredPermissionMode:"auto"}));});
+    expect(screen.getByRole("button",{name:"专家团权限：请求批准"})).toBeInTheDocument();
+    expect(mocks.groupPermissionModeGet).toHaveBeenCalledWith("group-b");
+  });
+
+  it("离开专家团后，迟到的保存结果不会弹出其他专家团的反馈或修改首页", async () => {
+    let finish!: (value: PermissionModeStatus) => void;
+    mocks.groupPermissionModeSet.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+    const toast=vi.fn(), user=userEvent.setup();
+    const view=render(<PermissionPicker groupId="group-a" onToast={toast} />);
+    await user.click(screen.getByRole("button",{name:"专家团权限：请求批准"}));
+    await user.click(screen.getByRole("menuitemradio",{name:/^自动判断/}));
+    view.unmount();
+    await act(async()=>{finish(modeStatus(undefined,{permissionMode:"auto",configuredPermissionMode:"auto"}));});
+    expect(toast).not.toHaveBeenCalled();
+    expect(usePermissionModeStore.getState().homeMode).toBe("ask");
+  });
+
+  it("组织策略广播后重新读取专家团的实际权限，不沿用旧的免审批状态", async () => {
+    mocks.groupPermissionModeGet.mockResolvedValueOnce(modeStatus(undefined,{permissionMode:"always-approve",configuredPermissionMode:"always-approve"}))
+      .mockResolvedValue(modeStatus(undefined,{locked:true,lockedReason:"组织已要求人工批准"}));
+    render(<PermissionPicker groupId="group-a" groupPermissionMode="always-approve" />);
+    await screen.findByRole("button",{name:"专家团权限：本专家团免审批"});
+    await act(async()=>{usePermissionModeStore.getState().setStatus(modeStatus(undefined,{locked:true}));});
+    await screen.findByRole("button",{name:"专家团权限：请求批准"});
+    expect(mocks.groupPermissionModeGet).toHaveBeenCalledTimes(2);
+    expect(mocks.permissionModeSet).not.toHaveBeenCalled();
   });
 
   it("菜单只保留简短说明，独立授权边界放在提权确认中", async () => {

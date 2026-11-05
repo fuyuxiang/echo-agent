@@ -350,7 +350,7 @@ pub(crate) fn ensure_always_approve_available() -> Result<(), String> {
     }
 }
 
-fn effective_permission_mode(
+pub(crate) fn effective_permission_mode(
     configured_mode: &str,
     auto_available: bool,
     always_approve_available: bool,
@@ -456,14 +456,15 @@ pub(crate) fn resolve_new_session_permission_mode(
 
 fn configured_session_permission_mode(session_id: Option<&str>) -> String {
     match session_id {
-        Some(session_id) => crate::meta::permission_mode(session_id),
+        Some(session_id) => crate::groups::configured_permission_mode_for_session(session_id)
+            .unwrap_or_else(|| crate::meta::permission_mode(session_id)),
         None => "ask".into(),
     }
 }
 
 pub(crate) fn effective_session_permission_mode(session_id: &str) -> String {
     let configured = crate::policy::locked_permission_mode()
-        .unwrap_or_else(|| crate::meta::permission_mode(session_id));
+        .unwrap_or_else(|| configured_session_permission_mode(Some(session_id)));
     effective_permission_mode(
         &configured,
         auto_mode_available(),
@@ -710,12 +711,14 @@ async fn notify_runtime_permission_mode(
     mode: &str,
     session_ids: Option<&[String]>,
     exclude_session_ids: Option<&[String]>,
+    prompt_on_auto_deny: bool,
 ) -> Result<(), String> {
     let (yolo_mode, auto_mode) = permission_mode_flags(mode);
     let mut params = serde_json::json!({
         "permission_mode": mode,
         "yolo_mode": yolo_mode,
         "auto_mode": auto_mode,
+        "promptOnAutoDeny": prompt_on_auto_deny,
         // Scope the generic Runtime API to sessions created by this desktop
         // integration. The shipped product has one desktop client, while the
         // embedded Runtime still requires an explicit origin boundary.
@@ -744,7 +747,18 @@ pub(crate) async fn sync_runtime_session_permission_mode(
     session_id: &str,
     mode: &str,
 ) -> Result<(), String> {
-    notify_runtime_permission_mode(tx, mode, Some(&[session_id.to_string()]), None).await
+    notify_runtime_permission_mode(tx, mode, Some(&[session_id.to_string()]), None, false).await
+}
+
+pub(crate) async fn sync_group_session_permission_modes(
+    tx: &echo_agent_acp::AcpAgentTx,
+    session_ids: &[String],
+    mode: &str,
+) -> Result<(), String> {
+    if session_ids.is_empty() {
+        return Ok(());
+    }
+    notify_runtime_permission_mode(tx, mode, Some(session_ids), None, true).await
 }
 
 /// Change one task's permission mode. The Runtime update is explicitly scoped
@@ -761,6 +775,10 @@ pub async fn permission_mode_set(
 ) -> Result<PermissionModeSetResult, String> {
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
+    }
+    if let Some(group_id) = crate::groups::permission_scope_for_session(&session_id) {
+        return crate::groups::set_permission_mode(&app, &state, &permissions, &group_id, &mode)
+            .await;
     }
     let _transition_guard = permission_transition_lock().lock().await;
     // Only sessions admitted into this Runtime generation may be mutated.
@@ -789,7 +807,7 @@ pub async fn permission_mode_set(
     let mut sync_error = None;
     let mut runtime_synced = false;
     for attempt in 1..=2 {
-        match notify_runtime_permission_mode(tx, &mode, Some(&target_ids), None).await {
+        match notify_runtime_permission_mode(tx, &mode, Some(&target_ids), None, false).await {
             Ok(()) => {
                 runtime_synced = true;
                 break;
@@ -803,7 +821,7 @@ pub async fn permission_mode_set(
 
     if !runtime_synced {
         let error = sync_error.unwrap_or_else(|| "运行中的 Agent 未确认权限同步".into());
-        if notify_runtime_permission_mode(tx, &previous_mode, Some(&target_ids), None)
+        if notify_runtime_permission_mode(tx, &previous_mode, Some(&target_ids), None, false)
             .await
             .is_ok()
         {
@@ -820,7 +838,7 @@ pub async fn permission_mode_set(
 
     if crate::policy::locked_permission_mode().is_none() {
         if let Err(error) = crate::meta::set_permission_mode(&session_id, &mode) {
-            if notify_runtime_permission_mode(tx, &previous_mode, Some(&target_ids), None)
+            if notify_runtime_permission_mode(tx, &previous_mode, Some(&target_ids), None, false)
                 .await
                 .is_ok()
             {
@@ -1053,7 +1071,7 @@ mod tests {
     async fn runtime_notification_carries_mode_flags_and_waits_for_ack() {
         let (client, mut agent) = echo_agent_acp::acp_channels();
         let task = tokio::spawn(async move {
-            notify_runtime_permission_mode(&client.tx, "always-approve", None, None).await
+            notify_runtime_permission_mode(&client.tx, "always-approve", None, None, false).await
         });
         let message = agent.rx.recv().await.expect("permission mode notification");
         let echo_agent_acp::AcpAgentMessage::ExtNotification(arguments) = message else {
@@ -1082,8 +1100,14 @@ mod tests {
         let task = tokio::spawn(async move {
             let included = vec!["automation-session".to_string()];
             let excluded = vec!["interactive-session".to_string()];
-            notify_runtime_permission_mode(&client.tx, "ask", Some(&included), Some(&excluded))
-                .await
+            notify_runtime_permission_mode(
+                &client.tx,
+                "ask",
+                Some(&included),
+                Some(&excluded),
+                false,
+            )
+            .await
         });
         let message = agent.rx.recv().await.expect("permission mode notification");
         let echo_agent_acp::AcpAgentMessage::ExtNotification(arguments) = message else {

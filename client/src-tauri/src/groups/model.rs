@@ -69,9 +69,12 @@ pub struct Message {
     pub stop_root_id: Option<String>,
     #[serde(default)]
     pub request_owner_id: Option<String>,
-    /// Manual result summaries retain the original request's inputs on every retry.
+    /// Later rounds and result summaries retain their related task's context.
     #[serde(default)]
     pub source_request_id: Option<String>,
+    /// Explicit inheritance selection; None retains legacy all-attachment behavior.
+    #[serde(default)]
+    pub source_attachment_paths: Option<Vec<String>>,
     #[serde(default)]
     pub assigned_work_ids: Vec<String>,
     /// Changes only when public text or attachments change, never for tool progress.
@@ -176,6 +179,7 @@ pub struct Group {
     pub source_session_id: Option<String>,
     pub source_team_id: Option<String>,
     pub coordinator_id: String,
+    #[serde(default = "default_group_permission_mode")]
     pub permission_mode: String,
     pub members: Vec<Member>,
     pub messages: Vec<Message>,
@@ -188,6 +192,10 @@ pub struct Group {
     pub revision: u64,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+fn default_group_permission_mode() -> String {
+    "ask".into()
 }
 
 /// Public delivery is projected from the durable request, work and message records.
@@ -302,6 +310,8 @@ impl Group {
             .iter()
             .filter_map(|m| m.stop_root_id.as_deref())
             .collect::<HashSet<_>>();
+        let blocked = self.messages.iter().filter(|message| message.tool_calls.iter().any(Self::auto_block_record))
+            .filter_map(|message| message.work_id.as_deref()).collect::<HashSet<_>>();
         let requests = roots
             .into_iter()
             .map(|root| {
@@ -361,7 +371,7 @@ impl Group {
                 } else if final_message.is_some() {
                     if works
                         .iter()
-                        .any(|w| matches!(w.status.as_str(), "failed" | "cancelled"))
+                        .any(|w| matches!(w.status.as_str(), "failed" | "cancelled") || blocked.contains(w.id.as_str()))
                     {
                         "partial"
                     } else {
@@ -624,7 +634,7 @@ impl Group {
         let root = id();
         let supplements = inputs
             .iter()
-            .filter(|m| m.request_id.is_some())
+            .filter(|m| m.request_id.is_some() || m.id != source_root)
             .map(|m| {
                 format!(
                     "用户补充 [id={}; 收件人={}]：{}\n{}",
@@ -641,10 +651,11 @@ impl Group {
             .collect::<Vec<_>>()
             .join("\n\n");
         let mut attachments = vec![];
+        let effective_attachments = self.related_attachments(&work.root_id);
         for path in inputs
             .iter()
             .flat_map(|m| &m.attachments)
-            .filter(|path| permits(path))
+            .filter(|path| effective_attachments.contains(path) && permits(path))
         {
             if !attachments.contains(path) {
                 attachments.push(path.clone());
@@ -678,6 +689,7 @@ impl Group {
         message.id = root;
         message.request_owner_id = Some(owner);
         message.source_request_id = Some(source_root);
+        message.source_attachment_paths = Some(vec![]);
         message.knowledge = knowledge;
         message.attachments = attachments;
         if let Some(source) = source {
@@ -789,6 +801,7 @@ impl Group {
             stop_root_id: None,
             request_owner_id: None,
             source_request_id: None,
+            source_attachment_paths: None,
             assigned_work_ids: vec![],
             public_revision,
         });
@@ -890,6 +903,26 @@ impl Group {
         }
         paths
     }
+
+    /// A later round inherits the source's effective selection, not every file
+    /// ever seen by an ancestor. An explicit empty selection ends inheritance.
+    pub fn related_attachments(&self, root: &str) -> Vec<String> {
+        let mut paths = vec![];
+        let mut seen = std::collections::HashSet::new();
+        let mut cursor = Some(root);
+        while let Some(root) = cursor.filter(|root| seen.insert((*root).to_string())) {
+            for path in self.request_attachments(root) {
+                if !paths.contains(&path) { paths.push(path); }
+            }
+            let message = self.messages.iter().find(|message| message.id == root);
+            if let Some(selected) = message.and_then(|message| message.source_attachment_paths.as_ref()) {
+                for path in selected { if !paths.contains(path) { paths.push(path.clone()); } }
+                break;
+            }
+            cursor = message.and_then(|message| message.source_request_id.as_deref());
+        }
+        paths
+    }
     pub fn followup_context(&self, root: &str) -> Result<String, String> {
         let mut context = String::new();
         for m in self
@@ -922,7 +955,9 @@ impl Group {
             .find(|w| w.id == work_id)
             .cloned()
             .ok_or("工作不存在")?;
-        if !matches!(work.status.as_str(), "failed" | "uncertain" | "cancelled") {
+        if !matches!(work.status.as_str(), "failed" | "uncertain" | "cancelled")
+            && !(work.status == "completed" && self.auto_permission_blocked(work_id))
+        {
             return Err("只能重试失败、停止或执行情况未确认的工作".into());
         }
         let sessions = if work.status == "uncertain" {
@@ -948,11 +983,30 @@ impl Group {
         let message = self.post(None, "user", format!("检查后继续：{}", work.prompt), None);
         message.id = root;
         message.request_owner_id = Some(work.member_id);
+        message.source_request_id = Some(work.root_id.clone());
         message.attachments = attachments;
         if let Some(source) = source {
             message.knowledge = source.knowledge;
         }
         Ok(sessions)
+    }
+
+    /// Only native failed tool records establish a permission block. Model
+    /// prose or user quotations must never unlock a completed-work retry.
+    pub fn auto_permission_blocked(&self, work_id: &str) -> bool {
+        self.messages
+            .iter()
+            .filter(|message| message.work_id.as_deref() == Some(work_id))
+            .flat_map(|message| &message.tool_calls)
+            .any(Self::auto_block_record)
+    }
+
+    fn auto_block_record(call: &serde_json::Value) -> bool {
+        call.get("status").and_then(serde_json::Value::as_str) == Some("failed")
+            && [call.get("content"), call.get("rawOutput")]
+                .into_iter()
+                .flatten()
+                .any(|content| content.to_string().contains("Auto mode blocked this action"))
     }
 
     fn retire_cancelled_context(&mut self, work: &Work) {

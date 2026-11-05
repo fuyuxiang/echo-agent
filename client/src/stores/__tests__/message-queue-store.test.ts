@@ -4,6 +4,7 @@ import {
   hasActiveItems,
   queueTerminalPolicy,
 } from "../message-queue-store";
+import { codingQueueId } from "@/lib/queue-owner";
 
 const resetStore = () => useMessageQueueStore.setState({ queues: {} });
 
@@ -229,7 +230,7 @@ describe("message-queue-store — claimNext", () => {
     const s = useMessageQueueStore.getState();
     const id = s.enqueue("s1", "a");
     s.claimNext("s1");
-    s.setStatus("s1", id, "queued");
+    s.settleSending("s1", "retry");
 
     expect(s.claimNext("s1")?.id).toBe(id);
   });
@@ -310,6 +311,63 @@ describe("message-queue-store — settleSending", () => {
     expect(store().getQueue("s1").map((item) => item.id)).toEqual([first, second]);
     expect(store().getQueue("s1")[1]).toMatchObject({ status: "queued" });
     expect(store().getQueue("s1")[1].promptId).toBeUndefined();
+  });
+});
+
+describe("message-queue-store — 原生接收确认", () => {
+  beforeEach(resetStore);
+
+  it("仅确认同一会话和 prompt，重复确认不改状态，编码队列沿用相同身份边界", () => {
+    const queue = store();
+    const key = codingQueueId("/repo", "A", "s1")!;
+    for (const owner of ["s1", "s2", key]) {
+      const id = queue.enqueue(owner, "重复文本");
+      queue.claimById(owner, id, "same-prompt");
+    }
+    queue.acknowledgePrompt("s1", "wrong-prompt");
+    expect(queue.getQueue("s1")[0].status).toBe("sending");
+    queue.acknowledgePrompt("s1", "same-prompt");
+    expect(queue.getQueue("s1")[0].status).toBe("accepted");
+    expect(queue.getQueue(key)[0].status).toBe("accepted");
+    expect(queue.getQueue("s2")[0].status).toBe("sending");
+    const snapshot = store().queues;
+    queue.acknowledgePrompt("s1", "same-prompt");
+    expect(store().queues).toBe(snapshot);
+    expect(hasActiveItems(queue.getQueue("s1"))).toBe(false);
+    expect(queue.claimNext("s1", "duplicate")).toBeNull();
+  });
+
+  it("接收后继续跟踪到完成，失败保留原消息并要求确认重发", () => {
+    const queue = store();
+    const id = queue.enqueue("s1", "修改文件", ["/repo/方案.docx"]);
+    queue.claimById("s1", id, "p1");
+    queue.acknowledgePrompt("s1", "p1");
+    queue.settleSending("s1", "retry", "p1");
+    expect(queue.getQueue("s1")[0]).toMatchObject({ id, text: "修改文件", attachments: ["/repo/方案.docx"],
+      status: "paused", recovery: "failed", promptId: "p1", sendError: expect.stringContaining("执行失败") });
+    expect(queue.claimNext("s1", "duplicate")).toBeNull();
+    expect(queue.settleSending("s1", "consume", "unrelated")).toBeNull();
+    queue.setStatus("s1", id, "queued");
+    expect(queue.getQueue("s1")[0].promptId).toBeUndefined();
+    expect(queue.settleSending("s1", "consume", "p1")).toBeNull();
+    expect(queue.claimNext("s1", "p2")?.id).toBe(id);
+  });
+
+  it("旧界面的编辑、删除、暂停和重排不能破坏已认领条目", () => {
+    const queue = store();
+    const id = queue.enqueue("s1", "正在接收");
+    queue.enqueue("s1", "下一条");
+    queue.claimById("s1", id, "p1");
+    for (const status of ["sending", "accepted"]) {
+      if (status === "accepted") queue.acknowledgePrompt("s1", "p1");
+      expect(queue.update("s1", id, "覆盖")).toBe(false);
+      expect(queue.remove("s1", id)).toBe(false);
+      expect(queue.setStatus("s1", id, "queued")).toBe(false);
+      expect(queue.reorder("s1", 0, 1)).toBe(false);
+      expect(queue.getQueue("s1")[0]).toMatchObject({ text: "正在接收", status });
+    }
+    queue.retryAllSending();
+    expect(queue.getQueue("s1")[0]).toMatchObject({ status: "paused", recovery: "uncertain", promptId: "p1" });
   });
 });
 

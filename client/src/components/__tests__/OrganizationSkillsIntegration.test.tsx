@@ -125,7 +125,8 @@ describe("专家技能页的组织 Skill 集成", () => {
 
   it("本地 Skill 可直接选择组织范围并打包上传", async () => {
     render(<SkillsTab pills={<span>页签</span>} />);
-    fireEvent.click(await screen.findByRole("button", { name: "上传本地分析到组织" }));
+    fireEvent.click(await screen.findByRole("button", { name: "技能 本地分析更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "上传本地分析到组织" }));
 
     expect(await screen.findByRole("heading", { name: "上传到组织" })).toBeInTheDocument();
     expect(screen.getByRole("combobox")).toHaveValue("team-1");

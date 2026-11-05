@@ -1,18 +1,22 @@
 //! Persistent multi-expert conversations, executed exclusively by Agent Runtime.
 pub(crate) mod management;
+mod intent;
 mod mcp;
 mod model;
 #[cfg(test)]
 mod native_smoke;
+pub(crate) mod permissions;
 mod runtime;
 mod store;
 #[cfg(test)]
 mod tests;
 pub use model::*;
+pub(crate) use permissions::set_permission_mode;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock, RwLock};
 use store::Store;
+use intent::discussion_only_request;
 use tauri::{Emitter, Manager, State};
 
 static STORE: OnceLock<Store> = OnceLock::new();
@@ -51,6 +55,13 @@ fn changed(group_id: &str) {
 pub fn is_member_session(session: &str) -> bool {
     session_owner(session).is_some()
 }
+pub(crate) fn permission_scope_for_session(session: &str) -> Option<String> {
+    session_owner(session).map(|(group, _)| group)
+}
+pub(crate) fn configured_permission_mode_for_session(session: &str) -> Option<String> {
+    let group = permission_scope_for_session(session)?;
+    db().and_then(|store| store.permission_mode(&group)).ok()
+}
 fn session_owner(session: &str) -> Option<Owner> {
     let cache = OWNERS.get_or_init(Default::default);
     if let Some(owner) = cache.read().unwrap().get(session) {
@@ -70,6 +81,14 @@ fn remember_owner(session: &str, group: &str, member: &str) {
         .write()
         .unwrap()
         .insert(session.into(), Some((group.into(), member.into())));
+}
+pub(crate) fn retain_unready_session(session: &str, group: &str, member: &str) {
+    // A native actor can be allocated before permission sync fails. Retain its
+    // ownership so retries, deletion and catalog hiding still account for it.
+    if let Err(error) = db().and_then(|store| store.bind_owner(session, group, member)) {
+        tracing::error!(%error, session, group, "unready group session ownership could not be retained");
+    }
+    remember_owner(session, group, member);
 }
 pub fn has_member(group: &str, member: &str) -> bool {
     db().and_then(|s| s.get(group))
@@ -336,6 +355,11 @@ pub struct SendInput {
     pub new_request: bool,
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Start a new round using this task's visible context, without replaying it.
+    #[serde(default)]
+    pub source_request_id: Option<String>,
+    #[serde(default)]
+    pub source_attachment_paths: Option<Vec<String>>,
     pub id: String,
     pub text: String,
     pub member_ids: Vec<String>,
@@ -376,6 +400,22 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
     }
     if g.archived {
         return Err("请先恢复专家团协作".into());
+    }
+    let discussion = input.discussion || discussion_only_request(&input.text);
+    if let Some(source) = &input.source_request_id {
+        if input.request_id.is_some() || !g.works.iter().any(|w| &w.root_id == source)
+            || !g.messages.iter().any(|m| &m.id == source && m.kind == "user")
+        {
+            return Err("关联任务不存在或与补充任务冲突，请重新选择；输入内容已保留".into());
+        }
+        if let Some(paths) = &input.source_attachment_paths {
+            let available = g.related_attachments(source);
+            if paths.len() > crate::shell_fs::MAX_ATTACHMENT_COUNT || paths.iter().any(|path| !available.contains(path)) {
+                return Err("所选历史附件不属于关联任务，或超过 20 个；请重新选择，输入内容已保留".into());
+            }
+        }
+    } else if input.source_attachment_paths.is_some() {
+        return Err("请先选择关联任务，再选择需要沿用的附件".into());
     }
     if input.knowledge.context.chars().count() > 20_000
         || (!input.knowledge.personal && !input.knowledge.context.is_empty())
@@ -427,8 +467,6 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
             targets.push(g.coordinator_id.clone());
         }
     }
-    targets.sort();
-    targets.dedup();
     if targets.iter().any(|target| {
         !g.members
             .iter()
@@ -436,6 +474,8 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
     }) {
         return Err("指定成员不在本专家团中".into());
     }
+    targets.sort();
+    targets.dedup();
     let reply = input
         .reply_to
         .as_ref()
@@ -477,19 +517,19 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
                 w.status.as_str(),
                 "queued" | "dispatching" | "running" | "waiting_children"
             ) && w.epoch == g.epoch
-                && w.discussion == input.discussion
+                && w.discussion == discussion
                 && (targets.contains(&w.member_id) || targets.iter().any(|target| target == owner))
         })
         .map(|w| w.root_id.clone())
         .collect::<std::collections::HashSet<_>>();
     // An explicit reply fences task attribution, even when the quoted task has ended.
-    let ongoing = if input.new_request {
+    let ongoing = if input.new_request || input.source_request_id.is_some() {
         None
     } else if let Some(root) = &input.request_id {
         if !g.works.iter().any(|w| {
             &w.root_id == root
                 && !w.terminal()
-                && w.discussion == input.discussion
+                && w.discussion == discussion
                 && w.epoch == g.epoch
         }) {
             return Err("所选任务已结束或模式已改变，请选择新话题后发送；输入内容已保留".into());
@@ -508,7 +548,7 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
                 g.works.iter().any(|w| {
                     &w.root_id == root
                         && w.epoch == g.epoch
-                        && w.discussion == input.discussion
+                        && w.discussion == discussion
                         && matches!(
                             w.status.as_str(),
                             "queued" | "dispatching" | "running" | "waiting_children"
@@ -573,7 +613,7 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
                     root,
                     target,
                     format!("用户直接向你补充本次任务，请完成这部分并返回实际结果：\n{prompt}"),
-                    input.discussion,
+                    discussion,
                     parent,
                     depth,
                 )?);
@@ -582,7 +622,7 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
     }
     if ongoing.is_none() {
         for target in &targets {
-            g.enqueue(&input.id, target, prompt.clone(), input.discussion, None, 0)?;
+            g.enqueue(&input.id, target, prompt.clone(), discussion, None, 0)?;
         }
     }
     let owner = ongoing.is_none().then(|| {
@@ -601,6 +641,8 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
     message.work_id = assigned_work_ids.first().cloned();
     message.assigned_work_ids = assigned_work_ids;
     message.request_owner_id = owner;
+    message.source_request_id = input.source_request_id.clone();
+    message.source_attachment_paths = input.source_attachment_paths.clone();
     message.member_ids = targets;
     Ok(())
 }
@@ -737,7 +779,14 @@ pub async fn group_send(
         return Ok(());
     }
     if !duplicate {
-        db()?.update(&group_id, |g| send(g, &input))?;
+        let filesystem = app.state::<crate::shell_fs::FilesystemAccess>();
+        db()?.update(&group_id, |g| {
+            send(g, &input)?;
+            if !is_stop_request(&input) {
+                validate_send_attachments(g, &input.id, &filesystem)?;
+            }
+            Ok(())
+        })?;
     }
     changed(&group_id);
     let latest = db()?.get(&group_id)?;
@@ -872,6 +921,23 @@ pub async fn group_control(
     let result = cancel_group_sessions(tx.as_ref(), sessions).await;
     runtime::kick(app, group_id);
     result
+}
+
+/// Validate the effective payload inside the same transaction as admission.
+/// Failure preserves the draft and never publishes an already-failed work row.
+fn validate_send_attachments(g: &Group, message_id: &str, filesystem: &crate::shell_fs::FilesystemAccess) -> Result<(), String> {
+    let message = g.messages.iter().find(|message| message.id == message_id).ok_or("消息不存在")?;
+    let root = message.request_id.as_deref().unwrap_or(&message.id);
+    let workspace = filesystem.require_workspace(&g.cwd)?;
+    let mut checked = std::collections::HashSet::new();
+    for work in g.works.iter().filter(|work| work.root_id == root) {
+        if !checked.insert(&work.member_id) { continue; }
+        let member = g.members.iter().find(|member| member.id == work.member_id).ok_or("成员不存在")?;
+        let paths = runtime::work_attachments(g, work, member)?;
+        filesystem.validate_session_attachments(&workspace, &paths).map_err(|error|
+            format!("{error}。请调整新附件或“沿用此前任务附件”的选择；补充当前任务时可改为关联新一轮。输入内容已保留"))?;
+    }
+    Ok(())
 }
 
 fn stopping_sessions(g: &Group, message_id: &str) -> Result<Vec<(String, String)>, String> {

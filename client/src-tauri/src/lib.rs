@@ -9,8 +9,6 @@ mod agent_config;
 mod agent_runtime;
 mod agents_store;
 mod app_updater;
-#[cfg(any(windows, test))]
-mod windows_install;
 mod attachment_blob;
 mod attachment_preview;
 mod automation;
@@ -86,6 +84,8 @@ mod team_orchestration;
 mod theia;
 mod webview_recovery;
 mod weixin;
+#[cfg(any(windows, test))]
+mod windows_install;
 
 use bridge::{FolderTrusts, Permissions, PlanApprovals, Questions};
 use commands::AppState;
@@ -1254,6 +1254,8 @@ pub fn run() {
             groups::group_send,
             groups::group_control,
             groups::group_settings,
+            groups::permissions::group_permission_mode_get,
+            groups::permissions::group_permission_mode_set,
             groups::group_metadata,
             groups::group_delete,
             groups::group_cleanup_pending,

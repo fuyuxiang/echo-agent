@@ -12,7 +12,7 @@ function finish(sessionId: string, promptId: string, stopReason = "end_turn") {
   state.setMessages([{id:promptId,role:"assistant",parts:[],complete:true,promptId,stopReason} as ChatMessage]);
 }
 
-it("retains admitted context until the correlated native completion, then advances only after delivery", async () => {
+it("retains native-accepted ownership until completion, then advances only after delivery", async () => {
   const props=options();
   const hook=renderHook(value=>useCodingFollowupQueue(value),{initialProps:props});
   act(()=>{hook.result.current.enqueue("核验边界",["/repo/a.ts"]);hook.result.current.enqueue("第二条",[]);});
@@ -21,6 +21,12 @@ it("retains admitted context until the correlated native completion, then advanc
   hook.rerender({...props,autoReady:true,manualReady:true});
   await waitFor(()=>expect(props.send).toHaveBeenCalledExactlyOnceWith("核验边界",["/repo/a.ts"],expect.any(String),false,undefined));
   expect(useMessageQueueStore.getState().getQueue(hook.result.current.queueId!)[0].status).toBe("sending");
+  act(() => useMessageQueueStore.getState().acknowledgePrompt("sA", props.send.mock.calls[0][2]));
+  expect(useMessageQueueStore.getState().getQueue(hook.result.current.queueId!)[0].status).toBe("accepted");
+  expect(hook.result.current.manualReady).toBe(false);
+  expect(hook.result.current.sending).toBe(true);
+  hook.rerender({...props,autoReady:true,manualReady:true});
+  expect(props.send).toHaveBeenCalledOnce();
   hook.rerender({...props,autoReady:false,manualReady:false});
   act(()=>finish("sA",props.send.mock.calls[0][2]));
   await waitFor(()=>expect(useMessageQueueStore.getState().getQueue(hook.result.current.queueId!)).toHaveLength(1));
@@ -72,9 +78,22 @@ it("coexisting or remounted workbenches cannot claim a second row while one is s
   const first=renderHook(()=>useCodingFollowupQueue(props));
   act(()=>{first.result.current.enqueue("first",[]);first.result.current.enqueue("second",[]);});
   await waitFor(()=>expect(props.send).toHaveBeenCalledOnce());
+  act(() => useMessageQueueStore.getState().acknowledgePrompt("sA", props.send.mock.calls[0][2]));
   const second=renderHook(()=>useCodingFollowupQueue(props));
   first.unmount();second.unmount();
   const remounted=renderHook(()=>useCodingFollowupQueue(props));
   expect(props.send).toHaveBeenCalledOnce();
   remounted.unmount();
+});
+
+it("native-accepted coding failures require review and cannot automatically replay partial work", async () => {
+  const props={...options(),autoReady:true,manualReady:true};
+  const hook=renderHook(()=>useCodingFollowupQueue(props));
+  act(()=>{hook.result.current.enqueue("修改代码",["src/a.ts"]);});
+  await waitFor(()=>expect(props.send).toHaveBeenCalledOnce());
+  act(()=>useMessageQueueStore.getState().acknowledgePrompt("sA",props.send.mock.calls[0][2]));
+  act(()=>finish("sA",props.send.mock.calls[0][2],"error"));
+  await waitFor(()=>expect(useMessageQueueStore.getState().getQueue(hook.result.current.queueId!)[0])
+    .toMatchObject({status:"paused",recovery:"failed",attachments:["src/a.ts"]}));
+  expect(props.send).toHaveBeenCalledOnce();
 });

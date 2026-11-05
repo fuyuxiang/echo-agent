@@ -1,7 +1,7 @@
-import { ResourceIcon, ResourceList, ResourceRow } from "../../ResourceList";
+import { ResourceIcon, ResourceList, ResourceMenu, ResourceRow } from "../../ResourceList";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  XCloseIcon, SearchIcon, ConfigureIcon, McpIcon, DeleteIcon, RefreshCwIcon,
+  XCloseIcon, SearchIcon, ConfigureIcon, McpIcon, RefreshCwIcon,
 } from "@/foundation/components/Icon/icons";
 import {
   mcpAuthTrigger, mcpDelete, mcpList, mcpSetup, mcpToggle, mcpToggleTool, onMcpStatusEvent,
@@ -251,7 +251,7 @@ export function McpModal({
         <CapabilityEmptyState icon={<McpIcon size="lg" />}
           title={`没有找到与「${search}」匹配的连接器`} onClear={() => setSearch("")} />
       ) : (
-        <ResourceList className="mcp-list" aria-label="已配置连接器">
+        <ResourceList collectionKey="connectors" layout="compact" summary={`${filtered.length} 个连接器 · ${filtered.filter(server => server.enabled).length} 个已启用`} className="mcp-list" aria-label="已配置连接器">
           {filtered.map((server) => {
             const state = statusOf(server);
             const isExpanded = expanded === server.name;
@@ -270,10 +270,9 @@ export function McpModal({
                         <span>{transportLabel(server.transport)}</span>
                         <span>·</span>
                         <span className={`mcp-state mcp-state--${state.tone}`}><span aria-hidden="true" className={`mcp-dot mcp-dot--${state.tone}`} />{state.label}</span>
-                        <span>·</span>
-                        <span>{server.tools.length} 个工具</span>
+                        {server.live && server.status === "ready" && <><span>·</span><span>{server.tools.length} 个工具</span></>}
                       </div>
-                      {server.target && <div className="mcp-item-target" title={server.target}>{server.target}</div>}
+                      <div className="mcp-item-target resource-clamp">{server.enabled ? server.live ? "点击查看工具与连接详情" : "已启用，启动任务后连接" : "启用后可供任务使用"}</div>
                     </div>
                   </button>
                   <div className="resource-row__actions">
@@ -292,18 +291,16 @@ export function McpModal({
                       onChange={() => void handleToggle(server, !server.enabled)} />
                     <span className="sk-toggle-track"><span className="sk-toggle-thumb" /></span>
                   </label>
-                  {server.editable && (
-                    <button type="button" className="sk-inst-del" title="删除用户配置"
-                      aria-label={`删除 MCP 服务 ${server.displayName || server.name}`}
-                      disabled={mutating !== null}
-                      onClick={() => void handleDelete(server)}><DeleteIcon size="sm" /></button>
-                  )}
+                  <span className="resource-switch-status">{server.enabled ? "已启用" : "已停用"}</span>
+                  <ResourceMenu label={`连接器 ${server.displayName || server.name}`} disabled={mutating !== null}
+                    actions={server.editable ? [{ label: `删除 MCP 服务 ${server.displayName || server.name}`, text: "删除用户配置", danger: true, onSelect: () => { void handleDelete(server); } }] : []} />
                   </div>
                 </div>
                 {authError?.name === server.name && <div className="ec-error" role="alert">授权失败：{authError.message}。可点击「授权连接」重试。</div>}
                 {isExpanded && (
                   <div className="mcp-item-details">
                     <div className="mcp-detail-grid">
+                      {server.target && <><span>地址 / 命令</span><strong className="mcp-detail-target">{server.target}</strong></>}
                       <span>来源</span><strong>{server.source || "本地"}{server.vendor ? ` · ${server.vendor}` : ""}</strong>
                       <span>运行方式</span><strong>{server.live ? "当前会话已加载" : "已持久化，等待会话加载"}</strong>
                     </div>
@@ -378,7 +375,7 @@ export function McpModal({
       )}
     </>
   );
-  const summary = `${servers.length} 个连接器 · ${servers.reduce((sum, server) => sum + server.tools.length, 0)} 个工具`;
+  const summary = `${servers.length} 个连接器 · ${servers.filter(server => server.enabled).length} 个已启用`;
   const editor = <McpConfigEditor embedded={embedded} onBack={() => setEditing(false)}
     onSaved={() => void reload(true)} onToast={onToast} />;
 
@@ -396,7 +393,7 @@ export function McpModal({
         </button>
       </>}
       summary={<>
-        <span>{loading && servers.length === 0 ? "正在读取连接器…" : error && servers.length === 0 ? "连接器列表未加载" : summary}</span>
+        {servers.length === 0 && (loading || error) && <span>{loading ? "正在读取连接器…" : "连接器列表未加载"}</span>}
         <span>配置会保存到本机，有活动任务时立即应用。</span>
       </>}>
       {listContent}

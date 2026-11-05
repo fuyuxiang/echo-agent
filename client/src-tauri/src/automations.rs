@@ -2872,7 +2872,11 @@ fn result_from_reader(
     let mut processed_events = 0;
     let mut output_full = false;
     if prompt_id.is_none() {
-        return Ok(AutomationRunResult { text, truncated, progress: None });
+        return Ok(AutomationRunResult {
+            text,
+            truncated,
+            progress: None,
+        });
     }
     let mut line = Vec::new();
     loop {
@@ -2932,7 +2936,10 @@ fn result_from_reader(
         let kind = update
             .get("sessionUpdate")
             .and_then(serde_json::Value::as_str);
-        if !matches!(kind, Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update")) {
+        if !matches!(
+            kind,
+            Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update")
+        ) {
             continue;
         }
         if let Some(event) = meta
@@ -2948,13 +2955,32 @@ fn result_from_reader(
             break;
         }
         processed_events += 1;
-        if let Some(timestamp) = meta.and_then(|m| m.get("agentTimestampMs")).and_then(serde_json::Value::as_i64) {
-            progress.last_activity_at = Some(progress.last_activity_at.unwrap_or(timestamp).max(timestamp));
+        if let Some(timestamp) = meta
+            .and_then(|m| m.get("agentTimestampMs"))
+            .and_then(serde_json::Value::as_i64)
+        {
+            progress.last_activity_at = Some(
+                progress
+                    .last_activity_at
+                    .unwrap_or(timestamp)
+                    .max(timestamp),
+            );
         }
         if matches!(kind, Some("tool_call" | "tool_call_update")) {
-            if let Some(id) = update.get("toolCallId").or_else(|| update.get("tool_call_id")).and_then(serde_json::Value::as_str).filter(|id| !id.is_empty() && id.len() <= 4096) {
-                let tool = tools.entry(id.to_string()).or_insert_with(|| ("执行操作".into(), "in_progress".into(), processed_events));
-                if let Some(title) = update.get("title").and_then(serde_json::Value::as_str).filter(|s| !s.trim().is_empty()) {
+            if let Some(id) = update
+                .get("toolCallId")
+                .or_else(|| update.get("tool_call_id"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 4096)
+            {
+                let tool = tools
+                    .entry(id.to_string())
+                    .or_insert_with(|| ("执行操作".into(), "in_progress".into(), processed_events));
+                if let Some(title) = update
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                {
                     tool.0 = title.chars().take(160).collect();
                 }
                 if let Some(status) = update.get("status").and_then(serde_json::Value::as_str) {
@@ -2992,10 +3018,19 @@ fn result_from_reader(
         }
     }
     progress.total_tools = tools.len();
-    progress.completed_tools = tools.values().filter(|(_, status, _)| status == "completed").count();
-    progress.failed_tools = tools.values().filter(|(_, status, _)| status == "failed").count();
-    progress.active_tool = tools.values().filter(|(_, status, _)| status != "completed" && status != "failed")
-        .max_by_key(|(_, _, order)| order).map(|(title, _, _)| title.clone());
+    progress.completed_tools = tools
+        .values()
+        .filter(|(_, status, _)| status == "completed")
+        .count();
+    progress.failed_tools = tools
+        .values()
+        .filter(|(_, status, _)| status == "failed")
+        .count();
+    progress.active_tool = tools
+        .values()
+        .filter(|(_, status, _)| status != "completed" && status != "failed")
+        .max_by_key(|(_, _, order)| order)
+        .map(|(title, _, _)| title.clone());
     Ok(AutomationRunResult {
         text: text.trim().into(),
         truncated,
@@ -5952,8 +5987,18 @@ mod tests {
         let row = |prompt: &str, event: &str, timestamp: i64, update: serde_json::Value| {
             serde_json::json!({ "params": { "_meta": { "promptId": prompt, "eventId": event, "agentTimestampMs": timestamp }, "update": update } }).to_string()
         };
-        let start = row("p1", "start", 100, serde_json::json!({ "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "检索资料", "status": "in_progress" }));
-        let finished = row("p1", "finished", 200, serde_json::json!({ "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed" }));
+        let start = row(
+            "p1",
+            "start",
+            100,
+            serde_json::json!({ "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "检索资料", "status": "in_progress" }),
+        );
+        let finished = row(
+            "p1",
+            "finished",
+            200,
+            serde_json::json!({ "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed" }),
+        );
         let lines = [start.clone(), finished.clone(), start, finished,
             row("p1", "failed", 300, serde_json::json!({ "sessionUpdate": "tool_call", "toolCallId": "t2", "title": "失效来源", "status": "failed" })),
             row("p1", "active", 400, serde_json::json!({ "sessionUpdate": "tool_call", "toolCallId": "t3", "title": "整理报告", "status": "in_progress" })),

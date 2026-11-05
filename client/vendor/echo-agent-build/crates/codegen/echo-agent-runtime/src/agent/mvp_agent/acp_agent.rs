@@ -2681,6 +2681,7 @@ impl acp::Agent for MvpAgent {
                         .send(crate::session::SessionCommand::SetPermissionMode {
                             yolo_mode,
                             auto_mode,
+                            prompt_on_auto_deny: params.get("promptOnAutoDeny").and_then(|value| value.as_bool()).unwrap_or(false),
                             respond_to,
                         })
                         .is_ok()

@@ -15,7 +15,7 @@ export const GroupReply = memo(function GroupReply({ message, member, coordinato
     attachments:message.attachments,parts:[{kind:"text",text:message.text}]}),[message.id,message.text,message.attachments,complete]);
   const name = member?.name ?? "成员";
   return <div className={`group-reply-message${conclusion ? " group-reply-message--conclusion" : ""}`}>
-    <div className="group-reply-message__identity"><span className="group-member__avatar" aria-hidden="true">{Array.from(name)[0]}</span><strong>{name}</strong>{coordinator && <small>协调员</small>}{conclusion && <span className="group-conclusion-label">本次结论</span>}</div>
+    <div className="group-reply-message__identity"><span className="group-member__avatar" aria-hidden="true">{Array.from(name)[0]}</span><strong>{name}</strong>{coordinator && name !== "协调员" && <small>协调员</small>}{conclusion && <span className="group-conclusion-label">本次结论</span>}</div>
     <div className="group-reply-message__body"><MessageItem message={reply} streaming={!complete} waitingForModel={false} hideIdentity authorName={name} markdownConfig={config} cwd={config.cwd} onToast={onToast} /></div>
   </div>;
 });

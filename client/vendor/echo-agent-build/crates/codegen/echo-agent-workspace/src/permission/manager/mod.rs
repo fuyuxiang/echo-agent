@@ -920,6 +920,14 @@ impl PermissionHandle {
         }
     }
 
+    pub fn set_prompt_on_auto_deny(&self, enabled: bool) {
+        if let PermissionHandle::Actor { cmd_tx, .. } = self {
+            if let Err(error) = cmd_tx.send(PermissionCommand::SetPromptOnAutoDeny(enabled)) {
+                tracing::error!(?error, "failed to set auto denial prompt behavior");
+            }
+        }
+    }
+
     /// Install a classifier implementation for auto mode (tests / production).
     /// Clears [`Self::has_llm_side_query`] unless you also call
     /// [`Self::set_llm_side_query_wired`]. Prefer
@@ -1565,6 +1573,7 @@ fn spawn_permission_manager_with_pin(
             Some(crate::permission::auto_mode::default_auto_mode_classifier());
         let mut auto_consecutive_denials: u32 = 0;
         let mut auto_total_denials: u32 = 0;
+        let mut prompt_on_auto_deny = false;
         // Recent turns + project AGENTS.md for classifier context (set by session).
         let mut classifier_turns: Vec<crate::permission::auto_mode::ClassifierTurn> = Vec::new();
         let mut recorded_permission_decisions: Vec<crate::permission::auto_mode::ClassifierTurn> =
@@ -1591,6 +1600,9 @@ fn spawn_permission_manager_with_pin(
             .eq(DEFAULT_ALLOWED_DOMAINS.iter().copied());
         while let Some(cmd) = rx.recv().await {
             match cmd {
+                PermissionCommand::SetPromptOnAutoDeny(enabled) => {
+                    prompt_on_auto_deny = enabled;
+                }
                 PermissionCommand::SetYoloMode(enabled) => {
                     // Authoritative re-clamp: no client can enable yolo under
                     // the pin, whatever ingestion path set it.
@@ -2131,8 +2143,9 @@ fn spawn_permission_manager_with_pin(
                                     // ordinary Auto denial semantics: deny within
                                     // the budget, then escalate to a prompt.
                                     ClassifierVerdict::Block
-                                        if auto_consecutive_denials
-                                            < AUTO_DENY_CONSECUTIVE_LIMIT
+                                        if !prompt_on_auto_deny
+                                            && auto_consecutive_denials
+                                                < AUTO_DENY_CONSECUTIVE_LIMIT
                                             && auto_total_denials < AUTO_DENY_TOTAL_LIMIT =>
                                     {
                                         auto_consecutive_denials += 1;
@@ -2178,10 +2191,14 @@ fn spawn_permission_manager_with_pin(
                                             tool = %tool_name,
                                             consecutive = auto_consecutive_denials,
                                             total = auto_total_denials,
-                                            "auto mode: denial limit reached — prompting user"
+                                            "auto mode: blocked action requires user approval"
                                         );
                                         auto_forced_prompt = true;
-                                        auto_prompt_reason = Some(reasons::AUTO_DENIAL_LIMIT);
+                                        auto_prompt_reason = Some(if prompt_on_auto_deny {
+                                            reasons::AUTO_CLASSIFIER_DENY
+                                        } else {
+                                            reasons::AUTO_DENIAL_LIMIT
+                                        });
                                     }
                                     ClassifierVerdict::Unavailable if is_timeout => {
                                         tracing::info!(
@@ -9217,6 +9234,72 @@ mod tests {
                 assert_eq!(denied_web_fetch_domain(host, &set), None, "{host}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn collaboration_auto_blocks_prompt_immediately_without_overriding_policy_denies() {
+        use crate::permission::auto_mode::{ClassifierVerdict, FixedClassifier};
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (manager, _) =
+                    manager_with_recording_client(&cwd, None, client, ClientType::Generic);
+                manager.set_auto_mode(true);
+                manager.set_prompt_on_auto_deny(true);
+                manager.set_classifier(Some(Arc::new(FixedClassifier(ClassifierVerdict::Block))));
+                let access = || AccessKind::MCPTool {
+                    name: "echoagent__group_call_member".into(),
+                    input: serde_json::json!({"member":"expert","prompt":"write report"}),
+                };
+                let decision = manager
+                    .request(access(), tool_call(), None, None, None)
+                    .await;
+                assert!(
+                    matches!(decision, Decision::Reject(_)),
+                    "the user's choice resolves the first block"
+                );
+                assert_eq!(
+                    prompts.borrow().len(),
+                    1,
+                    "first block must reach the client, without three silent denials"
+                );
+                manager.set_prompt_on_auto_deny(false);
+                let decision = manager
+                    .request(access(), tool_call(), None, None, None)
+                    .await;
+                assert!(matches!(decision, Decision::PolicyDeny(_)));
+                assert_eq!(
+                    prompts.borrow().len(),
+                    1,
+                    "ordinary Auto semantics are unchanged"
+                );
+
+                let client = RecordingClient::default();
+                let denied_prompts = client.prompts.clone();
+                let config = crate::permission::types::PermissionConfig::new(vec![
+                    crate::permission::rules::parse_permission_rule(
+                        "MCPTool(echoagent__group_call_member)",
+                        RuleAction::Deny,
+                    )
+                    .unwrap(),
+                ]);
+                let (manager, _) =
+                    manager_with_recording_client(&cwd, Some(config), client, ClientType::Generic);
+                manager.set_auto_mode(true);
+                manager.set_prompt_on_auto_deny(true);
+                let decision = manager
+                    .request(access(), tool_call(), None, None, None)
+                    .await;
+                assert!(matches!(decision, Decision::PolicyDeny(_)));
+                assert!(
+                    denied_prompts.borrow().is_empty(),
+                    "hard policy denies cannot be approved in the UI"
+                );
+            })
+            .await;
     }
 
     /// Auto mode on the real permission gate: allowlist / classifier allow /

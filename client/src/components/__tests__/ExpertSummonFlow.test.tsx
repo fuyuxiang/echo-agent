@@ -35,7 +35,7 @@ describe("本地专家直接使用与失败恢复", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("目录不可用");
     expect(usePendingExpertStore.getState().expert).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    fireEvent.click(await screen.findByRole("button", { name: "对话" }));
+    fireEvent.click(await screen.findByRole("button", { name: "与评审专家对话" }));
     await waitFor(() => expect(onGoHome).toHaveBeenCalledOnce());
     expect(usePendingExpertStore.getState().expert?.source).toBe("local");
   });

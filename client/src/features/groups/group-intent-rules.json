@@ -1,0 +1,6 @@
+{
+  "only": "^(?:请|麻烦)?(?:本轮|这次|现在|目前|暂时|先)?(?:只|仅)(?:需要|需|要)?(?:回答|讨论|分析|评审|阅读|给出(?:建议|方案))|^(?:please\\s+)?(?:discussion only|only\\s+(?:discuss|review|analy[sz]e|answer))",
+  "first": "^(?:请)?先(?:回答|讨论|评审|给出建议|给出方案)",
+  "noWrite": "^(?:请)?(?:本轮|这次|现在|目前|暂时|先)?(?:不要|暂不|不允许|禁止)(?:直接)?(?:修改|改动|写入|执行|动手|实现|编写|创建文件)(?:任何(?:代码|文件|操作)|代码|文件|任何内容)?$|^(?:please\\s+)?(?:do not|don't)\\s+(?:edit|modify|write|execute)(?:\\s+(?:any\\s+)?(?:files|code|anything))?$",
+  "execute": "(?:^|然后|随后|接着|之后|再|并(?:且)?|同时)(?:请|帮我|直接|立即|继续|马上|实际)*\\s*(?:实现|修改|改动|编写|创建|生成|执行|运行|测试|修复|部署|提交|推送|安装|删除|保存)|(?:^|\\b(?:then|and|afterwards)\\s+)(?:please\\s+|directly\\s+)?(?:implement|modify|write|create|generate|execute|run|test|fix|deploy|commit|push|install|delete|save)\\b"
+}
