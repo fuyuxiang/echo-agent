@@ -1,3 +1,4 @@
+import { ResourceDescription, ResourceIcon, ResourceList, ResourceRow } from "./ResourceList";
 /**
  * 插件面板 - 对接 EchoAgent 的 echo.agent/plugins/list + echo.agent/plugins/action
  *
@@ -180,31 +181,29 @@ export function PluginsPanel({ sessionId, onToast }: PluginsPanelProps) {
         {plugins.length > 0 && visible.length === 0 && (
           <CapabilityEmptyState icon={<PuzzlePieceIcon size="lg" />} title={`没有找到与「${search}」匹配的插件`} onClear={() => setSearch("")} />
         )}
-        {visible.map((p) => (
-          <div
+        {visible.length > 0 && <ResourceList aria-label="已安装插件">{visible.map((p) => (
+          <ResourceRow
             key={p.id ?? p.name}
             className={`plugins-panel__item ${p.enabled ? "" : "plugins-panel__item--muted"}`}
           >
-            <div className="plugins-panel__item-icon">
-              <PuzzlePieceIcon size="md" />
-            </div>
-            <div className="plugins-panel__item-content">
-              <div className="plugins-panel__item-name">
+            <ResourceIcon><PuzzlePieceIcon size="md" /></ResourceIcon>
+            <div className="plugins-panel__item-content resource-row__body">
+              <div className="plugins-panel__item-name resource-row__title">
                 {p.name}
                 {p.version && (
-                  <span className="plugins-panel__version">v{p.version}</span>
+                  <span className="plugins-panel__version resource-tag">v{p.version}</span>
                 )}
-                <span className={`plugins-panel__scope plugins-panel__scope--${p.scope}`}>
+                <span className={`plugins-panel__scope resource-tag plugins-panel__scope--${p.scope}`}>
                   {scopeLabel(p.scope)}
                 </span>
                 {!p.trusted && (
-                  <span className="plugins-panel__warn">未受信任</span>
+                  <span className="plugins-panel__warn resource-tag resource-action--danger">未受信任</span>
                 )}
               </div>
               {p.description && (
-                <div className="plugins-panel__item-desc">{p.description}</div>
+                <ResourceDescription text={p.description} label={`插件「${p.name}」的说明`} className="plugins-panel__item-desc" />
               )}
-              <div className="plugins-panel__item-meta">
+              <div className="plugins-panel__item-meta resource-row__meta">
                 {p.skillCount !== undefined && p.skillCount > 0 && (
                   <span title="技能"><SkillIcon size="sm" /> {p.skillCount}</span>
                 )}
@@ -219,10 +218,12 @@ export function PluginsPanel({ sessionId, onToast }: PluginsPanelProps) {
                 )}
               </div>
             </div>
-            <div className="plugins-panel__item-actions">
+            <div className="plugins-panel__item-actions resource-row__actions">
               {(p.management?.uninstallable || p.management?.removable) && <button type="button" className="capability-button plugins-panel__remove" aria-label={`${p.management.uninstallable ? "卸载" : "移除"}插件 ${p.name}`} disabled={loading || busy !== null} onClick={() => removePlugin(p)}><DeleteIcon size="sm" />{p.management.uninstallable ? "卸载" : "移除"}</button>}
               {!p.management?.uninstallable && !p.management?.removable && p.root && <button type="button" className="capability-button" disabled={busy !== null} onClick={() => { void openLocalPath(p.root!, { revealFile: true }).catch(error => onToast?.(`无法打开插件来源：${String(error)}`)); }}>来源目录</button>}
               <button
+                type="button"
+                aria-pressed={p.enabled}
                 className={`plugins-panel__toggle ${p.enabled ? "plugins-panel__toggle--on" : ""}`}
                 onClick={() => handleToggle(p)}
                 disabled={loading || busy !== null}
@@ -231,8 +232,8 @@ export function PluginsPanel({ sessionId, onToast }: PluginsPanelProps) {
                 {busy === (p.id ?? p.name) ? "…" : p.enabled ? "已启用" : "已禁用"}
               </button>
             </div>
-          </div>
-        ))}
+          </ResourceRow>
+        ))}</ResourceList>}
         {loading && <div className="capability-loading" role="status">加载中…</div>}
       </div>
       <details className="capability-help">

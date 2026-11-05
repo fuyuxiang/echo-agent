@@ -15,12 +15,11 @@ const presentation=async page=>page.locator(".template-card").first().evaluate(c
   const grid=getComputedStyle(card.parentElement);
   return {
     card:style(card,["minHeight","padding","gap","borderRadius","borderColor","borderWidth","backgroundColor","boxShadow"]),
-    icon:style(card.querySelector(".project-card2__glyph"),["width","height","borderRadius","backgroundColor","color"]),
-    iconGraphic:style(card.querySelector(".project-card2__glyph svg"),["width","height","color"]),
-    title:style(card.querySelector(".project-card2__name"),typography),
-    description:style(card.querySelector(".project-card2__desc"),typography),
+    icon:style(card.querySelector(".resource-icon"),["width","height","borderRadius","backgroundColor","color"]),
+    iconGraphic:style(card.querySelector(".resource-icon svg"),["width","height","color"]),
+    title:style(card.querySelector(".resource-template__title"),typography),
+    description:style(card.querySelector(".resource-template__description"),typography),
     grid:{columns:grid.gridTemplateColumns.split(" ").length,gap:grid.gap},
-    height:card.getBoundingClientRect().height,
   };
 });
 try {

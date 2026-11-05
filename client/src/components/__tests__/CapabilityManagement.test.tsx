@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ExpertsTab } from "../experts-panel/experts/ExpertsTab";
+import { AssistantsPanel } from "../AssistantsPanel";
 import { SkillsTab } from "../experts-panel/skills/SkillsTab";
 import { ConnectorsTab } from "../experts-panel/connectors/ConnectorsTab";
 import { PluginsPanel } from "../PluginsPanel";
@@ -11,6 +12,7 @@ const api = vi.hoisted(() => ({
   mcpList: vi.fn(), mcpToggle: vi.fn(), mcpConfigPath: vi.fn(), mcpConfigRead: vi.fn(), mcpConfigSave: vi.fn(),
   onMcpStatusEvent: vi.fn(),
   listenOrgSkillsChanged: vi.fn(),
+  agentsSave: vi.fn(), agentsDelete: vi.fn(),
 }));
 vi.mock("@/lib/agent-client", async (original) => ({ ...await original<object>(), ...api }));
 vi.mock("@/lib/org-client", async (original) => ({
@@ -70,6 +72,34 @@ describe("统一扩展管理的真实页面交互", () => {
     await screen.findByText("创建你的第一个专家，或选择下方模板开始");
     fireEvent.click(screen.getByRole("button", { name: "刷新专家" }));
     expect(await screen.findByRole("button", { name: "查看专家 测试专家 详情" })).toBeInTheDocument();
+  });
+
+  it("专家模板只预填创建草稿，保留指令和模型标签", async () => {
+    render(<ExpertsTab pills={null} />);
+    fireEvent.click(await screen.findByRole("button", { name: "代码专家" }));
+    const editor = await screen.findByRole("dialog", { name: "创建专家" });
+    expect(within(editor).getByRole("textbox", { name: "专家名称" })).toHaveValue("代码专家");
+    expect((within(editor).getByRole("textbox", { name: "专家指令" }) as HTMLTextAreaElement).value).toContain("你是一名代码专家");
+    expect(within(editor).getByRole("button", { name: "默认" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(editor).getByRole("button", { name: "推理" })).toHaveAttribute("aria-pressed", "true");
+    expect(api.agentsSave).not.toHaveBeenCalled();
+  });
+
+  it("专家列表的对话和编辑直接可用，删除仍需确认", async () => {
+    const onUse = vi.fn();
+    render(<AssistantsPanel onUseAssistant={onUse} />);
+    fireEvent.click(await screen.findByRole("button", { name: "与测试专家对话" }));
+    expect(onUse).toHaveBeenCalledWith(expert);
+    fireEvent.click(screen.getByRole("button", { name: "编辑专家 测试专家" }));
+    const editor = await screen.findByRole("dialog", { name: "编辑 测试专家" });
+    expect(within(editor).getByRole("textbox", { name: "专家名称" })).toHaveValue(expert.name);
+    fireEvent.click(within(editor).getByRole("button", { name: "取消" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除专家 测试专家" }));
+    const confirmation = await screen.findByRole("alertdialog");
+    expect(api.agentsDelete).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole("button", { name: "取消" }));
+    expect(screen.getByRole("button", { name: "查看专家 测试专家 详情" })).toBeInTheDocument();
+    expect(api.agentsDelete).not.toHaveBeenCalled();
   });
 
   it("技能刷新失败保留条目，重试成功后恢复正常", async () => {

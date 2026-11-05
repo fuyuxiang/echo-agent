@@ -113,6 +113,12 @@ let extensionPlugins = Array.from({ length: extensionCount }, (_, index) => ({
   version: "1.0.0", skillCount: 2, agentCount: 1, mcpServerCount: 1,
   ...(query.get("pluginManagement") === "1" ? {management:{uninstallable:index===0,removable:index===1,packagePlugins:[extensionName(index)],removalPath:`/review/plugins/plugin-${index}`,pathPlugins:[extensionName(index)]}} : {}),
 }));
+if (query.get("pluginDescriptions") === "1") extensionPlugins = extensionPlugins.map((plugin, index) => ({
+  ...plugin,
+  description: index === 0
+    ? `${"把工作目标、项目资料和交付要求整理成完整的执行计划，检查结果并保留可追溯的来源。".repeat(10)}\n\n完整说明的最后一段。`
+    : index === 1 ? "简短说明" : "提供任务所需的技能、专家与工具，并保留完整的使用说明。",
+}));
 let extensionConnectors = Array.from({ length: extensionCount }, (_, index) => ({
   name: `review-mcp-${index}`, displayName: extensionName(index), transport: "stdio", target: `review-tool-${index}`,
   enabled: true, source: "user", status: "ready", live: true, editable: true, setupValues: {}, args: [], env: {},

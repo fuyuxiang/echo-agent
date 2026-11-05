@@ -43,7 +43,7 @@
 .capability-search__icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--echo-text-weak); pointer-events: none; }
 .capability-search__clear { position: absolute; top: 50%; right: 3px; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; width: var(--echo-size-control-sm); height: var(--echo-size-control-sm); border: 0; border-radius: 5px; background: transparent; color: var(--echo-text-medium); cursor: pointer; }
 .capability-search__clear:hover { background: var(--echo-bg-hover); }
-.capability-empty { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 20px; border: 1px dashed var(--echo-border-default); border-radius: 14px; background: var(--echo-bg-primary); color: var(--echo-text-medium); }
+.capability-empty { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 20px; border: 1px dashed var(--echo-border-default); border-radius: var(--echo-radius-card); background: var(--echo-bg-primary); color: var(--echo-text-medium); }
 .capability-empty__icon { display: inline-flex; flex: 0 0 auto; color: var(--echo-text-weak); }
 .capability-empty__copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .capability-empty__copy > p { margin: 0; font-size: .875rem; line-height: 1.6; }
@@ -57,9 +57,7 @@
 .capability-help p { margin: 8px 0 0; }
 .capability-help code { overflow-wrap: anywhere; white-space: normal; }
 .capability-page .colleagues-panel { padding: 0; }
-.capability-page .colleague-card-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
 .capability-page .colleagues-panel-section-header { padding-top: 0; }
-.capability-page .sk-inst-row { border-radius: 14px; min-width: 0; }
 .capability-page .sk-inst-info { min-width: 0; }
 .capability-page .sk-toggle { position: relative; }
 .capability-page .sk-toggle input { display: block; position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; z-index: 1; }
@@ -72,7 +70,6 @@
 .capability-page .mcp-item-meta { flex-wrap: wrap; }
 .capability-page .mcp-item-target { max-width: 100%; overflow-wrap: anywhere; }
 .capability-page .plugins-panel__list { gap: 12px; }
-.capability-page .plugins-panel__item { min-width: 0; border-radius: 14px; }
 .capability-page .plugins-panel__item-name { flex-wrap: wrap; overflow-wrap: anywhere; }
 .capability-page .plugins-panel__item-desc { overflow-wrap: anywhere; }
 .capability-page .plugins-panel__item:hover { transform: none; }

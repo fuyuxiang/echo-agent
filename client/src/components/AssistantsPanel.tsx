@@ -1,13 +1,8 @@
+import { ResourceList, ResourceRow } from "./ResourceList";
+import { TemplateCard } from "./TemplateCard";
 import { avatarTextColor } from "../lib/avatar-color";
-/**
- * 专家面板 — 1:1 复刻 EchoAgent colleagues-panel
- *
- * UI 结构对齐 EchoAgent:
- *  - dashboard 模式: 顶部 section-header + 卡片网格
- *  - colleague-card: 头像(带状态指示灯) + 名称 + 角色标签 + 描述 + 对话按钮
- *  - 右键/三点菜单: 编辑 / 删除
- *  - CreateColleagueDialog: modal 弹窗，含 "从模板创建" / "从专家雇佣" 两个 tab
- *  - 点击卡片 → 专家个人资料页(profile)
+/** Expert management uses shared resource rows; creation uses shared template choices.
+ * Profile, configuration and creation workflows remain feature-owned.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -25,7 +20,6 @@ import {
   XCloseIcon,
   ChatBubbleIcon,
   ChevronLeftIcon,
-  MoreDotsIcon,
 } from "@/foundation/components/Icon/icons";
 import {
   agentsDelete,
@@ -140,7 +134,6 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditorDraft | null>(null);
   const [profileAgent, setProfileAgent] = useState<AgentEntry | null>(null);
-  const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const { requestConfirmation, dialog } = useAppDialog();
   const reloadGeneration = useRef(0);
 
@@ -294,75 +287,39 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
           )}
 
           {filteredAssistants.length > 0 && (
-            <div className="colleague-card-grid">
+            <ResourceList aria-label="已创建专家">
               {filteredAssistants.map((agent) => {
                 const statusVariant = getStatusVariant(agent);
-                const isOpen = menuOpen === agent.path;
-                return (
-                  <div key={agent.path} className="colleague-card-wrapper">
-                    <div
-                      className={`colleague-card${isOpen ? " is-menu-open" : ""}`}
-                    >
-                      {/* More Menu Trigger */}
-                      <button
-                        className="colleague-card-more"
-                        onClick={(e) => { e.stopPropagation(); setMenuOpen(isOpen ? null : agent.path); }}
-                      >
-                        <MoreDotsIcon size="sm" />
-                      </button>
-                      {isOpen && (
-                        <div className="colleague-card-menu" onClick={(e) => e.stopPropagation()}>
-                          <button className="colleague-card-menu-item" onClick={() => { openEdit(agent); setMenuOpen(null); }}>
-                            <EditToolIcon size="sm" /><span>编辑</span>
-                          </button>
-                          <div className="colleague-card-menu-separator" />
-                          <button className="colleague-card-menu-item colleague-card-menu-item--danger" onClick={() => { handleDelete(agent); setMenuOpen(null); }}>
-                            <DeleteIcon size="sm" /><span>删除</span>
-                          </button>
-                        </div>
-                      )}
-
-                      <button
-                        type="button"
-                        className="colleague-card-profile-main"
-                        onClick={() => setProfileAgent(agent)}
-                        aria-label={`查看专家 ${agent.name} 详情`}
-                      >
-                        {/* Identity */}
-                        <div className="colleague-card-identity">
-                          <ColleagueAvatar index={agent.avatar} name={agent.name} size={48} status={statusVariant} />
-                          <div className="colleague-card-identity-text">
-                            <div className="colleague-card-name-row">
-                              <span className="colleague-card-name">{agent.name}</span>
-                              <span className={`colleague-card-status-pill colleague-card-status-pill--${statusVariant}`}>
-                                {statusVariant === "working" ? "工作中" : statusVariant === "idle" ? "空闲" : "异常"}
-                              </span>
-                            </div>
-                            <div className="colleague-card-role">
-                              {agent.modelTags?.map((t) => MODEL_TAGS.find(m => m.key === t)?.label ?? t).join(" · ") || "通用专家"}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Description */}
-                        <span className="colleague-card-description">
-                          {agent.description ?? "（无描述）"}
+                return <ResourceRow key={agent.path}>
+                  <button type="button" className="colleague-card-profile-main resource-row__main"
+                    onClick={() => setProfileAgent(agent)} aria-label={`查看专家 ${agent.name} 详情`}>
+                    <ColleagueAvatar index={agent.avatar} name={agent.name} size={36} status={statusVariant} />
+                    <span className="resource-row__body">
+                      <span className="resource-row__title">{agent.name}
+                        <span className={`colleague-card-status-pill colleague-card-status-pill--${statusVariant}`}>
+                          {statusVariant === "working" ? "工作中" : statusVariant === "idle" ? "空闲" : "异常"}
                         </span>
-                      </button>
-
-                      {/* Chat Button */}
-                      <button
-                        className="colleague-card-chat-button"
-                        onClick={(e) => { e.stopPropagation(); onUseAssistant?.(agent); }}
-                      >
-                        <ChatBubbleIcon size="sm" />
-                        <span>对话</span>
-                      </button>
-                    </div>
+                      </span>
+                      <span className="resource-row__description resource-clamp">{agent.description || "（无描述）"}</span>
+                      <span className="resource-row__meta">
+                        {agent.modelTags?.map((t) => MODEL_TAGS.find(m => m.key === t)?.label ?? t).join(" · ") || "通用专家"}
+                      </span>
+                    </span>
+                  </button>
+                  <div className="resource-row__actions">
+                    <button type="button" className="capability-button" onClick={() => onUseAssistant?.(agent)} aria-label={`与${agent.name}对话`}>
+                      <ChatBubbleIcon size="sm" /><span>对话</span>
+                    </button>
+                    <button type="button" className="capability-button" onClick={() => openEdit(agent)} aria-label={`编辑专家 ${agent.name}`}>
+                      <EditToolIcon size="sm" /><span>编辑</span>
+                    </button>
+                    <button type="button" className="capability-button resource-action--danger" onClick={() => handleDelete(agent)} aria-label={`删除专家 ${agent.name}`} title="删除专家">
+                      <DeleteIcon size="sm" />
+                    </button>
                   </div>
-                );
+                </ResourceRow>;
               })}
-            </div>
+            </ResourceList>
           )}
         </div>
 
@@ -374,32 +331,15 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
               <span>推荐模板</span>
             </h3>
           </div>
-          <div className="colleague-card-grid">
-            {filteredTemplates.map((tpl) => {
-              return (
-                <div key={tpl.id} className="colleague-card-wrapper">
-                  <button type="button" className="colleague-card colleague-card--template" onClick={() => openFromTemplate(tpl)}>
-                    <div className="colleague-card-identity">
-                      <ColleagueAvatar index={tpl.defaultAvatar} name={tpl.name} size={48} overrideColor={tpl.color} />
-                      <div className="colleague-card-identity-text">
-                        <div className="colleague-card-name-row">
-                          <span className="colleague-card-name">{tpl.name}</span>
-                        </div>
-                        <div className="colleague-card-role">{tpl.category}</div>
-                      </div>
-                    </div>
-                    <div className="colleague-card-description">{tpl.description}</div>
-                    <div className="colleague-card-template-tags">
-                      {tpl.defaultTags.map(t => (
-                        <span key={t} className={`colleague-tag colleague-tag--${t}`}>
-                          {MODEL_TAGS.find(m => m.key === t)?.label ?? t}
-                        </span>
-                      ))}
-                    </div>
-                  </button>
-                </div>
-              );
-            })}
+          <div className="template-grid">
+            {filteredTemplates.map((tpl) => (
+              <TemplateCard key={tpl.id} icon={<tpl.icon size="md" />} title={tpl.name}
+                description={tpl.description} category={tpl.category}
+                metadata={tpl.defaultTags.map(t => <span key={t} className="resource-tag">
+                  {MODEL_TAGS.find(m => m.key === t)?.label ?? t}
+                </span>)}
+                onSelect={() => openFromTemplate(tpl)} />
+            ))}
           </div>
         </div>}
 

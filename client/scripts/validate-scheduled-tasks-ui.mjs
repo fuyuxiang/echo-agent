@@ -57,7 +57,7 @@ try {
           const runtime = document.querySelector(".atm-runtime").getBoundingClientRect();
           return { cards, runtimeHeight: runtime.height };
         });
-        const expectedColumns = width === 1280 ? (font === 16 ? 3 : 2) : width === 768 && font === 16 ? 2 : 1;
+        const expectedColumns = 1;
         assert.equal(layout.cards.filter(card => Math.abs(card.y - layout.cards[0].y) < 1).length, expectedColumns, `card columns ${width}/${font}`);
         assert(layout.cards.every(card => card.width >= 270), `cards must remain readable ${width}/${font}`);
         if (width === 1280 && font === 16) assert(layout.runtimeHeight <= 52, "runtime summary must remain compact");
@@ -77,6 +77,16 @@ try {
           /已错过/,
         );
         await page.getByRole("button", { name: /^全部/ }).click();
+        await page.getByRole("button", { name: "批量管理", exact: true }).click();
+        for (const [name, state] of [["每日 AI 新闻简报", "已启用"], ["每周工作回顾", "已暂停"], ["已结束的一次性报告", "已错过"]]) {
+          const row = page.getByRole("listitem", { name: `定时任务 ${name}`, exact: true });
+          assert(await row.getByText(state, { exact: true }).isVisible(), "batch deletion must retain task state");
+        }
+        await page.getByRole("checkbox", { name: "选择定时任务「每周工作回顾」", exact: true }).check();
+        assert.equal(await page.getByRole("switch").count(), 0, "batch selection does not expose live switches");
+        await assertFits();
+        await page.screenshot({ path: join(output, `batch-${width}-${theme}-${font}.png`) });
+        await page.getByRole("button", { name: "退出管理", exact: true }).click();
         await page
           .getByRole("button", { name: "每日 AI 新闻简报", exact: true })
           .click();
@@ -191,22 +201,21 @@ try {
         await page.close();
       }
 
-  // Multiple rows and long real-world text must keep card controls aligned.
+  // Long content stays in a full-width row; controls remain inside each row.
   const grid = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await grid.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?many=1`);
   await grid.getByRole("button", { name: "每日 AI 新闻简报", exact: true }).waitFor();
   const rows = await grid.locator(".atm-task-card").evaluateAll(cards => cards.map(card => {
     const rect = card.getBoundingClientRect();
     const actions = card.querySelector(".atm-task-card__actions").getBoundingClientRect();
-    return { top: rect.top, bottom: rect.bottom, actionsBottom: actions.bottom, width: rect.width, fits: card.scrollWidth <= card.clientWidth + 1 };
+    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, actionsRight: actions.right, actionsBottom: actions.bottom, width: rect.width, fits: card.scrollWidth <= card.clientWidth + 1 };
   }));
   assert.equal(rows.length, 6);
-  assert.equal(rows.filter(card => card.top === rows[0].top).length, 3);
-  assert.equal(rows.filter(card => card.top === rows[3].top).length, 3);
-  for (const group of [rows.slice(0, 3), rows.slice(3)]) {
-    assert(group.every(card => card.fits));
-    assert(group.every(card => Math.abs(card.bottom - group[0].bottom) < 1));
-    assert(group.every(card => Math.abs(card.actionsBottom - group[0].actionsBottom) < 1));
+  for (const [index, row] of rows.entries()) {
+    assert(row.fits);
+    assert(Math.abs(row.left - rows[0].left) < 1 && Math.abs(row.width - rows[0].width) < 1, "task rows share the same width");
+    assert(row.actionsRight <= row.right && row.actionsBottom <= row.bottom, "task controls stay inside the row");
+    if (index) assert(row.top >= rows[index - 1].bottom - 1, "tasks remain in a vertical list");
   }
   const help = grid.getByRole("button", { name: "运行说明", exact: true });
   await help.click();

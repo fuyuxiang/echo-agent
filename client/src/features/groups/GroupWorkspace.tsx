@@ -1,3 +1,4 @@
+import { ResourceIcon, ResourceList, ResourceRow } from "@/components/ResourceList";
 import { modelChoiceLabel, findModelDisplayName, findModelChoiceLabel } from "@/lib/model-presentation";
 import { Button } from "@/components/Button";
 import { CapabilityPage, CapabilityEmptyState, CapabilityError } from "@/components/experts-panel/shared/CapabilityPage";
@@ -54,12 +55,18 @@ export function GroupWorkspace({ cwd, modelId, models, workspaces, onToast, onOp
     <div className="groups-toolbar"><Button variant="ghost" onClick={() => setTeamsOpen(true)}>专家团模板</Button><div className="groups-status-filter" role="group" aria-label="专家团状态"><button type="button" aria-pressed={!archived} onClick={() => setArchived(false)}>未归档</button><button type="button" aria-pressed={archived} onClick={() => setArchived(true)}>已归档</button></div></div>
     {error && <CapabilityError onRetry={() => void useGroupStore.getState().refresh()} retrying={loading}>{error}</CapabilityError>}
     {loading && <p className="capability-loading" role="status">正在读取专家团…</p>}
-    <div className="groups-grid">{visibleGroups.slice(0, visibleCount).map(group => <article className="group-card group-card--managed" key={group.id} onContextMenu={event => openGroupMenu(group.id, event)}>
-      <button type="button" className="group-card__open" onClick={() => void useGroupStore.getState().select(group.id)} aria-label={`打开专家团 ${group.name}`}>
-        <span className="group-card__icon"><Users size={24} /></span><span className="group-card__head"><strong>{group.name}</strong><small>{groupStatus(group)}</small></span><p>{group.goal || "在专家团里说明目标，协调员会和专家一起推进。"}</p><span className="group-card__members">{group.members.filter(member => !member.removed).map(member => member.name).join(" · ")}</span><small className="group-card__cwd" title={group.cwd}>{group.cwd}</small>
+    {visibleGroups.length > 0 && <ResourceList className="groups-grid" aria-label="专家团列表">{visibleGroups.slice(0, visibleCount).map(group => <ResourceRow className="group-card--managed" key={group.id} onContextMenu={event => openGroupMenu(group.id, event)}>
+      <button type="button" className="resource-row__main" onClick={() => void useGroupStore.getState().select(group.id)} aria-label={`打开专家团 ${group.name}`}>
+        <ResourceIcon><Users size={18} /></ResourceIcon>
+        <span className="resource-row__body">
+          <span className="resource-row__title">{group.name}<span className="resource-tag">{groupStatus(group)}</span></span>
+          <span className="resource-row__description resource-clamp">{group.goal || "在专家团里说明目标，协调员会和专家一起推进。"}</span>
+          <span className="resource-row__meta"><span>{group.members.filter(member => !member.removed).map(member => member.name).join(" · ")}</span><span className="resource-path" title={group.cwd}>{group.cwd}</span></span>
+        </span>
       </button>
       <GroupActionButton group={group} />
-    </article>)}</div>
+    </ResourceRow>)}</ResourceList>}
+
     {visibleGroups.length > visibleCount && <div className="groups-load-more"><button type="button" className="btn btn--ghost" onClick={() => setVisibleCount(count => count + 24)}>加载更多专家团（已显示 {Math.min(visibleCount, visibleGroups.length)} / {visibleGroups.length}）</button></div>}
     {!loading && groups.length > 0 && !visibleGroups.length && <div className="groups-empty"><Search size={30} /><h2>{query ? "没有找到专家团" : archived ? "没有已归档的专家团" : "没有未归档的专家团"}</h2><p>{query ? "试试其他名称或协作目标。" : archived ? "归档后会保留聊天和工作记录，可随时恢复。" : "可以创建专家团，或从已归档列表恢复。"}</p>{query && <button className="btn btn--ghost" onClick={() => setQuery("")}>清除搜索</button>}</div>}
 

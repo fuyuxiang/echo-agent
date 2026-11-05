@@ -884,6 +884,41 @@ describe("AutomationPanel（有任务/有记录）", () => {
     expect(automationsRun).not.toHaveBeenCalled();
   });
 
+  it("普通列表和批量管理始终显示启用、暂停、错过、结束及过期状态", async () => {
+    const tasks = [
+      baseAutomation,
+      { ...baseAutomation, id: "paused", name: "暂停任务", status: "PAUSED" as const },
+      { ...baseAutomation, id: "missed", name: "错过任务", status: "PAUSED" as const, scheduleType: "once" as const, scheduledDate: "2020-01-01" },
+      { ...baseAutomation, id: "ended", name: "结束任务", status: "PAUSED" as const, scheduleType: "once" as const, scheduledDate: "2020-01-01" },
+      { ...baseAutomation, id: "expired", name: "过期任务", validUntilDate: "2020-01-01" },
+    ];
+    snapshot = { automations: tasks, records: [{
+      id: "ended-run", automationId: "ended", automationName: "结束任务", status: "success",
+      startedAt: "2020-01-01T01:00:00Z", scheduledFor: "2020-01-01T01:00:00Z", archived: false,
+    }] };
+    const { rerender } = render(<AutomationPanel refreshSignal={0} />);
+    await screen.findByRole("button", { name: baseAutomation.name });
+    const assertStates = () => {
+      for (const [index, state] of ["已启用", "已暂停", "已错过", "计划已结束", "已过有效期"].entries()) {
+        expect(within(screen.getByRole("listitem", { name: `定时任务 ${tasks[index].name}` })).getByText(state)).toBeVisible();
+      }
+    };
+    assertStates();
+    fireEvent.click(screen.getByRole("button", { name: "批量管理" }));
+    assertStates();
+    fireEvent.click(screen.getByRole("button", { name: "暂停任务" }));
+    expect(screen.getByRole("checkbox", { name: "选择定时任务「暂停任务」" })).toBeChecked();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(automationsRun).not.toHaveBeenCalled();
+    expect(automationsDelete).not.toHaveBeenCalled();
+
+    snapshot = { ...snapshot, automations: tasks.map(task => ({ ...task, status: "PAUSED" as const })) };
+    rerender(<AutomationPanel refreshSignal={1} />);
+    const activeRow = screen.getByRole("listitem", { name: `定时任务 ${baseAutomation.name}` });
+    expect(await within(activeRow).findByText("已暂停")).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "选择定时任务「暂停任务」" })).toBeChecked();
+  });
+
   it("新建和模板入口直接展示，模板可返回列表或创建待确认草稿", async () => {
     snapshot = { automations: [baseAutomation], records: [] };
     render(<AutomationPanel />);

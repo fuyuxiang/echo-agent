@@ -1,3 +1,4 @@
+import { ResourceIcon, ResourceList, ResourceRow } from "./ResourceList";
 import { modelChoiceLabel } from "@/lib/model-presentation";
 /**
  * 项目面板 — 对齐 EchoAgent 项目列表页 + 新建项目弹窗。
@@ -225,7 +226,7 @@ export function ProjectsPanel({
             description={projects.length === 0 ? "点击“新建项目”，或从下方模板创建。" : "试试其他项目名称。"}
             onClear={query ? () => setQuery("") : undefined} />
         ) : (
-          <div className="project-grid">
+          <ResourceList className="project-grid" aria-label="我的项目">
             {filtered.map((p) => (
               <ProjectCard
                 key={p.id}
@@ -236,7 +237,7 @@ export function ProjectsPanel({
                 onDelete={() => setDeleteTarget(p)}
               />
             ))}
-          </div>
+          </ResourceList>
         )}
       </section>
 
@@ -461,12 +462,12 @@ function ProjectCard({
     : { position: "fixed", visibility: "hidden" };
 
   return (
-    <div className="project-card2" ref={ref}>
-      <button type="button" className="project-card2__main" onClick={onEnter}>
-        <span className="project-card2__glyph"><ProjectGlyph /></span>
+    <ResourceRow className="project-card2" ref={ref}>
+      <button type="button" className="project-card2__main resource-row__main" onClick={onEnter}>
+        <ResourceIcon><ProjectGlyph /></ResourceIcon>
         <span className="project-card2__body">
-          <span className="project-card2__name">{project.name}</span>
-          <span className="project-card2__sub">{addedLabel(project.createdAt)}</span>
+          <span className="project-card2__name resource-row__title">{project.name}</span>
+          <span className="project-card2__sub resource-row__meta">{addedLabel(project.createdAt)}</span>
         </span>
       </button>
       <div className="project-card2__more-wrap">
@@ -517,7 +518,7 @@ function ProjectCard({
         </div>,
         document.body,
       )}
-    </div>
+    </ResourceRow>
   );
 }
 

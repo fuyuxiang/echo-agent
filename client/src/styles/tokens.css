@@ -657,6 +657,15 @@ body.vscode-dark {
   --echo-code-deletion-bg: var(--echo-status-error-soft);
   --echo-radius-control: 8px;
   --echo-radius-card: 12px;
+  /* Resource management: one density scale for lists and template choices. */
+  --echo-resource-padding: 16px;
+  --echo-resource-gap: 12px;
+  --echo-resource-icon-size: 36px;
+  --echo-resource-row-min-height: 88px;
+  --echo-resource-template-min-height: 112px;
+  --echo-resource-title-size: .875rem;
+  --echo-resource-description-size: .8125rem;
+  --echo-resource-meta-size: .75rem;
   --echo-radius-dialog: 14px;
   --echo-control-font-size: .8125rem;
   --echo-control-line-height: 1.5;

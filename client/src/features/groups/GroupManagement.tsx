@@ -1,3 +1,5 @@
+import { CapabilityPage } from "@/components/experts-panel/shared/CapabilityPage";
+import { ResourceIcon } from "@/components/ResourceList";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Plus, Users } from "lucide-react";
 import { agentsList } from "@/lib/agent-client";
@@ -65,17 +67,19 @@ export function GroupTeams({ onBack, onUse, onCreate }: { onBack: () => void; on
   }, []);
   useEffect(() => { void loadExperts(); return () => { expertGeneration.current++; }; }, [loadExperts]);
   const dialog = useAppDialog("group-templates");
-  return <div className="groups-page">
-    <button className="groups-back" onClick={onBack}><ArrowLeft size={16} />返回专家团</button>
-    <header className="groups-page__header"><div><h1>专家团模板</h1><p>只展示你明确保存的协作组合，用于创建新的专家团。模板不包含聊天记录。</p></div><button className="btn btn--ghost" disabled={loading} onClick={() => { void refresh(); void loadExperts(); }}>{loading ? "读取中…" : "刷新模板"}</button></header>
+  return <CapabilityPage title="专家团模板" headingLevel={1} className="groups-page groups-page--list"
+    description="只展示你明确保存的协作组合，用于创建新的专家团。模板不包含聊天记录。"
+    actions={<><button type="button" className="capability-button" onClick={onBack}><ArrowLeft size={16} />返回专家团</button><button type="button" className="capability-button" disabled={loading} onClick={() => { void refresh(); void loadExperts(); }}>{loading ? "读取中…" : "刷新模板"}</button></>}>
     {error && <p role="alert" className="groups-error">模板读取失败：{error}。请刷新重试。</p>}
     {loading && <p role="status">正在读取专家团模板…</p>}
     {expertError && <p role="status" className="groups-muted">暂时无法检查本地专家，创建时会重新核对。可刷新重试。</p>}
-    <div className="groups-grid">{teams.map(team => {
+    <div className="template-grid">{teams.map(team => {
       const missing = experts ? team.members.filter(member => !experts.includes(member.name)).map(member => member.name) : [];
-      return <section className="group-card group-card--template" key={team.id}>
-        <span className="group-card__head"><strong>{team.name}</strong><small>{team.members.length} 位专家</small></span>
-        <p>{team.description || "围绕新目标，复用这组专家。"}</p><span className="group-card__members">{team.members.map(member => member.name).join(" · ")}</span>
+      return <section className="resource-template resource-template--managed group-card--template" key={team.id}>
+        <div className="resource-row__main"><ResourceIcon><Users size={18} /></ResourceIcon><div className="resource-template__body">
+        <span className="resource-template__heading"><strong className="resource-template__title">{team.name}</strong><span className="resource-tag">{team.members.length} 位专家</span></span>
+        <p className="resource-template__description">{team.description || "围绕新目标，复用这组专家。"}</p><span className="resource-template__metadata">{team.members.map(member => member.name).join(" · ")}</span>
+        </div></div>
         {!!missing.length && <div className="groups-error">缺少本地专家：{missing.join("、")}。创建时可移除失效成员并重新选择。</div>}
         {!team.members.length && <div className="groups-muted">模板暂无成员，创建时请先选择专家。</div>}
         <div className="group-form__actions">
@@ -88,7 +92,7 @@ export function GroupTeams({ onBack, onUse, onCreate }: { onBack: () => void; on
     })}</div>
     {!loading && !teams.length && !error && <div className="groups-empty"><Users size={32} /><h2>把合适的协作组合留下来</h2><p>在专家团的操作菜单或成员页选择“保存为模板”，下次就可以直接复用。会话团队可从对应会话创建专家团。</p><button className="btn btn--primary" onClick={onCreate}><Plus size={16} />创建专家团</button></div>}
     {dialog.dialog}
-  </div>;
+  </CapabilityPage>;
 }
 
 export function SaveTeamButton({ group, onError }: { group: Group; onError: (error: string) => void }) {

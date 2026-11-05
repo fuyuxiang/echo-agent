@@ -1,3 +1,4 @@
+import { ResourceList } from "./ResourceList";
 import { findModelDisplayName } from "@/lib/model-presentation";
 import { PageToolbar } from "./PageToolbar";
 /** Local scheduled-task workspace: plans, scoped run results and a draft-safe editor. */
@@ -1757,7 +1758,7 @@ export function AutomationPanel({
                 </button>
               ))}
             </div>
-            <div className="atm-task-cards">
+            {filteredTasks.length > 0 && <ResourceList className="atm-task-cards" aria-label="定时任务列表">
               {filteredTasks.map((task) => (
                 <AutomationTaskCard
                   key={task.id}
@@ -1783,7 +1784,7 @@ export function AutomationPanel({
                   }
                 />
               ))}
-            </div>
+            </ResourceList>}
             {filteredTasks.length === 0 && (
               <div className="atm-panel-empty">没有匹配的定时任务</div>
             )}

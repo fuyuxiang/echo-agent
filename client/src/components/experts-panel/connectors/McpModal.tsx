@@ -1,3 +1,4 @@
+import { ResourceIcon, ResourceList, ResourceRow } from "../../ResourceList";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   XCloseIcon, SearchIcon, ConfigureIcon, McpIcon, DeleteIcon, RefreshCwIcon,
@@ -250,16 +251,16 @@ export function McpModal({
         <CapabilityEmptyState icon={<McpIcon size="lg" />}
           title={`没有找到与「${search}」匹配的连接器`} onClear={() => setSearch("")} />
       ) : (
-        <div className="mcp-list">
+        <ResourceList className="mcp-list" aria-label="已配置连接器">
           {filtered.map((server) => {
             const state = statusOf(server);
             const isExpanded = expanded === server.name;
             return (
-              <div key={server.name} className={`mcp-item-wrap${isExpanded ? " mcp-item-wrap--expanded" : ""}`}>
+              <ResourceRow key={server.name} className={`mcp-item-wrap resource-row--expandable${isExpanded ? " mcp-item-wrap--expanded" : ""}`}>
                 <div className="mcp-item">
                   <button type="button" className="mcp-item-main" aria-expanded={isExpanded}
                     onClick={() => setExpanded(isExpanded ? null : server.name)}>
-                    <span className={`mcp-dot mcp-dot--${state.tone}`} />
+                    <ResourceIcon><McpIcon size="md" /></ResourceIcon>
                     <div className="mcp-item-info">
                       <div className="mcp-item-name">
                         {server.displayName || server.name}
@@ -268,13 +269,14 @@ export function McpModal({
                       <div className="mcp-item-meta">
                         <span>{transportLabel(server.transport)}</span>
                         <span>·</span>
-                        <span className={`mcp-state mcp-state--${state.tone}`}>{state.label}</span>
+                        <span className={`mcp-state mcp-state--${state.tone}`}><span aria-hidden="true" className={`mcp-dot mcp-dot--${state.tone}`} />{state.label}</span>
                         <span>·</span>
                         <span>{server.tools.length} 个工具</span>
                       </div>
                       {server.target && <div className="mcp-item-target" title={server.target}>{server.target}</div>}
                     </div>
                   </button>
+                  <div className="resource-row__actions">
                   {server.authRequired && (
                     <button type="button" className="um-btn um-btn--primary"
                       aria-label={`授权 MCP 服务 ${server.displayName || server.name}`}
@@ -296,6 +298,7 @@ export function McpModal({
                       disabled={mutating !== null}
                       onClick={() => void handleDelete(server)}><DeleteIcon size="sm" /></button>
                   )}
+                  </div>
                 </div>
                 {authError?.name === server.name && <div className="ec-error" role="alert">授权失败：{authError.message}。可点击「授权连接」重试。</div>}
                 {isExpanded && (
@@ -368,10 +371,10 @@ export function McpModal({
                     )}
                   </div>
                 )}
-              </div>
+              </ResourceRow>
             );
           })}
-        </div>
+        </ResourceList>
       )}
     </>
   );

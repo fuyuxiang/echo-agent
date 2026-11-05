@@ -1,3 +1,4 @@
+import { ResourceIcon, ResourceList, ResourceRow } from "../../ResourceList";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import {
@@ -62,13 +63,13 @@ function RuntimeSkillRow({
     ? skill.enabled ? "卸载" : "安装"
     : skill.enabled ? "停用" : "启用";
   return (
-    <div className={`sk-inst-row${organizationManaged ? " sk-inst-row--organization" : ""}`}>
-      <div className="sk-card-head" style={{ flex: 1 }}>
-        <PuzzlePieceIcon size="md" className="sk-inst-icon" />
+    <ResourceRow className={`sk-inst-row${organizationManaged ? " sk-inst-row--organization" : ""}`}>
+      <div className="sk-card-head resource-row__main">
+        <ResourceIcon><PuzzlePieceIcon size="md" /></ResourceIcon>
         <div className="sk-inst-info">
-          <div className="sk-card-name">{name}</div>
-          <p className="sk-card-desc">{skill.description || "（无描述）"}</p>
-          <div className="sk-inst-meta">
+          <div className="sk-card-name resource-row__title">{name}</div>
+          <p className="sk-card-desc resource-row__description resource-clamp">{skill.description || "（无描述）"}</p>
+          <div className="sk-inst-meta resource-row__meta">
             <span>{skillSourceLabel(skill)}</span>
             {organizationManaged && <span>组织托管</span>}
             {mandatory && <span className="sk-inst-meta--mandatory">组织强制</span>}
@@ -78,6 +79,7 @@ function RuntimeSkillRow({
           </div>
         </div>
       </div>
+      <div className="resource-row__actions">
       <label className={`sk-toggle${mandatory ? " sk-toggle--locked" : ""}`}
         title={mandatory ? "组织强制 Skill 不能卸载" : organizationManaged
           ? skill.enabled ? "已安装" : "未安装"
@@ -101,7 +103,8 @@ function RuntimeSkillRow({
           aria-label={`移除技能 ${name}`}
           onClick={() => onRemove(skill)}><DeleteIcon size="sm" /></button>
       )}
-    </div>
+      </div>
+    </ResourceRow>
   );
 }
 
@@ -268,12 +271,12 @@ export function SkillsTab({ pills, onToast, cwd }: Props) {
         ) : visible.length === 0 ? (
           <CapabilityEmptyState icon={<PuzzlePieceIcon size="lg" />} title={`没有找到与「${search}」匹配的技能`} onClear={() => setSearch("")} />
         ) : (
-          <div className="sk-inst-list">
+          <ResourceList className="sk-inst-list" aria-label="已安装技能">
             {visible.map((skill) => (
               <RuntimeSkillRow key={skill.name + (skill.path ?? "")} skill={skill}
                 onToggle={handleToggle} onRemove={handleRemove} onUpload={setUploadSkill} />
             ))}
-          </div>
+          </ResourceList>
         )}
       </CapabilityPage>
 
