@@ -64,4 +64,4 @@ echo-agent gateway
 
 项目处于 Beta 阶段，两端版本独立发布。升级前应阅读对应发行说明并备份数据。Runtime 需要 Python 3.11+；Desktop 的正式发行目标为 macOS 和 Windows，具体架构及依赖见各自安装指南。
 
-项目采用 [MIT 许可证](https://github.com/fuyuxiang/echo-agent/blob/master/LICENSE)。问题反馈见 [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues)。
+项目原创代码采用 [PolyForm Noncommercial License 1.0.0](https://github.com/fuyuxiang/echo-agent/blob/master/LICENSE)，超出许可范围的商业用途需另行授权。问题反馈见 [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues)。

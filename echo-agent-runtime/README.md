@@ -83,4 +83,10 @@ python -m pytest tests/
 
 发布脚本 `scripts/publish.sh` 需要额外安装 `twine`，会明确上传 wheel/sdist 到 PyPI；单独构建不会发布。CI 会在仓库外构建 Runtime，并检查解压安装和真实 Gateway 进程。
 
-完整文档：[中文文档站](https://fuyuxiang.github.io/echo-agent/)。版本记录：[CHANGELOG.md](CHANGELOG.md)。项目使用 [MIT License](LICENSE)；内置 FastEmbed 的来源及许可见 [VENDOR.md](echo_agent/_vendor/fastembed/VENDOR.md)。
+完整文档：[中文文档站](https://fuyuxiang.github.io/echo-agent/)。版本记录：[CHANGELOG.md](CHANGELOG.md)。项目使用 [PolyForm Noncommercial License 1.0.0](LICENSE)；内置 FastEmbed 的来源及许可见 [VENDOR.md](echo_agent/_vendor/fastembed/VENDOR.md)。
+
+本项目原创代码采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，允许许可证规定的非商业用途。超出许可范围的商业用途需事先取得另行授权，请联系仓库维护者。
+
+第三方组件保留各自的许可证。此前已按其他许可证授予的权利不受本次更新影响。
+
+原 MIT 声明见 [LICENSES/MIT.txt](LICENSES/MIT.txt)。

@@ -4,7 +4,7 @@
 
 **让 Agent 记住上下文，把经验转化为技能。**
 
-可自托管、可嵌入的开源 Agent Runtime，以及本地优先的桌面 Agent。
+可自托管、可嵌入、源码开放的 Agent Runtime，以及本地优先的桌面 Agent。
 
 <p>
   <a href="#快速开始"><img src="docs/assets/readme/runtime-button.svg" alt="Runtime 入门" width="164" height="44" /></a>
@@ -18,7 +18,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
 [![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-online-blue)](https://fuyuxiang.github.io/echo-agent/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
 
 <!-- Refreshed daily from the official website by .github/workflows/download-stats.yml. -->
@@ -247,6 +247,10 @@ Echo Agent 由 **付玉祥**、**高延荣** 共同发起。
 
 ## 许可证
 
-Echo Agent 基于 [MIT License](LICENSE) 开源。桌面端所含第三方组件的许可信息见 [第三方许可说明](client/THIRD_PARTY_NOTICES.md)。
+本项目原创代码采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，允许许可证规定的非商业用途。超出许可范围的商业用途需事先取得另行授权，请联系仓库维护者。
+
+第三方组件保留各自的许可证。此前已按其他许可证授予的权利不受本次更新影响。
+
+原 MIT 声明见 [LICENSES/MIT.txt](LICENSES/MIT.txt)。桌面端所含第三方组件的许可信息见 [第三方许可说明](client/THIRD_PARTY_NOTICES.md)。
 
 Runtime 内置的 FastEmbed 兼容副本使用 Apache-2.0 许可证，来源及 Pillow 13 兼容修改见 [维护说明](echo-agent-runtime/echo_agent/_vendor/fastembed/VENDOR.md)。

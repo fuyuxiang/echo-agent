@@ -52,6 +52,7 @@
     ],
     "resources": {
       "../LICENSE": "LICENSE",
+      "../LICENSES/MIT.txt": "licenses/legacy-MIT.txt",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "../vendor/echo-agent-build/LICENSE": "licenses/echo-agent-build-LICENSE",
       "../vendor/echo-agent-build/third_party/NOTICE": "licenses/echo-agent-build-THIRD-PARTY-NOTICE",

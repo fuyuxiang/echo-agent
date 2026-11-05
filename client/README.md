@@ -2,11 +2,11 @@
 
 <h1 align="center">EchoAgent</h1>
 
-<p align="center"><strong>让 AI 在真实工作区中完成任务，并让每一步都可查看、可控制。</strong><br />开源、本地优先的桌面 Agent 工作台，集成对话、工具执行、代码开发与任务交付。</p>
+<p align="center"><strong>让 AI 在真实工作区中完成任务，并让每一步都可查看、可控制。</strong><br />源码开放、本地优先的桌面 Agent 工作台，集成对话、工具执行、代码开发与任务交付。</p>
 
 <p align="center"><a href="README.en.md">English</a> · <a href="#快速开始">快速开始</a> · <a href="#主要能力">主要能力</a> · <a href="#架构与数据流">架构</a> · <a href="#参与贡献">参与贡献</a> · <a href="https://github.com/fuyuxiang/echo-agent-desktop/issues">反馈问题</a></p>
 
-<p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fuyuxiang/echo-agent-desktop/ci.yml?branch=main&amp;label=CI" alt="CI 状态" /></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT 许可证" /></a> <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows-2563eb" alt="桌面平台：macOS、Windows" /> <img src="https://img.shields.io/badge/Tauri-2-24c8db" alt="Tauri 2" /></p>
+<p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fuyuxiang/echo-agent-desktop/ci.yml?branch=main&amp;label=CI" alt="CI 状态" /></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-2ea44f" alt="PolyForm Noncommercial 1.0.0 许可证" /></a> <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows-2563eb" alt="桌面平台：macOS、Windows" /> <img src="https://img.shields.io/badge/Tauri-2-24c8db" alt="Tauri 2" /></p>
 
 <p align="center"><img src="docs/images/echoagent-home.png" width="100%" alt="EchoAgent 首页，包含任务输入框、模型选择、工作目录和权限模式" /></p>
 
@@ -210,7 +210,11 @@ Linux 自动化后端已有部分平台适配，但项目目前没有正式 Linu
 
 ## 许可证与致谢
 
-EchoAgent 应用代码采用 [MIT License](LICENSE)。内嵌 Runtime、Theia 和其他第三方组件遵循各自许可证，详见 [Third-Party Notices](THIRD_PARTY_NOTICES.md)。项目基于 [Tauri](https://tauri.app/)、[React](https://react.dev/) 和 [Eclipse Theia](https://theia-ide.org/) 构建。
+本项目原创代码采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，允许许可证规定的非商业用途。超出许可范围的商业用途需事先取得另行授权，请联系仓库维护者。
+
+第三方组件保留各自的许可证。此前已按其他许可证授予的权利不受本次更新影响。
+
+原 MIT 声明见 [LICENSES/MIT.txt](LICENSES/MIT.txt)。内嵌 Runtime、Theia 和其他第三方组件遵循各自许可证，详见 [Third-Party Notices](THIRD_PARTY_NOTICES.md)。项目基于 [Tauri](https://tauri.app/)、[React](https://react.dev/) 和 [Eclipse Theia](https://theia-ide.org/) 构建。
 
 
 ### 组织服务自动发布与设备回执

@@ -1,4 +1,4 @@
-; EchoAgent installation policy. SPDX-License-Identifier: MIT
+; EchoAgent installation policy. SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 ; All checks run before maintenance/uninstall pages and again before copying.
 Var EchoExplicitDirectory
 Var EchoRepairLegacy

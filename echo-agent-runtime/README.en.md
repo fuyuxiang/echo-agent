@@ -83,4 +83,10 @@ python -m pytest tests/
 
 `scripts/publish.sh` additionally requires `twine` and explicitly uploads the wheel/sdist to PyPI. Building alone never publishes. CI builds outside the repository and exercises extracted-source installation and real Gateway processes.
 
-[Documentation](https://fuyuxiang.github.io/echo-agent/en/) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE). Bundled FastEmbed provenance and licensing: [VENDOR.md](echo_agent/_vendor/fastembed/VENDOR.md).
+[Documentation](https://fuyuxiang.github.io/echo-agent/en/) · [Changelog](CHANGELOG.md) · [PolyForm Noncommercial License 1.0.0](LICENSE). Bundled FastEmbed provenance and licensing: [VENDOR.md](echo_agent/_vendor/fastembed/VENDOR.md).
+
+Original project code is available under the [PolyForm Noncommercial License 1.0.0](LICENSE) for the purposes permitted by that license. Commercial uses outside those purposes require separate permission from the maintainers.
+
+Third-party components retain their respective licenses. This update does not revoke rights already granted under earlier licenses.
+
+Earlier MIT notice: [LICENSES/MIT.txt](LICENSES/MIT.txt).

@@ -4,7 +4,7 @@
 
 **Give your Agent memory. Turn experience into skills.**
 
-An open-source, self-hosted, embeddable Agent Runtime and a local-first desktop Agent.
+A source-available, self-hosted, embeddable Agent Runtime and a local-first desktop Agent.
 
 <p>
   <a href="#quick-start"><img src="docs/assets/readme/runtime-button.svg" alt="Runtime quick start" width="164" height="44" /></a>
@@ -18,7 +18,7 @@ An open-source, self-hosted, embeddable Agent Runtime and a local-first desktop 
 [![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
 [![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-online-blue)](https://fuyuxiang.github.io/echo-agent/en/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
 
 <!-- Refreshed daily from the official website by .github/workflows/download-stats.yml. -->
@@ -247,6 +247,10 @@ Echo Agent was co-founded by **Yuxiang Fu** and **Yanrong Gao**.
 
 ## License
 
-Echo Agent is open source under the [MIT License](LICENSE). See the [third-party notices](client/THIRD_PARTY_NOTICES.md) for licenses of components included in the desktop app.
+Original project code is available under the [PolyForm Noncommercial License 1.0.0](LICENSE) for the purposes permitted by that license. Commercial uses outside those purposes require separate permission from the maintainers.
+
+Third-party components retain their respective licenses. This update does not revoke rights already granted under earlier licenses.
+
+Earlier MIT notice: [LICENSES/MIT.txt](LICENSES/MIT.txt). See the [third-party notices](client/THIRD_PARTY_NOTICES.md) for licenses of components included in the desktop app.
 
 The FastEmbed compatibility copy bundled with the Runtime is licensed under Apache-2.0. See its [maintenance notes](echo-agent-runtime/echo_agent/_vendor/fastembed/VENDOR.md) for the source and Pillow 13 compatibility changes.

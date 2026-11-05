@@ -64,4 +64,4 @@ Concept pages require no source-code knowledge. Architecture diagrams show bound
 
 The project is in Beta, with independent releases for each product. Read release notes and back up before upgrading. Runtime requires Python 3.11+. Desktop release targets are macOS and Windows; see the installation pages for architectures and requirements.
 
-The project uses the [MIT license](https://github.com/fuyuxiang/echo-agent/blob/master/LICENSE). Report issues through [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues).
+Original project code is available under the [PolyForm Noncommercial License 1.0.0](https://github.com/fuyuxiang/echo-agent/blob/master/LICENSE). Commercial uses outside the permitted purposes require separate permission. Report issues through [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues).

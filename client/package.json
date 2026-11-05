@@ -150,5 +150,6 @@
       "pptxgenjs>image-size": "^2.0.4",
       "katex": "^0.18.4"
     }
-  }
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
 }

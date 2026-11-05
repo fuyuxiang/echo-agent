@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-EchoAgent application code is licensed under the MIT License. The application
+EchoAgent application code is offered under the PolyForm Noncommercial License 1.0.0. Earlier MIT grants remain in effect; see LICENSES/MIT.txt. The application
 also embeds and distributes third-party components under their respective
 licenses.
 

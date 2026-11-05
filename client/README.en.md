@@ -2,11 +2,11 @@
 
 <h1 align="center">EchoAgent</h1>
 
-<p align="center"><strong>Let AI finish work in a real workspace, with every step visible and under your control.</strong><br />An open-source, local-first desktop agent workspace for conversations, tool use, coding, and reviewable delivery.</p>
+<p align="center"><strong>Let AI finish work in a real workspace, with every step visible and under your control.</strong><br />A source-available, local-first desktop agent workspace for conversations, tool use, coding, and reviewable delivery.</p>
 
 <p align="center"><a href="README.md">简体中文</a> · <a href="#quick-start">Quick start</a> · <a href="#capabilities">Capabilities</a> · <a href="#architecture-and-data-flow">Architecture</a> · <a href="#contributing">Contribute</a> · <a href="https://github.com/fuyuxiang/echo-agent-desktop/issues">Issues</a></p>
 
-<p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fuyuxiang/echo-agent-desktop/ci.yml?branch=main&amp;label=CI" alt="CI status" /></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT license" /></a> <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows-2563eb" alt="Desktop platforms: macOS and Windows" /> <img src="https://img.shields.io/badge/Tauri-2-24c8db" alt="Tauri 2" /></p>
+<p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fuyuxiang/echo-agent-desktop/ci.yml?branch=main&amp;label=CI" alt="CI status" /></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-2ea44f" alt="PolyForm Noncommercial 1.0.0 license" /></a> <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows-2563eb" alt="Desktop platforms: macOS and Windows" /> <img src="https://img.shields.io/badge/Tauri-2-24c8db" alt="Tauri 2" /></p>
 
 <p align="center"><img src="docs/images/echoagent-home.png" width="100%" alt="EchoAgent home screen with a task composer, model picker, workspace picker, and permission mode" /></p>
 
@@ -178,4 +178,8 @@ The automation backend has some Linux platform support, but there is currently n
 
 ## License and acknowledgements
 
-EchoAgent application code is licensed under the [MIT License](LICENSE). The embedded Runtime, Theia, and other third-party components retain their own licenses; see [Third-Party Notices](THIRD_PARTY_NOTICES.md). Built with [Tauri](https://tauri.app/), [React](https://react.dev/), and [Eclipse Theia](https://theia-ide.org/).
+Original project code is available under the [PolyForm Noncommercial License 1.0.0](LICENSE) for the purposes permitted by that license. Commercial uses outside those purposes require separate permission from the maintainers.
+
+Third-party components retain their respective licenses. This update does not revoke rights already granted under earlier licenses.
+
+Earlier MIT notice: [LICENSES/MIT.txt](LICENSES/MIT.txt). The embedded Runtime, Theia, and other third-party components retain their own licenses; see [Third-Party Notices](THIRD_PARTY_NOTICES.md). Built with [Tauri](https://tauri.app/), [React](https://react.dev/), and [Eclipse Theia](https://theia-ide.org/).

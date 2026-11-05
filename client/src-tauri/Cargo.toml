@@ -1,9 +1,10 @@
 [package]
 name = "echoagent"
 version = "0.3.11"
-description = "EchoAgent — an open-source desktop agent workspace built on Tauri"
+description = "EchoAgent — a source-available desktop agent workspace built on Tauri"
 authors = ["EchoAgent"]
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
 rust-version = "1.96.0"
 
 # The Tauri library expects a lib target (for mobile, and so the binary can
