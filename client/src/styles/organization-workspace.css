@@ -183,3 +183,33 @@
     .org-workspace .org-resource-scroll { flex:none; overflow:visible; }
   }
 }
+
+/* Keep list controls together; upload menus never participate in header layout. */
+.org-workspace__page-header { align-items:flex-start; }
+.org-workspace__page-actions { padding-top:3px; }
+.org-upload-button>.topbar-actions { display:flex; }
+.topbar-actions__menu.org-upload-menu { width:184px; min-width:184px; max-width:calc(100vw - 16px); }
+.org-resource-list-actions { display:flex; flex:none; align-items:center; gap:8px; margin-left:auto; }
+.org-resource-list-actions>.org-resource-count { margin:0; flex-basis:auto; }
+.org-resource-select { position:relative; flex:0 1 160px; min-width:125px; }
+.org-resource-select--status { flex-basis:140px; }
+.org-resource-select>select { appearance:none; box-sizing:border-box; width:100%; height:36px; min-width:0; padding:6px 28px 6px 10px; border:1px solid var(--echo-border-control); border-radius:8px; background:var(--echo-bg-primary); color:var(--echo-text-strong); font:inherit; font-size:.8125rem; text-overflow:ellipsis; }
+.org-resource-select>svg { position:absolute; right:9px; top:50%; transform:translateY(-50%); pointer-events:none; color:var(--echo-text-medium); }
+.org-document-breadcrumbs { display:flex; flex:none; flex-wrap:wrap; align-items:center; gap:4px; padding:0 0 12px; min-width:0; }
+.org-document-breadcrumbs>span { display:flex; align-items:center; gap:4px; min-width:0; }
+.org-memory .org-document-breadcrumbs button { min-height:28px; max-width:100%; border:0; padding:3px 6px; background:transparent; color:var(--echo-text-medium); font-size:.8125rem; overflow-wrap:anywhere; text-align:left; }
+.org-memory .org-document-breadcrumbs button[aria-current="page"] { color:var(--echo-text-strong); font-weight:600; }
+.org-document-breadcrumbs svg { flex:none; color:var(--echo-text-weak); }
+.org-document-search-context { color:var(--echo-text-weak); font-size:.75rem; margin-left:auto; }
+.org-memory .org-document-folder { display:grid; grid-template-columns:28px minmax(0,1fr) 18px; gap:12px; align-items:center; width:100%; min-height:68px; padding:13px 16px; border:0; border-bottom:1px solid var(--echo-border-default); border-radius:0; background:var(--echo-bg-primary); text-align:left; }
+.org-memory .org-document-folder:hover:not(:disabled) { background:var(--echo-bg-hover); border-color:var(--echo-border-default); }
+.org-document-folder>svg:first-child { color:var(--echo-brand); }
+.org-document-folder>svg:last-child { color:var(--echo-text-weak); }
+.org-document-folder>span { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.org-document-folder strong { overflow-wrap:anywhere; color:var(--echo-text-strong); font-size:.8125rem; font-weight:600; }
+.org-document-folder small { color:var(--echo-text-medium); font-size:.75rem; }
+.org-memory .org-document-location { display:block; min-height:24px; padding:2px 0; border:0; background:transparent; color:var(--echo-brand); text-align:left; overflow-wrap:anywhere; font-size:.75rem; }
+@container organization (max-width:760px) {
+  .org-resource-list-actions { flex-basis:100%; justify-content:flex-end; }
+  .org-resource-select { flex:1 1 125px; }
+}

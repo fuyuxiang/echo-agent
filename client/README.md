@@ -56,6 +56,8 @@ pnpm install --frozen-lockfile
 .\dev.bat
 ```
 
+组织文档支持保留顶层文件夹、子目录和空目录上传；可通过面包屑浏览目录，搜索结果显示所在路径。已有文档保持在根目录。保留目录结构需要配套升级组织服务器；连接旧服务器时，已有文档浏览与普通文档上传保持兼容。
+
 首次启动会构建并暂存内嵌 Theia IDE、Office Worker 和 Rust Runtime，可能需要较长时间。`pnpm tauri dev` 运行完整桌面应用；`pnpm dev` 只启动 Vite 前端。
 
 ### 创建第一个任务

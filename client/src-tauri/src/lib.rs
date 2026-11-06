@@ -1111,6 +1111,7 @@ pub fn run() {
             org::org_preview_document,
             org::org_download_document,
             org::org_scan_document_folder,
+            org::org_import_document_folders,
             org::org_list_documents,
             org::org_library_query,
             org::org_list_memories,

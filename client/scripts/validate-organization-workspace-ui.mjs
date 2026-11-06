@@ -180,6 +180,44 @@ try {
     await degradedPage.screenshot({path:join(output,`${mode.filter}-${width}.png`)});
     await degradedPage.close();
   }
+  for (const [width,height,theme] of [[1440,900,'light'],[1100,760,'dark'],[390,760,'light']]) {
+    const foldersPage=await browser.newPage({viewport:{width,height}});
+    activePage=foldersPage;
+    foldersPage.setDefaultTimeout(15000);
+    foldersPage.on('pageerror',error=>errors.push(error.message));
+    await foldersPage.goto(`${base}&orgFolders=1&collapsed=1&theme=${theme}`);
+    await foldersPage.getByLabel('组织知识概况').waitFor();
+    await foldersPage.locator('.org-memory__nav button').filter({hasText:'文档'}).click();
+    await foldersPage.getByRole('button',{name:/项目资料.*文件夹/}).waitFor();
+    assert(await foldersPage.getByText('已有文档.xlsx',{exact:true}).isVisible());
+    assert(await foldersPage.locator('.org-workspace').evaluate(root=>root.scrollWidth<=root.clientWidth+2),`${width}: folder root overflows`);
+    const header=await foldersPage.locator('.org-workspace__page-header').boundingBox();
+    const before=await foldersPage.locator('.org-resource-scroll').boundingBox();
+    await foldersPage.getByRole('button',{name:'更多上传方式',exact:true}).click();
+    const menu=await foldersPage.getByRole('menu',{name:'上传方式',exact:true}).boundingBox();
+    const trigger=await foldersPage.getByRole('button',{name:'更多上传方式',exact:true}).boundingBox();
+    assert.equal((await foldersPage.locator('.org-resource-scroll').boundingBox()).y,before.y,'upload menu moved the list');
+    assert(Math.abs(menu.x+menu.width-trigger.x-trigger.width)<2,'upload menu is not right aligned');
+    assert(menu.width<=200,'one-item upload menu is too wide');
+    assert.equal((await foldersPage.locator('.org-workspace__page-header').boundingBox()).height,header.height);
+    await foldersPage.screenshot({path:join(output,`folders-upload-${width}-${theme}.png`)});
+    await foldersPage.keyboard.press('Escape');
+    await foldersPage.getByRole('button',{name:/项目资料.*文件夹/}).click();
+    await foldersPage.getByRole('button',{name:/设计.*文件夹/}).waitFor();
+    await foldersPage.getByRole('button',{name:/设计.*文件夹/}).click();
+    await foldersPage.getByText('需求说明.docx',{exact:true}).waitFor();
+    const breadcrumbs=foldersPage.getByRole('navigation',{name:'文档目录'});
+    assert(await breadcrumbs.getByRole('button',{name:'项目资料',exact:true}).isVisible());
+    assert.equal(await breadcrumbs.getByRole('button',{name:'设计',exact:true}).getAttribute('aria-current'),'page');
+    await foldersPage.screenshot({path:join(output,`folders-nested-${width}-${theme}.png`)});
+    await foldersPage.getByRole('searchbox',{name:'搜索文档'}).fill('需求');
+    await foldersPage.getByRole('button',{name:'打开所在目录：项目资料/设计',exact:true}).waitFor();
+    await foldersPage.getByRole('button',{name:'打开所在目录：项目资料/设计',exact:true}).click();
+    assert.equal(await foldersPage.getByRole('searchbox',{name:'搜索文档'}).inputValue(),'');
+    await breadcrumbs.getByRole('button',{name:'产品研发团队',exact:true}).click();
+    await foldersPage.getByText('已有文档.xlsx',{exact:true}).waitFor();
+    await foldersPage.close();
+  }
   assert.deepEqual(errors,[]);
   writeFileSync(join(output,'evidence.json'),JSON.stringify(evidence,null,2));
   console.log(JSON.stringify({output,layouts:evidence.length,flows:'fixed navigation and toolbar / independent scroll and query / full search / paginated submissions / draft / install / menu focus / logout / retry'}));

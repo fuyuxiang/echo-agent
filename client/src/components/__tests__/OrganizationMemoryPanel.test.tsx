@@ -10,10 +10,10 @@ const api = vi.hoisted(() => ({
   orgArchiveDocument: vi.fn(), orgNewDocumentVersion: vi.fn(), orgPublishDocument: vi.fn(),
   orgSetSkillPreference: vi.fn(), orgPublishSkill: vi.fn(), orgSubmitSkill: vi.fn(), orgSyncSkills: vi.fn(),
   orgDownloadDocument: vi.fn(), orgFetchDocument: vi.fn(), orgPreviewDocument: vi.fn(),
-  orgRemoveOwnSubmission: vi.fn(), orgScanDocumentFolder: vi.fn(),
+  orgRemoveOwnSubmission: vi.fn(), orgScanDocumentFolder: vi.fn(), orgImportDocumentFolders: vi.fn(),
 }));
 vi.mock("@/lib/org-client", () => api);
-const agentClientMocks = vi.hoisted(() => ({ filesystemPickFiles: vi.fn(async () => []), filesystemPickDirectory: vi.fn(async () => null) }));
+const agentClientMocks = vi.hoisted(() => ({ filesystemPickFiles: vi.fn<() => Promise<string[]>>(async () => []), filesystemPickDirectory: vi.fn<() => Promise<string | null>>(async () => null) }));
 vi.mock("@/lib/agent-client", () => agentClientMocks);
 
 import { OrganizationMemoryPanel } from "../OrganizationMemoryPanel";
@@ -643,13 +643,22 @@ describe("OrganizationMemoryPanel", () => {
     await waitFor(() => expect(api.orgRemoveOwnSubmission).toHaveBeenCalledWith("submission-1"));
   });
 
-  it("文件夹上传先展示文件清单，保留相对路径作为文档名", async () => {
+  it("文件夹上传先展示清单，保留顶层、嵌套和空目录，再以文件名提交到对应目录", async () => {
+    const query = api.orgLibraryQuery.getMockImplementation()!;
+    api.orgLibraryQuery.mockImplementation(async (resource, criteria) => ({ ...await query(resource, criteria),
+      ...(resource === "documents" ? { supportsFolders: true, folders: [], breadcrumbs: [], documentTotal: 2, folderTotal: 0 } : {}),
+    }));
+    api.orgImportDocumentFolders.mockResolvedValue({ folders: [
+      { id:"folder-root", path:"docs", name:"docs", scopeId:teamScope.id },
+      { id:"folder-nested", path:"docs/nested", name:"nested", scopeId:teamScope.id },
+      { id:"folder-empty", path:"docs/empty", name:"empty", scopeId:teamScope.id },
+    ] });
     vi.mocked(filesystemPickDirectory).mockResolvedValue("/workspace/docs");
     api.orgScanDocumentFolder.mockResolvedValue({
       items: [
         { path: "/workspace/docs/a.md", relativePath: "a.md", size: 10 },
         { path: "/workspace/docs/nested/b.txt", relativePath: "nested/b.txt", size: 20 },
-      ], skipped: 1, totalBytes: 30,
+      ], skipped: 1, totalBytes: 30, rootName:"docs", directories:["nested","empty"],
     });
     api.orgSubmitDocument.mockResolvedValue({ state: "approved" });
     render(<OrganizationMemoryPanel />);
@@ -665,9 +674,105 @@ describe("OrganizationMemoryPanel", () => {
     expect(api.orgSubmitDocument).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "开始上传" }));
     await waitFor(() => expect(api.orgSubmitDocument).toHaveBeenCalledWith(
-      "/workspace/docs/nested/b.txt", teamScope.id, "nested/b.txt",
+      "/workspace/docs/nested/b.txt", teamScope.id, "b.txt", undefined, "folder-nested",
     ));
+    expect(api.orgImportDocumentFolders).toHaveBeenCalledWith(teamScope.id, ["docs", "docs/nested", "docs/empty"], null);
+    expect(api.orgSubmitDocument).toHaveBeenCalledWith("/workspace/docs/a.md", teamScope.id, "a.md", undefined, "folder-root");
   });
+  it("目录进入、面包屑返回和跨目录搜索保留范围，旧文档显示在根目录", async () => {
+    const original = api.orgLibraryQuery.getMockImplementation()!;
+    const folder={id:"folder-project",name:"项目资料",scopeId:teamScope.id,scopeName:teamScope.name,parentId:null};
+    api.orgLibraryQuery.mockImplementation(async (resource, query) => {
+      if(resource!=="documents")return original(resource,query);
+      if(query.query)return {items:[{...document("nested","需求.md",teamScope.id,teamScope.name),folderId:folder.id,folderPath:"项目资料"}],total:1,page:1,size:20,supportsFolders:true,folders:[],breadcrumbs:[],documentTotal:1,folderTotal:0};
+      const nested=query.folderId===folder.id;
+      return {items:nested?[]:[document("legacy","已有文档",teamScope.id,teamScope.name)],total:nested?0:2,page:1,size:20,supportsFolders:true,folders:nested?[]:[folder],breadcrumbs:nested?[folder]:[],documentTotal:nested?0:1,folderTotal:nested?0:1};
+    });
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button",{name:/^文档/}));
+    expect(await screen.findByText("已有文档")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:/项目资料.*文件夹/}));
+    await waitFor(()=>expect(api.orgLibraryQuery).toHaveBeenCalledWith("documents",expect.objectContaining({folderId:folder.id,scopeId:teamScope.id,page:1})));
+    const crumbs=screen.getByRole("navigation",{name:"文档目录"});
+    expect(await within(crumbs).findByRole("button",{name:"项目资料"})).toHaveAttribute("aria-current","page");
+    fireEvent.click(within(crumbs).getByRole("button",{name:teamScope.name}));
+    expect(await screen.findByText("已有文档")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("searchbox",{name:"搜索文档"}),{target:{value:"需求"}});
+    fireEvent.click(await screen.findByRole("button",{name:"打开所在目录：项目资料"}));
+    await waitFor(()=>expect(screen.getByRole("searchbox",{name:"搜索文档"})).toHaveValue(""));
+    fireEvent.change(screen.getByRole("combobox",{name:"查看范围"}),{target:{value:personalScope.id}});
+    await waitFor(()=>expect(api.orgLibraryQuery).toHaveBeenCalledWith("documents",expect.objectContaining({scopeId:personalScope.id,folderId:"root"})));
+  });
+
+  it("旧服务器保留平铺文档和单文件上传，文件夹上传明确要求升级", async () => {
+    render(<OrganizationMemoryPanel />);
+    await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button",{name:/^文档/}));
+    expect(screen.getByText("个人文档")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"更多上传方式"}));
+    fireEvent.click(screen.getByRole("menuitem",{name:"上传文件夹"}));
+    fireEvent.click(within(screen.getByRole("dialog",{name:"选择上传位置"})).getByRole("button",{name:"选择文件夹"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("当前服务器尚不支持保留文件夹结构");
+    expect(api.orgImportDocumentFolders).not.toHaveBeenCalled();
+    expect(filesystemPickDirectory).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button",{name:"上传文档"}));
+    fireEvent.click(within(screen.getByRole("dialog",{name:"选择上传位置"})).getByRole("button",{name:/^选择文件$/}));
+    await waitFor(()=>expect(filesystemPickFiles).toHaveBeenCalled());
+  });
+
+  it("在目录内上传单文件时使用当前目录，上传范围变化后不沿用旧目录", async () => {
+    const original=api.orgLibraryQuery.getMockImplementation()!;
+    const folder={id:"folder-team",name:"团队资料",scopeId:teamScope.id,scopeName:teamScope.name,parentId:null};
+    api.orgLibraryQuery.mockImplementation(async(resource,criteria)=>({...await original(resource,criteria),...(resource==="documents"?{supportsFolders:true,folders:criteria.folderId===folder.id?[]:[folder],breadcrumbs:criteria.folderId===folder.id?[folder]:[]}:{} )}));
+    agentClientMocks.filesystemPickFiles.mockResolvedValue(["/workspace/a.md"]);
+    api.orgSubmitDocument.mockResolvedValue({state:"approved"});
+    render(<OrganizationMemoryPanel />);await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button",{name:/^文档/}));
+    fireEvent.click(screen.getByRole("button",{name:/团队资料.*文件夹/}));
+    await waitFor(()=>expect(within(screen.getByRole("navigation",{name:"文档目录"})).getByRole("button",{name:"团队资料"})).toHaveAttribute("aria-current","page"));
+    fireEvent.click(screen.getByRole("button",{name:"上传文档"}));
+    fireEvent.click(within(screen.getByRole("dialog",{name:"选择上传位置"})).getByRole("button",{name:/^选择文件$/}));
+    await waitFor(()=>expect(api.orgSubmitDocument).toHaveBeenCalledWith("/workspace/a.md",teamScope.id,undefined,undefined,folder.id));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"上传文档"})).toBeEnabled());
+    fireEvent.click(screen.getByRole("button",{name:"上传文档"}));
+    const dialog=screen.getByRole("dialog",{name:"选择上传位置"});
+    fireEvent.change(within(dialog).getByLabelText("文档上传范围"),{target:{value:personalScope.id}});
+    fireEvent.click(within(dialog).getByRole("button",{name:/^选择文件$/}));
+    await waitFor(()=>expect(api.orgSubmitDocument).toHaveBeenCalledWith("/workspace/a.md",personalScope.id,undefined));
+  });
+
+  it("空文件夹可上传并保留目录，不伪造文件上传成功数量", async () => {
+    const original=api.orgLibraryQuery.getMockImplementation()!;
+    api.orgLibraryQuery.mockImplementation(async(resource,criteria)=>({...await original(resource,criteria),...(resource==="documents"?{supportsFolders:true,folders:[],breadcrumbs:[]}:{} )}));
+    agentClientMocks.filesystemPickDirectory.mockResolvedValue("/workspace/空文件夹");
+    api.orgScanDocumentFolder.mockResolvedValue({rootName:"空文件夹",directories:[],items:[],totalBytes:0,skipped:0});
+    api.orgImportDocumentFolders.mockResolvedValue({folders:[{id:"empty",path:"空文件夹",name:"空文件夹",scopeId:personalScope.id}]});
+    const onToast=vi.fn();render(<OrganizationMemoryPanel onToast={onToast}/>);await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button",{name:/^文档/}));fireEvent.click(screen.getByRole("button",{name:"更多上传方式"}));
+    fireEvent.click(screen.getByRole("menuitem",{name:"上传文件夹"}));
+    fireEvent.click(within(screen.getByRole("dialog",{name:"选择上传位置"})).getByRole("button",{name:"选择文件夹"}));
+    fireEvent.click(await screen.findByRole("button",{name:"开始上传"}));
+    await waitFor(()=>expect(onToast).toHaveBeenCalledWith("文件夹结构已创建"));
+    expect(api.orgSubmitDocument).not.toHaveBeenCalled();
+  });
+
+  it("目录创建失败不上传散落文件，保留清单以便重试", async () => {
+    const query=api.orgLibraryQuery.getMockImplementation()!;
+    api.orgLibraryQuery.mockImplementation(async(resource,criteria)=>({...await query(resource,criteria),...(resource==="documents"?{supportsFolders:true,folders:[],breadcrumbs:[]}:{} )}));
+    agentClientMocks.filesystemPickDirectory.mockResolvedValue("/workspace/资料");
+    api.orgScanDocumentFolder.mockResolvedValue({rootName:"资料",directories:[],items:[{path:"/workspace/资料/a.md",relativePath:"a.md",size:1}],totalBytes:1,skipped:0});
+    api.orgImportDocumentFolders.mockRejectedValue(new Error("目录创建失败"));
+    render(<OrganizationMemoryPanel />);await screen.findByLabelText("组织知识概况");
+    fireEvent.click(screen.getByRole("button",{name:/^文档/}));
+    fireEvent.click(screen.getByRole("button",{name:"更多上传方式"}));fireEvent.click(screen.getByRole("menuitem",{name:"上传文件夹"}));
+    fireEvent.click(within(screen.getByRole("dialog",{name:"选择上传位置"})).getByRole("button",{name:"选择文件夹"}));
+    fireEvent.click(await screen.findByRole("button",{name:"开始上传"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("目录创建失败");
+    expect(api.orgSubmitDocument).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog",{name:"文件夹上传确认"})).toBeInTheDocument();
+  });
+
   it("概览与左侧显示服务端总数，翻页与刷新不丢失当前页", async () => {
     api.orgLibrarySummary.mockResolvedValue({ memories: 245, documents: 126, documentReady: 120, documentProcessing: 6, skills: 67, skillInstalled: 12, skillMandatory: 3, memoryPending: 0, documentPending: 0, skillPending: 0 });
     const original = api.orgLibraryQuery.getMockImplementation()!;

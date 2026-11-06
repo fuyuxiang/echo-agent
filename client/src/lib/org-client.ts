@@ -43,6 +43,8 @@ export interface OrgSession {
 
 export interface OrgDocument {
   id: string;
+  folderId?: string | null;
+  folderPath?: string;
   title: string;
   sourceType: string;
   status: "pending" | "parsing" | "chunking" | "embedding" | "ready" | "failed" | "archived";
@@ -70,8 +72,13 @@ export interface DocumentPage {
 }
 
 export type OrgLibraryResource = "memories" | "documents" | "skills" | "memory-submissions" | "document-submissions" | "skill-submissions";
-export interface OrgLibraryQuery { scopeId: string; query: string; filter: string; page: number; size: number }
-export interface OrgLibraryPage<T> { items: T[]; total: number; page: number; size: number }
+export interface OrgDocumentFolder { id: string; name: string; scopeId: string; parentId: string | null; scopeName?: string }
+export interface OrgLibraryQuery { scopeId: string; query: string; filter: string; page: number; size: number; folderId?: string }
+export interface OrgLibraryPage<T> {
+  items: T[]; total: number; page: number; size: number;
+  supportsFolders?: boolean; folders?: OrgDocumentFolder[]; breadcrumbs?: OrgDocumentFolder[];
+  documentTotal?: number; folderTotal?: number;
+}
 export interface OrgLibrarySummary {
   memories: number; documents: number; documentReady: number; documentProcessing: number;
   documentKeywordOnly?: number;
@@ -209,10 +216,10 @@ export const orgSubmitMemoryCandidate = (input: {
   validUntil: input.validUntil ?? null,
   sensitivity: input.sensitivity ?? 0,
 });
-export const orgSubmitDocument = (filePath: string, scopeId: string, title?: string, tags?: string[]) =>
+export const orgSubmitDocument = (filePath: string, scopeId: string, title?: string, tags?: string[], folderId?: string | null) =>
   invoke<{ submissionId?: string | null; docId?: string | null; state: string; documentStatus?: string; dedup?: boolean }>(
     "org_submit_document",
-    { filePath, scopeId, title: title ?? null, tags: tags ?? null },
+    { filePath, scopeId, title: title ?? null, tags: tags ?? null, folderId: folderId ?? null },
   );
 export const orgDocumentSubmissionsMine = () =>
   invoke<Submission[]>("org_document_submissions_mine");
@@ -226,7 +233,9 @@ export const orgDownloadDocument = (resourceId: string, submission: boolean, sug
   invoke<string | null>("org_download_document", { resourceId, submission, suggestedName });
 export interface OrgFolderFile { path: string; relativePath: string; size: number }
 export const orgScanDocumentFolder = (folderPath: string) =>
-  invoke<{ items: OrgFolderFile[]; skipped: number; totalBytes: number }>("org_scan_document_folder", { folderPath });
+  invoke<{ items: OrgFolderFile[]; skipped: number; totalBytes: number; rootName: string; directories: string[] }>("org_scan_document_folder", { folderPath });
+export const orgImportDocumentFolders = (scopeId: string, paths: string[], parentFolderId?: string | null) =>
+  invoke<{ folders: Array<OrgDocumentFolder & { path: string }> }>("org_import_document_folders", { scopeId, paths, parentFolderId: parentFolderId ?? null });
 export const orgFetchDocument = (docId: string, page?: number | null, range?: string) =>
   invoke<{ docId: string; text: string; chunks: Array<{ seq: number; text: string; heading?: string; locPage?: number }>; hasMore?: boolean; nextSeq?: number | null }>(
     "org_fetch_document",

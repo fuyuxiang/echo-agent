@@ -2449,8 +2449,9 @@ pub async fn org_library_query(
     filter: Option<String>,
     page: Option<u32>,
     size: Option<u32>,
+    folder_id: Option<String>,
 ) -> Result<Value, String> {
-    let path = library_query_path(
+    let mut path = library_query_path(
         &resource,
         scope_id.as_deref(),
         query.as_deref(),
@@ -2458,6 +2459,14 @@ pub async fn org_library_query(
         page,
         size,
     )?;
+    if resource == "documents" {
+        if let Some(folder_id) = folder_id {
+            validate_resource_id(&folder_id, "organization folder id")?;
+            let mut url = Url::parse(&format!("http://local{path}")).map_err(|e| e.to_string())?;
+            url.query_pairs_mut().append_pair("folderId", &folder_id);
+            path = format!("{}?{}", url.path(), url.query().unwrap_or_default());
+        }
+    }
     authenticated_json(&state.inner, Method::GET, &path, None).await
 }
 
@@ -2835,97 +2844,120 @@ pub async fn org_scan_document_folder(
     folder_path: String,
 ) -> Result<Value, String> {
     let root = filesystem.require_workspace(&folder_path)?;
-    tokio::task::spawn_blocking(move || {
-        let mut queue = std::collections::VecDeque::from([(root.clone(), 0_usize)]);
-        let mut items = Vec::<OrgFolderFile>::new();
-        let mut scanned = 0_usize;
-        let mut skipped = 0_usize;
-        let mut total_size = 0_u64;
-        while let Some((directory, depth)) = queue.pop_front() {
-            if depth > 8 {
-                skipped += 1;
-                continue;
-            }
-            let Ok(entries) = std::fs::read_dir(&directory) else {
+    tokio::task::spawn_blocking(move || scan_document_folder(root))
+        .await
+        .map_err(|error| format!("扫描文件夹失败：{error}"))?
+}
+
+fn scan_document_folder(root: std::path::PathBuf) -> Result<Value, String> {
+    let mut queue = std::collections::VecDeque::from([(root.clone(), 0_usize)]);
+    let mut items = Vec::<OrgFolderFile>::new();
+    let mut directories = Vec::<String>::new();
+    let root_name = root
+        .file_name()
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "上传文件夹".into());
+    let mut scanned = 0_usize;
+    let mut skipped = 0_usize;
+    let mut total_size = 0_u64;
+    while let Some((directory, depth)) = queue.pop_front() {
+        if depth > 8 {
+            skipped += 1;
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            skipped += 1;
+            continue;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
                 skipped += 1;
                 continue;
             };
-            for entry in entries {
-                let Ok(entry) = entry else {
-                    skipped += 1;
-                    continue;
-                };
-                scanned += 1;
-                if scanned > 10_000 {
-                    return Err("文件夹条目超过 10000 个，请缩小范围".into());
-                }
-                let path = entry.path();
-                let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-                    skipped += 1;
-                    continue;
-                };
-                if metadata.file_type().is_symlink() {
-                    skipped += 1;
-                    continue;
-                }
-                let Ok(canonical) = path.canonicalize() else {
-                    skipped += 1;
-                    continue;
-                };
-                if !canonical.starts_with(&root) {
-                    skipped += 1;
-                    continue;
-                }
-                if metadata.is_dir() {
-                    queue.push_back((canonical, depth + 1));
-                    continue;
-                }
-                let extension = path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if !metadata.is_file()
-                    || !matches!(
-                        extension.as_str(),
-                        "md" | "txt" | "pdf" | "docx" | "xlsx" | "pptx" | "png" | "jpg" | "jpeg"
-                    )
-                {
+            scanned += 1;
+            if scanned > 10_000 {
+                return Err("文件夹条目超过 10000 个，请缩小范围".into());
+            }
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                skipped += 1;
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                skipped += 1;
+                continue;
+            }
+            let Ok(canonical) = path.canonicalize() else {
+                skipped += 1;
+                continue;
+            };
+            if !canonical.starts_with(&root) {
+                skipped += 1;
+                continue;
+            }
+            if metadata.is_dir() {
+                if depth >= 8 {
                     skipped += 1;
                     continue;
                 }
-                if metadata.len() > MAX_DOCUMENT_UPLOAD_BYTES {
-                    skipped += 1;
-                    continue;
+                directories.push(
+                    canonical
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+                if directories.len() >= 5_000 {
+                    return Err("目录超过 5000 个，请分批上传".into());
                 }
-                let relative_path = canonical
-                    .strip_prefix(&root)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                if relative_path.chars().count() > 500 {
-                    skipped += 1;
-                    continue;
-                }
-                total_size = total_size.saturating_add(metadata.len());
-                if total_size > 1024 * 1024 * 1024 {
-                    return Err("文件夹可上传内容超过 1 GiB".into());
-                }
-                items.push(OrgFolderFile {
-                    path: canonical.to_string_lossy().into_owned(),
-                    relative_path,
-                    size: metadata.len(),
-                });
-                if items.len() > 500 {
-                    return Err("可上传文件超过 500 个，请分批上传".into());
-                }
+                queue.push_back((canonical, depth + 1));
+                continue;
+            }
+            let extension = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !metadata.is_file()
+                || !matches!(
+                    extension.as_str(),
+                    "md" | "txt" | "pdf" | "docx" | "xlsx" | "pptx" | "png" | "jpg" | "jpeg"
+                )
+            {
+                skipped += 1;
+                continue;
+            }
+            if metadata.len() > MAX_DOCUMENT_UPLOAD_BYTES {
+                skipped += 1;
+                continue;
+            }
+            let relative_path = canonical
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if relative_path.chars().count() > 500 {
+                skipped += 1;
+                continue;
+            }
+            total_size = total_size.saturating_add(metadata.len());
+            if total_size > 1024 * 1024 * 1024 {
+                return Err("文件夹可上传内容超过 1 GiB".into());
+            }
+            items.push(OrgFolderFile {
+                path: canonical.to_string_lossy().into_owned(),
+                relative_path,
+                size: metadata.len(),
+            });
+            if items.len() > 500 {
+                return Err("可上传文件超过 500 个，请分批上传".into());
             }
         }
-        items.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-        Ok::<Value, String>(json!({ "items": items, "skipped": skipped, "totalBytes": total_size }))
-    })
-    .await
-    .map_err(|error| format!("扫描文件夹失败：{error}"))?
+    }
+    items.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    Ok::<Value, String>(
+        json!({ "items": items, "skipped": skipped, "totalBytes": total_size, "rootName": root_name, "directories": directories }),
+    )
 }
 
 #[tauri::command]
@@ -3200,11 +3232,15 @@ pub async fn org_submit_document(
     scope_id: String,
     title: Option<String>,
     tags: Option<Vec<String>>,
+    folder_id: Option<String>,
 ) -> Result<Value, String> {
     if file_path.len() > 4_096 || file_path.contains('\0') {
         return Err("document path is invalid or too long".into());
     }
     validate_resource_id(&scope_id, "organization scope id")?;
+    if let Some(folder_id) = folder_id.as_deref() {
+        validate_resource_id(folder_id, "organization folder id")?;
+    }
     if let Some(title) = title.as_deref() {
         validate_bounded_text(title, "organization document title", MAX_TITLE_CHARS, true)?;
     }
@@ -3250,6 +3286,9 @@ pub async fn org_submit_document(
         label: "文档",
     };
     let mut fields = vec![("scopeId".to_string(), scope_id)];
+    if let Some(folder_id) = folder_id {
+        fields.push(("folderId".into(), folder_id));
+    }
     if let Some(title) = title {
         fields.push(("title".into(), title));
     }
@@ -3263,6 +3302,32 @@ pub async fn org_submit_document(
         &name,
         &upload,
         Some(&request_context),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn org_import_document_folders(
+    state: State<'_, OrgState>,
+    scope_id: String,
+    parent_folder_id: Option<String>,
+    paths: Vec<String>,
+) -> Result<Value, String> {
+    validate_resource_id(&scope_id, "organization scope id")?;
+    if let Some(id) = parent_folder_id.as_deref() {
+        validate_resource_id(id, "organization folder id")?;
+    }
+    if paths.is_empty() || paths.len() > 5_000 {
+        return Err("目录数量无效".into());
+    }
+    for path in &paths {
+        validate_bounded_text(path, "organization folder path", 1024, true)?;
+    }
+    authenticated_json(
+        &state.inner,
+        Method::POST,
+        "/api/v1/document-folders/import",
+        Some(json!({"scopeId":scope_id,"parentFolderId":parent_folder_id,"paths":paths})),
     )
     .await
 }
@@ -6589,5 +6654,49 @@ mod tests {
             })
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod document_directory_scan_tests {
+    use super::scan_document_folder;
+
+    #[test]
+    fn preserves_root_nested_and_empty_directories_without_absolute_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("项目资料");
+        std::fs::create_dir_all(root.join("设计/空目录")).unwrap();
+        std::fs::write(root.join("说明.md"), "root").unwrap();
+        std::fs::write(root.join("设计/需求.txt"), "nested").unwrap();
+        std::fs::write(root.join("忽略.exe"), "unsupported").unwrap();
+        let result = scan_document_folder(root.canonicalize().unwrap()).unwrap();
+        assert_eq!(result["rootName"], "项目资料");
+        assert_eq!(result["items"].as_array().unwrap().len(), 2);
+        let names: Vec<_> = result["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["relativePath"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"说明.md"));
+        assert!(names.contains(&"设计/需求.txt"));
+        let directories = result["directories"].as_array().unwrap();
+        assert!(directories.contains(&serde_json::json!("设计/空目录")));
+        assert_eq!(result["skipped"], 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_symbolic_links_instead_of_importing_outside_documents() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("资料");
+        std::fs::create_dir(&root).unwrap();
+        let secret = home.path().join("outside.md");
+        std::fs::write(&secret, "outside").unwrap();
+        std::os::unix::fs::symlink(&secret, root.join("linked.md")).unwrap();
+        let result = scan_document_folder(root.canonicalize().unwrap()).unwrap();
+        assert!(result["items"].as_array().unwrap().is_empty());
+        assert_eq!(result["skipped"], 1);
+        assert_eq!(result["rootName"], "资料");
     }
 }

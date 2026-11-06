@@ -6,6 +6,8 @@ import {
   BrainCircuit,
   Building2,
   ChevronDown,
+  ChevronRight,
+  Folder,
   MoreHorizontal,
   Search,
   FileText,
@@ -38,6 +40,7 @@ import {
   orgPreviewDocument,
   orgRemoveOwnSubmission,
   orgScanDocumentFolder,
+  orgImportDocumentFolders,
   orgSession,
   orgSubmitDocument,
   orgSubmitMemoryCandidate,
@@ -241,7 +244,7 @@ export function OrganizationMemoryPanel({
   const [scopes, setScopes] = useState<OrgScope[]>([]);
   const [writeScope, setWriteScope] = useState("");
   const [publishScope, setPublishScope] = useState("");
-  const [folderBatch, setFolderBatch] = useState<{ folder: string; files: OrgFolderFile[]; skipped: number; totalBytes: number; scopeId: string; scopeName: string } | null>(null);
+  const [folderBatch, setFolderBatch] = useState<{ folder: string; files: OrgFolderFile[]; skipped: number; totalBytes: number; scopeId: string; scopeName: string; rootName: string; directories: string[]; parentFolderId: string | null } | null>(null);
   const folderBatchRef = useModalFocus<HTMLDivElement>(!!folderBatch, () => { if (!busyRef.current) setFolderBatch(null); });
   const [uploadIntent, setUploadIntent] = useState<"files" | "folder" | null>(null);
   const uploadDialogRef = useModalFocus<HTMLDivElement>(Boolean(uploadIntent), () => setUploadIntent(null));
@@ -501,6 +504,9 @@ export function OrganizationMemoryPanel({
     }
   };
 
+  const documentUploadFolder = (scopeId: string) => pages.documents.supportsFolders && queries.documents.scopeId === scopeId
+    && queries.documents.folderId !== "root" ? queries.documents.folderId ?? null : null;
+
   const pickAndUploadDocument = async () => {
     if (!uploadScope) return;
     const boundary = currentBoundary();
@@ -513,7 +519,8 @@ export function OrganizationMemoryPanel({
         extensions: ["md", "txt", "pdf", "docx", "xlsx", "pptx", "png", "jpg", "jpeg"],
       });
       if (!isCurrentBoundary(boundary) || !paths || paths.length === 0) return;
-      await uploadDocumentsInBatch(paths.map((path) => ({ path })), uploadScope.id);
+      const folderId = documentUploadFolder(uploadScope.id);
+      await uploadDocumentsInBatch(paths.map((path) => ({ path, folderId })), uploadScope.id);
     } catch (reason) {
       if (isCurrentBoundary(boundary)) setError(`选择文档失败：${String(reason).replace(/^Error:\s*/, "")}`);
     }
@@ -521,6 +528,7 @@ export function OrganizationMemoryPanel({
 
   const pickDocumentFolder = async () => {
     if (!uploadScope) return;
+    if (!pages.documents.supportsFolders) { setError("当前服务器尚不支持保留文件夹结构，请升级组织服务器后重试。单个文档仍可正常上传。"); return; }
     const boundary = currentBoundary();
     setError(null);
     try {
@@ -528,18 +536,20 @@ export function OrganizationMemoryPanel({
       if (!isCurrentBoundary(boundary) || !folder) return;
       const result = await orgScanDocumentFolder(folder);
       if (!isCurrentBoundary(boundary)) return;
-      if (result.items.length === 0) {
-        setError("文件夹中没有可上传的文档（支持 MD、TXT、PDF、Office 文档和图片）");
-        return;
-      }
-      setFolderBatch({ folder, files: result.items, skipped: result.skipped, totalBytes: result.totalBytes, scopeId: uploadScope.id, scopeName: uploadScope.name });
+      setFolderBatch({ folder, files: result.items, skipped: result.skipped, totalBytes: result.totalBytes,
+        scopeId: uploadScope.id, scopeName: uploadScope.name,
+        rootName: result.rootName || folder.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "上传文件夹",
+        directories: result.directories ?? [], parentFolderId: documentUploadFolder(uploadScope.id),
+      });
     } catch (reason) {
       if (isCurrentBoundary(boundary)) setError(`扫描文件夹失败：${String(reason).replace(/^Error:\s*/, "")}`);
     }
   };
 
   const openDocumentUpload = (intent: "files" | "folder") => {
-    if (!allowDocumentUpload && availableDocumentScopes[0]) setWriteScope(availableDocumentScopes[0].id);
+    const currentScope = availableDocumentScopes.find(scope => scope.id === queries.documents.scopeId);
+    if (currentScope) setWriteScope(currentScope.id);
+    else if (!allowDocumentUpload && availableDocumentScopes[0]) setWriteScope(availableDocumentScopes[0].id);
     setUploadIntent(intent);
   };
 
@@ -551,20 +561,39 @@ export function OrganizationMemoryPanel({
     else await pickAndUploadDocument();
   };
 
-  const uploadDocumentsInBatch = async (files: Array<{ path: string; title?: string }>, scopeId: string) => {
+  const uploadDocumentsInBatch = async (
+    files: Array<{ path: string; title?: string; folderPath?: string; folderId?: string | null }>, scopeId: string,
+    directory?: { paths: string[]; parentFolderId: string | null; rootName: string },
+  ) => {
     const boundary = currentBoundary();
     if (busyRef.current) return;
     setBusy(true);
     setError(null);
     setUploadProgress({ label: "正在上传文档", completed: 0, total: files.length });
     let batchError: string | null = null;
+    let phase = "上传失败";
     try {
+      let uploadedRootId: string | undefined;
+      if (directory) {
+        setUploadProgress({ label: "正在创建目录", completed: 0, total: files.length });
+        const imported = await orgImportDocumentFolders(scopeId, [...new Set(directory.paths)], directory.parentFolderId);
+        if (!isCurrentBoundary(boundary)) return;
+        const folderIds = new Map(imported.folders.map(folder => [folder.path, folder.id]));
+        uploadedRootId = folderIds.get(directory.rootName.normalize("NFC"));
+        if (!uploadedRootId) throw new Error("服务器未返回上传根目录，请重试");
+        files = files.map(file => {
+          const folderId = folderIds.get((file.folderPath ?? directory.rootName).normalize("NFC"));
+          if (!folderId) throw new Error("服务器未返回完整目录，已停止上传");
+          return { ...file, folderId };
+        });
+      }
       const settled = await settleWithConcurrency(
         files,
         3,
         (file) => {
           if (!isCurrentBoundary(boundary)) throw new Error("组织账号或权限已改变，已停止后续上传");
-          return orgSubmitDocument(file.path, scopeId, file.title);
+          return file.folderId ? orgSubmitDocument(file.path, scopeId, file.title, undefined, file.folderId)
+            : orgSubmitDocument(file.path, scopeId, file.title);
         },
         (completed) => isCurrentBoundary(boundary) && setUploadProgress({
           label: "正在上传文档",
@@ -587,14 +616,21 @@ export function OrganizationMemoryPanel({
       setError(batchError);
       if (done > 0 || skipped > 0) {
         onToast?.(`新增 ${done} 个文档，跳过重复 ${skipped} 个${failures.length ? `，失败 ${failures.length} 个` : ""}${done ? "；正在处理文档" : ""}`);
+      } else if (directory && files.length === 0) {
+        onToast?.("文件夹结构已创建");
       } else {
         onToast?.(`上传失败：${failures[0] ?? "未知原因"}`);
       }
+      if (uploadedRootId) {
+        library.update("documents", { scopeId, folderId: uploadedRootId, query: "", filter: "" });
+        setResourceViews(previous => ({ ...previous, documents: "published" }));
+      }
+      phase = "刷新列表失败";
       setUploadProgress({ label: "正在刷新列表", completed: files.length, total: files.length });
       await loadWorkspace(true);
       if (isCurrentBoundary(boundary)) setFolderBatch(null);
     } catch (reason) {
-      const refreshError = `刷新列表失败：${String(reason).replace(/^Error:\s*/, "")}`;
+      const refreshError = `${phase}：${String(reason).replace(/^Error:\s*/, "")}`;
       if (isCurrentBoundary(boundary)) setError(batchError ? `${batchError}\n${refreshError}` : refreshError);
     } finally {
       if (isCurrentBoundary(boundary)) setUploadProgress(null);
@@ -883,6 +919,13 @@ export function OrganizationMemoryPanel({
     : tab === "skills" ? (view === "mine" ? "skill-submissions" : "skills") : (view === "mine" ? "document-submissions" : "documents");
   const activeQuery = queries[activeResource];
   const activePage = pages[activeResource];
+  const documentFolders = pages.documents.folders ?? [];
+  const documentBreadcrumbs = pages.documents.breadcrumbs ?? [];
+  const folderBrowsing = tab === "documents" && view === "published" && pages.documents.supportsFolders === true;
+  const openFolder = (id: string, scopeId = queries.documents.scopeId) => {
+    scrollPositions.current.documents = 0;
+    library.update("documents", { folderId: id, scopeId, query: "" });
+  };
   const scrollKey = tab === "overview" ? "overview" : activeResource;
   const updateQuery = (patch: Partial<typeof activeQuery>) => {
     scrollPositions.current[scrollKey] = 0;
@@ -890,7 +933,7 @@ export function OrganizationMemoryPanel({
   };
   useLayoutEffect(() => {
     if (contentRef.current) contentRef.current.scrollTop = scrollPositions.current[scrollKey] ?? 0;
-  }, [scrollKey, activeQuery.page, activeQuery.size, activeQuery.scopeId, activeQuery.query, activeQuery.filter, workspaceLoaded]);
+  }, [scrollKey, activeQuery.page, activeQuery.size, activeQuery.scopeId, activeQuery.folderId, activeQuery.query, activeQuery.filter, workspaceLoaded]);
 
   if (loading) {
     return (
@@ -967,10 +1010,10 @@ export function OrganizationMemoryPanel({
           <header className="org-workspace__page-header">
             <div><h2>{pageTitle}</h2><p>{pageDescription}</p></div>
             <div className="org-workspace__page-actions">
-              {!workspaceUnavailable && <button type="button" className="org-icon-button" aria-label="刷新" title="更新组织资料" disabled={busy} onClick={() => void refreshWorkspace()}><RefreshCw size={16} className={busy ? "org-memory__spin" : undefined} /></button>}
+              {tab === "overview" && !workspaceUnavailable && <button type="button" className="org-icon-button" aria-label="刷新" title="更新组织资料" disabled={busy} onClick={() => void refreshWorkspace()}><RefreshCw size={16} className={busy ? "org-memory__spin" : undefined} /></button>}
               {tab === "memories" && <button className="org-memory__primary" disabled={busy || !writeScope} onClick={() => { setMemoryWorkspace(value => value || cwd || ""); setShowMemoryForm(true); }}><Plus size={15} />提交经验</button>}
               {tab === "documents" && <div className="org-upload-button"><button className="org-memory__primary" onClick={() => openDocumentUpload("files")} disabled={busy || availableDocumentScopes.length === 0}><Upload size={15} />上传文档</button>
-                <ActionMenu label="更多上传方式" menuLabel="上传方式" busy={busy || availableDocumentScopes.length === 0} triggerClassName="org-memory__primary" trigger={<ChevronDown size={15} />}>
+                <ActionMenu label="更多上传方式" menuLabel="上传方式" busy={busy || availableDocumentScopes.length === 0} triggerClassName="org-memory__primary" menuClassName="topbar-actions__menu org-upload-menu" resetKey={`${tab}:${writeScope}`} trigger={<ChevronDown size={15} />}>
                   {({ close }) => <button type="button" role="menuitem" className="topbar-actions__item" onClick={() => { close(); openDocumentUpload("folder"); }}><FolderUp size={15} />上传文件夹</button>}
                 </ActionMenu></div>}
               {tab === "skills" && <><button type="button" className="echo-button" onClick={() => void syncSkills()} disabled={busy}><RefreshCw size={15} />同步技能</button><button className="org-memory__primary" onClick={() => { setActionInvoker(null); setSkillDialog({ kind: "upload" }); }} disabled={busy || !uploadScope || !allowSkillSubmission}><Upload size={15} />提交 Skill</button></>}
@@ -980,14 +1023,22 @@ export function OrganizationMemoryPanel({
             <div className="org-resource-views" role="group" aria-label="资源视图"><button type="button" aria-pressed={view === "published"} onClick={() => setResourceViews(previous => ({ ...previous, [tab]: "published" }))}>已发布</button><button type="button" aria-pressed={view === "mine"} onClick={() => setResourceViews(previous => ({ ...previous, [tab]: "mine" }))}>我的提交</button></div>
             <div className="org-resource-filters">
               <div className="org-resource-search"><Search size={16} aria-hidden="true" /><input type="search" aria-label={`搜索${pageTitle}`} placeholder={view === "mine" ? "搜索我的提交" : `搜索${tab === "skills" ? "技能" : pageTitle}`} maxLength={2000} value={activeQuery.query} onChange={event => updateQuery({ query: event.target.value })} />{activeQuery.query && <button type="button" aria-label="清空搜索" onClick={() => updateQuery({ query: "" })}><X size={14} /></button>}</div>
-              <select aria-label="查看范围" value={activeQuery.scopeId} onChange={event => updateQuery({ scopeId: event.target.value })}><option value="">全部授权范围</option>{scopes.map(scope => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select>
-              <select aria-label={view === "mine" ? "提交状态" : tab === "memories" ? "经验类型" : tab === "documents" ? "文档状态" : "安装状态"} value={activeQuery.filter} onChange={event => updateQuery({ filter: event.target.value })}>
+              <div className="org-resource-select"><select aria-label="查看范围" value={activeQuery.scopeId} onChange={event => updateQuery({ scopeId: event.target.value })}><option value="">全部授权范围</option>{scopes.map(scope => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select><ChevronDown size={14} aria-hidden="true" /></div>
+              <div className="org-resource-select org-resource-select--status"><select aria-label={view === "mine" ? "提交状态" : tab === "memories" ? "经验类型" : tab === "documents" ? "文档状态" : "安装状态"} value={activeQuery.filter} onChange={event => updateQuery({ filter: event.target.value })}>
                 <option value="">{view === "mine" ? "全部状态" : tab === "memories" ? "全部类型" : tab === "documents" ? "全部状态" : "全部技能"}</option>
                 {(view === "mine" ? [["pending", "待处理"], ["approved", "已通过"], ["rejected", "已拒绝"], ...(tab === "skills" ? [["revoked", "已撤销"]] : [["withdrawn", "已撤回"]])] : tab === "memories" ? Object.entries(memoryKindLabel) : tab === "documents" ? [["ready", "可检索"], ["processing", "处理中"], ["failed", "处理失败"], ...((librarySummary?.documentKeywordOnly !== undefined || activeQuery.filter === "keywordOnly") ? [["keywordOnly", librarySummary?.documentSemanticPartial === undefined ? "语义索引待完善" : "关键词检索"]] : []), ...((librarySummary?.documentSemanticPartial !== undefined || activeQuery.filter === "semanticPartial") ? [["semanticPartial", "部分语义可用"]] : [])] : [["installed", "已安装"], ["available", "未安装"], ["mandatory", "组织必装"]]).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-              <span className="org-resource-count" role="status">{activePage.loading ? "正在更新…" : activePage.error ? "更新失败" : `共 ${activePage.total} 项`}</span>
+              </select><ChevronDown size={14} aria-hidden="true" /></div>
+              <div className="org-resource-list-actions"><span className="org-resource-count" role="status">{activePage.loading ? "正在更新…" : activePage.error ? "更新失败" : folderBrowsing
+                ? `${pages.documents.folderTotal ?? 0} 个文件夹 · ${pages.documents.documentTotal ?? 0} 份文档` : `共 ${activePage.total} 项`}</span>
+                {!workspaceUnavailable && <button type="button" className="org-icon-button" aria-label="刷新" title="刷新当前列表" disabled={busy} onClick={() => void refreshWorkspace()}><RefreshCw size={16} className={busy ? "org-memory__spin" : undefined} /></button>}
+              </div>
             </div>
           </div>}
+          {folderBrowsing && <nav className="org-document-breadcrumbs" aria-label="文档目录">
+            <button type="button" onClick={() => openFolder("root")} disabled={activePage.loading || activeQuery.folderId === "root" && !activeQuery.query}>{scopes.find(scope => scope.id === activeQuery.scopeId)?.name ?? "全部文档"}</button>
+            {documentBreadcrumbs.map((folder, index) => <span key={folder.id}><ChevronRight size={13} aria-hidden="true" /><button type="button" aria-current={index === documentBreadcrumbs.length - 1 && !activeQuery.query ? "page" : undefined} disabled={activePage.loading} onClick={() => openFolder(folder.id, folder.scopeId)}>{folder.name}</button></span>)}
+            {activeQuery.query && <span className="org-document-search-context">当前授权范围的搜索结果</span>}
+          </nav>}
           <div className="org-resource-scroll" ref={contentRef} tabIndex={0} aria-label={`${pageTitle}资源区域`} onScroll={event => { scrollPositions.current[scrollKey] = event.currentTarget.scrollTop; }}>
             {error && !showMemoryForm && !skillDialog && !folderBatch && <OrganizationError reason={error} busy={busy} onRetry={workspaceUnavailable || !workspaceLoaded ? () => void refreshWorkspace() : undefined} onDismiss={() => setError(null)} />}
             {workspaceUnavailable && workspaceLoaded && <p className="org-workspace-status" role="status">组织资料更新失败，下方保留上次加载的内容。</p>}
@@ -1006,12 +1057,16 @@ export function OrganizationMemoryPanel({
               {view === "mine" && activePage.items.some(item => "state" in item && item.state === "pending") && <p className="org-submission-guidance" role="note">安全检查通过后，服务器会按组织策略发布；需要人工审核时，请联系组织管理员。</p>}
               {activePage.items.length === 0 && !activePage.loading && !activePage.error && <div className="org-resource-empty"><PackageOpen size={28} /><strong>{activeQuery.query || activeQuery.scopeId || activeQuery.filter ? "没有找到匹配的内容" : view === "mine" ? "还没有提交记录" : "当前范围暂无已发布内容"}</strong><p>{activeQuery.query || activeQuery.scopeId || activeQuery.filter ? "试试其他关键词，或调整筛选条件。" : view === "mine" ? "提交后的安全检查与发布进度会显示在这里。" : "上传或提交后，通过处理的内容会显示在这里。"}</p>{(activeQuery.query || activeQuery.scopeId || activeQuery.filter) && <button className="echo-button" onClick={() => updateQuery({ query: "", scopeId: "", filter: "" })}>清空筛选</button>}</div>}
               {view === "published" && tab === "memories" && <div className="org-library__list">{memories.map(memory => <article className="org-library__row org-memory-row" key={memory.id}><div className="org-library__icon"><BrainCircuit size={18} /></div><div className="org-library__main"><span className="org-memory-kind">{memoryKindLabel[memory.kind]}</span><button type="button" className="org-memory-summary" onClick={() => setMemoryDetail(memory)}>{memory.content}</button><span>{memory.scopeName} · {memory.trust === "verified" ? "已验证" : memory.trust === "reviewed" ? "已复核" : "内容待验证"}{memory.workspaceRef ? ` · ${memory.workspaceRef}` : ""}</span></div><span className={`org-state org-state--${memory.stale ? "failed" : "ready"}`}>{memory.stale ? "已过期" : "可用于任务"}</span></article>)}</div>}
-              {view === "published" && tab === "documents" && <div className="org-library__list">{documents.map(document => {
+              {view === "published" && tab === "documents" && <div className="org-library__list">
+                {documentFolders.map(folder => <button type="button" className="org-document-folder" key={folder.id} onClick={() => openFolder(folder.id, folder.scopeId)} disabled={activePage.loading}>
+                  <Folder size={22} aria-hidden="true" /><span><strong>{folder.name}</strong><small>{folder.scopeName ?? ""} · 文件夹</small></span><ChevronRight size={16} aria-hidden="true" />
+                </button>)}
+                {documents.map(document => {
                 const mayManage = document.ownerId === session.user?.id || session.user?.role === "curator" || session.user?.role === "admin";
                 const retrievalState = documentRetrievalState(document);
                 const canPublishCopy = document.scopeKind === "personal" && scopes.some(scope => scope.kind !== "personal" && scope.canPublishDocuments !== false);
                 const fileName = document.title.match(/\.[A-Za-z0-9]{1,8}$/) ? document.title : `${document.title}.${document.sourceType === "image" ? "png" : document.sourceType}`;
-                return <article className="org-library__row org-document-library__row" key={document.id}><div className="org-library__icon"><FileText size={19} /></div><div className="org-library__main"><strong title={document.title}>{document.title}</strong><span>{document.scopeName} · {document.sourceType.toUpperCase()} · {readableBytes(document.byteSize)}</span>{document.failReason && <em>{document.failReason}</em>}</div><span className={`org-state org-state--${document.status}`} title={retrievalState.title}>{retrievalState.label}</span><div className="org-library__actions">{document.status === "ready" && <><button onClick={() => void showDocumentPreview(document.id, fileName, document.sourceType, false)} disabled={previewLoading}><Eye size={14} />查看</button><button onClick={() => void downloadDocument(document.id, fileName, false)}><Download size={14} />下载</button></>}{(mayManage || canPublishCopy) && <ActionMenu label={`更多文档操作：${document.title}`} menuLabel="文档操作" resetKey={document.id} busy={busy} triggerClassName="org-icon-button" trigger={<MoreHorizontal size={18} />}>{({ close, triggerRef }) => <>{canPublishCopy && <button role="menuitem" disabled={document.status !== "ready"} className="topbar-actions__item" onClick={() => { setActionInvoker(triggerRef.current); close(); setPublishDocumentTarget(document); }}>发布副本</button>}{mayManage && <><button role="menuitem" className="topbar-actions__item" disabled={document.status !== "ready"} onClick={() => { close(true); void uploadNewVersion(document); }}><History size={15} />新版本</button><button role="menuitem" className="topbar-actions__item" disabled={document.status !== "ready"} onClick={() => { setActionInvoker(triggerRef.current); close(); setRemoveTarget({ id: document.id, name: document.title, submission: false }); }}><Archive size={15} />归档</button></>}</>}</ActionMenu>}</div></article>;
+                return <article className="org-library__row org-document-library__row" key={document.id}><div className="org-library__icon"><FileText size={19} /></div><div className="org-library__main"><strong title={document.title}>{document.title}</strong><span>{document.scopeName} · {document.sourceType.toUpperCase()} · {readableBytes(document.byteSize)}</span>{folderBrowsing && activeQuery.query && <button type="button" className="org-document-location" onClick={() => openFolder(document.folderId ?? "root", document.scopeId)} aria-label={`打开所在目录：${document.folderPath || "根目录"}`}>{document.folderPath || "根目录"}</button>}{document.failReason && <em>{document.failReason}</em>}</div><span className={`org-state org-state--${document.status}`} title={retrievalState.title}>{retrievalState.label}</span><div className="org-library__actions">{document.status === "ready" && <><button onClick={() => void showDocumentPreview(document.id, fileName, document.sourceType, false)} disabled={previewLoading}><Eye size={14} />查看</button><button onClick={() => void downloadDocument(document.id, fileName, false)}><Download size={14} />下载</button></>}{(mayManage || canPublishCopy) && <ActionMenu label={`更多文档操作：${document.title}`} menuLabel="文档操作" resetKey={document.id} busy={busy} triggerClassName="org-icon-button" trigger={<MoreHorizontal size={18} />}>{({ close, triggerRef }) => <>{canPublishCopy && <button role="menuitem" disabled={document.status !== "ready"} className="topbar-actions__item" onClick={() => { setActionInvoker(triggerRef.current); close(); setPublishDocumentTarget(document); }}>发布副本</button>}{mayManage && <><button role="menuitem" className="topbar-actions__item" disabled={document.status !== "ready"} onClick={() => { close(true); void uploadNewVersion(document); }}><History size={15} />新版本</button><button role="menuitem" className="topbar-actions__item" disabled={document.status !== "ready"} onClick={() => { setActionInvoker(triggerRef.current); close(); setRemoveTarget({ id: document.id, name: document.title, submission: false }); }}><Archive size={15} />归档</button></>}</>}</ActionMenu>}</div></article>;
               })}</div>}
               {view === "published" && tab === "skills" && <div className="org-skill-grid">{skills.map(skill => <article className="org-skill-card" key={skill.skillId}><div><strong>{skill.name}</strong><span className="org-skill-card__version">v{skill.version}</span></div><p>{skill.description}</p><div className="org-skill-card__meta"><span className={`org-scope-badge org-scope-badge--${skill.scopeKind}`}><ScopeIcon kind={skill.scopeKind} />{skill.scopeName}</span><span className={`org-state org-state--${skill.enabled ? "ready" : "pending"}`}>{skill.mandatory ? "组织必装" : skill.enabled ? "已安装" : "未安装"}</span></div><footer>{skill.mandatory ? <span className="org-skill-card__managed"><LockKeyhole size={13} />由组织管理</span> : <button className={skill.enabled ? "echo-button" : "org-memory__primary"} disabled={busy} onClick={() => void toggleSkill(skill)}>{skill.enabled ? "卸载" : "安装"}</button>}{skill.scopeKind === "personal" && scopes.some(scope => scope.kind !== "personal") && <button className="org-skill-card__publish" disabled={busy} onClick={() => { setActionInvoker(null); setSkillDialog({ kind: "publish", skill }); }}>发布副本</button>}</footer></article>)}</div>}
               {view === "mine" && tab === "memories" && <MemoryPromotionList promotions={memoryPromotions} />}
@@ -1046,7 +1101,8 @@ export function OrganizationMemoryPanel({
           {skillDialog && <div ref={skillDialogRef} tabIndex={-1} className="org-document-modal" role="dialog" aria-modal="true" aria-label={skillDialog.kind === "upload" ? "提交 Skill" : "发布 Skill 副本"}>
             <div className="org-document-modal__confirm"><h3>{skillDialog.kind === "upload" ? "提交 Skill" : "发布 Skill 副本"}</h3><p>{skillDialog.kind === "upload" ? "选择共享范围后，选择本地 Skill ZIP 技能包。服务器将进行安全检查，并按组织策略发布。技能执行仍受客户端权限控制。" : `将“${skillDialog.skill.name}”发布到共享范围，个人版本保持不变。`}</p><label className="org-document-publish__scope"><span>{skillDialog.kind === "upload" ? "提交到" : "发布到"}</span><select data-modal-initial-focus aria-label={skillDialog.kind === "upload" ? "Skill 提交范围" : "Skill 副本发布目标"} value={skillDialog.kind === "upload" ? writeScope : publishScope} onChange={event => skillDialog.kind === "upload" ? setWriteScope(event.target.value) : setPublishScope(event.target.value)}><option value="">选择范围</option>{scopes.filter(scope => skillDialog.kind === "upload" || scope.kind !== "personal").map(scope => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>{error && <OrganizationError reason={error} />}<div><button disabled={busy} onClick={() => setSkillDialog(null)}>取消</button><button className="org-memory__primary" disabled={busy || (skillDialog.kind === "upload" ? !writeScope || !allowSkillSubmission : !publishScope)} onClick={() => { if(skillDialog.kind === "publish") void publishSkill(skillDialog.skill); else { setSkillDialog(null); void pickAndUploadSkill(); } }}>{busy ? "处理中…" : skillDialog.kind === "upload" ? "选择文件" : "确认发布"}</button></div></div>
           </div>}
-          {folderBatch && <div ref={folderBatchRef} tabIndex={-1} className="org-document-modal" role="dialog" aria-modal="true" aria-label="文件夹上传确认"><div className="org-editor-dialog"><header><h3>准备上传 {folderBatch.files.length} 个文档</h3></header><div className="org-document-batch"><p>目标：{folderBatch.scopeName} · 共 {readableBytes(folderBatch.totalBytes)} · 已跳过 {folderBatch.skipped} 项不支持或不符合限制的内容</p><small>{folderBatch.folder}</small><ul>{folderBatch.files.map(file => <li key={file.path}>{file.relativePath}<span>{readableBytes(file.size)}</span></li>)}</ul>{error && <OrganizationError reason={error} />}</div><footer><button disabled={busy} onClick={() => setFolderBatch(null)}>取消</button><button className="org-memory__primary" disabled={busy} onClick={() => void uploadDocumentsInBatch(folderBatch.files.map(file => ({ path:file.path,title:file.relativePath })),folderBatch.scopeId)}>开始上传</button></footer></div></div>}
+          {folderBatch && <div ref={folderBatchRef} tabIndex={-1} className="org-document-modal" role="dialog" aria-modal="true" aria-label="文件夹上传确认"><div className="org-editor-dialog"><header><h3>准备上传 {folderBatch.files.length} 个文档</h3></header><div className="org-document-batch"><p>目标：{folderBatch.scopeName} · 共 {readableBytes(folderBatch.totalBytes)} · 已跳过 {folderBatch.skipped} 项不支持或不符合限制的内容</p><p>保留“{folderBatch.rootName}”及其子目录结构{folderBatch.parentFolderId ? "，上传到当前目录" : "，上传到范围根目录"}。</p><small>{folderBatch.folder}</small><ul>{folderBatch.files.map(file => <li key={file.path}>{file.relativePath}<span>{readableBytes(file.size)}</span></li>)}</ul>{error && <OrganizationError reason={error} />}</div><footer><button disabled={busy} onClick={() => setFolderBatch(null)}>取消</button><button className="org-memory__primary" disabled={busy} onClick={() => void uploadDocumentsInBatch(folderBatch.files.map(file => ({ path:file.path, title:file.relativePath.split("/").pop(), folderPath:[folderBatch.rootName, ...file.relativePath.split("/").slice(0,-1)].join("/") })),folderBatch.scopeId,
+              { paths:[folderBatch.rootName, ...folderBatch.directories.map(path => `${folderBatch.rootName}/${path}`), ...folderBatch.files.map(file => [folderBatch.rootName, ...file.relativePath.split("/").slice(0,-1)].join("/"))], parentFolderId:folderBatch.parentFolderId, rootName:folderBatch.rootName })}>开始上传</button></footer></div></div>}
           {preview && <div ref={previewDialogRef} tabIndex={-1} onClick={(event) => { if (event.target === event.currentTarget) closePreview(); }} className="org-document-modal" role="dialog" aria-modal="true" aria-label={`查看文档 ${preview.name}`}>
             <div className="org-document-modal__panel">
               <header><div><strong>{preview.name}</strong>{preview.parsed && <small>内容来自知识索引，原件排版请下载查看</small>}</div><div className="org-document-modal__header-actions">{!preview.unavailableReason && <button onClick={() => void downloadDocument(preview.resourceId, preview.name, preview.submission)}><Download size={14} />下载原件</button>}<button data-modal-initial-focus aria-label="关闭预览" onClick={closePreview}><X size={18} /></button></div></header>
@@ -1062,7 +1118,7 @@ export function OrganizationMemoryPanel({
             <div className="org-document-modal__confirm"><h3>发布文档副本</h3><p>将“{publishDocumentTarget.title}”发布到指定共享范围。原文档仍留在我的空间。</p><label className="org-document-publish__scope"><span>发布到</span><select aria-label="文档副本发布目标" value={publishScope} onChange={(event) => setPublishScope(event.target.value)}><option value="">选择共享范围</option>{scopes.filter((scope) => scope.kind !== "personal").map((scope) => <option key={scope.id} value={scope.id} disabled={scope.canPublishDocuments === false}>{scopeLabel(scope.kind)} · {scope.name}{scope.canPublishDocuments === false ? "（仅管理员可发布）" : ""}</option>)}</select></label><div><button data-modal-initial-focus onClick={closePublishDialog} disabled={busy}>取消</button><button className="org-memory__primary" onClick={() => void publishDocument(publishDocumentTarget)} disabled={busy || !publishScope || scopes.find((scope) => scope.id === publishScope)?.canPublishDocuments === false}>{busy ? "发布中…" : "确认发布"}</button></div></div>
           </div>}
           {uploadIntent && <div ref={uploadDialogRef} className="org-document-modal" role="dialog" aria-modal="true" aria-label="选择上传位置" tabIndex={-1}>
-            <div className="org-document-modal__confirm"><h3>{uploadIntent === "folder" ? "上传文件夹" : "上传文档"}</h3><p>选择文档的可访问范围。上传后会自动安全扫描并建立索引。</p><label className="org-document-publish__scope"><span>上传到</span><select aria-label="文档上传范围" data-modal-initial-focus value={writeScope} onChange={(event) => setWriteScope(event.target.value)}><option value="">选择上传范围</option>{availableDocumentScopes.map((scope) => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label><div><button onClick={() => setUploadIntent(null)}>取消</button><button className="org-memory__primary" onClick={() => void startDocumentUpload()} disabled={!allowDocumentUpload}>{uploadIntent === "folder" ? "选择文件夹" : "选择文件"}</button></div></div>
+            <div className="org-document-modal__confirm"><h3>{uploadIntent === "folder" ? "上传文件夹" : "上传文档"}</h3><p>选择文档的可访问范围。上传后会自动安全扫描并建立索引。</p><label className="org-document-publish__scope"><span>上传到</span><select aria-label="文档上传范围" data-modal-initial-focus value={writeScope} onChange={(event) => setWriteScope(event.target.value)}><option value="">选择上传范围</option>{availableDocumentScopes.map((scope) => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label>{pages.documents.supportsFolders && <p className="org-document-upload-location">目录：{documentUploadFolder(writeScope) ? (pages.documents.breadcrumbs ?? []).map(folder => folder.name).join(" / ") : "根目录"}</p>}<div><button onClick={() => setUploadIntent(null)}>取消</button><button className="org-memory__primary" onClick={() => void startDocumentUpload()} disabled={!allowDocumentUpload}>{uploadIntent === "folder" ? "选择文件夹" : "选择文件"}</button></div></div>
           </div>}
           {removeTarget && <div ref={removeDialogRef} tabIndex={-1} onClick={(event) => { if (event.target === event.currentTarget) closeRemoveDialog(); }} aria-busy={busy} className="org-document-modal" role="alertdialog" aria-modal="true" aria-label="确认删除文档">
             <div className="org-document-modal__confirm"><h3>移除文档？</h3><p>“{removeTarget.name}”会从共享列表和 Agent 检索中移除。服务器会保留已上传的原始文件内容。</p><div><button data-modal-initial-focus onClick={closeRemoveDialog} disabled={busy}>取消</button><button className="org-memory__primary" onClick={() => void removeOwnDocument()} disabled={busy}>{busy ? "处理中…" : "确认移除"}</button></div></div>

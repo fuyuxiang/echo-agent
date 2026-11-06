@@ -641,6 +641,16 @@ Object.assign(window, {
             skills:orgSkillSamples.length,skillInstalled:orgSkillSamples.filter(item=>item.enabled).length,skillMandatory:orgSkillSamples.filter(item=>item.mandatory).length,
             memoryPending:orgPromotionSamples.filter(item=>item.state==="pending").length,documentPending:orgDocumentSubmissionSamples.filter(item=>item.state==="pending").length,skillPending:orgSkillSubmissionSamples.filter(item=>item.state==="pending").length,
           };
+          if (args.resource === "documents" && query.get("orgFolders") === "1") {
+            const folder={id:"folder-project",name:"项目资料",scopeId:"team",scopeName:"产品研发团队",parentId:null};
+            const nested={id:"folder-design",name:"设计",scopeId:"team",scopeName:"产品研发团队",parentId:folder.id};
+            const searching=!!args.query;
+            const atRoot=!args.folderId||args.folderId==="root";
+            const atProject=args.folderId===folder.id;
+            const folders=searching?[]:atRoot?[folder]:atProject?[nested]:[];
+            const docs=searching||!atRoot&&!atProject?[{...orgDocuments[0],title:"需求说明.docx",folderId:nested.id,folderPath:"项目资料/设计"}]:atRoot?[{...orgDocuments[1],title:"已有文档.xlsx",folderId:null,folderPath:""}]:[];
+            return {supportsFolders:true,folders,items:docs,total:folders.length+docs.length,documentTotal:docs.length,folderTotal:folders.length,page:1,size:20,breadcrumbs:atRoot?[]:atProject?[folder]:[folder,nested]};
+          }
           const source: any[] = args.resource === "memories" ? orgMemorySamples : args.resource === "documents" ? orgDocumentSamples : args.resource === "skills" ? orgSkillSamples : args.resource === "memory-submissions" ? orgPromotionSamples : args.resource === "document-submissions" ? orgDocumentSubmissionSamples : orgSkillSubmissionSamples;
           const items=source.filter(item=>(!args.scopeId || item.scopeId===args.scopeId) && (!args.query || JSON.stringify(item).includes(args.query)) && (!args.filter ||
             (args.resource==="memories"?item.kind===args.filter:args.resource==="skills"?args.filter==="installed"?item.enabled:args.filter==="mandatory"?item.mandatory:!item.enabled:args.resource==="documents"?args.filter==="keywordOnly"?item.vectorStatus==="degraded"&&item.vectorChunkCount===0:args.filter==="semanticPartial"?item.vectorStatus==="degraded"&&item.vectorChunkCount>0:item.status===args.filter:item.state===args.filter)));

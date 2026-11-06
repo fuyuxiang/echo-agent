@@ -14,7 +14,7 @@ export const libraryResources: OrgLibraryResource[] = ["memories", "documents", 
 const defaultQuery = (): OrgLibraryQuery => ({ scopeId: "", query: "", filter: "", page: 1, size: 20 });
 type Pages = { [K in OrgLibraryResource]: OrgLibraryPage<LibraryItems[K]> & { loading: boolean; error: string | null } };
 type Queries = Record<OrgLibraryResource, OrgLibraryQuery>;
-const freshQueries = () => Object.fromEntries(libraryResources.map(key => [key, defaultQuery()])) as Queries;
+const freshQueries = () => Object.fromEntries(libraryResources.map(key => [key, { ...defaultQuery(), ...(key === "documents" ? { folderId: "root" } : {}) }])) as Queries;
 const freshPages = () => Object.fromEntries(libraryResources.map(key => [key, { items: [], total: 0, page: 1, size: 20, loading: false, error: null }])) as unknown as Pages;
 
 /** Each resource and submission view owns its query, page and request generation.
@@ -69,7 +69,7 @@ export function useOrganizationLibrary() {
       if (!current()) return;
       const applied = appliedQueries.current[resource];
       const sameCriteria = applied && applied.scopeId === query.scopeId && applied.query === query.query
-        && applied.filter === query.filter && applied.size === query.size;
+        && applied.filter === query.filter && applied.size === query.size && applied.folderId === query.folderId;
       setPages(previous => ({ ...previous, [resource]: {
         ...(sameCriteria ? previous[resource] : { items: [], total: 0, page: query.page, size: query.size }),
         loading: false, error: String(reason),
@@ -79,7 +79,9 @@ export function useOrganizationLibrary() {
   }, []);
 
   const update = useCallback((resource: OrgLibraryResource, patch: Partial<OrgLibraryQuery>) => {
-    const query = { ...queryRef.current[resource], ...patch, page: patch.page ?? 1 };
+    const query = { ...queryRef.current[resource], ...patch, page: patch.page ?? 1,
+      ...(resource === "documents" && patch.scopeId !== undefined && patch.folderId === undefined ? { folderId: "root" } : {}),
+    };
     queryRef.current = { ...queryRef.current, [resource]: query };
     setQueries(queryRef.current);
     clearTimeout(timers.current[resource]);
