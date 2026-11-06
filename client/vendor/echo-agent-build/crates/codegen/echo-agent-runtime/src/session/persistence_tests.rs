@@ -100,12 +100,159 @@ fn title_source_prefers_display_text_over_injected_wire_context() {
 }
 
 #[test]
+fn title_source_respects_an_explicitly_empty_display_text() {
+    for key in ["displayText", "display_text"] {
+        let text = acp::TextContent::new("injected attachment context")
+            .meta(serde_json::json!({ (key): "" }).as_object().cloned());
+        let chunk = PersistenceContentChunk::new(vec![acp::ContentBlock::Text(text)]);
+        assert_eq!(chunk.title_source_text(), "");
+    }
+}
+
+#[test]
 fn title_source_falls_back_to_joined_wire_text_without_display_text() {
     let chunk = PersistenceContentChunk::new(vec![
         acp::ContentBlock::Text(acp::TextContent::new("first")),
         acp::ContentBlock::Text(acp::TextContent::new("second")),
     ]);
     assert_eq!(chunk.title_source_text(), "first\nsecond");
+}
+
+#[tokio::test]
+async fn title_recovery_uses_opening_display_text_instead_of_later_topics() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("recover-first-title"),
+        cwd: "/test".into(),
+    };
+    let storage = JsonlStorageAdapter::with_explicit_session_dir(dir.path().to_path_buf());
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    for (text, display) in [
+        ("hidden project and expert context", Some("最初的完整问题")),
+        ("attached context", None),
+    ] {
+        let text = acp::TextContent::new(text).meta(display.map(|display| {
+            serde_json::json!({ "displayText": display })
+                .as_object()
+                .unwrap()
+                .clone()
+        }));
+        storage
+            .append_update(
+                &info,
+                &SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+                    info.id.clone(),
+                    acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(
+                        acp::ContentBlock::Text(text),
+                    )),
+                ))),
+            )
+            .await
+            .unwrap();
+    }
+    storage
+        .append_update(&info, &neutral_update(&info, "assistant response"))
+        .await
+        .unwrap();
+    storage
+        .append_update(
+            &info,
+            &SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+                info.id.clone(),
+                acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(
+                    acp::ContentBlock::Text(acp::TextContent::new("后来的天气问题")),
+                )),
+            ))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        load_initial_title_source(&storage, &info)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("最初的完整问题")
+    );
+}
+
+#[tokio::test]
+async fn title_recovery_preserves_a_textless_opening() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("recover-textless-title"),
+        cwd: "/test".into(),
+    };
+    let storage = JsonlStorageAdapter::with_explicit_session_dir(dir.path().to_path_buf());
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    for content in [
+        acp::ContentBlock::Image(acp::ImageContent::new("AQID", "image/png")),
+        acp::ContentBlock::Text(acp::TextContent::new("later question")),
+    ] {
+        storage
+            .append_update(
+                &info,
+                &SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+                    info.id.clone(),
+                    acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(content)),
+                ))),
+            )
+            .await
+            .unwrap();
+        storage
+            .append_update(&info, &neutral_update(&info, "assistant response"))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        load_initial_title_source(&storage, &info).await.unwrap(),
+        Some(String::new())
+    );
+}
+
+#[tokio::test]
+async fn title_recovery_separates_prompts_without_an_assistant_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("recover-cancelled-opening"),
+        cwd: "/test".into(),
+    };
+    let storage = JsonlStorageAdapter::with_explicit_session_dir(dir.path().to_path_buf());
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    for (index, text) in ["最初的问题", "取消后的另一个问题"].into_iter().enumerate()
+    {
+        let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text)))
+            .meta(
+                serde_json::json!({ "promptIndex": index })
+                    .as_object()
+                    .cloned(),
+            );
+        storage
+            .append_update(
+                &info,
+                &SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+                    info.id.clone(),
+                    acp::SessionUpdate::UserMessageChunk(chunk),
+                ))),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        load_initial_title_source(&storage, &info)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("最初的问题")
+    );
 }
 
 #[tokio::test]

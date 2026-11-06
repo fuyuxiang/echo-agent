@@ -1,12 +1,12 @@
-//! Early-session auto-title refresh on `SessionActor`.
+//! Legacy, optional title checkpoints for non-desktop clients.
 //!
 //! The first title comes from the fast first-prompt path
 //! ([`crate::session::summary::SummaryGenerator`]); this side-call then
-//! refreshes it from the whole conversation at
-//! [`crate::session::helpers::session_summary::TITLE_REFRESH_TURNS`] so a weak
-//! first prompt doesn't leave the session mistitled, then freezes. Best-effort
-//! and generation-guarded; a manual `/rename` always wins (enforced by the
-//! `RegenerateTitle` persistence path).
+//! requests a title from the whole conversation at
+//! [`crate::session::helpers::session_summary::TITLE_REFRESH_TURNS`], then freezes.
+//! Desktop sessions disable these calls. Persistence only adopts a result when
+//! no title exists, so these compatibility requests never replace an established
+//! automatic or manual title.
 
 use super::*;
 
@@ -134,9 +134,8 @@ impl SessionActor {
         );
         if let Some(title) = title {
             tracing::info!(turns, chars = title.len(), "session title refreshed");
-            // The persistence actor overwrites an auto title but never a manual
-            // `/rename` (checked under the summary lock), notifying clients only
-            // when the write lands.
+            // The persistence actor only fills an absent title (checked under
+            // the summary lock), notifying clients only when the write lands.
             let _ = self
                 .notifications
                 .persistence_tx

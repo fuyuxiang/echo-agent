@@ -115,10 +115,9 @@ impl PersistenceContentChunk {
             };
             text.meta
                 .as_ref()
-                .and_then(|meta| meta.get("displayText"))
+                .and_then(|meta| meta.get("displayText").or_else(|| meta.get("display_text")))
                 .and_then(|value| value.as_str())
                 .map(str::trim)
-                .filter(|value| !value.is_empty())
                 .map(str::to_string)
         }) {
             return display;
@@ -133,6 +132,58 @@ impl PersistenceContentChunk {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+/// Read only the opening user message from the durable ACP transcript. Unlike
+/// model context, this survives compaction; unlike search prompt extraction,
+/// it preserves displayText and a textless first message.
+async fn load_initial_title_source(
+    storage: &dyn StorageAdapter,
+    info: &Info,
+) -> io::Result<Option<String>> {
+    let Some(path) = storage.updates_file_path(info) else {
+        return Ok(None);
+    };
+    tokio::task::spawn_blocking(move || {
+        let Some(updates) = crate::session::storage::UpdatesIterator::open(&path)? else {
+            return Ok(None);
+        };
+        let mut blocks = Vec::new();
+        let mut opening_prompt = None;
+        for update in updates {
+            if let crate::session::storage::SessionUpdate::Acp(notification) = update? {
+                if let acp::SessionUpdate::UserMessageChunk(chunk) = notification.update {
+                    let prompt = (
+                        chunk
+                            .meta
+                            .as_ref()
+                            .and_then(|meta| meta.get("promptIndex"))
+                            .and_then(|value| value.as_u64()),
+                        notification
+                            .meta
+                            .as_ref()
+                            .and_then(|meta| meta.get("promptId"))
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string),
+                    );
+                    // Cancelled turns can leave consecutive user messages with
+                    // no assistant chunk between them. Keep their sources apart.
+                    if !blocks.is_empty() && opening_prompt.as_ref() != Some(&prompt) {
+                        break;
+                    }
+                    opening_prompt = Some(prompt);
+                    blocks.push(chunk.content);
+                    continue;
+                }
+            }
+            if !blocks.is_empty() {
+                break;
+            }
+        }
+        Ok((!blocks.is_empty()).then(|| PersistenceContentChunk::new(blocks).title_source_text()))
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
 /// Mirrors generated titles to the session registry after local persistence succeeds.
@@ -337,9 +388,8 @@ pub enum PersistenceMsg {
     /// Routed back through the persistence channel so the storage write
     /// stays sequential with other summary.json mutations.
     GeneratedTitle(String),
-    /// Early-session title refresh (turns 3 and 6): overwrite an existing auto
-    /// title with one regenerated from the whole conversation. Never overwrites
-    /// a manual `/rename` (enforced atomically under the summary lock).
+    /// Compatibility request from the legacy refresh path. Only fills an
+    /// absent title; established titles are preserved under the summary lock.
     RegenerateTitle(String),
     /// Persist a bounded preview of the latest session recap so listing
     /// surfaces can show it whenever available; `None` clears it (rewind
@@ -2011,9 +2061,8 @@ impl SessionPersistence {
                     }
                 }
                 PersistenceMsg::RegenerateTitle(title) => {
-                    // Overwrites an existing auto title but never a manual
-                    // `/rename` (enforced atomically under the summary lock);
-                    // `Ok(true)` means the refresh landed.
+                    // An old refresh request must not rename an established
+                    // conversation or announce a title the storage rejected.
                     match self
                         .storage
                         .regenerate_generated_title(&self.info, title.clone())
@@ -2021,7 +2070,7 @@ impl SessionPersistence {
                     {
                         Ok(true) => self.announce_adopted_title(title),
                         Ok(false) => {
-                            tracing::debug!("skipped title refresh; session has a manual title");
+                            tracing::debug!("skipped title refresh; session already has a title");
                         }
                         Err(e) => {
                             tracing::warn!(?e, "failed to persist refreshed session title");
@@ -2683,6 +2732,24 @@ pub(crate) async fn load(
     let remote_sync = init_remote_sync(&persisted_info.summary, storage_mode, auth_manager)?;
 
     let has_title = !persisted_info.summary.display_title().is_empty();
+    let mut had_history = persisted_info.chat_history.iter().any(
+        |item| matches!(item, ConversationItem::User(user) if user.synthetic_reason.is_none()),
+    );
+    // ACP prompt history survives model-context compaction. Recover the opening
+    // instead of taking the next follow-up when an earlier title call was lost.
+    let first_prompt = if has_title {
+        None
+    } else {
+        match load_initial_title_source(storage.as_ref(), &loaded_info).await {
+            Ok(source) => source,
+            Err(error) => {
+                tracing::warn!(%error, "could not recover first prompt for session title");
+                // An unreadable transcript is not evidence of a fresh session.
+                had_history = true;
+                None
+            }
+        }
+    };
     tokio::task::spawn(async move {
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
@@ -2691,9 +2758,7 @@ pub(crate) async fn load(
                 persistence_tx: summary_tx,
             },
         );
-        if has_title {
-            summary_gen.mark_done();
-        }
+        summary_gen.restore(has_title, had_history, first_prompt);
         let persistence = SessionPersistence {
             info: loaded_info,
             storage: storage.clone(),
@@ -2776,6 +2841,24 @@ pub(crate) async fn load_light(
     let remote_sync = init_remote_sync(&persisted_info.summary, storage_mode, auth_manager)?;
 
     let has_title = !persisted_info.summary.display_title().is_empty();
+    let mut had_history = persisted_info.chat_history.iter().any(
+        |item| matches!(item, ConversationItem::User(user) if user.synthetic_reason.is_none()),
+    );
+    // ACP prompt history survives model-context compaction. Recover the opening
+    // instead of taking the next follow-up when an earlier title call was lost.
+    let first_prompt = if has_title {
+        None
+    } else {
+        match load_initial_title_source(storage.as_ref(), &loaded_info).await {
+            Ok(source) => source,
+            Err(error) => {
+                tracing::warn!(%error, "could not recover first prompt for session title");
+                // An unreadable transcript is not evidence of a fresh session.
+                had_history = true;
+                None
+            }
+        }
+    };
     tokio::task::spawn(async move {
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
@@ -2784,9 +2867,7 @@ pub(crate) async fn load_light(
                 persistence_tx: summary_tx,
             },
         );
-        if has_title {
-            summary_gen.mark_done();
-        }
+        summary_gen.restore(has_title, had_history, first_prompt);
         let persistence = SessionPersistence {
             info: loaded_info,
             storage: storage.clone(),

@@ -106,7 +106,7 @@ struct SummaryFile {
     cwd: Option<String>,
     #[serde(default)]
     updated_at: Option<String>,
-    /// EchoAgent bumps this on any activity; preferred when `updated_at` is stale.
+    /// Conversation activity, excluding title and other metadata writes.
     #[serde(default)]
     last_active_at: Option<String>,
     #[serde(default)]
@@ -326,9 +326,9 @@ fn to_session_summary(
         .or_else(|| recover_title_from_updates(session_dir))
         .unwrap_or_else(|| "未命名会话".into());
     let updated_at = summary
-        .updated_at
+        .last_active_at
         .clone()
-        .or_else(|| summary.last_active_at.clone())
+        .or_else(|| summary.updated_at.clone())
         .map(|value| bounded_text(value, MAX_UPDATED_AT_CHARS));
     let is_git_repo = summary.git_root_dir.as_ref().map(|path| !path.is_empty());
     let hidden = session_is_hidden(&summary, &session_id);
@@ -1132,6 +1132,34 @@ mod tests {
     fn reads_upstream_session_summary_field() {
         let parsed = summary(r#"{"session_summary":"First prompt"}"#);
         assert_eq!(display_title(&parsed).as_deref(), Some("First prompt"));
+    }
+
+    #[test]
+    fn title_metadata_does_not_move_the_conversations_activity_time() {
+        let session_dir = std::path::Path::new("/sessions/stable-title");
+        for (last_active_at, expected) in [
+            (Some("2026-11-05T08:00:00Z"), "2026-11-05T08:00:00Z"),
+            (None, "2026-11-06T09:00:00Z"),
+        ] {
+            let parsed = summary(
+                &serde_json::json!({
+                    "generated_title": "用户手动改名",
+                    "title_is_manual": true,
+                    "updated_at": "2026-11-06T09:00:00Z",
+                    "last_active_at": last_active_at,
+                })
+                .to_string(),
+            );
+            let row = to_session_summary(
+                session_dir,
+                parsed,
+                "/workspace".into(),
+                &Default::default(),
+            )
+            .unwrap();
+            assert_eq!(row.updated_at.as_deref(), Some(expected));
+            assert_eq!(row.title, "用户手动改名");
+        }
     }
 
     #[test]

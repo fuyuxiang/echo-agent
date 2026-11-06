@@ -2667,8 +2667,11 @@ impl Config {
     pub fn is_feature_enabled(&self, feature: Feature) -> bool {
         self.feature(feature).value
     }
-    pub(crate) fn is_title_refresh_enabled(&self) -> bool {
-        self.resolve_title_refresh().value
+    /// Desktop tasks keep the title derived from their opening message. Apply
+    /// this at session creation as well as resume: actors reload effective
+    /// configuration independently of the launcher's configuration snapshot.
+    pub fn is_title_refresh_enabled_for_client(&self, client_identifier: Option<&str>) -> bool {
+        client_identifier != Some("echo-agent-desktop") && self.resolve_title_refresh().value
     }
     /// Not a registry row: a row's default is a value, this one is another
     /// feature's answer read at call time. Pinnable anyway, the pin being its own

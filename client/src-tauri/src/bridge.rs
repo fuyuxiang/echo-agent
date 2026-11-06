@@ -994,6 +994,25 @@ pub struct TurnErrorEvent {
 pub struct SummaryEvent {
     pub session_id: String,
     pub title: String,
+    pub is_manual: bool,
+}
+
+#[cfg(test)]
+mod summary_event_tests {
+    use super::SummaryEvent;
+
+    #[test]
+    fn title_notifications_retain_manual_provenance() {
+        for is_manual in [false, true] {
+            let payload = serde_json::to_value(SummaryEvent {
+                session_id: "session".into(),
+                title: "会话标题".into(),
+                is_manual,
+            })
+            .unwrap();
+            assert_eq!(payload["isManual"], is_manual);
+        }
+    }
 }
 
 /// Payload emitted on `agent://subagent` — a live or replayed subagent lifecycle event
@@ -2251,6 +2270,7 @@ async fn handle_session_notification(app: &AppHandle, params: &Value) {
                     SummaryEvent {
                         session_id: session_id.to_string(),
                         title,
+                        is_manual,
                     },
                 );
             } else {

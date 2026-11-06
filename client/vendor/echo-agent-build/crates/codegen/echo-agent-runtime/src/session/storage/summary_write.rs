@@ -92,9 +92,8 @@ pub(crate) struct SummaryPatch {
     /// automatic LLM title generation so it never clobbers a title the user
     /// set via `/rename`. Ignored when `generated_title` is also set.
     pub generated_title_if_absent: Option<String>,
-    /// Overwrite an existing *auto* title with a freshly regenerated one, but
-    /// never a manual `/rename`. Used by the early-session title refresh
-    /// (turns 3 and 6). Ignored when `generated_title` (manual) is also set.
+    /// Legacy refresh request. Like initial generation, it can only fill an
+    /// absent title. An established automatic or manual title remains stable.
     pub generated_title_regenerate: Option<String>,
     /// `/rename --auto`: clear the manual pin. Takes precedence over the
     /// generated-title fields. A successful clear blanks `generated_title`
@@ -206,17 +205,14 @@ impl Summary {
             // Manual `/rename`: recorded so clients can restore the
             // prompt-border title on resume.
             self.title_is_manual = true;
-        } else if let Some(title) = &patch.generated_title_regenerate {
-            // Early-session refresh: replace an existing auto title, but never
-            // a manual `/rename` (checked atomically under the summary lock).
-            if !self.title_is_manual {
-                self.set_title_overwrite(title);
-                absent_title_applied = true;
-            }
-        } else if let Some(title) = &patch.generated_title_if_absent {
-            // Auto-generated titles defer to any title already present, so a
-            // manual `/rename` is never overwritten by a racing LLM title.
-            if self.display_title().trim().is_empty() {
+        } else if let Some(title) = patch
+            .generated_title_if_absent
+            .as_ref()
+            .or(patch.generated_title_regenerate.as_ref())
+        {
+            // All automatic writers share this atomic guard, including legacy
+            // refreshes and results arriving after a reconnect or manual rename.
+            if !title.trim().is_empty() && self.display_title().trim().is_empty() {
                 self.set_title(title);
                 // Defensive: an adopted auto title is never manual.
                 self.title_is_manual = false;
@@ -240,16 +236,6 @@ impl Summary {
         {
             self.session_summary = title.to_owned();
         }
-    }
-
-    /// Replace an auto title with a refreshed one. Unlike [`Self::set_title`],
-    /// this also updates the mirrored `session_summary` (which for an auto title
-    /// holds the previous auto title) so `display_title()` — read by older
-    /// clients that only see `session_summary` — reflects the new title. Only
-    /// called for non-manual titles, so no manual `/rename` is overwritten.
-    fn set_title_overwrite(&mut self, title: &str) {
-        self.generated_title = Some(title.to_owned());
-        self.session_summary = title.to_owned();
     }
 }
 
@@ -614,10 +600,9 @@ mod tests {
         assert!(!summary.title_is_manual);
     }
 
-    /// Early-session title refresh overwrites an existing auto title, updating
-    /// the mirrored `session_summary` so old clients see the new title too.
+    /// Even a legacy refresh cannot replace the first adopted automatic title.
     #[tokio::test]
-    async fn regenerate_overwrites_auto_title() {
+    async fn regenerate_preserves_initial_auto_title() {
         let dir = TempDir::new().unwrap();
         let (adapter, info, summary_path) = new_session(&dir).await;
 
@@ -630,12 +615,97 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(applied);
+        assert!(!applied);
         let summary = read_summary(&summary_path).unwrap();
-        assert_eq!(summary.display_title(), "Refined Real Topic");
-        // Mirror updated so `display_title()` (old clients) reflects the refresh.
-        assert_eq!(summary.session_summary, "Refined Real Topic");
+        assert_eq!(summary.display_title(), "First Prompt Title");
+        assert_eq!(summary.session_summary, "First Prompt Title");
         assert!(!summary.title_is_manual);
+    }
+
+    #[tokio::test]
+    async fn initial_title_survives_followups_resume_and_summary_updates() {
+        let dir = TempDir::new().unwrap();
+        let (adapter, info, summary_path) = new_session(&dir).await;
+        assert!(
+            adapter
+                .set_generated_title_if_absent(&info, "首问任务".into())
+                .await
+                .unwrap()
+        );
+        for turn in 2..=8 {
+            let resumed = JsonlStorageAdapter::with_explicit_session_dir(
+                summary_path.parent().unwrap().to_path_buf(),
+            );
+            assert!(
+                !resumed
+                    .regenerate_generated_title(&info, format!("第 {turn} 轮新话题"))
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !resumed
+                    .set_generated_title_if_absent(&info, "重复的初始结果".into())
+                    .await
+                    .unwrap()
+            );
+            resumed
+                .set_last_recap(&info, Some(format!("第 {turn} 轮进展")))
+                .await
+                .unwrap();
+        }
+        let summary = read_summary(&summary_path).unwrap();
+        assert_eq!(summary.display_title(), "首问任务");
+        assert_eq!(summary.session_summary, "首问任务");
+        assert_eq!(summary.last_recap.as_deref(), Some("第 8 轮进展"));
+        assert!(!summary.title_is_manual);
+        assert!(
+            summary.last_active_at.is_none(),
+            "metadata is not new user activity"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_refresh_and_manual_rename_preserve_the_users_choice() {
+        let dir = TempDir::new().unwrap();
+        let (adapter, info, summary_path) = new_session(&dir).await;
+        adapter
+            .set_generated_title_if_absent(&info, "首问任务".into())
+            .await
+            .unwrap();
+        let (refresh, rename) = tokio::join!(
+            adapter.regenerate_generated_title(&info, "后续新话题".into()),
+            adapter.update_session_title(&info, "用户指定名称".into()),
+        );
+        assert!(!refresh.unwrap());
+        rename.unwrap();
+        let summary = read_summary(&summary_path).unwrap();
+        assert_eq!(summary.display_title(), "用户指定名称");
+        assert!(summary.title_is_manual);
+    }
+
+    #[tokio::test]
+    async fn legacy_summary_titles_and_empty_results_do_not_reopen_naming() {
+        let dir = TempDir::new().unwrap();
+        let (adapter, info, summary_path) = new_session(&dir).await;
+        assert!(
+            !adapter
+                .set_generated_title_if_absent(&info, "  ".into())
+                .await
+                .unwrap()
+        );
+        let mut summary = read_summary(&summary_path).unwrap();
+        summary.session_summary = "历史会话标题".into();
+        write_summary_atomic(&summary_path, &summary).unwrap();
+        assert!(
+            !adapter
+                .regenerate_generated_title(&info, "新话题".into())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            read_summary(&summary_path).unwrap().display_title(),
+            "历史会话标题"
+        );
     }
 
     /// A title refresh never overwrites a manual `/rename`, and reports `false`.

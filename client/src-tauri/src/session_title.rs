@@ -160,6 +160,9 @@ pub(crate) fn clean_auto_title(raw: &str) -> Option<String> {
     if title.is_empty() {
         return None;
     }
+    if title == "New session" {
+        title = "新会话".to_string();
+    }
     if title.chars().count() > MAX_TITLE_SCALARS {
         title = title.chars().take(MAX_TITLE_SCALARS).collect();
     }
@@ -186,6 +189,11 @@ pub(crate) fn fallback_title_from_user_text(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{clean_auto_title, fallback_title_from_user_text};
+
+    #[test]
+    fn textless_opening_fallback_uses_the_desktop_language() {
+        assert_eq!(clean_auto_title("New session").as_deref(), Some("新会话"));
+    }
 
     #[test]
     fn removes_closed_reasoning_before_title() {

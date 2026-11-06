@@ -1588,7 +1588,8 @@ pub(crate) async fn spawn_session_actor(
     let resolved_tool_overrides: std::sync::Arc<
         arc_swap::ArcSwapOption<echo_agent_sampling_types::ToolOverrides>,
     > = std::sync::Arc::new(arc_swap::ArcSwapOption::empty());
-    let title_refresh_enabled = effective_config.is_title_refresh_enabled();
+    let title_refresh_enabled = effective_config
+        .is_title_refresh_enabled_for_client(session_client_identifier.as_deref());
     let initial_title_refresh_idx =
         crate::session::helpers::session_summary::initial_title_refresh_idx(
             title_refresh_watermark,

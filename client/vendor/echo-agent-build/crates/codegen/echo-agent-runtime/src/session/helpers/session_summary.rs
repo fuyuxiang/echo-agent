@@ -271,6 +271,9 @@ pub async fn generate_session_summary(
     model: &str,
 ) -> String {
     let clean_message = title_source_text(&user_message);
+    if clean_message.trim().is_empty() {
+        return title_fallback_from_user_text(&clean_message);
+    }
     let request = ConversationRequest::from_items(vec![
         ConversationItem::system(INITIAL_TITLE_SYSTEM_PROMPT),
         ConversationItem::user(format!(

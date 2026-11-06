@@ -438,6 +438,8 @@ export interface ConversationNavigationRequest {
 export interface SessionSummaryEvent {
   sessionId: string;
   title: string;
+  /** Retained from the Runtime so a delayed automatic result cannot undo a rename. */
+  isManual?: boolean;
 }
 
 // ---------- skills (echo.agent/skills/*) ----------

@@ -2195,6 +2195,97 @@ mod byok_isolation_tests {
 }
 
 #[cfg(test)]
+mod session_title_policy_tests {
+    use super::*;
+    use echo_agent_runtime::session::info::Info;
+    use echo_agent_runtime::session::storage::{JsonlStorageAdapter, StorageAdapter};
+
+    #[test]
+    fn desktop_keeps_initial_titles_even_with_legacy_refresh_enabled() {
+        for enabled in [false, true] {
+            let raw = serde_json::from_value(serde_json::json!({
+                "features": { "title_refresh": enabled, "turn_summary": true }
+            }))
+            .unwrap();
+            let mut config = AgentConfig::new_from_toml_cfg(&raw).unwrap();
+            assert!(!config.is_title_refresh_enabled_for_client(Some(DESKTOP_CLIENT_IDENTIFIER)));
+            assert_eq!(config.features.title_refresh, Some(enabled));
+            assert!(
+                config.is_feature_enabled(echo_agent_runtime::agent::config::Feature::TurnSummary)
+            );
+            config
+                .requirements
+                .title_refresh
+                .pin(true, echo_agent_runtime::config::RequirementSource::Unknown);
+            assert!(!config.is_title_refresh_enabled_for_client(Some(DESKTOP_CLIENT_IDENTIFIER)));
+        }
+    }
+
+    #[tokio::test]
+    async fn persisted_title_survives_followups_and_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = Info {
+            id: acp::SessionId::new("stable-title"),
+            cwd: "/test".into(),
+        };
+        let storage = JsonlStorageAdapter::with_explicit_session_dir(dir.path().to_path_buf());
+        storage
+            .init_session(&info, acp::ModelId::new("test-model"))
+            .await
+            .unwrap();
+        assert!(storage
+            .set_generated_title_if_absent(&info, "首问任务".into())
+            .await
+            .unwrap());
+        for turn in 2..=8 {
+            let reopened = JsonlStorageAdapter::with_explicit_session_dir(dir.path().to_path_buf());
+            assert!(!reopened
+                .regenerate_generated_title(&info, format!("第 {turn} 轮新话题"))
+                .await
+                .unwrap());
+            reopened
+                .set_last_recap(&info, Some(format!("第 {turn} 轮进展")))
+                .await
+                .unwrap();
+        }
+        let summary = storage.load_summary(&info).await.unwrap();
+        assert_eq!(summary.display_title(), "首问任务");
+        assert_eq!(summary.last_recap.as_deref(), Some("第 8 轮进展"));
+    }
+
+    #[tokio::test]
+    async fn manual_title_wins_against_late_initial_and_refresh_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = Info {
+            id: acp::SessionId::new("manual-title"),
+            cwd: "/test".into(),
+        };
+        let storage = JsonlStorageAdapter::with_explicit_session_dir(dir.path().to_path_buf());
+        storage
+            .init_session(&info, acp::ModelId::new("test-model"))
+            .await
+            .unwrap();
+        let (automatic, manual) = tokio::join!(
+            storage.set_generated_title_if_absent(&info, "首问自动标题".into()),
+            storage.update_session_title(&info, "用户指定名称".into()),
+        );
+        automatic.unwrap();
+        manual.unwrap();
+        assert!(!storage
+            .regenerate_generated_title(&info, "后续话题".into())
+            .await
+            .unwrap());
+        assert!(!storage
+            .set_generated_title_if_absent(&info, "迟到的自动标题".into())
+            .await
+            .unwrap());
+        let summary = storage.load_summary(&info).await.unwrap();
+        assert_eq!(summary.display_title(), "用户指定名称");
+        assert!(summary.title_is_manual);
+    }
+}
+
+#[cfg(test)]
 mod memory_retrieval_tests {
     use super::*;
 

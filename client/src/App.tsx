@@ -406,6 +406,7 @@ function Shell() {
   const sessionCatalogGenerationRef = useRef(0);
   const modelCatalogGenerationRef = useRef(0);
   const memoryCommandsInFlightRef = useRef(new Set<string>());
+  const manuallyNamedSessionsRef = useRef(new Set<string>());
 
   const showToast = useCallback((message: string, durationMs?: number, kind: ToastMessageKind = "auto") => {
     enqueueToast(message, [], durationMs, kind);
@@ -969,16 +970,15 @@ function Shell() {
             }, config ?? undefined);
             publishQuotaAlert(next, config, payload.sessionId);
           },
-          onSummary: ({ sessionId, title }) => {
+          onSummary: ({ sessionId, title, isManual }) => {
             if (sessionsStore.getState().deletedSessionIds.includes(sessionId)) return;
-            // EchoAgent generated (or we renamed) a session title — update the
-            // sidebar entry in place. This overrides the "新会话" placeholder
-            // set optimistically in handleSendNew. Stamp updatedAt so the
-            // sidebar can re-sort the freshly-active session to the top.
+            if (isManual) manuallyNamedSessionsRef.current.add(sessionId);
+            else if (manuallyNamedSessionsRef.current.has(sessionId)) return;
+            // Replace the provisional first-message title, or apply a manual
+            // rename. Naming is metadata, not new conversation activity.
             sessionsStore.getState().upsert({
               sessionId,
               title,
-              updatedAt: new Date().toISOString(),
             });
             // Sync title into the owning project's conversation list.
             const allProjects = useProjectsStore.getState().projects;
@@ -2085,18 +2085,12 @@ function Shell() {
     }
   };
 
-  // Topbar title rename — EchoAgent's `echo.agent/session/rename`. EchoAgent broadcasts
-  // SessionSummaryGenerated on success (agent://summary → onSummary upserts the
-  // same entry); we also upsert optimistically to avoid a flicker while the
-  // event round-trips. On failure we rethrow so TopbarTitle reverts its draft.
+  // Share the sidebar's persisted rename flow so every title surface updates
+  // together. Rethrow failures so TopbarTitle restores the current name.
   const handleRenameTitle = async (newTitle: string) => {
     if (!currentEntry) return;
     try {
-      await agentRenameSession(currentEntry.sessionId, newTitle, currentEntry.cwd);
-      sessionsStore.getState().upsert({
-        sessionId: currentEntry.sessionId,
-        title: newTitle,
-      });
+      await handleRenameSession(currentEntry.sessionId, newTitle, currentEntry.cwd);
     } catch (e) {
       showToast(`重命名失败：${String(e).replace(/^Error:\s*/, "")}`);
       throw e;
@@ -2334,6 +2328,7 @@ function Shell() {
     const summary = findSessionSummary(sessionId);
     const cwd = summary?.cwd || explicitCwd;
     await agentRenameSession(sessionId, title, cwd);
+    manuallyNamedSessionsRef.current.add(sessionId);
     sessionsStore.getState().upsert({ sessionId, title });
     const projectStore = useProjectsStore.getState();
     for (const project of projectStore.projects) {
@@ -2357,6 +2352,7 @@ function Shell() {
     // Leave while the catalog still identifies this as the current session;
     // `remove` also clears currentSessionId and would otherwise strand its transcript.
     clearDeletedSessionState(sessionId);
+    manuallyNamedSessionsRef.current.delete(sessionId);
     sessionsStore.getState().remove(sessionId, cwd);
     if (result?.memoryCleanupWarning) {
       showActionToast(`对话已删除，部分记忆未能清理，请到记忆页面检查。\n${result.memoryCleanupWarning}`, [
@@ -3017,8 +3013,7 @@ function Shell() {
           showToast("用法：/rename <新标题>");
           return false;
         }
-        await agentRenameSession(sessionId, args.trim(), entry.cwd);
-        sessionsStore.getState().upsert({ sessionId, title: args.trim() });
+        await handleRenameSession(sessionId, args.trim(), entry.cwd);
 
         return true;
       }

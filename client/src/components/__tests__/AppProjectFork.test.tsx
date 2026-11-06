@@ -33,6 +33,8 @@ vi.mock("../Sidebar", () => ({ Sidebar: ({ onSelect, onDeleteSession, onNavigate
 vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("../ChatView").ChatView>) => <div>
   <span data-testid="active-title">{props.title}</span>
   <span data-testid="task-refresh">{props.taskRefreshSignal}</span>
+  <button onClick={() => void props.onRename?.("手动任务标题")}>重命名任务</button>
+  <button onClick={() => void props.onClientSlashCommand?.({ name: "rename", args: "命令任务标题" })}>命令重命名</button>
   <button onClick={() => {const id=useSessionStore.getState().sessionId; if(id) void props.onPrepareRetry?.(id);}}>预检重试</button>
   <button onClick={() => void props.onForked?.("fork", "source", "/workspace")}>接收真实fork结果</button>
   <button onClick={() => void props.onSend("继续分叉")}>分叉下一轮</button>
@@ -46,6 +48,7 @@ vi.mock("@/lib/agent-client", async (original) => ({
   agentsValidateReferences: vi.fn(async () => {}),
   agentPrepareSend: vi.fn(async () => {}),
   agentLoadSession: vi.fn(async () => "model-a"), agentSend: vi.fn(async () => {}), projectsSave: vi.fn(async () => {}),
+  agentRenameSession: vi.fn(async () => {}),
   agentDeleteSession: vi.fn(async () => ({ memorySummariesDeleted: 1, memoryCleanupWarning: null })),
   memoryFlush: vi.fn(async () => true), memoryDream: vi.fn(async () => true),
   internalReload: vi.fn(async () => {}), subscribeAgentEvents: vi.fn(async () => () => {}),
@@ -99,6 +102,38 @@ beforeEach(() => {
   vi.mocked(client.memoryFlush).mockReset().mockResolvedValue(true);
   vi.mocked(client.memoryDream).mockReset().mockResolvedValue(true);
   vi.mocked(invoke).mockImplementation(async (command) => command === "notification_take_pending_opens" ? [] : null);
+});
+
+describe("会话标题同步", () => {
+  it("首次命名同步顶部、侧栏数据和项目列表，保留最近活动时间", async () => {
+    await start(false);
+    const timestamp = "2026-11-05T08:00:00Z";
+    act(() => useSessionsStore.getState().upsert({ sessionId: "source", updatedAt: timestamp }));
+    const subscriptions = vi.mocked(client.subscribeAgentEvents).mock.calls;
+    const handlers = subscriptions[subscriptions.length - 1][0];
+    act(() => handlers.onSummary?.({ sessionId: "source", title: "首问正式标题" }));
+    expect(screen.getByTestId("active-title")).toHaveTextContent("首问正式标题");
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "source"))
+      .toMatchObject({ title: "首问正式标题", updatedAt: timestamp });
+    expect(useProjectsStore.getState().projects[0].conversations[0].title).toBe("首问正式标题");
+
+    fireEvent.click(screen.getByRole("button", { name: "重命名任务" }));
+    await waitFor(() => expect(client.agentRenameSession).toHaveBeenCalledWith("source", "手动任务标题", "/workspace"));
+    await waitFor(() => expect(screen.getByTestId("active-title")).toHaveTextContent("手动任务标题"));
+    expect(useProjectsStore.getState().projects[0].conversations[0].title).toBe("手动任务标题");
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "source")?.updatedAt).toBe(timestamp);
+
+    act(() => handlers.onSummary?.({ sessionId: "source", title: "迟到的自动标题", isManual: false }));
+    expect(screen.getByTestId("active-title")).toHaveTextContent("手动任务标题");
+    expect(useProjectsStore.getState().projects[0].conversations[0].title).toBe("手动任务标题");
+    act(() => handlers.onSummary?.({ sessionId: "source", title: "来自另一个窗口的手动名称", isManual: true }));
+    expect(screen.getByTestId("active-title")).toHaveTextContent("来自另一个窗口的手动名称");
+    act(() => handlers.onSummary?.({ sessionId: "source", title: "旧的自动通知", isManual: false }));
+    expect(screen.getByTestId("active-title")).toHaveTextContent("来自另一个窗口的手动名称");
+    fireEvent.click(screen.getByRole("button", { name: "命令重命名" }));
+    await waitFor(() => expect(screen.getByTestId("active-title")).toHaveTextContent("命令任务标题"));
+    expect(useProjectsStore.getState().projects[0].conversations[0].title).toBe("命令任务标题");
+  });
 });
 
 describe("manual memory commands", () => {
