@@ -220,9 +220,26 @@ try {
     await inspect(page,"groups-chat",scenario,true);
     const details=page.getByRole("button",{name:"专家团详情",exact:true});
     if(await details.getAttribute("aria-expanded")==="false") await details.click();
-    await page.locator(".group-tabs").getByRole("button",{name:"设置",exact:true}).click();
+    await page.locator(".group-tabs").getByRole("button",{name:"群设置",exact:true}).click();
+    await page.locator(".group-settings-options > summary").click();
     await page.getByRole("button",{name:"保存专家团设置",exact:true}).scrollIntoViewIfNeeded();
     await inspect(page,"groups-settings",scenario,true);
+    const backdrop=page.getByRole("button",{name:"关闭专家团详情",exact:true});
+    if(await backdrop.isVisible()) {
+      if(theme==="light") {
+        // A real mask is allowed; an arbitrary black button must still fail,
+        // even when it borrows the mask's class and accessible label.
+        const original=await backdrop.getAttribute("style");
+        await backdrop.evaluate(element=>element.style.setProperty("background-color","rgb(0, 0, 0)","important"));
+        const negative=await inspectButtonBackgrounds(page,theme);
+        assert(negative.black.some(button=>button.classes==="group-detail-backdrop"),"Mask classification hid an incorrect black button");
+        await backdrop.evaluate((element,original)=>original===null ? element.removeAttribute("style") : element.setAttribute("style",original),original);
+        assertButtonBackgrounds(await inspectButtonBackgrounds(page,theme),"Restored drawer mask");
+      }
+      await backdrop.click({position:{x:8,y:64}});
+      await page.locator(".group-chat__detail").waitFor({state:"hidden"});
+      assert.equal(await details.getAttribute("aria-expanded"),"false","Drawer mask did not close the actual detail panel");
+    }
     await page.close();
     console.log(`Design-system surfaces passed: ${scenario.join(" / ")}`);
   }

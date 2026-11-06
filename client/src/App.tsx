@@ -2577,6 +2577,15 @@ function Shell() {
   };
 
   notificationNavigatorRef.current = (sessionId) => handleSelectSession(sessionId, undefined, false, true);
+  // Catalog surfaces close only after history has actually loaded. Deliberate
+  // cancellation keeps their selection available without an error banner.
+  const openCatalogSession = async (sessionId: string, cwd?: string) => {
+    try { await handleSelectSession(sessionId, cwd, false, true); }
+    catch (error) {
+      if (error instanceof Error && error.message === "请先处理代码开发中的未保存内容") throw new TrayActionCancelled();
+      throw error;
+    }
+  };
   const openTrayGroup = async (groupId: string) => {
     const generation = ++selectionGenerationRef.current;
     const ensureCurrentNavigation = () => {
@@ -2598,11 +2607,7 @@ function Shell() {
       if (!action.targetId) throw new Error("任务入口无效");
       const entry = findSessionSummary(action.targetId);
       if (entry?.archived || sessionsStore.getState().deletedSessionIds.includes(action.targetId)) throw new Error("任务已删除或归档，请查看全部任务");
-      try { await handleSelectSession(action.targetId, undefined, false, true); }
-      catch (error) {
-        if (error instanceof Error && error.message === "请先处理代码开发中的未保存内容") throw new TrayActionCancelled();
-        throw error;
-      }
+      await openCatalogSession(action.targetId);
       setTrayAttention(previous => ({ sessionId: action.targetId!, sequence: (previous?.sequence ?? 0) + 1 }));
     } else if (action.kind === "group") {
       if (!action.targetId) throw new Error("专家团入口无效");
@@ -3516,7 +3521,7 @@ function Shell() {
           <SearchOverlay
             open
             onClose={() => setSearchOpen(false)}
-            onSelect={handleSelectSession}
+            onSelect={openCatalogSession}
             onSelectGroup={openTrayGroup}
           />
         </Suspense>

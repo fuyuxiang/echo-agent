@@ -296,10 +296,9 @@ export function PlaceholderPage({
           <KnowledgeBasePanel
             onOpen={(id, url) => {
               const target = url ?? id;
-              const open = /^https?:\/\//i.test(target)
+              return /^https?:\/\//i.test(target)
                 ? openExternalUrl(target)
                 : openLocalPath(target, cwd);
-              void open.catch((error) => onToast?.(`打开知识条目失败：${String(error).replace(/^Error:\s*/, "")}`));
             }}
             onToast={onToast}
           />

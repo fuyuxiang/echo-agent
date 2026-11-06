@@ -5,6 +5,7 @@ import { useSessionsStore } from "@/stores/sessions-store";
 import { useGroupStore } from "@/features/groups/group-store";
 import type { Group } from "@/features/groups/group-client";
 import { TrayActionCancelled } from "@/lib/desktop-tray-connection";
+import userEvent from "@testing-library/user-event";
 
 vi.mock("@/lib/agent-client", () => ({
   sessionSearch: vi.fn(),
@@ -38,10 +39,10 @@ describe("SearchOverlay", () => {
     const onClose = vi.fn();
     render(<SearchOverlay open onClose={onClose} onSelect={vi.fn()} onSelectGroup={onSelectGroup} />);
     expect(screen.queryByText("归档评审")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "产品评审" }));
+    fireEvent.click(screen.getByRole("button", { name: "产品评审 默认工作区" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("暂时不可用");
     expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "产品评审" }));
+    fireEvent.click(screen.getByRole("button", { name: "重试打开" }));
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
     expect(onSelectGroup).toHaveBeenCalledWith("group-one");
   });
@@ -82,12 +83,66 @@ describe("SearchOverlay", () => {
     const onClose = vi.fn();
     const onSelectGroup = vi.fn().mockRejectedValueOnce(new TrayActionCancelled()).mockResolvedValue(undefined);
     render(<SearchOverlay open onClose={onClose} onSelect={vi.fn()} onSelectGroup={onSelectGroup} />);
-    fireEvent.click(screen.getByRole("button", { name: "产品评审" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "产品评审" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "产品评审 默认工作区" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "产品评审 默认工作区" })).toBeEnabled());
     expect(screen.queryByRole("alert")).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "产品评审" }));
+    fireEvent.click(screen.getByRole("button", { name: "产品评审 默认工作区" }));
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+
+  it("超过 30 条本地任务可继续显示，最近任务优先且同名目录可辨识", async () => {
+    useSessionsStore.getState().setIndependent(Array.from({length:65}, (_, index) => ({
+      sessionId:`history-${index}`, title:"交付复盘", cwd:`/projects/${index}`,
+      updatedAt:new Date(2026,10,6,0,index).toISOString(),
+    })));
+    render(<SearchOverlay open onClose={vi.fn()} onSelect={vi.fn()} />);
+    const list=screen.getByRole("list");
+    expect(list.children).toHaveLength(30);
+    expect(list.querySelector("button")).toHaveAccessibleName("交付复盘 /projects/64");
+    expect(screen.getByText(/显示更多本地会话/)).toHaveRole("button");
+    fireEvent.click(screen.getByText(/显示更多本地会话/));
+    expect(list.children).toHaveLength(60);
+    fireEvent.click(screen.getByText(/显示更多本地会话/));
+    expect(list.children).toHaveLength(65);
+    expect(list.lastElementChild?.querySelector("button")).toHaveAccessibleName("交付复盘 /projects/0");
+    expect(screen.queryByText(/显示更多本地会话/)).toBeNull();
+  });
+
+  it("输入框通过方向键选择同名任务，Enter 打开准确目录，IME Enter 不打开", async () => {
+    const user = userEvent.setup();
+    useSessionsStore.getState().setIndependent([
+      {sessionId:"one",title:"同名任务",cwd:"/one"},
+      {sessionId:"two",title:"同名任务",cwd:"/two"},
+    ]);
+    const onSelect=vi.fn();
+    render(<SearchOverlay open onClose={vi.fn()} onSelect={onSelect} />);
+    const input=screen.getByRole("textbox",{name:"搜索会话标题或内容"});
+    input.focus();
+    fireEvent.keyDown(input,{key:"Enter",keyCode:229});
+    expect(onSelect).not.toHaveBeenCalled();
+    await user.keyboard("{ArrowDown}{ArrowDown}");
+    expect(screen.getByRole("button",{name:"同名任务 /two"})).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledWith("two","/two");
+  });
+
+  it("全文返回替换本地重复记录时保留所选任务的键盘焦点", async () => {
+    const user=userEvent.setup();
+    let finish!: (hits: {sessionId:string;title:string;cwd:string;snippet:string}[]) => void;
+    vi.mocked(sessionSearch).mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+    useSessionsStore.getState().setIndependent([{sessionId:"focused",title:"交付复盘",cwd:"/workspace"}]);
+    const onSelect=vi.fn();
+    render(<SearchOverlay open onClose={vi.fn()} onSelect={onSelect} />);
+    await user.type(screen.getByRole("textbox",{name:"搜索会话标题或内容"}),"交付");
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("button",{name:"交付复盘 /workspace"})).toHaveFocus();
+    await waitFor(()=>expect(sessionSearch).toHaveBeenCalledOnce());
+    await act(async()=>finish([{sessionId:"focused",title:"交付复盘",cwd:"/workspace",snippet:"正文命中内容"}]));
+    const result=screen.getByText("正文命中内容").closest("button");
+    expect(result).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledWith("focused","/workspace");
   });
 
   it("FTS 失败显示错误与重试，不伪装成空结果", async () => {
@@ -99,6 +154,73 @@ describe("SearchOverlay", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("index unavailable");
     expect(screen.getByRole("button", { name: "重试搜索" })).toBeInTheDocument();
     expect(screen.queryByText("没有匹配的会话")).toBeNull();
+  });
+
+  it.each(["session", "group"])("快速 Enter 打开 %s 失败后，防抖搜索不能清除重试入口", async (kind) => {
+    vi.useFakeTimers();
+    try {
+      const select = vi.fn().mockRejectedValueOnce(new Error("读取失败")).mockResolvedValue(undefined);
+      const onClose = vi.fn();
+      if (kind === "session") {
+        useSessionsStore.getState().setIndependent([{ sessionId: "local", title: "交付复盘", cwd: "/review" }]);
+      } else {
+        useGroupStore.setState({ groups: [{ id: "group", name: "交付复盘", archived: false, updatedAt: 1 } as Group] });
+      }
+      render(<SearchOverlay open onClose={onClose} onSelect={select} onSelectGroup={select} />);
+      const input = screen.getByRole("textbox", { name: "搜索会话标题或内容" });
+      fireEvent.change(input, { target: { value: "交付" } });
+      await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+      expect(screen.getByRole("alert")).toHaveTextContent("打开失败：读取失败");
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(sessionSearch).toHaveBeenCalledOnce();
+      expect(screen.getByRole("button", { name: "重试打开" })).toBeEnabled();
+      expect(screen.getByRole("alert")).toHaveTextContent("打开失败：读取失败");
+      expect(onClose).not.toHaveBeenCalled();
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重试打开" })); });
+      expect(select).toHaveBeenCalledTimes(2);
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("搜索与打开同时失败时，各自保留原因并重试原操作", async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectSearch!: (error: Error) => void;
+      vi.mocked(sessionSearch).mockImplementationOnce(() => new Promise((_, reject) => { rejectSearch = reject; }));
+      useSessionsStore.getState().setIndependent([{ sessionId: "local", title: "交付复盘", cwd: "/review" }]);
+      const onSelect = vi.fn().mockRejectedValueOnce(new Error("会话不可读")).mockResolvedValue(undefined);
+      const onClose = vi.fn();
+      render(<SearchOverlay open onClose={onClose} onSelect={onSelect} />);
+      const input = screen.getByRole("textbox", { name: "搜索会话标题或内容" });
+      fireEvent.change(input, { target: { value: "交付" } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+      await act(async () => { rejectSearch(new Error("索引不可用")); });
+      expect(screen.getAllByRole("alert")).toHaveLength(2);
+      expect(screen.getByText("打开失败：会话不可读")).toBeInTheDocument();
+      expect(screen.getByText("搜索失败：索引不可用")).toBeInTheDocument();
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重试搜索" })); });
+      expect(screen.queryByText("搜索失败：索引不可用")).toBeNull();
+      expect(screen.getByText("打开失败：会话不可读")).toBeInTheDocument();
+      expect(onSelect).toHaveBeenCalledOnce();
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重试打开" })); });
+      expect(onSelect).toHaveBeenLastCalledWith("local", "/review");
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("切换查询清除上次打开错误，重新打开弹窗也不恢复旧错误", async () => {
+    useSessionsStore.getState().setIndependent([{ sessionId: "local", title: "交付复盘", cwd: "/review" }]);
+    const props = { onSelect: vi.fn().mockRejectedValue(new Error("旧打开失败")), onClose: vi.fn() };
+    const { rerender } = render(<SearchOverlay open {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "交付复盘 /review" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("旧打开失败");
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "新" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "重试打开" })).toBeNull();
+    rerender(<SearchOverlay open={false} {...props} />);
+    rerender(<SearchOverlay open {...props} />);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("本地与 FTS 重复时保留带 snippet 的 FTS 结果", async () => {

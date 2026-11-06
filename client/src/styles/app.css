@@ -7743,7 +7743,7 @@ button.diff__path {
   animation: settings-fade-in 0.12s ease-out;
 }
 .conversation-search-modal {
-  width: min(480px, calc(100vw - 64px));
+  width: min(600px, calc(100vw - 64px));
   max-height: 70vh;
   background: var(--echo-bg-primary);
   border-radius: 12px;
@@ -7752,6 +7752,19 @@ button.diff__path {
   flex-direction: column;
   overflow: hidden;
   animation: settings-slide-up 0.18s ease-out;
+}
+.conversation-search-modal__heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 16px 18px 4px;
+  color: var(--echo-text-strong);
+  font-size: .875rem;
+}
+.conversation-search-modal__heading > span {
+  color: var(--echo-text-medium);
+  font-size: .75rem;
 }
 .conversation-search-modal__input-wrapper {
   display: flex;
@@ -7767,6 +7780,7 @@ button.diff__path {
 }
 .conversation-search-modal__input {
   flex: 1;
+  min-width: 0;
   border: none;
   background: transparent;
   outline: none;
@@ -7796,7 +7810,9 @@ button.diff__path {
 }
 .conversation-search-modal__body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px 0;
 }
 .conversation-search-modal__count {
@@ -7825,6 +7841,35 @@ button.diff__path {
 }
 .conversation-search-modal__item:hover {
   background: var(--echo-bg-hover);
+}
+.conversation-search-modal__item:focus-visible {
+  background: var(--echo-bg-hover);
+  outline: 2px solid var(--echo-focus-ring);
+  outline-offset: -2px;
+}
+.conversation-search-modal__more {
+  display: block;
+  margin: 8px 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: var(--echo-radius-sm);
+  background: var(--echo-bg-primary);
+  color: var(--echo-text-strong);
+  font: inherit;
+  font-size: .75rem;
+  cursor: pointer;
+}
+.conversation-search-modal__footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  flex-shrink: 0;
+  padding: 10px 16px;
+  border-top: 1px solid var(--echo-border-subtle);
+  color: var(--echo-text-medium);
+  font-size: .6875rem;
+  line-height: 1.5;
 }
 .conversation-search-modal__item-icon {
   color: var(--echo-text-weak);
@@ -10742,15 +10787,57 @@ body:has([aria-modal="true"]) .global-tooltip:not(.global-tooltip--dialog) {
   -webkit-box-orient: vertical;
 }
 .conversation-search-modal__item-cwd {
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   color: var(--echo-text-weak);
   font-family: ui-monospace, monospace;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 .conversation-search-modal__empty {
   padding: 24px;
   text-align: center;
   color: var(--echo-text-weak);
   font-size: 0.8125rem;
+}
+.conversation-search-modal__error {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 8px 16px;
+  padding: 12px;
+  border-inline-start: 3px solid var(--echo-status-error);
+  border-radius: var(--echo-radius-sm);
+  color: var(--echo-status-error);
+  background: var(--echo-status-error-soft);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.conversation-search-modal__error > div {
+  flex: 1 1 220px;
+  min-width: 0;
+  align-self: center;
+}
+.conversation-search-modal__retry {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: var(--echo-radius-sm);
+  color: var(--echo-text-strong);
+  background: var(--echo-bg-primary);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.conversation-search-modal__retry:focus-visible {
+  outline: 2px solid var(--echo-focus-ring);
+  outline-offset: 2px;
+}
+.conversation-search-modal__retry:disabled {
+  opacity: .5;
+  cursor: wait;
 }
 
 /* ========================================================================

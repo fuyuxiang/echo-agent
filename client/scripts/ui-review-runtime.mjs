@@ -39,9 +39,10 @@ export async function createUiReviewServer(port = 1439, {
   fixture = "/scripts/fixtures/ui-surfaces.tsx",
   baseline = process.env.UI_REVIEW_BASELINE === "1",
   currentFixtures = false,
+  baselineRevision,
   cacheRoot,
 } = {}) {
-  const original = baseline ? createUiReviewBaseline(process.cwd(), { currentFixtures }) : null;
+  const original = baseline ? createUiReviewBaseline(process.cwd(), { currentFixtures, revision: baselineRevision }) : null;
   const cache = original ? null : createUiReviewCache(fixture, cacheRoot);
   const dispose = () => { try { cache?.close(); } finally { original?.close(); } };
   let server;

@@ -367,7 +367,7 @@ void (async () => {
         projectModel.dispatchEvent(new Event('change', { bubbles: true }));
         await delay(150);
         const createConfirm = await waitFor(() => [...document.querySelectorAll('[role="dialog"][aria-label="新建项目"] button')]
-          .find((item) => item.textContent?.trim() === '确定' && !item.disabled));
+          .find((item) => item.textContent?.trim() === '创建项目' && !item.disabled));
         createConfirm.click();
         const project = await waitFor(async () => (await invoke('projects_load')).find((item) => item.name === projectName));
         record('native-project-create', project.defaultModelId === targetModelId ? 'passed' : 'failed', {

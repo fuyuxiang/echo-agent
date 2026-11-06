@@ -1,0 +1,1297 @@
+{
+  "before": {
+    "baseline": true,
+    "baselineRevision": "f6ccbd59f0807113990222fd1cfab3f75276f376",
+    "observations": [
+      {
+        "id": "PX01-recent",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX01-recent-1280-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 30,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 400,
+              "y": 96,
+              "right": 880,
+              "bottom": 656
+            }
+          ]
+        },
+        "textMeasured": 15,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX02-duplicate-titles",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX02-duplicate-titles-1280-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 2,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 400,
+              "y": 96,
+              "right": 880,
+              "bottom": 261
+            }
+          ]
+        },
+        "textMeasured": 4,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX03-picker-error",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX03-picker-error-1280-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1280,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 32,
+              "y": 228.6875,
+              "right": 1248,
+              "bottom": 274.6875
+            }
+          ]
+        },
+        "textMeasured": 12,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX04-readable-source",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX04-readable-source-1280-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": [
+              "review-source"
+            ]
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1280,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 32,
+              "y": 228.6875,
+              "right": 1248,
+              "bottom": 274.6875
+            }
+          ]
+        },
+        "textMeasured": 13,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX01-recent",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX01-recent-1024-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 30,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 272,
+              "y": 81.59375,
+              "right": 752,
+              "bottom": 557.59375
+            }
+          ]
+        },
+        "textMeasured": 13,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX02-duplicate-titles",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX02-duplicate-titles-1024-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 2,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 272,
+              "y": 81.59375,
+              "right": 752,
+              "bottom": 246.59375
+            }
+          ]
+        },
+        "textMeasured": 4,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX03-picker-error",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX03-picker-error-1024-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1024,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 30.71875,
+              "y": 228.6875,
+              "right": 993.28125,
+              "bottom": 274.6875
+            }
+          ]
+        },
+        "textMeasured": 12,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX04-readable-source",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX04-readable-source-1024-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": [
+              "review-source"
+            ]
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1024,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 30.71875,
+              "y": 228.6875,
+              "right": 993.28125,
+              "bottom": 274.6875
+            }
+          ]
+        },
+        "textMeasured": 13,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX01-recent",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "filename": "PX01-recent-1024-dark-18.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 30,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 272,
+              "y": 81.59375,
+              "right": 752,
+              "bottom": 557.59375
+            }
+          ]
+        },
+        "textMeasured": 11,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX02-duplicate-titles",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "filename": "PX02-duplicate-titles-1024-dark-18.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 2,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 272,
+              "y": 81.59375,
+              "right": 752,
+              "bottom": 266.59375
+            }
+          ]
+        },
+        "textMeasured": 4,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX03-picker-error",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "filename": "PX03-picker-error-1024-dark-18.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1024,
+              "bottom": 120.75
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 30.71875,
+              "y": 261.3125,
+              "right": 993.28125,
+              "bottom": 307.3125
+            }
+          ]
+        },
+        "textMeasured": 12,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX04-readable-source",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "filename": "PX04-readable-source-1024-dark-18.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": [
+              "review-source"
+            ]
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1024,
+              "bottom": 120.75
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 30.71875,
+              "y": 261.3125,
+              "right": 993.28125,
+              "bottom": 307.3125
+            }
+          ]
+        },
+        "textMeasured": 13,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX01-recent",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "filename": "PX01-recent-1280-dark-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 30,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 400,
+              "y": 96,
+              "right": 880,
+              "bottom": 656
+            }
+          ]
+        },
+        "textMeasured": 15,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX02-duplicate-titles",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "filename": "PX02-duplicate-titles-1280-dark-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 2,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 400,
+              "y": 96,
+              "right": 880,
+              "bottom": 261
+            }
+          ]
+        },
+        "textMeasured": 4,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX03-picker-error",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "filename": "PX03-picker-error-1280-dark-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1280,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 32,
+              "y": 228.6875,
+              "right": 1248,
+              "bottom": 274.6875
+            }
+          ]
+        },
+        "textMeasured": 12,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX04-readable-source",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "filename": "PX04-readable-source-1280-dark-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": [
+              "review-source"
+            ]
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1280,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 32,
+              "y": 228.6875,
+              "right": 1248,
+              "bottom": 274.6875
+            }
+          ]
+        },
+        "textMeasured": 13,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      }
+    ],
+    "flows": []
+  },
+  "after": {
+    "baseline": false,
+    "baselineRevision": null,
+    "observations": [
+      {
+        "id": "PX01-recent",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX01-recent-1280-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 30,
+            "directories": 30,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 340,
+              "y": 96,
+              "right": 940,
+              "bottom": 656
+            }
+          ]
+        },
+        "textMeasured": 20,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX02-duplicate-titles",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX02-duplicate-titles-1280-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 2,
+            "directories": 2,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 340,
+              "y": 96,
+              "right": 940,
+              "bottom": 378.5
+            }
+          ]
+        },
+        "textMeasured": 10,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX03-picker-error",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX03-picker-error-1280-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [
+              "添加失败：隔离测试：目录选择器不可用重试操作"
+            ],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1280,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 32,
+              "y": 302.6875,
+              "right": 1248,
+              "bottom": 348.6875
+            },
+            {
+              "selector": "[role=\"alert\"]",
+              "x": 32,
+              "y": 116.5,
+              "right": 1248,
+              "bottom": 176.5
+            }
+          ]
+        },
+        "textMeasured": 14,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX04-readable-source",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX04-readable-source-1280-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": [
+              "产品资料"
+            ]
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1280,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 32,
+              "y": 228.6875,
+              "right": 1248,
+              "bottom": 274.6875
+            }
+          ]
+        },
+        "textMeasured": 13,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX01-recent",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX01-recent-1024-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 30,
+            "directories": 30,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 212,
+              "y": 81.59375,
+              "right": 812,
+              "bottom": 557.59375
+            }
+          ]
+        },
+        "textMeasured": 18,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX02-duplicate-titles",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX02-duplicate-titles-1024-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 2,
+            "directories": 2,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 212,
+              "y": 81.59375,
+              "right": 812,
+              "bottom": 364.09375
+            }
+          ]
+        },
+        "textMeasured": 10,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX03-picker-error",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX03-picker-error-1024-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [
+              "添加失败：隔离测试：目录选择器不可用重试操作"
+            ],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1024,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 30.71875,
+              "y": 302.6875,
+              "right": 993.28125,
+              "bottom": 348.6875
+            },
+            {
+              "selector": "[role=\"alert\"]",
+              "x": 30.71875,
+              "y": 116.5,
+              "right": 993.28125,
+              "bottom": 176.5
+            }
+          ]
+        },
+        "textMeasured": 14,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX04-readable-source",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "filename": "PX04-readable-source-1024-light-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": [
+              "产品资料"
+            ]
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1024,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 30.71875,
+              "y": 228.6875,
+              "right": 993.28125,
+              "bottom": 274.6875
+            }
+          ]
+        },
+        "textMeasured": 13,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX01-recent",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "filename": "PX01-recent-1024-dark-18.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 30,
+            "directories": 30,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 212,
+              "y": 81.59375,
+              "right": 812,
+              "bottom": 557.59375
+            }
+          ]
+        },
+        "textMeasured": 15,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX02-duplicate-titles",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "filename": "PX02-duplicate-titles-1024-dark-18.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 2,
+            "directories": 2,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 212,
+              "y": 81.59375,
+              "right": 812,
+              "bottom": 412.25
+            }
+          ]
+        },
+        "textMeasured": 10,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX03-picker-error",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "filename": "PX03-picker-error-1024-dark-18.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [
+              "添加失败：隔离测试：目录选择器不可用重试操作"
+            ],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1024,
+              "bottom": 120.75
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 30.71875,
+              "y": 349.15625,
+              "right": 993.28125,
+              "bottom": 395.15625
+            },
+            {
+              "selector": "[role=\"alert\"]",
+              "x": 30.71875,
+              "y": 134.75,
+              "right": 993.28125,
+              "bottom": 208.59375
+            }
+          ]
+        },
+        "textMeasured": 14,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX04-readable-source",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "filename": "PX04-readable-source-1024-dark-18.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": [
+              "产品资料"
+            ]
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1024,
+              "bottom": 120.75
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 30.71875,
+              "y": 261.3125,
+              "right": 993.28125,
+              "bottom": 307.3125
+            }
+          ]
+        },
+        "textMeasured": 13,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX01-recent",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "filename": "PX01-recent-1280-dark-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 30,
+            "directories": 30,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 340,
+              "y": 96,
+              "right": 940,
+              "bottom": 656
+            }
+          ]
+        },
+        "textMeasured": 20,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX02-duplicate-titles",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "filename": "PX02-duplicate-titles-1280-dark-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 2,
+            "directories": 2,
+            "alerts": [],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".conversation-search-modal",
+              "x": 340,
+              "y": 96,
+              "right": 940,
+              "bottom": 378.5
+            }
+          ]
+        },
+        "textMeasured": 10,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX03-picker-error",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "filename": "PX03-picker-error-1280-dark-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [
+              "添加失败：隔离测试：目录选择器不可用重试操作"
+            ],
+            "sourceLabels": []
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1280,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 32,
+              "y": 302.6875,
+              "right": 1248,
+              "bottom": 348.6875
+            },
+            {
+              "selector": "[role=\"alert\"]",
+              "x": 32,
+              "y": 116.5,
+              "right": 1248,
+              "bottom": 176.5
+            }
+          ]
+        },
+        "textMeasured": 14,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      },
+      {
+        "id": "PX04-readable-source",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "filename": "PX04-readable-source-1280-dark-13.png",
+        "geometry": {
+          "overflow": false,
+          "observations": {
+            "results": 0,
+            "directories": 0,
+            "alerts": [],
+            "sourceLabels": [
+              "产品资料"
+            ]
+          },
+          "elements": [
+            {
+              "selector": ".kb-panel__head",
+              "x": 0,
+              "y": 0,
+              "right": 1280,
+              "bottom": 102.5
+            },
+            {
+              "selector": ".kb-panel__search",
+              "x": 32,
+              "y": 228.6875,
+              "right": 1248,
+              "bottom": 274.6875
+            }
+          ]
+        },
+        "textMeasured": 13,
+        "controlsMeasured": 0,
+        "colorFailures": [],
+        "controlFailures": []
+      }
+    ],
+    "flows": [
+      {
+        "id": "PX06",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "errorKeptSearchOpen": true,
+        "retryClosedSearch": true,
+        "selected": "review-64 | /review/客户甲/资料"
+      },
+      {
+        "id": "PX08",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "font": 13
+        },
+        "focusPreserved": true,
+        "selected": "review-1 | /review/客户乙/资料"
+      },
+      {
+        "id": "PX06",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "errorKeptSearchOpen": true,
+        "retryClosedSearch": true,
+        "selected": "review-64 | /review/客户甲/资料"
+      },
+      {
+        "id": "PX08",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "light",
+          "font": 13
+        },
+        "focusPreserved": true,
+        "selected": "review-1 | /review/客户乙/资料"
+      },
+      {
+        "id": "PX06",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "errorKeptSearchOpen": true,
+        "retryClosedSearch": true,
+        "selected": "review-64 | /review/客户甲/资料"
+      },
+      {
+        "id": "PX08",
+        "condition": {
+          "width": 1024,
+          "height": 680,
+          "theme": "dark",
+          "font": 18
+        },
+        "focusPreserved": true,
+        "selected": "review-1 | /review/客户乙/资料"
+      },
+      {
+        "id": "PX06",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "errorKeptSearchOpen": true,
+        "retryClosedSearch": true,
+        "selected": "review-64 | /review/客户甲/资料"
+      },
+      {
+        "id": "PX08",
+        "condition": {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "font": 13
+        },
+        "focusPreserved": true,
+        "selected": "review-1 | /review/客户乙/资料"
+      }
+    ]
+  }
+}

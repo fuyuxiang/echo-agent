@@ -73,7 +73,7 @@ window.__echoNativeLocalReview = async ({ invoke, context, scope }) => {
   const snapshots = () => new Set(document.querySelectorAll('.toast__message'));
   const toast = (before, text) => waitFor(() => [...document.querySelectorAll('.toast__message')]
     .find((element) => visible(element) && !before.has(element) && element.textContent?.includes(text)), `Actual ${text} feedback`, 25000);
-  const panel = () => document.querySelector('.settings-modal-overlay .notify-panel[aria-label="通知渠道"]');
+  const panel = () => document.querySelector('.settings-modal-overlay .notify-panel[aria-label="通知设置"]');
   const row = (label) => [...(panel()?.querySelectorAll('.notify-panel__row') || [])]
     .find((element) => element.querySelector('.notify-panel__row-label')?.textContent === label);
   const notificationPanelReady = () => {
@@ -99,7 +99,15 @@ window.__echoNativeLocalReview = async ({ invoke, context, scope }) => {
       return visible(element) && !element.disabled ? element : null;
     }, 'Actual Settings entry')).click();
     await click(() => document.querySelector('.settings-modal-overlay .settings-navigation'), '通知');
-    await click(() => document.querySelector('.settings-modal-overlay [aria-label="通知视图"]'), '通知渠道');
+    await click(() => document.querySelector('.settings-modal-overlay [aria-label="通知视图"]'), '通知设置');
+    const advanced = await waitFor(() => {
+      const current = panel(), toggle = current?.querySelector('.notify-advanced__toggle');
+      return visible(toggle) && current.querySelector('.notify-advanced__count')?.textContent !== '正在读取…'
+        && !current.querySelector('.panel-inline-error') ? toggle : null;
+    }, 'Actual loaded external notification disclosure');
+    if (advanced.getAttribute('aria-expanded') !== 'true') advanced.click();
+    await waitFor(() => panel()?.querySelector('.notify-advanced__toggle')?.getAttribute('aria-expanded') === 'true', 'External notification disclosure expanded');
+    await click(panel, '添加渠道');
     await waitFor(notificationPanelReady, 'Actual notification channel panel loaded');
   };
   const closeSettings = async () => {
@@ -116,16 +124,20 @@ window.__echoNativeLocalReview = async ({ invoke, context, scope }) => {
     } else input(panel().querySelector('[aria-label="通知渠道类型"]'), 'generic-webhook');
     input(panel().querySelector('[aria-label="通知渠道显示名"]'), label);
     input(panel().querySelector('[aria-label="Webhook URL"]'), endpoint);
-    const before = snapshots();
     await click(panel, editing ? '保存修改' : '+ 添加');
-    await toast(before, `渠道 ${label} 已${editing ? '更新' : '添加'}`);
-    await waitFor(() => visible(row(label)) && !button(panel(), '取消编辑'), 'Persisted channel row');
+    // Toasts deliberately coalesce repeated messages. The persistent panel
+    // feedback, closed editor, native readback and later real HTTP requests
+    // establish this save without assuming every save creates a new toast node.
+    await waitFor(() => visible(row(label)) && !panel()?.querySelector('.notify-panel__editor')
+      && panel()?.querySelector('.settings-msg[role="status"]')?.textContent === `通知渠道“${label}”已保存，立即用于后续通知。`, 'Saved feedback, persisted channel row and closed editor');
     return configured(label);
   };
   const send = async (failure = false) => {
-    const before = snapshots();
     await click(() => row(report.expected.label), '测试');
-    const feedback = await toast(before, failure ? '发送失败：' : '测试通知已发送');
+    const feedback = await waitFor(() => {
+      const current = panel()?.querySelector(failure ? '.settings-msg[role="alert"]' : '.settings-msg[role="status"]');
+      return visible(current) && current.textContent.includes(failure ? '发送失败：' : '测试通知已向渠道提交') ? current : null;
+    }, 'Actual persistent channel test feedback');
     if (failure) assert(feedback.textContent.includes('403'), 'Failure did not expose the actual HTTP rejection');
   };
   const denial = async (id) => {
@@ -146,7 +158,7 @@ window.__echoNativeLocalReview = async ({ invoke, context, scope }) => {
       && item.payload.sessionId === null && Number.isFinite(Date.parse(item.payload.timestamp)), 'Actual webhook payload differs from the production test message');
     return audit;
   };
-  const meetingPanel = () => document.querySelector('.meeting-panel');
+  const meetingPanel = () => document.querySelector('.meeting-workbench');
   const openMeeting = async () => {
     const homeButton = await waitFor(() => [...document.querySelectorAll('.sidebar__nav-item')]
       .find((element) => visible(element) && !element.disabled && element.textContent.trim() === '新建任务'), 'Actual Home entry');
@@ -161,15 +173,17 @@ window.__echoNativeLocalReview = async ({ invoke, context, scope }) => {
         && element.querySelector('.iam-item__label')?.textContent === '会议录音与纪要'), 'Actual meeting-history menu entry without ASR');
     meetingEntry.click();
     await waitFor(() => visible(meetingPanel()) && meetingPanel().querySelector('h1')?.textContent === '录音转写', 'Actual meeting page without an ASR model');
-    assert(meetingPanel().textContent.includes('需要配置 MiniMax 模型'), 'Missing-ASR capability feedback was lost');
-    if (!meetingPanel().querySelector('#meeting-create-form')) await click(meetingPanel, '新建录音或导入文件');
+    if (!meetingPanel().querySelector('.meeting-start')) await click(meetingPanel, '新建录音');
+    assert(meetingPanel().textContent.includes('尚未配置转写连接，可以先录音，配置后再补转。'), 'Missing-ASR capability feedback was lost');
     const start = [...meetingPanel().querySelectorAll('button')].find((element) => element.textContent.trim() === '开始录音');
-    assert(visible(start) && start.disabled, 'No-ASR profile incorrectly enables recording');
-    const selected = await waitFor(() => [...meetingPanel().querySelectorAll('.meeting-list__item')]
-      .find((element) => element.querySelector('.meeting-list__title')?.textContent === report.expected.meetingTitle), 'Actual isolated meeting list');
+    assert(visible(start) && !start.disabled, 'Local recording unavailable without optional ASR connection');
+    const library = meetingPanel().querySelector('button[aria-label="展开录音列表"]');
+    if (library) library.click();
+    const selected = await waitFor(() => [...meetingPanel().querySelectorAll('.meeting-library__item')]
+      .find((element) => element.querySelector('strong')?.textContent === report.expected.meetingTitle), 'Actual isolated meeting list');
     selected.click();
-    await waitFor(() => meetingPanel()?.querySelector('.meeting-detail__header h2')?.textContent === report.expected.meetingTitle, 'Selected isolated meeting');
-    assert(button(meetingPanel(), '系统播放器') && button(meetingPanel(), '编辑纪要'), 'Saved meeting controls inaccessible without ASR');
+    await waitFor(() => meetingPanel()?.querySelector('.meeting-workbench__record-header h2')?.textContent === report.expected.meetingTitle
+      && visible(meetingPanel().querySelector('[aria-label="录音播放器"]')) && button(meetingPanel(), '编辑纪要'), 'Selected isolated meeting and saved controls without ASR');
   };
   let active = required[0];
   try {
@@ -216,14 +230,13 @@ window.__echoNativeLocalReview = async ({ invoke, context, scope }) => {
       record(active, { meetingId, exactSavedMinutes: true, noAsrPageEntry: true, retryPlayerControlAvailable: true });
       active = required[3];
       await openSettings();
-      const before = snapshots();
       const remove = row(report.expected.finalLabel)?.querySelector(`button[aria-label="移除 ${CSS.escape(report.expected.finalLabel)}"]`);
       assert(visible(remove) && !remove.disabled, 'Actual channel remove unavailable');
       remove.click();
       const dialog = await waitFor(() => [...document.querySelectorAll('.app-dialog')]
         .find((element) => visible(element) && element.querySelector('.app-dialog__title')?.textContent === '移除通知渠道？'), 'Actual remove confirmation');
       await click(dialog, '移除');
-      await toast(before, '已移除渠道');
+      await waitFor(() => !visible(dialog) && !row(report.expected.finalLabel), 'Removed channel row and closed confirmation');
       assert((await call('notify_channels_list')).length === 0, 'UI channel removal did not persist');
       await denial(report.expected.channelId);
       await auditCounts(3, 1);
@@ -275,19 +288,19 @@ window.__echoNativeLocalReview = async ({ invoke, context, scope }) => {
       assert(fixture.minutes === report.expected.originalMinutes && fixture.audioPath === report.expected.audioPath, 'Unexpected isolated meeting seed');
       const before = snapshots();
       await click(meetingPanel, '系统播放器');
-      const failure = await toast(before, '打开录音失败：');
-      assert(meetingPanel().querySelector('.meeting-detail__header h2')?.textContent === report.expected.meetingTitle
+      const failure = await toast(before, '无法打开录音，请检查文件是否仍在本机');
+      assert(meetingPanel().querySelector('.meeting-workbench__record-header h2')?.textContent === report.expected.meetingTitle
         && button(meetingPanel(), '编辑纪要'), 'Missing audio error made the meeting unusable');
-      record(active, { actualPlayerButton: true, actualNativeFailure: failure.textContent, noAsrPageEntry: true, recordingRemainsDisabled: true });
+      record(active, { actualPlayerButton: true, actualNativeFailure: failure.textContent, noAsrPageEntry: true, localRecordingAvailableWithoutAsr: true, recordingStarted: false });
       active = required[9];
       const repair = await service('/repair', 'POST');
       assert(repair.repaired === true && repair.path === report.expected.audioPath && repair.fixture === true, 'Owned parent did not repair the synthetic missing WAV');
       await click(meetingPanel, '编辑纪要');
       const editor = await waitFor(() => meetingPanel()?.querySelector('textarea[aria-label="编辑会议纪要"]'), 'Actual meeting editor after player failure');
       input(editor, report.expected.minutes);
-      const beforeSave = snapshots();
       await click(meetingPanel, '保存纪要');
-      await toast(beforeSave, '会议纪要已保存');
+      await waitFor(() => !meetingPanel()?.querySelector('textarea[aria-label="编辑会议纪要"]')
+        && meetingPanel()?.textContent.includes('缺文件错误后可继续编辑和保存。'), 'Saved minutes rendered and editor closed');
       const saved = await call('meeting_get', { meetingId });
       assert(saved.minutes === report.expected.minutes && saved.status === 'completed' && saved.audioPath === report.expected.audioPath, 'UI minutes recovery did not persist');
       await service('/state', 'POST', { expected: report.expected });
@@ -306,6 +319,14 @@ window.__echoNativeLocalReview = async ({ invoke, context, scope }) => {
   } catch (error) {
     const message = String(error?.message || error).slice(0, 1800);
     report.errors.push(`${active}: ${message}`);
+    if (typeof document !== 'undefined') report.failureDom = {
+      headings: [...document.querySelectorAll('h1,h2,h3')].filter(visible).map(element => element.textContent?.slice(0, 120)),
+      notificationText: panel()?.textContent?.slice(0, 3500),
+      disclosureExpanded: panel()?.querySelector('.notify-advanced__toggle')?.getAttribute('aria-expanded'),
+      visibleButtons: [...document.querySelectorAll('button')].filter(visible).map(element => ({
+        label: element.getAttribute('aria-label') || element.textContent?.trim(), disabled: element.disabled,
+      })).slice(-60),
+    };
     if (!report.checks.some((check) => check.id === active)) report.checks.push({ id: active, result: 'failed', evidence: message });
     for (const id of required) if (!report.checks.some((check) => check.id === id)) report.checks.push({ id, result: 'blocked', evidence: 'Earlier actual native gate failed' });
   }

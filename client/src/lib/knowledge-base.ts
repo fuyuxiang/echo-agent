@@ -12,6 +12,8 @@ export interface KbEntry {
   snippet?: string;
   /** 来源标识(由 searchKb 自动填充 provider id;provider 也可自带)。 */
   source?: string;
+  /** Human-readable source name supplied by semantic or external providers. */
+  sourceLabel?: string;
   /** 可选 URL/路径(打开用)。 */
   url?: string;
 }
@@ -70,15 +72,19 @@ export async function rebuildAllKbProvidersWithDiagnostics(): Promise<{
 }> {
   const out: Array<{ id: string; count: number | undefined }> = [];
   const failures: KbSearchFailure[] = [];
-  for (const p of registry.providers) {
-    if (!p.isEnabled() || !p.rebuild) continue;
+  // Source removal is allowed during a long rebuild. Do not start queued work
+  // for a removed provider, or restore its stats when in-flight work settles.
+  const isCurrent = (p: KbProvider) => registry.providers.includes(p) && p.isEnabled();
+  for (const p of [...registry.providers]) {
+    if (!isCurrent(p) || !p.rebuild) continue;
     try {
       const count = await p.rebuild();
+      if (!isCurrent(p)) continue;
       const c = typeof count === "number" ? count : undefined;
       out.push({ id: p.id, count: c });
       recordIndexStats(p.id, c);
     } catch (error) {
-      failures.push({ id: p.id, label: p.label, message: String(error).replace(/^Error:\s*/, "") });
+      if (isCurrent(p)) failures.push({ id: p.id, label: p.label, message: String(error).replace(/^Error:\s*/, "") });
     }
   }
   return { rebuilt: out, failures };

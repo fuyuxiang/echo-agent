@@ -2168,7 +2168,9 @@ button,
   justify-content: space-between;
   padding: 12px 14px;
   border-radius: 10px;
-  background: var(--ui-surface-muted);
+  color: var(--echo-status-error);
+  background: var(--echo-status-error-soft);
+  border-inline-start: 3px solid var(--echo-status-error);
 }
 
 .knowledge-page .kb-panel__search {

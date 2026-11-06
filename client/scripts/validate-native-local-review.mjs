@@ -38,8 +38,11 @@ export function localMeetingFixture(home, nonce, timestamp = Date.now()) {
   const id = `${nonce.slice(0, 8)}-${nonce.slice(8, 12)}-4${nonce.slice(13, 16)}-a${nonce.slice(17, 20)}-${nonce.slice(20, 32)}`;
   return { id, title: `隔离缺文件恢复-${nonce}`, createdAt: timestamp, updatedAt: timestamp,
     status: 'completed', providerId: 'isolated-native-review-fixture', modelId: 'isolated/unconfigured',
-    durationSeconds: 0, recordedSamples: 0, audioPath: join(home, 'meetings', id, '原生缺文件恢复.wav'),
+    // The later repaired silent WAV has 320 samples at 16 kHz. Nonzero audio
+    // metadata makes the production player available for the missing-file path.
+    durationSeconds: 0.02, recordedSamples: 320, audioPath: join(home, 'meetings', id, '原生缺文件恢复.wav'),
     captureSource: 'imported', originalFileName: '显式隔离验收 fixture.wav', transcript: [], chunks: [],
+    live: { processedSamples: 0 }, minutesStale: false,
     minutes: `# 显式隔离测试记录\n这是验收 fixture，未录音、未转写。${nonce}` };
 }
 export function verifyNativeLocalReport({ report, phase, home, nonce, pid, startedAt, previousExpected }) {
@@ -113,8 +116,12 @@ function silentFixtureWav() {
 function filesystem({ home, fixture, expected, phase, receiverUrl, wav, first }) {
   const manifestPath = join(home, 'meetings', fixture.id, 'manifest.json');
   const meeting = JSON.parse(ordinary(manifestPath, home));
-  const normalized = { ...meeting, minutes: fixture.minutes, updatedAt: fixture.updatedAt };
-  assert.deepEqual(normalized, fixture, 'Meeting save modified fields outside the seeded fixture minutes/update time');
+  // Explicitly verify the current backup contract before comparing every
+  // remaining field; saving minutes must preserve the former saved version.
+  const { previousMinutes, ...saved } = meeting;
+  assert.equal(previousMinutes, fixture.minutes, 'Meeting save lost the previous saved minutes');
+  const normalized = { ...saved, minutes: fixture.minutes, updatedAt: fixture.updatedAt };
+  assert.deepEqual(normalized, fixture, 'Meeting save modified fields outside the minutes, backup and update time');
   assert.equal(meeting.minutes, expected.minutes);
   assert(Number.isSafeInteger(meeting.updatedAt) && meeting.updatedAt >= fixture.updatedAt);
   const audio = ordinary(fixture.audioPath, home);
@@ -140,7 +147,7 @@ function filesystem({ home, fixture, expected, phase, receiverUrl, wav, first })
   assert(failures[0].body.includes(`本地通知验收-${expected.nonce}`));
   const result = { phase, providerCount: configs.length, meetingManifest: { path: manifestPath, sha256: hash(ordinary(manifestPath, home)) },
     syntheticAudio: { path: fixture.audioPath, size: audio.length, sha256: hash(audio), fixture: true },
-    persistedMinutes: expected.minutes, failureInboxId: failures[0].id, failureInboxCount: 1,
+    persistedMinutes: expected.minutes, previousMinutesPreserved: true, failureInboxId: failures[0].id, failureInboxCount: 1,
     fixtureOriginalFieldsPreserved: true, successfulPlaybackVerified: false, asrOrRecordingVerified: false };
   if (phase === 'restart') {
     assert.deepEqual(result.syntheticAudio, first.syntheticAudio, 'Restart changed the restored fixture WAV');

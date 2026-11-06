@@ -3,6 +3,7 @@ import {
   registerKbProvider,
   unregisterKbProvider,
   rebuildAllKbProviders,
+  rebuildAllKbProvidersWithDiagnostics,
   recordIndexStats,
   getIndexStats,
   getAllIndexStats,
@@ -110,6 +111,25 @@ describe("knowledge-base 注册表", () => {
     const stats = getIndexStats("a");
     expect(stats.fileCount).toBe(7);
     expect(typeof stats.lastRebuiltAt).toBe("number");
+  });
+
+  it.each([false, true])("移除进行中和待处理的知识源，不恢复索引状态或报旧错误（失败=%s）", async (fails) => {
+    let finish!: () => void;
+    const rebuilding = new Promise<number>((resolve, reject) => {
+      finish = () => fails ? reject(new Error("已移除目录不可读")) : resolve(7);
+    });
+    const queuedRebuild = vi.fn(async () => 3);
+    registerKbProvider({ ...provider("running", []), rebuild: () => rebuilding });
+    registerKbProvider({ ...provider("queued", []), rebuild: queuedRebuild });
+    const pending = rebuildAllKbProvidersWithDiagnostics();
+    unregisterKbProvider("running");
+    unregisterKbProvider("queued");
+    // Reusing an ID must not let the old provider write into the new one.
+    registerKbProvider(provider("running", []));
+    finish();
+    expect(await pending).toEqual({ rebuilt: [], failures: [] });
+    expect(queuedRebuild).not.toHaveBeenCalled();
+    expect(getIndexStats("running")).toEqual({});
   });
 });
 

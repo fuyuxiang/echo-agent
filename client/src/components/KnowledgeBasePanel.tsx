@@ -4,7 +4,7 @@
  * EchoAgent 的知识源 provider-agnostic(本地文件夹/网盘/文档库均可注册,见
  * lib/knowledge-base)。本面板提供搜索框 + 跨源结果列表。无 provider 时显示空态。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PageToolbar } from "./PageToolbar";
 import { FolderOpen, Info, Search } from "lucide-react";
 import {
@@ -28,7 +28,7 @@ import {
 
 interface KnowledgeBasePanelProps {
   /** 打开条目回调(可选)。 */
-  onOpen?: (entryId: string, url?: string) => void;
+  onOpen?: (entryId: string, url?: string) => void | Promise<void>;
   /** 临时反馈(可选)。 */
   onToast?: (msg: string) => void;
 }
@@ -49,8 +49,40 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
   const [searchRetryKey, setSearchRetryKey] = useState(0);
   const [sourceChangeKey, setSourceChangeKey] = useState(0);
   const [rebuildError, setRebuildError] = useState<string | null>(null);
+  const [rebuildNotice, setRebuildNotice] = useState<string | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
+  const rebuildingRef = useRef(false);
+  const sourceRevisionRef = useRef(0);
+  const [sourceAction, setSourceAction] = useState<"add" | "remove" | null>(null);
+  const sourceActionRef = useRef(false);
+  const openingRef = useRef(false);
+  const openContextRef = useRef(0);
+  const mountedRef = useRef(false);
+  const [openingEntry, setOpeningEntry] = useState<KbEntry | null>(null);
+  const [feedback, setFeedback] = useState<{ message: string; error: boolean; retry?: () => Promise<void> } | null>(null);
+  const reportFeedback = (message: string, error = false, retry?: () => Promise<void>) => {
+    if (!mountedRef.current) return;
+    setFeedback({ message, error, retry });
+    onToast?.(message);
+  };
   const q = debouncedQuery.trim();
   const currentQuery = query.trim();
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      openContextRef.current += 1;
+    };
+  }, []);
+
+  const sourcesChanged = () => {
+    sourceRevisionRef.current += 1;
+    openContextRef.current += 1;
+    setRebuildError(null);
+    setRebuildNotice(null);
+    setSourceChangeKey((key) => key + 1);
+    setRefreshKey((key) => key + 1);
+  };
   useEffect(() => {
     let cancelled = false;
     void hydrateKnowledgeSources()
@@ -104,72 +136,118 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
       })
       .catch(() => {});
     refreshStatus();
-    const timer = semanticStatus?.state === "indexing"
+    const timer = rebuilding || semanticStatus?.state === "indexing"
       ? window.setInterval(refreshStatus, 1_000)
       : undefined;
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearInterval(timer);
     };
-  }, [refreshKey, semanticStatus?.state]);
+  }, [refreshKey, semanticStatus?.state, rebuilding]);
 
   /** 添加本地文件夹知识源:弹出原生目录选择 → 注册 local KbProvider。 */
   const addLocalFolder = async () => {
+    if (sourceActionRef.current || openingRef.current) return;
     if (!isTauriAvailable()) {
-      onToast?.("请在 EchoAgent 桌面应用中添加本地文件夹");
+      reportFeedback("请在 EchoAgent 桌面应用中添加本地文件夹", true);
       return;
     }
+    sourceActionRef.current = true;
+    setSourceAction("add");
+    setFeedback(null);
     try {
       const dir = await filesystemPickDirectory();
-      if (!dir) return;
+      if (!dir || !mountedRef.current) return;
       const { added } = await addLocalKnowledgeSource(dir);
-      setSourceChangeKey((key) => key + 1);
-      setRefreshKey((k) => k + 1);
-      if (!added) onToast?.("这个文件夹已经添加过了");
+      if (!mountedRef.current) return;
+      sourcesChanged();
+      reportFeedback(added ? "已添加知识源，可以搜索其中的资料" : "这个文件夹已经添加过了");
     } catch (e) {
-      onToast?.(`添加失败：${String(e).replace(/^Error:\s*/, "")}`);
+      reportFeedback(`添加失败：${String(e).replace(/^Error:\s*/, "")}`, true, addLocalFolder);
+    } finally {
+      sourceActionRef.current = false;
+      if (mountedRef.current) setSourceAction(null);
     }
   };
 
   /** 移除一个已注册知识源(by id)。 */
   const removeSource = async (id: string) => {
+    if (sourceActionRef.current || openingRef.current) return;
+    sourceActionRef.current = true;
+    setSourceAction("remove");
+    setFeedback(null);
     try {
       if (await removeKnowledgeSource(id)) {
+        if (!mountedRef.current) return;
         if (sources.length === 1) setQuery("");
         setSources((current) => current.filter((source) => source.id !== id));
         setResults([]);
-        setSourceChangeKey((key) => key + 1);
-        setRefreshKey((k) => k + 1);
+        sourcesChanged();
+        reportFeedback("已移除知识源，原文件仍保留在原目录");
       }
     } catch (error) {
-      onToast?.(`移除失败：${String(error).replace(/^Error:\s*/, "")}`);
+      reportFeedback(`移除失败：${String(error).replace(/^Error:\s*/, "")}`, true, () => removeSource(id));
+    } finally {
+      sourceActionRef.current = false;
+      if (mountedRef.current) setSourceAction(null);
     }
   };
 
   /** 重建索引:刷新所有知识源缓存(本地文件夹内容变化后手动重新扫描)。 */
-  const [rebuilding, setRebuilding] = useState(false);
   const rebuildIndex = async () => {
+    if (rebuildingRef.current || sourceActionRef.current) return;
+    rebuildingRef.current = true;
+    const sourceRevision = sourceRevisionRef.current;
     setRebuilding(true);
     setRebuildError(null);
+    setRebuildNotice(null);
     try {
       const { rebuilt: res, failures } = await rebuildAllKbProvidersWithDiagnostics();
       const semantic = await rebuildPersonalKnowledgeIndex();
-      if (semantic) setSemanticStatus(semantic);
+      if (!mountedRef.current) return;
       setRefreshKey((k) => k + 1);
       setSourceChangeKey((key) => key + 1);
+      // A source can be removed while native indexing is awaiting its model.
+      // Fetch current status instead of publishing the old source snapshot.
+      if (sourceRevisionRef.current !== sourceRevision) return;
+      if (semantic) setSemanticStatus(semantic);
       if (failures.length > 0) {
         const message = `部分知识源索引刷新失败：${failures.map((failure) => `${failure.label}：${failure.message}`).join("；")}。请重试。`;
         setRebuildError(message);
         onToast?.(message);
         return;
       }
-      onToast?.(semantic || res.length > 0 ? "知识库已更新，可以搜索最新内容" : "暂无可更新的知识源");
+      const message = semantic?.state === "degraded"
+        ? "索引已刷新，部分搜索能力暂时不可用，可继续使用关键词搜索"
+        : semantic || res.length > 0 ? "知识库已更新，可以搜索最新内容" : "暂无可更新的知识源";
+      setRebuildNotice(message);
+      onToast?.(message);
     } catch (e) {
+      if (!mountedRef.current || sourceRevisionRef.current !== sourceRevision) return;
       const message = `重建失败：${String(e).replace(/^Error:\s*/, "")}`;
       setRebuildError(message);
       onToast?.(message);
     } finally {
-      setRebuilding(false);
+      rebuildingRef.current = false;
+      if (mountedRef.current) setRebuilding(false);
+    }
+  };
+
+  const openEntry = async (entry: KbEntry) => {
+    if (openingRef.current || sourceActionRef.current || !onOpen) return;
+    openingRef.current = true;
+    const context = openContextRef.current;
+    setOpeningEntry(entry);
+    setFeedback(null);
+    try {
+      await onOpen(entry.id, entry.url);
+    } catch (error) {
+      if (mountedRef.current && openContextRef.current === context) {
+        reportFeedback(`打开“${entry.title}”失败：${String(error).replace(/^Error:\s*/, "")}`, true, () => openEntry(entry));
+      }
+    } finally {
+      openingRef.current = false;
+      if (mountedRef.current) setOpeningEntry(null);
     }
   };
 
@@ -274,21 +352,31 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
             type="button"
             className="kb-panel__add-btn"
             onClick={() => void addLocalFolder()}
+            disabled={sourceAction !== null || openingEntry !== null}
             title="添加本地文件夹作为知识源"
           >
-            + 添加本地文件夹
+            {sourceAction === "add" ? "选择文件夹中…" : "+ 添加本地文件夹"}
           </button>}
           <button
             type="button"
             className="kb-panel__refresh-btn"
             onClick={() => void rebuildIndex()}
-            disabled={rebuilding}
+            disabled={sourceAction !== null || rebuilding}
             title="重新扫描所有知识源(文件夹内容变化后刷新)"
           >
-            {rebuilding ? "重建中…" : "↻ 刷新索引"}
+            {rebuilding ? "刷新中…" : "↻ 刷新索引"}
           </button>
         </div>}
       </PageToolbar>
+      {feedback && <div className={`kb-panel__index-status${feedback.error ? " kb-panel__load-error" : ""}`}
+        role={feedback.error ? "alert" : "status"}>
+        <span>{feedback.message}</span>
+        {feedback.error && feedback.retry && <button type="button" className="kb-panel__refresh-btn"
+          disabled={sourceAction !== null || openingEntry !== null} onClick={() => void feedback.retry?.()}>重试操作</button>}
+      </div>}
+      {openingEntry !== null && <div className="kb-panel__index-status" role="status">正在打开“{openingEntry.title}”…</div>}
+      {rebuilding && <div className="kb-panel__index-status" role="status">正在刷新索引，可继续查看资料和管理知识源。</div>}
+      {rebuildNotice && <div className="kb-panel__index-status" role="status">{rebuildNotice}</div>}
       {sourcesError && (
         <div className="kb-panel__index-status kb-panel__load-error" role="alert">
           <span>知识源读取失败：{sourcesError}</span>
@@ -299,7 +387,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
       )}
       {rebuildError && <div className="kb-panel__index-status kb-panel__load-error" role="alert">
         <span>{rebuildError}</span>
-        <button type="button" className="kb-panel__refresh-btn" onClick={() => void rebuildIndex()} disabled={rebuilding}>重试刷新索引</button>
+        <button type="button" className="kb-panel__refresh-btn" onClick={() => void rebuildIndex()} disabled={sourceAction !== null || rebuilding}>重试刷新索引</button>
       </div>}
       {!sourcesError && sourcesLoading && sources.length === 0 && (
         <div className="kb-panel__loading" role="status">正在读取知识源…</div>
@@ -310,8 +398,8 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           <h2>还没有添加知识源</h2>
           <p>选择一个存放资料的本地文件夹，添加后即可在这里搜索内容，并在任务中引用来源。</p>
           {isTauriAvailable() ? (
-            <button type="button" className="kb-panel__add-btn" onClick={() => void addLocalFolder()}>
-              + 添加本地文件夹
+            <button type="button" className="kb-panel__add-btn" onClick={() => void addLocalFolder()} disabled={sourceAction !== null || openingEntry !== null}>
+              {sourceAction === "add" ? "选择文件夹中…" : "+ 添加本地文件夹"}
             </button>
           ) : (
             <span className="kb-panel__desktop-hint">请在桌面应用中添加本地文件夹</span>
@@ -333,6 +421,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
                 type="button"
                 className="kb-panel__source-chip-remove"
                 onClick={() => void removeSource(s.id)}
+                disabled={sourceAction !== null || openingEntry !== null}
                 aria-label={`移除知识源 ${s.label}`}
                 title="移除此知识源"
               >
@@ -361,7 +450,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           })()}
         </div>
       )}
-      {sources.length > 0 && semanticStatus && !["ready", "idle"].includes(semanticStatus.state) && (
+      {sources.length > 0 && !rebuilding && semanticStatus && !["ready", "idle"].includes(semanticStatus.state) && (
         <div
           className="kb-panel__index-status"
           role={semanticStatus.state === "error" ? "alert" : "status"}
@@ -382,7 +471,11 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           type="text"
           value={query}
           placeholder="搜索知识库…"
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            openContextRef.current += 1;
+            setQuery(e.target.value);
+            setFeedback(null);
+          }}
           aria-label="搜索知识库"
         />
       </div>}
@@ -423,11 +516,12 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
                   <button
                     type="button"
                     className="kb-panel__row"
-                    onClick={() => onOpen?.(e.id, e.url)}
+                    onClick={() => void openEntry(e)}
+                    disabled={openingEntry !== null || sourceAction !== null}
                     title={e.url ?? e.title}
                     aria-label={`打开知识条目：${e.title}`}
                   >
-                    <span className="kb-panel__row-source">{e.source}</span>
+                    <span className="kb-panel__row-source">{e.sourceLabel || sources.find(source => source.id === e.source)?.label || e.source || "知识库"}</span>
                     <span className="kb-panel__row-title">{e.title}</span>
                     {e.snippet && <span className="kb-panel__row-snippet">{e.snippet}</span>}
                   </button>

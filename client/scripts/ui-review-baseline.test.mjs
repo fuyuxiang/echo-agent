@@ -21,6 +21,7 @@ it("compiles nested CSS imports from HEAD and preserves the HEAD fixture entry o
   write("index.html", '<!doctype html><html data-source="head"></html>');
   git("init", "-q"); git("add", ".");
   git("-c", "user.name=UI Review", "-c", "user.email=ui-review@example.invalid", "commit", "-qm", "Baseline fixture");
+  const originalRevision = git("rev-parse", "HEAD").toString().trim();
   write("src/styles/index.css", '.working-entry { color: black; }');
   write("src/styles/nested.css", '.working-nested { color: black; }');
   write("scripts/fixtures/review.tsx", 'import "../../src/styles/new.css"; export const version = "working";');
@@ -49,4 +50,12 @@ it("compiles nested CSS imports from HEAD and preserves the HEAD fixture entry o
   expect(sharedFixture.plugin.load(join(root,"src/styles/index.css"))).toContain(".head-entry");
   expect(sharedFixture.plugin.load(join(root,"src/styles/index.css"))).not.toContain("working");
   baseline.close(); expect(existsSync(baseline.directory)).toBe(false);
+  // A saved review must remain reproducible after the fixes are committed.
+  git("add", ".");
+  git("-c", "user.name=UI Review", "-c", "user.email=ui-review@example.invalid", "commit", "-qm", "Updated fixture");
+  const pinned = createUiReviewBaseline(root, { revision: originalRevision, currentFixtures: true });
+  cleanups.push(pinned.close);
+  expect(pinned.revision).toBe(originalRevision);
+  expect(pinned.plugin.load(join(root,"src/styles/index.css"))).toContain(".head-entry");
+  expect(pinned.plugin.load(join(root,"scripts/fixtures/review.tsx"))).toBeNull();
 });

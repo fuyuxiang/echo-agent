@@ -22,6 +22,8 @@ export async function inspectButtonBackgrounds(page, theme) {
     probe.style.color = "var(--echo-button-primary-fg)";
     document.body.append(probe);
     const expected = { background:getComputedStyle(probe).backgroundColor, color:getComputedStyle(probe).color };
+    probe.style.backgroundColor = "var(--echo-color-mask-color)";
+    const mask = getComputedStyle(probe).backgroundColor;
     probe.remove();
     const buttons = [...document.querySelectorAll('button,[role="button"]')].filter(e => {
       const rect = e.getBoundingClientRect(), style = getComputedStyle(e);
@@ -29,8 +31,16 @@ export async function inspectButtonBackgrounds(page, theme) {
         && !e.closest(".monaco-editor,.xterm,.markdown-body,.md-content,.create-colleague-avatar-item");
     }).map(e => {
       const style = getComputedStyle(e);
+      // The compact group drawer uses an accessible empty button as its scrim.
+      // Keep it in the evidence, but classify only the actual full-inset,
+      // token-painted scrim as an overlay rather than an action-button face.
+      const backdrop = e.matches("button.group-detail-backdrop")
+        && e.getAttribute("aria-label") === "关闭专家团详情" && !e.textContent.trim() && !e.children.length
+        && style.position === "absolute" && [style.top,style.right,style.bottom,style.left].every(value => value === "0px")
+        && style.backgroundColor === mask;
       return { name:(e.getAttribute("aria-label") || e.textContent || e.getAttribute("title") || "").trim().slice(0, 100),
         classes:e.className, background:style.backgroundColor, color:style.color, disabled:e.matches(":disabled,[aria-disabled=true]"),
+        backdrop,
         primary:e.matches(primarySelector) && !e.matches(".echo-composer__send--empty,.pd-pill--stat") };
     });
     // color-mix() may serialize as color(srgb ...) with 0..1 channels.
@@ -39,6 +49,7 @@ export async function inspectButtonBackgrounds(page, theme) {
     canvas.width = canvas.height = 1;
     const context = canvas.getContext("2d", {willReadFrequently:true});
     const black = theme === "light" ? buttons.filter(button => {
+      if (button.backdrop) return false;
       context.clearRect(0, 0, 1, 1);
       context.fillStyle = button.background;
       context.fillRect(0, 0, 1, 1);

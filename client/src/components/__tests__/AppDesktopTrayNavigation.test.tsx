@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -18,10 +18,11 @@ vi.mock("../TasksPanel", () => ({ TasksPanel: () => null }));
 vi.mock("../SecondarySidebar", () => ({ SecondarySidebar: () => null }));
 vi.mock("../TopbarActions", () => ({ TopbarActions: () => null }));
 vi.mock("../FolderTrustDialog", () => ({ FolderTrustDialog: () => null }));
-vi.mock("../Sidebar", () => ({ Sidebar: ({ onSelect, onNavigate }: {
-  onSelect: (id: string) => void; onNavigate: (label: string) => void;
+vi.mock("../Sidebar", () => ({ Sidebar: ({ onSelect, onNavigate, onOpenSearch }: {
+  onSelect: (id: string) => void; onNavigate: (label: string) => void; onOpenSearch: () => void;
 }) => <>
   <button onClick={() => onSelect("source")}>打开源会话</button>
+  <button onClick={onOpenSearch}>打开搜索</button>
   {['专家团', '项目', '代码开发'].map(label =>
     <button key={label} onClick={() => onNavigate(label)}>导航{label}</button>)}
 </> }));
@@ -86,6 +87,41 @@ function prepareGroup(group: Group, snapshot: () => Promise<Group>) {
   act(() => useGroupStore.setState({ groups: [group], current: null, currentId: null, error: null }));
 }
 const openGroup = (group: Group) => trayReview.onAction!({ id: '1', kind: 'group', targetId: group.id });
+
+describe('catalog search navigation', () => {
+  it('keeps the actual search open after a native load failure and retries the selected task', async () => {
+    await start();
+    act(() => useSessionsStore.getState().upsert({sessionId:'retry-target',title:'另一个任务',cwd:'/workspace',currentModelId:'model-a'}));
+    vi.mocked(client.agentLoadSession).mockRejectedValueOnce(new Error('读取会话失败'));
+    fireEvent.click(screen.getByRole('button',{name:'打开搜索'}));
+    fireEvent.click(await screen.findByRole('button',{name:'另一个任务 /workspace'}));
+    const search=screen.getByRole('dialog',{name:'搜索会话'});
+    expect(await within(search).findByRole('alert')).toHaveTextContent('读取会话失败');
+    expect(search).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'重试打开'}));
+    await waitFor(()=>expect(screen.queryByRole('dialog',{name:'搜索会话'})).toBeNull());
+    expect(client.agentLoadSession).toHaveBeenLastCalledWith('retry-target','/workspace');
+    expect(useSessionsStore.getState().currentSessionId).toBe('retry-target');
+    expect(useSessionStore.getState().error).toBeNull();
+  });
+
+  it('cancelling the coding leave guard keeps search and the editor, without a failure alert', async () => {
+    await start();
+    fireEvent.click(screen.getByRole('button',{name:'导航代码开发'}));
+    await screen.findByText('代码开发页面');
+    codingGuard.mockResolvedValueOnce(false);
+    const before=vi.mocked(client.agentLoadSession).mock.calls.length;
+    fireEvent.click(screen.getByRole('button',{name:'打开搜索'}));
+    fireEvent.click(await screen.findByRole('button',{name:'源会话 /workspace'}));
+    await waitFor(()=>expect(codingGuard).toHaveBeenCalledOnce());
+    await waitFor(()=>expect(screen.getByRole('button',{name:'源会话 /workspace'})).toBeEnabled());
+    const search=screen.getByRole('dialog',{name:'搜索会话'});
+    expect(search).toBeInTheDocument();
+    expect(screen.getByText('代码开发页面')).toBeInTheDocument();
+    expect(within(search).queryByRole('alert')).toBeNull();
+    expect(client.agentLoadSession).toHaveBeenCalledTimes(before);
+  });
+});
 
 describe('desktop tray group navigation', () => {
   it('opens the requested group after its native snapshot is loaded', async () => {
