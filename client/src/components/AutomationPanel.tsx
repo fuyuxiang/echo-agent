@@ -1758,7 +1758,7 @@ export function AutomationPanel({
                 </button>
               ))}
             </div>
-            {filteredTasks.length > 0 && <ResourceList collectionKey="automations" layout="compact" className="atm-task-cards" aria-label="定时任务列表">
+            {filteredTasks.length > 0 && <ResourceList collectionKey="automations" layout="grid" className="atm-task-cards" aria-label="定时任务列表">
               {filteredTasks.map((task) => (
                 <AutomationTaskCard
                   key={task.id}

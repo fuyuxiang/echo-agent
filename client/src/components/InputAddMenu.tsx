@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { AudioLines, Check, ChevronRight, Globe2, Monitor, Paperclip } from "lucide-react";
+import { ArrowLeft, AudioLines, Check, ChevronRight, Globe2, Monitor, Paperclip } from "lucide-react";
 import {
   AddIcon,
   ExpertTabIcon,
@@ -41,6 +41,8 @@ interface MenuItem {
 
 const SUBMENU_GAP = 4;
 const SUBMENU_VIEWPORT_INSET = 8;
+// Shared with CSS so we can choose explicit panel navigation before a hover opens it.
+const SUBMENU_WIDTH_REM = 17.5;
 
 const FILE_ITEMS: MenuItem[] = [
   { id: "add-files", label: "添加文件", icon: <Paperclip size={16} /> },
@@ -78,6 +80,19 @@ function isCatalogItem(id: MenuItemId): id is CatalogId {
   return id === "experts" || id === "skills" || id === "connectors";
 }
 
+function focusCatalogItem(element: HTMLElement | null | undefined) {
+  if (!element) return;
+  // Native focus scrolling can move the entire chat when the menu extends
+  // outside its composer. Reveal options only in the catalog's own scroller.
+  element.focus({ preventScroll: true });
+  const scroller = element.closest<HTMLElement>(".iam-submenu__scroll");
+  if (!scroller) return;
+  const item = element.getBoundingClientRect();
+  const viewport = scroller.getBoundingClientRect();
+  if (item.top < viewport.top) scroller.scrollTop += item.top - viewport.top;
+  else if (item.bottom > viewport.bottom) scroller.scrollTop += item.bottom - viewport.bottom;
+}
+
 export function InputAddMenu({
   onPickFiles,
   disabled = false,
@@ -96,14 +111,19 @@ export function InputAddMenu({
   const [hoveredItem, setHoveredItem] = useState<MenuItemId | null>(null);
   const [submenuTop, setSubmenuTop] = useState(0);
   const [submenuSide, setSubmenuSide] = useState<SubmenuSide>("right");
+  const [submenuLeft, setSubmenuLeft] = useState<number | null>(null);
+  const [submenuPanel, setSubmenuPanel] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const mainMenuRef = useRef<HTMLDivElement>(null);
   const mainItemRefs = useRef(new Map<MenuItemId, HTMLButtonElement>());
   const submenuRef = useRef<HTMLDivElement>(null);
   const loadGenerationRef = useRef(0);
   const focusFirstItemOnOpenRef = useRef(false);
   const pendingSubmenuFocusRef = useRef(false);
+  const pendingMainFocusRef = useRef<MenuItemId | null>(null);
+  const previousPanelRef = useRef(false);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -122,6 +142,14 @@ export function InputAddMenu({
     ? [fileItems, AUTOMATION_ITEMS, CATALOG_ITEMS]
     : [fileItems, CATALOG_ITEMS];
   const flatItems = menuGroups.flat();
+  const showingPanel = submenuPanel && hoveredItem !== null && isCatalogItem(hoveredItem);
+
+  const clearHoverTimers = useCallback(() => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+    hoverTimerRef.current = null;
+    leaveTimerRef.current = null;
+  }, []);
 
   const loadData = useCallback(async () => {
     const generation = ++loadGenerationRef.current;
@@ -158,14 +186,13 @@ export function InputAddMenu({
       setCatalogLoading(false);
       setHoveredItem(null);
       pendingSubmenuFocusRef.current = false;
-      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
-      if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+      clearHoverTimers();
     }
-  }, [open, meetingHistoryOnly, loadData]);
+  }, [open, meetingHistoryOnly, loadData, clearHoverTimers]);
 
   useEffect(() => {
     if (!open || !focusFirstItemOnOpenRef.current) return;
-    mainItemRefs.current.get(meetingHistoryOnly ? "meeting-minutes" : "add-files")?.focus();
+    mainItemRefs.current.get(meetingHistoryOnly ? "meeting-minutes" : "add-files")?.focus({ preventScroll: true });
     focusFirstItemOnOpenRef.current = false;
   }, [open, meetingHistoryOnly]);
 
@@ -174,21 +201,24 @@ export function InputAddMenu({
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        clearHoverTimers();
         focusFirstItemOnOpenRef.current = false;
+        pendingSubmenuFocusRef.current = false;
         setOpen(false);
         setHoveredItem(null);
       }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  }, [open, clearHoverTimers]);
 
   useEffect(() => {
     if (!triggerDisabled) return;
+    clearHoverTimers();
     focusFirstItemOnOpenRef.current = false;
     setOpen(false);
     setHoveredItem(null);
-  }, [triggerDisabled]);
+  }, [triggerDisabled, clearHoverTimers]);
 
   // Close on Escape
   useEffect(() => {
@@ -196,35 +226,39 @@ export function InputAddMenu({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
+        clearHoverTimers();
         focusFirstItemOnOpenRef.current = false;
+        pendingSubmenuFocusRef.current = false;
         setOpen(false);
         setHoveredItem(null);
-        triggerRef.current?.focus();
+        triggerRef.current?.focus({ preventScroll: true });
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open]);
+  }, [open, clearHoverTimers]);
 
   // Cleanup timers
   useEffect(() => {
     return () => {
       loadGenerationRef.current += 1;
-      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
-      if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+      clearHoverTimers();
     };
-  }, []);
+  }, [clearHoverTimers]);
 
   const handleItemEnter = (id: MenuItemId) => {
     if (leaveTimerRef.current) { clearTimeout(leaveTimerRef.current); leaveTimerRef.current = null; }
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     // Direct actions never open the catalog flyout.
     if (disabled || !isCatalogItem(id)) { setHoveredItem(null); return; }
+    // A replacement panel must never appear underneath a hovering pointer.
+    if (submenuPanel) return;
     hoverTimerRef.current = setTimeout(() => openSubmenu(id), 150);
   };
 
   const handleItemLeave = () => {
     if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
+    if (submenuPanel) return;
     leaveTimerRef.current = setTimeout(() => setHoveredItem(null), 200);
   };
 
@@ -233,26 +267,42 @@ export function InputAddMenu({
   };
 
   const handleSubmenuLeave = () => {
+    if (submenuPanel) return;
     leaveTimerRef.current = setTimeout(() => setHoveredItem(null), 200);
   };
 
   const close = (restoreFocus = true) => {
+    clearHoverTimers();
     focusFirstItemOnOpenRef.current = false;
     pendingSubmenuFocusRef.current = false;
+    pendingMainFocusRef.current = null;
     setOpen(false);
     setHoveredItem(null);
-    if (restoreFocus) triggerRef.current?.focus();
+    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
   };
+
+  const returnToMainMenu = () => {
+    clearHoverTimers();
+    pendingSubmenuFocusRef.current = false;
+    pendingMainFocusRef.current = hoveredItem;
+    setHoveredItem(null);
+  };
+
+  useLayoutEffect(() => {
+    if (!open || hoveredItem || !pendingMainFocusRef.current) return;
+    mainItemRefs.current.get(pendingMainFocusRef.current)?.focus({ preventScroll: true });
+    pendingMainFocusRef.current = null;
+  }, [open, hoveredItem]);
 
   const focusSubmenu = () => {
     pendingSubmenuFocusRef.current = true;
     window.requestAnimationFrame(() => {
-      const firstItem = submenuRef.current?.querySelector<HTMLButtonElement>('button[role="menuitem"]');
+      const firstItem = submenuRef.current?.querySelector<HTMLButtonElement>('.iam-submenu__scroll button[role="menuitem"]');
       if (firstItem) {
-        firstItem.focus();
+        focusCatalogItem(firstItem);
         pendingSubmenuFocusRef.current = false;
       } else {
-        submenuRef.current?.focus();
+        focusCatalogItem(submenuRef.current?.querySelector<HTMLButtonElement>('.iam-sub-back') ?? submenuRef.current);
       }
     });
   };
@@ -260,8 +310,8 @@ export function InputAddMenu({
   useEffect(() => {
     if (!hoveredItem || catalogLoading || !pendingSubmenuFocusRef.current) return;
     const frame = window.requestAnimationFrame(() => {
-      const firstItem = submenuRef.current?.querySelector<HTMLButtonElement>('button[role="menuitem"]');
-      (firstItem ?? submenuRef.current)?.focus();
+      const firstItem = submenuRef.current?.querySelector<HTMLButtonElement>('.iam-submenu__scroll button[role="menuitem"]');
+      focusCatalogItem(firstItem ?? submenuRef.current?.querySelector<HTMLButtonElement>('.iam-sub-back') ?? submenuRef.current);
       pendingSubmenuFocusRef.current = false;
     });
     return () => window.cancelAnimationFrame(frame);
@@ -269,58 +319,91 @@ export function InputAddMenu({
 
   const openSubmenu = (id: CatalogId, moveFocus = false) => {
     if (disabled) return;
+    clearHoverTimers();
     setSubmenuTop(mainItemRefs.current.get(id)?.offsetTop ?? 0);
     setHoveredItem(id);
-    if (moveFocus) focusSubmenu();
+    if (moveFocus || submenuPanel) focusSubmenu();
   };
 
   const updateSubmenuPosition = useCallback(() => {
-    if (!hoveredItem || !isCatalogItem(hoveredItem)) return;
-
-    const anchor = mainItemRefs.current.get(hoveredItem);
     const popover = popoverRef.current;
-    const submenu = submenuRef.current;
-    if (!anchor || !popover || !submenu) return;
-
+    if (!popover) return;
     const popoverRect = popover.getBoundingClientRect();
-    const submenuHeight = submenu.offsetHeight;
-    const preferredTop = anchor.offsetTop;
-    const minTop = SUBMENU_VIEWPORT_INSET - popoverRect.top;
-    const maxTop = window.innerHeight
-      - SUBMENU_VIEWPORT_INSET
-      - popoverRect.top
-      - submenuHeight;
-    const nextTop = Math.round(
-      Math.max(minTop, Math.min(preferredTop, Math.max(minTop, maxTop))),
-    );
-    setSubmenuTop((current) => current === nextTop ? current : nextTop);
-
+    const fontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const submenu = submenuRef.current;
+    const submenuWidth = submenu?.getBoundingClientRect().width || submenu?.offsetWidth
+      || Math.min(SUBMENU_WIDTH_REM * fontSize, window.innerWidth - SUBMENU_VIEWPORT_INSET * 2);
     const roomOnRight = window.innerWidth
       - SUBMENU_VIEWPORT_INSET
       - popoverRect.right
       - SUBMENU_GAP;
     const roomOnLeft = popoverRect.left - SUBMENU_VIEWPORT_INSET - SUBMENU_GAP;
-    const nextSide: SubmenuSide = roomOnRight >= submenu.offsetWidth || roomOnRight >= roomOnLeft
+    const nextPanel = Math.max(roomOnRight, roomOnLeft) < submenuWidth;
+    if (nextPanel && submenu && mainMenuRef.current?.contains(document.activeElement)) {
+      pendingSubmenuFocusRef.current = true;
+    }
+    setSubmenuPanel(nextPanel);
+    if (nextPanel && hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+    if (nextPanel && leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current);
+      leaveTimerRef.current = null;
+    }
+    const nextSide: SubmenuSide = roomOnRight >= submenuWidth || roomOnRight >= roomOnLeft
       ? "right"
       : "left";
     setSubmenuSide((current) => current === nextSide ? current : nextSide);
+    if (!hoveredItem || !isCatalogItem(hoveredItem) || !submenu) return;
+    const anchor = mainItemRefs.current.get(hoveredItem);
+    if (!anchor) return;
+    const originTop = popoverRect.top + popover.clientTop;
+    const submenuHeight = Math.max(submenu.offsetHeight, submenu.getBoundingClientRect().height);
+    const preferredTop = nextPanel ? popover.clientHeight - submenuHeight : anchor.offsetTop;
+    const minTop = SUBMENU_VIEWPORT_INSET - originTop;
+    const maxTop = window.innerHeight - SUBMENU_VIEWPORT_INSET - originTop - submenuHeight;
+    setSubmenuTop(Math.max(minTop, Math.min(preferredTop, Math.max(minTop, maxTop))));
+    const nextLeft = nextPanel
+      ? Math.max(
+        SUBMENU_VIEWPORT_INSET,
+        Math.min(popoverRect.left, window.innerWidth - SUBMENU_VIEWPORT_INSET - submenuWidth),
+      ) - popoverRect.left - popover.clientLeft
+      : null;
+    setSubmenuLeft((current) => current === nextLeft ? current : nextLeft);
   }, [hoveredItem]);
 
   useLayoutEffect(() => {
-    if (!hoveredItem) return;
+    if (!open) return;
 
     updateSubmenuPosition();
+    const frame = window.requestAnimationFrame(updateSubmenuPosition);
     window.addEventListener("resize", updateSubmenuPosition);
+    window.addEventListener("scroll", updateSubmenuPosition, true);
     const observer = typeof ResizeObserver === "undefined"
       ? null
       : new ResizeObserver(updateSubmenuPosition);
     if (submenuRef.current) observer?.observe(submenuRef.current);
+    if (popoverRef.current) observer?.observe(popoverRef.current);
+    if (containerRef.current?.parentElement) observer?.observe(containerRef.current.parentElement);
 
     return () => {
+      window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", updateSubmenuPosition);
+      window.removeEventListener("scroll", updateSubmenuPosition, true);
       observer?.disconnect();
     };
-  }, [catalogErrors, catalogLoading, connectors.length, experts.length, hoveredItem, skills.length, updateSubmenuPosition]);
+  }, [open, catalogErrors, catalogLoading, connectors.length, experts.length, hoveredItem, skills.length, submenuPanel, updateSubmenuPosition]);
+
+  useLayoutEffect(() => {
+    // Resizing a flyout into a panel hides its parent; carry keyboard focus with it.
+    const wasPanel = previousPanelRef.current;
+    previousPanelRef.current = showingPanel;
+    if (hoveredItem && (
+      (showingPanel && (pendingSubmenuFocusRef.current || mainMenuRef.current?.contains(document.activeElement)))
+      || (wasPanel && !showingPanel && document.activeElement === document.body)
+    )) focusSubmenu();
+  }, [showingPanel]);
 
   const handleItemClick = (id: MenuItemId, moveFocusToSubmenu = false) => {
     if (disabled && (!meetingHistoryOnly || id !== "meeting-minutes")) return;
@@ -350,6 +433,7 @@ export function InputAddMenu({
   const handleTriggerClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (triggerDisabled) return;
     event.stopPropagation();
+    clearHoverTimers();
     const openedFromKeyboard = event.detail === 0;
     setHoveredItem(null);
     setOpen((current) => {
@@ -366,11 +450,11 @@ export function InputAddMenu({
   ) => {
     const focusAt = (nextIndex: number) => {
       if (meetingHistoryOnly) {
-        mainItemRefs.current.get("meeting-minutes")?.focus();
+        mainItemRefs.current.get("meeting-minutes")?.focus({ preventScroll: true });
         return;
       }
       const normalized = (nextIndex + flatItems.length) % flatItems.length;
-      mainItemRefs.current.get(flatItems[normalized].id)?.focus();
+      mainItemRefs.current.get(flatItems[normalized].id)?.focus({ preventScroll: true });
     };
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -400,7 +484,7 @@ export function InputAddMenu({
     const index = items.indexOf(document.activeElement as HTMLButtonElement);
     const focusAt = (nextIndex: number) => {
       if (items.length === 0) return;
-      items[(nextIndex + items.length) % items.length]?.focus();
+      focusCatalogItem(items[(nextIndex + items.length) % items.length]);
     };
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -416,9 +500,7 @@ export function InputAddMenu({
       focusAt(items.length - 1);
     } else if (event.key === "ArrowLeft") {
       event.preventDefault();
-      const parentId = hoveredItem;
-      setHoveredItem(null);
-      if (parentId) mainItemRefs.current.get(parentId)?.focus();
+      returnToMainMenu();
     }
   };
 
@@ -446,7 +528,10 @@ export function InputAddMenu({
       return (
         <div className="iam-sub-state iam-sub-state--error" role="none">
           <span role="alert">{error}，请重试。</span>
-          <button type="button" className="iam-sub-retry" role="menuitem" onClick={() => void loadData()}>
+          <button type="button" className="iam-sub-retry" role="menuitem" onClick={() => {
+            pendingSubmenuFocusRef.current = true;
+            void loadData();
+          }}>
             重试
           </button>
         </div>
@@ -476,7 +561,7 @@ export function InputAddMenu({
             role="menuitem"
             onClick={() => handleSelectExpert(e)}
           >
-            <span className="iam-sub-avatar">{(e.name || "?")[0]}</span>
+            <span className="iam-sub-avatar" aria-hidden="true">{(e.name || "?")[0]}</span>
             <span className="iam-sub-text">
               <span className="iam-sub-name">{e.name}</span>
               {e.description && <span className="iam-sub-desc">{e.description.slice(0, 40)}</span>}
@@ -529,9 +614,6 @@ export function InputAddMenu({
                 </span>
               </button>
             ))}
-          <button type="button" className="iam-sub-footer" role="menuitem" onClick={handleSelectConnector}>
-            管理连接器 →
-          </button>
         </>
       );
     }
@@ -540,8 +622,12 @@ export function InputAddMenu({
 
     return (
       <div
-        className={`iam-submenu iam-submenu--${submenuSide}`}
-        style={{ "--iam-submenu-top": `${submenuTop}px` } as SubmenuStyle}
+        className={`iam-submenu iam-submenu--${submenuSide}${submenuPanel ? " iam-submenu--panel" : ""}`}
+        style={{
+          "--iam-submenu-top": `${submenuTop}px`,
+          left: submenuLeft ?? undefined,
+          right: submenuLeft === null ? undefined : "auto",
+        } as SubmenuStyle}
         role="menu"
         tabIndex={-1}
         aria-label={`${flatItems.find((item) => item.id === hoveredItem)?.label ?? "添加"}子菜单`}
@@ -550,13 +636,23 @@ export function InputAddMenu({
         onMouseEnter={handleSubmenuEnter}
         onMouseLeave={handleSubmenuLeave}
       >
+        {submenuPanel && <div className="iam-submenu__header">
+          <button type="button" className="iam-sub-back" role="menuitem" aria-label="返回添加菜单" onClick={returnToMainMenu}>
+            <ArrowLeft size={16} />返回
+          </button>
+          <span className="iam-submenu__title">{flatItems.find((item) => item.id === hoveredItem)?.label}</span>
+        </div>}
         <div className="iam-submenu__scroll">{items}</div>
       </div>
     );
   };
 
   return (
-    <div className="iam-wrap" ref={containerRef}>
+    <div className="iam-wrap" ref={containerRef} style={{ "--iam-catalog-width": `${SUBMENU_WIDTH_REM}rem` } as CSSProperties}
+      onKeyDown={(event) => {
+        // Continue normal Tab navigation from the trigger after dismissing the menu.
+        if (event.key === "Tab") close();
+      }}>
       <button
         className="echo-composer__add"
         onClick={handleTriggerClick}
@@ -573,12 +669,22 @@ export function InputAddMenu({
 
       {open && !triggerDisabled && (
         <div
-          className="iam-popover"
+          className={`iam-popover${showingPanel ? " iam-popover--catalog" : ""}`}
           id="composer-add-menu"
-          role="menu"
-          aria-label="添加内容"
+          role={showingPanel ? "presentation" : "menu"}
+          aria-label={showingPanel ? undefined : "添加内容"}
           ref={popoverRef}
+          onMouseDown={(event) => {
+            if (event.button !== 0) return;
+            const button = event.target instanceof Element ? event.target.closest("button") : null;
+            if (!button || button.disabled) return;
+            // Native pointer focus scrolls clipped composer ancestors too.
+            // Keep focus visible without moving the workbench before click.
+            event.preventDefault();
+            button.focus({ preventScroll: true });
+          }}
         >
+          <div className="iam-main-menu" ref={mainMenuRef} aria-hidden={showingPanel || undefined}>
           {menuGroups.map((group, gi) => (
             <div key={gi}>
               {gi > 0 && <div className="iam-divider" />}
@@ -622,7 +728,8 @@ export function InputAddMenu({
                     aria-disabled={modeUnavailable || historyRestricted || undefined}
                     aria-haspopup={isCatalogItem(item.id) ? "menu" : undefined}
                     aria-expanded={isCatalogItem(item.id) ? hoveredItem === item.id : undefined}
-                    title={modeUnavailable ? description : undefined}
+                    data-tip={description}
+                    aria-description={description}
                     ref={(element) => {
                       if (element) mainItemRefs.current.set(item.id, element);
                       else mainItemRefs.current.delete(item.id);
@@ -630,10 +737,7 @@ export function InputAddMenu({
                     onKeyDown={(event) => handleMainKeyDown(event, item, itemIndex)}
                   >
                     <span className="iam-item__icon">{item.icon}</span>
-                    <span className="iam-item__copy">
-                      <span className="iam-item__label">{item.label}</span>
-                      {description && <span className="iam-item__description">{description}</span>}
-                    </span>
+                    <span className="iam-item__label">{item.label}</span>
                     {selected && <Check className="iam-item__check" size={15} strokeWidth={2} />}
                     {isCatalogItem(item.id) && (
                       <span className="iam-item__chevron">
@@ -646,6 +750,7 @@ export function InputAddMenu({
               </div>
             </div>
           ))}
+          </div>
           {renderSubmenu()}
         </div>
       )}

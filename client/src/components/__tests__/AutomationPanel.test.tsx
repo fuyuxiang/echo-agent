@@ -49,6 +49,7 @@ import {
   agentsList,
   automationsDelete,
   automationsRun,
+  automationsSetStatus,
   automationsResetSession,
   automationRunStop,
   automationRunRetryCleanup,
@@ -61,6 +62,7 @@ import {
 } from "@/lib/agent-client";
 
 beforeEach(() => {
+  localStorage.removeItem("echo.resource-view.automations");
   useAutomationEditorStore.getState().close();
   snapshot = emptySnapshot;
   vi.mocked(automationsResetSession).mockClear();
@@ -80,6 +82,7 @@ beforeEach(() => {
   vi.mocked(automationsSave).mockReset().mockImplementation(async (automation) => { snapshot = { ...snapshot, automations: [automation] }; return automation; });
   vi.mocked(automationsDelete).mockReset().mockResolvedValue(undefined);
   vi.mocked(automationsRun).mockReset().mockResolvedValue("record-id");
+  vi.mocked(automationsSetStatus).mockReset().mockResolvedValue(undefined);
   vi.mocked(providersList).mockReset().mockResolvedValue({ providers: [], models: [] });
   vi.mocked(skillsList).mockReset().mockResolvedValue([]);
   vi.mocked(agentsList).mockReset().mockResolvedValue([]);
@@ -858,7 +861,8 @@ describe("AutomationPanel（有任务/有记录）", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("编辑、测试运行和管理是独立控件，编辑不触发实际运行", async () => {
+  it.each(["cards", "list"])("%s 视图的编辑、运行和管理是独立控件，编辑不触发实际运行", async (view) => {
+    localStorage.setItem("echo.resource-view.automations", view);
     snapshot = { automations: [baseAutomation], records: [] };
     render(<AutomationPanel />);
     const edit = await screen.findByRole("button", { name: `编辑定时任务「${baseAutomation.name}」` });
@@ -870,6 +874,80 @@ describe("AutomationPanel（有任务/有记录）", () => {
     fireEvent.click(edit);
     expect(await screen.findByRole("textbox", { name: "名称" })).toHaveValue(baseAutomation.name);
     expect(automationsRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["cards", "list"])("%s 视图可暂停、恢复并手动运行指定任务", async (view) => {
+    localStorage.setItem("echo.resource-view.automations", view);
+    snapshot = { automations: [baseAutomation], records: [] };
+    vi.mocked(automationsSetStatus).mockImplementation(async (id, status) => {
+      snapshot = { ...snapshot, automations: snapshot.automations.map(task => task.id === id ? { ...task, status } : task) };
+    });
+    render(<AutomationPanel />);
+    const toggle = await screen.findByRole("switch", { name: `启用定时任务「${baseAutomation.name}」` });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    expect(automationsSetStatus).toHaveBeenLastCalledWith(baseAutomation.id, "PAUSED");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(automationsSetStatus).toHaveBeenLastCalledWith(baseAutomation.id, "ACTIVE");
+    fireEvent.click(screen.getByRole("button", { name: `立即运行「${baseAutomation.name}」` }));
+    await waitFor(() => expect(automationsRun).toHaveBeenCalledExactlyOnceWith(baseAutomation.id));
+    expect(screen.getByRole("list", { name: "定时任务列表" })).toHaveAttribute("data-view", view);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(automationsSave).not.toHaveBeenCalled();
+  });
+
+  it("键盘切换视图、筛选和重新打开保留偏好及任务操作，不会误执行", async () => {
+    const user = userEvent.setup();
+    snapshot = { automations: [baseAutomation], records: [] };
+    const first = render(<AutomationPanel />);
+    await screen.findByRole("button", { name: baseAutomation.name });
+    const list = screen.getByRole("list", { name: "定时任务列表" });
+    const row = within(list).getByRole("listitem");
+    const viewButton = screen.getByRole("button", { name: "列表视图" });
+    viewButton.focus();
+    await user.keyboard("{Enter}");
+    expect(viewButton).toHaveFocus();
+    expect(list).toHaveAttribute("data-view", "list");
+    expect(within(list).getByRole("listitem")).toBe(row);
+    expect(within(row).getByRole("switch", { name: `启用定时任务「${baseAutomation.name}」` })).toBeEnabled();
+    expect(within(row).getByRole("button", { name: `立即运行「${baseAutomation.name}」` })).toBeEnabled();
+    expect(within(row).getByRole("button", { name: `编辑定时任务「${baseAutomation.name}」` })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /^已暂停/ }));
+    expect(screen.getByText("没有匹配的定时任务")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /^全部/ }));
+    expect(screen.getByRole("list", { name: "定时任务列表" })).toHaveAttribute("data-view", "list");
+    first.unmount();
+    render(<AutomationPanel />);
+    const reopened = await screen.findByRole("list", { name: "定时任务列表" });
+    expect(reopened).toHaveAttribute("data-view", "list");
+    fireEvent.click(screen.getByRole("button", { name: "卡片视图" }));
+    expect(reopened).toHaveAttribute("data-view", "cards");
+    expect(screen.getByRole("button", { name: "卡片视图" })).toHaveAttribute("aria-pressed", "true");
+    expect(automationsRun).not.toHaveBeenCalled();
+    expect(automationsSave).not.toHaveBeenCalled();
+    expect(automationsDelete).not.toHaveBeenCalled();
+  });
+
+  it("跨视图切换保留批量选择和状态，启停及执行控件不会混入选择模式", async () => {
+    snapshot = { automations: [baseAutomation, { ...baseAutomation, id: "paused-view", name: "暂停的另一任务", status: "PAUSED" }], records: [] };
+    render(<AutomationPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "批量管理" }));
+    const select = screen.getByRole("checkbox", { name: `选择定时任务「${baseAutomation.name}」` });
+    fireEvent.click(select);
+    for (const name of ["列表视图", "卡片视图"]) {
+      fireEvent.click(screen.getByRole("button", { name }));
+      expect(screen.getByRole("checkbox", { name: `选择定时任务「${baseAutomation.name}」` })).toBeChecked();
+      expect(screen.getAllByRole("listitem")).toHaveLength(2);
+      expect(within(screen.getByRole("listitem", { name: "定时任务 暂停的另一任务" })).getByText("已暂停")).toBeVisible();
+      expect(screen.queryByRole("switch")).toBeNull();
+      expect(screen.queryByRole("button", { name: /^立即运行「/ })).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "退出管理" }));
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
+    expect(screen.queryByRole("checkbox", { name: /^选择定时任务/ })).toBeNull();
+    expect(automationsRun).not.toHaveBeenCalled();
+    expect(automationsDelete).not.toHaveBeenCalled();
   });
 
   it("批量选择通过独立复选控件完成，不进入编辑或执行任务", async () => {

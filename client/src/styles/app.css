@@ -5311,27 +5311,38 @@ button.diff__path {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
-  width: 280px;
+  width: 14rem;
   max-width: calc(100vw - 16px);
   box-sizing: border-box;
-  background: var(--echo-bg-primary);
+  background: var(--echo-surface-raised);
   border: 1px solid var(--echo-border-default);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.12), 0 2px 8px rgba(0,0,0,.06);
-  padding: 6px 0;
+  border-radius: 10px;
+  box-shadow: var(--echo-shadow-md);
+  padding: 6px;
   z-index: var(--echo-layer-popover);
   animation: iam-fadeIn .15s ease-out;
+}
+/* Preserve the main menu's geometry while only the catalog panel is visible. */
+.iam-popover--catalog {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  pointer-events: none;
+  animation: none;
+}
+.iam-main-menu[aria-hidden="true"] {
+  visibility: hidden;
 }
 @keyframes iam-fadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 .iam-group {
-  padding: 2px 0;
+  padding: 0;
 }
 .iam-divider {
   height: 1px;
-  margin: 4px 12px;
+  margin: 5px 6px;
   background: var(--echo-border-default);
 }
 .iam-item {
@@ -5339,11 +5350,11 @@ button.diff__path {
   align-items: center;
   gap: 8px;
   width: 100%;
-  height: 52px;
-  padding: 8px 14px;
+  min-height: 34px;
+  padding: 6px 10px;
   cursor: pointer;
   border: 0;
-  border-radius: 0;
+  border-radius: 6px;
   background: transparent;
   color: inherit;
   font: inherit;
@@ -5363,6 +5374,11 @@ button.diff__path {
 }
 .iam-item--selected {
   color: var(--echo-brand);
+  background: var(--echo-control-selected-bg);
+}
+.iam-item--selected:hover,
+.iam-item--selected:focus-visible {
+  background: var(--echo-control-selected-bg-hover);
 }
 .iam-item--disabled {
   cursor: not-allowed;
@@ -5375,37 +5391,22 @@ button.diff__path {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   color: var(--echo-text-medium);
 }
-.iam-item:not(:has(.iam-item__description)) .iam-item__copy {
-  justify-content: center;
-}
-.iam-item__copy {
-  flex: 1;
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
 .iam-item__label {
+  flex: 1;
+  min-width: 0;
   font-size: 0.8125rem;
-  line-height: 20px;
+  line-height: 1.5;
   color: var(--echo-text-strong);
   white-space: nowrap;
 }
 .iam-item--selected .iam-item__label,
 .iam-item--selected .iam-item__icon {
   color: var(--echo-brand);
-}
-.iam-item__description {
-  overflow: hidden;
-  color: var(--echo-text-tertiary);
-  font-size: 0.6875rem;
-  line-height: 15px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .iam-item__check {
   flex: none;
@@ -5423,36 +5424,86 @@ button.diff__path {
   position: absolute;
   left: calc(100% + 4px);
   top: var(--iam-submenu-top, 0);
-  width: 280px;
+  width: var(--iam-catalog-width);
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  background: var(--echo-bg-primary);
+  background: var(--echo-surface-raised);
   border: 1px solid var(--echo-border-default);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.12), 0 2px 8px rgba(0,0,0,.06);
-  padding: 6px 0;
+  border-radius: 10px;
+  box-shadow: var(--echo-shadow-md);
+  padding: 4px;
   z-index: calc(var(--echo-layer-popover) + 1);
-  animation: iam-fadeIn .12s ease-out;
+  animation: iam-catalog-fadeIn .12s ease-out;
+  pointer-events: auto;
+}
+@keyframes iam-catalog-fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .iam-submenu--left {
   right: calc(100% + 4px);
   left: auto;
 }
+.iam-submenu--panel {
+  animation: none;
+}
+.iam-submenu__header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--echo-border-default);
+}
+.iam-submenu__title {
+  padding-right: 8px;
+  color: var(--echo-text-medium);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.iam-sub-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--echo-text-strong);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.iam-sub-back:hover,
+.iam-sub-back:focus-visible {
+  background: var(--echo-bg-hover);
+}
+.iam-sub-back:focus-visible {
+  outline: none;
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--echo-brand) 65%, transparent);
+}
 .iam-submenu__scroll {
+  flex: 0 1 auto;
+  min-height: 0;
   max-height: min(300px, calc(100vh - 28px));
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .iam-sub-item {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 48px;
-  padding: 7px 12px;
+  min-height: 40px;
+  padding: 7px 8px;
   border: none;
+  border-radius: 6px;
   background: none;
   cursor: pointer;
   text-align: left;
@@ -5491,7 +5542,7 @@ button.diff__path {
 }
 .iam-sub-name {
   font-size: 0.8125rem;
-  line-height: 18px;
+  line-height: 1.4;
   color: var(--echo-text-strong);
   white-space: nowrap;
   overflow: hidden;
@@ -5499,14 +5550,14 @@ button.diff__path {
 }
 .iam-sub-desc {
   font-size: 0.6875rem;
-  line-height: 14px;
+  line-height: 1.4;
   color: var(--echo-text-tertiary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .iam-sub-empty {
-  padding: 16px 12px;
+  padding: 12px 8px;
   font-size: 0.75rem;
   color: var(--echo-text-tertiary);
   text-align: center;
@@ -5535,26 +5586,15 @@ button.diff__path {
 .iam-sub-retry:focus-visible {
   background: color-mix(in srgb, currentColor 9%, transparent);
 }
-.iam-sub-footer {
-  width: 100%;
-  padding: 8px 12px;
-  font-size: 0.75rem;
-  font-family: inherit;
-  color: var(--echo-brand);
-  cursor: pointer;
-  border: none;
-  border-top: 1px solid var(--echo-border-default);
-  background: none;
-  margin-top: 4px;
-  text-align: center;
-}
-.iam-sub-footer:hover {
-  background: var(--echo-bg-hover);
-}
-.iam-sub-footer:focus-visible {
-  outline: none;
-  background: var(--echo-bg-hover);
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--echo-brand) 65%, transparent);
+@media (prefers-reduced-motion: reduce) {
+  .iam-popover,
+  .iam-submenu {
+    animation: none;
+  }
+  .iam-item,
+  .iam-sub-item {
+    transition: none;
+  }
 }
 
 /* ---------- Recording transcription / meeting minutes ---------- */

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createUiReviewServer, reviewChromium } from "./ui-review-runtime.mjs";
-const output = mkdtempSync(join(tmpdir(), "echo-scheduled-tasks-"));
+import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
+const output = reviewOutput(mkdtempSync(join(tmpdir(), "echo-scheduled-tasks-")));
 const server = await createUiReviewServer(0, {
   fixture: "/scripts/fixtures/scheduled-tasks-review.tsx",
 });
@@ -44,7 +44,15 @@ try {
                 ...document.querySelectorAll(
                   ".atm-task-card,.atm-editor-dialog,.atm-editor-footer,.atm-task-detail",
                 ),
-              ].every((el) => el.scrollWidth <= el.clientWidth + 1),
+              ].every((el) => el.scrollWidth <= el.clientWidth + 1) &&
+              [...document.querySelectorAll('.atm-task-card')].every(card => {
+                const rect = card.getBoundingClientRect();
+                const main = card.querySelector('.atm-task-card__main').getBoundingClientRect();
+                const actions = card.querySelector('.atm-task-card__actions')?.getBoundingClientRect();
+                return !actions || (actions.left >= rect.left && actions.right <= rect.right + 1
+                  && actions.bottom <= rect.bottom + 1
+                  && (actions.top >= main.bottom - 1 || actions.left >= main.right - 1));
+              }),
           );
           assert(value, `overflow ${width} ${theme}`);
         };
@@ -55,9 +63,9 @@ try {
             return { x, y, width, height };
           });
           const runtime = document.querySelector(".atm-runtime").getBoundingClientRect();
-          return { cards, runtimeHeight: runtime.height };
+          return { cards, runtimeHeight: runtime.height, collectionWidth: grid.parentElement.clientWidth };
         });
-        const expectedColumns = 1;
+        const expectedColumns = layout.collectionWidth >= 62 * font ? 3 : layout.collectionWidth >= 40 * font ? 2 : 1;
         assert.equal(layout.cards.filter(card => Math.abs(card.y - layout.cards[0].y) < 1).length, expectedColumns, `card columns ${width}/${font}`);
         assert(layout.cards.every(card => card.width >= 270), `cards must remain readable ${width}/${font}`);
         if (width === 1280 && font === 16) assert(layout.runtimeHeight <= 52, "runtime summary must remain compact");
@@ -67,8 +75,36 @@ try {
           assert.equal(await entry.evaluate(el => getComputedStyle(el).backgroundColor), "rgba(0, 0, 0, 0)", `${label}: no solid fill`);
         }
         await page.screenshot({
-          path: join(output, `list-${width}-${theme}-${font}.png`),
+          path: join(output, `cards-${width}-${theme}-${font}.png`),
         });
+        const listView = page.getByRole('button', { name: '列表视图', exact: true });
+        await listView.focus();
+        await page.keyboard.press('Enter');
+        assert(await listView.evaluate(el => el === document.activeElement), 'switching retains keyboard focus');
+        await page.locator('.atm-task-cards[data-view="list"]').waitFor();
+        const listRows = await page.locator('.atm-task-card').evaluateAll(cards => cards.map(card => {
+          const { x, y, width, height } = card.getBoundingClientRect();
+          return { x, y, width, height };
+        }));
+        assert.equal(listRows.length, 3);
+        assert(listRows.slice(1).every((row, index) => row.y >= listRows[index].y + listRows[index].height - 1), 'list rows remain vertical');
+        if (expectedColumns > 1) {
+          assert(listRows[0].width > layout.cards[0].width * 1.5, 'cards and list must have different geometry');
+          assert(listRows[0].height < layout.cards[0].height, 'wide list rows are more compact');
+        }
+        await assertFits();
+        await page.screenshot({ path: join(output, `list-${width}-${theme}-${font}.png`) });
+        await page.reload();
+        await page.locator('.atm-task-cards[data-view="list"]').waitFor();
+        await page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, font);
+        const cardsView = page.getByRole('button', { name: '卡片视图', exact: true });
+        await cardsView.focus();
+        await page.keyboard.press('Space');
+        assert(await cardsView.evaluate(el => el === document.activeElement), 'returning to cards retains keyboard focus');
+        await page.locator('.atm-task-cards[data-view="cards"]').waitFor();
+        await page.reload();
+        await page.locator('.atm-task-cards[data-view="cards"]').waitFor();
+        await page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, font);
         await page.getByRole("button", { name: /^已结束\s*1$/ }).click();
         assert.equal(await page.locator(".atm-task-card").count(), 1);
         assert.equal(Math.round((await page.locator(".atm-task-card").boundingBox()).width), Math.round(layout.cards[0].width), "filtering must preserve card width");
@@ -83,6 +119,13 @@ try {
           assert(await row.getByText(state, { exact: true }).isVisible(), "batch deletion must retain task state");
         }
         await page.getByRole("checkbox", { name: "选择定时任务「每周工作回顾」", exact: true }).check();
+        for (const view of ['列表视图', '卡片视图']) {
+          await page.getByRole('button', { name: view, exact: true }).click();
+          assert(await page.getByRole('checkbox', { name: '选择定时任务「每周工作回顾」', exact: true }).isChecked(), 'switching views preserves batch selection');
+          assert.equal(await page.locator('.atm-task-card').count(), 3);
+          assert.equal(await page.getByRole('button', { name: /^立即运行「/ }).count(), 0);
+          await assertFits();
+        }
         assert.equal(await page.getByRole("switch").count(), 0, "batch selection does not expose live switches");
         await assertFits();
         await page.screenshot({ path: join(output, `batch-${width}-${theme}-${font}.png`) });
@@ -195,27 +238,34 @@ try {
           font,
           columns: expectedColumns,
           flows:
-            "list/ended/detail/notification/editor/models/session-mode/run/reset",
+            "cards/list/keyboard/persistence/batch-selection/ended/detail/notification/editor/models/session-mode/run/reset",
           errors,
         });
         await page.close();
       }
 
-  // Long content stays in a full-width row; controls remain inside each row.
+  // Long content remains readable in a real grid and in full-width list rows.
   const grid = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await grid.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?many=1`);
   await grid.getByRole("button", { name: "每日 AI 新闻简报", exact: true }).waitFor();
-  const rows = await grid.locator(".atm-task-card").evaluateAll(cards => cards.map(card => {
-    const rect = card.getBoundingClientRect();
-    const actions = card.querySelector(".atm-task-card__actions").getBoundingClientRect();
-    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, actionsRight: actions.right, actionsBottom: actions.bottom, width: rect.width, fits: card.scrollWidth <= card.clientWidth + 1 };
-  }));
-  assert.equal(rows.length, 6);
-  for (const [index, row] of rows.entries()) {
-    assert(row.fits);
-    assert(Math.abs(row.left - rows[0].left) < 1 && Math.abs(row.width - rows[0].width) < 1, "task rows share the same width");
-    assert(row.actionsRight <= row.right && row.actionsBottom <= row.bottom, "task controls stay inside the row");
-    if (index) assert(row.top >= rows[index - 1].bottom - 1, "tasks remain in a vertical list");
+  for (const view of ['cards', 'list']) {
+    await grid.getByRole('button', { name: view === 'cards' ? '卡片视图' : '列表视图', exact: true }).click();
+    const rows = await grid.locator(".atm-task-card").evaluateAll(cards => cards.map(card => {
+      const rect = card.getBoundingClientRect();
+      const actions = card.querySelector(".atm-task-card__actions").getBoundingClientRect();
+      const main = card.querySelector('.atm-task-card__main').getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, actionsRight: actions.right, actionsBottom: actions.bottom, actionsTop: actions.top, mainBottom: main.bottom, width: rect.width, fits: card.scrollWidth <= card.clientWidth + 1 };
+    }));
+    assert.equal(rows.length, 6);
+    for (const [index, row] of rows.entries()) {
+      assert(row.fits);
+      assert(Math.abs(row.width - rows[0].width) < 1, "tasks share the same column width");
+      assert(row.actionsRight <= row.right && row.actionsBottom <= row.bottom, "task controls stay inside the row");
+      if (view === 'cards') assert(row.actionsTop >= row.mainBottom - 1, 'card footer never overlaps long content');
+      if (view === 'list' && index) assert(row.top >= rows[index - 1].bottom - 1, "tasks remain in a vertical list");
+    }
+    assert.equal(rows.filter(row => Math.abs(row.top - rows[0].top) < 1).length, view === 'cards' ? 3 : 1, 'wide cards form three columns; list remains one column');
+    await grid.screenshot({ path: join(output, `${view}-1440-long-content.png`) });
   }
   const help = grid.getByRole("button", { name: "运行说明", exact: true });
   await help.click();

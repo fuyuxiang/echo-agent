@@ -68,6 +68,14 @@ describe("InputAddMenu", () => {
     expect(screen.getByRole("menuitem", { name: "添加文件" })).not.toHaveFocus();
   });
 
+  it.each([false, true])("Tab 离开菜单时关闭弹层（Shift=%s）", async (shiftKey) => {
+    render(<InputAddMenu onPickFiles={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.keyDown(screen.getByRole("menuitem", { name: "添加文件" }), { key: "Tab", shiftKey });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.getByRole("button", { name: "添加" })).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("在 + 菜单中用中文能力名按任务开启，不暴露内部模式名", async () => {
     const onAutomationModeChange = vi.fn();
     render(
@@ -245,5 +253,105 @@ describe("InputAddMenu", () => {
 
     expect(await screen.findByRole("menuitem", { name: /恢复后的专家/ })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("menuitem", { name: /恢复后的专家/ })).toHaveFocus());
+  });
+
+  it("窄窗口目录需要点击进入，鼠标离开不会丢失页面，返回恢复父项焦点", async () => {
+    const onSelectExpert = vi.fn();
+    vi.mocked(agentsList).mockResolvedValueOnce([
+      { name: "代码专家", path: "/agents/code.md", description: "审查代码", scope: "user", raw: "检查代码" },
+    ]);
+    render(<InputAddMenu onPickFiles={vi.fn()} onSelectExpert={onSelectExpert} />);
+    fireEvent.click(screen.getByRole("button", { name: "添加" }), { detail: 1 });
+    const popover = screen.getByRole("menu", { name: "添加内容" });
+    const rectSpy = vi.spyOn(popover, "getBoundingClientRect").mockReturnValue({
+      x: 30, y: 400, left: 30, top: 400, right: 254, bottom: 640,
+      width: 224, height: 240, toJSON: () => ({}),
+    });
+    const originalWidth = window.innerWidth;
+    try {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 350 });
+      fireEvent(window, new Event("resize"));
+      const experts = screen.getByRole("menuitem", { name: "专家" });
+      fireEvent.mouseEnter(experts);
+      await act(() => new Promise(resolve => setTimeout(resolve, 200)));
+      expect(screen.queryByRole("menu", { name: "专家子菜单" })).toBeNull();
+      fireEvent.click(experts, { detail: 1 });
+      const catalog = await screen.findByRole("menu", { name: "专家子菜单" });
+      expect(catalog).toHaveClass("iam-submenu--panel");
+      expect(screen.queryByRole("menuitem", { name: "技能" })).toBeNull();
+      fireEvent.mouseLeave(catalog);
+      await act(() => new Promise(resolve => setTimeout(resolve, 250)));
+      expect(catalog).toBeVisible();
+      fireEvent.click(screen.getByRole("menuitem", { name: "返回添加菜单" }));
+      expect(experts).toHaveFocus();
+      expect(screen.getByRole("menuitem", { name: "技能" })).toBeVisible();
+      expect(screen.queryByRole("menu", { name: "专家子菜单" })).toBeNull();
+      expect(onSelectExpert).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("menuitem", { name: "技能" }), { detail: 1 });
+      const skills = await screen.findByRole("menu", { name: "技能子菜单" });
+      fireEvent.keyDown(skills, { key: "ArrowLeft" });
+      expect(screen.getByRole("menuitem", { name: "技能" })).toHaveFocus();
+    } finally {
+      rectSpy.mockRestore();
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
+    }
+  });
+
+  it("空目录提供可聚焦的返回入口，Escape 仍关闭菜单并恢复添加按钮焦点", async () => {
+    render(<InputAddMenu onPickFiles={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: "添加" });
+    fireEvent.click(trigger, { detail: 0 });
+    const popover = screen.getByRole("menu", { name: "添加内容" });
+    const rectSpy = vi.spyOn(popover, "getBoundingClientRect").mockReturnValue({
+      x: 30, y: 400, left: 30, top: 400, right: 254, bottom: 640,
+      width: 224, height: 240, toJSON: () => ({}),
+    });
+    const originalWidth = window.innerWidth;
+    try {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 350 });
+      fireEvent(window, new Event("resize"));
+      fireEvent.keyDown(screen.getByRole("menuitem", { name: "专家" }), { key: "ArrowRight" });
+      expect(await screen.findByText("暂无已安装专家")).toBeVisible();
+      await waitFor(() => expect(screen.getByRole("menuitem", { name: "返回添加菜单" })).toHaveFocus());
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(trigger).toHaveFocus();
+    } finally {
+      rectSpy.mockRestore();
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
+    }
+  });
+
+  it("打开目录时调整窗口保持所选目录和焦点，返回按钮消失后焦点回到条目", async () => {
+    render(<InputAddMenu onPickFiles={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    const popover = screen.getByRole("menu", { name: "添加内容" });
+    const rectSpy = vi.spyOn(popover, "getBoundingClientRect").mockReturnValue({
+      x: 30, y: 400, left: 30, top: 400, right: 254, bottom: 640,
+      width: 224, height: 240, toJSON: () => ({}),
+    });
+    const originalWidth = window.innerWidth;
+    try {
+      const connectors = screen.getByRole("menuitem", { name: "连接器" });
+      connectors.focus();
+      fireEvent.keyDown(connectors, { key: "ArrowRight" });
+      const catalog = await screen.findByRole("menu", { name: "连接器子菜单" });
+      const server = await screen.findByRole("menuitem", { name: /真实服务/ });
+      await waitFor(() => expect(server).toHaveFocus());
+      connectors.focus();
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 350 });
+      fireEvent(window, new Event("resize"));
+      expect(catalog).toHaveClass("iam-submenu--panel");
+      await waitFor(() => expect(server).toHaveFocus());
+      screen.getByRole("menuitem", { name: "返回添加菜单" }).focus();
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
+      fireEvent(window, new Event("resize"));
+      expect(catalog).not.toHaveClass("iam-submenu--panel");
+      await waitFor(() => expect(server).toHaveFocus());
+    } finally {
+      rectSpy.mockRestore();
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
+    }
   });
 });

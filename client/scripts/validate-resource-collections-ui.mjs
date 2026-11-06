@@ -75,7 +75,7 @@ try {
     ["projects", "项目", "grid"], ["capabilities", "专家·技能·连接器", "grid"],
     ["resource-groups", "专家团", "grid"], ["capabilities", "技能", "grid"],
     ["capabilities", "连接器", "compact"], ["capabilities", "插件", "grid"],
-    ["management-schedules", "定时任务", "compact"],
+    ["management-schedules", "定时任务", "grid"],
   ];
   for (const [width, font, theme, collapsed] of [[1280, 16, "light", 1], [1280, 16, "dark", 0], [1024, 22, "dark", 1], [768, 22, "light", 1], [390, 16, "light", 1], [350, 22, "dark", 1]]) {
     await page.setViewportSize({ width, height: 900 });
