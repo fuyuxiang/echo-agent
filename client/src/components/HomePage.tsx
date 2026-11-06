@@ -111,6 +111,7 @@ export function HomePage({
       <div className="home__inner">
         <header className="home__header">
           <h1 className="home__title">今天想完成什么？</h1>
+          <p className="home__description">描述任务，或添加文件、知识与工具。</p>
         </header>
 
         <section className="home__composer-area">

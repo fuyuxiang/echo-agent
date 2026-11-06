@@ -200,7 +200,7 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-code-diff-added-text-bg: #2EA0430C;
   --echo-code-diff-removed-text-bg: #F851490C;
   --echo-code-match-bg: #EEF0FD;
-  --echo-surface-sidebar: #F0F2F5;
+  --echo-surface-sidebar: #F4F5F8;
   --echo-surface-content: #FFFFFF;
   --echo-surface-raised: #FFFFFF;
   --echo-surface-conversation: #EEF1F5;
@@ -547,8 +547,8 @@ body.vscode-dark {
 :root {
   --echo-font-code-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --echo-font-mono: var(--echo-font-code-family);
-  --echo-font-display-size: 32px;
-  --echo-font-display-line-height: 40px;
+  --echo-font-display-size: 2.25rem;
+  --echo-font-display-line-height: 1.3;
   --echo-font-display-weight: 700;
   --echo-font-h1-size: 24px;
   --echo-font-h1-line-height: 32px;
@@ -655,27 +655,35 @@ body.vscode-dark {
 :root {
   --echo-code-addition-bg: var(--echo-status-success-surface);
   --echo-code-deletion-bg: var(--echo-status-error-soft);
-  --echo-radius-control: 8px;
-  --echo-radius-card: 12px;
+  --echo-radius-control: 6px;
+  --echo-radius-card: 10px;
   /* Resource management: one density scale for lists and template choices. */
   --echo-resource-padding: 16px;
   --echo-resource-gap: 12px;
   --echo-resource-icon-size: 36px;
   --echo-resource-row-min-height: 88px;
-  --echo-resource-template-min-height: 112px;
+  --echo-resource-template-min-height: 104px;
   --echo-resource-title-size: .875rem;
   --echo-resource-description-size: .8125rem;
   --echo-resource-meta-size: .75rem;
-  --echo-radius-dialog: 14px;
+  --echo-radius-dialog: 12px;
   --echo-control-font-size: .8125rem;
   --echo-control-line-height: 1.5;
   --echo-control-gap: 6px;
-  --echo-page-gutter: 24px;
-  --echo-page-width: 1120px;
-  --echo-page-title-size: 1.25rem;
-  --echo-page-title-weight: 650;
+  --echo-page-gutter: 32px;
+  --echo-page-width: 1200px;
+  --echo-page-title-size: 1.5rem;
+  --echo-page-title-weight: 600;
   --echo-page-title-line-height: 1.4;
   --echo-section-gap: 24px;
+  --echo-page-top: 32px;
+  --echo-header-height: 56px;
+  --echo-reading-width: 820px;
+  --echo-home-width: 760px;
+  --echo-content-title-size: .9375rem;
+  --echo-body-size: .875rem;
+  --echo-caption-size: .75rem;
+  --echo-line-height: 1.6;
   /* Compatibility: brand and primary share the same product action palette. */
   --echo-button-brand-bg: var(--echo-button-primary-bg);
   --echo-button-brand-bg-hover: var(--echo-button-primary-bg-hover);
@@ -684,4 +692,11 @@ body.vscode-dark {
 }
 [data-theme="dark"] {
   --echo-shadow-floating: 0 20px 56px rgba(0, 0, 0, .36), 0 2px 8px rgba(0, 0, 0, .24);
+}
+
+@media (max-width: 1180px) {
+  :root { --echo-page-gutter: 24px; --echo-page-top: 24px; }
+}
+@media (max-width: 760px) {
+  :root { --echo-page-gutter: 16px; }
 }

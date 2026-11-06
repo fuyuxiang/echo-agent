@@ -1,0 +1,136 @@
+/* ---------- Home ---------- */
+
+.home {
+  background: var(--echo-surface-canvas);
+  position: relative;
+  isolation: isolate;
+  min-height: 0;
+  max-width: none;
+  overflow-x: hidden;
+  padding: var(--echo-spacing-9) var(--echo-page-gutter);
+}
+
+.home__inner {
+  max-width: var(--echo-home-width);
+  flex: 0 0 auto;
+  gap: 32px;
+  /* Auto margins center the whole task entry. When content outgrows the
+     window they resolve to zero, keeping the title reachable by scrolling. */
+  margin: auto;
+}
+
+.home__header {
+  width: 100%;
+  align-items: flex-start;
+}
+
+.home__title {
+  font-size: clamp(1.75rem, 3.6cqi, var(--echo-font-display-size));
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.025em;
+  text-align: left;
+}
+.home__description {
+  margin: 12px 0 0;
+  color: var(--echo-text-medium);
+  font-size: var(--echo-body-size);
+  line-height: var(--echo-line-height);
+}
+
+.home__composer-area {
+  width: 100%;
+  gap: 16px;
+}
+
+.echo-composer-wrap--home {
+  padding: 0;
+  border-radius: var(--echo-radius-dialog);
+  background: transparent;
+}
+
+.echo-composer {
+  position: relative;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: var(--echo-radius-dialog);
+  background: var(--ui-surface-raised);
+  box-shadow: none;
+  backdrop-filter: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.echo-composer:focus-within {
+  border-color: var(--ui-brand-line);
+  box-shadow: 0 0 0 1px var(--echo-border-focus);
+}
+
+.home .echo-composer {
+  padding: 20px 20px 0;
+  border-radius: var(--echo-radius-dialog);
+  box-shadow: var(--echo-shadow-input);
+}
+
+.home .echo-composer:focus-within {
+  box-shadow: 0 0 0 2px var(--echo-brand-soft);
+}
+
+.home .echo-composer-meta {
+  margin-top: 8px;
+}
+
+.echo-composer__input { max-height: min(32vh, 280px); overflow-y: auto; }
+.echo-composer--home .echo-composer__input {
+  min-height: clamp(88px, 11vh, 120px);
+  max-height: clamp(160px, 36vh, 420px);
+}
+@media (max-height: 640px) {
+  .home { padding-block: 24px; }
+  .echo-composer--home .echo-composer__input { min-height: 80px; }
+}
+
+.workspace-picker__error { max-width: 360px; padding: 8px 12px; color: var(--echo-status-error); white-space: normal; overflow-wrap: anywhere; font-size: 0.75rem; }
+
+/* 拖拽图片时的全卡片覆盖提示。Tauri onDragDropEvent 在 enter/over 期间触发,
+   半透明遮罩 + 居中文案给用户一个明确的释放目标。
+   2026-09 扩展:列表出实际支持的文件类型范围(图片 / 文档 / 代码 / 文本 /
+   数据),并把 hover 与 drop 的反馈分开 —— hover 仅给乐观提示,真正的
+   「已添加 N / 跳过 M」留给 toast。 */
+.echo-composer__dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 16px;
+  border-radius: 18px;
+  background: var(--echo-brand-soft);
+  border: 1.5px dashed color-mix(in srgb, var(--echo-brand) 65%, transparent);
+  color: var(--echo-brand);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+  animation: echo-composer-dropzone-fade 120ms ease-out;
+}
+
+.echo-composer__dropzone-title {
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+
+.echo-composer__dropzone-hint {
+  font-size: 0.75rem;
+  font-weight: 500;
+  opacity: 0.85;
+  letter-spacing: 0.2px;
+  text-align: center;
+}
+
+@keyframes echo-composer-dropzone-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}

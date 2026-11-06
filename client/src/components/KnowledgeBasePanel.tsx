@@ -1,3 +1,4 @@
+import { PageHeading } from "./PageHeading";
 /**
  * 知识库面板 —— 对齐 EchoAgent `knowledge-base-panel`(可插拔知识源)。
  *
@@ -342,10 +343,8 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
   return (
     <div className="kb-panel" role="region" aria-label="知识库">
       <PageToolbar className="kb-panel__head">
-        <div className="kb-panel__heading">
-          <h1 className="kb-panel__title">知识库</h1>
-          <p>管理知识源并搜索其中的资料</p>
-        </div>
+        <PageHeading title="知识库" description="管理知识源并搜索其中的资料"
+          className="kb-panel__heading" titleClassName="kb-panel__title" />
         {sources.length > 0 && <div className="kb-panel__head-right">
           <span className="kb-panel__sources">{sources.length} 个知识源</span>
           {isTauriAvailable() && <button

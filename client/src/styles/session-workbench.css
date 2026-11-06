@@ -24,8 +24,8 @@
 .conversation-origin button:focus-visible, .conversation-continuations button:focus-visible, .conversation-continuations summary:focus-visible, .conversation-continuation-feedback button:focus-visible { outline:2px solid var(--echo-brand); outline-offset:2px; }
 @media(pointer:coarse) { .conversation-origin button, .conversation-continuations button, .conversation-continuations summary, .conversation-continuation-feedback button { min-height:44px; } }
 .main-topbar {
-  flex: 0 0 56px;
-  height: 56px;
+  flex: 0 0 var(--echo-header-height);
+  height: var(--echo-header-height);
   min-width: 0;
   display: flex;
   align-items: center;

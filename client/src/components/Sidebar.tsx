@@ -1041,13 +1041,14 @@ export function Sidebar({
         </div>
       )}
 
-      <nav className="sidebar__nav">
+      <nav className="sidebar__nav" aria-label="主导航">
         <button
           className={
-            "sidebar__nav-item" +
+            "sidebar__nav-item sidebar__nav-item--create" +
             (activeNav === "新建任务" ? " sidebar__nav-item--active" : "")
           }
           onClick={onNewSession}
+          aria-current={activeNav === "新建任务" ? "page" : undefined}
         >
           <EchoNewTaskIcon size="md" />
           <span>新建任务</span>
@@ -1058,6 +1059,7 @@ export function Sidebar({
             <button
               key={id}
               aria-label={label}
+              aria-current={isSidebarMenuItemActive(id, activeNav) ? "page" : undefined}
               title={id === "capabilities" ? "管理专家、技能与连接器" : undefined}
               className={
                 "sidebar__nav-item" +

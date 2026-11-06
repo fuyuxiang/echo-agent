@@ -1,3 +1,4 @@
+import { PageHeading } from "./PageHeading";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Brain, Plus, RefreshCw, Search, Pin, Pencil, Trash2, Check, Copy, Download } from "lucide-react";
 import { Button, IconButton } from "./Button";
@@ -101,7 +102,8 @@ export function PersonalMemoryPanel({ cwd, sessionId, onToast, onOpenSession, on
     catch (e) { setError(message(e)); } finally { setBusy(false); }
   };
   return <section className="personal-memory" aria-label="个人记忆管理">
-    <header className="personal-memory__header"><div><h2><Brain size={20} /> 记忆</h2><p>记住你的习惯、项目约定和近期跟进事项。你可以随时更正或让 Echo 忘记。</p></div>
+    <header className="personal-memory__header"><PageHeading title="记忆" level={2}
+      description="记住你的习惯、项目约定和近期跟进事项。你可以随时更正或让 Echo 忘记。" />
       <IconButton label="刷新个人记忆" disabled={loading || busy} onClick={() => void reload()}><RefreshCw size={16} /></IconButton></header>
     <MemorySettingsPanel compact />
     <div className="personal-memory__context">{cwd ? <>当前工作区 <code title={cwd}>{cwd}</code></> : "当前仅查看跨项目的全局记忆"}</div>

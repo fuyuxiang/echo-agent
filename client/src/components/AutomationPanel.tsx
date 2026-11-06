@@ -1,3 +1,4 @@
+import { PageHeading } from "./PageHeading";
 import { ResourceList } from "./ResourceList";
 import { findModelDisplayName } from "@/lib/model-presentation";
 import { PageToolbar } from "./PageToolbar";
@@ -1404,7 +1405,8 @@ export function AutomationPanel({
       ) : (
         <PageToolbar className="atm-toolbar">
           <div className="atm-toolbar-left">
-            <h1 className="atm-page-title">定时任务</h1>
+            <PageHeading title="定时任务" titleClassName="atm-page-title"
+              description="按计划执行任务，跟进运行记录与交付结果。" />
             {isBatchMode ? (
               <div className="atm-batch-info">
                 <button

@@ -1,3 +1,4 @@
+import { PageHeading } from "./PageHeading";
 import { modelDisplayName } from "@/lib/model-presentation";
 import { modelTestDuration, useModelConnectionTests } from "@/lib/use-model-connection-tests";
 import { SettingsDisclosure } from "./SettingsDisclosure";
@@ -419,10 +420,8 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId }: Model
   return (
     <div className="model-connections" onWheel={handleWheel}>
       <header className="model-connections__header">
-        <div>
-          <h2>模型与连接</h2>
-          <p>选择默认模型，或添加个人模型连接。组织提供的连接由管理员维护。</p>
-        </div>
+        <PageHeading title="模型与连接" level={2}
+          description="选择默认模型，或添加个人模型连接。组织提供的连接由管理员维护。" />
         <button className="echo-button echo-button--primary echo-button--medium" onClick={() => setConnectionEditor("new")}>
           <span className="echo-button__content"><Plus size={15} />添加个人连接</span>
         </button>

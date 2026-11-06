@@ -3,9 +3,13 @@
 // hidden; computed parent backgrounds alone are insufficient for diff text.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 const require = createRequire(import.meta.url);
-const { PNG } = require(resolve("vendor/theia-platform/node_modules/playwright-core/lib/utilsBundle.js"));
+// Use the same optional browser installation as ui-review-runtime. Screenshot
+// audits must also work without installing the full native IDE toolchain.
+const playwrightRequire = createRequire(realpathSync(process.env.PLAYWRIGHT_MODULE || resolve("vendor/theia-platform/node_modules/playwright/index.mjs")));
+const { PNG } = require(resolve(dirname(playwrightRequire.resolve("playwright-core/package.json")), "lib/utilsBundle.js"));
 const luminance = rgb => rgb.map(channel => channel / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
 export async function inspectEditorPaint(page, target, path, { diffHighlights = false } = {}) {
   if (diffHighlights) {

@@ -1,6 +1,6 @@
 /* The organization workspace has one content scroll owner and persistent navigation. */
 .org-workspace.org-memory { display:flex; flex-direction:column; width:100%; height:100%; min-width:0; min-height:0; padding:0; overflow:hidden; background:var(--echo-bg-primary); container:organization / inline-size; }
-.org-workspace__topbar { display:flex; flex:none; align-items:center; gap:16px; min-height:72px; padding:18px 26px; border-bottom:1px solid var(--echo-border-default); }
+.org-workspace__topbar { display:flex; flex:none; align-items:center; gap:16px; min-height:var(--echo-header-height); padding:12px 24px; border-bottom:1px solid var(--echo-border-default); }
 .org-workspace__brand { display:flex; align-items:center; gap:9px; min-width:0; }
 .org-workspace__brand>svg { flex:none; color:var(--echo-brand); }
 .org-workspace__brand h1 { overflow:hidden; margin:0; font-size:1.125rem; font-weight:700; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
@@ -13,14 +13,14 @@
 .org-account-trigger span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .org-account-details { display:flex; flex-direction:column; gap:6px; max-width:300px; padding:12px 10px; border-bottom:1px solid var(--echo-border-default); margin-bottom:4px; color:var(--echo-text-strong); font-size:.8125rem; }
 .org-account-details span,.org-account-details small { overflow-wrap:anywhere; color:var(--echo-text-weak); font-size:.75rem; line-height:1.6; }
-.org-workspace__body { display:grid; grid-template-columns:168px minmax(0,1fr); flex:1; gap:26px; min-height:0; padding:0 26px 16px 16px; }
-.org-workspace .org-memory__nav { align-self:stretch; gap:5px; padding:22px 12px 12px 0; background:transparent; overflow-y:auto; }
+.org-workspace__body { display:grid; grid-template-columns:176px minmax(0,1fr); flex:1; gap:0; min-height:0; padding:0; }
+.org-workspace .org-memory__nav { align-self:stretch; gap:5px; padding:24px 12px; border-right:1px solid var(--echo-border-default); background:var(--echo-surface-sidebar); overflow-y:auto; }
 .org-workspace .org-memory__nav button { align-items:center; flex:none; min-height:40px; gap:8px; padding:10px; font-size:.8125rem; border-radius:8px; }
 .org-workspace .org-memory__nav button em { font-size:.6875rem; font-variant-numeric:tabular-nums; }
-.org-workspace .org-memory__content { display:flex; flex-direction:column; min-width:0; min-height:0; padding:0; overflow:hidden; }
-.org-workspace__page-header { display:flex; flex:none; align-items:center; justify-content:space-between; gap:16px; padding:22px 0 16px; }
+.org-workspace .org-memory__content { container:organization-content / inline-size; display:flex; flex-direction:column; min-width:0; min-height:0; padding:0 var(--echo-page-gutter) 24px; overflow:hidden; }
+.org-workspace__page-header { display:flex; flex:none; align-items:center; justify-content:space-between; gap:16px; padding:var(--echo-page-top) 0 24px; }
 .org-workspace__page-header>div:first-child { min-width:0; }
-.org-workspace__page-header h2 { margin:0 0 5px; font-size:1.25rem; font-weight:700; line-height:1.4; }
+.org-workspace__page-header h2 { margin:0 0 5px; font-size:var(--echo-page-title-size); font-weight:var(--echo-page-title-weight); line-height:var(--echo-page-title-line-height); }
 .org-workspace__page-header p { margin:0; color:var(--echo-text-medium); font-size:.8125rem; line-height:1.6; }
 .org-workspace__page-actions { display:flex; flex:none; align-items:center; justify-content:flex-end; gap:8px; }
 .org-memory .org-icon-button { display:inline-flex; align-items:center; justify-content:center; flex:none; width:34px; height:34px; padding:0; border:1px solid transparent; background:transparent; color:var(--echo-text-medium); }
@@ -51,7 +51,7 @@
 .org-resource-empty>svg { color:var(--echo-brand); }
 .org-resource-empty strong { color:var(--echo-text-strong); font-size:.9375rem; }
 .org-resource-empty p { margin:0 0 6px; font-size:.8125rem; line-height:1.6; }
-.org-workspace__welcome { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:center; gap:22px; padding:26px; border:1px solid var(--echo-border-default); border-radius:14px; background: var(--echo-surface-content); }
+.org-workspace__welcome { display:grid; grid-template-columns:minmax(0,1fr) 240px; align-items:center; gap:24px; padding:24px; border:1px solid var(--echo-border-default); border-radius:var(--echo-radius-card); background: var(--echo-surface-content); }
 .org-workspace__welcome h3 { margin:0 0 10px; font-size:1.25rem; line-height:1.5; }
 .org-workspace__welcome p { font-size:.8125rem; line-height:1.8; }
 .org-workspace__welcome span { display:block; margin-top:18px; color:var(--echo-text-weak); font-size:.75rem; line-height:1.6; }
@@ -119,7 +119,8 @@
 .org-editor-dialog .org-document-batch { overflow:auto; margin:0; padding:18px 24px; border:0; border-radius:0; }
 .org-document-batch ul { overflow-wrap:anywhere; }
 @container organization (max-width:900px) {
-  .org-workspace__body { grid-template-columns:140px minmax(0,1fr); gap:20px; padding-inline:14px 20px; }
+  .org-workspace__body { grid-template-columns:clamp(140px, 7rem, 160px) minmax(0,1fr); gap:0; padding:0; }
+  .org-workspace .org-memory__content { padding:0 16px 12px; }
   .org-workspace__page-header { flex-wrap:wrap; gap:12px; }
   .org-workspace__page-actions { margin-left:auto; }
   .org-resource-filters { flex-wrap:wrap; }
@@ -129,7 +130,7 @@
   .org-workspace .org-document-library__row { grid-template-columns:32px minmax(0,1fr) auto; }
   .org-workspace .org-document-library__row .org-library__actions { grid-column:2/-1; justify-content:flex-end; }
   .org-workspace__welcome { grid-template-columns:1fr; gap:16px; }
-  .org-workspace__welcome img { width:min(100%,420px); justify-self:center; }
+  .org-workspace__welcome img { width:min(100%,240px); justify-self:start; }
   .org-workspace .org-overview__hero { grid-template-columns:38px minmax(0,1fr); }
   .org-workspace .org-overview__hero>.org-memory__primary { grid-column:2; justify-self:start; }
   .org-workspace .org-overview__metrics { grid-template-columns:1fr; }
@@ -144,7 +145,7 @@
   .org-workspace .org-memory__nav { display:flex; flex:none; flex-direction:row; gap:4px; padding:10px 0; border-right:0; border-bottom:1px solid var(--echo-border-default); overflow-x:auto; }
   .org-workspace .org-memory__nav button { display:flex; flex:none; width:auto; gap:6px; min-height:36px; padding:7px 10px; }
   .org-workspace .org-memory__nav button em { display:none; }
-  .org-workspace .org-memory__content { flex:1; }
+  .org-workspace .org-memory__content { flex:1; padding:0 0 8px; }
   .org-workspace__page-header { padding:16px 0 12px; }
   .org-workspace__page-header p { display:none; }
   .org-workspace__page-header h2 { margin:0; font-size:1.125rem; }
@@ -212,4 +213,25 @@
 @container organization (max-width:760px) {
   .org-resource-list-actions { flex-basis:100%; justify-content:flex-end; }
   .org-resource-select { flex:1 1 125px; }
+}
+
+/* Content width accounts for both sidebars and the reading preference. Keep
+   the title/actions together and filters on two rows before they can consume
+   the list's reading space. Navigation and pagination remain available. */
+@container organization-content (max-width:40rem) {
+  .org-workspace__page-header { align-items:center; gap:12px; padding:16px 0 12px; }
+  .org-workspace__page-header h2 { margin:0; font-size:1.25rem; }
+  .org-workspace__page-header p { display:none; }
+  .org-workspace__page-actions { flex-wrap:wrap; gap:6px; padding-top:0; }
+  .org-workspace__page-actions button { font-size:.75rem; padding-inline:9px; }
+  .org-resource-toolbar { padding-bottom:12px; }
+  .org-resource-views { margin-bottom:10px; }
+  .org-memory .org-resource-views button { padding:8px 0 10px; }
+  .org-resource-filters { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); grid-template-areas:"search scope" "status actions"; gap:8px; }
+  .org-resource-search { grid-area:search; min-width:0; max-width:none; }
+  .org-resource-select { grid-area:scope; min-width:0; }
+  .org-resource-select--status { grid-area:status; }
+  .org-resource-list-actions { grid-area:actions; flex-basis:auto; min-width:0; max-width:100%; justify-content:flex-end; }
+  .org-resource-list-actions>.org-resource-count { min-width:0; white-space:normal; overflow-wrap:anywhere; }
+  .org-resource-pagination { gap:8px; min-height:48px; padding-top:8px; }
 }

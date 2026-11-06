@@ -12,7 +12,7 @@
 .coding-workbench {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: max(44px, 2.75rem) minmax(0, 1fr);
+  grid-template-rows: max(48px, 3rem) minmax(0, 1fr);
   height: 100%;
   overflow: hidden;
   font-size: 0.75rem;
@@ -24,7 +24,7 @@
 .coding-workbench--theia {
   --echo-agent-width: 410px;
   grid-template-columns: minmax(0, 1fr) min(8px, 1vw) minmax(300px, var(--echo-agent-width, 410px));
-  grid-template-rows: max(44px, 2.75rem) minmax(0, 1fr);
+  grid-template-rows: max(48px, 3rem) minmax(0, 1fr);
   font-size: 0.8125rem;
 }
 
@@ -271,14 +271,14 @@
 
 .echo-theia-agent__heading {
   display: flex;
-  flex: 0 0 40px;
+  flex: 0 0 44px;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
   padding: 0 12px;
   border-bottom: 1px solid var(--echo-border-subtle);
-  background: var(--echo-bg-primary);
+  background: var(--echo-surface-sidebar);
 }
 
 .echo-theia-agent__heading .coding-task-switcher {

@@ -122,6 +122,7 @@
 .echo-button--large { --control-height: var(--echo-size-control-lg); padding: 8px 16px; }
 :is(.echo-button--icon-only, .settings-btn--icon-only, .form-button--icon-only) { width: var(--control-height); min-width: var(--control-height); padding: 0; }
 .echo-button__content { display: inline-flex; align-items: center; justify-content: center; gap: var(--echo-control-gap); }
+.echo-button__content > svg { flex: none; width: var(--echo-icon-size-md); height: var(--echo-icon-size-md); }
 .echo-button__content--loading { opacity: 0; }
 .echo-button__spinner { position: absolute; width: 16px; height: 16px; animation: echo-icon-spin 1s linear infinite; }
 .app-dialog__button { min-width: 76px; }

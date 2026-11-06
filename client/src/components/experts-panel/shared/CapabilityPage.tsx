@@ -2,6 +2,7 @@ import { useRef, type ReactNode } from "react";
 import { SearchIcon, XCloseIcon } from "@/foundation/components/Icon/icons";
 import { PageToolbar } from "@/components/PageToolbar";
 import { Button, IconButton } from "@/components/Button";
+import { PageHeading } from "@/components/PageHeading";
 
 interface Props {
   title: string;
@@ -24,16 +25,15 @@ interface Props {
 /** The extension pages share one toolbar, content gutter and scroll owner. */
 export function CapabilityPage({ title, headingLevel = 2, description, metadata, className = "", search, actions, illustration, summary, children }: Props) {
   const searchRef = useRef<HTMLInputElement>(null);
-  const Heading = headingLevel === 1 ? "h1" : "h2";
   return (
     <section className={`capability-page ${className}`} aria-label={title}>
       <div className="capability-page__inner">
         <PageToolbar className={`capability-page__header${illustration ? " capability-page__header--illustrated" : ""}`}>
-          <div className="capability-page__heading">
-            <Heading className="capability-page__title">{title}</Heading>
-            {description && <p className="capability-page__description">{description}</p>}
-            {(metadata || illustration) && <div className="capability-page__metadata" aria-hidden={metadata ? undefined : true}>{metadata}</div>}
-          </div>
+          <PageHeading title={title} description={description} level={headingLevel}
+            className="capability-page__heading" titleClassName="capability-page__title"
+            descriptionClassName="capability-page__description">
+            {metadata && <div className="capability-page__metadata">{metadata}</div>}
+          </PageHeading>
           <div className="capability-page__controls">
             {search && (
               <div className="capability-search">

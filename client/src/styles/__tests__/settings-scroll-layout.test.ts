@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const appCss = readFileSync(resolve(process.cwd(), "src/styles/app.css"), "utf8");
-const visualPolishCss = readFileSync(resolve(process.cwd(), "src/styles/visual-polish.css"), "utf8");
+const visualPolishCss = readFileSync(resolve(process.cwd(), "src/styles/settings-center.css"), "utf8");
 
 describe("settings content scrolling contract", () => {
   it("keeps the standalone token usage view vertically scrollable", () => {

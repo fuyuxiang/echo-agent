@@ -34,6 +34,7 @@
     "test:task-recovery": "node scripts/test-browser-inputs.mjs && node scripts/validate-task-recovery-ui.mjs",
     "test:ui:organization": "node scripts/validate-organization-workspace-ui.mjs",
     "test:ui:management-pages": "node scripts/validate-management-pages-ui.mjs",
+    "test:ui:workspace-design": "node scripts/validate-workspace-design.mjs && node scripts/validate-organization-workspace-ui.mjs --extended",
     "test:ui:product-experience": "node scripts/validate-product-experience-ui.mjs",
     "test:ui:resource-collections": "node scripts/validate-resource-collections-ui.mjs",
     "test:ui:queue": "node scripts/validate-queue-admission-ui.mjs",

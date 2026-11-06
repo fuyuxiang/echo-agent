@@ -8,7 +8,7 @@ const readCss = (fileName: string) =>
 const appCss = readCss("app.css");
 const globalCss = readCss("global.css");
 const tokensCss = readCss("tokens.css");
-const visualPolishCss = readCss("visual-polish.css");
+const visualPolishCss = readCss("settings-center.css");
 
 function themeColors(theme: "light" | "dark") {
   const selector = theme === "dark" ? ':root[data-theme="dark"]' : ':root,';

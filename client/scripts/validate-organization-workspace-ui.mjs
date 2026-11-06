@@ -8,19 +8,37 @@ const server=await createUiReviewServer(0);
 const base=`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=organization-shell&platform=mac`;
 let browser, activePage;
 const evidence=[],errors=[];
+// Use persisted reading sizes, including the supported minimum window with
+// both the default and widest sidebar. Empty overview pages miss list collapse.
+const layouts = [
+  [1440,900,'light',13,false,248], [1100,760,'dark',13,false,248],
+  [768,720,'light',18,true,248], [390,760,'dark',13,true,248],
+  [1024,680,'light',18,false,248], [1024,680,'dark',18,false,248],
+  [1024,680,'light',18,false,400], [1024,680,'dark',18,false,400],
+  ...(process.argv.includes('--extended') ? [
+    [768,720,'light',18,false,248], [1024,768,'light',13,false,248],
+    [1920,1080,'dark',18,false,248], [1920,1080,'light',13,true,248],
+  ] : []),
+];
 try {
   browser=await (await reviewChromium()).launch({headless:true,executablePath:process.env.CHROME_BIN||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
-  for(const [width,height,theme,font,collapsed] of (process.argv.includes('--flows-only')?[]:[[1440,900,'light',16,false],[1100,760,'dark',16,false],[768,720,'light',22,true],[390,760,'dark',16,true],...(process.argv.includes('--extended')?[[768,720,'light',22,false],[1024,768,'light',16,false],[1920,1080,'dark',22,false],[1920,1080,'light',16,true]]:[])])){
+  for(const [width,height,theme,font,collapsed,sidebar] of (process.argv.includes('--flows-only')?[]:layouts)){
     const page=await browser.newPage({viewport:{width,height}});
     activePage=page;
     page.setDefaultTimeout(15000);
     page.setDefaultNavigationTimeout(45000);
     page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(({font,sidebar})=>{
+      localStorage.setItem('echoagent.fontSize',String(font));
+      localStorage.setItem('app-sidebar-width',String(sidebar));
+    },{font,sidebar});
     await page.goto(`${base}&orgState=many&theme=${theme}&collapsed=${collapsed?1:0}`);
     await page.getByLabel('组织知识概况').waitFor();
-    await page.addStyleTag({content:`html {font-size:${font}px!important}`});
+    await page.addStyleTag({content:`html {font-size:${16*font/13}px!important}`});
+    const screenshotSuffix=`${width}-${height}-${theme}-${font}-${sidebar}-${collapsed?'collapsed':'expanded'}`;
     for(const [tab,label] of [['overview','概览'],['memories','经验'],['documents','文档'],['skills','Skills']]){
       await page.locator('.org-memory__nav button').filter({hasText:label}).click();
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
       const geometry=await page.evaluate(()=>{
         const root=document.querySelector('.org-workspace'),main=root.querySelector('.org-memory__content'),nav=root.querySelector('.org-memory__nav'),scroll=root.querySelector('.org-resource-scroll');
         const viewport=document.querySelector('.app__main').getBoundingClientRect();
@@ -29,25 +47,39 @@ try {
           const rect=el.getBoundingClientRect(),style=getComputedStyle(el);
           return rect.width>0&&rect.height>0&&style.position!=='fixed'&&(rect.right>viewport.right+2||rect.left<viewport.left-2);
         }).map(el=>el.className).slice(0,10);
-        return {overflow,outerScroll:root.scrollHeight>root.clientHeight+2,contentHeight:scroll.clientHeight,scrollHeight:scroll.scrollHeight,navTop:nav.getBoundingClientRect().top,headerTop:main.querySelector('header').getBoundingClientRect().top,bottom:root.getBoundingClientRect().bottom};
+        const unreachableControls=[...root.querySelectorAll('.org-workspace__page-actions button,.org-resource-filters input,.org-resource-filters select,.org-resource-filters button,.org-resource-pagination button,.org-resource-pagination select')].filter(el=>{
+          if(!el.checkVisibility())return false;
+          const rect=el.getBoundingClientRect();
+          return rect.top<viewport.top-1||rect.bottom>viewport.bottom+1||!el.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));
+        }).map(el=>el.getAttribute('aria-label')||el.textContent.trim());
+        return {overflow,unreachableControls,outerScroll:root.scrollHeight>root.clientHeight+2,contentHeight:scroll.clientHeight,scrollHeight:scroll.scrollHeight,navTop:nav.getBoundingClientRect().top,headerTop:main.querySelector('header').getBoundingClientRect().top,bottom:root.getBoundingClientRect().bottom};
       });
       assert.deepEqual(geometry.overflow,[],`${width} ${tab}: horizontal overflow`);
+      assert.deepEqual(geometry.unreachableControls,[],`${screenshotSuffix} ${tab}: controls are covered or clipped`);
       assert(!geometry.outerScroll,`${width} ${tab}: outer page must not scroll`);
-      assert(geometry.contentHeight>height*.23,`${width} ${tab}: too little reading space (${geometry.contentHeight})`);
+      const minimumReadingHeight=width>=1024?Math.max(200,height*.23):height*.23;
+      assert(geometry.contentHeight>minimumReadingHeight,`${screenshotSuffix} ${tab}: too little reading space (${geometry.contentHeight})`);
       await page.locator('.org-resource-scroll').evaluate(el=>el.scrollTop=180);
       assert.equal(await page.locator('.org-memory__nav').evaluate(el=>el.getBoundingClientRect().top),geometry.navTop);
       assert.equal(await page.locator('.org-workspace__page-header').evaluate(el=>el.getBoundingClientRect().top),geometry.headerTop);
       await page.locator('.org-resource-scroll').evaluate(el=>el.scrollTop=0);
-      await page.screenshot({path:join(output,`${tab}-${width}-${theme}.png`)});
+      await page.screenshot({path:join(output,`${tab}-${screenshotSuffix}.png`)});
       if(tab!=='overview'){
-  await page.getByRole('button',{name:'我的提交',exact:true}).click();
-        await page.screenshot({path:join(output,`${tab}-mine-${width}-${theme}.png`)});
+        const action=page.locator(tab==='memories'?'.org-memory-summary':tab==='documents'?'.org-document-library__row .org-library__actions button':'.org-skill-card footer button').first();
+        await action.scrollIntoViewIfNeeded();
+        assert(await action.evaluate(el=>{
+          const rect=el.getBoundingClientRect(),viewport=el.closest('.org-resource-scroll').getBoundingClientRect();
+          return rect.top>=viewport.top-1&&rect.bottom<=viewport.bottom+1&&el.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));
+        }),`${screenshotSuffix} ${tab}: list action cannot be fully reached`);
+        await page.getByRole('button',{name:'我的提交',exact:true}).click();
+        await page.screenshot({path:join(output,`${tab}-mine-${screenshotSuffix}.png`)});
         await page.getByRole('button',{name:'下一页',exact:true}).click();
         await page.waitForFunction(()=>document.querySelector('.org-resource-pagination>div>span')?.textContent?.startsWith('2 /'));
         await page.getByRole('button',{name:'已发布',exact:true}).click();
       }
-      evidence.push({width,height,theme,font,tab,...geometry});
+      evidence.push({width,height,theme,font,sidebar,collapsed,tab,...geometry});
     }
+    console.log(`Organization layouts passed: ${screenshotSuffix}`);
     await page.close();
   }
   const page=await browser.newPage({viewport:{width:1440,height:900}});

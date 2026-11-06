@@ -1,0 +1,262 @@
+/* ---------- Application shell and sidebar ---------- */
+
+.app {
+  background: var(--ui-sidebar);
+}
+
+.app__main {
+  container-type: inline-size;
+  container-name: app-main;
+  background: var(--echo-surface-canvas);
+  border: 0;
+  border-left: 1px solid var(--ui-line);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.sidebar {
+  container: app-sidebar / size;
+  --sidebar-content-inset: 12px;
+  width: var(--app-sidebar-width, 248px);
+  background: var(--ui-sidebar);
+  padding: 0 0 8px;
+}
+
+.sidebar__logo-row {
+  height: var(--echo-header-height);
+  margin-bottom: 0;
+  /* The wordmark anchors the sidebar at the same inset as navigation icons. */
+  padding-left: calc(var(--sidebar-content-inset) + 12px);
+  padding-right: var(--sidebar-content-inset);
+  user-select: none;
+}
+
+.sidebar__logo-row > * {
+  pointer-events: none;
+}
+
+.sidebar__logo-col {
+  min-width: 0;
+}
+
+.sidebar__icon-btn {
+  flex: 0 0 32px;
+}
+
+.sidebar__logo {
+  display: block;
+  color: var(--echo-text-strong);
+  font-size: 1rem;
+  font-weight: 750;
+  line-height: 1.4;
+  letter-spacing: -.025em;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar__logo-agent {
+  font-weight: 500;
+  color: var(--echo-color-text-brand-default);
+}
+
+.sidebar__nav {
+  gap: 4px;
+  padding: 8px var(--sidebar-content-inset) 20px;
+}
+
+.sidebar__nav-item {
+  min-height: 36px;
+  height: auto;
+  padding: 8px 12px;
+  border-radius: var(--echo-radius-control);
+  color: var(--echo-text-medium);
+  transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.sidebar__nav-item:hover {
+  background: var(--echo-bg-hover);
+  color: var(--echo-text-strong);
+}
+
+.sidebar__nav-item--active {
+  background: var(--echo-control-selected-bg);
+  color: var(--echo-control-selected-fg);
+  box-shadow: none;
+  font-weight: 600;
+}
+
+.sidebar__nav-item--active svg {
+  color: inherit;
+}
+.sidebar__nav-item--active:hover { background: var(--echo-control-selected-bg-hover); }
+.sidebar__nav-item:is(:hover, .sidebar__nav-item--active) .sidebar__nav-sub { color: inherit; }
+
+/* Task creation is the persistent primary action; module links below it
+ * describe location. Keep the distinction even while reading a conversation. */
+.sidebar__nav-item--create,
+.sidebar__nav-item--create.sidebar__nav-item--active {
+  min-height: var(--echo-size-control-md);
+  margin-bottom: 8px;
+  background: var(--echo-button-primary-bg);
+  color: var(--echo-button-primary-fg);
+  font-weight: 600;
+}
+.sidebar__nav-item--create:hover,
+.sidebar__nav-item--create.sidebar__nav-item--active:hover {
+  background: var(--echo-button-primary-bg-hover);
+  color: var(--echo-button-primary-fg);
+}
+
+.sidebar__content {
+  padding: 6px var(--sidebar-content-inset) 14px;
+}
+
+/* Compact navigation must leave a row in all three catalogs at the supported
+   800px window height, including the fallback window header. The rem condition
+   also preserves that budget when the user increases the reading size. */
+@container app-sidebar (max-height: 800px) or (max-height: 48rem) {
+  .sidebar__logo-row { height: 32px; }
+  .sidebar__nav { gap: 0; padding-top: 0; padding-bottom: 4px; }
+  .sidebar__nav-item { min-height: 32px; height: auto; padding-block: 5px; }
+  .sidebar__nav-item--create,
+  .sidebar__nav-item--create.sidebar__nav-item--active { min-height: 32px; margin-bottom: 4px; }
+  .sidebar__content { padding-top: 2px; padding-bottom: 2px; }
+  .sidebar .sidebar__section-label { height: 28px; min-height: 28px; padding-block: 4px; }
+  .sidebar__footer { height: 48px; padding: 2px 8px; }
+  .sidebar__list-section:has(> .sidebar__group) { min-height: 68px; }
+  .sidebar__list-section--tasks:has(> .sidebar__group),
+  .sidebar__list-section--projects:has(> .sidebar__group) { min-height: calc(32px + max(36px, 2.2rem + 10px)); }
+  .sidebar .group-sidebar__item { height: 30px; flex-direction: row; align-items: center; gap: 6px; padding: 4px 12px; }
+  .sidebar .group-sidebar__item > span { flex: 1; min-width: 0; }
+  .sidebar .group-sidebar__item small { flex: none; white-space: nowrap; }
+}
+
+.sidebar__empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 24px 12px;
+  color: var(--echo-text-tertiary);
+  font-size: .8125rem;
+  line-height: 1.6;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.sidebar__empty-state strong {
+  color: var(--echo-text-strong);
+  font-size: .875rem;
+  font-weight: 600;
+}
+
+.sidebar__section-label {
+  min-height: 34px;
+  padding: 6px 10px;
+  color: var(--echo-text-tertiary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.sidebar__section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar__section-head .sidebar__section-label {
+  min-width: 0;
+  flex: 1;
+}
+
+.sidebar__section-action {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--echo-text-tertiary);
+  cursor: pointer;
+}
+
+.sidebar__section-action:hover,
+.sidebar__section-action.task-filter-trigger--active {
+  background: var(--ui-surface);
+  color: var(--echo-text-strong);
+}
+
+.sidebar__more-popover {
+  top: 0;
+  width: 204px;
+  max-height: min(620px, calc(100vh - 32px));
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.sidebar__more-item {
+  height: 34px;
+}
+
+.sidebar__group {
+  gap: 3px;
+}
+
+.sidebar__conv,
+.sidebar__node {
+  min-height: 36px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  border-radius: var(--echo-radius-control);
+  color: var(--echo-text-medium);
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.sidebar__conv:hover,
+.sidebar__node:hover {
+  background: color-mix(in srgb, var(--ui-surface) 60%, transparent);
+  color: var(--echo-text-strong);
+}
+
+.sidebar__conv {
+  min-height: 36px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.sidebar__conv--active,
+.sidebar__conv--active:hover {
+  background: var(--echo-control-selected-bg);
+  color: var(--echo-control-selected-fg);
+}
+.sidebar__conv--active .sidebar__conv-title,
+.sidebar__conv--active .sidebar__conv-time,
+.sidebar__conv:hover .sidebar__conv-time { color: inherit; }
+
+.sidebar__footer {
+  margin: 0;
+  padding-left: 20px;
+  padding-right: var(--sidebar-content-inset);
+  border-top-color: var(--ui-line);
+}
+
+.sidebar__user {
+  border-radius: 11px;
+}
+
+.sidebar__more-popover,
+.task-filter-popover,
+.context-menu {
+  border-color: var(--ui-line-strong);
+  border-radius: var(--echo-radius-card);
+  background: var(--ui-surface-raised);
+  box-shadow: var(--ui-shadow-xs);
+  backdrop-filter: none;
+}

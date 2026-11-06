@@ -80,3 +80,38 @@ body {
 [data-theme="dark"] {
   color-scheme: dark;
 }
+
+:root {
+  --ui-canvas: var(--echo-bg-secondary);
+  --ui-sidebar: var(--echo-surface-sidebar);
+  --ui-surface: var(--echo-bg-primary);
+  --ui-surface-muted: var(--echo-bg-secondary);
+  --ui-surface-raised: var(--echo-surface-raised);
+  --ui-line: var(--echo-border-default);
+  --ui-line-strong: var(--echo-button-secondary-border);
+  --ui-brand-soft: var(--echo-brand-soft);
+  --ui-brand-line: var(--echo-brand-border);
+  --ui-radius-sm: var(--echo-radius-control);
+  --ui-radius-md: var(--echo-radius-card);
+  --ui-radius-lg: var(--echo-radius-dialog);
+  --ui-control-sm: var(--echo-size-control-sm);
+  --ui-control-md: var(--echo-size-control-md);
+  --ui-page-gutter: var(--echo-page-gutter);
+  --ui-shadow-xs: var(--echo-shadow-sm);
+  --ui-shadow-sm: var(--echo-shadow-md);
+  --ui-shadow-md: var(--echo-shadow-floating);
+  --ui-content-width: var(--echo-page-width);
+}
+
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+button,
+[role="button"] {
+  -webkit-tap-highlight-color: transparent;
+}

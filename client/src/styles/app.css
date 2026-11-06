@@ -2,8 +2,9 @@
  * EchoAgent application styles.
  *
  * Design tokens (--echo-*) come from tokens.css (ported from EchoAgent).
- * Layout numbers mirror EchoAgent: 56px topbar, ~260px sidebar, 800px chat
- * column, 13px base font.
+ * Structural rules and legacy feature anatomy. Presentation is owned by the
+ * surface modules imported through visual-polish.css; shared geometry comes
+ * from tokens.css. Do not add competing theme or page-width overrides here.
  */
 
 /* ---------- app shell ---------- */
@@ -302,9 +303,6 @@
   position: relative;
   /* EchoAgent: main-content bg = --echo-home-bg-secondary (#fafafa light) */
   background: var(--echo-home-bg-secondary);
-  /* EchoAgent: non-Mac border-top-radius 12px */
-  border-top-left-radius: 12px;
-  border-top-right-radius: 12px;
   overflow: hidden;
 }
 
@@ -6609,36 +6607,6 @@ button.diff__path {
   font-family: "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   color: var(--echo-text-strong);
 }
-.home__scenes {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--echo-palette-gray-4);
-  border-radius: 10px;
-  height: 36px;
-  align-self: flex-start;
-  box-sizing: border-box;
-  margin: 16px 0 48px;
-}
-.home__scene {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 32px;
-  padding: 0 12px;
-  border: none;
-  border-radius: var(--echo-radius-lg);
-  background: none;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--echo-text-medium);
-}
-.home__scene--active {
-  background: var(--echo-brand-soft);
-  color: var(--echo-color-text-brand-default);
-  font-weight: 600;
-}
 .home__composer-area {
   display: flex;
   flex-direction: column;
@@ -6657,102 +6625,10 @@ button.diff__path {
 .home__send-error {
   color: var(--echo-color-danger, #d92d20);
 }
-.home__chips {
-  position: relative;
-  min-height: 32px;
-  /* EchoAgent: chips container no extra padding */
-  padding: 0;
-}
 /* 横向可滚动的 chip 列表(二级能力 / 三级模板) */
-.home__chips-list {
-  display: flex;
-  gap: 8px;
-  flex-wrap: nowrap;
-  align-items: center;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  cursor: grab;
-  user-select: none;
-  min-height: 32px;
-}
-.home__chips-list::-webkit-scrollbar { display: none; }
-.home__chips-list:active { cursor: grabbing; }
-.home__chip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 32px;
-  padding: 0 12px;
-  flex-shrink: 0;
-  /* EchoAgent CSS: bg=var(--echo-bg-primary), border=var(--echo-border-default), radius=8px */
-  background: var(--echo-bg-primary);
-  border: 1px solid var(--echo-border-default);
-  border-radius: 8px;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--echo-text-medium);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background-color .18s, color .18s;
-}
-.home__chip:hover {
-  background: var(--echo-bg-hover);
-  color: var(--echo-text-strong);
-}
-.home__chip-icon {
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--echo-text-weak);
-}
 /* 折叠态末尾的"更多"展开按钮 */
-.home__chip--more { color: var(--echo-text-medium); }
 /* 左右滚动箭头按钮 */
-.home__chips-arrow {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--echo-border-default);
-  border-radius: 50%;
-  background: var(--echo-bg-primary);
-  color: var(--echo-text-medium);
-  cursor: pointer;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.home__chips-arrow--left { left: 0; }
-.home__chips-arrow--right { right: 0; }
-.home__chips-arrow:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 /* 边缘渐隐遮罩(提示可继续滚动) */
-.home__chips--fade-right::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 48px;
-  height: 100%;
-  background: linear-gradient(to right, transparent, var(--echo-home-bg-secondary, #fafafa));
-  pointer-events: none;
-  z-index: 1;
-}
-.home__chips--fade-left::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 48px;
-  height: 100%;
-  background: linear-gradient(to left, transparent, var(--echo-home-bg-secondary, #fafafa));
-  pointer-events: none;
-  z-index: 1;
-}
 /* 三级:推荐模板 chip(灰底 + ↘ 箭头) */
 .home__template {
   display: inline-flex;

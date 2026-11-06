@@ -115,10 +115,10 @@ button.resource-row__main { padding: 0; border: 0; background: transparent; colo
 .resource-list > .atm-task-card { min-height: 112px; align-items: flex-start; }
 
 /* Cards are the default. The compact variant keeps operational controls in one row. */
-.resource-list[data-view="cards"] { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; border: 0; border-radius: 0; background: transparent; align-items: stretch; }
+.resource-list[data-view="cards"] { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--echo-spacing-5); border: 0; border-radius: 0; background: transparent; align-items: stretch; }
 .resource-list[data-view="cards"] > .resource-row { border: 1px solid var(--echo-border-default); border-radius: var(--echo-radius-card); background: var(--echo-bg-primary); transition: border-color .15s, background-color .15s; }
 .resource-list[data-view="cards"] > .resource-row:hover { border-color: var(--echo-border-strong); background: var(--echo-bg-hover); }
-.resource-list[data-view="cards"][data-layout="grid"] > .resource-row { flex-direction: column; align-items: stretch; justify-content: space-between; min-height: 180px; gap: 16px; }
+.resource-list[data-view="cards"][data-layout="grid"] > .resource-row { flex-direction: column; align-items: stretch; justify-content: space-between; min-height: 164px; gap: 16px; }
 .resource-list[data-view="cards"][data-layout="grid"] .resource-row__main { flex: none; width: 100%; align-items: flex-start; }
 .resource-list[data-view="cards"][data-layout="grid"] .resource-row__actions { flex-basis: auto; width: 100%; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--echo-border-default); }
 .resource-list[data-view="cards"] > .resource-row.is-selected { background: var(--echo-control-selected-bg); border-color: var(--echo-brand); }

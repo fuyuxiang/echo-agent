@@ -1,3 +1,4 @@
+import { PageHeading } from "./PageHeading";
 /**
  * Settings 面板的各个真实分区。
  *
@@ -123,10 +124,9 @@ export function SettingsSection({
     <div className={`settings-section${navigation ? " settings-subview" : ""}`}>
       {navigation}
       <header className="settings-section__header">
-        <div className="settings-section__heading">
-          <h2 className="settings-section__title">{title}</h2>
-          {desc && <p className="settings-section__desc">{desc}</p>}
-        </div>
+        <PageHeading title={title} description={desc} level={2}
+          className="settings-section__heading" titleClassName="settings-section__title"
+          descriptionClassName="settings-section__desc" />
         {actions && <div className="settings-section__actions">{actions}</div>}
       </header>
       <div className="settings-section__body">{children}</div>
