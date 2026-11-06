@@ -78,16 +78,13 @@ jobs:
           retention-days: 7
       - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
       - uses: actions/setup-python@v7
-        if: runner.os == 'Windows'
         id: python
         with:
           python-version: '3.12'
-          architecture: 'x64'
       - uses: dtolnay/rust-toolchain@stable
-      - uses: arduino/setup-protoc@v3
-        with:
-          version: '29.3'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install pinned protoc with download retries
+        shell: bash
+        run: python scripts/setup-protoc.py
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target

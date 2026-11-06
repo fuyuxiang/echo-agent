@@ -933,6 +933,16 @@ Function un.SkipIfPassive
 FunctionEnd
 
 Function CreateOrUpdateStartMenuShortcut
+  ; A repaired location must not take the old-target migration fast path.
+  ; Recreate the link so its target, working directory and tracking data all
+  ; describe the new installation, even if the previous link is malformed.
+  ${If} $EchoRepairShortcuts = 1
+    ${If} $NoShortcutMode = 1
+    ${AndIf} $WixMode = 0
+      Return
+    ${EndIf}
+    Goto echo_startmenu_recreate
+  ${EndIf}
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
   StrCpy $R0 0
@@ -967,17 +977,36 @@ Function CreateOrUpdateStartMenuShortcut
     ${EndIf}
   ${EndIf}
 
+  echo_startmenu_recreate:
   !if "${STARTMENUFOLDER}" != ""
     CreateDirectory "$SMPROGRAMS\$AppStartMenuFolder"
+    Delete "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk"
+    ClearErrors
     CreateShortcut "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    IfErrors echo_startmenu_failed
     !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk"
   !else
+    Delete "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+    ClearErrors
     CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    IfErrors echo_startmenu_failed
     !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
   !endif
+  Return
+  echo_startmenu_failed:
+    DetailPrint "Could not create Start menu shortcut for $INSTDIR\${MAINBINARYNAME}.exe"
+    SetErrorLevel 3
+    Quit
 FunctionEnd
 
 Function CreateOrUpdateDesktopShortcut
+  ${If} $EchoRepairShortcuts = 1
+    ${If} $NoShortcutMode = 1
+    ${AndIf} $WixMode = 0
+      Return
+    ${EndIf}
+    Goto echo_desktop_recreate
+  ${EndIf}
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
   !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
@@ -999,6 +1028,15 @@ Function CreateOrUpdateDesktopShortcut
     ${EndIf}
   ${EndIf}
 
+  echo_desktop_recreate:
+  Delete "$DESKTOP\${PRODUCTNAME}.lnk"
+  ClearErrors
   CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  IfErrors echo_desktop_failed
   !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+  Return
+  echo_desktop_failed:
+    DetailPrint "Could not create desktop shortcut for $INSTDIR\${MAINBINARYNAME}.exe"
+    SetErrorLevel 3
+    Quit
 FunctionEnd

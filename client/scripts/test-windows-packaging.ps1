@@ -73,7 +73,7 @@ function Invoke-TestProcess([string]$Source, [int]$TimeoutMs = 20000) {
 }
 
 try {
-    foreach ($name in @("build.ps1", "windows-packaging.ps1", "test-windows-packaging.ps1", "validate-windows-installer.ps1")) {
+    foreach ($name in @("build.ps1", "windows-packaging.ps1", "test-windows-packaging.ps1", "validate-windows-installer.ps1", "test-windows-installer-shortcuts.ps1")) {
         $tokens = $null
         $parseErrors = $null
         [System.Management.Automation.Language.Parser]::ParseFile(

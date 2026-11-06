@@ -82,6 +82,7 @@ jobs:
       - run: node scripts/release-version.mjs check
       - run: bash -n scripts/build.sh scripts/prepare-update-artifacts.sh scripts/publish-update.sh scripts/publish-all-updates.sh
       - run: python3 -m unittest discover -s deploy/update-server -p 'test_*.py'
+      - run: python3 -m unittest discover -s scripts -p 'test_setup_protoc.py'
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
       - run: pnpm icons:check
@@ -238,11 +239,12 @@ jobs:
             libxdo-dev
       # Match vendor/echo-agent-build/bin/protoc; older distro compilers do not
       # understand the built-in debug_redact option used by the vendored tests.
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+      - uses: actions/setup-python@v7
         with:
-          version: '29.3'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.12'
+      - name: Install pinned protoc with download retries
+        shell: bash
+        run: python scripts/setup-protoc.py
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -311,11 +313,12 @@ jobs:
         env:
           EXPECTED_RUNTIME_ARCH: ${{ matrix.arch }}
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+      - uses: actions/setup-python@v7
         with:
-          version: '29.3'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.12'
+      - name: Install pinned protoc with download retries
+        shell: bash
+        run: python scripts/setup-protoc.py
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -343,11 +346,12 @@ jobs:
       - name: Verify native runner architecture
         run: node -e "require('node:assert/strict').equal(process.arch, 'x64')"
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+      - uses: actions/setup-python@v7
         with:
-          version: '29.3'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.12'
+      - name: Install pinned protoc with download retries
+        shell: bash
+        run: python scripts/setup-protoc.py
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -382,6 +386,23 @@ jobs:
         if: matrix.shell == 'pwsh'
         shell: pwsh
         run: ./scripts/test-windows-packaging.ps1
+
+  windows-installer-shortcuts:
+    name: Windows installer shortcut recovery
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install NSIS for the production shortcut fixture
+        shell: powershell
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+            choco install nsis --version=3.11 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          }
+      - name: Verify shortcut recovery without building the application
+        shell: powershell
+        run: ./scripts/test-windows-installer-shortcuts.ps1
 
   windows-native-addons:
     name: Windows native addons / Node ${{ matrix.node }}
@@ -438,13 +459,12 @@ jobs:
             exit 1
           }
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+      - uses: actions/setup-python@v7
         with:
-          version: '29.3'
-          # setup-protoc queries the GitHub Releases API. Authenticate those
-          # read-only requests so shared runner IP rate limits cannot break CI.
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.12'
+      - name: Install pinned protoc with download retries
+        shell: bash
+        run: python scripts/setup-protoc.py
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: vendor/echo-agent-build -> target

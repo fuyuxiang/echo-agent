@@ -22,6 +22,13 @@ $desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'EchoAgent.ln
 $menuLink = Join-Path ([Environment]::GetFolderPath('Programs')) 'EchoAgent.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $assertions = 0
+$phase = 'first install'
+$transcribing = $false
+if ($env:ECHO_DESKTOP_VALIDATION_OUTPUT) {
+    New-Item -ItemType Directory -Path $env:ECHO_DESKTOP_VALIDATION_OUTPUT -Force | Out-Null
+    Start-Transcript -LiteralPath (Join-Path $env:ECHO_DESKTOP_VALIDATION_OUTPUT 'windows-installer.log') | Out-Null
+    $transcribing = $true
+}
 
 function Assert-True($Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -29,6 +36,7 @@ function Assert-True($Condition, [string]$Message) {
 }
 
 function Invoke-Installer([string]$Arguments, [bool]$ShouldSucceed = $true) {
+    Write-Host "Installer phase: $script:phase; arguments: $Arguments"
     # NSIS requires /D= to be last and unquoted, even for paths with spaces.
     $process = Start-Process -FilePath $Installer -ArgumentList $Arguments -PassThru
     try {
@@ -45,6 +53,7 @@ function Invoke-Installer([string]$Arguments, [bool]$ShouldSucceed = $true) {
 }
 
 function Assert-Install([string]$Directory) {
+    Write-Host "Checking installed payload, registration and shortcuts: $Directory"
     foreach ($leaf in @('echoagent.exe', 'uninstall.exe', 'theia', 'office')) {
         Assert-True (Test-Path -LiteralPath (Join-Path $Directory $leaf)) "Missing installed payload: $Directory\$leaf"
     }
@@ -55,7 +64,13 @@ function Assert-Install([string]$Directory) {
     Assert-True ($metadata.UninstallString -eq ('"' + (Join-Path $Directory 'uninstall.exe') + '"')) 'Wrong uninstaller registration'
     foreach ($link in @($desktopLink, $menuLink)) {
         Assert-True (Test-Path -LiteralPath $link) "Missing shortcut: $link"
-        Assert-True ($shell.CreateShortcut($link).TargetPath -eq (Join-Path $Directory 'echoagent.exe')) "Stale shortcut: $link"
+        $shortcut = $shell.CreateShortcut($link)
+        try {
+            $target = $shortcut.TargetPath
+            $expected = Join-Path $Directory 'echoagent.exe'
+            Write-Host "Shortcut: $link; target: $target; expected: $expected"
+            Assert-True ($target -eq $expected) "Stale shortcut during ${script:phase}: $link; expected '$expected', actual '$target'"
+        } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) }
     }
 }
 
@@ -70,8 +85,10 @@ try {
 
     # A deliberately chosen, durable location with Chinese and spaces remains
     # authoritative on subsequent updates. /ARGS must not swallow /D=.
+    $phase = 'move to custom directory'
     Invoke-Installer "/S /UPDATE /ARGS --acceptance /D=$customDir"
     Assert-Install $customDir
+    $phase = 'update custom directory'
     Invoke-Installer '/S /UPDATE'
     Assert-Install $customDir
 
@@ -79,6 +96,7 @@ try {
     # (including the uninstaller) is lost. Rebuild it without changing the path.
     Remove-Item -LiteralPath $customRoot -Recurse -Force
     Assert-True (-not (Test-Path -LiteralPath $customRoot)) 'Repair requires missing parent directories'
+    $phase = 'repair missing custom payload'
     Invoke-Installer '/S /UPDATE'
     Assert-Install $customDir
 
@@ -116,10 +134,13 @@ try {
         Set-ItemProperty -LiteralPath $runKey -Name 'echoagent-acceptance-home' -Value ('"' + (Join-Path $legacy 'echoagent.exe') + '"' + $startupArgs)
         foreach ($link in @($desktopLink, $menuLink)) {
             $shortcut = $shell.CreateShortcut($link)
-            $shortcut.TargetPath = Join-Path $legacy 'echoagent.exe'
-            $shortcut.Save()
+            try {
+                $shortcut.TargetPath = Join-Path $legacy 'echoagent.exe'
+                $shortcut.Save()
+            } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) }
         }
         $mode = if ($missingUninstaller) { '/P /UPDATE' } else { '/S /UPDATE' }
+        $phase = "repair legacy Temp installation (missing uninstaller: $missingUninstaller)"
         Invoke-Installer $mode
         Assert-Install $defaultDir
         Assert-True ((Get-Item -LiteralPath $runKey).GetValue('echoagent-acceptance-home') -eq ('"' + (Join-Path $defaultDir 'echoagent.exe') + '"' + $startupArgs)) 'Startup target or arguments were not repaired'
@@ -134,6 +155,7 @@ try {
     }
 
     $unsafeDir = Join-Path $scratch 'RejectedInstall'
+    $phase = 'reject temporary directory'
     Invoke-Installer "/S /D=$unsafeDir" $false
     Assert-True (-not (Test-Path -LiteralPath $unsafeDir)) 'Rejected install created a temporary application folder'
     Assert-Install $defaultDir
@@ -142,6 +164,7 @@ try {
     $junction = Join-Path $env:LOCALAPPDATA ('EchoInstallJunction-' + [guid]::NewGuid())
     New-Item -ItemType Junction -Path $junction -Target $scratch | Out-Null
     try {
+        $phase = 'reject junction into temporary directory'
         Invoke-Installer "/S /D=$junction\RejectedAlias" $false
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $scratch 'RejectedAlias'))) 'Junction bypassed the temporary path guard'
     } finally { [System.IO.Directory]::Delete($junction) }
@@ -149,10 +172,21 @@ try {
     # Remove only this acceptance's cache, then launch the repaired installation.
     Remove-Item -LiteralPath $scratch -Recurse -Force
     Assert-Install $defaultDir
+    $phase = 'launch repaired desktop'
     node (Join-Path $PSScriptRoot 'validate-packaged-desktop.mjs') (Join-Path $defaultDir 'echoagent.exe')
     if ($LASTEXITCODE -ne 0) { throw 'Repaired desktop WebView/IPC/IDE validation failed' }
     Write-Host "Windows installation acceptance passed ($assertions assertions)."
+} catch {
+    $message = "Phase: $phase; assertions passed: $assertions; $($_.Exception.Message)"
+    $escaped = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+    Write-Host "::error title=Windows installation acceptance failed::$escaped"
+    throw
 } finally {
-    if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
-    # Keep installed files/registration on the disposable runner for diagnostics.
+    try {
+        if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
+        # Keep installed files/registration on the disposable runner for diagnostics.
+    } finally {
+        if ($transcribing) { Stop-Transcript | Out-Null }
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+    }
 }
