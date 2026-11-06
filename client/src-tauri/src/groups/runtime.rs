@@ -37,7 +37,10 @@ pub(super) fn blocked_work(group: &Group) -> HashSet<String> {
 }
 
 pub(super) fn write_workspace_busy(group: &Group) -> bool {
-    group.works.iter().any(|work| !work.read_only() && (work.active() || work.status == "uncertain"))
+    group
+        .works
+        .iter()
+        .any(|work| !work.read_only() && (work.active() || work.status == "uncertain"))
 }
 
 pub(super) fn decision_context(group: &Group) -> Result<String, String> {
@@ -493,30 +496,63 @@ pub(super) fn work_prompt(
 /// when it has fallen outside the normal incremental history window.
 fn related_roots(group: &Group, work: &Work) -> HashSet<String> {
     let mut roots = HashSet::new();
-    let sources = group.messages.iter().filter_map(|m| m.source_request_id.as_deref().map(|source| (m.id.as_str(), source))).collect::<HashMap<_, _>>();
+    let sources = group
+        .messages
+        .iter()
+        .filter_map(|m| {
+            m.source_request_id
+                .as_deref()
+                .map(|source| (m.id.as_str(), source))
+        })
+        .collect::<HashMap<_, _>>();
     let mut cursor = sources.get(work.root_id.as_str()).copied();
     while let Some(root) = cursor {
-        if root == work.root_id || !roots.insert(root.to_string()) { break; }
+        if root == work.root_id || !roots.insert(root.to_string()) {
+            break;
+        }
         cursor = sources.get(root).copied();
     }
     roots
 }
 
-pub(super) fn work_attachments(group: &Group, work: &Work, member: &Member) -> Result<Vec<String>, String> {
+pub(super) fn work_attachments(
+    group: &Group,
+    work: &Work,
+    member: &Member,
+) -> Result<Vec<String>, String> {
     let mut paths = group.request_attachments(&work.root_id);
     let roots = related_roots(group, work);
-    if roots.is_empty() { return Ok(paths); }
-    let request = group.messages.iter().find(|message| message.id == work.root_id);
-    let selected = request.and_then(|message| message.source_attachment_paths.clone())
-        .unwrap_or_else(|| request.and_then(|message| message.source_request_id.as_deref())
-            .map(|root| group.related_attachments(root)).unwrap_or_default());
+    if roots.is_empty() {
+        return Ok(paths);
+    }
+    let request = group
+        .messages
+        .iter()
+        .find(|message| message.id == work.root_id);
+    let selected = request
+        .and_then(|message| message.source_attachment_paths.clone())
+        .unwrap_or_else(|| {
+            request
+                .and_then(|message| message.source_request_id.as_deref())
+                .map(|root| group.related_attachments(root))
+                .unwrap_or_default()
+        });
     let rules = recall_rules(group, member)?;
     for message in &group.messages {
-        if message.seq <= member.history_start_seq || !rules.permits(&message.text)
-            || !(roots.contains(&message.id) || message.request_id.as_ref().is_some_and(|root| roots.contains(root)))
-        { continue; }
+        if message.seq <= member.history_start_seq
+            || !rules.permits(&message.text)
+            || !(roots.contains(&message.id)
+                || message
+                    .request_id
+                    .as_ref()
+                    .is_some_and(|root| roots.contains(root)))
+        {
+            continue;
+        }
         for path in &message.attachments {
-            if selected.contains(path) && rules.permits(path) && !paths.contains(path) { paths.push(path.clone()); }
+            if selected.contains(path) && rules.permits(path) && !paths.contains(path) {
+                paths.push(path.clone());
+            }
         }
     }
     Ok(paths)
@@ -524,12 +560,26 @@ pub(super) fn work_attachments(group: &Group, work: &Work, member: &Member) -> R
 
 fn related_request_context(group: &Group, work: &Work, member: &Member) -> Result<String, String> {
     let roots = related_roots(group, work);
-    if roots.is_empty() { return Ok(String::new()); }
-    let related_work_ids = group.works.iter().filter(|w| roots.contains(&w.root_id)).map(|w| w.id.as_str()).collect::<HashSet<_>>();
+    if roots.is_empty() {
+        return Ok(String::new());
+    }
+    let related_work_ids = group
+        .works
+        .iter()
+        .filter(|w| roots.contains(&w.root_id))
+        .map(|w| w.id.as_str())
+        .collect::<HashSet<_>>();
     let related = history_window(group, member, 0, usize::MAX, false, false)?
-        .into_iter().filter(|m| roots.contains(&m.id)
-            || m.request_id.as_ref().is_some_and(|root| roots.contains(root))
-            || m.work_id.as_ref().is_some_and(|id| related_work_ids.contains(id.as_str())))
+        .into_iter()
+        .filter(|m| {
+            roots.contains(&m.id)
+                || m.request_id
+                    .as_ref()
+                    .is_some_and(|root| roots.contains(root))
+                || m.work_id
+                    .as_ref()
+                    .is_some_and(|id| related_work_ids.contains(id.as_str()))
+        })
         .filter(|m| matches!(m.kind.as_str(), "user" | "assistant" | "reference"))
         .collect::<Vec<_>>();
     let records = related.iter().rev().take(24).collect::<Vec<_>>();
@@ -539,12 +589,20 @@ fn related_request_context(group: &Group, work: &Work, member: &Member) -> Resul
     let mut knowledge_count = 0usize;
     let mut omitted_knowledge = false;
     for message in records.iter().rev() {
-        context.push_str(&format!("[id={}] {}", message.id, message.text.chars().take(2400).collect::<String>()));
+        context.push_str(&format!(
+            "[id={}] {}",
+            message.id,
+            message.text.chars().take(2400).collect::<String>()
+        ));
         context.push_str("\n\n");
     }
     // Knowledge is an input, not a chat token window. Keep it available to a
     // newly assigned member even after many intervening progress messages.
-    for message in related.iter().rev().filter(|message| message.kind == "user") {
+    for message in related
+        .iter()
+        .rev()
+        .filter(|message| message.kind == "user")
+    {
         let excerpt = &message.knowledge.context;
         if !excerpt.is_empty() && rules.permits(excerpt) {
             let count = excerpt.chars().count();

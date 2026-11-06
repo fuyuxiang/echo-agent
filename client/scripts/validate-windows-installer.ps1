@@ -16,7 +16,8 @@ if ((Test-Path -LiteralPath $productKey) -or (Test-Path -LiteralPath $uninstallK
 }
 $defaultDir = Join-Path $env:LOCALAPPDATA 'EchoAgent'
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) ('echo-install-acceptance-' + [guid]::NewGuid())
-$customDir = Join-Path $env:LOCALAPPDATA ('Echo安装验收 ' + [guid]::NewGuid())
+$customRoot = Join-Path $env:LOCALAPPDATA ('Echo安装验收 ' + [guid]::NewGuid())
+$customDir = Join-Path $customRoot '新建 工作区\客户端'
 $desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'EchoAgent.lnk'
 $menuLink = Join-Path ([Environment]::GetFolderPath('Programs')) 'EchoAgent.lnk'
 $shell = New-Object -ComObject WScript.Shell
@@ -59,6 +60,10 @@ function Assert-Install([string]$Directory) {
 }
 
 try {
+    # Missing targets must be accepted without precreating them: the path
+    # guard resolves their existing ancestors before the installer copies files.
+    Assert-True (-not (Test-Path -LiteralPath $defaultDir)) 'First install requires a missing default directory'
+    Assert-True (-not (Test-Path -LiteralPath $customRoot)) 'Custom install requires missing parent directories'
     New-Item -ItemType Directory -Path $scratch | Out-Null
     Invoke-Installer '/S'
     Assert-Install $defaultDir
@@ -67,6 +72,13 @@ try {
     # authoritative on subsequent updates. /ARGS must not swallow /D=.
     Invoke-Installer "/S /UPDATE /ARGS --acceptance /D=$customDir"
     Assert-Install $customDir
+    Invoke-Installer '/S /UPDATE'
+    Assert-Install $customDir
+
+    # A durable custom location remains authoritative after its entire payload
+    # (including the uninstaller) is lost. Rebuild it without changing the path.
+    Remove-Item -LiteralPath $customRoot -Recurse -Force
+    Assert-True (-not (Test-Path -LiteralPath $customRoot)) 'Repair requires missing parent directories'
     Invoke-Installer '/S /UPDATE'
     Assert-Install $customDir
 

@@ -11,7 +11,8 @@ function sources(directory) {
   });
 }
 
-it("every static frontend Tauri command is registered by the production host", () => {
+// This scans the complete production tree, including on slower native runners.
+it("every static frontend Tauri command is registered by the production host", { timeout: 30_000 }, () => {
   const host = readFileSync("src-tauri/src/lib.rs", "utf8");
   const handler = host.match(/\.invoke_handler\(tauri::generate_handler!\[([\s\S]*?)^\s*\]\)/m)?.[1];
   expect(handler, "production command handler must be found").toBeDefined();
@@ -21,7 +22,7 @@ it("every static frontend Tauri command is registered by the production host", (
   const missing = [];
   let calls = 0;
   for (const file of sources("src")) {
-    const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, false);
     const invokes = new Set();
     for (const statement of source.statements) {
       if (!ts.isImportDeclaration(statement) || statement.moduleSpecifier.text !== "@tauri-apps/api/core") continue;
@@ -32,6 +33,7 @@ it("every static frontend Tauri command is registered by the production host", (
         }
       }
     }
+    if (invokes.size === 0) continue;
     function visit(node) {
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && invokes.has(node.expression.text)
           && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0])) {

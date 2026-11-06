@@ -1656,7 +1656,8 @@ fn catalog_previews_exclude_expert_and_decision_history_without_altering_snapsho
     let mut g = group();
     g.members[0].profile = json!({"promptBody":"private expert instructions"});
     g.post(None, "user", "请求".into(), None).knowledge.context = "private knowledge".into();
-    g.messages.last_mut().unwrap().source_attachment_paths = Some(vec!["/private/source.txt".into()]);
+    g.messages.last_mut().unwrap().source_attachment_paths =
+        Some(vec!["/private/source.txt".into()]);
     g.decisions.push(Decision {
         id: id(),
         text: "有效决定".into(),
@@ -1677,7 +1678,10 @@ fn catalog_previews_exclude_expert_and_decision_history_without_altering_snapsho
     assert_eq!(full.members[0].profile, g.members[0].profile);
     assert_eq!(full.decisions.len(), 1);
     assert_eq!(full.messages[0].knowledge.context, "private knowledge");
-    assert_eq!(full.messages[0].source_attachment_paths.as_ref().unwrap(), &vec!["/private/source.txt".to_string()]);
+    assert_eq!(
+        full.messages[0].source_attachment_paths.as_ref().unwrap(),
+        &vec!["/private/source.txt".to_string()]
+    );
 }
 
 #[test]
@@ -2714,15 +2718,30 @@ fn completed_task_can_be_continued_without_replaying_its_work() {
     send(&mut g, &followup).unwrap();
     assert_eq!(g.works.len(), original_count + 1);
     assert_eq!(g.works[0].status, "completed");
-    assert_eq!(g.messages.last().unwrap().source_request_id.as_ref(), Some(&original.id));
-    let prompt = runtime::work_prompt(&g, g.works.last().unwrap(), &g.members[0], &Knowledge::default()).unwrap();
+    assert_eq!(
+        g.messages.last().unwrap().source_request_id.as_ref(),
+        Some(&original.id)
+    );
+    let prompt = runtime::work_prompt(
+        &g,
+        g.works.last().unwrap(),
+        &g.members[0],
+        &Knowledge::default(),
+    )
+    .unwrap();
     assert!(prompt.contains("已生成接口约定，登录验证通过"));
     assert!(prompt.contains("不自动重做"));
     send(&mut g, &followup).unwrap();
     assert_eq!(g.works.len(), original_count + 1);
     let mut forgotten = g.members[0].clone();
     forgotten.history_start_seq = g.messages.last().unwrap().seq;
-    let prompt = runtime::work_prompt(&g, g.works.last().unwrap(), &forgotten, &Knowledge::default()).unwrap();
+    let prompt = runtime::work_prompt(
+        &g,
+        g.works.last().unwrap(),
+        &forgotten,
+        &Knowledge::default(),
+    )
+    .unwrap();
     assert!(!prompt.contains("已生成接口约定，登录验证通过"));
 }
 
@@ -2747,7 +2766,16 @@ fn default_announcements_have_one_owner_and_explicit_recipients_are_preserved() 
     review.text = "@全体 请各自评审方案".into();
     review.new_request = true;
     send(&mut g, &review).unwrap();
-    assert_eq!(g.works.iter().filter(|work| work.root_id == review.id).count(), g.members.iter().filter(|member| member.expert.is_some()).count());
+    assert_eq!(
+        g.works
+            .iter()
+            .filter(|work| work.root_id == review.id)
+            .count(),
+        g.members
+            .iter()
+            .filter(|member| member.expert.is_some())
+            .count()
+    );
 }
 
 #[test]
@@ -2767,7 +2795,12 @@ fn summarizing_a_related_round_retains_the_new_user_requirement() {
     g.works.last_mut().unwrap().output = "已增加教师角色".into();
     g.finish(&second, None, false);
     g.summarize_request(&second).unwrap();
-    assert!(g.works.last().unwrap().prompt.contains("本轮必须增加教师角色"));
+    assert!(g
+        .works
+        .last()
+        .unwrap()
+        .prompt
+        .contains("本轮必须增加教师角色"));
 }
 
 #[test]
@@ -2785,10 +2818,15 @@ fn a_related_round_keeps_visible_attachments_and_respects_the_memory_cutoff() {
     next.text = "基于这张图继续评审".into();
     send(&mut g, &next).unwrap();
     let work = g.works.last().unwrap();
-    assert_eq!(runtime::work_attachments(&g, work, &g.members[0]).unwrap(), vec!["/work/interface.png"]);
+    assert_eq!(
+        runtime::work_attachments(&g, work, &g.members[0]).unwrap(),
+        vec!["/work/interface.png"]
+    );
     let mut forgotten = g.members[0].clone();
     forgotten.history_start_seq = g.messages.last().unwrap().seq;
-    assert!(runtime::work_attachments(&g, work, &forgotten).unwrap().is_empty());
+    assert!(runtime::work_attachments(&g, work, &forgotten)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -2807,12 +2845,22 @@ fn unconfirmed_writes_keep_the_workspace_busy_until_checked() {
 
 #[test]
 fn discussion_intent_matches_the_shared_frontend_contract() {
-    let cases: Vec<Value> = serde_json::from_str(include_str!("../../../src/features/groups/__tests__/group-intent-cases.json")).unwrap();
+    let cases: Vec<Value> = serde_json::from_str(include_str!(
+        "../../../src/features/groups/__tests__/group-intent-cases.json"
+    ))
+    .unwrap();
     for case in cases {
         let text = case["text"].as_str().unwrap();
-        assert_eq!(discussion_only_request(text), case["discussion"].as_bool().unwrap(), "{text}");
+        assert_eq!(
+            discussion_only_request(text),
+            case["discussion"].as_bool().unwrap(),
+            "{text}"
+        );
     }
-    for text in ["不要修改后端接口，请实现前端登录页面", "请先给出方案，然后直接实现并测试"] {
+    for text in [
+        "不要修改后端接口，请实现前端登录页面",
+        "请先给出方案，然后直接实现并测试",
+    ] {
         let mut g = group();
         let mut request = input();
         request.text = text.into();
@@ -2823,7 +2871,10 @@ fn discussion_intent_matches_the_shared_frontend_contract() {
 
 #[test]
 fn notification_keywords_cannot_redirect_explicit_assignments() {
-    for text in ["@全体 更新：请立即生成本周的周报", "@全体 通知：交付日期改到周五"] {
+    for text in [
+        "@全体 更新：请立即生成本周的周报",
+        "@全体 通知：交付日期改到周五",
+    ] {
         let mut g = group();
         let mut request = input();
         request.text = text.into();
@@ -2839,12 +2890,16 @@ fn attachment_selection_is_atomic_and_does_not_resurrect_excluded_files() {
     let home = tempfile::tempdir().unwrap();
     let workspace = home.path().canonicalize().unwrap();
     let access = crate::shell_fs::FilesystemAccess::default();
-    access.authorize_workspace(&workspace.to_string_lossy()).unwrap();
-    let paths = (0..21).map(|index| {
-        let path = workspace.join(format!("input-{index}.txt"));
-        std::fs::write(&path, "reference").unwrap();
-        path.to_string_lossy().into_owned()
-    }).collect::<Vec<_>>();
+    access
+        .authorize_workspace(&workspace.to_string_lossy())
+        .unwrap();
+    let paths = (0..21)
+        .map(|index| {
+            let path = workspace.join(format!("input-{index}.txt"));
+            std::fs::write(&path, "reference").unwrap();
+            path.to_string_lossy().into_owned()
+        })
+        .collect::<Vec<_>>();
     let store = Store::open(&home.path().join("groups.sqlite")).unwrap();
     let mut g = group();
     g.cwd = workspace.to_string_lossy().into_owned();
@@ -2857,19 +2912,28 @@ fn attachment_selection_is_atomic_and_does_not_resurrect_excluded_files() {
     next.new_request = true;
     next.source_request_id = Some(original.id.clone());
     next.attachments = vec![paths[20].clone()];
-    let error = store.update(&g.id, |group| {
-        send(group, &next)?;
-        validate_send_attachments(group, &next.id, &access)
-    }).unwrap_err();
+    let error = store
+        .update(&g.id, |group| {
+            send(group, &next)?;
+            validate_send_attachments(group, &next.id, &access)
+        })
+        .unwrap_err();
     assert!(error.contains("20"));
-    assert_eq!(store.get(&g.id).unwrap().messages.len(), 1, "failed admission cannot publish the message or work");
+    assert_eq!(
+        store.get(&g.id).unwrap().messages.len(),
+        1,
+        "failed admission cannot publish the message or work"
+    );
     next.source_attachment_paths = Some(paths[1..20].to_vec());
-    store.update(&g.id, |group| {
-        send(group, &next)?;
-        validate_send_attachments(group, &next.id, &access)
-    }).unwrap();
+    store
+        .update(&g.id, |group| {
+            send(group, &next)?;
+            validate_send_attachments(group, &next.id, &access)
+        })
+        .unwrap();
     let mut saved = store.get(&g.id).unwrap();
-    let attached = runtime::work_attachments(&saved, saved.works.last().unwrap(), &saved.members[0]).unwrap();
+    let attached =
+        runtime::work_attachments(&saved, saved.works.last().unwrap(), &saved.members[0]).unwrap();
     assert_eq!(attached.len(), 20);
     assert!(!attached.contains(&paths[0]));
     assert_eq!(saved.related_attachments(&next.id).len(), 20);
@@ -2880,7 +2944,11 @@ fn attachment_selection_is_atomic_and_does_not_resurrect_excluded_files() {
     assert!(send(&mut saved, &third).unwrap_err().contains("不属于"));
     third.source_attachment_paths = Some(vec![]);
     send(&mut saved, &third).unwrap();
-    assert!(runtime::work_attachments(&saved, saved.works.last().unwrap(), &saved.members[0]).unwrap().is_empty());
+    assert!(
+        runtime::work_attachments(&saved, saved.works.last().unwrap(), &saved.members[0])
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -2888,12 +2956,19 @@ fn inherited_attachment_size_is_checked_before_admission_and_can_be_reduced() {
     let home = tempfile::tempdir().unwrap();
     let workspace = home.path().canonicalize().unwrap();
     let access = crate::shell_fs::FilesystemAccess::default();
-    access.authorize_workspace(&workspace.to_string_lossy()).unwrap();
-    let paths = (0..4).map(|index| {
-        let path = workspace.join(format!("large-{index}.bin"));
-        std::fs::File::create(&path).unwrap().set_len(17 * 1024 * 1024).unwrap();
-        path.to_string_lossy().into_owned()
-    }).collect::<Vec<_>>();
+    access
+        .authorize_workspace(&workspace.to_string_lossy())
+        .unwrap();
+    let paths = (0..4)
+        .map(|index| {
+            let path = workspace.join(format!("large-{index}.bin"));
+            std::fs::File::create(&path)
+                .unwrap()
+                .set_len(17 * 1024 * 1024)
+                .unwrap();
+            path.to_string_lossy().into_owned()
+        })
+        .collect::<Vec<_>>();
     let mut g = group();
     g.cwd = workspace.to_string_lossy().into_owned();
     let mut original = input();
@@ -2906,7 +2981,9 @@ fn inherited_attachment_size_is_checked_before_admission_and_can_be_reduced() {
     next.attachments = vec![paths[3].clone()];
     let mut oversized = g.clone();
     send(&mut oversized, &next).unwrap();
-    assert!(validate_send_attachments(&oversized, &next.id, &access).unwrap_err().contains("总大小"));
+    assert!(validate_send_attachments(&oversized, &next.id, &access)
+        .unwrap_err()
+        .contains("总大小"));
     next.source_attachment_paths = Some(paths[..2].to_vec());
     send(&mut g, &next).unwrap();
     validate_send_attachments(&g, &next.id, &access).unwrap();
@@ -2922,25 +2999,48 @@ fn related_rounds_retain_knowledge_beyond_the_chat_window_without_reenabling_sou
     let work = g.works[0].id.clone();
     g.works[0].status = "completed".into();
     for index in 0..30 {
-        g.post(Some(g.coordinator_id.clone()), "assistant", format!("历史阶段进展 {index}"), Some(work.clone()));
+        g.post(
+            Some(g.coordinator_id.clone()),
+            "assistant",
+            format!("历史阶段进展 {index}"),
+            Some(work.clone()),
+        );
     }
     let mut next = input();
     next.new_request = true;
     next.source_request_id = Some(original.id);
     send(&mut g, &next).unwrap();
-    let prompt = runtime::work_prompt(&g, g.works.last().unwrap(), &g.members[1], &Knowledge::default()).unwrap();
+    let prompt = runtime::work_prompt(
+        &g,
+        g.works.last().unwrap(),
+        &g.members[1],
+        &Knowledge::default(),
+    )
+    .unwrap();
     assert!(prompt.contains("原规范：审批接口必须校验幂等键"));
     assert!(prompt.contains("不授予新的知识来源权限"));
     assert!(!g.messages.last().unwrap().knowledge.personal);
     let mut forgotten = g.members[1].clone();
     forgotten.history_start_seq = g.messages.last().unwrap().seq;
-    let prompt = runtime::work_prompt(&g, g.works.last().unwrap(), &forgotten, &Knowledge::default()).unwrap();
+    let prompt = runtime::work_prompt(
+        &g,
+        g.works.last().unwrap(),
+        &forgotten,
+        &Knowledge::default(),
+    )
+    .unwrap();
     assert!(!prompt.contains("审批接口必须校验幂等键"));
     let member = &g.members[1];
-    let memory = crate::paths::echo_agent_home_dir().join("group-memory").join(&g.id).join(&member.id).join("generation-0");
+    let memory = crate::paths::echo_agent_home_dir()
+        .join("group-memory")
+        .join(&g.id)
+        .join(&member.id)
+        .join("generation-0");
     let storage = echo_agent_memory::MemoryStorage::new_flat(std::path::Path::new(&g.cwd), &memory);
-    echo_agent_memory::records::forget_topic(&storage, "workspace", "审批接口必须校验幂等键").unwrap();
-    let prompt = runtime::work_prompt(&g, g.works.last().unwrap(), member, &Knowledge::default()).unwrap();
+    echo_agent_memory::records::forget_topic(&storage, "workspace", "审批接口必须校验幂等键")
+        .unwrap();
+    let prompt =
+        runtime::work_prompt(&g, g.works.last().unwrap(), member, &Knowledge::default()).unwrap();
     assert!(!prompt.contains("审批接口必须校验幂等键"));
 }
 
@@ -2964,7 +3064,13 @@ fn related_knowledge_is_bounded_and_reports_omitted_material() {
     next.new_request = true;
     next.source_request_id = Some(original.id);
     send(&mut g, &next).unwrap();
-    let prompt = runtime::work_prompt(&g, g.works.last().unwrap(), &g.members[0], &Knowledge::default()).unwrap();
+    let prompt = runtime::work_prompt(
+        &g,
+        g.works.last().unwrap(),
+        &g.members[0],
+        &Knowledge::default(),
+    )
+    .unwrap();
     assert!(prompt.contains(&"乙".repeat(20_000)));
     assert!(!prompt.contains(&"甲".repeat(20_000)));
     assert!(prompt.contains("尚未全部带入"));

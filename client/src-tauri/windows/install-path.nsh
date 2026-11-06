@@ -30,8 +30,12 @@ Function EchoCanonicalPath
   Push $4
   StrCpy $2 ""
   ClearErrors
-  GetFullPathName $0 "$0"
-  IfErrors echo_canonical_error
+  ; The NSIS command requires an existing target. The Win32 API only resolves
+  ; the path, allowing the loop below to find an existing ancestor first.
+  System::Call 'kernel32::GetFullPathNameW(w r0, i ${NSIS_MAX_STRLEN}, w.r3, p 0) i.r4'
+  IntCmp $4 0 echo_canonical_error
+  IntCmp $4 ${NSIS_MAX_STRLEN} echo_canonical_error 0 echo_canonical_error
+  StrCpy $0 $3
   echo_canonical_open:
     System::Call 'kernel32::CreateFileW(w r0, i 0, i 7, p 0, i 3, i 0x02000000, p 0) p.r1'
     StrCmp $1 -1 0 echo_canonical_found

@@ -1,6 +1,6 @@
 //! Persistent multi-expert conversations, executed exclusively by Agent Runtime.
-pub(crate) mod management;
 mod intent;
+pub(crate) mod management;
 mod mcp;
 mod model;
 #[cfg(test)]
@@ -10,13 +10,13 @@ mod runtime;
 mod store;
 #[cfg(test)]
 mod tests;
+use intent::discussion_only_request;
 pub use model::*;
 pub(crate) use permissions::set_permission_mode;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock, RwLock};
 use store::Store;
-use intent::discussion_only_request;
 use tauri::{Emitter, Manager, State};
 
 static STORE: OnceLock<Store> = OnceLock::new();
@@ -403,15 +403,23 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
     }
     let discussion = input.discussion || discussion_only_request(&input.text);
     if let Some(source) = &input.source_request_id {
-        if input.request_id.is_some() || !g.works.iter().any(|w| &w.root_id == source)
-            || !g.messages.iter().any(|m| &m.id == source && m.kind == "user")
+        if input.request_id.is_some()
+            || !g.works.iter().any(|w| &w.root_id == source)
+            || !g
+                .messages
+                .iter()
+                .any(|m| &m.id == source && m.kind == "user")
         {
             return Err("关联任务不存在或与补充任务冲突，请重新选择；输入内容已保留".into());
         }
         if let Some(paths) = &input.source_attachment_paths {
             let available = g.related_attachments(source);
-            if paths.len() > crate::shell_fs::MAX_ATTACHMENT_COUNT || paths.iter().any(|path| !available.contains(path)) {
-                return Err("所选历史附件不属于关联任务，或超过 20 个；请重新选择，输入内容已保留".into());
+            if paths.len() > crate::shell_fs::MAX_ATTACHMENT_COUNT
+                || paths.iter().any(|path| !available.contains(path))
+            {
+                return Err(
+                    "所选历史附件不属于关联任务，或超过 20 个；请重新选择，输入内容已保留".into(),
+                );
             }
         }
     } else if input.source_attachment_paths.is_some() {
@@ -527,10 +535,7 @@ fn send(g: &mut Group, input: &SendInput) -> Result<(), String> {
         None
     } else if let Some(root) = &input.request_id {
         if !g.works.iter().any(|w| {
-            &w.root_id == root
-                && !w.terminal()
-                && w.discussion == discussion
-                && w.epoch == g.epoch
+            &w.root_id == root && !w.terminal() && w.discussion == discussion && w.epoch == g.epoch
         }) {
             return Err("所选任务已结束或模式已改变，请选择新话题后发送；输入内容已保留".into());
         }
@@ -925,14 +930,28 @@ pub async fn group_control(
 
 /// Validate the effective payload inside the same transaction as admission.
 /// Failure preserves the draft and never publishes an already-failed work row.
-fn validate_send_attachments(g: &Group, message_id: &str, filesystem: &crate::shell_fs::FilesystemAccess) -> Result<(), String> {
-    let message = g.messages.iter().find(|message| message.id == message_id).ok_or("消息不存在")?;
+fn validate_send_attachments(
+    g: &Group,
+    message_id: &str,
+    filesystem: &crate::shell_fs::FilesystemAccess,
+) -> Result<(), String> {
+    let message = g
+        .messages
+        .iter()
+        .find(|message| message.id == message_id)
+        .ok_or("消息不存在")?;
     let root = message.request_id.as_deref().unwrap_or(&message.id);
     let workspace = filesystem.require_workspace(&g.cwd)?;
     let mut checked = std::collections::HashSet::new();
     for work in g.works.iter().filter(|work| work.root_id == root) {
-        if !checked.insert(&work.member_id) { continue; }
-        let member = g.members.iter().find(|member| member.id == work.member_id).ok_or("成员不存在")?;
+        if !checked.insert(&work.member_id) {
+            continue;
+        }
+        let member = g
+            .members
+            .iter()
+            .find(|member| member.id == work.member_id)
+            .ok_or("成员不存在")?;
         let paths = runtime::work_attachments(g, work, member)?;
         filesystem.validate_session_attachments(&workspace, &paths).map_err(|error|
             format!("{error}。请调整新附件或“沿用此前任务附件”的选择；补充当前任务时可改为关联新一轮。输入内容已保留"))?;

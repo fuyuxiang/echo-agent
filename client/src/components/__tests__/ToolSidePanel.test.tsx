@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { ToolSidePanel, type ToolSidePanelMode } from "../ToolSidePanel";
 import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout";
@@ -95,6 +95,10 @@ describe("ToolSidePanel resize lifecycle", () => {
 });
 
 describe("ToolSidePanel navigation collapse", () => {
+  // Load the real lazy document workspace before DOM queries start their
+  // one-second deadline on cold native runners.
+  beforeAll(async () => { await import("../DocumentWorkbench"); }, 30_000);
+
   beforeEach(() => {
     localStorage.clear();
     vi.mocked(invoke).mockReset().mockResolvedValue([]);

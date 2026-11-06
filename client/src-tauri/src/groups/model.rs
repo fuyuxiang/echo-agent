@@ -310,8 +310,12 @@ impl Group {
             .iter()
             .filter_map(|m| m.stop_root_id.as_deref())
             .collect::<HashSet<_>>();
-        let blocked = self.messages.iter().filter(|message| message.tool_calls.iter().any(Self::auto_block_record))
-            .filter_map(|message| message.work_id.as_deref()).collect::<HashSet<_>>();
+        let blocked = self
+            .messages
+            .iter()
+            .filter(|message| message.tool_calls.iter().any(Self::auto_block_record))
+            .filter_map(|message| message.work_id.as_deref())
+            .collect::<HashSet<_>>();
         let requests = roots
             .into_iter()
             .map(|root| {
@@ -369,10 +373,10 @@ impl Group {
                 {
                     "stopped"
                 } else if final_message.is_some() {
-                    if works
-                        .iter()
-                        .any(|w| matches!(w.status.as_str(), "failed" | "cancelled") || blocked.contains(w.id.as_str()))
-                    {
+                    if works.iter().any(|w| {
+                        matches!(w.status.as_str(), "failed" | "cancelled")
+                            || blocked.contains(w.id.as_str())
+                    }) {
                         "partial"
                     } else {
                         "delivered"
@@ -912,11 +916,19 @@ impl Group {
         let mut cursor = Some(root);
         while let Some(root) = cursor.filter(|root| seen.insert((*root).to_string())) {
             for path in self.request_attachments(root) {
-                if !paths.contains(&path) { paths.push(path); }
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
             }
             let message = self.messages.iter().find(|message| message.id == root);
-            if let Some(selected) = message.and_then(|message| message.source_attachment_paths.as_ref()) {
-                for path in selected { if !paths.contains(path) { paths.push(path.clone()); } }
+            if let Some(selected) =
+                message.and_then(|message| message.source_attachment_paths.as_ref())
+            {
+                for path in selected {
+                    if !paths.contains(path) {
+                        paths.push(path.clone());
+                    }
+                }
                 break;
             }
             cursor = message.and_then(|message| message.source_request_id.as_deref());
@@ -1006,7 +1018,11 @@ impl Group {
             && [call.get("content"), call.get("rawOutput")]
                 .into_iter()
                 .flatten()
-                .any(|content| content.to_string().contains("Auto mode blocked this action"))
+                .any(|content| {
+                    content
+                        .to_string()
+                        .contains("Auto mode blocked this action")
+                })
     }
 
     fn retire_cancelled_context(&mut self, work: &Work) {

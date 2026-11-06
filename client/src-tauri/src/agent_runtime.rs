@@ -680,7 +680,7 @@ pub(crate) async fn group_session(
     // this point; metadata alone cannot prove the selected mode took effect.
     if let Err(error) = crate::permission_config::sync_group_session_permission_modes(
         tx,
-        &[sid.clone()],
+        std::slice::from_ref(&sid),
         permission_mode,
     )
     .await
