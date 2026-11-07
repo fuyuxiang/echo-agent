@@ -411,6 +411,19 @@ Object.assign(window, {
         extensionAttempts[command] = (extensionAttempts[command] ?? 0) + 1;
         if (extensionAttempts[command] === 1) throw new Error("隔离验收：列表暂不可用");
       }
+      if (command.startsWith("retrieval_models_")) {
+        if (command==="retrieval_models_prepare") {
+          (window as any).__retrievalModelState="downloading";
+          (window as any).__retrievalOperationError=null;
+        }
+        if (command==="retrieval_models_cancel") { (window as any).__retrievalModelState="missing"; return true; }
+        if (command==="retrieval_models_import") {
+          (window as any).__retrievalModelState=query.has("retrievalImportFailure")?"ready":"verifying";
+          (window as any).__retrievalOperationError=query.has("retrievalImportFailure")?"离线模型导入未完成：模型文件缺失":null;
+        }
+        const state=(window as any).__retrievalModelState ?? query.get("retrievalModels") ?? "ready";
+        return {state, source:state==="ready"?"bundled":"missing",downloadedBytes:state==="ready"?400_000_000:state==="missing"?0:200_000_000,totalBytes:400_000_000,embeddingReady:state==="ready",rerankerReady:state==="ready",operationError:(window as any).__retrievalOperationError??null,message:state==="error"?"模型修复中断，可点击重试继续":null};
+      }
       switch (command) {
         case "agent_session_workspace_status": return {cwd:args.cwd, loaded:true, status: query.get("workspace") === "missing" && !(window as any).workspaceReady ? "missing" : "ready", message: query.get("workspace") === "missing" ? "原目录已被移动" : null};
         case "filesystem_pick_directory": return query.get("pickedFolder") ?? null;
@@ -454,13 +467,11 @@ Object.assign(window, {
           providers: [
             { id: "test-org", label: "研发团队", providerKind: "custom", source: "organization", managed: true, baseUrl: "https://review.invalid/v1", credentialConfigured: true },
             { id: "test-personal", label: "我的网关", providerKind: "custom", source: "personal", baseUrl: "https://review.invalid/v1", credentialConfigured: true },
-            { id: "test-builtin", label: "Echo", providerKind: "custom", source: "builtin", managed: true, baseUrl: "https://review.invalid/v1" },
           ],
           models: [
             { modelId: "test-org/a", remoteModelId: "team-a", name: "团队模型", providerId: "test-org", managed: true },
             { modelId: "test-personal/a", remoteModelId: "personal-a", name: "个人模型", providerId: "test-personal" },
             { modelId: "test-personal/b", remoteModelId: "personal-b", name: "备用模型", providerId: "test-personal" },
-            { modelId: "test-builtin/a", remoteModelId: "builtin-a", name: "Echo Brook", providerId: "test-builtin", managed: true },
           ],
         }; if (query.has("settingsDesign")) return {
           providers: [
@@ -919,11 +930,11 @@ function Fixture() {
     mode="create" draft={automationDraft} setDraft={setAutomationDraft}
     saving={false} workspaces={[{ cwd: "/Users/review/Documents/EchoAgent", sessionCount: 9 }]}
     models={query.get("modelChoices") === "1" ? [
-      { id: "echoagent-ojlab/brook", label: "Echo Brook", source: "builtin" },
-      { id: "echoagent-ojlab/cedar", label: "Echo Cedar", source: "builtin" },
-      { id: "echoagent-ojlab/reed", label: "Echo Reed", source: "builtin" },
+      { id: "personal/brook", label: "Echo Brook", source: "personal" },
+      { id: "personal/cedar", label: "Echo Cedar", source: "personal" },
+      { id: "personal/reed", label: "Echo Reed", source: "personal" },
     ] : []}
-    autoModelId={query.get("modelChoices") === "1" ? "echoagent-ojlab/reed" : undefined}
+    autoModelId={query.get("modelChoices") === "1" ? "personal/reed" : undefined}
     skills={[]} experts={[]} connectors={[]} records={[]}
     onSave={() => {}} onClose={() => {}} onArchiveRecord={() => {}}
     onRetryRecord={() => {}} onDeleteRecord={() => {}}

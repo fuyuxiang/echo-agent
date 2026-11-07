@@ -45,6 +45,9 @@ let tasks: Automation[] = [
     createdAt: "2020-01-01T00:00:00Z",
   },
 ];
+if (params.get("retired") === "1") {
+  tasks[0] = {...tasks[0], modelId: "echoagent-ojlab/Echo Reed", status: "PAUSED", nextRunAt: undefined};
+}
 if (params.get("many") === "1") {
   tasks.push(...tasks.map((task, index) => ({
     ...task,
@@ -128,19 +131,19 @@ Object.assign(window, {
             ready: true,
             runtimeReady: true,
             synchronized: true,
-            runtimeModels: ["builtin/m", "org/m", "personal/m"],
-            defaultModelId: "builtin/m",
+            runtimeModels: ["review/m", "org/m", "personal/m"],
+            defaultModelId: "review/m",
             providers: [],
           };
         case "providers_list":
           return {
             providers: [
               {
-                id: "builtin",
+                id: "review",
                 providerKind: "custom",
-                source: "builtin",
-                label: "Echo",
-                managed: true,
+                source: "personal",
+                label: "默认网关",
+                managed: false,
               },
               {
                 id: "org",
@@ -158,9 +161,9 @@ Object.assign(window, {
             ],
             models: [
               {
-                modelId: "builtin/m",
+                modelId: "review/m",
                 name: "Echo Brook",
-                providerId: "builtin",
+                providerId: "review",
                 remoteModelId: "brook",
               },
               {

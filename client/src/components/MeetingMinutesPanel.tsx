@@ -1,3 +1,4 @@
+import { isRemovedModelId, isRemovedModelProvider } from "@/lib/retired-models";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CircleStop,
@@ -102,9 +103,8 @@ export function MeetingMinutesPanel({
   const [selected, setSelected] = useState<MeetingRecord | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const meetingModels = models.filter((model) => model.providerId
-    && model.source !== "builtin"
-    && model.providerId !== "echoagent-ojlab"
-    && !model.id.startsWith("echoagent-ojlab/")
+    && !isRemovedModelProvider({ id: model.providerId ?? "", source: model.source })
+    && !isRemovedModelId(model.id)
     && isMiniMaxMeetingModel(model));
   const selectedModel = (!showCreate ? meetingModels.find((model) => model.id === selected?.modelId && model.providerId === selected.providerId) : undefined)
     ?? meetingModels.find((model) => model.id === modelId)

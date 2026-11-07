@@ -1,3 +1,4 @@
+import { isRemovedModelId } from "./retired-models";
 import { sanitizeModelLabel } from "./model-branding";
 
 /** Presentation metadata only. IDs remain unchanged for persistence and routing. */
@@ -7,7 +8,7 @@ export interface PresentableModel {
   remoteModelId?: string;
   providerId?: string;
   providerLabel?: string;
-  source?: "personal" | "organization" | "builtin" | "legacy";
+  source?: "personal" | "organization" | "legacy";
 }
 
 /** Only remove our reserved namespaces, never arbitrary vendor/model slugs. */
@@ -34,7 +35,7 @@ export function modelDisplayName(
 export function modelSourceLabel(model: PresentableModel | string): string {
   const id = typeof model === "string" ? model : model.id;
   const source = typeof model === "string" ? undefined : model.source;
-  if (source === "builtin" || (!source && id.startsWith("echoagent-ojlab/"))) return "内置";
+  if (isRemovedModelId(id)) return "已移除";
   if (source === "organization" || (!source && id.startsWith("organization/"))) return "组织";
   return "个人";
 }
@@ -45,14 +46,12 @@ export function groupModelsBySource<T extends PresentableModel>(models: readonly
   return [
     { source: "组织", label: "组织提供" },
     { source: "个人", label: "我的连接" },
-    { source: "内置", label: "内置模型" },
   ].map(({ source, label }) => ({ label, models: models.filter(model => modelSourceLabel(model) === source) }))
     .filter(group => group.models.length > 0);
 }
 
 /** Friendly connection name distinguishes models sharing the same name/source. */
 export function modelConnectionLabel(model: PresentableModel): string | undefined {
-  if (modelSourceLabel(model) === "内置") return undefined;
   return model.providerLabel?.trim() || model.providerId?.trim() || undefined;
 }
 

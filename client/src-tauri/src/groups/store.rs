@@ -33,7 +33,7 @@ impl Store {
         c.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| e.to_string())?;
         let migrate = (|| -> Result<(), String> {
-            migrate_builtin_models(&c)?;
+            clear_removed_model_bindings(&c)?;
             let done: bool = c
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM group_migrations WHERE name='public-text-v2')",
@@ -702,7 +702,7 @@ impl Store {
 
 /// Keep persisted groups, their list projections, and reusable templates in
 /// the same transaction. Original migration backups remain untouched.
-fn migrate_builtin_models(c: &Connection) -> Result<(), String> {
+fn clear_removed_model_bindings(c: &Connection) -> Result<(), String> {
     for table in ["groups", "group_previews", "team_templates"] {
         let mut query = c
             .prepare(&format!("SELECT id,data FROM {table}"))
@@ -720,15 +720,20 @@ fn migrate_builtin_models(c: &Connection) -> Result<(), String> {
                 serde_json::from_str(&data).map_err(|error| error.to_string())?;
             let mut changed = value
                 .get_mut("defaultModelId")
-                .is_some_and(crate::providers::migrate_builtin_model_reference);
+                .is_some_and(crate::providers::clear_removed_model_reference);
             if let Some(members) = value
                 .get_mut("members")
                 .and_then(serde_json::Value::as_array_mut)
             {
                 for member in members {
-                    changed |= member
-                        .get_mut("modelId")
-                        .is_some_and(crate::providers::migrate_builtin_model_reference);
+                    if let Some(model) = member.get_mut("modelId") {
+                        if crate::providers::clear_removed_model_reference(model) {
+                            if table != "team_templates" {
+                                *model = serde_json::Value::String(String::new());
+                            }
+                            changed = true;
+                        }
+                    }
                 }
             }
             if changed {

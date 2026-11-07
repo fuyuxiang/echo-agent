@@ -32,11 +32,12 @@ try {
     assert.equal(await mark.evaluate(el => getComputedStyle(el, "::after").animationPlayState), "running");
     assert.equal(await mark.evaluate(el => getComputedStyle(el, "::after").animationName), "echo-mark-breathe");
     assert.equal(await mark.locator("img").evaluate(el => getComputedStyle(el).transform), "none", "Artwork itself should stay still");
-    const trigger = page.getByRole("button", { name: "任务模型：Echo Reed", exact: true });
-    assert.deepEqual(await trigger.locator(".echo-mark img").evaluate(el => [el.clientWidth, el.clientHeight]), [18, 18]);
+    const trigger = page.getByRole("button", { name: "任务模型：工作模型", exact: true });
+    assert.equal(await trigger.locator(".model-identity").count(), 1);
+    assert.equal(await trigger.locator(".echo-mark").count(), 0);
     await trigger.click();
-    const option = page.getByRole("option", { name: /Echo Reed/ });
-    assert.deepEqual(await option.locator(".echo-mark img").evaluate(el => [el.clientWidth, el.clientHeight]), [22, 22]);
+    const option = page.getByRole("option", { name: /工作模型/ });
+    assert.equal(await option.locator(".model-identity").count(), 1);
     assert.equal(await option.locator(".echo-mark--active").count(), 0, "Model identity must stay still");
     await page.getByRole("dialog", { name: "任务模型", exact: true }).screenshot({ path: join(output, `model-menu-${theme}-${scale}x.png`) });
     await page.keyboard.press("Escape");

@@ -38,20 +38,12 @@ use futures::StreamExt;
 
 const ORGANIZATION_PROVIDER_ID: &str = "echoagent-organization";
 const ORGANIZATION_MODEL_PREFIX: &str = "organization/";
-pub(crate) const BUILTIN_PROVIDER_ID: &str = "echoagent-ojlab";
-pub(crate) const BUILTIN_MODEL_PREFIX: &str = "echoagent-ojlab/";
-pub(crate) const BUILTIN_DEFAULT_MODEL_ID: &str = "echoagent-ojlab/Echo Reed";
-// Exact server-side chat model IDs. Retrieval models must never enter this catalog.
-const BUILTIN_CHAT_MODELS: &[(&str, i64, i64)] = &[
-    ("Echo Cedar", 131_072, 8_192),
-    ("Echo Willow", 32_768, 8_192),
-    ("Echo Grove", 262_144, 8_192),
-    ("Echo Brook", 131_072, 8_192),
-    ("Echo Reed", 262_144, 65_536),
-];
+// Upgrade-only identifiers: retired models are never configured or served.
+const REMOVED_PROVIDER_ID: &str = "echoagent-ojlab";
+const REMOVED_MODEL_PREFIX: &str = "echoagent-ojlab/";
 const MANAGED_BY_KEY: &str = "echoagent_managed_by";
 const MANAGED_BY_ORGANIZATION: &str = "organization";
-const MANAGED_BY_BUILTIN: &str = "builtin";
+const REMOVED_MANAGED_BY: &str = "builtin";
 const LABEL_KEY: &str = "echoagent_label";
 const ALLOW_INSECURE_HTTP_KEY: &str = "echoagent_allow_insecure_http";
 const SYNCED_AT_KEY: &str = "echoagent_synced_at";
@@ -67,18 +59,6 @@ fn insecure_loopback_http_enabled() -> bool {
     std::env::var(ALLOW_INSECURE_LOOPBACK_HTTP_ENV)
         .ok()
         .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true"))
-}
-
-fn is_ojlab_base_url(raw: &str) -> bool {
-    raw.trim().trim_end_matches('/') == crate::agent_runtime::OJLAB_BASE_URL
-}
-
-fn provider_can_omit_api_key(table: &Map<String, Value>) -> bool {
-    table
-        .get("base_url")
-        .and_then(Value::as_str)
-        .is_some_and(is_ojlab_base_url)
-        && table.get("api_backend").and_then(Value::as_str) == Some("chat_completions")
 }
 
 fn validate_provider_base_url_with_policy(
@@ -119,7 +99,7 @@ fn validate_provider_base_url_with_options(
     match parsed.scheme() {
         "https" => Ok(parsed),
         "http" => {
-            if is_ojlab_base_url(raw) || allow_explicit_http {
+            if allow_explicit_http {
                 return Ok(parsed);
             }
             let exact_loopback = parsed.host_str().is_some_and(|host| {
@@ -712,10 +692,6 @@ fn resolved_provider_api_key(table: &Map<String, Value>) -> Option<String> {
         })
 }
 
-fn resolved_or_optional_api_key(table: &Map<String, Value>) -> Option<String> {
-    resolved_provider_api_key(table).or_else(|| provider_can_omit_api_key(table).then(String::new))
-}
-
 /// Honor an explicit provider/model capability declaration without guessing
 /// from model names. Absence remains unknown and the actual service decides.
 pub(crate) fn require_model_images_if_declared(model_id: &str) -> Result<(), String> {
@@ -818,7 +794,7 @@ fn inline_model_access_from_config(
         .and_then(Value::as_str)
         .unwrap_or("bearer");
     validate_auth_scheme(auth)?;
-    let api_key = resolved_or_optional_api_key(&connection).ok_or("Tab 模型没有可用凭据")?;
+    let api_key = resolved_provider_api_key(&connection).ok_or("Tab 模型没有可用凭据")?;
     let remote_model_id = model
         .get("model")
         .and_then(Value::as_str)
@@ -890,11 +866,11 @@ fn meeting_provider_access_from_config(
     } else {
         model
     };
-    if expected_provider_id == BUILTIN_PROVIDER_ID
-        || model_id.starts_with(BUILTIN_MODEL_PREFIX)
-        || provider.get(MANAGED_BY_KEY).and_then(Value::as_str) == Some(MANAGED_BY_BUILTIN)
+    if expected_provider_id == REMOVED_PROVIDER_ID
+        || model_id.starts_with(REMOVED_MODEL_PREFIX)
+        || provider.get(MANAGED_BY_KEY).and_then(Value::as_str) == Some(REMOVED_MANAGED_BY)
     {
-        return Err("内置模型不提供录音转写".into());
+        return Err("此模型已移除，请重新选择会议模型".into());
     }
     if provider.get(MANAGED_BY_KEY).and_then(Value::as_str) == Some(MANAGED_BY_ORGANIZATION) {
         let lease_until = provider
@@ -967,7 +943,6 @@ fn masked_key(table: &Map<String, Value>) -> Option<String> {
 fn provider_from_table(id: &str, table: &Map<String, Value>) -> ModelProviderEntry {
     let source = match table.get(MANAGED_BY_KEY).and_then(Value::as_str) {
         Some(MANAGED_BY_ORGANIZATION) => "organization",
-        Some(MANAGED_BY_BUILTIN) => "builtin",
         _ => "personal",
     };
     let managed = source != "personal";
@@ -1002,7 +977,7 @@ fn provider_from_table(id: &str, table: &Map<String, Value>) -> ModelProviderEnt
             && table.get(ALLOW_INSECURE_HTTP_KEY).and_then(Value::as_bool) == Some(true),
         source: source.into(),
         managed,
-        credential_configured: api_key.is_some() || provider_can_omit_api_key(table),
+        credential_configured: api_key.is_some(),
         synced_at: table
             .get(SYNCED_AT_KEY)
             .and_then(Value::as_integer)
@@ -1270,8 +1245,8 @@ fn remove_unselected_provider_models(
 }
 
 fn validate_personal_provider_target(config: &Value, provider_id: &str) -> Result<(), String> {
-    if provider_id == BUILTIN_PROVIDER_ID {
-        return Err("内置模型连接不能由本地设置修改".into());
+    if provider_id == REMOVED_PROVIDER_ID {
+        return Err("此连接已移除，请添加新的个人连接".into());
     }
     if provider_id == ORGANIZATION_PROVIDER_ID {
         return Err("组织托管连接不能由本地设置修改".into());
@@ -1283,15 +1258,15 @@ fn validate_personal_provider_target(config: &Value, provider_id: &str) -> Resul
     if existing.is_some_and(is_organization_managed) {
         return Err("组织托管连接不能由本地设置修改".into());
     }
-    if existing.is_some_and(is_builtin_managed) {
-        return Err("内置模型连接不能由本地设置修改".into());
+    if existing.is_some_and(is_removed_provider) {
+        return Err("此连接已移除，请添加新的个人连接".into());
     }
     Ok(())
 }
 
 fn validate_personal_model_target(config: &Value, model_id: &str) -> Result<(), String> {
-    if model_id.starts_with(BUILTIN_MODEL_PREFIX) {
-        return Err("内置模型不能由本地设置修改".into());
+    if model_id.starts_with(REMOVED_MODEL_PREFIX) {
+        return Err("此模型已移除，请选择其他模型".into());
     }
     if model_id.starts_with(ORGANIZATION_MODEL_PREFIX) {
         return Err("组织模型目录不能由本地设置修改".into());
@@ -1303,8 +1278,8 @@ fn validate_personal_model_target(config: &Value, model_id: &str) -> Result<(), 
     if existing.is_some_and(is_organization_model) {
         return Err("组织托管模型不能由本地设置修改".into());
     }
-    if existing.is_some_and(is_builtin_model) {
-        return Err("内置模型不能由本地设置修改".into());
+    if existing.is_some_and(is_removed_config_model) {
+        return Err("此模型已移除，请选择其他模型".into());
     }
     Ok(())
 }
@@ -1370,41 +1345,27 @@ fn provider_to_table(p: &ModelProviderEntry, existing: Option<&Value>) -> Result
         "base_url",
         needs_base_url,
     )?;
-    let personal_http = p.allow_insecure_http
-        && !p.managed
-        && !matches!(p.source.as_str(), "organization" | "builtin");
+    let personal_http = p.allow_insecure_http && !p.managed && p.source != "organization";
     let organization_http = p.allow_insecure_http
         && p.managed
         && p.source == "organization"
         && p.id == ORGANIZATION_PROVIDER_ID;
     let allow_insecure_http = personal_http || organization_http;
-    if is_ojlab_base_url(&base_url) && !allow_insecure_http {
-        return Err("远端 HTTP 服务需要明确同意明文传输".into());
-    }
     let parsed_base_url = validate_personal_provider_base_url(&base_url, allow_insecure_http)?;
-    let keyless_service = is_ojlab_base_url(&base_url);
-    let api_backend = if keyless_service {
-        "chat_completions".to_owned()
-    } else {
-        resolve_field(
-            &p.api_backend,
-            existing_str("api_backend"),
-            preset.as_ref().map(|p| p.api_backend),
-            "api_backend",
-            needs_base_url,
-        )?
-    };
-    let auth_scheme = if keyless_service {
-        "bearer".to_owned()
-    } else {
-        resolve_field(
-            &p.auth_scheme,
-            existing_str("auth_scheme"),
-            preset.as_ref().map(|p| p.auth_scheme),
-            "auth_scheme",
-            needs_base_url,
-        )?
-    };
+    let api_backend = resolve_field(
+        &p.api_backend,
+        existing_str("api_backend"),
+        preset.as_ref().map(|p| p.api_backend),
+        "api_backend",
+        needs_base_url,
+    )?;
+    let auth_scheme = resolve_field(
+        &p.auth_scheme,
+        existing_str("auth_scheme"),
+        preset.as_ref().map(|p| p.auth_scheme),
+        "auth_scheme",
+        needs_base_url,
+    )?;
 
     table.insert("base_url".into(), Value::String(base_url));
     table.insert("api_backend".into(), Value::String(api_backend));
@@ -1439,13 +1400,6 @@ fn provider_to_table(p: &ModelProviderEntry, existing: Option<&Value>) -> Result
             // Mask coming back from the UI — treat as no-op.
         } else {
             table.insert("api_key".into(), Value::String(key.to_string()));
-        }
-    }
-    if keyless_service {
-        // This public endpoint never needs a credential. Do not persist or
-        // forward an old provider key if a connection is repointed at it.
-        for field in ["api_key", "env_key", "auth_provider", "auth"] {
-            table.remove(field);
         }
     }
 
@@ -1583,169 +1537,96 @@ fn is_organization_model(value: &Value) -> bool {
             == Some(ORGANIZATION_PROVIDER_ID)
 }
 
-fn is_builtin_managed(value: &Value) -> bool {
+fn is_removed_provider(value: &Value) -> bool {
     value
         .as_table()
         .and_then(|table| table.get(MANAGED_BY_KEY))
         .and_then(Value::as_str)
-        == Some(MANAGED_BY_BUILTIN)
+        == Some(REMOVED_MANAGED_BY)
 }
 
-fn is_builtin_model(value: &Value) -> bool {
-    is_builtin_managed(value)
+fn is_removed_config_model(value: &Value) -> bool {
+    is_removed_provider(value)
         || value
             .as_table()
             .and_then(|table| table.get("model_provider"))
             .and_then(Value::as_str)
-            == Some(BUILTIN_PROVIDER_ID)
+            == Some(REMOVED_PROVIDER_ID)
 }
 
-const LEGACY_BUILTIN_MODEL_IDS: &[&str] = &[
-    "echoagent-ojlab/chat-xc",
-    "echoagent-ojlab/chat-glm",
-    "echoagent-ojlab/chat-qwen",
-];
-
-pub(crate) fn is_legacy_builtin_model_id(id: &str) -> bool {
-    LEGACY_BUILTIN_MODEL_IDS.contains(&id)
+/// Reserved IDs only: personal models with similar names are untouched.
+pub(crate) fn is_removed_model_id(id: &str) -> bool {
+    id.starts_with(REMOVED_MODEL_PREFIX)
 }
 
-pub(crate) fn migrate_builtin_model_reference(value: &mut serde_json::Value) -> bool {
-    if value.as_str().is_some_and(is_legacy_builtin_model_id) {
-        *value = serde_json::Value::String(BUILTIN_DEFAULT_MODEL_ID.into());
+pub(crate) fn clear_removed_model_reference(value: &mut serde_json::Value) -> bool {
+    if value.as_str().is_some_and(is_removed_model_id) {
+        *value = serde_json::Value::Null;
         true
     } else {
         false
     }
 }
 
-fn migrate_builtin_model_preferences(selection: &mut Map<String, Value>) {
-    // Empty/missing default means Auto. Never persist a fallback as a user choice.
-    // Bootstrap reads this value again from disk. Normalize whitespace to the
-    // empty string it recognizes as Auto instead of an explicit unknown model.
-    if let Some(Value::String(default)) = selection.get_mut("default") {
-        if default.trim().is_empty() {
-            default.clear();
-        }
-    }
-    for key in [
-        "default",
-        "web_search",
-        "session_summary",
-        "image_description",
-        "prompt_suggestion",
-    ] {
-        if selection
-            .get(key)
-            .and_then(Value::as_str)
-            .is_some_and(is_legacy_builtin_model_id)
-        {
-            selection.insert(key.into(), Value::String(BUILTIN_DEFAULT_MODEL_ID.into()));
-        }
-    }
-    // Preserve every original filter, including personal matches and invalid
-    // patterns (Runtime reports those). Add only the retired models' successor.
-    for key in ["allowed_models", "hidden_models", "disabled_models"] {
-        let Some(patterns) = selection.get_mut(key).and_then(Value::as_array_mut) else {
-            continue;
-        };
-        let covers_retired = patterns.iter().filter_map(Value::as_str).any(|pattern| {
-            globset::Glob::new(pattern).is_ok_and(|glob| {
-                let matcher = glob.compile_matcher();
-                LEGACY_BUILTIN_MODEL_IDS.iter().any(|id| {
-                    matcher.is_match(id)
-                        || matcher.is_match(id.strip_prefix(BUILTIN_MODEL_PREFIX).unwrap())
-                })
-            })
-        });
-        if covers_retired
-            && !patterns
-                .iter()
-                .any(|value| value.as_str() == Some(BUILTIN_DEFAULT_MODEL_ID))
-        {
-            patterns.push(Value::String(BUILTIN_DEFAULT_MODEL_ID.into()));
-        }
-    }
-}
-
-fn apply_builtin_model_config(config: &mut Value) -> Result<(), String> {
-    let mut provider = Map::new();
-    provider.insert(
-        "base_url".into(),
-        Value::String(crate::agent_runtime::OJLAB_BASE_URL.into()),
-    );
-    provider.insert(
-        "api_backend".into(),
-        Value::String("chat_completions".into()),
-    );
-    provider.insert("auth_scheme".into(), Value::String("bearer".into()));
-    provider.insert(LABEL_KEY.into(), Value::String("内置模型".into()));
-    provider.insert(
-        MANAGED_BY_KEY.into(),
-        Value::String(MANAGED_BY_BUILTIN.into()),
-    );
-    let providers = ensure_table(config, "model_providers")?;
-    if providers
-        .get(BUILTIN_PROVIDER_ID)
-        .is_some_and(|entry| !is_builtin_managed(entry))
+/// Remove the retired catalog and its preferences without creating any model,
+/// provider, credential, or replacement selection. Unknown user settings survive.
+fn remove_retired_model_config(config: &mut Value) -> Result<(), String> {
+    let Some(root) = config.as_table_mut() else {
+        return Ok(());
+    };
+    let mut removed_providers = std::collections::HashSet::from([REMOVED_PROVIDER_ID.to_string()]);
+    if let Some(providers) = root
+        .get_mut("model_providers")
+        .and_then(Value::as_table_mut)
     {
-        return Err("内置模型连接 ID 已被个人配置占用".into());
-    }
-    providers.insert(BUILTIN_PROVIDER_ID.into(), Value::Table(provider));
-
-    let models = ensure_table(config, "model")?;
-    // Reconcile the managed catalog rather than accumulating retired models.
-    // Personal and organization entries are outside this provider's ownership.
-    models.retain(|id, entry| {
-        !is_builtin_model(entry)
-            || BUILTIN_CHAT_MODELS
+        removed_providers.extend(
+            providers
                 .iter()
-                .any(|(slug, _, _)| id == format!("{BUILTIN_MODEL_PREFIX}{slug}"))
-    });
-    for &(slug, context_window, max_output_tokens) in BUILTIN_CHAT_MODELS {
-        let id = format!("{BUILTIN_MODEL_PREFIX}{slug}");
-        if models
-            .get(&id)
-            .is_some_and(|entry| !is_builtin_model(entry))
-        {
-            return Err(format!("内置模型 ID {id} 已被个人配置占用"));
-        }
-        let mut entry = Map::new();
-        entry.insert("model".into(), Value::String(slug.into()));
-        entry.insert("name".into(), Value::String(slug.into()));
-        entry.insert(
-            "model_provider".into(),
-            Value::String(BUILTIN_PROVIDER_ID.into()),
+                .filter(|(_, entry)| is_removed_provider(entry))
+                .map(|(id, _)| id.clone()),
         );
-        // The service's input limit is context_window - max_completion_tokens.
-        entry.insert("context_window".into(), Value::Integer(context_window));
-        entry.insert(
-            "max_completion_tokens".into(),
-            Value::Integer(max_output_tokens),
-        );
-        // Leave room for the response. Willow and Reed accept input up to 75%
-        // of their context, so the Runtime's default 85% compaction is too late.
-        let compact_percent =
-            (100 * (context_window - max_output_tokens) / context_window - 5).min(85);
-        if compact_percent < 85 {
-            entry.insert(
-                "auto_compact_threshold_percent".into(),
-                Value::Integer(compact_percent),
-            );
-        }
-        entry.insert(
-            MANAGED_BY_KEY.into(),
-            Value::String(MANAGED_BY_BUILTIN.into()),
-        );
-        models.insert(id, Value::Table(entry));
+        providers.retain(|id, _| !removed_providers.contains(id));
     }
-    let selection = ensure_table(config, "models")?;
-    migrate_builtin_model_preferences(selection);
+    let mut removed_models = std::collections::HashSet::<String>::new();
+    if let Some(models) = root.get_mut("model").and_then(Value::as_table_mut) {
+        models.retain(|id, entry| {
+            let removed = is_removed_model_id(id)
+                || is_removed_config_model(entry)
+                || entry
+                    .get("model_provider")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| removed_providers.contains(id));
+            if removed {
+                removed_models.insert(id.to_owned());
+            }
+            !removed
+        });
+    }
+    if let Some(selection) = root.get_mut("models").and_then(Value::as_table_mut) {
+        selection.retain(|_, value| {
+            !value
+                .as_str()
+                .is_some_and(|id| is_removed_model_id(id) || removed_models.contains(id))
+        });
+        for key in ["allowed_models", "hidden_models", "disabled_models"] {
+            if let Some(patterns) = selection.get_mut(key).and_then(Value::as_array_mut) {
+                let before = patterns.len();
+                patterns.retain(|value| {
+                    !value
+                        .as_str()
+                        .is_some_and(|id| is_removed_model_id(id) || removed_models.contains(id))
+                });
+                if before != 0 && patterns.is_empty() {
+                    selection.remove(key);
+                }
+            }
+        }
+    }
     Ok(())
 }
 
-pub(crate) fn ensure_builtin_model_config() -> Result<(), String> {
-    update_config(apply_builtin_model_config)
+pub(crate) fn remove_retired_models_before_runtime() -> Result<(), String> {
+    update_config_checked(remove_retired_model_config)
 }
 
 /// Apply a downloaded organization model to an in-memory config document.
@@ -1985,7 +1866,8 @@ pub(crate) fn enforce_organization_model_lease() -> Result<bool, String> {
 /// into synthetic providers for display; disk is not modified.
 #[tauri::command]
 pub fn providers_list() -> ProviderListModel {
-    let config = read_config();
+    let mut config = read_config();
+    let _ = remove_retired_model_config(&mut config);
 
     let mut providers = Vec::new();
     let mut models = Vec::new();
@@ -2027,7 +1909,7 @@ pub fn providers_list() -> ProviderListModel {
                         .and_then(Value::as_integer)
                         .and_then(|n| u32::try_from(n).ok()),
                     clear_max_output_tokens: false,
-                    managed: is_organization_model(v) || is_builtin_model(v),
+                    managed: is_organization_model(v) || is_removed_config_model(v),
                 });
             }
         }
@@ -2151,8 +2033,7 @@ pub fn providers_save_connection(
                 .as_table()
                 .and_then(resolved_provider_api_key)
                 .is_some();
-            if !credential_configured && !rendered.as_table().is_some_and(provider_can_omit_api_key)
-            {
+            if !credential_configured {
                 return Err("请填写 API Key".into());
             }
             providers.insert(provider_id.clone(), rendered);
@@ -2202,10 +2083,12 @@ pub fn providers_save_connection(
                 {
                     return Err("组织托管模型不能由本地设置修改".into());
                 }
-                if local_id.starts_with(BUILTIN_MODEL_PREFIX)
-                    || model_tables.get(&local_id).is_some_and(is_builtin_model)
+                if local_id.starts_with(REMOVED_MODEL_PREFIX)
+                    || model_tables
+                        .get(&local_id)
+                        .is_some_and(is_removed_config_model)
                 {
-                    return Err("内置模型不能由本地设置修改".into());
+                    return Err("此模型已移除，请选择其他模型".into());
                 }
                 if let Some(other_provider) = model_tables
                     .get(&local_id)
@@ -2301,10 +2184,10 @@ pub fn providers_save_model(
         {
             return Err("组织托管模型不能由本地设置修改".into());
         }
-        if local_id.starts_with(BUILTIN_MODEL_PREFIX)
-            || mdls.get(&local_id).is_some_and(is_builtin_model)
+        if local_id.starts_with(REMOVED_MODEL_PREFIX)
+            || mdls.get(&local_id).is_some_and(is_removed_config_model)
         {
-            return Err("内置模型不能由本地设置修改".into());
+            return Err("此模型已移除，请选择其他模型".into());
         }
         model.model_id.clone_from(&local_id);
         model.remote_model_id = Some(remote_model_id);
@@ -2507,7 +2390,7 @@ pub async fn providers_fetch_models_for_provider(
         .and_then(Value::as_table)
         .ok_or("连接不存在")?;
     let provider_kind = infer_provider_kind(table);
-    let api_key = resolved_or_optional_api_key(table).ok_or("该连接没有可用的已保存 API Key")?;
+    let api_key = resolved_provider_api_key(table).ok_or("该连接没有可用的已保存 API Key")?;
     let base_url = table
         .get("base_url")
         .and_then(Value::as_str)
@@ -2551,7 +2434,7 @@ pub async fn providers_test_connection(
     let rendered = provider_to_table(&provider, existing)?;
     let table = rendered.as_table().ok_or("连接配置无效")?;
     let provider_kind = infer_provider_kind(table);
-    let api_key = resolved_or_optional_api_key(table).ok_or("请填写 API Key")?;
+    let api_key = resolved_provider_api_key(table).ok_or("请填写 API Key")?;
     let base_url = table
         .get("base_url")
         .and_then(Value::as_str)
@@ -2595,7 +2478,7 @@ pub async fn providers_test_model_connection(
     // Organization-managed connections are tested exactly as downloaded;
     // never accept webview-provided overrides for their endpoint or secret.
     let rendered = if stored
-        .is_some_and(|entry| is_organization_managed(entry) || is_builtin_managed(entry))
+        .is_some_and(|entry| is_organization_managed(entry) || is_removed_provider(entry))
     {
         stored.cloned().ok_or("连接不存在")?
     } else {
@@ -2612,7 +2495,7 @@ pub async fn providers_test_model_connection(
 
     let table = rendered.as_table().ok_or("连接配置无效")?;
     let provider_kind = infer_provider_kind(table);
-    let api_key = resolved_or_optional_api_key(table).ok_or("请填写 API Key")?;
+    let api_key = resolved_provider_api_key(table).ok_or("请填写 API Key")?;
     let base_url = table
         .get("base_url")
         .and_then(Value::as_str)
@@ -2666,7 +2549,7 @@ async fn test_model_inference(
 ) -> Result<(), String> {
     let key = api_key.trim();
     let base = resolve_fetch_base_url(provider_kind, base_url, allow_insecure_http)?;
-    if key.is_empty() && !is_ojlab_base_url(&base) {
+    if key.is_empty() {
         return Err("请先填写 API Key".into());
     }
     let url = inference_endpoint(&base, api_backend)?;
@@ -2733,7 +2616,7 @@ async fn fetch_models(
 ) -> Result<Vec<FetchedModel>, String> {
     let key = api_key.trim();
     let base = resolve_fetch_base_url(provider_kind, base_url, allow_insecure_http)?;
-    if key.is_empty() && !is_ojlab_base_url(&base) {
+    if key.is_empty() {
         return Err("请先填写 API Key".into());
     }
     let auth_scheme = explicit_auth_scheme
@@ -2784,13 +2667,10 @@ async fn fetch_models(
     let json: serde_json::Value =
         serde_json::from_slice(&body).map_err(|e| format!("解析响应失败（非 JSON）：{e}"))?;
 
-    parse_fetched_models(&json, is_ojlab_base_url(&base))
+    parse_fetched_models(&json)
 }
 
-fn parse_fetched_models(
-    json: &serde_json::Value,
-    builtin_service: bool,
-) -> Result<Vec<FetchedModel>, String> {
+fn parse_fetched_models(json: &serde_json::Value) -> Result<Vec<FetchedModel>, String> {
     let data = json
         .get("data")
         .and_then(|d| d.as_array())
@@ -2801,9 +2681,6 @@ fn parse_fetched_models(
         .filter_map(|item| {
             let id = item.get("id").and_then(|v| v.as_str())?.to_string();
             if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
-                return None;
-            }
-            if builtin_service && !BUILTIN_CHAT_MODELS.iter().any(|(slug, _, _)| *slug == id) {
                 return None;
             }
             let owned_by = item
@@ -2828,267 +2705,86 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_and_model_filters_keep_their_semantics_after_catalog_migration() {
-        for preferred in [None, Some(""), Some("  "), Some("mine")] {
-            let mut config: Value = r#"
-[model.mine]
-model_provider = "mine"
-model = "chat-qwen"
-[models]
-allowed_models = ["mine"]
-"#
-            .parse()
-            .unwrap();
-            if let Some(preferred) = preferred {
-                config["models"]
-                    .as_table_mut()
-                    .unwrap()
-                    .insert("default".into(), Value::String(preferred.into()));
-            }
-            apply_builtin_model_config(&mut config).unwrap();
-            assert_eq!(
-                config["models"].get("default").and_then(Value::as_str),
-                preferred.map(|value| if value.trim().is_empty() { "" } else { value })
-            );
-            assert_eq!(
-                config["models"]["allowed_models"].as_array().unwrap(),
-                &vec![Value::String("mine".into())]
-            );
-        }
+    fn removed_catalog_cleanup_preserves_personal_organization_and_retrieval_settings() {
         let mut config: Value = r#"
-[models]
-default = "echoagent-ojlab/chat-qwen"
-session_summary = "echoagent-ojlab/chat-glm"
-web_search = "mine/chat-qwen"
-allowed_models = ["echoagent-ojlab/chat-*", "mine/*"]
-hidden_models = ["chat-gl[m]"]
-disabled_models = ["echoagent-ojlab/chat-xc"]
-"#
+            [model_providers.echoagent-ojlab]
+            base_url = "http://retired.invalid/v1"
+            echoagent_managed_by = "builtin"
+            [model_providers.mine]
+            base_url = "https://mine.invalid/v1"
+            api_key = "synthetic-key"
+            [model_providers.echoagent-organization]
+            echoagent_managed_by = "organization"
+            [model."echoagent-ojlab/Echo Reed"]
+            model_provider = "echoagent-ojlab"
+            [model."echoagent-ojlab/chat-xc"]
+            model_provider = "echoagent-ojlab"
+            [model.alias]
+            model_provider = "echoagent-ojlab"
+            [model."mine/Echo Reed"]
+            model_provider = "mine"
+            model = "Echo Reed"
+            [model."organization/team"]
+            model_provider = "echoagent-organization"
+            [models]
+            default = "echoagent-ojlab/Echo Reed"
+            small = "alias"
+            allowed_models = ["echoagent-ojlab/*", "mine/Echo Reed"]
+            hidden_models = ["echoagent-ojlab/chat-xc"]
+            disabled_models = []
+            [memory.embedding]
+            model = "embed-pro"
+            [unrelated]
+            preserved = true
+        "#
         .parse()
         .unwrap();
-        apply_builtin_model_config(&mut config).unwrap();
-        for key in ["default", "session_summary"] {
-            assert_eq!(
-                config["models"][key].as_str(),
-                Some(BUILTIN_DEFAULT_MODEL_ID)
-            );
-        }
+        let original = config.clone();
+        remove_retired_model_config(&mut config).unwrap();
+        assert_eq!(config["model_providers"].as_table().unwrap().len(), 2);
+        assert_eq!(config["model"].as_table().unwrap().len(), 2);
         assert_eq!(
-            config["models"]["web_search"].as_str(),
-            Some("mine/chat-qwen")
+            config["model_providers"]["mine"],
+            original["model_providers"]["mine"]
         );
-        for key in ["allowed_models", "hidden_models", "disabled_models"] {
-            assert!(config["models"][key]
+        assert_eq!(
+            config["model"]["mine/Echo Reed"],
+            original["model"]["mine/Echo Reed"]
+        );
+        assert!(config["models"].get("default").is_none());
+        assert!(config["models"].get("small").is_none());
+        assert_eq!(
+            config["models"]["allowed_models"].as_array().unwrap().len(),
+            1
+        );
+        assert!(config["models"].get("hidden_models").is_none());
+        assert_eq!(
+            config["models"]["disabled_models"]
                 .as_array()
                 .unwrap()
-                .contains(&Value::String(BUILTIN_DEFAULT_MODEL_ID.into())));
-        }
-        let first = config.clone();
-        apply_builtin_model_config(&mut config).unwrap();
-        assert_eq!(config, first);
-    }
-
-    #[test]
-    fn builtin_catalog_is_idempotent_and_preserves_personal_and_organization_models() {
-        let mut config: Value = r#"
-[model_providers.mine]
-base_url = "https://example.com/v1"
-api_key = "personal-key"
-[model.mine]
-model_provider = "mine"
-model = "mine"
-[model_providers.echoagent-organization]
-echoagent_managed_by = "organization"
-[model."organization/team"]
-model_provider = "echoagent-organization"
-model = "team"
-"#
-        .parse()
-        .unwrap();
-        apply_builtin_model_config(&mut config).unwrap();
-        let first = config.clone();
-        apply_builtin_model_config(&mut config).unwrap();
-        assert_eq!(config, first);
-        assert!(config["model"]["mine"].is_table());
-        assert!(config["model"]["organization/team"].is_table());
-        assert_eq!(
-            config["model"][BUILTIN_DEFAULT_MODEL_ID]["model"].as_str(),
-            Some("Echo Reed")
+                .len(),
+            0
         );
-        assert_eq!(
-            config["models"].get("default"),
-            None,
-            "Auto must stay unset when no explicit default was saved"
-        );
-        assert_eq!(config["model"].as_table().unwrap().len(), 7);
-        for (slug, context_window, max_input_tokens, max_output_tokens) in [
-            ("Echo Cedar", 131_072, 122_880, 8_192),
-            ("Echo Willow", 32_768, 24_576, 8_192),
-            ("Echo Grove", 262_144, 253_952, 8_192),
-            ("Echo Brook", 131_072, 122_880, 8_192),
-            ("Echo Reed", 262_144, 196_608, 65_536),
-        ] {
-            let entry = &config["model"][format!("{BUILTIN_MODEL_PREFIX}{slug}").as_str()];
-            assert_eq!(entry["model"].as_str(), Some(slug));
-            assert_eq!(entry["name"].as_str(), Some(slug));
-            assert_eq!(entry["context_window"].as_integer(), Some(context_window));
-            assert_eq!(
-                entry["max_completion_tokens"].as_integer(),
-                Some(max_output_tokens)
-            );
-            assert_eq!(context_window - max_output_tokens, max_input_tokens);
-            if matches!(slug, "Echo Willow" | "Echo Reed") {
-                assert_eq!(
-                    entry["auto_compact_threshold_percent"].as_integer(),
-                    Some(70)
-                );
-            }
-        }
-        let provider = config["model_providers"][BUILTIN_PROVIDER_ID]
-            .as_table()
-            .unwrap();
-        assert!(provider_can_omit_api_key(provider));
-        assert!(provider_from_table(BUILTIN_PROVIDER_ID, provider).managed);
-        assert!(resolved_provider_api_key(provider).is_none());
-        assert!(validate_personal_provider_target(&config, BUILTIN_PROVIDER_ID).is_err());
-        assert!(validate_personal_model_target(&config, BUILTIN_DEFAULT_MODEL_ID).is_err());
-    }
-
-    #[test]
-    fn builtin_catalog_replaces_retired_models_and_migrates_only_builtin_defaults() {
-        for preferred in [
-            "",
-            "echoagent-ojlab/chat-xc",
-            "echoagent-ojlab/chat-glm",
-            "echoagent-ojlab/chat-qwen",
-            "mine",
-            "organization/team",
-            "echoagent-ojlab/Echo Grove",
-        ] {
-            let mut config: Value = r#"
-[model."echoagent-ojlab/chat-xc"]
-model_provider = "echoagent-ojlab"
-model = "chat-xc"
-[model."echoagent-ojlab/chat-glm"]
-echoagent_managed_by = "builtin"
-model = "chat-glm"
-[model."echoagent-ojlab/chat-qwen"]
-model_provider = "echoagent-ojlab"
-model = "chat-qwen"
-[model."echoagent-ojlab/embed-pro"]
-model_provider = "echoagent-ojlab"
-model = "embed-pro"
-[model.mine]
-model_provider = "mine"
-model = "chat-xc"
-[models]
-default = ""
-"#
-            .parse()
-            .unwrap();
-            config["models"]["default"] = Value::String(preferred.into());
-            let personal = config["model"]["mine"].clone();
-            apply_builtin_model_config(&mut config).unwrap();
-            assert_eq!(config["model"].as_table().unwrap().len(), 6);
-            assert_eq!(config["model"]["mine"], personal);
-            for retired in [
-                "chat-xc",
-                "chat-glm",
-                "chat-qwen",
-                "embed-pro",
-                "rerank-pro",
-            ] {
-                assert!(config["model"]
-                    .get(format!("{BUILTIN_MODEL_PREFIX}{retired}"))
-                    .is_none());
-            }
-            let expected = if is_legacy_builtin_model_id(preferred) {
-                BUILTIN_DEFAULT_MODEL_ID
-            } else {
-                preferred
-            };
-            assert_eq!(config["models"]["default"].as_str(), Some(expected));
-            let first = config.clone();
-            apply_builtin_model_config(&mut config).unwrap();
-            assert_eq!(config, first);
-        }
-    }
-
-    #[test]
-    fn builtin_model_discovery_excludes_retrieval_and_retired_models() {
-        let response = serde_json::json!({ "data": [
-            {"id": "Echo Cedar"}, {"id": "Echo Willow"}, {"id": "Echo Grove"},
-            {"id": "Echo Brook"}, {"id": "Echo Reed"}, {"id": "embed-pro"},
-            {"id": "rerank-pro"}, {"id": "chat-xc"}, {"id": "chat-glm"},
-            {"id": "chat-qwen"}, {"id": "Echo Unknown"}, {"id": ""},
-        ] });
-        let builtin = parse_fetched_models(&response, true).unwrap();
-        assert_eq!(
-            builtin
-                .iter()
-                .map(|model| model.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "Echo Cedar",
-                "Echo Willow",
-                "Echo Grove",
-                "Echo Brook",
-                "Echo Reed"
-            ]
-        );
-        // A personal service keeps its own catalog; this restriction is specific
-        // to the known built-in endpoint.
-        assert_eq!(parse_fetched_models(&response, false).unwrap().len(), 11);
-    }
-
-    #[test]
-    fn only_the_named_http_service_can_run_without_a_key() {
-        assert!(validate_provider_base_url_with_policy(
-            crate::agent_runtime::OJLAB_BASE_URL,
-            false
-        )
-        .is_ok());
-        assert!(validate_provider_base_url_with_policy(
-            "http://123.56.188.16:8088/v1/other",
-            false
-        )
-        .is_err());
+        assert_eq!(config["memory"], original["memory"]);
+        assert_eq!(config["unrelated"], original["unrelated"]);
+        let cleaned = config.clone();
+        remove_retired_model_config(&mut config).unwrap();
+        assert_eq!(config, cleaned, "cleanup is idempotent");
+        let mut empty = Value::Table(Map::new());
+        remove_retired_model_config(&mut empty).unwrap();
         assert!(
-            validate_provider_base_url_with_policy("http://123.56.188.16.evil:8088/v1", false)
-                .is_err()
+            empty.as_table().unwrap().is_empty(),
+            "fresh profiles receive no injected model"
         );
-        let mut provider = Map::new();
-        provider.insert(
-            "base_url".into(),
-            Value::String(crate::agent_runtime::OJLAB_BASE_URL.into()),
-        );
-        provider.insert(
-            "api_backend".into(),
-            Value::String("chat_completions".into()),
-        );
-        assert_eq!(resolved_or_optional_api_key(&provider), Some(String::new()));
-        provider.insert(
-            "base_url".into(),
-            Value::String("https://example.com/v1".into()),
-        );
-        assert_eq!(resolved_or_optional_api_key(&provider), None);
+    }
 
-        let rendered = provider_to_table(
-            &ModelProviderEntry {
-                provider_kind: "custom".into(),
-                base_url: Some(crate::agent_runtime::OJLAB_BASE_URL.into()),
-                api_backend: Some("responses".into()),
-                auth_scheme: Some("x_api_key".into()),
-                api_key: Some("must-not-be-sent".into()),
-                allow_insecure_http: true,
-                ..Default::default()
-            },
-            None,
+    #[test]
+    fn discovery_preserves_user_services_model_catalog() {
+        let models = parse_fetched_models(
+            &serde_json::json!({"data":[{"id":"my-model"},{"id":"Echo Reed"}]}),
         )
         .unwrap();
-        assert!(rendered.as_table().unwrap().get("api_key").is_none());
-        assert_eq!(rendered["api_backend"].as_str(), Some("chat_completions"));
-        assert_eq!(rendered["auth_scheme"].as_str(), Some("bearer"));
+        assert_eq!(models.len(), 2);
     }
 
     // --- model_config_revision ---
@@ -3324,11 +3020,11 @@ base_url = "https://example.com"
         let error = meeting_provider_access_from_config(
             &config,
             "echoagent-ojlab/MiniMax-M3",
-            BUILTIN_PROVIDER_ID,
+            REMOVED_PROVIDER_ID,
         )
         .err()
         .unwrap();
-        assert!(error.contains("内置"));
+        assert!(error.contains("已移除"));
     }
 
     #[test]
@@ -3423,11 +3119,13 @@ base_url = "https://example.com"
     }
 
     #[test]
-    fn keyless_remote_service_still_requires_personal_http_consent() {
+    fn personal_http_connection_requires_consent_and_explicit_protocol() {
         let mut provider = ModelProviderEntry {
             id: "custom".into(),
             provider_kind: "custom".into(),
-            base_url: Some(crate::agent_runtime::OJLAB_BASE_URL.into()),
+            base_url: Some("http://example.com/v1".into()),
+            api_backend: Some("chat_completions".into()),
+            auth_scheme: Some("bearer".into()),
             source: "personal".into(),
             ..Default::default()
         };

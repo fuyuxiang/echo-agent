@@ -1588,8 +1588,8 @@ pub(crate) async fn spawn_session_actor(
     let resolved_tool_overrides: std::sync::Arc<
         arc_swap::ArcSwapOption<echo_agent_sampling_types::ToolOverrides>,
     > = std::sync::Arc::new(arc_swap::ArcSwapOption::empty());
-    let title_refresh_enabled = effective_config
-        .is_title_refresh_enabled_for_client(session_client_identifier.as_deref());
+    let title_refresh_enabled =
+        effective_config.is_title_refresh_enabled_for_client(session_client_identifier.as_deref());
     let initial_title_refresh_idx =
         crate::session::helpers::session_summary::initial_title_refresh_idx(
             title_refresh_watermark,
@@ -1974,7 +1974,7 @@ pub(crate) async fn spawn_session_actor(
         let session_id_for_reindex = session_info.id.to_string();
         let chunks_added_counter = session.memory.chunks_added.clone();
         session.memory.jobs.spawn(async move {
-            let db_path = storage.workspace_dir().join("index.sqlite");
+            let db_path = storage.index_path_for(Some(&embed_config));
             if let Ok(mut index) = crate::session::memory::MemoryIndex::open_or_create(
                 &db_path,
                 storage.clone(),
@@ -2010,9 +2010,11 @@ pub(crate) async fn spawn_session_actor(
                     files = files.len(),
                     "MEMORY_REINDEX: background reindex complete"
                 );
+                // Commit a complete keyword generation before any optional model work.
+                let _=storage.activate_index(&db_path);
                 let embedded_count = if let Some(api_key) = sampling_api_key {
                     if let Some(provider) =
-                        crate::session::memory::embedding::ApiEmbeddingProvider::from_session(
+                        crate::session::memory::embedding::ConfiguredEmbeddingProvider::from_session(
                             &embed_config,
                             sampling_base_url,
                             api_key,

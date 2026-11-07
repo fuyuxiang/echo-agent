@@ -42,9 +42,9 @@ describe("ModelSelector", () => {
     expect(change).toHaveBeenCalledWith("another/actual-model");
   });
 
-  it("内置、组织和个人同名模型可区分，选择回传原始 ID", () => {
+  it("组织和多个个人连接的同名模型可区分，选择回传原始 ID", () => {
     const models = [
-      { id: "echoagent-ojlab/Echo Reed", source: "builtin" as const },
+      { id: "custom-1/Echo Reed", remoteModelId: "Echo Reed", source: "personal" as const, providerLabel: "默认网关" },
       { id: "organization/Echo Reed", source: "organization" as const, providerLabel: "研发团队" },
       { id: "custom-2/Echo Reed", remoteModelId: "Echo Reed", source: "personal" as const, providerLabel: "我的网关" },
       { id: "custom-3/Echo Reed", remoteModelId: "Echo Reed", source: "personal" as const, providerLabel: "备用网关" },
@@ -52,9 +52,9 @@ describe("ModelSelector", () => {
     const change = vi.fn();
     render(<ModelSelector models={models} modelId={models[0].id} onModelChange={change} />);
     const trigger = screen.getByRole("button", { name: "Echo Reed" });
-    expect(trigger.title).toBe("Echo Reed · 内置");
+    expect(trigger.title).toBe("Echo Reed · 个人 · 默认网关");
     expect(trigger.textContent).toBe("Echo Reed");
-    for (const [index, name] of ["Echo Reed · 内置", "Echo Reed · 组织 · 研发团队", "Echo Reed · 个人 · 我的网关", "Echo Reed · 个人 · 备用网关"].entries()) {
+    for (const [index, name] of ["Echo Reed · 个人 · 默认网关", "Echo Reed · 组织 · 研发团队", "Echo Reed · 个人 · 我的网关", "Echo Reed · 个人 · 备用网关"].entries()) {
       fireEvent.click(trigger);
       const menu = screen.getByRole("listbox");
       expect(menu.querySelector(".model-selector__source")).toBeNull();
@@ -66,7 +66,7 @@ describe("ModelSelector", () => {
 
   it("不同来源轻量分组，模型行不重复来源且切换保留真实ID", () => {
     const models = [
-      {id:"echoagent-ojlab/Echo Reed",source:"builtin" as const},
+      {id:"personal/default",label:"Echo Reed",source:"personal" as const},
       {id:"organization/MiniMax-M3.1-Flash",remoteModelId:"MiniMax-M3.1-Flash",source:"organization" as const,providerLabel:"组织提供"},
       {id:"personal/gpt",label:"我的常用模型",source:"personal" as const,providerLabel:"个人网关"},
     ];
@@ -75,7 +75,7 @@ describe("ModelSelector", () => {
     const trigger=screen.getByRole("button",{name:"Echo Reed"});
     expect(trigger.title).toBe("Echo Reed");fireEvent.click(trigger);
     const menu=screen.getByRole("listbox");
-    expect(screen.getAllByRole("group").map(group => group.getAttribute("aria-labelledby") && document.getElementById(group.getAttribute("aria-labelledby")!)?.textContent)).toEqual(["组织提供", "我的连接", "内置模型"]);
+    expect(screen.getAllByRole("group").map(group => group.getAttribute("aria-labelledby") && document.getElementById(group.getAttribute("aria-labelledby")!)?.textContent)).toEqual(["组织提供", "我的连接"]);
     expect(screen.getByRole("option", { name: "MiniMax-M3.1-Flash" }).textContent).toBe("MiniMax-M3.1-Flash");
     expect(menu.textContent).not.toContain("个人网关");
     fireEvent.click(screen.getByRole("option",{name:"MiniMax-M3.1-Flash"}));
@@ -277,16 +277,16 @@ describe("ModelSelector", () => {
   it("跨组方向键按视觉顺序导航，单一来源不显示冗余组标题", () => {
     const change = vi.fn();
     const view = render(<ModelSelector models={[
-      { id: "b", label: "内置 B", source: "builtin" },
+      { id: "b", label: "个人 B", source: "personal" },
       { id: "p", label: "个人 P", source: "personal" },
       { id: "o", label: "组织 O", source: "organization" },
     ]} onModelChange={change} />);
     fireEvent.click(screen.getByRole("button", { name: "请选择模型" }));
     expect(screen.getByRole("option", { name: "组织 O" })).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
-    expect(screen.getByRole("option", { name: "个人 P" })).toHaveFocus();
+    expect(screen.getByRole("option", { name: "个人 B" })).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: "End" });
-    expect(screen.getByRole("option", { name: "内置 B" })).toHaveFocus();
+    expect(screen.getByRole("option", { name: "个人 P" })).toHaveFocus();
     fireEvent.keyDown(document, { key: "Escape" });
     view.rerender(<ModelSelector models={[{ id: "p", label: "个人 P", source: "personal" }]} onModelChange={change} />);
     fireEvent.click(screen.getByRole("button", { name: "请选择模型" }));

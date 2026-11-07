@@ -1,7 +1,12 @@
 import type { Automation, AutomationRunRecord } from "@/lib/types";
+import { isRemovedModelId } from "@/lib/retired-models";
 import { formatDateInputValue, scheduledAtIso } from "./schedule-utils";
 
 export type TaskFilter = "all" | "active" | "paused" | "ended";
+export function taskNeedsModelSelection(task: Pick<Automation, "modelId">): boolean {
+  return Boolean(task.modelId && isRemovedModelId(task.modelId));
+}
+export const REMOVED_TASK_MODEL_MESSAGE = "原模型已移除，任务已暂停。请重新选择模型并保存，再启用计划或立即运行。";
 export function taskState(
   task: Automation,
   records: AutomationRunRecord[] = [],
@@ -21,13 +26,14 @@ export function taskState(
     task.validUntilDate < formatDateInputValue(now)
   )
     return "ended";
-  return task.status === "ACTIVE" ? "active" : "paused";
+  return task.status === "ACTIVE" && !taskNeedsModelSelection(task) ? "active" : "paused";
 }
 export function taskStateLabel(
   task: Automation,
   records: AutomationRunRecord[] = [],
 ): string {
   const state = taskState(task, records);
+  if (state !== "ended" && taskNeedsModelSelection(task)) return "待选模型";
   if (state !== "ended") return state === "active" ? "已启用" : "已暂停";
   if (
     task.scheduleType === "once" &&

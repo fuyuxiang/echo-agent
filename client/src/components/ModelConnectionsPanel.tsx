@@ -1,3 +1,4 @@
+import { withoutRemovedModels } from "@/lib/retired-models";
 import { PageHeading } from "./PageHeading";
 import { modelDisplayName } from "@/lib/model-presentation";
 import { modelTestDuration, useModelConnectionTests } from "@/lib/use-model-connection-tests";
@@ -151,10 +152,6 @@ function connectionName(provider: ModelProviderEntry): string {
   return provider.label || PROVIDER_PRESETS[provider.providerKind]?.shortLabel || provider.id;
 }
 
-function isOjlabBaseUrl(value: string): boolean {
-  return value.trim().replace(/\/+$/, "") === "http://123.56.188.16:8088/v1";
-}
-
 function connectionBaseUrlError(value: string, allowInsecureHttp: boolean): string | null {
   if (!value.trim()) return "请填写 Base URL。";
   let url: URL;
@@ -276,11 +273,12 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId }: Model
     const generation = ++reloadGenerationRef.current;
     try {
       const auth = await agentAuthStatus();
-      const [nextCatalog, nextDefaults] = await Promise.all([
+      const [rawCatalog, nextDefaults] = await Promise.all([
         providersList(),
         agentsDefaultsGet(),
       ]);
       if (generation !== reloadGenerationRef.current) return null;
+      const nextCatalog = withoutRemovedModels(rawCatalog);
       setCatalog(nextCatalog);
       setDefaults(nextDefaults);
       setEffectiveDefaultModelId(auth.defaultModelId ?? null);
@@ -317,11 +315,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId }: Model
     [catalog.providers],
   );
   const personalProviders = useMemo(
-    () => catalog.providers.filter((provider) => provider.source !== "organization" && provider.source !== "builtin"),
-    [catalog.providers],
-  );
-  const builtinProviders = useMemo(
-    () => catalog.providers.filter((provider) => provider.source === "builtin"),
+    () => catalog.providers.filter((provider) => provider.source !== "organization"),
     [catalog.providers],
   );
   const selectedProvider = catalog.providers.find((provider) => provider.id === selectedProviderId) ?? null;
@@ -481,15 +475,6 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId }: Model
                 onSelect={setSelectedProviderId}
               />
             )}
-            {builtinProviders.length > 0 && (
-              <ConnectionGroup
-                title="内置模型"
-                providers={builtinProviders}
-                catalog={catalog}
-                selectedProviderId={selectedProviderId}
-                onSelect={setSelectedProviderId}
-              />
-            )}
           </aside>
 
           {selectedProvider && (
@@ -505,7 +490,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId }: Model
                   <div className="model-connections__title-row">
                     <h3>{connectionName(selectedProvider)}</h3>
                     {selectedProvider.managed ? (
-                      <span className="model-connections__badge model-connections__badge--managed"><LockKeyhole size={11} />{selectedProvider.source === "builtin" ? "内置只读" : "组织托管"}</span>
+                      <span className="model-connections__badge model-connections__badge--managed"><LockKeyhole size={11} />组织托管</span>
                     ) : (
                       <span className="model-connections__badge">个人配置</span>
                     )}
@@ -524,7 +509,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId }: Model
               </header>
 
 
-              {selectedProvider.source !== "organization" && selectedProvider.source !== "builtin" && selectedProvider.baseUrl?.startsWith("http://") && (
+              {selectedProvider.source !== "organization" && selectedProvider.baseUrl?.startsWith("http://") && (
                 <div className="model-connections__message model-connections__message--warn">
                   此连接使用 HTTP 明文传输；API Key、提问和模型回复可能被网络路径上的其他人看到。
                 </div>
@@ -604,11 +589,11 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId }: Model
               <SettingsDisclosure title="连接信息与选择规则" description="接口地址、凭据状态和模型上下文窗口">
               <dl className="model-connections__facts">
                 <div><dt>接口协议</dt><dd>{protocolLabel(selectedProvider)}</dd></div>
-                <div><dt>API Key</dt><dd>{selectedProvider.source === "builtin" || (isOjlabBaseUrl(selectedProvider.baseUrl ?? "") && !selectedProvider.apiKey) ? "此服务无需 API Key" : selectedProvider.managed ? "由组织安全配置 · 不可查看" : selectedProvider.credentialConfigured ? "已保存在本机" : "未配置"}</dd></div>
+                <div><dt>API Key</dt><dd>{selectedProvider.managed ? "由组织安全配置 · 不可查看" : selectedProvider.credentialConfigured ? "已保存在本机" : "未配置"}</dd></div>
                 <div><dt>Base URL</dt><dd title={selectedProvider.baseUrl}>{selectedProvider.baseUrl || "—"}{selectedProvider.managed && <span> · 只读</span>}</dd></div>
                 <div><dt>上下文窗口</dt><dd>{selectedProvider.contextWindow ? `${selectedProvider.contextWindow.toLocaleString()} tokens` : selectedModels.some((model) => model.contextWindow) ? "按模型配置" : "使用模型默认值"}</dd></div>
               </dl>
-                <p className="settings-hint">自动选择优先级：已设默认、组织模型、个人模型、内置模型。仅会使用当前可用的模型。</p>
+                <p className="settings-hint">自动选择优先级：已设默认、组织模型、个人模型。仅会使用当前可用的模型。</p>
               </SettingsDisclosure>
             </section>
           )}
@@ -771,7 +756,7 @@ function ConnectionEditor({
   const validate = (): string | null => {
     const baseUrlError = connectionBaseUrlError(draft.baseUrl, draft.allowInsecureHttp);
     if (baseUrlError) return baseUrlError;
-    if (!original && !draft.apiKey.trim() && !isOjlabBaseUrl(draft.baseUrl)) return "请填写 API Key。";
+    if (!original && !draft.apiKey.trim()) return "请填写 API Key。";
     if (draft.contextWindow && Number(draft.contextWindow) <= 0) return "上下文窗口必须大于 0。";
     return null;
   };
@@ -910,9 +895,7 @@ function ConnectionEditor({
     <div ref={dialogRef} className="models-settings-panel__editor-overlay" role="dialog" aria-modal="true" aria-label={original ? "编辑连接" : "添加个人连接"} tabIndex={-1}>
       <div className="model-connection-editor">
         <header className="models-settings-panel__editor-header">
-          <div><div className="models-settings-panel__editor-title">{original ? "编辑个人连接" : "添加个人连接"}</div><div className="models-settings-panel__editor-note">{isOjlabBaseUrl(draft.baseUrl)
-            ? "填写 Base URL 和 Model ID；此服务无需 API Key。"
-            : original?.credentialConfigured
+          <div><div className="models-settings-panel__editor-title">{original ? "编辑个人连接" : "添加个人连接"}</div><div className="models-settings-panel__editor-note">{original?.credentialConfigured
               ? "修改连接信息；API Key 留空则沿用已保存凭据。"
               : original
                 ? "填写 Base URL 和 Model ID；如服务需要鉴权，请填写 API Key。"
@@ -923,7 +906,7 @@ function ConnectionEditor({
         <div className="model-connection-editor__body">
         <fieldset className="model-connection-editor__fields" disabled={saving || testing || discovering}>
           <section className="model-connection-editor__section">
-            <div className="model-connection-editor__section-title"><span>连接信息</span><small>{isOjlabBaseUrl(draft.baseUrl) ? "此服务无需 API Key" : original?.credentialConfigured ? "Base URL 必填 · API Key 可留空复用" : original ? "Base URL 必填 · API Key 按服务要求填写" : "Base URL 与 API Key 必填"}</small></div>
+            <div className="model-connection-editor__section-title"><span>连接信息</span><small>{original?.credentialConfigured ? "Base URL 必填 · API Key 可留空复用" : original ? "Base URL 必填 · API Key 按服务要求填写" : "Base URL 与 API Key 必填"}</small></div>
             <div className="models-settings-panel__field">
               <label className="models-settings-panel__label" htmlFor="model-provider-kind">接口类型</label>
               <div className="models-settings-panel__select-shell">
@@ -938,22 +921,20 @@ function ConnectionEditor({
             </div>
             <div className="models-settings-panel__field">
               <label className="models-settings-panel__label" htmlFor="model-base-url">Base URL</label>
-              <input id="model-base-url" className="form-control models-settings-panel__input" value={draft.baseUrl} onChange={(event) => { setError(null); setDiscoveryMessage(null); setDraft((current) => isOjlabBaseUrl(event.target.value)
-                ? { ...current, baseUrl: event.target.value, providerKind: "custom", apiBackend: "chat_completions", authScheme: "bearer", apiKey: "", allowInsecureHttp: false }
-                : { ...current, baseUrl: event.target.value, allowInsecureHttp: event.target.value.trim() === current.baseUrl.trim() && current.allowInsecureHttp }); }} placeholder="https://api.example.com/v1" inputMode="url" />
+              <input id="model-base-url" className="form-control models-settings-panel__input" value={draft.baseUrl} onChange={(event) => { setError(null); setDiscoveryMessage(null); setDraft((current) => ({ ...current, baseUrl: event.target.value, allowInsecureHttp: event.target.value.trim() === current.baseUrl.trim() && current.allowInsecureHttp })); }} placeholder="https://api.example.com/v1" inputMode="url" />
               <span className="model-connection-editor__help">填写 API 根地址，例如 https://example.com:60100/v1；端口写在主机名后。HTTPS 无需额外设置。</span>
               {draft.baseUrl.trim().toLowerCase().startsWith("http://") && (
                 <label className="model-connection-editor__help model-connection-editor__http-consent">
                   <input type="checkbox" checked={draft.allowInsecureHttp} onChange={(event) => setDraft((current) => ({ ...current, allowInsecureHttp: event.target.checked }))} />
-                  允许此个人连接使用 HTTP。我了解{isOjlabBaseUrl(draft.baseUrl) ? "提问和模型回复" : "API Key、提问和模型回复"}会以明文传输。
+                  允许此个人连接使用 HTTP。我了解 API Key、提问和模型回复会以明文传输。
                 </label>
               )}
             </div>
             <div className="models-settings-panel__field">
               <label className="models-settings-panel__label" htmlFor="model-api-key">API Key</label>
               <div className="models-settings-panel__input-shell">
-                <input id="model-api-key" className="form-control models-settings-panel__input models-settings-panel__input--with-trailing-icon" type={showKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))} placeholder={isOjlabBaseUrl(draft.baseUrl) ? "无需填写" : original?.credentialConfigured ? "已保存；留空表示不更换" : preset.placeholderKey} autoComplete="off" disabled={isOjlabBaseUrl(draft.baseUrl)} />
-                <button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only models-settings-panel__input-toggle" onClick={() => setShowKey((current) => !current)} type="button" aria-label={showKey ? "隐藏 API Key" : "显示 API Key"} disabled={isOjlabBaseUrl(draft.baseUrl)}>{showKey ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+                <input id="model-api-key" className="form-control models-settings-panel__input models-settings-panel__input--with-trailing-icon" type={showKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))} placeholder={original?.credentialConfigured ? "已保存；留空表示不更换" : preset.placeholderKey} autoComplete="off" />
+                <button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only models-settings-panel__input-toggle" onClick={() => setShowKey((current) => !current)} type="button" aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}>{showKey ? <EyeOff size={14} /> : <Eye size={14} />}</button>
               </div>
               <span className="model-connection-editor__help">
                 <KeyRound size={11} />
@@ -989,8 +970,8 @@ function ConnectionEditor({
           {showAdvanced && (
             <div className="models-settings-panel__advanced">
               <div className="models-settings-panel__field-row">
-                <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-api-backend">请求协议</label><select id="model-api-backend" className="form-control models-settings-panel__select" value={draft.apiBackend} onChange={(event) => setDraft((current) => ({ ...current, apiBackend: event.target.value as ApiBackend }))} disabled={isOjlabBaseUrl(draft.baseUrl)}><option value="chat_completions">Chat Completions</option><option value="responses">Responses</option><option value="messages">Messages</option></select></div>
-                <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-auth-scheme">认证方式</label><select id="model-auth-scheme" className="form-control models-settings-panel__select" value={draft.authScheme} onChange={(event) => setDraft((current) => ({ ...current, authScheme: event.target.value as AuthScheme }))} disabled={isOjlabBaseUrl(draft.baseUrl)}><option value="bearer">Bearer Token</option><option value="x_api_key">X-API-Key</option></select></div>
+                <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-api-backend">请求协议</label><select id="model-api-backend" className="form-control models-settings-panel__select" value={draft.apiBackend} onChange={(event) => setDraft((current) => ({ ...current, apiBackend: event.target.value as ApiBackend }))}><option value="chat_completions">Chat Completions</option><option value="responses">Responses</option><option value="messages">Messages</option></select></div>
+                <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-auth-scheme">认证方式</label><select id="model-auth-scheme" className="form-control models-settings-panel__select" value={draft.authScheme} onChange={(event) => setDraft((current) => ({ ...current, authScheme: event.target.value as AuthScheme }))}><option value="bearer">Bearer Token</option><option value="x_api_key">X-API-Key</option></select></div>
               </div>
               <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-context-window">默认上下文窗口（可选）</label><input id="model-context-window" className="form-control models-settings-panel__input" type="number" min={1} value={draft.contextWindow} onChange={(event) => setDraft((current) => ({ ...current, contextWindow: event.target.value }))} placeholder="例如 128000" /></div>
             </div>

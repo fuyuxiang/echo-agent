@@ -1,3 +1,4 @@
+import { LocalRetrievalModels } from "./LocalRetrievalModels";
 import { PageHeading } from "./PageHeading";
 /**
  * 知识库面板 —— 对齐 EchoAgent `knowledge-base-panel`(可插拔知识源)。
@@ -367,6 +368,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           </button>
         </div>}
       </PageToolbar>
+      <LocalRetrievalModels />
       {feedback && <div className={`kb-panel__index-status${feedback.error ? " kb-panel__load-error" : ""}`}
         role={feedback.error ? "alert" : "status"}>
         <span>{feedback.message}</span>
@@ -403,12 +405,12 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           ) : (
             <span className="kb-panel__desktop-hint">请在桌面应用中添加本地文件夹</span>
           )}
-          <span className="kb-panel__privacy-hint">文件保留在原目录；建立语义索引时，文本片段会发送到模型服务。</span>
+          <span className="kb-panel__privacy-hint">文件保留在原目录；向量生成与相关性排序在本机完成。</span>
         </div>
       )}
       {sources.length > 0 && <div className="kb-panel__privacy" role="note">
         <Info size={16} strokeWidth={1.8} aria-hidden="true" />
-        <span>原文件保留在所选目录；文本片段会发送到语义模型服务生成向量并排序，索引保存在本机。任务回答会标注来源。</span>
+        <span>原文件和检索索引保存在本机，向量生成与排序在本机完成。用于回答的资料会交给当前对话模型，并标注来源。</span>
       </div>}
       {/* 已注册知识源 chip 列表(每个可移除)。 */}
       {sources.length > 0 && (
@@ -463,6 +465,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           </span>
         </div>
       )}
+      {sources.length > 0 && semanticStatus?.warnings?.map((warning,index) => <div key={index} className="kb-panel__index-status" role="status">{warning}</div>)}
       {sources.length > 0 && <div className="kb-panel__search">
         <Search size={18} strokeWidth={1.8} aria-hidden="true" />
         <input

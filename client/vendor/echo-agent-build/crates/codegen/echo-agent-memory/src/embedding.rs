@@ -47,6 +47,15 @@ pub trait EmbeddingProvider: Send + Sync {
         texts: &[&str],
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>>;
 
+    /// Query encoding is distinct from document encoding for asymmetric models.
+    async fn embed_query(&self, query: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        self.embed_batch(&[query])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "missing query embedding".into())
+    }
+
     /// Bind candidate provenance to every send/retry, including auth replay.
     async fn embed_batch_with_policy(
         &self,
@@ -93,6 +102,83 @@ pub(crate) fn validate_embedding_batch(
         }
     }
     Ok(())
+}
+
+/// Provider selected at the host boundary. Local mode never constructs HTTP credentials.
+#[derive(Clone)]
+pub enum ConfiguredEmbeddingProvider {
+    Api(ApiEmbeddingProvider),
+    Local(crate::local::LocalEmbeddingProvider),
+}
+impl From<ApiEmbeddingProvider> for ConfiguredEmbeddingProvider {
+    fn from(provider: ApiEmbeddingProvider) -> Self {
+        Self::Api(provider)
+    }
+}
+impl ConfiguredEmbeddingProvider {
+    pub fn from_session(
+        config: &echo_agent_config_types::MemoryEmbeddingConfig,
+        base_url: String,
+        key: String,
+    ) -> Option<Self> {
+        if config.provider == "local" {
+            crate::local::LocalEmbeddingProvider::new().map(Self::Local)
+        } else {
+            ApiEmbeddingProvider::from_session(config, base_url, key).map(Self::Api)
+        }
+    }
+    pub fn with_request_permit(self, permit: MemoryRequestPermit) -> Self {
+        match self {
+            Self::Api(p) => Self::Api(p.with_request_permit(permit)),
+            Self::Local(p) => Self::Local(p.with_request_permit(permit)),
+        }
+    }
+}
+#[async_trait]
+impl EmbeddingProvider for ConfiguredEmbeddingProvider {
+    async fn embed_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+        match self {
+            Self::Api(p) => p.embed_batch(texts).await,
+            Self::Local(p) => p.embed_batch(texts).await,
+        }
+    }
+    async fn embed_query(&self, query: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        match self {
+            Self::Api(p) => p.embed_query(query).await,
+            Self::Local(p) => p.embed_query(query).await,
+        }
+    }
+    async fn embed_batch_with_policy(
+        &self,
+        texts: &[&str],
+        permit: MemoryRequestPermit,
+    ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+        match self {
+            Self::Api(p) => p.embed_batch_with_policy(texts, permit).await,
+            Self::Local(p) => p.embed_batch_with_policy(texts, permit).await,
+        }
+    }
+    fn model_name(&self) -> &str {
+        match self {
+            Self::Api(p) => p.model_name(),
+            Self::Local(p) => p.model_name(),
+        }
+    }
+    fn dimensions(&self) -> usize {
+        match self {
+            Self::Api(p) => p.dimensions(),
+            Self::Local(p) => p.dimensions(),
+        }
+    }
+    fn fingerprint(&self) -> String {
+        match self {
+            Self::Api(p) => p.fingerprint(),
+            Self::Local(p) => p.fingerprint(),
+        }
+    }
 }
 
 /// API-based embedding provider using an OpenAI-compatible embeddings endpoint.

@@ -9,7 +9,7 @@ import windowsTray from "../../src-tauri/icons/tray/windows-64.png";
 import "../../src/styles/index.css";
 
 localStorage.setItem("echoagent.theme", new URLSearchParams(location.search).get("theme") || "light");
-const models = [{ id: "echoagent-ojlab/Echo Reed", source: "builtin" as const },
+const models = [{ id: "personal/primary", label: "工作模型", source: "personal" as const },
   { id: "custom/demo", label: "个人模型", source: "personal" as const, providerKind: "openai" }];
 
 function Review() {
@@ -32,7 +32,7 @@ function Review() {
       .tray-preview img {display:block;object-fit:contain}
       .mac-template {display:block;background:currentColor;mask:url('${macTray}') center/contain no-repeat}
     `}</style>
-    <header><img src="/app-icon.png" width={64} height={64} alt="EchoAgent" /><div><h1>EchoAgent</h1><p>应用图标 · 对话头像 · 内置模型 · 系统托盘</p></div></header>
+    <header><img src="/app-icon.png" width={64} height={64} alt="EchoAgent" /><div><h1>EchoAgent</h1><p>应用图标 · 对话头像 · 模型 · 系统托盘</p></div></header>
     <section data-testid="conversation"><h2>聊天头像与等待状态</h2>
       <MessageItem message={{ id: "icon-review", role: "assistant", complete, startedAt: Date.now(),
         parts: complete ? [{ kind: "text", text: "已完成，头像保持原图并停止呼吸提示。" }] : [] }}
@@ -42,7 +42,7 @@ function Review() {
       <button className="review-button" onClick={() => setState("decision")}>等待用户确认</button>
       <button className="review-button" onClick={() => setState("error")}>模拟错误</button>
     </section>
-    <section><h2>内置模型标识</h2><ModelSelector modelId={model} models={models} onModelChange={setModel} ariaLabel="任务模型" /></section>
+    <section><h2>模型标识</h2><ModelSelector modelId={model} models={models} onModelChange={setModel} ariaLabel="任务模型" /></section>
     <section><h2>Windows 托盘 · 原图缩小</h2>{["light", "dark"].map(background =>
       <div key={background} className={`tray-preview tray-preview--${background}`}>{[16, 20, 24, 32, 64].map(size =>
         <figure key={size}><img src={windowsTray} width={size} height={size} alt="" /><figcaption>{size}px</figcaption></figure>)}</div>)}</section>

@@ -1,7 +1,7 @@
 // Explicit no-model acceptance, separate from the unfiltered host unit suite.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { cleanNativeReviewEnvironment } from "./lib/native-review-isolation.mjs";
@@ -13,11 +13,15 @@ const prepared = prepareMacosTestSignatures(clean);
 const executable = prepared.signed.find(path => basename(path).startsWith("echoagent_lib-"));
 if (process.platform === "darwin") assert.ok(executable, "Compiled host library harness required");
 const runtimeSmoke = "agent_runtime::tests::spawn_smoke_spawn_initialize_new_session";
+const retiredSelection = '[models]\ndefault = "echoagent-ojlab/Echo Reed"\nallowed_models = ["echoagent-ojlab/*"]\n'
+  + '[model_providers.echoagent-ojlab]\nbase_url = "http://removed.invalid/v1"\nechoagent_managed_by = "builtin"\n'
+  + ["Echo Brook", "Echo Cedar", "Echo Grove", "Echo Reed", "Echo Willow", "chat-xc", "chat-glm", "chat-qwen"]
+    .map(id => `[model.${JSON.stringify(`echoagent-ojlab/${id}`)}]\nmodel = ${JSON.stringify(id)}\nmodel_provider = "echoagent-ojlab"\n`).join('');
 for (const { name, selection, scenario } of [
   { name: runtimeSmoke, selection: '[models]\ndefault = "review/mock"', scenario: "explicit personal model" },
   { name: runtimeSmoke, selection: "", scenario: "Auto without a saved preference" },
   { name: runtimeSmoke, selection: '[models]\ndefault = "  "', scenario: "Auto with a blank preference" },
-  { name: runtimeSmoke, selection: '[models]\ndefault = "echoagent-ojlab/chat-xc"', scenario: "retired built-in preference" },
+  { name: runtimeSmoke, selection: retiredSelection, scenario: "retired catalog, preference, and model filters" },
   { name: "skills::runtime_tests::resident_skill_reload_smoke", selection: '[models]\ndefault = "review/mock"', scenario: "resident skill reload" },
 ]) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "echo-runtime-smoke-")));
@@ -56,4 +60,5 @@ remote_fetch = false
   const result = spawnSync(command, [...args, "--nocapture", "--test-threads=1"], { cwd, env, stdio: "inherit", timeout: 180_000 });
   if (result.error) throw result.error;
   if (result.status !== 0) { process.exitCode = result.status ?? 1; break; }
+  assert.doesNotMatch(readFileSync(join(home, "config.toml"), "utf8"), /echoagent-ojlab/, "Retired models must not be reinstalled after startup");
 }

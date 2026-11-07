@@ -169,7 +169,7 @@ try {
         await page.getByRole("button", { name: /^选择定时任务模型：/ }).click();
         const menu = page.getByRole("listbox", { name: "选择定时任务模型" });
         await menu.waitFor();
-        assert.equal(await menu.getByRole("group").count(), 3);
+        assert.equal(await menu.getByRole("group").count(), 2, "Only organization and personal model groups remain");
         await menu
           .getByRole("option", { name: "团队模型", exact: true })
           .click();
@@ -346,11 +346,40 @@ try {
     assert.deepEqual(errors, []);
     await live.close();
   }
+  for (const [width, theme, font] of [[350, "light", 22], [768, "dark", 22], [1280, "light", 16]]) {
+    const page = await browser.newPage({viewport:{width,height:900}});
+    const errors=[];page.on("pageerror",error=>errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?retired=1&theme=${theme}`);
+    await page.evaluate(font=>{document.documentElement.style.fontSize=`${font}px`;},font);
+    const card=page.getByRole("listitem",{name:"定时任务 每日 AI 新闻简报",exact:true});
+    await card.getByText("待选模型",{exact:true}).waitFor();
+    assert.equal(await card.getByRole("switch").isEnabled(),false);
+    assert.equal(await card.getByRole("button",{name:"立即运行「每日 AI 新闻简报」"}).isEnabled(),false);
+    assert.equal(await card.locator(".atm-task-card__next").count(),0);
+    assert.equal(await card.evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
+    await card.screenshot({path:join(output,`retired-model-${width}-${theme}.png`)});
+    await card.getByRole("button",{name:"编辑定时任务「每日 AI 新闻简报」"}).click();
+    const editor=page.getByRole("dialog",{name:"编辑定时任务",exact:true});await editor.waitFor();
+    await editor.getByRole("button",{name:"跟随默认模型",exact:true}).waitFor();
+    assert.equal(await editor.getByRole("button",{name:"高级设置",exact:true}).getAttribute("aria-expanded"),"false");
+    const modelField=editor.getByRole("region",{name:"重新选择任务模型"});
+    assert.equal(await modelField.isVisible(),true);
+    assert.equal(await editor.getByRole("button",{name:"保存并立即运行",exact:true}).isEnabled(),false);
+    assert.equal(await editor.evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
+    await page.screenshot({path:join(output,`retired-model-editor-${width}-${theme}.png`)});
+    await editor.getByRole("button",{name:"跟随默认模型",exact:true}).click();
+    await editor.getByRole("button",{name:"保存修改",exact:true}).click();
+    await editor.waitFor({state:"hidden"});
+    const saved=await page.evaluate(()=>window.scheduledReview.snapshot().tasks.find(task=>task.id==="news"));
+    assert.equal(saved.status,"PAUSED");assert.equal(saved.modelId,undefined);
+    assert.equal(await page.evaluate(()=>window.scheduledReview.calls.some(call=>["automations_run","automations_set_status"].includes(call.command))),false);
+    assert.deepEqual(errors,[]);await page.close();
+  }
   writeFileSync(
     join(output, "evidence.json"),
     JSON.stringify(evidence, null, 2),
   );
-  console.log(JSON.stringify({ output, layouts: evidence.length, extraFlows: ["pending-approval/stop/future-plan", "create/unsaved/default-session/no-auto-run", "direct-template/back/prefilled-draft/no-auto-run", "late-admission/live-progress/read-failure/final-result"] }));
+  console.log(JSON.stringify({ output, layouts: evidence.length, extraFlows: ["pending-approval/stop/future-plan", "create/unsaved/default-session/no-auto-run", "direct-template/back/prefilled-draft/no-auto-run", "late-admission/live-progress/read-failure/final-result", "retired-model/explicit-reselection/save-paused/no-auto-run"] }));
 } finally {
   await browser?.close();
   await server.close();

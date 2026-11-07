@@ -517,14 +517,15 @@ pub(crate) async fn ensure_runtime_ready(
 }
 
 /// Resolve Auto to a live configured model. An explicit user preference wins;
-/// otherwise the organization model, a personal model, then Echo Reed wins.
+/// otherwise an organization model, then a personal model wins.
 pub(crate) fn effective_configured_model_id(
     configured: &[String],
     runtime: &[String],
     preferred: Option<&str>,
 ) -> Option<String> {
     let available = |id: &str| {
-        configured.iter().any(|configured_id| configured_id == id)
+        !crate::providers::is_removed_model_id(id)
+            && configured.iter().any(|configured_id| configured_id == id)
             && runtime.iter().any(|runtime_id| runtime_id == id)
     };
     preferred
@@ -539,16 +540,8 @@ pub(crate) fn effective_configured_model_id(
         .or_else(|| {
             configured
                 .iter()
-                .find(|id| {
-                    !id.starts_with("organization/")
-                        && !id.starts_with(crate::providers::BUILTIN_MODEL_PREFIX)
-                        && available(id)
-                })
+                .find(|id| !id.starts_with("organization/") && available(id))
                 .cloned()
-        })
-        .or_else(|| {
-            available(crate::providers::BUILTIN_DEFAULT_MODEL_ID)
-                .then(|| crate::providers::BUILTIN_DEFAULT_MODEL_ID.to_string())
         })
         .or_else(|| configured.iter().find(|id| available(id)).cloned())
 }
@@ -667,6 +660,11 @@ pub(crate) fn resolve_automation_model_id(
     state: &AppState,
     requested_model: Option<&str>,
 ) -> Result<String, String> {
+    if requested_model.is_some_and(crate::providers::is_removed_model_id) {
+        return Err(
+            "原模型已移除，任务已暂停；请编辑任务重新选择模型，再启用计划或立即运行。".into(),
+        );
+    }
     let status = app
         .map(|app| auth_status_with_runtime_reload(app, state))
         .unwrap_or_else(|| auth_status(state));
@@ -2813,14 +2811,16 @@ mod tests {
             state.tx.lock().unwrap().is_none(),
             "cancelled runtime must not accept new prompts"
         );
-        assert!(state
-            .handle
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .cancel
-            .is_cancelled());
+        assert!(
+            state
+                .handle
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .cancel
+                .is_cancelled()
+        );
         finished.send(true).unwrap();
         stop_agent_runtime_wait(&state, std::time::Duration::from_millis(5))
             .await
@@ -2879,13 +2879,15 @@ mod tests {
         let (replacement, _agent) = echo_agent_acp::acp_channels();
         *state.tx.lock().unwrap() = Some(replacement.tx.clone());
         assert!(!state.quarantine_gateway_if_current(&old_tx, "late old failure".into()));
-        assert!(state
-            .tx
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .same_channel(&replacement.tx));
+        assert!(
+            state
+                .tx
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .same_channel(&replacement.tx)
+        );
     }
 
     #[test]
@@ -2955,14 +2957,16 @@ mod tests {
         assert!(error.contains("仍在初始化"));
         assert!(state.handle.lock().unwrap().is_some());
         assert!(state.tx.lock().unwrap().is_some());
-        assert!(!state
-            .handle
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .cancel
-            .is_cancelled());
+        assert!(
+            !state
+                .handle
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .cancel
+                .is_cancelled()
+        );
     }
 
     #[test]
@@ -2975,26 +2979,24 @@ mod tests {
 
         let valid_answers =
             HashMap::from([("Which?".into(), serde_json::json!(["first", "second"]))]);
-        assert!(validate_question_payload(
-            "request",
-            Some(&valid_answers),
-            None,
-            None,
-            Some("accepted")
-        )
-        .is_ok());
+        assert!(
+            validate_question_payload(
+                "request",
+                Some(&valid_answers),
+                None,
+                None,
+                Some("accepted")
+            )
+            .is_ok()
+        );
         let oversized = HashMap::from([(
             "Which?".into(),
             serde_json::Value::String("x".repeat(MAX_QUESTION_VALUE_CHARS + 1)),
         )]);
-        assert!(validate_question_payload(
-            "request",
-            Some(&oversized),
-            None,
-            None,
-            Some("accepted")
-        )
-        .is_err());
+        assert!(
+            validate_question_payload("request", Some(&oversized), None, None, Some("accepted"))
+                .is_err()
+        );
     }
 
     fn runtime_state(revision: &str, model_ids: &[&str]) -> RuntimeModelState {
@@ -3034,7 +3036,8 @@ mod tests {
     }
 
     #[test]
-    fn automatic_model_resolution_prefers_explicit_then_organization_then_personal_then_builtin() {
+    fn automatic_model_resolution_prefers_explicit_then_organization_then_personal_and_excludes_removed()
+     {
         let configured = vec![
             "echoagent-ojlab/Echo Cedar".into(),
             "echoagent-ojlab/Echo Reed".into(),
@@ -3055,7 +3058,7 @@ mod tests {
         );
         assert_eq!(
             effective_configured_model_id(&configured, &configured[..2], None).as_deref(),
-            Some("echoagent-ojlab/Echo Reed")
+            None
         );
     }
 
@@ -3131,11 +3134,13 @@ mod tests {
         let failed_status =
             auth_status_from_snapshots(vec!["model-a".into()], None, "rev-a", failed, true);
         assert!(!failed_status.ready);
-        assert!(failed_status
-            .reason
-            .as_deref()
-            .unwrap()
-            .contains("reload rejected"));
+        assert!(
+            failed_status
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("reload rejected")
+        );
         assert!(validate_runtime_ready(&failed_status, None).is_err());
 
         let ready_status = auth_status_from_snapshots(
@@ -3390,13 +3395,15 @@ mod tests {
             trusted_existing_session_cwd(&state, &filesystem, "fixed-session", None).unwrap(),
             bound
         );
-        assert!(trusted_existing_session_cwd(
-            &state,
-            &filesystem,
-            "fixed-session",
-            Some(&other.to_string_lossy())
-        )
-        .is_err());
+        assert!(
+            trusted_existing_session_cwd(
+                &state,
+                &filesystem,
+                "fixed-session",
+                Some(&other.to_string_lossy())
+            )
+            .is_err()
+        );
         std::fs::remove_dir(&bound).unwrap();
         assert!(trusted_existing_session_cwd(&state, &filesystem, "fixed-session", None).is_err());
         assert!(
@@ -3426,13 +3433,10 @@ mod tests {
                 .unwrap(),
             bound
         );
-        assert!(trusted_existing_session_cwd(
-            &state,
-            &filesystem,
-            &id,
-            Some(&other.to_string_lossy())
-        )
-        .is_err());
+        assert!(
+            trusted_existing_session_cwd(&state, &filesystem, &id, Some(&other.to_string_lossy()))
+                .is_err()
+        );
         assert!(
             state.session_workspace(&id).is_err(),
             "validation must not activate a Runtime session"
@@ -3465,12 +3469,10 @@ mod tests {
                 trusted_session_history_cwd(&state, &id, Some(&bound.to_string_lossy())).unwrap(),
                 bound
             );
-            assert!(trusted_session_history_cwd(
-                &state,
-                &id,
-                Some(&other.path().to_string_lossy())
-            )
-            .is_err());
+            assert!(
+                trusted_session_history_cwd(&state, &id, Some(&other.path().to_string_lossy()))
+                    .is_err()
+            );
         }
         assert!(
             !bound.exists(),

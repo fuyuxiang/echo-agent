@@ -204,7 +204,8 @@ export function Composer({
   onControl?: (
     action: SessionControlAction,
   ) => boolean | void | Promise<boolean | void>;
-  placeholder?: string;
+  /** Empty-input guidance, optionally resolved from admitted attachments. */
+  placeholder?: string | ((attachmentCount: number) => string);
   apiReady?: boolean;
   /** Message shown when the composer is unavailable. */
   setupHint?: string;
@@ -1295,6 +1296,7 @@ export function Composer({
         <textarea
           ref={ref}
           className="echo-composer__input"
+          aria-label="输入问题或任务"
           rows={1}
           value={text}
           disabled={!apiReady || awaitingQuestion || disabled}
@@ -1304,7 +1306,9 @@ export function Composer({
               : apiReady
               ? sceneTag
                 ? "" // 有操作类型标签时不显示占位文案(匹配 EchoAgent)
-                : placeholder ?? "描述想完成的任务，可添加文件"
+                : typeof placeholder === "function"
+                  ? placeholder(attachments.length)
+                  : placeholder ?? "描述想完成的任务，可添加文件"
               : ""
           }
           onChange={(e) => {

@@ -298,8 +298,8 @@ window.__echoNativePlanReview = async ({ invoke, home, cwd, phase, expected, ret
     activeCheck = required[required.length - 1];
     assert(originalSession && originalSession !== sessionId, 'Missing independent owning session to return to');
     await selectSession(originalSession);
-    await chooseModel('echoagent-ojlab/Echo Reed');
-    record(activeCheck, { sessionId: originalSession, selectedInUi: true, modelId: 'echoagent-ojlab/Echo Reed' });
+    await chooseModel('echoagent-review/claude-opus-5-5');
+    record(activeCheck, { sessionId: originalSession, selectedInUi: true, modelId: 'echoagent-review/claude-opus-5-5' });
   } catch (error) {
     const message = errorText(error);
     report.errors.push({ check: activeCheck, error: message });

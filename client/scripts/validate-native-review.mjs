@@ -1,3 +1,4 @@
+import { seedReviewModel, PRIVATE_REVIEW_MODEL_ID } from './lib/native-review-model.mjs';
 import { cleanNativeReviewEnvironment } from "./lib/native-review-isolation.mjs";
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
 import { spawn, spawnSync } from "node:child_process";
@@ -30,6 +31,8 @@ if (mediaRequested) {
   copyFileSync(seedAudio, join(workspace, '中文会议验收.wav'));
   chmodSync(join(workspace, '中文会议验收.wav'), 0o600);
 }
+if (!existsSync(join(home, 'config.toml'))) writeFileSync(join(home, 'config.toml'), '', { mode: 0o600 });
+seedReviewModel(home);
 console.log(`Isolated native review home: ${home}`);
 console.log(`Current native evidence directory: ${output}`);
 const failures = [];
@@ -215,7 +218,7 @@ for (const phase of ["first-launch", "restart"]) {
     if (projectExpectation && sessionExpectation) {
       const projects = JSON.parse(readFileSync(join(home, "echoagent-projects.json"), "utf8"));
       const project = Array.isArray(projects) && projects.find((item) => item.id === projectExpectation.id);
-      if (!project || project.name !== projectExpectation.name || project.defaultModelId !== "echoagent-ojlab/Echo Reed"
+      if (!project || project.name !== projectExpectation.name || project.defaultModelId !== "echoagent-review/claude-opus-5-5"
         || !project.conversations?.some((item) => item.sessionId === sessionExpectation)) {
         throw new Error(`${phase}: actual saved project or session binding differs from UI evidence`);
       }
@@ -286,7 +289,7 @@ for (const phase of ["first-launch", "restart"]) {
       const resumed = evidenceFor('native-restart-task');
       if (!resumed || resumed.sessionId !== firstReport.sessionId || resumed.cwd !== firstReport.workspace
         || resumed.status !== 'completed' || resumed.newUserMessageVisible !== true
-        || !resumed.modelLabel?.includes('Echo Reed') || !resumed.answer?.includes('验收成功')) {
+        || !resumed.modelLabel?.includes(PRIVATE_REVIEW_MODEL_ID.split('/').at(-1)) || !resumed.answer?.includes('验收成功')) {
         throw new Error(`${phase}: restored session did not execute a successful new native task`);
       }
     }

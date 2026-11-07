@@ -1,3 +1,4 @@
+import { seedReviewModel } from './lib/native-review-model.mjs';
 import { cleanNativeReviewEnvironment } from "./lib/native-review-isolation.mjs";
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
 // Actual isolated native Code Agent acceptance. The --self-test mode exercises
@@ -13,7 +14,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import vm from 'node:vm';
 
 const filename = '原生模型代码验收.cjs';
-const modelId = 'echoagent-ojlab/Echo Reed';
+const modelId = 'echoagent-review/claude-opus-5-5';
 const packageSource = JSON.stringify({ name: 'echoagent-native-model-acceptance', version: '1.0.0', private: true,
   scripts: { test: 'node --test' } }, null, 2) + '\n';
 const testSource = "const test = require('node:test');\nconst assert = require('node:assert/strict');\ntest('原生模型代码验收：实际导出值为42', () => {\n  const generated = require('./原生模型代码验收.cjs');\n  assert.equal(generated.验收值, 42);\n});\n";
@@ -202,6 +203,7 @@ if (!continueRestart) {
 // Explicit real policy, not a permissive fixture backend. All other MCP / web
 // tools are denied before bridge approval; filesystem/commands ask per call.
 writeFileSync(join(home, 'config.toml'), '[permission]\ndeny = ["WebFetch", "WebSearch", "MCPTool"]\nask = ["*"]\n', { flag: 'wx', mode: 0o600 });
+seedReviewModel(home);
 }
 const red = continueRestart ? JSON.parse(priorArtifact('actual-initial-red.json')) : nodeTest(cwd);
 assert.notEqual(red.exitCode, 0, 'The real initial test must fail without a generated implementation');
@@ -279,7 +281,7 @@ const physicalEvidence = (report) => {
   assert.equal(candidates.length, 1, 'Actual Runtime session directory is ambiguous or missing');
   const sessionDirectory = candidates[0];
   const summary = json(join(sessionDirectory, 'summary.json'));
-  assert([modelId, 'Echo Reed'].includes(summary.current_model_id), 'Actual saved model differs from the UI-selected model');
+  assert([modelId, modelId.split('/').at(-1)].includes(summary.current_model_id), 'Actual saved model differs from the UI-selected model');
   const updates = jsonl(join(sessionDirectory, 'updates.jsonl'));
   const tools = new Map();
   for (const envelope of updates) {

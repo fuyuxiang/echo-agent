@@ -283,6 +283,7 @@ const SYSTEM_TAGS: &[&str] = &[
     "agent-memory",
     "system_reminder",
     "background_context",
+    "echoagent_personal_knowledge",
     "command-name",
     "command-message",
     "command-args",
@@ -334,7 +335,7 @@ pub fn extract_last_user_query(conversation: &[ConversationItem]) -> Option<Stri
         .iter()
         .rev()
         .find(|item| matches!(item, ConversationItem::User(_)))
-        .map(|item| extract_user_query(&item.text_content()))
+        .map(|item| real_user_query(item))
         .filter(|q| !q.is_empty())
 }
 /// The continuation prompt added to the conversation after auto-compaction.
@@ -398,12 +399,62 @@ pub fn is_real_user_turn(item: &ConversationItem) -> bool {
             if has_images {
                 return true;
             }
-            let extracted = extract_user_query(&item.text_content());
+            let extracted = real_user_query(item);
             !is_synthetic_extracted_query(&extracted)
         }
         _ => false,
     }
 }
+/// Prefer persisted original input. Legacy sessions still strip host evidence tags.
+fn real_user_query(item: &ConversationItem) -> String {
+    if let ConversationItem::User(user) = item {
+        if let Some(query) = &user.retrieval_query {
+            return query.trim().to_owned();
+        }
+    }
+    extract_user_query(&item.text_content())
+}
+
+/// Preserve human-authored memory evidence without turning retrieved documents or
+/// organization answers into unrestricted, durable personal facts. Explicit
+/// memory_manage operations remain governed by the user's separate instruction.
+fn restricted_knowledge(item: &ConversationItem) -> bool {
+    match item {
+        ConversationItem::User(user) => user.knowledge_context.is_some() || user.content.iter().any(|part| {
+            matches!(part,ContentPart::Text {text} if text.contains("<echoagent_personal_knowledge>"))
+        }),
+        ConversationItem::Assistant(assistant) => assistant.tool_calls.iter().any(|call| {
+            let name=call.name.strip_prefix("echoagent_organization_memory__").unwrap_or(&call.name);
+            name.starts_with("knowledge_")||name.starts_with("local_knowledge_") || (matches!(call.name.as_str(),"use_tool"|"multi_tool_use.parallel") && call.arguments.contains("echoagent_organization_memory"))
+        }) || (assistant.content.contains("[Called tools:") && assistant.content.contains("echoagent_organization_memory__")),
+        _ => false,
+    }
+}
+
+pub fn personal_memory_conversation(conversation: Vec<ConversationItem>) -> Vec<ConversationItem> {
+    // Once retrieved knowledge enters a model's context, later answers and
+    // compacted summaries may derive from it even without another tool call.
+    // Human-authored preferences remain eligible; generated evidence does not.
+    let retrieved_context = conversation.iter().any(restricted_knowledge);
+    conversation
+        .into_iter()
+        .filter_map(|mut item| {
+            if retrieved_context && !is_real_user_turn(&item) {
+                return None;
+            }
+            if is_real_user_turn(&item) {
+                let query = real_user_query(&item);
+                if let ConversationItem::User(user) = &mut item {
+                    user.content = vec![ContentPart::Text {
+                        text: std::sync::Arc::<str>::from(query),
+                    }];
+                }
+            }
+            Some(item)
+        })
+        .collect()
+}
+
 /// Extract all *real* user queries from a conversation, in order.
 ///
 /// "Real" means the item passes [`is_real_user_turn`] — it has no
@@ -416,7 +467,7 @@ pub fn extract_real_user_queries(conversation: &[ConversationItem]) -> Vec<Strin
     conversation
         .iter()
         .filter(|item| is_real_user_turn(item))
-        .map(|item| extract_user_query(&item.text_content()))
+        .map(|item| real_user_query(item))
         .collect()
 }
 /// Extract the last *real* user query text from a conversation.
@@ -431,7 +482,7 @@ pub fn extract_last_real_user_query(conversation: &[ConversationItem]) -> Option
         .iter()
         .rev()
         .find(|item| is_real_user_turn(item))
-        .map(|item| extract_user_query(&item.text_content()))
+        .map(|item| real_user_query(item))
 }
 /// Extract messages since the last user message in the conversation.
 ///
@@ -644,6 +695,8 @@ pub struct TodoSummary {
 /// handled by the consumer (e.g. `echo-agent-runtime`), which has access to
 /// memory backends and other shell-specific dependencies.
 pub struct CompactionStateContext {
+    /// Retrieved evidence provenance survives summarization and session recovery.
+    pub knowledge_context: Option<String>,
     /// Monotonic cwd generation; zero preserves the legacy compaction shape.
     pub cwd_generation: u64,
     /// Project instructions resolved for the latest destination cwd.
@@ -687,6 +740,10 @@ impl CompactionStateContext {
     /// the last-query field human-only.
     pub async fn build(conversation: &[ConversationItem], inputs: CompactionInputs) -> Self {
         Self {
+            knowledge_context: conversation
+                .iter()
+                .any(restricted_knowledge)
+                .then(|| "retrieved-knowledge".to_owned()),
             cwd_generation: inputs.cwd_generation,
             destination_project_instructions: inputs.destination_project_instructions,
             agent_message_anchor: extract_latest_agent_message(conversation),
@@ -722,6 +779,7 @@ impl CompactionStateContext {
     /// re-cueing the model to re-read the same files.
     pub fn for_compaction(&self) -> Self {
         Self {
+            knowledge_context: self.knowledge_context.clone(),
             cwd_generation: self.cwd_generation,
             destination_project_instructions: self.destination_project_instructions.clone(),
             agent_message_anchor: self
@@ -954,13 +1012,16 @@ fn summary_before_recent_carrier(_input: &CompactedHistoryInput<'_>) -> Option<S
 pub fn build_compacted_history(input: CompactedHistoryInput<'_>) -> Vec<ConversationItem> {
     let carrier = summary_before_recent_carrier(&input);
     let summary_first = carrier.is_some();
-    let summary_item = carrier.map(ConversationItem::user_meta).unwrap_or_else(|| {
+    let mut summary_item = carrier.map(ConversationItem::user_meta).unwrap_or_else(|| {
         let mut formatted_summary = format_compact_summary_content(&input.compaction_summary);
         if let Some(ref hint) = input.transcript_hint {
             formatted_summary.push_str(hint);
         }
         ConversationItem::user_meta(formatted_summary)
     });
+    if let ConversationItem::User(user) = &mut summary_item {
+        user.knowledge_context = input.state_context.knowledge_context.clone();
+    }
     let mut compacted: Vec<ConversationItem> = vec![
         input.system_message,
         ConversationItem::user_meta(input.user_message_prefix),

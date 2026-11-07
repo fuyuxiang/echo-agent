@@ -11,13 +11,13 @@ import { CORE_CHECKS, coreReviewProjectName, validateCoreManifest, verifyNativeC
 const home = '/private/tmp/echo-native-review-core-synthetic', nonce = 'a'.repeat(32), cwd = `${home}/workspaces/default`;
 const fixtures = ['xlsx', 'epub', 'ods'].map((format) => ({ format, path: `${cwd}/办公读取/中文 ${format}.${format}`,
   marker: `CORE-${format.toUpperCase()}-${nonce}`, ...(format === 'epub' ? { excludedMarker: `CORE-NAV-EXCLUDED-${nonce}` } : {}) }));
-const expected = { version: 1, home, cwd, nonce, modelId: 'echoagent-ojlab/Echo Reed', officeFixtures: fixtures,
+const expected = { version: 1, home, cwd, nonce, modelId: 'echoagent-review/claude-opus-5-5', officeFixtures: fixtures,
   sessionId: 'synthetic-parent', forkedSessionId: 'synthetic-fork', projectForkedSessionId: 'synthetic-project-fork', deletedSessionId: 'synthetic-deleted',
   ownedSessionIds: ['synthetic-parent', 'synthetic-fork', 'synthetic-project-fork', 'synthetic-deleted'], title: `隔离核心会话-${nonce}`,
   project: { id: 'synthetic-project', name: coreReviewProjectName(nonce), cwd: `${home}/workspaces/project`, initialPlans: '[]', initialTasks: '[]' },
   markers: { recovery: `CORE-RECOVER-${nonce}`, queued: `CORE-QUEUED-${nonce}`, project: `CORE-PROJECT-${nonce}` },
   child: { sessionId: 'synthetic-child', marker: `CORE-CHILD-${nonce}` },
-  customModel: { providerId: 'custom-1', modelId: 'custom-1/chat-qwen', label: `隔离个人Qwen-${nonce}`, marker: `CORE-CUSTOM-${nonce}` } };
+  customModel: { providerId: 'custom-1', modelId: 'custom-1/chat-qwen', label: `隔离个人模型-${nonce}`, marker: `CORE-CUSTOM-${nonce}` } };
 const fixtureSource = readFileSync('scripts/fixtures/native-core-review.js', 'utf8');
 const projectExpression = fixtureSource.match(/const name = ([^\n;]+);/)?.[1];
 assert(projectExpression, 'Actual fixed project fixture expression missing');
@@ -39,7 +39,7 @@ const report = (phase) => {
       recovery: { marker: expected.markers.recovery, completion: turn('recovery-1') } });
     put('core-automation-draft-navigation-exit', { marker: `CORE-DRAFT-${nonce}`, restoredViaNavigation: true,
       quitConfirmationViaUi: true, exitCancelledAndRuntimeReady: true, noTasksCreated: true, discardedViaUi: true });
-    put('core-custom-qwen-connection', { testedAndSavedViaUi: true, explicitHttpConsent: true, noCredentials: true,
+    put('core-custom-qwen-connection', { testedAndSavedViaUi: true, explicitHttpConsent: false, noCredentials: false,
       actualSessionModelId: expected.customModel.modelId, response: { modelId: expected.customModel.modelId,
         marker: expected.customModel.marker, completion: turn('custom-1') } });
     put('core-project-move-switch-ui', { projectForkedSessionId: expected.projectForkedSessionId, forkPendingBeforeTurn: true,
@@ -142,9 +142,9 @@ rejects('duplicated queued completion cannot masquerade as two turns', (v) => { 
 rejects('failed stop recovery is not completed', (v) => { v.report.checks.find((c) => c.id === 'core-stop-and-resend').evidence.recovery.completion.stopReason = 'error'; });
 rejects('unknown permission scope is rejected', (v) => { v.report.permissions.push({ sessionId: expected.sessionId, via: 'production allow-once UI', operation: { name: 'bash', command: 'echo' } }); });
 rejects('Office reply alone is not real tool output', (v) => { v.report.checks.find((c) => c.id === 'core-office-epub-runtime-read').evidence.toolOutputFingerprint = false; });
-rejects('custom model HTTP consent cannot be fabricated as omitted', (v) => { v.report.checks.find((c) => c.id === 'core-custom-qwen-connection').evidence.explicitHttpConsent = false; });
+rejects('HTTPS model evidence cannot claim a different HTTP transport', (v) => { v.report.checks.find((c) => c.id === 'core-custom-qwen-connection').evidence.explicitHttpConsent = true; });
 rejects('draft quit must preserve real Runtime after cancellation', v => { v.report.checks.find(c => c.id === 'core-automation-draft-navigation-exit').evidence.exitCancelledAndRuntimeReady = false; });
-rejects('builtin selector alone does not prove custom switch', (v) => { v.report.expected.customModel.modelId = expected.modelId; });
+rejects('primary model selector alone does not prove custom switch', (v) => { v.report.expected.customModel.modelId = expected.modelId; });
 for (const phase of ['first-launch', 'restart']) { verifyNativeCoreReport(args(phase)); cases.push({ name: `valid synthetic ${phase} admission only`, passed: true, actualNative: false }); }
 {
   const value = args('restart'); value.report.expected.title += '-changed'; assert.throws(() => verifyNativeCoreReport(value));

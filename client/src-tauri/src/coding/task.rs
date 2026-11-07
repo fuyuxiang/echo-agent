@@ -290,6 +290,15 @@ pub fn load(root: &Path, task_id: &str) -> Option<CodingTask> {
     // Additive compatibility: never delete or rewrite a legacy record while
     // reading it. The next normal save persists this idempotent upgrade.
     task.schema_version = 2;
+    // Retired model selection is a live binding; keep its session and all
+    // historical execution/provenance records while allowing reselection.
+    if task
+        .model_id
+        .as_deref()
+        .is_some_and(crate::providers::is_removed_model_id)
+    {
+        task.model_id = None;
+    }
     if !task.strict_workflow {
         task.global_constraints.retain(|constraint| {
             constraint
@@ -1315,6 +1324,25 @@ mod tests {
             thread.join().unwrap();
         }
         assert_eq!(list_tasks(&root).len(), 8);
+        std::fs::remove_dir_all(store::workspace_dir(&root)).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn retired_task_binding_is_cleared_without_losing_session_or_task_content() {
+        let root = temp_root();
+        let mut task = create_task(&root, "旧代码任务", "保留需求和执行记录").unwrap();
+        task.session_id = Some("saved-session".into());
+        task.model_id = Some("echoagent-ojlab/Echo Reed".into());
+        save(&root, &task).unwrap();
+        let restored = load(&root, &task.id).unwrap();
+        let mut expected =
+            store::read_json::<serde_json::Value>(&task_path(&root, &task.id)).unwrap();
+        expected["modelId"] = serde_json::Value::Null;
+        assert_eq!(serde_json::to_value(&restored).unwrap(), expected);
+        task.model_id = Some("mine/Echo Reed".into());
+        save(&root, &task).unwrap();
+        assert_eq!(load(&root, &task.id).unwrap().model_id, task.model_id);
         std::fs::remove_dir_all(store::workspace_dir(&root)).ok();
         std::fs::remove_dir_all(&root).ok();
     }

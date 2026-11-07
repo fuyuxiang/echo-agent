@@ -22,7 +22,7 @@ const base = {
 const models = [
   { id: "organization/MiniMax-M3", remoteModelId: "MiniMax-M3", providerId: "echoagent-organization", source: "organization" as const, providerKind: "custom" },
   { id: "personal/other", remoteModelId: "other-chat", providerId: "personal", source: "personal" as const, providerKind: "custom" },
-  { id: "echoagent-ojlab/MiniMax-M3", remoteModelId: "MiniMax-M3", providerId: "echoagent-ojlab", source: "builtin" as const, providerKind: "custom" },
+  { id: "echoagent-ojlab/MiniMax-M3", remoteModelId: "MiniMax-M3", providerId: "echoagent-ojlab", source: "legacy" as const, providerKind: "custom" },
 ];
 // The before run accepts the old wording: failures must identify lost access.
 const meetingLabel = /录音转写|会议录音与纪要/;

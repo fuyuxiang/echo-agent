@@ -6,7 +6,7 @@
   window.__echoNativeCodeAgentStarted = true;
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   const filename = '原生模型代码验收.cjs';
-  const modelId = 'echoagent-ojlab/Echo Reed';
+  const modelId = 'echoagent-review/claude-opus-5-5';
   const markerKey = 'echoagent.native-code-agent-review.v1';
   const home = scope?.home;
   const cwd = `${home}/workspaces/default`;

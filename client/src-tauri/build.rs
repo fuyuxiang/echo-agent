@@ -1,5 +1,59 @@
 use std::process::Command;
 
+fn check_release_models(manifest_dir: &std::path::Path) {
+    let source =
+        "../vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json";
+    println!("cargo:rerun-if-changed={source}");
+    println!("cargo:rerun-if-changed=resources/retrieval-models");
+    if std::env::var("PROFILE").as_deref() != Ok("release") {
+        return;
+    }
+    // Also protect direct `cargo build --release` / builds using --no-default-features:
+    // a release must never silently ship without the fixed, verified weights.
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let expected: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_dir.join(source))?)?;
+        let root = manifest_dir.join("resources/retrieval-models");
+        let marker: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("verified.json"))?)?;
+        if marker != expected {
+            return Err("model manifest mismatch".into());
+        }
+        for asset in expected["assets"]
+            .as_array()
+            .ok_or("missing model assets")?
+        {
+            let path = root.join(asset["path"].as_str().ok_or("missing model path")?);
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if !metadata.is_file()
+                || metadata.file_type().is_symlink()
+                || Some(metadata.len()) != asset["size"].as_u64()
+            {
+                return Err(format!("incomplete model: {}", path.display()).into());
+            }
+            let mut file = std::fs::File::open(&path)?;
+            let mut hash = Sha256::new();
+            let mut buffer = [0u8; 128 * 1024];
+            loop {
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                hash.update(&buffer[..count]);
+            }
+            if format!("{:x}", hash.finalize())
+                != asset["sha256"].as_str().ok_or("missing checksum")?
+            {
+                return Err(format!("model checksum mismatch: {}", path.display()).into());
+            }
+        }
+        Ok(())
+    })();
+    result.expect("Bundled retrieval models are missing or invalid. Run `pnpm retrieval:prepare` (offline: ECHO_RETRIEVAL_MODELS_SOURCE=/path/to/models) before building.");
+}
+
 fn git_output(manifest_dir: &std::path::Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .args(args)
@@ -42,6 +96,7 @@ fn main() {
     let manifest_dir = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo must set CARGO_MANIFEST_DIR"),
     );
+    check_release_models(&manifest_dir);
     let commit = std::env::var("ECHOAGENT_BUILD_COMMIT")
         .ok()
         .filter(|value| !value.trim().is_empty())

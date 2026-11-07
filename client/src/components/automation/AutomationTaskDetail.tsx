@@ -31,6 +31,8 @@ import {
   sessionModeLabel,
   taskStateLabel,
   taskState,
+  taskNeedsModelSelection,
+  REMOVED_TASK_MODEL_MESSAGE,
   workspaceName,
 } from "./task-presentation";
 
@@ -87,6 +89,7 @@ export function AutomationTaskDetail({
   }, [selected?.cwd, selected?.sessionId, onToast]);
   const needsCleanup = runs.some(runNeedsCleanup);
   const busy = starting || runs.some(runBusy) || needsCleanup;
+  const needsModel = Boolean(task && taskNeedsModelSelection(task));
   useEffect(() => {
     setSelectedId(initialRecordId ?? latestId);
   }, [initialRecordId, latestId]);
@@ -103,7 +106,7 @@ export function AutomationTaskDetail({
             <button
               type="button"
               className="atm-create-btn"
-              disabled={busy}
+              disabled={busy || needsModel}
               onClick={() => onRun(task.id)}
             >
               <Play size={16} />
@@ -115,12 +118,13 @@ export function AutomationTaskDetail({
               onClick={() => onEdit(task)}
             >
               <Pencil size={16} />
-              编辑任务
+              {needsModel ? "重新选择模型" : "编辑任务"}
             </button>
             {taskState(task, runs) !== "ended" && (
               <button
                 type="button"
                 className="atm-toolbar-btn"
+                disabled={needsModel}
                 onClick={() => onPause(task)}
               >
                 {task.status === "ACTIVE" ? "暂停计划" : "启用计划"}
@@ -130,6 +134,7 @@ export function AutomationTaskDetail({
         )}
       </PageToolbar>
       <h1 className="atm-task-detail__title">{name}</h1>
+      {needsModel && <p className="atm-editor-error" role="status">{REMOVED_TASK_MODEL_MESSAGE}</p>}
       {pendingCleanup && pendingCleanup.id !== selected?.id && (
         <div className="atm-cleanup-notice" role="alert">
           <p>此前有运行尚未完成清理，完成清理后才能再次执行任务。</p>
@@ -141,7 +146,7 @@ export function AutomationTaskDetail({
           <div className="atm-task-detail__meta">
             <span>{taskStateLabel(task, runs)}</span>
             <span>{describeSchedule(task)}</span>
-            {task.status === "ACTIVE" && (
+            {!needsModel && task.status === "ACTIVE" && (
               <span>下次：{nextRunLabel(task.nextRunAt)}</span>
             )}
           </div>

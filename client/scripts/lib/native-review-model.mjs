@@ -4,9 +4,9 @@ import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 export const PRIVATE_REVIEW_MODEL_ID = 'echoagent-review/claude-opus-5-5';
-export const DEFAULT_REVIEW_MODEL_ID = 'echoagent-ojlab/Echo Reed';
+export const DEFAULT_REVIEW_MODEL_ID = PRIVATE_REVIEW_MODEL_ID;
 export function isReviewModelId(value) {
-  return [DEFAULT_REVIEW_MODEL_ID, 'echoagent-ojlab/Echo Grove', PRIVATE_REVIEW_MODEL_ID].includes(value);
+  return value === PRIVATE_REVIEW_MODEL_ID;
 }
 let cached;
 function privateConnection() {
@@ -33,7 +33,7 @@ export function reviewModelId(fallback = DEFAULT_REVIEW_MODEL_ID) {
 }
 export function seedReviewModel(home) {
   const connection = privateConnection();
-  if (!connection) return DEFAULT_REVIEW_MODEL_ID;
+  assert(connection, 'Native model acceptance requires an explicit NATIVE_REVIEW_MODEL_CONFIG resource');
   const path = join(home, 'config.toml');
   const config = readFileSync(path, 'utf8');
   assert(!config.includes('[models]') && !config.includes('[model_providers.echoagent-review]'), 'Refusing to overwrite existing test model configuration');

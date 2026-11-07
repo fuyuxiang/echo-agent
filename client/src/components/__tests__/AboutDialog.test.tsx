@@ -9,7 +9,7 @@ vi.mock("@/lib/agent-client", () => ({ agentAuthStatus: vi.fn(async () => ({
 
 it("关于页面隐藏默认模型和目录的管理前缀，保留来源区分", async () => {
   const { container } = render(<AboutDialog open onClose={vi.fn()} init={{ defaultModelId: "echoagent-ojlab/Echo Reed" } as never} />);
-  expect(await screen.findByText("Echo Reed · 内置, Echo Reed · 组织")).toBeInTheDocument();
+  expect(await screen.findByText("Echo Reed · 已移除, Echo Reed · 组织")).toBeInTheDocument();
   expect(screen.getByText("默认模型").nextElementSibling).toHaveTextContent("Echo Reed");
   expect(container.textContent).not.toMatch(/echoagent-ojlab\/|organization\//);
 });

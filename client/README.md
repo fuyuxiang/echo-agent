@@ -66,7 +66,9 @@ pnpm install --frozen-lockfile
 2. 输入目标并发送；如果任务要读写文件，请选择实际要授权的目录。
 3. 查看计划与工具执行过程，按需处理权限请求；有文件修改时检查 Diff 和验证结果。
 
-应用提供内置模型，**无需填写个人 API Key，但推理会访问项目配置的远端服务**。若要使用自己的模型，在「设置 → 模型」中添加连接、模型并测试。自定义连接支持 OpenAI、Anthropic 及其兼容接口；模型的工具调用等能力取决于实际服务。个人模型配置保存在本机 `~/.echo-agent/config.toml`。
+使用前请在「设置 → 模型」中添加连接、模型并测试。自定义连接支持 OpenAI、Anthropic 及其兼容接口；模型的工具调用等能力取决于实际服务。个人模型配置保存在本机 `~/.echo-agent/config.toml`。
+
+应用不再提供内置聊天模型。升级后会清除旧内置模型目录及相关默认选择，保留已有对话、文件、个人连接和组织模型。绑定旧模型的定时任务会暂停，并显示“待选模型”；请编辑任务明确选择可用模型或“跟随默认模型”，保存后再启用，不会自动换用其他服务。知识库与记忆检索服务不受影响。
 
 <p align="center"><img src="docs/images/echoagent-task-flow.png" width="100%" alt="典型任务流程：选择目录、模型与模式，发送目标，执行计划与工具，审批操作，检查变更，验证并交付；检查后可返回继续迭代" /></p>
 
@@ -106,6 +108,18 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 
 退出保护独立读取后端实际执行与待确认状态，已归档、隐藏或专家团内部的会话仍受保护；界面恢复期间也不依赖菜单计数。状态读取失败或超时时，可选择继续运行或确认退出。异步打开专家团期间切换到其他任务或页面，以最后一次导航为准；后台审批初始化与实时事件合并同步。
 
+### 本地知识检索
+
+个人知识库和本地记忆使用客户端内置的 `BAAI/bge-base-zh-v1.5`（768 维）与 `BAAI/bge-reranker-base`，固定版本的 ONNX INT8 模型约占 400MB 安装空间。安装后直接读取应用资源，首次使用无需下载或复制模型，断网也可进行本地检索；检索文本不会发送给外网向量或重排服务。“知识库”或“记忆”页的“模型维护”支持校验、修复和离线导入。仅修复缺失或损坏的文件时可能联网下载，修复文件存入用户数据目录，不修改安装资源；模型不可用或 CPU 不支持时仍可使用关键词检索。
+
+个人知识库结合中文双字词索引、英文关键词与向量召回，再筛选和重排相关段落；支持保留 Word 段落／表格、Excel 工作表／共享字符串和 PPT 实际展示顺序与页码。宽表按单元格地址保留全部非空值，避免空列展开或数据覆盖；模型维护操作失败时仍保留可用模型，并单独显示错误。长中文文本按 token 预算切分，并保留标题和重叠上下文。升级模型会在独立索引代次中准备，原始文档与旧索引保留。日常记忆自动回忆不运行重排，语义等待预算为 650ms，超时返回关键词结果；显式深度查询可重排。组织知识继续使用组织服务的模型、权限、范围和引用，不复用个人索引；知识来源会保存在会话中，阻止检索结论经自动整理变成个人事实。
+
+向量生成和重排在本机完成；参与回答的资料和自动整理记忆的内容仍会交给当前对话模型。离线模型目录结构为 `embedding/{model.onnx,tokenizer.json}` 与 `reranker/{model.onnx,tokenizer.json}`；准确下载版本、文件名和 SHA256 在 `vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json`。原模型说明：[Embedding](https://huggingface.co/BAAI/bge-base-zh-v1.5)、[Reranker](https://huggingface.co/BAAI/bge-reranker-base)。
+
+开发与打包时自动运行 `pnpm retrieval:prepare`，按固定版本下载并校验模型到被 Git 忽略的 `src-tauri/resources/retrieval-models/`；不将权重提交到源码仓库。离线构建可先运行 `pnpm retrieval:prepare --source /path/to/models`，或设置 `ECHO_RETRIEVAL_MODELS_SOURCE` 指向上述离线目录。`pnpm retrieval:check` 检查所有文件的 SHA256；Release 编译也会强制校验，缺失或损坏会中止构建，避免产出缺模型的客户端。安装包携带相应模型与推理运行时的许可说明。
+
+`pnpm test:retrieval-packaging` 验证资源准备与损坏处理；准备真实模型后，`pnpm test:retrieval-offline` 分别使用全新数据目录验证内置模型离线首用（不复制权重）和离线包导入（写入用户目录），覆盖真实向量生成、重排和文件校验。
+
 ### 记忆
 
 “设置 → 记忆”集中管理总开关与记忆内容。任务完成后自动提取有依据的个人偏好、工作背景、项目事实和近期事项；提取失败或快速退出时保留待处理内容，重新打开工作区后重试。全局偏好跨项目使用，项目事实按工作区隔离；短期事项可标记完成或设置有效期。历史问题可由助手查找原对话，并读取来源消息核实。
@@ -135,7 +149,7 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 ### 数据与权限边界
 
 - 默认数据根目录是 `~/.echo-agent/`，可在启动前通过 `ECHO_AGENT_HOME` 调整。模型配置位于 `config.toml`，MCP 配置位于 `mcp.json`，会话与工作台状态存放在该根目录下的对应子目录。
-- Provider API Key 保存在本机配置文件中。请保护该文件，避免将其提交到仓库或附在公开 Issue 中。个人模型连接默认要求 HTTPS；内置模型使用项目配置的远端 HTTP 服务。
+- Provider API Key 保存在本机配置文件中。请保护该文件，避免将其提交到仓库或附在公开 Issue 中。个人模型连接默认要求 HTTPS；使用 HTTP 需要明确确认。
 - “本地优先”不等于离线。发送给模型的任务内容，以及启用 Browser Use / Computer Use 后提供的网页内容或屏幕截图，会到达所选模型服务；MCP、通知、云存储和可选组织能力也可能访问外部服务。
 - 工作区授权、权限模式与操作确认共同控制 Agent 行为。Browser Use 默认限制私网访问；Computer Use 从明确的用户任务启动，任务内连续操作，不逐步弹窗。暂停、停止、切换模式和重启撤销旧执行令牌；系统权限仍按操作系统要求授予。电脑任务范围是执行上下文，不是操作系统文件沙箱。Theia 的交互终端以当前系统用户身份运行，应审查来源未知项目中的命令。
 
@@ -175,7 +189,7 @@ CI 的 Rust 格式检查独立运行，格式错误不会阻止静态检查与�
 
 依赖升级、兼容补丁来源和锁文件更新步骤见 [依赖安全维护](docs/dependency-security.md)。
 
-原生验收入口为 `scripts/validate-native-review.mjs`，以及 `validate-native-browser-review.mjs`、`validate-native-core-review.mjs`、`validate-native-ide-git-review.mjs`、`validate-native-local-review.mjs`、`validate-native-webdav-review.mjs` 和 `validate-native-exit-recovery-review.mjs`。这些工具需要已构建的桌面可执行文件，使用独立临时数据目录；主验收流程包含首次启动和重启检查。涉及模型的流程需要可用的项目内置模型服务，定时任务验收会等待真实到点。它们不会由普通单元测试自动启动。
+原生验收入口为 `scripts/validate-native-review.mjs`，以及 `validate-native-browser-review.mjs`、`validate-native-core-review.mjs`、`validate-native-ide-git-review.mjs`、`validate-native-local-review.mjs`、`validate-native-webdav-review.mjs` 和 `validate-native-exit-recovery-review.mjs`。这些工具需要已构建的桌面可执行文件，使用独立临时数据目录；主验收流程包含首次启动和重启检查。涉及模型的流程需要通过 `NATIVE_REVIEW_MODEL_CONFIG` 显式提供独立的测试连接配置，定时任务验收会等待真实到点。它们不会由普通单元测试自动启动。
 
 macOS 原生桌面任务使用 [`scripts/validate-native-desktop-controls.mjs`](scripts/validate-native-desktop-controls.mjs)，支持 `--smoke`、`--journey`、`--task-flow` 和 `--universal-flow`。桌面任务是否完成需结合真实 Runtime 日志、独立文件核验和界面证据判定；单元测试或 Windows 交叉编译通过不能替代实机验收。准备步骤、核验入口和历史实测范围见 [桌面验收记录](docs/desktop-control/validation.md)。
 
@@ -199,7 +213,7 @@ macOS 原生桌面任务使用 [`scripts/validate-native-desktop-controls.mjs`](
 <details>
 <summary>个人使用需要 EchoAgent 账户吗？</summary>
 
-不需要。可使用内置模型或自行配置模型连接；组织服务是可选功能。
+不需要。可自行配置个人模型连接；组织服务是可选功能。
 
 </details>
 

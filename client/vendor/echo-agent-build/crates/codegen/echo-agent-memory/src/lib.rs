@@ -30,6 +30,7 @@ pub mod embedding;
 mod embedding_sync;
 pub mod flush;
 pub mod index;
+pub mod local;
 pub mod maintenance;
 pub mod mmr;
 pub mod observation;

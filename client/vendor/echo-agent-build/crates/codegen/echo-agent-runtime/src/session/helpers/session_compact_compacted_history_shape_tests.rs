@@ -318,6 +318,7 @@ fn sanitize_then_validate_produces_valid_history() {
 fn fallback_minimal_history_has_no_tool_results() {
     use echo_agent_chat_state::compaction_utils::validate_compacted_history;
     let state_context = CompactionStateContext {
+        knowledge_context: None,
         cwd_generation: 0,
         destination_project_instructions: None,
         agent_message_anchor: None,
@@ -530,6 +531,7 @@ async fn no_subagents_means_no_section() {
 #[test]
 fn fallback_preserves_subagents() {
     let original = CompactionStateContext {
+        knowledge_context: None,
         cwd_generation: 0,
         destination_project_instructions: None,
         agent_message_anchor: None,
@@ -560,6 +562,7 @@ fn fallback_preserves_subagents() {
         todos: vec![],
     };
     let fallback = CompactionStateContext {
+        knowledge_context: None,
         cwd_generation: original.cwd_generation,
         destination_project_instructions: original.destination_project_instructions.clone(),
         agent_message_anchor: original.agent_message_anchor.clone(),

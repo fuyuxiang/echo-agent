@@ -62,7 +62,7 @@ describe("ModelConnectionsPanel", () => {
     mocks.listenOrgModelsChanged.mockResolvedValue(() => {});
   });
 
-  it.each(["personal", "organization", "builtin"] as const)("%s 模型可逐一测试，失败重试不影响默认配置", async source => {
+  it.each(["personal", "organization"] as const)("%s 模型可逐一测试，失败重试不影响默认配置", async source => {
     const provider = { ...importProvider, source, managed: source !== "personal" };
     mocks.providersList.mockResolvedValue({ providers: [provider], models: [
       { modelId: "local/a", remoteModelId: "remote-a", name: "模型 A", providerId: provider.id, managed: provider.managed },
@@ -234,51 +234,18 @@ describe("ModelConnectionsPanel", () => {
     expect(screen.queryByText(/此连接使用 HTTP 明文传输/)).not.toBeInTheDocument();
   });
 
-  it("内置模型无需密钥且显示实际默认模型", async () => {
-    mocks.agentsDefaultsGet.mockResolvedValue({ ...defaults, defaultModel: "echoagent-ojlab/Echo Reed" });
-    mocks.agentAuthStatus.mockResolvedValue({ ready: true, defaultModelId: "echoagent-ojlab/Echo Reed" });
+  it("兼容旧后端数据时排除已移除的内置连接和五个模型", async () => {
     mocks.providersList.mockResolvedValue({
-      providers: [{
-        id: "echoagent-ojlab",
-        providerKind: "custom",
-        label: "内置模型",
-        source: "builtin",
-        managed: true,
-        credentialConfigured: true,
-        baseUrl: "http://123.56.188.16:8088/v1",
-        apiBackend: "chat_completions",
-      }],
-      models: [
-        { modelId: "echoagent-ojlab/Echo Cedar", remoteModelId: "Echo Cedar", providerId: "echoagent-ojlab", name: "Echo Cedar", contextWindow: 131072, maxOutputTokens: 8192, managed: true },
-        { modelId: "echoagent-ojlab/Echo Willow", remoteModelId: "Echo Willow", providerId: "echoagent-ojlab", name: "Echo Willow", contextWindow: 32768, maxOutputTokens: 8192, managed: true },
-        { modelId: "echoagent-ojlab/Echo Grove", remoteModelId: "Echo Grove", providerId: "echoagent-ojlab", name: "Echo Grove", contextWindow: 262144, maxOutputTokens: 8192, managed: true },
-        { modelId: "echoagent-ojlab/Echo Brook", remoteModelId: "Echo Brook", providerId: "echoagent-ojlab", name: "Echo Brook", contextWindow: 131072, maxOutputTokens: 8192, managed: true },
-        { modelId: "echoagent-ojlab/Echo Reed", remoteModelId: "Echo Reed", providerId: "echoagent-ojlab", name: "Echo Reed", contextWindow: 262144, maxOutputTokens: 65536, managed: true },
-      ],
+      providers: [{ id: "echoagent-ojlab", label: "内置模型", providerKind: "custom", source: "builtin", managed: true }],
+      models: ["Echo Brook", "Echo Cedar", "Echo Grove", "Echo Reed", "Echo Willow"].map(name => ({
+        modelId: `echoagent-ojlab/${name}`, providerId: "echoagent-ojlab", name,
+      })),
     });
     render(<ModelConnectionsPanel />);
-    expect(await screen.findByText("此服务无需 API Key")).toBeInTheDocument();
-    expect(screen.queryByText(/此连接使用 HTTP 明文传输/)).not.toBeInTheDocument();
-    expect(screen.getByText("内置只读")).toBeInTheDocument();
-    expect(screen.getByText("已设默认 · 当前使用")).toBeInTheDocument();
-    expect(screen.getAllByText("上下文 262,144 · 最大输出 8,192 tokens")).toHaveLength(1);
-    expect(screen.getAllByText("上下文 131,072 · 最大输出 8,192 tokens")).toHaveLength(2);
-    expect(screen.getByText("上下文 32,768 · 最大输出 8,192 tokens")).toBeInTheDocument();
-    expect(screen.getByText("上下文 262,144 · 最大输出 65,536 tokens")).toBeInTheDocument();
-    expect(screen.getByText("可用模型").parentElement).toHaveTextContent("5 个");
-    for (const name of ["Echo Cedar", "Echo Willow", "Echo Grove", "Echo Brook", "Echo Reed"]) {
-      expect(screen.getByText(name, { selector: "strong" })).toBeInTheDocument();
-    }
-    expect(screen.getByText("已设默认 · 当前使用").closest("li")).toHaveTextContent("Echo Reed");
-    expect(screen.queryByText(/embed-pro|rerank-pro|chat-glm|chat-qwen|chat-xc/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "编辑连接" })).not.toBeInTheDocument();
-    mocks.providersTestModelConnection.mockResolvedValue(undefined);
-    fireEvent.click(screen.getByRole("button", { name: "测试模型 Echo Reed" }));
-    await waitFor(() => expect(mocks.providersTestModelConnection).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "echoagent-ojlab", apiKey: undefined }),
-      "Echo Reed",
-    ));
-    expect(await screen.findByText(/测试通过 · 耗时/)).toBeInTheDocument();
+    expect(await screen.findByText("还没有可用模型")).toBeInTheDocument();
+    expect(screen.queryByText("内置模型")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Echo Brook|Echo Cedar|Echo Grove|Echo Reed|Echo Willow/)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "添加个人连接" }).length).toBeGreaterThan(0);
   });
 
   it("标题和无纵向溢出的连接列表可继续滚动详情，移动布局交由原生滚动", async () => {
@@ -477,24 +444,18 @@ describe("ModelConnectionsPanel", () => {
     expect(mocks.internalReload).toHaveBeenCalledWith("models");
   });
 
-  it("指定服务的个人连接可以留空 API Key", async () => {
-    mocks.providersTestModelConnection.mockResolvedValue(undefined);
-    mocks.providersSaveConnection.mockResolvedValue({ providerId: "custom", modelIds: ["chat-xc"] });
+  it("原内置服务地址作为个人连接时也必须明确配置凭据", async () => {
     render(<ModelConnectionsPanel />);
     await screen.findByText("还没有可用模型");
     fireEvent.click(screen.getAllByRole("button", { name: "添加个人连接" })[0]);
     const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
     fireEvent.change(within(dialog).getByLabelText("Base URL"), { target: { value: "http://123.56.188.16:8088/v1" } });
-    fireEvent.change(within(dialog).getByLabelText("模型名称 / ID"), { target: { value: "chat-xc" } });
-    expect(within(dialog).getByText("此服务无需 API Key")).toBeInTheDocument();
-    expect(within(dialog).getByLabelText("API Key")).toBeDisabled();
+    fireEvent.change(within(dialog).getByLabelText("模型名称 / ID"), { target: { value: "my-model" } });
+    expect(within(dialog).getByLabelText("API Key")).toBeEnabled();
     fireEvent.click(within(dialog).getByLabelText(/允许此个人连接使用 HTTP/));
     fireEvent.click(within(dialog).getByRole("button", { name: "测试并保存" }));
-    await waitFor(() => expect(mocks.providersSaveConnection).toHaveBeenCalledWith(
-      expect.objectContaining({ baseUrl: "http://123.56.188.16:8088/v1", apiKey: undefined, allowInsecureHttp: true }),
-      [expect.objectContaining({ remoteModelId: "chat-xc" })],
-      true,
-    ));
+    expect(await within(dialog).findByText("请填写 API Key。")).toBeInTheDocument();
+    expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
   });
 
   it("OpenAI 作为 Responses 模型 Provider 接入而不是独立 Agent Runtime", async () => {

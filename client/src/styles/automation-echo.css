@@ -1921,6 +1921,7 @@
 .atm-advanced-settings .atm-prompt-toolbar { padding: 12px 0; flex-wrap: wrap; border: 0; }
 .atm-model-field { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; max-width: 100%; }
 .atm-model-field small { color: var(--atm-text-secondary); }
+.atm-model-recovery { margin-bottom: 16px; }
 .atm-model-field .model-selector { max-width: 100%; }
 .atm-editor-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 24px; border-top: 1px solid var(--atm-border-soft); flex: none; background: var(--atm-surface); }
 .atm-editor-footer > p { font-size: .75rem; color: var(--atm-text-secondary); line-height: 1.6; margin: 0; }

@@ -6,6 +6,7 @@ export type PersonalKnowledgeIndexState = "idle" | "indexing" | "ready" | "degra
 
 export interface PersonalKnowledgeIndexStatus {
   state: PersonalKnowledgeIndexState;
+  warnings?: string[];
   message?: string | null;
   fileCount: number;
   chunkCount: number;
@@ -55,7 +56,7 @@ function parseStatus(value: unknown): PersonalKnowledgeIndexStatus | null {
     || typeof value.embeddingModel !== "string"
     || typeof value.rerankModel !== "string"
   ) return null;
-  return value as unknown as PersonalKnowledgeIndexStatus;
+  return {...value,warnings:Array.isArray(value.warnings)?value.warnings.filter((item):item is string=>typeof item==="string"):[]} as unknown as PersonalKnowledgeIndexStatus;
 }
 
 function parseSearchResponse(value: unknown): PersonalKnowledgeSearchResponse | null {

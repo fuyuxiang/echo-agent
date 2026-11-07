@@ -473,7 +473,8 @@ impl SessionActor {
             )))
             .meta(Some(chunk_meta)),
         );
-        let notification_meta = user_echo_notification_meta(self.build_notification_meta(), prompt_id);
+        let notification_meta =
+            user_echo_notification_meta(self.build_notification_meta(), prompt_id);
         let notification = acp::SessionNotification::new(self.session_info.id.clone(), update)
             .meta(notification_meta.as_object().cloned());
         let _ = self
@@ -894,7 +895,8 @@ impl SessionActor {
             let update = acp::SessionUpdate::UserMessageChunk(
                 acp::ContentChunk::new(block.clone()).meta(user_chunk_meta.clone()),
             );
-            let notification_meta = user_echo_notification_meta(self.build_notification_meta(), prompt_id);
+            let notification_meta =
+                user_echo_notification_meta(self.build_notification_meta(), prompt_id);
             let notification = acp::SessionNotification::new(self.session_info.id.clone(), update)
                 .meta(notification_meta.as_object().cloned());
             if echo_mode == UserEchoMode::PersistOnly {
@@ -1096,6 +1098,19 @@ impl SessionActor {
                 attached_image_refs,
             ))
             .await;
+        let original_user_query = prompt_blocks
+            .iter()
+            .filter_map(|block| {
+                let acp::ContentBlock::Text(text) = block else {
+                    return None;
+                };
+                text.meta
+                    .as_ref()?
+                    .get("echoAgentUserInput")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .next();
         let prompt_text_for_hook = Some(user_message.clone());
         {
             if trace_gcs_config.is_some() {
@@ -1138,6 +1153,21 @@ impl SessionActor {
                     item
                 }
             };
+            if let ConversationItem::User(user) = &mut user_chat {
+                if user.synthetic_reason.is_none() {
+                    user.retrieval_query = original_user_query.clone();
+                    user.knowledge_context = prompt_blocks.iter().find_map(|block| {
+                        let acp::ContentBlock::Text(text) = block else {
+                            return None;
+                        };
+                        text.meta
+                            .as_ref()?
+                            .get("echoAgentKnowledgeContext")?
+                            .as_str()
+                            .map(str::to_owned)
+                    });
+                }
+            }
             user_chat.set_prompt_index(current_prompt_index);
             if !self.is_cursor_harness() {
                 for image in &user_images {
@@ -3659,7 +3689,9 @@ mod identical_tool_call_run_tests {
 }
 #[cfg(test)]
 mod user_echo_broadcast_tests {
-    use super::{InputOrigin, PromptOrigin, UserEchoMode, user_echo_mode, user_echo_notification_meta};
+    use super::{
+        InputOrigin, PromptOrigin, UserEchoMode, user_echo_mode, user_echo_notification_meta,
+    };
 
     #[test]
     fn background_echo_preserves_event_identity_and_binds_the_admitted_prompt() {

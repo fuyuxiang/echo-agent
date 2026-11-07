@@ -21,7 +21,7 @@
 
 .home__header {
   width: 100%;
-  align-items: flex-start;
+  align-items: center;
 }
 
 .home__title {
@@ -29,13 +29,7 @@
   font-weight: 600;
   line-height: 1.35;
   letter-spacing: -0.025em;
-  text-align: left;
-}
-.home__description {
-  margin: 12px 0 0;
-  color: var(--echo-text-medium);
-  font-size: var(--echo-body-size);
-  line-height: var(--echo-line-height);
+  text-align: center;
 }
 
 .home__composer-area {

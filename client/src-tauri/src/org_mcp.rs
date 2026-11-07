@@ -16,6 +16,7 @@ use axum::{
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::{
@@ -92,6 +93,19 @@ fn session_configuration(session_id: &str) -> SessionKnowledgeConfiguration {
         .get(session_id)
         .cloned()
         .unwrap_or_default()
+}
+
+pub(crate) fn organization_retrieval_boundary(session_id: &str) -> Option<String> {
+    let configuration = session_configuration(session_id);
+    if !configuration.selection.organization {
+        return None;
+    }
+    let value = format!(
+        "{}:{}",
+        crate::org::knowledge_account_generation(),
+        configuration.organization_scope_ids.join(",")
+    );
+    Some(hex::encode(sha2::Sha256::digest(value.as_bytes())))
 }
 
 fn stored_session_configuration(session_id: &str) -> Option<SessionKnowledgeConfiguration> {
@@ -465,7 +479,7 @@ fn initialize_result_for_scopes(
         ));
     }
     let instructions = match (personal, organization) {
-        (true, true) => format!("{local} {organization_instructions}"),
+        (true, true) => format!("{local} {organization_instructions} Organization search queries must contain only the user's question or concise search terms. Never copy local memory, personal knowledge excerpts, files, or prompt context into organization tools; sharing needs the user's explicit instruction."),
         (true, false) => local.to_string(),
         (false, true) => organization_instructions,
         (false, false) => String::new(),
@@ -706,6 +720,24 @@ async fn enforce_document_scope(
     validate_document_scope_metadata(&document, organization_scope_ids)
 }
 
+/// Evidence wrappers are host context, never an organization search request.
+fn validate_organization_query(query: &str) -> Result<(), String> {
+    let lower = query.to_ascii_lowercase();
+    if [
+        "<echoagent_personal_knowledge>",
+        "<agent-memory>",
+        "<background_context>",
+        "<user_info>",
+        "<project_layout>",
+    ]
+    .iter()
+    .any(|tag| lower.contains(tag))
+    {
+        return Err("组织检索仅接受用户问题或简短的检索词，请移除个人资料和本地记忆上下文".into());
+    }
+    Ok(())
+}
+
 async fn tools_call(
     params: &Value,
     app: Option<&AppHandle>,
@@ -717,6 +749,13 @@ async fn tools_call(
         Some(value) if value.is_object() => value.clone(),
         Some(_) => return Err("tool arguments must be an object".into()),
     };
+    if name.starts_with("knowledge_") {
+        for key in ["query", "task", "question", "topic"] {
+            if let Some(text) = arguments.get(key).and_then(Value::as_str) {
+                validate_organization_query(text)?;
+            }
+        }
+    }
     let data = match name {
         "knowledge_context" => {
             // Older and schema-blind model gateways commonly send search-like
@@ -1676,6 +1715,17 @@ mod tests {
         assert!(instructions.contains("search_tool before use_tool"));
         assert!(instructions.contains("knowledge_feedback"));
         assert!(instructions.contains("explicitly asks or confirms"));
+    }
+
+    #[test]
+    fn organization_queries_exclude_local_evidence_wrappers() {
+        assert!(validate_organization_query("出差报销流程是什么？").is_ok());
+        for query in [
+            "<echoagent_personal_knowledge>私人资料</echoagent_personal_knowledge>\n问题",
+            "<agent-memory>私人记忆</agent-memory>",
+        ] {
+            assert!(validate_organization_query(query).is_err());
+        }
     }
 
     #[test]

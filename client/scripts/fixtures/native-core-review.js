@@ -211,7 +211,7 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
     assert(context.coreRequested === true && context.evaluations === 1 && Number.isInteger(context.pid) && context.pid > 0
       && context.home === home && context.phase === scope.phase && scope.schema === 1 && scope.home === home
       && scope.nonce === nonce && scope.cwd === `${home}/workspaces/default`
-      && ['first-launch', 'restart'].includes(scope.phase) && ['echoagent-ojlab/Echo Reed', 'echoagent-review/claude-opus-5-5'].includes(scope.modelId), 'Native Core manifest/context mismatch');
+      && ['first-launch', 'restart'].includes(scope.phase) && ['echoagent-review/claude-opus-5-5', 'echoagent-review/claude-opus-5-5'].includes(scope.modelId), 'Native Core manifest/context mismatch');
     assert(Array.isArray(scope.officeFixtures) && scope.officeFixtures.length === 3
       && scope.officeFixtures.every((item, i) => item.format === ['xlsx', 'epub', 'ods'][i]
         && item.path === `${scope.cwd}/办公读取/中文 ${item.format}.${item.format}`
@@ -458,10 +458,9 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
       });
       await stage('core-custom-qwen-connection', async () => {
         const binding = await call('desktop_review_model_connection');
-        const privateModel = scope.modelId === 'echoagent-review/claude-opus-5-5';
         assert(binding.model === scope.modelId.split('/').at(-1), 'Configured model binding differs');
         const http = new URL(binding.baseUrl).protocol === 'http:';
-        const label = `隔离个人${privateModel ? '模型' : 'Qwen'}-${nonce}`, marker = `CORE-CUSTOM-${nonce}`;
+        const label = `隔离个人模型-${nonce}`, marker = `CORE-CUSTOM-${nonce}`;
         (await wait(() => document.querySelector('button[aria-label="设置"]'), 'settings for personal model')).click();
         (await wait(() => [...document.querySelectorAll('.settings-navigation__item')].find((el) => el.textContent.trim() === '模型'), 'model settings')).click();
         (await wait(() => button(document.querySelector('.model-connections'), '添加个人连接') || button(document, '添加个人连接'), 'add personal connection')).click();

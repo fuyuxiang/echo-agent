@@ -106,6 +106,41 @@ function beginRunnableEditor() {
 describe("自动化编辑流程与通知导航", () => {
   const ready = async () => { await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull()); openAdvanced(); };
 
+  it("旧模型任务显示待选模型并阻止运行，明确选择默认模型后保存仍保持暂停", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot = {automations: [{...task, modelId: "echoagent-ojlab/Echo Reed", status: "PAUSED", nextRunAt: undefined}], records: []};
+    render(<AutomationPanel />);
+    expect(await screen.findByText("待选模型")).toBeInTheDocument();
+    expect(screen.getByRole("switch", {name: "启用定时任务「原任务」"})).toBeDisabled();
+    expect(screen.getByRole("button", {name: "立即运行「原任务」"})).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", {name: "编辑定时任务「原任务」"}));
+    await waitFor(() => expect(screen.queryByText("正在加载工作空间、模型与运行时能力…")).toBeNull());
+    expect(screen.getByRole("button", {name: "高级设置"})).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("region", {name: "重新选择任务模型"})).toBeInTheDocument();
+    expect(screen.getByRole("button", {name: "保存并立即运行"})).toBeDisabled();
+    expect(document.querySelector(".atm-execution-summary")).toHaveTextContent("原模型已移除，请重新选择");
+    expect(useAutomationEditorStore.getState().draft?.modelId).toBe("echoagent-ojlab/Echo Reed");
+    fireEvent.click(screen.getByRole("button", {name: "跟随默认模型"}));
+    expect(screen.getByRole("region", {name: "重新选择任务模型"})).toBeInTheDocument();
+    expect(screen.getByRole("button", {name: "保存并立即运行"})).toBeEnabled();
+    expect(document.querySelector(".atm-editor-footer")).toHaveTextContent("保存后保持暂停，可在任务详情中启用。");
+    fireEvent.click(screen.getByRole("button", {name: "保存修改"}));
+    await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({modelId: undefined, status: "PAUSED"})));
+    expect(automationsSetStatus).not.toHaveBeenCalled();
+    expect(automationsRun).not.toHaveBeenCalled();
+  });
+
+  it("旧模型任务详情保留历史入口并说明暂停原因，不提供无效启用或运行", async () => {
+    const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
+    snapshot = {automations: [{...task, modelId: "echoagent-ojlab/Echo Reed", status: "PAUSED"}], records: []};
+    render(<AutomationPanel />);
+    fireEvent.click(await screen.findByRole("button", {name: "原任务"}));
+    expect(screen.getByRole("button", {name: "立即运行"})).toBeDisabled();
+    expect(screen.getByRole("button", {name: "启用计划"})).toBeDisabled();
+    expect(screen.getByRole("button", {name: "重新选择模型"})).toBeEnabled();
+    expect(screen.getByText(/原模型已移除，任务已暂停/)).toBeInTheDocument();
+  });
+
   it("超时清理中保留结果、显示进度并阻止重跑与普通停止", async () => {
     const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
     snapshot.records = [{ id: "cleanup-running", automationId: task.id, automationName: task.name,

@@ -133,7 +133,10 @@ test('explicit private review model is scoped, seeded owner-only, and redacted',
   const value = { baseUrl: 'https://example.invalid/v1', model: 'claude-opus-5-5', protocol: 'chat_completions', apiKey: key };
   try {
     const model = await import('./lib/native-review-model.mjs');
-    assert.equal(model.reviewModelId(), model.DEFAULT_REVIEW_MODEL_ID);
+    assert.equal(model.reviewModelId(), model.PRIVATE_REVIEW_MODEL_ID);
+    assert.equal(model.isReviewModelId("echoagent-ojlab/Echo Reed"), false);
+    assert.equal(model.isReviewModelId("echoagent-ojlab/Echo Grove"), false);
+    assert.throws(() => model.seedReviewModel(root), /explicit NATIVE_REVIEW_MODEL_CONFIG/);
     process.env.NATIVE_REVIEW_MODEL_CONFIG = privatePath;
     writeFileSync(privatePath, JSON.stringify(value), { mode: 0o644 });
     assert.throws(() => model.reviewModelId(), /owner-only/);

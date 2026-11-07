@@ -30,6 +30,7 @@ const connector = {
 describe("统一扩展管理的真实页面交互", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    localStorage.clear();
     useSessionStore.getState().setSession(null);
     api.agentsList.mockResolvedValue([expert]);
     api.skillsList.mockResolvedValue([skill]);
@@ -135,12 +136,41 @@ describe("统一扩展管理的真实页面交互", () => {
     render(<ConnectorsTab pills={null} />);
     fireEvent.change(screen.getByRole("textbox", { name: "搜索连接器" }), { target: { value: "review-tool" } });
     const name = await screen.findByText("测试连接器");
-    expect(screen.getByText("待会话启动")).toBeInTheDocument();
+    expect(screen.getByText("待任务启动")).toBeInTheDocument();
     expect(screen.queryByText("0 个工具")).toBeNull();
     expect(screen.queryByText("review-tool")).toBeNull();
     fireEvent.click(name);
     expect(screen.getByText("review-tool")).toBeInTheDocument();
-    expect(screen.getByText("创建会话后将完成握手并列出工具")).toBeInTheDocument();
+    expect(screen.getByText("启动任务后将连接服务并获取工具")).toBeInTheDocument();
+  });
+
+  it("连接器默认紧凑列表，切换卡片保留已展开详情、控件及视图偏好", async () => {
+    const view = render(<ConnectorsTab pills={null} />);
+    const name = await screen.findByText("测试连接器");
+    const list = screen.getByRole("list", { name: "已配置连接器" });
+    expect(list).toHaveAttribute("data-view", "list");
+    expect(list).toHaveAttribute("data-layout", "grid");
+    expect(screen.queryByText("已启用，启动任务后连接")).toBeNull();
+    fireEvent.click(name);
+    const main = name.closest("button")!;
+    const details = document.getElementById(main.getAttribute("aria-controls")!);
+    expect(details).toHaveTextContent("review-tool");
+    const toggle = screen.getByRole("checkbox", { name: "停用 MCP 服务 测试连接器" });
+
+    const cards = screen.getByRole("button", { name: "卡片视图" });
+    cards.focus();
+    fireEvent.click(cards);
+    expect(cards).toHaveFocus();
+    expect(list).toHaveAttribute("data-view", "cards");
+    expect(main).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById(main.getAttribute("aria-controls")!)).toBe(details);
+    expect(screen.getByRole("checkbox", { name: "停用 MCP 服务 测试连接器" })).toBe(toggle);
+    expect(api.mcpToggle).not.toHaveBeenCalled();
+
+    view.unmount();
+    render(<ConnectorsTab pills={null} />);
+    await screen.findByText("测试连接器");
+    expect(screen.getByRole("list", { name: "已配置连接器" })).toHaveAttribute("data-view", "cards");
   });
 
   it("配置入口保留已有内容，拒绝无效 JSON，保存后可回到连接器列表", async () => {

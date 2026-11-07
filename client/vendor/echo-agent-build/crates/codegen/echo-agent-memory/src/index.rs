@@ -359,6 +359,19 @@ impl MemoryIndex {
                     result.added += 1;
                 }
             }
+            // Also backfill unchanged legacy chunks during the next file sync.
+            let rowid: i64 = tx.query_row(
+                "SELECT rowid FROM chunks WHERE id = ?1",
+                params![chunk_id],
+                |row| row.get(0),
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO chunks_terms(rowid, text) VALUES (?1, ?2)",
+                params![
+                    rowid,
+                    super::query_expansion::indexed_cjk_terms(&chunk.text)
+                ],
+            )?;
         }
 
         // Delete chunks no longer in file
@@ -367,6 +380,10 @@ impl MemoryIndex {
                 tx.execute(
                     "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?1, ?2)",
                     params![old_record.rowid, old_record.text],
+                )?;
+                tx.execute(
+                    "DELETE FROM chunks_terms WHERE rowid = ?1",
+                    params![old_record.rowid],
                 )?;
                 if self.vec_available {
                     let _ = tx.execute(
@@ -459,10 +476,8 @@ impl MemoryIndex {
     }
 
     /// SQLite's default FTS5 tokenizer treats a continuous Chinese sentence as
-    /// one token. Match overlapping Han bigrams against the source chunks so a
-    /// shorter Chinese phrase can find a longer saved sentence. The scan uses
-    /// at most 16 bigrams and only runs for queries containing Han characters; English still
-    /// follows the indexed BM25 path above.
+    /// one token. Search indexed Han bigrams so short phrases can find longer
+    /// sentences. Only pre-migration chunks without terms use the legacy scan.
     fn search_cjk_substrings(
         &self,
         query: &str,
@@ -473,13 +488,45 @@ impl MemoryIndex {
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
+        let indexed_query = terms
+            .iter()
+            .map(|term| format!("\"{term}\""))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let source_filter = sources
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(" AND c.source IN ({})", vec!["?"; s.len()].join(",")))
+            .unwrap_or_default();
+        let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(indexed_query)];
+        if let Some(sources) = sources {
+            for source in sources {
+                args.push(Box::new(source.to_string()));
+            }
+        }
+        args.push(Box::new(limit.saturating_mul(3) as i64));
+        let refs = args.iter().map(|arg| arg.as_ref()).collect::<Vec<_>>();
+        let mut statement = self.db.prepare(&format!("SELECT f.rowid, c.text FROM chunks_terms f JOIN chunks c ON c.rowid=f.rowid WHERE chunks_terms MATCH ?{source_filter} ORDER BY f.rank LIMIT ?"))?;
+        let mut indexed = statement
+            .query_map(refs.as_slice(), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|(rowid, text)| {
+                let hits = terms
+                    .iter()
+                    .filter(|term| text.contains(term.as_str()))
+                    .count();
+                (rowid, -(hits as f64 / terms.len() as f64))
+            })
+            .collect::<Vec<_>>();
         let score = vec!["(instr(c.text, ?) > 0)"; terms.len()].join(" + ");
         let source_clause = sources
             .filter(|items| !items.is_empty())
             .map(|items| format!(" AND c.source IN ({})", vec!["?"; items.len()].join(", ")))
             .unwrap_or_default();
         let sql = format!(
-            "WITH scored AS (SELECT c.rowid, ({score}) AS hits FROM chunks c WHERE 1=1{source_clause}) \
+            "WITH scored AS (SELECT c.rowid, ({score}) AS hits FROM chunks c WHERE NOT EXISTS (SELECT 1 FROM chunks_terms t WHERE t.rowid=c.rowid){source_clause}) \
              SELECT rowid, hits FROM scored WHERE hits > 0 ORDER BY hits DESC, rowid DESC LIMIT ?"
         );
         let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = terms
@@ -507,7 +554,10 @@ impl MemoryIndex {
                 (rowid, -(hits as f64 / terms.len() as f64))
             })
             .collect::<Vec<_>>();
-        self.resolve_fts_rowids(rows)
+        indexed.extend(rows);
+        indexed.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
+        indexed.truncate(limit);
+        self.resolve_fts_rowids(indexed)
     }
 
     fn merge_cjk_results(
@@ -586,6 +636,31 @@ impl MemoryIndex {
             })
             .ok();
         Ok(result)
+    }
+
+    /// Adjacent indexed passages from the same authorized document, for context
+    /// expansion after relevance selection (never additional search candidates).
+    pub fn neighboring_chunks(&self, id: &str) -> Result<Vec<ChunkRecord>, rusqlite::Error> {
+        let Some(chunk) = self.get_chunk(id)? else {
+            return Ok(Vec::new());
+        };
+        let ids = self
+            .db
+            .prepare(
+                "SELECT id FROM chunks WHERE path=?1 AND rowid<?2 ORDER BY rowid DESC LIMIT 1",
+            )?
+            .query_map(params![chunk.path, chunk.rowid], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut next = self
+            .db
+            .prepare("SELECT id FROM chunks WHERE path=?1 AND rowid>?2 ORDER BY rowid LIMIT 1")?
+            .query_map(params![chunk.path, chunk.rowid], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut ids = ids;
+        ids.append(&mut next);
+        ids.into_iter()
+            .filter_map(|id| self.get_chunk(&id).transpose())
+            .collect()
     }
 
     /// Return the current value of the reindex claim from meta.
@@ -879,6 +954,10 @@ impl MemoryIndex {
             tx.execute(
                 "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?1, ?2)",
                 params![record.rowid, record.text],
+            )?;
+            tx.execute(
+                "DELETE FROM chunks_terms WHERE rowid = ?1",
+                params![record.rowid],
             )?;
             if self.vec_available {
                 let _ = tx.execute(

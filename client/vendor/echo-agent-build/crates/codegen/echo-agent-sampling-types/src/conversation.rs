@@ -242,6 +242,12 @@ pub enum PriorTurnInterrupt {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserItem {
     pub content: Vec<ContentPart>,
+    /// Original human query, separate from retrieved evidence and generated context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_query: Option<String>,
+    /// Retrieved knowledge turns cannot become unrestricted personal memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_context: Option<String>,
     /// Set when this item was synthesized by the runtime rather than typed by
     /// a real user.  `None` for all genuine user messages.
     ///
@@ -1004,6 +1010,8 @@ impl ConversationItem {
             synthetic_reason: None,
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1017,6 +1025,8 @@ impl ConversationItem {
             synthetic_reason: None,
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1034,6 +1044,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::CompactionMeta),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1052,6 +1064,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::SystemReminder),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1081,6 +1095,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::ProjectInstructions),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1094,6 +1110,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::WorkingDirectorySwitch),
             cwd_generation: Some(cwd_generation),
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1107,6 +1125,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::AgentMessage),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1124,6 +1144,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::AutoContinue),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1141,6 +1163,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::AutoRecovery),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1159,6 +1183,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::Interjection),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1172,6 +1198,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::TaskCompleted),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1185,6 +1213,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::SubagentCompleted),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1198,6 +1228,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::NotificationDrain),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1211,6 +1243,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::GoalSummary),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1228,6 +1262,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::GoalClassifierNudge),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1241,6 +1277,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::SchedulerFired),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }
@@ -1254,6 +1292,8 @@ impl ConversationItem {
             synthetic_reason: Some(SyntheticReason::StopHookFeedback),
             cwd_generation: None,
             prior_turn_interrupt: None,
+            retrieval_query: None,
+            knowledge_context: None,
             prompt_index: None,
         })
     }

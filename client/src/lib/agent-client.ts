@@ -1,3 +1,4 @@
+import { isRemovedModelId, withoutRemovedModels } from "./retired-models";
 /**
  * agent-client — typed wrappers over the EchoAgent Tauri commands and events.
  *
@@ -780,7 +781,7 @@ export type ApiBackend = "chat_completions" | "responses" | "messages";
 
 /** HTTP auth header style. Mirrors EchoAgent's AuthScheme enum (snake_case). */
 export type AuthScheme = "bearer" | "x_api_key";
-export type ProviderSource = "personal" | "organization" | "builtin" | "legacy";
+export type ProviderSource = "personal" | "organization" | "legacy";
 
 /**
  * One connection/auth profile — written to `[model_providers.<id>]`. A single
@@ -872,7 +873,7 @@ export function filterModelsByRuntimeCatalog(
   // mismatch fallback below — they come from the embedded Runtime's bundled
   // catalog, not from a connection the user configured, so selecting one
   // cannot succeed. See `model-branding`.
-  const selectable = options.filter((option) => !isUpstreamBrandedModelId(option.id));
+  const selectable = options.filter((option) => !isUpstreamBrandedModelId(option.id) && !isRemovedModelId(option.id));
   if (runtimeModels.length === 0) return selectable;
   const catalog = new Set(runtimeModels);
   const allowed = selectable.filter((option) => catalog.has(option.id));
@@ -883,8 +884,9 @@ export function filterModelsByRuntimeCatalog(
 
 /** Flatten a ProviderListModel into per-model rows (id + label + provider). */
 export function flattenModels(list: ProviderListModel): ModelOptionRow[] {
-  return list.models.map((m) => {
-    const provider = list.providers.find((p) => p.id === m.providerId);
+  const available = withoutRemovedModels(list);
+  return available.models.map((m) => {
+    const provider = available.providers.find((p) => p.id === m.providerId);
     return {
       id: m.modelId,
       label: modelDisplayName({ id: m.modelId, label: m.name, remoteModelId: m.remoteModelId }),
@@ -899,7 +901,7 @@ export function flattenModels(list: ProviderListModel): ModelOptionRow[] {
 }
 
 export async function providersList(): Promise<ProviderListModel> {
-  return invoke<ProviderListModel>("providers_list");
+  return withoutRemovedModels(await invoke<ProviderListModel>("providers_list"));
 }
 
 export async function providersSaveProvider(provider: ModelProviderEntry): Promise<void> {

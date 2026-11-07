@@ -6,8 +6,9 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "pnpm ide:prepare && pnpm office:build && pnpm dev",
-    "beforeBuildCommand": "pnpm ide:prepare && pnpm office:build && pnpm build"
+    "beforeDevCommand": "pnpm retrieval:prepare && pnpm ide:prepare && pnpm office:build && pnpm dev",
+    "beforeBuildCommand": "pnpm retrieval:prepare && pnpm ide:prepare && pnpm office:build && pnpm build",
+    "beforeBundleCommand": "pnpm retrieval:check"
   },
   "app": {
     "windows": [
@@ -54,6 +55,7 @@
       "../LICENSE": "LICENSE",
       "../LICENSES/MIT.txt": "licenses/legacy-MIT.txt",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../LICENSES/retrieval": "licenses/retrieval",
       "../vendor/echo-agent-build/LICENSE": "licenses/echo-agent-build-LICENSE",
       "../vendor/echo-agent-build/third_party/NOTICE": "licenses/echo-agent-build-THIRD-PARTY-NOTICE",
       "../vendor/theia-platform/LICENSE-EPL": "licenses/theia/LICENSE-EPL",
@@ -65,7 +67,8 @@
       "resources/theia/browser": "theia/browser",
       "resources/theia/node": "theia/node",
       "theia-parent-guard.cjs": "theia/parent-guard.cjs",
-      "resources/office": "office"
+      "resources/office": "office",
+      "resources/retrieval-models": "retrieval-models"
     }
   },
   "plugins": {

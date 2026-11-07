@@ -26,7 +26,7 @@ export interface ModelOption {
   /** Optional provider id this model belongs to. */
   providerId?: string;
   providerLabel?: string;
-  source?: "personal" | "organization" | "builtin" | "legacy";
+  source?: "personal" | "organization" | "legacy";
   /** The selected connection sends credentials and content over plaintext HTTP. */
   insecureHttp?: boolean;
 }

@@ -82,7 +82,7 @@ export function verifyNativeCoreReport({ report, manifest, pid, startedAt, exitC
   assert(e.child?.sessionId && !e.ownedSessionIds.includes(e.child.sessionId)); assert.equal(e.child.marker, `CORE-CHILD-${manifest.nonce}`);
   assert(/^[A-Za-z0-9-]{1,128}$/.test(e.child.sessionId));
   assert(e.customModel?.providerId && e.customModel.modelId && e.customModel.modelId !== manifest.modelId);
-  assert.equal(e.customModel.label, `隔离个人${manifest.modelId === PRIVATE_REVIEW_MODEL_ID ? '模型' : 'Qwen'}-${manifest.nonce}`); assert.equal(e.customModel.marker, `CORE-CUSTOM-${manifest.nonce}`);
+  assert.equal(e.customModel.label, `隔离个人模型-${manifest.nonce}`); assert.equal(e.customModel.marker, `CORE-CUSTOM-${manifest.nonce}`);
   assert(Array.isArray(report.permissions) && report.permissions.every((entry) => !entry.denied
     && entry.sessionId === e.sessionId && entry.via === 'production allow-once UI'
     && (entry.operation?.name === 'read_file' ? manifest.officeFixtures.some((f) => f.path === entry.operation.path)
@@ -109,7 +109,7 @@ export function verifyNativeCoreReport({ report, manifest, pid, startedAt, exitC
     assert.equal(project.forkPendingBeforeTurn, true); assert.equal(project.forkPendingAfterTurn, false); assert.equal(project.sourcePendingUnchanged, true);
     assert.equal(project.projectTurn?.sessionId, e.projectForkedSessionId); assert.equal(project.projectTurn.marker, e.markers.project);
     assert.equal(project.projectTurn.completion?.stopReason, 'end_turn');
-    assert.equal(custom?.testedAndSavedViaUi, true); assert.equal(custom.explicitHttpConsent, manifest.modelId !== PRIVATE_REVIEW_MODEL_ID); assert.equal(custom.noCredentials, manifest.modelId !== PRIVATE_REVIEW_MODEL_ID);
+    assert.equal(custom?.testedAndSavedViaUi, true); assert.equal(custom.explicitHttpConsent, false); assert.equal(custom.noCredentials, false);
     assert.equal(custom.actualSessionModelId, e.customModel.modelId); assert.equal(custom.response?.modelId, e.customModel.modelId);
     assert.equal(custom.response.marker, e.customModel.marker); assert.equal(custom.response.completion?.stopReason, 'end_turn');
     for (const item of manifest.officeFixtures) {

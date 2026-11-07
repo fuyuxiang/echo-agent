@@ -64,7 +64,9 @@ The first launch builds and stages the embedded Theia IDE, Office Worker, and Ru
 2. Describe your goal and send it. For file tasks, select the directory you intend to authorize.
 3. Follow the plan and tool activity, handle approval requests when they appear, and inspect diffs and verification results for file changes.
 
-Built-in models **do not require your own API key, but inference uses a project-configured remote service**. To use your own model, add and test a connection and model under **Settings → Models**. Custom connections support OpenAI, Anthropic, and compatible APIs. Tool use and other model features depend on the service. Personal model configuration is stored locally in `~/.echo-agent/config.toml`.
+Before using the app, add and test a personal connection and model under **Settings → Models**. Custom connections support OpenAI, Anthropic, and compatible APIs. Tool use and other model features depend on the service. Personal model configuration is stored locally in `~/.echo-agent/config.toml`.
+
+Built-in chat models are no longer provided. Upgrades remove their catalog and saved selections while preserving conversations, files, personal connections, and organization models. Scheduled tasks bound to a retired model are paused and marked as needing a model selection. Edit the task to choose an available model or explicitly follow the default, save, then enable it again; upgrades never silently switch these tasks to another service. Knowledge and memory retrieval services are unchanged.
 
 <p align="center"><img src="docs/images/echoagent-task-flow.png" width="100%" alt="Typical task flow: choose a workspace, select a model and mode, send a goal, plan and use tools, review permissions, inspect changes, verify and deliver; inspection may lead to another iteration" /></p>
 
@@ -109,7 +111,7 @@ Save reusable member, role, and model settings as templates without copying chat
 ### Data and permission boundaries
 
 - The default data root is `~/.echo-agent/`. Set `ECHO_AGENT_HOME` before launch to change it. Model configuration lives in `config.toml`, MCP configuration in `mcp.json`, and sessions and workbench state in subdirectories under that root.
-- Provider API keys are stored in a local configuration file. Protect it and do not commit it or attach it to a public issue. Personal model connections require HTTPS by default; the built-in models use the project's configured remote HTTP service.
+- Provider API keys are stored in a local configuration file. Protect it and do not commit it or attach it to a public issue. Personal model connections require HTTPS by default; HTTP requires explicit consent.
 - “Local-first” does not mean offline. Task content sent to a model, as well as webpage content or screenshots provided through Browser Use or Computer Use, reaches the selected model service. MCP, notifications, cloud storage, and optional organization features may also access external services.
 - Workspace authorization, permission modes, and action confirmations govern Agent activity. Browser Use restricts private-network access by default. Computer Use starts from an explicit user task and executes continuously without per-step approval. Pausing, stopping, switching modes, or restarting revokes the old execution lease; operating-system permissions remain required. Desktop task scope is execution context, not an OS filesystem sandbox. Theia's interactive terminal runs as the current OS user; review commands from unfamiliar projects.
 
@@ -145,7 +147,7 @@ See the [desktop release guide](docs/desktop-release.en.md) for packaging.
 
 See [dependency security maintenance](docs/dependency-security.md) for dependency upgrades, compatibility patches, and lockfile updates.
 
-Native acceptance runners, starting with `scripts/validate-native-review.mjs`, use a built desktop executable and isolated temporary data. Model-based flows require an available model service; they are not started by ordinary unit tests. For macOS desktop tasks, use [`scripts/validate-native-desktop-controls.mjs`](scripts/validate-native-desktop-controls.mjs) with `--smoke`, `--journey`, `--task-flow`, or `--universal-flow`. Completion requires real Runtime logs, independent file verification, and UI evidence. Unit tests or Windows cross-compilation do not replace real-device acceptance. See [desktop validation records](docs/desktop-control/validation.md) for preparation, verification entry points, and the scope of historical runs.
+Native acceptance runners, starting with `scripts/validate-native-review.mjs`, use a built desktop executable and isolated temporary data. Model-based flows require an explicit private test connection supplied through `NATIVE_REVIEW_MODEL_CONFIG`; they are not started by ordinary unit tests. For macOS desktop tasks, use [`scripts/validate-native-desktop-controls.mjs`](scripts/validate-native-desktop-controls.mjs) with `--smoke`, `--journey`, `--task-flow`, or `--universal-flow`. Completion requires real Runtime logs, independent file verification, and UI evidence. Unit tests or Windows cross-compilation do not replace real-device acceptance. See [desktop validation records](docs/desktop-control/validation.md) for preparation, verification entry points, and the scope of historical runs.
 
 Diagram checks reuse Theia's optional Playwright installation, or accept `PLAYWRIGHT_MODULE` pointing to an independently installed Playwright `index.mjs`. Browser tools are used only for development checks. The checks use an ephemeral local port and the production SVG image to verify text and node bounds, long circular labels, explicit line breaks, multiline Markdown, tree connections, configuration isolation between diagram kinds, preview, source, copy, download, and failure recovery. Set `CHROME_BIN` to select Chromium and `UI_REVIEW_OUTPUT` to choose the screenshot and geometry directory. Native WKWebView checks on macOS require Xcode Command Line Tools and cover the same label boundaries and configuration isolation. CI runs these checks on Windows, macOS, and Linux.
 
@@ -165,7 +167,7 @@ Yes. Add a local service with an OpenAI- or Anthropic-compatible API as a custom
 <details>
 <summary>Do I need an EchoAgent account for personal use?</summary>
 
-No. Use a built-in model or configure your own model connection. Organization services are optional.
+No. Configure your own personal model connection. Organization services are optional.
 
 </details>
 
@@ -183,3 +185,13 @@ Original project code is available under the [PolyForm Noncommercial License 1.0
 Third-party components retain their respective licenses. This update does not revoke rights already granted under earlier licenses.
 
 Earlier MIT notice: [LICENSES/MIT.txt](LICENSES/MIT.txt). The embedded Runtime, Theia, and other third-party components retain their own licenses; see [Third-Party Notices](THIRD_PARTY_NOTICES.md). Built with [Tauri](https://tauri.app/), [React](https://react.dev/), and [Eclipse Theia](https://theia-ide.org/).
+
+### Local retrieval models
+
+Personal knowledge and local memory use bundled, pinned ONNX INT8 versions of `BAAI/bge-base-zh-v1.5` (768 dimensions) and `BAAI/bge-reranker-base` (about 400MB installed). The app reads its resources directly: first use requires no model download or copy and local retrieval works offline. Model maintenance in Knowledge or Memory settings supports verification, repair and offline import. A failed maintenance action reports its error separately while preserving healthy active models. Wide spreadsheets retain non-empty values with cell coordinates, and presentation citations follow the actual slide order. Only missing or damaged files may require downloads; repairs use the user data directory and never modify signed app resources. Keyword retrieval remains available if models or CPU support are unavailable. Automatic memory recall skips reranking and caps semantic waiting at 650ms. Organization knowledge retains its server-side scopes, authorization, citations and model pipeline. Retrieved evidence provenance survives conversation persistence and compaction, preventing automatic conversion into unrestricted personal memory.
+
+Embeddings and reranking run locally. Evidence used to answer and content used for memory extraction still reach the selected chat model. Fixed model versions, offline paths and checksums are in `vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json`.
+
+Tauri development and packaging run `pnpm retrieval:prepare`, staging verified files in the Git-ignored `src-tauri/resources/retrieval-models/` directory. For offline builds, use `pnpm retrieval:prepare --source /path/to/models` or set `ECHO_RETRIEVAL_MODELS_SOURCE`. `pnpm retrieval:check` validates all SHA256 checksums; release compilation also rejects incomplete or corrupt model resources. Model and inference-runtime license notices are included in the installer.
+
+With verified model files available, `pnpm test:retrieval-offline` uses separate fresh profiles to test bundled first use without copying weights and offline package import into user data, including real embeddings, reranking and file verification.

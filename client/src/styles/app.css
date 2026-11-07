@@ -7585,13 +7585,10 @@ button.diff__path {
   font-size: 0.8125rem;
   font-weight: 650;
 }
-.model-identity--echo { background: transparent; }
-.model-identity .echo-mark { width: 22px; height: 22px; }
 .model-selector__item > .model-identity { grid-column: 1; grid-row: 1 / span 2; }
 .model-selector__trigger { gap: 6px; }
 .model-selector__trigger > .model-identity { width: 18px; height: 18px; flex-basis: 18px; border-radius: 4px; font-size: 0.625rem; }
-.model-selector__trigger .echo-mark { width: 18px; height: 18px; }
-.model-selector__trigger > .model-identity > svg:not(.echo-mark) { width: 13px; height: 13px; }
+.model-selector__trigger > .model-identity > svg { width: 13px; height: 13px; }
 .model-selector__footer {
   flex-shrink: 0;
   border-top: 1px solid var(--echo-border-subtle);

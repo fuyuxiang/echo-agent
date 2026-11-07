@@ -231,6 +231,7 @@ if [[ $BUILD_RC -eq 0 ]]; then
         log_err "Expected EchoAgent.app not found inside: $DEFAULT_DMG"
         exit 1
     fi
+    node "$PROJECT_ROOT/scripts/prepare-retrieval-models.mjs" --check --directory "$APP_BUNDLE/Contents/Resources/retrieval-models"
 
     APP_PLIST="$APP_BUNDLE/Contents/Info.plist"
     BUNDLE_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$APP_PLIST")"

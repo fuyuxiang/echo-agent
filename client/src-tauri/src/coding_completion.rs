@@ -125,7 +125,7 @@ fn payload(
         "Language: {}\n{}<CURSOR>{}",
         request.language, request.prefix, request.suffix
     );
-    let mut body = match access.api_backend.as_str() {
+    match access.api_backend.as_str() {
         "responses" => serde_json::json!({
             "model": access.remote_model_id, "instructions": system,
             "input": content, "max_output_tokens": 512, "stream": false,
@@ -138,17 +138,7 @@ fn payload(
             "model": access.remote_model_id, "max_tokens": 256, "stream": false,
             "messages": [{ "role": "system", "content": system }, { "role": "user", "content": content }],
         }),
-    };
-    // The shipped Reed connection was measured accepting this standard field.
-    // Keep the override specific to that exact configured endpoint/model;
-    // unknown BYOK providers retain their own protocol contract.
-    if access.api_backend == "chat_completions"
-        && access.remote_model_id == "Echo Reed"
-        && access.endpoint == format!("{}/chat/completions", crate::agent_runtime::OJLAB_BASE_URL)
-    {
-        body["reasoning_effort"] = serde_json::json!("none");
     }
-    body
 }
 
 fn parse_completion(

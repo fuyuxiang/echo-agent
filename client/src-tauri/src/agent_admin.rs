@@ -244,8 +244,10 @@ fn memory_storage(cwd: Option<&str>) -> Result<MemoryStorage, String> {
     ))
 }
 
-fn open_memory_index(storage: &MemoryStorage) -> Result<Option<MemoryIndex>, String> {
-    let db_path = storage.workspace_dir().join("index.sqlite");
+fn open_memory_index_at(
+    storage: &MemoryStorage,
+    db_path: &Path,
+) -> Result<Option<MemoryIndex>, String> {
     let metadata = match std::fs::symlink_metadata(&db_path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             return Err(format!(
@@ -273,18 +275,51 @@ fn open_memory_index(storage: &MemoryStorage) -> Result<Option<MemoryIndex>, Str
 }
 
 fn purge_memory_index_paths(storage: &MemoryStorage, paths: &[PathBuf]) -> Result<usize, String> {
-    let Some(mut index) = open_memory_index(storage)? else {
-        return Ok(0);
-    };
     let mut removed = 0usize;
-    for path in paths {
-        removed = removed.saturating_add(
-            index
-                .delete_path(path)
-                .map_err(|error| format!("purge memory index for {}: {error}", path.display()))?,
-        );
+    for db in workspace_index_paths(storage.workspace_dir())? {
+        let Some(mut index) = open_memory_index_at(storage, &db)? else {
+            continue;
+        };
+        for path in paths {
+            removed =
+                removed.saturating_add(index.delete_path(path).map_err(|error| {
+                    format!("purge memory index for {}: {error}", path.display())
+                })?);
+        }
     }
     Ok(removed)
+}
+
+fn workspace_index_paths(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut paths = Vec::new();
+    for (position, entry) in entries.enumerate() {
+        if position >= MAX_MEMORY_SCAN_ENTRIES {
+            return Err("工作区记忆索引数量超过安全处理上限".into());
+        }
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let generation = name.starts_with("index-v3-")
+            && name.ends_with(".sqlite")
+            && name.len() == 32
+            && name.as_bytes()[9..25].iter().all(u8::is_ascii_hexdigit);
+        if name != "index.sqlite" && !generation {
+            continue;
+        }
+        let metadata =
+            std::fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("memory index must be a regular file".into());
+        }
+        paths.push(entry.path());
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 /// Global MEMORY.md is copied into every workspace search index. Keep all
@@ -294,7 +329,7 @@ fn memory_index_paths(
     scope: MemoryEntryScope,
 ) -> Result<Vec<PathBuf>, String> {
     if scope != MemoryEntryScope::Global {
-        return Ok(vec![storage.workspace_dir().join("index.sqlite")]);
+        return workspace_index_paths(storage.workspace_dir());
     }
     let mut paths = Vec::new();
     match std::fs::read_dir(storage.global_dir()) {
@@ -311,20 +346,7 @@ fn memory_index_paths(
                 {
                     continue;
                 }
-                let path = entry.path().join("index.sqlite");
-                match std::fs::symlink_metadata(&path) {
-                    Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-                        paths.push(path)
-                    }
-                    Ok(_) => {
-                        return Err(format!(
-                            "memory index must be a regular file: {}",
-                            path.display()
-                        ));
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(format!("inspect {}: {error}", path.display())),
-                }
+                paths.extend(workspace_index_paths(&entry.path())?);
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -413,7 +435,10 @@ fn session_summary_paths(storage: &MemoryStorage) -> Result<Vec<PathBuf>, String
     // Also include stale indexed sources whose files have already disappeared.
     // Otherwise a partial/manual deletion could leave sensitive text searchable
     // forever with no visible row from which the user can remove it.
-    if let Some(index) = open_memory_index(storage)? {
+    for db in workspace_index_paths(storage.workspace_dir())? {
+        let Some(index) = open_memory_index_at(storage, &db)? else {
+            continue;
+        };
         let indexed = index
             .all_indexed_paths()
             .map_err(|error| format!("read memory index paths: {error}"))?;
@@ -3079,6 +3104,14 @@ mod tests {
             )
             .unwrap();
             index.reindex_file(&global_file, "global").unwrap();
+            let generated = storage
+                .workspace_dir()
+                .join("index-v3-0123456789abcdef.sqlite");
+            let mut next =
+                MemoryIndex::open_or_create(&generated, storage.clone(), Default::default(), 4)
+                    .unwrap();
+            next.reindex_file(&global_file, "global").unwrap();
+            storage.activate_index(&generated).unwrap();
         }
 
         std::fs::write(&global_file, "## Preferences\n\nNewPreferenceToken").unwrap();
@@ -3097,6 +3130,21 @@ mod tests {
                 crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
             )
             .unwrap();
+            let generated = super::open_memory_index_at(storage, &storage.index_path())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                generated.embedding_dimensions(),
+                4,
+                "administration must preserve the generation's vector dimensions"
+            );
+            assert_eq!(
+                generated
+                    .search_fts("NewPreferenceToken", 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
             assert_eq!(index.search_fts("NewPreferenceToken", 10).unwrap().len(), 1);
             assert!(index
                 .search_fts("OldPreferenceToken", 10)

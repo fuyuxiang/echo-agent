@@ -171,6 +171,8 @@ pub(super) fn build_initial_injection_backend_params(
 ) -> (crate::session::memory::MemoryBackendParams, f64) {
     let mut injection_params = params.clone();
     injection_params.search_source = crate::session::memory::MemorySearchSource::Injection;
+    // Automatic reminders must not wait for a cross-encoder on every user turn.
+    injection_params.search_config.reranker.enabled = false;
     let effective_min_score = initial_injection_config
         .min_score
         .map(|min_score| {
@@ -989,7 +991,7 @@ impl SessionActor {
         );
         let chat_history =
             echo_agent_chat_state::compaction_utils::prepare_conversation_for_summarization(
-                conversation,
+                echo_agent_chat_state::compaction_utils::personal_memory_conversation(conversation),
             );
         MemoryFlushSnapshot {
             counts,

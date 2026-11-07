@@ -48,6 +48,9 @@ CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(hash);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, content='');
 
+-- Additive migration: indexed Han bigrams; the original FTS table remains readable.
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_terms USING fts5(text);
+
 INSERT OR IGNORE INTO meta(key, value) VALUES ('reindex_claim', '');
 "#
     );

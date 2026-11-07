@@ -1,3 +1,4 @@
+import { seedReviewModel } from './lib/native-review-model.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -39,6 +40,7 @@ const seed = home => {
   writeFileSync(join(other,'other.cjs'),"// Independent workspace sentinel.\nrequire('node:assert/strict').equal(7,7);\n",{flag:'wx',mode:0o600});
   mkdirSync(join(home,'empty-legacy'),{mode:0o700});
   writeFileSync(join(home,'config.toml'),'[permission]\ndeny = ["WebFetch", "WebSearch", "MCPTool"]\nask = ["*"]\n',{flag:'wx',mode:0o600});
+  if (!process.argv.includes('--self-test')) seedReviewModel(home);
   return {cwd,other,files,otherHash:hash(readFileSync(join(other,'other.cjs')))};
 };
 const actualNode = (cwd,args) => {
@@ -141,7 +143,7 @@ const output=realpathSync(mkdtempSync(join(tmpdir(),'echo-native-workspace-evide
 const fixture=seed(home);const initial=actualNode(fixture.cwd,['--test','test.cjs']);assert.notEqual(initial.exitCode,0,'Fixture must initially fail');
 const expectedTheiaSha256=hash(readFileSync(new URL('../src-tauri/resources/theia/browser/lib/frontend/bundle.js',import.meta.url)));
 const result={version:1,environment:'actual macOS native workspace journey',executable,binarySha256:hash(readFileSync(executable)),home,output,
-  modelId:'echoagent-ojlab/Echo Reed',initial,passed:false,errors:[],mode:inlineOnly?'inline-only':'full-journey',
+  modelId:'echoagent-review/claude-opus-5-5',initial,passed:false,errors:[],mode:inlineOnly?'inline-only':'full-journey',
   scope:inlineOnly?'Tab-only actual Code UI/Theia/provider: shown, accept, native Undo, rapid typing/Escape discard, unchanged disk and zero CodingTask/session. No Ask/Plan/Agent requests, injected model results, or probe retry.':'Ask dirty buffer, edited Plan/Agent, two native checks, actual Theia Diff, two-project production UI navigation and return, real Tab. Fixture setup preloads only two recent-project entries and their scoped native grants, with no task/session/model/result injection.'};
 const reportPath=join(home,'native-review.json');
 const environment={...cleanNativeReviewEnvironment(process.env),PATH:`${dirname(process.execPath)}:${process.env.PATH??''}`,

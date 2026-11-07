@@ -8,6 +8,78 @@ use echo_agent_config_types::MemoryRerankerConfig;
 const MAX_RETRIES: usize = 3;
 const INITIAL_BACKOFF_MS: u64 = 500;
 
+pub enum ConfiguredReranker {
+    Api(ApiReranker),
+    Local {
+        permit: Option<super::embedding::MemoryRequestPermit>,
+    },
+}
+
+impl ConfiguredReranker {
+    pub fn from_config(config: &MemoryRerankerConfig) -> Option<Self> {
+        if !config.enabled {
+            return None;
+        }
+        if config
+            .endpoint
+            .as_deref()
+            .is_some_and(|endpoint| endpoint.starts_with("local://"))
+        {
+            return crate::local::available(true).then_some(Self::Local { permit: None });
+        }
+        ApiReranker::from_config(config).map(Self::Api)
+    }
+    pub fn with_request_permit(self, permit: super::embedding::MemoryRequestPermit) -> Self {
+        match self {
+            Self::Api(p) => Self::Api(p.with_request_permit(permit)),
+            Self::Local { .. } => Self::Local {
+                permit: Some(permit),
+            },
+        }
+    }
+    pub async fn rerank(
+        &self,
+        query: &str,
+        candidates: &[SearchResult],
+        top_n: usize,
+    ) -> Result<Vec<SearchResult>, Box<dyn std::error::Error + Send + Sync>> {
+        match self {
+            Self::Api(provider) => provider.rerank(query, candidates, top_n).await,
+            Self::Local { permit } => {
+                if candidates.is_empty() || top_n == 0 {
+                    return Ok(Vec::new());
+                }
+                let documents = candidates
+                    .iter()
+                    .map(|candidate| candidate.snippet.as_str())
+                    .collect::<Vec<_>>();
+                let scores = crate::local::rerank(query, &documents, permit.clone()).await?;
+                if let Some(permit) = permit {
+                    permit(&documents)?;
+                }
+                if scores.len() != candidates.len() {
+                    return Err("local reranker returned an invalid result count".into());
+                }
+                let mut results = candidates
+                    .iter()
+                    .cloned()
+                    .zip(scores)
+                    .filter_map(|(mut candidate, score)| {
+                        if !score.is_finite() || score < crate::local::MIN_RELEVANCE {
+                            return None;
+                        }
+                        candidate.score = score;
+                        Some(candidate)
+                    })
+                    .collect::<Vec<_>>();
+                results.sort_by(|a, b| b.score.total_cmp(&a.score));
+                super::search::select_evidence(&mut results, top_n);
+                Ok(results)
+            }
+        }
+    }
+}
+
 pub struct ApiReranker {
     endpoint: String,
     model: String,
@@ -132,11 +204,19 @@ fn reorder_from_response(
             .ok_or_else(|| format!("reranker result {index} has an invalid relevance_score"))?;
 
         let mut result = candidates[index].clone();
-        result.score = score.clamp(0.0, 1.0);
+        // This API field is already a normalized relevance score, not a logit.
+        // Zero-relevance results must not be injected merely to fill top_n.
+        if !(0.0..=1.0).contains(&score) {
+            return Err("reranker relevance_score must be between zero and one".to_owned());
+        }
+        if score < crate::local::MIN_RELEVANCE {
+            continue;
+        }
+        result.score = score;
         reranked.push(result);
     }
 
-    if reranked.is_empty() {
+    if items.is_empty() {
         return Err("reranker response contains no results".to_owned());
     }
     Ok(reranked)
@@ -145,6 +225,28 @@ fn reorder_from_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_relevance_returns_no_evidence_and_invalid_scales_fail_closed() {
+        let candidates = vec![candidate("irrelevant")];
+        let empty = reorder_from_response(
+            &candidates,
+            &serde_json::json!({"results":[{"index":0,"relevance_score":0.0}]}),
+            1,
+        )
+        .unwrap();
+        assert!(empty.is_empty());
+        for score in [-1.0, 2.0] {
+            assert!(
+                reorder_from_response(
+                    &candidates,
+                    &serde_json::json!({"results":[{"index":0,"relevance_score":score}]}),
+                    1
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn keyless_reranker_configuration_is_usable() {

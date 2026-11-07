@@ -12,18 +12,18 @@ function savedView(key: string, fallback: ResourceView): ResourceView {
 }
 
 /** Shared collection chrome. Features retain ownership of actions and state. */
-export function ResourceList({ className = "", collectionKey, layout = "grid", summary, children, ...props }:
-  HTMLAttributes<HTMLDivElement> & { collectionKey?: CollectionKey; layout?: "grid" | "compact"; summary?: ReactNode }) {
+export function ResourceList({ className = "", collectionKey, layout = "grid", defaultView = "cards", summary, children, ...props }:
+  HTMLAttributes<HTMLDivElement> & { collectionKey?: CollectionKey; layout?: "grid" | "compact"; defaultView?: ResourceView; summary?: ReactNode }) {
   const storageKey = `echo.resource-view.${collectionKey}`;
-  const [view, setView] = useState<ResourceView>(() => savedView(storageKey, "cards"));
+  const [view, setView] = useState<ResourceView>(() => savedView(storageKey, defaultView));
   useEffect(() => {
-    setView(savedView(storageKey, "cards"));
+    setView(savedView(storageKey, defaultView));
     const sync = (event: StorageEvent) => {
-      if (event.key === storageKey || event.key === null) setView(savedView(storageKey, "cards"));
+      if (event.key === storageKey || event.key === null) setView(savedView(storageKey, defaultView));
     };
     window.addEventListener("storage", sync);
     return () => window.removeEventListener("storage", sync);
-  }, [storageKey]);
+  }, [storageKey, defaultView]);
   const label = props["aria-label"] || "资源";
   return <div className="resource-collection">
     {collectionKey && <div className="resource-collection__toolbar">

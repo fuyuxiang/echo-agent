@@ -9,7 +9,7 @@ window.__echoDesktopControlsActiveBudget = (limitMs, initialNow) => {
     return {activeMs,limitMs,waitingForUser,expired:activeMs>=limitMs};
   };
 };
-window.__echoDesktopControlsJourney = async ({home,cwd,modelId='echoagent-ojlab/Echo Reed',smoke=false}) => {
+window.__echoDesktopControlsJourney = async ({home,cwd,modelId='echoagent-review/claude-opus-5-5',smoke=false}) => {
   if(window.__echoDesktopControlsJourneyStarted)return;
   window.__echoDesktopControlsJourneyStarted=true;
   const invoke=(command,args={})=>window.__TAURI_INTERNALS__.invoke(command,args);

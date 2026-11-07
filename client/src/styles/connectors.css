@@ -1,0 +1,86 @@
+/* Connector views share live controls and details, with distinct scan density. */
+.mcp-list > .mcp-item-wrap { container: connector-item / inline-size; }
+.mcp-list .mcp-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(8rem, .7fr) minmax(8rem, .8fr) 9rem;
+  grid-template-areas: "main transport health actions";
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 12px 16px;
+}
+.mcp-list .mcp-item-main { grid-area: main; min-width: 0; width: 100%; gap: 12px; }
+.mcp-list .mcp-item-main:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 4px; border-radius: var(--echo-radius-control); }
+.mcp-list .mcp-item-name { overflow-wrap: anywhere; }
+.mcp-list .mcp-item-name code { max-width: 100%; }
+.mcp-list .mcp-item-chevron { flex: none; color: var(--echo-text-weak); transition: transform .15s; }
+.mcp-list .mcp-item-main[aria-expanded="true"] .mcp-item-chevron { transform: rotate(180deg); }
+.mcp-list .mcp-item-transport { grid-area: transport; min-width: 0; color: var(--echo-text-medium); font-size: var(--echo-resource-meta-size); overflow-wrap: anywhere; }
+.mcp-list .mcp-item-health { grid-area: health; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.mcp-list .mcp-item-meta { margin: 0; flex-wrap: wrap; }
+.mcp-list .mcp-item-health .um-btn { min-height: 32px; max-width: 100%; padding: 4px 10px; white-space: normal; }
+.mcp-list .resource-row__actions { grid-area: actions; width: auto; flex-basis: auto; flex-wrap: nowrap; gap: 8px; }
+.mcp-list.resource-list[data-view="list"] > .mcp-item-wrap { min-height: 0; }
+.mcp-list .mcp-item-wrap--expanded > .mcp-item { background: var(--echo-bg-hover); }
+.mcp-list .mcp-item-details { min-width: 0; padding: 0 16px 16px; }
+.mcp-list .mcp-detail-grid { grid-template-columns: 5rem minmax(0, 1fr); }
+.mcp-list .mcp-detail-grid strong { overflow-wrap: anywhere; }
+.mcp-list .mcp-tools { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); }
+.mcp-list .mcp-setup-form { min-width: 0; padding: 12px; }
+.mcp-list .mcp-setup-form > label { min-width: 0; }
+.mcp-list .mcp-setup-form select { width: 100%; min-width: 0; }
+.mcp-list .ec-error { display: block; margin: 0 12px 12px; overflow-wrap: anywhere; }
+
+.mcp-list.resource-list[data-view="cards"] { align-items: start; }
+.mcp-list.resource-list[data-view="cards"] > .mcp-item-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+  padding: 0;
+}
+.mcp-list.resource-list > .mcp-item-wrap--expanded { border-color: var(--echo-brand); }
+.mcp-list[data-view="cards"] .mcp-item {
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-areas: "main" "transport" "health" "actions";
+  align-items: start;
+  gap: 12px;
+  min-height: 200px;
+  padding: 16px;
+}
+.mcp-list[data-view="cards"] .mcp-item-transport { padding-left: 48px; }
+.mcp-list[data-view="cards"] .mcp-item-health { padding-left: 48px; }
+.mcp-list.resource-list[data-view="cards"] .resource-row__actions {
+  width: 100%;
+  margin-top: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--echo-border-default);
+  align-self: end;
+}
+.mcp-list[data-view="cards"] .resource-switch-status { margin-right: auto; }
+
+@container resource-list (max-width: 52rem) {
+  .mcp-list[data-view="list"] .mcp-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "main actions" "transport health";
+    gap: 6px 12px;
+  }
+  .mcp-list[data-view="list"] .mcp-item-transport { padding-left: 48px; }
+}
+@container resource-list (max-width: 28rem) {
+  .mcp-list[data-view="list"] .mcp-item {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "main main" "transport health" "actions actions";
+    gap: 10px 12px;
+  }
+  .mcp-list[data-view="list"] .mcp-item-transport { padding-left: 0; }
+}
+@container connector-item (max-width: 28rem) {
+  .mcp-list .mcp-detail-grid { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .mcp-list .mcp-detail-grid > span:not(:first-child) { margin-top: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mcp-list .mcp-item-chevron { transition: none; }
+}

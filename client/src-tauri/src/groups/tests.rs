@@ -26,21 +26,12 @@ fn retired_models_migrate_in_groups_previews_and_templates_without_losing_contex
     };
     store.save_template(&template).unwrap();
     let migrated = Store::open(&path).unwrap();
-    g.members[0].model_id = crate::providers::BUILTIN_DEFAULT_MODEL_ID.into();
+    g.members[0].model_id = String::new();
     assert_eq!(migrated.get(&g.id).unwrap(), g);
-    assert_eq!(
-        migrated.list().unwrap()[0].members[0].model_id,
-        crate::providers::BUILTIN_DEFAULT_MODEL_ID
-    );
+    assert_eq!(migrated.list().unwrap()[0].members[0].model_id, "");
     let templates = migrated.templates().unwrap();
-    assert_eq!(
-        templates[0].default_model_id.as_deref(),
-        Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID)
-    );
-    assert_eq!(
-        templates[0].members[0].model_id.as_deref(),
-        Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID)
-    );
+    assert_eq!(templates[0].default_model_id.as_deref(), None);
+    assert_eq!(templates[0].members[0].model_id.as_deref(), None);
     assert_eq!(templates[0].description, template.description);
     assert_eq!(Store::open(&path).unwrap().get(&g.id).unwrap(), g);
 }

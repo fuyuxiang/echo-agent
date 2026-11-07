@@ -39,6 +39,7 @@ mod expert_avatar;
 mod ext;
 mod groups;
 mod host_watchdog;
+mod knowledge_documents;
 mod knowledge_traces;
 mod live_info_mcp;
 mod logging;
@@ -69,6 +70,7 @@ mod providers;
 mod recording_recovery;
 mod recovery_policy;
 mod resource_identity;
+mod retrieval_models;
 mod session_artifacts;
 mod session_continuation;
 mod session_creation;
@@ -901,6 +903,7 @@ pub fn run() {
 
     let app = builder
         .setup(move |app| {
+            retrieval_models::initialize_from_resources(app.handle());
             if let Err(error) = host_watchdog::start() {
                 tracing::warn!(%error, "host crash recovery could not start; renderer recovery remains available");
             }
@@ -1137,6 +1140,10 @@ pub fn run() {
             personal_knowledge::personal_knowledge_cancel_search,
             personal_knowledge::personal_knowledge_rebuild,
             personal_knowledge::personal_knowledge_index_status,
+            retrieval_models::retrieval_models_status,
+            retrieval_models::retrieval_models_prepare,
+            retrieval_models::retrieval_models_import,
+            retrieval_models::retrieval_models_cancel,
             // connectors / MCP (echo.agent/mcp/*)
             mcp::mcp_list,
             mcp::mcp_upsert,

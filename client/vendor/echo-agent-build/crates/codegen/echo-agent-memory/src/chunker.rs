@@ -4,7 +4,7 @@
 //! Chunks respect markdown structure (headers, paragraphs, code blocks)
 //! and include ancestor headers for self-containment.
 //!
-//! Character counts are used as a proxy for token counts (chars / 4 ≈ tokens).
+//! Token budgets include heading context. Oversized single lines are split at UTF-8 boundaries.
 
 use echo_agent_config_types::MemoryIndexConfig;
 
@@ -40,7 +40,7 @@ pub fn chunk_markdown(content: &str, config: &MemoryIndexConfig) -> Vec<Chunk> {
         return vec![];
     }
 
-    let max_chars = config.max_chunk_chars;
+    let max_chars = config.max_chunk_chars.max(1);
     let lines: Vec<&str> = content.lines().collect();
 
     if lines.is_empty() {
@@ -48,7 +48,7 @@ pub fn chunk_markdown(content: &str, config: &MemoryIndexConfig) -> Vec<Chunk> {
     }
 
     // If the entire content fits in one chunk, return it directly.
-    if content.len() <= max_chars {
+    if fits(content, max_chars) {
         return vec![Chunk {
             text: content.to_string(),
             start_line: 0,
@@ -63,7 +63,10 @@ pub fn chunk_markdown(content: &str, config: &MemoryIndexConfig) -> Vec<Chunk> {
     for section in &sections {
         let section_text = section.lines.join("\n");
 
-        if section_text.len() <= max_chars {
+        if fits(
+            &add_header_context(&section.header_context, &section_text),
+            max_chars,
+        ) {
             chunks.push(Chunk {
                 text: add_header_context(&section.header_context, &section_text),
                 start_line: section.start_line,
@@ -96,9 +99,34 @@ fn split_by_headers<'a>(lines: &[&'a str]) -> Vec<Section<'a>> {
     let mut current_lines: Vec<&'a str> = Vec::new();
     let mut current_start = 0;
     let mut header_stack: Vec<(usize, String)> = Vec::new(); // (level, text)
-
+    let mut fence: Option<(char, usize)> = None;
     for (i, &line) in lines.iter().enumerate() {
-        if let Some(level) = header_level(line) {
+        let trimmed = line.trim_start();
+        let marker = trimmed
+            .chars()
+            .next()
+            .filter(|character| matches!(character, '`' | '~'));
+        let fence_line = marker.map(|marker| {
+            (
+                marker,
+                trimmed
+                    .chars()
+                    .take_while(|character| *character == marker)
+                    .count(),
+            )
+        });
+        let in_code = fence.is_some();
+        if let Some((marker, count)) = fence_line.filter(|(_, count)| *count >= 3) {
+            match fence {
+                None => fence = Some((marker, count)),
+                Some((old, width)) if old == marker && count >= width => fence = None,
+                _ => {}
+            }
+        }
+        if let Some(level) = (!in_code && fence.is_none())
+            .then(|| header_level(line))
+            .flatten()
+        {
             // Flush previous section
             if !current_lines.is_empty() {
                 sections.push(Section {
@@ -133,77 +161,113 @@ fn split_by_headers<'a>(lines: &[&'a str]) -> Vec<Section<'a>> {
 /// Split a large section into sub-chunks by paragraph boundaries (`\n\n`).
 /// Continuation chunks are prefixed with the last `overlap_chars` of the
 /// previous chunk for embedding continuity.
+pub const CHUNK_PIPELINE_VERSION: &str = "token-structural-v3";
+const TOKEN_BUDGET: usize = 384;
+const OVERLAP_TOKENS: usize = 64;
+
+fn fits(text: &str, max_chars: usize) -> bool {
+    text.chars().count() <= max_chars && crate::local::token_count(text) <= TOKEN_BUDGET
+}
+
 fn split_section_by_paragraphs(
     section: &Section<'_>,
     max_chars: usize,
     overlap_chars: usize,
 ) -> Vec<Chunk> {
+    let text = section.lines.join("\n");
+    let boundaries = text
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(text.len()))
+        .collect::<Vec<_>>();
+    let own_heading = section
+        .lines
+        .first()
+        .filter(|line| header_level(line).is_some())
+        .copied()
+        .unwrap_or("");
+    let continuation = [section.header_context.as_str(), own_heading]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" > ");
     let mut chunks = Vec::new();
-    let mut current_text = String::new();
-    let mut current_start = section.start_line;
-    let mut line_offset = 0;
-
-    for (i, &line) in section.lines.iter().enumerate() {
-        let is_blank = line.trim().is_empty();
-
-        // Paragraph boundary: blank line AND accumulated text is non-empty
-        if is_blank && !current_text.is_empty() && current_text.len() + line.len() > max_chars {
-            // Flush current chunk
-            let flushed = current_text.trim().to_string();
-            chunks.push(Chunk {
-                text: add_header_context(&section.header_context, &flushed),
-                start_line: current_start,
-                end_line: section.start_line + i,
-            });
-            // Apply overlap: start next chunk with tail of previous
-            current_text = if overlap_chars > 0 {
-                let tail: String = flushed
-                    .chars()
-                    .rev()
-                    .take(overlap_chars)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                tail
+    let mut start = 0;
+    while start + 1 < boundaries.len() {
+        let context = if start == 0 {
+            &section.header_context
+        } else {
+            &continuation
+        };
+        let mut context = context
+            .chars()
+            .take((max_chars / 3).max(1))
+            .collect::<String>();
+        while !context.is_empty() && crate::local::token_count(&context) > 64 {
+            context.pop();
+        }
+        while !context.is_empty() && context.chars().count() + 14 >= max_chars {
+            context.pop();
+        }
+        let prefix = if context.is_empty() {
+            String::new()
+        } else {
+            format!("[Context: {context}]\n\n")
+        };
+        let mut lo = start + 1;
+        let mut hi = (start + max_chars.max(1)).min(boundaries.len() - 1);
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if fits(
+                &format!("{prefix}{}", &text[boundaries[start]..boundaries[mid]]),
+                max_chars,
+            ) {
+                lo = mid;
             } else {
-                String::new()
-            };
-            current_start = section.start_line + i + 1;
-            line_offset = i + 1;
-            continue;
+                hi = mid - 1;
+            }
         }
-
-        if !current_text.is_empty() {
-            current_text.push('\n');
+        let mut end = lo;
+        // Prefer sentence/line boundaries near the end without producing tiny chunks.
+        if end < boundaries.len() - 1 {
+            let floor = start + (end - start) * 2 / 3;
+            for candidate in (floor.max(start + 1)..=end).rev() {
+                let previous = &text[boundaries[candidate - 1]..boundaries[candidate]];
+                if matches!(previous, "\n" | "。" | "！" | "？" | "；") {
+                    end = candidate;
+                    break;
+                }
+            }
         }
-        current_text.push_str(line);
-
-        // If single line pushes us over max, flush what we have
-        if current_text.len() > max_chars && i > line_offset {
-            // Split at the previous line
-            let split_at = current_text.rfind('\n').unwrap_or(current_text.len());
-            let (keep, remainder) = current_text.split_at(split_at);
+        let body = &text[boundaries[start]..boundaries[end]];
+        if !body.trim().is_empty() {
+            let start_line = section.start_line
+                + text[..boundaries[start]]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count();
+            let before_end = &text[..boundaries[end]];
+            let end_line = section.start_line
+                + before_end.bytes().filter(|b| *b == b'\n').count()
+                + usize::from(!before_end.ends_with('\n'));
             chunks.push(Chunk {
-                text: add_header_context(&section.header_context, keep.trim()),
-                start_line: current_start,
-                end_line: section.start_line + i,
+                text: format!("{prefix}{}", body.trim()),
+                start_line,
+                end_line: end_line.max(start_line + 1),
             });
-            current_text = remainder.trim_start_matches('\n').to_string();
-            current_start = section.start_line + i;
-            line_offset = i;
         }
+        if end == boundaries.len() - 1 {
+            break;
+        }
+        let overlap = overlap_chars.min((end - start) / 2);
+        let mut next = end.saturating_sub(overlap).max(start + 1);
+        while next < end
+            && crate::local::token_count(&text[boundaries[next]..boundaries[end]]) > OVERLAP_TOKENS
+        {
+            next += 1;
+        }
+        start = next;
     }
-
-    // Flush remaining
-    if !current_text.trim().is_empty() {
-        chunks.push(Chunk {
-            text: add_header_context(&section.header_context, current_text.trim()),
-            start_line: current_start,
-            end_line: section.start_line + section.lines.len(),
-        });
-    }
-
     chunks
 }
 
@@ -251,6 +315,57 @@ mod tests {
 
     fn default_config() -> MemoryIndexConfig {
         MemoryIndexConfig::default()
+    }
+
+    #[test]
+    fn code_comments_do_not_create_document_sections() {
+        let lines = [
+            "## 配置说明",
+            "```bash",
+            "# shell comment",
+            "echo value",
+            "```",
+            "正文",
+            "### 真正的小节",
+            "说明",
+        ];
+        let sections = split_by_headers(&lines);
+        assert_eq!(sections.len(), 2);
+        assert!(sections[0].lines.contains(&"# shell comment"));
+        assert!(!sections[1].header_context.contains("shell comment"));
+    }
+
+    #[test]
+    fn chinese_long_lines_are_bounded_and_keep_the_tail() {
+        let content = format!("{}最后结论", "中文知识".repeat(1000));
+        let chunks = chunk_markdown(&content, &default_config());
+        assert!(chunks.len() > 1);
+        assert!(
+            chunks
+                .iter()
+                .all(|c| crate::local::token_count(&c.text) <= TOKEN_BUDGET)
+        );
+        assert!(chunks.last().unwrap().text.contains("最后结论"));
+    }
+
+    #[test]
+    fn overlapping_chunks_keep_previous_text_and_heading() {
+        let content = format!("## 报销制度\n\n{}\n{}", "甲".repeat(200), "乙".repeat(200));
+        let chunks = chunk_markdown(
+            &content,
+            &MemoryIndexConfig {
+                max_chunk_chars: 1600,
+                chunk_overlap_chars: 64,
+            },
+        );
+        assert!(chunks.len() > 2);
+        assert!(
+            chunks
+                .iter()
+                .skip(1)
+                .any(|c| c.text.contains("甲") && c.text.contains("乙"))
+        );
+        assert!(chunks.iter().skip(1).all(|c| c.text.contains("报销制度")));
     }
 
     #[test]

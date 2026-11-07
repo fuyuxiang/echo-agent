@@ -148,7 +148,7 @@ mod tests {
             url: format!("http://127.0.0.1:39817/review/{nonce}/"),
             nonce,
             phase: "first-launch".into(),
-            model_id: "echoagent-ojlab/Echo Reed".into(),
+            model_id: "echoagent-review/claude-opus-5-5".into(),
             expected: None,
         }
     }
@@ -178,7 +178,7 @@ mod tests {
         assert!(validate_manifest(&value, &home, "first-launch").is_err());
         let mut value = fixture();
         value.model_id = "echoagent-ojlab/Echo Grove".into();
-        assert!(validate_manifest(&value, &home, "first-launch").is_ok());
+        assert!(validate_manifest(&value, &home, "first-launch").is_err());
         let mut value = fixture();
         value.model_id = "other".into();
         assert!(validate_manifest(&value, &home, "first-launch").is_err());

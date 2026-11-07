@@ -171,7 +171,11 @@ impl SessionMemory {
             .as_ref()
             .and_then(|p| p.embed_config.as_ref())
             .map_or(1024, |c| c.dimensions);
-        let db_path = storage.workspace_dir().join("index.sqlite");
+        let db_path = storage.index_path_for(
+            self.backend_params
+                .as_ref()
+                .and_then(|p| p.embed_config.as_ref()),
+        );
         crate::session::memory::MemoryIndex::open_or_create(
             &db_path,
             storage.clone(),

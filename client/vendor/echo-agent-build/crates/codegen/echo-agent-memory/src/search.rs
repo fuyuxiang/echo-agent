@@ -55,16 +55,14 @@ pub(super) async fn resolve_query_embedding(
     let Some(provider) = provider.filter(|_| is_vector_index_available) else {
         return QueryEmbedding::FtsOnly;
     };
-    match tokio::time::timeout(
-        super::QUERY_EMBEDDING_TIMEOUT,
-        provider.embed_batch(&[query]),
-    )
-    .await
-    {
-        Ok(Ok(embeddings)) => embeddings
-            .into_iter()
-            .next()
-            .map_or(QueryEmbedding::EmbeddingFallback, QueryEmbedding::Hybrid),
+    match tokio::time::timeout(super::QUERY_EMBEDDING_TIMEOUT, provider.embed_query(query)).await {
+        Ok(Ok(embedding))
+            if embedding.len() == provider.dimensions()
+                && embedding.iter().all(|value| value.is_finite()) =>
+        {
+            QueryEmbedding::Hybrid(embedding)
+        }
+        Ok(Ok(_)) => QueryEmbedding::EmbeddingFallback,
         Ok(Err(error)) => {
             tracing::warn!(target: crate::MEMORY_LOG_TARGET, %error, "embedding query failed");
             QueryEmbedding::EmbeddingFallback
@@ -87,6 +85,56 @@ pub struct SearchResult {
     pub snippet: String,
     pub source: String,
     pub created_at: i64,
+}
+
+/// Prefer independent passages; fill remaining slots from the same document when useful.
+pub fn select_evidence(results: &mut Vec<SearchResult>, limit: usize) {
+    if limit == 0 {
+        results.clear();
+        return;
+    }
+    let mut unique: Vec<SearchResult> = Vec::new();
+    for result in results.drain(..) {
+        let body = result
+            .snippet
+            .split_once("\n\n")
+            .filter(|_| result.snippet.starts_with("[Context:"))
+            .map_or(result.snippet.as_str(), |(_, body)| body);
+        let duplicate = unique.iter().any(|old| {
+            if old.snippet == result.snippet {
+                return true;
+            }
+            // Overlap at a chunk boundary is expected; discard only near-total containment.
+            let prior = old
+                .snippet
+                .split_once("\n\n")
+                .filter(|_| old.snippet.starts_with("[Context:"))
+                .map_or(old.snippet.as_str(), |(_, body)| body);
+            old.path == result.path
+                && body.chars().count() > 40
+                && (prior.contains(body) || body.contains(prior))
+        });
+        if !duplicate {
+            unique.push(result);
+        }
+    }
+    let mut selected = Vec::new();
+    let mut deferred = Vec::new();
+    let mut per_path = HashMap::<String, usize>::new();
+    for result in unique {
+        let count = per_path.entry(result.path.clone()).or_default();
+        if *count < 2 {
+            *count += 1;
+            selected.push(result);
+        } else {
+            deferred.push(result);
+        }
+    }
+    selected.extend(deferred);
+    selected.truncate(limit);
+    // Preserve relevance ordering after soft diversity selection.
+    selected.sort_by(|a, b| b.score.total_cmp(&a.score));
+    *results = selected;
 }
 
 pub(super) struct SearchMerge {
@@ -306,58 +354,45 @@ pub(super) fn hybrid_search_merge(
                 .flatten()
                 .map(|chunk| lexical_query_coverage(query, &chunk.text))
                 .unwrap_or(0.0);
-            let normalized = relative * (0.25 + 0.75 * coverage);
+            let normalized = (0.85 + 0.15 * relative) * coverage;
             fts_scores.insert(r.chunk_id.clone(), normalized);
         }
     }
 
-    // Normalize vector distances to [0,1] similarity using absolute scale.
-    //
-    // For normalized embeddings, L2 distance ranges from 0 (identical) to 2
-    // (opposite). Using `similarity = 1.0 - distance / 2.0` maps this to
-    // [0, 1] on an absolute scale, avoiding the compression problem where
-    // relative normalization (`1 - d/max_d`) collapses all scores to near-zero
-    // when candidates cluster in a narrow distance band (common for
-    // high-dimensional embeddings due to concentration of measure).
-    //
-    // The constant `2.0` is the theoretical maximum L2 distance between two
-    // unit-norm vectors: ||u - v||₂ = sqrt(2 - 2·cos(θ)) ≤ sqrt(4) = 2.
-    const MAX_L2_DISTANCE: f64 = 2.0;
+    // sqlite-vec returns Euclidean distance, not squared distance. The local
+    // provider enforces unit norm, so cosine = 1 - distance² / 2.
     for (chunk_id, distance) in &vec_results {
-        let similarity = (1.0 - (*distance as f64 / MAX_L2_DISTANCE)).clamp(0.0, 1.0);
+        let similarity = (1.0 - (*distance as f64).powi(2) / 2.0).clamp(0.0, 1.0);
         vec_scores.insert(chunk_id.clone(), similarity);
     }
 
-    // Merge per-chunk scores: use max(fts_only, hybrid) so FTS-only chunks
-    // are never penalized by the existence of unrelated vector results.
-    let mut scores: HashMap<String, f64> = HashMap::new();
-    let text_weight = config.text_weight as f64;
-    let vector_weight = config.vector_weight as f64;
-
-    // Collect all unique chunk IDs across both result sets.
-    let all_chunk_ids: std::collections::HashSet<&String> =
-        fts_scores.keys().chain(vec_scores.keys()).collect();
-
-    for chunk_id in all_chunk_ids {
-        let fts = fts_scores.get(chunk_id).copied().unwrap_or(0.0);
-        let vec = vec_scores.get(chunk_id).copied().unwrap_or(0.0);
-
-        let score = if fts > 0.0 && vec > 0.0 {
-            // Both signals available: weighted combination, but never worse
-            // than the FTS score alone (since text_weight < 1.0 would otherwise
-            // penalize a strong keyword match).
-            let hybrid = text_weight * fts + vector_weight * vec;
-            hybrid.max(fts)
-        } else if fts > 0.0 {
-            // FTS-only: full FTS score (not penalized to text_weight)
-            fts
+    // RRF combines independent rank lists without pretending BM25 and cosine
+    // have the same scale. Keep absolute evidence confidence for rejection.
+    let mut fused = HashMap::<String, f64>::new();
+    for (rank, result) in fts_results.iter().enumerate() {
+        *fused.entry(result.chunk_id.clone()).or_default() += if vec_results.is_empty() {
+            1.0
         } else {
-            // Vector-only: weighted vector score
-            vec
-        };
-
-        scores.insert(chunk_id.clone(), score);
+            config.text_weight.max(0.0) as f64
+        } / (60.0 + rank as f64 + 1.0);
     }
+    for (rank, (chunk_id, _)) in vec_results.iter().enumerate() {
+        *fused.entry(chunk_id.clone()).or_default() +=
+            config.vector_weight.max(0.0) as f64 / (60.0 + rank as f64 + 1.0);
+    }
+    let scores = fused
+        .keys()
+        .map(|id| {
+            (
+                id.clone(),
+                fts_scores
+                    .get(id)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(vec_scores.get(id).copied().unwrap_or(0.0)),
+            )
+        })
+        .collect::<HashMap<_, _>>();
 
     // Apply temporal decay and source weights, build results
     let now_secs = std::time::SystemTime::now()
@@ -413,7 +448,10 @@ pub(super) fn hybrid_search_merge(
 
         if display_score >= config.min_score as f64 {
             ranked.push((
-                raw_score,
+                fused.get(chunk_id).copied().unwrap_or(0.0)
+                    * decay_multiplier
+                    * source_weight
+                    * access_boost,
                 SearchResult {
                     chunk_id: chunk_id.clone(),
                     path: chunk.path.clone(),
@@ -461,7 +499,7 @@ pub(super) fn hybrid_search_merge(
 /// Fraction of meaningful query terms present in a candidate. CJK phrases are
 /// decomposed into character bigrams so partial Chinese matches do not receive
 /// the same confidence as full-phrase matches.
-fn lexical_query_coverage(query: &str, text: &str) -> f64 {
+pub fn lexical_query_coverage(query: &str, text: &str) -> f64 {
     let mut terms = Vec::new();
     for keyword in super::query_expansion::extract_keywords(query) {
         let chars: Vec<char> = keyword.chars().collect();

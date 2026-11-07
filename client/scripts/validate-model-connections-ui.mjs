@@ -37,7 +37,7 @@ try {
     assert.match(success, /测试通过 · 耗时 [0-9]+\.[0-9] 秒/);
     assert.ok(Number(success.match(/耗时 ([0-9.]+) 秒/)[1]) >= 1.1);
     assert.doesNotMatch(await row.textContent(), /429/);
-    for (const [connection, name, providerId, modelId] of [["研发团队", "团队模型", "test-org", "team-a"], ["Echo", "Echo Brook", "test-builtin", "builtin-a"]]) {
+    for (const [connection, name, providerId, modelId] of [["研发团队", "团队模型", "test-org", "team-a"]]) {
       await page.locator(".model-connections__source").filter({ hasText: connection }).click();
       await page.getByRole("button", { name: `测试模型 ${name}`, exact: true }).click();
       await page.getByRole("status").filter({ hasText: "测试通过" }).waitFor();
@@ -60,5 +60,5 @@ try {
     await page.close();
   }
   writeFileSync(join(output, "evidence.json"), JSON.stringify(evidence, null, 2));
-  console.log(`Model connection tests passed: ${evidence.length} layouts, exact per-model routing, pending, failure/retry, all three sources and management targeting. Screenshots: ${output}`);
+  console.log(`Model connection tests passed: ${evidence.length} layouts, exact per-model routing, pending, failure/retry, personal and organization sources and management targeting. Screenshots: ${output}`);
 } finally { await browser?.close(); await server.close(); }

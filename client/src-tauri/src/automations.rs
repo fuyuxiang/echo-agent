@@ -560,7 +560,7 @@ fn read_store() -> Result<AutomationStore, String> {
         None => return Ok(AutomationStore::default()),
     };
     if let Ok(mut store) = serde_json::from_str::<AutomationStore>(&content) {
-        migrate_builtin_models(&mut store);
+        pause_automations_with_removed_models(&mut store);
         return Ok(store);
     }
     // Legacy fallback: reshape each automation object, then parse.
@@ -569,18 +569,21 @@ fn read_store() -> Result<AutomationStore, String> {
     migrate_legacy_json(&mut value);
     let mut store = serde_json::from_value(value)
         .map_err(|error| format!("migrate {}: {error}", path.display()))?;
-    migrate_builtin_models(&mut store);
+    pause_automations_with_removed_models(&mut store);
     Ok(store)
 }
 
-fn migrate_builtin_models(store: &mut AutomationStore) {
+fn pause_automations_with_removed_models(store: &mut AutomationStore) {
     for automation in &mut store.automations {
         if automation
             .model_id
             .as_deref()
-            .is_some_and(crate::providers::is_legacy_builtin_model_id)
+            .is_some_and(crate::providers::is_removed_model_id)
         {
-            automation.model_id = Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID.into());
+            // Keep the explicit selection until the user replaces it. None is
+            // Auto and would silently send an unattended task to another service.
+            automation.status = "PAUSED".into();
+            automation.next_run_at = None;
         }
     }
 }
@@ -2198,6 +2201,7 @@ fn claim_due_unblocked(
     now: DateTime<Local>,
     blocked: &HashSet<String>,
 ) -> Vec<ClaimedAutomation> {
+    pause_automations_with_removed_models(store);
     ensure_next_runs(store, now);
     let mut due = Vec::new();
     for a in &mut store.automations {
@@ -2307,6 +2311,9 @@ fn validate_weekdays(days: &[String]) -> Result<(), String> {
 /// validation is useful feedback, but direct IPC calls and migrated files must
 /// not be able to create an ACTIVE task that can never produce a next run.
 fn validate_automation_at(a: &Automation, now: DateTime<Local>) -> Result<(), String> {
+    if a.status == "ACTIVE" {
+        require_current_model_selection(a)?;
+    }
     selected_expert_identity(a)?;
     if a.name.trim().is_empty() {
         return Err("请填写自动化任务名称".into());
@@ -2423,10 +2430,12 @@ fn set_status_at(
         .iter_mut()
         .find(|automation| automation.id == id)
         .ok_or_else(|| format!("automation {id} not found"))?;
-    automation.status = normalized.into();
     if normalized == "ACTIVE" {
-        validate_automation_at(automation, now)?;
+        let mut resumed = automation.clone();
+        resumed.status = normalized.into();
+        validate_automation_at(&resumed, now)?;
     }
+    automation.status = normalized.into();
     // Recompute only the task whose status changed. Recomputing every task here
     // can move an unrelated, already-due timestamp into the future before the
     // scheduler has a chance to claim it, silently dropping that occurrence.
@@ -2435,6 +2444,19 @@ fn set_status_at(
 }
 
 // ---------- Tauri commands ----------
+
+fn require_current_model_selection(automation: &Automation) -> Result<(), String> {
+    if automation
+        .model_id
+        .as_deref()
+        .is_some_and(crate::providers::is_removed_model_id)
+    {
+        return Err(
+            "原模型已移除，任务已暂停；请编辑任务重新选择模型，再启用计划或立即运行。".into(),
+        );
+    }
+    Ok(())
+}
 
 /// Full snapshot: automations (with recomputed next runs) + run records.
 #[tauri::command]
@@ -4473,9 +4495,11 @@ mod tests {
         );
         // A delete after the frontend snapshot was read is still authoritative.
         store.automations.clear();
-        assert!(save_automation_in_store(&mut store, draft, false)
-            .unwrap_err()
-            .contains("已被移除"));
+        assert!(
+            save_automation_in_store(&mut store, draft, false)
+                .unwrap_err()
+                .contains("已被移除")
+        );
         assert!(store.automations.is_empty());
     }
 
@@ -5078,11 +5102,13 @@ mod tests {
                 .map(|item| item.id.as_str()),
             Some("automation")
         );
-        assert!(record
-            .automation_snapshot
-            .as_ref()
-            .and_then(|item| item.model_id.as_deref())
-            .is_none());
+        assert!(
+            record
+                .automation_snapshot
+                .as_ref()
+                .and_then(|item| item.model_id.as_deref())
+                .is_none()
+        );
         assert_eq!(record.scheduled_for.as_deref(), Some(scheduled_for));
 
         let legacy: AutomationRunRecord = serde_json::from_value(serde_json::json!({
@@ -5260,10 +5286,12 @@ mod tests {
 
         ensure_next_runs(&mut store, now);
 
-        assert!(store
-            .automations
-            .iter()
-            .all(|automation| automation.status == "PAUSED"));
+        assert!(
+            store
+                .automations
+                .iter()
+                .all(|automation| automation.status == "PAUSED")
+        );
     }
 
     #[test]
@@ -5319,9 +5347,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("oversized.json");
         std::fs::write(&path, b"12345").unwrap();
-        assert!(read_bounded_string(&path, 4)
-            .unwrap_err()
-            .contains("safety limit"));
+        assert!(
+            read_bounded_string(&path, 4)
+                .unwrap_err()
+                .contains("safety limit")
+        );
     }
 
     #[cfg(unix)]
@@ -5334,9 +5364,11 @@ mod tests {
         let link = dir.path().join("linked.json");
         std::fs::write(&target, b"{}").unwrap();
         symlink(&target, &link).unwrap();
-        assert!(read_bounded_string(&link, 128)
-            .unwrap_err()
-            .contains("non-symlink"));
+        assert!(
+            read_bounded_string(&link, 128)
+                .unwrap_err()
+                .contains("non-symlink")
+        );
     }
 
     #[test]
@@ -5605,10 +5637,12 @@ mod tests {
         );
         cancel.response_tx.send(Ok(())).unwrap();
         let failure = task.await.unwrap().unwrap_err();
-        assert!(failure
-            .permission_reset_error
-            .unwrap()
-            .contains("injected permission reset failure"));
+        assert!(
+            failure
+                .permission_reset_error
+                .unwrap()
+                .contains("injected permission reset failure")
+        );
         assert_eq!(failure.error, "injected metadata write failure");
     }
 
@@ -5766,10 +5800,12 @@ mod tests {
                 error: "stopped",
             },
         );
-        assert!(serde_json::to_value(finished)
-            .unwrap()
-            .get("currentModelId")
-            .is_none());
+        assert!(
+            serde_json::to_value(finished)
+                .unwrap()
+                .get("currentModelId")
+                .is_none()
+        );
     }
 
     #[test]
@@ -5805,9 +5841,11 @@ mod tests {
             checks: Vec::new(),
             manifest: None,
         };
-        assert!(require_automated_skill_capability(None, "demo")
-            .unwrap_err()
-            .contains("未完成执行能力预检"));
+        assert!(
+            require_automated_skill_capability(None, "demo")
+                .unwrap_err()
+                .contains("未完成执行能力预检")
+        );
         for state in [
             SkillCapabilityState::InstructionOnly,
             SkillCapabilityState::Ready,
@@ -5824,7 +5862,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_builtin_automation_models_use_reed_without_changing_other_choices() {
+    fn retired_automation_models_pause_without_changing_explicit_or_auto_choices() {
         let selections = [
             None,
             Some("echoagent-ojlab/chat-xc"),
@@ -5838,26 +5876,67 @@ mod tests {
                 .iter()
                 .map(|model| Automation {
                     model_id: model.map(str::to_string),
+                    next_run_at: Some(now_local().to_rfc3339()),
                     ..test_automation()
                 })
                 .collect(),
         };
-        migrate_builtin_models(&mut store);
-        assert_eq!(
-            store
-                .automations
-                .iter()
-                .map(|item| item.model_id.as_deref())
-                .collect::<Vec<_>>(),
-            vec![
-                None,
-                Some("echoagent-ojlab/Echo Reed"),
-                Some("echoagent-ojlab/Echo Reed"),
-                Some("echoagent-ojlab/Echo Reed"),
-                Some("mine/chat-qwen"),
-                Some("echoagent-ojlab/Echo Grove"),
-            ],
+        let original = serde_json::to_value(&store).unwrap();
+        pause_automations_with_removed_models(&mut store);
+        for (index, task) in store.automations.iter().enumerate() {
+            assert_eq!(task.model_id.as_deref(), selections[index]);
+            if task
+                .model_id
+                .as_deref()
+                .is_some_and(crate::providers::is_removed_model_id)
+            {
+                assert_eq!(task.status, "PAUSED");
+                assert!(task.next_run_at.is_none());
+            } else {
+                assert_eq!(
+                    serde_json::to_value(task).unwrap(),
+                    original["automations"][index]
+                );
+            }
+        }
+        let migrated = serde_json::to_value(&store).unwrap();
+        pause_automations_with_removed_models(&mut store);
+        assert_eq!(serde_json::to_value(&store).unwrap(), migrated);
+        store.automations.retain(|task| {
+            task.model_id
+                .as_deref()
+                .is_some_and(crate::providers::is_removed_model_id)
+        });
+        assert!(claim_due(&mut store, now_local() + Duration::days(1)).is_empty());
+    }
+
+    #[test]
+    fn removed_automation_model_cannot_resume_or_be_claimed_until_reselected() {
+        let now = now_local();
+        let mut task = test_automation();
+        task.id = "retired".into();
+        task.name = "每日报告".into();
+        task.prompt = "整理报告".into();
+        task.permission_mode = "default".into();
+        task.status = "PAUSED".into();
+        task.model_id = Some("echoagent-ojlab/Echo Reed".into());
+        let mut store = AutomationStore {
+            automations: vec![task],
+        };
+        assert!(
+            set_status_at(&mut store, "retired", "ACTIVE", now)
+                .unwrap_err()
+                .contains("重新选择模型")
         );
+        assert_eq!(store.automations[0].status, "PAUSED");
+        // Even a forged ACTIVE snapshot is paused by the claim boundary.
+        store.automations[0].status = "ACTIVE".into();
+        store.automations[0].next_run_at = Some((now - Duration::minutes(1)).to_rfc3339());
+        assert!(claim_due(&mut store, now).is_empty());
+        store.automations[0].model_id = None; // Explicitly selecting Auto is allowed.
+        set_status_at(&mut store, "retired", "ACTIVE", now).unwrap();
+        assert_eq!(store.automations[0].status, "ACTIVE");
+        assert!(store.automations[0].next_run_at.is_some());
     }
 
     #[test]
@@ -5968,9 +6047,11 @@ mod tests {
             "第二轮结果"
         );
         assert!(result_from_updates(text.as_bytes(), None).text.is_empty());
-        assert!(result_from_updates(text.as_bytes(), Some("missing"))
-            .text
-            .is_empty());
+        assert!(
+            result_from_updates(text.as_bytes(), Some("missing"))
+                .text
+                .is_empty()
+        );
     }
 
     #[test]
@@ -6297,16 +6378,18 @@ mod tests {
         let (mut records, mut fact) = terminal_fixture();
         let history = serde_json::to_vec(&records).unwrap();
         let mut durable_fact = Vec::new();
-        assert!(persist_terminal_transition(
-            &mut records,
-            &mut fact,
-            |fact| {
-                durable_fact = serde_json::to_vec(fact).unwrap();
-                Ok(())
-            },
-            |_| Err("injected history failure".into())
-        )
-        .is_err());
+        assert!(
+            persist_terminal_transition(
+                &mut records,
+                &mut fact,
+                |fact| {
+                    durable_fact = serde_json::to_vec(fact).unwrap();
+                    Ok(())
+                },
+                |_| Err("injected history failure".into())
+            )
+            .is_err()
+        );
         let outbox = home.path().join("automation-terminal-outbox");
         std::fs::create_dir_all(&outbox).unwrap();
         let path = outbox.join(format!(
@@ -6557,30 +6640,34 @@ mod tests {
         };
         amend_cleanup_fact(&mut fact, cleanup.clone());
         let mut durable = String::new();
-        assert!(persist_terminal_transition(
-            &mut records,
-            &mut fact,
-            |fact| {
-                durable = serde_json::to_string(fact).unwrap();
-                Ok(())
-            },
-            |_| Err("history unavailable".into()),
-        )
-        .is_err());
+        assert!(
+            persist_terminal_transition(
+                &mut records,
+                &mut fact,
+                |fact| {
+                    durable = serde_json::to_string(fact).unwrap();
+                    Ok(())
+                },
+                |_| Err("history unavailable".into()),
+            )
+            .is_err()
+        );
         records.records[0].cleanup = None;
         let mut recovered: TerminalFact = serde_json::from_str(&durable).unwrap();
         persist_terminal_transition(&mut records, &mut recovered, |_| Ok(()), |_| Ok(())).unwrap();
         assert_eq!(records.records[0].cleanup, Some(cleanup));
         assert!(record_needs_cleanup(&records.records[0]));
-        assert!(recovered
-            .completion
-            .as_ref()
-            .unwrap()
-            .event
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("清理超时"));
+        assert!(
+            recovered
+                .completion
+                .as_ref()
+                .unwrap()
+                .event
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("清理超时")
+        );
         amend_cleanup_fact(
             &mut recovered,
             AutomationRunCleanup {
@@ -6654,16 +6741,18 @@ mod tests {
         );
         assert!(update.cleanup_only && update.external_claimed);
         let mut saved = String::new();
-        assert!(persist_terminal_transition(
-            &mut records,
-            &mut update,
-            |fact| {
-                saved = serde_json::to_string(fact).unwrap();
-                Ok(())
-            },
-            |_| Err("disk unavailable".into()),
-        )
-        .is_err());
+        assert!(
+            persist_terminal_transition(
+                &mut records,
+                &mut update,
+                |fact| {
+                    saved = serde_json::to_string(fact).unwrap();
+                    Ok(())
+                },
+                |_| Err("disk unavailable".into()),
+            )
+            .is_err()
+        );
         let mut recovered: TerminalFact = serde_json::from_str(&saved).unwrap();
         records.records[0].cleanup = fact.cleanup.clone();
         persist_terminal_transition(&mut records, &mut recovered, |_| Ok(()), |_| Ok(())).unwrap();
@@ -6746,11 +6835,13 @@ mod tests {
     fn external_delivery_requires_durable_claim_and_restart_does_not_blindly_send_again() {
         let (_, mut fact) = terminal_fixture();
         let mut receipt = String::new();
-        assert!(claim_external_attempt(&mut fact, true, |fact| {
-            receipt = serde_json::to_string(fact).unwrap();
-            Ok(())
-        })
-        .unwrap());
+        assert!(
+            claim_external_attempt(&mut fact, true, |fact| {
+                receipt = serde_json::to_string(fact).unwrap();
+                Ok(())
+            })
+            .unwrap()
+        );
         let mut restored: TerminalFact = serde_json::from_str(&receipt).unwrap();
         assert!(restored.external_result.is_none()); // Unknown, never treated as delivered.
         assert!(!claim_external_attempt(&mut restored, true, |_| Ok(())).unwrap());
@@ -6777,9 +6868,11 @@ mod tests {
         let mut automation = test_automation();
         automation.expert_id = Some("old-name".into());
         automation.expert_name = Some("old-name".into());
-        assert!(selected_expert_identity(&automation)
-            .unwrap_err()
-            .contains("重新选择"));
+        assert!(
+            selected_expert_identity(&automation)
+                .unwrap_err()
+                .contains("重新选择")
+        );
         let legacy = serde_json::to_value(&automation).unwrap();
         let mut legacy_object = legacy.as_object().unwrap().clone();
         legacy_object.remove("expertPath");

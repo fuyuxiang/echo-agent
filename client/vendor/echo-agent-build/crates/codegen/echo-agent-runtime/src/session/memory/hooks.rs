@@ -111,6 +111,10 @@ pub fn on_session_end(
         return SessionEndResult::Skipped;
     }
 
+    let memory_safe = echo_agent_chat_state::compaction_utils::personal_memory_conversation(
+        conversation.to_vec(),
+    );
+    let conversation = memory_safe.as_slice();
     let Some(real_queries) = queries_meeting_session_end_threshold(conversation) else {
         return SessionEndResult::Skipped;
     };

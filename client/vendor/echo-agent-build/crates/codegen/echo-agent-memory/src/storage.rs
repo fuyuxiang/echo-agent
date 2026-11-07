@@ -178,6 +178,62 @@ impl MemoryStorage {
             fallback
         }
     }
+    /// Administrative reads follow the committed index; a model switch never clears it.
+    pub fn index_path(&self) -> PathBuf {
+        let name = std::fs::read(self.workspace_dir.join("active-index.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<String>(&bytes).ok())
+            .filter(|name| {
+                name.starts_with("index-v3-")
+                    && name.ends_with(".sqlite")
+                    && name.len() == 32
+                    && name.as_bytes()[9..25].iter().all(u8::is_ascii_hexdigit)
+            });
+        self.workspace_dir
+            .join(name.as_deref().unwrap_or("index.sqlite"))
+    }
+
+    pub fn index_path_for(
+        &self,
+        config: Option<&echo_agent_config_types::MemoryEmbeddingConfig>,
+    ) -> PathBuf {
+        if config.is_some_and(|config| config.provider == "local") {
+            let identity = format!(
+                "{}:{}:tokenizers={}",
+                crate::local::fingerprint(),
+                crate::chunker::CHUNK_PIPELINE_VERSION,
+                crate::local::available(false)
+            );
+            self.workspace_dir.join(format!(
+                "index-v3-{}.sqlite",
+                &blake3::hash(identity.as_bytes()).to_hex()[..16]
+            ))
+        } else {
+            self.index_path()
+        }
+    }
+
+    pub fn activate_index(&self, path: &Path) -> std::io::Result<()> {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return Err(std::io::Error::other("invalid index name"));
+        };
+        if path.parent() != Some(self.workspace_dir.as_path())
+            || !name.starts_with("index-v3-")
+            || !path.is_file()
+        {
+            return Ok(());
+        }
+        if self.index_path() == path {
+            return Ok(());
+        }
+        crate::storage::atomic_write_with_history(
+            &self.workspace_dir.join("active-index.json"),
+            serde_json::to_string(name)
+                .map_err(std::io::Error::other)?
+                .as_bytes(),
+        )
+    }
+
     pub fn enabled(&self) -> bool {
         self.setting("memory", None, "enabled", true)
     }
@@ -205,7 +261,7 @@ impl MemoryStorage {
     /// Count total indexed chunks via a read-only SQLite connection.
     /// Returns 0 if the index doesn't exist or the query fails.
     pub fn total_chunk_count(&self) -> usize {
-        let db_path = self.workspace_dir.join("index.sqlite");
+        let db_path = self.index_path();
         // Journal-mode-aware open: never mmap a legacy WAL -shm on network
         // mounts (SIGBUS); see echo_agent_sqlite_journal::JournalMode::open_readonly.
         echo_agent_sqlite_journal::JournalMode::for_db_path(&db_path)

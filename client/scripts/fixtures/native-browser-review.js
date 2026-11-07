@@ -183,7 +183,7 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
     scope = await call('desktop_review_browser_manifest'); const context = await call('desktop_review_context');
     assert(context.browserRequested === true && context.evaluations === 1 && context.home === home
       && scope.home === home && scope.nonce === nonce && scope.cwd === `${home}/workspaces/default`
-      && ['echoagent-ojlab/Echo Reed', 'echoagent-ojlab/Echo Grove', 'echoagent-review/claude-opus-5-5'].includes(scope.modelId), 'Native browser scope mismatch');
+      && ['echoagent-review/claude-opus-5-5', 'review/unapproved-model', 'echoagent-review/claude-opus-5-5'].includes(scope.modelId), 'Native browser scope mismatch');
     Object.assign(report, { phase: scope.phase, home, nonce, nativeContext: context }); admitted = true;
     report.expected = scope.phase === 'restart' ? scope.expected : { schema: 1, home, nonce, cwd: scope.cwd, sessionId: null, url: scope.url, modelId: scope.modelId };
     await stage('browser-isolation', async () => {

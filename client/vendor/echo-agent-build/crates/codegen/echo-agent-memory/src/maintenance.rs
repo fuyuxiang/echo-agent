@@ -2,14 +2,17 @@
 //! its network lifetime; repeated requests for a database share one worker.
 use std::{collections::HashMap, path::PathBuf, sync::Mutex};
 
-use crate::{MemoryIndex, MemoryStorage, embedding::ApiEmbeddingProvider};
+use crate::{
+    MemoryIndex, MemoryStorage,
+    embedding::{ConfiguredEmbeddingProvider, EmbeddingProvider},
+};
 use tokio::{sync::watch, task::JoinHandle};
 
 #[derive(Clone)]
 struct Work {
     db: PathBuf,
     storage: MemoryStorage,
-    provider: ApiEmbeddingProvider,
+    provider: ConfiguredEmbeddingProvider,
     dimensions: usize,
 }
 
@@ -34,7 +37,7 @@ impl EmbeddingMaintenance {
         &self,
         db: PathBuf,
         storage: MemoryStorage,
-        provider: ApiEmbeddingProvider,
+        provider: ConfiguredEmbeddingProvider,
         dimensions: usize,
     ) {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
@@ -108,12 +111,38 @@ async fn run_pass(work: &Work) -> bool {
     // No SQLite connection/reference crosses an await. Preserve a newer
     // model's dimensions and let fingerprint checks reject stale responses.
     let candidates = (|| {
-        let index = MemoryIndex::open_or_create_preserving_dimensions(
+        let mut index = MemoryIndex::open_or_create_preserving_dimensions(
             &work.db,
             work.storage.clone(),
             Default::default(),
             work.dimensions,
         )?;
+        if matches!(&work.provider, ConfiguredEmbeddingProvider::Local(_))
+            && work.db != work.storage.index_path()
+        {
+            // Build a new model/tokenizer generation beside the committed index.
+            // Interrupted preparation leaves the previous keyword index usable.
+            let files = work
+                .storage
+                .list_memory_files()
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+            for path in index.all_indexed_paths()? {
+                let path = std::path::PathBuf::from(path);
+                if !path.is_file() || !work.storage.is_indexable_memory_file(&path) {
+                    index.delete_path(&path)?;
+                }
+            }
+            for file in files {
+                index.reindex_file(&file, work.storage.classify_source(&file))?;
+            }
+            if !work.storage.enabled() {
+                return Ok(Vec::new());
+            }
+            work.storage
+                .activate_index(&work.db)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        }
+        index.ensure_embedding_fingerprint(&work.provider.fingerprint())?;
         index.embedding_candidates()
     })();
     let candidates = match candidates {

@@ -13,7 +13,7 @@ type TestModel = {
   remoteModelId: string;
   providerId: string;
   providerKind: string;
-  source: "personal" | "organization" | "builtin";
+  source: "personal" | "organization" | "legacy";
 };
 
 describe("meeting transcription capability", () => {
@@ -38,7 +38,7 @@ describe("meeting transcription capability", () => {
 
   it("hides unsupported and built-in models without probing", async () => {
     const nonMiniMax: TestModel = { id: "work-model", remoteModelId: "other-chat", providerId: "personal", providerKind: "custom", source: "personal" };
-    const builtIn: TestModel = { id: "echoagent-ojlab/MiniMax-M3", remoteModelId: "MiniMax-M3", providerId: "echoagent-ojlab", providerKind: "minimax", source: "builtin" };
+    const builtIn: TestModel = { id: "echoagent-ojlab/MiniMax-M3", remoteModelId: "MiniMax-M3", providerId: "echoagent-ojlab", providerKind: "minimax", source: "legacy" };
     const { result, rerender } = renderHook(({ model }: { model: TestModel }) => useMeetingTranscriptionCapability(model), { initialProps: { model: nonMiniMax } });
 
     expect(isMiniMaxMeetingModel(nonMiniMax)).toBe(false);

@@ -27,7 +27,7 @@ describe("model presentation", () => {
   });
 
   it("来源由显式元数据决定，历史记录可从保留前缀恢复", () => {
-    expect(modelSourceLabel("echoagent-ojlab/Echo Reed")).toBe("内置");
+    expect(modelSourceLabel("echoagent-ojlab/Echo Reed")).toBe("已移除");
     expect(modelSourceLabel("organization/Echo Reed")).toBe("组织");
     expect(modelSourceLabel({ id: "legacy", source: "legacy" })).toBe("个人");
     expect(modelChoiceLabel({ id: "organization/model", label: "主力模型", source: "organization", providerLabel: "研发团队" })).toBe("主力模型 · 组织 · 研发团队");
@@ -36,7 +36,7 @@ describe("model presentation", () => {
   it("同名模型的目录身份、远端请求名称及连接信息不因展示而改变", () => {
     const list = {
       providers: [
-        { id: "echoagent-ojlab", providerKind: "custom" as const, source: "builtin" as const, label: "内置模型" },
+        { id: "echoagent-ojlab", providerKind: "custom" as const, source: "legacy" as const, label: "内置模型" },
         { id: "organization", providerKind: "custom" as const, source: "organization" as const, label: "研发团队" },
         { id: "my-gateway", providerKind: "custom" as const, source: "personal" as const, label: "我的网关" },
       ],
@@ -47,10 +47,10 @@ describe("model presentation", () => {
       ],
     };
     const options = flattenModels(list);
-    expect(options.map((model) => model.label)).toEqual(["Echo Reed", "Echo Reed", "Echo Reed"]);
-    expect(options.map((model) => model.id)).toEqual(list.models.map((model) => model.modelId));
-    expect(options.map((model) => model.remoteModelId)).toEqual(["Echo Reed", "Echo Reed", "Echo Reed"]);
-    expect(options.map(model => modelChoiceLabel(model, options))).toEqual(["Echo Reed · 内置", "Echo Reed · 组织 · 研发团队", "Echo Reed · 个人 · 我的网关"]);
+    expect(options.map((model) => model.label)).toEqual(["Echo Reed", "Echo Reed"]);
+    expect(options.map((model) => model.id)).toEqual(list.models.slice(1).map((model) => model.modelId));
+    expect(options.map((model) => model.remoteModelId)).toEqual(["Echo Reed", "Echo Reed"]);
+    expect(options.map(model => modelChoiceLabel(model, options))).toEqual(["Echo Reed · 组织 · 研发团队", "Echo Reed · 个人 · 我的网关"]);
     expect(findModelDisplayName(options, options[0].id)).toBe("Echo Reed");
     expect(findModelDisplayName([], "organization/已下线模型")).toBe("已下线模型");
   });

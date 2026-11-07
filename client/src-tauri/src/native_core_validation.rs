@@ -40,10 +40,7 @@ fn validate_manifest(value: &Manifest, home: &Path, phase: &str) -> Result<(), S
             .nonce
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        || !matches!(
-            value.model_id.as_str(),
-            "echoagent-ojlab/Echo Reed" | crate::native_review_model::PRIVATE_MODEL_ID
-        )
+        || !crate::native_review_model::allowed_model(&value.model_id)
         || value.office_fixtures.len() != 3
         || (phase == "restart")
             != value
@@ -191,7 +188,7 @@ mod tests {
             cwd,
             nonce,
             phase: "first-launch".into(),
-            model_id: "echoagent-ojlab/Echo Reed".into(),
+            model_id: "echoagent-review/claude-opus-5-5".into(),
             office_fixtures,
             expected: None,
         }

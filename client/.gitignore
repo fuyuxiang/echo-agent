@@ -57,6 +57,9 @@ __pycache__/
 /src-tauri/resources/theia/runtime-platform.json
 /src-tauri/resources/office/worker.mjs
 /src-tauri/resources/office/licenses/
+/src-tauri/resources/retrieval-models/*
+!/src-tauri/resources/retrieval-models/.keep
+/src-tauri/resources/retrieval-models.lock/
 
 # 本机环境与 Cargo 工具路径
 .env

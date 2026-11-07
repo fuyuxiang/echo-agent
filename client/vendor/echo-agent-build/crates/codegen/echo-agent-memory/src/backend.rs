@@ -151,7 +151,9 @@ pub struct MemoryBackendParams {
 impl MemoryBackendParams {
     /// Async so `current_api_key_async` can drive the AuthManager
     /// refresh chain; reindex loops outlive the OIDC TTL.
-    pub async fn make_embedding_provider(&self) -> Option<super::embedding::ApiEmbeddingProvider> {
+    pub async fn make_embedding_provider(
+        &self,
+    ) -> Option<super::embedding::ConfiguredEmbeddingProvider> {
         build_embedding_provider(
             self.embed_config.as_ref(),
             &self.embedding_credentials,
@@ -167,7 +169,7 @@ async fn build_embedding_provider(
     credentials: &EndpointScopedCredentials,
     static_api_key: Option<&str>,
     base_url: &str,
-) -> Option<super::embedding::ApiEmbeddingProvider> {
+) -> Option<super::embedding::ConfiguredEmbeddingProvider> {
     let config = config?;
     if config.model.as_ref().is_none_or(|m| m.is_empty()) {
         return None;
@@ -175,11 +177,11 @@ async fn build_embedding_provider(
     match config.provider.trim().to_ascii_lowercase().as_str() {
         "api" | "auto" => {}
         "local" => {
-            tracing::warn!(
-                target: crate::MEMORY_LOG_TARGET,
-                "memory embedding provider 'local' is not bundled; using private on-device FTS only"
+            return super::embedding::ConfiguredEmbeddingProvider::from_session(
+                config,
+                String::new(),
+                String::new(),
             );
-            return None;
         }
         provider => {
             tracing::warn!(
@@ -209,7 +211,8 @@ async fn build_embedding_provider(
             config,
             base_url.to_owned(),
             client,
-        );
+        )
+        .map(Into::into);
     }
 
     let per_call_key = if credentials_approved && let Some(p) = credentials.api_key_provider() {
@@ -223,7 +226,11 @@ async fn build_embedding_provider(
             (base_url.trim_end_matches('/') == "http://123.56.188.16:8088/v1/embeddings")
                 .then(String::new)
         })?;
-    super::embedding::ApiEmbeddingProvider::from_session(config, base_url.to_owned(), api_key)
+    super::embedding::ConfiguredEmbeddingProvider::from_session(
+        config,
+        base_url.to_owned(),
+        api_key,
+    )
 }
 
 /// `MemoryBackend` implementation backed by hybrid search (FTS5 + vector KNN).
@@ -336,11 +343,22 @@ impl MemoryBackendImpl {
     fn open_readonly(&self) -> Result<rusqlite::Connection, rusqlite::Error> {
         // Journal-mode-aware open (busy_timeout included): never mmap a legacy
         // WAL -shm on network mounts (SIGBUS); see JournalMode::open_readonly.
-        echo_agent_sqlite_journal::JournalMode::for_db_path(&self.db_path)
-            .open_readonly(&self.db_path)
+        let path = if self.embed_chunks_on_search
+            && self
+                .embed_config
+                .as_ref()
+                .is_some_and(|config| config.provider == "local")
+        {
+            self.storage.index_path()
+        } else {
+            self.db_path.clone()
+        };
+        echo_agent_sqlite_journal::JournalMode::for_db_path(&path).open_readonly(&path)
     }
 
-    async fn make_embedding_provider(&self) -> Option<super::embedding::ApiEmbeddingProvider> {
+    async fn make_embedding_provider(
+        &self,
+    ) -> Option<super::embedding::ConfiguredEmbeddingProvider> {
         build_embedding_provider(
             self.embed_config.as_ref(),
             &self.embedding_credentials,
@@ -360,7 +378,7 @@ impl MemoryBackendImpl {
 
     /// Build a fully configured backend for a live session.
     pub fn from_session_params(storage: MemoryStorage, params: &MemoryBackendParams) -> Self {
-        let db_path = storage.workspace_dir().join("index.sqlite");
+        let db_path = storage.index_path_for(params.embed_config.as_ref());
         let mut backend = Self::new(db_path, storage)
             .with_session_id(params.session_id.clone())
             .with_search_config(params.search_config.clone());
@@ -417,8 +435,34 @@ impl MemoryBackend for MemoryBackendImpl {
         let keyword_count = super::query_expansion::extract_keywords(query).len();
 
         let embed_dims = self.embed_config.as_ref().map_or(1024, |ec| ec.dimensions);
-        let mut index = match super::index::MemoryIndex::open_or_create(
-            &self.db_path,
+        let managed_local = personal_memory
+            && self
+                .embed_config
+                .as_ref()
+                .is_some_and(|config| config.provider == "local");
+        let desired_path = if managed_local {
+            self.storage.index_path_for(self.embed_config.as_ref())
+        } else {
+            self.db_path.clone()
+        };
+        let committed_path = self.storage.index_path();
+        let using_previous = managed_local && desired_path != committed_path;
+        let read_path = if using_previous {
+            committed_path
+        } else {
+            desired_path.clone()
+        };
+        let configured_provider = self.make_embedding_provider().await;
+        if using_previous && let Some(provider) = configured_provider.as_ref() {
+            self.embedding_maintenance.schedule(
+                desired_path.clone(),
+                self.storage.clone(),
+                provider.clone(),
+                embed_dims,
+            );
+        }
+        let mut index = match super::index::MemoryIndex::open_or_create_preserving_dimensions(
+            &read_path,
             self.storage.clone(),
             echo_agent_config_types::MemoryIndexConfig::default(),
             embed_dims,
@@ -459,6 +503,7 @@ impl MemoryBackend for MemoryBackendImpl {
         // Watcher-sync telemetry data (populated inside the claim guard below).
         let mut watcher_sync_stats: Option<(usize, usize, std::time::Instant)> = None;
         if let Some(ref watcher) = self.watcher
+            && !using_previous
             && watcher.is_dirty()
             && index.try_claim_reindex(self.stale_claim_secs)
         {
@@ -502,7 +547,12 @@ impl MemoryBackend for MemoryBackendImpl {
         }
 
         // ── Async phase: embed missing chunks (no &index borrow) ──
-        let provider = self.make_embedding_provider().await;
+        let provider = if using_previous {
+            None
+        } else {
+            configured_provider
+        }
+        .filter(|provider| provider.dimensions() == index.embedding_dimensions());
         if let Some(ref provider) = provider {
             match index.ensure_embedding_fingerprint(&provider.fingerprint()) {
                 Ok(true) if self.embed_chunks_on_search => {
@@ -527,7 +577,7 @@ impl MemoryBackend for MemoryBackendImpl {
             && let Some(ref provider) = provider
         {
             self.embedding_maintenance.schedule(
-                self.db_path.clone(),
+                desired_path.clone(),
                 self.storage.clone(),
                 provider.clone(),
                 embed_dims,
@@ -552,12 +602,12 @@ impl MemoryBackend for MemoryBackendImpl {
         // ── Sync phase 2: FTS search ──
         let mut search_config = self.search_config.clone();
         let mmr_fallback_config = search_config.mmr.clone();
-        let reranker = super::reranker::ApiReranker::from_config(&search_config.reranker)
+        let reranker = super::reranker::ConfiguredReranker::from_config(&search_config.reranker)
             .map(|reranker| reranker.with_request_permit(self.request_permit()));
         search_config.max_results = if reranker.is_some() {
             // Feed the model a broader coarse-retrieval pool than the final
             // result count. hybrid_search_merge truncates to this value.
-            max_results.saturating_mul(3).max(max_results)
+            max_results.saturating_mul(3).clamp(max_results.min(15), 15)
         } else {
             max_results
         };
@@ -589,14 +639,20 @@ impl MemoryBackend for MemoryBackendImpl {
         // ── Async phase: embed query for vector search (no &index borrow) ──
         // Index maintenance is independent of query embedding. A denied or
         // failed document batch must not disable vectors already available.
-        let query_embedding = super::search::resolve_query_embedding(
+        let embedding_query = super::search::resolve_query_embedding(
             provider
                 .as_ref()
                 .map(|provider| provider as &dyn super::embedding::EmbeddingProvider),
             index.vec_available(),
             query,
-        )
-        .await;
+        );
+        let query_embedding = if self.search_source == MemorySearchSource::Injection {
+            tokio::time::timeout(std::time::Duration::from_millis(650), embedding_query)
+                .await
+                .unwrap_or(super::search::QueryEmbedding::EmbeddingFallback)
+        } else {
+            embedding_query.await
+        };
 
         // ── Sync phase 3: vector search + scoring + merge (borrows &index) ──
         let merged = super::search::hybrid_search_merge(
@@ -635,7 +691,7 @@ impl MemoryBackend for MemoryBackendImpl {
             let relevance: Vec<f64> = results.iter().map(|result| result.score).collect();
             super::mmr::mmr_rerank(&mut results, &relevance, &mmr_fallback_config);
             results.truncate(max_results);
-        } else if let Some(reranker) = reranker.filter(|_| results.len() > 1) {
+        } else if let Some(reranker) = reranker.filter(|_| !results.is_empty()) {
             let reranker = if personal_memory {
                 reranker.with_request_permit(
                     self.storage.request_permit_for_paths(
@@ -1691,7 +1747,30 @@ mod tests {
                     .await
                     .unwrap()
                     .unwrap();
-            assert!(!results.is_empty());
+            assert!(
+                !results.is_empty(),
+                "query_only={query_only}; enabled={}; received={:?}",
+                backend.storage.enabled(),
+                received.lock().unwrap()
+            );
+            if !query_only {
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        if received
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .flatten()
+                            .any(|text| text.contains("Rust programming tutorial"))
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("background document maintenance should complete independently");
+            }
             let inputs = received.lock().unwrap().clone();
             assert!(
                 inputs.iter().any(|batch| batch == &["rust".to_owned()]),

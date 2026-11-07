@@ -1,3 +1,4 @@
+import { isRemovedModelId, isRemovedModelProvider } from "@/lib/retired-models";
 import { useCallback, useEffect, useState } from "react";
 import { isMiniMaxMeetingModel, meetingCheckConnection } from "./meeting-minutes";
 
@@ -6,7 +7,7 @@ interface MeetingModel {
   providerId?: string;
   remoteModelId?: string;
   providerKind?: string;
-  source?: "personal" | "organization" | "builtin" | "legacy";
+  source?: "personal" | "organization" | "legacy";
 }
 
 type ProbeState = "ineligible" | "checking" | "available" | "unavailable";
@@ -14,9 +15,8 @@ type ProbeState = "ineligible" | "checking" | "available" | "unavailable";
 /** The model slug narrows candidates; the live endpoint/key check decides availability. */
 export function useMeetingTranscriptionCapability(model?: MeetingModel, refreshToken?: unknown) {
   const eligible = Boolean(model?.providerId
-    && model.source !== "builtin"
-    && model.providerId !== "echoagent-ojlab"
-    && !model.id.startsWith("echoagent-ojlab/")
+    && !isRemovedModelProvider({ id: model.providerId ?? "", source: model.source })
+    && !isRemovedModelId(model.id)
     && isMiniMaxMeetingModel(model));
   const key = eligible ? `${model!.id}\u0000${model!.providerId}\u0000${model!.remoteModelId ?? ""}` : "";
   const [attempt, setAttempt] = useState(0);

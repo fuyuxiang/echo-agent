@@ -137,7 +137,7 @@ impl Default for MemoryIndexConfig {
     fn default() -> Self {
         Self {
             max_chunk_chars: 1600,
-            chunk_overlap_chars: 320,
+            chunk_overlap_chars: 64,
         }
     }
 }
@@ -146,8 +146,8 @@ impl Default for MemoryIndexConfig {
 #[derive(Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct MemoryEmbeddingConfig {
-    /// Provider type: `"api"` or `"auto"`. `"local"` explicitly disables
-    /// network embedding calls and currently falls back to on-device FTS.
+    /// Provider type: `"api"`, `"auto"` or bundled on-device `"local"`.
+    /// Missing local model files degrade to FTS without using the network.
     pub provider: String,
     /// Model name for the embedding API. `None` disables vector embeddings.
     pub model: Option<String>,

@@ -2,15 +2,15 @@
 //!
 //! Source files remain in the user-selected folders. Extracted text is chunked
 //! into a private SQLite FTS5/sqlite-vec index under the EchoAgent data home.
-//! Retrieval combines BM25 and bge-m3 vectors, then applies the configured
-//! bge-reranker-v2-m3 model. Every network-dependent stage has a lexical
-//! fallback so a provider outage never prevents the user's task from running.
+//! Retrieval combines indexed Chinese/English keywords with local BGE vectors,
+//! then reranks on device. Keyword search remains available before model setup
+//! and when optional local inference fails.
 
 use echo_agent_memory::{
     backend::MemoryBackendImpl,
-    embedding::{ApiEmbeddingProvider, EmbeddingProvider},
-    index::{init_sqlite_vec, MemoryIndex},
-    reranker::ApiReranker,
+    embedding::{ConfiguredEmbeddingProvider, EmbeddingProvider},
+    index::{MemoryIndex, init_sqlite_vec},
+    reranker::ConfiguredReranker,
     search::SearchResult,
     storage::MemoryStorage,
 };
@@ -77,6 +77,12 @@ struct SourceFile {
 struct IndexManifest {
     version: u32,
     embedding_model: String,
+    #[serde(default)]
+    generation: String,
+    #[serde(default)]
+    index_fingerprint: String,
+    #[serde(default)]
+    warnings: Vec<String>,
     last_updated_at: Option<u64>,
     entries: Vec<ManifestEntry>,
 }
@@ -106,6 +112,7 @@ struct RuntimeIndexStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalKnowledgeIndexStatus {
+    warnings: Vec<String>,
     state: String,
     message: Option<String>,
     file_count: usize,
@@ -143,6 +150,7 @@ pub struct PersonalKnowledgeSearchResponse {
 
 #[derive(Debug)]
 struct SyncResult {
+    root: PathBuf,
     manifest: IndexManifest,
     chunk_count: usize,
     pending_embedding_count: usize,
@@ -184,30 +192,106 @@ fn update_runtime_status(update: impl FnOnce(&mut RuntimeIndexStatus)) {
     }
 }
 
-fn index_root() -> PathBuf {
+fn base_index_root() -> PathBuf {
     crate::paths::echo_agent_home_dir().join(INDEX_DIR)
 }
 
-fn documents_dir() -> PathBuf {
-    index_root().join(INDEX_DOCUMENTS_DIR)
+fn valid_generation(value: &str) -> bool {
+    value.len() == 24 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn index_root() -> PathBuf {
+    let base = base_index_root();
+    let generation = std::fs::read(base.join("active.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<String>(&bytes).ok());
+    generation
+        .filter(|g| valid_generation(g))
+        .map(|g| base.join("indexes").join(g))
+        .unwrap_or(base)
+}
+
+fn target_fingerprint() -> String {
+    format!(
+        "{}:office-structural-v3:{}:tokenizers={}",
+        echo_agent_memory::local::fingerprint(),
+        echo_agent_memory::chunker::CHUNK_PIPELINE_VERSION,
+        echo_agent_memory::local::available(false)
+    )
+}
+
+fn target_index_root() -> PathBuf {
+    let active = index_root();
+    let manifest = load_manifest_at(&active);
+    if valid_generation(&manifest.generation) && manifest.index_fingerprint == target_fingerprint()
+    {
+        return active;
+    }
+    let digest = hex::encode(Sha256::digest(target_fingerprint().as_bytes()));
+    base_index_root().join("indexes").join(&digest[..24])
+}
+
+fn root_for_manifest(manifest: &IndexManifest) -> PathBuf {
+    if valid_generation(&manifest.generation) {
+        base_index_root().join("indexes").join(&manifest.generation)
+    } else {
+        base_index_root()
+    }
+}
+
+fn activate_index(root: &Path) -> Result<(), String> {
+    let generation = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|g| valid_generation(g))
+        .ok_or("索引代次无效")?;
+    std::fs::create_dir_all(base_index_root()).map_err(|e| e.to_string())?;
+    crate::paths::write_private_file(
+        &base_index_root().join("active.json"),
+        &serde_json::to_vec(generation).map_err(|e| e.to_string())?,
+    )?;
+    prune_old_generations(root);
+    Ok(())
+}
+
+fn prune_old_generations(active: &Path) {
+    let Ok(entries) = std::fs::read_dir(base_index_root().join("indexes")) else {
+        return;
+    };
+    let mut generations = entries
+        .flatten()
+        .filter_map(|entry| {
+            let metadata = std::fs::symlink_metadata(entry.path()).ok()?;
+            (metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && entry.file_name().to_str().is_some_and(valid_generation))
+            .then(|| (entry.path(), metadata.modified().unwrap_or(UNIX_EPOCH)))
+        })
+        .collect::<Vec<_>>();
+    generations.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
+    for (path, modified) in generations.into_iter().skip(3) {
+        // Keep a grace day for in-flight snapshots and recent rollback. These
+        // directories contain derived caches only, never the original sources.
+        if path != active && modified.elapsed().is_ok_and(|age| age.as_secs() > 86400) {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
 }
 
 fn database_path() -> PathBuf {
     index_root().join(INDEX_DATABASE)
 }
-
-fn manifest_path() -> PathBuf {
-    index_root().join(INDEX_MANIFEST)
+fn memory_storage_at(root: &Path) -> MemoryStorage {
+    MemoryStorage::new_flat(root, root)
 }
-
 fn memory_storage() -> MemoryStorage {
-    let root = index_root();
-    MemoryStorage::new_flat(&root, &root)
+    memory_storage_at(&index_root())
 }
 
 fn embedding_config() -> MemoryEmbeddingConfig {
+    crate::retrieval_models::initialize();
     MemoryEmbeddingConfig {
-        provider: "api".to_owned(),
+        provider: "local".to_owned(),
         model: Some(crate::agent_runtime::MEMORY_EMBEDDING_MODEL.to_owned()),
         dimensions: crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
         endpoint: Some(crate::agent_runtime::MEMORY_EMBEDDING_ENDPOINT.to_owned()),
@@ -239,8 +323,8 @@ fn reranker_config() -> MemorySearchConfig {
     config
 }
 
-fn embedding_provider() -> Option<ApiEmbeddingProvider> {
-    ApiEmbeddingProvider::from_session(
+fn embedding_provider() -> Option<ConfiguredEmbeddingProvider> {
+    ConfiguredEmbeddingProvider::from_session(
         &embedding_config(),
         crate::agent_runtime::MEMORY_EMBEDDING_ENDPOINT.to_owned(),
         String::new(),
@@ -325,7 +409,8 @@ fn supported_file(path: &Path) -> bool {
     )
 }
 
-fn scan_files() -> Result<Vec<SourceFile>, String> {
+fn scan_files() -> Result<(Vec<SourceFile>, bool), String> {
+    let mut truncated = false;
     let mut out = Vec::new();
     let mut seen_files = HashSet::new();
     let mut scanned_entries = 0usize;
@@ -337,6 +422,7 @@ fn scan_files() -> Result<Vec<SourceFile>, String> {
                 || out.len() >= MAX_LOCAL_FILES
                 || scanned_entries >= MAX_LOCAL_SCAN_ENTRIES
             {
+                truncated = true;
                 continue;
             }
             let Ok(canonical_directory) = std::fs::canonicalize(&directory) else {
@@ -368,6 +454,8 @@ fn scan_files() -> Result<Vec<SourceFile>, String> {
                 }
                 if metadata.is_dir() && depth < 5 {
                     queue.push_back((canonical, depth + 1));
+                } else if metadata.is_dir() {
+                    truncated = true;
                 } else if metadata.is_file()
                     && supported_file(&canonical)
                     && seen_files.insert(canonical.clone())
@@ -388,29 +476,9 @@ fn scan_files() -> Result<Vec<SourceFile>, String> {
         }
     }
     out.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(out)
-}
-
-fn xml_text(xml: &str) -> String {
-    let mut reader = quick_xml::Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut out = Vec::new();
-    loop {
-        match reader.read_event() {
-            Ok(quick_xml::events::Event::Text(text)) => {
-                if let Ok(value) = text.decode() {
-                    let value = value.trim();
-                    if !value.is_empty() {
-                        out.push(value.to_string());
-                    }
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
-        }
-    }
-    out.join(" ")
+    let truncated =
+        truncated || out.len() >= MAX_LOCAL_FILES || scanned_entries >= MAX_LOCAL_SCAN_ENTRIES;
+    Ok((out, truncated))
 }
 
 fn read_source_file(path: &Path) -> Result<String, String> {
@@ -444,10 +512,17 @@ fn read_source_file(path: &Path) -> Result<String, String> {
                 .into_owned();
             let selected = match extension.as_str() {
                 "docx" => name == "word/document.xml",
-                "pptx" => name.starts_with("ppt/slides/slide") && name.ends_with(".xml"),
+                "pptx" => {
+                    name == "ppt/presentation.xml"
+                        || name == "ppt/_rels/presentation.xml.rels"
+                        || (name.starts_with("ppt/slides/") && name.ends_with(".xml"))
+                }
                 "xlsx" => {
-                    (name == "xl/sharedStrings.xml" || name.starts_with("xl/worksheets/sheet"))
-                        && name.ends_with(".xml")
+                    name == "xl/_rels/workbook.xml.rels"
+                        || ((name == "xl/sharedStrings.xml"
+                            || name == "xl/workbook.xml"
+                            || name.starts_with("xl/worksheets/sheet"))
+                            && name.ends_with(".xml"))
                 }
                 _ => false,
             };
@@ -473,9 +548,9 @@ fn read_source_file(path: &Path) -> Result<String, String> {
             total_xml_bytes = total_xml_bytes.saturating_add(bytes.len() as u64);
             let xml = String::from_utf8(bytes)
                 .map_err(|_| "personal knowledge Office XML is not valid UTF-8".to_owned())?;
-            parts.push(xml_text(&xml));
+            parts.push((name, xml));
         }
-        return Ok(parts.join("\n"));
+        return crate::knowledge_documents::extract(&extension, parts);
     }
     String::from_utf8(bytes).map_err(|_| "personal knowledge file is not valid UTF-8".into())
 }
@@ -509,9 +584,10 @@ fn modified_millis(metadata: &std::fs::Metadata) -> u64 {
         .unwrap_or_default()
 }
 
-fn cache_path_for(original: &Path) -> PathBuf {
+fn cache_path_for(root: &Path, original: &Path) -> PathBuf {
     let digest = Sha256::digest(original.to_string_lossy().as_bytes());
-    documents_dir().join(format!("{:x}.md", digest))
+    root.join(INDEX_DOCUMENTS_DIR)
+        .join(format!("{:x}.md", digest))
 }
 
 fn title_for(path: &Path) -> String {
@@ -531,7 +607,10 @@ fn index_document(title: &str, text: &str) -> String {
 }
 
 fn load_manifest() -> IndexManifest {
-    let Ok(bytes) = std::fs::read(manifest_path()) else {
+    load_manifest_at(&index_root())
+}
+fn load_manifest_at(root: &Path) -> IndexManifest {
+    let Ok(bytes) = std::fs::read(root.join(INDEX_MANIFEST)) else {
         return IndexManifest::default();
     };
     serde_json::from_slice::<IndexManifest>(&bytes)
@@ -540,14 +619,14 @@ fn load_manifest() -> IndexManifest {
         .unwrap_or_default()
 }
 
-fn save_manifest(manifest: &IndexManifest) -> Result<(), String> {
+fn save_manifest_at(root: &Path, manifest: &IndexManifest) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|error| format!("encode personal knowledge index manifest: {error}"))?;
-    crate::paths::write_private_file(&manifest_path(), &bytes)
+    crate::paths::write_private_file(&root.join(INDEX_MANIFEST), &bytes)
 }
 
-fn remove_database_files() {
-    let database = database_path();
+fn remove_database_files_at(root: &Path) {
+    let database = root.join(INDEX_DATABASE);
     for path in [
         database.clone(),
         PathBuf::from(format!("{}-wal", database.to_string_lossy())),
@@ -558,10 +637,13 @@ fn remove_database_files() {
 }
 
 fn open_index() -> Result<MemoryIndex, String> {
+    open_index_at(&index_root())
+}
+fn open_index_at(root: &Path) -> Result<MemoryIndex, String> {
     init_sqlite_vec();
-    MemoryIndex::open_or_create(
-        &database_path(),
-        memory_storage(),
+    MemoryIndex::open_or_create_preserving_dimensions(
+        &root.join(INDEX_DATABASE),
+        memory_storage_at(root),
         MemoryIndexConfig::default(),
         crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
     )
@@ -569,16 +651,24 @@ fn open_index() -> Result<MemoryIndex, String> {
 }
 
 fn sync_index(force: bool) -> Result<SyncResult, String> {
-    std::fs::create_dir_all(documents_dir())
-        .map_err(|error| format!("create personal knowledge index: {error}"))?;
-    crate::paths::harden_private_dir(&index_root())?;
-    crate::paths::harden_private_dir(&documents_dir())?;
-
-    let old_manifest = load_manifest();
-    if force {
-        remove_database_files();
+    let mut root = target_index_root();
+    if force && root == index_root() {
+        let identity = format!("{}:{}", target_fingerprint(), uuid::Uuid::now_v7());
+        root = base_index_root()
+            .join("indexes")
+            .join(&hex::encode(Sha256::digest(identity.as_bytes()))[..24]);
     }
-    let mut index = open_index()?;
+    let documents = root.join(INDEX_DOCUMENTS_DIR);
+    std::fs::create_dir_all(&documents)
+        .map_err(|error| format!("create personal knowledge index: {error}"))?;
+    crate::paths::harden_private_dir(&root)?;
+    crate::paths::harden_private_dir(&documents)?;
+
+    let old_manifest = load_manifest_at(&root);
+    if force {
+        remove_database_files_at(&root);
+    }
+    let mut index = open_index_at(&root)?;
     let indexed_paths = index
         .all_indexed_paths()
         .map_err(|error| format!("read personal knowledge index paths: {error}"))?
@@ -591,16 +681,19 @@ fn sync_index(force: bool) -> Result<SyncResult, String> {
         .map(|entry| (entry.original_path.clone(), entry))
         .collect::<HashMap<_, _>>();
     let mut next_entries = Vec::new();
-
-    for source_file in scan_files()? {
+    let (files, truncated) = scan_files()?;
+    let mut skipped = Vec::new();
+    for source_file in files {
         let Ok(metadata) = std::fs::metadata(&source_file.path) else {
+            skipped.push(title_for(&source_file.path));
             continue;
         };
         if metadata.len() > MAX_LOCAL_FILE_BYTES {
+            skipped.push(title_for(&source_file.path));
             continue;
         }
         let original_path = source_file.path.to_string_lossy().into_owned();
-        let cache_path = cache_path_for(&source_file.path);
+        let cache_path = cache_path_for(&root, &source_file.path);
         let cache_path_string = cache_path.to_string_lossy().into_owned();
         let title = title_for(&source_file.path);
         let modified = modified_millis(&metadata);
@@ -622,6 +715,7 @@ fn sync_index(force: bool) -> Result<SyncResult, String> {
                 }
                 Ok(_) => continue,
                 Err(error) => {
+                    skipped.push(title_for(&source_file.path));
                     tracing::warn!(path = %source_file.path.display(), %error, "personal knowledge file was skipped");
                     if let Some(previous) =
                         previous.filter(|entry| Path::new(&entry.cache_path).is_file())
@@ -677,8 +771,28 @@ fn sync_index(force: bool) -> Result<SyncResult, String> {
     }
 
     next_entries.sort_by(|left, right| left.original_path.cmp(&right.original_path));
+    let mut warnings = Vec::new();
+    if truncated {
+        warnings.push("已达到扫描范围上限（500 个文件、5 层目录或 10000 项），部分资料可能未索引；请缩小知识源范围".to_owned());
+    }
+    if !skipped.is_empty() {
+        warnings.push(format!(
+            "{} 个文件本次未能更新（超过 5MB、无法读取或解析失败）：{}{}",
+            skipped.len(),
+            skipped
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("、"),
+            if skipped.len() > 5 { "等" } else { "" }
+        ));
+    }
     let mut manifest = IndexManifest {
+        warnings,
         version: INDEX_VERSION,
+        generation: root.file_name().unwrap().to_string_lossy().into_owned(),
+        index_fingerprint: target_fingerprint(),
         embedding_model: crate::agent_runtime::MEMORY_EMBEDDING_MODEL.to_owned(),
         last_updated_at: Some(
             SystemTime::now()
@@ -692,14 +806,14 @@ fn sync_index(force: bool) -> Result<SyncResult, String> {
     if manifest.entries.is_empty() {
         manifest.last_updated_at = None;
     }
-    save_manifest(&manifest)?;
+    save_manifest_at(&root, &manifest)?;
     let vec_available = index.vec_available();
     let pending_embedding_count = index
         .chunks_without_embeddings()
         .map_err(|error| format!("read pending personal knowledge embeddings: {error}"))?
         .len();
     drop(index);
-    let chunk_count = memory_storage().total_chunk_count();
+    let chunk_count = memory_storage_at(&root).total_chunk_count();
     // sqlite-vec is optional in the shared memory crate. Treat every chunk as
     // pending when the extension is unavailable so the UI never reports a
     // keyword-only index as fully semantic.
@@ -709,6 +823,7 @@ fn sync_index(force: bool) -> Result<SyncResult, String> {
         chunk_count
     };
     Ok(SyncResult {
+        root,
         manifest,
         chunk_count,
         pending_embedding_count,
@@ -716,12 +831,12 @@ fn sync_index(force: bool) -> Result<SyncResult, String> {
     })
 }
 
-async fn embed_pending(max_batches: Option<usize>) -> Result<(usize, usize), String> {
+async fn embed_pending(root: &Path, max_batches: Option<usize>) -> Result<(usize, usize), String> {
     let Some(provider) = embedding_provider() else {
-        return Err("personal knowledge embedding provider is not configured".into());
+        return Err("本地语义模型尚未准备，请在知识库或记忆页面准备模型".into());
     };
     let pending = {
-        let index = open_index()?;
+        let index = open_index_at(root)?;
         index
             .ensure_embedding_fingerprint(&provider.fingerprint())
             .map_err(|error| format!("validate personal knowledge embedding cache: {error}"))?;
@@ -736,7 +851,7 @@ async fn embed_pending(max_batches: Option<usize>) -> Result<(usize, usize), Str
         if !crate::org::local_knowledge_allowed().await {
             return Err("signed organization policy disables personal knowledge".into());
         }
-        let mut authorized = load_manifest();
+        let mut authorized = load_manifest_at(root);
         authorize_manifest(&mut authorized, &load_sources()?);
         let allowed_paths = authorized
             .entries
@@ -744,7 +859,7 @@ async fn embed_pending(max_batches: Option<usize>) -> Result<(usize, usize), Str
             .map(|entry| entry.cache_path.as_str())
             .collect::<HashSet<_>>();
         let batch = {
-            let index = open_index()?;
+            let index = open_index_at(root)?;
             batch
                 .iter()
                 .filter(|(chunk_id, _)| {
@@ -780,20 +895,23 @@ async fn embed_pending(max_batches: Option<usize>) -> Result<(usize, usize), Str
         if !crate::org::local_knowledge_allowed().await {
             return Err("signed organization policy disables personal knowledge".into());
         }
-        let mut current = load_manifest();
+        let mut current = load_manifest_at(root);
         authorize_manifest(&mut current, &load_sources()?);
         let current_paths = current
             .entries
             .iter()
             .map(|entry| entry.cache_path.as_str())
             .collect::<HashSet<_>>();
-        let index = open_index()?;
+        let index = open_index_at(root)?;
         let mut batch_embedded = 0usize;
-        for ((chunk_id, _), embedding) in batch.iter().zip(embeddings.iter()) {
+        for ((chunk_id, text), embedding) in batch.iter().zip(embeddings.iter()) {
             if !index
                 .get_chunk(chunk_id)
                 .map_err(|error| format!("validate embedded chunk: {error}"))?
-                .is_some_and(|chunk| current_paths.contains(chunk.path.as_str()))
+                .is_some_and(|chunk| {
+                    current_paths.contains(chunk.path.as_str())
+                        && chunk.hash == echo_agent_memory::chunker::chunk_hash(text)
+                })
             {
                 continue;
             }
@@ -872,6 +990,7 @@ fn index_status_snapshot() -> PersonalKnowledgeIndexStatus {
         "ready".to_owned()
     };
     PersonalKnowledgeIndexStatus {
+        warnings: manifest.warnings,
         state,
         message: runtime.message,
         file_count,
@@ -930,6 +1049,9 @@ async fn rebuild_inner(
             return Err(error);
         }
     };
+    if load_manifest().entries.is_empty() {
+        activate_index(&synced.root)?;
+    }
     update_runtime_status(|status| {
         status.file_count = synced.manifest.entries.len();
         status.chunk_count = synced.chunk_count;
@@ -948,12 +1070,12 @@ async fn rebuild_inner(
     }
 
     let embedding_result = if synced.vec_available && synced.pending_embedding_count > 0 {
-        embed_pending(None).await
+        embed_pending(&synced.root, None).await
     } else {
         Ok((0, 0))
     };
     let remaining = if synced.vec_available {
-        open_index()
+        open_index_at(&synced.root)
             .and_then(|index| {
                 index.chunks_without_embeddings().map_err(|error| {
                     format!("read remaining personal knowledge embeddings: {error}")
@@ -964,6 +1086,9 @@ async fn rebuild_inner(
     } else {
         synced.chunk_count
     };
+    if crate::org::local_knowledge_allowed().await {
+        activate_index(&synced.root)?;
+    }
     update_runtime_status(|status| match embedding_result {
         Ok(_) if remaining == 0 => {
             status.state = if status.file_count == 0 {
@@ -988,7 +1113,7 @@ async fn rebuild_inner(
         }
         Err(ref error) => {
             status.state = "degraded".to_owned();
-            status.message = Some(format!("向量服务暂不可用，已保留关键词检索：{error}"));
+            status.message = Some(format!("本地语义检索暂不可用，已保留关键词检索：{error}"));
             status.pending_embedding_count = remaining;
             status.embedded_chunk_count = status.chunk_count.saturating_sub(remaining);
         }
@@ -1062,7 +1187,12 @@ fn map_results(
             let start_line = result.start_line.saturating_sub(2) + 1;
             let end_line = result.end_line.saturating_sub(2).max(start_line);
             Some(PersonalKnowledgeEntry {
-                id: format!("{}#L{}", entry.original_path, start_line),
+                id: format!(
+                    "{}#L{}-{}",
+                    entry.original_path,
+                    start_line,
+                    &hex::encode(Sha256::digest(result.chunk_id.as_bytes()))[..12]
+                ),
                 title: entry.title.clone(),
                 snippet: strip_cached_heading(&result.snippet, &entry.title),
                 source: entry.source_id.clone(),
@@ -1077,6 +1207,43 @@ fn map_results(
         .collect()
 }
 
+fn expand_neighbor_context(results: &mut [SearchResult], manifest: &IndexManifest) {
+    let Ok(index) = open_index_at(&root_for_manifest(manifest)) else {
+        return;
+    };
+    let selected = results
+        .iter()
+        .map(|result| result.chunk_id.clone())
+        .collect::<HashSet<_>>();
+    for result in results {
+        let Ok(neighbors) = index.neighboring_chunks(&result.chunk_id) else {
+            continue;
+        };
+        for neighbor in neighbors {
+            if selected.contains(&neighbor.id) {
+                continue;
+            }
+            let candidate = if neighbor.rowid
+                < index
+                    .get_chunk(&result.chunk_id)
+                    .ok()
+                    .flatten()
+                    .map_or(0, |chunk| chunk.rowid)
+            {
+                format!("{}\n\n{}", neighbor.text, result.snippet)
+            } else {
+                format!("{}\n\n{}", result.snippet, neighbor.text)
+            };
+            if echo_agent_memory::local::token_count(&candidate) > 700 {
+                continue;
+            }
+            result.snippet = candidate;
+            result.start_line = result.start_line.min(neighbor.start_line);
+            result.end_line = result.end_line.max(neighbor.end_line);
+        }
+    }
+}
+
 async fn rerank_candidates(
     query: &str,
     candidates: Vec<SearchResult>,
@@ -1084,8 +1251,8 @@ async fn rerank_candidates(
     cancellation: &CancellationToken,
 ) -> Result<Vec<SearchResult>, String> {
     let config = reranker_config();
-    let reranker = ApiReranker::from_config(&config.reranker)
-        .ok_or_else(|| "personal knowledge reranker is not configured".to_owned())?;
+    let reranker = ConfiguredReranker::from_config(&config.reranker)
+        .ok_or_else(|| "本地相关性模型尚未准备".to_owned())?;
     tokio::select! {
         _ = cancellation.cancelled() => Err(SEARCH_CANCELLED.to_owned()),
         result = tokio::time::timeout(RERANK_TIMEOUT, reranker.rerank(query, &candidates, limit)) => {
@@ -1102,9 +1269,10 @@ async fn search_hybrid(
     manifest: &IndexManifest,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<PersonalKnowledgeEntry>, bool, Option<String>), String> {
-    let candidate_count = limit.saturating_mul(5).clamp(limit, 60);
+    let candidate_count = limit.saturating_mul(3).clamp(limit, 20);
     let config = coarse_search_config(candidate_count);
-    let backend = MemoryBackendImpl::new(database_path(), memory_storage())
+    let root = root_for_manifest(manifest);
+    let backend = MemoryBackendImpl::new(root.join(INDEX_DATABASE), memory_storage_at(&root))
         .with_embedding(
             embedding_config(),
             crate::agent_runtime::MEMORY_EMBEDDING_ENDPOINT.to_owned(),
@@ -1143,16 +1311,27 @@ async fn search_hybrid(
             created_at: result.created_at.unwrap_or_default(),
         })
         .collect::<Vec<_>>();
-    if candidates.len() <= 1 {
+    if candidates.is_empty() {
         return Ok((map_results(candidates, manifest), false, None));
     }
     match rerank_candidates(query, candidates.clone(), limit, cancellation).await {
-        Ok(reranked) => Ok((map_results(reranked, manifest), true, None)),
+        Ok(mut reranked) => {
+            echo_agent_memory::search::select_evidence(&mut reranked, limit);
+            expand_neighbor_context(&mut reranked, manifest);
+            Ok((map_results(reranked, manifest), true, None))
+        }
         Err(error) if error == SEARCH_CANCELLED => Err(error),
         Err(error) => {
             tracing::warn!(%error, "personal knowledge reranking degraded to hybrid ordering");
             Ok((
-                map_results(candidates.into_iter().take(limit).collect(), manifest),
+                map_results(
+                    candidates
+                        .into_iter()
+                        .filter(|candidate| candidate.score >= 0.6)
+                        .take(limit)
+                        .collect(),
+                    manifest,
+                ),
                 false,
                 Some(error),
             ))
@@ -1250,10 +1429,11 @@ fn indexed_lexical_search(
     limit: usize,
     manifest: &IndexManifest,
 ) -> Result<Vec<PersonalKnowledgeEntry>, String> {
-    if !database_path().is_file() {
+    let root = root_for_manifest(manifest);
+    if !root.join(INDEX_DATABASE).is_file() {
         return Ok(Vec::new());
     }
-    let index = open_index()?;
+    let index = open_index_at(&root)?;
     let terms = search_terms(query);
     let by_cache = manifest
         .entries
@@ -1276,9 +1456,17 @@ fn indexed_lexical_search(
             let Some(source) = by_cache.get(chunk.path.as_str()) else {
                 continue;
             };
+            if echo_agent_memory::search::lexical_query_coverage(query, &chunk.text) < 0.2 {
+                continue;
+            }
             let start_line = chunk.start_line.saturating_sub(2) + 1;
             let end_line = chunk.end_line.saturating_sub(2).max(start_line);
-            let id = format!("{}#L{}", source.original_path, start_line);
+            let id = format!(
+                "{}#L{}-{}",
+                source.original_path,
+                start_line,
+                &hex::encode(Sha256::digest(chunk.id.as_bytes()))[..12]
+            );
             let title_hit = source.title.to_lowercase().contains(term);
             let rank_quality = 1.0 / (1.0 + hit.rank.abs());
             let score = (terms.len().saturating_sub(term_index) * 10 + term.chars().count() * 2)
@@ -1447,7 +1635,10 @@ pub(crate) async fn search(
     let mut degraded_reason = (status.state == "indexing")
         .then(|| "个人知识索引正在后台更新，本次使用上一版完整索引".to_owned());
     let mut retrieval_mode = "keyword";
-    let mut items = if status.embedded_chunk_count > 0 {
+    let mut items = if status.embedded_chunk_count > 0
+        && manifest.index_fingerprint == target_fingerprint()
+        && echo_agent_memory::local::available(false)
+    {
         match search_hybrid(query, limit, &manifest, cancellation).await {
             Ok((items, reranked, rerank_error)) if !items.is_empty() => {
                 if let Some(error) = rerank_error {
@@ -1459,6 +1650,10 @@ pub(crate) async fn search(
                     "hybrid"
                 };
                 items
+            }
+            Ok((_, true, _)) => {
+                retrieval_mode = "hybrid-reranked";
+                Vec::new()
             }
             Ok(_) => indexed_lexical_search_async(query, limit, &manifest, cancellation).await?,
             Err(error) if error == SEARCH_CANCELLED => return Err(error),
@@ -1547,6 +1742,52 @@ pub fn personal_knowledge_index_status() -> PersonalKnowledgeIndexStatus {
 mod tests {
     use super::*;
 
+    #[test]
+    fn office_zip_reader_preserves_reordered_presentation_pages_and_wide_sheet_cells() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let write_package = |name: &str, parts: &[(&str, &str)]| {
+            let path = directory.path().join(name);
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            for (part, content) in parts {
+                zip.start_file(*part, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(content.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        };
+        let presentation = write_package(
+            "调整顺序.pptx",
+            &[
+                ("ppt/slides/slide1.xml", "<p><t>实际第二页</t></p>"),
+                ("ppt/slides/slide2.xml", "<p><t>实际第一页</t></p>"),
+                (
+                    "ppt/presentation.xml",
+                    r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="256" r:id="r2"/><p:sldId id="257" r:id="r1"/></p:sldIdLst></p:presentation>"#,
+                ),
+                (
+                    "ppt/_rels/presentation.xml.rels",
+                    r#"<Relationships><Relationship Id="r1" Target="slides/slide1.xml"/><Relationship Id="r2" Target="slides/slide2.xml"/></Relationships>"#,
+                ),
+            ],
+        );
+        assert_eq!(
+            read_source_file(&presentation).unwrap(),
+            "## 第 1 页\n\n实际第一页\n\n## 第 2 页\n\n实际第二页"
+        );
+        let spreadsheet = write_package(
+            "宽表.xlsx",
+            &[(
+                "xl/worksheets/sheet1.xml",
+                r#"<worksheet><row r="1"><c r="AMJ1"><v>1024</v></c><c r="AMK1"><v>1025</v></c></row></worksheet>"#,
+            )],
+        );
+        let extracted = read_source_file(&spreadsheet).unwrap();
+        assert!(extracted.contains("AMJ1：1024"));
+        assert!(extracted.contains("AMK1：1025"));
+    }
+
     fn source_fixture() -> (tempfile::TempDir, Vec<LocalSource>, IndexManifest) {
         let directory = tempfile::tempdir().unwrap();
         let mut sources = Vec::new();
@@ -1578,6 +1819,9 @@ mod tests {
             IndexManifest {
                 version: INDEX_VERSION,
                 embedding_model: "test".into(),
+                generation: String::new(),
+                index_fingerprint: String::new(),
+                warnings: Vec::new(),
                 last_updated_at: Some(1),
                 entries,
             },
@@ -1661,14 +1905,20 @@ mod tests {
     fn personal_retrieval_uses_requested_models() {
         let embedding = embedding_config();
         let search = reranker_config();
-        assert_eq!(embedding.model.as_deref(), Some("embed-pro"));
-        assert_eq!(embedding.dimensions, 1024);
+        assert_eq!(
+            embedding.model.as_deref(),
+            Some(echo_agent_memory::local::EMBEDDING_MODEL)
+        );
+        assert_eq!(embedding.dimensions, 768);
         assert_eq!(
             embedding.endpoint.as_deref(),
             Some(crate::agent_runtime::MEMORY_EMBEDDING_ENDPOINT)
         );
         assert!(embedding.api_key.is_none());
-        assert_eq!(search.reranker.model.as_deref(), Some("rerank-pro"));
+        assert_eq!(
+            search.reranker.model.as_deref(),
+            Some(echo_agent_memory::local::RERANK_MODEL)
+        );
         assert_eq!(
             search.reranker.endpoint.as_deref(),
             Some(crate::agent_runtime::MEMORY_RERANK_ENDPOINT)
@@ -1680,9 +1930,11 @@ mod tests {
     #[test]
     fn lexical_terms_keep_exact_query_and_add_cjk_subphrases() {
         let terms = search_terms("公司的差旅费用标准是什么？");
-        assert!(terms
-            .iter()
-            .any(|term| term == "公司的差旅费用标准是什么？"));
+        assert!(
+            terms
+                .iter()
+                .any(|term| term == "公司的差旅费用标准是什么？")
+        );
         assert!(terms.iter().any(|term| term == "差旅费用"));
         assert!(terms.iter().any(|term| term == "费用标准"));
     }
@@ -1717,6 +1969,9 @@ mod tests {
         let manifest = IndexManifest {
             version: INDEX_VERSION,
             embedding_model: crate::agent_runtime::MEMORY_EMBEDDING_MODEL.to_owned(),
+            generation: String::new(),
+            index_fingerprint: String::new(),
+            warnings: Vec::new(),
             last_updated_at: Some(1),
             entries: vec![ManifestEntry {
                 original_path: "/notes/travel.md".to_owned(),

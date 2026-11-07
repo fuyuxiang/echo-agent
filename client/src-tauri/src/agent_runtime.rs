@@ -46,29 +46,30 @@ use std::os::windows::fs::OpenOptionsExt;
 
 const MAX_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 pub(crate) const DESKTOP_CLIENT_IDENTIFIER: &str = "echo-agent-desktop";
-pub(crate) const OJLAB_BASE_URL: &str = "http://123.56.188.16:8088/v1";
-pub(crate) const MEMORY_EMBEDDING_ENDPOINT: &str = "http://123.56.188.16:8088/v1/embeddings";
-pub(crate) const MEMORY_EMBEDDING_MODEL: &str = "embed-pro";
-pub(crate) const MEMORY_EMBEDDING_DIMENSIONS: usize = 1024;
-pub(crate) const MEMORY_RERANK_ENDPOINT: &str = "http://123.56.188.16:8088/v1/rerank";
-pub(crate) const MEMORY_RERANK_MODEL: &str = "rerank-pro";
+pub(crate) const MEMORY_EMBEDDING_ENDPOINT: &str = "local://retrieval/embeddings";
+pub(crate) const MEMORY_EMBEDDING_MODEL: &str = echo_agent_memory::local::EMBEDDING_MODEL;
+pub(crate) const MEMORY_EMBEDDING_DIMENSIONS: usize = echo_agent_memory::local::DIMENSIONS;
+pub(crate) const MEMORY_RERANK_ENDPOINT: &str = "local://retrieval/rerank";
+pub(crate) const MEMORY_RERANK_MODEL: &str = echo_agent_memory::local::RERANK_MODEL;
 
 fn configure_memory_retrieval(cfg: &mut AgentConfig) {
+    crate::retrieval_models::initialize();
     let Some(memory) = cfg.memory_config.as_mut() else {
         return;
     };
 
-    memory.embedding.provider = "api".to_owned();
+    memory.embedding.provider = "local".to_owned();
     memory.embedding.model = Some(MEMORY_EMBEDDING_MODEL.to_owned());
     memory.embedding.dimensions = MEMORY_EMBEDDING_DIMENSIONS;
     memory.embedding.endpoint = Some(MEMORY_EMBEDDING_ENDPOINT.to_owned());
     // Session startup falls back to the chat model's API key when this is None.
-    // An explicit empty key keeps the built-in embedding service keyless.
+    // An explicit empty key prevents chat credentials entering retrieval config.
     memory.embedding.api_key = Some(String::new());
     memory.embedding.send_dimensions = false;
+    memory.initial_injection.min_score = Some(0.6);
 
     // The model-based reranker becomes the final ordering stage. The runtime's
-    // lightweight Jaccard MMR remains available as the network-failure fallback
+    // lightweight Jaccard MMR remains available as the inference-failure fallback
     // ordering but is not applied before a successful model rerank.
     memory.search.reranker.enabled = true;
     memory.search.reranker.endpoint = Some(MEMORY_RERANK_ENDPOINT.to_owned());
@@ -146,10 +147,10 @@ pub fn spawn_agent_runtime(_cwd: PathBuf) -> Result<AgentHandle> {
     // 这里不再需要注册 —— new_session 会把 MCP server 传给 EchoAgent，EchoAgent 以
     // client 身份连接（工具名 echoagent__create_team 等）。对 EchoAgent 零补丁。
 
-    crate::sessions::migrate_builtin_models_before_runtime()
+    crate::sessions::clear_removed_models_before_runtime()
         .map_err(|error| anyhow!("migrate saved task models: {error}"))?;
-    crate::providers::ensure_builtin_model_config()
-        .map_err(|error| anyhow!("install built-in model catalog: {error}"))?;
+    crate::providers::remove_retired_models_before_runtime()
+        .map_err(|error| anyhow!("remove retired model catalog: {error}"))?;
 
     // 0. Pin off the Runtime's upstream model-catalog fetch before the config is
     // read, so the load below already sees it. BYOK-only: the remote catalog adds
@@ -874,6 +875,10 @@ pub(crate) fn build_prompt_blocks(
     let mut text_meta = acp::Meta::new();
     text_meta.insert("echoDesktopTask".into(), serde_json::Value::Bool(true));
     text_meta.insert(
+        "echoAgentUserInput".into(),
+        serde_json::Value::String(display_text.unwrap_or(text).to_owned()),
+    );
+    text_meta.insert(
         "displayText".into(),
         serde_json::Value::String(display_text.unwrap_or(text).to_string()),
     );
@@ -1045,6 +1050,22 @@ pub(crate) fn build_team_prompt_blocks(
     // Validate/read attachments before registering a team for a rejected send.
     let mut blocks = build_prompt_blocks(text, attachments, display_text)?;
     let visible_text = display_text.unwrap_or(text);
+    if text.starts_with("<echoagent_personal_knowledge>") {
+        if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
+            block.meta.get_or_insert_with(Default::default).insert(
+                "echoAgentKnowledgeContext".into(),
+                serde_json::json!("personal-knowledge"),
+            );
+        }
+    }
+    if let Some(boundary) = crate::org_mcp::organization_retrieval_boundary(session_id) {
+        if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
+            block.meta.get_or_insert_with(Default::default).insert(
+                "echoAgentKnowledgeContext".into(),
+                serde_json::json!(boundary),
+            );
+        }
+    }
     let context = crate::team_mcp::prepare_prompt(session_id, prompt_id, visible_text)
         .map_err(|error| anyhow!(error))?;
     if !context.is_empty() {
@@ -1909,23 +1930,10 @@ mod tests {
             ),
             "Runtime uses the local Auto hint without persisting it as a preference"
         );
-        // Check the effective Runtime catalog, including IDs containing spaces.
-        // A settings-only update can otherwise display models the actor rejects.
-        let mut builtin_ids = runtime_ids
-            .into_iter()
-            .filter(|id| id.starts_with(crate::providers::BUILTIN_MODEL_PREFIX))
-            .collect::<Vec<_>>();
-        builtin_ids.sort();
-        assert_eq!(
-            builtin_ids,
-            [
-                "echoagent-ojlab/Echo Brook",
-                "echoagent-ojlab/Echo Cedar",
-                "echoagent-ojlab/Echo Grove",
-                "echoagent-ojlab/Echo Reed",
-                "echoagent-ojlab/Echo Willow",
-            ]
-        );
+        assert!(runtime_ids
+            .iter()
+            .all(|id| !crate::providers::is_removed_model_id(id)));
+        assert!(runtime_ids.iter().any(|id| id == "review/mock"));
         // 3. New session: runs AgentBuilder::build + merges the client-side
         //    MCP server entry (team tools live as echoagent__* now).
         let session_id = tokio::time::timeout(
@@ -1942,18 +1950,9 @@ mod tests {
         .expect("new_session timed out (60s)")
         .expect("new_session failed");
         assert!(!session_id.is_empty(), "empty session id");
-        for model_id in &builtin_ids {
-            set_session_model(&handle.tx, &session_id, model_id)
-                .await
-                .expect("switch to built-in chat model without inference");
-        }
-        set_session_model(
-            &handle.tx,
-            &session_id,
-            crate::providers::BUILTIN_DEFAULT_MODEL_ID,
-        )
-        .await
-        .expect("select Echo Reed");
+        set_session_model(&handle.tx, &session_id, "review/mock")
+            .await
+            .expect("select isolated personal model");
         assert_eq!(
             tokio::time::timeout(
                 std::time::Duration::from_secs(30),
@@ -1963,7 +1962,7 @@ mod tests {
             .expect("reconnect replay timed out")
             .unwrap()
             .as_deref(),
-            Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID),
+            Some("review/mock"),
         );
         if let Some(default_model) = init.default_model_id.as_deref() {
             set_session_model(&handle.tx, &session_id, default_model)
@@ -2075,8 +2074,8 @@ mod tests {
             .expect("upgraded task replay timed out")
             .unwrap()
             .as_deref(),
-            Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID),
-            "upgrade restores the selected built-in, never an unrelated provider"
+            Some("review/mock"),
+            "removed binding uses the configured personal default without rewriting history"
         );
         restored.cancel.cancel();
         if let Some(thread) = restored.thread {
@@ -2303,7 +2302,7 @@ mod memory_retrieval_tests {
         memory.search.reranker.endpoint = Some("https://custom.example/rerank".into());
         configure_memory_retrieval(&mut config);
         let memory = config.memory_config.as_ref().unwrap();
-        assert_eq!(memory.embedding.provider, "api");
+        assert_eq!(memory.embedding.provider, "local");
         assert_eq!(memory.embedding.api_key.as_deref(), Some(""));
         assert_eq!(
             memory.embedding.endpoint.as_deref(),
@@ -2325,61 +2324,24 @@ mod memory_retrieval_tests {
         );
     }
 
-    #[tokio::test]
-    async fn builtin_embedding_does_not_send_the_chat_model_key() {
-        use echo_agent_memory::embedding::{ApiEmbeddingProvider, EmbeddingProvider};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
+    #[test]
+    fn builtin_embedding_never_uses_a_network_provider_or_chat_key() {
+        use echo_agent_memory::embedding::ConfiguredEmbeddingProvider;
         let raw = serde_json::from_value(serde_json::json!({})).unwrap();
         let mut config = AgentConfig::new_from_toml_cfg(&raw).unwrap();
         config.memory_config = Some(Default::default());
         configure_memory_retrieval(&mut config);
         let embedding = &config.memory_config.as_ref().unwrap().embedding;
-        let embedding_key = embedding
-            .api_key
-            .clone()
-            .or_else(|| Some("model-secret".to_owned()))
-            .unwrap();
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}/v1/embeddings", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0; 4096];
-            loop {
-                let count = stream.read(&mut buffer).await.unwrap();
-                if count == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..count]);
-                if request.windows(4).any(|part| part == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            stream
-                .write_all(
-                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .unwrap();
-            String::from_utf8(request).unwrap()
-        });
-
-        let provider =
-            ApiEmbeddingProvider::from_session(embedding, endpoint, embedding_key).unwrap();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            provider.embed_batch(&["private memory"]),
-        )
-        .await
-        .unwrap();
-        assert!(result.is_err());
-        let request = tokio::time::timeout(std::time::Duration::from_secs(5), server)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(!request.to_ascii_lowercase().contains("authorization:"));
-        assert!(!request.contains("model-secret"));
+        assert_eq!(embedding.provider, "local");
+        assert_eq!(embedding.api_key.as_deref(), Some(""));
+        let provider = ConfiguredEmbeddingProvider::from_session(
+            embedding,
+            "https://chat.example/v1".into(),
+            "model-secret".into(),
+        );
+        assert!(!matches!(
+            provider,
+            Some(ConfiguredEmbeddingProvider::Api(_))
+        ));
     }
 }

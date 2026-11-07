@@ -103,12 +103,12 @@ describe("UsageQuotaPanel", () => {
     expect(screen.getAllByText("$0.0600").length).toBeGreaterThan(0);
   });
 
-  it("同名内置与组织模型显示来源，费率仍按完整 ID 分别保存", () => {
+  it("同名历史已移除与组织模型显示来源，费率仍按完整 ID 分别保存", () => {
     const records = recordUsage([], { modelId: "echoagent-ojlab/Echo Reed", promptTokens: 1000, completionTokens: 500 });
     recordUsage(records, { modelId: "organization/Echo Reed", promptTokens: 200, completionTokens: 100 });
     const { container } = render(<UsageQuotaPanel />);
     expect(container.textContent).not.toMatch(/echoagent-ojlab\/|organization\//);
-    fireEvent.change(screen.getByLabelText("Echo Reed · 内置 输入费率"), { target: { value: "30" } });
+    fireEvent.change(screen.getByLabelText("Echo Reed · 已移除 输入费率"), { target: { value: "30" } });
     fireEvent.change(screen.getByLabelText("Echo Reed · 组织 输入费率"), { target: { value: "60" } });
     fireEvent.click(screen.getByText("保存费率"));
     expect(loadQuotaConfig()?.rates).toMatchObject({

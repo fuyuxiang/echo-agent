@@ -2114,6 +2114,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
 #[test]
 fn generation_zero_compaction_keeps_legacy_project_instructions() {
     let state_context = CompactionStateContext {
+        knowledge_context: None,
         cwd_generation: 0,
         destination_project_instructions: Some("destination rules".into()),
         agent_message_anchor: None,
@@ -2141,6 +2142,7 @@ fn generation_zero_compaction_keeps_legacy_project_instructions() {
 #[test]
 fn relocated_compaction_uses_destination_project_instructions() {
     let state_context = CompactionStateContext {
+        knowledge_context: None,
         cwd_generation: 1,
         destination_project_instructions: Some("destination rules".into()),
         agent_message_anchor: None,
@@ -2168,6 +2170,7 @@ fn relocated_compaction_uses_destination_project_instructions() {
 #[test]
 fn relocated_compaction_does_not_restore_source_instructions_when_destination_has_none() {
     let state_context = CompactionStateContext {
+        knowledge_context: None,
         cwd_generation: 1,
         destination_project_instructions: None,
         agent_message_anchor: None,
@@ -2198,6 +2201,7 @@ fn relocated_compaction_does_not_restore_source_instructions_when_destination_ha
 #[test]
 fn build_compacted_history_tags_agents_md_with_project_instructions() {
     let state_context = CompactionStateContext {
+        knowledge_context: None,
         cwd_generation: 0,
         destination_project_instructions: None,
         agent_message_anchor: None,
@@ -2242,6 +2246,7 @@ fn build_compacted_history_tags_agents_md_with_project_instructions() {
 #[test]
 fn build_compacted_history_omits_agents_md_when_none() {
     let state_context = CompactionStateContext {
+        knowledge_context: None,
         cwd_generation: 0,
         destination_project_instructions: None,
         agent_message_anchor: None,
@@ -2961,4 +2966,88 @@ fn fit_counts_encrypted_reasoning_against_budget() {
         out.iter().any(|i| i.text_content() == "recent answer"),
         "recent turn must survive"
     );
+}
+
+#[test]
+fn retrieval_query_stays_separate_from_knowledge_injection() {
+    let mut user = ConversationItem::user(format!(
+        "<user_query><echoagent_personal_knowledge>{}</echoagent_personal_knowledge>原问题</user_query>",
+        "资料".repeat(3000)
+    ));
+    if let ConversationItem::User(item) = &mut user {
+        item.retrieval_query = Some("原问题".into());
+    }
+    assert_eq!(extract_last_real_user_query(&[user]), Some("原问题".into()));
+    assert_eq!(
+        extract_user_query(
+            "<user_query><echoagent_personal_knowledge>旧资料</echoagent_personal_knowledge>原问题</user_query>"
+        ),
+        "原问题"
+    );
+}
+#[test]
+fn organization_answers_cannot_become_personal_memory() {
+    let mut restricted = ConversationItem::user("组织制度是什么？");
+    if let ConversationItem::User(item) = &mut restricted {
+        item.knowledge_context = Some("organization-boundary".into());
+    }
+    let safe = personal_memory_conversation(vec![
+        restricted,
+        ConversationItem::assistant("受限组织内容"),
+        ConversationItem::user("以后回答简洁一点"),
+        ConversationItem::assistant("好的"),
+    ]);
+    assert_eq!(safe.len(), 2);
+    assert!(
+        safe.iter().all(is_real_user_turn),
+        "retain human preferences while excluding all knowledge-derived answers"
+    );
+    assert!(
+        !safe
+            .iter()
+            .any(|item| item.text_content().contains("受限组织内容"))
+    );
+    assert_eq!(
+        extract_last_real_user_query(&safe),
+        Some("以后回答简洁一点".into())
+    );
+}
+
+#[test]
+fn retrieved_provenance_survives_compaction_and_disk_roundtrip() {
+    let state = CompactionStateContext {
+        knowledge_context: Some("organization-account-scope".into()),
+        cwd_generation: 0,
+        destination_project_instructions: None,
+        agent_message_anchor: None,
+        recent_messages: vec![],
+        last_user_query: Some("组织制度是什么？".into()),
+        agent_edited_paths: vec![],
+        running_tasks: vec![],
+        running_subagents: vec![],
+        connected_mcp_servers: vec![],
+        todos: vec![],
+    };
+    let compacted = build_compacted_history(CompactedHistoryInput {
+        system_message: ConversationItem::system("sys"),
+        user_message_prefix: String::new(),
+        agents_md_reminder: None,
+        state_context: &state.for_compaction(),
+        compaction_summary: "组织制度的受限结论".into(),
+        system_reminder: None,
+        summary_before_recent: false,
+        transcript_hint: None,
+        summary_count: 1,
+    });
+    let bytes = serde_json::to_vec(&compacted).unwrap();
+    let mut restored: Vec<ConversationItem> = serde_json::from_slice(&bytes).unwrap();
+    restored.push(ConversationItem::user("继续解释刚才的制度"));
+    restored.push(ConversationItem::assistant("基于组织资料的另一个结论"));
+    let safe = personal_memory_conversation(restored);
+    assert_eq!(
+        extract_real_user_queries(&safe),
+        vec!["组织制度是什么？", "继续解释刚才的制度"]
+    );
+    assert!(safe.iter().all(is_real_user_turn));
+    assert!(!safe.iter().any(|item| item.text_content().contains("结论")));
 }

@@ -1,6 +1,6 @@
 // Read-only qualification through the real app IPC, Runtime, and MCP service.
 // Does not approve desktop writes, synthesize tools, or claim task acceptance.
-window.__echoDesktopControlsReview = async ({ home, cwd }) => {
+window.__echoDesktopControlsReview = async ({ home, cwd, modelId }) => {
   if (window.__echoDesktopControlsStarted) return;
   window.__echoDesktopControlsStarted = true;
   const invoke = (command,args={}) => window.__TAURI_INTERNALS__.invoke(command,args);
@@ -46,7 +46,7 @@ window.__echoDesktopControlsReview = async ({ home, cwd }) => {
       }
       tools.set(id,previous);
     });
-    sessionId=await invoke('agent_new_session',{cwd,modelId:'echoagent-ojlab/Echo Reed',permissionMode:'ask'});
+    sessionId=await invoke('agent_new_session',{cwd,modelId,permissionMode:'ask'});
     report.sessionId=sessionId;
     await invoke('set_coding_mode',{sessionId,mode:'computer_use'});
     const promptId=`controls-${Date.now()}`;

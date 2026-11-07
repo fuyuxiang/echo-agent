@@ -20,10 +20,12 @@ pub fn select_flush_window(
     // The memory model needs conversation evidence, not signed reasoning,
     // images or executable tool-call pairs that a bounded window may split.
     let messages: Vec<_> =
-        echo_agent_chat_state::compaction_utils::prepare_conversation_for_summarization(messages)
-            .into_iter()
-            .filter(|item| !matches!(item, ConversationItem::System(_)))
-            .collect();
+        echo_agent_chat_state::compaction_utils::prepare_conversation_for_summarization(
+            echo_agent_chat_state::compaction_utils::personal_memory_conversation(messages),
+        )
+        .into_iter()
+        .filter(|item| !matches!(item, ConversationItem::System(_)))
+        .collect();
 
     if messages.is_empty() || recent_message_count == 0 {
         return Vec::new();

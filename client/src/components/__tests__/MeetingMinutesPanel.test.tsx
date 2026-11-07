@@ -49,7 +49,7 @@ beforeEach(() => meetingDrafts.clear());
 const models = [
   { id: "personal/MiniMax-M3", label: "个人 MiniMax", providerId: "personal", providerKind: "custom", source: "personal" as const },
   { id: "organization/MiniMax-M3", label: "组织 MiniMax", providerId: "echoagent-organization", providerKind: "custom", source: "organization" as const, insecureHttp: true },
-  { id: "echoagent-ojlab/MiniMax-M3", label: "内置 MiniMax", providerId: "echoagent-ojlab", providerKind: "custom", source: "builtin" as const },
+  { id: "echoagent-ojlab/MiniMax-M3", label: "内置 MiniMax", providerId: "echoagent-ojlab", providerKind: "custom", source: "legacy" as const },
 ];
 
 describe("MeetingMinutesPanel recording first workflow", () => {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
 import { validateExtensionLayouts } from "./validate-extension-layout.mjs";
+import { validateConnectorViews } from "./validate-connector-views.mjs";
 
 const output = reviewOutput(mkdtempSync(join(tmpdir(), "echo-resource-collections-")));
 const server = await createUiReviewServer(1439);
@@ -71,10 +72,11 @@ try {
     assert(await responsive.locator(".resource-description__text").evaluate(element => element === document.activeElement), "removing an unnecessary toggle keeps focus at its text");
   }
   const extensionLayouts = await validateExtensionLayouts(page, output);
+  const connectorViews = await validateConnectorViews(browser, base, output);
   const surfaces = [
     ["projects", "项目", "grid"], ["capabilities", "专家·技能·连接器", "grid"],
     ["resource-groups", "专家团", "grid"], ["capabilities", "技能", "grid"],
-    ["capabilities", "连接器", "compact"], ["capabilities", "插件", "grid"],
+    ["capabilities", "连接器", "grid"], ["capabilities", "插件", "grid"],
     ["management-schedules", "定时任务", "grid"],
   ];
   for (const [width, font, theme, collapsed] of [[1280, 16, "light", 1], [1280, 16, "dark", 0], [1024, 22, "dark", 1], [768, 22, "light", 1], [390, 16, "light", 1], [350, 22, "dark", 1]]) {
@@ -126,7 +128,7 @@ try {
       await page.locator('.resource-list[data-view="cards"]').waitFor();
       if (label === "项目") assert.equal(await page.locator(".capability-page__illustration").count(), 0, "populated projects use the compact heading");
       if (label === "专家·技能·连接器") assert.equal(await page.locator(".colleague-avatar-dot,.colleague-card-status-pill").count(), 0, "expert definitions have no invented live status");
-      if (label === "连接器") assert.equal(await page.locator(".mcp-item-main").filter({ hasText: "0 个工具" }).count(), 0, "unloaded connectors do not imply tool discovery failure");
+      if (label === "连接器") assert.equal(await page.locator(".mcp-item-wrap").filter({ hasText: "0 个工具" }).count(), 0, "unloaded connectors do not imply tool discovery failure");
       if (label === "定时任务") assert.equal(await page.getByRole("listitem", { name: "定时任务 每周交付报告", exact: true }).locator(".atm-task-card__next").count(), 0, "paused tasks have no next execution promise");
     }
   }
@@ -154,8 +156,8 @@ try {
     assert.deepEqual(style, reference, `${surface} and ${firstSurface} share template presentation`);
   }
   assert.deepEqual(errors, []);
-  writeFileSync(join(output, "layouts.json"), JSON.stringify({ extensionLayouts, resources: evidence, templates }, null, 2));
-  console.log(JSON.stringify({ output, extensionLayouts, collectionLayouts: evidence.length, templateTypes: templates.length, errors }));
+  writeFileSync(join(output, "layouts.json"), JSON.stringify({ extensionLayouts, connectorViews, resources: evidence, templates }, null, 2));
+  console.log(JSON.stringify({ output, extensionLayouts, connectorLayouts: connectorViews.length, collectionLayouts: evidence.length, templateTypes: templates.length, errors }));
 } finally {
   await browser?.close();
   await server.close();

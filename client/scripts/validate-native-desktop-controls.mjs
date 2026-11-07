@@ -1,3 +1,4 @@
+import { seedReviewModel } from './lib/native-review-model.mjs';
 // Build first with --features tauri/custom-protocol; a dev-URL binary cannot run standalone.
 // Actual app identity and Runtime evidence. --task-flow requires the independent
 // verifier before claiming a completed desktop task.
@@ -36,7 +37,7 @@ document.querySelector('#copy').onclick=()=>{document.querySelector('#result').t
 document.querySelector('#file').onchange=async e=>{const f=e.target.files[0];received=f?await f.text():'';document.querySelector('#received').textContent=f?f.name+'\\n'+received:'';verify();};
 </script>`,{mode:0o600});
 writeFileSync(join(home,'config.toml'),'[marketplace]\nofficial_marketplace_auto_installed = true\ndisabled_sources = []\n[claude_compat]\nimported = true\n',{mode:0o600});
-let requestedModelId='echoagent-ojlab/Echo Reed';
+let requestedModelId='echoagent-review/claude-opus-5-5';
 const resource=process.env.ECHO_DESKTOP_REVIEW_CONTROLS_MODEL_RESOURCE;
 if(resource){
   const file=lstatSync(resource),parent=lstatSync(dirname(resource));
@@ -56,6 +57,8 @@ if(resource){
     table('models',{default:m.modelId})+table('model_providers.'+quote(m.providerId),m.provider)+table('model.'+quote(m.modelId),m.model);
   writeFileSync(join(home,'config.toml'),config,{mode:0o600});
   requestedModelId=m.modelId;
+} else {
+  requestedModelId=seedReviewModel(home);
 }
 const legacy=join(home,'empty-legacy');mkdirSync(legacy,{mode:0o700});
 const bundle=join(home,'EchoAgent Controls.app'),contents=join(bundle,'Contents');

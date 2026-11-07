@@ -6,10 +6,7 @@ use std::path::Path;
 pub(crate) const PRIVATE_MODEL_ID: &str = "echoagent-review/claude-opus-5-5";
 
 pub(crate) fn allowed_model(id: &str) -> bool {
-    matches!(
-        id,
-        "echoagent-ojlab/Echo Reed" | "echoagent-ojlab/Echo Grove" | PRIVATE_MODEL_ID
-    )
+    id == PRIVATE_MODEL_ID
 }
 
 // Deliberately no Debug: this DTO may contain the explicitly supplied key.
@@ -22,13 +19,6 @@ pub(crate) struct ReviewConnection {
 }
 
 pub(crate) fn connection(home: &Path, id: &str) -> Result<ReviewConnection, String> {
-    if id == "echoagent-ojlab/Echo Reed" {
-        return Ok(ReviewConnection {
-            base_url: crate::agent_runtime::OJLAB_BASE_URL.into(),
-            api_key: None,
-            model: "Echo Reed".into(),
-        });
-    }
     if id != PRIVATE_MODEL_ID {
         return Err("Unsupported core review model binding".into());
     }
@@ -90,9 +80,7 @@ pub(crate) fn validate_config(home: &Path, id: &str) -> Result<(), String> {
     if !allowed_model(id) {
         return Err("Unsupported review model".into());
     }
-    if id == PRIVATE_MODEL_ID {
-        connection(home, id)?;
-    }
+    connection(home, id)?;
     Ok(())
 }
 

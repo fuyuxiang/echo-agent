@@ -13,6 +13,13 @@ describe('定时任务计划状态与执行状态', () => {
   it('错过一次性计划不会被误认为用户暂停', () => {
     expect(taskStateLabel({ ...task(), scheduleType: 'once', scheduledDate: '2020-01-01', status: 'PAUSED' })).toBe('已错过');
   });
+  it('原模型已移除时提示重新选择，并保留已结束计划的状态', () => {
+    const retired: Automation = { ...task(), modelId: 'echoagent-ojlab/Echo Reed', scheduleType: 'once', scheduledDate: '2020-01-01', status: 'PAUSED' };
+    expect(taskState(retired)).toBe('ended');
+    expect(taskStateLabel(retired)).toBe('已错过');
+    expect(taskStateLabel({ ...retired, scheduleType: 'recurring' })).toBe('待选模型');
+    expect(taskStateLabel({ ...retired, modelId: 'mine/Echo Reed', scheduleType: 'recurring' })).toBe('已暂停');
+  });
   it('待确认、停止中和等待会话均有可理解的执行状态', () => {
     const run = { id: 'r', automationId: '', automationName: '', startedAt: '', status: 'running', archived: false };
     expect(runStatusLabel({ ...run, needsAttention: true })).toBe('待确认');

@@ -410,10 +410,18 @@ fn read_from(path: &std::path::Path) -> Result<Vec<Value>, String> {
         if project
             .get("defaultModelId")
             .and_then(Value::as_str)
-            .is_some_and(crate::providers::is_legacy_builtin_model_id)
+            .is_some_and(crate::providers::is_removed_model_id)
         {
-            project["defaultModelId"] =
-                Value::String(crate::providers::BUILTIN_DEFAULT_MODEL_ID.into());
+            project["defaultModelId"] = Value::Null;
+        }
+        for collection in ["tasks", "plans", "legacyPlans", "conversations"] {
+            if let Some(entries) = project.get_mut(collection).and_then(Value::as_array_mut) {
+                for entry in entries {
+                    if let Some(model) = entry.get_mut("modelId") {
+                        crate::providers::clear_removed_model_reference(model);
+                    }
+                }
+            }
         }
     }
     Ok(projects)
@@ -727,16 +735,21 @@ mod tests {
     }
 
     #[test]
-    fn retired_builtin_project_defaults_use_reed_without_changing_personal_models() {
+    fn retired_project_defaults_are_cleared_without_changing_personal_models() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("projects.json");
         let mut projects = vec![
-            json!({"id":"old", "name":"旧项目", "defaultModelId":"echoagent-ojlab/chat-xc"}),
+            json!({"id":"old", "name":"旧项目", "defaultModelId":"echoagent-ojlab/chat-xc",
+                "tasks":[{"id":"old-task","modelId":"echoagent-ojlab/Echo Reed","sessionId":"history"},{"id":"mine","modelId":"mine/chat"}],
+                "conversations":[{"sessionId":"history","modelId":"echoagent-ojlab/Echo Willow"}]}),
             json!({"id":"personal", "name":"个人模型", "defaultModelId":"mine/chat-xc"}),
             json!({"id":"current", "name":"当前模型", "defaultModelId":"echoagent-ojlab/Echo Grove"}),
         ];
         write_to(&path, &projects).unwrap();
-        projects[0]["defaultModelId"] = json!(crate::providers::BUILTIN_DEFAULT_MODEL_ID);
+        projects[0]["defaultModelId"] = serde_json::Value::Null;
+        projects[0]["tasks"][0]["modelId"] = serde_json::Value::Null;
+        projects[0]["conversations"][0]["modelId"] = serde_json::Value::Null;
+        projects[2]["defaultModelId"] = serde_json::Value::Null;
         assert_eq!(read_from(&path).unwrap(), projects);
     }
 

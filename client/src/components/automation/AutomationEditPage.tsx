@@ -20,7 +20,7 @@ import type {
 } from "@/lib/types";
 import type { AgentEntry, SkillInfo } from "@/lib/types";
 import { ModelSelector } from "@/components/ModelSelector";
-import { localTimeZoneLabel, workspaceName } from "./task-presentation";
+import { localTimeZoneLabel, workspaceName, taskNeedsModelSelection, REMOVED_TASK_MODEL_MESSAGE } from "./task-presentation";
 import {
   loadDesktopNotifyStatus,
   loadNotifyChannels,
@@ -474,6 +474,7 @@ export function AutomationEditPage({
   onOpenNotificationSettings,
   onWorkspaceCommit,
   validationError,
+  modelSelectionRequired = false,
 }: {
   mode: "create" | "edit";
   draft: AutomationDraft;
@@ -499,11 +500,14 @@ export function AutomationEditPage({
   onOpenNotificationSettings?: () => void;
   onWorkspaceCommit?: (cwd: string) => void;
   validationError?: string | null;
+  modelSelectionRequired?: boolean;
   onArchiveRecord: (id: string) => void;
   onRetryRecord: (automationId: string) => void;
   onDeleteRecord: (id: string) => void;
   onOpenSession?: (sessionId: string) => void;
 }) {
+  const needsModel = taskNeedsModelSelection(draft);
+  const modelRecovery = modelSelectionRequired || needsModel;
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [notificationRevision, setNotificationRevision] = useState(0);
   useEffect(() => {
@@ -682,11 +686,17 @@ export function AutomationEditPage({
       {/* ===== 表单主体 ===== */}
       <div className="atm-detail-content">
         <div className="atm-modal-body">
+          {needsModel && <p className="atm-editor-error" role="status">{REMOVED_TASK_MODEL_MESSAGE}</p>}
           {validationError && (
             <p className="atm-editor-error" role="alert">
               {validationError}
             </p>
           )}
+          {modelRecovery && <section className="atm-model-recovery" aria-label="重新选择任务模型">
+            <div className="atm-modal-label">任务模型</div>
+            <ModelChip models={models} value={draft.modelId} autoModelId={autoModelId}
+              disabled={saving} onChange={(id) => set({modelId: id})} />
+          </section>}
           {/* 名称 */}
           <label className="atm-modal-label" htmlFor={nameId}>
             名称
@@ -873,7 +883,7 @@ export function AutomationEditPage({
             </span>
             <span>
               模型：
-              {draft.modelId
+              {needsModel ? "原模型已移除，请重新选择" : draft.modelId
                 ? modelDisplayName(
                     models.find((model) => model.id === draft.modelId) ||
                       draft.modelId,
@@ -936,13 +946,13 @@ export function AutomationEditPage({
               />
 
               <div className="atm-prompt-toolbar">
-                <ModelChip
+                {!modelRecovery && <ModelChip
                   models={models}
                   value={draft.modelId}
                   autoModelId={autoModelId}
                   disabled={saving}
                   onChange={(id) => set({ modelId: id })}
-                />
+                />}
                 <SkillChip
                   skills={skills}
                   selected={draft.skills}
@@ -1043,7 +1053,9 @@ export function AutomationEditPage({
         </div>
       </div>
       <div className="atm-editor-footer">
-        <p>保存后按计划执行。“立即运行”会真实执行一次。</p>
+        <p>{draft.status === "PAUSED" || needsModel
+          ? "保存后保持暂停，可在任务详情中启用。"
+          : "保存后按计划执行。"}“立即运行”会真实执行一次。</p>
         <div>
           <button
             type="button"
@@ -1057,7 +1069,7 @@ export function AutomationEditPage({
             <button
               type="button"
               className="atm-detail-btn atm-detail-btn--secondary"
-              disabled={saving || isRecurringSelectionEmpty}
+              disabled={saving || isRecurringSelectionEmpty || needsModel}
               onClick={onTest}
             >
               保存并立即运行

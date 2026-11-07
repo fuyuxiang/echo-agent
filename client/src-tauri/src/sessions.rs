@@ -778,8 +778,8 @@ fn agent_sessions_root() -> PathBuf {
 
 /// Run only before constructing Runtime actors. Live summaries are owned by
 /// their actors and must never be rewritten behind Runtime's back.
-pub(crate) fn migrate_builtin_models_before_runtime() -> Result<usize, String> {
-    migrate_builtin_models_from_root(&agent_sessions_root())
+pub(crate) fn clear_removed_models_before_runtime() -> Result<usize, String> {
+    clear_removed_models_from_root(&agent_sessions_root())
 }
 
 /// Files restored or made readable after startup must not reach Runtime's
@@ -800,7 +800,7 @@ fn require_migrated_model_from_root(
                 && summary
                     .current_model_id
                     .as_deref()
-                    .is_some_and(crate::providers::is_legacy_builtin_model_id)
+                    .is_some_and(crate::providers::is_removed_model_id)
         })
     {
         return Err(
@@ -811,7 +811,7 @@ fn require_migrated_model_from_root(
     Ok(())
 }
 
-fn migrate_builtin_models_from_root(root: &Path) -> Result<usize, String> {
+fn clear_removed_models_from_root(root: &Path) -> Result<usize, String> {
     let directories = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -852,7 +852,7 @@ fn migrate_builtin_models_from_root(root: &Path) -> Result<usize, String> {
             if !summary
                 .current_model_id
                 .as_deref()
-                .is_some_and(crate::providers::is_legacy_builtin_model_id)
+                .is_some_and(crate::providers::is_removed_model_id)
             {
                 continue;
             }
@@ -860,7 +860,9 @@ fn migrate_builtin_models_from_root(root: &Path) -> Result<usize, String> {
             // history, timestamps, usage, and workspace identity.
             let mut value: serde_json::Value =
                 serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-            crate::providers::migrate_builtin_model_reference(&mut value["current_model_id"]);
+            // Runtime's persisted ModelId is a required string, not Option<String>.
+            // An empty identifier clears the binding while keeping old history readable.
+            value["current_model_id"] = serde_json::Value::String(String::new());
             let updated = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
             crate::paths::write_private_file(&path, &updated)?;
             migrated += 1;
@@ -910,7 +912,7 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(super::migrate_builtin_models_from_root(&root).unwrap(), 3);
+        assert_eq!(super::clear_removed_models_from_root(&root).unwrap(), 4);
         for (index, model) in models.iter().enumerate() {
             let directory = workspace.join(format!("saved-{index}"));
             let value: serde_json::Value =
@@ -918,11 +920,11 @@ mod tests {
                     .unwrap();
             assert_eq!(
                 value["current_model_id"].as_str(),
-                Some(if index < 3 {
-                    crate::providers::BUILTIN_DEFAULT_MODEL_ID
+                if crate::providers::is_removed_model_id(model) {
+                    Some("")
                 } else {
-                    model
-                })
+                    Some(*model)
+                }
             );
             assert_eq!(value["future"]["unchanged"], true);
             assert_eq!(value["generated_title"], "旧 chat-qwen 对话");
@@ -931,7 +933,7 @@ mod tests {
                 b"historical model: chat-qwen\n"
             );
         }
-        assert_eq!(super::migrate_builtin_models_from_root(&root).unwrap(), 0);
+        assert_eq!(super::clear_removed_models_from_root(&root).unwrap(), 0);
     }
 
     #[test]
@@ -961,7 +963,7 @@ mod tests {
                 .contains("重启")
         );
         assert!(super::require_migrated_model_from_root(&root, "unrelated-task", &cwd).is_ok());
-        assert_eq!(super::migrate_builtin_models_from_root(&root).unwrap(), 1);
+        assert_eq!(super::clear_removed_models_from_root(&root).unwrap(), 1);
         assert!(super::require_migrated_model_from_root(&root, "old-task", &cwd).is_ok());
     }
 
@@ -976,7 +978,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            super::migrate_builtin_models_from_root(home.path()).unwrap(),
+            super::clear_removed_models_from_root(home.path()).unwrap(),
             0
         );
     }
@@ -995,7 +997,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), home.path().join("workspace/linked-task"))
             .unwrap();
         assert_eq!(
-            super::migrate_builtin_models_from_root(home.path()).unwrap(),
+            super::clear_removed_models_from_root(home.path()).unwrap(),
             0
         );
         assert_eq!(std::fs::read(path).unwrap(), contents);

@@ -3,8 +3,8 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ResourceList, ResourceMenu, ResourceRow } from "../ResourceList";
 
-function Collection({ scope = "experts" }: { scope?: "experts" | "skills" }) {
-  return <ResourceList collectionKey={scope} aria-label="测试资源">
+function Collection({ scope = "experts", defaultView }: { scope?: "experts" | "skills" | "connectors"; defaultView?: "cards" | "list" }) {
+  return <ResourceList collectionKey={scope} defaultView={defaultView} aria-label="测试资源">
     <ResourceRow><button type="button">打开资源</button></ResourceRow>
   </ResourceList>;
 }
@@ -12,6 +12,27 @@ function Collection({ scope = "experts" }: { scope?: "experts" | "skills" }) {
 describe("资源视图偏好与操作", () => {
   beforeEach(() => localStorage.clear());
   afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    [null, "list"], ["invalid", "list"], ["cards", "cards"], ["list", "list"],
+  ])("连接器默认列表，保留合法偏好（%s → %s），读取时不覆盖存储", (saved, expected) => {
+    if (saved !== null) localStorage.setItem("echo.resource-view.connectors", saved);
+    const save = vi.spyOn(Storage.prototype, "setItem");
+    render(<Collection scope="connectors" defaultView="list" />);
+    expect(screen.getByRole("list")).toHaveAttribute("data-view", expected);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("无法读取偏好时使用页面默认值，清除跨窗口偏好也回到页面默认值", () => {
+    const read = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
+    render(<Collection scope="connectors" defaultView="list" />);
+    expect(screen.getByRole("list")).toHaveAttribute("data-view", "list");
+    read.mockRestore();
+    fireEvent.click(screen.getByRole("button", { name: "卡片视图" }));
+    localStorage.removeItem("echo.resource-view.connectors");
+    fireEvent(window, new StorageEvent("storage", { key: null }));
+    expect(screen.getByRole("list")).toHaveAttribute("data-view", "list");
+  });
 
   it("默认卡片；切换保留条目与焦点，重新打开仍使用所选视图，各页互不影响", async () => {
     const user = userEvent.setup();

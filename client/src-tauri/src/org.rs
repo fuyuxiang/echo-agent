@@ -241,6 +241,13 @@ impl Default for OrgState {
 
 static SHARED_ORG_STATE: OnceLock<OrgState> = OnceLock::new();
 
+pub(crate) fn knowledge_account_generation() -> u64 {
+    shared_state()
+        .inner
+        .account_generation
+        .load(Ordering::Acquire)
+}
+
 pub fn shared_state() -> OrgState {
     SHARED_ORG_STATE.get_or_init(OrgState::default).clone()
 }

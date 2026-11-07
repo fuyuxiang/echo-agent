@@ -203,6 +203,25 @@ pub fn extract_cjk_bigrams(query: &str) -> Vec<String> {
     terms
 }
 
+/// Index every Han bigram, rather than scanning all source text at query time.
+pub fn indexed_cjk_terms(text: &str) -> String {
+    let mut previous = None;
+    let mut terms = HashSet::new();
+    for character in text.chars() {
+        if matches!(character, '\u{3400}'..='\u{9fff}' | '\u{f900}'..='\u{faff}') {
+            if let Some(first) = previous {
+                terms.insert(format!("{first}{character}"));
+            }
+            previous = Some(character);
+        } else {
+            previous = None;
+        }
+    }
+    let mut sorted = terms.into_iter().collect::<Vec<_>>();
+    sorted.sort();
+    sorted.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

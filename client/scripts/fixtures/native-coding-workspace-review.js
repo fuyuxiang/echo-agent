@@ -8,7 +8,7 @@
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   const home = scope?.home;
   const cwd = `${home}/workspaces/default`;
-  const modelId = 'echoagent-ojlab/Echo Reed';
+  const modelId = 'echoagent-review/claude-opus-5-5';
   const original = 'exports.double = n => n + 1;\n';
   const safeSource = value => typeof value === 'string' && value.length <= 4096
     && value.includes('UNSAVED_A01')
@@ -239,7 +239,7 @@
       await wait(()=>visible(document.querySelector('.echo-theia__frame'))&&!document.querySelector('.echo-theia__cover'),'Actual production Theia startup',90000);
       if(scope.inlineOnly===true) {
         assert((await call('coding_task_list',{root:cwd})).length===0,'Tab-only fixture already has a CodingTask');
-        await wait(()=>document.querySelector('button[aria-label^="开发任务模型："]')?.getAttribute('aria-label').includes('Echo Reed'),'Tab-only existing configured Echo Reed selection');
+        await wait(()=>document.querySelector('button[aria-label^="开发任务模型："]')?.getAttribute('aria-label').includes(modelId.split('/').at(-1)),'Tab-only configured personal model selection');
         const baseline=await call('read_text_file',{path:`${cwd}/completion.cjs`,cwd,maxBytes:4096});
         const inlineStart=inline.length;
         report.hostFocusBefore=hostFocusDiagnostics();

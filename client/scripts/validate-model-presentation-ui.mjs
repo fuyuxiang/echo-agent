@@ -23,7 +23,7 @@ try {
     const menu = page.getByRole("listbox", { name: "任务模型" });
     assert.equal(await menu.getByRole("option").count(), 6);
     assert.equal(await page.locator(".model-selector__source").count(), 0, "sources are grouped rather than repeated as badges");
-    assert.equal(await menu.getByRole("group").count(), 3);
+    assert.equal(await menu.getByRole("group").count(), 2);
     assert.doesNotMatch(await menu.textContent(), /echoagent-ojlab\/|organization\/|custom-[23]\//);
     const popup = page.getByRole("dialog", { name: "任务模型" });
     const layout = await popup.evaluate((element) => {
@@ -34,7 +34,7 @@ try {
     assert.ok(layout.left >= 0 && layout.right <= width + 1 && layout.top >= 0 && layout.bottom <= 801 && layout.fits, JSON.stringify({ width, theme, font, layout }));
     await popup.screenshot({ path: join(output, `models-${width}-${theme}-${font}.png`) });
     for (const [name, id] of [
-      ["Echo Reed · 内置", "echoagent-ojlab/Echo Reed"],
+      ["Echo Reed · 个人 · 默认网关", "custom-1/Echo Reed"],
       ["Echo Reed · 组织 · 研发团队", "organization/Echo Reed"],
       ["Echo Reed · 个人 · 我的网关", "custom-2/Echo Reed"],
       ["Echo Reed · 个人 · 备用网关", "custom-3/Echo Reed"],

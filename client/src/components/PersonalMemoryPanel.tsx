@@ -1,3 +1,4 @@
+import { LocalRetrievalModels } from "./LocalRetrievalModels";
 import { PageHeading } from "./PageHeading";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Brain, Plus, RefreshCw, Search, Pin, Pencil, Trash2, Check, Copy, Download } from "lucide-react";
@@ -109,6 +110,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, onToast, onOpenSession, on
     <div className="personal-memory__context">{cwd ? <>当前工作区 <code title={cwd}>{cwd}</code></> : "当前仅查看跨项目的全局记忆"}</div>
     {snapshot && !snapshot.enabled && <p className="personal-memory__notice" role="status">记忆已关闭，后续对话不再提取或使用记忆。已有内容仍可查看和管理。</p>}
     {error && <div className="panel-inline-error" role="alert"><span>{error}</span><Button size="compact" onClick={() => void reload()}>重新加载</Button></div>}
+    <LocalRetrievalModels />
     <div className="personal-memory__toolbar"><div role="tablist" aria-label="记忆分类">{([["active", "有效记忆"], ["tasks", "待跟进事项"], ["inactive", "已停用"]] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>{label}</button>)}</div>
       <Button size="compact" disabled={busy || !!draft || importing} onClick={() => beginEdit({ scope: "global", kind: "user", key: "", content: "", pinned: true, validUntil: null })}><Plus size={15} /> 添加记忆</Button>
       <Button size="compact" disabled={busy || !!draft || importing} onClick={() => { setImporting(true); setImportCwd(cwd); setPreviews([]); }}>导入记忆</Button>

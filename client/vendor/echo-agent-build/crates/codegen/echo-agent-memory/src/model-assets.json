@@ -1,0 +1,41 @@
+{
+  "pipelineVersion": "bge-zh-int8-cls-normalized-query-v1-chunks-v3",
+  "assets": [
+    {
+      "role": "embedding",
+      "repo": "Xenova/bge-base-zh-v1.5",
+      "revision": "71e50dc531959f9e04ebf190ea25b00261a0a186",
+      "remote": "tokenizer.json",
+      "path": "embedding/tokenizer.json",
+      "size": 439124,
+      "sha256": "7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
+    },
+    {
+      "role": "embedding",
+      "repo": "Xenova/bge-base-zh-v1.5",
+      "revision": "71e50dc531959f9e04ebf190ea25b00261a0a186",
+      "remote": "onnx/model_quantized.onnx",
+      "path": "embedding/model.onnx",
+      "size": 102868746,
+      "sha256": "b665f3bba56c3119bc76ba131ebcc544d720a7408cb11581bdf354aaa0198d43"
+    },
+    {
+      "role": "reranker",
+      "repo": "onnx-community/bge-reranker-base-ONNX",
+      "revision": "f131ae72114cb18333648a2ee6b0942849e8ab95",
+      "remote": "tokenizer.json",
+      "path": "reranker/tokenizer.json",
+      "size": 17082798,
+      "sha256": "14917dd757b81bc44d4af6b028367351702656670c1954e055dabdfcf21593cf"
+    },
+    {
+      "role": "reranker",
+      "repo": "onnx-community/bge-reranker-base-ONNX",
+      "revision": "f131ae72114cb18333648a2ee6b0942849e8ab95",
+      "remote": "onnx/model_quantized.onnx",
+      "path": "reranker/model.onnx",
+      "size": 279252659,
+      "sha256": "46a1bb4cf46ff1e300d27589d620141fbf04fc0eaf8e7bb6dea5e044475ff387"
+    }
+  ]
+}

@@ -8,6 +8,13 @@ import { usePendingExpertStore } from "@/stores/pending-expert-store";
 import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import type { AutomationMode } from "@/lib/automation-client";
 
+function homePlaceholder(attachmentCount: number): string {
+  if (attachmentCount === 0) return "从一个问题、一个想法，或一份文件开始";
+  return attachmentCount === 1
+    ? "想如何处理这份文件？"
+    : "想基于这些文件完成什么？";
+}
+
 /** EchoAgent 首页：单一任务入口。 */
 export function HomePage({
   onSend,
@@ -111,7 +118,6 @@ export function HomePage({
       <div className="home__inner">
         <header className="home__header">
           <h1 className="home__title">今天想完成什么？</h1>
-          <p className="home__description">描述任务，或添加文件、知识与工具。</p>
         </header>
 
         <section className="home__composer-area">
@@ -120,6 +126,7 @@ export function HomePage({
             disabled={creatingSession}
             onSend={onSend}
             onCancel={() => {}}
+            placeholder={homePlaceholder}
             apiReady={apiReady}
             modelLoading={modelLoading}
             setupHint={

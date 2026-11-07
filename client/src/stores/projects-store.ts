@@ -1,3 +1,4 @@
+import { isRemovedModelId } from "@/lib/retired-models";
 import { create } from "zustand";
 import { projectsLoad, projectsSave } from "@/lib/agent-client";
 import type { SessionSummary } from "@/lib/types";
@@ -118,6 +119,10 @@ export function migrateProjectWorkItems(project: Pick<ProjectMeta, "tasks" | "pl
   return tasks;
 }
 
+function clearRemovedModelBinding<T extends { modelId?: string }>(item: T): T {
+  return typeof item.modelId === "string" && isRemovedModelId(item.modelId) ? { ...item, modelId: undefined } : item;
+}
+
 /** 旧数据/外部数据补齐缺省详情字段，保证组件可直接读数组。 */
 function normalize(x: unknown): ProjectMeta | null {
   if (!x || typeof x !== "object") return null;
@@ -129,7 +134,7 @@ function normalize(x: unknown): ProjectMeta | null {
     cwd: o.cwd,
     templateId: o.templateId,
     instructions: o.instructions,
-    defaultModelId: typeof o.defaultModelId === "string" ? o.defaultModelId : undefined,
+    defaultModelId: typeof o.defaultModelId === "string" && !isRemovedModelId(o.defaultModelId) ? o.defaultModelId : undefined,
     createdAt: o.createdAt ?? new Date().toISOString(),
     connectors: Array.isArray(o.connectors) ? o.connectors : [],
     experts: Array.isArray(o.experts) ? o.experts : [],
@@ -137,10 +142,10 @@ function normalize(x: unknown): ProjectMeta | null {
     plans: [],
     legacyPlans: o.legacyPlans ?? (Array.isArray(o.plans) && o.plans.length ? o.plans : undefined),
     schemaVersion: 2,
-    tasks: migrateProjectWorkItems({ tasks: o.tasks ?? [], plans: o.plans ?? [] }),
+    tasks: migrateProjectWorkItems({ tasks: o.tasks ?? [], plans: o.plans ?? [] }).map(clearRemovedModelBinding),
     assets: Array.isArray(o.assets) ? o.assets : [],
     members: Array.isArray(o.members) ? o.members : [],
-    conversations: Array.isArray(o.conversations) ? o.conversations : [],
+    conversations: Array.isArray(o.conversations) ? o.conversations.map(clearRemovedModelBinding) : [],
   };
 }
 

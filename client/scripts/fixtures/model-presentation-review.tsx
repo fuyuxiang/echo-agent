@@ -12,10 +12,10 @@ const models: ModelOption[] = query.get("catalog") === "empty" ? [] : query.get(
   {id:"gateway/fast",label:"通用模型",remoteModelId:"fast",providerId:"gateway",providerLabel:"我的网关",source:"personal"},
   {id:"gateway/strong",label:"通用模型",remoteModelId:"strong",providerId:"gateway",providerLabel:"我的网关",source:"personal"},
 ] : query.get("catalog") === "distinct" ? [
-  ...["Echo Reed", "Echo Brook", "Echo Cedar", "Echo Grove", "Echo Willow"].map(name => ({id:`echoagent-ojlab/${name}`,source:"builtin" as const})),
+  ...["Echo Reed", "Echo Brook", "Echo Cedar", "Echo Grove", "Echo Willow"].map(name => ({id:`personal/${name}`,label:name,source:"personal" as const})),
   {id:"organization/MiniMax-M3.1-Flash",remoteModelId:"MiniMax-M3.1-Flash",source:"organization",providerLabel:"组织提供"},
 ] : [
-  { id: "echoagent-ojlab/Echo Reed", source: "builtin" },
+  { id: "custom-1/Echo Reed", remoteModelId: "Echo Reed", source: "personal", providerLabel: "默认网关" },
   { id: "organization/Echo Reed", source: "organization", providerLabel: "研发团队" },
   { id: "custom-2/Echo Reed", remoteModelId: "Echo Reed", source: "personal", providerLabel: "我的网关" },
   { id: "custom-3/Echo Reed", remoteModelId: "Echo Reed", source: "personal", providerLabel: "备用网关" },

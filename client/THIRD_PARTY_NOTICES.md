@@ -192,3 +192,14 @@ package manifest. Exact package versions are pinned in `pnpm-lock.yaml`.
 - Copyright: Tiptap GmbH and the respective ProseMirror contributors.
 - Published Tiptap, wrapper and third-party license files are copied from the
   installed packages into `office/licenses/` during the application build.
+
+## Local retrieval inference and model assets
+
+- `ort` 2.0.0-rc.10: https://github.com/pykeio/ort (MIT OR Apache-2.0).
+- ONNX Runtime 1.22.0: https://github.com/microsoft/onnxruntime/tree/v1.22.0 (MIT); CPU inference runtime linked into the desktop application.
+- Hugging Face Tokenizers 0.22.2: https://github.com/huggingface/tokenizers/tree/v0.22.2 (Apache-2.0).
+- BAAI BGE base zh v1.5: https://huggingface.co/BAAI/bge-base-zh-v1.5 (MIT).
+- BAAI BGE reranker base: https://huggingface.co/BAAI/bge-reranker-base (MIT).
+- Fixed INT8 ONNX conversions: `Xenova/bge-base-zh-v1.5` revision `71e50dc531959f9e04ebf190ea25b00261a0a186`, and `onnx-community/bge-reranker-base-ONNX` revision `f131ae72114cb18333648a2ee6b0942849e8ab95` on Hugging Face.
+
+Weights are downloaded and verified at build time and bundled in application resources. At runtime, only explicit repair of missing or damaged files may download weights; users can also import a verified offline model package. Weights are not checked into this repository. The asset manifest retains exact upstream revisions and SHA256 digests. Bundled inference license copies are in `licenses/retrieval/` in application resources.

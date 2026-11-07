@@ -80,6 +80,7 @@ import {
   localTimeZoneLabel,
   nextRunLabel,
   taskState,
+  taskNeedsModelSelection,
   runStatusLabel,
   runBusy,
   runNeedsCleanup,
@@ -1217,6 +1218,7 @@ export function AutomationPanel({
             )}
             <AutomationEditPage
               mode={isCreating ? "create" : "edit"}
+              modelSelectionRequired={Boolean(editingAutomation && taskNeedsModelSelection(editingAutomation))}
               draft={draft}
               setDraft={(next) =>
                 setDraft((current) => {

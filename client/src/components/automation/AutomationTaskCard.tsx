@@ -23,6 +23,8 @@ import {
   runStatusLabel,
   taskState,
   taskStateLabel,
+  taskNeedsModelSelection,
+  REMOVED_TASK_MODEL_MESSAGE,
   workspaceName,
 } from "./task-presentation";
 
@@ -54,6 +56,7 @@ export function AutomationTaskCard({
   const last = orderedRuns(records)[0];
   const needsCleanup = records.some(runNeedsCleanup);
   const ended = taskState(task, records) === "ended";
+  const needsModel = taskNeedsModelSelection(task);
   return (
     <ResourceRow className={`atm-task-card${selected ? " is-selected" : ""}`} aria-label={`定时任务 ${task.name}`}>
       <div className="atm-task-card__main resource-row__main">
@@ -67,9 +70,10 @@ export function AutomationTaskCard({
             <span className="resource-tag atm-task-card__state">{taskStateLabel(task, records)}</span>
           </div>
           <p className="atm-task-card__prompt" title={task.prompt}>{task.prompt}</p>
+          {needsModel && <p className="atm-editor-error" role="status">{REMOVED_TASK_MODEL_MESSAGE}</p>}
           <div className="atm-task-card__details resource-row__meta">
             <span className="atm-task-card__schedule"><Clock3 size={14} />{describeSchedule(task)}</span>
-            {!ended && task.status === "ACTIVE" && <span className="atm-task-card__next">下次：{nextRunLabel(task.nextRunAt)}</span>}
+            {!ended && !needsModel && task.status === "ACTIVE" && <span className="atm-task-card__next">下次：{nextRunLabel(task.nextRunAt)}</span>}
             <span className="atm-task-card__workspace" title={task.cwds}><Folder size={14} />{workspaceName(task.cwds)}</span>
             {describeValidity(task) && <span>{describeValidity(task)}</span>}
           </div>
@@ -89,13 +93,13 @@ export function AutomationTaskCard({
       {!batch && <div className="atm-task-card__actions resource-row__actions">
         {!ended && <div className="atm-task-card__toggle">
           <span aria-hidden="true">启用</span>
-          <Switch ariaLabel={`启用定时任务「${task.name}」`} checked={task.status === "ACTIVE"} disabled={updating} onChange={() => onToggle(task.id, task.status)} />
+          <Switch ariaLabel={`启用定时任务「${task.name}」`} checked={!needsModel && task.status === "ACTIVE"} disabled={updating || needsModel} onChange={() => onToggle(task.id, task.status)} />
         </div>}
-        <button type="button" className="atm-toolbar-btn" aria-label={`立即运行「${task.name}」`} disabled={busy || needsCleanup} onClick={() => onRun(task.id)}>
+        <button type="button" className="atm-toolbar-btn" aria-label={`立即运行「${task.name}」`} disabled={busy || needsCleanup || needsModel} onClick={() => onRun(task.id)}>
           <Play size={15} />{needsCleanup ? "等待清理" : busy ? "执行中" : "立即运行"}
         </button>
         <button type="button" className="atm-toolbar-btn" aria-label={`编辑定时任务「${task.name}」`} onClick={() => onEdit(task)}>
-          <Pencil size={15} />编辑
+          <Pencil size={15} />{needsModel ? "重新选择模型" : "编辑"}
         </button>
       </div>}
     </ResourceRow>
