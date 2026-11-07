@@ -51,7 +51,7 @@ async function inspect(page, context) {
         clipped:element.scrollWidth > element.clientWidth + 2,
       };
     });
-    const exceptions = ".settings-search__results > button,.personal-memory__toolbar [role=tab],.settings-navigation__item,.settings-view-tabs__item,.settings-modal__close,.model-connections__source,.models-settings-panel__editor-close,.model-connection-editor__chips button,.models-settings-panel__advanced-toggle,.theme-toggle__btn,.resources-panel__tab,.memory-editor__close,.archived-settings__scope,.notification-filter,.notification-row__mark,.notification-row__session,.notify-advanced__toggle,.quota-panel__period-btn,.storage-panel__entry-name--button,.help-card";
+    const exceptions = ".settings-search__results > button,.personal-memory__toolbar [role=tab],.settings-navigation__item,.settings-view-tabs__item,.settings-modal__close,.model-connections__source,.model-settings__connection,.model-settings__manage-entry,.models-settings-panel__editor-close,.model-connection-editor__chips button,.models-settings-panel__advanced-toggle,.theme-toggle__btn,.resources-panel__tab,.memory-editor__close,.archived-settings__scope,.notification-filter,.notification-row__mark,.notification-row__session,.notify-advanced__toggle,.quota-panel__period-btn,.storage-panel__entry-name--button,.help-card";
     const unmanaged = [...root.querySelectorAll("button")].filter(visible).filter(element => !element.matches(`.settings-btn,.form-button,.echo-button,.btn,${exceptions}`)).map(element => ({name:element.textContent.trim(),classes:element.className}));
     const fields = [...root.querySelectorAll("input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]),select,textarea")].filter(visible).filter(element => !element.closest(".archived-settings__search")).map(element => {
       const css = getComputedStyle(element);
@@ -117,12 +117,20 @@ try {
         memory: ".personal-memory__legacy .resources-panel",
         security: ".permission-rule-builder",
         data: ".settings-path-value",
-        "agent-settings": 'input[aria-label="OTLP 遥测端点"]',
+        "agent-settings": 'input[id="advanced-monitor-endpoint"]',
         usage: ".quota-panel__config-grid",
         "cloud-storage": ".storage-panel__breadcrumb",
       }[surface];
       if (secondarySelector) assert.equal(await page.locator(secondarySelector).isVisible(),false,`${surface}: secondary details crowd the initial page`);
-      if (surface === "memory") await page.getByText("高级：记忆文档与会话摘要", {exact:true}).click();
+      if (surface === "model") {
+        await page.getByRole("button",{name:"管理模型连接",exact:true}).click();
+        await page.getByRole("group",{name:"模型连接",exact:true}).getByRole("button").first().click();
+      }
+      if (surface === "memory") {
+        await page.getByRole("button",{name:"管理",exact:true}).click();
+        await page.getByRole("button",{name:"更多",exact:true}).click();
+        await page.getByRole("menuitem",{name:"原有记忆文档",exact:true}).click();
+      }
       const disclosures = page.locator(".settings-disclosure");
       for (let index = 0; index < await disclosures.count(); index += 1) {
         const details = disclosures.nth(index);
@@ -132,9 +140,10 @@ try {
       if (secondarySelector) assert.equal(await page.locator(secondarySelector).isVisible(),true,`${surface}: secondary controls cannot be reached`);
       if (await disclosures.count()) await inspect(page,{surface:`${surface}-details`,width,height,theme,font});
       if(surface==="model") {
-        await page.getByRole("button",{name:"添加个人连接",exact:true}).first().click();
+        await page.getByRole("button",{name:"返回连接管理",exact:true}).click();
+        await page.getByRole("button",{name:"添加模型连接",exact:true}).click();
         await inspect(page,{surface:"model-editor",width,height,theme,font});
-        await page.getByRole("dialog",{name:"添加个人连接",exact:true}).getByRole("button",{name:"高级设置",exact:true}).click();
+        await page.getByRole("dialog",{name:"添加模型连接",exact:true}).getByRole("button",{name:"更多设置",exact:true}).click();
         await inspect(page,{surface:"model-editor-advanced",width,height,theme,font});
       }
       if(surface==="cloud-storage") {
@@ -147,11 +156,11 @@ try {
         await inspect(page,{surface:"notify-editor",width,height,theme,font});
       }
       if(surface==="personal-memory") {
-        await page.getByRole("button",{name:"添加记忆",exact:true}).click();
+        await page.getByRole("button",{name:"管理",exact:true}).click();
+        await page.getByRole("button",{name:"更多",exact:true}).click();
+        await page.getByRole("menuitem",{name:"添加记忆",exact:true}).click();
         await inspect(page,{surface:"memory-editor",width,height,theme,font});
-        await page.getByText("更多选项", {exact:true}).click();
-        await page.getByLabel("主题（可选）").waitFor();
-        await inspect(page,{surface:"memory-editor-advanced",width,height,theme,font});
+        assert.equal(await page.getByLabel("主题（可选）").count(),0,"memory editor should preserve metadata without asking users to configure it");
       }
     }
     assert.deepEqual(errors,[]);
@@ -194,7 +203,8 @@ try {
     assert.equal(pressed.actual,pressed.expected,`${theme}: primary pressed drift`);
     await page.mouse.move(0,0);await page.mouse.up();
     await page.goto(`${base}/__ui-review?surface=agent-settings&theme=${theme}`,{waitUntil:"networkidle"});
-    const field=page.locator(".settings-input").first();await field.focus();
+    await page.getByText("开发者选项",{exact:true}).click();
+    const field=page.getByRole("spinbutton",{name:"子代理最大层级",exact:true});await field.focus();
     assert.equal(await field.evaluate(element=>getComputedStyle(element).outlineStyle),"solid",`${theme}: field focus missing`);
     await page.close();
   }

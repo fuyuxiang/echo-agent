@@ -13,7 +13,7 @@ import { PageHeading } from "./PageHeading";
  *  - general: 窗口与后台运行偏好
  *  - agent-settings: 子代理、配置重载与诊断
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSettingsDraft } from "@/lib/settings-drafts";
 import { BrowserTaskSettings } from "./BrowserTaskSettings";
 import {
@@ -34,6 +34,9 @@ import {
   AppWindow,
   Globe2,
   Monitor,
+  BookOpen,
+  LifeBuoy,
+  ChevronDown,
 } from "lucide-react";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 import { useTheme } from "./ThemeProvider";
@@ -73,6 +76,9 @@ import { validateOtlpEndpoint } from "@/lib/otlp-exporter";
 import { DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, readFontSize, saveFontSize } from "@/lib/font-size";
 import { useAppDialog } from "./AppDialog";
 import { usePermissionStore } from "@/stores/permission-store";
+import "@/styles/help-settings.css";
+import "@/styles/advanced-settings.css";
+import "@/styles/security-settings.css";
 
 const ECHO_AGENT_DOCS_URL = "https://fuyuxiang.github.io/echo-agent/";
 const ACP_SPEC_URL = "https://agentclientprotocol.com/";
@@ -271,7 +277,7 @@ const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   dreamEnabled: true,
 };
 
-export function MemorySettingsPanel({ compact = false }: { compact?: boolean }) {
+export function MemorySettingsPanel({ compact = false, onBusyChange, onConfigChange }: { compact?: boolean; onBusyChange?: (busy: boolean) => void; onConfigChange?: (config: MemoryConfig) => void }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [config, setConfig] = useState<MemoryConfig>(DEFAULT_MEMORY_CONFIG);
@@ -279,6 +285,9 @@ export function MemorySettingsPanel({ compact = false }: { compact?: boolean }) 
   const [loadError, setLoadError] = useState(false);
   useSettingsDraft({ dirty: false, busy, label: "记忆设置" });
   const [reload, setReload] = useState(0);
+
+  useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
+  useEffect(() => { if (!loading && !loadError && !busy) onConfigChange?.(config); }, [config, loading, loadError, busy, onConfigChange]);
 
   useEffect(() => {
     let cancelled = false;
@@ -332,11 +341,11 @@ export function MemorySettingsPanel({ compact = false }: { compact?: boolean }) 
   const controls = <>
     {loadError && <div role="alert" className="settings-hint">配置未加载，暂时无法修改。<button className="settings-btn" onClick={() => setReload((n) => n + 1)}>重新加载</button></div>}
     <div className="settings-row settings-row--comfortable">
-      <div className="settings-row__label settings-row__label--stacked"><span className="settings-row__name">使用记忆</span><span className="settings-row__description">记住你的偏好和项目背景，在后续对话中参考。</span></div>
+      <div className="settings-row__label settings-row__label--stacked"><span className="settings-row__name">使用记忆</span><span className="settings-row__description">{compact ? config.enabled ? "在后续任务中参考你的偏好和工作背景，减少重复说明。" : "已停止学习和使用记忆，已保存的内容仍可管理。" : "记住你的偏好和项目背景，在后续对话中参考。"}</span></div>
       <label className="sk-toggle"><input type="checkbox" role="switch" aria-label="使用记忆" checked={config.enabled} disabled={loading || loadError || busy} onChange={(event) => void updateConfig("enabled", event.target.checked)} /><span className="sk-toggle-track"><span className="sk-toggle-thumb" /></span></label>
     </div>
     {!loading && !loadError && legacyPolicyChanged && <p className="settings-hint" role="note">你在旧版中关闭了部分记忆策略，自动学习或参考记忆可能受限。<button className="settings-btn" disabled={busy} onClick={() => void restorePolicy()}>恢复推荐策略</button></p>}
-    <p className="settings-hint">关闭后立即停止后续提取和使用记忆，已有内容仍可查看和管理。自动整理会使用已配置的模型服务。</p>
+    {!compact && <p className="settings-hint">关闭后立即停止后续提取和使用记忆，已有内容仍可查看和管理。自动整理会使用已配置的模型服务。</p>}
     {msg && <p className="settings-msg" role="status">{msg}</p>}
   </>;
   return compact ? <div className="personal-memory__switch" data-setting-id="memory-preference">{controls}</div> : <SettingsSection title="记忆" desc="管理 Echo 对你的了解。">{controls}</SettingsSection>;
@@ -358,6 +367,19 @@ export function HelpSettingsPanel() {
   const installUpdate = useUpdateStore((state) => state.install);
   const updateBusy = updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing";
   const updateProgress = total && total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : undefined;
+  const checkedDate = checkedAt ? new Date(checkedAt) : null;
+  const checkedLabel = checkedDate && !Number.isNaN(checkedDate.getTime())
+    ? `${checkedDate.toDateString() === new Date().toDateString() ? "今天 " : checkedDate.toLocaleDateString("zh-CN") + " "}${checkedDate.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}`
+    : null;
+  const statusLabel = {
+    idle: "启动时自动检查更新",
+    checking: "正在检查更新…",
+    available: `发现新版本 v${update?.version}`,
+    downloading: `正在下载 v${update?.version}${updateProgress === undefined ? "" : ` · ${updateProgress}%`}`,
+    installing: "正在安装，完成后将重启",
+    "up-to-date": "当前已是最新版本",
+    error: updateErrorStage === "install" ? "安装更新失败" : updateErrorStage === "download" ? "下载更新失败" : "检查更新失败",
+  }[updateStatus];
 
   const openHelpResource = (url: string) => {
     setResourceError("");
@@ -367,78 +389,71 @@ export function HelpSettingsPanel() {
   };
 
   return (
-    <SettingsSection title="帮助与更新" desc="检查版本更新，查阅使用文档和常见问题排查步骤。">
-      <SettingsGroup
-        title="版本与更新"
-        settingId="updates"
-        desc="启动时自动检查新版本。更新服务需要内网或 VPN。"
-        meta={<span>v{APP_VERSION}</span>}
-      >
-        <div className="settings-action-row">
-          <div className="settings-action-row__content">
-            <strong>
-              {updateStatus === "checking" && "正在检查更新…"}
-              {updateStatus === "available" && `发现新版本 v${update?.version}`}
-              {updateStatus === "downloading" && `正在下载 v${update?.version}`}
-              {updateStatus === "installing" && "正在安装，完成后将重启"}
-              {updateStatus === "up-to-date" && "当前已是最新版本"}
-              {updateStatus === "error" && (updateErrorStage === "install" ? "安装更新失败" : updateErrorStage === "download" ? "下载更新失败" : "检查更新失败")}
-              {updateStatus === "idle" && "检查 EchoAgent 更新"}
-            </strong>
-            <span>
-              {updateStatus === "available"
-                ? (update?.notes?.trim() || "新版本已准备好，安装前会校验发布签名。")
-                : updateStatus === "error"
-                  ? updateError
-                  : checkedAt
-                    ? `上次检查：${new Date(checkedAt).toLocaleString("zh-CN")}`
-                    : "更新服务仅在内网或 VPN 环境可访问，断网不影响应用启动。"}
-            </span>
-            {(updateStatus === "downloading" || updateStatus === "installing") && (
-              <div className="settings-update-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={updateProgress}>
-                <span style={updateProgress === undefined ? undefined : { width: `${updateProgress}%` }} />
-              </div>
-            )}
+    <div className="help-settings">
+    <SettingsSection title="帮助与更新">
+      <section className="help-settings__version" aria-label="版本与更新" data-setting-id="updates">
+        <div className="help-settings__version-row">
+          <img className="help-settings__logo" src="/app-icon.png" alt="" width={40} height={40} draggable={false} />
+          <div className="help-settings__identity">
+            <div className="help-settings__product"><h3>EchoAgent</h3><span>v{APP_VERSION}</span></div>
+            <p className="help-settings__status" role={updateStatus === "error" ? "alert" : "status"}>
+              {updateStatus === "up-to-date" && <CheckCircle2 size={14} aria-hidden="true" />}
+              {updateStatus === "error" && <AlertTriangle size={14} aria-hidden="true" />}
+              {statusLabel}
+            </p>
+            {checkedLabel && !updateBusy && updateStatus !== "error" && <p className="help-settings__checked">上次检查：<time dateTime={checkedAt} title={checkedDate!.toLocaleString("zh-CN")}>{checkedLabel}</time></p>}
           </div>
           {updateStatus === "available" ? (
             <button className="settings-btn settings-btn--primary" onClick={() => void installUpdate()}>
-              <Download size={15} /> 下载并安装
+              <Download size={15} aria-hidden="true" /> 下载并安装
             </button>
           ) : (
             <button className="settings-btn" onClick={() => void checkUpdate(true)} disabled={updateBusy}>
-              {updateStatus === "checking" ? <Loader2 size={15} className="update-dialog__spinner" />
-                : updateStatus === "up-to-date" ? <CheckCircle2 size={15} />
-                  : updateStatus === "error" ? <AlertTriangle size={15} />
-                    : <RefreshCw size={15} />}
-              {updateStatus === "checking" ? "检查中" : "检查更新"}
+              {updateBusy ? <Loader2 size={15} className="update-dialog__spinner" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
+              {updateStatus === "checking" ? "检查中" : updateStatus === "downloading" ? "下载中" : updateStatus === "installing" ? "安装中" : updateStatus === "error" ? "重新检查" : "检查更新"}
             </button>
           )}
         </div>
-      </SettingsGroup>
-      <SettingsGroup title="帮助资源">
-        <div className="help-grid">
-          <a className="help-card" href={ECHO_AGENT_DOCS_URL} onClick={(event) => { event.preventDefault(); openHelpResource(ECHO_AGENT_DOCS_URL); }}>
-            <ExternalLink size={18} />
-            <strong>EchoAgent 文档</strong>
-            <span>查看功能说明、配置方法与最佳实践</span>
-          </a>
-
-        </div>
-      </SettingsGroup>
+        {(updateStatus === "downloading" || updateStatus === "installing") && <div className="settings-update-progress help-settings__progress" role="progressbar" aria-label="更新进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={updateStatus === "downloading" ? updateProgress : undefined}>
+          <span style={updateStatus === "downloading" && updateProgress !== undefined ? { width: `${updateProgress}%` } : undefined} />
+        </div>}
+        {updateStatus === "available" && update?.notes?.trim() && <details className="help-settings__details" key={`notes-${update.version}`}><summary>更新内容<ChevronDown size={14} aria-hidden="true" /></summary><p>{update.notes}</p></details>}
+        {updateStatus === "error" && <div className="help-settings__error">
+          <p>{updateErrorStage === "install" ? "重新检查更新后，可再次尝试安装。" : updateErrorStage === "download" ? "请检查网络连接后重新检查更新。" : "请确认已连接企业内网或 VPN，再重试。"}</p>
+          {updateError && <details className="help-settings__details" key={`error-${updateErrorStage}-${updateError}`}><summary>查看详情<ChevronDown size={14} aria-hidden="true" /></summary><p>{updateError}</p></details>}
+        </div>}
+      </section>
+      <div className="help-settings__resources" role="group" aria-label="使用帮助">
+        <a className="help-settings__resource" aria-label="使用文档（在浏览器中打开）" href={ECHO_AGENT_DOCS_URL} onClick={(event) => { event.preventDefault(); openHelpResource(ECHO_AGENT_DOCS_URL); }}>
+          <BookOpen size={19} aria-hidden="true" /><span><strong>使用文档</strong><span>功能说明与配置指南</span></span><ExternalLink size={16} aria-hidden="true" />
+        </a>
+        <details className="help-settings__troubleshooting" data-setting-id="help-faq">
+          <summary className="help-settings__resource"><LifeBuoy size={19} aria-hidden="true" /><span><strong>问题排查</strong><span>模型连接、应用启动等问题</span></span><ChevronDown size={16} aria-hidden="true" /></summary>
+          <div className="help-settings__troubleshooting-body">
+            <ol className="settings-checklist">
+              <li><span>1</span><div><strong>确认模型配置</strong><p>在“模型”中确认有可用模型；使用个人服务时，添加连接并填写所需凭据。</p></div></li>
+              <li><span>2</span><div><strong>检查配置文件</strong><p>确认 <code>~/.echo-agent/config.toml</code> 可以正常读写。</p></div></li>
+              <li><span>3</span><div><strong>重新加载或重启</strong><p>先在“高级设置”重新加载对应配置，仍无效时再重启应用。</p></div></li>
+            </ol>
+            <details className="help-settings__details help-settings__technical"><summary>技术资料<ChevronDown size={14} aria-hidden="true" /></summary>
+              <a className="settings-inline-link" href={ACP_SPEC_URL} onClick={(event) => { event.preventDefault(); openHelpResource(ACP_SPEC_URL); }}>ACP 协议规范 <ExternalLink size={13} aria-hidden="true" /></a>
+            </details>
+          </div>
+        </details>
+      </div>
       {resourceError && <p className="settings-msg settings-msg--warn" role="alert">{resourceError}</p>}
-      <SettingsDisclosure title="常见问题与技术信息" settingId="help-faq" description="模型不可用、Agent 无法启动时的排查步骤">
-        <ol className="settings-checklist">
-          <li><span>1</span><div><strong>确认模型配置</strong><p>在“模型”中确认有可用模型；使用个人服务时，添加连接并填写所需凭据。</p></div></li>
-          <li><span>2</span><div><strong>检查配置文件</strong><p>确认 <code>~/.echo-agent/config.toml</code> 可以正常读写。</p></div></li>
-          <li><span>3</span><div><strong>重新加载或重启</strong><p>先在“高级设置”重新加载对应配置，仍无效时再重启应用。</p></div></li>
-        </ol>
-      <a className="settings-inline-link" href={ACP_SPEC_URL} onClick={(event) => { event.preventDefault(); openHelpResource(ACP_SPEC_URL); }}>ACP 协议规范 <ExternalLink size={13} /></a>
-      </SettingsDisclosure>
     </SettingsSection>
+    </div>
   );
 }
 
 // ---------- 安全中心 ----------
+
+const PERMISSION_ACTION_LABELS: Record<string, string> = { allow: "允许", ask: "询问", deny: "拒绝" };
+const PERMISSION_TOOL_LABELS: Record<string, string> = {
+  bash: "执行命令", read: "读取文件", edit: "修改文件", grep: "搜索文件",
+  mcp: "连接器工具", webfetch: "访问网页", any: "所有工具",
+};
 
 export function SecuritySettingsPanel() {
   const [rules, setRules] = useState<PermissionRule[]>([]);
@@ -507,7 +522,7 @@ export function SecuritySettingsPanel() {
     try {
       await automationRequestComputerPermissions();
       await loadAutomationSupport();
-      setAutomationFeedback("已打开系统权限设置；授权后回到 EchoAgent 即可自动刷新。");
+      setAutomationFeedback("已发起系统授权，请完成授权后返回应用查看状态。");
     } catch (error) {
       setAutomationFeedback(`无法打开系统权限：${String(error).replace(/^Error:\s*/, "")}`);
     } finally {
@@ -517,6 +532,7 @@ export function SecuritySettingsPanel() {
 
   const addRule = () => {
     if (!draft.tool.trim()) return;
+    setFeedback("");
     setRules((items) => [...items, {
       action: draft.action,
       tool: draft.tool.trim().toLowerCase(),
@@ -542,76 +558,43 @@ export function SecuritySettingsPanel() {
 
 
 
+  const browser = automationSupport?.browser;
+  const computer = automationSupport?.computer;
+  const isMac = Boolean(computer && /mac|darwin/i.test(computer.platform));
+  const desktopUnavailable = computer?.desktopAvailable === false;
+  const missingPermissions = computer ? [!computer.screenCapture && "屏幕录制", !computer.inputControl && "辅助功能"].filter(Boolean).join("、") : "";
+  const computerReady = Boolean(computer?.available && computer.screenCapture && computer.inputControl && !desktopUnavailable);
+  const canRequestPermissions = Boolean(!automationLoading && !automationError && computer?.available && isMac && !desktopUnavailable && missingPermissions);
+  const browserState = automationLoading ? "检查中…" : automationError ? "检查失败" : !browser ? "未检查" : browser.available ? "已就绪" : "未就绪";
+  const computerState = automationLoading ? "检查中…" : automationError ? "检查失败" : !computer ? "未检查" : !computer.available ? "不可用" : desktopUnavailable ? "暂不可用" : canRequestPermissions ? "需要授权" : computerReady ? isMac ? "已授权" : "已就绪" : "暂不可用";
+  const browserDescription = automationLoading ? "正在检查本机浏览器" : automationError ? "暂时无法确认浏览器状态" : !browser ? "请在桌面客户端查看操作权限" : browser.available ? browser.browserName || "兼容浏览器" : browser.reason || "未找到可用浏览器";
+  const computerDescription = automationLoading ? "正在检查系统权限" : automationError ? "暂时无法确认系统权限" : !computer ? "请在桌面客户端查看操作权限" : !computer.available || desktopUnavailable ? computer.reason || "当前桌面环境暂不可用" : canRequestPermissions ? `缺少系统权限：${missingPermissions}。授权后返回应用会自动检查。` : computerReady ? isMac ? "屏幕录制、辅助功能已授权，可在系统设置中管理或撤销。" : "当前桌面会话已就绪，具体应用的访问权限会在使用时检查。" : computer.reason || "请检查当前桌面会话后重试";
+
   return (
-    <SettingsSection
-      title="安全与权限"
-      desc="查看系统授权，管理 Agent 可以使用的操作范围。"
-    >
-      <SettingsGroup
-        title="浏览器与电脑操作"
-        settingId="automation-permissions"
-        desc="这些能力按任务授权使用。可以从输入框的 + 菜单为当前任务开启；打开设置不会启用它们。"
-        meta={<span className="settings-status-badge">{automationLoading ? "检查中…" : automationError ? "检查失败" : "按任务开启"}</span>}
-      >
-        <div className="settings-row settings-row--comfortable">
-          <div className="settings-row__label settings-row__label--stacked">
-            <span className="settings-row__name"><Globe2 size={17} />浏览器操作</span>
-            <span className="settings-row__description">
-              {automationSupport?.browser.available
-                ? `${automationSupport.browser.browserName || "兼容浏览器"}已就绪，每个任务使用独立浏览数据`
-                : automationSupport?.browser.reason || "正在检查本机浏览器…"}
-            </span>
-          </div>
-          <span className={`settings-status-badge${automationSupport?.browser.available ? " settings-status-badge--ready" : ""}`}>
-            {automationSupport ? (automationSupport.browser.available ? "可用" : "不可用") : "未检查"}
-          </span>
+    <div className="security-settings">
+    <SettingsSection title="安全与权限" desc="查看系统授权，管理任务浏览器和高级权限规则。">
+      <section className="security-settings__capabilities" data-setting-id="automation-permissions" aria-label="操作权限">
+        <header className="security-settings__capability-header"><div><h3>操作权限</h3><p>浏览器和电脑操作需从任务输入框的 + 菜单单独开启。</p></div>
+          <button type="button" className="settings-btn settings-btn--ghost" aria-label={automationError ? "重试检查权限" : "重新检查权限"} disabled={automationLoading || automationBusy} onClick={() => void loadAutomationSupport()}><RefreshCw size={14} />{automationLoading ? "检查中…" : automationError ? "重试" : "刷新"}</button>
+        </header>
+        <div className="security-settings__capability" role="group" aria-label="浏览器操作状态">
+          <Globe2 size={20} aria-hidden="true" /><div><strong>浏览器操作</strong><p>{browserDescription}</p></div><span className={`security-settings__badge${!automationLoading && !automationError && browser?.available ? " security-settings__badge--ready" : ""}`}>{browserState}</span>
         </div>
-        <div className="settings-row settings-row--comfortable">
-          <div className="settings-row__label settings-row__label--stacked">
-            <span className="settings-row__name"><Monitor size={17} />电脑操作</span>
-            <span className="settings-row__description">
-              {automationSupport?.computer.available
-                ? automationSupport.computer.screenCapture && automationSupport.computer.inputControl
-                  ? "屏幕录制和辅助功能权限已就绪"
-                  : automationSupport.computer.reason || "需要屏幕录制和辅助功能权限"
-                : automationSupport?.computer.reason || "正在检查系统支持…"}
-            </span>
-          </div>
-          {automationSupport?.computer.available
-            && (!automationSupport.computer.screenCapture || !automationSupport.computer.inputControl) ? (
-              <button
-                type="button"
-                className="settings-btn"
-                disabled={automationBusy}
-                onClick={() => void requestComputerPermissions()}
-              >
-                {automationBusy ? "打开中…" : "授予系统权限"}
-              </button>
-            ) : (
-              <span className={`settings-status-badge${automationSupport?.computer.available ? " settings-status-badge--ready" : ""}`}>
-                {automationSupport ? (automationSupport.computer.available ? "可用" : "不可用") : "未检查"}
-              </span>
-            )}
+        <div className="security-settings__capability" role="group" aria-label="电脑操作状态">
+          <Monitor size={20} aria-hidden="true" /><div><strong>电脑操作</strong><p>{computerDescription}</p></div><span className={`security-settings__badge${!automationLoading && !automationError && computerReady ? " security-settings__badge--ready" : canRequestPermissions ? " security-settings__badge--attention" : ""}`}>{computerState}</span>
+          {canRequestPermissions && <button type="button" className="settings-btn" disabled={automationBusy} onClick={() => void requestComputerPermissions()}>{automationBusy ? "打开中…" : "前往授权"}</button>}
         </div>
-        {automationError && <p className="settings-msg settings-msg--warn" role="alert">{automationError}</p>}
-        {automationFeedback && <p className="settings-hint" role="status">{automationFeedback}</p>}
-        <div className="settings-info-callout">
-          启用后，相关网页或屏幕内容会作为任务上下文发送给当前模型。浏览器数据按任务隔离，可在下方“浏览器数据与访问范围”中管理。
-        </div>
-        <div className="settings-group__footer">
-          <button type="button" className="settings-btn" onClick={() => void loadAutomationSupport()} disabled={automationLoading}>
-            {automationLoading ? "检查中…" : "重新检查"}
-          </button>
-        </div>
-      </SettingsGroup>
-      <SettingsDisclosure title="浏览器数据与访问范围" settingId="browser-data" description="选择任务，管理登录状态、缓存和本机与内网访问范围。">
+        {automationError && <p className="settings-msg settings-msg--warn" role="alert">检查失败：{automationError}</p>}
+        {automationFeedback && <p className={automationFeedback.startsWith("无法") ? "settings-msg settings-msg--warn" : "security-settings__feedback"} role={automationFeedback.startsWith("无法") ? "alert" : "status"}>{automationFeedback}</p>}
+        <p className="security-settings__privacy">使用时，相关网页或屏幕内容可能作为任务上下文发送给当前模型。</p>
+      </section>
+      <SettingsDisclosure title="任务浏览器" settingId="browser-data" description="管理所选任务的登录数据和访问范围">
         <BrowserTaskSettings />
       </SettingsDisclosure>
-      <SettingsDisclosure title="自定义工具规则" settingId="permission-rules" description={feedback.startsWith("保存失败") ? feedback : rulesError ? "读取失败，请展开重试；原有规则不会被覆盖。" : loading ? "正在读取…" : `${rules.length} 条规则${rulesDirty || builderDirty ? " · 有未保存的修改" : ""} · 按工具或命令细化授权`} defaultOpen={Boolean(rulesError) || feedback.startsWith("保存失败")}>
+      <SettingsDisclosure title="高级权限规则" settingId="permission-rules" description={feedback.startsWith("保存失败") ? feedback : rulesError ? "读取失败，请展开重试；原有规则不会被覆盖。" : loading ? "正在读取…" : `${rules.length ? `${rules.length} 条自定义规则` : "未添加自定义规则"}${rulesDirty || builderDirty ? " · 有未保存的修改" : ""}`} defaultOpen={Boolean(rulesError) || feedback.startsWith("保存失败")}>
         <SettingsGroup
-          title="工具权限规则"
+          title="权限规则"
           desc="拒绝优先于询问，询问优先于允许。保存后重启 Agent 生效。"
-          meta={<span className="settings-status-badge">{loading ? "加载中…" : rulesError ? "加载失败" : `${rules.length} 条规则`}</span>}
         >
           {rulesError && (
             <div className="settings-msg settings-msg--warn" role="alert">
@@ -622,16 +605,16 @@ export function SecuritySettingsPanel() {
             </div>
           )}
           {rules.length > 0 ? (
-            <ul className="rules-list">
+            <ul className="rules-list" aria-label="权限规则列表">
               {rules.map((rule, index) => (
                 <li key={`${rule.action}-${rule.tool}-${rule.pattern ?? ""}-${index}`} className={`rules-list__item rules-list__item--${rule.action}`}>
-                  <span className="rules-list__action">{rule.action}</span>
-                  <span className="rules-list__tool">{rule.tool}</span>
+                  <span className="rules-list__action">{PERMISSION_ACTION_LABELS[rule.action] || rule.action}</span>
+                  <span className="rules-list__tool">{PERMISSION_TOOL_LABELS[rule.tool] || rule.tool}</span>
                   <span className="rules-list__pattern">{rule.pattern || "所有调用"}</span>
                   <button
                     type="button"
                     className="settings-btn settings-btn--ghost settings-btn--danger settings-btn--compact settings-btn--icon-only rules-list__remove"
-                    onClick={() => setRules((items) => items.filter((_, itemIndex) => itemIndex !== index))}
+                    onClick={() => { setFeedback(""); setRules((items) => items.filter((_, itemIndex) => itemIndex !== index)); }}
                     aria-label={`删除规则 ${index + 1}`}
                     disabled={loading || saving || Boolean(rulesError)}
                   >
@@ -641,13 +624,13 @@ export function SecuritySettingsPanel() {
               ))}
             </ul>
           ) : !loading && !rulesError ? (
-            <div className="settings-empty-inline">尚未添加自定义权限规则</div>
+            <div className="settings-empty-inline">未添加自定义规则。需要为特定工具设置处理方式时，再添加规则。</div>
           ) : null}
 
           <div className="permission-rule-builder">
             <label className="permission-rule-builder__field">
               <span>处理方式</span>
-              <select className="form-control" value={draft.action} onChange={(e) => setDraft({ ...draft, action: e.target.value })} aria-label="规则动作" disabled={loading || saving || Boolean(rulesError)}>
+              <select className="form-control" value={draft.action} onChange={(e) => { setFeedback(""); setDraft({ ...draft, action: e.target.value }); }} aria-label="规则动作" disabled={loading || saving || Boolean(rulesError)}>
                 <option value="deny">拒绝</option>
                 <option value="ask">询问</option>
                 <option value="allow">允许</option>
@@ -655,28 +638,30 @@ export function SecuritySettingsPanel() {
             </label>
             <label className="permission-rule-builder__field">
               <span>工具类型</span>
-              <select className="form-control" value={draft.tool} onChange={(e) => setDraft({ ...draft, tool: e.target.value })} aria-label="工具类型" disabled={loading || saving || Boolean(rulesError)}>
-                {['bash', 'read', 'edit', 'grep', 'mcp', 'webfetch', 'any'].map((tool) => <option key={tool} value={tool}>{tool}</option>)}
+              <select className="form-control" value={draft.tool} onChange={(e) => { setFeedback(""); setDraft({ ...draft, tool: e.target.value }); }} aria-label="工具类型" disabled={loading || saving || Boolean(rulesError)}>
+                {['bash', 'read', 'edit', 'grep', 'mcp', 'webfetch', 'any'].map((tool) => <option key={tool} value={tool}>{PERMISSION_TOOL_LABELS[tool]}（{tool}）</option>)}
               </select>
             </label>
             <label className="permission-rule-builder__field permission-rule-builder__field--pattern">
-              <span>匹配模式（可选）</span>
-              <input className="form-control" value={draft.pattern ?? ""} onChange={(e) => setDraft({ ...draft, pattern: e.target.value })} placeholder="例如 git *" disabled={loading || saving || Boolean(rulesError)} />
+              <span>匹配范围（可选）</span>
+              <input className="form-control" value={draft.pattern ?? ""} onChange={(e) => { setFeedback(""); setDraft({ ...draft, pattern: e.target.value }); }} aria-label="匹配范围（可选）" placeholder="例如 git *" disabled={loading || saving || Boolean(rulesError)} />
             </label>
           </div>
           <div className="settings-group__footer">
-            <button className="settings-btn" type="button" onClick={addRule} disabled={loading || saving || Boolean(rulesError)}>添加到列表</button>
+            <button className="settings-btn" type="button" onClick={addRule} disabled={loading || saving || Boolean(rulesError)}>添加规则</button>
             {builderDirty && <button className="settings-btn" type="button" onClick={() => setDraft({ action: "ask", tool: "bash", pattern: "" })} disabled={saving}>清空输入</button>}
-            <button className="settings-btn settings-btn--primary" type="button" onClick={() => void saveRules()} disabled={saving || loading || Boolean(rulesError) || builderDirty}>
-              {saving ? "保存中…" : "保存全部规则"}
+            <button className="settings-btn settings-btn--primary" type="button" onClick={() => void saveRules()} disabled={saving || loading || Boolean(rulesError) || builderDirty || !rulesDirty}>
+              {saving ? "保存中…" : "保存修改"}
             </button>
           </div>
-          {builderDirty && <p className="settings-hint" role="note">当前规则尚未加入列表。请先“添加到列表”，再保存全部规则。</p>}
+          {rulesDirty && <p className="security-settings__unsaved" role="status">规则列表有未保存的修改。</p>}
+          {builderDirty && <p className="settings-hint" role="note">当前输入尚未加入规则列表。请先“添加规则”，再“保存修改”。</p>}
         </SettingsGroup>
         {feedback && <p className="settings-hint" role={feedback.startsWith("保存失败") ? "alert" : "status"}>{feedback}</p>}
       </SettingsDisclosure>
 
     </SettingsSection>
+    </div>
   );
 }
 
@@ -844,80 +829,94 @@ export function GeneralSettingsPanel() {
   );
 }
 
+const RELOAD_OPTIONS = [
+  { kind: "mcp_all", name: "MCP 连接器", description: "连接器或工具配置更改后未生效时，重新读取配置。" },
+  { kind: "skills", name: "技能目录", description: "新添加或修改的技能未出现时，重新扫描技能目录。" },
+  { kind: "models", name: "模型配置", description: "模型连接更改后未生效时，重新读取模型配置。" },
+] as const;
+type ReloadKind = typeof RELOAD_OPTIONS[number]["kind"];
+type ReloadFeedback = { kind: "success" | "error"; text: string };
+
 function RuntimeReloadSettingsGroup() {
-  const [busy, setBusy] = useState(false);
-  useSettingsDraft({ dirty: false, busy, label: "配置重载" });
-  const [msg, setMsg] = useState<string | null>(null);
-  const handleReload = async (kind: "mcp_all" | "skills" | "models") => {
-    setBusy(true);
+  const [busy, setBusy] = useState<ReloadKind | null>(null);
+  const busyRef = useRef(false);
+  const [results, setResults] = useState<Partial<Record<ReloadKind, ReloadFeedback>>>({});
+  useSettingsDraft({ dirty: false, busy: Boolean(busy), label: "配置重载" });
+  const handleReload = async (kind: ReloadKind, name: string) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(kind);
+    setResults(current => ({ ...current, [kind]: undefined }));
     try {
       await internalReload(kind);
-      setMsg(`已重新加载${{ mcp_all: " MCP 连接器", skills: "技能目录", models: "模型配置" }[kind]}`);
-    } catch (e) {
-      setMsg(`失败：${String(e).replace(/^Error:\s*/, "")}`);
+      setResults(current => ({ ...current, [kind]: { kind: "success", text: `${name}已重新加载。` } }));
+    } catch (error) {
+      setResults(current => ({ ...current, [kind]: { kind: "error", text: `重新加载失败：${String(error).replace(/^Error:\s*/, "")}` } }));
     } finally {
-      setBusy(false);
+      busyRef.current = false;
+      setBusy(null);
     }
   };
-  return <>
-      <SettingsGroup title="重新加载配置" settingId="reload" desc="只刷新对应配置，不关闭当前窗口。">
-        <div className="settings-action-row">
-          <div className="settings-action-row__content"><strong>MCP 连接器</strong><span>重新读取所有 MCP 服务和工具配置。</span></div>
-          <button className="settings-btn" onClick={() => handleReload("mcp_all")} disabled={busy}><RefreshCw size={15} />重新加载</button>
+  return <SettingsDisclosure title="配置未生效？" settingId="reload" description="按需重新加载连接器、技能或模型配置">
+    <p className="settings-hint">选择未生效的配置重新加载，完成后再重试相关操作。</p>
+    <div className="advanced-settings__reloads">
+      {RELOAD_OPTIONS.map(option => <section className="advanced-settings__reload" aria-label={option.name} key={option.kind}>
+        <div className="advanced-settings__reload-row">
+          <div><h3>{option.name}</h3><p>{option.description}</p></div>
+          <button type="button" className="settings-btn" aria-label={`重新加载${option.name}`} aria-busy={busy === option.kind} disabled={Boolean(busy)} onClick={() => void handleReload(option.kind, option.name)}>
+            {busy === option.kind ? <Loader2 size={15} className="advanced-settings__spin" /> : <RefreshCw size={15} />}{busy === option.kind ? "加载中…" : "重新加载"}
+          </button>
         </div>
-        <div className="settings-action-row">
-          <div className="settings-action-row__content"><strong>技能目录</strong><span>重新扫描本地、项目和组织下发的技能。</span></div>
-          <button className="settings-btn" onClick={() => handleReload("skills")} disabled={busy}><RefreshCw size={15} />重新加载</button>
-        </div>
-        <div className="settings-action-row">
-          <div className="settings-action-row__content"><strong>模型配置</strong><span>重新读取厂商、凭据和模型目录。</span></div>
-          <button className="settings-btn" onClick={() => handleReload("models")} disabled={busy}><RefreshCw size={15} />重新加载</button>
-        </div>
-      </SettingsGroup>
-    {msg && <p className="settings-msg" role="status">{msg}</p>}
-  </>;
+        {results[option.kind] && <p className={`settings-msg settings-msg--${results[option.kind]!.kind}`} role={results[option.kind]!.kind === "error" ? "alert" : "status"}>{results[option.kind]!.text}</p>}
+      </section>)}
+    </div>
+  </SettingsDisclosure>;
 }
 
-function DiagnosticSettingsGroup() {
+function DeveloperSettingsGroup({ children, hasPendingChanges, hasError }: {
+  children: React.ReactNode;
+  hasPendingChanges: boolean;
+  hasError: boolean;
+}) {
   const [feedback, setFeedback] = useState("");
   const [savedEndpoint, setSavedEndpoint] = useState(() => {
     try { return localStorage.getItem("echoagent.otlp.endpoint") ?? ""; } catch { return ""; }
   });
   const [otlpEndpoint, setOtlpEndpoint] = useState(savedEndpoint);
-  useSettingsDraft({ dirty: otlpEndpoint.trim() !== savedEndpoint, label: "诊断配置" });
-  const saveOtlp = () => {
-    const endpoint = otlpEndpoint.trim();
+  const endpointDirty = otlpEndpoint.trim() !== savedEndpoint;
+  useSettingsDraft({ dirty: endpointDirty, label: "监控服务配置" });
+  const saveOtlp = (value = otlpEndpoint) => {
+    const endpoint = value.trim();
     try {
       if (endpoint) localStorage.setItem("echoagent.otlp.endpoint", validateOtlpEndpoint(endpoint));
       else localStorage.removeItem("echoagent.otlp.endpoint");
       setSavedEndpoint(endpoint);
+      setOtlpEndpoint(endpoint);
     } catch (error) {
-      setFeedback(`无法保存诊断配置：${String(error).replace(/^Error:\s*/, "")}`);
+      setFeedback(`无法保存监控配置：${String(error).replace(/^Error:\s*/, "")}`);
       return;
     }
-    setFeedback(endpoint ? "OTLP 已启用，重启应用后生效。" : "OTLP 已关闭，重启应用后生效。");
+    setFeedback(endpoint ? "监控接入配置已保存，重启应用后生效。" : "监控已关闭，重启应用后生效。");
   };
-  return <SettingsDisclosure title="诊断数据上报" settingId="diagnostics" defaultOpen={feedback.startsWith("无法保存")} description={otlpEndpoint.trim() !== savedEndpoint ? "有未保存的修改" : savedEndpoint ? "已保存 OTLP 端点 · 重启应用后生效" : "默认关闭 · 供排查运行问题时使用"}>
-      <SettingsGroup title="遥测与诊断" desc="按需配置运行事件上报，用于排查问题；不包含对话正文。">
-        <div className="settings-row settings-row--comfortable">
-          <div className="settings-row__label settings-row__label--stacked">
-            <span className="settings-row__name">OTLP 遥测端点</span>
-            <span className="settings-row__description">留空表示关闭，修改后重启应用生效</span>
-          </div>
-          <div className="settings-row__control settings-row__control--wide">
-            <input
-              className="settings-input"
-              aria-label="OTLP 遥测端点"
-              value={otlpEndpoint}
-              onChange={(event) => setOtlpEndpoint(event.target.value)}
-              placeholder="http://127.0.0.1:4318/v1/logs"
-            />
-            <button type="button" className="settings-btn" onClick={saveOtlp}>保存</button>
-            {otlpEndpoint.trim() !== savedEndpoint && <button type="button" className="settings-btn" onClick={() => { setOtlpEndpoint(savedEndpoint); setFeedback(""); }}>撤销修改</button>}
-          </div>
+  const summary = [
+    hasPendingChanges || endpointDirty ? "有未保存的修改" : null,
+    savedEndpoint ? "监控服务已启用 · 更改后需重启应用" : "执行参数与监控接入，通常无需修改",
+  ].filter(Boolean).join(" · ");
+  return <SettingsDisclosure title="开发者选项" settingId="developer-options" defaultOpen={hasError || feedback.startsWith("无法保存")} description={summary}>
+    {children}
+    <SettingsGroup title="接入监控服务" settingId="diagnostics" desc="将运行事件发送到你配置的监控服务，用于排查问题。">
+      <div className="advanced-settings__monitor" role="group" aria-label="监控服务配置">
+        <label className="settings-row__name" htmlFor="advanced-monitor-endpoint">监控服务地址（OTLP）</label>
+        <input id="advanced-monitor-endpoint" className="settings-input" value={otlpEndpoint} onChange={event => { setOtlpEndpoint(event.target.value); setFeedback(""); }} placeholder="http://127.0.0.1:4318/v1/logs" spellCheck={false} autoComplete="off" aria-describedby="advanced-monitor-hint" aria-invalid={feedback.startsWith("无法保存") || undefined} />
+        <p className="settings-hint" id="advanced-monitor-hint">留空表示关闭，修改后重启应用生效。</p>
+        <div className="advanced-settings__actions">
+          <button type="button" className="settings-btn" disabled={!endpointDirty} onClick={() => saveOtlp()}>保存</button>
+          {endpointDirty && <button type="button" className="settings-btn" onClick={() => { setOtlpEndpoint(savedEndpoint); setFeedback(""); }}>撤销修改</button>}
+          {savedEndpoint && <button type="button" className="settings-btn settings-btn--ghost" onClick={() => saveOtlp("")}>关闭监控</button>}
         </div>
-      </SettingsGroup>
-    {feedback && <p className="settings-hint" role={feedback.startsWith("无法保存") ? "alert" : "status"}>{feedback}</p>}
+        {feedback && <p className={`settings-msg settings-msg--${feedback.startsWith("无法保存") ? "error" : "success"}`} role={feedback.startsWith("无法保存") ? "alert" : "status"}>{feedback}</p>}
+      </div>
+    </SettingsGroup>
   </SettingsDisclosure>;
 }
 
@@ -978,15 +977,10 @@ export function AgentSettingsPanel() {
   }, [loadError, subagentDepth, subagentDraft]);
 
   return (
-    <SettingsSection
-      title="高级设置"
-      desc="调整 Agent 执行参数、重新加载配置，或按需开启诊断。通常无需修改。"
-      actions={(
-        <button className="settings-btn" onClick={reload} disabled={loading || savingRuntime || depthDirty}>
-          <RefreshCw size={15} /> {loading ? "加载中…" : "刷新状态"}
-        </button>
-      )}
-    >
+    <div className="advanced-settings">
+    <SettingsSection title="高级设置" desc="按需排查配置问题，或调整开发者选项。日常使用通常无需修改。">
+      <RuntimeReloadSettingsGroup />
+      <DeveloperSettingsGroup hasPendingChanges={depthDirty} hasError={Boolean(loadError) || runtimeMsg?.kind === "error" || runtimeMsg?.kind === "invalid"}>
       {loadError && (
         <div className="settings-msg settings-msg--warn" role="alert">
           <span>子代理配置读取失败：{loadError}</span>{" "}
@@ -1005,7 +999,7 @@ export function AgentSettingsPanel() {
               <span className="agent-runtime-row__hint">
                 {subagentDepth === null
                   ? "子代理配置当前不可用，重试成功前不会保存任何默认值。"
-                  : `设置任务继续分派的最大层级，已保存为 ${subagentDepth}。1 表示仅顶层可分派，重启 Agent 后生效。`}
+                  : `控制任务继续分派的层级。1 表示仅顶层可分派；修改后重启 Agent 生效。`}
               </span>
             </div>
             <div className="agent-runtime-row__control">
@@ -1043,9 +1037,9 @@ export function AgentSettingsPanel() {
           )}
       </SettingsGroup>
 
-      <RuntimeReloadSettingsGroup />
-      <DiagnosticSettingsGroup />
+      </DeveloperSettingsGroup>
     </SettingsSection>
+    </div>
   );
 }
 

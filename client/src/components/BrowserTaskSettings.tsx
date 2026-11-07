@@ -53,17 +53,18 @@ export function BrowserTaskSettings() {
   const label = options.find(item => item.sessionId === selectedId)?.title || "未命名任务";
   return <div className="browser-task-settings">
     <label className="settings-row settings-row--comfortable">
-      <span className="settings-row__label"><span className="settings-row__name">选择任务</span></span>
+      <span className="settings-row__label"><span className="settings-row__name">管理哪个任务</span></span>
       <select className="form-control settings-select" aria-label="管理浏览器数据的任务" value={selectedId} disabled={busy}
         onChange={event => { setSelected(event.target.value); setFeedback(null); }}>
         <option value="">请选择任务</option>
-        {options.map(item => <option key={item.sessionId} value={item.sessionId}>{item.title || "未命名任务"}</option>)}
+        {options.map(item => <option key={item.sessionId} value={item.sessionId}>{item.title || "未命名任务"}{item.sessionId === currentId && item.title !== "当前任务" ? "（当前任务）" : ""}</option>)}
       </select>
     </label>
     {!selectedId ? <p className="settings-hint">选择需要管理的任务，其他任务的浏览器数据不受影响。</p>
       : automation.error ? <p className="settings-msg settings-msg--warn" role="alert">{automation.error}
         <button type="button" className="settings-btn" disabled={busy} onClick={automation.reconnect}>重新读取</button></p>
       : !status ? <p className="settings-hint" role="status">正在读取任务的浏览器设置…</p> : <>
+        <h4 className="security-settings__browser-heading">访问范围</h4>
         <label className="settings-row settings-row--comfortable">
           <span className="settings-row__label settings-row__label--stacked">
             <span className="settings-row__name">允许访问本机与内网</span>
@@ -72,10 +73,11 @@ export function BrowserTaskSettings() {
           <input type="checkbox" checked={status.allowPrivateNetwork} disabled={busy}
             onChange={event => void run(() => automationSetPrivateNetwork(selectedId, event.target.checked), "访问范围已更新。")}/>
         </label>
+        <h4 className="security-settings__browser-heading">浏览器数据</h4>
         <div className="settings-row settings-row--comfortable">
           <div className="settings-row__label settings-row__label--stacked">
-            <span className="settings-row__name">浏览器数据</span>
-            <span className="settings-row__description">{taskWorking ? "任务运行中，请先停止任务再清除。" : status.browserHasData ? "包含该任务的登录状态、缓存和下载文件。" : "该任务暂无浏览器数据。"}</span>
+            <span className="settings-row__name">登录状态、缓存和下载文件</span>
+            <span className="settings-row__description">{taskWorking ? "任务运行中，请先停止任务再清除。" : status.browserHasData ? "包含该任务的登录状态、缓存和下载文件。" : "该任务暂无可清除的浏览器数据。"}</span>
           </div>
           <button type="button" className="settings-btn" disabled={busy || taskWorking || !status.browserHasData}
             onClick={() => requestConfirmation({ title: "清除该任务的浏览器数据？",

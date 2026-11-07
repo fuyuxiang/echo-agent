@@ -48,7 +48,7 @@
     "test:ui:input-add-menu": "node scripts/validate-input-add-menu-ui.mjs",
     "test:ui:scheduled-tasks": "node scripts/validate-scheduled-tasks-ui.mjs && node scripts/validate-scheduled-transcript-ui.mjs",
     "test:ui:brand-palette": "node scripts/validate-brand-palette-ui.mjs",
-    "test:ui:settings": "node scripts/validate-settings-navigation-ui.mjs && node scripts/validate-notification-settings-ui.mjs && node scripts/validate-settings-controls-ui.mjs",
+    "test:ui:settings": "node scripts/validate-settings-navigation-ui.mjs && node scripts/validate-notification-settings-ui.mjs && node scripts/validate-settings-controls-ui.mjs && node scripts/validate-model-settings-ui.mjs && node scripts/validate-security-settings-ui.mjs && node scripts/validate-advanced-settings-ui.mjs && node scripts/validate-help-settings-ui.mjs",
     "test:ui:tool-modes": "node scripts/validate-unified-tool-modes-ui.mjs",
     "test:ui:share-export": "node scripts/validate-share-export-ui.mjs",
     "test:ui:model-presentation": "node scripts/validate-model-presentation-ui.mjs && node scripts/validate-model-connections-ui.mjs",

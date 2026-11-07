@@ -1,0 +1,53 @@
+/* All presentation changes stay inside the security settings surface. */
+.security-settings { width: min(100%, 840px); min-width: 0; }
+.security-settings > .settings-section { width: 100%; max-width: none; min-height: 0; margin: 0; overflow: visible; gap: 24px; }
+.security-settings .settings-section__body { gap: 18px; }
+.security-settings__capabilities { min-width: 0; padding: 20px 24px; border: 1px solid var(--echo-border-default); border-radius: var(--echo-radius-card); background: var(--echo-bg-primary); }
+.security-settings__capability-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding-bottom: 8px; }
+.security-settings__capability-header > div { min-width: 0; }
+.security-settings__capability-header h3 { margin: 0; color: var(--echo-text-strong); font-size: var(--echo-body-size); font-weight: 600; }
+.security-settings__capability-header p { margin: 7px 0 0; color: var(--echo-text-medium); font-size: var(--echo-caption-size); line-height: 1.7; }
+.security-settings__capability-header > button { flex-shrink: 0; }
+.security-settings__capability { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 18px 0; }
+.security-settings__capability + .security-settings__capability { border-top: 1px solid var(--echo-border-default); }
+.security-settings__capability > svg { flex-shrink: 0; color: var(--echo-text-medium); }
+.security-settings__capability > div { min-width: 0; flex: 1; }
+.security-settings__capability strong { color: var(--echo-text-strong); font-size: var(--echo-body-size); font-weight: 550; }
+.security-settings__capability p { margin: 6px 0 0; color: var(--echo-text-medium); font-size: var(--echo-caption-size); line-height: 1.7; overflow-wrap: anywhere; }
+.security-settings__badge { display: inline-flex; align-items: center; flex-shrink: 0; padding: 4px 9px; border-radius: 999px; color: var(--echo-text-medium); background: var(--echo-bg-secondary); font-size: var(--echo-caption-size); line-height: 1.5; white-space: nowrap; }
+.security-settings__badge--ready { color: var(--echo-status-success); background: var(--echo-status-success-soft); }
+.security-settings__badge--attention { color: var(--echo-status-warning); background: var(--echo-status-warning-soft); }
+.security-settings__privacy { margin: 0; padding-top: 14px; border-top: 1px solid var(--echo-border-default); color: var(--echo-text-medium); font-size: var(--echo-caption-size); line-height: 1.7; }
+.security-settings__feedback { margin: 0 0 14px; color: var(--echo-text-medium); font-size: var(--echo-caption-size); line-height: 1.7; }
+.security-settings .settings-disclosure { margin: 0; }
+.security-settings .settings-disclosure__heading > span { color: var(--echo-text-medium); font-size: var(--echo-caption-size); }
+.security-settings .rules-list { padding: 0; margin: 0 0 18px; }
+.security-settings .rules-list__item { grid-template-columns: 44px minmax(92px, .4fr) minmax(0, 1fr) var(--echo-size-control-sm); }
+.security-settings .rules-list__action { overflow-wrap: anywhere; }
+.security-settings .rules-list__tool { font-family: inherit; font-size: var(--echo-caption-size); overflow-wrap: anywhere; }
+.security-settings .rules-list__pattern { white-space: normal; overflow-wrap: anywhere; }
+.security-settings .permission-rule-builder { grid-template-columns: minmax(100px, .7fr) minmax(160px, 1fr) minmax(160px, 1fr); padding: 20px 0 12px; }
+.security-settings .settings-hint { margin: 10px 0 0; padding: 0; border: 0; background: none; font-size: var(--echo-caption-size); line-height: 1.7; overflow-wrap: anywhere; }
+.security-settings__unsaved { color: var(--echo-text-medium); font-size: var(--echo-caption-size); margin: 12px 0 0; }
+.security-settings .browser-task-settings > .settings-row:first-child { padding-top: 0; }
+.security-settings .browser-task-settings > .settings-row:first-child .settings-row__label { flex-basis: auto; }
+.security-settings .browser-task-settings .settings-select { max-width: min(420px, 70%); }
+.security-settings__browser-heading { margin: 18px 0 0; padding-top: 18px; border-top: 1px solid var(--echo-border-default); color: var(--echo-text-strong); font-size: var(--echo-body-size); font-weight: 550; }
+.security-settings .browser-task-settings > .settings-row { gap: 16px; }
+.security-settings .browser-task-settings .settings-row__label { min-width: 0; }
+.security-settings .browser-task-settings .settings-row__description { overflow-wrap: anywhere; }
+.security-settings .browser-task-settings input[type="checkbox"] { flex-shrink: 0; accent-color: var(--echo-color-text-brand-default); }
+@media (max-width: 760px) {
+  .security-settings .permission-rule-builder { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .security-settings .permission-rule-builder__field--pattern { grid-column: 1 / -1; }
+}
+@media (max-width: 600px) {
+  .security-settings__capabilities { padding: 18px 16px; }
+  .security-settings__capability { flex-wrap: wrap; }
+  .security-settings__capability > div { flex-basis: calc(100% - 36px); }
+  .security-settings__capability > .security-settings__badge { margin-left: 32px; }
+  .security-settings .browser-task-settings .settings-select { width: 100%; max-width: 100%; }
+  .security-settings .rules-list__item { grid-template-columns: 44px minmax(0, 1fr) var(--echo-size-control-sm); }
+  .security-settings .rules-list__pattern { grid-column: 1 / 3; }
+  .security-settings .rules-list__remove { grid-column: 3; grid-row: 1 / 3; }
+}

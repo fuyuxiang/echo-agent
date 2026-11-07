@@ -166,6 +166,7 @@ export function SettingsPanel({
   onDeleteSession,
   onOpenSession,
   onOpenAutomation,
+  onOpenOrganization,
   onToast,
 }: {
   open: boolean;
@@ -184,12 +185,16 @@ export function SettingsPanel({
   onDeleteSession?: (sessionId: string, cwd?: string) => Promise<void>;
   onOpenSession?: (sessionId: string, cwd?: string) => void | Promise<void>;
   onOpenAutomation?: (automationId: string) => void | Promise<void>;
+  onOpenOrganization?: () => void;
   onToast?: (message: string) => void;
 }) {
   const [active, setActive] = useState<SettingsSectionId>(() => normalizeSection(initialSection));
   const [cloudDirty, setCloudDirty] = useState(false);
   const [memoryDirty, setMemoryDirty] = useState(false);
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const [memoryEntry, setMemoryEntry] = useState(0);
+  const [modelEntry, setModelEntry] = useState(0);
+  const [modelTargetId, setModelTargetId] = useState(initialModelId);
   const drafts = useRef(new Map<string, SettingsDraftState>());
   const [draftBusy, setDraftBusy] = useState(false);
   const reportDraft = useCallback((id: string, state: SettingsDraftState | null) => {
@@ -230,9 +235,15 @@ export function SettingsPanel({
       action: () => { if (!isBusy()) action(); },
     });
   };
-  const selectSection = (section: SettingsSectionId) => {
+  const selectSection = (section: SettingsSectionId, modelId?: string) => {
     const next = normalizeSection(section);
-    if (next !== active) confirmLeave(() => { setActive(next); setSearchTarget(null); });
+    if (next !== active || next === "memory" || next === "model") confirmLeave(() => {
+      setModelTargetId(next === "model" ? modelId : undefined);
+      if (next === "memory" && next === active) setMemoryEntry(value => value + 1);
+      if (next === "model" && !modelId) setModelEntry(value => value + 1);
+      setActive(next);
+      setSearchTarget(null);
+    });
   };
   const requestClose = () => confirmLeave(onClose);
   const modalRef = useModalFocus<HTMLDivElement>(open, requestClose);
@@ -245,11 +256,11 @@ export function SettingsPanel({
   // A new direct link while Settings is open follows the same draft guard.
   useEffect(() => {
     if (open) {
-      if (wasOpen.current) selectRequested.current(initialSection);
-      else { setActive(normalizeSection(initialSection)); setSearchTarget(null); setLeaveFeedback(""); }
+      if (wasOpen.current) selectRequested.current(initialSection, initialModelId);
+      else { setActive(normalizeSection(initialSection)); setModelTargetId(initialModelId); setSearchTarget(null); setLeaveFeedback(""); }
     }
     wasOpen.current = open;
-  }, [initialSection, open]);
+  }, [initialSection, initialModelId, open]);
 
   useEffect(() => {
     if (!searchTarget || !open) return;
@@ -336,8 +347,16 @@ export function SettingsPanel({
               <strong>{settingsSectionTitle(active)}</strong>
             </div>
             <SettingsSearch onSelect={(entry, onSelected) => {
-              const navigate = () => { setActive(normalizeSection(entry.section)); setSearchTarget({ target: entry.target }); onSelected(); };
-              if (normalizeSection(entry.section) === active) navigate();
+              const navigate = () => {
+                const section = normalizeSection(entry.section);
+                setModelTargetId(undefined);
+                if (section === "memory") setMemoryEntry(value => value + 1);
+                if (section === "model") setModelEntry(value => value + 1);
+                setActive(section);
+                setSearchTarget({ target: entry.target });
+                onSelected();
+              };
+              if (normalizeSection(entry.section) === active && active !== "memory" && active !== "model") navigate();
               else confirmLeave(navigate);
             }} />
             <button
@@ -354,7 +373,7 @@ export function SettingsPanel({
           {leaveFeedback && <p className="settings-navigation-feedback" role="status">{leaveFeedback}</p>}
           <div className="settings-modal__panel" ref={panelRef} tabIndex={-1}>
             {active === "model" ? (
-              <ModelConnectionsPanel onModelsChanged={onModelsChanged} initialModelId={initialModelId} />
+              <ModelConnectionsPanel overviewRequest={modelEntry} onModelsChanged={onModelsChanged} initialModelId={modelTargetId} onOpenOrganization={onOpenOrganization ? () => confirmLeave(onOpenOrganization) : undefined} />
             ) : active === "shortcuts" ? (
               <div className="settings-subview">
                 <SettingsViewTabs label="通用视图" items={GENERAL_VIEWS} active={active} onSelect={selectSection} />
@@ -362,7 +381,7 @@ export function SettingsPanel({
               </div>
             ) : active === "memory" ? (
               <div className="settings-subview settings-personal-memory">
-                <PersonalMemoryPanel cwd={cwd} sessionId={sessionId} onToast={onToast} onOpenSession={onOpenSession} onUnsavedChange={setMemoryDirty} onBusyChange={setMemoryBusy} />
+                <PersonalMemoryPanel key={memoryEntry} initialView={searchTarget?.target === "memory-management" ? "manage" : "overview"} cwd={cwd} sessionId={sessionId} onToast={onToast} onOpenSession={onOpenSession} onUnsavedChange={setMemoryDirty} onBusyChange={setMemoryBusy} />
               </div>
             ) : active === "help" ? (
               <HelpSettingsPanel />

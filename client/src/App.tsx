@@ -3536,6 +3536,7 @@ function Shell() {
             cwd={activeSessionCwd || newSessionTargetCwd}
             onClose={() => setSettingsOpen(false)}
             onModelsChanged={refreshModels}
+            onOpenOrganization={() => { setSettingsOpen(false); handleNavigate("组织"); }}
             onRestoreSession={handleArchiveSession}
             onDeleteSession={handleDeleteSession}
             onOpenSession={(sessionId) => handleSelectSession(sessionId, undefined, false, true)}

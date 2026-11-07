@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   providersSaveModel: vi.fn(),
   providersTestConnection: vi.fn(),
   providersTestModelConnection: vi.fn(),
+  openExternalUrl: vi.fn(),
   orgSession: vi.fn(),
   orgSyncModelConfig: vi.fn(),
   listenOrgModelsChanged: vi.fn(),
@@ -32,7 +33,12 @@ vi.mock("@/lib/org-client", () => ({
 }));
 
 import { ModelConnectionsPanel } from "../ModelConnectionsPanel";
-import { resetOrgSessionMirror } from "@/stores/org-session-store";
+import { resetOrgSessionMirror, useOrgSessionStore } from "@/stores/org-session-store";
+
+async function openFirstConnection() {
+  fireEvent.click(await screen.findByRole("button", { name: "管理模型连接" }));
+  fireEvent.click(within(await screen.findByRole("group", { name: "模型连接" })).getAllByRole("button").find(button => button.classList.contains("model-settings__connection"))!);
+}
 
 const defaults = {
   defaultModel: "",
@@ -51,7 +57,7 @@ const importProvider = {
 
 describe("ModelConnectionsPanel", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     resetOrgSessionMirror();
     mocks.providersList.mockResolvedValue({ providers: [], models: [] });
     mocks.agentsDefaultsGet.mockResolvedValue(defaults);
@@ -64,6 +70,7 @@ describe("ModelConnectionsPanel", () => {
 
   it.each(["personal", "organization"] as const)("%s 模型可逐一测试，失败重试不影响默认配置", async source => {
     const provider = { ...importProvider, source, managed: source !== "personal" };
+    if (source === "organization") mocks.orgSession.mockResolvedValue({ loggedIn: true, serverUrl: "https://org.test", bootstrap: { scopes: [{ id: "org", kind: "org", name: "组织" }] } });
     mocks.providersList.mockResolvedValue({ providers: [provider], models: [
       { modelId: "local/a", remoteModelId: "remote-a", name: "模型 A", providerId: provider.id, managed: provider.managed },
       { modelId: "local/b", remoteModelId: "remote-b", name: "模型 B", providerId: provider.id, managed: provider.managed },
@@ -72,6 +79,7 @@ describe("ModelConnectionsPanel", () => {
     mocks.providersTestModelConnection.mockImplementationOnce(() => new Promise((_, reject) => { rejectTest = reject; }))
       .mockResolvedValueOnce(undefined);
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
     const button = await screen.findByRole("button", { name: "测试模型 模型 B" });
     fireEvent.click(button);
     fireEvent.click(button);
@@ -106,23 +114,24 @@ describe("ModelConnectionsPanel", () => {
   it("中文输入 Model ID 时 Enter 不添加，关闭草稿先确认", async () => {
     render(<ModelConnectionsPanel />);
     await screen.findByText("还没有可用模型");
-    const opener = screen.getAllByRole("button", { name: "添加个人连接" })[0];
+    const opener = screen.getAllByRole("button", { name: "添加模型连接" })[0];
     opener.focus();
     fireEvent.click(opener);
-    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
-    const input = within(dialog).getByLabelText("模型名称 / ID");
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "custom" } });
+    const input = within(dialog).getByLabelText("模型 ID");
     fireEvent.change(input, { target: { value: "候选模型" } });
     fireEvent.keyDown(input, { key: "Enter", isComposing: true });
     expect(input).toHaveValue("候选模型");
     fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
     expect(input).toHaveValue("候选模型");
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(input).toHaveValue("");
-    expect(within(dialog).getByText("候选模型")).toBeInTheDocument();
+    expect(input).toHaveValue("候选模型");
+    expect(within(dialog).queryByRole("button", { name: "添加更多模型" })).toBeNull();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.getByRole("alertdialog", { name: "舍弃未保存的修改？" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
-    expect(within(dialog).getByText("候选模型")).toBeInTheDocument();
+    expect(input).toHaveValue("候选模型");
     expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
   });
 
@@ -134,8 +143,9 @@ describe("ModelConnectionsPanel", () => {
       .mockImplementationOnce(() => new Promise((resolve) => { resolveModels = resolve; }));
     mocks.providersSaveConnection.mockReset();
     render(<ModelConnectionsPanel />);
-    fireEvent.click(await screen.findByRole("button", { name: "同步模型" }));
-    const dialog = screen.getByRole("dialog", { name: "同步模型" });
+    await openFirstConnection();
+    fireEvent.click(await screen.findByRole("button", { name: "获取更多模型" }));
+    const dialog = screen.getByRole("dialog", { name: "添加更多模型" });
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("读取模型列表失败：连接中断");
     expect(within(dialog).getByRole("button", { name: /^添加.*个模型$/ })).toBeDisabled();
 
@@ -167,8 +177,9 @@ describe("ModelConnectionsPanel", () => {
       .mockRejectedValueOnce(new Error("暂时无法写入配置"))
       .mockImplementationOnce(() => new Promise((resolve) => { resolveSave = resolve; }));
     render(<ModelConnectionsPanel />);
-    fireEvent.click(await screen.findByRole("button", { name: "同步模型" }));
-    const dialog = screen.getByRole("dialog", { name: "同步模型" });
+    await openFirstConnection();
+    fireEvent.click(await screen.findByRole("button", { name: "获取更多模型" }));
+    const dialog = screen.getByRole("dialog", { name: "添加更多模型" });
     const firstModel = await within(dialog).findByRole("checkbox", { name: "model-a" });
     const secondModel = within(dialog).getByRole("checkbox", { name: "model-b" });
     const configured = within(dialog).getByRole("checkbox", { name: /configured/ });
@@ -196,7 +207,7 @@ describe("ModelConnectionsPanel", () => {
     );
 
     await act(async () => { resolveSave({ providerId: "personal", modelIds: ["model-b"] }); });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "同步模型" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "添加更多模型" })).not.toBeInTheDocument());
     expect(await screen.findByText("已添加 1 个模型。")).toBeInTheDocument();
   });
 
@@ -224,10 +235,11 @@ describe("ModelConnectionsPanel", () => {
     });
 
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
 
     expect(await screen.findByText("组织托管")).toBeInTheDocument();
     expect(screen.getByText("由组织安全配置 · 不可查看")).toBeInTheDocument();
-    expect(screen.getByText("组织提供", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "组织提供", level: 3 })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "编辑连接" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "删除连接" })).not.toBeInTheDocument();
     expect(screen.getByText("远端模型 ID：MiniMax-M3")).toBeInTheDocument();
@@ -245,40 +257,20 @@ describe("ModelConnectionsPanel", () => {
     expect(await screen.findByText("还没有可用模型")).toBeInTheDocument();
     expect(screen.queryByText("内置模型")).not.toBeInTheDocument();
     expect(screen.queryByText(/Echo Brook|Echo Cedar|Echo Grove|Echo Reed|Echo Willow/)).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "添加个人连接" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "添加模型连接" }).length).toBeGreaterThan(0);
   });
 
-  it("标题和无纵向溢出的连接列表可继续滚动详情，移动布局交由原生滚动", async () => {
-    mocks.providersList.mockResolvedValue({
-      providers: [{ id: "custom", providerKind: "custom", label: "工作", source: "personal", baseUrl: "https://example.com/v1" }],
-      models: [{ modelId: "model-a", providerId: "custom" }],
-    });
-    const { container } = render(<ModelConnectionsPanel />);
-    const detail = await screen.findByRole("region", { name: "工作连接详情" });
-    const sourceList = screen.getByLabelText("模型连接");
-    const panel = container.querySelector<HTMLElement>(".model-connections")!;
-    panel.style.overflowY = "hidden";
-    Object.defineProperties(detail, {
-      scrollHeight: { configurable: true, value: 1000 },
-      clientHeight: { configurable: true, value: 200 },
-    });
-    Object.defineProperties(sourceList, {
-      scrollHeight: { configurable: true, value: 200 },
-      clientHeight: { configurable: true, value: 200 },
-    });
-
-    fireEvent.wheel(screen.getByRole("heading", { name: "模型与连接" }), { deltaY: 120 });
-    expect(detail.scrollTop).toBe(120);
-    fireEvent.wheel(sourceList, { deltaY: 120 });
-    expect(detail.scrollTop).toBe(240);
-
-    Object.defineProperty(sourceList, "scrollHeight", { configurable: true, value: 500 });
-    fireEvent.wheel(sourceList, { deltaY: 120 });
-    expect(detail.scrollTop).toBe(240);
-
-    panel.style.overflowY = "auto";
-    fireEvent.wheel(screen.getByRole("heading", { name: "模型与连接" }), { deltaY: 120 });
-    expect(detail.scrollTop).toBe(240);
+  it("首页不展开连接详情，管理页可返回且保留模型来源", async () => {
+    mocks.providersList.mockResolvedValue({ providers: [importProvider], models: [{ modelId: "model-a", providerId: importProvider.id }] });
+    render(<ModelConnectionsPanel />);
+    expect(await screen.findByRole("heading", { name: "模型" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "工作连接连接详情" })).toBeNull();
+    await openFirstConnection();
+    expect(screen.getByRole("region", { name: "工作连接连接详情" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回连接管理" }));
+    expect(screen.getByRole("heading", { name: "连接管理" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回模型设置" }));
+    expect(screen.getByRole("heading", { name: "模型" })).toBeInTheDocument();
   });
 
   it("个人 HTTP 连接仍显示明文传输提醒", async () => {
@@ -287,6 +279,7 @@ describe("ModelConnectionsPanel", () => {
       models: [{ modelId: "model-a", providerId: "custom" }],
     });
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
     expect(await screen.findByText("此连接使用 HTTP 明文传输；API Key、提问和模型回复可能被网络路径上的其他人看到。")).toBeInTheDocument();
   });
 
@@ -301,6 +294,7 @@ describe("ModelConnectionsPanel", () => {
       ],
     });
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
     const detail = await screen.findByRole("region", { name: "工作连接详情" });
     const rows = within(detail).getAllByRole("listitem");
     expect(within(rows[0]).getByText("当前自动使用")).toBeInTheDocument();
@@ -316,6 +310,7 @@ describe("ModelConnectionsPanel", () => {
       models: [{ modelId: "model-a", providerId: "custom" }],
     });
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
     expect(await screen.findByText("已设默认 · 当前使用")).toBeInTheDocument();
     expect(screen.queryByText("当前自动使用")).not.toBeInTheDocument();
   });
@@ -330,7 +325,7 @@ describe("ModelConnectionsPanel", () => {
     render(<ModelConnectionsPanel />);
     expect(await screen.findByText(/已设默认模型「missing-model」不在当前模型目录中/)).toBeInTheDocument();
     expect(screen.getByText(/已设默认模型「missing-model」不在当前模型目录中/)).not.toHaveTextContent(/echoagent-ojlab\/|organization\//);
-    expect(screen.getByText("当前自动使用")).toBeInTheDocument();
+    expect(screen.getByText(/当前自动使用「/)).toBeInTheDocument();
   });
 
   it("手动编辑模型可设置并清除最大输出", async () => {
@@ -340,6 +335,7 @@ describe("ModelConnectionsPanel", () => {
     });
     mocks.providersSaveConnection.mockResolvedValue({ providerId: "custom", modelIds: ["model-a"] });
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
     await screen.findByText("远端模型 ID：model-a");
     fireEvent.click(screen.getByRole("button", { name: "编辑模型 model-a" }));
     const dialog = screen.getByRole("dialog", { name: "编辑模型" });
@@ -364,6 +360,7 @@ describe("ModelConnectionsPanel", () => {
     });
     mocks.providersSaveConnection.mockResolvedValue({ providerId: "custom", modelIds: ["model-a"] });
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
     await screen.findByRole("region", { name: "OpenAI 兼容连接详情" });
     fireEvent.click(screen.getByRole("button", { name: /手动添加/ }));
     const dialog = screen.getByRole("dialog", { name: "手动添加模型" });
@@ -396,6 +393,7 @@ describe("ModelConnectionsPanel", () => {
     mocks.providersList.mockResolvedValue({ providers: [provider], models });
 
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
 
     const detail = await screen.findByRole("region", { name: "工作用连接详情" });
     expect(within(detail).getByText("7 个")).toBeInTheDocument();
@@ -403,7 +401,7 @@ describe("ModelConnectionsPanel", () => {
     expect(within(detail).getByText("远端模型 ID：model-7")).toBeInTheDocument();
   });
 
-  it("直接填写 Model ID 后测试实际模型并保存个人连接", async () => {
+  it("新增表单只保存配置，不发送实际模型请求", async () => {
     mocks.providersTestModelConnection.mockResolvedValue(undefined);
     mocks.providersSaveConnection.mockResolvedValue({
       providerId: "custom",
@@ -412,23 +410,20 @@ describe("ModelConnectionsPanel", () => {
 
     render(<ModelConnectionsPanel />);
     await screen.findByText("还没有可用模型");
-    fireEvent.click(screen.getAllByRole("button", { name: "添加个人连接" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "添加模型连接" })[0]);
 
-    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "custom" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "更多设置" }));
     fireEvent.change(within(dialog).getByLabelText(/连接名称/), { target: { value: "我的 MiniMax" } });
-    fireEvent.change(within(dialog).getByLabelText("Base URL"), { target: { value: "https://api.minimaxi.com/v1" } });
-    fireEvent.change(within(dialog).getByLabelText("API Key"), { target: { value: "sk-test" } });
-    fireEvent.change(within(dialog).getByLabelText("模型名称 / ID"), { target: { value: "MiniMax-M3" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "测试并保存" }));
-
+    fireEvent.change(within(dialog).getByLabelText("服务地址（Base URL）"), { target: { value: "https://api.minimaxi.com/v1" } });
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "sk-test" } });
+    fireEvent.change(within(dialog).getByLabelText("模型 ID"), { target: { value: "MiniMax-M3" } });
+    expect(within(dialog).queryByRole("button", { name: "测试此模型" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "添加更多模型" })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
     await waitFor(() => {
-      expect(mocks.providersTestModelConnection).toHaveBeenCalledWith(
-        expect.objectContaining({
-          baseUrl: "https://api.minimaxi.com/v1",
-          apiKey: "sk-test",
-        }),
-        "MiniMax-M3",
-      );
+      expect(mocks.providersTestModelConnection).not.toHaveBeenCalled();
       expect(mocks.providersSaveConnection).toHaveBeenCalledWith(
         expect.objectContaining({
           id: "",
@@ -447,49 +442,52 @@ describe("ModelConnectionsPanel", () => {
   it("原内置服务地址作为个人连接时也必须明确配置凭据", async () => {
     render(<ModelConnectionsPanel />);
     await screen.findByText("还没有可用模型");
-    fireEvent.click(screen.getAllByRole("button", { name: "添加个人连接" })[0]);
-    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
-    fireEvent.change(within(dialog).getByLabelText("Base URL"), { target: { value: "http://123.56.188.16:8088/v1" } });
-    fireEvent.change(within(dialog).getByLabelText("模型名称 / ID"), { target: { value: "my-model" } });
-    expect(within(dialog).getByLabelText("API Key")).toBeEnabled();
+    fireEvent.click(screen.getAllByRole("button", { name: "添加模型连接" })[0]);
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "custom" } });
+    fireEvent.change(within(dialog).getByLabelText("服务地址（Base URL）"), { target: { value: "http://123.56.188.16:8088/v1" } });
+    fireEvent.change(within(dialog).getByLabelText("模型 ID"), { target: { value: "my-model" } });
+    expect(within(dialog).getByLabelText("API 密钥")).toBeEnabled();
     fireEvent.click(within(dialog).getByLabelText(/允许此个人连接使用 HTTP/));
-    fireEvent.click(within(dialog).getByRole("button", { name: "测试并保存" }));
-    expect(await within(dialog).findByText("请填写 API Key。")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(await within(dialog).findByText("请填写 API 密钥。")).toBeInTheDocument();
     expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
   });
 
   it("OpenAI 作为 Responses 模型 Provider 接入而不是独立 Agent Runtime", async () => {
     render(<ModelConnectionsPanel />);
     await screen.findByText("还没有可用模型");
-    fireEvent.click(screen.getAllByRole("button", { name: "添加个人连接" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "添加模型连接" })[0]);
 
-    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
-    fireEvent.change(within(dialog).getByLabelText("接口类型"), {
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "custom" } });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), {
       target: { value: "openai" },
     });
 
-    expect(within(dialog).getByLabelText("Base URL")).toHaveValue("https://api.openai.com/v1");
-    expect(within(dialog).getByText("使用 OpenAI Platform API Key；ChatGPT 订阅登录不能作为模型 API 凭据。")).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "高级设置" }));
+    expect(within(dialog).getByText("服务地址：https://api.openai.com/v1")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "修改地址" }));
+    expect(within(dialog).getByLabelText("服务地址（Base URL）")).toHaveValue("https://api.openai.com/v1");
+    fireEvent.click(within(dialog).getByRole("button", { name: "更多设置" }));
     expect(within(dialog).getByDisplayValue("Responses")).toBeInTheDocument();
   });
 
   it("连接编辑器具有初始焦点、Tab 圈定、Escape 与触发器恢复", async () => {
     render(<ModelConnectionsPanel />);
     await screen.findByText("还没有可用模型");
-    const opener = screen.getAllByRole("button", { name: "添加个人连接" })[0];
+    const opener = screen.getAllByRole("button", { name: "添加模型连接" })[0];
     opener.focus();
     fireEvent.click(opener);
 
-    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
-    expect(within(dialog).getByLabelText(/连接名称/)).toHaveFocus();
-    const last = within(dialog).getByRole("button", { name: "测试并保存" });
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    expect(within(dialog).getByLabelText("模型服务商")).toHaveFocus();
+    const last = within(dialog).getByRole("button", { name: "保存" });
     last.focus();
     fireEvent.keyDown(document, { key: "Tab" });
     expect(within(dialog).getByRole("button", { name: "关闭" })).toHaveFocus();
 
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "添加个人连接" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "添加模型连接" })).toBeNull();
     expect(opener).toHaveFocus();
   });
 
@@ -509,12 +507,13 @@ describe("ModelConnectionsPanel", () => {
 
     render(<ModelConnectionsPanel onModelsChanged={onModelsChanged} />);
     await screen.findByText("还没有可用模型");
-    fireEvent.click(screen.getAllByRole("button", { name: "添加个人连接" })[0]);
-    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
-    fireEvent.change(within(dialog).getByLabelText("Base URL"), { target: { value: "https://api.example.com/v1" } });
-    fireEvent.change(within(dialog).getByLabelText("API Key"), { target: { value: "sk-test" } });
-    fireEvent.change(within(dialog).getByLabelText("模型名称 / ID"), { target: { value: "model-a" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "直接保存" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "添加模型连接" })[0]);
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "custom" } });
+    fireEvent.change(within(dialog).getByLabelText("服务地址（Base URL）"), { target: { value: "https://api.example.com/v1" } });
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "sk-test" } });
+    fireEvent.change(within(dialog).getByLabelText("模型 ID"), { target: { value: "model-a" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(mocks.internalReload).toHaveBeenCalledWith("models"));
     expect(onModelsChanged).not.toHaveBeenCalled();
@@ -546,21 +545,20 @@ describe("ModelConnectionsPanel", () => {
     mocks.providersSaveConnection.mockResolvedValue({ providerId: "custom", modelIds: ["model-a"] });
 
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
     await screen.findByText("现有连接", { selector: "h3" });
     fireEvent.click(screen.getByRole("button", { name: "编辑连接" }));
     const dialog = screen.getByRole("dialog", { name: "编辑连接" });
-    expect(within(dialog).getByLabelText("API Key")).toHaveValue("");
-    fireEvent.click(within(dialog).getByRole("button", { name: "测试并保存" }));
-
-    await waitFor(() => {
-      expect(mocks.providersTestModelConnection).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "custom", apiKey: undefined, source: "personal" }),
-        "model-a",
-      );
-    });
+    expect(within(dialog).getByLabelText("API 密钥")).toHaveValue("");
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(mocks.providersSaveConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "custom", apiKey: undefined, source: "personal" }),
+      [expect.objectContaining({ modelId: "model-a", remoteModelId: "model-a" })], true,
+    ));
+    expect(mocks.providersTestModelConnection).not.toHaveBeenCalled();
   });
 
-  it("编辑连接时以当前勾选结果替换该连接的模型", async () => {
+  it("编辑连接时完整保留已有多模型及其能力配置", async () => {
     const provider = {
       id: "custom",
       providerKind: "custom" as const,
@@ -582,26 +580,20 @@ describe("ModelConnectionsPanel", () => {
     mocks.providersSaveConnection.mockResolvedValue({ providerId: "custom", modelIds: ["model-a"] });
 
     render(<ModelConnectionsPanel />);
+    await openFirstConnection();
     await screen.findByText("现有连接", { selector: "h3" });
     fireEvent.click(screen.getByRole("button", { name: "编辑连接" }));
     const dialog = screen.getByRole("dialog", { name: "编辑连接" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "获取模型列表（可选）" }));
-
-    const modelB = await within(dialog).findByRole("checkbox", { name: /model-b/ });
-    expect(modelB).toBeChecked();
-    fireEvent.click(modelB);
-    fireEvent.click(within(dialog).getByRole("button", { name: "直接保存" }));
-
-    await waitFor(() => {
-      expect(mocks.providersSaveConnection).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "custom", apiKey: undefined }),
-        [expect.objectContaining({ modelId: "model-a", remoteModelId: "model-a", maxOutputTokens: 8192 })],
-        true,
-      );
-    });
+    expect(within(dialog).getByLabelText("已配置模型")).toHaveTextContent("model-amodel-b");
+    expect(within(dialog).queryByRole("button", { name: "从服务获取模型" })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(mocks.providersSaveConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "custom", apiKey: undefined }),
+      [expect.objectContaining({ modelId: "model-a", remoteModelId: "model-a", maxOutputTokens: 8192 }), expect.objectContaining({ modelId: "model-b", remoteModelId: "model-b" })], true,
+    ));
   });
 
-  it("服务端不支持 models 接口时仍可手填 Model ID 并直接保存", async () => {
+  it("服务端不支持 models 接口时仍可手填 Model ID 并保存", async () => {
     mocks.providersTestConnection.mockRejectedValue(new Error("404 /models"));
     mocks.providersSaveConnection.mockResolvedValue({
       providerId: "custom",
@@ -610,20 +602,21 @@ describe("ModelConnectionsPanel", () => {
 
     render(<ModelConnectionsPanel />);
     await screen.findByText("还没有可用模型");
-    fireEvent.click(screen.getAllByRole("button", { name: "添加个人连接" })[0]);
-    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
-    fireEvent.change(within(dialog).getByLabelText("Base URL"), { target: { value: "https://private.example/v1" } });
-    fireEvent.change(within(dialog).getByLabelText("API Key"), { target: { value: "private-key" } });
-    fireEvent.change(within(dialog).getByLabelText("模型名称 / ID"), { target: { value: "private-model-v2" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "添加模型连接" })[0]);
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "custom" } });
+    fireEvent.change(within(dialog).getByLabelText("服务地址（Base URL）"), { target: { value: "https://private.example/v1" } });
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "private-key" } });
+    fireEvent.change(within(dialog).getByLabelText("模型 ID"), { target: { value: "private-model-v2" } });
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "获取模型列表（可选）" }));
-    expect(await within(dialog).findByText(/这不影响手动填写、测试和保存/)).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "直接保存" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
+    expect(await within(dialog).findByText(/可手动填写模型 ID 后保存/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
 
     await waitFor(() => {
       expect(mocks.providersSaveConnection).toHaveBeenCalledWith(
         expect.objectContaining({
-          label: "",
+          label: "OpenAI 兼容",
           baseUrl: "https://private.example/v1",
           apiKey: "private-key",
         }),
@@ -637,68 +630,58 @@ describe("ModelConnectionsPanel", () => {
     mocks.providersTestConnection.mockResolvedValue([{ id: "chat-xc" }]);
     render(<ModelConnectionsPanel />);
     await screen.findByText("还没有可用模型");
-    fireEvent.click(screen.getAllByRole("button", { name: "添加个人连接" })[0]);
-    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
-    const baseUrl = within(dialog).getByLabelText("Base URL");
+    fireEvent.click(screen.getAllByRole("button", { name: "添加模型连接" })[0]);
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "custom" } });
+    const baseUrl = within(dialog).getByLabelText("服务地址（Base URL）");
     fireEvent.change(baseUrl, { target: { value: "http://example.com/:60100/v1" } });
-    fireEvent.change(within(dialog).getByLabelText("API Key"), { target: { value: "test-key" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "获取模型列表（可选）" }));
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "test-key" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
     expect(within(dialog).getByText(/端口号位置不对/)).toBeInTheDocument();
     expect(mocks.providersTestConnection).not.toHaveBeenCalled();
 
     fireEvent.change(baseUrl, { target: { value: "http://example.com:60100/v1" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "获取模型列表（可选）" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
     expect(within(dialog).getByText(/使用 HTTP 前，请确认/)).toBeInTheDocument();
     expect(mocks.providersTestConnection).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByLabelText(/允许此个人连接使用 HTTP/));
-    fireEvent.click(within(dialog).getByRole("button", { name: "获取模型列表（可选）" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
     await waitFor(() => expect(mocks.providersTestConnection).toHaveBeenCalledWith(
       expect.objectContaining({ baseUrl: "http://example.com:60100/v1", allowInsecureHttp: true }),
     ));
 
     fireEvent.change(baseUrl, { target: { value: "http://123.56.188.16:8088/v1" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "获取模型列表（可选）" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
     expect(within(dialog).getByText(/使用 HTTP 前，请确认/)).toBeInTheDocument();
     expect(mocks.providersTestConnection).toHaveBeenCalledTimes(1);
     fireEvent.click(within(dialog).getByLabelText(/允许此个人连接使用 HTTP/));
-    fireEvent.click(within(dialog).getByRole("button", { name: "获取模型列表（可选）" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
     await waitFor(() => expect(mocks.providersTestConnection).toHaveBeenCalledTimes(2));
     expect(mocks.providersTestConnection).toHaveBeenLastCalledWith(
       expect.objectContaining({ baseUrl: "http://123.56.188.16:8088/v1", allowInsecureHttp: true }),
     );
 
     fireEvent.change(baseUrl, { target: { value: "https://secure.example.com/v1" } });
-    fireEvent.change(within(dialog).getByLabelText("API Key"), { target: { value: "test-key" } });
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "test-key" } });
     expect(within(dialog).queryByLabelText(/允许此个人连接使用 HTTP/)).not.toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "获取模型列表（可选）" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
     await waitFor(() => expect(mocks.providersTestConnection).toHaveBeenCalledTimes(3));
     expect(mocks.providersTestConnection).toHaveBeenLastCalledWith(
       expect.objectContaining({ baseUrl: "https://secure.example.com/v1", allowInsecureHttp: false }),
     );
   });
 
-  it("实际模型测试失败时不保存，但允许用户确认后直接保存", async () => {
+  it("模型测试失败保留已保存的连接，不修改默认配置", async () => {
+    mocks.providersList.mockResolvedValue({ providers: [importProvider], models: [{ modelId: "p/model", remoteModelId: "special-model", providerId: importProvider.id }] });
     mocks.providersTestModelConnection.mockRejectedValue(new Error("自定义网关需要额外参数"));
-    mocks.providersSaveConnection.mockResolvedValue({
-      providerId: "custom",
-      modelIds: ["special-model"],
-    });
-
     render(<ModelConnectionsPanel />);
-    await screen.findByText("还没有可用模型");
-    fireEvent.click(screen.getAllByRole("button", { name: "添加个人连接" })[0]);
-    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
-    fireEvent.change(within(dialog).getByLabelText("Base URL"), { target: { value: "https://special.example/v1" } });
-    fireEvent.change(within(dialog).getByLabelText("API Key"), { target: { value: "special-key" } });
-    fireEvent.change(within(dialog).getByLabelText("模型名称 / ID"), { target: { value: "special-model" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "测试并保存" }));
-
-    expect(await within(dialog).findByText(/测试失败，尚未保存/)).toBeInTheDocument();
+    await openFirstConnection();
+    fireEvent.click(screen.getByRole("button", { name: "测试模型 special-model" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("自定义网关需要额外参数");
+    expect(screen.getByRole("button", { name: "编辑连接" })).toBeEnabled();
     expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "直接保存" }));
-    await waitFor(() => expect(mocks.providersSaveConnection).toHaveBeenCalledTimes(1));
+    expect(mocks.agentsDefaultsSave).not.toHaveBeenCalled();
   });
 
   it("删除已成功但后续全局刷新失败时不保留可重复删除的弹窗", async () => {
@@ -720,6 +703,7 @@ describe("ModelConnectionsPanel", () => {
     const onModelsChanged = vi.fn().mockRejectedValue(new Error("shell refresh failed"));
 
     render(<ModelConnectionsPanel onModelsChanged={onModelsChanged} />);
+    await openFirstConnection();
     await screen.findByText("个人连接", { selector: "h3" });
     fireEvent.click(screen.getByRole("button", { name: "删除连接" }));
     const dialog = screen.getByRole("alertdialog", { name: "删除连接“个人连接”？" });
@@ -730,4 +714,244 @@ describe("ModelConnectionsPanel", () => {
     expect(await screen.findByText(/shell refresh failed/)).toHaveTextContent("配置已保存");
     expect(mocks.providersDeleteProvider).toHaveBeenCalledTimes(1);
   });
+  it.each([false, true])("无组织上下文时 loggedIn=%s 首页与管理页都不展示无关组织同步", async loggedIn => {
+    mocks.orgSession.mockResolvedValue({ loggedIn, serverUrl: "https://account.test", bootstrap: { scopes: [{ id: "personal", kind: "personal", name: "个人" }] } });
+    mocks.providersList.mockResolvedValue({ providers: [importProvider], models: [{ modelId: "a", providerId: importProvider.id }] });
+    render(<ModelConnectionsPanel />);
+    await screen.findByRole("button", { name: "管理模型连接" });
+    expect(screen.queryByText(/同步|组织模型|组织提供/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "添加模型连接" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "管理模型连接" }));
+    expect(screen.queryByRole("region", { name: "组织模型状态" })).toBeNull();
+    expect(mocks.orgSyncModelConfig).not.toHaveBeenCalled();
+  });
+
+  it("组织空目录只有在同步明确返回空结果后才显示", async () => {
+    mocks.orgSession.mockResolvedValue({ loggedIn: true, serverUrl: "https://org.test", bootstrap: { scopes: [{ id: "org", kind: "org", name: "组织" }] } });
+    mocks.orgSyncModelConfig.mockResolvedValue({ configured: false, syncedAt: 1 });
+    render(<ModelConnectionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "管理模型连接" }));
+    expect(screen.getByRole("region", { name: "组织模型状态" })).toHaveTextContent("尚未获取组织模型");
+    expect(screen.queryByText("组织暂未提供模型")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "刷新组织模型" }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "组织模型状态" })).toHaveTextContent("组织暂未提供模型"));
+    expect(mocks.orgSyncModelConfig).toHaveBeenCalledTimes(1);
+    expect(mocks.agentsDefaultsSave).not.toHaveBeenCalled();
+  });
+
+  it("组织刷新失败不能伪装成未分配，个人模型仍可管理", async () => {
+    mocks.orgSession.mockResolvedValue({ loggedIn: true, serverUrl: "https://org.test", bootstrap: { scopes: [{ id: "org", kind: "org", name: "组织" }] } });
+    mocks.orgSyncModelConfig.mockRejectedValue(new Error("网络不可达"));
+    mocks.providersList.mockResolvedValue({ providers: [importProvider], models: [{ modelId: "a", providerId: importProvider.id }] });
+    render(<ModelConnectionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "管理模型连接" }));
+    fireEvent.click(screen.getByRole("button", { name: "刷新组织模型" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("暂时无法获取组织模型：网络不可达");
+    expect(screen.queryByText("组织暂未提供模型")).toBeNull();
+    fireEvent.click(within(screen.getByRole("group", { name: "模型连接" })).getByRole("button", { name: /工作连接/ }));
+    expect(screen.getByRole("button", { name: "编辑连接" })).toBeEnabled();
+  });
+
+  it.each([false, true])("组织认证过期时 loggedIn=%s 仍给出登录入口，个人模型不被禁用", async loggedIn => {
+    const login = vi.fn();
+    mocks.orgSession.mockResolvedValue({ loggedIn, requiresReauthentication: true, serverUrl: "https://org.test" });
+    mocks.providersList.mockResolvedValue({ providers: [{ ...importProvider, id: "org", source: "organization", managed: true }, importProvider], models: [{ modelId: "org/a", providerId: "org" }, { modelId: "p/a", providerId: importProvider.id }] });
+    render(<ModelConnectionsPanel onOpenOrganization={login} />);
+    const selector = await screen.findByRole("combobox", { name: "默认模型" });
+    expect(within(selector).getByRole("option", { name: /org\/a/ })).toBeDisabled();
+    expect(within(selector).getByRole("option", { name: /p\/a/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "管理模型连接" }));
+    fireEvent.click(screen.getByRole("button", { name: "前往组织登录" }));
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(mocks.orgSyncModelConfig).not.toHaveBeenCalled();
+  });
+
+  it("读取失败提供重试，不能显示空模型的假象", async () => {
+    mocks.providersList.mockRejectedValueOnce(new Error("配置不可读"));
+    render(<ModelConnectionsPanel />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("读取模型配置失败：配置不可读");
+    expect(screen.queryByText("还没有可用模型")).toBeNull();
+    expect(screen.queryByRole("button", { name: "添加模型连接" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+    expect(await screen.findByText("还没有可用模型")).toBeInTheDocument();
+    expect(mocks.providersList).toHaveBeenCalledTimes(2);
+  });
+
+  it("设为默认保留其他默认配置，并沿用原有加载与刷新链路", async () => {
+    mocks.providersList.mockResolvedValue({ providers: [importProvider], models: [{ modelId: "a", providerId: importProvider.id }] });
+    const changed = vi.fn();
+    render(<ModelConnectionsPanel onModelsChanged={changed} />);
+    fireEvent.change(await screen.findByRole("combobox", { name: "默认模型" }), { target: { value: "a" } });
+    await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+    expect(mocks.agentsDefaultsSave).toHaveBeenCalledExactlyOnceWith({ ...defaults, defaultModel: "a" });
+    expect(mocks.internalReload).toHaveBeenCalledWith("models");
+  });
+
+  it("设为默认未完成时禁用所有编辑入口，完成后可正常保存连接", async () => {
+    mocks.providersList.mockResolvedValue({ providers: [importProvider], models: [{ modelId: "a", remoteModelId: "remote-a", providerId: importProvider.id }] });
+    let finishDefault!: () => void;
+    mocks.agentsDefaultsSave.mockImplementationOnce(() => new Promise<void>(resolve => { finishDefault = resolve; }));
+    mocks.providersSaveConnection.mockResolvedValue({ providerId: importProvider.id, modelIds: ["a"] });
+    const changed = vi.fn();
+    render(<ModelConnectionsPanel initialModelId="a" onModelsChanged={changed} />);
+    const detail = await screen.findByRole("region", { name: "工作连接连接详情" });
+    fireEvent.click(within(detail).getByRole("button", { name: "设为默认" }));
+    for (const name of ["编辑连接", "删除连接", "手动添加", "获取更多模型", "编辑模型 remote-a", "删除模型 remote-a"]) {
+      const button = within(detail).getByRole("button", { name });
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+    }
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
+    await act(async () => finishDefault());
+    await waitFor(() => expect(within(detail).getByRole("button", { name: "编辑连接" })).toBeEnabled());
+    fireEvent.click(within(detail).getByRole("button", { name: "编辑连接" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "编辑连接" })).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑连接" })).toBeNull());
+    await waitFor(() => expect(changed).toHaveBeenCalledTimes(2));
+    expect(mocks.providersSaveConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["connection", "manual", "import"] as const)("%s 保存从写入到全局刷新完成都持有操作锁", async editor => {
+    mocks.providersList.mockResolvedValue({ providers: [importProvider], models: [{ modelId: "a", remoteModelId: "remote-a", providerId: importProvider.id }] });
+    mocks.providersFetchModelsForProvider.mockResolvedValue([{ id: "remote-b" }]);
+    let finishSave!: (value: { providerId: string; modelIds: string[] }) => void;
+    let finishRefresh!: () => void;
+    mocks.providersSaveConnection.mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve; }));
+    const changed = vi.fn(() => new Promise<void>(resolve => { finishRefresh = resolve; }));
+    render(<ModelConnectionsPanel initialModelId="a" onModelsChanged={changed} />);
+    const detail = await screen.findByRole("region", { name: "工作连接连接详情" });
+    const entry = { connection: "编辑连接", manual: "手动添加", import: "获取更多模型" }[editor]!;
+    fireEvent.click(within(detail).getByRole("button", { name: entry }));
+    const dialog = screen.getByRole("dialog");
+    if (editor === "manual") fireEvent.change(within(dialog).getByLabelText("远端模型 ID"), { target: { value: "remote-b" } });
+    if (editor === "import") fireEvent.click(await within(dialog).findByRole("checkbox", { name: "remote-b" }));
+    const saveLabel = { connection: "保存", manual: "保存模型", import: "添加 1 个模型" }[editor]!;
+    const save = within(dialog).getByRole("button", { name: saveLabel });
+    fireEvent.click(save); fireEvent.click(save);
+    expect(mocks.providersSaveConnection).toHaveBeenCalledTimes(1);
+    expect(within(detail).getByRole("button", { name: "编辑连接" })).toBeDisabled();
+    expect(mocks.internalReload).not.toHaveBeenCalled();
+    await act(async () => finishSave({ providerId: importProvider.id, modelIds: ["a"] }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(within(detail).getByRole("button", { name: "编辑连接" })).toBeDisabled();
+    await act(async () => finishRefresh());
+    await waitFor(() => expect(within(detail).getByRole("button", { name: "编辑连接" })).toBeEnabled());
+    expect(mocks.internalReload).toHaveBeenCalledExactlyOnceWith("models");
+    expect(mocks.providersSaveConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it("服务发现只选择一个模型，切换接口时清除旧发现列表并保留手填模型", async () => {
+    mocks.providersTestConnection.mockResolvedValue([{ id: "first" }, { id: "second" }]);
+    render(<ModelConnectionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "添加模型连接" }));
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "deepseek" } });
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "test-key" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
+    fireEvent.click(await within(dialog).findByRole("radio", { name: "first" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: "second" }));
+    expect(within(dialog).getByRole("radio", { name: "first" })).not.toBeChecked();
+    expect(within(dialog).getByLabelText("模型 ID")).toHaveValue("second");
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "another-key" } });
+    expect(within(dialog).queryByRole("radio")).toBeNull();
+    expect(within(dialog).getByLabelText("模型 ID")).toHaveValue("second");
+    expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
+    expect(within(dialog).queryByText(/录音|语音额度/)).toBeNull();
+  });
+
+  it("保存已成功但加载失败时只重试加载，不重复保存", async () => {
+    mocks.providersSaveConnection.mockResolvedValue({ providerId: "custom", modelIds: ["a"] });
+    mocks.internalReload.mockRejectedValueOnce(new Error("运行时暂不可用")).mockResolvedValue(undefined);
+    render(<ModelConnectionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "添加模型连接" }));
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "custom" } });
+    fireEvent.change(within(dialog).getByLabelText("服务地址（Base URL）"), { target: { value: "https://test.example/v1" } });
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "test-key" } });
+    fireEvent.change(within(dialog).getByLabelText("模型 ID"), { target: { value: "a" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("配置已保存，但暂未生效");
+    fireEvent.click(screen.getByRole("button", { name: "重试加载" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("模型状态已刷新"));
+    expect(mocks.providersSaveConnection).toHaveBeenCalledTimes(1);
+    expect(mocks.providersTestModelConnection).not.toHaveBeenCalled();
+  });
+
+  it("组织身份切换时清除旧目录与未完成的旧测试结果", async () => {
+    mocks.orgSession.mockResolvedValue({ loggedIn: true, serverUrl: "https://first-org.test" });
+    mocks.providersList.mockResolvedValue({ providers: [{ ...importProvider, id: "first-org", source: "organization", managed: true }], models: [{ modelId: "first/model", remoteModelId: "first-model", providerId: "first-org" }] });
+    let finishOldTest!: () => void;
+    mocks.providersTestModelConnection.mockImplementationOnce(() => new Promise<void>(resolve => { finishOldTest = resolve; }));
+    render(<ModelConnectionsPanel />);
+    await openFirstConnection();
+    fireEvent.click(screen.getByRole("button", { name: "测试模型 first-model" }));
+    mocks.providersList.mockResolvedValue({ providers: [importProvider], models: [{ modelId: "new/model", providerId: importProvider.id }] });
+    act(() => useOrgSessionStore.getState().setSession({ loggedIn: true, serverUrl: "https://next-org.test" }));
+    await screen.findByText("远端模型 ID：new/model");
+    expect(screen.queryByText("远端模型 ID：first-model")).toBeNull();
+    await act(async () => finishOldTest());
+    expect(screen.queryByText(/测试通过/)).toBeNull();
+  });
+
+  it("空目录之后收到组织配置更新时不保留旧的空状态", async () => {
+    let changed!: () => void;
+    mocks.orgSession.mockResolvedValue({ loggedIn: true, serverUrl: "https://org.test", bootstrap: { scopes: [{ id: "org", kind: "org", name: "组织" }] } });
+    mocks.listenOrgModelsChanged.mockImplementationOnce(async callback => { changed = callback; return () => {}; });
+    mocks.orgSyncModelConfig.mockResolvedValue({ configured: false, syncedAt: 1 });
+    render(<ModelConnectionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "管理模型连接" }));
+    fireEvent.click(screen.getByRole("button", { name: "刷新组织模型" }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "组织模型状态" })).toHaveTextContent("组织暂未提供模型"));
+    mocks.providersList.mockResolvedValue({ providers: [{ ...importProvider, source: "organization", managed: true }], models: [{ modelId: "new-org-model", providerId: importProvider.id }] });
+    act(() => changed());
+    await waitFor(() => expect(screen.getByRole("region", { name: "组织模型状态" })).toHaveTextContent("由组织管理员维护"));
+  });
+
+  it.each([
+    ["kimi", "Kimi", "https://api.moonshot.cn/v1"],
+    ["zhipu", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4/"],
+  ])("%s 预设沿用已有兼容协议，保存并重新编辑时不丢失配置", async (service, label, baseUrl) => {
+    mocks.providersSaveConnection.mockImplementation(async (provider, models) => {
+      mocks.providersList.mockResolvedValue({ providers: [{ ...provider, id: "saved", apiKey: undefined, credentialConfigured: true, source: "personal" }], models: models.map((model: object) => ({ ...model, modelId: "saved/model", providerId: "saved" })) });
+      return { providerId: "saved", modelIds: ["saved/model"] };
+    });
+    render(<ModelConnectionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "添加模型连接" }));
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: service } });
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "isolated-test-key" } });
+    fireEvent.change(within(dialog).getByLabelText("模型 ID"), { target: { value: "test-model" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await screen.findByRole("region", { name: `${label}连接详情` });
+    expect(mocks.providersSaveConnection).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ providerKind: "custom", apiBackend: "chat_completions", authScheme: "bearer", baseUrl }),
+      [expect.objectContaining({ remoteModelId: "test-model" })], true,
+    );
+    expect(mocks.providersTestModelConnection).not.toHaveBeenCalled();
+    expect(mocks.agentsDefaultsSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "编辑连接" }));
+    expect(screen.getByLabelText("模型服务商")).toHaveValue(service);
+    expect(screen.getByLabelText("API 密钥")).toHaveValue("");
+    expect(screen.getByLabelText("已配置模型")).toHaveTextContent("test-model");
+  });
+
+  it("先选择服务商，必填错误定位到对应字段，密钥帮助不提交配置", async () => {
+    mocks.openExternalUrl.mockResolvedValue(undefined);
+    render(<ModelConnectionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "添加模型连接" }));
+    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(within(dialog).getByLabelText("模型服务商")).toHaveAttribute("aria-invalid", "true");
+    expect(within(dialog).getByLabelText("模型服务商")).toHaveFocus();
+    fireEvent.change(within(dialog).getByLabelText("模型服务商"), { target: { value: "deepseek" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "获取密钥" }));
+    expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith("https://platform.deepseek.com");
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(within(dialog).getByLabelText("API 密钥")).toHaveAttribute("aria-invalid", "true");
+    expect(within(dialog).getByLabelText("API 密钥")).toHaveFocus();
+    expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
+  });
+
 });

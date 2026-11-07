@@ -1,14 +1,23 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import type { PersonalMemoryRecord } from "@/lib/agent-client";
 
 const api = vi.hoisted(() => ({ memoryRecordsGet: vi.fn(), memoryRecordSave: vi.fn(), memoryRecordRetire: vi.fn(), memoryFlush: vi.fn() }));
 vi.mock("@/lib/agent-client", () => api);
-vi.mock("../ResourcesPanel", () => ({ ResourcesPanel: () => <div>原有记忆文档</div> }));
+vi.mock("../ResourcesPanel", async () => {
+  const { useState } = await import("react");
+  const { useSettingsDraft } = await import("@/lib/settings-drafts");
+  return { ResourcesPanel: () => {
+    const [dirty, setDirty] = useState(false);
+    useSettingsDraft({ dirty, label: "原有记忆文档" });
+    return <div>原有文档内容<button onClick={() => setDirty(true)}>编辑原有文档</button></div>;
+  } };
+});
 vi.mock("../SettingsSections", () => ({ MemorySettingsPanel: () => <div>对话记忆开关</div> }));
+vi.mock("../LocalRetrievalModels", () => ({ LocalRetrievalModels: () => <div>本地模型维护</div> }));
 import { PersonalMemoryPanel } from "../PersonalMemoryPanel";
 
 const record: PersonalMemoryRecord = { id: "r1", scope: "global", kind: "user", key: "报告语言", content: "报告使用中文", status: "active", pinned: true, origin: "manual", confidence: 1, sources: ["source-1"], evidence: "请用中文", createdAt: 1, updatedAt: 2, validUntil: null, revision: 3 };
@@ -16,130 +25,201 @@ let saved: PersonalMemoryRecord[];
 beforeEach(() => {
   vi.clearAllMocks(); saved = [{ ...record }];
   api.memoryRecordsGet.mockImplementation(async () => ({ records: saved, enabled: true, pendingCount: 0, extraction: { outcome: "saved", detail: "", succeededAt: 2 }, retrieval: { at: 0, sources: [] } }));
-  api.memoryRecordSave.mockImplementation(async (input) => { const value = { ...record, ...input, revision: 4 }; saved = [value]; return value; });
-  api.memoryRecordRetire.mockImplementation(async () => { saved = saved.map((v) => ({ ...v, status: "forgotten" as const })); });
+  api.memoryRecordSave.mockImplementation(async input => { const value = { ...record, ...input, revision: 4 }; saved = [value]; return value; });
+  api.memoryRecordRetire.mockImplementation(async (_record, _cwd, completed) => { saved = saved.map(value => ({ ...value, status: completed ? "completed" : "forgotten" })); });
 });
+function openManager() { fireEvent.click(screen.getByRole("button", { name: "管理" })); }
+function openAction(name: string) {
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.click(screen.getByRole("menuitem", { name }));
+}
+async function renderManager(cwd?: string) {
+  const view = render(<PersonalMemoryPanel cwd={cwd} />); openManager();
+  await screen.findByText(record.content);
+  return view;
+}
 
-describe("个人记忆管理", () => {
-  it("记忆和自动整理都关闭时明确提示两项都需要恢复", async () => {
-    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: false, autoProcessingEnabled: false, pendingCount: 1,
-      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
+describe("记忆设置与二级管理", () => {
+  it("首页只提供开关和管理入口，列表、排查及旧文档按需加载", async () => {
     render(<PersonalMemoryPanel cwd="/project-a" />);
-    expect(await screen.findByText("待整理内容已保存在本机，开启记忆并恢复自动整理后继续处理")).toBeInTheDocument();
+    await waitFor(() => expect(api.memoryRecordsGet).toHaveBeenCalledWith("/project-a"));
+    expect(screen.getByRole("heading", { name: "记忆" })).toBeInTheDocument();
+    expect(screen.getByText("对话记忆开关")).toBeInTheDocument();
+    expect(screen.queryByText(record.content)).toBeNull();
+    expect(screen.queryByText("本地模型维护")).toBeNull();
+    expect(screen.queryByText("原有文档内容")).toBeNull();
+    expect(screen.queryByRole("button", { name: "添加记忆" })).toBeNull();
+    expect(api.memoryRecordSave).not.toHaveBeenCalled();
+    openManager();
+    expect(await screen.findByText(record.content)).toBeInTheDocument();
+    expect(screen.queryByLabelText("类型")).toBeNull();
+    expect(screen.queryByText("已固定")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    expect(screen.getByRole("menu", { name: "记忆操作" })).toHaveStyle({ zIndex: "var(--echo-layer-dialog-popover)" });
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    openAction("原有记忆文档");
+    expect(screen.getByText("原有文档内容")).toBeInTheDocument();
   });
 
-  it("损坏待办已隔离时说明原件保留和重新提取入口，不误报全部整理完成", async () => {
-    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: true, pendingCount: 1, quarantinedCount: 2,
-      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
-    render(<PersonalMemoryPanel cwd="/project-a" />);
-    expect(await screen.findByText(/已隔离 2 项损坏的待整理内容/)).toHaveTextContent("损坏部分未完成提取，可打开原对话重新提取");
-  });
-  it("旧版关闭自动整理时不承诺开启记忆后自动处理", async () => {
-    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: true, autoProcessingEnabled: false, pendingCount: 1,
-      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
-    render(<PersonalMemoryPanel cwd="/project-a" />);
-    expect(await screen.findByText("待整理内容已保存在本机，自动整理已暂停，可恢复推荐策略后继续处理")).toBeInTheDocument();
-    expect(screen.getByText("1 项内容待整理，已暂停自动整理；不影响已保存的聊天记录")).toBeInTheDocument();
-  });
-
-  it("记忆关闭时保留待整理内容，明确说明自动处理已暂停", async () => {
-    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: false, pendingCount: 2,
-      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
-    render(<PersonalMemoryPanel cwd="/project-a" />);
-    expect(await screen.findByText("待整理内容已保存在本机，开启记忆后继续处理")).toBeInTheDocument();
-    expect(screen.getByText("2 项内容待整理，已暂停自动整理；不影响已保存的聊天记录")).toBeInTheDocument();
-  });
-  it("退出后待整理内容明确显示为本地已保存，不误报提取失败", async () => {
-    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: true, pendingCount: 2,
-      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
-    render(<PersonalMemoryPanel cwd="/project-a" />);
-    expect(await screen.findByText("待整理内容已保存在本机，将自动继续处理")).toBeInTheDocument();
-    expect(screen.getByText("2 项内容待整理，打开工作区后自动继续；不影响已保存的聊天记录")).toBeInTheDocument();
-    expect(screen.queryByText("最近一次提取未完成")).toBeNull();
-  });
-  it("处理状态明确说明没有新增内容，不把完成时间当成保存凭据", async () => {
-    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: true, pendingCount: 0,
-      extraction: { outcome: "unchanged", detail: "", succeededAt: 2 }, retrieval: { at: 0, sources: [] } });
-    render(<PersonalMemoryPanel cwd="/project-a" />);
-    expect(await screen.findByText("最近一次提取没有新增内容，现有记忆保持不变")).toBeInTheDocument();
-    expect(screen.queryByText("最近一次提取已保存记忆")).toBeNull();
-  });
-  it.each([true, false])("提取结果 completed=%s 不会假定新增记忆或保留了待处理内容", async completed => {
-    api.memoryFlush.mockResolvedValueOnce(completed);
-    const onToast = vi.fn();
-    render(<PersonalMemoryPanel cwd="/project-a" sessionId="session-a" onToast={onToast} />);
-    await screen.findByText("报告使用中文");
-    fireEvent.click(screen.getByText("记忆状态与排查"));
-    fireEvent.click(screen.getByRole("button", { name: "立即提取" }));
-    await waitFor(() => expect(api.memoryFlush).toHaveBeenCalledWith("session-a"));
-    await waitFor(() => expect(onToast).toHaveBeenCalledWith(completed
-      ? "记忆提取已完成，可在记忆页面查看结果；没有新增内容时不会重复保存"
-      : "本次提取未完成，请查看记忆处理状态后重试"));
-    expect(onToast).not.toHaveBeenCalledWith(expect.stringMatching(/已提取本次对话|已保留待处理/));
-    expect(screen.getAllByText("报告使用中文")).toHaveLength(1);
-  });
-  it("默认只呈现记忆内容，排查和旧文档按需展开", async () => {
-    render(<PersonalMemoryPanel cwd="/project-a" />);
-    expect(await screen.findByText("报告使用中文")).toBeInTheDocument();
-    expect(screen.queryByText("原有记忆文档")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("高级：记忆文档与会话摘要"));
-    expect(await screen.findByText("原有记忆文档")).toBeInTheDocument();
-  });
-  it("更正使用打开草稿时的范围和版本，切换工作区不会改写别的项目", async () => {
-    const user = userEvent.setup(); const view = render(<PersonalMemoryPanel cwd="/project-a" />);
-    await user.click(await screen.findByRole("button", { name: "更正 报告语言" }));
-    await user.clear(screen.getByLabelText("记忆内容")); await user.type(screen.getByLabelText("记忆内容"), "报告使用双语");
+  it("编辑只改正文，保留范围、类型、有效期、优先级和并发版本", async () => {
+    saved = [{ ...record, scope: "workspace", kind: "task", pinned: false, validUntil: 4102444800 }];
+    const view = await renderManager("/project-a");
+    fireEvent.click(screen.getByRole("button", { name: "编辑 报告语言" }));
+    fireEvent.change(screen.getByLabelText("记忆内容"), { target: { value: "报告使用双语" } });
     view.rerender(<PersonalMemoryPanel cwd="/project-b" />);
-    await user.click(screen.getByRole("button", { name: "保存记忆" }));
-    await waitFor(() => expect(api.memoryRecordSave).toHaveBeenCalledWith(expect.objectContaining({ id: "r1", expectedRevision: 3, content: "报告使用双语" }), "/project-a"));
+    fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
+    await waitFor(() => expect(api.memoryRecordSave).toHaveBeenCalledWith({ id: "r1", scope: "workspace", kind: "task", key: "报告语言", content: "报告使用双语", pinned: false, validUntil: 4102444800, evidence: "请用中文", expectedRevision: 3 }, "/project-a"));
   });
-  it("忘记后条目离开有效列表，来源对话能通过专用入口打开", async () => {
-    const user = userEvent.setup(); const open = vi.fn(); render(<PersonalMemoryPanel cwd="/project-a" onOpenSession={open} />);
-    await user.click(await screen.findByText("来源与依据"));
-    await user.click(screen.getByRole("button", { name: "打开来源对话 source-1" })); expect(open).toHaveBeenCalledWith("source-1");
+
+  it("返回时保护修改，取消返回保留草稿，确认后才离开", async () => {
+    const onUnsavedChange = vi.fn();
+    render(<PersonalMemoryPanel onUnsavedChange={onUnsavedChange} />); openManager();
+    fireEvent.click(await screen.findByRole("button", { name: "编辑 报告语言" }));
+    expect(onUnsavedChange).toHaveBeenLastCalledWith(false);
+    fireEvent.change(screen.getByLabelText("记忆内容"), { target: { value: "先给结论" } });
+    expect(onUnsavedChange).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: "返回记忆设置" }));
+    expect(screen.getByRole("alertdialog", { name: "舍弃未保存的修改？" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(screen.getByLabelText("记忆内容")).toHaveValue("先给结论");
+    fireEvent.click(screen.getByRole("button", { name: "返回记忆设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "舍弃修改" }));
+    expect(screen.getByRole("button", { name: "管理" })).toBeInTheDocument();
+    expect(api.memoryRecordSave).not.toHaveBeenCalled();
+  });
+
+  it("恢复原值不产生离开警告，保存失败仍保留编辑内容", async () => {
+    await renderManager();
+    fireEvent.click(screen.getByRole("button", { name: "编辑 报告语言" }));
+    const content = screen.getByLabelText("记忆内容");
+    fireEvent.change(content, { target: { value: "先给结论" } });
+    fireEvent.change(content, { target: { value: record.content } });
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "编辑 报告语言" }));
+    fireEvent.change(screen.getByLabelText("记忆内容"), { target: { value: "保存失败时保留我" } });
+    api.memoryRecordSave.mockRejectedValueOnce(new Error("磁盘空间不足"));
+    fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("磁盘空间不足");
+    expect(screen.getByLabelText("记忆内容")).toHaveValue("保存失败时保留我");
+  });
+
+  it("忘记后离开当前列表，来源仍可核对，停用记录从更多查看", async () => {
+    const user = userEvent.setup(); const open = vi.fn();
+    render(<PersonalMemoryPanel cwd="/project-a" onOpenSession={open} />); openManager();
+    await user.click(await screen.findByText("查看来源"));
+    await user.click(screen.getByRole("button", { name: "打开来源对话 source-1" }));
+    expect(open).toHaveBeenCalledWith("source-1");
     await user.click(screen.getByRole("button", { name: "忘记 报告语言" }));
     await user.click(await screen.findByRole("button", { name: "忘记" }));
     await waitFor(() => expect(api.memoryRecordRetire).toHaveBeenCalledWith(expect.objectContaining({ id: "r1", revision: 3 }), "/project-a", false));
-    await waitFor(() => expect(screen.queryByText("报告使用中文")).not.toBeInTheDocument());
-    await user.click(screen.getByRole("tab", { name: "已停用" })); expect(screen.getByText("已忘记")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(record.content)).toBeNull());
+    openAction("历史记录");
+    expect(screen.getByText("已忘记")).toBeInTheDocument();
+    expect(screen.getByText(record.content)).toBeInTheDocument();
   });
-  it("导入必须先预览再保存，失败保留尚未导入的草稿", async () => {
-    const user = userEvent.setup(); render(<PersonalMemoryPanel />);
-    await user.click(await screen.findByRole("button", { name: "导入记忆" }));
-    await user.type(screen.getByLabelText("待导入的记忆"), "回答先给结论\n周报用中文");
+
+  it("临时事项在卡片上标明待跟进，不展开来源即可完成并查看历史", async () => {
+    saved = [{ ...record, kind: "task" }];
+    await renderManager("/project-a");
+    expect(screen.getByText("待跟进")).toBeVisible();
+    expect(screen.getByText("查看来源").closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("button", { name: "完成 报告语言" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "将这件事标记为已完成？" })).getByRole("button", { name: "标记完成" }));
+    await waitFor(() => expect(api.memoryRecordRetire).toHaveBeenCalledWith(expect.objectContaining({ kind: "task" }), "/project-a", true));
+    await waitFor(() => expect(screen.queryByText(record.content)).toBeNull());
+    openAction("历史记录");
+    expect(screen.getByText("已完成")).toBeVisible();
+    expect(screen.queryByText("待跟进")).toBeNull();
+    expect(screen.queryByRole("button", { name: "完成 报告语言" })).toBeNull();
+  });
+
+  it("导入必须先预览，部分失败保留剩余草稿和原工作区", async () => {
+    const view = await renderManager("/project-a"); openAction("导入记忆");
+    fireEvent.change(screen.getByLabelText("待导入的记忆"), { target: { value: "回答先给结论\n周报用中文" } });
     expect(api.memoryRecordSave).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "预览导入" }));
+    fireEvent.click(screen.getByRole("button", { name: "预览导入" }));
+    view.rerender(<PersonalMemoryPanel cwd="/project-b" />);
     api.memoryRecordSave.mockResolvedValueOnce(record).mockRejectedValueOnce(new Error("磁盘空间不足"));
-    await user.click(screen.getByRole("button", { name: "添加 2 条记忆" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加 2 条记忆" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("已导入 1 条");
     expect(screen.getByRole("button", { name: "添加 1 条记忆" })).toBeInTheDocument();
+    expect(api.memoryRecordSave.mock.calls.every(call => call[1] === "/project-a")).toBe(true);
+  });
+
+  it("导入原文变更后必须重新预览，取消返回不丢失导入内容", async () => {
+    await renderManager(); openAction("导入记忆");
+    const content = screen.getByLabelText("待导入的记忆");
+    fireEvent.change(content, { target: { value: "报告先给结论" } });
+    fireEvent.click(screen.getByRole("button", { name: "预览导入" }));
+    expect(screen.getByRole("button", { name: "添加 1 条记忆" })).toBeInTheDocument();
+    fireEvent.change(content, { target: { value: "报告使用双语" } });
+    expect(screen.queryByRole("button", { name: "添加 1 条记忆" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "返回记忆设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(content).toHaveValue("报告使用双语");
+    expect(api.memoryRecordSave).not.toHaveBeenCalled();
+  });
+
+  it("导出沿用有效记录格式，复制失败时仍可手动复制", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("clipboard unavailable")) } });
+    saved.push({ ...record, id: "forgotten", content: "不导出的停用记录", status: "forgotten" });
+    await renderManager(); openAction("复制导出");
+    const exported = await screen.findByLabelText("导出内容（可复制保存）");
+    expect(JSON.parse((exported as HTMLTextAreaElement).value)).toEqual([record]);
+  });
+
+  it("原有文档的未保存修改也受到二级返回保护", async () => {
+    await renderManager(); openAction("原有记忆文档");
+    fireEvent.click(screen.getByRole("button", { name: "编辑原有文档" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回管理记忆" }));
+    expect(screen.getByRole("alertdialog", { name: "舍弃未保存的修改？" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(screen.getByText("原有文档内容")).toBeInTheDocument();
+  });
+
+  it("关闭记忆仍可进入管理页，读取失败提供重试且不显示空记忆假象", async () => {
+    api.memoryRecordsGet.mockRejectedValueOnce(new Error("读取失败"));
+    render(<PersonalMemoryPanel />); openManager();
+    expect(await screen.findByRole("alert")).toHaveTextContent("读取失败");
+    expect(screen.queryByText("还没有保存的记忆")).toBeNull();
+    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: false, pendingCount: 0, extraction: {}, retrieval: { at: 0, sources: [] } });
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    expect(await screen.findByText("还没有保存的记忆")).toBeInTheDocument();
+    expect(screen.getByText(/开启记忆后/)).toBeInTheDocument();
   });
 });
 
+describe("按需访问原有记忆状态", () => {
+  it.each([
+    [false, false, "待整理内容已保存在本机，开启记忆并恢复自动整理后继续处理"],
+    [true, false, "待整理内容已保存在本机，自动整理已暂停，可恢复推荐策略后继续处理"],
+    [false, true, "待整理内容已保存在本机，开启记忆后继续处理"],
+    [true, true, "待整理内容已保存在本机，将自动继续处理"],
+  ])("enabled=%s autoProcessing=%s 仍准确描述已有待整理内容", async (enabled, autoProcessingEnabled, summary) => {
+    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled, autoProcessingEnabled, pendingCount: 2, extraction: { outcome: "queued", succeededAt: null }, retrieval: { at: 0, sources: [] } });
+    render(<PersonalMemoryPanel cwd="/project-a" />); openManager(); openAction("记忆状态与排查");
+    expect(await screen.findByText(summary as string)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`2 项内容待整理，${enabled && autoProcessingEnabled ? "打开工作区后自动继续" : "已暂停自动整理"}`))).toBeInTheDocument();
+  });
 
-it("查看原记忆不算修改，编辑后恢复原值不触发离开警告", async () => {
-  const onUnsavedChange = vi.fn();
-  render(<PersonalMemoryPanel onUnsavedChange={onUnsavedChange} />);
-  fireEvent.click(await screen.findByRole("button", { name: "更正 报告语言" }));
-  expect(onUnsavedChange).toHaveBeenLastCalledWith(false);
-  const content = screen.getByLabelText("记忆内容");
-  fireEvent.change(content, { target: { value: "先给结论" } });
-  expect(onUnsavedChange).toHaveBeenLastCalledWith(true);
-  fireEvent.change(content, { target: { value: record.content } });
-  expect(onUnsavedChange).toHaveBeenLastCalledWith(false);
-  fireEvent.click(screen.getByRole("button", { name: "取消" }));
-  expect(screen.queryByRole("alertdialog")).toBeNull();
-  expect(screen.queryByLabelText("记忆内容")).toBeNull();
-});
+  it("损坏内容保留恢复提示，不混进日常设置", async () => {
+    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: true, pendingCount: 1, quarantinedCount: 2, extraction: { outcome: "queued", succeededAt: null }, retrieval: { at: 0, sources: [] } });
+    render(<PersonalMemoryPanel />);
+    await waitFor(() => expect(api.memoryRecordsGet).toHaveBeenCalled());
+    expect(screen.queryByText(/已隔离 2 项/)).toBeNull();
+    openManager(); openAction("记忆状态与排查");
+    expect(screen.getByText(/已隔离 2 项损坏的待整理内容/)).toHaveTextContent("损坏部分未完成提取，可打开原对话重新提取");
+  });
 
-it("导入原文变更后必须重新预览，不能保存旧预览", async () => {
-  render(<PersonalMemoryPanel />);
-  fireEvent.click(await screen.findByRole("button", { name: "导入记忆" }));
-  const content = screen.getByLabelText("待导入的记忆");
-  fireEvent.change(content, { target: { value: "报告先给结论" } });
-  fireEvent.click(screen.getByRole("button", { name: "预览导入" }));
-  expect(screen.getByRole("button", { name: "添加 1 条记忆" })).toBeInTheDocument();
-  fireEvent.change(content, { target: { value: "报告使用双语" } });
-  expect(screen.queryByRole("button", { name: "添加 1 条记忆" })).toBeNull();
-  expect(api.memoryRecordSave).not.toHaveBeenCalled();
+  it.each([true, false])("手动提取 completed=%s 不会误报已保存新记忆", async completed => {
+    api.memoryFlush.mockResolvedValueOnce(completed);
+    const onToast = vi.fn();
+    render(<PersonalMemoryPanel cwd="/project-a" sessionId="session-a" onToast={onToast} />); openManager();
+    await screen.findByText(record.content); openAction("记忆状态与排查");
+    fireEvent.click(screen.getByRole("button", { name: "立即提取" }));
+    await waitFor(() => expect(api.memoryFlush).toHaveBeenCalledWith("session-a"));
+    await waitFor(() => expect(onToast).toHaveBeenCalledWith(completed ? "记忆提取已完成，可在记忆页面查看结果；没有新增内容时不会重复保存" : "本次提取未完成，请查看记忆处理状态后重试"));
+  });
 });

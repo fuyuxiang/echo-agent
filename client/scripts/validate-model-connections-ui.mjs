@@ -38,13 +38,15 @@ try {
     assert.ok(Number(success.match(/耗时 ([0-9.]+) 秒/)[1]) >= 1.1);
     assert.doesNotMatch(await row.textContent(), /429/);
     for (const [connection, name, providerId, modelId] of [["研发团队", "团队模型", "test-org", "team-a"]]) {
-      await page.locator(".model-connections__source").filter({ hasText: connection }).click();
+      await page.getByRole("button",{name:"返回连接管理",exact:true}).click();
+      await page.getByRole("group",{name:"模型连接",exact:true}).getByRole("button").filter({hasText:connection}).click();
       await page.getByRole("button", { name: `测试模型 ${name}`, exact: true }).click();
       await page.getByRole("status").filter({ hasText: "测试通过" }).waitFor();
       assert.equal(await page.getByRole("button", { name: "编辑连接", exact: true }).count(), 0);
       assert.ok(await page.evaluate(({providerId,modelId}) => window.modelTestCalls.some(call => call.providerId === providerId && call.modelId === modelId), {providerId,modelId}));
     }
-    await page.locator(".model-connections__source").filter({ hasText: "我的网关" }).click();
+    await page.getByRole("button",{name:"返回连接管理",exact:true}).click();
+    await page.getByRole("group",{name:"模型连接",exact:true}).getByRole("button").filter({hasText:"我的网关"}).click();
     assert.match(await row.getByRole("status").textContent(), /测试通过/);
     const layout = await page.locator(".model-connections").evaluate(root => ({
       fits: root.scrollWidth <= root.clientWidth + 1,

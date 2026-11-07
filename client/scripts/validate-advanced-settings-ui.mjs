@@ -1,0 +1,86 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createUiReviewServer,reviewChromium,reviewOutput} from './ui-review-runtime.mjs';
+
+const output=reviewOutput(mkdtempSync(join(tmpdir(),'echo-advanced-settings-')));
+console.log('Evidence: '+output);
+const server=await createUiReviewServer(0);
+const base=`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=agent-settings&advancedSettingsReview=1`;
+const layouts=[];let browser;
+const endpoint='https://monitor.review.invalid/v1/logs';
+const storageKey='echoagent.otlp.endpoint';
+async function capture(page,name){
+  for(const selector of ['.settings-modal__panel','.advanced-settings']) assert.equal(await page.locator(selector).evaluate(el=>el.scrollWidth>el.clientWidth+1),false,`${name}: ${selector} overflow`);
+  const clipped=await page.locator('.advanced-settings button:visible').evaluateAll(elements=>elements.filter(el=>el.scrollWidth>el.clientWidth+1).map(el=>el.textContent));
+  assert.deepEqual(clipped,[],`${name}: clipped button`);
+  await page.screenshot({path:join(output,name+'.png')});layouts.push(name);
+}
+try{
+  browser=await(await reviewChromium()).launch({headless:true,executablePath:process.env.CHROME_BIN||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+  for(const [width,height,theme,font] of [[1440,1000,'light',13],[1024,768,'dark',13],[768,900,'light',18],[390,844,'dark',18]]){
+    const page=await browser.newPage({viewport:{width,height}});page.setDefaultTimeout(15000);page.setDefaultNavigationTimeout(60000);
+    const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(font=>{localStorage.setItem('echoagent.fontSize',String(font));const observer=new MutationObserver(()=>{if(document.documentElement){document.documentElement.style.fontSize=`${16*font/13}px`;observer.disconnect();}});observer.observe(document,{childList:true,subtree:true});},font);
+    await page.goto(base+`&theme=${theme}&advancedReloadError=1`,{waitUntil:'networkidle'});
+    const root=page.locator('.advanced-settings');await root.waitFor();
+    const reload=page.locator('[data-setting-id="reload"]');
+    const dev=page.locator('[data-setting-id="developer-options"]');
+    assert.equal(await root.locator('details').count(),2);
+    assert.equal(await root.locator('details[open]').count(),0);
+    assert.equal(await root.getByRole('button',{name:'刷新状态',exact:true}).count(),0);
+    assert.equal(await page.evaluate(()=>window.advancedSettingsReviewCalls.saves.length),0);
+    await capture(page,`collapsed-${width}-${theme}`);
+    await reload.locator(':scope > summary').focus();await page.keyboard.press('Enter');
+    await page.getByRole('button',{name:'重新加载技能目录',exact:true}).click();
+    const skills=page.getByRole('region',{name:'技能目录',exact:true});
+    await skills.getByRole('alert').waitFor();
+    assert.match(await skills.getByRole('alert').textContent(),/技能目录暂不可读/);
+    await capture(page,`reload-failure-${width}-${theme}`);
+    await page.getByRole('button',{name:'重新加载技能目录',exact:true}).click();
+    await skills.getByRole('status').waitFor();
+    assert.deepEqual(await page.evaluate(()=>window.advancedSettingsReviewCalls.reloads),['skills','skills']);
+    await reload.locator(':scope > summary').click();
+    await dev.locator(':scope > summary').click();
+    const depth=page.getByRole('spinbutton',{name:'子代理最大层级',exact:true});assert.equal(await depth.inputValue(),'4');
+    await depth.fill('6');await dev.locator(':scope > summary').click();assert.match(await dev.locator(':scope > summary').textContent(),/有未保存的修改/);
+    await dev.locator(':scope > summary').click();assert.equal(await depth.inputValue(),'6');
+    await page.getByRole('button',{name:'撤销修改',exact:true}).click();assert.equal(await depth.inputValue(),'4');
+    await depth.fill('5');await page.locator('[data-setting-id="subagents"]').getByRole('button',{name:'保存',exact:true}).click();
+    await page.getByRole('status').filter({hasText:'子代理深度已保存为 5'}).waitFor();
+    const monitor=page.getByRole('group',{name:'监控服务配置',exact:true});
+    const field=monitor.getByRole('textbox',{name:'监控服务地址（OTLP）',exact:true});
+    await field.fill('javascript:invalid');await monitor.getByRole('button',{name:'保存',exact:true}).click();await monitor.getByRole('alert').waitFor();
+    assert.equal(await page.evaluate(key=>localStorage.getItem(key),storageKey),null);
+    await field.fill(endpoint);await monitor.getByRole('button',{name:'保存',exact:true}).click();
+    await monitor.getByRole('status').filter({hasText:'重启应用后生效'}).waitFor();
+    assert.equal(await page.evaluate(key=>localStorage.getItem(key),storageKey),endpoint);
+    await capture(page,`developer-${width}-${theme}`);
+    await dev.locator(':scope > summary').click();assert.match(await dev.locator(':scope > summary').textContent(),/监控服务已启用/);
+    await capture(page,`monitor-enabled-${width}-${theme}`);
+    await dev.locator(':scope > summary').click();await monitor.getByRole('button',{name:'关闭监控',exact:true}).click();
+    assert.equal(await page.evaluate(key=>localStorage.getItem(key),storageKey),null);
+    assert.equal(await field.inputValue(),'');
+    assert.deepEqual(await page.evaluate(()=>window.advancedSettingsReviewCalls.saves),[5]);
+    assert.deepEqual(errors,[]);console.log(`Advanced settings passed: ${width}×${height}, ${theme}, font ${font}`);await page.close();
+  }
+  const page=await browser.newPage({viewport:{width:1280,height:850}});page.setDefaultTimeout(15000);page.setDefaultNavigationTimeout(60000);
+  await page.addInitScript(({storageKey,endpoint})=>localStorage.setItem(storageKey,endpoint),{storageKey,endpoint});
+  await page.goto(base,{waitUntil:'networkidle'});
+  const dev=page.locator('[data-setting-id="developer-options"]');
+  assert.equal(await dev.evaluate(el=>el.open),false);assert.match(await dev.textContent(),/监控服务已启用/);
+  await dev.locator(':scope > summary').click();assert.equal(await page.getByRole('textbox',{name:'监控服务地址（OTLP）',exact:true}).inputValue(),endpoint);
+  assert.equal(await page.evaluate(key=>localStorage.getItem(key),storageKey),endpoint);
+  assert.deepEqual(await page.evaluate(()=>window.advancedSettingsReviewCalls.saves),[]);
+  await capture(page,'existing-monitor-preserved');
+  await page.goto(base+'&advancedReadError=1',{waitUntil:'networkidle'});
+  await page.getByRole('alert').filter({hasText:'配置暂不可读'}).waitFor();
+  assert.equal(await dev.evaluate(el=>el.open),true);
+  assert.equal(await page.getByRole('spinbutton',{name:'子代理最大层级',exact:true}).isDisabled(),true);
+  await page.getByRole('button',{name:'重试',exact:true}).click();await page.getByRole('spinbutton',{name:'子代理最大层级',exact:true}).waitFor();
+  await page.waitForFunction(()=>document.querySelector('input[aria-label="子代理最大层级"]').value==='4');
+  assert.deepEqual(await page.evaluate(()=>window.advancedSettingsReviewCalls.saves),[]);
+  await capture(page,'read-error-recovered');await page.close();
+  writeFileSync(join(output,'evidence.json'),JSON.stringify({layouts},null,2));console.log(JSON.stringify({layouts:layouts.length,output}));
+}finally{await browser?.close();await server.close();}

@@ -9,6 +9,96 @@
   overscroll-behavior: contain;
 }
 
+/* The model view owns scrolling inside the fixed-height settings panel. */
+.model-connections--overview,
+.model-connections--connections,
+.model-connections--detail {
+  width: min(100%, 840px);
+  height: auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  gap: 20px;
+  padding-bottom: 24px;
+}
+.model-connections > * { flex-shrink: 0; }
+.model-settings__back.echo-button { align-self: flex-start; margin-left: -8px; }
+.model-settings__hint { margin: 0; color: var(--echo-text-medium); font-size: var(--echo-caption-size); line-height: 1.7; }
+/* The first level is a choice and one management entry, with no catalog grid. */
+.model-settings__default,
+.model-settings__manage-entry,
+.model-settings__connections {
+  min-width: 0;
+  border: 1px solid var(--echo-border-default);
+  border-radius: var(--echo-radius-card);
+  background: var(--echo-bg-primary);
+}
+.model-settings__default { padding: 24px; }
+.model-settings__default > label { display: block; margin-bottom: 12px; color: var(--echo-text-strong); font-size: var(--echo-body-size); font-weight: 600; }
+.model-settings__select-shell { position: relative; }
+.model-settings__select-shell > svg { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--echo-text-medium); }
+.model-settings__default-select.form-control { width: 100%; min-height: 48px; padding: 10px 42px 10px 14px; appearance: none; background-image: none; font-size: var(--echo-body-size); font-weight: 500; text-overflow: ellipsis; cursor: pointer; }
+.model-settings__default p { margin: 10px 0 0; color: var(--echo-text-medium); font-size: var(--echo-caption-size); line-height: 1.6; overflow-wrap: anywhere; }
+.model-settings__readiness { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--echo-border-default); font-size: var(--echo-caption-size); line-height: 1.6; }
+.model-settings__manage-entry { display: flex; align-items: center; gap: 16px; width: 100%; padding: 22px 24px; color: var(--echo-text-strong); font: inherit; text-align: left; cursor: pointer; }
+.model-settings__manage-entry > span:nth-child(2) { display: block; min-width: 0; flex: 1; }
+.model-settings__manage-entry strong { display: block; font-size: var(--echo-body-size); font-weight: 600; }
+.model-settings__manage-entry > span > span { display: block; margin-top: 5px; font-size: var(--echo-caption-size); color: var(--echo-text-medium); line-height: 1.6; }
+.model-settings__manage-entry > svg { flex-shrink: 0; color: var(--echo-text-medium); }
+.model-settings__manage-entry:hover,
+.model-settings__connection:hover { background: var(--echo-bg-hover); }
+.model-settings__manage-entry:focus-visible,
+.model-settings__connection:focus-visible { outline: 2px solid var(--echo-focus-ring); outline-offset: 2px; }
+.model-settings__connection-icon { display: grid; flex: 0 0 38px; width: 38px; height: 38px; place-items: center; border-radius: 9px; background: var(--echo-bg-secondary); color: var(--echo-text-medium); }
+.model-settings__connection-groups { display: flex; flex-direction: column; gap: 28px; }
+.model-settings__connection-group { min-width: 0; }
+.model-settings__connection-group > h3 { margin: 0 0 12px; color: var(--echo-text-medium); font-size: var(--echo-caption-size); font-weight: 600; }
+.model-settings__connections { overflow: hidden; }
+.model-settings__connections:empty { display: none; }
+.model-settings__connection { display: flex; align-items: center; gap: 14px; width: 100%; min-width: 0; min-height: 76px; padding: 18px 22px; border: 0; background: transparent; color: var(--echo-text-strong); font: inherit; text-align: left; cursor: pointer; }
+.model-settings__connection + .model-settings__connection { border-top: 1px solid var(--echo-border-default); }
+.model-settings__connection > span:nth-child(2) { display: flex; flex: 1; flex-direction: column; gap: 5px; min-width: 0; }
+.model-settings__connection strong { font-size: var(--echo-body-size); font-weight: 550; overflow-wrap: anywhere; }
+.model-settings__connection > span > span { font-size: var(--echo-caption-size); color: var(--echo-text-medium); }
+.model-settings__connection > svg { flex-shrink: 0; color: var(--echo-text-medium); }
+.model-settings__group-empty { padding: 22px; border: 1px solid var(--echo-border-default); border-radius: var(--echo-radius-card); background: var(--echo-bg-primary); }
+.model-settings__organization { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.model-settings__organization strong { font-size: var(--echo-caption-size); color: var(--echo-text-medium); font-weight: 600; }
+.model-settings__organization p { margin: 6px 0 0; font-size: var(--echo-caption-size); color: var(--echo-text-medium); line-height: 1.6; }
+.model-settings__organization > span { color: var(--echo-text-medium); font-size: var(--echo-caption-size); }
+.model-connections--detail > .model-connections__detail { overflow: visible; padding: 22px 24px; border: 1px solid var(--echo-border-default); border-radius: var(--echo-radius-card); background: var(--echo-bg-primary); }
+.model-connections--detail .model-connections__models-header { flex-wrap: wrap; gap: 12px; }
+.model-connections--detail .model-connections__detail-header { flex-wrap: wrap; }
+.model-connections--detail .model-connections__model-list li { min-width: 0; flex-wrap: wrap; }
+.model-connections--detail .model-connections__model-copy { min-width: 120px; }
+.model-connections--detail .model-connections__model-actions { flex-wrap: wrap; }
+.model-connections--detail .model-connections__model-copy strong,
+.model-connections--detail .model-connections__model-copy span { white-space: normal; overflow-wrap: anywhere; }
+.model-connections--overview > .model-connections__empty { min-height: 220px; background: var(--echo-bg-primary); border-style: solid; text-align: center; }
+.model-connections__message > .echo-button { margin-left: 12px; }
+
+.model-connection-editor.model-connection-editor--simple { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 40px); }
+.model-connection-editor--simple .model-connection-editor__body { padding: 24px; }
+.model-connection-editor--simple .model-connection-editor__fields { gap: 22px; }
+.model-connection-editor--simple .models-settings-panel__field { gap: 8px; }
+.model-connection-editor--simple .model-connection-editor__help { font-size: var(--echo-caption-size); line-height: 1.6; color: var(--echo-text-medium); }
+.model-connection-editor__address { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 18px; border-bottom: 1px solid var(--echo-border-default); font-size: var(--echo-caption-size); color: var(--echo-text-medium); }
+.model-connection-editor__address > span { min-width: 0; overflow-wrap: anywhere; }
+.model-connection-editor__model-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.model-connection-editor__model-heading > .echo-button,
+.model-connection-editor__address > .echo-button { flex-shrink: 0; }
+.model-connection-editor__model-heading > .echo-button { min-height: 32px; padding-top: 2px; padding-bottom: 2px; font-weight: 450; }
+.model-connection-editor__field-error { color: var(--echo-color-text-error-default); font-size: var(--echo-caption-size); line-height: 1.5; }
+.model-connection-editor--simple .model-connection-editor__chips { max-height: 160px; overflow-y: auto; }
+.model-connection-editor--simple .model-connection-editor__chips code { font-size: var(--echo-caption-size); }
+.model-connection-editor--simple .model-connection-editor__model-picker { max-height: 180px; }
+@media(max-width: 600px) {
+  .model-settings__default, .model-settings__manage-entry, .model-settings__connection, .model-connections--detail > .model-connections__detail { padding: 18px 16px; }
+  .model-settings__readiness, .model-settings__organization { align-items: flex-start; flex-wrap: wrap; }
+  .model-connection-editor.model-connection-editor--simple { width: 100vw; max-height: 100vh; }
+  .model-connection-editor--simple .model-connection-editor__body { padding: 20px 16px; }
+}
+
 .model-connections__header {
   display: flex;
   align-items: flex-start;

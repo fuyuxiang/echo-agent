@@ -6,15 +6,23 @@ import {join} from "node:path";
 import assert from "node:assert/strict";
 const output=reviewOutput(mkdtempSync(join(tmpdir(),"echo-local-retrieval-ui-")));
 const server=await createUiReviewServer();let browser;
+async function openMemoryModels(page, surface) {
+  if(surface!=="personal-memory") return;
+  await page.getByRole("button",{name:"管理",exact:true}).click();
+  await page.getByRole("button",{name:"更多",exact:true}).click();
+  await page.getByRole("menuitem",{name:"记忆状态与排查",exact:true}).click();
+}
 try {
   browser=await (await reviewChromium()).launch({headless:true,executablePath:process.env.CHROME_BIN||"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"});
   const page=await browser.newPage();const errors=[];page.on("pageerror",error=>errors.push(error.message));
+  page.setDefaultNavigationTimeout(60000);
   let layouts=0;
   for (const surface of ["personal-memory","management-knowledge"]) {
     for (const [width,theme] of [[1024,"light"],[768,"dark"]]) {
       await page.setViewportSize({width,height:900});
       for (const state of ["missing","downloading","verifying","error","ready"]) {
         await page.goto(`http://127.0.0.1:1439/__ui-review?surface=${surface}&theme=${theme}&retrievalModels=${state}`);
+        await openMemoryModels(page, surface);
         const card=page.getByRole("region",{name:"本地语义检索"});await card.waitFor();
         if (state==="ready") await page.getByText("本地语义检索已就绪").waitFor();
         if (state==="error") await card.getByRole("button",{name:"重试修复模型"}).waitFor();
@@ -38,6 +46,7 @@ try {
         }
       }
       await page.goto(`http://127.0.0.1:1439/__ui-review?surface=${surface}&theme=${theme}&retrievalModels=ready&retrievalImportFailure=1&pickedFolder=/review/invalid-models`);
+      await openMemoryModels(page, surface);
       const card=page.getByRole("region",{name:"本地语义检索"});
       await card.getByText("本地语义检索已就绪").waitFor();
       await card.getByText("模型维护",{exact:true}).click();

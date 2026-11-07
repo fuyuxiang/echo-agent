@@ -62,7 +62,14 @@ import { useGroupStore } from "../../src/features/groups/group-store";
 import { GroupWorkspace } from "../../src/features/groups/GroupWorkspace";
 import { useMessageQueueStore } from "../../src/stores/message-queue-store";
 
+import { modelSettingsNativeReview } from "./model-settings-native-review";
+import { advancedSettingsNativeReview } from "./advanced-settings-native-review";
+import { securitySettingsNativeReview } from "./security-settings-native-review";
+
 const query = new URLSearchParams(location.search);
+const modelSettingsReview = modelSettingsNativeReview(query);
+const advancedSettingsReview = advancedSettingsNativeReview(query);
+const securitySettingsReview = securitySettingsNativeReview(query);
 const recoveryReview = { permissionResolutions: 0, modeChanges: 0 };
 Object.assign(window, { recoveryReview });
 const modelTestCalls: { providerId: string; modelId: string }[] = [];
@@ -404,6 +411,9 @@ Object.assign(window, {
     unregisterCallback: (id: number) => callbacks.delete(id),
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
     invoke: async (command: string, args: any = {}) => {
+      if (modelSettingsReview?.commands.has(command)) return modelSettingsReview.invoke(command, args);
+      if (advancedSettingsReview?.commands.has(command)) return advancedSettingsReview.invoke(command, args);
+      if (securitySettingsReview?.commands.has(command)) return securitySettingsReview.invoke(command, args);
       if (["workbench", "coding-question"].includes(query.get("surface") ?? "")) workbenchCalls.push({command, args});
       if (command === "agent_resolve_permission") recoveryReview.permissionResolutions++;
       if (command === "permission_mode_set") recoveryReview.modeChanges++;
@@ -1013,6 +1023,6 @@ function Fixture() {
     const coding = <CodingLayoutReview cwd={cwd} onCwdChange={setCwd} />;
     return query.get("codingShell") === "1" ? <CodingSidebarReview cwd={cwd} onCwdChange={setCwd} /> : coding;
   }
-  return <SettingsPanel open initialModelId={query.get("initialModelId") ?? undefined} initialSection={(surface === "weixin-connected" || surface === "weixin-offline" || surface === "weixin-unconnected" ? "weixin-channel" : surface) as SettingsSectionId} cwd={surface === "personal-memory" ? "/Users/fuyuxiang/Documents/EchoAgent" : undefined} onClose={() => {}} />;
+  return <SettingsPanel open onOpenOrganization={modelSettingsReview ? () => { modelSettingsReview.calls.logins++; } : undefined} initialModelId={query.get("initialModelId") ?? undefined} initialSection={(surface === "weixin-connected" || surface === "weixin-offline" || surface === "weixin-unconnected" ? "weixin-channel" : surface) as SettingsSectionId} cwd={surface === "personal-memory" ? "/Users/fuyuxiang/Documents/EchoAgent" : undefined} onClose={() => {}} />;
 }
 createRoot(document.getElementById("root")!).render(<ThemeProvider><Fixture /></ThemeProvider>);

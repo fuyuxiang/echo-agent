@@ -25,10 +25,10 @@ try {
       ["字号", "字体大小", "font-size"],
       ["后台运行", "关闭窗口后继续运行", "background"],
       ["Webhook", "推送到其他应用", "external-notifications"],
-      ["OTLP", "诊断数据上报", "diagnostics"],
+      ["OTLP", "接入监控服务", "diagnostics"],
       ["数据目录", "本地数据目录", "data-directory"],
       ["常见问题", "常见问题与使用帮助", "help-faq"],
-      ["权限规则", "自定义工具规则", "permission-rules"],
+      ["权限规则", "高级权限规则", "permission-rules"],
     ]) {
       await search.fill(query);
       const results = page.getByRole("listbox", { name: "设置搜索结果" });
@@ -90,7 +90,7 @@ try {
     // Pending input survives a cancelled search navigation and a cancelled
     // close. Saving the list removes the guard, and the next visit reads it.
     await search.fill("权限规则");
-    await page.getByRole("option").filter({ hasText: "自定义工具规则" }).click();
+    await page.getByRole("option").filter({ hasText: "高级权限规则" }).click();
     const pattern = page.getByPlaceholder("例如 git *");
     await pattern.fill("git status");
     await search.fill("备份");
@@ -101,7 +101,7 @@ try {
     assert(await search.evaluate(element => document.activeElement === element), "Cancelling search navigation lost keyboard focus");
     await page.getByRole("button", { name: "关闭设置", exact: true }).click();
     await confirmation.getByRole("button", { name: "取消", exact: true }).click();
-    await page.getByRole("button", { name: "添加到列表", exact: true }).click();
+    await page.getByRole("button", { name: "添加规则", exact: true }).click();
     await page.evaluate(() => {
       const invoke = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = async (command, args) => {
@@ -109,7 +109,7 @@ try {
         return invoke(command, args);
       };
     });
-    await page.getByRole("button", { name: "保存全部规则", exact: true }).click();
+    await page.getByRole("button", { name: "保存修改", exact: true }).click();
     await page.getByRole("button", { name: "关闭设置", exact: true }).click();
     const busyFeedback = page.getByRole("status").filter({ hasText: "正在处理，请等待完成" });
     await busyFeedback.waitFor();

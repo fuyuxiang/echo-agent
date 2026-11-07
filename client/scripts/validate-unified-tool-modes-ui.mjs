@@ -56,7 +56,7 @@ try {
       const original=window.__TAURI_INTERNALS__.invoke;window.browserSettingsCalls=[];
       window.__TAURI_INTERNALS__.invoke=async(command,args)=>{if(["automation_set_private_network","automation_clear_browser_data"].includes(command))window.browserSettingsCalls.push({command,args});return original(command,args);};
     });
-    await page.locator("summary").filter({hasText:"浏览器数据与访问范围"}).click();
+    await page.locator("summary").filter({hasText:"任务浏览器"}).click();
     const selector=page.getByRole("combobox",{name:"管理浏览器数据的任务"});await selector.selectOption("browser-b");
     const checkbox=page.getByRole("checkbox",{name:/允许访问本机与内网/});await checkbox.waitFor();
     assert.equal(await checkbox.isChecked(),false);await checkbox.click();

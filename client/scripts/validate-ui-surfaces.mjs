@@ -63,13 +63,25 @@ page.setDefaultNavigationTimeout(60000);
           cards: document.querySelectorAll(".personal-memory__card").length,
         }));
         assert.ok(!memoryLayout.overflow, "personal memory causes horizontal page overflow");
-        assert.equal(memoryLayout.cards, 2);
-        await page.getByRole("button", { name: "添加记忆", exact: true }).click();
+        assert.equal(memoryLayout.cards, 0, "memory content belongs to its management view");
+        await page.screenshot({ path: join(output, `memory-settings-${width}-${theme}.png`) });
+        await page.getByRole("button", { name: "管理", exact: true }).click();
+        assert.equal(await page.locator(".personal-memory__card").count(), 2);
+        const task=page.locator('.personal-memory__card').filter({hasText:'客户汇报初稿'});
+        assert.equal(await task.getByText('待跟进',{exact:true}).isVisible(),true);
+        assert.equal(await task.getByRole('button',{name:'完成 客户汇报初稿',exact:true}).isVisible(),true);
+        assert.equal(await task.locator('details').evaluate(element=>element.open),false);
+        await page.screenshot({ path: join(output, `memory-management-${width}-${theme}.png`) });
+        await page.getByRole("button", { name: "更多", exact: true }).click();
+        await page.getByRole("menuitem", { name: "添加记忆", exact: true }).click();
         await page.getByLabel("记忆内容").fill("测试偏好：先给结论");
-        assert.equal(await page.getByLabel("主题（可选）").isVisible(), false, "advanced fields should be collapsed");
+        assert.equal(await page.getByLabel("主题（可选）").count(), 0, "internal memory metadata should not be exposed as form fields");
         await page.screenshot({ path: join(output, `personal-memory-${width}-${theme}.png`) });
         layouts += 1;
-        await page.getByText("记忆状态与排查", { exact: true }).click();
+        await page.getByRole("button", { name: "取消", exact: true }).click();
+        await page.getByRole("alertdialog").getByRole("button", { name: "舍弃修改", exact: true }).click();
+        await page.getByRole("button", { name: "更多", exact: true }).click();
+        await page.getByRole("menuitem", { name: "记忆状态与排查", exact: true }).click();
         const recovery = page.getByRole("note").filter({ hasText: "已隔离 2 项损坏的待整理内容" });
         await recovery.scrollIntoViewIfNeeded();
         assert.ok(await recovery.isVisible(), "isolated checkpoint recovery must remain understandable");
@@ -203,7 +215,7 @@ page.setDefaultNavigationTimeout(60000);
         assert.equal(await page.getByRole("switch", { name: "使用记忆", exact: true }).isChecked(), true);
       }
       if (surface === "security") {
-        await page.getByText("自定义工具规则", { exact: true }).click();
+        await page.getByText("高级权限规则", { exact: true }).click();
         await page.locator(".permission-rule-builder").scrollIntoViewIfNeeded();
         const fields = await page.locator(".permission-rule-builder .form-control").evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height));
         assert.ok(Math.max(...fields) - Math.min(...fields) < 1, "permission controls have inconsistent heights");

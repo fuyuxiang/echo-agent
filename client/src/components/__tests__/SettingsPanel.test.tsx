@@ -67,6 +67,7 @@ import { testDesktopNotify } from "@/lib/notify-channels";
 import { SettingsPanel } from "../SettingsPanel";
 import { ThemeProvider } from "../ThemeProvider";
 import {
+  providersList,
   memoryConfigGet,
   memoryConfigSave,
   memoryList,
@@ -93,23 +94,23 @@ describe("Settings navigation and search", () => {
     vi.mocked(permissionList).mockResolvedValue([]);
     const onClose = vi.fn();
     render(<ThemeProvider><SettingsPanel open initialSection="security" onClose={onClose} /></ThemeProvider>);
-    fireEvent.click(screen.getByText("自定义工具规则"));
+    fireEvent.click(screen.getByText("高级权限规则"));
     const pattern = screen.getByPlaceholderText("例如 git *");
     await waitFor(() => expect(pattern).toBeEnabled());
     fireEvent.change(pattern, { target: { value: "git status" } });
-    expect(screen.getByRole("button", { name: "保存全部规则" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "通用" }));
     let dialog = await screen.findByRole("alertdialog", { name: "舍弃未保存的修改？" });
     fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
     expect(pattern).toHaveValue("git status");
-    fireEvent.click(screen.getByRole("button", { name: "添加到列表" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加规则" }));
     fireEvent.click(screen.getByRole("button", { name: "关闭设置" }));
     dialog = await screen.findByRole("alertdialog", { name: "舍弃未保存的修改？" });
     fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
 
     let release!: () => void;
     vi.mocked(permissionSave).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
-    fireEvent.click(screen.getByRole("button", { name: "保存全部规则" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
     fireEvent.click(screen.getByRole("button", { name: "通用" }));
     expect(screen.getByText(/正在处理，请等待完成/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "安全与权限", level: 2 })).toBeInTheDocument();
@@ -126,12 +127,12 @@ describe("Settings navigation and search", () => {
     let fail!: (error: Error) => void;
     vi.mocked(permissionSave).mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
     render(<ThemeProvider><SettingsPanel open initialSection="security" onClose={() => {}} /></ThemeProvider>);
-    fireEvent.click(screen.getByText("自定义工具规则"));
+    fireEvent.click(screen.getByText("高级权限规则"));
     const pattern = screen.getByPlaceholderText("例如 git *");
     await waitFor(() => expect(pattern).toBeEnabled());
     fireEvent.change(pattern, { target: { value: "git status" } });
-    fireEvent.click(screen.getByRole("button", { name: "添加到列表" }));
-    fireEvent.click(screen.getByRole("button", { name: "保存全部规则" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加规则" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
     fireEvent.click(screen.getByRole("button", { name: "通用" }));
     expect(screen.getByText(/正在处理，请等待完成/)).toBeInTheDocument();
 
@@ -151,11 +152,13 @@ describe("Settings navigation and search", () => {
     vi.mocked(internalReload).mockImplementationOnce(() => new Promise<void>(resolve => { finishReload = resolve; }));
     const onClose = vi.fn();
     render(<ThemeProvider><SettingsPanel open initialSection="agent-settings" onClose={onClose} /></ThemeProvider>);
+    fireEvent.click(screen.getByText("开发者选项"));
     const depth = screen.getByRole("spinbutton", { name: "子代理最大层级" });
     await waitFor(() => expect(depth).toBeEnabled());
     fireEvent.change(depth, { target: { value: "3" } });
     fireEvent.click(within(depth.closest(".agent-runtime-row") as HTMLElement).getByRole("button", { name: "保存" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "重新加载" })[0]);
+    fireEvent.click(screen.getByText("配置未生效？"));
+    fireEvent.click(screen.getByRole("button", { name: "重新加载MCP 连接器" }));
     fireEvent.click(screen.getByRole("button", { name: "通用" }));
     expect(screen.getByText(/正在处理，请等待完成/)).toBeInTheDocument();
 
@@ -212,10 +215,11 @@ describe("Settings navigation and search", () => {
   it("外部直达链接也保护未保存的高级配置，并允许撤销修改", async () => {
     vi.mocked(subagentsConfigGet).mockResolvedValueOnce({ maxDepth: 2 });
     const view = render(<ThemeProvider><SettingsPanel open initialSection="agent-settings" onClose={() => {}} /></ThemeProvider>);
+    fireEvent.click(screen.getByText("开发者选项"));
     const depth = screen.getByRole("spinbutton", { name: "子代理最大层级" });
     await waitFor(() => expect(depth).toHaveValue(2));
     fireEvent.change(depth, { target: { value: "4" } });
-    expect(screen.getByRole("button", { name: "刷新状态" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "刷新状态" })).toBeNull();
     view.rerender(<ThemeProvider><SettingsPanel open initialSection="help" onClose={() => {}} /></ThemeProvider>);
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "取消" }));
     expect(depth).toHaveValue(4);
@@ -236,7 +240,7 @@ describe("Settings navigation and search", () => {
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.change(search, { target: { value: "OTLP" } });
     fireEvent.keyDown(search, { key: "Enter" });
-    const field = await screen.findByRole("textbox", { name: "OTLP 遥测端点" });
+    const field = await screen.findByRole("textbox", { name: "监控服务地址（OTLP）" });
     await waitFor(() => expect(field.closest("details")).toHaveAttribute("open"));
     expect(screen.getByRole("button", { name: "高级设置" })).toHaveAttribute("aria-current", "page");
     expect(search).toHaveValue("");
@@ -246,7 +250,7 @@ describe("Settings navigation and search", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /推送到其他应用/ })).toHaveAttribute("aria-expanded", "true"));
     fireEvent.change(search, { target: { value: "常见问题" } });
     fireEvent.keyDown(search, { key: "Enter" });
-    const faq = screen.getByText("常见问题与技术信息").closest("details")!;
+    const faq = screen.getByText("问题排查").closest("details")!;
     await waitFor(() => expect(faq).toHaveAttribute("open"));
     expect(screen.getByText("确认模型配置")).toBeVisible();
     await waitFor(() => expect(faq.querySelector("summary")).toHaveFocus());
@@ -271,7 +275,9 @@ describe("SettingsPanel", () => {
     expect(await screen.findByRole("heading", { name: "记忆" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "记忆" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("button", { name: "记忆行为" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("高级：记忆文档与会话摘要"));
+    fireEvent.click(screen.getByRole("button", { name: "管理" }));
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "原有记忆文档" }));
     await waitFor(() => expect(memoryList).toHaveBeenCalledWith("/workspace"));
     expect(screen.getByLabelText("当前记忆上下文")).toHaveTextContent("/workspace");
     expect(screen.getByLabelText("当前记忆上下文")).toHaveTextContent("已连接当前会话");
@@ -344,19 +350,19 @@ describe("SettingsPanel", () => {
   it("配置重载和诊断集中在高级设置，保存诊断仍校验端点", async () => {
     localStorage.removeItem("echoagent.otlp.endpoint");
     render(<ThemeProvider><SettingsPanel open initialSection="security" onClose={() => {}} /></ThemeProvider>);
-    expect(screen.queryByLabelText("OTLP 遥测端点")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("监控服务地址（OTLP）")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "高级设置" }));
-    expect(await screen.findByRole("heading", { name: "重新加载配置" })).toBeInTheDocument();
-    const disclosure = screen.getByText("诊断数据上报").closest("details")!;
+    expect(await screen.findByText("配置未生效？")).toBeInTheDocument();
+    const disclosure = screen.getByText("开发者选项").closest("details")!;
     expect(disclosure).not.toHaveAttribute("open");
-    fireEvent.click(screen.getByText("诊断数据上报"));
-    const field = screen.getByRole("textbox", { name: "OTLP 遥测端点" });
+    fireEvent.click(screen.getByText("开发者选项"));
+    const field = screen.getByRole("textbox", { name: "监控服务地址（OTLP）" });
     fireEvent.change(field, { target: { value: "javascript:invalid" } });
-    fireEvent.click(within(disclosure).getByRole("button", { name: "保存" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("无法保存诊断配置");
+    fireEvent.click(within(screen.getByRole("group", { name: "监控服务配置" })).getByRole("button", { name: "保存" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("无法保存监控配置");
     expect(localStorage.getItem("echoagent.otlp.endpoint")).toBeNull();
     fireEvent.change(field, { target: { value: "http://127.0.0.1:4318/v1/logs" } });
-    fireEvent.click(within(disclosure).getByRole("button", { name: "保存" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "监控服务配置" })).getByRole("button", { name: "保存" }));
     expect(localStorage.getItem("echoagent.otlp.endpoint")).toBe("http://127.0.0.1:4318/v1/logs");
     localStorage.removeItem("echoagent.otlp.endpoint");
   });
@@ -381,7 +387,7 @@ describe("SettingsPanel", () => {
       </ThemeProvider>,
     );
 
-    fireEvent.click(await screen.findByRole("link", { name: /EchoAgent 文档/ }));
+    fireEvent.click(await screen.findByRole("link", { name: /使用文档/ }));
 
     await waitFor(() => {
       expect(openExternalUrl).toHaveBeenCalledWith("https://fuyuxiang.github.io/echo-agent/");
@@ -393,7 +399,7 @@ describe("SettingsPanel", () => {
 
     const pages = [
       ["通用", "通用"], ["通知", "通知设置"], ["微信连接", "微信连接"],
-      ["模型", "模型与连接"], ["高级设置", "高级设置"], ["记忆", "记忆"],
+      ["模型", "模型"], ["高级设置", "高级设置"], ["记忆", "记忆"],
       ["模型用量", "模型用量"], ["云存储", "云存储"], ["数据管理", "备份与恢复"],
       ["安全与权限", "安全与权限"], ["帮助与更新", "帮助与更新"],
     ];
@@ -453,9 +459,9 @@ describe("SettingsPanel", () => {
       </ThemeProvider>,
     );
 
-    expect(await screen.findByRole("heading", { name: "浏览器与电脑操作", level: 3 }))
+    expect(await screen.findByRole("heading", { name: "操作权限", level: 3 }))
       .toBeInTheDocument();
-    expect(screen.getByText(/\+ 菜单为当前任务开启/)).toBeInTheDocument();
+    expect(screen.getByText(/任务输入框的 \+ 菜单单独开启/)).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /默认.*操作电脑/ })).toBeNull();
   });
 
@@ -608,7 +614,9 @@ describe("SettingsPanel", () => {
 
   it("离开记忆页先保护草稿，取消离开保留编辑内容", async () => {
     render(<ThemeProvider><SettingsPanel open initialSection="memory" onClose={() => {}} /></ThemeProvider>);
-    fireEvent.click(await screen.findByRole("button", { name: "添加记忆" }));
+    fireEvent.click(await screen.findByRole("button", { name: "管理" }));
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "添加记忆" }));
     fireEvent.change(screen.getByLabelText("记忆内容"), { target: { value: "汇报先给结论" } });
     fireEvent.click(screen.getByRole("button", { name: "通用" }));
     const confirmation = await screen.findByRole("alertdialog", { name: "舍弃未保存的记忆？" });
@@ -618,6 +626,65 @@ describe("SettingsPanel", () => {
     fireEvent.click(within(await screen.findByRole("alertdialog", { name: "舍弃未保存的记忆？" })).getByRole("button", { name: "舍弃修改" }));
     expect(screen.queryByLabelText("记忆内容")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "通用" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("记忆二级页支持搜索直达，搜索离开编辑时仍保护草稿", async () => {
+    render(<ThemeProvider><SettingsPanel open initialSection="memory" onClose={() => {}} /></ThemeProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "管理" }));
+    const search = screen.getByRole("combobox", { name: "搜索设置" });
+    fireEvent.change(search, { target: { value: "使用记忆" } });
+    fireEvent.click(await screen.findByRole("option", { name: /使用记忆/ }));
+    expect(await screen.findByRole("switch", { name: "使用记忆" })).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: "管理记忆" } });
+    fireEvent.click(await screen.findByRole("option", { name: /管理记忆/ }));
+    expect(await screen.findByRole("heading", { name: "管理记忆" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "添加记忆" }));
+    fireEvent.change(screen.getByLabelText("记忆内容"), { target: { value: "不能丢失的记忆草稿" } });
+    fireEvent.change(search, { target: { value: "使用记忆" } });
+    fireEvent.click(await screen.findByRole("option", { name: /使用记忆/ }));
+    const confirmation = await screen.findByRole("alertdialog", { name: "舍弃未保存的记忆？" });
+    fireEvent.click(within(confirmation).getByRole("button", { name: "取消" }));
+    expect(screen.getByLabelText("记忆内容")).toHaveValue("不能丢失的记忆草稿");
+  });
+
+  it("点击模型导航返回首页前保护连接草稿", async () => {
+    render(<ThemeProvider><SettingsPanel open initialSection="model" onClose={() => {}} /></ThemeProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "添加模型连接" }));
+    fireEvent.change(screen.getByLabelText("模型 ID"), { target: { value: "keep-draft" } });
+    fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "模型" }));
+    const warning = await screen.findByRole("alertdialog", { name: "舍弃未保存的修改？" });
+    fireEvent.click(within(warning).getByRole("button", { name: "取消" }));
+    expect(screen.getByLabelText("模型 ID")).toHaveValue("keep-draft");
+    fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "模型" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "舍弃修改" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "添加模型连接" })).toBeNull());
+    expect(screen.getByRole("heading", { name: "模型", level: 2 })).toBeInTheDocument();
+  });
+
+  it.each(["navigation", "search"] as const)("模型直达后通过 %s 返回模型首页不再重复定位旧模型", async route => {
+    const catalog = {
+      providers: [{ id: "review", providerKind: "custom" as const, source: "personal" as const, label: "工作连接", baseUrl: "https://review.invalid/v1", credentialConfigured: true }],
+      models: [{ modelId: "review/a", providerId: "review" }, { modelId: "review/b", providerId: "review" }],
+    };
+    vi.mocked(providersList).mockResolvedValueOnce(catalog).mockResolvedValueOnce(catalog);
+    const props = { open: true, initialSection: "model" as const, initialModelId: "review/a", onClose: () => {} };
+    const view = render(<ThemeProvider><SettingsPanel {...props} /></ThemeProvider>);
+    await screen.findByRole("heading", { name: "连接详情" });
+    await waitFor(() => expect(document.querySelector('[data-model-id="review/a"]')).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "通用" }));
+    if (route === "navigation") fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "模型" }));
+    else {
+      fireEvent.change(screen.getByRole("combobox", { name: "搜索设置" }), { target: { value: "模型与连接" } });
+      fireEvent.click(await screen.findByRole("option", { name: /模型与连接/ }));
+    }
+    expect(await screen.findByRole("combobox", { name: "默认模型" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "模型" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "连接详情" })).toBeNull();
+    // A later explicit direct link still locates its requested model.
+    view.rerender(<ThemeProvider><SettingsPanel {...props} initialModelId="review/b" /></ThemeProvider>);
+    expect(await screen.findByRole("heading", { name: "连接详情" })).toBeInTheDocument();
+    await waitFor(() => expect(document.querySelector('[data-model-id="review/b"]')).toHaveFocus());
   });
 
   it("记忆开关仅保存更改字段", async () => {
@@ -731,13 +798,13 @@ describe("SettingsPanel", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("权限规则读取失败：权限配置损坏");
     expect(screen.queryByText("尚未添加自定义权限规则")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "保存全部规则" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled();
     expect(permissionSave).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(screen.getByText("rm *")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "保存全部规则" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled();
   });
 
   it("保存规则后收起面板仍会展开失败提示并保留规则", async () => {
@@ -745,9 +812,11 @@ describe("SettingsPanel", () => {
     let fail!: (error: Error) => void;
     vi.mocked(permissionSave).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
     render(<ThemeProvider><SettingsPanel open initialSection="security" onClose={() => {}} /></ThemeProvider>);
-    const summary = await screen.findByText("自定义工具规则", {exact:true});
+    const summary = await screen.findByText("高级权限规则", {exact:true});
     fireEvent.click(summary);
-    fireEvent.click(await screen.findByRole("button", {name:"保存全部规则"}));
+    fireEvent.change(screen.getByPlaceholderText("例如 git *"), { target: { value: "git status" } });
+    fireEvent.click(screen.getByRole("button", {name:"添加规则"}));
+    fireEvent.click(await screen.findByRole("button", {name:"保存修改"}));
     fireEvent.click(summary);
     await act(async () => { fail(new Error("disk unavailable")); });
     expect(await screen.findByRole("alert")).toHaveTextContent("保存失败");

@@ -16,7 +16,7 @@ export interface ActionMenuHandle {
   triggerRef: RefObject<HTMLButtonElement>;
 }
 export function ActionMenu({ label, menuLabel, trigger, resetKey, busy = false,
-  triggerClassName = "main-topbar__btn", menuClassName = "topbar-actions__menu", children, contentKey, onOpenChange, onBack,
+  triggerClassName = "main-topbar__btn", menuClassName = "topbar-actions__menu", menuZIndex = MENU_Z_INDEX, children, contentKey, onOpenChange, onBack,
 }: {
   onBack?: () => void;
   contentKey?: string;
@@ -28,6 +28,8 @@ export function ActionMenu({ label, menuLabel, trigger, resetKey, busy = false,
   busy?: boolean;
   triggerClassName?: string;
   menuClassName?: string;
+  /** Portalled menus opened inside dialogs use the dialog popover layer. */
+  menuZIndex?: CSSProperties["zIndex"];
   children: (handle: ActionMenuHandle) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -199,7 +201,7 @@ export function ActionMenu({ label, menuLabel, trigger, resetKey, busy = false,
         // prevent a submenu from shrinking back after its content changes.
         maxHeight: menuPosition.maxHeight,
         overflowY: "auto",
-        zIndex: MENU_Z_INDEX,
+        zIndex: menuZIndex,
       }
     : { position: "fixed", visibility: "hidden" };
 

@@ -83,13 +83,13 @@ try {
     for (const form of ["project", "expert", "model"]) {
       const surface = form === "project" ? "page&label=项目" : form === "expert" ? "capabilities" : "model";
       await page.goto(`http://127.0.0.1:1439/__ui-review?surface=${surface}&theme=${theme}`);
-      await page.getByRole("button", { name: form === "project" ? "新建项目" : form === "expert" ? "创建专家" : "添加个人连接", exact: true }).first().click();
+      await page.getByRole("button", { name: form === "project" ? "新建项目" : form === "expert" ? "创建专家" : "添加模型连接", exact: true }).first().click();
       const shell = form === "model" ? ".model-connection-editor" : ".create-colleague-dialog";
       await page.locator(shell).waitFor();
       const header = form === "model" ? ".models-settings-panel__editor-header" : ".create-colleague-header";
       const body = form === "model" ? ".model-connection-editor__body" : ".create-colleague-body";
       const footer = form === "model" ? ".models-settings-panel__editor-footer" : ".create-colleague-footer";
-      if (form === "model") await page.getByRole("button", { name: "高级设置", exact: true }).click();
+      if (form === "model") await page.getByRole("button", { name: "更多设置", exact: true }).click();
       if (form !== "model") await page.locator(`${shell} textarea`).first().fill("项目约束、结果要求与操作说明。".repeat(45));
       await inspect(`form-${form}-${width}-${theme}`, shell, header, footer, body);
       if (form === "project") {
