@@ -5,6 +5,9 @@ use echo_agent_runtime::session::{
     storage::{CopySessionOptions, JsonlStorageAdapter, SessionUpdate, StorageAdapter},
 };
 use tempfile::TempDir;
+// Exercise the exact production title policy in the host regression suite.
+#[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/title_recovery_scope.rs"]
+mod title_recovery_scope;
 fn chat_user(text: &str, index: usize) -> ConversationItem {
     let mut item = ConversationItem::user(text);
     item.set_prompt_index(index);
@@ -157,6 +160,8 @@ async fn continuation_scenario(compacted: bool) {
         .contains("future-secret"));
     assert!(copied.summary.display_title().is_empty());
     assert!(!copied.summary.title_is_manual);
+    assert_eq!(copied.summary.title_source_prompt_index, Some(2));
+    assert_eq!(copied.summary.inherited_prefix_len, None);
     assert_eq!(
         adapter
             .load_session(&source)

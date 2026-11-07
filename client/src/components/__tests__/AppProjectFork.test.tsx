@@ -25,6 +25,7 @@ vi.mock("../FolderTrustDialog", () => ({ FolderTrustDialog: () => null }));
 vi.mock("../Sidebar", () => ({ Sidebar: ({ onSelect, onDeleteSession, onNavigate }: { onSelect: (id: string) => void; onDeleteSession?: (id: string, cwd: string) => Promise<void>; onNavigate?: (label: string) => void }) => <>
   <button onClick={() => onSelect("source")}>打开项目源会话</button>
   <button onClick={() => onSelect("other")}>打开其他会话</button>
+  <button onClick={() => onSelect("fork")}>再次打开接续会话</button>
   <button onClick={() => void onDeleteSession?.("source", "/workspace")}>删除项目源会话</button>
   <button onClick={() => onNavigate?.("项目")}>进入项目管理</button>
 </> }));
@@ -253,6 +254,27 @@ describe("App deletion feedback", () => {
 });
 
 describe("project fork continuation", () => {
+  it("首次回放期间再次打开同一接续会话，保留共同加载成功的历史", async () => {
+    await start();
+    let finish!: (model: string) => void;
+    const replay = new Promise<string>(resolve => { finish = resolve; });
+    // The native client coalesces concurrent loads of the same session.
+    vi.mocked(client.agentLoadSession).mockImplementation(() => replay);
+    completeFork();
+    await waitFor(() => expect(client.agentLoadSession).toHaveBeenCalledWith("fork", "/workspace"));
+    fireEvent.click(screen.getByRole("button", { name: "再次打开接续会话" }));
+    await waitFor(() => expect(vi.mocked(client.agentLoadSession).mock.calls.filter(([id]) => id === "fork")).toHaveLength(2));
+    await act(async () => {
+      useSessionStore.getState().setMessages([{ id: "inherited-user", role: "user", complete: true, parts: [{ kind: "text", text: "完整继承历史" }] }]);
+      finish("model-a");
+    });
+    expect(useSessionsStore.getState().currentSessionId).toBe("fork");
+    expect(useSessionStore.getState().transcripts.fork?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "inherited-user" }),
+    ]));
+    expect(useSessionStore.getState().error).toBeFalsy();
+    expect(screen.queryByRole("button", { name: "重新打开" })).toBeNull();
+  });
   it("继承知识来源和组织范围，后续修改互不影响", async () => {
     await start();
     useKnowledgeStore.getState().setSessionSources("source",["personal","organization"]);

@@ -1,4 +1,5 @@
 import type { PersonalMemoryInput } from "./agent-client";
+import { memoryTitleFromContent } from "./memory-title";
 
 /** Import is a reviewable draft, never an instruction to execute. */
 export function parseMemoryImport(text: string): PersonalMemoryInput[] {
@@ -24,7 +25,7 @@ export function parseMemoryImport(text: string): PersonalMemoryInput[] {
     seen.add(content);
     const kind = "kind" in item && ["user", "feedback", "project", "reference", "task"].includes(String(item.kind)) ? item.kind as PersonalMemoryInput["kind"] : "user";
     return [{ scope: "scope" in item && item.scope === "workspace" ? "workspace" : "global", kind,
-      key: "key" in item && typeof item.key === "string" ? item.key.trim().slice(0, 160) || content.slice(0, 60) : content.slice(0, 60), content,
+      key: "key" in item && typeof item.key === "string" ? [...item.key.trim()].slice(0, 160).join("") || memoryTitleFromContent(content) : memoryTitleFromContent(content), content,
       pinned: true, validUntil: "validUntil" in item && typeof item.validUntil === "number" && Number.isFinite(item.validUntil) ? item.validUntil : null }];
   });
 }

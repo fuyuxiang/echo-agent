@@ -317,9 +317,10 @@ export function ChatView({
   const terminalMessage = [...messages].reverse().find(message => message.role === "assistant"
     && (!control?.promptId || message.promptId === control.promptId));
   const stoppedCategory = terminalMessage?.cancellationCategory;
-  const automationMode: AutomationMode = agentMode === "browser_use" || agentMode === "computer_use"
-    ? agentMode
-    : "default";
+  // Runtime coding-mode notifications can be "default" while the native
+  // browser/computer session remains active. Its own status owns tool mode.
+  const automationMode: AutomationMode = automation.status?.mode
+    ?? (agentMode === "browser_use" || agentMode === "computer_use" ? agentMode : "default");
   const handleAutomationModeChange = useCallback(async (nextMode: AutomationMode) => {
     if (!sessionId || automationModeChanging || nextMode === automationMode) return;
     setAutomationModeChanging(true);
@@ -329,8 +330,8 @@ export function ChatView({
         if (stopped === false) throw new Error("暂停尚未确认，请稍后重试");
       }
       await setCodingMode(sessionId, nextMode === "default" ? "agent" : nextMode);
-      // CurrentModeUpdate remains authoritative; this immediate local update
-      // avoids a visible delay on runtimes that acknowledge asynchronously.
+      // Native automation status owns tool mode; this local projection also
+      // covers the initial status load and asynchronous acknowledgements.
       useSessionStore.getState().setAgentMode(nextMode, sessionId);
     } catch (error) {
       onToast?.(`切换工具失败：${friendlyError(error)}`);
@@ -1361,7 +1362,7 @@ export function ChatView({
         findToolCall={(id) => findToolCall(messages, id)}
       />
       {retryDialog}
-      {sessionId && historyAction && !historyDisabled && !replacingTurn && <RewindBar key={sessionId} sessionId={sessionId}
+      {sessionId && historyAction && !historyDisabled && !replacingTurn && <RewindBar key={`rewind:${sessionId}`} sessionId={sessionId}
         minPromptIndex={origin ? origin.promptIndex + 1 : undefined}
         canExecute={canExecuteHistory}
         action={historyAction} onActionDone={() => { if (useSessionStore.getState().sessionId === sessionId) setHistoryAction(null); }} onRewound={onRewound}

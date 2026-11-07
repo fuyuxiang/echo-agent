@@ -176,6 +176,7 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 | `pnpm test:production-startup` | 构建后用静态服务和隔离浏览器检查真实生产资源启动、脚本错误及资源加载；日常 CI 自动运行并保留截图、报告。 |
 | `pnpm office:test` | 验证内置文档生成器。 |
 | `pnpm test:rust` | 在新临时数据目录运行全部 Rust 单元与集成测试；macOS 先对本仓库的测试程序作本地 ad hoc 签名，避免大型未签名测试程序的子进程启动延迟。 |
+| `pnpm test:memory:rust` | 单独运行记忆依赖库自身的完整单测，覆盖来源日志、遗忘、归档和标题更正；使用隔离数据目录，macOS 对自有测试程序作本地签名，CI 自动运行。 |
 | `pnpm test:runtime-smoke` | 显式运行两个 ignored 的真实 Runtime/MCP/Skills 验收；使用全新隔离数据和合成模型配置，不发送模型请求。 |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml --check` | 检查 Rust 格式。 |
 | `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings` | 运行 Rust 静态检查。 |

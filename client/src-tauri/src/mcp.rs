@@ -16,8 +16,10 @@ use std::sync::{Mutex, OnceLock};
 use agent_client_protocol as acp;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::{
+    DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
+};
 
 use crate::commands::AppState;
 use crate::ext::{call_ext, call_ext_value, raw_params};
@@ -945,6 +947,10 @@ fn stdio_change_requires_confirmation(
         .is_none_or(|server| !same_stdio_execution(incoming, server))
 }
 
+fn stdio_confirmation_approved(result: MessageDialogResult) -> bool {
+    matches!(result, MessageDialogResult::Custom(label) if label == "允许本次")
+}
+
 fn confirm_stdio_execution(app: &AppHandle, servers: &[McpUpsertRequest]) -> Result<(), String> {
     if servers.is_empty() {
         return Ok(());
@@ -981,18 +987,31 @@ fn confirm_stdio_execution(app: &AppHandle, servers: &[McpUpsertRequest]) -> Res
     } else {
         String::new()
     };
-    let approved = app
+    // An unparented macOS dialog uses CFUserNotification instead of an
+    // application-owned sheet. Keep this execution decision attached to the
+    // actual client window; a missing window must never imply permission.
+    let window = app
+        .get_webview_window("main")
+        .ok_or("无法打开 MCP 启动确认：客户端主窗口不可用")?;
+    tracing::info!(
+        servers = servers.len(),
+        "MCP stdio execution confirmation requested"
+    );
+    let result = app
         .dialog()
         .message(format!(
             "MCP stdio 会以当前用户权限启动本地进程。仅当你信任命令及其来源时允许。\n\n{details}{extra}"
         ))
+        .parent(&window)
         .title("允许 MCP 启动本地进程？")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
             "允许本次".into(),
             "取消".into(),
         ))
-        .blocking_show();
+        .blocking_show_with_result();
+    let approved = stdio_confirmation_approved(result);
+    tracing::info!(approved, "MCP stdio execution confirmation resolved");
     if approved {
         Ok(())
     } else {
@@ -2213,6 +2232,23 @@ pub async fn mcp_auth_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdio_confirmation_requires_the_explicit_allow_button() {
+        assert!(stdio_confirmation_approved(MessageDialogResult::Custom(
+            "允许本次".into()
+        )));
+        for result in [
+            MessageDialogResult::Cancel,
+            MessageDialogResult::No,
+            MessageDialogResult::Ok,
+            MessageDialogResult::Yes,
+            MessageDialogResult::Custom("取消".into()),
+            MessageDialogResult::Custom("允许本次 ".into()),
+        ] {
+            assert!(!stdio_confirmation_approved(result));
+        }
+    }
 
     #[test]
     fn setup_and_tool_payloads_are_bounded() {

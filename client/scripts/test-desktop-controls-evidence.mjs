@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyControlsJournal } from './lib/desktop-controls-evidence.mjs';
+import { verifyControlsJournal, verifyControlsModelBinding } from './lib/desktop-controls-evidence.mjs';
+test('task evidence binds the explicitly selected model and its persisted alias',()=>{
+  const selected='echoagent-review/claude-opus-5-5';
+  for(const value of [selected,'claude-opus-5-5'])verifyControlsModelBinding(value,selected);
+  assert.throws(()=>verifyControlsModelBinding('MiniMax-M3.1-Flash',selected));
+  assert.throws(()=>verifyControlsModelBinding('another/claude-opus-5-5',selected));
+  assert.throws(()=>verifyControlsModelBinding('foreign','foreign'));
+});
 const session='synthetic-session';
 const event=(tool,output,extra={})=>({params:{sessionId:session,update:{sessionUpdate:'tool_call_update',status:'completed',toolCallId:tool,rawOutput:{type:'MCP',server_name:'echoagent-automation',tool_name:tool,output:{OkayOutput:JSON.stringify(output)}},...extra}}});
 const mark={params:{sessionId:session,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'CONTROL-RUNTIME-READONLY'}}}};

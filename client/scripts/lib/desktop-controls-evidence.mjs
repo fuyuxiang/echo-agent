@@ -1,4 +1,10 @@
 import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
+import { isReviewModelId } from './native-review-model.mjs';
+export function verifyControlsModelBinding(reported, requested) {
+  assert(isReviewModelId(requested), 'Desktop task requires the explicitly configured review model');
+  assert([requested, requested.split('/').at(-1)].includes(reported), 'Desktop task used a different model');
+}
 export function verifyControlsJournal(bytes, sessionId) {
   const results=[],groups=new Map();let marker=false,terminalUsed=false,invalidNativeJson=false,assistantTail="";
   for(const line of String(bytes).split('\n').filter(Boolean)) {

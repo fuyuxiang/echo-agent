@@ -2,6 +2,7 @@ import { cleanNativeReviewEnvironment } from "./lib/native-review-isolation.mjs"
 import { DEFAULT_REVIEW_MODEL_ID, PRIVATE_REVIEW_MODEL_ID, seedReviewModel, redactReviewModelSecrets, captureReviewModelLogs } from './lib/native-review-model.mjs';
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
 import { activateNativeReviewWindow, assertNativeReviewSessionUnlocked } from './lib/native-review-window.mjs';
+import { confirmNativeCoreWorkspace } from './lib/native-core-workspace-picker.mjs';
 // Real macOS Native runner. Importing this module does not launch an app.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -90,8 +91,10 @@ export function verifyNativeCoreReport({ report, manifest, pid, startedAt, exitC
   const evidence = (id) => report.checks.find((check) => check.id === id)?.evidence;
   assert.equal(evidence('core-native-isolation')?.permissionMode, 'ask');
   if (manifest.phase === 'first-launch') {
+    assert.equal(evidence('core-fork-original-preserved')?.temporaryTitle, `${e.title} · 新方向`);
     const queue = evidence('core-queue-and-send-now'), stop = evidence('core-stop-and-resend');
     assert.equal(queue?.sessionId, e.sessionId); assert.equal(queue.admittedViaUi, true);
+    assert(queue.streamedBeforeSendNowChars >= 32, 'send_now must interrupt actual model output');
     assert.equal(queue.immediateBeforeQueued, true); assert.equal(queue.noDuplicate, true);
     assert(Array.isArray(queue.completions) && queue.completions.some((item) => item.sessionId === e.sessionId
       && item.stopReason === 'cancelled' && item.cancelTrigger === 'send_now'));
@@ -99,7 +102,7 @@ export function verifyNativeCoreReport({ report, manifest, pid, startedAt, exitC
     assert(completed.length >= 2 && completed.every((item) => typeof item.promptId === 'string' && item.promptId.length > 0)
       && new Set(completed.map((item) => item.promptId)).size === completed.length, 'Real distinct queued/immediate completions are missing');
     assert(stop?.stopped?.sessionId === e.sessionId && stop.stopped.cancelTrigger === 'stop' && stop.stopped.stopReason === 'cancelled'
-      && stop.lateWaitMs >= 1000 && stop.recovery?.marker === e.markers.recovery && stop.recovery.completion.stopReason === 'end_turn');
+      && stop.streamedBeforeStopChars >= 32 && stop.lateWaitMs >= 1000 && stop.recovery?.marker === e.markers.recovery && stop.recovery.completion.stopReason === 'end_turn');
     const draft = evidence('core-automation-draft-navigation-exit');
     assert.equal(draft?.marker, `CORE-DRAFT-${manifest.nonce}`);
     for (const key of ['restoredViaNavigation', 'quitConfirmationViaUi', 'exitCancelledAndRuntimeReady', 'noTasksCreated', 'discardedViaUi']) assert.equal(draft[key], true);
@@ -115,8 +118,15 @@ export function verifyNativeCoreReport({ report, manifest, pid, startedAt, exitC
     for (const item of manifest.officeFixtures) {
       const read = evidence(`core-office-${item.format}-runtime-read`); assert.equal(read?.path, item.path);
       assert.equal(read.toolOutputFingerprint, true); assert.equal(read.completion?.stopReason, 'end_turn');
+      assert(Array.isArray(read.permissions) && read.permissions.length === 1, 'Each fixture read must require one actual approval');
+      const approval = read.permissions[0];
+      assert(approval.via === 'production allow-once UI' && approval.pendingBeforeApproval === true
+        && approval.sessionId === e.sessionId && approval.operation?.name === 'read_file' && approval.operation.path === item.path
+        && typeof approval.toolCallId === 'string' && approval.toolCallId.length > 0
+        && read.toolCallId === approval.toolCallId, 'Read output must belong to the approved, previously pending tool call');
     }
   } else {
+    assert.equal(evidence('core-restart-fork-ui')?.temporaryTitle, `${e.title} · 新方向`);
     assert.equal(evidence('core-restart-custom-model')?.modelId, e.customModel.modelId);
     assert.equal(evidence('core-restart-custom-model')?.selectedSessionId, e.sessionId);
   }
@@ -179,15 +189,78 @@ const sessionFiles = (home, sessionId) => {
   const root = sessionDirectory(home, sessionId), history = ordinary(join(root, 'chat_history.jsonl'), home), updates = ordinary(join(root, 'updates.jsonl'), home);
   return { root, history, updates, historySha256: sha(history), updatesSha256: sha(updates) };
 };
-export function physical(home, expected, fixtures, first) {
+export function verifyCancellationJournal(journal, sessionId, cancellationIds) {
+  const chunkText = row => typeof row.params?.update?.content === 'string' ? row.params.update.content
+    : typeof row.params?.update?.content?.text === 'string' ? row.params.update.content.text : '';
+  return cancellationIds.map(({ trigger, promptId }) => {
+    assert(typeof promptId === 'string' && promptId.length > 0, 'Actual cancellation prompt ID missing');
+    const rows = journal.filter(row => row.params?.sessionId === sessionId && (row.params?.update?.prompt_id ?? row.params?._meta?.promptId) === promptId);
+    const end = rows.findIndex(row => row.params?.update?.sessionUpdate === 'turn_completed'
+      && row.params.update.stop_reason === 'cancelled' && row.params?._meta?.cancelTrigger === trigger);
+    assert(end >= 0, 'Native journal has no matching cancellation ACK');
+    const streamed = rows.slice(0, end).filter(row => row.params?.update?.sessionUpdate === 'agent_message_chunk')
+      .map(chunkText).join('');
+    assert(streamed.length >= 32, 'Cancellation did not interrupt actual model output on disk');
+    assert(!rows.slice(end + 1).some(row => row.params?.update?.sessionUpdate === 'agent_message_chunk' && chunkText(row).length > 0),
+      'Late model output survived cancellation in native journal');
+    return { trigger, promptId, streamedCharacters: streamed.length, noLateChunks: true };
+  });
+}
+export function physical(home, expected, fixtures, first, report) {
   const source = sessionFiles(home, expected.sessionId), fork = sessionFiles(home, expected.forkedSessionId);
+  const journal = source.updates.toString('utf8').trim().split('\n').map(line => JSON.parse(line));
+  const strings = value => typeof value === 'string' ? [value] : Array.isArray(value) ? value.flatMap(strings)
+    : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
+  const cancellationIds = first?.cancellations ?? [
+    { trigger: 'stop', promptId: report.checks.find(check => check.id === 'core-stop-and-resend')?.evidence?.stopped?.promptId },
+    { trigger: 'send_now', promptId: report.checks.find(check => check.id === 'core-queue-and-send-now')?.evidence?.completions
+      ?.find(turn => turn.stopReason === 'cancelled' && turn.cancelTrigger === 'send_now')?.promptId },
+  ];
+  const cancellations = verifyCancellationJournal(journal, expected.sessionId, cancellationIds);
+  const reads = fixtures.map(fixture => {
+    const toolCallId = first?.reads.find(read => read.format === fixture.format)?.toolCallId
+      ?? report.checks.find(check => check.id === `core-office-${fixture.format}-runtime-read`)?.evidence?.toolCallId;
+    assert(typeof toolCallId === 'string' && toolCallId.length > 0, 'Approved read ID missing from physical proof');
+    const updates = journal.filter(row => row.params?.sessionId === expected.sessionId
+      && (row.params?.update?.toolCallId ?? row.params?.update?.tool_call_id) === toolCallId).map(row => row.params.update);
+    const complete = updates.filter(update => update.sessionUpdate === 'tool_call_update' && update.status === 'completed');
+    assert.equal(complete.length, 1, 'Exactly one actual completed read must exist in the native journal');
+    assert(updates.some(update => {
+      let input = update.rawInput;
+      if (typeof input === 'string') { try { input = JSON.parse(input); } catch { return false; } }
+      const raw = input?.tool_input ?? input;
+      const path = raw?.file_path ?? raw?.path ?? raw?.target_file;
+      return (raw?.variant === 'ReadFile' || update._meta?.['echo.agent/tool']?.name === 'read_file'
+        || input?.tool_name?.split(/:|__/).at(-1) === 'read_file')
+        && [fixture.path, fixture.path.slice(expected.cwd.length + 1)].includes(path);
+    }), 'Physical tool input lost its exact authorized file');
+    const merged = Object.assign({}, ...updates);
+    const output = strings(merged.content).join('\n') || strings(merged.rawOutput ?? merged.raw_output).join('\n');
+    assert(output.includes(fixture.marker), 'Actual tool output fingerprint missing from native journal');
+    if (fixture.format === 'xlsx') assert(output.includes('00123456789012345678'), 'Physical XLSX output lost text digits');
+    if (fixture.format === 'epub') assert(!output.includes(fixture.excludedMarker)
+      && output.indexOf(`第一章 ${fixture.marker}`) >= 0
+      && output.indexOf(`第二章 ${fixture.marker}`) > output.indexOf(`第一章 ${fixture.marker}`), 'Physical EPUB output order/navigation mismatch');
+    if (fixture.format === 'ods') assert(output.includes('A\t\tB') && output.includes('重复列\t重复列')
+      && output.split(`重复行 ${fixture.marker}`).length - 1 === 2, 'Physical ODS output layout mismatch');
+    return { format: fixture.format, path: fixture.path, toolCallId, outputSha256: sha(output) };
+  });
+  const state = JSON.parse(ordinary(join(home, 'echoagent-state.json'), home));
+  const origin = state.session_continuations?.[expected.forkedSessionId];
+  assert(origin?.parentSessionId === expected.sessionId && origin.parentTitle === expected.title
+    && origin.temporaryTitle === `${expected.title} · 新方向` && origin.inheritedTurnCount > 0,
+  'Physical continuation provenance/title missing');
   const jobsPath = join(home, 'echoagent-automations.json');
   if (existsSync(jobsPath)) assert.equal(JSON.parse(ordinary(jobsPath, home)).automations.length, 0, 'Draft editor unexpectedly created a persisted task');
   assert.equal(sessionDirectory(home, expected.deletedSessionId, true), null, 'Deleted session data remains');
   for (const entry of [source, fork]) {
     assert(entry.history.toString('utf8').includes(expected.markers.recovery), 'Actual source/fork history lost recovery prompt');
     const summary = JSON.parse(ordinary(join(entry.root, 'summary.json'), home));
-    assert.equal(summary.info?.cwd, expected.cwd); assert.equal(summary.generated_title, expected.title);
+    assert.equal(summary.info?.cwd, expected.cwd);
+    if (entry === source) assert.equal(summary.generated_title, expected.title);
+    else assert(summary.title_source_prompt_index === origin.promptIndex + 1
+      && !summary.generated_title?.trim() && !summary.session_summary?.trim(),
+      'Read-only continuation load must retain its temporary title without generating a parent-history title');
     const model = entry === source ? expected.customModel.modelId : expected.modelId;
     assert([model, model.split('/').at(-1)].includes(summary.current_model_id), 'Physical source/fork model mismatch');
   }
@@ -209,7 +282,7 @@ export function physical(home, expected, fixtures, first) {
   const updates = child.updates.toString('utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
   assert(updates.some((value) => JSON.stringify(value).includes(expected.child.marker)), 'Actual child output missing on disk');
   assert(!updates.some((value) => ['tool_call', 'tool_call_update'].includes((value.params?.update ?? value.params)?.sessionUpdate)), 'No-tool child invoked a tool');
-  return { source: { sessionId: expected.sessionId, historySha256: source.historySha256, updatesSha256: source.updatesSha256 },
+  return { reads, cancellations, source: { sessionId: expected.sessionId, historySha256: source.historySha256, updatesSha256: source.updatesSha256 },
     fork: { sessionId: expected.forkedSessionId, historySha256: fork.historySha256, updatesSha256: fork.updatesSha256 },
     child: { sessionId: expected.child.sessionId, historySha256: child.historySha256, noTools: true },
     projectFork: { sessionId: expected.projectForkedSessionId, historySha256: projectFork.historySha256, currentProjectContractInActualHistory: true },
@@ -229,16 +302,24 @@ export async function runNativeCoreReview({ executable, resourceOnly = false } =
   assert.equal(process.platform, 'darwin', 'Actual review requires macOS Native WebView');
   if (!resourceOnly) assertNativeReviewSessionUnlocked();
   if (!resourceOnly) { assert(executable, 'Pass the newly built fixed Core application'); executable = realpathSync(resolve(executable)); assert(lstatSync(executable).isFile()); }
+  const binaryProof = (() => {
+    if (!executable) return { binarySha256: null, coreFixtureSha256: null };
+    const binary = readFileSync(executable), fixture = readFileSync(new URL('./fixtures/native-core-review.js', import.meta.url));
+    assert(binary.includes(fixture), 'Native binary contains an outdated Core fixture; rebuild with tauri/custom-protocol before acceptance');
+    return { binarySha256: sha(binary), coreFixtureSha256: sha(fixture) };
+  })();
   const outputRoot = nativeReviewOutput('native-core', 'NATIVE_CORE_REVIEW_OUTPUT');
   mkdirSync(outputRoot, { recursive: true }); const output = mkdtempSync(join(outputRoot, 'run-'));
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'echo-native-review-core-'))); chmodSync(home, 0o700);
   const nonce = randomBytes(16).toString('hex'), cwd = join(home, 'workspaces', 'default'), legacy = join(home, 'empty-legacy'); mkdirSync(legacy, { mode: 0o700 });
   const fixtures = await createCoreFixtures(home, nonce), fixtureBefore = fixtures.map((f) => ({ path: f.path, sha256: sha(ordinary(f.path, home)) }));
   const revocations = readonlyCompatibilitySourceRevocations();
-  writeFileSync(join(home, 'config.toml'), `[marketplace]\nofficial_marketplace_auto_installed = true\ndisabled_sources = [${revocations.map((value) => JSON.stringify(value)).join(', ')}]\n[claude_compat]\nimported = true\n`, { flag: 'wx', mode: 0o600 });
+  // Reads normally auto-allow in Ask mode. Add a stricter rule only in this
+  // private profile so every synthetic Office read exercises the real prompt.
+  writeFileSync(join(home, 'config.toml'), `[marketplace]\nofficial_marketplace_auto_installed = true\ndisabled_sources = [${revocations.map((value) => JSON.stringify(value)).join(', ')}]\n[claude_compat]\nimported = true\n[permission]\nask = [${JSON.stringify(`Read(${cwd}/办公读取/**)`)}]\n`, { flag: 'wx', mode: 0o600 });
   const modelId = seedReviewModel(home);
   const beforeForeign = foreignSnapshot(), result = { version: 1, kind: 'native-core-driver', home, cwd, nonce, output,
-    executable: executable || null, binarySha256: executable ? sha(readFileSync(executable)) : null, nativeVerified: false, passed: false,
+    executable: executable || null, ...binaryProof, nativeVerified: false, passed: false,
     phases: [], errors: [], osPickerVerified: false, homeEnvironmentChanged: false, syntheticFixtures: true,
     fixtures: fixtureBefore, compatibilityRevocationCount: revocations.length, foreignBefore: beforeForeign };
   let active, interrupted = false, expected = null, firstPhysical;
@@ -256,6 +337,7 @@ export async function runNativeCoreReview({ executable, resourceOnly = false } =
       writeFileSync(join(home, 'native-core-manifest.private.json'), JSON.stringify(manifest), { mode: 0o600 });
       const reportPath = join(home, 'native-review.json'); if (existsSync(reportPath)) unlinkSync(reportPath);
       const startedAt = Date.now(); active = managed(spawn(executable, ['--data-home', home], { env: { ...env, ECHO_DESKTOP_REVIEW_PHASE: phase }, stdio: ['ignore', 'pipe', 'pipe'] }));
+      writeFileSync(join(output, `${phase}-launch.json`), JSON.stringify({ home, cwd, nonce, phase, pid: active.child.pid, startedAt }, null, 2), { mode: 0o600 });
       const logs = captureReviewModelLogs(active.child, join(output, `${phase}-app.log`));
       // This journey asserts actual visible UI. Keep only its own application
       // in front while WebKit is running it, without AX, input, or screenshots.
@@ -267,11 +349,31 @@ export async function runNativeCoreReview({ executable, resourceOnly = false } =
         const activated = activateNativeReviewWindow(active.child.pid);
         (result.windowActivation ??= []).push({ phase, pid: active.child.pid, activated, at: new Date().toISOString() });
       };
-      let beforeFork, handoffError, beforeHandled = false, afterHandled = false;
+      let beforeFork, handoffError, beforeHandled = false, afterHandled = false, workspacePicked = false, pickerRequestedAt;
       const handoffs = (async () => {
         while (!active.ended) {
           activateOwnedWindow();
           try {
+            if (existsSync(reportPath)) {
+              const failed = JSON.parse(ordinary(reportPath, home));
+              // A final failed renderer report may leave a genuine unsaved
+              // draft quit dialog open. Stop only this failed owned run; the
+              // intentional draft-exit checkpoint is not a final report.
+              if (failed.kind === 'native-core' && failed.phase === phase && failed.nonce === nonce
+                && failed.home === home && failed.nativeContext?.pid === active.child.pid
+                && failed.passed === false && Date.parse(failed.finishedAt) >= startedAt) {
+                result.errors.push(`${phase}: renderer failed: ${JSON.stringify(failed.errors).slice(0, 2000)}`);
+                active.child.kill('SIGTERM');
+                break;
+              }
+            }
+            const pickerReady = join(cwd, 'core-workspace-picker-ready.json');
+            if (phase === 'first-launch' && !workspacePicked && existsSync(pickerReady)) {
+              assert.deepEqual(JSON.parse(ordinary(pickerReady, home)), { nonce, cwd });
+              pickerRequestedAt ??= Date.now();
+              assert(Date.now() - pickerRequestedAt <= 30000, 'Owned native workspace picker did not become available');
+              workspacePicked = confirmNativeCoreWorkspace({ pid: active.child.pid, home, cwd });
+            }
             const readyPath = join(cwd, 'core-fork-ready.json'), donePath = join(cwd, 'core-fork-done.json');
             if (phase === 'first-launch' && !beforeHandled && existsSync(readyPath)) {
               const data = JSON.parse(ordinary(readyPath, home)); assert.equal(data.nonce, nonce);
@@ -292,7 +394,12 @@ export async function runNativeCoreReview({ executable, resourceOnly = false } =
               writeFileSync(join(output, 'fork-physical-proof.json'), JSON.stringify(proof, null, 2), { mode: 0o600 });
               writeFileSync(join(cwd, 'core-fork-after.json'), JSON.stringify(proof), { flag: 'wx', mode: 0o600 });
             }
-          } catch (error) { handoffError = String(error); break; }
+          } catch (error) {
+            handoffError = String(error?.message || error).slice(0, 2000);
+            result.errors.push(`${phase}: native handoff: ${handoffError}`);
+            active.child.kill('SIGTERM');
+            break;
+          }
           await delay(100);
         }
       })();
@@ -306,8 +413,14 @@ export async function runNativeCoreReview({ executable, resourceOnly = false } =
           && Array.isArray(report.expected.ownedSessionIds)) expected = report.expected;
         const verified = verifyNativeCoreReport({ report, manifest, pid: active.child.pid, startedAt,
           exitCode: active.child.exitCode, signal: active.child.signalCode, previousExpected: expected });
+        if (phase === 'first-launch') {
+          assert(workspacePicked && report.workspaceSelection?.cwd === cwd
+            && report.workspaceSelection.via === 'native folder picker', 'Missing actual private workspace selection');
+          assert.deepEqual(JSON.parse(ordinary(join(home, 'echoagent-picked-workspaces.json'), home)), [cwd], 'Unexpected native directory grant');
+          result.osPickerVerified = true;
+        }
         assert(!handoffError && (phase !== 'first-launch' || afterHandled), 'Independent fork physical barrier failed/missing');
-        const files = physical(home, verified, fixtures, firstPhysical);
+        const files = physical(home, verified, fixtures, firstPhysical, report);
         assert.deepEqual(files.fixtures.map(({ path, sha256 }) => ({ path, sha256 })), fixtureBefore, 'Read tool altered input fixtures');
         writeFileSync(join(output, `${phase}-filesystem.json`), JSON.stringify(files, null, 2), { mode: 0o600 });
         if (phase === 'first-launch') { expected = verified; firstPhysical = files; }

@@ -191,7 +191,43 @@ fn root(storage: &MemoryStorage, scope: &str) -> io::Result<PathBuf> {
 }
 
 fn load(storage: &MemoryStorage, scope: &str) -> io::Result<Ledger> {
-    read_json(&root(storage, scope)?.join("records.json"))
+    let mut ledger: Ledger = read_json(&root(storage, scope)?.join("records.json"))?;
+    // Older clients could update the body while retaining its old derived
+    // title. Repair the view too, so those existing facts work immediately;
+    // ordinary reads do not write files or change revisions/source attribution.
+    let replaced_titles: HashSet<String> = ledger
+        .replaced
+        .iter()
+        .flat_map(|text| derived_title_variants(text))
+        .filter(|key| !key.is_empty())
+        .collect();
+    let replaced_symbols: HashSet<String> = ledger
+        .replaced
+        .iter()
+        .filter(|text| normalized(text).is_empty())
+        .flat_map(|text| title_variants(text))
+        .collect();
+    for record in &mut ledger.records {
+        if active(record)
+            && (replaced_titles.contains(&normalized(&record.key))
+                || replaced_symbols.contains(record.key.trim()))
+        {
+            record.key = content_title(&record.content);
+        }
+    }
+    // A formatting-only edit is the same current fact, not an obsolete fact.
+    // Repair old exclusion entries in memory without altering the saved file.
+    let current_facts: HashSet<String> = ledger
+        .records
+        .iter()
+        .filter(|r| active(r))
+        .map(|r| normalized(&r.content))
+        .filter(|text| !text.is_empty())
+        .collect();
+    ledger
+        .replaced
+        .retain(|old| !current_facts.contains(&normalized(old)));
+    Ok(ledger)
 }
 
 fn lock_storage(storage: &MemoryStorage) -> io::Result<std::fs::File> {
@@ -220,6 +256,41 @@ fn normalized(text: &str) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect()
+}
+
+fn content_title(content: &str) -> String {
+    content.trim().chars().take(60).collect()
+}
+
+fn title_variants(content: &str) -> [String; 3] {
+    // The old frontend counted UTF-16 code units; retain those titles while
+    // generating new ones by Unicode scalar value without splitting a pair.
+    let mut units = 0;
+    let legacy: String = content
+        .trim()
+        .chars()
+        .take_while(|c| {
+            units += c.len_utf16();
+            units <= 60
+        })
+        .collect();
+    [content.trim().into(), content_title(content), legacy]
+}
+
+fn derived_title_variants(content: &str) -> [String; 3] {
+    title_variants(content).map(|value| normalized(&value))
+}
+
+fn content_derived_title(key: &str, content: &str) -> bool {
+    if !key.trim().is_empty()
+        && title_variants(content)
+            .iter()
+            .any(|value| value == key.trim())
+    {
+        return true;
+    }
+    let key = normalized(key);
+    !key.is_empty() && derived_title_variants(content).contains(&key)
 }
 
 fn terms(text: &str) -> HashSet<String> {
@@ -425,7 +496,11 @@ impl RecallRules {
             return true;
         }
         let normalized = normalized(content);
-        if self.replaced.iter().any(|old| normalized.contains(old)) {
+        if self
+            .replaced
+            .iter()
+            .any(|old| !old.is_empty() && normalized.contains(old))
+        {
             return false;
         }
         self.permits_forgotten(content, &normalized)
@@ -474,12 +549,13 @@ impl RecallRules {
     }
 
     pub fn permits_path(&self, path: &Path) -> bool {
-        let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+        if path.file_stem().and_then(|name| name.to_str()).is_none() {
             return false;
-        };
-        !self.blocked_sessions.iter().any(|sid| {
-            sid.chars().count() >= 8 && stem.ends_with(&sid.chars().take(8).collect::<String>())
-        })
+        }
+        !self
+            .blocked_sessions
+            .iter()
+            .any(|sid| crate::storage::session_log_path_belongs_to(path, sid))
     }
 }
 // Single-document callers retain their short-circuiting path; group history
@@ -490,11 +566,10 @@ pub fn permitted(storage: &MemoryStorage, content: &str) -> io::Result<bool> {
             continue;
         }
         let ledger = load(storage, scope)?;
-        if ledger
-            .replaced
-            .iter()
-            .any(|old| normalized(content).contains(&normalized(old)))
-        {
+        if ledger.replaced.iter().any(|old| {
+            let old = normalized(old);
+            !old.is_empty() && normalized(content).contains(&old)
+        }) {
             return Ok(false);
         }
         if ledger.forgotten.iter().any(|topic| related(topic, content)) {
@@ -504,7 +579,8 @@ pub fn permitted(storage: &MemoryStorage, content: &str) -> io::Result<bool> {
             if r.status == "forgotten" {
                 related(&r.content, content)
             } else if !active(r) {
-                normalized(content).contains(&normalized(&r.content))
+                let old = normalized(&r.content);
+                !old.is_empty() && normalized(content).contains(&old)
             } else {
                 false
             }
@@ -574,6 +650,18 @@ pub fn remember(
             .position(|r| normalized(&r.key) == normalized(&input.key) && r.kind == input.kind)
     };
     if let Some(index) = existing {
+        let previous = &ledger.records[index];
+        if !automatic
+            && input.id.is_some()
+            && ((input.key == previous.key
+                && content_derived_title(&previous.key, &previous.content))
+                || ledger
+                    .replaced
+                    .iter()
+                    .any(|old| content_derived_title(&input.key, old)))
+        {
+            input.key = content_title(&input.content);
+        }
         if ledger.records.iter().enumerate().any(|(other, r)| {
             other != index && r.kind == input.kind && normalized(&r.key) == normalized(&input.key)
         }) {
@@ -626,7 +714,10 @@ pub fn remember(
             return Ok(if automatic { None } else { Some(record) });
         }
         // Old facts are excluded from legacy summaries and historical reads too.
-        if previous.content != input.content {
+        if previous.content != input.content
+            && (normalized(&previous.content).is_empty()
+                || normalized(&previous.content) != normalized(&input.content))
+        {
             ledger.replaced.push(previous.content.clone());
         }
         previous.content = input.content;
@@ -792,16 +883,18 @@ pub fn forget_source(storage: &MemoryStorage, session_id: &str) -> io::Result<us
 }
 
 pub fn source_path_blocked(storage: &MemoryStorage, path: &Path) -> io::Result<bool> {
-    let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+    if path.file_stem().and_then(|name| name.to_str()).is_none() {
         return Ok(false);
-    };
+    }
     for scope in ["global", "workspace"] {
         if scope == "workspace" && storage.is_ephemeral() {
             continue;
         }
-        if load(storage, scope)?.blocked_sessions.iter().any(|sid| {
-            sid.chars().count() >= 8 && stem.ends_with(&sid.chars().take(8).collect::<String>())
-        }) {
+        if load(storage, scope)?
+            .blocked_sessions
+            .iter()
+            .any(|sid| crate::storage::session_log_path_belongs_to(path, sid))
+        {
             return Ok(true);
         }
     }
@@ -810,9 +903,16 @@ pub fn source_path_blocked(storage: &MemoryStorage, path: &Path) -> io::Result<b
 
 pub fn core_context(storage: &MemoryStorage) -> io::Result<String> {
     let mut context = String::new();
-    for record in list(storage, true)?.iter().filter(|r| {
+    let records = list(storage, true)?;
+    let preferences = records.iter().filter(|r| {
         active(r) && (r.pinned || r.kind == "user" || r.kind == "feedback" || r.kind == "task")
-    }) {
+    });
+    // Current project facts are durable context too. Keep existing preferences
+    // first and share the same bounded budget, without depending on embeddings.
+    let project_facts = records
+        .iter()
+        .filter(|r| active(r) && !r.pinned && r.scope == "workspace" && r.kind == "project");
+    for record in preferences.chain(project_facts) {
         let line = format!(
             "- [{} / {} / {}] {}: {}\n",
             record.id, record.scope, record.kind, record.key, record.content
@@ -1170,6 +1270,246 @@ mod tests {
             key: "response style".into(),
             content: content.into(),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn editing_derived_titles_keeps_current_and_independent_facts_recallable() {
+        let old = "用户口令为 MEMORY-OLD。";
+        let edited = "用户口令为 MEMORY-NEW。";
+        for key in [old, "用户口令为 MEMORY-OLD", "用户 口令为 memory old！"] {
+            let dir = tempfile::tempdir().unwrap();
+            let storage =
+                MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+            let original = remember(
+                &storage,
+                RecordInput {
+                    key: key.into(),
+                    ..input("global", old)
+                },
+                Some("original-source"),
+                false,
+            )
+            .unwrap()
+            .unwrap();
+            remember(
+                &storage,
+                RecordInput {
+                    key: "independent topic".into(),
+                    ..input("global", "Independent fact must survive")
+                },
+                None,
+                false,
+            )
+            .unwrap();
+            let updated = remember(
+                &storage,
+                RecordInput {
+                    id: Some(original.id.clone()),
+                    key: key.into(),
+                    expected_revision: Some(original.revision),
+                    ..input("global", edited)
+                },
+                None,
+                false,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(updated.key, edited);
+            assert_eq!(updated.revision, original.revision + 1);
+            assert_eq!(updated.sources, original.sources);
+            let reopened =
+                MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+            let context = core_context(&reopened).unwrap();
+            assert!(context.contains(edited) && context.contains("Independent fact must survive"));
+            assert!(permitted(&reopened, &context).unwrap());
+            assert!(!permitted(&reopened, old).unwrap());
+            let projection =
+                std::fs::read_to_string(reopened.global_dir().join(RECORD_DOCUMENT)).unwrap();
+            assert!(!projection.contains("MEMORY-OLD"));
+        }
+    }
+
+    #[test]
+    fn title_repairs_preserve_custom_topics_and_revision_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        let original = remember(&storage, input("global", "old preference"), None, false)
+            .unwrap()
+            .unwrap();
+        let updated = remember(
+            &storage,
+            RecordInput {
+                id: Some(original.id.clone()),
+                expected_revision: Some(original.revision),
+                ..input("global", "new preference")
+            },
+            None,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.key, "response style");
+        assert!(
+            remember(
+                &storage,
+                RecordInput {
+                    id: Some(original.id.clone()),
+                    expected_revision: Some(original.revision),
+                    ..input("global", "stale preference")
+                },
+                None,
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(list(&storage, true).unwrap()[0], updated);
+    }
+
+    #[test]
+    fn existing_stale_titles_are_repaired_without_writing_or_losing_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        let old = "用户口令为 MEMORY-OLD。";
+        let current = "用户口令为 MEMORY-NEW。";
+        let original = remember(
+            &storage,
+            RecordInput {
+                key: old.into(),
+                ..input("global", old)
+            },
+            Some("original-source"),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let path = storage.global_dir().join("records.json");
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy["records"][0]["content"] = current.into();
+        legacy["records"][0]["revision"] = 2.into();
+        legacy["replaced"] = serde_json::json!([old]);
+        write_json(&path, &legacy).unwrap();
+        let bytes_before = std::fs::read(&path).unwrap();
+        let repaired = list(&storage, true).unwrap().remove(0);
+        assert_eq!(repaired.id, original.id);
+        assert_eq!(repaired.sources, original.sources);
+        assert_eq!(repaired.revision, 2);
+        assert_eq!(repaired.key, current);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes_before,
+            "reading must not mutate the ledger"
+        );
+        assert!(permitted(&storage, &core_context(&storage).unwrap()).unwrap());
+        refresh_documents(&storage).unwrap();
+        assert!(
+            !std::fs::read_to_string(storage.global_dir().join(RECORD_DOCUMENT))
+                .unwrap()
+                .contains("MEMORY-OLD")
+        );
+        // A client holding the pre-fix title must not restore it on save.
+        let saved = remember(
+            &storage,
+            RecordInput {
+                id: Some(original.id),
+                key: old.into(),
+                expected_revision: Some(2),
+                ..input("global", current)
+            },
+            None,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(saved.key, current);
+        assert_eq!(saved.revision, 2);
+    }
+
+    #[test]
+    fn unicode_titles_keep_legacy_prefixes_and_new_scalar_boundaries() {
+        let content = "🧠偏好".repeat(35);
+        let legacy: String = content.chars().take(45).collect(); // 60 UTF-16 units
+        assert!(content_derived_title(&legacy, &content));
+        assert_eq!(content_title(&content).chars().count(), 60);
+        assert!(!content_derived_title("unrelated topic", &content));
+        assert!(content_derived_title("🧠", "🧠"));
+        assert!(!content_derived_title("!!!", "🧠"));
+    }
+
+    #[test]
+    fn formatting_and_symbol_corrections_do_not_disable_unrelated_memory() {
+        for (old, current) in [("报告使用中文。", "报告 使用 中文！"), ("🧠", "🌟")]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let storage =
+                MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+            let original = remember(
+                &storage,
+                RecordInput {
+                    key: old.into(),
+                    ..input("global", old)
+                },
+                None,
+                false,
+            )
+            .unwrap()
+            .unwrap();
+            remember(
+                &storage,
+                RecordInput {
+                    key: "independent".into(),
+                    ..input("global", "Independent fact must survive")
+                },
+                None,
+                false,
+            )
+            .unwrap();
+            let updated = remember(
+                &storage,
+                RecordInput {
+                    id: Some(original.id.clone()),
+                    key: old.into(),
+                    expected_revision: Some(original.revision),
+                    ..input("global", current)
+                },
+                None,
+                false,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(updated.key, current);
+            assert!(permitted(&storage, &core_context(&storage).unwrap()).unwrap());
+            assert!(
+                RecallRules::load(&storage)
+                    .unwrap()
+                    .permits(&core_context(&storage).unwrap())
+            );
+            // Simulate the old client retaining a title and a formatting-only
+            // exclusion, then verify current reads recover without a rewrite.
+            let path = storage.global_dir().join("records.json");
+            let mut legacy: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let row = legacy["records"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|r| r["id"] == original.id)
+                .unwrap();
+            row["key"] = old.into();
+            legacy["replaced"] = serde_json::json!([old]);
+            write_json(&path, &legacy).unwrap();
+            let before = std::fs::read(&path).unwrap();
+            let repaired = list(&storage, true)
+                .unwrap()
+                .into_iter()
+                .find(|r| r.id == original.id)
+                .unwrap();
+            assert_eq!(repaired.key, current);
+            assert!(permitted(&storage, &core_context(&storage).unwrap()).unwrap());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }
     #[test]

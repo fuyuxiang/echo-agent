@@ -244,6 +244,23 @@ pub fn start() -> Result<(), String> {
     {
         return Ok(());
     }
+    start_owned()
+}
+
+// Called only by the fixed, private native lifecycle acceptance fixture after
+// its origin, model configuration and owned paths have all been validated.
+pub(crate) fn start_for_native_review() -> Result<u32, String> {
+    if !cfg!(debug_assertions) {
+        return Err("Native lifecycle review requires a debug build".into());
+    }
+    start_owned()?;
+    WATCHER
+        .get()
+        .and_then(|w| w.lock().ok()?.as_ref().map(|w| w._child.id()))
+        .ok_or_else(|| "Crash watcher was not started".into())
+}
+
+fn start_owned() -> Result<(), String> {
     let executable = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|e| e.to_string())?;

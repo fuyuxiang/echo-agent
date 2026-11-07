@@ -378,6 +378,22 @@ impl JsonlStorageAdapter {
                 echo_agent_chat_state::compaction_utils::strip_reasoning_blocks(chat_to_copy);
         }
 
+        let title_source_prompt_index = if options.fresh_title {
+            Some(
+                crate::session::persistence::title_recovery_scope::next_title_prompt_index(
+                    options.target_prompt_index,
+                    chat_to_copy.iter().filter_map(|item| match item {
+                        ConversationItem::User(user) if user.synthetic_reason.is_none() => {
+                            Some(user.prompt_index)
+                        }
+                        _ => None,
+                    }),
+                )?,
+            )
+        } else {
+            source_summary.title_source_prompt_index
+        };
+
         let num_chat_messages = chat_to_copy.len();
         let cwd_switch_bookkeeping_generation = chat_to_copy
             .iter()
@@ -437,6 +453,7 @@ impl JsonlStorageAdapter {
                 num_chat_messages,
                 cwd_switch_bookkeeping_generation,
                 inherited_prefix_len,
+                title_source_prompt_index,
             },
         );
         let summary_bytes = serde_json::to_vec_pretty(&target_summary).map_err(invalid_data)?;
@@ -542,6 +559,7 @@ struct ForkCounters {
     num_chat_messages: usize,
     cwd_switch_bookkeeping_generation: u64,
     inherited_prefix_len: Option<usize>,
+    title_source_prompt_index: Option<usize>,
 }
 
 /// Build the fork target's summary: counters from this copy, fork identity
@@ -588,6 +606,7 @@ fn fork_summary(
         fork_context_source: options.fork_context_source.clone(),
         fork_parent_prompt_id: options.fork_parent_prompt_id.clone(),
         inherited_prefix_len: counters.inherited_prefix_len,
+        title_source_prompt_index: counters.title_source_prompt_index,
         hidden: None,
         source_workspace_dir: options.source_workspace_dir.clone(),
         git_root_dir: None,

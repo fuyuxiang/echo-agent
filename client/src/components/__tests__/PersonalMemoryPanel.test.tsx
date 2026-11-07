@@ -40,6 +40,17 @@ async function renderManager(cwd?: string) {
 }
 
 describe("记忆设置与二级管理", () => {
+  it.each(["用户的报告专属口令为 MEMORY-OLD。", "用户的报告专属口令为 MEMORY-OLD", "用户 的 报告专属口令为 memory old！"])("编辑派生标题记忆时更新标题：%s", async key => {
+    const original = "用户的报告专属口令为 MEMORY-OLD。";
+    const edited = "用户的报告专属口令为 MEMORY-NEW。";
+    saved = [{ ...record, key, content: original, origin: "automatic", pinned: false }];
+    render(<PersonalMemoryPanel cwd="/project-a" />); openManager();
+    fireEvent.click(await screen.findByRole("button", { name: `编辑 ${key}` }));
+    fireEvent.change(screen.getByLabelText("记忆内容"), { target: { value: edited } });
+    fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
+    await waitFor(() => expect(api.memoryRecordSave).toHaveBeenCalledWith(expect.objectContaining({ id: record.id, key: edited, content: edited, expectedRevision: record.revision }), "/project-a"));
+  });
+
   it("首页只提供开关和管理入口，列表、排查及旧文档按需加载", async () => {
     render(<PersonalMemoryPanel cwd="/project-a" />);
     await waitFor(() => expect(api.memoryRecordsGet).toHaveBeenCalledWith("/project-a"));

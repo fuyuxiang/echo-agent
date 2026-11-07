@@ -11,6 +11,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { cleanNativeReviewEnvironment } from './lib/native-review-isolation.mjs';
 import { assertNativeReviewSessionUnlocked } from './lib/native-review-window.mjs';
 import { verifyControlsJournal } from './lib/desktop-controls-evidence.mjs';
+import { confirmNativeReviewWorkspace } from './lib/native-core-workspace-picker.mjs';
+import { activateNativeReviewWindow } from './lib/native-review-window.mjs';
 
 assert.equal(process.platform,'darwin','This runner qualifies an actual macOS app only');
 assert([3,4].includes(process.argv.length),'Pass the executable built from current source and optional --journey, --smoke or --task-flow');
@@ -91,6 +93,22 @@ try {
     closeSync(fd);child.unref();
     Object.assign(report,{pid:child.pid,journey:true,smoke,crossApp,approvalPolicy:taskFlow?'direct-user-task':'human-selected-task-or-action',progress:join(fixtures,taskFlow?'task-flow-progress.json':'journey-progress.json')});
     writeFileSync(join(home,'driver.json'),JSON.stringify(report,null,2),{mode:0o600});
+    if(taskFlow) {
+      const ready=join(cwd,'controls-workspace-picker-ready.json'),deadline=Date.now()+120000;
+      let picked=false;
+      while(!picked&&child.exitCode===null&&child.signalCode===null&&Date.now()<deadline) {
+        activateNativeReviewWindow(child.pid);
+        if(existsSync(ready)) {
+          const value=JSON.parse(readFileSync(ready,'utf8'));
+          assert.deepEqual(value,{home,cwd,pid:child.pid});
+          picked=confirmNativeReviewWorkspace({pid:child.pid,home,cwd,kind:'controls'});
+        }
+        if(!picked)await delay(500);
+      }
+      assert(picked,'The owned native Computer Use workspace picker did not finish');
+      report.osPickerVerified=true;
+      writeFileSync(join(home,'driver.json'),JSON.stringify(report,null,2),{mode:0o600});
+    }
     console.log(JSON.stringify({home,bundle,pid:child.pid,progress:report.progress,approvalPolicy:report.approvalPolicy}));
     process.exit(0);
   }

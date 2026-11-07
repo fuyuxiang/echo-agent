@@ -85,6 +85,72 @@ fn neutral_update(info: &Info, text: &str) -> SessionUpdate {
     SessionUpdate::Acp(Box::new(notification(info, text)))
 }
 
+#[tokio::test]
+async fn user_request_replay_survives_actor_abort_before_model_response() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("interrupted-user-request"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().to_path_buf(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    let actor = test_actor(info.clone(), storage);
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::Update(neutral_update(
+            &info,
+            "prior assistant tail",
+        )))
+        .unwrap();
+    let request = acp::SessionNotification::new(
+        info.id.clone(),
+        acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
+            acp::TextContent::new("pending user request"),
+        ))),
+    );
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::Update(SessionUpdate::Acp(Box::new(
+            request,
+        ))))
+        .unwrap();
+    // An actor ordering barrier, deliberately not Flush/FlushAndAck: the model
+    // has produced no response and the host will not get a graceful shutdown.
+    probe_writable(&actor.handle).await.unwrap();
+    actor.stop().await;
+    let reopened = JsonlStorageAdapter::with_explicit_session_dir(dir.path().to_path_buf());
+    let replay = reopened.load_session(&info).await.unwrap().updates;
+    assert_eq!(
+        replay.len(),
+        2,
+        "the interrupted request was left only in the merge buffer"
+    );
+    let SessionUpdate::Acp(first) = &replay[0] else {
+        panic!("missing prior ACP chunk")
+    };
+    assert!(matches!(
+        &first.update,
+        acp::SessionUpdate::AgentMessageChunk(_)
+    ));
+    let SessionUpdate::Acp(last) = &replay[1] else {
+        panic!("missing user ACP chunk")
+    };
+    let acp::SessionUpdate::UserMessageChunk(chunk) = &last.update else {
+        panic!("user order changed")
+    };
+    let acp::ContentBlock::Text(text) = &chunk.content else {
+        panic!("user text changed")
+    };
+    assert_eq!(text.text, "pending user request");
+}
+
 #[test]
 fn title_source_prefers_display_text_over_injected_wire_context() {
     let text = acp::TextContent::new(
@@ -170,7 +236,7 @@ async fn title_recovery_uses_opening_display_text_instead_of_later_topics() {
         .await
         .unwrap();
     assert_eq!(
-        load_initial_title_source(&storage, &info)
+        load_initial_title_source(&storage, &info, 0)
             .await
             .unwrap()
             .as_deref(),
@@ -210,7 +276,7 @@ async fn title_recovery_preserves_a_textless_opening() {
             .unwrap();
     }
     assert_eq!(
-        load_initial_title_source(&storage, &info).await.unwrap(),
+        load_initial_title_source(&storage, &info, 0).await.unwrap(),
         Some(String::new())
     );
 }
@@ -247,7 +313,7 @@ async fn title_recovery_separates_prompts_without_an_assistant_reply() {
             .unwrap();
     }
     assert_eq!(
-        load_initial_title_source(&storage, &info)
+        load_initial_title_source(&storage, &info, 0)
             .await
             .unwrap()
             .as_deref(),
@@ -1400,25 +1466,8 @@ async fn reset_title_to_auto_then_generated_title_is_adopted() {
         .unwrap();
     flush_ack(&actor.handle).await.unwrap();
 
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let titles = save_session_titles(&server, SESSION_ID);
-        if titles
-            .iter()
-            .any(|t| t.title_present && t.title.is_empty() && t.title_is_manual == Some(false))
-        {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!(
-                "unpin must POST title:\"\" and title_is_manual:false (merge backends keep a prior true if omitted): {titles:?}"
-            );
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-
     let upsert_path = format!("/sessions/{SESSION_ID}");
-    let upserted_title = server.requests().into_iter().rev().find_map(|r| {
+    let session_row_title = || server.requests().into_iter().rev().find_map(|r| {
         (r.method == "PUT" && r.path == upsert_path)
             .then(|| {
                 r.body
@@ -1430,6 +1479,21 @@ async fn reset_title_to_auto_then_generated_title_is_adopted() {
             })
             .flatten()
     });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let titles = save_session_titles(&server, SESSION_ID);
+        // The remote worker awaits POST before sending PUT. Seeing the POST
+        // in the mock server is not an acknowledgement of that later request.
+        if titles.iter().any(|t| t.title_present && t.title.is_empty()
+            && t.title_is_manual == Some(false)) && session_row_title().as_deref() == Some("") {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("unpin must POST cleared metadata and PUT the empty session-row title: {titles:?}; requests={:?}", request_path_summary(&server));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let upserted_title = session_row_title();
     assert_eq!(
         upserted_title.as_deref(),
         Some(""),

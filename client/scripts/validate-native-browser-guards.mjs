@@ -2,7 +2,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { BROWSER_CHECKS, verifyBrowserReport } from './validate-native-browser-review.mjs';
+import { BROWSER_CHECKS, verifyBrowserReport, nativeBrowserReviewEnvironment } from './validate-native-browser-review.mjs';
+const environment = nativeBrowserReviewEnvironment({ HOME: '/synthetic', HTTPS_PROXY: 'http://127.0.0.1:7890', NO_PROXY: 'example.invalid',
+  OPENAI_API_KEY: 'synthetic-forbidden', ECHO_DESKTOP_REVIEW_CORE: '1', NODE_OPTIONS: '--invalid' }, '/synthetic/legacy', 'first-launch');
+assert.equal(environment.HTTPS_PROXY, 'http://127.0.0.1:7890');
+for (const host of ['127.0.0.1', 'localhost', '::1', 'example.invalid']) assert(environment.NO_PROXY.split(',').includes(host));
+for (const key of ['OPENAI_API_KEY', 'NODE_OPTIONS', 'ECHO_DESKTOP_REVIEW_CORE']) assert.equal(environment[key], undefined);
+assert.equal(environment.HOME, '/synthetic');
 const now = Date.now(), home = '/private/tmp/echo-native-review-browser-synthetic', nonce = 'a'.repeat(32);
 const manifest = { home, cwd: home + '/workspaces/default', nonce, phase: 'first-launch',
   url: `http://127.0.0.1:34567/review/${nonce}/`, modelId: 'echoagent-review/claude-opus-5-5' };

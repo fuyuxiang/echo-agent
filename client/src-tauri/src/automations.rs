@@ -4495,11 +4495,9 @@ mod tests {
         );
         // A delete after the frontend snapshot was read is still authoritative.
         store.automations.clear();
-        assert!(
-            save_automation_in_store(&mut store, draft, false)
-                .unwrap_err()
-                .contains("已被移除")
-        );
+        assert!(save_automation_in_store(&mut store, draft, false)
+            .unwrap_err()
+            .contains("已被移除"));
         assert!(store.automations.is_empty());
     }
 
@@ -5102,13 +5100,11 @@ mod tests {
                 .map(|item| item.id.as_str()),
             Some("automation")
         );
-        assert!(
-            record
-                .automation_snapshot
-                .as_ref()
-                .and_then(|item| item.model_id.as_deref())
-                .is_none()
-        );
+        assert!(record
+            .automation_snapshot
+            .as_ref()
+            .and_then(|item| item.model_id.as_deref())
+            .is_none());
         assert_eq!(record.scheduled_for.as_deref(), Some(scheduled_for));
 
         let legacy: AutomationRunRecord = serde_json::from_value(serde_json::json!({
@@ -5286,12 +5282,10 @@ mod tests {
 
         ensure_next_runs(&mut store, now);
 
-        assert!(
-            store
-                .automations
-                .iter()
-                .all(|automation| automation.status == "PAUSED")
-        );
+        assert!(store
+            .automations
+            .iter()
+            .all(|automation| automation.status == "PAUSED"));
     }
 
     #[test]
@@ -5347,11 +5341,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("oversized.json");
         std::fs::write(&path, b"12345").unwrap();
-        assert!(
-            read_bounded_string(&path, 4)
-                .unwrap_err()
-                .contains("safety limit")
-        );
+        assert!(read_bounded_string(&path, 4)
+            .unwrap_err()
+            .contains("safety limit"));
     }
 
     #[cfg(unix)]
@@ -5364,11 +5356,9 @@ mod tests {
         let link = dir.path().join("linked.json");
         std::fs::write(&target, b"{}").unwrap();
         symlink(&target, &link).unwrap();
-        assert!(
-            read_bounded_string(&link, 128)
-                .unwrap_err()
-                .contains("non-symlink")
-        );
+        assert!(read_bounded_string(&link, 128)
+            .unwrap_err()
+            .contains("non-symlink"));
     }
 
     #[test]
@@ -5637,12 +5627,10 @@ mod tests {
         );
         cancel.response_tx.send(Ok(())).unwrap();
         let failure = task.await.unwrap().unwrap_err();
-        assert!(
-            failure
-                .permission_reset_error
-                .unwrap()
-                .contains("injected permission reset failure")
-        );
+        assert!(failure
+            .permission_reset_error
+            .unwrap()
+            .contains("injected permission reset failure"));
         assert_eq!(failure.error, "injected metadata write failure");
     }
 
@@ -5800,12 +5788,10 @@ mod tests {
                 error: "stopped",
             },
         );
-        assert!(
-            serde_json::to_value(finished)
-                .unwrap()
-                .get("currentModelId")
-                .is_none()
-        );
+        assert!(serde_json::to_value(finished)
+            .unwrap()
+            .get("currentModelId")
+            .is_none());
     }
 
     #[test]
@@ -5841,11 +5827,9 @@ mod tests {
             checks: Vec::new(),
             manifest: None,
         };
-        assert!(
-            require_automated_skill_capability(None, "demo")
-                .unwrap_err()
-                .contains("未完成执行能力预检")
-        );
+        assert!(require_automated_skill_capability(None, "demo")
+            .unwrap_err()
+            .contains("未完成执行能力预检"));
         for state in [
             SkillCapabilityState::InstructionOnly,
             SkillCapabilityState::Ready,
@@ -5923,11 +5907,9 @@ mod tests {
         let mut store = AutomationStore {
             automations: vec![task],
         };
-        assert!(
-            set_status_at(&mut store, "retired", "ACTIVE", now)
-                .unwrap_err()
-                .contains("重新选择模型")
-        );
+        assert!(set_status_at(&mut store, "retired", "ACTIVE", now)
+            .unwrap_err()
+            .contains("重新选择模型"));
         assert_eq!(store.automations[0].status, "PAUSED");
         // Even a forged ACTIVE snapshot is paused by the claim boundary.
         store.automations[0].status = "ACTIVE".into();
@@ -6047,11 +6029,9 @@ mod tests {
             "第二轮结果"
         );
         assert!(result_from_updates(text.as_bytes(), None).text.is_empty());
-        assert!(
-            result_from_updates(text.as_bytes(), Some("missing"))
-                .text
-                .is_empty()
-        );
+        assert!(result_from_updates(text.as_bytes(), Some("missing"))
+            .text
+            .is_empty());
     }
 
     #[test]
@@ -6378,18 +6358,16 @@ mod tests {
         let (mut records, mut fact) = terminal_fixture();
         let history = serde_json::to_vec(&records).unwrap();
         let mut durable_fact = Vec::new();
-        assert!(
-            persist_terminal_transition(
-                &mut records,
-                &mut fact,
-                |fact| {
-                    durable_fact = serde_json::to_vec(fact).unwrap();
-                    Ok(())
-                },
-                |_| Err("injected history failure".into())
-            )
-            .is_err()
-        );
+        assert!(persist_terminal_transition(
+            &mut records,
+            &mut fact,
+            |fact| {
+                durable_fact = serde_json::to_vec(fact).unwrap();
+                Ok(())
+            },
+            |_| Err("injected history failure".into())
+        )
+        .is_err());
         let outbox = home.path().join("automation-terminal-outbox");
         std::fs::create_dir_all(&outbox).unwrap();
         let path = outbox.join(format!(
@@ -6640,34 +6618,30 @@ mod tests {
         };
         amend_cleanup_fact(&mut fact, cleanup.clone());
         let mut durable = String::new();
-        assert!(
-            persist_terminal_transition(
-                &mut records,
-                &mut fact,
-                |fact| {
-                    durable = serde_json::to_string(fact).unwrap();
-                    Ok(())
-                },
-                |_| Err("history unavailable".into()),
-            )
-            .is_err()
-        );
+        assert!(persist_terminal_transition(
+            &mut records,
+            &mut fact,
+            |fact| {
+                durable = serde_json::to_string(fact).unwrap();
+                Ok(())
+            },
+            |_| Err("history unavailable".into()),
+        )
+        .is_err());
         records.records[0].cleanup = None;
         let mut recovered: TerminalFact = serde_json::from_str(&durable).unwrap();
         persist_terminal_transition(&mut records, &mut recovered, |_| Ok(()), |_| Ok(())).unwrap();
         assert_eq!(records.records[0].cleanup, Some(cleanup));
         assert!(record_needs_cleanup(&records.records[0]));
-        assert!(
-            recovered
-                .completion
-                .as_ref()
-                .unwrap()
-                .event
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("清理超时")
-        );
+        assert!(recovered
+            .completion
+            .as_ref()
+            .unwrap()
+            .event
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("清理超时"));
         amend_cleanup_fact(
             &mut recovered,
             AutomationRunCleanup {
@@ -6741,18 +6715,16 @@ mod tests {
         );
         assert!(update.cleanup_only && update.external_claimed);
         let mut saved = String::new();
-        assert!(
-            persist_terminal_transition(
-                &mut records,
-                &mut update,
-                |fact| {
-                    saved = serde_json::to_string(fact).unwrap();
-                    Ok(())
-                },
-                |_| Err("disk unavailable".into()),
-            )
-            .is_err()
-        );
+        assert!(persist_terminal_transition(
+            &mut records,
+            &mut update,
+            |fact| {
+                saved = serde_json::to_string(fact).unwrap();
+                Ok(())
+            },
+            |_| Err("disk unavailable".into()),
+        )
+        .is_err());
         let mut recovered: TerminalFact = serde_json::from_str(&saved).unwrap();
         records.records[0].cleanup = fact.cleanup.clone();
         persist_terminal_transition(&mut records, &mut recovered, |_| Ok(()), |_| Ok(())).unwrap();
@@ -6835,13 +6807,11 @@ mod tests {
     fn external_delivery_requires_durable_claim_and_restart_does_not_blindly_send_again() {
         let (_, mut fact) = terminal_fixture();
         let mut receipt = String::new();
-        assert!(
-            claim_external_attempt(&mut fact, true, |fact| {
-                receipt = serde_json::to_string(fact).unwrap();
-                Ok(())
-            })
-            .unwrap()
-        );
+        assert!(claim_external_attempt(&mut fact, true, |fact| {
+            receipt = serde_json::to_string(fact).unwrap();
+            Ok(())
+        })
+        .unwrap());
         let mut restored: TerminalFact = serde_json::from_str(&receipt).unwrap();
         assert!(restored.external_result.is_none()); // Unknown, never treated as delivered.
         assert!(!claim_external_attempt(&mut restored, true, |_| Ok(())).unwrap());
@@ -6868,11 +6838,9 @@ mod tests {
         let mut automation = test_automation();
         automation.expert_id = Some("old-name".into());
         automation.expert_name = Some("old-name".into());
-        assert!(
-            selected_expert_identity(&automation)
-                .unwrap_err()
-                .contains("重新选择")
-        );
+        assert!(selected_expert_identity(&automation)
+            .unwrap_err()
+            .contains("重新选择"));
         let legacy = serde_json::to_value(&automation).unwrap();
         let mut legacy_object = legacy.as_object().unwrap().clone();
         legacy_object.remove("expertPath");

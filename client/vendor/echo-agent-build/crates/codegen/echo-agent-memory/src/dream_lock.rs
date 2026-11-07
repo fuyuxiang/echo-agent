@@ -155,7 +155,7 @@ impl DreamLock {
 pub fn sessions_since(
     sessions_dir: &Path,
     since: SystemTime,
-    exclude_sid8: Option<&str>,
+    exclude_session_id: Option<&str>,
 ) -> io::Result<Vec<String>> {
     let entries = match fs::read_dir(sessions_dir) {
         Ok(entries) => entries,
@@ -175,11 +175,11 @@ pub fn sessions_since(
             continue;
         }
 
-        if let Some(exclude) = exclude_sid8
+        if let Some(exclude) = exclude_session_id
             && path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .is_some_and(|stem| stem.ends_with(exclude))
+                .is_some_and(|stem| crate::storage::session_log_belongs_to(stem, exclude))
         {
             continue;
         }

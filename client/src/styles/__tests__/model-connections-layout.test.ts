@@ -6,7 +6,7 @@ const css = readFileSync(resolve(__dirname, "../model-connections.css"), "utf8")
 
 function declarationBlock(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
+  const match = css.match(new RegExp(`^${escaped}\\s*\\{([^}]*)\\}`, "m"));
   if (!match) throw new Error(`Missing CSS rule: ${selector}`);
   return match[1];
 }

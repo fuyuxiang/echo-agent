@@ -41,7 +41,7 @@ pub fn check_dream_gates(
     config: &MemoryDreamConfig,
     lock: &DreamLock,
     sessions_dir: &Path,
-    current_session_sid8: Option<&str>,
+    current_session_id: Option<&str>,
 ) -> DreamGate {
     if !config.enabled {
         return DreamGate::Disabled;
@@ -63,7 +63,7 @@ pub fn check_dream_gates(
 
     // Session gate
     let sessions =
-        match super::dream_lock::sessions_since(sessions_dir, last_at, current_session_sid8) {
+        match super::dream_lock::sessions_since(sessions_dir, last_at, current_session_id) {
             Ok(s) => s,
             Err(e) => return DreamGate::Error(e.to_string()),
         };
@@ -395,7 +395,7 @@ fn archive_processed_sessions(sessions_dir: &Path, stems: &[String]) -> Vec<Stri
         let mut destination = archive_dir.join(format!("{stem}.md"));
         if destination.exists() {
             destination = archive_dir.join(format!(
-                "{stem}-{}.md",
+                "{stem}.archive-{}.md",
                 chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
             ));
         }
@@ -1494,6 +1494,37 @@ mod tests {
         assert_eq!(cleaned[0], "exists");
         assert!(!sessions.join("exists.md").exists());
         assert!(sessions.join("archive/exists.md").exists());
+    }
+
+    #[test]
+    fn archive_collisions_keep_both_versions_and_the_complete_source_identity() {
+        let dir = TempDir::new().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let stem = "2026-11-08-task--sid-opaque";
+        for content in ["first snapshot", "second snapshot"] {
+            write_old_session_content(&sessions, stem, content);
+            assert_eq!(
+                archive_processed_sessions(&sessions, &[stem.into()]),
+                vec![stem]
+            );
+        }
+        let archived: Vec<_> = fs::read_dir(sessions.join("archive"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(archived.len(), 2);
+        let mut contents = Vec::new();
+        for path in archived {
+            assert!(crate::storage::session_log_path_belongs_to(&path, "opaque"));
+            assert!(!crate::storage::session_log_path_belongs_to(
+                &path,
+                "opaque-neighbor"
+            ));
+            contents.push(fs::read_to_string(path).unwrap());
+        }
+        contents.sort();
+        assert_eq!(contents, vec!["first snapshot", "second snapshot"]);
     }
 
     // -------------------------------------------------------------------

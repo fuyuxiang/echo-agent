@@ -134,12 +134,17 @@ impl PersistenceContentChunk {
     }
 }
 
-/// Read only the opening user message from the durable ACP transcript. Unlike
+#[path = "title_recovery_scope.rs"]
+pub(crate) mod title_recovery_scope;
+
+/// Read the opening local user message from the durable ACP transcript. Unlike
 /// model context, this survives compaction; unlike search prompt extraction,
-/// it preserves displayText and a textless first message.
+/// it preserves displayText and a textless first message. Forks skip inherited
+/// prompt indexes so simply opening one cannot generate its parent's title.
 async fn load_initial_title_source(
     storage: &dyn StorageAdapter,
     info: &Info,
+    minimum_prompt_index: usize,
 ) -> io::Result<Option<String>> {
     let Some(path) = storage.updates_file_path(info) else {
         return Ok(None);
@@ -166,6 +171,10 @@ async fn load_initial_title_source(
                             .and_then(|value| value.as_str())
                             .map(str::to_string),
                     );
+                    if !title_recovery_scope::is_title_source_prompt(prompt.0, minimum_prompt_index)
+                    {
+                        continue;
+                    }
                     // Cancelled turns can leave consecutive user messages with
                     // no assistant chunk between them. Keep their sources apart.
                     if !blocks.is_empty() && opening_prompt.as_ref() != Some(&prompt) {
@@ -970,6 +979,10 @@ pub struct Summary {
     /// summarized. `None` means no inherited prefix (non-forked session).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_prefix_len: Option<usize>,
+    /// Earliest ACP prompt eligible to supply this session's own title.
+    /// Fresh continuations exclude inherited prompts without changing compaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_source_prompt_index: Option<usize>,
     /// Visibility override. None = default for `session_kind`, Some = explicit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden: Option<bool>,
@@ -1083,6 +1096,7 @@ impl Summary {
             fork_context_source: None,
             fork_parent_prompt_id: None,
             inherited_prefix_len: None,
+            title_source_prompt_index: None,
             hidden: None,
             source_workspace_dir: None,
             git_root_dir: git_metadata.git_root_dir,
@@ -1863,8 +1877,19 @@ impl SessionPersistence {
                 PersistenceMsg::Update(update) => {
                     match update {
                         SessionUpdate::Acp(notification) => {
-                            // ACP notifications use merging to coalesce consecutive text chunks
-                            if let Some(to_write) = self.maybe_merge_notification(&notification) {
+                            // A user request must survive a crash while the model
+                            // is still waiting for its first response. Holding it
+                            // in the text merge buffer leaves chat_history ahead
+                            // of updates.jsonl and hides that request on resume.
+                            if matches!(&notification.update, acp::SessionUpdate::UserMessageChunk(_))
+                                && !Self::is_empty_chunk(&notification.update)
+                            {
+                                self.queue_pending_notification();
+                                self.pending_updates.push_back(SessionUpdate::Acp(notification));
+                                if let Err(error) = self.drain_updates().await {
+                                    tracing::warn!(%error, "retaining uncommitted user request for retry");
+                                }
+                            } else if let Some(to_write) = self.maybe_merge_notification(&notification) {
                                 self.pending_updates
                                     .push_back(SessionUpdate::Acp(Box::new(to_write)));
                                 if let Err(error) = self.drain_updates().await {
@@ -2732,15 +2757,25 @@ pub(crate) async fn load(
     let remote_sync = init_remote_sync(&persisted_info.summary, storage_mode, auth_manager)?;
 
     let has_title = !persisted_info.summary.display_title().is_empty();
-    let mut had_history = persisted_info.chat_history.iter().any(
-        |item| matches!(item, ConversationItem::User(user) if user.synthetic_reason.is_none()),
+    let (mut had_history, minimum_prompt_index) = title_recovery_scope::initial_title_scope(
+        persisted_info.summary.title_source_prompt_index,
+        persisted_info
+            .chat_history
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::User(user) if user.synthetic_reason.is_none() => {
+                    Some(user.prompt_index)
+                }
+                _ => None,
+            }),
     );
     // ACP prompt history survives model-context compaction. Recover the opening
     // instead of taking the next follow-up when an earlier title call was lost.
     let first_prompt = if has_title {
         None
     } else {
-        match load_initial_title_source(storage.as_ref(), &loaded_info).await {
+        match load_initial_title_source(storage.as_ref(), &loaded_info, minimum_prompt_index).await
+        {
             Ok(source) => source,
             Err(error) => {
                 tracing::warn!(%error, "could not recover first prompt for session title");
@@ -2841,15 +2876,25 @@ pub(crate) async fn load_light(
     let remote_sync = init_remote_sync(&persisted_info.summary, storage_mode, auth_manager)?;
 
     let has_title = !persisted_info.summary.display_title().is_empty();
-    let mut had_history = persisted_info.chat_history.iter().any(
-        |item| matches!(item, ConversationItem::User(user) if user.synthetic_reason.is_none()),
+    let (mut had_history, minimum_prompt_index) = title_recovery_scope::initial_title_scope(
+        persisted_info.summary.title_source_prompt_index,
+        persisted_info
+            .chat_history
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::User(user) if user.synthetic_reason.is_none() => {
+                    Some(user.prompt_index)
+                }
+                _ => None,
+            }),
     );
     // ACP prompt history survives model-context compaction. Recover the opening
     // instead of taking the next follow-up when an earlier title call was lost.
     let first_prompt = if has_title {
         None
     } else {
-        match load_initial_title_source(storage.as_ref(), &loaded_info).await {
+        match load_initial_title_source(storage.as_ref(), &loaded_info, minimum_prompt_index).await
+        {
             Ok(source) => source,
             Err(error) => {
                 tracing::warn!(%error, "could not recover first prompt for session title");

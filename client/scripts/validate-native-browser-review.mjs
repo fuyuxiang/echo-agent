@@ -1,4 +1,4 @@
-import { cleanNativeReviewEnvironment } from "./lib/native-review-isolation.mjs";
+import { cleanNativeReviewEnvironment, withNativeReviewLoopbackBypass } from "./lib/native-review-isolation.mjs";
 import { isReviewModelId, reviewModelId, seedReviewModel, redactReviewModelSecrets, captureReviewModelLogs } from './lib/native-review-model.mjs';
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
 // Parent accepts only real native reports, Chrome requests and physical bytes.
@@ -13,8 +13,21 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { createBrowserReviewResource } from './lib/browser-review-resource.mjs';
 import { readonlyCompatibilitySourceRevocations } from './lib/native-core-review-isolation.mjs';
+import { confirmNativeReviewWorkspace } from './lib/native-core-workspace-picker.mjs';
+import { activateNativeReviewWindow } from './lib/native-review-window.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
+export function nativeBrowserReviewEnvironment(base, legacy, phase) {
+  assert(['first-launch', 'restart'].includes(phase));
+  const env = { ...cleanNativeReviewEnvironment(base), ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_BROWSER: '1',
+    ECHO_DESKTOP_REVIEW_PHASE: phase, GROK_HOME: legacy };
+  for (const key of Object.keys(env)) if ((key.startsWith('ECHO_DESKTOP_REVIEW_')
+    && !['ECHO_DESKTOP_REVIEW_BROWSER', 'ECHO_DESKTOP_REVIEW_PHASE'].includes(key))
+    || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'ECHO_THEIA_NODE', 'NODE_OPTIONS', 'NODE_PATH'].includes(key)) delete env[key];
+  // Keep the user's external model transport, while local fixture requests
+  // bypass proxies. The runner must not silently alter external transport.
+  return withNativeReviewLoopbackBypass(env);
+}
 export const BROWSER_CHECKS = Object.freeze({
   'first-launch': ['browser-isolation', 'browser-mode-ui', 'browser-network-consent-ui',
     'browser-submit-download-model', 'browser-reject-delete-ui', 'browser-takeover-resume-ui', 'browser-clear-data-ui'],
@@ -53,6 +66,9 @@ export async function runNativeBrowserReview(executable, modelId = 'echoagent-re
   assert(isReviewModelId(modelId), 'Only explicitly authorized model resources are permitted');
   assert.equal(process.platform, 'darwin'); executable = realpathSync(resolve(executable));
   assert(lstatSync(executable).isFile());
+  const fixtureBytes = readFileSync(new URL('./fixtures/native-browser-review.js', import.meta.url));
+  const binaryBytes = readFileSync(executable);
+  assert(binaryBytes.includes(fixtureBytes), 'Rebuild the native executable with the current fixed browser fixture');
   const output = nativeReviewOutput('native-browser', 'NATIVE_BROWSER_REVIEW_OUTPUT');
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'echo-native-review-browser-'))); chmodSync(home, 0o700);
   const cwd = join(home, 'workspaces/default'), legacy = join(home, 'empty-legacy');
@@ -61,7 +77,7 @@ export async function runNativeBrowserReview(executable, modelId = 'echoagent-re
   writeFileSync(join(home, 'config.toml'), `[marketplace]\nofficial_marketplace_auto_installed = true\ndisabled_sources = [${revocations.map(JSON.stringify).join(', ')}]\n[claude_compat]\nimported = true\n`, { mode: 0o600 });
   seedReviewModel(home);
   const result = { version: 1, kind: 'real-native-browser-driver', nativeVerified: false, passed: false,
-    home, cwd, output, binarySha256: digest(readFileSync(executable)), phases: [], errors: [], defaultHomeChanged: false,
+    home, cwd, output, binarySha256: digest(binaryBytes), fixtureSha256: digest(fixtureBytes), phases: [], errors: [], defaultHomeChanged: false,
     resourceRequestsMadeByParent: false, modelOutputInjected: false, modelId };
   let resource, active, activeLogs, expected, downloadObserved = false, interrupted = false;
   const physical = path => {
@@ -85,19 +101,31 @@ export async function runNativeBrowserReview(executable, modelId = 'echoagent-re
         expected: phase === 'restart' ? expected : null };
       writeFileSync(join(home, 'native-browser-manifest.private.json'), JSON.stringify(manifest), { mode: 0o600 });
       const reportPath = join(home, 'native-review.json'); if (existsSync(reportPath)) unlinkSync(reportPath);
-      const env = { ...cleanNativeReviewEnvironment(process.env), ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_BROWSER: '1',
-        ECHO_DESKTOP_REVIEW_PHASE: phase, GROK_HOME: legacy };
-      for (const key of Object.keys(env)) if ((key.startsWith('ECHO_DESKTOP_REVIEW_')
-        && !['ECHO_DESKTOP_REVIEW_BROWSER', 'ECHO_DESKTOP_REVIEW_PHASE'].includes(key))
-        || ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy',
-          'ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'ECHO_THEIA_NODE', 'NODE_OPTIONS', 'NODE_PATH'].includes(key)) delete env[key];
+      const env = nativeBrowserReviewEnvironment(process.env, legacy, phase);
       assert.equal(env.HOME, process.env.HOME);
       const start = Date.now(); const child = spawn(executable, ['--data-home', home], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
       active = child; let ended = false, code, signal, childError;
+      let workspacePicked = false, pickerRequestedAt, nextActivation = 0;
+      writeFileSync(join(output, `${phase}-launch.json`), JSON.stringify({ pid: child.pid, home, cwd, nonce, phase }), { mode: 0o600 });
       const exited = new Promise(accept => { child.once('error', error => { childError = error; ended = true; accept(); });
         child.once('close', (value, sig) => { ended = true; code = value; signal = sig; accept(); }); });
       const logs = captureReviewModelLogs(child, join(output, `${phase}-app.log`)); activeLogs = logs;
       while (!ended && Date.now() - start < (phase === 'first-launch' ? 960000 : 180000)) {
+        if (Date.now() >= nextActivation) { activateNativeReviewWindow(child.pid); nextActivation = Date.now() + 15000; }
+        if (existsSync(reportPath)) {
+          const partial = JSON.parse(physical(reportPath));
+          if (partial.passed === false) {
+            writeFileSync(join(output, `${phase}.json`), redactReviewModelSecrets(JSON.stringify(partial)), { mode: 0o600 });
+            throw new Error(`Actual browser renderer failed: ${JSON.stringify(partial.errors)}`);
+          }
+        }
+        const pickerReady = join(cwd, 'browser-workspace-picker-ready.json');
+        if (phase === 'first-launch' && !workspacePicked && existsSync(pickerReady)) {
+          assert.deepEqual(JSON.parse(physical(pickerReady)), { nonce, cwd });
+          pickerRequestedAt ??= Date.now();
+          assert(Date.now() - pickerRequestedAt <= 30000, 'Owned browser workspace picker exceeded its bound');
+          workspacePicked = confirmNativeReviewWorkspace({ pid: child.pid, home, cwd, kind: 'browser' });
+        }
         const ready = join(cwd, 'browser-download-ready.json');
         if (phase === 'first-launch' && !downloadObserved && existsSync(ready)) {
           const data = JSON.parse(physical(ready)); assert.deepEqual(Object.keys(data).sort(), ['nonce', 'sessionId']);
@@ -124,7 +152,13 @@ export async function runNativeBrowserReview(executable, modelId = 'echoagent-re
       if (existsSync(reportPath)) writeFileSync(join(output, `${phase}.json`), redactReviewModelSecrets(readFileSync(reportPath)), { mode: 0o600 });
       result.phases.push({ phase, pid: child.pid, exitCode: code, signal, elapsedSeconds: (Date.now() - start) / 1000 });
       assert.equal(code, 0); assert.equal(signal, null);
-      expected = verifyBrowserReport(JSON.parse(physical(reportPath)), manifest, child.pid, start);
+      const report = JSON.parse(physical(reportPath));
+      expected = verifyBrowserReport(report, manifest, child.pid, start);
+      if (phase === 'first-launch') {
+        assert(workspacePicked && report.workspaceSelection?.cwd === cwd && report.workspaceSelection.via === 'native folder picker');
+        assert.deepEqual(JSON.parse(physical(join(home, 'echoagent-picked-workspaces.json'))), [cwd]);
+        result.osPickerVerified = true;
+      }
       const profile = join(home, 'automation/browser-profiles', digest(expected.sessionId).slice(0, 32));
       assert(!existsSync(profile), 'Clear/restart left the task browser profile');
       assert(downloadObserved, 'No physical download was observed before clear');

@@ -16,4 +16,12 @@ describe("记忆导入预览", () => {
     expect(() => parseMemoryImport("a".repeat(4001))).toThrow(/4000/);
     expect(() => parseMemoryImport(Array.from({ length: 101 }, (_, i) => `记忆 ${i}`).join("\n"))).toThrow(/100/);
   });
+  it("派生标题和自定义主题不会截断 Unicode 字符", () => {
+    const content = `${"文".repeat(59)}🧠记忆`;
+    const [derived] = parseMemoryImport(content);
+    expect(derived.key).toBe(`${"文".repeat(59)}🧠`);
+    const [custom] = parseMemoryImport(JSON.stringify([{ content, key: `${"文".repeat(159)}🧠继续` }]));
+    expect([...custom.key]).toHaveLength(160);
+    expect(custom.key.endsWith("🧠")).toBe(true);
+  });
 });

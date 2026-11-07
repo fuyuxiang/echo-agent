@@ -185,14 +185,18 @@ fn status_snapshot(
     supported: bool,
 ) -> ModelStatus {
     status.total_bytes = manifest().assets.iter().map(|asset| asset.size).sum();
-    status.source = if pair_ready(&root) {
-        if root == user { "repaired" } else { "bundled" }
+    status.source = if pair_ready(root) {
+        if root == user {
+            "repaired"
+        } else {
+            "bundled"
+        }
     } else {
         "missing"
     }
     .into();
-    status.embedding_ready = echo_agent_memory::local::model_files_ready(&root, false);
-    status.reranker_ready = echo_agent_memory::local::model_files_ready(&root, true);
+    status.embedding_ready = echo_agent_memory::local::model_files_ready(root, false);
+    status.reranker_ready = echo_agent_memory::local::model_files_ready(root, true);
     if !supported {
         status.state = "unsupported".into();
         status.message =
@@ -309,7 +313,7 @@ async fn download_asset(
     completed: u64,
     cancellation: &CancellationToken,
 ) -> Result<(), String> {
-    let mut offset = std::fs::metadata(&part).map_or(0, |m| m.len());
+    let mut offset = std::fs::metadata(part).map_or(0, |m| m.len());
     if offset > size {
         tokio::fs::remove_file(&part)
             .await
@@ -745,11 +749,10 @@ mod tests {
     async fn bundled_models_work_offline_without_creating_or_copying_user_models() {
         use echo_agent_memory::embedding::EmbeddingProvider;
         let home = crate::paths::echo_agent_home_dir();
-        assert!(
-            home.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("echo-retrieval-bundle-"))
-        );
+        assert!(home
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("echo-retrieval-bundle-")));
         assert!(!user_root().exists());
         let bundle =
             PathBuf::from(std::env::var_os("ECHO_RETRIEVAL_MODELS").expect("bundled models"))
@@ -774,11 +777,9 @@ mod tests {
         );
         let chunks = echo_agent_memory::chunker::chunk_markdown(&long, &Default::default());
         assert!(chunks.len() > 1);
-        assert!(
-            chunks
-                .iter()
-                .all(|chunk| echo_agent_memory::local::token_count(&chunk.text) <= 384)
-        );
+        assert!(chunks
+            .iter()
+            .all(|chunk| echo_agent_memory::local::token_count(&chunk.text) <= 384));
         assert_eq!(
             provider
                 .embed_query("离职时应归还哪些物品？")
@@ -833,11 +834,9 @@ mod tests {
             echo_agent_memory::local::rerank("火星卫星的轨道周期是多少？", &documents, None)
                 .await
                 .unwrap();
-        assert!(
-            irrelevant
-                .iter()
-                .all(|score| *score < echo_agent_memory::local::MIN_RELEVANCE)
-        );
+        assert!(irrelevant
+            .iter()
+            .all(|score| *score < echo_agent_memory::local::MIN_RELEVANCE));
         // Maintenance of a healthy bundle also stays fully offline and read-only.
         check_or_repair(&CancellationToken::new()).await.unwrap();
         assert!(!user_root().exists());

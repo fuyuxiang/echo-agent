@@ -286,8 +286,8 @@ fn set_nested_bool(
 }
 
 /// Persist all memory controls in one atomic config write. A running session
-/// keeps its existing memory backend; the new configuration applies after the
-/// Agent Runtime is restarted.
+/// keeps its existing memory backend; live storage/request checks apply these
+/// switches without restarting. Backend and timer configuration remain resident.
 #[tauri::command]
 pub fn memory_config_save(
     memory: MemoryConfigPatch,

@@ -137,6 +137,7 @@ See the [automation platform and security guide](docs/automation-platform-suppor
 | `pnpm test:production-startup` | After building, serve production assets and check startup, script errors, and resource loading in an isolated browser; CI retains screenshots and reports. |
 | `pnpm office:test` | Verify the built-in document generator. |
 | `pnpm test:rust` | Run all Rust unit and integration tests with isolated data; locally sign this workspace's test harnesses on macOS before execution. |
+| `pnpm test:memory:rust` | Run the memory dependency's complete unit suite with isolated data, including source logs, forgetting, archives and title corrections; locally sign its own harness on macOS. Runs in CI. |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml --check` | Check Rust formatting. |
 | `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings` | Run Rust static analysis. |
 | `pnpm dist:mac` / `pnpm dist:win` | Build an installer on the corresponding platform; production releases require platform signing. |

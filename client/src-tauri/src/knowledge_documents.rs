@@ -1,7 +1,7 @@
 //! Bounded Office XML to readable, source-attributed Markdown. No model calls.
 use quick_xml::{
-    Reader,
     events::{BytesStart, Event},
+    Reader,
 };
 use std::collections::{BTreeMap, HashMap};
 
@@ -281,16 +281,12 @@ fn sheet(xml: &str, shared: &[String]) -> Result<String, String> {
                     } else {
                         value.clone()
                     };
-                    if !displayed.trim().is_empty() {
-                        if cells.insert(position, displayed).is_some() {
-                            return Err("Excel 同一行存在重复单元格地址".into());
-                        }
+                    if !displayed.trim().is_empty() && cells.insert(position, displayed).is_some() {
+                        return Err("Excel 同一行存在重复单元格地址".into());
                     }
                 }
-                b"row" => {
-                    if !cells.is_empty() {
-                        rows.push((row_number, std::mem::take(&mut cells)));
-                    }
+                b"row" if !cells.is_empty() => {
+                    rows.push((row_number, std::mem::take(&mut cells)));
                 }
                 _ => {}
             },
@@ -535,7 +531,11 @@ mod tests {
         assert!(extract("pptx", parts).unwrap_err().contains("顺序信息缺失"));
         let xml = r#"<Relationships><Relationship Id="r1" Target="https://example.invalid/slide.xml" TargetMode="External"/></Relationships>"#;
         assert!(relationship_targets(xml, "ppt").unwrap().is_empty());
-        assert!(relationship_targets(r#"<Relationships><Relationship Id="r1" Target="../../outside.xml"/></Relationships>"#, "ppt").is_err());
+        assert!(relationship_targets(
+            r#"<Relationships><Relationship Id="r1" Target="../../outside.xml"/></Relationships>"#,
+            "ppt"
+        )
+        .is_err());
     }
 
     #[test]

@@ -2811,16 +2811,14 @@ mod tests {
             state.tx.lock().unwrap().is_none(),
             "cancelled runtime must not accept new prompts"
         );
-        assert!(
-            state
-                .handle
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .cancel
-                .is_cancelled()
-        );
+        assert!(state
+            .handle
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cancel
+            .is_cancelled());
         finished.send(true).unwrap();
         stop_agent_runtime_wait(&state, std::time::Duration::from_millis(5))
             .await
@@ -2879,15 +2877,13 @@ mod tests {
         let (replacement, _agent) = echo_agent_acp::acp_channels();
         *state.tx.lock().unwrap() = Some(replacement.tx.clone());
         assert!(!state.quarantine_gateway_if_current(&old_tx, "late old failure".into()));
-        assert!(
-            state
-                .tx
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .same_channel(&replacement.tx)
-        );
+        assert!(state
+            .tx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .same_channel(&replacement.tx));
     }
 
     #[test]
@@ -2957,16 +2953,14 @@ mod tests {
         assert!(error.contains("仍在初始化"));
         assert!(state.handle.lock().unwrap().is_some());
         assert!(state.tx.lock().unwrap().is_some());
-        assert!(
-            !state
-                .handle
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .cancel
-                .is_cancelled()
-        );
+        assert!(!state
+            .handle
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cancel
+            .is_cancelled());
     }
 
     #[test]
@@ -2979,24 +2973,26 @@ mod tests {
 
         let valid_answers =
             HashMap::from([("Which?".into(), serde_json::json!(["first", "second"]))]);
-        assert!(
-            validate_question_payload(
-                "request",
-                Some(&valid_answers),
-                None,
-                None,
-                Some("accepted")
-            )
-            .is_ok()
-        );
+        assert!(validate_question_payload(
+            "request",
+            Some(&valid_answers),
+            None,
+            None,
+            Some("accepted")
+        )
+        .is_ok());
         let oversized = HashMap::from([(
             "Which?".into(),
             serde_json::Value::String("x".repeat(MAX_QUESTION_VALUE_CHARS + 1)),
         )]);
-        assert!(
-            validate_question_payload("request", Some(&oversized), None, None, Some("accepted"))
-                .is_err()
-        );
+        assert!(validate_question_payload(
+            "request",
+            Some(&oversized),
+            None,
+            None,
+            Some("accepted")
+        )
+        .is_err());
     }
 
     fn runtime_state(revision: &str, model_ids: &[&str]) -> RuntimeModelState {
@@ -3036,8 +3032,8 @@ mod tests {
     }
 
     #[test]
-    fn automatic_model_resolution_prefers_explicit_then_organization_then_personal_and_excludes_removed()
-     {
+    fn automatic_model_resolution_prefers_explicit_then_organization_then_personal_and_excludes_removed(
+    ) {
         let configured = vec![
             "echoagent-ojlab/Echo Cedar".into(),
             "echoagent-ojlab/Echo Reed".into(),
@@ -3134,13 +3130,11 @@ mod tests {
         let failed_status =
             auth_status_from_snapshots(vec!["model-a".into()], None, "rev-a", failed, true);
         assert!(!failed_status.ready);
-        assert!(
-            failed_status
-                .reason
-                .as_deref()
-                .unwrap()
-                .contains("reload rejected")
-        );
+        assert!(failed_status
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("reload rejected"));
         assert!(validate_runtime_ready(&failed_status, None).is_err());
 
         let ready_status = auth_status_from_snapshots(
@@ -3395,15 +3389,13 @@ mod tests {
             trusted_existing_session_cwd(&state, &filesystem, "fixed-session", None).unwrap(),
             bound
         );
-        assert!(
-            trusted_existing_session_cwd(
-                &state,
-                &filesystem,
-                "fixed-session",
-                Some(&other.to_string_lossy())
-            )
-            .is_err()
-        );
+        assert!(trusted_existing_session_cwd(
+            &state,
+            &filesystem,
+            "fixed-session",
+            Some(&other.to_string_lossy())
+        )
+        .is_err());
         std::fs::remove_dir(&bound).unwrap();
         assert!(trusted_existing_session_cwd(&state, &filesystem, "fixed-session", None).is_err());
         assert!(
@@ -3433,10 +3425,13 @@ mod tests {
                 .unwrap(),
             bound
         );
-        assert!(
-            trusted_existing_session_cwd(&state, &filesystem, &id, Some(&other.to_string_lossy()))
-                .is_err()
-        );
+        assert!(trusted_existing_session_cwd(
+            &state,
+            &filesystem,
+            &id,
+            Some(&other.to_string_lossy())
+        )
+        .is_err());
         assert!(
             state.session_workspace(&id).is_err(),
             "validation must not activate a Runtime session"
@@ -3469,10 +3464,12 @@ mod tests {
                 trusted_session_history_cwd(&state, &id, Some(&bound.to_string_lossy())).unwrap(),
                 bound
             );
-            assert!(
-                trusted_session_history_cwd(&state, &id, Some(&other.path().to_string_lossy()))
-                    .is_err()
-            );
+            assert!(trusted_session_history_cwd(
+                &state,
+                &id,
+                Some(&other.path().to_string_lossy())
+            )
+            .is_err());
         }
         assert!(
             !bound.exists(),

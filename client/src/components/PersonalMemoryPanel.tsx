@@ -11,6 +11,7 @@ import { useUnsavedClose } from "@/lib/use-unsaved-close";
 import { SettingsDraftContext, type SettingsDraftState } from "@/lib/settings-drafts";
 import { parseMemoryImport } from "@/lib/memory-import";
 import { memoryFlushMessage } from "@/lib/memory-feedback";
+import { isContentDerivedMemoryTitle, memoryTitleFromContent } from "@/lib/memory-title";
 import { memoryRecordsGet, memoryRecordSave, memoryRecordRetire, memoryFlush, type MemoryConfig, type PersonalMemoryInput, type PersonalMemoryRecord, type PersonalMemorySnapshot } from "@/lib/agent-client";
 import "@/styles/personal-memory.css";
 
@@ -20,7 +21,7 @@ const active = (record: PersonalMemoryRecord) => record.status === "active" && (
 const message = (error: unknown) => String(error).replace(/^Error:\s*/, "");
 type View = "overview" | "manage" | "history" | "support" | "documents";
 type Props = { cwd?: string; sessionId?: string; initialView?: "overview" | "manage"; onToast?: (text: string) => void; onOpenSession?: (id: string, cwd?: string) => void | Promise<void>; onUnsavedChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void };
-type Draft = { input: PersonalMemoryInput; cwd?: string; baseline: string };
+type Draft = { input: PersonalMemoryInput; cwd?: string; baseline: string; deriveKeyFromContent: boolean };
 
 export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", onToast, onOpenSession, onUnsavedChange, onBusyChange }: Props) {
   const [view, setView] = useState<View>(initialView);
@@ -48,7 +49,8 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
   const locked = busy || settingsBusy || legacyState.busy;
   const draftDirty = draft !== null && JSON.stringify(draft.input) !== draft.baseline;
   const dirty = draftDirty || legacyState.dirty || (importing && (Boolean(importText.trim()) || previews.length > 0));
-  const beginEdit = (input: PersonalMemoryInput) => setDraft({ cwd, input, baseline: JSON.stringify(input) });
+  const beginEdit = (input: PersonalMemoryInput) => setDraft({ cwd, input, baseline: JSON.stringify(input),
+    deriveKeyFromContent: isContentDerivedMemoryTitle(input.key, input.content) });
   useEffect(() => onUnsavedChange?.(dirty), [dirty, onUnsavedChange]);
   useEffect(() => onBusyChange?.(locked), [locked, onBusyChange]);
   useEffect(() => () => { onUnsavedChange?.(false); onBusyChange?.(false); }, [onUnsavedChange, onBusyChange]);
@@ -103,7 +105,10 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
   const save = async () => {
     if (!draft || !draft.input.content.trim()) return;
     setBusy(true);
-    try { await memoryRecordSave({ ...draft.input, key: draft.input.key.trim() || draft.input.content.trim().slice(0, 60) }, draft.cwd); setDraft(null); onToast?.("记忆已保存"); await reload(true); }
+    // An automatic title must follow its edited content. Keeping the old fact
+    // in the title makes the recall policy reject the entire memory context.
+    const key = draft.deriveKeyFromContent ? memoryTitleFromContent(draft.input.content) : draft.input.key.trim();
+    try { await memoryRecordSave({ ...draft.input, key: key || memoryTitleFromContent(draft.input.content) }, draft.cwd); setDraft(null); onToast?.("记忆已保存"); await reload(true); }
     catch (e) { setError(message(e)); } finally { setBusy(false); }
   };
   const retire = (record: PersonalMemoryRecord, completed = false) => {

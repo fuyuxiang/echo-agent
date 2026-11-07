@@ -144,7 +144,7 @@ export function WorkspacePicker({
     setPicking(true);
     setPickError(null);
     try {
-      const selected = await filesystemPickDirectory();
+      const selected = await filesystemPickDirectory(cwd || defaultWorkspaceCwd);
       if (!selected) return;
       onSelectWorkspace(selected);
       close();

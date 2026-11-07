@@ -33,10 +33,22 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
     throw new Error(`Actual native condition timed out: ${label}`);
   };
   const record = (id, evidence) => report.checks.push({ id, result: 'passed', evidence });
+  const progress = async (activeStage) => {
+    if (!approved) return;
+    await call('write_text_file', { path: 'core-progress.json', workspaceRoot: scope.cwd,
+      content: JSON.stringify({ home, nonce, phase: scope.phase, pid: report.nativeContext.pid, activeStage,
+        checks: report.checks.map(({ id, result }) => ({ id, result })), errors: report.errors,
+        permissions: report.permissions.map(({ requestId, toolCallId, operation, via, pendingBeforeApproval, denied }) =>
+          ({ requestId, toolCallId, operation, via, pendingBeforeApproval, denied })) }) });
+  };
   const stage = async (id, work) => {
-    try { const evidence = await work(); record(id, evidence); return evidence; }
+    await progress(id);
+    let evidence = null;
+    try { evidence = await work(); record(id, evidence); }
     catch (error) { const message = String(error?.message || error).slice(0, 1800);
-      report.checks.push({ id, result: 'failed', evidence: { error: message } }); report.errors.push(`${id}: ${message}`); return null; }
+      report.checks.push({ id, result: 'failed', evidence: { error: message } }); report.errors.push(`${id}: ${message}`); }
+    await progress(null);
+    return evidence;
   };
   const set = (element, value) => {
     const proto = element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype
@@ -61,7 +73,7 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
     assert(continuing, `${id} failed with unfinished session/queue; abort further work`);
   };
   const select = async (sessionId) => {
-    await ownSession(sessionId);
+    const summary = await ownSession(sessionId);
     if (document.querySelector('.app__body--collapsed')) {
       (await wait(() => document.querySelector('button[aria-label="展开侧边栏"]'), 'sidebar reveal')).click();
     }
@@ -95,6 +107,14 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
       const control = document.querySelector('.echo-composer .model-selector__trigger');
       return selected() === sessionId && visible(control) && !control.disabled && control.getAttribute('aria-busy') !== 'true';
     }, 'actual selected conversation UI ready');
+    if (summary.continuation) {
+      const inherited = await wait(() => {
+        const control = document.querySelector('button.conversation-origin__history');
+        return visible(control) ? control : null;
+      }, 'actual inherited history disclosure');
+      if (inherited.getAttribute('aria-expanded') !== 'true') inherited.click();
+      await wait(() => visible(document.getElementById('conversation-inherited-history')), 'inherited transcript expanded through UI');
+    }
     return info;
   };
   const menu = async (sessionId, label) => {
@@ -169,8 +189,13 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
       const card = document.getElementById(`permission-${request.requestId}`), allow = button(card, '允许一次');
       if (!visible(card) || !allow) continue;
       assert(request.options.some((option) => option.kind === 'allow'), 'Tool has no actual allow-once option');
+      assert(typeof request.toolCallId === 'string' && request.toolCallId.length > 0
+        && !toolUpdates.some(update => update.sessionId === request.sessionId
+          && (update.toolCallId ?? update.tool_call_id) === request.toolCallId && update.status === 'completed'),
+      'Tool completed before permission was approved');
       allow.click(); handled.add(request.requestId);
-      report.permissions.push({ requestId: request.requestId, sessionId: request.sessionId, operation, via: 'production allow-once UI' });
+      report.permissions.push({ requestId: request.requestId, sessionId: request.sessionId, toolCallId: request.toolCallId,
+        operation, pendingBeforeApproval: true, via: 'production allow-once UI' });
     }
   };
   const finish = async (text, marker, start, permitted, modelId = scope.modelId) => {
@@ -259,7 +284,9 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
       });
       await stage('core-restart-fork-ui', async () => { await select(report.expected.forkedSessionId);
         assert(users().some((item) => item.includes(report.expected.markers.recovery)), 'Fork history missing in actual UI');
-        return { sessionId: selected(), sourceSessionId: report.expected.sessionId, inheritedUserVisible: true, newPromptSent: false }; });
+        const temporaryTitle = `${report.expected.title} · 新方向`;
+        await wait(() => document.querySelector('.main-topbar__title')?.textContent === temporaryTitle, 'read-only fork title after restart');
+        return { sessionId: selected(), sourceSessionId: report.expected.sessionId, inheritedUserVisible: true, temporaryTitle, newPromptSent: false }; });
       await stage('core-restart-office-fixtures', async () => {
         for (const item of scope.officeFixtures) { const info = await call('path_stat', { path: item.path, cwd: scope.cwd }); assert(info.exists && info.kind === 'file' && info.absolute === item.path, 'Office fixture missing'); }
         return { fixtures: scope.officeFixtures, physicalShaCheckedByParent: true, noModelCall: true };
@@ -289,6 +316,20 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
           && item.dataset.modelId === modelId), 'actual model option')).click();
       };
       await choose();
+      // Explicitly choose the fixed fixture root through production UI. The
+      // default Home action intentionally creates an independent task folder.
+      (await wait(() => {
+        const control = document.querySelector('.workspace-picker__trigger');
+        return visible(control) && !control.disabled ? control : null;
+      }, 'production workspace chooser')).click();
+      await writeHandoff('core-workspace-picker-ready.json', { nonce, cwd: scope.cwd });
+      (await wait(() => button(document, '选择文件夹…'), 'native directory picker')).click();
+      await wait(() => {
+        const control = document.querySelector('.workspace-picker__trigger');
+        return visible(control) && !control.disabled
+          && control.getAttribute('aria-label') === `工作目录：${scope.cwd}。点击切换`;
+      }, 'native picker selected the exact private workspace', 30000);
+      report.workspaceSelection = { cwd: scope.cwd, via: 'native folder picker' };
       const e = report.expected, m = e.markers;
       Object.assign(m, { initial: `CORE-INITIAL-${nonce}`, queued: `CORE-QUEUED-${nonce}`, immediate: `CORE-NOW-${nonce}`,
         recovery: `CORE-RECOVER-${nonce}`, child: `CORE-CHILD-${nonce}`, project: `CORE-PROJECT-${nonce}` });
@@ -299,14 +340,64 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
       e.sessionId = first.sessionId; e.ownedSessionIds.push(first.sessionId); activeSessionId = first.sessionId;
       const initialResponse = await stage('core-qwen-initial-response', () => finish(initial, m.initial, start));
       if (!initialResponse) await requireSettledAfterFailedStage('core-qwen-initial-response', e.sessionId);
+      await stage('core-stop-and-resend', async () => {
+        const slow = `隔离停止验收 ${nonce}：请直接连续撰写五千字中文说明，不调用工具。`, before = completions.length;
+        await send(slow);
+        await wait(async () => { await service(null); return reply().trim().length >= 32; }, 'actual streamed text before stop', 30000);
+        const streamedBeforeStopChars = reply().trim().length;
+        assert(!completions.slice(before).some(item => item.sessionId === e.sessionId), 'Long reply completed before Stop');
+        (await wait(() => { const b = document.querySelector('.echo-composer button[aria-label="停止生成"]'); return visible(b) && !b.disabled ? b : null; }, 'actual stop button')).click();
+        const stop = await wait(async () => { await service(null); const event = completions.slice(before).find((item) => item.sessionId === e.sessionId && item.cancelTrigger === 'stop');
+          return event && (await ownSession(e.sessionId)).status === 'stopped' ? event : null; }, 'actual stop ACK and terminal', 30000);
+        await delay(1000); assert((await ownSession(e.sessionId)).status === 'stopped', 'Late event reversed stopped state');
+        const text = simple(m.recovery), recoveryStart = completions.length; await send(text); const result = await finish(text, m.recovery, recoveryStart);
+        return { stopped: stop, streamedBeforeStopChars, lateWaitMs: 1000, recovery: result };
+      });
+      for (const item of scope.officeFixtures) await stage(`core-office-${item.format}-runtime-read`, async () => {
+        const request = `隔离办公读取验收：仅调用 read_file 读取“${item.path}”。禁止终端、写入、其他路径或工具。根据实际工具内容只回复文件中的指纹及规定顺序，不可猜测。${item.format === 'epub'
+          ? '按正文阅读顺序列出两个章节标题；不要输出导航内容。' : item.format === 'ods' ? '保留A与B之间空列；说明重复行和重复列均出现两次。' : '保留20位编号原值，不要转为科学计数。'}`;
+        const before = completions.length, toolsBefore = toolUpdates.length, permissionsBefore = report.permissions.length; await send(request);
+        const result = await finish(request, item.marker, before, { kind: 'read', path: item.path, relative: item.path.slice(scope.cwd.length + 1) });
+        const updates = toolUpdates.slice(toolsBefore).filter((update) => update.sessionId === e.sessionId);
+        const final = new Map();
+        for (const update of updates) { const id = update.toolCallId ?? update.tool_call_id; if (id) final.set(id, { ...final.get(id), ...update }); }
+        const strings = (value) => typeof value === 'string' ? [value]
+          : Array.isArray(value) ? value.flatMap(strings) : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
+        const reads = [...final.values()].filter((tool) => tool.status === 'completed'
+          && /read_file|Read file|读取/i.test(JSON.stringify(tool)));
+        const output = reads.map((tool) => {
+          const content = strings(tool.content).join('\n'); return content || strings(tool.rawOutput ?? tool.raw_output).join('\n');
+        }).join('\n');
+        assert(reads.length === 1 && output.includes(item.marker), 'Exactly one successful actual read_file result with fingerprint is required');
+        const approvals = report.permissions.slice(permissionsBefore);
+        assert(approvals.length === 1 && approvals[0].operation?.name === 'read_file'
+          && approvals[0].operation.path === item.path && approvals[0].pendingBeforeApproval
+          && approvals[0].toolCallId === (reads[0].toolCallId ?? reads[0].tool_call_id),
+        'The exact read must wait for its real allow-once approval');
+        if (item.format === 'epub') assert(!output.includes(item.excludedMarker), 'Non-spine EPUB navigation entered read output');
+        if (item.format === 'xlsx') assert(output.includes('00123456789012345678'), 'XLSX 20-digit text was lost');
+        if (item.format === 'epub') assert(output.indexOf(`第一章 ${item.marker}`) >= 0
+          && output.indexOf(`第二章 ${item.marker}`) > output.indexOf(`第一章 ${item.marker}`), 'EPUB spine order was not preserved');
+        if (item.format === 'ods') assert(output.includes('A\t\tB') && output.includes('重复列\t重复列')
+          && output.split(`重复行 ${item.marker}`).length - 1 === 2, 'ODS empty/repeated cells or rows were lost');
+        return { ...result, path: item.path, toolCallId: approvals[0].toolCallId, permissions: approvals, toolOutputFingerprint: true,
+          updates: updates.map((update) => JSON.stringify(update).slice(0, 6000)).slice(0, 12) };
+      });
       const control = await stage('core-queue-and-send-now', async () => {
         const slow = `隔离排队验收 ${nonce}：请直接连续撰写五千字中文说明，不调用工具。`;
         const before = completions.length; await send(slow);
         await wait(() => visible(document.querySelector('.echo-composer button[aria-label="停止生成"]')), 'real streaming turn');
-        const queued = simple(m.queued), immediate = simple(m.immediate);
+        await wait(async () => { await service(null); return reply().trim().length >= 32; }, 'actual streamed text before send_now', 30000);
+        const streamedBeforeSendNowChars = reply().trim().length;
+        const queued = simple(m.queued), immediate = `取消上一条长文要求，不再继续该任务。${simple(m.immediate)}`;
         await send(queued, '加入待发送队列');
         await wait(() => document.querySelector('.queue-row__text')?.textContent === queued, 'durable queue visible');
-        await send(immediate, '中断当前回复并立即发送');
+        await send(immediate, '加入待发送队列');
+        (await wait(() => {
+          const row = [...document.querySelectorAll('.queue-row')]
+            .find(item => item.querySelector('.queue-row__text')?.textContent === immediate);
+          return button(row, '立即发送');
+        }, 'actual queued immediate-send action')).click();
         await wait(async () => { await service(null); return completions.slice(before).find((item) => item.sessionId === e.sessionId && item.cancelTrigger === 'send_now'); }, 'actual send_now cancellation', 30000);
         await wait(async () => { await service(null); return canContinueAfterFailure((await ownSession(e.sessionId)).status,
           !document.querySelector('.queue-panel')) ? true : null; }, 'actual queue auto-drain completed and empty', 120000);
@@ -317,25 +408,16 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
         const turns = completions.slice(before).filter((item) => item.sessionId === e.sessionId);
         assert(turns.filter((item) => item.stopReason === 'end_turn').length >= 2, 'Both real Qwen responses must complete');
         assert([...document.querySelectorAll('.msg--assistant')].some((item) => item.textContent.includes(m.immediate)), 'Immediate Qwen reply missing');
-        return { sessionId: e.sessionId, admittedViaUi: true, immediateBeforeQueued: true, noDuplicate: true, completions: turns };
+        return { sessionId: e.sessionId, admittedViaUi: true, streamedBeforeSendNowChars, immediateBeforeQueued: true, noDuplicate: true, completions: turns };
       });
       if (!control) await requireSettledAfterFailedStage('core-queue-and-send-now', e.sessionId);
-      await stage('core-stop-and-resend', async () => {
-        const slow = `隔离停止验收 ${nonce}：请直接连续撰写五千字中文说明，不调用工具。`, before = completions.length;
-        await send(slow); (await wait(() => { const b = document.querySelector('.echo-composer button[aria-label="停止生成"]'); return visible(b) && !b.disabled ? b : null; }, 'actual stop button')).click();
-        const stop = await wait(async () => { await service(null); const event = completions.slice(before).find((item) => item.sessionId === e.sessionId && item.cancelTrigger === 'stop');
-          return event && (await ownSession(e.sessionId)).status === 'stopped' ? event : null; }, 'actual stop ACK and terminal', 30000);
-        await delay(1000); assert((await ownSession(e.sessionId)).status === 'stopped', 'Late event reversed stopped state');
-        const text = simple(m.recovery), recoveryStart = completions.length; await send(text); const result = await finish(text, m.recovery, recoveryStart);
-        return { stopped: stop, lateWaitMs: 1000, recovery: result };
-      });
       const title = `隔离核心会话-${nonce}`;
       await stage('core-rename-search-ui', async () => {
         await menu(e.sessionId, '重命名'); set(await wait(() => document.querySelector('input[aria-label="会话名称"]'), 'rename input'), title);
         await delay(150);
         (await wait(() => document.querySelector('.context-menu__rename-save'), 'rename save')).click();
         await wait(async () => (await ownSession(e.sessionId)).title === title, 'native rename persistence'); e.title = title;
-        (await wait(() => document.querySelector('button[aria-label="搜索"]'), 'search open')).click();
+        (await wait(() => document.querySelector('button[aria-label="搜索全部任务"]'), 'search open')).click();
         set(await wait(() => document.querySelector('input[aria-label="搜索会话标题或内容"]'), 'real search input'), m.recovery);
         const hit = await wait(() => [...document.querySelectorAll('.conversation-search-modal__item--remote')]
           .find((item) => item.textContent.includes(m.recovery)), 'actual FTS content result', 30000);
@@ -344,9 +426,12 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
       });
       const fork = async () => {
         await select(e.sessionId); const old = new Set((await catalog()).map((item) => item.sessionId));
-        (await wait(() => document.querySelector('.rewind-bar button[title="分叉此会话"]'), 'fork UI')).click();
-        (await wait(() => button([...document.querySelectorAll('[role="dialog"]')]
-          .find(el => visible(el) && el.textContent.includes('分叉此会话？')), '创建分叉'), 'fork confirmation')).click();
+        (await wait(() => {
+          const control = document.querySelector('button[aria-label="任务操作"]');
+          return visible(control) && !control.disabled ? control : null;
+        }, 'conversation actions')).click();
+        (await wait(() => [...document.querySelectorAll('[role="menuitem"]')]
+          .find(el => visible(el) && !el.disabled && el.textContent.trim() === '在新对话中继续'), 'continue conversation')).click();
         const next = await wait(async () => (await catalog()).find((item) => !old.has(item.sessionId) && !item.hidden), 'real fork ID');
         assert(next.sessionId !== e.sessionId && next.cwd === scope.cwd, 'Fork ID/workspace invalid'); e.ownedSessionIds.push(next.sessionId);
         await wait(() => selected() === next.sessionId, 'actual fork selection');
@@ -356,8 +441,10 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
       await stage('core-fork-original-preserved', async () => {
         await writeHandoff('core-fork-ready.json', { nonce, sessionId: e.sessionId }); await parentAck('core-fork-before.json');
         const next = await fork(); e.forkedSessionId = next.sessionId;
+        const temporaryTitle = `${e.title} · 新方向`;
+        await wait(() => document.querySelector('.main-topbar__title')?.textContent === temporaryTitle, 'fresh continuation temporary title');
         await writeHandoff('core-fork-done.json', { nonce, sessionId: e.sessionId, forkedSessionId: next.sessionId, marker: m.recovery });
-        const proof = await parentAck('core-fork-after.json'); return { sessionId: e.sessionId, forkedSessionId: next.sessionId, proof, selectedInUi: true };
+        const proof = await parentAck('core-fork-after.json'); return { sessionId: e.sessionId, forkedSessionId: next.sessionId, proof, temporaryTitle, selectedInUi: true };
       });
       await select(e.sessionId);
       await stage('core-archive-restore-ui', async () => {
@@ -366,7 +453,7 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
         (await wait(() => document.querySelector('button[aria-label="设置"]'), 'settings')).click();
         (await wait(() => [...document.querySelectorAll('.settings-navigation__item')]
           .find((el) => el.querySelector('.settings-navigation__label')?.textContent.trim() === '数据管理'), 'data settings entry')).click();
-        (await wait(() => button(document.querySelector('[role="group"][aria-label="数据视图"]'), '已归档'), 'archive settings tab')).click();
+        (await wait(() => button(document.querySelector('[role="group"][aria-label="数据视图"]'), '已归档会话'), 'archive settings tab')).click();
         const row = await wait(() => [...document.querySelectorAll('.archived-settings__item')].find((el) => el.querySelector('.archived-settings__item-title')?.textContent === e.title), 'owned archived row');
         button(row, '恢复并打开').click(); await wait(async () => !(await ownSession(e.sessionId)).archived && selected() === e.sessionId, 'actual restored and selected');
         return { sessionId: e.sessionId, archived: true, restored: true, viaSettingsUi: true };
@@ -417,31 +504,6 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
         return { deletedSessionId: trash.sessionId, onlyOwnData: true, originalsRemain: true };
       });
       await select(e.sessionId);
-      for (const item of scope.officeFixtures) await stage(`core-office-${item.format}-runtime-read`, async () => {
-        const request = `隔离办公读取验收：仅调用 read_file 读取“${item.path}”。禁止终端、写入、其他路径或工具。根据实际工具内容只回复文件中的指纹及规定顺序，不可猜测。${item.format === 'epub'
-          ? '按正文阅读顺序列出两个章节标题；不要输出导航内容。' : item.format === 'ods' ? '保留A与B之间空列；说明重复行和重复列均出现两次。' : '保留20位编号原值，不要转为科学计数。'}`;
-        const before = completions.length, toolsBefore = toolUpdates.length, permissionsBefore = report.permissions.length; await send(request);
-        const result = await finish(request, item.marker, before, { kind: 'read', path: item.path, relative: item.path.slice(scope.cwd.length + 1) });
-        const updates = toolUpdates.slice(toolsBefore).filter((update) => update.sessionId === e.sessionId);
-        const final = new Map();
-        for (const update of updates) { const id = update.toolCallId ?? update.tool_call_id; if (id) final.set(id, { ...final.get(id), ...update }); }
-        const strings = (value) => typeof value === 'string' ? [value]
-          : Array.isArray(value) ? value.flatMap(strings) : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
-        const reads = [...final.values()].filter((tool) => tool.status === 'completed'
-          && /read_file|Read file|读取/i.test(JSON.stringify(tool)));
-        const output = reads.map((tool) => {
-          const content = strings(tool.content).join('\n'); return content || strings(tool.rawOutput ?? tool.raw_output).join('\n');
-        }).join('\n');
-        assert(reads.length === 1 && output.includes(item.marker), 'Exactly one successful actual read_file result with fingerprint is required');
-        if (item.format === 'epub') assert(!output.includes(item.excludedMarker), 'Non-spine EPUB navigation entered read output');
-        if (item.format === 'xlsx') assert(output.includes('00123456789012345678'), 'XLSX 20-digit text was lost');
-        if (item.format === 'epub') assert(output.indexOf(`第一章 ${item.marker}`) >= 0
-          && output.indexOf(`第二章 ${item.marker}`) > output.indexOf(`第一章 ${item.marker}`), 'EPUB spine order was not preserved');
-        if (item.format === 'ods') assert(output.includes('A\t\tB') && output.includes('重复列\t重复列')
-          && output.split(`重复行 ${item.marker}`).length - 1 === 2, 'ODS empty/repeated cells or rows were lost');
-        return { ...result, path: item.path, permissions: report.permissions.slice(permissionsBefore), toolOutputFingerprint: true,
-          updates: updates.map((update) => JSON.stringify(update).slice(0, 6000)).slice(0, 12) };
-      });
       await stage('core-subagent-no-side-effects', async () => {
         const childPrompt = `请只回复“${m.child}”；不要调用任何工具、读取或写入文件、访问网络或联系他人。`;
         const input = { prompt: childPrompt, description: '隔离返回固定字符串', subagent_type: 'general-purpose',
@@ -453,7 +515,14 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
         const child = events.find((event) => event.phase === 'finished' && event.status === 'completed' && event.output?.includes(m.child));
         assert(child && child.subagentId !== e.sessionId && events.some((event) => event.phase === 'spawned' && event.subagentId === child.subagentId), 'No actual spawned/completed child with exact output');
         e.child = { sessionId: child.subagentId, marker: m.child };
-        const panel = await wait(() => document.querySelector('.subagent-panel[aria-label="子代理运行时"]'), 'actual child panel');
+        const expand = document.querySelector('button[aria-label="展开工作区"]');
+        if (visible(expand)) expand.click();
+        (await wait(() => [...document.querySelectorAll('[role="tablist"][aria-label="工作区分类"] [role="tab"]')]
+          .find(item => visible(item) && item.textContent.trim() === '任务'), 'actual task workspace tab')).click();
+        (await wait(() => [...document.querySelectorAll('[role="tablist"][aria-label="任务视图"] [role="tab"]')]
+          .find(item => visible(item) && item.textContent.trim() === '运行'), 'actual running workspace tab')).click();
+        const panel = await wait(() => { const item = document.querySelector('.subagent-panel[aria-label="子代理运行时"]');
+          return visible(item) ? item : null; }, 'actual child panel');
         assert(panel.textContent.includes('已完成'), 'Child completed state absent in UI'); return { ...result, child: e.child, events, noToolAuthorizedForChild: true };
       });
       await stage('core-custom-qwen-connection', async () => {
@@ -463,9 +532,13 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
         const label = `隔离个人模型-${nonce}`, marker = `CORE-CUSTOM-${nonce}`;
         (await wait(() => document.querySelector('button[aria-label="设置"]'), 'settings for personal model')).click();
         (await wait(() => [...document.querySelectorAll('.settings-navigation__item')].find((el) => el.textContent.trim() === '模型'), 'model settings')).click();
-        (await wait(() => button(document.querySelector('.model-connections'), '添加个人连接') || button(document, '添加个人连接'), 'add personal connection')).click();
-        const editor = await wait(() => document.querySelector('[role="dialog"][aria-label="添加个人连接"]'), 'personal connection editor');
-        set(editor.querySelector('#model-connection-label'), label); set(editor.querySelector('#model-base-url'), binding.baseUrl);
+        (await wait(() => document.querySelector('button[aria-label="管理模型连接"]'), 'connection management')).click();
+        (await wait(() => button(document, '添加模型连接'), 'add personal connection')).click();
+        const editor = await wait(() => document.querySelector('[role="dialog"][aria-label="添加模型连接"]'), 'personal connection editor');
+        set(await wait(() => editor.querySelector('#model-provider-kind'), 'explicit custom service'), 'custom');
+        set(await wait(() => editor.querySelector('#model-base-url'), 'custom service address'), binding.baseUrl);
+        (await wait(() => button(editor, '更多设置'), 'connection advanced fields')).click();
+        set(await wait(() => editor.querySelector('#model-connection-label'), 'personal connection name'), label);
         if (http) {
           const consent = await wait(() => editor.querySelector('.model-connection-editor__http-consent input'), 'actual HTTP consent');
           assert(!consent.checked, 'HTTP consent must start unchecked'); consent.click();
@@ -475,7 +548,7 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
         if (binding.apiKey) set(editor.querySelector('#model-api-key'), binding.apiKey);
         set(editor.querySelector('#model-id-input'), binding.model);
         await delay(150);
-        const testSave = button(editor, '测试并保存'); assert(testSave, 'Actual model test/save action missing'); testSave.click();
+        const save = button(editor, '保存'); assert(save, 'Actual model save action missing'); save.click();
         const entry = await wait(async () => {
           const alert = editor.querySelector('.models-settings-panel__error, [role="alert"]');
           if (visible(alert)) throw new Error(`Actual connection test/save failed: ${alert.textContent.slice(0, 500)}`);
@@ -487,8 +560,15 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
           assert(!provider || provider.source === 'personal' && !provider.managed && Boolean(provider.apiKey) === Boolean(binding.apiKey)
             && provider.baseUrl === binding.baseUrl && provider.allowInsecureHttp === http, 'Personal connection scope/auth was changed');
           return model ? { providerId: provider.id, modelId: model.modelId, label, marker } : null;
-        }, 'real model test then persisted normal connection', 90000);
+        }, 'persisted normal connection from production editor', 90000);
         e.customModel = entry;
+        const modelRow = await wait(() => document.querySelector(`.model-connections__model-list [data-model-id="${CSS.escape(entry.modelId)}"]`), 'saved model detail');
+        (await wait(() => button(modelRow, '测试模型'), 'actual saved model connection test')).click();
+        await wait(() => {
+          const failed = modelRow.querySelector('.model-connections__test-result--error');
+          if (visible(failed)) throw new Error(`Actual saved model test failed: ${failed.textContent.slice(0, 500)}`);
+          return visible(modelRow.querySelector('.model-connections__test-result--success'));
+        }, 'actual saved model test success', 90000);
         (await wait(() => document.querySelector('button[aria-label="关闭设置"]'), 'close personal model settings')).click();
         await select(e.sessionId); await choose(entry.modelId);
         await wait(async () => (await ownSession(e.sessionId)).currentModelId === entry.modelId, 'actual personal session model switch', 60000);
@@ -507,7 +587,7 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
           (await wait(() => [...document.querySelectorAll('button')].find(node => visible(node) && node.textContent.trim() === '定时任务'), 'actual automation navigation')).click();
         };
         await openAutomation();
-        (await wait(() => button(document, '+ 添加自动化'), 'actual new automation form')).click();
+        (await wait(() => button(document, '+ 新建定时任务') || button(document, '新建定时任务'), 'actual new automation form')).click();
         const name = await wait(() => document.querySelector('.atm-modal-input'), 'actual automation name');
         set(name, marker);
         (await wait(() => [...document.querySelectorAll('.sidebar__nav-item')].find(node => visible(node) && node.textContent.trim() === '专家·技能·连接器'), 'leave automation via actual navigation')).click();

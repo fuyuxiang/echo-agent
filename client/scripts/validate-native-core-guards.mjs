@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
-import { CORE_CHECKS, coreReviewProjectName, validateCoreManifest, verifyNativeCoreReport } from './validate-native-core-review.mjs';
+import { CORE_CHECKS, coreReviewProjectName, validateCoreManifest, verifyNativeCoreReport, verifyCancellationJournal } from './validate-native-core-review.mjs';
 
 const home = '/private/tmp/echo-native-review-core-synthetic', nonce = 'a'.repeat(32), cwd = `${home}/workspaces/default`;
 const fixtures = ['xlsx', 'epub', 'ods'].map((format) => ({ format, path: `${cwd}/办公读取/中文 ${format}.${format}`,
@@ -33,9 +33,10 @@ const report = (phase) => {
   const put = (id, evidence) => { r.checks.find((check) => check.id === id).evidence = evidence; };
   put('core-native-isolation', { permissionMode: 'ask' });
   if (phase === 'first-launch') {
-    put('core-queue-and-send-now', { sessionId: expected.sessionId, admittedViaUi: true, immediateBeforeQueued: true, noDuplicate: true,
+    put('core-fork-original-preserved', { temporaryTitle: `${expected.title} · 新方向` });
+    put('core-queue-and-send-now', { sessionId: expected.sessionId, admittedViaUi: true, streamedBeforeSendNowChars: 100, immediateBeforeQueued: true, noDuplicate: true,
       completions: [turn('slow-1', 'cancelled', 'send_now'), turn('immediate-1'), turn('queued-1')] });
-    put('core-stop-and-resend', { stopped: turn('slow-2', 'cancelled', 'stop'), lateWaitMs: 1000,
+    put('core-stop-and-resend', { stopped: turn('slow-2', 'cancelled', 'stop'), streamedBeforeStopChars: 100, lateWaitMs: 1000,
       recovery: { marker: expected.markers.recovery, completion: turn('recovery-1') } });
     put('core-automation-draft-navigation-exit', { marker: `CORE-DRAFT-${nonce}`, restoredViaNavigation: true,
       quitConfirmationViaUi: true, exitCancelledAndRuntimeReady: true, noTasksCreated: true, discardedViaUi: true });
@@ -45,13 +46,42 @@ const report = (phase) => {
     put('core-project-move-switch-ui', { projectForkedSessionId: expected.projectForkedSessionId, forkPendingBeforeTurn: true,
       forkPendingAfterTurn: false, sourcePendingUnchanged: true, projectTurn: { sessionId: expected.projectForkedSessionId,
         marker: expected.markers.project, completion: { ...turn('project-fork-turn'), sessionId: expected.projectForkedSessionId } } });
-    for (const item of fixtures) put(`core-office-${item.format}-runtime-read`, { path: item.path, toolOutputFingerprint: true, completion: turn(`read-${item.format}`) });
-  } else put('core-restart-custom-model', { modelId: expected.customModel.modelId, selectedSessionId: expected.sessionId });
+    for (const item of fixtures) {
+      const approval = { requestId: `approve-${item.format}`, sessionId: expected.sessionId, toolCallId: `tool-${item.format}`,
+        operation: { name: 'read_file', path: item.path }, pendingBeforeApproval: true, via: 'production allow-once UI' };
+      r.permissions.push(approval);
+      put(`core-office-${item.format}-runtime-read`, { path: item.path, toolCallId: approval.toolCallId, permissions: [approval],
+        toolOutputFingerprint: true, completion: turn(`read-${item.format}`) });
+    }
+  } else {
+    put('core-restart-fork-ui', { temporaryTitle: `${expected.title} · 新方向` });
+    put('core-restart-custom-model', { modelId: expected.customModel.modelId, selectedSessionId: expected.sessionId });
+  }
   return r;
 };
 const args = (phase = 'first-launch') => ({ report: report(phase), manifest: manifest(phase), pid: 12345, startedAt: Date.now() - 1000,
   exitCode: 0, signal: null, previousExpected: expected });
 const cases = [];
+{
+  // Production streaming chunks carry _meta.promptId; durable completion ACKs
+  // carry update.prompt_id. Join both real wire forms without losing scope.
+  const chunk = (promptId, text) => ({ params: { sessionId: 'parent', _meta: { promptId },
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
+  const ack = { params: { sessionId: 'parent', _meta: { cancelTrigger: 'stop' },
+    update: { sessionUpdate: 'turn_completed', prompt_id: 'stopped', stop_reason: 'cancelled' } } };
+  const journal = [chunk('stopped', 'actual streamed text '.repeat(3)), ack, chunk('next-turn', 'valid later response')];
+  const ids = [{ trigger: 'stop', promptId: 'stopped' }];
+  assert.equal(verifyCancellationJournal(journal, 'parent', ids)[0].noLateChunks, true);
+  cases.push({ name: 'physical cancellation joins actual stream and completion wire fields', passed: true });
+  assert.throws(() => verifyCancellationJournal([...journal, chunk('stopped', 'late')], 'parent', ids));
+  cases.push({ name: 'physical cancellation rejects late output on the cancelled prompt', passed: true });
+  assert.throws(() => verifyCancellationJournal(journal, 'foreign', ids));
+  cases.push({ name: 'physical cancellation rejects another session ACK', passed: true });
+  assert.throws(() => verifyCancellationJournal([chunk('other', 'x'.repeat(40)), ack], 'parent', ids));
+  cases.push({ name: 'physical cancellation cannot borrow another prompt streaming output', passed: true });
+  assert.throws(() => verifyCancellationJournal(journal, 'parent', [{ trigger: 'send_now', promptId: 'stopped' }]));
+  cases.push({ name: 'physical cancellation requires the exact cancellation trigger', passed: true });
+}
 {
   // Run the actual fixed fixture predicate against production display names.
   // A stale route/display name must fail offline before a real draft guard can
@@ -106,20 +136,29 @@ const cases = [];
   const recordAndStage = fixtureSource.slice(fixtureSource.indexOf('  const record ='), fixtureSource.indexOf('  const set ='));
   const overallExpression = fixtureSource.match(/report\.passed = ([\s\S]*?);\s*\n\s*report\.finishedAt/)?.[1];
   assert(recordAndStage.includes('report.errors.push') && overallExpression, 'Actual failure recorder or final admission expression missing');
+  const progressWrites = [];
   const failed = await vm.runInNewContext(`(async () => {
-    const report = { checks: [], errors: [] }, approved = true;
+    const report = { checks: [], errors: [], permissions: [], nativeContext: {pid:12345} }, approved = true;
+    const scope = {cwd, phase:'first-launch'};
     const required = ['core-qwen-initial-response', 'synthetic-local-continuation'];
     ${recordAndStage}
     await stage(required[0], async () => { throw new Error('Exact model marker mismatch'); });
     if ((${continuationExpression})('completed', true)) await stage(required[1], async () => ({ localCoverage: true }));
     report.passed = ${overallExpression};
     return report;
-  })()`);
+  })()`, { home, nonce, cwd, call: async (command, args) => {
+    assert.equal(command, 'write_text_file'); assert.equal(args.path, 'core-progress.json'); assert.equal(args.workspaceRoot, cwd);
+    const snapshot = JSON.parse(args.content);
+    assert.equal(snapshot.home, home); assert.equal(snapshot.nonce, nonce); assert.equal(snapshot.pid, 12345);
+    progressWrites.push(snapshot);
+  } });
   assert.equal(failed.checks.length, 2);
   assert.equal(failed.checks[0].result, 'failed');
   assert.equal(failed.checks[1].result, 'passed');
   assert.equal(failed.errors.length, 1);
   assert.equal(failed.passed, false, 'Continuing local coverage must never promote a bad model marker to overall pass');
+  assert.equal(progressWrites.length, 4); assert.equal(progressWrites[0].activeStage, 'core-qwen-initial-response');
+  assert.equal(progressWrites.at(-1).checks[0].result, 'failed'); assert.equal(progressWrites.at(-1).errors.length, 1);
   cases.push({ name: 'bad model marker stays failed with error after later local coverage succeeds', passed: true, actualNative: false });
 
   const markerAssertion = fixtureSource.match(/assert\(reply\(\)\.includes\(m\.queued\), 'Queued Qwen reply missing exact marker'\);/)?.[0];
@@ -138,10 +177,16 @@ rejects('fake IPC renderer claim', (v) => { v.report.fakeIPC = true; });
 rejects('renderer cannot qualify parent Native readback', (v) => { v.report.nativeVerified = true; });
 rejects('foreign session ID is rejected', (v) => { v.report.expected.deletedSessionId = 'foreign-session'; });
 rejects('queue cancelled for wrong trigger', (v) => { v.report.checks.find((c) => c.id === 'core-queue-and-send-now').evidence.completions[0].cancelTrigger = 'stop'; });
+rejects('send_now before model output is not a streaming interruption', v => { v.report.checks.find(c => c.id === 'core-queue-and-send-now').evidence.streamedBeforeSendNowChars = 0; });
+rejects('stop before model output is not a streaming interruption', v => { v.report.checks.find(c => c.id === 'core-stop-and-resend').evidence.streamedBeforeStopChars = 0; });
 rejects('duplicated queued completion cannot masquerade as two turns', (v) => { const c = v.report.checks.find((c) => c.id === 'core-queue-and-send-now').evidence.completions; c[2].promptId = c[1].promptId; });
 rejects('failed stop recovery is not completed', (v) => { v.report.checks.find((c) => c.id === 'core-stop-and-resend').evidence.recovery.completion.stopReason = 'error'; });
 rejects('unknown permission scope is rejected', (v) => { v.report.permissions.push({ sessionId: expected.sessionId, via: 'production allow-once UI', operation: { name: 'bash', command: 'echo' } }); });
 rejects('Office reply alone is not real tool output', (v) => { v.report.checks.find((c) => c.id === 'core-office-epub-runtime-read').evidence.toolOutputFingerprint = false; });
+rejects('continuation title cannot be replaced by inherited content', v => { v.report.checks.find(c => c.id === 'core-fork-original-preserved').evidence.temporaryTitle = 'old parent prompt'; });
+rejects('auto-allowed read is not a real approval', v => { v.report.checks.find(c => c.id === 'core-office-xlsx-runtime-read').evidence.permissions = []; });
+rejects('read completed before approval', v => { v.report.checks.find(c => c.id === 'core-office-xlsx-runtime-read').evidence.permissions[0].pendingBeforeApproval = false; });
+rejects('approval belongs to another tool', v => { v.report.checks.find(c => c.id === 'core-office-xlsx-runtime-read').evidence.toolCallId = 'unapproved-tool'; });
 rejects('HTTPS model evidence cannot claim a different HTTP transport', (v) => { v.report.checks.find((c) => c.id === 'core-custom-qwen-connection').evidence.explicitHttpConsent = true; });
 rejects('draft quit must preserve real Runtime after cancellation', v => { v.report.checks.find(c => c.id === 'core-automation-draft-navigation-exit').evidence.exitCancelledAndRuntimeReady = false; });
 rejects('primary model selector alone does not prove custom switch', (v) => { v.report.expected.customModel.modelId = expected.modelId; });

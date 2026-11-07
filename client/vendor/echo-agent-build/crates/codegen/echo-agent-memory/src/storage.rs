@@ -10,6 +10,105 @@ use std::sync::{Mutex, OnceLock};
 
 use echo_agent_tools::util::echo_agent_home::echo_agent_home;
 
+/// Stable filename component for the complete conversation identity. UUIDv7
+/// timestamp prefixes are shared by rapidly created conversations.
+pub fn session_log_source_id(session_id: &str) -> String {
+    if !session_id.is_empty()
+        && session_id.len() <= 64
+        && !session_id.contains("--sid-")
+        && session_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        session_id.to_owned()
+    } else {
+        blake3::hash(session_id.as_bytes()).to_hex().to_string()
+    }
+}
+
+/// New logs carry an explicit full-source suffix; old eight-character logs
+/// retain their conservative matching for dream and forgotten-source policy.
+pub fn session_log_belongs_to(stem: &str, session_id: &str) -> bool {
+    if let Some((_, source)) = stem.split_once("--sid-") {
+        source == session_log_source_id(session_id)
+    } else {
+        let legacy: String = session_id.chars().take(8).collect();
+        !legacy.is_empty() && stem.ends_with(&legacy)
+    }
+}
+
+/// Match source logs throughout their lifecycle. Snapshot suffixes are only
+/// interpreted in their archive/history directories; a longer source ID in
+/// the live sessions directory must never become another source's snapshot.
+pub fn session_log_path_belongs_to(path: &Path, session_id: &str) -> bool {
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    if !stem.contains("--sid-") {
+        // Old files do not retain enough identity to distinguish UUIDv7
+        // collisions. Preserve their existing conservative cleanup policy.
+        let short: String = session_id.chars().take(8).collect();
+        return !short.is_empty()
+            && (stem.ends_with(&format!("-{short}")) || stem.contains(&format!("-{short}-")));
+    }
+    if session_log_belongs_to(stem, session_id) {
+        return true;
+    }
+    let parent = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|s| s.to_str());
+    if parent == Some("archive") {
+        if let Some((base, stamp)) = stem.rsplit_once(".archive-") {
+            return !stamp.is_empty()
+                && stamp.bytes().all(|b| b.is_ascii_digit())
+                && session_log_belongs_to(base, session_id);
+        }
+    }
+    let Some((base, suffix)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    match parent {
+        // Dream adds a nanosecond Unix timestamp when the archive name exists.
+        Some("archive") if suffix.len() == 19 && unambiguous_session_log_source(session_id) => {
+            session_log_belongs_to(base, session_id)
+        }
+        Some(".history") => {
+            let Some((base, stamp)) = base.rsplit_once('-') else {
+                return false;
+            };
+            let bytes = stamp.as_bytes();
+            bytes.len() == 26
+                && bytes[8] == b'T'
+                && bytes[15] == b'.'
+                && bytes[25] == b'Z'
+                && bytes[..8]
+                    .iter()
+                    .chain(&bytes[9..15])
+                    .chain(&bytes[16..25])
+                    .all(u8::is_ascii_digit)
+                && session_log_belongs_to(base, session_id)
+        }
+        _ => false,
+    }
+}
+
+fn unambiguous_session_log_source(session_id: &str) -> bool {
+    let source = session_log_source_id(session_id);
+    (source.len() == 64 && source.bytes().all(|b| b.is_ascii_hexdigit()))
+        || (source.len() == 36
+            && source.bytes().enumerate().all(|(i, b)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    b == b'-'
+                } else {
+                    b.is_ascii_hexdigit()
+                }
+            }))
+}
+
 /// Scope for a memory write operation.
 /// Write-operation scope. Distinct from `echo_agent_core::config::MemoryScope` (agent memory dir).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,11 +431,11 @@ impl MemoryStorage {
 
     /// Write a daily session log file.
     ///
-    /// File path: `~/.echo-agent/memory/{project}-{hash8}/sessions/YYYY-MM-DD-{slug}-{sid8}.md`
+    /// File path: `~/.echo-agent/memory/{project}-{hash8}/sessions/YYYY-MM-DD-{slug}--sid-{full-session-id}.md`
     ///
     /// - `date`: e.g. `"2026-02-23"`
     /// - `slug`: short slug derived from the first user message
-    /// - `session_id`: full session ID (first 8 chars used as suffix)
+    /// - `session_id`: full session ID (stored in a filename-safe source suffix)
     /// - `content`: markdown content to write
     /// - `append`: when `true`, appends a timestamped section instead of
     ///   overwriting. Each section is separated by `---` and a timestamp
@@ -350,8 +449,8 @@ impl MemoryStorage {
         append: bool,
     ) -> std::io::Result<PathBuf> {
         let sessions_dir = self.sessions_dir();
-        let sid8 = &session_id[..session_id.len().min(8)];
-        let filename = format!("{date}-{slug}-{sid8}.md");
+        let source_id = session_log_source_id(session_id);
+        let filename = format!("{date}-{slug}--sid-{source_id}.md");
         let path = sessions_dir.join(&filename);
 
         if self.ephemeral {
@@ -1048,6 +1147,57 @@ pub fn slugify(input: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_source_matching_is_exact_through_history_and_archive() {
+        let first = "01a1b736-b69b-7f72-9e6f-d29a21ad9f8a";
+        let second = "01a1b736-d919-7a83-82d0-3b846063a6fb";
+        for id in [first, second, "../unsafe/来源", "opaque--sid-another"] {
+            let stem = format!("2026-11-08-task--sid-{}", session_log_source_id(id));
+            for path in [
+                format!("sessions/{stem}.md"),
+                format!("sessions/archive/{stem}.md"),
+                format!("sessions/archive/{stem}.archive-1794130000123456789.md"),
+                format!("sessions/.history/{stem}-20261108T090102.123456789Z-123.md"),
+            ] {
+                assert!(session_log_path_belongs_to(Path::new(&path), id), "{path}");
+                if id != second {
+                    assert!(
+                        !session_log_path_belongs_to(Path::new(&path), second),
+                        "{path}"
+                    );
+                }
+            }
+            if id == first || id == second {
+                assert!(session_log_path_belongs_to(
+                    Path::new(&format!("sessions/archive/{stem}-1794130000123456789.md")),
+                    id
+                ));
+            }
+        }
+        for path in [
+            "sessions/2026-11-08-task--sid-opaque-1794130000123456789.md",
+            "sessions/archive/2026-11-08-task--sid-opaque-1794130000123456789.md",
+            "sessions/.history/2026-11-08-task--sid-opaque-123-1.md",
+            "sessions/2026-11-08-task--sid-opaque.archive-1794130000123456789.md",
+            "sessions/2026-11-08-task--sid-opaque-20261108T090102.123456789Z-123.md",
+        ] {
+            assert!(
+                !session_log_path_belongs_to(Path::new(path), "opaque"),
+                "{path}"
+            );
+        }
+        assert!(!session_log_path_belongs_to(
+            Path::new("sessions/2026-11-08-task--sid-malformed-01a1b736.md"),
+            first
+        ));
+        for path in [
+            "sessions/2026-11-08-task-01a1b736.md",
+            "sessions/archive/2026-11-08-task-01a1b736-123.md",
+            "sessions/.history/2026-11-08-task-01a1b736-456-1.md",
+        ] {
+            assert!(session_log_path_belongs_to(Path::new(path), first));
+        }
+    }
     use tempfile::TempDir;
 
     /// Prepend the hermetic git binary (via `GIT_BIN_PATH`) to `PATH` so that
@@ -1170,12 +1320,9 @@ mod tests {
             .unwrap();
 
         assert!(path.exists());
-        assert!(
-            path.file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .contains("2026-02-23-fix-auth-session1")
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            "2026-02-23-fix-auth--sid-session12345678.md"
         );
 
         let read_back = storage.read_file(&path, None, None).unwrap();

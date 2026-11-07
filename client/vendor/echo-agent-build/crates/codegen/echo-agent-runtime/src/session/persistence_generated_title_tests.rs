@@ -12,6 +12,7 @@ fn summary_round_trips_generated_title_through_json() {
     )
     .unwrap();
     summary.generated_title = Some("Refactor auth middleware".into());
+    summary.title_source_prompt_index = Some(7);
     summary.worktree_label = Some("auth-refactor".into());
 
     let json = serde_json::to_string(&summary).unwrap();
@@ -25,6 +26,7 @@ fn summary_round_trips_generated_title_through_json() {
         deserialized.worktree_label.as_deref(),
         Some("auth-refactor")
     );
+    assert_eq!(deserialized.title_source_prompt_index, Some(7));
 }
 
 #[test]
@@ -41,6 +43,7 @@ fn summary_deserializes_without_new_fields_backward_compat() {
     let summary: Summary = serde_json::from_str(json).unwrap();
     assert!(summary.generated_title.is_none());
     assert!(summary.worktree_label.is_none());
+    assert!(summary.title_source_prompt_index.is_none());
     assert_eq!(summary.session_summary, "first prompt text");
 }
 

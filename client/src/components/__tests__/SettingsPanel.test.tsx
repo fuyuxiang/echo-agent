@@ -90,6 +90,36 @@ import { useProjectsStore } from "@/stores/projects-store";
 beforeEach(() => vi.clearAllMocks());
 
 describe("Settings navigation and search", () => {
+  it("开始下一次搜索后，上一项的延迟定位不会抢走焦点或关闭结果", async () => {
+    render(<ThemeProvider><SettingsPanel open onClose={() => {}} /></ThemeProvider>);
+    await screen.findByRole("heading", { name: "通用", level: 2 });
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => {
+      frames.push(callback);
+      return frames.length;
+    });
+    try {
+      const search = screen.getByRole("combobox", { name: "搜索设置" });
+      search.focus();
+      fireEvent.change(search, { target: { value: "字号" } });
+      fireEvent.keyDown(search, { key: "Enter" });
+      expect(search).toHaveValue("");
+      expect(frames.length).toBeGreaterThan(0);
+
+      search.focus();
+      fireEvent.change(search, { target: { value: "常见问题" } });
+      act(() => { for (const callback of frames.splice(0)) callback(0); });
+
+      expect(search).toHaveFocus();
+      expect(search).toHaveValue("常见问题");
+      expect(screen.getByRole("listbox", { name: "设置搜索结果" })).toBeVisible();
+      fireEvent.click(screen.getByRole("option", { name: /常见问题与使用帮助/ }));
+      expect(await screen.findByText("确认模型配置", { exact: true })).toBeVisible();
+    } finally {
+      requestFrame.mockRestore();
+    }
+  });
+
   it("权限输入、规则列表和保存中的请求都受到离开保护", async () => {
     vi.mocked(permissionList).mockResolvedValue([]);
     const onClose = vi.fn();

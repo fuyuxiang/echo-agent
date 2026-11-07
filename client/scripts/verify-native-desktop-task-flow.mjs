@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {nativeShortcut,nativeBrowserMarkerObserved} from './lib/native-tool-inputs.mjs';
+import {verifyControlsModelBinding} from './lib/desktop-controls-evidence.mjs';
 import {readFileSync,writeFileSync,realpathSync,lstatSync,statSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -11,7 +12,9 @@ const reportPath=join(home,'workspaces/default/native-control-fixtures/task-flow
 const r=JSON.parse(readFileSync(reportPath,'utf8'));
 assert.equal(r.home,home);assert.equal(driver.home,home);assert.equal(driver.pid,r.context.pid);
 assert.equal(r.version,2);assert.equal(r.expected,`任务驱动电脑验收 ${home.split('-').at(-1)}\n中文输入、暂停与继续成功\n`,'each run must prove its own distinct input');
-assert.match(r.model,/MiniMax-M3\.1-Flash/);assert.equal(r.model,driver.requestedModelId);
+verifyControlsModelBinding(r.model,driver.requestedModelId);
+assert.equal(driver.osPickerVerified,true);assert.equal(r.workspaceSelection?.cwd,driver.cwd);
+assert.deepEqual(JSON.parse(readFileSync(join(home,'echoagent-picked-workspaces.json'),'utf8')),[driver.cwd]);
 assert.deepEqual(r.errors,[]);assert(r.finishedAt,'continued model turn must finish');
 assert(r.completions.some(c=>c.at>r.resumedAt&&c.at<=r.finishedAt&&c.stopReason==='end_turn'&&!c.cancelTrigger),'the continued model must end naturally, without a test cancellation');
 assert.equal(r.targetWrittenByFixture,false);assert.equal(r.approvalResolvedByFixture,false);

@@ -529,6 +529,21 @@ pub async fn desktop_validation_ready(
             return crate::native_core_validation::launch(&window)
                 .inspect_err(|error| tracing::warn!(%error, "Core review launch rejected"));
         }
+        if std::env::var("ECHO_DESKTOP_REVIEW_COLLABORATION").as_deref() == Ok("1") {
+            return crate::native_collaboration_validation::launch(&window);
+        }
+        if std::env::var("ECHO_DESKTOP_REVIEW_EXTENSIONS").as_deref() == Ok("1") {
+            return crate::native_extensions_validation::launch(&window);
+        }
+        if std::env::var("ECHO_DESKTOP_REVIEW_KNOWLEDGE").as_deref() == Ok("1") {
+            return crate::native_knowledge_validation::launch(&window);
+        }
+        if std::env::var("ECHO_DESKTOP_REVIEW_LIFECYCLE").as_deref() == Ok("1") {
+            return crate::native_lifecycle_validation::launch(&window);
+        }
+        if std::env::var("ECHO_DESKTOP_REVIEW_MEMORYAUTO").as_deref() == Ok("1") {
+            return crate::native_memoryauto_validation::launch(&window);
+        }
         if std::env::var("ECHO_DESKTOP_REVIEW_LOCAL").as_deref() == Ok("1") {
             #[cfg(target_os = "macos")]
             {

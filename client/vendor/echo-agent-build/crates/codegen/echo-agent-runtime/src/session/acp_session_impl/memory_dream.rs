@@ -269,7 +269,7 @@ impl SessionActor {
         self.memory.reindex_and_embed(path, source).await;
     }
 
-    /// Common setup for dream methods: storage, lock, sessions dir, and truncated session id.
+    /// Common setup for dream methods: storage, lock, sessions dir, and complete session id.
     fn dream_context(
         &self,
     ) -> Option<(
@@ -283,8 +283,8 @@ impl SessionActor {
         let lock = crate::session::memory::dream_lock::DreamLock::new(workspace_dir);
         let sessions_dir = storage.sessions_dir();
         let sid = &self.session_info.id.0;
-        let sid8 = sid[..8.min(sid.len())].to_owned();
-        Some((storage, lock, sessions_dir, sid8))
+        let session_id = sid.to_string();
+        Some((storage, lock, sessions_dir, session_id))
     }
 
     /// Run dream consolidation if gates pass.
@@ -313,13 +313,13 @@ impl SessionActor {
 
         use crate::session::memory::dream::*;
 
-        let Some((storage, lock, sessions_dir, sid8)) = self.dream_context() else {
+        let Some((storage, lock, sessions_dir, session_id)) = self.dream_context() else {
             return;
         };
 
         let mut live_config = self.memory.dream_config;
         live_config.enabled = true;
-        let gate = check_dream_gates(&live_config, &lock, &sessions_dir, Some(&sid8));
+        let gate = check_dream_gates(&live_config, &lock, &sessions_dir, Some(&session_id));
         let sessions = match gate {
             DreamGate::Open { sessions } => sessions,
             other => {
@@ -350,14 +350,14 @@ impl SessionActor {
         if !self.memory.is_enabled() {
             return Err("memory is not enabled for this session".into());
         }
-        let Some((storage, lock, sessions_dir, sid8)) = self.dream_context() else {
+        let Some((storage, lock, sessions_dir, session_id)) = self.dream_context() else {
             return Err("memory storage is not available for this session".into());
         };
 
         let sessions = match sessions_since(
             &sessions_dir,
             std::time::SystemTime::UNIX_EPOCH,
-            Some(&sid8),
+            Some(&session_id),
         ) {
             Ok(s) if s.is_empty() => {
                 tracing::info!(

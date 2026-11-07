@@ -9,7 +9,7 @@
 use echo_agent_memory::{
     backend::MemoryBackendImpl,
     embedding::{ConfiguredEmbeddingProvider, EmbeddingProvider},
-    index::{MemoryIndex, init_sqlite_vec},
+    index::{init_sqlite_vec, MemoryIndex},
     reranker::ConfiguredReranker,
     search::SearchResult,
     storage::MemoryStorage,
@@ -1930,11 +1930,9 @@ mod tests {
     #[test]
     fn lexical_terms_keep_exact_query_and_add_cjk_subphrases() {
         let terms = search_terms("公司的差旅费用标准是什么？");
-        assert!(
-            terms
-                .iter()
-                .any(|term| term == "公司的差旅费用标准是什么？")
-        );
+        assert!(terms
+            .iter()
+            .any(|term| term == "公司的差旅费用标准是什么？"));
         assert!(terms.iter().any(|term| term == "差旅费用"));
         assert!(terms.iter().any(|term| term == "费用标准"));
     }

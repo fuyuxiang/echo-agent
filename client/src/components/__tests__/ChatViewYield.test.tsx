@@ -1249,6 +1249,23 @@ describe("session workbench entry paths", () => {
     vi.mocked(sessionFork).mockClear();
   });
   afterEach(() => { delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView; });
+  it("回溯确认与工作区面板具有独立身份，关闭确认不移除工作区", async () => {
+    const errors = vi.spyOn(console, "error");
+    try {
+      renderChat();
+      workspaceItem("文件.*工作目录");
+      const workspace = screen.getByRole("complementary", { name: "工作区面板" });
+      sessionItem("回溯…");
+      await screen.findByRole("dialog", { name: "回溯时间线" });
+      expect(workspace).toBeVisible();
+      expect(errors.mock.calls.filter(args => args.some(value => String(value).includes("same key")))).toEqual([]);
+      fireEvent.click(screen.getByRole("button", { name: "关闭回溯时间线" }));
+      expect(workspace).toBeVisible();
+      expect(screen.queryByRole("dialog", { name: "回溯时间线" })).toBeNull();
+    } finally {
+      errors.mockRestore();
+    }
+  });
   it("空任务保留文件和网页浏览，只隐藏没有内容的查找、交付与历史操作", () => {
     setStore({messages:[]});
     render(<ThemeProvider><ChatView {...baseProps} cwd="/bound/workspace" /></ThemeProvider>);
@@ -1517,6 +1534,31 @@ describe("所有工具模式统一使用会话交互", () => {
     setStore({ sessionId:"unified",messages:[{id:"u",role:"user",complete:true,parts:[{kind:"text",text:"整理报告"}]},
       {id:"a",role:"assistant",complete:false,parts:[]}],streaming:true,streamingMessageId:"a",sendNowPending:false,error:null,plan:null,planApproval:undefined,control:undefined });
     baseProps.onSend.mockReset();baseProps.onCancel.mockReset();baseProps.onToast.mockClear();
+  });
+  it.each(["browser_use", "computer_use"] as const)("Runtime 默认模式不覆盖原生 %s 状态，空闲回合也能暂停", async mode => {
+    setStore({agentMode:"default",streaming:false,streamingMessageId:null});
+    automationState.status={sessionId:"unified",mode,paused:false,allowPrivateNetwork:false,
+      browser:{available:true},browserRunning:true,browserHasData:true,computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
+    baseProps.onCancel.mockResolvedValue(true);
+    renderChat();fireEvent.change(screen.getByRole("textbox"),{target:{value:"停一下"}});
+    fireEvent.click(screen.getByRole("button",{name:"发送"}));
+    await waitFor(()=>expect(baseProps.onCancel).toHaveBeenCalledWith("pause"));
+    expect(baseProps.onSend).not.toHaveBeenCalled();
+  });
+  it("原生默认模式优先于旧工具模式，普通空闲会话不发出暂停", async () => {
+    setStore({agentMode:"browser_use",streaming:false,streamingMessageId:null});
+    automationState.status={sessionId:"unified",mode:"default",paused:false,allowPrivateNetwork:false,
+      browser:{available:true},browserRunning:false,browserHasData:false,computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
+    renderChat();fireEvent.change(screen.getByRole("textbox"),{target:{value:"停一下"}});
+    fireEvent.click(screen.getByRole("button",{name:"发送"}));
+    await waitFor(()=>expect(baseProps.onToast).toHaveBeenCalledWith("当前任务没有正在运行的内容"));
+    expect(baseProps.onCancel).not.toHaveBeenCalled();
+  });
+  it("原生浏览器暂停状态在 Runtime 默认模式下仍显示继续入口", () => {
+    setStore({agentMode:"default",streaming:false,streamingMessageId:null,messages:[{id:"a",role:"assistant",complete:true,parts:[{kind:"text",text:"网页结果"}]}]});
+    automationState.status={sessionId:"unified",mode:"browser_use",paused:true,allowPrivateNetwork:false,
+      browser:{available:true},browserRunning:true,browserHasData:true,computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
+    renderChat();expect(screen.getByRole("button",{name:"继续任务"})).toBeEnabled();
   });
   it.each(["default","browser_use","computer_use"] as const)("%s 运行时只显示普通停止按钮，没有专属状态栏", mode => {
     setStore({agentMode:mode});const {container}=renderChat();

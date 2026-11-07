@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import vm from 'node:vm';
-import { cleanNativeReviewEnvironment } from './lib/native-review-isolation.mjs';
+import { cleanNativeReviewEnvironment, withNativeReviewLoopbackBypass } from './lib/native-review-isolation.mjs';
 import { captureReviewModelLogs } from './lib/native-review-model.mjs';
 import { assertNativeReviewSessionUnlocked, activateNativeReviewWindow } from './lib/native-review-window.mjs';
 
@@ -146,11 +146,10 @@ const result={version:1,environment:'actual macOS native workspace journey',exec
   modelId:'echoagent-review/claude-opus-5-5',initial,passed:false,errors:[],mode:inlineOnly?'inline-only':'full-journey',
   scope:inlineOnly?'Tab-only actual Code UI/Theia/provider: shown, accept, native Undo, rapid typing/Escape discard, unchanged disk and zero CodingTask/session. No Ask/Plan/Agent requests, injected model results, or probe retry.':'Ask dirty buffer, edited Plan/Agent, two native checks, actual Theia Diff, two-project production UI navigation and return, real Tab. Fixture setup preloads only two recent-project entries and their scoped native grants, with no task/session/model/result injection.'};
 const reportPath=join(home,'native-review.json');
-const environment={...cleanNativeReviewEnvironment(process.env),PATH:`${dirname(process.execPath)}:${process.env.PATH??''}`,
+const environment=withNativeReviewLoopbackBypass({...cleanNativeReviewEnvironment(process.env),PATH:`${dirname(process.execPath)}:${process.env.PATH??''}`,
   GROK_HOME:join(home,'empty-legacy'),ECHO_DESKTOP_REVIEW:'1',ECHO_DESKTOP_REVIEW_CODE:'1',ECHO_DESKTOP_REVIEW_CODING_WORKSPACE:'1',
   ECHO_DESKTOP_REVIEW_CODING_INLINE_ONLY:inlineOnly?'1':'0',
-  ECHO_DESKTOP_REVIEW_PHASE:'first-launch',npm_config_cache:join(home,'npm-cache'),npm_config_update_notifier:'false',npm_config_audit:'false',npm_config_fund:'false'};
-for(const key of ['HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'])delete environment[key];
+  ECHO_DESKTOP_REVIEW_PHASE:'first-launch',npm_config_cache:join(home,'npm-cache'),npm_config_update_notifier:'false',npm_config_audit:'false',npm_config_fund:'false'});
 console.log(`Isolated workspace home: ${home}`);console.log(`Native evidence: ${output}`);
 let child;
 let interrupted=false;

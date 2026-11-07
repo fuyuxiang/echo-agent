@@ -486,6 +486,7 @@ mod tests {
             fork_context_source: None,
             fork_parent_prompt_id: None,
             inherited_prefix_len: None,
+            title_source_prompt_index: None,
             hidden: None,
             source_workspace_dir: None,
             git_root_dir: None,

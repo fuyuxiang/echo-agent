@@ -70,6 +70,25 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
     set(area, text); await wait(() => area.value === text, 'actual draft');
     (await wait(() => { const el = document.querySelector('.echo-composer button[aria-label="发送"]'); return visible(el) && !el.disabled ? el : null; }, 'actual send')).click();
   };
+  const browserSettings = async () => {
+    (await wait(() => document.querySelector('button[aria-label="设置"]'), 'settings entry')).click();
+    (await wait(() => [...document.querySelectorAll('.settings-navigation__item')]
+      .find(el => el.querySelector('.settings-navigation__label')?.textContent.trim() === '安全与权限'), 'security settings')).click();
+    const disclosure = await wait(() => document.querySelector('[data-setting-id="browser-data"]'), 'task browser settings');
+    if (!disclosure.open) disclosure.querySelector('summary').click();
+    const picker = await wait(() => disclosure.querySelector('select[aria-label="管理浏览器数据的任务"]'), 'browser task selection');
+    assert([...picker.options].some(option => option.value === sessionId), 'Owned browser task missing from settings');
+    if (picker.value !== sessionId) {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(picker, sessionId);
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    await wait(() => picker.value === sessionId && disclosure.querySelector('input[type="checkbox"]'), 'exact browser task settings loaded');
+    return disclosure;
+  };
+  const closeSettings = async () => {
+    (await wait(() => document.querySelector('button[aria-label="关闭设置"]'), 'close browser settings')).click();
+    await wait(() => !document.querySelector('button[aria-label="关闭设置"]'), 'browser settings closed');
+  };
   const handled = new Set(), handledApprovals = new Set();
   const allowedOperation = request => {
     if (desired === 'restored-no-tools') return null;
@@ -79,6 +98,7 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
     if (!raw || typeof raw.tool_name !== 'string' || !raw.tool_input || Array.isArray(raw.tool_input)) return null;
     if (!raw.tool_name.startsWith('echoagent-automation__')) return null;
     const name = raw.tool_name.slice('echoagent-automation__'.length), args = raw.tool_input;
+    if (desired === 'resume-readonly' && !['browser_snapshot', 'automation_status'].includes(name)) return null;
     if (['browser_start', 'browser_snapshot', 'browser_screenshot', 'browser_downloads', 'automation_status'].includes(name)
       && Object.keys(args).length === 0) return { name, args };
     if (name === 'browser_navigate' && Object.keys(args).join(',') === 'url' && args.url === scope.url) return { name, args };
@@ -104,6 +124,9 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
       'Unexpected question, trust or plan cannot be approved by this journey');
     for (const request of pending.permissions ?? []) {
       if (handled.has(request.requestId)) continue;
+      // Generic chat permission cards are behind the settings modal. Handle
+      // those only after closing it, through the visible production card.
+      if (document.querySelector('button[aria-label="关闭设置"]')) continue;
       const operation = allowedOperation(request);
       if (!operation) { await call('agent_resolve_permission', { requestId: request.requestId, optionId: null, cancelled: true });
         let raw = request.rawInput;
@@ -133,7 +156,9 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
           assert(['发送本次验收文本', '下载中文验收文件'].includes(target), 'Unexpected click target'); accept = true;
         } else assert(desired === 'reject-delete' && approval.tool === 'browser_click' && target === '删除本次测试记录', 'Unexpected action denied');
       }
-      const card = document.querySelector('.perm-inline[data-approval-source="automation"]'), action = button(card, accept ? '允许一次' : '拒绝');
+      const card = document.querySelector(desired === 'private-network'
+        ? '.browser-task-settings .perm-inline[data-approval-source="automation"]'
+        : '.chatview .perm-inline[data-approval-source="automation"]'), action = button(card, accept ? '允许一次' : '拒绝');
       if (!visible(card) || !action) continue;
       assert(card.textContent.includes(approval.title), 'Rendered safety card does not match native request');
       action.click(); handledApprovals.add(approval.requestId);
@@ -193,7 +218,9 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
       return { capability, cwd: scope.cwd, pid: context.pid };
     });
     await listen('agent://complete', ({ payload }) => completions.push(payload));
-    await listen('agent://update', ({ payload }) => { if (['tool_call', 'tool_call_update'].includes(payload?.sessionUpdate ?? payload?.type) && updates.length < 120) updates.push(payload); });
+    await listen('agent://update', ({ payload }) => { const update = payload?.update ?? payload;
+      if (['tool_call', 'tool_call_update'].includes(update?.sessionUpdate ?? update?.type) && updates.length < 120)
+        updates.push(payload.update ? { ...update, sessionId: payload.sessionId } : payload); });
     await wait(async () => { const auth = await call('agent_auth_status');
       return auth.ready && auth.runtimeReady && auth.synchronized && auth.runtimeModels.includes(scope.modelId); }, 'actual model readiness', 90000);
     if (scope.phase === 'restart') {
@@ -239,6 +266,13 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
         return visible(el) && !el.disabled ? el : null; }, 'real Composer model selector'); selector.click();
       (await wait(() => [...document.querySelectorAll('.model-selector__item')].find(el => visible(el)
         && el.dataset.modelId === scope.modelId), 'exact Qwen option')).click();
+      (await wait(() => document.querySelector('.workspace-picker__trigger'), 'workspace chooser')).click();
+      await call('write_text_file', { path: 'browser-workspace-picker-ready.json', workspaceRoot: scope.cwd,
+        content: JSON.stringify({ nonce, cwd: scope.cwd }) });
+      (await wait(() => button(document, '选择文件夹…'), 'native directory picker')).click();
+      await wait(() => document.querySelector('.workspace-picker__trigger')?.getAttribute('aria-label')
+        === `工作目录：${scope.cwd}。点击切换`, 'native picker selected exact browser workspace');
+      report.workspaceSelection = { cwd: scope.cwd, via: 'native folder picker' };
       await stage('browser-mode-ui', async () => {
         (await wait(() => document.querySelector('.echo-composer button[aria-label="添加"]'), 'add menu')).click();
         (await wait(() => [...document.querySelectorAll('[role="menuitemradio"]')].find(el => visible(el)
@@ -261,11 +295,12 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
         return { ...state, mcp: { name: server.name, status: server.status, live: server.live, tools: server.tools.map(tool => tool.name) } };
       });
       await stage('browser-network-consent-ui', async () => {
-        desired = 'private-network'; (await wait(() => document.querySelector('.automation-control__more summary'), 'network options')).click();
-        const checkbox = await wait(() => document.querySelector('.automation-control__private input'), 'actual private network checkbox');
+        desired = 'private-network'; const settings = await browserSettings();
+        const checkbox = await wait(() => settings.querySelector('input[type="checkbox"]'), 'actual private network checkbox');
         assert(!checkbox.checked, 'Consent starts unchecked'); checkbox.click();
         await wait(async () => { await service(); return (await call('automation_status', { sessionId })).allowPrivateNetwork; }, 'real safety approval then network enable');
-        assert(report.approvals.some(item => item.action === 'automation_set_private_network' && item.approved), 'No real network confirmation'); return { confirmedViaUi: true };
+        assert(report.approvals.some(item => item.action === 'automation_set_private_network' && item.approved), 'No real network confirmation');
+        await closeSettings(); return { confirmedViaUi: true, selectedTask: sessionId, via: 'security task browser settings' };
       });
       await stage('browser-submit-download-model', async () => {
         desired = 'submit-download';
@@ -284,22 +319,26 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
         assert(report.approvals.filter(item => !item.approved && item.action === 'browser_click').length === 1, 'No actual rejected delete card'); return result;
       });
       await stage('browser-takeover-resume-ui', async () => {
-        desired = 'none'; (await wait(() => button(document.querySelector('.automation-control'), '接管'), 'real takeover')).click();
+        desired = 'none'; await send('停一下');
         const paused = await wait(async () => { const s = await call('automation_status', { sessionId }); return s.paused ? s : null; }, 'native paused boundary');
         assert((await call('automation_pending_approvals', { sessionId })).length === 0, 'Takeover left live approvals');
-        (await wait(() => button(document.querySelector('.automation-control'), '继续'), 'real resume')).click();
-        await wait(async () => !(await call('automation_status', { sessionId })).paused, 'native resumed'); return { paused, resumedViaUi: true };
+        desired = 'resume-readonly'; const marker = `BROWSER-RESUMED-${nonce}`, before = updates.length;
+        const resumed = await turn(`继续之前的网页任务，仅通过use_tool调用echoagent-automation__browser_snapshot读取当前同一页面，tool_input严格为{}。不要点击、输入、导航或访问其他网址；之后只回复“${marker}”。`, marker);
+        assert(updates.slice(before).some(update => update.status === 'completed' && update.rawOutput?.type === 'MCP'
+          && update.rawOutput.server_name === 'echoagent-automation' && update.rawOutput.tool_name === 'browser_snapshot'), 'Resume has no real browser snapshot');
+        await wait(async () => !(await call('automation_status', { sessionId })).paused, 'native resumed');
+        return { paused, resumedViaUi: true, via: 'production Composer pause and continuation', resumed };
       });
       await stage('browser-clear-data-ui', async () => {
-        const details = document.querySelector('.automation-control__more'); if (!details.open) details.querySelector('summary').click();
-        (await wait(() => button(document.querySelector('.automation-control'), '清除本任务浏览器数据'), 'real clear browser')).click();
+        const settings = await browserSettings();
+        (await wait(() => button(settings, '清除浏览器数据'), 'real clear browser')).click();
         const dialog = await wait(() => [...document.querySelectorAll('[role="alertdialog"]')].find(el => visible(el) && el.textContent.includes('清除该任务的浏览器数据')), 'real clear confirmation');
         button(dialog, '取消')?.click();
         assert((await call('automation_status', { sessionId })).browserHasData, 'Cancel removed browser data');
-        (await wait(() => button(document.querySelector('.automation-control'), '清除本任务浏览器数据'), 'clear retry')).click();
+        (await wait(() => button(settings, '清除浏览器数据'), 'clear retry')).click();
         (await wait(() => button([...document.querySelectorAll('[role="alertdialog"]')].find(el => visible(el) && el.textContent.includes('清除该任务的浏览器数据')), '清除数据'), 'explicit clear data')).click();
         const state = await wait(async () => { const s = await call('automation_status', { sessionId }); return s.paused && !s.browserRunning && !s.browserHasData ? s : null; }, 'actual profile removal + paused');
-        return { state, cancelPreservedProfile: true, clearConfirmedViaUi: true };
+        await closeSettings(); return { state, cancelPreservedProfile: true, clearConfirmedViaUi: true, selectedTask: sessionId };
       });
     }
   } catch (error) { report.errors.push(String(error?.message || error).slice(0, 2000)); }

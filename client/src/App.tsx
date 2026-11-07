@@ -190,6 +190,13 @@ type SessionSelectionIntent =
   | { kind: "subagent"; source: SubagentOpenContext }
   | { kind: "return"; point: SubagentReturnPoint };
 
+class SessionNavigationSupersededError extends Error {
+  constructor() {
+    super("任务打开已被新的导航操作取代");
+    this.name = "SessionNavigationSupersededError";
+  }
+}
+
 function publishQuotaAlert(
   records: UsageRecord[],
   config: QuotaConfig | null,
@@ -2026,12 +2033,9 @@ function Shell() {
       (message) => message.id === beforeCancel.streamingMessageId,
     );
     const activePromptId = beforeCancel?.pendingSendNowPromptId ?? activeMessage?.promptId;
-    if (!beforeCancel?.streamingMessageId && !beforeCancel?.pendingSendNowPromptId
-      && sessionStore.getState().agentMode !== "computer_use"
-      && sessionStore.getState().agentMode !== "browser_use") {
-      showToast(action === "pause" ? "当前任务没有正在运行的内容" : "当前任务已停止");
-      return false;
-    }
+    // ChatView uses native tool status to reject ordinary idle chat controls.
+    // Once requested, always apply the native execution fence: Runtime's
+    // coding mode can be default while a browser/computer session is live.
     sessionStore.getState().requestControl(sessionId, action, activePromptId);
     sessionsStore.getState().upsert({
       sessionId,
@@ -2433,7 +2437,7 @@ function Shell() {
       try {
         const list = await agentListAllSessions(true);
         if (selectionGenerationRef.current !== generation) {
-          if (strict) throw new Error("任务打开已被新的导航操作取代");
+          if (strict) throw new SessionNavigationSupersededError();
           return;
         }
         sessionsStore.getState().mergeSessions(list);
@@ -2448,7 +2452,7 @@ function Shell() {
         try {
           const list = await agentListSessions(sessionCwd, true);
           if (selectionGenerationRef.current !== generation) {
-            if (strict) throw new Error("任务打开已被新的导航操作取代");
+            if (strict) throw new SessionNavigationSupersededError();
             return;
           }
           sessionsStore.getState().mergeSessions(list);
@@ -2463,7 +2467,7 @@ function Shell() {
       }
     }
     if (selectionGenerationRef.current !== generation) {
-      if (strict) throw new Error("任务打开已被新的导航操作取代");
+      if (strict) throw new SessionNavigationSupersededError();
       return;
     }
     if (!entry) {
@@ -2529,7 +2533,7 @@ function Shell() {
       const loadedModelId = await agentLoadSession(sessionId, entry.cwd);
       historyLoaded = true;
       if (selectionGenerationRef.current !== generation) {
-        if (strict) throw new Error("任务打开已被新的导航操作取代");
+        if (strict) throw new SessionNavigationSupersededError();
         return;
       }
       // The load response is authoritative; older runtimes may omit models.
@@ -2787,6 +2791,9 @@ function Shell() {
       await handleSelectSession(newId, cwd, false, true);
       if (sessionsStore.getState().currentSessionId === newId) setConversationNavigation({sessionId:newId, sequence:++conversationNavigationSequence.current, focusComposer:true});
     } catch (error) {
+      // A newer selection can join this same successful native replay. The
+      // superseded caller must not discard its history or display an error.
+      if (error instanceof SessionNavigationSupersededError) return;
       // A failed first replay is a partial cache, never authoritative history.
       // Reopening must read all persisted chunks instead of suppressing them.
       if (!hadHistory) {
@@ -2805,6 +2812,7 @@ function Shell() {
       await handleSelectSession(id, undefined, false, true);
       if (sessionsStore.getState().currentSessionId === id) setConversationNavigation({sessionId:id, sequence:++conversationNavigationSequence.current, target});
     } catch (error) {
+      if (error instanceof SessionNavigationSupersededError) return;
       if (sessionsStore.getState().currentSessionId === sourceId || sessionsStore.getState().currentSessionId === id) {
         if (findSessionSummary(id)?.archived) {
           showActionToast("关联对话已归档，请先恢复后查看", [{label:"管理归档",onClick:()=>openSettings("archived")}],6000);

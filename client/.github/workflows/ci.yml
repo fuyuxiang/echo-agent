@@ -266,6 +266,9 @@ jobs:
         run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
+      - name: Run isolated memory library unit tests
+        if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
+        run: node scripts/test-rust-memory.mjs
       - name: Verify authentication with the patched cryptography backend
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: |

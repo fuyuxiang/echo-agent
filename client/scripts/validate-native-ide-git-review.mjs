@@ -1,4 +1,5 @@
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
+import { seedReviewModel } from './lib/native-review-model.mjs';
 // Private real Native Git journey. No repository push, global Git write or model.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
@@ -266,6 +267,9 @@ export async function runNativeIdeGitReview({ executable, resourceOnly = false, 
     result.compatibilityRevocationCount = revocations.length;
     const baselineFiles = Object.fromEntries(['ide-terminal-proof.cjs', '.gitignore'].map(name => [name, digest(physical(join(cwd, name)))]));
     if (resourceOnly) { result.resourcesPrepared = true; result.initialHead = initialHead; return result; }
+    // The production readiness gate requires an explicit model connection even
+    // though this Git/editor journey does not send a model prompt.
+    result.configuredModelId = seedReviewModel(home);
     server = createServer((request, response) => {
       if (request.method !== 'GET' || request.url !== `/ide-preview/${generation}`) { response.writeHead(404); response.end(); return; }
       previewRequests++; response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -302,6 +306,14 @@ export async function runNativeIdeGitReview({ executable, resourceOnly = false, 
     let lastActivation = Date.now();
     while (!ended && Date.now() - start < 660000) {
       try {
+        const partialPath = join(home, 'native-review.json');
+        if (existsSync(partialPath)) {
+          const partial = JSON.parse(physical(partialPath));
+          if (partial.passed === false) {
+            writeFileSync(join(output, 'first-launch.json'), physical(partialPath), { mode: 0o600 });
+            throw new Error(`Actual IDE renderer failed: ${JSON.stringify(partial.errors)}`);
+          }
+        }
         // Startup can take longer than the initial five-second activation
         // window. Retry only this child PID while awaiting the first handoff.
         if (!stageHandled && Date.now() - lastActivation >= 5000) {

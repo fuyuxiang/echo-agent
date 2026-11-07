@@ -27,6 +27,9 @@ try {
   await page.getByRole("dialog",{name:"重命名专家团",exact:true}).getByRole("textbox",{name:"专家团名称",exact:true}).fill("统一管理专家团");
   await page.getByRole("button",{name:"保存名称",exact:true}).click();
   await page.getByRole("heading",{name:"统一管理专家团",exact:true}).waitFor();
+  // The heading renders the new snapshot before GroupSettings merges it into
+  // its local draft in an effect. Await that merge, then verify both fields.
+  await page.waitForFunction(() => document.querySelector('.group-form--settings input')?.value === "统一管理专家团");
   assert.equal(await page.locator(".group-form--settings").getByRole("textbox",{name:"专家团名称",exact:true}).inputValue(),"统一管理专家团");
   assert.equal(await page.locator(".group-form--settings").getByRole("textbox",{name:"协作目标",exact:true}).inputValue(),"保留未保存的目标");
   await page.getByRole("button",{name:"保存专家团设置",exact:true}).click();

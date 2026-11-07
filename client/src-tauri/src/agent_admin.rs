@@ -248,7 +248,7 @@ fn open_memory_index_at(
     storage: &MemoryStorage,
     db_path: &Path,
 ) -> Result<Option<MemoryIndex>, String> {
-    let metadata = match std::fs::symlink_metadata(&db_path) {
+    let metadata = match std::fs::symlink_metadata(db_path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             return Err(format!(
                 "memory index must be a regular file: {}",
@@ -265,7 +265,7 @@ fn open_memory_index_at(
 
     init_sqlite_vec();
     MemoryIndex::open_or_create_preserving_dimensions(
-        &db_path,
+        db_path,
         storage.clone(),
         Default::default(),
         crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
@@ -457,18 +457,7 @@ fn session_summary_paths(storage: &MemoryStorage) -> Result<Vec<PathBuf>, String
 }
 
 fn path_belongs_to_session(path: &Path, session_id: &str) -> bool {
-    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-        return false;
-    };
-    if stem.contains(session_id) {
-        return true;
-    }
-    let sid8 = session_id.chars().take(8).collect::<String>();
-    if sid8.is_empty() {
-        return false;
-    }
-    let marker = format!("-{sid8}");
-    stem.ends_with(&marker) || stem.contains(&format!("{marker}-"))
+    echo_agent_memory::storage::session_log_path_belongs_to(path, session_id)
 }
 
 fn remove_session_summary_paths(
@@ -3238,6 +3227,80 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_full_source_preserves_its_uuid_v7_neighbor_and_search_index() {
+        let root = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(root.path().join("global"), root.path().join("workspace"));
+        let first = "01a1b736-b69b-7f72-9e6f-d29a21ad9f8a";
+        let second = "01a1b736-d919-7a83-82d0-3b846063a6fb";
+        let mut owned = Vec::new();
+        let mut preserved = Vec::new();
+        for (id, token) in [(first, "FirstSourceToken"), (second, "SecondSourceToken")] {
+            let path = storage
+                .write_daily_log("2026-11-08", "same-slug", id, token, false)
+                .unwrap();
+            storage
+                .write_daily_log("2026-11-08", "same-slug", id, token, false)
+                .unwrap();
+            let stem = path.file_stem().unwrap().to_str().unwrap();
+            let paths = if id == first {
+                &mut owned
+            } else {
+                &mut preserved
+            };
+            paths.push(path.clone());
+            for name in [
+                format!("{stem}.md"),
+                format!("{stem}.archive-1794130000123456789.md"),
+                format!("{stem}-1794130000123456789.md"),
+            ] {
+                let archived = storage.sessions_dir().join("archive").join(name);
+                std::fs::create_dir_all(archived.parent().unwrap()).unwrap();
+                std::fs::copy(&path, &archived).unwrap();
+                paths.push(archived);
+            }
+            paths.extend(
+                std::fs::read_dir(storage.sessions_dir().join(".history"))
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .filter(|p| super::path_belongs_to_session(p, id)),
+            );
+        }
+        init_sqlite_vec();
+        let db = storage.workspace_dir().join("index.sqlite");
+        let mut index = MemoryIndex::open_or_create(
+            &db,
+            storage.clone(),
+            Default::default(),
+            crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+        )
+        .unwrap();
+        index.reindex_file(&owned[0], "session").unwrap();
+        index.reindex_file(&preserved[0], "session").unwrap();
+        drop(index);
+        assert_eq!(
+            delete_session_memory_artifacts_from_storage(&storage, first).unwrap(),
+            owned.len()
+        );
+        assert!(owned.iter().all(|p| !p.exists()));
+        assert!(preserved
+            .iter()
+            .all(|p| std::fs::read_to_string(p).unwrap() == "SecondSourceToken"));
+        let index = MemoryIndex::open_or_create(
+            &db,
+            storage,
+            Default::default(),
+            crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+        )
+        .unwrap();
+        assert!(index.search_fts("FirstSourceToken", 10).unwrap().is_empty());
+        assert!(!index
+            .search_fts("SecondSourceToken", 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn model_reasoning_cannot_be_persisted_as_memory() {
         use echo_agent_runtime::session::memory::{dream, flush};
 
@@ -3425,5 +3488,140 @@ mod tests {
         assert_eq!(commands[0].name, "legacy");
         assert_eq!(commands[0].argument_hint.as_deref(), Some("value"));
         assert_eq!(commands[0].source.as_deref(), Some("builtin"));
+    }
+}
+
+#[cfg(test)]
+mod memory_session_identity_tests {
+    #[test]
+    fn memory_logs_preserve_distinct_real_uuid_v7_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = echo_agent_memory::MemoryStorage::new_flat(root.path(), root.path());
+        // Two actual IDs from the isolated native knowledge acceptance. UUIDv7
+        // shares its timestamp prefix across rapidly created conversations.
+        let first_id = "01a1b736-b69b-7f72-9e6f-d29a21ad9f8a";
+        let second_id = "01a1b736-d919-7a83-82d0-3b846063a6fb";
+        let first = storage
+            .write_daily_log(
+                "2026-11-08",
+                "task_completed",
+                first_id,
+                "first project fact",
+                false,
+            )
+            .unwrap();
+        let second = storage
+            .write_daily_log(
+                "2026-11-08",
+                "task_completed",
+                second_id,
+                "second project fact",
+                false,
+            )
+            .unwrap();
+        assert_ne!(
+            first, second,
+            "Distinct source conversations must not overwrite the same automatic memory log"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&first).unwrap(),
+            "first project fact"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap(),
+            "second project fact"
+        );
+        let others = echo_agent_memory::dream_lock::sessions_since(
+            &storage.sessions_dir(),
+            std::time::SystemTime::UNIX_EPOCH,
+            Some(first_id),
+        )
+        .unwrap();
+        assert_eq!(others.len(), 1);
+        assert_eq!(others[0], second.file_stem().unwrap().to_str().unwrap());
+        let memory = echo_agent_memory::records::remember(
+            &storage,
+            echo_agent_memory::records::RecordInput {
+                scope: "global".into(),
+                kind: "user".into(),
+                key: "first fact".into(),
+                content: "first project fact".into(),
+                ..Default::default()
+            },
+            Some(first_id),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        echo_agent_memory::records::retire(
+            &storage,
+            "global",
+            &memory.id,
+            Some(memory.revision),
+            false,
+        )
+        .unwrap();
+        assert!(echo_agent_memory::records::source_path_blocked(&storage, &first).unwrap());
+        assert!(!echo_agent_memory::records::source_path_blocked(&storage, &second).unwrap());
+        let legacy = storage.sessions_dir().join("2026-11-08-old-01a1b736.md");
+        assert!(echo_agent_memory::records::source_path_blocked(&storage, &legacy).unwrap());
+        let safe = echo_agent_memory::storage::session_log_source_id("../unsafe/来源");
+        assert_eq!(safe.len(), 64);
+        assert!(safe.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+    #[test]
+    fn memory_core_context_keeps_current_unpinned_project_facts() {
+        let data = tempfile::tempdir().unwrap();
+        let cwd = tempfile::Builder::new()
+            .prefix("memory-core-context-")
+            .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
+            .unwrap();
+        let storage = echo_agent_memory::MemoryStorage::new(cwd.path(), Some(data.path()));
+        let project = echo_agent_memory::records::remember(
+            &storage,
+            echo_agent_memory::records::RecordInput {
+                scope: "workspace".into(),
+                kind: "project".into(),
+                key: "quality workflow".into(),
+                content: "Current project review code is REVIEW-current-project".into(),
+                pinned: false,
+                ..Default::default()
+            },
+            Some("project-source"),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        echo_agent_memory::records::remember(
+            &storage,
+            echo_agent_memory::records::RecordInput {
+                scope: "global".into(),
+                kind: "reference".into(),
+                key: "unrelated document".into(),
+                content: "REFERENCE-kept-for-search".into(),
+                pinned: false,
+                ..Default::default()
+            },
+            None,
+            false,
+        )
+        .unwrap();
+        let context = echo_agent_memory::records::core_context(&storage).unwrap();
+        assert!(
+            context.contains("REVIEW-current-project"),
+            "Durable facts for the current project must not depend on a vector-search score"
+        );
+        assert!(!context.contains("REFERENCE-kept-for-search"));
+        echo_agent_memory::records::retire(
+            &storage,
+            "workspace",
+            &project.id,
+            Some(project.revision),
+            false,
+        )
+        .unwrap();
+        assert!(!echo_agent_memory::records::core_context(&storage)
+            .unwrap()
+            .contains("REVIEW-current-project"));
     }
 }

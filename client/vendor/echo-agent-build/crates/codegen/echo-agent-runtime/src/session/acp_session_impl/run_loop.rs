@@ -638,8 +638,7 @@ pub(super) async fn run_session(
         tokio::select! {
                 biased;
                 // Idle flush timer fired — run background flush.
-                _ = &mut idle_flush_sleep, if session.idle_flush_timeout.is_some()
-                    && session.memory.is_enabled() => {
+                _ = &mut idle_flush_sleep, if session.idle_flush_timeout.is_some() => {
                     // Failed jobs must recover even in an unchanged/empty chat.
                     // Exact checkpoint identities suppress completed work; history
                     // length cannot identify edits or post-compaction content.
@@ -648,7 +647,11 @@ pub(super) async fn run_session(
                     // Keep polling the timer even during a request: a select!
                     // branch disabled by a background-owned flag will not wake
                     // when that flag changes without another actor command.
-                    if !session.memory.is_flushing.load(std::sync::atomic::Ordering::Relaxed) {
+                    // Poll configured timers while memory is disabled too: the
+                    // live config can be re-enabled without an actor command.
+                    // A disabled select! branch would otherwise stay asleep.
+                    if session.memory.is_enabled()
+                        && !session.memory.is_flushing.load(std::sync::atomic::Ordering::Relaxed) {
                         session.memory.jobs.spawn({
                             let session = session.clone();
                             async move { session.queue_memory_extraction().await; }
@@ -660,16 +663,17 @@ pub(super) async fn run_session(
                     }
                 }
                 // Dream check timer — periodically run dream consolidation.
-                _ = &mut dream_check_sleep, if session.dream_check_timeout.is_some()
-                    && session.memory.is_enabled() => {
-                    tracing::debug!(target: echo_agent_telemetry::memory_log::TARGET,
-                        "MEMORY_DREAM_CHECK: timer fired");
-                    session.memory.jobs.spawn({
-                        let session = session.clone();
-                        async move {
-                            session.maybe_run_dream().await;
-                        }
-                    });
+                _ = &mut dream_check_sleep, if session.dream_check_timeout.is_some() => {
+                    if session.memory.is_enabled() {
+                        tracing::debug!(target: echo_agent_telemetry::memory_log::TARGET,
+                            "MEMORY_DREAM_CHECK: timer fired");
+                        session.memory.jobs.spawn({
+                            let session = session.clone();
+                            async move {
+                                session.maybe_run_dream().await;
+                            }
+                        });
+                    }
                     if let Some(timeout) = session.dream_check_timeout {
                         dream_check_sleep.as_mut().reset(tokio::time::Instant::now() + timeout);
                     }

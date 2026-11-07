@@ -11,6 +11,22 @@ import { filesystemPickDirectory } from "@/lib/agent-client";
 import { GlobalTooltip } from "../GlobalTooltip";
 
 describe("WorkspacePicker", () => {
+  it.each([
+    { cwd: "/work/current", defaultWorkspaceCwd: "/default", automaticWorkspace: false, expected: "/work/current" },
+    { cwd: undefined, defaultWorkspaceCwd: "/default", automaticWorkspace: true, expected: "/default" },
+    { cwd: undefined, defaultWorkspaceCwd: undefined, automaticWorkspace: false, expected: undefined },
+  ])("系统目录选择器从有效工作目录打开：$expected", async ({ expected, ...props }) => {
+    vi.mocked(filesystemPickDirectory).mockClear();
+    const select = vi.fn();
+    render(<WorkspacePicker {...props} workspaces={[]} onSelectWorkspace={select} />);
+    fireEvent.click(screen.getByRole("button", { name: /工作目录/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "选择文件夹…" }));
+    expect(filesystemPickDirectory).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(filesystemPickDirectory).mock.calls[0][0]).toBe(expected);
+    await waitFor(() => expect(screen.getByRole("menuitem", { name: "选择文件夹…" })).toBeEnabled());
+    expect(select).not.toHaveBeenCalled();
+  });
+
   it("自动目录与手动目录可在创建前选择，自动分配的历史任务不污染候选列表", () => {
     const select = vi.fn();
     const id = "019a3c14-99e0-7654-bff0-baa788d4bbdd";

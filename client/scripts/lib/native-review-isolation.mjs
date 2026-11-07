@@ -11,3 +11,9 @@ export function cleanNativeReviewEnvironment(environment = process.env) {
     ECHO_AGENT_TELEMETRY_TRACE_UPLOAD: 'false',
   };
 }
+
+export function withNativeReviewLoopbackBypass(environment) {
+  const bypass = [...new Set(['127.0.0.1', 'localhost', '::1',
+    ...(environment.NO_PROXY ?? '').split(','), ...(environment.no_proxy ?? '').split(',')])].filter(Boolean).join(',');
+  return { ...environment, NO_PROXY: bypass, no_proxy: bypass };
+}

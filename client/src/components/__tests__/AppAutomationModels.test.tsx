@@ -428,6 +428,16 @@ describe("自动化会话模型同步", () => {
     expect(useMessageQueueStore.getState().getQueue("auto-1")[0].status).toBe("paused");
   });
 
+  it("Runtime 默认模式和空闲回合不阻止已请求的原生停止屏障", async () => {
+    await start();created("model-a");
+    fireEvent.click(screen.getByRole("button",{name:"打开自动化"}));
+    await screen.findByTestId("model");
+    expect(useSessionStore.getState().streaming).toBe(false);
+    act(()=>useSessionStore.getState().setAgentMode("default","auto-1"));
+    fireEvent.click(screen.getByRole("button",{name:"停止执行"}));
+    await waitFor(()=>expect(invoke).toHaveBeenCalledWith("agent_cancel",{sessionId:"auto-1",cancelAction:"stop",promptId:null}));
+    await waitFor(()=>expect(useSessionStore.getState().transcripts["auto-1"].control?.phase).toBe("stopped"));
+  });
   it("停止确认先于完成事件到达时，也会暂停并保留待发送消息", async () => {
     await start();
     created("model-a");

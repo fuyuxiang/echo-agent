@@ -276,6 +276,10 @@ export function SettingsPanel({
     ancestors.forEach(details => details.querySelector<HTMLElement>(":scope > summary")?.click());
     target.querySelector<HTMLElement>(':scope > button[aria-expanded="false"]')?.click();
     const frame = requestAnimationFrame(() => {
+      // A new query can arrive before the previous selection's next frame.
+      // Preserve its focus and results instead of applying stale navigation.
+      const search = modalRef.current?.querySelector<HTMLInputElement>(".settings-search input");
+      if (search?.value.trim()) return;
       target.scrollIntoView?.({ block: "center" });
       const control = target.querySelector<HTMLElement>("summary, button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), h2");
       const focusTarget = control ?? target;
