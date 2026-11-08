@@ -6,6 +6,7 @@
 ## [Unreleased]
 
 ### Added
+- 设置向导的服务商目录新增 Runcrate（OpenAI 兼容的 AI 云，环境变量 `RUNCRATE_API_KEY`，默认地址 `https://api.runcrate.ai/v1`）
 - 服务端源码、Dashboard、内置技能、测试和组件脚本归入可独立下载部署的 `echo-agent-runtime/`，Python 包名、导入名和 CLI 命令保持兼容。
 - 源码安装支持本地目录及无 Git 的解压目录；远程安装稀疏检出 Runtime，并明确准备和验证 Dashboard。
 - 发布构建同时生成 wheel、含完整前端源码的 sdist，以及附带预构建 Dashboard 的独立 Runtime 压缩包；CI 覆盖仓库外构建、解压安装与真实 Gateway 验证。
