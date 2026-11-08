@@ -7,6 +7,7 @@
 - 开发机器使用 Node.js 22 或 24。`pnpm ide:build` 编译 [`vendor/theia-platform/`](../vendor/theia-platform/)，`pnpm ide:stage` 将 Theia 后端、生产依赖和当前平台的 Node.js 放入 Tauri 资源目录。
 - `pnpm tauri dev` 和 `pnpm tauri build` 的前置钩子会运行 `pnpm ide:prepare`；缺少资源、架构变化或源码更新时重新构建和暂存。安装包中的 IDE 使用随包分发的 Node.js，普通用户不需另装。
 - `pnpm ide:build` 从仓库内经过 SHA-256 核对的 VSIX 解包固定版本基础语言扩展、VS Code Git 与 Git Base；`pnpm ide:stage` 将它们与轻量 TOML 语法扩展一起放入安装包。运行时从本地 `plugins/` 加载，不依赖用户联网或手动安装扩展。基础语法覆盖 JavaScript/JSX、TypeScript/TSX、Rust、Python、Java、JSON、YAML、TOML、HTML、CSS、Markdown 和 Shell Script。TOML 仅提供语法功能。Git/Git Base 固定为 `1.95.3`；Git provider 使用系统 Git、真实 SCM 页面及 Git 命令，Git Base 是其必需依赖。`pnpm ide:plugins:update` 才从固定 OpenVSX URL 更新仓库 VSIX 及摘要；普通准备验证许可证、语言语法/可执行入口、版本、依赖和 Git 命令，缓存复用还核对 staged 插件完整内容摘要。
+- Git 扩展的版本探测与非交互进程由 [`patch-theia-git-windowless.mjs`](../scripts/patch-theia-git-windowless.mjs) 定点补丁，在 Windows 隐藏后台控制台，同时保留 cwd、环境、stdio、取消和错误传播。原 VSIX 与摘要保持不变，暂存目录记录补丁来源；未知版本、入口或摘要会阻断构建。构建、暂存、缓存复用和安装包验收均核验补丁与插件树指纹，升级 Git 扩展时需同步复核。
 - `pnpm ide:build` 和 `pnpm ide:stage` 会给固定版本 `node-pty` 的 Windows ConPTY 清理 helper 加 `windowsHide: true`，保持交互 shell 的上游 ConPTY 创建参数，并处理终端管道在连接前后发生的错误。构建会将旧版加过 `CREATE_NO_WINDOW` 的源码恢复到固定版本的上游参数，再重建原生模块并同步到 `prebuilds/`。暂存缓存和运行时验证会检查源码与二进制；Windows 打包还会实际启动、使用并关闭一个 ConPTY 终端。升级 `node-pty` 时须先复核补丁，构建会在版本或调用点变化时失败。
 - Theia 的 `ipc-bootstrap` 和 `plugin-host` 是后台 IPC worker，Windows 构建让它们保留管道与 IPC、以无控制台模式启动。构建后、暂存后及复用缓存前均检查实际 JavaScript 产物；补丁调用点变化会让构建失败。IDE 的交互终端仍由 ConPTY 创建，不套用这些后台进程标志。
 - 如启动失败，先看应用数据目录中的 `theia.log`。开发者可以用 [`smoke-theia.mjs`](../scripts/smoke-theia.mjs) 检查内嵌页面与桥接。
@@ -26,3 +27,7 @@ Theia 的文件操作和交互终端以当前系统用户身份运行。授权�
 `ECHO_AGENT_HOME` 指向独立于默认 `~/.echo-agent/` 的数据目录时，IDE 配置与日志保存到该目录的 `theia/` 子目录，便于隔离测试与独立数据空间。使用默认数据目录时继续使用 Tauri 应用数据目录中的现有 `theia-config/` 和 `theia.log`，保留既有编辑器设置和布局。
 
 关键实现见 [`theia.rs`](../src-tauri/src/theia.rs)、[`TheiaIdeFrame.tsx`](../src/features/coding/TheiaIdeFrame.tsx) 和 [`prepare-theia.mjs`](../scripts/prepare-theia.mjs)。
+
+## 维护与验证
+
+修改桥接或插件后运行 `pnpm ide:build`、`pnpm ide:stage`、`pnpm ide:verify-git` 和 `pnpm test:ide`；生产依赖与兼容补丁另见 [依赖维护](dependency-security.md)。原生 Git/编辑器驱动与文件、进程独立核验见 [开发与验收](testing.md)，Windows 文件切换、后台窗口和输入法按 [Windows 桌面验收](windows-desktop-feedback-acceptance.md) 检查。

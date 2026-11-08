@@ -8,13 +8,13 @@ IDE 代理认证使用独立的 `proxyAuthorization` 配置，由后端传给 CO
 
 UI 审计的浏览器启动和 PNG 解码共用 `scripts/ui-review-tools.mjs`，统一从 `PLAYWRIGHT_MODULE` 指定的独立安装解析 Playwright；未指定时可复用本地 IDE 工具。干净 CI 不需要安装完整 Theia 依赖，脚本回归测试覆盖仓库外工具路径及错误配置提示。
 
-## 2026-11-03 修复依据
+## 解析与合并依赖
 
 桌面、Agent workspace 和 Markdown fuzz workspace 的 `pulldown-cmark` 均升级至 0.13.6，workspace 的最低依赖版本同步调整，修复 [RUSTSEC-2026-0433](https://rustsec.org/advisories/RUSTSEC-2026-0433.html)。当前解析配置没有启用公告所述的 `ENABLE_WIKILINKS`，仍升级依赖以消除潜在调用风险，不为旧版本添加审计例外。
 
 `deepmerge 4.3.1+echo.1` 的原型污染回移补丁通过 npm workspace 选用。审计只认可 GHSA-gcqx-w48m-w2h4、精确版本、`security/deepmerge` 链接和已固定的四个文件 SHA-256；扫描前后都重新验证内容。原始 registry 副本、改动后的补丁、其他公告和独立的传递依赖告警仍阻断。原始扫描计数、命中路径与补丁依据保留在审计产物中。
 
-## 2026-10-27 修复依据
+## 压缩与哈希依赖
 
 桌面和 Agent workspace 的锁文件均使用 `zstd 0.14.3`、`zstd-safe 8.2.0`、`zstd-sys 2.1.2+zstd.1.5.7`，处理 RUSTSEC-2026-0391、RUSTSEC-2026-0395 至 0406 和 RUSTSEC-2026-0410。直接依赖门槛同时调整为 `zstd 0.14.3`、`tonic 0.14.7` 和 `async-compression 0.4.51`，使传递依赖也选用修复版本。修复边界见 [zstd 公告](https://rustsec.org/advisories/RUSTSEC-2026-0391.html)、[zstd-safe 公告](https://rustsec.org/advisories/RUSTSEC-2026-0395.html)和 [zstd-sys 公告](https://rustsec.org/advisories/RUSTSEC-2026-0410.html)。`block-buffer 0.12.0` 升至上游修复版 `0.12.1`。
 
@@ -22,7 +22,7 @@ UI 审计的浏览器启动和 PNG 解码共用 `scripts/ui-review-tools.mjs`，
 
 `src-tauri/tests/block_buffer_panic_safety.rs` 通过实际 `sha2 0.10` 依赖的 buffer API，分别验证带特殊字节输入的压缩回调、写入特殊字节的生成回调 panic 后，捕获 panic 并继续复用时游标不被覆盖。该测试由现有宿主测试 job 执行；审计 job 另运行 `python3 -m unittest discover -s scripts -p 'test_audit_dependencies.py'`，验证精确匹配、非原始发布包保护及其他安全发现仍使审计失败。
 
-## 2026-10-24 修复依据
+## Runtime 与 IDE 依赖
 
 宿主和 Runtime 的 Tokio 锁至 1.53.3、ctutils 锁至 0.4.4，分别处理 [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html) 和 [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)。两个 workspace 分别更新，不以其中一个锁文件代替另一个。
 
@@ -30,11 +30,11 @@ Theia 的 body-parser 保留 1.x / 2.x API，分别要求 1.20.9+ / 2.4.0+；mul
 
 `test:security` 从 Theia 与 MCP SDK 的实际模块路径分别加载两套 body-parser，在独立子进程的真实 HTTP 服务中验证 [GHSA-27r3-jxmh-p828](https://github.com/expressjs/body-parser/security/advisories/GHSA-27r3-jxmh-p828) 的流生命周期边界。有效 gzip 帧后加 NUL 和 100 KiB 尾部用于触发旧版未捕获的解压错误；分阶段 deflate 请求在解析回调后才发送最后字节，要求服务能读完 HTTP 请求，并保持另一路 SHA-256 消费者的数据完整。普通 JSON、合法 gzip、坏 gzip 的 400 响应及后续请求也逐项断言，子进程必须输出完整成功证据且以 0 退出。
 
-本地对照使用同一 fixture：1.20.8 / 2.3.0 各 5 次均因未捕获的 `Z_DATA_ERROR` 退出 1，1.20.9 / 2.4.0 各 5 次均通过。旧版本只安装在临时目录，不加入项目或 CI 依赖。单独检查已安装版本可执行 `node scripts/fixtures/body-parser-recovery.mjs /absolute/path/to/body-parser/index.js`；不能以短后缀 gzip 请求得到 200/400 作为漏洞已修复的证据。触发样例依据[上游回归用例](https://github.com/expressjs/body-parser/blob/1.20.9/test/json.js)。
+对照检查使用同一 fixture，要求修复版本正常退出，并拒绝未捕获的 `Z_DATA_ERROR`。旧版本仅安装在临时目录，不加入项目或 CI 依赖。单独检查已安装版本可执行 `node scripts/fixtures/body-parser-recovery.mjs /absolute/path/to/body-parser/index.js`；不能以短后缀 gzip 请求得到 200/400 作为漏洞已修复的证据。触发样例依据[上游回归用例](https://github.com/expressjs/body-parser/blob/1.20.9/test/json.js)。
 
-VSIX 开发工具通过 `@azure/identity` 引用 MSAL。当前最新 Identity 4.14.0 仍依赖 MSAL 6，而 [MSAL 公告](https://github.com/AzureAD/microsoft-authentication-library-for-js/security/advisories/GHSA-xcx6-jx8p-x3h5) 的修复从 7.1.0 开始，因此临时固定 Identity 4.13.0（使用 MSAL 3.8.10，满足 VSCE 的 `^4.1.0` 约束）。该开发依赖不进入 IDE 生产图；待上游发布兼容修复后再解除固定，不强制为 Identity 替换不同主版本的认证内核。真实 Azure 登录未在本地执行。
+VSIX 开发工具通过 `@azure/identity` 引用 MSAL。源码配置固定 Identity 4.13.0（使用 MSAL 3.8.10，满足 VSCE 的 `^4.1.0` 约束），避免选择依赖 MSAL 6 的版本；该分支的修复依据见 [MSAL 公告](https://github.com/AzureAD/microsoft-authentication-library-for-js/security/advisories/GHSA-xcx6-jx8p-x3h5)。该开发依赖不进入 IDE 生产图；解除固定前复核公告、上游依赖图与登录兼容性，不强制替换不同主版本的认证内核。
 
-本次完整命令、结果和未验证范围见 [源码审计记录](source-audit-2026-10-24.md)。
+验证命令与审计产物要求见下文；跨模块验收层级见 [开发与验收](testing.md)。具体运行结果随对应版本的 CI artifacts 保存。
 
 ## 工具链与依赖图
 
@@ -79,7 +79,7 @@ Theia 源码安装的 `postinstall` 自动应用补丁；IDE 构建入口会再�
 
 ## 升级流程
 
-1. 从依赖公告和上游修复确定受影响范围，分别检查前端、Theia 源码、IDE 生产图和五个 Rust 锁文件（包括独立原生验收 harness）。优先选用上游兼容修复。
+1. 从依赖公告和上游修复确定受影响范围，分别检查前端、Theia 源码、IDE 生产图和所有已跟踪的 Rust 锁文件（范围见上表，包括独立验收 harness）。优先选用上游兼容修复。
 2. 调整直接依赖或最小必要范围的 override。跨主版本覆盖时，逐一核对调用方的导出方式、模块路径、参数、流事件和取消行为；不能仅依据审计输出选择版本。
 3. 使用对应包管理器更新锁文件。修改 Theia 的生产依赖策略后运行 `pnpm ide:lock`，再用 `pnpm ide:build`、`pnpm ide:stage` 验证实际构建及生产安装。不要手工拼接锁文件。
 4. 修改 Rust 依赖时分别更新实际受影响的 workspace 锁文件，随后以 `--locked` 编译；桌面程序不会自动继承另一个 workspace 根目录的 `[patch.crates-io]`。
@@ -128,7 +128,7 @@ python3 scripts/audit-dependencies.py npm --output /tmp/echo-npm-audit
 python3 scripts/audit-dependencies.py rust --output /tmp/echo-rust-audit
 ```
 
-不指定输出目录时会创建系统临时目录。npm 部分并行审计前端、Theia 源码和重建的 IDE 生产依赖图；Rust 部分向 OSV 查询七个锁文件中的 registry 包版本，保留公告、包清单和分类结果。`test:security` 对照 Git 跟踪清单检查锁文件覆盖，避免新增 harness 被漏审。本地补丁通过来源摘要及配置检查验证，不以全局忽略公告替代修复。
+不指定输出目录时会创建系统临时目录。npm 部分并行审计前端、Theia 源码和重建的 IDE 生产依赖图；Rust 部分向 OSV 查询已纳入审计的全部锁文件中的 registry 包版本，保留公告、包清单和分类结果。`test:security` 对照 Git 跟踪清单检查锁文件覆盖，避免新增 harness 被漏审。本地补丁通过来源摘要及配置检查验证，不以全局忽略公告替代修复。
 
 - 退出码 `0`：本次扫描完成且没有安全发现。
 - 退出码 `1`：扫描完成但发现需处理的安全问题。

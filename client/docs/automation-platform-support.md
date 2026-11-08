@@ -9,7 +9,7 @@
 | Linux X11 | 检测到 Chromium 系浏览器后可用 | X11 会话提供 XTEST 扩展 |
 | Linux Wayland | 检测到 Chromium 系浏览器后可用 | 不启用全局截屏和输入注入；需切换 X11 会话 |
 
-新增的 macOS AX / Windows UI Automation 控件层复用同一 Computer Use 入口、Runtime 和审批。支持与实机验收是不同状态；接口、读取限制及本次验证结果见 [原生桌面控件](desktop-control/README.md)。
+macOS AX / Windows UI Automation 控件层复用同一 Computer Use 入口、Runtime 和审批。接口与读取限制见 [原生桌面控件](desktop-control/README.md)，实机判定方法见 [桌面控制验收](desktop-control/validation.md)。支持能力与特定版本的验收结果分别记录。
 
 ## 任务控制与确认
 

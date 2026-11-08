@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-// Canonical product palette, documented in docs/enterprise-theme-review.md.
+// Canonical product palette, documented in docs/theme-design.md.
 // Exact values are independent of the rendered tokens so token drift fails.
 const palette = {
   light: { default: [79,91,213], hover: [66,76,189], pressed: [54,63,159], foreground: [255,255,255] },

@@ -2,7 +2,7 @@
 
 Computer Use 在原有会话绑定、认证的 `echoagent-automation` MCP 服务内增加 AX（macOS）和 Microsoft UI Automation（Windows）适配。没有外部 Python、脚本解释器或需手工运行的生产 helper。Linux 保留现有 X11 截图与键鼠路线，原生控件返回不支持。
 
-本次实现及验收记录见 [validation.md](validation.md)。代码存在、编译通过、系统授权、真实桌面任务完成是不同状态；本次未通过的验收不能据此宣称完成。
+验收准备、场景和独立核验见 [桌面控制验收](validation.md)。代码存在、编译通过、系统授权和真实桌面任务完成是不同状态；验证结果须绑定实际版本与平台。
 
 ## 任务与暂停续做
 
@@ -22,6 +22,7 @@ macOS 首次需要在系统设置中授予实际运行的应用辅助功能与�
 
 | 工具 | 参数 | 返回与用途 |
 | --- | --- | --- |
+| `computer_context` | `app?`、`appRef?` 或 `windowRef?` | 合并已知应用匹配、窗口发现、紧凑控件与当前菜单命令；动作已返回新状态时直接使用，避免重复枚举 |
 | `computer_list_apps` | `name?`, `identifier?` | 正在运行的应用及后端 `ref`；可精确过滤已知目标，返回 unique/ambiguous/incomplete/not_found；Windows 当前枚举有顶层窗口的进程，并使用系统版本资源中的本地化名称、可执行文件名及不含扩展名的别名 |
 | `computer_list_windows` | `appRef?` | 优先按目标应用查窗口；某应用超时/不可访问时保留其他有效窗口并返回 incomplete、issues，不把全局失败当作目标无窗口 |
 | `computer_continue` | `cursor` | 用上页 `nextCursor` 继续读取，直到 null；保留原始 `resultId`、`snapshotId`、顺序和引用 |
@@ -31,10 +32,11 @@ macOS 首次需要在系统设置中授予实际运行的应用辅助功能与�
 | `computer_verify_file` | `path`, `expectedText?`, `expectedTrailingNewlines?` | 只读核验当前任务明确指定的输出路径，支持后续补充及由主机解析的主目录、桌面、文档、下载和工作区位置；不创建/修改文件。可比较 UTF-8 全文，必须区分“文件存在”与“正文完全匹配” |
 | `computer_activate_window` | `ref` | 激活已发现的应用或窗口；重新检查目标前台身份，返回 `verified` |
 | `computer_key_window` | 窗口 `ref`, `shortcut`；或 `key`, `modifiers?` | 优先用 shortcut="cmd+n" 等字符串；两种表示只能选一种。执行前重新验证原窗口、恢复并核对前台与非受保护的键盘焦点，再发送已知快捷键；返回派发状态，保存等任务结果需继续观察 |
+| `computer_file_dialog` | 原文稿窗口 `ref`, 绝对文件 `path` | 在已打开的 macOS 标准 Open/Save 面板准备目录、路径及保存文件名，精确读回并返回当前状态；不打开面板、不写文件、不点击最终提交 |
 | `computer_snapshot` | `windowRef`, `maxDepth?`, `maxNodes?`, `maxText?` | 扁平节点与 `parentRef`、`snapshotId`、`truncated`、`treeTruncated`、坐标单位及可用时的真实 `documentUrl` |
 | `computer_find` | `windowRef`, `role?`, `name?`, `identifier?`, `maxDepth?`, `maxNodes?` | 精确匹配；至少一个条件。返回 unique/ambiguous/incomplete/not_found、候选和 `searchComplete`；不会选首个歧义候选 |
 | `computer_invoke` | `ref`, `action` | 只执行节点公布的动作；调用后重新观察，能确认的 focus/select/expand/collapse 返回 verified，其他动作须继续核验业务结果 |
-| `computer_set_value` | `ref`, `value` | 替换可写文本（允许清空），上限 64KB；原生写入后完整读回比较，支持中文、多行和特殊字符 |
+| `computer_set_value` | `ref`, `value`, `inputMethod?`, `trailingNewlines?` | 替换可写文本（允许清空），原生 value 方式上限 64KB，显式 keyboard 方式最多 8KB；写入后完整读回比较，支持中文、多行和特殊字符 |
 | `computer_read` | `ref`, `offset?`, `limit?` | 按 Unicode scalar 偏移读文本；返回 text、nextOffset、truncated、continuationBlocked。不得将 provider 暴露文本当作完整历史 |
 | `computer_wait_for` | `windowRef`, 选择器条件, `state`, `text?`, `timeoutMs?` | 等 appears/disappears/enabled/text_equals；轮询间释放桌面；歧义或截断不能被当作条件达成；超时返回 verified=false |
 
@@ -64,7 +66,7 @@ macOS 首次需要在系统设置中授予实际运行的应用辅助功能与�
 | `permission_denied` | 用户检查当前应用身份、系统授权/权限级别 |
 | `native_timeout` / `native_failure` | 原生提供方超时/失败；写操作必须先检查是否已生效 |
 
-工具结果通过现有 Runtime MCP 处理链返回；截图仍是 MCP image，经过 `format_mcp_image` 的 data URI 和 Runtime 图像提取链进入图像上下文。本次未改写此链路。切换到 Computer Use / Browser Use 会实际重建工具配置，仅保留工具发现、MCP 调用与会话 MCP 工具；不会保留默认模式的 Shell。忙碌时拒绝需要重建的切换，不显示虚假切换成功；退出自动化模式恢复进入前的会话工具配置，并重新注册属于该会话的记忆与历史工具；进入计划模式也必须实际恢复。
+工具结果通过 Runtime MCP 处理链返回；截图是 MCP image，经过 `format_mcp_image` 的 data URI 和 Runtime 图像提取链进入图像上下文。切换到 Computer Use / Browser Use 会实际重建工具配置，仅保留工具发现、MCP 调用与会话 MCP 工具；不会保留默认模式的 Shell。忙碌时拒绝需要重建的切换，不显示虚假切换成功；退出自动化模式恢复进入前的会话工具配置，并重新注册属于该会话的记忆与历史工具；进入计划模式也必须实际恢复。
 
 应用/窗口列表、snapshot 和 find 的 JSON 每页最多 12000 UTF-8 字节，动作结果的 before/after 与附带 state 也共同受完整回包预算约束，超出的控件通过同一游标继续读取；避免 Runtime 的 20000 字节默认截断破坏 JSON。`pageTruncated` 与 `nextCursor` 表示还有已观察到的结果页；`totalItems` 是本轮已观察结果数，不能把第一页当作全部结果。`truncated` / `treeTruncated` 则表示提供方或遍历边界上的不完整。游标绑定本会话、单次消费、120 秒有效；同一窗口刷新快照或本会话原生写操作使相关控件页失效。最多 32 个待续结果、4MiB 缓存；达到上限要求完成旧页或缩小快照，不隐瞒遗漏。文本预览最多 512 scalar，展示的名称等元数据最多 256 scalar，额外裁剪会标注 `textTruncated` / `metadataPreviewTruncated`；查找在裁剪展示之前完成。
 
@@ -98,7 +100,7 @@ macOS AX bounds 是全局桌面逻辑点；Windows UIA bounds 是全局桌面物
 - macOS 每个 AX 元素设置 150ms 消息超时，原生对象由 CFRetain/CFRelease 管理。应用列表可由 AppKit 返回；窗口与控件实际 AX 读取仍要求授权。
 - Windows 在 MTA 初始化 COM，使用 UIA8 connection 250ms / transaction 500ms 超时；UIA 对象在同一线程创建、调用、释放。高权限、UAC、跨桌面和 provider 问题返回明确原因。单个进程或窗口不可访问时保留已读取的窗口并标记不完整；桌面根节点本身不可访问仍返回错误。优先按可访问 appRef 查询。
 - 异常 provider 若无视系统超时并卡在进程内，当前实现不能强制终止单次原生调用；暂停完成会等待它退出。尚未实现有签名与强制超时管理的隔离 helper，不能承诺抵御所有 provider 硬挂起。
-- 本次尚未完成的平台或真实任务详见验收记录；不承诺任意软件所有界面均可自动操作。
+- 各平台和真实任务按验收指南分别验证；不承诺任意软件所有界面均可自动操作。
 
 原生 API 依据：[Apple AX 消息超时](https://developer.apple.com/documentation/applicationservices/1459345-axuielementsetmessagingtimeout)、[Microsoft UIA transaction timeout](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomation2-get_transactiontimeout)。
 
@@ -107,7 +109,7 @@ macOS AX bounds 是全局桌面逻辑点；Windows UIA bounds 是全局桌面物
 
 `computer_set_value` 默认 `inputMethod="value"`，调用原生 AX/UIA 设置并精确读回。若控件 setter 不支持或读回未改变，可在重新观察后显式传 `inputMethod="keyboard"`（最多 8KB），无需 frameId。该方式激活原窗口、聚焦并核对准确的原控件，再全选替换、发送 Unicode、核对实际完整值。它只接受可聚焦文本控件；同一任务授权与桌面租约仍适用。失焦、受保护焦点、暂停或桌面不可用会停止后续输入；部分执行不自动重试。读回相等仅证明符合这次入参，仍需与用户要求比较。
 
-macOS 的 `desktopAvailable` 独立于系统授权；合盖、锁定或离开图形会话时不会继续原生操作或把 AXApplication 当作窗口。见 [与实际脚本的对照](reference-controller-comparison.md)。
+macOS 的 `desktopAvailable` 独立于系统授权；合盖、锁定或离开图形会话时不会继续原生操作或把 AXApplication 当作窗口。单个 AX 提供方不可访问时保留其他有效窗口，避免把局部错误误报为全局权限撤销；焦点为原窗口所属的嵌套 AXSheet 时，按真实窗口和有界父链核验归属。
 
 ## 文档位置与文字结尾
 
@@ -119,13 +121,13 @@ macOS 的 `desktopAvailable` 独立于系统授权；合盖、锁定或离开图
 
 提供方兼容：明确的无符号整数选项（点击次数、终止换行数、观察深度/数量、文本分段位置等）兼容纯十进制字符串，随后继续执行原有范围检查。不会解释任意表达式或改变文本、坐标、引用、授权含义。
 
-## 评审修复后的验证入口
+## 验证入口
 
 - `pnpm test`：完整前端回归，包含暂停、继续、权限边界及失败保留状态。
 - `pnpm test:scripts`：包含真实 Runtime 日志资格验证、短引用、分页证据及验收计时回归。
 - `pnpm test:desktop-native`：直接编译生产原生模块；macOS 点击事件对象测试需要可访问图形会话，测试不会派发输入。
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml --lib`：完整主程序及 Runtime 类型检查。
 - `cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-runtime --lib prompt_mode_transition_tests`：SessionActor 的工具名称、模式事件及自动化到默认、询问、计划模式切换回归。
-- `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib agent_runtime::tests::spawn_smoke_spawn_initialize_new_session -- --ignored --test-threads=1`：需要显式设置隔离的 `ECHO_AGENT_HOME` 和 `GROK_HOME`；启动真实主程序 ACP Runtime 与本地 MCP，检查六条退出路径的实际工具库存，不发送模型推理请求或实体桌面输入。
+- `pnpm test:runtime-smoke`：在隔离数据中启动真实 ACP Runtime 与本地 MCP，检查启停、模型选择及常驻技能刷新，不发送模型推理请求或实体桌面输入。
 
-主程序与 Runtime 使用各自的 Cargo 锁文件；独立原生检查不能代替完整主程序检查。上述自动化结果也不代替特定 Windows 应用的实机验收。历史实测报告的二进制指纹保持原样，不能将旧二进制的成果作为新版本已经实测的证据。
+主程序与 Runtime 使用各自的 Cargo 锁文件；独立原生检查不能代替完整主程序检查。真实任务与输出核验见 [桌面控制验收](validation.md)，交互约定见 [桌面任务体验](task-experience-design.md)。上述自动化检查不替代特定应用与平台的实机验收。

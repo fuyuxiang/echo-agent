@@ -1,8 +1,8 @@
-# Windows 桌面反馈验收
+# Windows 桌面交互验收
 
-本轮代码回归不代替 Windows 安装包的原生验收。脚本只创建临时数据根和测试项目，保留证据供审阅，不读取真实会话配置。
+本页是 Windows 安装包的长期验收清单。先按 [发行流程](desktop-release.md) 构建并安装待验版本，记录源码和安装包指纹；界面回归不能代替原生验收。脚本只创建临时数据根和测试项目，保留证据供审阅，不读取真实会话配置。
 
-安装本轮构建的包后，在 Windows PowerShell 中执行（路径使用实际安装位置）：
+安装待验包后，在 Windows PowerShell 中执行（路径使用实际安装位置）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/validate-windows-file-switch.ps1 -Executable 'C:\path\EchoAgent.exe' -TheiaBrowser 'C:\path\theia\browser'
@@ -18,3 +18,5 @@ powershell -ExecutionPolicy Bypass -File scripts/validate-windows-file-switch.ps
 - 在临时任务中打开通知设置，测试桌面提醒，点击 OS 提醒返回该任务。普通设置页测试不能代替带任务目标的测试。测试关闭后重启仍关闭、组织策略限制、系统关闭权限或勿扰模式；UI 只声称已向系统提交，投递错误应进入本地通知记录。
 
 macOS 也需要使用独立测试任务完成通知投递与点击返回。将原生结果、安装包/插件指纹、录屏、视口与 DPR 一同保存。禁止以 VM 的 spawn 参数测试或浏览器截图替代原生签核。
+
+共同的输入、目录与失败恢复规则见 [产品体验约定](product-experience.md)；测试层级和产物保存方式见 [开发与验收](testing.md)。
