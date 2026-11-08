@@ -23,7 +23,7 @@ jobs:
         os: [macos-15-intel, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
@@ -32,6 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: scripts/stability-check -> target
+          cache-on-failure: 'true'
       - run: pnpm install --frozen-lockfile
       - name: Validate native review guards without launching desktop tasks
         if: runner.os == 'macOS'
@@ -40,7 +41,7 @@ jobs:
       - run: pnpm test:stability:native
         env:
           STABILITY_EVIDENCE_DIR: ${{ runner.temp }}/desktop-stability
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: desktop-stability-${{ matrix.os }}
@@ -53,7 +54,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
@@ -62,7 +63,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: python3 -m unittest discover -s scripts -p 'test_audit_dependencies.py'
       - run: python3 scripts/audit-dependencies.py --output security-audit-results
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: dependency-security
@@ -73,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
@@ -91,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
@@ -100,23 +101,23 @@ jobs:
       - name: Run frontend and script unit tests
         id: unit_tests
         run: pnpm test --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit="${{ runner.temp }}/echo-unit-tests.xml"
+      - run: pnpm test:scripts
+      - run: pnpm office:test
       - name: Preserve unit test report
         if: ${{ always() && (steps.unit_tests.outcome == 'success' || steps.unit_tests.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unit-test-results-linux
           path: ${{ runner.temp }}/echo-unit-tests.xml
           if-no-files-found: ignore
           retention-days: 7
-      - run: pnpm test:scripts
-      - run: pnpm office:test
 
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
@@ -134,7 +135,7 @@ jobs:
           PRODUCTION_SMOKE_OUTPUT: ${{ runner.temp }}/production-startup-evidence
       - name: Preserve production startup evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-startup
           path: ${{ runner.temp }}/production-startup-evidence
@@ -150,7 +151,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: '24.22.1'
@@ -176,61 +177,69 @@ jobs:
           UI_REVIEW_OUTPUT: ${{ runner.temp }}/app-icons-evidence
       - name: Preserve icon screenshots and checks
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: app-icons-${{ matrix.os }}
           path: ${{ runner.temp }}/app-icons-evidence
           if-no-files-found: ignore
 
-  ui-contracts:
-    name: UI behavior, themes and rendered contrast
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+  ui-checks:
+    name: UI / ${{ matrix.suite }}
+    # Playwright 1.55 supports Ubuntu 24.04. Do not silently migrate the
+    # browser/font baseline when ubuntu-latest changes to another release.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: design
+            command: node scripts/validate-design-system.mjs
+          - suite: themes
+            command: pnpm test:ui:theme-states
+          - suite: theme-lifecycle
+            command: pnpm test:ui:theme-lifecycle
+          - suite: contrast
+            command: pnpm test:ui:contrast
+          - suite: raster
+            command: pnpm test:ui:contrast:complex
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install isolated browser review tools
-        id: tools
         run: |
           npm install --prefix "$RUNNER_TEMP/ui-contract-tools" --no-package-lock --ignore-scripts playwright@1.55.0
           node "$RUNNER_TEMP/ui-contract-tools/node_modules/playwright/cli.js" install --with-deps chromium
-      - name: Verify design surfaces and real navigation journeys
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
-        run: node scripts/validate-design-system.mjs
+      - name: Verify ${{ matrix.suite }}
+        run: ${{ matrix.command }}
         env:
           PLAYWRIGHT_MODULE: ${{ runner.temp }}/ui-contract-tools/node_modules/playwright/index.mjs
-          UI_REVIEW_OUTPUT: ${{ runner.temp }}/ui-contract-evidence/design
-      - name: Verify live theme transitions and subagent settings save requests
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
-        run: pnpm test:ui:theme-states
-        env:
-          PLAYWRIGHT_MODULE: ${{ runner.temp }}/ui-contract-tools/node_modules/playwright/index.mjs
-          UI_REVIEW_OUTPUT: ${{ runner.temp }}/ui-contract-evidence/themes
-      - name: Verify rendered text contrast, overlays and reduced motion
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
-        run: pnpm test:ui:contrast
-        env:
-          PLAYWRIGHT_MODULE: ${{ runner.temp }}/ui-contract-tools/node_modules/playwright/index.mjs
-          UI_REVIEW_OUTPUT: ${{ runner.temp }}/ui-contract-evidence/contrast
-      - name: Verify actual raster contrast for native selects and shared headings
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
-        run: pnpm test:ui:contrast:complex
-        env:
-          PLAYWRIGHT_MODULE: ${{ runner.temp }}/ui-contract-tools/node_modules/playwright/index.mjs
-          UI_REVIEW_OUTPUT: ${{ runner.temp }}/ui-contract-evidence/raster
+          UI_REVIEW_OUTPUT: ${{ runner.temp }}/ui-contract-evidence/${{ matrix.suite }}
       - name: Preserve UI assertions, screenshots and failure diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: ui-contract-evidence
+          name: ui-contract-evidence-${{ matrix.suite }}
           path: ${{ runner.temp }}/ui-contract-evidence
           if-no-files-found: ignore
           retention-days: 7
+
+  # Preserve the existing status name for branch protection. A partial matrix
+  # or a skipped suite cannot produce a successful aggregate check.
+  ui-contracts:
+    name: UI behavior, themes and rendered contrast
+    needs: ui-checks
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every UI suite to pass
+        run: test '${{ needs.ui-checks.result }}' = 'success'
 
   mermaid-render:
     name: Mermaid rendering / ${{ matrix.os }}
@@ -242,7 +251,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
@@ -260,7 +269,7 @@ jobs:
           UI_REVIEW_OUTPUT: ${{ runner.temp }}/mermaid-render-evidence
       - name: Preserve diagram screenshots and geometry
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mermaid-render-${{ matrix.os }}
           # Preserve review assets without uploading the large Swift module cache.
@@ -282,6 +291,8 @@ jobs:
 
   rust:
     runs-on: ubuntu-24.04
+    env:
+      NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
     steps:
       - uses: actions/checkout@v7
       - name: Install Tauri system dependencies
@@ -297,15 +308,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Install pinned protoc with download retries
-        shell: bash
-        run: python scripts/setup-protoc.py
+      - name: Install verified pinned protoc
+        uses: ./.github/actions/setup-protoc
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          cache-on-failure: 'true'
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
@@ -334,12 +345,21 @@ jobs:
           cargo test --manifest-path vendor/lru-0.12/Cargo.toml --test security
           cargo test --manifest-path vendor/lru-0.16/Cargo.toml --test security
 
+      - name: Preserve complete native test output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-test-results-${{ github.job }}-${{ runner.arch }}
+          path: ci-artifacts/native-tests
+          if-no-files-found: ignore
+
   automation-macos:
     name: Native Runtime / macOS ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     # Keep full assertions while fitting both hosted macOS architectures.
     env:
+      NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     strategy:
@@ -363,12 +383,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Install pinned protoc with download retries
-        shell: bash
-        run: python scripts/setup-protoc.py
+      - name: Install verified pinned protoc
+        uses: ./.github/actions/setup-protoc
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          cache-on-failure: 'true'
       - name: Verify the macOS protoc locator
         run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
         env:
@@ -384,11 +404,20 @@ jobs:
       - name: Verify memory checkpoint and cancellation with a stalled local model
         run: node scripts/test-memory-shutdown.mjs
 
+      - name: Preserve complete native test output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-test-results-${{ github.job }}-${{ runner.arch }}
+          path: ci-artifacts/native-tests
+          if-no-files-found: ignore
+
   automation-windows:
     name: Native Runtime / Windows x64
     runs-on: windows-latest
     timeout-minutes: 90
     env:
+      NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
@@ -402,12 +431,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Install pinned protoc with download retries
-        shell: bash
-        run: python scripts/setup-protoc.py
+      - name: Install verified pinned protoc
+        uses: ./.github/actions/setup-protoc
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          cache-on-failure: 'true'
       - name: Verify the Windows protoc locator
         run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
         env:
@@ -418,6 +447,14 @@ jobs:
         run: node scripts/test-runtime-smoke.mjs
       - name: Verify memory checkpoint and cancellation with a stalled local model
         run: node scripts/test-memory-shutdown.mjs
+
+      - name: Preserve complete native test output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-test-results-${{ github.job }}-${{ runner.arch }}
+          path: ci-artifacts/native-tests
+          if-no-files-found: ignore
 
   windows-packaging-guards:
     name: Windows packaging / ${{ matrix.shell }}
@@ -462,7 +499,7 @@ jobs:
           ECHO_SHORTCUT_TEST_OUTPUT: ${{ runner.temp }}/windows-shortcut-evidence
       - name: Preserve shortcut compiler, fixture and failure diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-shortcut-evidence
           path: ${{ runner.temp }}/windows-shortcut-evidence
@@ -526,12 +563,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Install pinned protoc with download retries
-        shell: bash
-        run: python scripts/setup-protoc.py
+      - name: Install verified pinned protoc
+        uses: ./.github/actions/setup-protoc
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: vendor/echo-agent-build -> target
+          cache-on-failure: 'true'
       # Release profile activates the automatic rg.exe download, pinned hash
       # verification, ZIP extraction and include_bytes! path. The test then
       # executes that embedded binary after runtime extraction.
@@ -553,7 +590,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
@@ -561,7 +598,7 @@ jobs:
           cache-dependency-path: vendor/theia-platform/package-lock.json
       - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
       - run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbfile-dev libsecret-1-dev
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6.1.0
         with:
           path: |
             vendor/theia-platform/packages/*/lib

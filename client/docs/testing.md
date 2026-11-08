@@ -30,6 +30,26 @@
 
 Rust 检查与格式门禁分别为 `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings` 和 `cargo fmt --manifest-path src-tauri/Cargo.toml --check`。新增独立 harness 时同步维护锁文件、安全审计覆盖及 CI。
 
+## CI 故障定位
+
+`ci` 和 `desktop-validation` 是独立流程；同一提交的两套流程及全部平台通过后，才能认为 CI 已通过。被后续推送取消、尚未运行到的步骤和本机定向测试都不能替代该结果。
+
+主干打包保留已启动的完整矩阵，新推送仅替换等待中的版本，避免长时间构建被连续提交反复取消；PR 仍优先验证最新版本。报告上传放在应用验证之后，服务超时仍会报错，但不会提前截断后续安装和 Runtime 检查。
+
+Rust 缓存在失败后仍保存已完成的依赖编译，供后续修复复用；失败测试会照常执行并报告，不把缓存命中作为验收结果。
+
+UI 检查在固定的 Ubuntu 24.04、Node 22.23.4 和 Playwright 1.55.0 下，分别运行设计、主题、主题生命周期、对比度及栅格采样五套检查。`UI behavior, themes and rendered contrast` 汇总状态要求全部通过。失败时先查看对应 `UI / ...` 作业及 `ui-contract-evidence-*` artifact；主题检查的 `failure.json` 包含窗口、字号、主题、当前场景和浏览器错误，`failure.png` 保留失败画面。macOS 本地通过不代表 Linux 字体和浏览器采样也通过。
+
+主题检查额外用 Linux 浏览器标识运行真实 Monaco，覆盖其专有的 `renderFinalNewline=dimmed` 默认值。末尾空行的行号必须参与对比度检查，并在切换主题后继续使用可读颜色。
+
+Rust 宿主及 Runtime 测试通过 `NATIVE_TEST_OUTPUT` 保存每次子进程的完整 `stdout.log`、`stderr.log`，并上传 `native-test-results-*`。测试失败详情通常位于 stdout，编译警告通常位于 stderr，排查时应同时查看。公开错误注释分别截取两条输出的末尾，避免警告覆盖断言，或超长注释在真正的错误前被平台截断。
+
+隔离验收固定合成的 `ECHO_AGENT_AGENT_ID`。全新数据目录没有缓存的机器标识，Runtime 的初始化响应会等待平台硬件查询；专家团和模型流程测试应排除这项无关依赖，保留原有握手超时及业务断言。
+
+安全审计的反例单测会模拟注册表不可用，但必须将 `GITHUB_STEP_SUMMARY` 隔离到每个测试的临时文件，避免模拟失败污染真实 CI 摘要。实际扫描仍发布自己的报告，扫描未完成仍须失败；Rust 维护提示与安全漏洞分开报告。
+
+各原生平台通过同一个本地 Action 安装固定的 protoc。归档缓存按平台、架构及安装脚本区分，使用前重新校验 SHA-256；下载完成后立即保存缓存，后续测试失败不会丢弃已验证的工具。损坏响应只作有上限的重试，不会放宽哈希校验。
+
 ## 原生应用与真实模型
 
 原生驱动需要当前源码构建的内嵌页面程序。先准备资源和前端，再构建；普通开发 URL 二进制不能代替：

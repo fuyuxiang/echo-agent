@@ -4,10 +4,12 @@ import copy
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import shutil
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -38,7 +40,20 @@ def npm_fixture(version="3.1.5", identifier=MINIMATCH_ADVISORY):
     return data, packages
 
 
-class NpmAuditReviewTests(unittest.TestCase):
+class AuditTestCase(unittest.TestCase):
+    def setUp(self):
+        # Failure fixtures must never append simulated scan errors to the
+        # runner's real step summary. Keep the production publisher exercised
+        # against a private file instead of disabling it for the whole job.
+        directory = tempfile.TemporaryDirectory(prefix="echo-audit-test-")
+        self.addCleanup(directory.cleanup)
+        self.step_summary = Path(directory.name) / "step-summary.md"
+        environment = patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(self.step_summary)})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+
+class NpmAuditReviewTests(AuditTestCase):
     def deepmerge_fixture(self):
         advisory = {"title": "prototype poisoning", "severity": "low",
                     "url": "https://github.com/advisories/GHSA-gcqx-w48m-w2h4"}
@@ -224,7 +239,7 @@ class NpmAuditReviewTests(unittest.TestCase):
             self.assertEqual((root / "keep.txt").read_text(), "unrelated")
 
 
-class RustAuditReviewTests(unittest.TestCase):
+class RustAuditReviewTests(AuditTestCase):
     def test_review_is_specific_to_the_verified_release_and_advisory(self):
         review = audit.reviewed_rust_exception("block-buffer", "0.10.4", ADVISORY, {IDENTITY})
         self.assertIn("outside the buffer", review["reason"])
@@ -270,6 +285,33 @@ class RustAuditReviewTests(unittest.TestCase):
             self.assertEqual(report["maintenance"], [])
             self.assertIn("src-tauri/Cargo.lock", report["not_affected"][0]["manifests"])
             self.assertEqual(set(json.loads((output / "rust-advisories.json").read_text())), set(records))
+
+
+class AuditSummaryIsolationTests(AuditTestCase):
+    def test_failure_fixtures_do_not_publish_to_the_inherited_ci_summary(self):
+        self.step_summary.write_text("Existing CI summary\n")
+        names = [
+            "test_incomplete_audit_exits_with_error_and_writes_a_summary",
+            "test_failed_reruns_do_not_reuse_previous_success_evidence",
+        ]
+        result = subprocess.run(
+            [sys.executable, "-m", "unittest",
+             *[f"scripts.test_audit_dependencies.NpmAuditReviewTests.{name}" for name in names]],
+            cwd=audit.ROOT, env={**os.environ, "GITHUB_STEP_SUMMARY": str(self.step_summary)},
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.step_summary.read_text(), "Existing CI summary\n")
+
+    def test_production_publisher_still_reports_incomplete_scans(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.step_summary.write_text("Existing CI summary\n")
+            audit.write_summary(Path(directory), "actual scan failure")
+            summary = self.step_summary.read_text()
+            self.assertTrue(summary.startswith("Existing CI summary\n"))
+            self.assertEqual(summary.count("## Dependency security"), 1)
+            self.assertIn("Audit incomplete: actual scan failure", summary)
+            self.assertIn("Not scanned", summary)
 
 
 if __name__ == "__main__":

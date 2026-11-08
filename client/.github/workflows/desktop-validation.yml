@@ -6,6 +6,7 @@ on:
     tags: ['v*']
     paths: &packaging-paths
       - '.github/workflows/desktop-validation.yml'
+      - '.github/actions/**'
       - '.gitattributes'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -30,7 +31,9 @@ permissions:
   contents: read
 concurrency:
   group: desktop-validation-${{ github.ref }}
-  cancel-in-progress: true
+  # Main builds can take hours. Finish the active matrix while new pushes
+  # replace only the pending run; PR iterations can still cancel older work.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   packaged-desktop:
     strategy:
@@ -57,7 +60,7 @@ jobs:
       - name: Verify native packaging architecture
         if: runner.os == 'macOS'
         run: test "$(uname -m)" = '${{ matrix.arch }}'
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ runner.os == 'Windows' && '24.22.1' || '22.23.4' }}
@@ -71,23 +74,14 @@ jobs:
       - name: Run frontend and script unit tests
         id: unit_tests
         run: pnpm test --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit="${{ runner.temp }}/echo-unit-tests.xml"
-      - name: Preserve unit test report
-        if: ${{ always() && (steps.unit_tests.outcome == 'success' || steps.unit_tests.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-results-${{ matrix.target }}
-          path: ${{ runner.temp }}/echo-unit-tests.xml
-          if-no-files-found: ignore
-          retention-days: 7
       - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
       - uses: actions/setup-python@v7
         id: python
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install pinned protoc with download retries
-        shell: bash
-        run: python scripts/setup-protoc.py
+      - name: Install verified pinned protoc
+        uses: ./.github/actions/setup-protoc
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -122,16 +116,17 @@ jobs:
           if [[ -f "$bundle_script" ]]; then
             cp "$bundle_script" "$diagnostics/bundle_dmg.sh"
           fi
+          if [[ "$build_exit" -ne 0 ]]; then
+            node --input-type=module - "$diagnostics/build.log" "$build_exit" <<'JS'
+          import { readFileSync } from 'node:fs';
+          const tail = readFileSync(process.argv[2], 'utf8').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').slice(-2800);
+          const message = `Exit code ${process.argv[3]}\n${tail}`.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+          console.error(`::error title=macOS packaging failed::${message}`);
+          JS
+          fi
           exit "$build_exit"
         env:
           PUPPETEER_SKIP_DOWNLOAD: '1'
-      - name: Preserve macOS packaging diagnostics
-        if: ${{ always() && runner.os == 'macOS' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-packaging-diagnostics-${{ matrix.arch }}
-          path: ${{ runner.temp }}/echo-macos-packaging-diagnostics
-          if-no-files-found: ignore
       - name: Package Windows validation build
         if: runner.os == 'Windows'
         shell: powershell
@@ -141,26 +136,21 @@ jobs:
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) {
             $tail = Get-Content -LiteralPath $buildLog -Tail 120 | Out-String
-            if ($tail.Length -gt 12000) { $tail = $tail.Substring($tail.Length - 12000) }
-            $message = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            $tail = [regex]::Replace($tail, '\x1B\[[0-?]*[ -/]*[@-~]', '')
+            if ($tail.Length -gt 2800) { $tail = $tail.Substring($tail.Length - 2800) }
+            $message = "Exit code $buildExit`n$tail".Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
             Write-Host "::error title=Windows packaging failed::$message"
             exit $buildExit
           }
         env:
           PUPPETEER_SKIP_DOWNLOAD: '1'
           PYTHON: ${{ steps.python.outputs.python-path }}
-      - name: Preserve Windows packaging diagnostics
-        if: ${{ always() && runner.os == 'Windows' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-packaging-diagnostics
-          path: ${{ runner.temp }}/echo-windows-build.log
-          if-no-files-found: ignore
       - run: pnpm test:security
       - run: node vendor/theia-platform/node_modules/playwright/cli.js install chromium
       - run: node scripts/validate-theia-runtime.mjs
       - run: pnpm test:rust
         env:
+          NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
           CARGO_PROFILE_DEV_DEBUG: '0'
           CARGO_PROFILE_TEST_DEBUG: '0'
           ECHO_VALIDATE_LONG_PATHS: ${{ runner.os == 'Windows' && '1' || '0' }}
@@ -191,14 +181,45 @@ jobs:
           node scripts/inspect-windows-installer.mjs $installer.FullName $version
           if ($LASTEXITCODE -ne 0) { throw 'Windows installer embedded version check failed' }
           ./scripts/validate-windows-installer.ps1 -Installer $installer.FullName
+      # Keep reporting after all application checks so upload outages cannot
+      # prevent installer/runtime verification from being attempted.
+      - name: Preserve unit test report
+        if: ${{ always() && (steps.unit_tests.outcome == 'success' || steps.unit_tests.outcome == 'failure') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-results-${{ matrix.target }}
+          path: ${{ runner.temp }}/echo-unit-tests.xml
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Preserve macOS packaging diagnostics
+        if: ${{ always() && runner.os == 'macOS' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-packaging-diagnostics-${{ matrix.arch }}
+          path: ${{ runner.temp }}/echo-macos-packaging-diagnostics
+          if-no-files-found: ignore
+      - name: Preserve Windows packaging diagnostics
+        if: ${{ always() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-packaging-diagnostics
+          path: ${{ runner.temp }}/echo-windows-build.log
+          if-no-files-found: ignore
+      - name: Preserve complete native test output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-test-results-${{ matrix.target }}
+          path: ci-artifacts/native-tests
+          if-no-files-found: ignore
       - name: Preserve packaged desktop startup diagnostics
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-startup-diagnostics-${{ matrix.os }}
           path: ${{ runner.temp }}/echo-packaged-desktop-diagnostics
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-validation-${{ matrix.os }}
           path: |

@@ -18,6 +18,7 @@ export function readEditorThemeColors(): Record<string, string> {
   const roles: Record<string, string> = {
     "editor.background": "surface-content", "editor.foreground": "text-strong",
     "editorLineNumber.foreground": "text-weak", "editorLineNumber.activeForeground": "text-strong",
+    "editorLineNumber.dimmedForeground": "text-weak",
     "editor.selectionBackground": "control-selected-bg-active", "editor.selectionForeground": "text-strong",
     "editor.inactiveSelectionBackground": "control-selected-bg", "editor.lineHighlightBackground": "surface-content",
     "editor.wordHighlightBackground": "code-match-bg", "editor.wordHighlightStrongBackground": "code-match-bg",

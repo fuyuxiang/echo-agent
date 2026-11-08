@@ -5,6 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { inspectEditorPaint } from "./editor-paint-audit.mjs";
 import { reviewChromium } from "./ui-review-tools.mjs";
+import { createUiReviewServer } from "./ui-review-runtime.mjs";
+import { inspectRenderedColors } from "./ui-color-audit.mjs";
 
 test("syntax contrast ignores repainted editor chrome and rejects unreadable visible glyphs", { timeout: 60000 }, async () => {
   const output = mkdtempSync(join(tmpdir(), "echo-editor-paint-test-"));
@@ -46,4 +48,46 @@ test("syntax contrast ignores repainted editor chrome and rejects unreadable vis
     assert(unreadable.failures.some(sample => sample.text === "visible-token" && sample.minimum < 4.5),
       "The occlusion fix must still reject low-contrast visible syntax");
   } finally { await browser?.close(); rmSync(output, { recursive: true, force: true }); }
+});
+
+test("Linux final-newline line numbers remain readable through live theme changes", { timeout: 180000 }, async () => {
+  const server = await createUiReviewServer(0, { fixture: "/scripts/fixtures/enterprise-theme-review.tsx" });
+  let browser;
+  try {
+    browser = await (await reviewChromium()).launch({ headless: true,
+      ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}) });
+    const context = await browser.newContext({
+      // Monaco defaults renderFinalNewline to "dimmed" only on Linux. Exercise
+      // that real default on macOS/Windows too, without altering editor options.
+      userAgent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36`,
+    });
+    for (const [width, height, font] of [[1280, 800, 13], [1280, 800, 18], [1024, 680, 13], [1024, 680, 18]]) {
+      const page = await context.newPage();
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      await page.setViewportSize({ width, height });
+      await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=monaco&theme=light`, { waitUntil: "networkidle", timeout: 90000 });
+      await page.locator(".monaco-diff-editor .dimmed-line-number").first().waitFor();
+      await page.evaluate(font => { document.documentElement.style.fontSize = `${16 * font / 13}px`; }, font);
+      for (const theme of ["light", "dark", "light"]) {
+        await page.evaluate(theme => window.enterpriseThemeReview.setTheme(theme), theme);
+        await page.waitForFunction(theme => {
+          if (document.documentElement.dataset.theme !== theme) return false;
+          const probe = document.createElement("span");
+          probe.style.color = "var(--echo-text-weak)";
+          document.body.append(probe);
+          const expected = getComputedStyle(probe).color;
+          probe.remove();
+          return [...document.querySelectorAll(".monaco-diff-editor .dimmed-line-number")]
+            .every(element => getComputedStyle(element).color === expected);
+        }, theme);
+        const samples = (await page.evaluate(inspectRenderedColors)).text.filter(sample => sample.selector.includes("dimmed-line-number"));
+        assert.equal(samples.length, 2, "Both editors' final line numbers must participate in the audit");
+        assert.deepEqual(samples.filter(sample => sample.ratio < sample.threshold), [],
+          `${width}x${height}/${font}px/${theme}: final line numbers must retain WCAG AA contrast`);
+      }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally { await browser?.close(); await server.close(); }
 });

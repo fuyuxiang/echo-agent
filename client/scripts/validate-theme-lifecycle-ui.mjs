@@ -6,10 +6,11 @@ import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-
 
 const output = reviewOutput(join(tmpdir(), "echo-theme-lifecycle"));
 const server = await createUiReviewServer(0, { fixture: "/scripts/fixtures/enterprise-theme-review.tsx" });
-const browser = await (await reviewChromium()).launch({ headless: true, executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
 const evidence = [];
-let page;
+let browser, page;
 try {
+  browser = await (await reviewChromium()).launch({ headless: true,
+    ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}) });
   page = await browser.newPage({ colorScheme: "light", viewport: { width: 1024, height: 680 } });
   page.setDefaultNavigationTimeout(90000);
   const errors = []; page.on("pageerror", error => errors.push(error.message));
@@ -77,4 +78,4 @@ try {
   if (page) await page.screenshot({ path: join(output, "failure.png") }).catch(() => {});
   writeFileSync(join(output, "partial-evidence.json"), JSON.stringify({ error: String(error), evidence }, null, 2));
   throw error;
-} finally { await browser.close(); await server.close(); }
+} finally { await browser?.close(); await server.close(); }

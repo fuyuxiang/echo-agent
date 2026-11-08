@@ -20,7 +20,8 @@ writeFileSync(join(output, "run.json"), JSON.stringify({
   fontScale: "root = 16 * preference / 13", quick,
 }, null, 2));
 const servers = [];
-let browser;
+let browser, page, activeScenario;
+let pageErrors = [];
 async function server(fixture) {
   if (!servers.length) servers.push(await createUiReviewServer(0, { fixture: "/scripts/fixtures/theme-review-router.ts", baseline, currentFixtures: true }));
   const instance = servers[0];
@@ -43,9 +44,10 @@ try {
     ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}) });
   const layouts = quick ? [[1280, 800, 13]] : [[1280, 800, 13], [1280, 800, 18], [1024, 680, 13], [1024, 680, 18]];
   for (const [width, height, font] of layouts) for (const theme of ["light", "dark"]) {
-    let page;
-    let pageErrors = [];
+    page = undefined;
+    pageErrors = [];
     const go = async (base, params) => {
+      activeScenario = { width, height, font, theme, fixture: base, params };
       if (page) {
         assert.deepEqual(pageErrors, [], "The preceding fixture must complete without browser errors");
         await page.close();
@@ -70,6 +72,7 @@ try {
       await page.mouse.move(0, 0);
     };
     const capture = async (name, { requiredMarks = false, requiredText = [] } = {}) => {
+      activeScenario = { ...activeScenario, capture: name };
       const colors = await page.evaluate(inspectRenderedColors);
       const geometry = await page.evaluate(() => ({
         overflow: document.documentElement.scrollWidth > innerWidth + 1,
@@ -260,7 +263,18 @@ try {
   }
   const failures = evidence.flatMap(record => [...record.failures, ...record.controlFailures].map(failure => ({ context: record.context, ...failure })));
   console.log(JSON.stringify({ baseline, states: evidence.length, text: evidence.reduce((sum, record) => sum + record.text.length, 0), controls: evidence.reduce((sum, record) => sum + record.controls.length, 0), failures: failures.length, errors, output }));
-  if (!auditOnly) assert.deepEqual(failures, [], `Rendered contrast failures: ${output}/failures.json`);
+  if (!auditOnly) assert.equal(failures.length, 0, `Rendered contrast failures: ${output}/failures.json; ${JSON.stringify(failures.slice(0, 3))}`);
+} catch (error) {
+  const failure = { error: String(error), stack: error.stack, scenario: activeScenario,
+    url: page && !page.isClosed() ? page.url() : null, pageErrors, completedStates: evidence.length };
+  writeFileSync(join(output, "failure.json"), JSON.stringify(failure, null, 2));
+  if (page && !page.isClosed()) await page.screenshot({ path: join(output, "failure.png"), timeout: 5000 }).catch(() => {});
+  console.error("Theme review failed:", JSON.stringify(failure));
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const message = `${JSON.stringify(activeScenario)}: ${String(error)}`.slice(0, 3000).replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+    console.error(`::error title=Theme review failed::${message}`);
+  }
+  throw error;
 } finally {
   checkpoint();
   await browser?.close();

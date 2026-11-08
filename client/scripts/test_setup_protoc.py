@@ -89,8 +89,49 @@ class SetupProtocTests(unittest.TestCase):
             destination = Path(temp) / "protoc.zip"
             with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
                 setup_protoc.download("https://example.test/protoc.zip", destination, "0" * 64,
-                                      open_url=lambda *args, **kwargs: io.BytesIO(b"truncated"))
+                                      open_url=lambda *args, **kwargs: io.BytesIO(b"truncated"),
+                                      sleep=lambda _: None)
             self.assertFalse(destination.exists())
+
+    def test_incomplete_success_response_is_retried_and_never_cached(self):
+        attempts, delays = [], []
+        data = b"complete pinned archive"
+
+        def open_url(url, timeout):
+            attempts.append(url)
+            return io.BytesIO(b"truncated" if len(attempts) == 1 else data)
+
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "protoc.zip"
+            setup_protoc.download("https://example.test/protoc.zip", destination,
+                                  hashlib.sha256(data).hexdigest(), open_url=open_url, sleep=delays.append)
+            self.assertEqual(destination.read_bytes(), data)
+            self.assertEqual(list(Path(temp).iterdir()), [destination])
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(delays, [2])
+
+    def test_verified_cache_needs_no_network_and_corrupt_cache_is_replaced(self):
+        data = b"complete pinned archive"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "protoc.zip"
+            destination.write_bytes(data)
+            setup_protoc.download("https://example.test/protoc.zip", destination, digest,
+                                  open_url=lambda *args, **kwargs: self.fail("Verified cache must work offline"))
+            destination.write_bytes(b"corrupt cache")
+            setup_protoc.download("https://example.test/protoc.zip", destination, digest,
+                                  open_url=lambda *args, **kwargs: io.BytesIO(data))
+            self.assertEqual(destination.read_bytes(), data)
+
+    def test_failed_replacement_cannot_reuse_corrupt_cache(self):
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "protoc.zip"
+            destination.write_bytes(b"corrupt cache")
+            with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+                setup_protoc.download("https://example.test/protoc.zip", destination, "0" * 64,
+                                      open_url=lambda *args, **kwargs: io.BytesIO(b"still corrupt"),
+                                      sleep=lambda _: None)
+            self.assertEqual(list(Path(temp).iterdir()), [])
 
     def test_extract_preserves_includes_and_rejects_path_escape(self):
         with tempfile.TemporaryDirectory() as temp:

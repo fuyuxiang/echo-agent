@@ -1,0 +1,24 @@
+name: Set up pinned protoc
+description: Restore and verify the pinned compiler archive before installing it
+runs:
+  using: composite
+  steps:
+    - name: Restore pinned compiler archive
+      id: archive
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ${{ runner.temp }}/echo-protoc-cache
+        key: protoc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-protoc.py') }}
+    - name: Verify and install protoc
+      shell: bash
+      run: python scripts/setup-protoc.py
+      env:
+        ECHO_PROTOC_CACHE: ${{ runner.temp }}/echo-protoc-cache
+    # Save immediately: a later test/packaging failure must not discard this
+    # successful download and force every subsequent run onto the network.
+    - name: Save verified compiler archive
+      if: steps.archive.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6.1.0
+      with:
+        path: ${{ runner.temp }}/echo-protoc-cache
+        key: ${{ steps.archive.outputs.cache-primary-key }}

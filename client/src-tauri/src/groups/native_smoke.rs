@@ -21,6 +21,16 @@ fn native_runtime_group_contract() {
         .env("ECHO_GROUP_NATIVE_TEST", "1")
         .env("ECHO_AGENT_HOME", home.path())
         .env("GROK_HOME", home.path().join("empty-legacy"))
+        .env("ECHO_AGENT_REVIEW_ISOLATED", "1")
+        .env("ECHO_AGENT_TELEMETRY_ENABLED", "false")
+        .env("ECHO_AGENT_TELEMETRY_TRACE_UPLOAD", "false")
+        // This contract tests collaboration, not cold machine fingerprinting.
+        // Windows mid::get starts four synchronous WMI queries; initialize's
+        // agentId metadata otherwise waits for them on every fresh test home.
+        .env(
+            "ECHO_AGENT_AGENT_ID",
+            "00000000-0000-4000-8000-000000000001",
+        )
         .env_remove("HTTP_PROXY")
         .env_remove("HTTPS_PROXY")
         .env_remove("ALL_PROXY")
@@ -321,7 +331,7 @@ paths = ["{relative_plugin}"]
         crate::agent_runtime::initialize(&tx),
     )
     .await
-    .unwrap()
+    .expect("isolated Runtime ACP initialize exceeded 30s")
     .unwrap();
     let profile = json!({"name":echo_agent_core::AgentDefinition::default_echo_agent_build().name,"description":"native test expert","promptMode":"extend","promptBody":"GROUP_ROLE_MUST_SURVIVE_RESTORE"});
     let store = Store::open(&home.join("collaboration.sqlite")).unwrap();

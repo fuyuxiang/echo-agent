@@ -8,12 +8,14 @@ test('native acceptance strips inherited credentials, discovery overrides, and r
   const inherited = { HOME: '/synthetic/foreign-home', PATH: '/synthetic/bin',
     OpenAI_API_KEY: 'mixed-case-marker', Echo_Agent_Config_Path: '/synthetic/config', Node_Options: '--require synthetic',
     ECHO_AGENT_HOME: '/synthetic/foreign-data', ECHO_AGENT_AUTH_PATH: '/synthetic/private-auth',
+    ECHO_AGENT_AGENT_ID: 'foreign-device-identity',
     ECHO_AGENT_AUTH: 'private-marker', ECHO_AGENT_AUTH_PROVIDER_COMMAND: 'foreign-command',
     ECHO_AGENT_CONFIG_PATH: '/synthetic/private-config', OTEL_EXPORTER_OTLP_ENDPOINT: 'https://foreign.invalid',
     CLAUDE_CONFIG_DIR: '/synthetic/claude', OPENAI_API_KEY: 'private-marker', GROK_AUTH: 'private-marker', CONFIG_PATH: '/synthetic/private-config', NODE_OPTIONS: '--require foreign', PYTHONPATH: '/synthetic/python', CODEX_HOME: '/synthetic/codex',
     ECHO_DESKTOP_REVIEW_CODE_AGENT: '1', ECHO_LOCAL_REVIEW_CONFIG: 'foreign', ECHO_WEBDAV_REVIEW_SECRET: 'foreign' };
   const clean = cleanNativeReviewEnvironment(inherited);
   assert.deepEqual(clean, { HOME: inherited.HOME, PATH: inherited.PATH, ECHO_AGENT_REVIEW_ISOLATED: '1',
+    ECHO_AGENT_AGENT_ID: '00000000-0000-4000-8000-000000000001',
     ECHO_AGENT_TELEMETRY_ENABLED: 'false', ECHO_AGENT_TELEMETRY_TRACE_UPLOAD: 'false' });
   assert.equal(inherited.ECHO_AGENT_AUTH, 'private-marker');
 });

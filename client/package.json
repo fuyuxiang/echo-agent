@@ -86,7 +86,7 @@
     "test:security": "node --test scripts/test-theia-archive-security.mjs scripts/test-dependency-patches.mjs scripts/test-theia-scanoss.mjs scripts/test-dependency-runtime-security.mjs",
     "security:audit": "python3 scripts/audit-dependencies.py",
     "test:ui:contrast": "node scripts/validate-color-contrast-ui.mjs --full --open-overlays --plan-review --profile-review",
-    "test:ui:theme-states": "node scripts/validate-enterprise-theme.mjs",
+    "test:ui:theme-states": "node --test scripts/test-editor-paint-audit.mjs && node scripts/validate-enterprise-theme.mjs",
     "test:ui:theme-lifecycle": "node scripts/validate-theme-lifecycle-ui.mjs",
     "test:ui:editor-paint": "node scripts/validate-local-editor-paint-ui.mjs",
     "test:ui:editor-theme": "node --test scripts/test-editor-paint-audit.mjs && node scripts/validate-editor-theme-ui.mjs",
