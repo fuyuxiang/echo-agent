@@ -35,6 +35,22 @@ backend.on("error", error => { console.error(error); });
 let server, workbenchServer, browser, page;
 const evidence = [], browserErrors = [];
 const luminance = hex => [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16) / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+
+async function waitForEditorTheme(page, frame, theme) {
+  // Wait for React to apply the host theme before reading its resolved roles.
+  // The iframe must follow that palette without being remounted.
+  await page.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);
+  const host = await page.evaluate(() => {
+    const css = getComputedStyle(document.documentElement);
+    return Object.fromEntries(["surface-content", "surface-sidebar", "text-strong", "text-medium", "code-comment", "code-constant"].map(role => [role, css.getPropertyValue(`--echo-${role}`).trim().toLowerCase()]));
+  });
+  for (const [role, color] of Object.entries(host)) assert.match(color, /^#[\da-f]{6}$/i, `Host theme role ${role} must resolve to a color`);
+  await frame.waitForFunction(({ theme, background }) => document.body.classList.contains(`theia-${theme}`)
+    && getComputedStyle(document.documentElement).getPropertyValue("--theia-editor-background").trim().toLowerCase() === background,
+  { theme, background: host["surface-content"] });
+  return host;
+}
+
 try {
   let ready = false;
   for (let attempt = 0; attempt < 180; attempt++) {
@@ -60,10 +76,7 @@ try {
   assert(frame, "The real IDE iframe must be present");
   const documentIdentity = await frame.evaluate(() => { window.themeReviewIdentity = crypto.randomUUID(); return window.themeReviewIdentity; });
   const capture = async (state, theme) => {
-    const host = await page.evaluate(() => {
-      const css = getComputedStyle(document.documentElement);
-      return Object.fromEntries(["surface-content", "surface-sidebar", "text-strong", "text-medium", "code-comment", "code-constant"].map(role => [role, css.getPropertyValue(`--echo-${role}`).trim().toLowerCase()]));
-    });
+    const host = await waitForEditorTheme(page, frame, theme);
     await frame.waitForFunction(expected => {
       const comment = [...document.querySelectorAll(".view-lines span[class*=mtk]")].find(element => element.textContent.trim().startsWith("//"));
       const probe = document.createElement("span"); probe.style.color = expected; document.body.append(probe);
@@ -110,8 +123,6 @@ try {
   };
   for (const theme of ["light", "dark", "light"]) {
     await page.evaluate(theme => window.enterpriseThemeReview.setTheme(theme), theme);
-    await frame.waitForFunction(theme => document.body.classList.contains(`theia-${theme}`), theme);
-    await frame.waitForFunction(color => getComputedStyle(document.documentElement).getPropertyValue("--theia-editor-background").trim().toLowerCase() === color, theme === "dark" ? "#1b1f28" : "#ffffff");
     await capture("editor", theme);
   }
   const context = await page.evaluate(() => window.enterpriseThemeReview.ideContext());
@@ -120,7 +131,6 @@ try {
   await ide.locator(".monaco-diff-editor").waitFor();
   for (const theme of ["light", "dark"]) {
     await page.evaluate(theme => window.enterpriseThemeReview.setTheme(theme), theme);
-    await frame.waitForFunction(theme => document.body.classList.contains(`theia-${theme}`), theme);
     await capture("diff", theme);
   }
   // The command palette opens a real local terminal; the command prints only
@@ -142,7 +152,6 @@ try {
   await delay(1200);
   for (const theme of ["dark", "light"]) {
     await page.evaluate(theme => window.enterpriseThemeReview.setTheme(theme), theme);
-    await frame.waitForFunction(theme => document.body.classList.contains(`theia-${theme}`), theme);
     await capture("terminal", theme);
   }
   const terminalContext = await page.evaluate(() => window.enterpriseThemeReview.ideContext());
@@ -162,18 +171,21 @@ try {
       document.documentElement.style.fontSize = `${16 * font / 13}px`;
       window.codingWorkbenchThemeReview.setTheme(theme);
     }, { theme, font });
-    await workbenchIde.locator(`body.theia-${theme}`).waitFor();
+    const host = await waitForEditorTheme(page, workbenchFrame, theme);
     await page.locator(".echo-theia-agent .echo-theia-agent__input").waitFor();
     await workbenchFrame.waitForFunction(expected => {
       const comment = [...document.querySelectorAll(".view-lines span[class*=mtk]")].find(element => element.textContent.trim().startsWith("//"));
-      return comment && getComputedStyle(comment).color === expected;
-    }, theme === "dark" ? "rgb(156, 184, 147)" : "rgb(78, 106, 88)");
+      const probe = document.createElement("span"); probe.style.color = expected; document.body.append(probe);
+      const color = getComputedStyle(probe).color; probe.remove();
+      return comment && getComputedStyle(comment).color === color;
+    }, host["code-comment"]);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
     const colors = await workbenchFrame.evaluate(() => ({
       background: getComputedStyle(document.documentElement).getPropertyValue("--theia-editor-background").trim().toLowerCase(),
       statusbar: getComputedStyle(document.documentElement).getPropertyValue("--theia-statusBar-background").trim().toLowerCase(),
     }));
-    assert.equal(colors.background, theme === "dark" ? "#1b1f28" : "#ffffff");
+    assert.equal(colors.background, host["surface-content"]);
+    assert.equal(colors.statusbar, host["surface-sidebar"]);
     const activityIcons = await workbenchFrame.evaluate(() => {
       const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
       const context = canvas.getContext("2d", { willReadFrequently: true });
@@ -200,7 +212,7 @@ try {
     await page.screenshot({ path: join(output, file) });
     const paint = await inspectEditorPaint(page, workbenchFrame, join(output, file.replace(".png", "-backdrop.png")));
     assert.deepEqual(paint.failures, [], `${file}: actual workbench syntax paint`);
-    evidence.push({ state: "workbench", theme, width, height, font, colors, file, paint, activityIcons });
+    evidence.push({ state: "workbench", theme, width, height, font, host, colors, file, paint, activityIcons });
   }
   assert.deepEqual(browserErrors, [], "Real host/IDE browser exceptions");
   const workbenchCalls = await page.evaluate(() => window.codingWorkbenchThemeReview.calls);

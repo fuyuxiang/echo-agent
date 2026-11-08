@@ -187,7 +187,7 @@
   border: 1px solid var(--echo-border-default);
   border-radius: 9px;
   background: var(--echo-bg-primary);
-  box-shadow: 0 14px 34px rgb(0 0 0 / 18%);
+  box-shadow: var(--echo-shadow-popover);
 }
 
 .echo-theia-preview-form label {
@@ -1017,7 +1017,7 @@
   border: 1px solid var(--echo-border-default);
   border-radius: 9px;
   background: var(--echo-bg-secondary);
-  box-shadow: 0 14px 34px rgb(0 0 0 / 24%);
+  box-shadow: var(--echo-shadow-popover);
 }
 
 .coding-project-switcher__caption {
@@ -2020,7 +2020,7 @@
   border: 1px solid var(--echo-border-default);
   border-radius: 8px;
   background: var(--echo-bg-secondary);
-  box-shadow: 0 12px 28px rgb(0 0 0 / 22%);
+  box-shadow: var(--echo-shadow-popover);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -2525,7 +2525,7 @@
   border: 1px solid var(--echo-border-subtle);
   border-radius: 10px;
   background: var(--echo-bg-primary);
-  box-shadow: 0 5px 18px rgb(0 0 0 / 4%);
+  box-shadow: var(--echo-shadow-input);
 }
 
 .coding-agent textarea,
@@ -2638,7 +2638,7 @@
   border: 1px solid var(--echo-border-default);
   border-radius: 13px;
   background: var(--echo-bg-primary);
-  box-shadow: 0 12px 30px rgb(0 0 0 / 6%), 0 2px 6px rgb(0 0 0 / 3%);
+  box-shadow: var(--echo-shadow-input);
 }
 
 .coding-agent__starter-card > textarea {

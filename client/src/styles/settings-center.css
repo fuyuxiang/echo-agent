@@ -4,14 +4,14 @@
 .modal-overlay,
 .about-dialog__overlay,
 .feedback-dialog__overlay {
-  background: rgba(7, 14, 13, 0.5);
-  backdrop-filter: blur(3px);
+  background: var(--echo-bg-overlay);
+  backdrop-filter: none;
 }
 
 .settings-modal {
   border-color: var(--ui-line-strong);
   background: var(--ui-surface);
-  box-shadow: 0 30px 90px rgba(7, 14, 13, 0.28), 0 4px 14px rgba(7, 14, 13, 0.12);
+  box-shadow: var(--echo-shadow-modal);
 }
 
 .settings-modal__nav {
@@ -1117,68 +1117,6 @@ a.help-card:hover {
   font-weight: 600;
 }
 
-.agent-stats {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.agent-stats__item {
-  min-height: 112px;
-  padding: 18px 12px;
-  border: 1px solid var(--ui-line);
-  background: var(--ui-surface-muted);
-}
-
-.agent-stats__num {
-  font-size: 1.75rem;
-  font-weight: 720;
-}
-
-.agent-stats__label {
-  margin-top: 5px;
-  font-size: 0.75rem;
-}
-
-.agent-stats__sub {
-  margin-top: 6px;
-  line-height: 1.4;
-}
-
-.agent-section {
-  border-color: var(--ui-line);
-  border-radius: 10px;
-  background: transparent;
-}
-
-.agent-section + .agent-section {
-  margin-top: 8px;
-}
-
-.agent-section__title {
-  min-height: 44px;
-  padding: 11px 13px;
-}
-
-.agent-section[open] .agent-section__title {
-  border-bottom: 1px solid var(--ui-line);
-  background: var(--ui-surface-muted);
-}
-
-.agent-section__body {
-  padding: 10px 12px 12px;
-}
-
-.agent-list {
-  gap: 6px;
-}
-
-.agent-list__item {
-  min-height: 38px;
-  padding: 7px 10px;
-  border: 1px solid var(--ui-line);
-  background: var(--ui-surface);
-}
-
 .agent-runtime-row {
   align-items: center;
   min-height: 78px;
@@ -1600,14 +1538,6 @@ a.help-card:hover {
 
   .settings-font-control input[type="range"] {
     flex: 1 1 150px;
-  }
-
-  .agent-stats {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .agent-stats__item {
-    min-height: 92px;
   }
 
   .rules-list__item {

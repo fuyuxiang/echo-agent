@@ -5,8 +5,8 @@
   position: fixed; z-index: var(--echo-layer-popover); display: flex; flex-direction: column;
   width: max-content; min-width: min(224px, calc(100vw - 24px)); max-width: min(320px, calc(100vw - 24px)); padding: 6px; gap: 2px;
   overflow-x: hidden; overflow-y: auto; box-sizing: border-box;
-  background: var(--echo-bg-primary); border: 1px solid var(--echo-border-default);
-  border-radius: 12px; box-shadow: var(--echo-shadow-lg);
+  background: var(--echo-surface-raised); border: 1px solid var(--echo-border-default);
+  border-radius: var(--echo-radius-dialog); box-shadow: var(--echo-shadow-popover);
 }
 .permission-picker__modes { display: flex; flex-direction: column; gap: 2px; flex: none; }
 .permission-picker__mode {

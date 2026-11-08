@@ -119,7 +119,7 @@ try {
         background: getComputedStyle(document.body).backgroundColor, mounted: !!document.querySelector(".window-sidebar-brand"),
       }));
       assert.equal(initial.theme, expected); assert.equal(initial.scheme, expected);
-      assert.equal(initial.background, expected === "dark" ? "rgb(17, 19, 24)" : "rgb(247, 248, 250)");
+      assert.equal(initial.background, expected === "dark" ? "rgb(21, 22, 25)" : "rgb(250, 250, 251)");
       assert(heldScripts > 0, "The real module requests must be held before capturing the first frame");
       assert.equal(initial.mounted, false, "The first-frame assertion must run before React mounts");
       await startup.screenshot({ path: join(output, `first-frame-${preference}-${system}.png`) });

@@ -45,27 +45,28 @@
 
 .echo-composer {
   position: relative;
-  border: 1px solid var(--ui-line-strong);
+  border: 1px solid var(--echo-border-default);
   border-radius: var(--echo-radius-dialog);
   background: var(--ui-surface-raised);
-  box-shadow: none;
+  box-shadow: var(--echo-shadow-input);
   backdrop-filter: none;
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  transition: border-color var(--echo-motion-duration-fast), box-shadow var(--echo-motion-duration-fast);
+}
+
+.echo-composer:hover:not(:focus-within) {
+  border-color: var(--echo-border-strong);
 }
 
 .echo-composer:focus-within {
-  border-color: var(--ui-brand-line);
-  box-shadow: 0 0 0 1px var(--echo-border-focus);
+  border-color: var(--echo-border-focus);
+}
+
+.echo-composer--disabled {
+  background: var(--echo-surface-canvas);
 }
 
 .home .echo-composer {
   padding: 20px 20px 0;
-  border-radius: var(--echo-radius-dialog);
-  box-shadow: var(--echo-shadow-input);
-}
-
-.home .echo-composer:focus-within {
-  box-shadow: 0 0 0 2px var(--echo-brand-soft);
 }
 
 .home .echo-composer-meta {
@@ -99,7 +100,7 @@
   justify-content: center;
   gap: 6px;
   padding: 12px 16px;
-  border-radius: 18px;
+  border-radius: var(--echo-radius-dialog);
   background: var(--echo-brand-soft);
   border: 1.5px dashed color-mix(in srgb, var(--echo-brand) 65%, transparent);
   color: var(--echo-brand);
@@ -107,8 +108,11 @@
   font-weight: 600;
   letter-spacing: 0;
   pointer-events: none;
-  backdrop-filter: blur(2px);
   animation: echo-composer-dropzone-fade 120ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .echo-composer { transition: none; }
 }
 
 .echo-composer__dropzone-title {

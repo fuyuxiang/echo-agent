@@ -80,6 +80,10 @@
   color: var(--echo-text-strong);
 }
 
+.sidebar__nav-item:active {
+  background: var(--echo-bg-active);
+}
+
 .sidebar__nav-item--active {
   background: var(--echo-control-selected-bg);
   color: var(--echo-control-selected-fg);
@@ -107,6 +111,11 @@
 .sidebar__nav-item--create.sidebar__nav-item--active:hover {
   background: var(--echo-button-primary-bg-hover);
   color: var(--echo-button-primary-fg);
+}
+
+.sidebar__nav-item--create:active,
+.sidebar__nav-item--create.sidebar__nav-item--active:active {
+  background: var(--echo-button-primary-bg-active);
 }
 
 .sidebar__content {
@@ -221,7 +230,7 @@
 
 .sidebar__conv:hover,
 .sidebar__node:hover {
-  background: color-mix(in srgb, var(--ui-surface) 60%, transparent);
+  background: var(--echo-bg-hover);
   color: var(--echo-text-strong);
 }
 
@@ -254,9 +263,9 @@
 .sidebar__more-popover,
 .task-filter-popover,
 .context-menu {
-  border-color: var(--ui-line-strong);
+  border: 1px solid var(--ui-line-strong);
   border-radius: var(--echo-radius-card);
   background: var(--ui-surface-raised);
-  box-shadow: var(--ui-shadow-xs);
+  box-shadow: var(--echo-shadow-popover);
   backdrop-filter: none;
 }

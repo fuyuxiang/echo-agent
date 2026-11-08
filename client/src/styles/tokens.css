@@ -124,10 +124,10 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-bg-active: rgba(32, 36, 46, .08);
   --echo-bg-overlay: var(--echo-palette-black-40);
   --echo-bg-inverse: #242936;
-  --echo-border-default: #E1E5EB;
-  --echo-border-weak: #EBEEF3;
-  --echo-border-subtle: #EBEEF3;
-  --echo-border-strong: #CBD2DD;
+  --echo-border-default: #DFE1E6;
+  --echo-border-weak: #EAEBEF;
+  --echo-border-subtle: var(--echo-border-weak);
+  --echo-border-strong: #C9CDD4;
   --echo-border-focus: var(--echo-focus-ring);
   --echo-control-selected-bg: #EEF0FD;
   --echo-control-selected-bg-hover: #E7EAFD;
@@ -150,8 +150,8 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-button-primary-bg-disabled: var(--echo-control-disabled-bg);
   --echo-button-primary-fg-disabled: var(--echo-control-disabled-fg);
   --echo-button-secondary-bg: var(--echo-surface-content);
-  --echo-button-secondary-bg-hover: var(--echo-bg-hover);
-  --echo-button-secondary-bg-active: var(--echo-bg-active);
+  --echo-button-secondary-bg-hover: color-mix(in srgb, var(--echo-text-strong) 5%, var(--echo-surface-content));
+  --echo-button-secondary-bg-active: color-mix(in srgb, var(--echo-text-strong) 9%, var(--echo-surface-content));
   --echo-button-secondary-bg-disabled: var(--echo-control-disabled-bg);
   --echo-button-secondary-fg: var(--echo-text-strong);
   --echo-button-secondary-fg-disabled: var(--echo-control-disabled-fg);
@@ -188,7 +188,7 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-toast-secondary: #B2BBCB;
   --echo-toast-action: #BAC1FF;
   --echo-toast-hover: #343C50;
-  --echo-surface-canvas: #F7F8FA;
+  --echo-surface-canvas: #FAFAFB;
   --echo-code-comment: #4E6A58;
   --echo-code-type: #206980;
   --echo-code-number: #237A57;
@@ -200,10 +200,10 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-code-diff-added-text-bg: #2EA0430C;
   --echo-code-diff-removed-text-bg: #F851490C;
   --echo-code-match-bg: #EEF0FD;
-  --echo-surface-sidebar: #F4F5F8;
+  --echo-surface-sidebar: #F3F4F6;
   --echo-surface-content: #FFFFFF;
   --echo-surface-raised: #FFFFFF;
-  --echo-surface-conversation: #EEF1F5;
+  --echo-surface-conversation: #F0F1F3;
   --echo-control-selected-bg-active: #E5E8FC;
   --echo-button-primary-bg: #4F5BD5;
   --echo-button-primary-bg-hover: #424CBD;
@@ -211,7 +211,7 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-button-primary-fg: #FFFFFF;
   --echo-control-disabled-bg: #E9EDF3;
   --echo-control-disabled-fg: #798392;
-  --echo-border-control: #7B8798;
+  --echo-border-control: #81858F;
   --echo-status-success-surface: #EBF6EF;
   --echo-status-warning-soft: #FFF5E4;
   --echo-status-error-soft: #FDEEEF;
@@ -227,11 +227,8 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-button-danger-bg-active: #922532;
   --echo-button-danger-fg-on-solid: #FFFFFF;
   --echo-todo-menu-bg-hover: var(--echo-palette-gray-4);
-  --echo-todo-menu-bg-active: var(--echo-palette-gray-5);
-  --echo-todo-menu-icon-default: var(--echo-palette-black-70);
   --echo-todo-menu-text-default: var(--echo-palette-black-90);
   --echo-todo-menu-text-heading: var(--echo-text-weak);
-  --echo-todo-menu-text-view-more: var(--echo-text-weak);
   --echo-button-grey-bg: color-mix(in srgb, var(--echo-palette-black-100) 4%, transparent);
   --echo-button-grey-bg-hover: color-mix(in srgb, var(--echo-palette-black-100) 8%, transparent);
   --echo-button-grey-bg-active: color-mix(in srgb, var(--echo-palette-black-100) 12%, transparent);
@@ -377,10 +374,10 @@ body.vscode-dark {
   --echo-bg-hover: rgba(232, 236, 243, .06);
   --echo-bg-active: rgba(232, 236, 243, .10);
   --echo-bg-overlay: var(--echo-palette-black-60);
-  --echo-border-default: #303746;
-  --echo-border-weak: #272E3A;
-  --echo-border-subtle: #272E3A;
-  --echo-border-strong: #465168;
+  --echo-border-default: #3C3F48;
+  --echo-border-weak: #30333B;
+  --echo-border-subtle: var(--echo-border-weak);
+  --echo-border-strong: #535965;
   --echo-border-focus: var(--echo-focus-ring);
   --echo-control-selected-bg: #292F52;
   --echo-control-selected-bg-hover: #343C63;
@@ -403,8 +400,8 @@ body.vscode-dark {
   --echo-button-primary-bg-disabled: var(--echo-control-disabled-bg);
   --echo-button-primary-fg-disabled: var(--echo-control-disabled-fg);
   --echo-button-secondary-bg: var(--echo-surface-content);
-  --echo-button-secondary-bg-hover: var(--echo-bg-hover);
-  --echo-button-secondary-bg-active: var(--echo-bg-active);
+  --echo-button-secondary-bg-hover: color-mix(in srgb, var(--echo-text-strong) 5%, var(--echo-surface-content));
+  --echo-button-secondary-bg-active: color-mix(in srgb, var(--echo-text-strong) 9%, var(--echo-surface-content));
   --echo-button-secondary-bg-disabled: var(--echo-control-disabled-bg);
   --echo-button-secondary-fg: var(--echo-text-strong);
   --echo-button-secondary-fg-disabled: var(--echo-control-disabled-fg);
@@ -442,7 +439,7 @@ body.vscode-dark {
   --echo-toast-secondary: #B2BBCB;
   --echo-toast-action: #BAC1FF;
   --echo-toast-hover: #343C50;
-  --echo-surface-canvas: #111318;
+  --echo-surface-canvas: #151619;
   --echo-code-comment: #9CB893;
   --echo-code-type: #4EC9B0;
   --echo-code-number: #B5CEA8;
@@ -452,10 +449,10 @@ body.vscode-dark {
   --echo-code-diff-added-text-bg: #2EA04311;
   --echo-code-diff-removed-text-bg: #F8514911;
   --echo-code-match-bg: #222840;
-  --echo-surface-sidebar: #151820;
-  --echo-surface-content: #1B1F28;
-  --echo-surface-raised: #242936;
-  --echo-surface-conversation: #242936;
+  --echo-surface-sidebar: #1A1B1F;
+  --echo-surface-content: #1D1F23;
+  --echo-surface-raised: #292B31;
+  --echo-surface-conversation: #292B31;
   --echo-control-selected-bg-active: #384168;
   --echo-button-primary-bg: #A5AEFF;
   --echo-button-primary-bg-hover: #BAC1FF;
@@ -463,7 +460,7 @@ body.vscode-dark {
   --echo-button-primary-fg: #171B3A;
   --echo-control-disabled-bg: #252B36;
   --echo-control-disabled-fg: #738199;
-  --echo-border-control: #69778F;
+  --echo-border-control: #7C8595;
   --echo-status-success-surface: #19382C;
   --echo-status-warning-soft: #372C1B;
   --echo-status-error-soft: #3D252C;
@@ -479,11 +476,8 @@ body.vscode-dark {
   --echo-button-danger-bg-active: #FFC9D0;
   --echo-button-danger-fg-on-solid: #3B1820;
   --echo-todo-menu-bg-hover: color-mix(in srgb, var(--echo-palette-white-100) 8%, transparent);
-  --echo-todo-menu-bg-active: color-mix(in srgb, var(--echo-palette-white-100) 12%, transparent);
-  --echo-todo-menu-icon-default: var(--echo-palette-white-70);
   --echo-todo-menu-text-default: var(--echo-palette-white-90);
   --echo-todo-menu-text-heading: var(--echo-text-weak);
-  --echo-todo-menu-text-view-more: var(--echo-text-weak);
   --echo-button-grey-bg: color-mix(in srgb, var(--echo-palette-white-100) 6%, transparent);
   --echo-button-grey-bg-hover: var(--echo-palette-white-10);
   --echo-button-grey-bg-active: color-mix(in srgb, var(--echo-palette-white-100) 14%, transparent);
@@ -577,14 +571,14 @@ body.vscode-dark {
 /* EchoAgent Shadows */
 :root {
   --echo-shadow-none: none;
-  --echo-shadow-sm: 0 1px 2px color-mix(in srgb, var(--echo-palette-black-100) 8%, transparent);
-  --echo-shadow-md: 0 2px 8px color-mix(in srgb, var(--echo-palette-black-100) 12%, transparent);
-  --echo-shadow-lg: 0 4px 16px color-mix(in srgb, var(--echo-palette-black-100) 16%, transparent);
+  --echo-shadow-sm: 0 1px 2px rgb(20 24 35 / 5%);
+  --echo-shadow-md: 0 2px 8px rgb(20 24 35 / 8%);
+  --echo-shadow-lg: var(--echo-shadow-popover);
   --echo-shadow-xl: 0 8px 32px color-mix(in srgb, var(--echo-palette-black-100) 20%, transparent);
-  --echo-shadow-popover: 0 4px 12px -4px color-mix(in srgb, var(--echo-palette-black-100) 4%, transparent), 0 3px 6px -8px color-mix(in srgb, var(--echo-palette-black-100) 4%, transparent);
-  --echo-shadow-input: 0 12px 24px -8px color-mix(in srgb, var(--echo-palette-black-100) 2%, transparent), 0 2px 4px -4px color-mix(in srgb, var(--echo-palette-black-100) 2%, transparent);
-  --echo-shadow-modal: 0 12px 48px rgba(0, 0, 0, 24%);
-  --echo-shadow-floating: 0 18px 48px rgba(32, 36, 46, .10), 0 2px 8px rgba(32, 36, 46, .05);
+  --echo-shadow-popover: 0 8px 24px -6px rgb(20 24 35 / 12%), 0 2px 6px rgb(20 24 35 / 5%);
+  --echo-shadow-input: 0 2px 8px -2px rgb(20 24 35 / 5%);
+  --echo-shadow-modal: 0 16px 48px -8px rgb(20 24 35 / 20%), 0 2px 8px rgb(20 24 35 / 6%);
+  --echo-shadow-floating: var(--echo-shadow-popover);
 }
 
 /* EchoAgent foundation tokens. Maintained directly in this CSS file. */
@@ -611,6 +605,7 @@ body.vscode-dark {
   --echo-icon-size-md: 16px;
   --echo-icon-size-lg: 20px;
   --echo-icon-size-xl: 24px;
+  --echo-icon-stroke-width: 1.75;
 }
 
 /* EchoAgent foundation tokens. Maintained directly in this CSS file. */
@@ -691,7 +686,11 @@ body.vscode-dark {
   --echo-button-brand-fg: var(--echo-button-primary-fg);
 }
 [data-theme="dark"] {
-  --echo-shadow-floating: 0 20px 56px rgba(0, 0, 0, .36), 0 2px 8px rgba(0, 0, 0, .24);
+  --echo-shadow-sm: 0 1px 2px rgb(0 0 0 / 16%);
+  --echo-shadow-md: 0 2px 8px rgb(0 0 0 / 22%);
+  --echo-shadow-popover: 0 8px 24px -6px rgb(0 0 0 / 36%), 0 2px 6px rgb(0 0 0 / 24%);
+  --echo-shadow-input: 0 2px 8px -2px rgb(0 0 0 / 16%);
+  --echo-shadow-modal: 0 16px 48px -8px rgb(0 0 0 / 48%), 0 2px 8px rgb(0 0 0 / 24%);
 }
 
 @media (max-width: 1180px) {

@@ -29,7 +29,7 @@
   text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
-  transition: background var(--echo-motion-duration-fast), border-color var(--echo-motion-duration-fast), color var(--echo-motion-duration-fast);
+  transition: background-color var(--echo-motion-duration-fast), border-color var(--echo-motion-duration-fast), color var(--echo-motion-duration-fast);
 }
 /* Only the React button needs a containing block for its loading spinner.
  * Low specificity lets feature classes own positioning and flex sizing. */
@@ -149,6 +149,7 @@
   font: inherit;
   font-size: var(--echo-control-font-size);
   line-height: var(--echo-control-line-height);
+  transition: border-color var(--echo-motion-duration-fast), background-color var(--echo-motion-duration-fast), color var(--echo-motion-duration-fast);
 }
 :is(.form-control, .settings-input, :where(.app-dialog__field input,
     .app-dialog__field textarea, .group-form input:not([type="checkbox"]),
@@ -159,7 +160,13 @@
   color: var(--echo-text-weak);
   opacity: 1;
 }
-:is(.form-control, .settings-input):disabled { opacity: .55; cursor: not-allowed; }
+:is(.form-control, .settings-input):disabled {
+  background-color: var(--echo-control-disabled-bg);
+  color: var(--echo-control-disabled-fg);
+  border-color: var(--echo-border-default);
+  opacity: 1;
+  cursor: not-allowed;
+}
 :is(.form-control, .settings-input)[readonly] { background-color: var(--echo-bg-secondary); }
 :is(.form-control, .settings-input)[aria-invalid="true"] { border-color: var(--echo-status-error); }
 select.form-control {
@@ -194,5 +201,8 @@ select.form-control {
   .echo-theia-agent__splitter:focus-visible { outline: 1px solid Highlight; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .echo-button { transition: none; }
+  .echo-composer__tool--active { animation: none; }
+  :is(.echo-button, .btn, .form-button, .capability-button, .settings-btn, .atm-btn,
+      .app-dialog__button, .atm-create-btn, .atm-detail-btn, .meeting-primary,
+      .meeting-secondary, .meeting-danger, .form-control, .settings-input) { transition: none; }
 }

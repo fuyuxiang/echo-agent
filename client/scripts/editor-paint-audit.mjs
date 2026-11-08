@@ -46,7 +46,14 @@ export async function inspectEditorPaint(page, target, path, { diffHighlights = 
         if (/hidden|auto|scroll|clip/.test(css.overflowY)) { top = Math.max(top, box.top); bottom = Math.min(bottom, box.bottom); }
       }
       if (right <= left || bottom <= top || !opacity) return [];
-      return [{ text: element.textContent, color: style.color, opacity, rect: { left, right, top, bottom }, threshold: 4.5 }];
+      // Monaco keeps token boxes underneath its minimap and overlay scrollbars.
+      // Those reserved areas can repaint between screenshots without any glyph
+      // being visible there; their changing pixels are not syntax backdrops.
+      const occlusions = [...element.closest(".monaco-editor").querySelectorAll(".minimap, .scrollbar")]
+        .map(chrome => chrome.getBoundingClientRect())
+        .filter(box => box.width && box.height && box.left < right && box.right > left && box.top < bottom && box.bottom > top)
+        .map(({ left, right, top, bottom }) => ({ left, right, top, bottom }));
+      return [{ text: element.textContent, color: style.color, opacity, rect: { left, right, top, bottom }, occlusions, threshold: 4.5 }];
     });
   });
   assert(geometry.length >= 8, "Real syntax tokens must be painted and sampled");
@@ -77,6 +84,8 @@ export async function inspectEditorPaint(page, target, path, { diffHighlights = 
     let minimum = Infinity, backdrop, pixels = 0;
     for (let y = Math.max(0, Math.ceil((token.rect.top + offset.y) * scale)); y < Math.min(png.height, Math.floor((token.rect.bottom + offset.y) * scale)); y++) {
       for (let x = Math.max(0, Math.ceil((token.rect.left + offset.x) * scale)); x < Math.min(png.width, Math.floor((token.rect.right + offset.x) * scale)); x++) {
+        const point = { x: (x + .5) / scale - offset.x, y: (y + .5) / scale - offset.y };
+        if (token.occlusions.some(box => point.x >= box.left && point.x < box.right && point.y >= box.top && point.y < box.bottom)) continue;
         const i = (y * png.width + x) * 4, bg = [...png.data.subarray(i, i + 3)];
         // Borders and guides can touch a token's rectangle without lying
         // behind a glyph. The real ink difference locates painted text only.
