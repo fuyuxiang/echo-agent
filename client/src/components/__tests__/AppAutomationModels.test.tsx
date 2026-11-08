@@ -189,7 +189,7 @@ describe("自动化会话模型同步", () => {
     });
     const transcript = useSessionStore.getState().transcripts["auto-1"];
     expect(transcript.control).toBeUndefined();
-    expect(transcript.messages.find(message => message.promptId === "p-next")?.parts).toContainEqual({ kind: "text", text: "第二轮结果" });
+    expect(transcript.messages.find(message => message.role === "assistant" && message.promptId === "p-next")?.parts).toContainEqual({ kind: "text", text: "第二轮结果" });
     expect(usePermissionStore.getState().queues["auto-1"]).toHaveLength(1);
     expect(useQuestionStore.getState().queues["auto-1"]).toHaveLength(1);
     act(() => {
@@ -197,6 +197,54 @@ describe("自动化会话模型同步", () => {
       handlers.onAutomationUpdate?.(admission);
     });
     expect(useSessionStore.getState().transcripts["auto-1"].control?.promptId).toBe("p-next");
+  });
+
+  it("常驻后台工作不覆盖本轮终态，自动接续的实际进展重新标记处理中", async () => {
+    await start(); created("model-a");
+    act(() => {
+      useSessionStore.getState().startStreaming("auto-1", "main");
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "排查字体" }, _meta: { promptId: "main", promptIndex: 0 } });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "tool_call", toolCallId: "lookup", title: "检查目录", status: "completed", _meta: { promptId: "main" } });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "task_backgrounded", task_id: "directory", tool_call_id: "lookup", description: "检查微信目录" });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "已有结论" }, _meta: { promptId: "main" } });
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "main", stopReason: "end_turn" });
+    });
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "auto-1")?.status).toBe("completed");
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "internal result" }, _meta: { promptId: "task-completed-directory", promptIndex: 1, hideFromScrollback: true } });
+    });
+    // Native admission starts work even while waiting for the first model token.
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "auto-1")?.status).toBe("working");
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "补充结论" }, _meta: { promptId: "task-completed-directory" } });
+    });
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "auto-1")?.status).toBe("working");
+    act(() => handlers.onComplete?.({ sessionId: "auto-1", promptId: "task-completed-directory", stopReason: "end_turn" }));
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "auto-1")?.status).toBe("completed");
+    act(() => handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "task_backgrounded", task_id: "directory", tool_call_id: "lookup" }));
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "auto-1")?.status).toBe("completed");
+  });
+
+  it("已结束会话的历史回放及迟到工具回执不会重新标记为执行中", async () => {
+    await start(); created("model-a");
+    useSessionsStore.getState().upsert({ sessionId: "auto-1", status: "completed" });
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "历史请求" }, _meta: { promptId: "historical", promptIndex: 0, isReplay: true } });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "tool_call", toolCallId: "history-tool", title: "检查目录", status: "in_progress", _meta: { promptId: "historical", isReplay: true } });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "历史回复" }, _meta: { promptId: "historical", isReplay: true } });
+    });
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "auto-1")?.status).toBe("completed");
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "turn_completed", prompt_id: "historical", stop_reason: "end_turn", _meta: { isReplay: true } });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "tool_call_update", toolCallId: "history-tool", status: "completed" });
+    });
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "auto-1")?.status).toBe("completed");
+  });
+
+  it("旁路会话的后台事件不创建无来源的侧栏任务", async () => {
+    await start();
+    act(() => handlers.onUpdate?.({ __sessionId: "side-channel", sessionUpdate: "task_backgrounded", task_id: "side-task" }));
+    expect(useSessionsStore.getState().independent.some(row => row.sessionId === "side-channel")).toBe(false);
   });
 
   it("旧 Runtime 无轮次身份的用户回显保留后台任务的过程和结果", async () => {

@@ -4,7 +4,7 @@
   padding:var(--echo-page-gutter);
   container:groups-page / inline-size;
   color:var(--echo-text-primary);
-  background:var(--echo-bg-primary);
+  background:var(--echo-surface-canvas);
 }
 
 .group-pending-notice {
@@ -357,7 +357,7 @@
   height:100%;
   min-height:0;
   overflow:hidden;
-  background:var(--echo-bg-primary);
+  background:var(--echo-surface-canvas);
   color:var(--echo-text-primary);
 }
 
@@ -366,7 +366,7 @@
   align-items:center;
   gap:12px;
   padding:16px 20px;
-  border-bottom:1px solid var(--echo-border-default);
+  border-bottom:1px solid var(--echo-border-weak);
   min-height:76px;
   box-sizing:border-box;
 }

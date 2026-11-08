@@ -441,7 +441,7 @@ function MoreDropdown({
         type="button"
         className={
           "sidebar__nav-item" +
-          (isActive || open ? " sidebar__nav-item--active" : "")
+          (isActive ? " sidebar__nav-item--active" : open ? " sidebar__nav-item--open" : "")
         }
         aria-haspopup="menu"
         aria-expanded={open}
@@ -1043,12 +1043,9 @@ export function Sidebar({
 
       <nav className="sidebar__nav" aria-label="主导航">
         <button
-          className={
-            "sidebar__nav-item sidebar__nav-item--create" +
-            (activeNav === "新建任务" ? " sidebar__nav-item--active" : "")
-          }
+          type="button"
+          className="sidebar__nav-item sidebar__nav-item--create"
           onClick={onNewSession}
-          aria-current={activeNav === "新建任务" ? "page" : undefined}
         >
           <EchoNewTaskIcon size="md" />
           <span>新建任务</span>

@@ -751,9 +751,10 @@ function Shell() {
               : undefined;
             if (
               updateSessionId
-              && applied && currentPromptUpdate && !updatedTranscript?.control && !pendingStatus
-              && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(updateType ?? "")
-              && (currentStatus === "pending" || isWaitingForUser(currentStatus))
+              && applied && currentPromptUpdate && u._meta?.isReplay !== true
+              && updatedTranscript?.streamingMessageId && !updatedTranscript.control && !pendingStatus
+              && ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"].includes(updateType ?? "")
+              && (currentStatus === "pending" || currentStatus === "completed" || isWaitingForUser(currentStatus))
             ) {
               sessionsStore.getState().upsert({
                 sessionId: updateSessionId,
@@ -1208,6 +1209,9 @@ function Shell() {
           },
           onSubagent: (e) => {
             useSubagentStore.getState().applyEvent(e);
+            if (!e.isReplay && (e.phase === "spawned" || e.phase === "finished")) {
+              setTaskRefreshSignal(value => value + 1);
+            }
           },
           onTurnError: (e) => {
             // EchoAgent reports mid-turn failures (429 while a tool was running,

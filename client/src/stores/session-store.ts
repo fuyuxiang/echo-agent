@@ -23,6 +23,7 @@ import {
   type SessionControlAction,
 } from "@/lib/session-control";
 import { terminalSessionStatus } from "@/lib/turn-status";
+import { readTurnIdentity, type ExecutionTurn } from "@/lib/execution-turn";
 import { officeReceiptFromRawOutput, type DocumentExportReceipt } from "@/lib/document-export";
 import { knowledgeToolContent } from "@/lib/knowledge-tool-output";
 import { settleQueuedPrompt, useMessageQueueStore } from "./message-queue-store";
@@ -47,6 +48,8 @@ export interface ChatMessage {
   promptIndex?: number;
   /** Stable terminal id used to deduplicate live and durable completion rails. */
   promptId?: string;
+  /** Native execution boundary, including internal background follow-ups. */
+  execution?: ExecutionTurn;
   /** False while the assistant is still streaming this message. */
   complete: boolean;
   /** Local wall-clock metadata for live turns. Historical replay may omit it. */
@@ -81,6 +84,8 @@ export type MessagePart = (
 /** A tool-call card rendered inline. Mirrors a subset of ToolCallUpdate. */
 export interface ToolCallView {
   completedAt?: number;
+  /** Immutable link from a native background admission to its launching tool. */
+  backgroundTask?: { id: string; description?: string };
   /** Runtime tool identity and event times used to verify sequential retries. */
   toolName?: string;
   startedAt?: number;
@@ -129,6 +134,9 @@ export interface PlanApprovalRequest {
  */
 export interface SessionTranscript {
   messages: ChatMessage[];
+  /** Unmatched immutable source links. Notifications can overtake tool cards;
+   * consume these on registration, without creating another task lifecycle. */
+  pendingBackgroundTasks?: { toolCallId: string; task: NonNullable<ToolCallView["backgroundTask"]> }[];
   /** Non-null while this session has an in-flight assistant message. Doubles
    *  as the per-session "is streaming" flag. */
   streamingMessageId: string | null;
@@ -305,6 +313,7 @@ const MAX_TOOL_CONTENT_BLOCKS = 256;
 const MAX_TOOL_TEXT_CHARS = 1_000_000;
 const MAX_TOOL_DIFF_CHARS = 1_000_000;
 const MAX_TOOL_IMAGE_BASE64_CHARS = 16 * 1024 * 1024;
+const MAX_PENDING_BACKGROUND_TASK_SOURCES = 256;
 const TRUNCATED_OUTPUT_MARKER = "\n\n… 输出过大，已停止在界面中继续累积 …";
 
 function boundedString(value: unknown, maxChars: number): string {
@@ -771,6 +780,7 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk,
         : current.parts;
       messages[matchingIndex] = {
         ...current,
+        ...(promptId ? { promptId } : {}),
         parts: nextText,
         agentText: chunk.agentText ?? current.agentText,
         attachments: mergePaths(current.attachments, chunk.attachments),
@@ -796,6 +806,7 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk,
   ) {
     messages[optimisticIndex] = {
       ...optimistic,
+      ...(promptId ? { promptId } : {}),
       promptIndex: chunk.promptIndex,
       agentText: chunk.agentText ?? optimistic.agentText,
       attachments: mergePaths(optimistic.attachments, chunk.attachments),
@@ -810,6 +821,7 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk,
     agentText: chunk.agentText,
     attachments: chunk.attachments,
     promptIndex: chunk.promptIndex,
+    ...(promptId ? { promptId } : {}),
     complete: true,
   };
   // Background admission arrives before the canonical user echo. Keep its
@@ -823,8 +835,12 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk,
     messages.splice(placeholderIndex, 0, user);
     return { ...transcript, messages, awaitingUserEchoPromptId: undefined };
   }
-  // A new replayed user turn closes the previous assistant turn.
-  const completed = completeStreamingAssistant({ ...transcript, messages });
+  // A native admission may overtake the preceding terminal ACK. Retire the
+  // spinner without manufacturing success; legacy history keeps its fallback.
+  const active = messages.find(message => message.id === transcript.streamingMessageId);
+  const completed = !isReplay && promptId && active?.promptId && active.promptId !== promptId
+    ? { ...transcript, messages, streamingMessageId: null }
+    : completeStreamingAssistant({ ...transcript, messages });
   return { ...completed, messages: [...completed.messages, user], executionStageTitle: undefined };
 }
 
@@ -895,7 +911,7 @@ function upsertToolCall(msg: ChatMessage, tc: ToolCallView, streamId?: string, s
     parts[idx] = {
       ...current,
       kind: "tool_call",
-      toolCall: { ...tc, startedAt: current.kind === "tool_call" ? current.toolCall.startedAt ?? tc.startedAt : tc.startedAt,
+      toolCall: { ...tc, backgroundTask: tc.backgroundTask ?? (current.kind === "tool_call" ? current.toolCall.backgroundTask : undefined), startedAt: current.kind === "tool_call" ? current.toolCall.startedAt ?? tc.startedAt : tc.startedAt,
         toolName: tc.toolName ?? (current.kind === "tool_call" ? current.toolCall.toolName : undefined) },
       ...(current.streamId || streamId ? { streamId: current.streamId ?? streamId } : {}),
     };
@@ -1526,6 +1542,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
       const updatePromptId = typeof updateMeta?.promptId === "string"
         ? updateMeta.promptId
         : undefined;
+      const turnIdentity = readTurnIdentity(updateMeta, updatePromptId);
 
       const applySessionUpdate = (tr: SessionTranscript): SessionTranscript => {
         if (eventId && eventLedgers.get(tr)?.has(eventId)) return tr;
@@ -1554,11 +1571,18 @@ export const useSessionStore = create<SessionState>((set, get) => {
           if (eventId) rememberEvent(tr, eventId);
           return tr;
         }
+        // History is never admission of a locally pending replacement. Keep
+        // its identity and spinner until Runtime accepts that exact live turn.
+        if (isReplay && tr.pendingSendNowPromptId && CONTROL_SUPPRESSED.has(t)) return tr;
         const activePromptId = tr.pendingSendNowPromptId
           ?? tr.messages.find(message => message.id === tr.streamingMessageId)?.promptId;
+        const activeIndex = tr.messages.find(message => message.id === tr.streamingMessageId)?.promptIndex;
+        const nativeAdmission = t === "user_message_chunk"
+          && !tr.pendingSendNowPromptId
+          && turnIdentity.promptIndex !== undefined && (activeIndex === undefined || turnIdentity.promptIndex > activeIndex);
         if (!isReplay && updatePromptId && CONTROL_SUPPRESSED.has(t) && t !== "tool_call_update"
           && (tr.completedPromptIds?.includes(updatePromptId)
-            || activePromptId && activePromptId !== updatePromptId)) return tr;
+            || activePromptId && activePromptId !== updatePromptId && !nativeAdmission)) return tr;
         if (
           !isReplay
           && updatePromptId
@@ -1572,6 +1596,10 @@ export const useSessionStore = create<SessionState>((set, get) => {
         // those must never recreate a streaming message. Historical replay is
         // allowed so reopening a controlled session can still show its history.
         if (tr.control && !isReplay && CONTROL_SUPPRESSED.has(t)) return tr;
+        if (updatePromptId && ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk", "tool_call", "plan"].includes(t)
+          && [...tr.messages].reverse().find(message => message.role === "assistant")?.promptId !== updatePromptId) {
+          tr = { ...tr, executionStageTitle: undefined };
+        }
 
         // Extract text delta from a content field that may be a single
         // TextContent object ({type:"text",text:"..."}) OR an array of them.
@@ -1605,8 +1633,52 @@ export const useSessionStore = create<SessionState>((set, get) => {
         switch (t) {
           case "user_message_chunk": {
             const chunk = normalizeUserChunk(u as unknown as Record<string, unknown>);
-            if (chunk.hidden || (!chunk.text && chunk.attachments.length === 0)) return tr;
+            if (chunk.hidden) {
+              // Preserve the native boundary without exposing model-only input.
+              // A newer admission retires the old spinner; only its own terminal
+              // ACK may mark the older message complete.
+              if (!updatePromptId) return tr;
+              const existing = tr.messages.find(message => message.role === "assistant" && message.promptId === updatePromptId);
+              if (existing) return { ...tr };
+              const { messages, id } = ensureStreamingAssistant(tr.messages, null, updatePromptId, isReplay);
+              return { ...tr, messages, streamingMessageId: id, executionStageTitle: undefined };
+            }
+            if (!chunk.text && chunk.attachments.length === 0) return tr;
             return activatePendingSendNow(applyUserChunk(tr, chunk, updatePromptId, isReplay));
+          }
+          case "task_backgrounded": {
+            const raw = u as unknown as Record<string, unknown>;
+            const id = boundedString(raw.task_id ?? raw.taskId, 4_096);
+            const toolCallId = boundedString(raw.tool_call_id ?? raw.toolCallId, 4_096);
+            if (!id || !toolCallId) return tr;
+            const description = boundedString(raw.description ?? raw.monitor_description, 240) || undefined;
+            const pending = tr.pendingBackgroundTasks ?? [];
+            const previous = pending.find(source => source.toolCallId === toolCallId);
+            const task = previous
+              ? previous.task.id === id && !previous.task.description && description
+                ? { id, description } : previous.task
+              : { id, description };
+            let changed = false;
+            let matched = false;
+            const messages = tr.messages.map(message => {
+              const parts = message.parts.map(part => {
+                if (part.kind !== "tool_call" || part.toolCall.toolCallId !== toolCallId) return part;
+                matched = true;
+                const current = part.toolCall.backgroundTask;
+                if (current && (current.id !== task.id || current.description || !task.description)) return part;
+                changed = true;
+                return { ...part, toolCall: { ...part.toolCall, backgroundTask: task } };
+              });
+              return changed && parts.some((part, index) => part !== message.parts[index]) ? { ...message, parts } : message;
+            });
+            if (matched) return changed || previous ? {
+              ...tr, messages,
+              ...(previous ? { pendingBackgroundTasks: pending.filter(source => source !== previous) } : {}),
+            } : tr;
+            if (previous?.task === task) return tr;
+            return { ...tr, pendingBackgroundTasks: [
+              ...pending.filter(source => source !== previous), { toolCallId, task },
+            ].slice(-MAX_PENDING_BACKGROUND_TASK_SOURCES) };
           }
           case "agent_message_chunk": {
             const delta = extractDelta((u as { content?: unknown }).content);
@@ -1664,9 +1736,11 @@ export const useSessionStore = create<SessionState>((set, get) => {
             // "pending" (the defaults). Provide sensible fallbacks.
             const status = (raw.status as string) || "in_progress";
             const officeReceipt = officeReceiptFromRawOutput(raw.rawOutput ?? raw.raw_output);
+            const toolCallId = boundedString(raw.toolCallId ?? raw.tool_call_id, 4_096);
+            const pendingSource = tr.pendingBackgroundTasks?.find(source => source.toolCallId === toolCallId);
             const view: ToolCallView = {
-              toolCallId:
-                boundedString(raw.toolCallId ?? raw.tool_call_id, 4_096),
+              toolCallId,
+              ...(pendingSource ? { backgroundTask: pendingSource.task } : {}),
               title: boundedString(raw.title, 4_096),
               kind: boundedString(raw.kind, 128) || "other",
               status: status === "completed" || status === "failed"
@@ -1692,6 +1766,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
               messages: [...messages],
               streamingMessageId: id,
               pendingSendNowPromptId: null,
+              ...(pendingSource ? { pendingBackgroundTasks: tr.pendingBackgroundTasks!.filter(source => source !== pendingSource) } : {}),
             };
           }
           case "tool_call_update": {
@@ -1772,7 +1847,9 @@ export const useSessionStore = create<SessionState>((set, get) => {
               : uu.plan && Array.isArray(uu.plan.entries) ? uu.plan : null;
             const stageContent = plan?.entries.find(entry => entry.status === "in_progress")?.content;
             const executionStageTitle = typeof stageContent === "string" ? stageContent.trim().slice(0, 240) || undefined : undefined;
-            return { ...tr, plan, executionStageTitle, planRevisionDirty: false };
+            // A plan can precede the first text/tool chunk of an admitted turn.
+            const assistant = updatePromptId ? ensureStreamingAssistant(tr.messages, tr.streamingMessageId, updatePromptId, isReplay) : undefined;
+            return { ...tr, ...(assistant ? { messages: assistant.messages, streamingMessageId: assistant.id } : {}), plan, executionStageTitle, planRevisionDirty: false };
           }
           case "current_mode_update": {
             const raw = u as unknown as Record<string, unknown>;
@@ -1844,8 +1921,21 @@ export const useSessionStore = create<SessionState>((set, get) => {
       };
       applyToTranscript(target, tr => {
         const previousMessage = tr.messages.find(message => message.id === tr.streamingMessageId);
-        const next = applySessionUpdate(tr);
+        let next = applySessionUpdate(tr);
         if (next !== tr && eventId) rememberEvent(tr, eventId);
+        if (next !== tr && updatePromptId && ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk", "tool_call", "plan"].includes(t)) {
+          const index = next.messages.findIndex(message => message.role === "assistant" && message.promptId === updatePromptId);
+          if (index >= 0) {
+            const message = next.messages[index];
+            // Chunks may omit metadata after admission; retain known provenance.
+            const execution = !updateMeta?.turnOrigin && message.execution ? message.execution
+              : { origin: turnIdentity.origin, ...(turnIdentity.sourceId ? { sourceId: turnIdentity.sourceId } : {}) };
+            const messages = [...next.messages];
+            messages[index] = { ...message, promptIndex: turnIdentity.promptIndex ?? message.promptIndex
+              ?? next.messages.find(m => m.role === "user" && m.promptId === updatePromptId)?.promptIndex, execution };
+            next = { ...next, messages };
+          }
+        }
         if (next === tr || isReplay || !next.streamingMessageId
           || !["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"].includes(t)) return next;
         const index = next.messages.findIndex(message => message.id === next.streamingMessageId);

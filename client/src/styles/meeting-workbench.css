@@ -1,4 +1,4 @@
-.meeting-workbench { flex: 1; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; color: var(--echo-text-primary); background: var(--echo-bg-primary); }
+.meeting-workbench { flex: 1; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; color: var(--echo-text-primary); background: var(--echo-surface-canvas); }
 .meeting-workbench button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; border: 1px solid var(--echo-border); border-radius: 7px; padding: 5px 10px; background: var(--echo-bg-primary); color: var(--echo-text-primary); font: inherit; font-size: .8125rem; cursor: pointer; }
 .meeting-workbench button:hover:not(:disabled) { background: var(--echo-bg-hover); }
 .meeting-workbench button:disabled { opacity: .48; cursor: not-allowed; }
@@ -6,7 +6,7 @@
 .meeting-workbench .meeting-primary { background: var(--echo-button-primary-bg); color: var(--echo-button-primary-fg); border-color: transparent; }
 .meeting-workbench .meeting-primary:hover:not(:disabled) { background: var(--echo-button-primary-bg-hover); color: var(--echo-button-primary-fg); }
 .meeting-workbench .meeting-icon-button { width: 32px; flex: 0 0 32px; padding: 5px; border-color: transparent; }
-.meeting-workbench__toolbar { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 12px 24px; min-height: var(--echo-header-height); border-bottom: 1px solid var(--echo-border); }
+.meeting-workbench__toolbar { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 12px 24px; min-height: var(--echo-header-height); border-bottom: 1px solid var(--echo-border-weak); }
 .meeting-workbench__toolbar h1 { margin: 0; font-size: 1rem; font-weight: 600; white-space: nowrap; }
 .meeting-workbench__new { margin-left: auto; }
 .meeting-workbench__body { flex: 1; min-height: 0; min-width: 0; display: flex; position: relative; }
@@ -30,7 +30,7 @@
 .meeting-workbench__notice { flex-shrink: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 9px; padding: 9px 24px; background: var(--echo-bg-secondary); font-size: .75rem; line-height: 1.6; overflow-wrap: anywhere; }
 .meeting-workbench__notice details { width: 100%; max-height: 100px; overflow: auto; }
 .meeting-workbench__notice details p { white-space: pre-wrap; }
-.meeting-workbench__menu { flex-shrink: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 8px 24px 12px; border-bottom: 1px solid var(--echo-border); }
+.meeting-workbench__menu { flex-shrink: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 8px 24px 12px; border-bottom: 1px solid var(--echo-border-weak); }
 .meeting-workbench .meeting-tabs { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 0 var(--echo-page-gutter); }
 .meeting-tabs > div { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .meeting-workbench .meeting-tabs [role=tab] { border: 0; border-radius: 0; padding: 10px 0; color: var(--echo-text-secondary); background: transparent; }

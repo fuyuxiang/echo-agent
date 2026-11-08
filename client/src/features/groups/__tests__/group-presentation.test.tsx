@@ -38,7 +38,7 @@ it("正文直接呈现，不会被单聊的过程分类折叠", () => {
   expect(screen.getByText("已完成核对。结论：必须补充边界验收。")).toBeInTheDocument();
   expect(screen.getByText("本次结论")).toBeInTheDocument();
   expect(document.querySelector(".execution-process")).toBeNull();
-  expect(screen.queryByText("本轮已完成")).toBeNull();
+  expect(screen.queryByText("本次处理已结束")).toBeNull();
 });
 
 it("恢复历史保留的正文，纯工具记录仍然可以在详情中访问", () => {

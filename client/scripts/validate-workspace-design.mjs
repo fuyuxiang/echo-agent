@@ -45,8 +45,11 @@ try {
         main:document.querySelector(".app__main")?.getBoundingClientRect().toJSON(),
         dialogs:[...document.querySelectorAll('[aria-modal="true"]')].map(e=>e.getBoundingClientRect().toJSON()),
         headings:[...document.querySelectorAll("h1,h2")].filter(e=>e.getBoundingClientRect().height>0).map(e=>({text:e.textContent,size:getComputedStyle(e).fontSize})),
-        headerControls:[...document.querySelectorAll(".capability-page__header button,.capability-page__header input,.settings-modal__toolbar button,.meeting-workbench__toolbar button")]
-          .filter(e=>e.checkVisibility()).map(e=>({label:e.getAttribute("aria-label") || e.textContent,...e.getBoundingClientRect().toJSON()})),
+        headerControls:[...document.querySelectorAll(".capability-page__header button,.capability-page__header input,.settings-modal__toolbar button,.meeting-workbench__toolbar button,.session-header button,.coding-workbench__topbar button")]
+          .filter(e=>e.checkVisibility()).map(e=>{
+            const r=e.getBoundingClientRect();
+            return {label:e.getAttribute("aria-label") || e.textContent,reachable:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),...r.toJSON()};
+          }),
         windowControls:[...document.querySelectorAll(".window-sidebar-navigation button")].map(e=>{
           const r=e.getBoundingClientRect();
           return {label:e.getAttribute("aria-label"),visible:e.checkVisibility(),reachable:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),...r.toJSON()};
@@ -60,8 +63,15 @@ try {
         assert.deepEqual(errors,[],`${filename}: browser errors`);
         assert.equal(geometry.fontPreference,String(font),`${filename}: reading preference was reset`);
         assert(!geometry.overflow,`${filename}: document overflow`);
+        if (geometry.main && geometry.windowControls.length) {
+          assert.equal(geometry.main.y,0,`${filename}: main column must reach the window top`);
+          assert.equal(geometry.main.bottom,height,`${filename}: main column must fill the window height`);
+        }
         for (const r of geometry.dialogs) assert(r.x>=-1 && r.y>=-1 && r.right<=width+1 && r.bottom<=height+1,`${filename}: dialog outside window`);
-        for (const r of geometry.headerControls) assert(r.x>=-1 && r.y>=-1 && r.right<=width+1 && r.bottom<=height+1,`${filename}: header action outside window: ${r.label}`);
+        for (const r of geometry.headerControls) {
+          assert(r.x>=-1 && r.y>=-1 && r.right<=width+1 && r.bottom<=height+1,`${filename}: header action outside window: ${r.label}`);
+          assert(r.reachable,`${filename}: header action is covered: ${r.label}`);
+        }
         for (const r of geometry.windowControls) assert(r.visible && r.reachable,`${filename}: window navigation is covered: ${r.label}`);
       }
       page.off("pageerror",onError);

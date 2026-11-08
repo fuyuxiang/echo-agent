@@ -9,6 +9,8 @@ vi.mock("@/lib/agent-client", () => ({
 
 import { taskKill, tasksList } from "@/lib/agent-client";
 import { TasksPanel } from "../TasksPanel";
+import { useSessionStore } from "@/stores/session-store";
+import { useSessionsStore } from "@/stores/sessions-store";
 
 beforeEach(() => {
   vi.mocked(tasksList).mockReset().mockResolvedValue([]);
@@ -16,6 +18,20 @@ beforeEach(() => {
 });
 
 describe("TasksPanel", () => {
+  it("查询常驻服务只更新面板，不反写会话终态或聊天执行状态", async () => {
+    useSessionStore.getState().setSession("service-query");
+    useSessionsStore.getState().upsert({ sessionId: "service-query", status: "completed" });
+    const chat = useSessionStore.getState().transcripts["service-query"];
+    const summary = useSessionsStore.getState().independent.find(row => row.sessionId === "service-query");
+    vi.mocked(tasksList).mockResolvedValue([{ id: "preview", source: "task", description: "本地预览服务", status: "running" }]);
+    render(<TasksPanel sessionId="service-query" />);
+    expect(await screen.findByText("本地预览服务")).toBeVisible();
+    expect(useSessionStore.getState().transcripts["service-query"]).toBe(chat);
+    expect(useSessionsStore.getState().independent.find(row => row.sessionId === "service-query")).toBe(summary);
+    expect(useSessionStore.getState().streaming).toBe(false);
+    expect(screen.getByRole("button", { name: "终止任务：本地预览服务" })).toBeEnabled();
+  });
+
   it("没有活动会话时不查询也不显示浮层", () => {
     render(<TasksPanel />);
 

@@ -1541,7 +1541,19 @@ async fn handle_client_message(
             } else if method == "echo.agent/task_backgrounded"
                 || method == "echo.agent/task_completed"
             {
-                // Background task lifecycle — refresh the tasks panel.
+                // Retain the immutable task-to-tool source link in history.
+                // Runtime's task list remains authoritative for active work.
+                if method == "echo.agent/task_backgrounded" {
+                    if let (Some(session_id), Some(update)) = (
+                        params.get("sessionId").and_then(Value::as_str),
+                        params.get("update"),
+                    ) {
+                        let _ = app.emit(
+                            "agent://update",
+                            durable_completion_update_event(session_id, &params, update),
+                        );
+                    }
+                }
                 let _ = app.emit("agent://task-update", &params);
             } else if method == "echo.agent/git_head_changed"
                 || method == "echo.agent/gitHeadChanged"
@@ -2283,6 +2295,12 @@ async fn handle_session_notification(app: &AppHandle, params: &Value) {
         "subagent_spawned" | "subagent_progress" | "subagent_finished" => {
             emit_subagent_event(app, session_id, kind, update, params);
         }
+        "task_backgrounded" => {
+            let _ = app.emit(
+                "agent://update",
+                durable_completion_update_event(session_id, params, update),
+            );
+        }
         _ => {
             tracing::debug!(
                 session_id,
@@ -2925,6 +2943,40 @@ mod tests {
         assert_eq!(event.occurred_at, Some(1_788_000_000_000));
         assert_eq!(event.event_id.as_deref(), Some("evt-1"));
         assert_eq!(event.usage["modelCalls"], 2);
+    }
+
+    #[test]
+    fn background_source_preserves_native_live_and_replay_identity() {
+        assert_eq!(
+            echo_agent_runtime::session::PromptOrigin::from_prompt_id("task-completed-task-1")
+                .client_metadata(),
+            serde_json::json!({"origin":"background_task","sourceId":"task-1"})
+        );
+        for replay in [false, true] {
+            let params = serde_json::json!({"_meta":{"eventId":"bg-1","isReplay":replay,"agentTimestampMs":123}});
+            let update = serde_json::to_value(
+                echo_agent_runtime::extensions::notification::SessionUpdate::TaskBackgrounded {
+                    tool_call_id: "tool-1".into(),
+                    task_id: "task-1".into(),
+                    command: "pwd".into(),
+                    cwd: "/workspace".into(),
+                    output_file: "/tmp/output".into(),
+                    monitor_description: None,
+                    description: Some("Check directory".into()),
+                },
+            )
+            .unwrap();
+            let value =
+                serde_json::to_value(durable_completion_update_event("s", &params, &update))
+                    .unwrap();
+            assert_eq!(value["sessionId"], "s");
+            assert_eq!(value["_meta"]["isReplay"], replay);
+            assert_eq!(value["_meta"]["eventId"], "bg-1");
+            assert_eq!(value["sessionUpdate"], "task_backgrounded");
+            assert_eq!(value["task_id"], "task-1");
+            assert_eq!(value["tool_call_id"], "tool-1");
+            assert_eq!(value["description"], "Check directory");
+        }
     }
 
     #[test]

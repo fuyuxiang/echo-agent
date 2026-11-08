@@ -866,6 +866,10 @@ impl SessionActor {
         let mut chunk_meta = serde_json::Map::new();
         chunk_meta.insert("modelId".into(), serde_json::json!(model_id));
         chunk_meta.insert(
+            "turnOrigin".into(),
+            input_origin.as_prompt_origin().client_metadata(),
+        );
+        chunk_meta.insert(
             "promptIndex".into(),
             serde_json::json!(current_prompt_index),
         );

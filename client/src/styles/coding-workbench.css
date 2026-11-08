@@ -17,7 +17,7 @@
   overflow: hidden;
   font-size: 0.75rem;
   color: var(--echo-text-strong);
-  background: var(--echo-bg-primary);
+  background: var(--echo-surface-canvas);
 }
 
 /* Echo Code's IDE surface is provided by the vendored Theia workbench. */
@@ -37,7 +37,7 @@
   z-index: 4;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  background: var(--echo-bg-primary);
+  background: var(--echo-surface-canvas);
   grid-column: 1 / -1;
 }
 

@@ -8,6 +8,10 @@
   margin-top: 0;
 }
 
+.pd-tabs-row {
+  border-bottom-color: var(--echo-border-weak);
+}
+
 .project-section__title {
   font-size: var(--echo-content-title-size);
   font-weight: 600;
@@ -60,7 +64,7 @@
 /* ---------- Automation ---------- */
 
 .automation-panel {
-  background: transparent;
+  background: var(--echo-surface-canvas);
 }
 
 .automation-panel .atm-toolbar,
@@ -77,8 +81,8 @@
   min-height: 68px;
   padding-block: 14px;
   padding-inline: var(--ui-page-gutter);
-  border-bottom: 1px solid var(--ui-line);
-  background: var(--atm-surface);
+  border-bottom: 1px solid var(--echo-border-weak);
+  background: var(--echo-surface-canvas);
   backdrop-filter: none;
 }
 
@@ -121,6 +125,10 @@
   background: transparent;
 }
 
+.um-page {
+  background: var(--echo-surface-canvas);
+}
+
 .um-page,
 .um-topbar-left,
 .um-topbar-right {
@@ -137,8 +145,8 @@
 .um-topbar {
   min-height: 72px;
   padding: 16px var(--ui-page-gutter);
-  border-bottom: 1px solid var(--ui-line);
-  background: color-mix(in srgb, var(--ui-canvas) 86%, transparent);
+  border-bottom: 1px solid var(--echo-border-weak);
+  background: var(--echo-surface-canvas);
   backdrop-filter: none;
 }
 

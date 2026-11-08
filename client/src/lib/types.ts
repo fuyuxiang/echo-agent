@@ -187,7 +187,7 @@ export type AcpSessionUpdate = (
 export type HostSessionUpdate = (
   | { sessionUpdate: "plan_approval_request"; requestId: string; toolCallId: string; planContent?: string }
   | { sessionUpdate: "plan_approval_resolved"; requestId: string }
-  | ({ sessionUpdate: "turn_completed" | "session_summary_generated" | "subagent_spawned" | "subagent_progress" | "subagent_finished" } & Record<string, unknown>)
+  | ({ sessionUpdate: "turn_completed" | "session_summary_generated" | "subagent_spawned" | "subagent_progress" | "subagent_finished" | "task_backgrounded" } & Record<string, unknown>)
 ) & SessionUpdateMetadata;
 
 // ---------- context usage (echo.agent/session/info + echo.agent/session/usage) ----------

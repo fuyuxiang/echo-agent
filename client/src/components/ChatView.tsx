@@ -4,6 +4,7 @@ import { SessionWorkspaceDirectory, SessionWorkspaceWarning } from "./SessionWor
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, type ReactNode } from "react";
 import { Play } from "lucide-react";
 import { TasksPanel } from "./TasksPanel";
+import { executionSource, resolveExecutionTurn, turnPresentation } from "@/lib/execution-turn";
 import { useSessionStore, type ChatMessage, type ToolCallView } from "@/stores/session-store";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useContinuationStore } from "@/stores/continuation-store";
@@ -84,6 +85,7 @@ function pausedTurnNeedsOriginalPrompt(messages: ChatMessage[]): boolean {
   // Cancellation may precede admission of the original prompt into Runtime
   // history. Retry that request only when no model or tool work can be replayed.
   return reply.length > 0 && reply.every((message) => message.role === "assistant"
+    && resolveExecutionTurn(message).origin === "user"
     && message.complete && message.stopReason === "cancelled"
     && message.parts.every((part) => part.kind !== "tool_call" && !part.text.trim()));
 }
@@ -235,6 +237,7 @@ export function ChatView({
   const inheritedIds = useMemo(() => inheritedMessageIds(messages, origin), [messages, origin]);
   const forkTargets = useMemo(() => continuationTargets(messages), [messages]);
   const messageIndices = useMemo(() => new Map(messages.map((message,index) => [message.id,index])), [messages]);
+  const latestQuestionIndex = useMemo(() => messages.map(message => message.role).lastIndexOf("user"), [messages]);
   const continuationLinks = useMemo(() => {
     const byMessage = new Map<string, SessionSummary[]>();
     for (const child of catalog) {
@@ -487,6 +490,11 @@ export function ChatView({
   const performRetry = useCallback(async (kind: MessageRetryKind) => {
     if (!sessionId || streaming || retryBlockedRef.current || retryingSessionsRef.current.has(sessionId)
       || useContinuationStore.getState().pending[sessionId]) return;
+    const lastReply = [...messages].reverse().find(message => message.role === "assistant");
+    if (lastReply && resolveExecutionTurn(lastReply).origin !== "user") {
+      onToast?.("这是后台接续处理，请在任务操作中选择“在新对话中继续”，或发送消息说明需要核对的内容");
+      return;
+    }
     const targetSessionId = sessionId;
     // Find the last user message text.
     const lastUserIndex = messages.map((message) => message.role).lastIndexOf("user");
@@ -1027,6 +1035,17 @@ export function ChatView({
                   );
                 }
                 const m = node.message;
+                const turn = m.role === "assistant" ? resolveExecutionTurn(m) : undefined;
+                const source = turn && turn.origin !== "user" ? executionSource(m, messages, liveSubagents) : undefined;
+                let execution = turn ? turnPresentation(turn, source?.description) : undefined;
+                if (execution && source?.rootPromptId) {
+                  const latestQuestion = messages[latestQuestionIndex];
+                  const sourceQuestion = messages.find(message => message.role === "user" && message.promptId === source.rootPromptId);
+                  if (sourceQuestion && sourceQuestion !== latestQuestion) {
+                    const title = sourceQuestion.parts.flatMap(part => part.kind === "text" ? [part.text] : []).join(" ").slice(0, 60);
+                    execution = { ...execution, description: `${execution.description ? `${execution.description} · ` : ""}来自较早的请求：${title}` };
+                  }
+                }
                 const idx = messageIndices.get(m.id) ?? node.index;
                 // 重试只对最后一条 assistant 消息开放（重试中间消息没有语义）。
                 const isLastAssistant =
@@ -1041,6 +1060,8 @@ export function ChatView({
                   <div key={`${sessionId}:${m.id}`} className={"msg-wrap" + findCls + (m.id === jumpTargetId ? " msg-wrap--jump-target" : "")} data-msg-id={m.id} tabIndex={-1}>
                     <MessageItem
                       message={m}
+                      executionLabel={execution?.label}
+                      executionDescription={execution?.description}
                       streaming={streaming && m.id === streamingMessageId}
                       waitingForModel={!awaitingDecision && !awaitingPlan && !awaitingQuestion && !controlPhase && !error}
                       waitingReason={streaming && m.id === streamingMessageId
@@ -1071,13 +1092,13 @@ export function ChatView({
                           || awaitingDecision || awaitingQuestion || awaitingPlan) return false;
                         return onSend(prompt, []);
                       } : undefined}
-                      compactIdentity={m.role === "assistant" && messages[idx - 1]?.role === "assistant"}
-                      latest={isLastAssistant}
+                      compactIdentity={m.role === "assistant" && messages[idx - 1]?.role === "assistant" && !execution}
+                      latest={isLastAssistant || idx > latestQuestionIndex && forkTargets.has(m.id)}
                       retrying={isLastAssistant && Boolean(sessionId && retryingSessions.has(sessionId))}
                       retryDisabled={retryBlocked || !apiReady || modelLoading || replacingTurn || sendNowPending || continuationPending}
                       retryDisabledReason={continuationPending ? "正在创建新对话，请稍候" : !workspace.available || workspace.busy ? "请先恢复本任务的工作目录，再重试回复" : !apiReady ? "请先配置可用模型" : modelLoading ? "正在同步模型，请稍候" : undefined}
                       onRetry={
-                        isLastAssistant && !inheritedIds.has(m.id) && !streaming && m.complete && !taskFeedback
+                        isLastAssistant && !execution && !inheritedIds.has(m.id) && !streaming && m.complete && !taskFeedback
                           ? handleRetry
                           : undefined
                       }

@@ -31,8 +31,8 @@
   align-items: center;
   gap: 12px;
   padding: 0 16px;
-  border-bottom: 1px solid var(--echo-border-default);
-  background: var(--echo-bg-primary);
+  border-bottom: 1px solid var(--echo-border-weak);
+  background: var(--echo-surface-canvas);
   box-sizing: border-box;
   -webkit-app-region: drag;
 }
@@ -129,7 +129,7 @@
 .session-header__workspace-toggle[aria-expanded=true] { background:var(--echo-bg-hover); color:var(--echo-text-strong); }
 .session-header__badge { position:absolute; top:0; right:-3px; min-width:14px; height:14px; border-radius:7px; padding:0 3px; background:var(--echo-brand-soft); color:var(--echo-color-text-brand-default); font-size:9px; line-height:14px; }
 .chatview .chatview__inner, .chatview .chatview__footer { max-width:808px; padding-left:24px; padding-right:24px; }
-.chatview .chatview__inner { gap:22px; padding-top:28px; padding-bottom:20px; }
+.chatview .chatview__inner { gap:22px; padding-top:24px; padding-bottom:20px; }
 .chatview .msg--user > div { max-width:85%; }
 .chatview .msg__bubble { font-size:15px; line-height:1.65; background:var(--echo-bg-tertiary); border-color:transparent; border-radius:16px; }
 .chatview .msg--assistant { font-size:15px; line-height:1.65; }

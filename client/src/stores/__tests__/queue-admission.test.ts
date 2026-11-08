@@ -40,6 +40,9 @@ it("replay, older prompt output, unrelated sessions and old cancellations do not
   queue.claimById("s1", id, "replacement");
   const chat = useSessionStore.getState();
   chat.requestSendNow("replacement", "s1");
+  const pending = useSessionStore.getState().transcripts.s1;
+  chat.applyUpdate({ __sessionId: "s1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "新要求" }, _meta: { promptId: "replacement", promptIndex: 1, isReplay: true } });
+  expect(useSessionStore.getState().transcripts.s1).toBe(pending);
   for (const update of [
     { __sessionId: "s1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "新要求" }, _meta: { promptId: "replacement", isReplay: true } },
     { __sessionId: "s1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "旧输出" }, _meta: { promptId: "old" } },
@@ -62,6 +65,33 @@ it("a legacy user echo acknowledges the newly activated send-now identity", () =
   chat.applyUpdate({ __sessionId: "s1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "新要求" } });
   expect(queue.getQueue("s1").find(item => item.id === id)?.status).toBe("accepted");
   expect(useSessionStore.getState().sendNowPending).toBe(false);
+});
+
+it.each([false, true])("旧轮回显不消费立即发送的等待状态，已知索引=%s", knownIndex => {
+  prepare("s1", "old");
+  const queue = useMessageQueueStore.getState();
+  const chat = useSessionStore.getState();
+  if (knownIndex) chat.applyUpdate({ __sessionId: "s1", sessionUpdate: "user_message_chunk",
+    content: { type: "text", text: "1123" }, _meta: { promptId: "old", promptIndex: 0 } });
+  const id = queue.enqueue("s1", "新要求");
+  queue.claimById("s1", id, "replacement");
+  chat.requestSendNow("replacement", "s1");
+  const before = useSessionStore.getState().transcripts.s1;
+  chat.applyUpdate({ __sessionId: "s1", sessionUpdate: "user_message_chunk",
+    content: { type: "text", text: "1123" }, _meta: { promptId: "old", promptIndex: 0 } });
+  expect(useSessionStore.getState().transcripts.s1).toBe(before);
+  expect(useSessionStore.getState().sendNowPending).toBe(true);
+  expect(queue.getQueue("s1").find(item => item.id === id)?.status).toBe("sending");
+  chat.applyUpdate({ __sessionId: "s1", sessionUpdate: "user_message_chunk",
+    content: { type: "text", text: "新要求" }, _meta: { promptId: "replacement", promptIndex: 1 } });
+  expect(useSessionStore.getState().sendNowPending).toBe(false);
+  expect(queue.getQueue("s1").find(item => item.id === id)?.status).toBe("accepted");
+  const messages = useSessionStore.getState().messages;
+  expect(messages.filter(message => message.role === "user")).toHaveLength(2);
+  chat.markComplete({ sessionId: "s1", promptId: "old", stopReason: "cancelled", cancelTrigger: "send_now" });
+  expect(useSessionStore.getState().streaming).toBe(true);
+  const currentMessages = useSessionStore.getState().messages;
+  expect(currentMessages[currentMessages.length - 1]?.promptId).toBe("replacement");
 });
 
 it("background coding admission uses the original workspace/task/session, preserving the focused conversation", () => {

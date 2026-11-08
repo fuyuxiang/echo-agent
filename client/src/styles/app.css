@@ -2239,6 +2239,18 @@
   min-width: 0;
   box-sizing: border-box;
 }
+.execution-turn {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 16px 0 10px;
+  color: var(--echo-text-secondary);
+  font-size: .8125rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.execution-turn__label { font-weight: 500; }
+.execution-turn p { margin: 0; min-width: 0; }
 .execution-process__overview {
   display: flex;
   align-items: baseline;

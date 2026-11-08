@@ -93,6 +93,6 @@ describe("execution record control and result consistency", () => {
     expect(container.querySelector(".execution-process__title")).toHaveTextContent(title);
     expect(container.querySelector(`.execution-process--${state}`)).not.toBeNull();
     expect(screen.getByRole("alert")).toHaveTextContent(title);
-    expect(screen.queryByText("本轮已完成")).toBeNull();
+    expect(screen.queryByText("本次处理已结束")).toBeNull();
   });
 });

@@ -92,7 +92,23 @@ try {
   await toggle.click();
   await page.locator("#app-sidebar").waitFor({ state: "hidden" });
   assert.ok(await brand.isVisible(), "Collapsing the sidebar must retain the window brand");
-  assert.deepEqual(await toggle.boundingBox(), anchor, "Production navigation must not move while collapsing");
+  const collapsed = await toggle.boundingBox();
+  if (await page.locator(".app--macos").count()) {
+    // Collapsed navigation moves into the main header's native-button-safe
+    // area; expanded navigation belongs to the sidebar's lower toolbar row.
+    const brandBounds = await brand.boundingBox();
+    const mainBounds = await page.locator(".app__main").boundingBox();
+    assert(brandBounds.x >= 92, "Collapsed branding must clear native window buttons");
+    assert(brandBounds.x + brandBounds.width <= collapsed.x, "Collapsed brand and toggle must not overlap");
+    assert(collapsed.y >= mainBounds.y && collapsed.y + collapsed.height <= mainBounds.y + 56,
+      "Collapsed navigation must fit inside the main header");
+  } else {
+    assert.deepEqual(collapsed, anchor, "Production navigation must not move while collapsing");
+  }
+  assert(await toggle.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2));
+  }), "Collapsed navigation must remain reachable");
   await toggle.click();
   await page.locator("#app-sidebar").waitFor({ state: "visible" });
   assert.deepEqual(await toggle.boundingBox(), anchor, "Production navigation must not move while expanding");
@@ -119,7 +135,7 @@ try {
         background: getComputedStyle(document.body).backgroundColor, mounted: !!document.querySelector(".window-sidebar-brand"),
       }));
       assert.equal(initial.theme, expected); assert.equal(initial.scheme, expected);
-      assert.equal(initial.background, expected === "dark" ? "rgb(21, 22, 25)" : "rgb(250, 250, 251)");
+      assert.equal(initial.background, expected === "dark" ? "rgb(21, 22, 25)" : "rgb(250, 250, 250)");
       assert(heldScripts > 0, "The real module requests must be held before capturing the first frame");
       assert.equal(initial.mounted, false, "The first-frame assertion must run before React mounts");
       await startup.screenshot({ path: join(output, `first-frame-${preference}-${system}.png`) });

@@ -101,6 +101,26 @@ pub enum PromptOrigin {
     PlanResume,
 }
 impl PromptOrigin {
+    /// Safe client provenance. The internal prompt/reminder body stays hidden.
+    pub fn client_metadata(&self) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            Self::User => json!({"origin":"user"}),
+            Self::TaskCompleted { task_id } => {
+                json!({"origin":"background_task","sourceId":task_id})
+            }
+            Self::SubagentCompleted { subagent_id } => {
+                json!({"origin":"subagent","sourceId":subagent_id})
+            }
+            Self::WorkflowCompleted { completion_id } => {
+                json!({"origin":"runtime","sourceId":completion_id})
+            }
+            Self::NotificationDrain => json!({"origin":"notification"}),
+            Self::GoalSummary | Self::GoalClassifierNudge => json!({"origin":"goal"}),
+            Self::SchedulerFired => json!({"origin":"scheduled"}),
+            Self::PlanResume => json!({"origin":"plan_resume"}),
+        }
+    }
     /// Parse a prompt_id string into a `PromptOrigin`.
     pub fn from_prompt_id(prompt_id: &str) -> Self {
         if let Some(task_id) = prompt_id.strip_prefix("task-completed-") {
@@ -201,6 +221,31 @@ impl PromptOrigin {
 #[cfg(test)]
 mod tests {
     use super::{PromptOrigin, QueuePolicy};
+    #[test]
+    fn client_turn_metadata_preserves_source_without_internal_prompt() {
+        assert_eq!(
+            PromptOrigin::User.client_metadata(),
+            serde_json::json!({"origin":"user"})
+        );
+        assert_eq!(
+            PromptOrigin::TaskCompleted {
+                task_id: "task-1".into()
+            }
+            .client_metadata(),
+            serde_json::json!({"origin":"background_task","sourceId":"task-1"})
+        );
+        assert_eq!(
+            PromptOrigin::SubagentCompleted {
+                subagent_id: "child-1".into()
+            }
+            .client_metadata(),
+            serde_json::json!({"origin":"subagent","sourceId":"child-1"})
+        );
+        assert_eq!(
+            PromptOrigin::NotificationDrain.client_metadata(),
+            serde_json::json!({"origin":"notification"})
+        );
+    }
     #[test]
     fn from_prompt_id_user() {
         assert_eq!(

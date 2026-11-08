@@ -139,7 +139,7 @@ describe("assistant execution process", () => {
     expect(container.querySelector(".msg__writing")).toBeVisible();
     expect(screen.queryByLabelText("当前阶段进展")).toBeNull();
     rerender(view({ ...message, complete: true, stopReason: "end_turn" }));
-    expect(screen.getByRole("status")).toHaveTextContent("本轮已完成");
+    expect(screen.getByRole("status")).toHaveTextContent("本次处理已结束");
     expect(screen.queryByLabelText("当前阶段进展")).toBeNull();
   });
 

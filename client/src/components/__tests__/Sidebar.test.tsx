@@ -127,6 +127,33 @@ describe("Sidebar", () => {
     expect(onNavigate).toHaveBeenCalledWith("组织");
   });
 
+  it.each(["新建任务", "专家·技能·连接器", "项目", "自动化"])("新建任务在 %s 保持操作语义并可正常触发", activeNav => {
+    const onNewSession = vi.fn();
+    render(<Sidebar {...base} activeNav={activeNav} onNewSession={onNewSession} />);
+    const create = screen.getByRole("button", { name: "新建任务" });
+    expect(create).not.toHaveAttribute("aria-current");
+    expect(create).not.toHaveClass("sidebar__nav-item--active");
+    fireEvent.click(create);
+    expect(onNewSession).toHaveBeenCalledOnce();
+  });
+
+  it("展开更多不会改变当前位置，进入更多中的模块后才转移选中态", () => {
+    const onNavigate = vi.fn();
+    const { container, rerender } = render(<Sidebar {...base} activeNav="专家·技能·连接器" onNavigate={onNavigate} />);
+    const more = screen.getByRole("button", { name: /更多/ });
+    fireEvent.keyDown(more, { key: "ArrowDown" });
+    expect(more).toHaveAttribute("aria-expanded", "true");
+    expect(more).not.toHaveClass("sidebar__nav-item--active");
+    expect(container.querySelectorAll(".sidebar__nav-item--active")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "专家·技能·连接器" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(screen.getByRole("menuitem", { name: "知识库" }));
+    expect(onNavigate).toHaveBeenCalledWith("知识库");
+    rerender(<Sidebar {...base} activeNav="知识库" onNavigate={onNavigate} />);
+    expect(more).toHaveClass("sidebar__nav-item--active");
+    expect(container.querySelectorAll(".sidebar__nav-item--active")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "专家·技能·连接器" })).not.toHaveAttribute("aria-current");
+  });
+
   const openMenuCustomizer = () => {
     fireEvent.click(screen.getByRole("button", { name: /更多/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: "自定义菜单栏" }));

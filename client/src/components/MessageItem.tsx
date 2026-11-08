@@ -91,6 +91,8 @@ function speechText(markdown: string): string {
  */
 export const MessageItem = memo(function MessageItem({
   message,
+  executionLabel,
+  executionDescription,
   streaming,
   waitingForModel = true,
   waitingReason,
@@ -122,6 +124,8 @@ export const MessageItem = memo(function MessageItem({
   turnFeedback,
 }: {
   message: ChatMessage;
+  executionLabel?: string;
+  executionDescription?: string;
   authorName?: string;
   compactIdentity?: boolean;
   /** The containing group message already provides the speaker and role. */
@@ -389,6 +393,10 @@ export const MessageItem = memo(function MessageItem({
   return (
     <div className={"msg msg--assistant" + (compactIdentity ? " msg--continuation" : "")}>
       <div>
+        {executionLabel && <div className="execution-turn" aria-label="本次处理说明">
+          <span className="execution-turn__label">{executionLabel}</span>
+          {executionDescription && <p>{executionDescription}</p>}
+        </div>}
         {!hideIdentity && <div className="msg__header">
           <span className={`msg__avatar${authorName ? "" : " msg__avatar--echo"}`}>
             {authorName ? <span aria-hidden="true">{authorName.slice(0, 1)}</span> : (

@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
+import { assertPrimaryAction } from "./ui-primary-action-audit.mjs";
+import { inspectRenderedColors } from "./ui-color-audit.mjs";
 
 const output = reviewOutput(mkdtempSync(join(tmpdir(), "echo-sidebar-toolbar-")));
 console.log(`Sidebar toolbar evidence: ${output}`);
@@ -10,6 +12,7 @@ const server = await createUiReviewServer(0);
 const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review`;
 const evidence = [];
 const catalogEvidence = [];
+const hierarchyEvidence = [];
 const macWindow = JSON.parse(readFileSync(new URL("../src-tauri/tauri.macos.conf.json", import.meta.url), "utf8")).app.windows[0];
 let browser;
 
@@ -21,6 +24,113 @@ async function emulatePlatform(page) {
       value: mac ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     });
   });
+}
+
+async function inspectNavigationPaint(control, background, foreground) {
+  const result = await control.evaluate((element, { background, foreground }) => {
+    const style = getComputedStyle(element);
+    const probe = document.createElement("span");
+    probe.style.backgroundColor = background ? `var(${background})` : "transparent";
+    probe.style.color = `var(${foreground})`;
+    document.body.append(probe);
+    const expected = getComputedStyle(probe);
+    const result = { background: style.backgroundColor, color: style.color,
+      expectedBackground: expected.backgroundColor, expectedColor: expected.color };
+    probe.remove();
+    return result;
+  }, { background, foreground });
+  assert.equal(result.background, result.expectedBackground, "Navigation background must reflect its action or current-location role");
+  assert.equal(result.color, result.expectedColor, "Navigation foreground must retain its paired semantic color");
+  return result;
+}
+
+async function checkNavigationHierarchy(browser) {
+  for (const [width, height, font] of [[1280, 800, 13], [1024, 680, 18]]) for (const theme of ["light", "dark"]) {
+    const page = await browser.newPage({ viewport: { width, height }, colorScheme: theme });
+    page.setDefaultNavigationTimeout(60000);
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    try {
+      await page.goto(`${base}?surface=expert-entry&extensionState=populated&theme=${theme}`, { waitUntil: "networkidle" });
+      const nav = page.getByRole("navigation", { name: "主导航", exact: true });
+      const newTask = nav.getByRole("button", { name: "新建任务", exact: true });
+      await newTask.waitFor();
+      await page.evaluate(font => { document.documentElement.style.fontSize = `${16 * font / 13}px`; }, font);
+      await page.mouse.move(width - 8, height - 8);
+      assert.equal(await nav.locator(".sidebar__nav-item--active").count(), 0, "Task creation is an action, including on the home page");
+      assert.equal(await newTask.getAttribute("aria-current"), null);
+      const neutral = await inspectNavigationPaint(newTask, null, "--echo-text-medium");
+      await newTask.hover();
+      await inspectNavigationPaint(newTask, "--echo-bg-hover", "--echo-text-strong");
+      await page.mouse.down();
+      await inspectNavigationPaint(newTask, "--echo-bg-active", "--echo-text-strong");
+      await page.mouse.move(width - 8, height - 8); await page.mouse.up();
+      await newTask.focus();
+      await page.keyboard.press("Tab"); await page.keyboard.press("Shift+Tab");
+      const focus = await newTask.evaluate(element => ({ focused: element === document.activeElement,
+        visible: element.matches(":focus-visible"), outline: getComputedStyle(element).outlineStyle,
+        width: parseFloat(getComputedStyle(element).outlineWidth) }));
+      assert(focus.focused && focus.visible && focus.outline === "solid" && focus.width >= 2, "Neutral creation must retain visible keyboard focus");
+
+      const capabilities = nav.getByRole("button", { name: "专家·技能·连接器", exact: true });
+      await capabilities.click();
+      await page.getByRole("heading", { name: "我的专家", exact: true }).waitFor();
+      await page.locator(".colleague-card-profile-main").first().waitFor();
+      await page.evaluate(() => document.fonts.ready);
+      await page.mouse.move(width - 8, height - 8);
+      assert.equal(await nav.locator(".sidebar__nav-item--active").count(), 1);
+      assert.equal(await capabilities.getAttribute("aria-current"), "page");
+      const selected = await inspectNavigationPaint(capabilities, "--echo-control-selected-bg", "--echo-control-selected-fg");
+      await inspectNavigationPaint(newTask, null, "--echo-text-medium");
+      await capabilities.hover();
+      await inspectNavigationPaint(capabilities, "--echo-control-selected-bg-hover", "--echo-control-selected-fg");
+      await page.mouse.down();
+      await inspectNavigationPaint(capabilities, "--echo-control-selected-bg-active", "--echo-control-selected-fg");
+      await page.mouse.move(width - 8, height - 8); await page.mouse.up();
+
+      const createExpert = page.getByRole("button", { name: "创建专家", exact: true });
+      const primary = () => createExpert.evaluate(element => ({ background: getComputedStyle(element).backgroundColor, color: getComputedStyle(element).color }));
+      for (const state of ["default", "hover", "pressed"]) {
+        if (state === "hover") await createExpert.hover();
+        if (state === "pressed") await page.mouse.down();
+        assertPrimaryAction(await primary(), { theme, state, label: "创建专家" });
+      }
+      await page.mouse.move(width - 8, height - 8); await page.mouse.up();
+      const colors = await page.evaluate(inspectRenderedColors);
+      assert.deepEqual([...colors.failures, ...colors.controlFailures], [], "Sidebar hierarchy and expert actions must stay readable");
+      await page.screenshot({ path: join(output, `hierarchy-experts-${width}-${font}-${theme}.png`) });
+      await createExpert.click();
+      const dialog = page.getByRole("dialog", { name: "创建专家", exact: true });
+      await dialog.waitFor(); await page.keyboard.press("Escape"); await dialog.waitFor({ state: "hidden" });
+
+      const more = nav.getByRole("button", { name: /更多/ });
+      await more.focus(); await page.keyboard.press("ArrowDown");
+      const menu = page.getByRole("menu", { name: "更多功能", exact: true });
+      await menu.waitFor();
+      assert.equal(await nav.locator(".sidebar__nav-item--active").count(), 1, "Opening More must not introduce a second selected module");
+      await inspectNavigationPaint(more, "--echo-bg-hover", "--echo-text-strong");
+      await inspectNavigationPaint(capabilities, "--echo-control-selected-bg", "--echo-control-selected-fg");
+      await menu.getByRole("menuitem", { name: "知识库", exact: true }).click();
+      await nav.locator(".sidebar__nav-item--active").filter({ hasText: "更多" }).waitFor();
+      assert.equal(await nav.locator(".sidebar__nav-item--active").count(), 1);
+      assert.equal(await capabilities.getAttribute("aria-current"), null);
+      await page.mouse.move(width - 8, height - 8);
+      await inspectNavigationPaint(more, "--echo-control-selected-bg", "--echo-control-selected-fg");
+      await inspectNavigationPaint(newTask, null, "--echo-text-medium");
+      const projects = nav.getByRole("button", { name: "项目", exact: true });
+      await projects.click();
+      await page.getByRole("heading", { name: "项目", exact: true }).waitFor();
+      assert.equal(await projects.getAttribute("aria-current"), "page");
+      assert.equal(await nav.locator(".sidebar__nav-item--active").count(), 1);
+      await newTask.focus(); await page.keyboard.press("Enter");
+      await page.getByText("今天想完成什么？", { exact: true }).waitFor();
+      assert.equal(await page.evaluate(() => window.workbenchNewTask), true, "Neutral new-task action must remain keyboard-operable");
+      assert.equal(await nav.locator(".sidebar__nav-item--active").count(), 0);
+      await inspectNavigationPaint(newTask, null, "--echo-text-medium");
+      assert.deepEqual(errors, []);
+      hierarchyEvidence.push({ width, height, font, theme, neutral, selected, focus, primary: "default/hover/pressed", flows: ["create expert dialog", "More stays neutral until navigation", "projects", "keyboard new task"] });
+    } finally { await page.close(); }
+  }
 }
 
 try {
@@ -46,6 +156,7 @@ try {
         };
         return {
           sidebar: rect(document.querySelector(".sidebar")),
+          main: rect(document.querySelector(".app__main")),
           toolbar: rect(document.querySelector(".sidebar__toolbar")),
           brand: rect(document.querySelector(".sidebar__logo")),
           brandRow: document.querySelector(".sidebar__logo-row") ? rect(document.querySelector(".sidebar__logo-row")) : null,
@@ -59,6 +170,8 @@ try {
         };
       });
       assert.equal(geometry.overflow, false, `${name}: page overflow`);
+      assert.equal(geometry.main.y, platform === "mac" ? 0 : 32, `${name}: main header starts directly below native chrome`);
+      assert.equal(geometry.main.bottom, height, `${name}: main column fills the window`);
       assert.equal(geometry.toolbar.height, 56, `${name}: toolbar must leave breathing room`);
       assert.equal(geometry.duplicateCollapse, 1, `${name}: one collapse control`);
       assert.equal(geometry.brandCount, 1, `${name}: one brand wordmark`);
@@ -124,15 +237,18 @@ try {
       assert.equal(await page.locator(".main-page-controls button").count(), 0, `${name}: page must not duplicate window controls`);
       assert.ok(await expand.evaluate((element, original) => element === original, persistentToggle), `${name}: toggle must remain mounted`);
       const collapsedToggle = await expand.boundingBox();
-      assert.equal(collapsedToggle.x, geometry.toggle.x, `${name}: toggle jumped horizontally`);
-      assert.equal(collapsedToggle.y, geometry.toggle.y, `${name}: toggle jumped vertically`);
       assert.equal(await page.locator(".sidebar__logo").count(), 1, `${name}: collapse duplicated branding`);
       assert.ok(await page.locator(".window-sidebar-brand").evaluate((element, original) => element === original, persistentBrand), `${name}: collapse replaced branding`);
-      assert.deepEqual(await page.locator(".window-sidebar-brand").boundingBox(), brandAnchor, `${name}: collapse moved branding`);
       if (platform === "mac") {
-        const expanded = await expand.boundingBox();
-        assert.ok(expanded.x >= 84, `${name}: collapsed traffic-light safe area`);
-        assert.ok(Math.abs(expanded.y - geometry.tools[0].y) <= 1, `${name}: toolbar must keep its top inset when collapsed`);
+        const brand = await page.locator(".window-sidebar-brand").boundingBox();
+        const header = await page.locator(".main-page-controls").boundingBox();
+        assert.ok(brand.x >= 92, `${name}: collapsed branding clears native buttons`);
+        assert.ok(brand.x + brand.width <= collapsedToggle.x, `${name}: branding clears the toggle`);
+        assert.ok(collapsedToggle.y >= header.y && collapsedToggle.y + collapsedToggle.height <= header.y + header.height, `${name}: collapsed navigation stays inside the top header`);
+      } else {
+        assert.equal(collapsedToggle.x, geometry.toggle.x, `${name}: toggle jumped horizontally`);
+        assert.equal(collapsedToggle.y, geometry.toggle.y, `${name}: toggle jumped vertically`);
+        assert.deepEqual(await page.locator(".window-sidebar-brand").boundingBox(), brandAnchor, `${name}: collapse moved branding`);
       }
       await page.getByRole("button", { name: "新建任务", exact: true }).click();
       assert.ok(await page.evaluate(() => window.workbenchNewTask), `${name}: new task callback`);
@@ -142,11 +258,13 @@ try {
       await expand.click();
       assert.ok(await collapse.evaluate(element => element === document.activeElement), `${name}: expand focus return`);
       assert.equal(await menu.count(), 0, `${name}: stale filter menu after collapse`);
-      // A stationary pointer must be able to repeatedly reverse the action.
+      // Collapse and restore remain reachable; the expanded sidebar stays fixed.
       for (let turn = 0; turn < 4; turn++) {
-        await page.mouse.click(geometry.toggle.x + 16, geometry.toggle.y + 16);
+        const target = await page.locator(".window-sidebar-toggle").boundingBox();
+        await page.mouse.click(target.x + 16, target.y + 16);
         assert.equal(await page.locator(".window-sidebar-toggle").getAttribute("aria-expanded"), turn % 2 ? "true" : "false", `${name}: repeated click missed the control`);
       }
+      assert.deepEqual(await collapse.boundingBox(), { x:geometry.toggle.x, y:geometry.toggle.y, width:geometry.toggle.width, height:geometry.toggle.height }, `${name}: restoring changed the sidebar toolbar position`);
       await persistentToggle.dispose();
       await persistentBrand.dispose();
       evidence.push({ name, ...geometry, menu: bounds });
@@ -220,6 +338,7 @@ try {
       catalogEvidence.push({ name, ...geometry });
     }
   }
+  await checkNavigationHierarchy(browser);
   const codingPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await emulatePlatform(codingPage);
   codingPage.on("pageerror", error => errors.push(error.message));
@@ -237,15 +356,16 @@ try {
   await codingPage.mouse.click(anchor.x + 16, anchor.y + 16);
   await codingPage.getByRole("button", { name: "展开侧边栏", exact: true }).waitFor();
   assert.equal(await codingPage.getByRole("button", { name: "展开侧边栏", exact: true }).count(), 1, "coding page duplicated sidebar restoration");
+  const collapsedAnchor = await toggle.boundingBox();
   const identity = await codingPage.locator(".coding-workbench__topbar-left").boundingBox();
-  assert.ok(identity.x >= anchor.x + 68, "coding identity overlaps window controls");
+  assert.ok(identity.x >= collapsedAnchor.x + 68, "coding identity overlaps window controls");
   await codingPage.screenshot({ path: join(output, "coding-collapsed-fixed-navigation.png") });
   await codingPage.getByRole("button", { name: "新建任务", exact: true }).click();
   await codingPage.locator(".app__coding-surface[hidden]").waitFor({ state: "attached" });
   assert.ok(await toggle.evaluate((element, original) => element === original, original), "changing the page replaced window navigation");
-  assert.deepEqual(await toggle.boundingBox(), anchor, "changing the page moved window navigation");
+  assert.deepEqual(await toggle.boundingBox(), collapsedAnchor, "changing the page moved window navigation");
   await codingPage.emulateMedia({ reducedMotion: "reduce" });
-  await codingPage.mouse.click(anchor.x + 16, anchor.y + 16);
+  await codingPage.mouse.click(collapsedAnchor.x + 16, collapsedAnchor.y + 16);
   await codingPage.getByRole("button", { name: "代码开发", exact: true }).click();
   await codingPage.locator(".app__coding-surface:not([hidden])").waitFor();
   assert.ok(await toggle.evaluate((element, original) => element === original, original), "returning to coding replaced window navigation");
@@ -253,8 +373,8 @@ try {
   await original.dispose();
   await codingPage.close();
   assert.deepEqual(errors, [], "sidebar toolbar page errors");
-  writeFileSync(join(output, "report.json"), JSON.stringify({ passed: true, evidence, catalogEvidence }, null, 2));
-  console.log(`Sidebar toolbar passed: ${evidence.length * 2 + catalogEvidence.length} layouts, search, filters, new task, catalog scrolling and keyboard focus; fixed navigation across coding, resize and page changes.`);
+  writeFileSync(join(output, "report.json"), JSON.stringify({ passed: true, evidence, catalogEvidence, hierarchyEvidence }, null, 2));
+  console.log(`Sidebar toolbar passed: ${evidence.length * 2 + catalogEvidence.length} layouts, ${hierarchyEvidence.length} navigation hierarchy scenarios, search, filters, new task, catalog scrolling and keyboard focus; fixed navigation across coding, resize and page changes.`);
 } finally {
   await browser?.close();
   await server.close();

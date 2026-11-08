@@ -260,8 +260,16 @@ impl SessionActor {
             .as_object_mut()
             .expect("json! literal is always an Object");
         if let Some(pid) = self.current_prompt_id.lock().ok().and_then(|g| g.clone()) {
+            obj.insert(
+                "turnOrigin".to_string(),
+                crate::session::PromptOrigin::from_prompt_id(&pid).client_metadata(),
+            );
             obj.insert("promptId".to_string(), pid.into());
         }
+        obj.insert(
+            "promptIndex".to_string(),
+            (*self.tool_context.prompt_index.lock().await).into(),
+        );
         if let Some(ms) = stream_start_ms {
             obj.insert("streamStartMs".to_string(), ms.into());
         }

@@ -324,7 +324,7 @@ jobs:
       - name: Run isolated memory library unit tests
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: node scripts/test-rust-memory.mjs
-      - name: Verify the complete Runtime library, authentication and interrupted request recovery
+      - name: Verify Runtime recovery and tool reminder contracts
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: node scripts/test-rust-runtime.mjs
       - name: Validate compatible memory-safety backports
@@ -377,7 +377,7 @@ jobs:
         run: node scripts/test-rust-desktop.mjs
       # The dependency's own tests are separate from host tests. In particular,
       # FSEvents path aliases need a real macOS gate on both architectures.
-      - name: Verify the complete Runtime library and native configuration watching
+      - name: Verify Runtime configuration watching and tool reminder contracts
         run: node scripts/test-rust-runtime.mjs
       - name: Verify isolated Runtime, MCP and resident skill reload without a model call
         run: node scripts/test-runtime-smoke.mjs

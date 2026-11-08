@@ -16,8 +16,8 @@ export function ConversationOrigin({ session, catalog, deleted, expanded, onTogg
   return <div className="conversation-origin">
     <div className="conversation-origin__source"><GitFork size={16} aria-hidden="true" /><span>接续自</span>
       {onOpen && !missing ? <button type="button" className="conversation-origin__link" onClick={() => onOpen(parentId, origin ? {promptIndex:origin.promptIndex, promptId:origin.promptId ?? undefined} : undefined)}
-        title={`返回“${title}”${origin ? `，定位到第 ${origin.inheritedTurnCount} 轮回复` : ""}`}>{title}</button> : <span>{title}</span>}
-      {origin && <span className="conversation-origin__meta">· 第 {origin.inheritedTurnCount} 轮回复后</span>}
+        title={`返回“${title}”${origin ? `，定位到第 ${origin.inheritedTurnCount} 轮的接续位置` : ""}`}>{title}</button> : <span>{title}</span>}
+      {origin && <span className="conversation-origin__meta">· 接续至第 {origin.inheritedTurnCount} 轮</span>}
       {missing && <span className="conversation-origin__meta">· {deletedParent ? "原对话已删除" : "原对话不可用"}</span>}
       {parent?.archived && <span className="conversation-origin__meta">· 已归档</span>}
     </div>

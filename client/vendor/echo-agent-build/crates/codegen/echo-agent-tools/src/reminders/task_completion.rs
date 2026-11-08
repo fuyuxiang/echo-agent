@@ -30,6 +30,7 @@ use std::sync::Arc;
 pub const DEFAULT_TASK_OUTPUT_TOOL: &str = "get_task_output";
 /// UI/Stop kill with no live waiter: tell the model not to relaunch the task.
 const USER_KILLED_NOTICE: &str = "This task was killed by the user — do not restart it.\n";
+const COMPLETION_RECONCILIATION: &str = "Result of existing work, not a new request. Reconcile with the latest task state; skip completed or superseded actions. Continue only remaining work. Report changed findings briefly, or say the conclusion is unchanged.\n";
 fn user_killed_notice(task: &TaskSnapshot) -> &'static str {
     if task.explicitly_killed && !task.kill_result_delivered {
         USER_KILLED_NOTICE
@@ -143,6 +144,7 @@ pub fn format_bash_completion(
          {notice}",
         task.task_id, status_str, command, duration_secs,
     );
+    msg.push_str(COMPLETION_RECONCILIATION);
     if task.signal.is_some() && duration_secs < 1.0 {
         msg.push_str(
             "Note: this is much shorter than expected for a backgrounded command. \
@@ -1183,6 +1185,22 @@ mod tests {
         assert!(msg.starts_with("While you were idle, 2 background tasks completed:"));
         assert!(msg.contains("bg-1"));
         assert!(msg.contains("bg-2"));
+    }
+    #[test]
+    fn format_bash_completion_reconciles_existing_work_with_latest_state() {
+        let msg = format_bash_completion(&make_completed("bg-1"), Some("get_task_output"), None);
+        for instruction in [
+            "not a new request",
+            "latest task state",
+            "skip completed or superseded actions",
+            "Continue only remaining work",
+            "conclusion is unchanged",
+        ] {
+            assert!(
+                msg.contains(instruction),
+                "missing reconciliation instruction: {instruction}"
+            );
+        }
     }
     #[test]
     fn format_bash_completion_pointer_form_is_small() {

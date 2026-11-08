@@ -124,7 +124,7 @@ try {
       return status && viewport && status.top >= viewport.top && status.bottom <= viewport.bottom + 1;
     });
     await stage("complete");
-    await process.getByText("本轮已完成", { exact: true }).waitFor();
+    await process.getByText("本次处理已结束", { exact: true }).waitFor();
     assert.equal(await page.locator(".execution-process--running, .msg__writing").count(), 0);
     assert.equal(await header.getAttribute("aria-expanded"), "false");
     assert.match(await header.textContent(), /查看过程/);

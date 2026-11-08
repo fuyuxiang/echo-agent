@@ -203,7 +203,7 @@ export function ExecutionProcess({
   const recoveredById = new Map(summary.recoveredTools.map(item => [item.failedToolCallId, item.successfulToolCallId]));
   const recoveredIds = new Set(recoveredById.keys());
   const recovered = summary.state === "complete" && recoveredIds.size > 0;
-  const title = !active ? resultNotice?.title ?? (summary.state === "complete" ? "本轮已完成" : summary.title)
+  const title = !active ? resultNotice?.title ?? (summary.state === "complete" ? "本次处理已结束" : summary.title)
     : waitingReason ?? (knowledgeTrace?.personal?.state === "searching" ? "正在检索个人知识库"
       : finalAnswerStarted ? "正在生成回复"
         : currentStage && (currentStage.planned || currentStage.progress.length > 0) ? currentStage.title : summary.title);

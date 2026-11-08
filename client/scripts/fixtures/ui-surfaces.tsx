@@ -995,7 +995,7 @@ function Fixture() {
     </div></div>;
   }
   if (surface === "expert-entry") return <div className="app"><div className="app__body">
-    <Sidebar activeNav={expertPageOpen ? label : "新建任务"} onNewSession={() => {}} onSelect={() => {}}
+    <Sidebar activeNav={expertPageOpen ? label : "新建任务"} onNewSession={() => { setExpertPageOpen(false); (window as any).workbenchNewTask = true; }} onSelect={() => {}}
       onNavigate={next => { setLabel(next); setExpertPageOpen(true); }} onOpenSettings={() => {}} onOpenSearch={() => {}} />
     <main className="app__main">{expertPageOpen ? (
       <div style={{ height: "100%" }}>

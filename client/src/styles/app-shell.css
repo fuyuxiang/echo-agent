@@ -9,7 +9,7 @@
   container-name: app-main;
   background: var(--echo-surface-canvas);
   border: 0;
-  border-left: 1px solid var(--ui-line);
+  border-left: 1px solid var(--echo-border-weak);
   border-radius: 0;
   box-shadow: none;
 }
@@ -75,7 +75,8 @@
   transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
 }
 
-.sidebar__nav-item:hover {
+.sidebar__nav-item:hover,
+.sidebar__nav-item--open {
   background: var(--echo-bg-hover);
   color: var(--echo-text-strong);
 }
@@ -94,28 +95,18 @@
 .sidebar__nav-item--active svg {
   color: inherit;
 }
-.sidebar__nav-item--active:hover { background: var(--echo-control-selected-bg-hover); }
+.sidebar__nav-item--active:hover {
+  background: var(--echo-control-selected-bg-hover);
+  color: var(--echo-control-selected-fg);
+}
+.sidebar__nav-item--active:active { background: var(--echo-control-selected-bg-active); }
 .sidebar__nav-item:is(:hover, .sidebar__nav-item--active) .sidebar__nav-sub { color: inherit; }
 
-/* Task creation is the persistent primary action; module links below it
- * describe location. Keep the distinction even while reading a conversation. */
-.sidebar__nav-item--create,
-.sidebar__nav-item--create.sidebar__nav-item--active {
+/* Task creation stays available as a neutral action. Selected surfaces belong
+ * to the current module; page-specific creation buttons retain primary color. */
+.sidebar__nav-item--create {
   min-height: var(--echo-size-control-md);
   margin-bottom: 8px;
-  background: var(--echo-button-primary-bg);
-  color: var(--echo-button-primary-fg);
-  font-weight: 600;
-}
-.sidebar__nav-item--create:hover,
-.sidebar__nav-item--create.sidebar__nav-item--active:hover {
-  background: var(--echo-button-primary-bg-hover);
-  color: var(--echo-button-primary-fg);
-}
-
-.sidebar__nav-item--create:active,
-.sidebar__nav-item--create.sidebar__nav-item--active:active {
-  background: var(--echo-button-primary-bg-active);
 }
 
 .sidebar__content {
@@ -129,8 +120,7 @@
   .sidebar__logo-row { height: 32px; }
   .sidebar__nav { gap: 0; padding-top: 0; padding-bottom: 4px; }
   .sidebar__nav-item { min-height: 32px; height: auto; padding-block: 5px; }
-  .sidebar__nav-item--create,
-  .sidebar__nav-item--create.sidebar__nav-item--active { min-height: 32px; margin-bottom: 4px; }
+  .sidebar__nav-item--create { min-height: 32px; margin-bottom: 4px; }
   .sidebar__content { padding-top: 2px; padding-bottom: 2px; }
   .sidebar .sidebar__section-label { height: 28px; min-height: 28px; padding-block: 4px; }
   .sidebar__footer { height: 48px; padding: 2px 8px; }

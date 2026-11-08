@@ -4,10 +4,14 @@
   --window-navigation-space: 200px;
 }
 
-/* A native window row sits above one shared brand-and-tools row on both OSes.
- * Windows already renders TitleBar. macOS uses its native overlay controls. */
+/* Keep the sidebar below macOS's native buttons. The main column extends into
+ * that row so every page header starts at the top of the window. */
 .app--macos .app__body:has(> .window-sidebar-navigation) {
   margin-block-start: 32px;
+}
+
+.app--macos .app__body:has(> .window-sidebar-navigation) > .app__main {
+  margin-block-start: -32px;
 }
 
 .window-native-drag-region {
@@ -17,10 +21,26 @@
 .app--macos .window-native-drag-region {
   display: block;
   position: fixed;
-  inset: 0 0 auto;
+  inset: 0 auto auto 0;
+  width: var(--app-sidebar-width, 248px);
   height: 32px;
   z-index: 22;
+  background: var(--ui-sidebar);
   -webkit-app-region: drag;
+}
+
+.app--macos .app__body--collapsed .window-native-drag-region {
+  width: 92px;
+  background: var(--echo-surface-canvas);
+}
+
+.app--macos .app__body--collapsed {
+  --window-navigation-space: 280px;
+}
+
+.app--macos .app__body--collapsed .window-sidebar-navigation {
+  top: -20px;
+  left: 100px;
 }
 
 .app--macos .app__body:has(> .window-sidebar-navigation) .sidebar-resize {

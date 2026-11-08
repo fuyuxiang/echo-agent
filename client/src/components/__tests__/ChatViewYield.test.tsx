@@ -238,6 +238,34 @@ describe("ChatView pause/yield/resume 闭环", () => {
     vi.mocked(setCodingMode).mockClear();
   });
 
+  it("后台接续失败保留主回复的分支入口，不暴露重跑原问题的操作", () => {
+    setStore({ messages: [
+      { id: "human", role: "user", complete: true, promptId: "human", promptIndex: 0, parts: [{ kind: "text", text: "排查字体" }] },
+      { id: "main", role: "assistant", complete: true, promptId: "human", promptIndex: 0, stopReason: "end_turn", parts: [{ kind: "text", text: "原有结论" }] },
+      { id: "wake", role: "assistant", complete: true, promptId: "task-completed-bg", promptIndex: 1, execution: { origin: "background_task", sourceId: "bg" }, stopReason: "error", parts: [{ kind: "thought", text: "核对时模型不可用" }] },
+    ] });
+    const { container } = renderChat();
+    expect(screen.getByLabelText("本次处理说明")).toHaveTextContent("后台结果核对");
+    expect(screen.queryByRole("button", { name: /^(重试|重新生成|重新执行)$/ })).toBeNull();
+    const original = container.querySelector('[data-msg-id="main"]') as HTMLElement;
+    expect(within(original).getByRole("group", { name: "回复操作" })).toHaveClass("msg__actions--latest");
+    fireEvent.click(within(original).getByRole("button", { name: "更多回复操作" }));
+    expect(screen.getByRole("menuitem", { name: "在新对话中继续" })).toBeEnabled();
+    expect(baseProps.onRetrySend).not.toHaveBeenCalled();
+  });
+
+  it("暂停的空后台轮次继续时发送继续指令，不回溯重发原始请求", async () => {
+    setStore({ messages: [
+      { id: "human", role: "user", complete: true, promptId: "human", promptIndex: 0, parts: [{ kind: "text", text: "原始请求" }] },
+      { id: "wake", role: "assistant", complete: true, promptId: "task-completed-bg", promptIndex: 1, stopReason: "cancelled", parts: [] },
+    ], control: { action: "pause", phase: "paused", requestedAt: 1 } });
+    renderChat();
+    fireEvent.click(screen.getByRole("button", { name: "继续任务" }));
+    await waitFor(() => expect(baseProps.onSend).toHaveBeenCalledExactlyOnceWith("继续", []));
+    expect(rewindExecute).not.toHaveBeenCalled();
+    expect(baseProps.onRetrySend).not.toHaveBeenCalled();
+  });
+
   it("托盘打开待确认任务后展开计划，再次打开仍保留计划面板", async () => {
     setStore({ planApproval: { requestId: "tray-plan", sessionId: "s1", toolCallId: "plan", planContent: "核对资料后生成报告" } });
     const { rerender } = render(<ThemeProvider><ChatView {...baseProps} attentionRequest={1} /></ThemeProvider>);
@@ -1378,6 +1406,19 @@ describe("session workbench entry paths", () => {
     expect(screen.queryByRole("dialog",{name:"分叉此会话？"})).toBeNull();
     await waitFor(()=>expect(onForked).toHaveBeenCalledWith("new-fork","workbench","/bound/workspace", expect.objectContaining({sessionId:"new-fork"})));
     expect(sessionContinue).toHaveBeenCalledWith("workbench","/bound/workspace", expect.objectContaining({requestId:expect.any(String)}));
+  });
+
+  it("从任务操作接续保留最新失败请求", async () => {
+    setStore({ messages: [
+      { id: "u0", role: "user", complete: true, promptId: "p0", promptIndex: 0, parts: [{ kind: "text", text: "最初要求" }] },
+      { id: "a0", role: "assistant", complete: true, promptId: "p0", promptIndex: 0, stopReason: "end_turn", parts: [{ kind: "text", text: "最初结论" }] },
+      { id: "u1", role: "user", complete: true, promptId: "p1", promptIndex: 1, parts: [{ kind: "text", text: "最新约束" }] },
+      { id: "a1", role: "assistant", complete: true, promptId: "p1", promptIndex: 1, stopReason: "error", parts: [] },
+    ] });
+    render(<ThemeProvider><ChatView {...baseProps} cwd="/bound/workspace" /></ThemeProvider>);
+    sessionItem("在新对话中继续");
+    await waitFor(() => expect(sessionContinue).toHaveBeenCalledWith("workbench", "/bound/workspace",
+      expect.objectContaining({ targetPromptIndex: 1, sourcePromptId: "p1" })));
   });
 
   it("接续创建失败后重试复用请求标识，避免重复会话", async () => {
