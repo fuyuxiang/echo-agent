@@ -81,15 +81,21 @@ async function inspect(page, spec, scenario, capture = false) {
     const titles = [...document.querySelectorAll(".capability-page__title,.settings-section__title,.model-connections__header h2,.meeting-panel__header h1,.org-memory__header h1")]
       .map(e => ({ text:e.textContent, size:getComputedStyle(e).fontSize, line:getComputedStyle(e).lineHeight, ...rect(e) }));
     const dialogs = [...document.querySelectorAll('[aria-modal="true"]')].map(rect);
-    return { overflow:document.documentElement.scrollWidth > innerWidth+1, titles, dialogs };
+    return { overflow:document.documentElement.scrollWidth > innerWidth+1, titles, dialogs,
+      rootFontSize:parseFloat(getComputedStyle(document.documentElement).fontSize),
+      fontPreference:localStorage.getItem("echoagent.fontSize"), theme:document.documentElement.dataset.theme };
   });
+  assert.ok(Math.abs(geometry.rootFontSize-16*scenario[3]/13)<0.001, `${spec} ${scenario}: requested font scenario was reset`);
+  assert.equal(geometry.fontPreference,String(scenario[3]),`${spec}: persisted font preference changed`);
+  assert.equal(geometry.theme,scenario[2],`${spec}: requested theme was not applied`);
   assert.ok(!geometry.overflow, `${spec} ${scenario}: document overflows horizontally`);
   for(const box of geometry.dialogs) assert.ok(box.x >= -1 && box.y >= -1 && box.right <= scenario[0]+1 && box.bottom <= scenario[1]+1, `${spec}: modal outside viewport`);
   if(capture) await page.screenshot({ path:join(output, `${spec.replaceAll(":","-")}-${scenario.join("-")}.png`) });
   evidence.push({ spec, scenario, ...geometry, buttons:buttonAudit.buttons, colors });
 }
 try {
-  browser = await (await reviewChromium()).launch({ headless:true, executablePath:process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
+  browser = await (await reviewChromium()).launch({ headless: true,
+    ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}) });
   console.log("Checking baseline source isolation");
   const baselineServer=await createUiReviewServer(0,{baseline:true});
   let baselinePage;
@@ -108,18 +114,37 @@ try {
   for(const scenario of scenarios) {
     console.log(`Checking ${surfaces.length} surfaces: ${scenario.join(" / ")}`);
     const [width,height,theme,font] = scenario;
-    const page = await browser.newPage({ viewport:{width,height}, colorScheme:theme });
-    const errors=[]; page.on("pageerror", error=>errors.push(error.message));
-    await page.addInitScript(size => {
-      const apply = () => { if (!document.documentElement) return false; document.documentElement.style.fontSize=`${16*size/13}px`; return true; };
-      if (!apply()) { const observer = new MutationObserver(() => { if (apply()) observer.disconnect(); }); observer.observe(document,{childList:true,subtree:true}); }
-    },font);
+    const errors=[];
+    const createPage = async () => {
+      const page = await browser.newPage({ viewport:{width,height}, colorScheme:theme });
+      page.on("pageerror", error=>errors.push(error.message));
+      await page.addInitScript(size => {
+        // General settings reapply this persisted preference on mount.
+        localStorage.setItem("echoagent.fontSize", String(size));
+        const apply = () => { if (!document.documentElement) return false; document.documentElement.style.fontSize=`${16*size/13}px`; return true; };
+        if (!apply()) { const observer = new MutationObserver(() => { if (apply()) observer.disconnect(); }); observer.observe(document,{childList:true,subtree:true}); }
+      },font);
+      return page;
+    };
+    // Each surface is a separate document, not an in-app navigation journey.
+    // A fresh page prevents earlier fixtures and repeated module navigations
+    // from poisoning later observations. Real navigation journeys stay below.
     for(const spec of surfaces) {
+      const page = await createPage();
+      console.log(`Checking surface ${spec}: ${scenario.join(" / ")}`);
       const [surface,variant]=spec.split(":");
       const params=new URLSearchParams({ surface,theme,extensionState:"populated" });
       if(variant) params.set(surface==="page"?"label":"state",variant);
       await page.goto(`${address(server)}/__ui-review?${params}`, {waitUntil:"networkidle"});
-      await page.locator("#root > *").first().waitFor();
+      try { await page.locator("#root > *").first().waitFor(); }
+      catch (error) {
+        const context = { spec, scenario, url: page.url(), errors, error: String(error) };
+        console.error("Surface did not render:", JSON.stringify(context));
+        writeFileSync(join(output, "surface-render-failure.json"), JSON.stringify(context, null, 2));
+        try { await page.screenshot({ path: join(output, "surface-render-failure.png"), timeout: 5000 }); }
+        catch (captureError) { console.error("Could not capture failed surface:", String(captureError)); }
+        throw error;
+      }
       if(await page.locator(".capability-search input").count()) await checkSearch(page);
       if(spec === "page:项目") {
         const image = page.getByRole("img", {name:"项目工作台插画"});
@@ -149,7 +174,9 @@ try {
         await page.locator(".org-memory__nav button").filter({hasText:tab}).click();
         await inspect(page,`organization-${tab}`,scenario,true);
       }
+      await page.close();
     }
+    const page = await createPage();
     // Compare actual final metrics across all six production compatibility paths.
     await page.goto(`${address(server)}/__ui-review?surface=controls&theme=${theme}`, {waitUntil:"networkidle"});
     const metrics=await page.locator("main > button").evaluateAll(elements=>elements.slice(0,6).map(e=>{
@@ -240,6 +267,7 @@ try {
       await page.locator(".group-chat__detail").waitFor({state:"hidden"});
       assert.equal(await details.getAttribute("aria-expanded"),"false","Drawer mask did not close the actual detail panel");
     }
+    assert.deepEqual(errors,[],`${scenario}: browser errors including group journeys`);
     await page.close();
     console.log(`Design-system surfaces passed: ${scenario.join(" / ")}`);
   }

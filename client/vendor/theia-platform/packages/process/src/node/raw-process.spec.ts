@@ -137,7 +137,13 @@ describe('RawProcess', function (): void {
         const output = await new Promise<string>(async (resolve, reject) => {
             const args = ['-e', 'console.error("text to stderr")'];
             const outStream = new stream.PassThrough();
-            const rawProcess = rawProcessFactory({ command: process.execPath, 'args': args });
+            // This child only prints text. Inherited color conflicts and
+            // experimental HTTP proxy initialization add unrelated startup
+            // warnings; neither belongs to the pipe text contract under test.
+            const env = { ...process.env };
+            delete env.FORCE_COLOR;
+            delete env.NODE_USE_ENV_PROXY;
+            const rawProcess = rawProcessFactory({ command: process.execPath, args, options: { env } });
             rawProcess.onError(reject);
 
             rawProcess.errorStream.pipe(outStream);

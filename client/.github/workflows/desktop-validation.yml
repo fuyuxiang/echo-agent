@@ -48,7 +48,10 @@ jobs:
             arch: x64
             target: windows-x86_64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    # Cold Intel packaging took 156 minutes in run 42218554799; the 180-minute
+    # job then killed the complete Rust tests. Reserve time for those tests and
+    # native installer checks even when the dependency caches are cold.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
       - name: Verify native packaging architecture
@@ -161,6 +164,11 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: '0'
           CARGO_PROFILE_TEST_DEBUG: '0'
           ECHO_VALIDATE_LONG_PATHS: ${{ runner.os == 'Windows' && '1' || '0' }}
+      - name: Verify bundled model inference and offline model package import
+        run: pnpm test:retrieval-offline
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
       - name: Start packaged macOS WebView, IDE and native IPC
         if: runner.os == 'macOS'
         env:

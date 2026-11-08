@@ -955,64 +955,46 @@ mod tests {
             );
         }
     }
-    /// `parse_list_req` forces the conversations-only `kind` exactly when
-    /// process chat mode is on; otherwise the client request is untouched.
+    /// Retired chat-mode flags must not rewrite or discard client metadata.
     #[test]
     #[serial_test::serial]
-    fn parse_list_req_forces_kind_under_process_chat_mode_only() {
+    fn parse_list_req_preserves_client_meta_when_chat_mode_is_retired() {
         use crate::agent::chat_modes::ECHO_AGENT_CHAT_MODE_ENV;
-        let raw = serde_json::json!({
-            "_meta": { "echo.agent/facetFilters": { "kind": ["build"], "starred": [true] } },
-        })
-        .to_string();
-        {
-            let _off = echo_agent_test_support::EnvGuard::unset(ECHO_AGENT_CHAT_MODE_ENV);
-            let req = parse_list_req(&raw).expect("parse");
-            let parsed = ParsedMeta::parse(req.meta.as_ref());
-            assert_eq!(
-                parsed.facet_filters.get(KIND_FACET_KEY),
-                Some(&vec![serde_json::json!("build")]),
-                "non-chat: client kind filter untouched"
-            );
-        }
-        {
-            let _on = echo_agent_test_support::EnvGuard::set(ECHO_AGENT_CHAT_MODE_ENV, "1");
-            let req = parse_list_req(&raw).expect("parse");
-            let parsed = ParsedMeta::parse(req.meta.as_ref());
-            let expected_build = if cfg!(feature = "local-workspace") {
-                Some(&vec![serde_json::json!("build")])
-            } else {
-                Some(&vec![serde_json::json!("build")])
-            };
-            assert_eq!(
-                parsed.facet_filters.get(KIND_FACET_KEY),
-                expected_build,
-                "client kind=build under process chat mode"
-            );
-            assert_eq!(
-                parsed.facet_filters.get("starred"),
-                Some(&vec![serde_json::json!(true)]),
-                "other facets pass through"
-            );
-            let req = parse_list_req("{}").expect("parse");
-            let parsed = ParsedMeta::parse(req.meta.as_ref());
-            let expected = None;
-            assert_eq!(
-                parsed.facet_filters.get(KIND_FACET_KEY),
-                expected,
-                "absent client kind still forces chat under process chat mode"
-            );
-            for bad in [
+        let cases = [
+            (serde_json::json!({}), None),
+            (
+                serde_json::json!({ "_meta": { "clientField": "keep", "echo.agent/facetFilters": { "kind": ["build"], "starred": [true] } } }),
+                Some(vec![serde_json::json!("build")]),
+            ),
+            (
                 serde_json::json!({ "_meta": { "echo.agent/facetFilters": { "kind": [] } } }),
+                Some(vec![]),
+            ),
+            (
                 serde_json::json!({ "_meta": { "echo.agent/facetFilters": { "kind": null } } }),
+                Some(vec![serde_json::Value::Null]),
+            ),
+            (
                 serde_json::json!({ "_meta": { "echo.agent/facetFilters": { "kind": ["other"] } } }),
-            ] {
-                let req = parse_list_req(&bad.to_string()).expect("parse");
+                Some(vec![serde_json::json!("other")]),
+            ),
+        ];
+        for flag in [None, Some("0"), Some("1")] {
+            let _guard = match flag {
+                Some(value) => {
+                    echo_agent_test_support::EnvGuard::set(ECHO_AGENT_CHAT_MODE_ENV, value)
+                }
+                None => echo_agent_test_support::EnvGuard::unset(ECHO_AGENT_CHAT_MODE_ENV),
+            };
+            for (raw, expected_kind) in &cases {
+                let expected: ListReq = serde_json::from_value(raw.clone()).expect("request");
+                let req = parse_list_req(&raw.to_string()).expect("parse");
+                assert_eq!(req.meta, expected.meta, "legacy flag {flag:?}: {raw}");
                 let parsed = ParsedMeta::parse(req.meta.as_ref());
                 assert_eq!(
                     parsed.facet_filters.get(KIND_FACET_KEY),
-                    expected,
-                    "empty/null/unknown kind must still force chat: {bad}"
+                    expected_kind.as_ref(),
+                    "client kind survives retired flag {flag:?}: {raw}"
                 );
             }
         }

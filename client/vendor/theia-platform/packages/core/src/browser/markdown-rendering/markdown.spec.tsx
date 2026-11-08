@@ -24,12 +24,23 @@ import { MarkdownString, MarkdownStringImpl } from '../../common/markdown-render
 
 let disableJSDOM: () => void;
 
+function enableMarkdownDOM(): () => void {
+    const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    const previous = environment.IS_REACT_ACT_ENVIRONMENT;
+    environment.IS_REACT_ACT_ENVIRONMENT = true;
+    const disable = enableJSDOM();
+    return () => {
+        disable();
+        environment.IS_REACT_ACT_ENVIRONMENT = previous;
+    };
+}
+
 describe('Markdown', () => {
     let mockRenderer: MarkdownRenderer & { lastRenderedMarkdown?: MarkdownString };
     let container: HTMLElement;
     let root: Root;
 
-    before(() => disableJSDOM = enableJSDOM());
+    before(() => disableJSDOM = enableMarkdownDOM());
     after(() => disableJSDOM());
 
     beforeEach(() => {
@@ -62,101 +73,86 @@ describe('Markdown', () => {
     });
 
     afterEach(() => {
-        root.unmount();
+        React.act(() => root.unmount());
         document.body.removeChild(container);
     });
 
-    it('should render markdown content', done => {
-        root.render(
+    it('should render markdown content', async () => {
+        await React.act(async () => root.render(
             <Markdown
                 markdown="**Hello World**"
                 markdownRenderer={mockRenderer}
                 className="test-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div, 'Container should exist');
-            assert.ok(div?.textContent?.includes('Hello World'), 'Should contain markdown text');
-            done();
-        }, 50);
+        const div = container.querySelector('.test-class');
+        assert.ok(div, 'Container should exist');
+        assert.ok(div?.textContent?.includes('Hello World'), 'Should contain markdown text');
     });
 
-    it('should render empty div when markdown is undefined', done => {
-        root.render(
+    it('should render empty div when markdown is undefined', async () => {
+        await React.act(async () => root.render(
             <Markdown
                 markdown={undefined}
                 markdownRenderer={mockRenderer}
                 className="test-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div, 'Container should exist');
-            assert.strictEqual(div?.childNodes.length, 0, 'Should have no children');
-            done();
-        }, 50);
+        const div = container.querySelector('.test-class');
+        assert.ok(div, 'Container should exist');
+        assert.strictEqual(div?.childNodes.length, 0, 'Should have no children');
     });
 
-    it('should render empty div when markdown is empty string', done => {
-        root.render(
+    it('should render empty div when markdown is empty string', async () => {
+        await React.act(async () => root.render(
             <Markdown
                 markdown=""
                 markdownRenderer={mockRenderer}
                 className="test-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div, 'Container should exist');
-            assert.strictEqual(div?.childNodes.length, 0, 'Should have no children');
-            done();
-        }, 50);
+        const div = container.querySelector('.test-class');
+        assert.ok(div, 'Container should exist');
+        assert.strictEqual(div?.childNodes.length, 0, 'Should have no children');
     });
 
-    it('should render empty div when markdown is whitespace only', done => {
-        root.render(
+    it('should render empty div when markdown is whitespace only', async () => {
+        await React.act(async () => root.render(
             <Markdown
                 markdown="   "
                 markdownRenderer={mockRenderer}
                 className="test-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div, 'Container should exist');
-            assert.strictEqual(div?.childNodes.length, 0, 'Should have no children');
-            done();
-        }, 50);
+        const div = container.querySelector('.test-class');
+        assert.ok(div, 'Container should exist');
+        assert.strictEqual(div?.childNodes.length, 0, 'Should have no children');
     });
 
-    it('should accept MarkdownString object', done => {
+    it('should accept MarkdownString object', async () => {
         const markdownString = new MarkdownStringImpl('**Bold Text**');
-        root.render(
+        await React.act(async () => root.render(
             <Markdown
                 markdown={markdownString}
                 markdownRenderer={mockRenderer}
                 className="test-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div, 'Container should exist');
-            assert.ok(div?.textContent?.includes('Bold Text'), 'Should contain markdown text');
-            done();
-        }, 50);
+        const div = container.querySelector('.test-class');
+        assert.ok(div, 'Container should exist');
+        assert.ok(div?.textContent?.includes('Bold Text'), 'Should contain markdown text');
     });
 
-    it('should call onRender callback when content is rendered', done => {
+    it('should call onRender callback when content is rendered', async () => {
         let renderCallbackCalled = false;
         let receivedElement: HTMLElement | undefined;
 
-        root.render(
+        await React.act(async () => root.render(
             <Markdown
                 markdown="Test content"
                 markdownRenderer={mockRenderer}
@@ -166,20 +162,17 @@ describe('Markdown', () => {
                     receivedElement = element;
                 }}
             />
-        );
+        ));
 
-        setTimeout(() => {
-            assert.ok(renderCallbackCalled, 'onRender should be called');
-            assert.ok(receivedElement, 'Should receive element');
-            done();
-        }, 50);
+        assert.ok(renderCallbackCalled, 'onRender should be called');
+        assert.ok(receivedElement, 'Should receive element');
     });
 
-    it('should call onRender callback with undefined when content is empty', done => {
+    it('should call onRender callback with undefined when content is empty', async () => {
         let renderCallbackCalled = false;
         let receivedElement: HTMLElement | undefined = document.createElement('div'); // Initialize to non-undefined
 
-        root.render(
+        await React.act(async () => root.render(
             <Markdown
                 markdown={undefined}
                 markdownRenderer={mockRenderer}
@@ -189,29 +182,23 @@ describe('Markdown', () => {
                     receivedElement = element;
                 }}
             />
-        );
+        ));
 
-        setTimeout(() => {
-            assert.ok(renderCallbackCalled, 'onRender should be called even for empty content');
-            assert.strictEqual(receivedElement, undefined, 'Should receive undefined for empty content');
-            done();
-        }, 100);
+        assert.ok(renderCallbackCalled, 'onRender should be called even for empty content');
+        assert.strictEqual(receivedElement, undefined, 'Should receive undefined for empty content');
     });
 
-    it('should apply className to container', done => {
-        root.render(
+    it('should apply className to container', async () => {
+        await React.act(async () => root.render(
             <Markdown
                 markdown="Test"
                 markdownRenderer={mockRenderer}
                 className="custom-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.custom-class');
-            assert.ok(div, 'Container with custom class should exist');
-            done();
-        }, 50);
+        const div = container.querySelector('.custom-class');
+        assert.ok(div, 'Container with custom class should exist');
     });
 });
 
@@ -220,7 +207,7 @@ describe('LocalizedMarkdown', () => {
     let container: HTMLElement;
     let root: Root;
 
-    before(() => disableJSDOM = enableJSDOM());
+    before(() => disableJSDOM = enableMarkdownDOM());
     after(() => disableJSDOM());
 
     beforeEach(() => {
@@ -253,31 +240,28 @@ describe('LocalizedMarkdown', () => {
     });
 
     afterEach(() => {
-        root.unmount();
+        React.act(() => root.unmount());
         document.body.removeChild(container);
     });
 
-    it('should render localized markdown content', done => {
-        root.render(
+    it('should render localized markdown content', async () => {
+        await React.act(async () => root.render(
             <LocalizedMarkdown
                 localizationKey="test/basic"
                 defaultMarkdown="Welcome to **Theia**!"
                 markdownRenderer={mockRenderer}
                 className="test-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div, 'Container should exist');
-            // The content should be localized (though in tests it will be the default)
-            assert.ok(div?.textContent?.includes('Theia'), 'Should contain localized text');
-            done();
-        }, 50);
+        const div = container.querySelector('.test-class');
+        assert.ok(div, 'Container should exist');
+        // The content should be localized (though in tests it will be the default)
+        assert.ok(div?.textContent?.includes('Theia'), 'Should contain localized text');
     });
 
-    it('should render localized markdown with parameters', done => {
-        root.render(
+    it('should render localized markdown with parameters', async () => {
+        await React.act(async () => root.render(
             <LocalizedMarkdown
                 localizationKey="test/greeting"
                 defaultMarkdown="Hello **{0}**! You have {1} messages."
@@ -285,70 +269,58 @@ describe('LocalizedMarkdown', () => {
                 markdownRenderer={mockRenderer}
                 className="test-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div, 'Container should exist');
-            assert.ok(div?.textContent?.includes('Alice'), 'Should contain first parameter');
-            assert.ok(div?.textContent?.includes('5'), 'Should contain second parameter');
-            done();
-        }, 50);
+        const div = container.querySelector('.test-class');
+        assert.ok(div, 'Container should exist');
+        assert.ok(div?.textContent?.includes('Alice'), 'Should contain first parameter');
+        assert.ok(div?.textContent?.includes('5'), 'Should contain second parameter');
     });
 
-    it('should render empty div when default markdown is empty', done => {
-        root.render(
+    it('should render empty div when default markdown is empty', async () => {
+        await React.act(async () => root.render(
             <LocalizedMarkdown
                 localizationKey="test/empty"
                 defaultMarkdown=""
                 markdownRenderer={mockRenderer}
                 className="test-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div, 'Container should exist');
-            assert.strictEqual(div?.childNodes.length, 0, 'Should have no children');
-            done();
-        }, 50);
+        const div = container.querySelector('.test-class');
+        assert.ok(div, 'Container should exist');
+        assert.strictEqual(div?.childNodes.length, 0, 'Should have no children');
     });
 
-    it('should update when localization key changes', done => {
-        const { rerender } = { rerender: (element: React.ReactElement) => root.render(element) };
+    it('should update when localization key changes', async () => {
 
-        root.render(
+        await React.act(async () => root.render(
             <LocalizedMarkdown
                 localizationKey="test/first"
                 defaultMarkdown="First content"
                 markdownRenderer={mockRenderer}
                 className="test-class"
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div?.textContent?.includes('First'), 'Should contain first content');
+        const div = container.querySelector('.test-class');
+        assert.ok(div?.textContent?.includes('First'), 'Should contain first content');
 
-            rerender(
-                <LocalizedMarkdown
-                    localizationKey="test/second"
-                    defaultMarkdown="Second content"
-                    markdownRenderer={mockRenderer}
-                    className="test-class"
-                />
-            );
+        await React.act(async () => root.render(
+            <LocalizedMarkdown
+                localizationKey="test/second"
+                defaultMarkdown="Second content"
+                markdownRenderer={mockRenderer}
+                className="test-class"
+            />
+        ));
 
-            setTimeout(() => {
-                const updatedDiv = container.querySelector('.test-class');
-                assert.ok(updatedDiv?.textContent?.includes('Second'), 'Should contain second content');
-                done();
-            }, 50);
-        }, 50);
+        const updatedDiv = container.querySelector('.test-class');
+        assert.ok(updatedDiv?.textContent?.includes('Second'), 'Should contain second content');
     });
 
-    it('should pass markdown options correctly', done => {
-        root.render(
+    it('should pass markdown options correctly', async () => {
+        await React.act(async () => root.render(
             <LocalizedMarkdown
                 localizationKey="test/html"
                 defaultMarkdown="Content with <span>HTML</span>"
@@ -356,16 +328,13 @@ describe('LocalizedMarkdown', () => {
                 className="test-class"
                 markdownOptions={{ supportHtml: true, supportThemeIcons: true, isTrusted: true }}
             />
-        );
+        ));
 
-        setTimeout(() => {
-            const div = container.querySelector('.test-class');
-            assert.ok(div, 'Container should exist');
-            assert.ok(mockRenderer.lastRenderedMarkdown, 'Should have rendered markdown');
-            assert.strictEqual(mockRenderer.lastRenderedMarkdown?.supportHtml, true, 'Should pass supportHtml option');
-            assert.strictEqual(mockRenderer.lastRenderedMarkdown?.supportThemeIcons, true, 'Should pass supportThemeIcons option');
-            assert.strictEqual(mockRenderer.lastRenderedMarkdown?.isTrusted, true, 'Should pass isTrusted option');
-            done();
-        }, 50);
+        const div = container.querySelector('.test-class');
+        assert.ok(div, 'Container should exist');
+        assert.ok(mockRenderer.lastRenderedMarkdown, 'Should have rendered markdown');
+        assert.strictEqual(mockRenderer.lastRenderedMarkdown?.supportHtml, true, 'Should pass supportHtml option');
+        assert.strictEqual(mockRenderer.lastRenderedMarkdown?.supportThemeIcons, true, 'Should pass supportThemeIcons option');
+        assert.strictEqual(mockRenderer.lastRenderedMarkdown?.isTrusted, true, 'Should pass isTrusted option');
     });
 });

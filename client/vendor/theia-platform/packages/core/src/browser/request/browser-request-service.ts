@@ -78,15 +78,6 @@ export class ProxyingBrowserRequestService extends AbstractBrowserRequestService
 @injectable()
 export class XHRBrowserRequestService extends ProxyingBrowserRequestService {
 
-    protected authorization?: string;
-
-    override configure(config: RequestConfiguration): Promise<void> {
-        if (config.proxyAuthorization !== undefined) {
-            this.authorization = config.proxyAuthorization;
-        }
-        return super.configure(config);
-    }
-
     override async request(options: RequestOptions, token?: CancellationToken): Promise<RequestContext> {
         try {
             const xhrResult = await this.xhrRequest(options, token);
@@ -103,14 +94,9 @@ export class XHRBrowserRequestService extends ProxyingBrowserRequestService {
     }
 
     protected xhrRequest(options: RequestOptions, token?: CancellationToken): Promise<RequestContext> {
-        const authorization = this.authorization || options.proxyAuthorization;
-        if (authorization) {
-            options.headers = {
-                ...(options.headers || {}),
-                'Proxy-Authorization': authorization
-            };
-        }
-
+        // Browser proxy authentication is managed by the browser. Backend
+        // fallback receives proxyAuthorization separately for its dispatcher;
+        // putting it in origin headers both leaks credentials and breaks CONNECT.
         const xhr = new XMLHttpRequest();
         return new Promise<RequestContext>((resolve, reject) => {
 
@@ -147,10 +133,11 @@ export class XHRBrowserRequestService extends ProxyingBrowserRequestService {
     protected setRequestHeaders(xhr: XMLHttpRequest, options: RequestOptions): void {
         if (options.headers) {
             for (const k of Object.keys(options.headers)) {
-                switch (k) {
-                    case 'User-Agent':
-                    case 'Accept-Encoding':
-                    case 'Content-Length':
+                switch (k.toLowerCase()) {
+                    case 'user-agent':
+                    case 'accept-encoding':
+                    case 'content-length':
+                    case 'proxy-authorization':
                         // unsafe headers
                         continue;
                 }

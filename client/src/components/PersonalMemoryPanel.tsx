@@ -22,6 +22,7 @@ const message = (error: unknown) => String(error).replace(/^Error:\s*/, "");
 type View = "overview" | "manage" | "history" | "support" | "documents";
 type Props = { cwd?: string; sessionId?: string; initialView?: "overview" | "manage"; onToast?: (text: string) => void; onOpenSession?: (id: string, cwd?: string) => void | Promise<void>; onUnsavedChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void };
 type Draft = { input: PersonalMemoryInput; cwd?: string; baseline: string; deriveKeyFromContent: boolean };
+type ImportPreview = { input: PersonalMemoryInput; deriveKeyFromContent: boolean };
 
 export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", onToast, onOpenSession, onUnsavedChange, onBusyChange }: Props) {
   const [view, setView] = useState<View>(initialView);
@@ -34,7 +35,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
   const [draft, setDraft] = useState<Draft | null>(null);
   const [importing, setImporting] = useState(false);
   const [importText, setImportText] = useState("");
-  const [previews, setPreviews] = useState<PersonalMemoryInput[]>([]);
+  const [previews, setPreviews] = useState<ImportPreview[]>([]);
   const [importCwd, setImportCwd] = useState(cwd);
   const [exportText, setExportText] = useState("");
   const [visibleLimit, setVisibleLimit] = useState(30);
@@ -130,7 +131,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
   const importRecords = async () => {
     setBusy(true); let saved = 0;
     try {
-      for (const input of previews) { await memoryRecordSave(input, importCwd); saved += 1; }
+      for (const { input } of previews) { await memoryRecordSave(input, importCwd); saved += 1; }
       setImporting(false); setImportText(""); setPreviews([]); onToast?.(`已导入 ${saved} 条记忆`); await reload(true);
     } catch (e) { setPreviews(values => values.slice(saved)); setError(`已导入 ${saved} 条，剩余内容未保存：${message(e)}`); }
     finally { setBusy(false); }
@@ -191,9 +192,13 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
           <h3>导入记忆</h3><p>粘贴导出的 JSON，或每行一条偏好与事实。检查预览后再保存。</p>
           {importCwd !== cwd && <p role="note">项目记忆仍会导入原工作区：{importCwd ?? "个人记忆"}</p>}
           <textarea ref={importRef} disabled={locked} className="form-control" aria-label="待导入的记忆" rows={5} value={importText} onChange={e => { setImportText(e.target.value); setPreviews([]); }} />
-          <Button size="compact" disabled={locked || !importText.trim()} onClick={() => { try { const items = parseMemoryImport(importText); if (!items.length) throw new Error("未识别到有效记忆，请检查内容"); if (!importCwd && items.some(value => value.scope === "workspace")) throw new Error("这些记忆需要工作区，请先打开对应项目"); setPreviews(items); setError(""); } catch (e) { setError(message(e)); } }}>预览导入</Button>
-          {previews.map((item, index) => <div className="personal-memory__import-row" key={index}><label>第 {index + 1} 条 · {item.scope === "global" ? "个人" : "原工作区"}<textarea disabled={locked} className="form-control" maxLength={4000} value={item.content} onChange={e => setPreviews(values => values.map((value, at) => at === index ? { ...value, content: e.target.value } : value))} /></label><IconButton disabled={locked} label={`移除导入项 ${index + 1}`} onClick={() => setPreviews(values => values.filter((_, at) => at !== index))}><Trash2 size={14} /></IconButton></div>)}
-          <div className="personal-memory__editor-actions"><Button size="compact" disabled={locked} onClick={() => navigate(view)}>取消导入</Button>{previews.length > 0 && <Button size="compact" variant="primary" loading={busy} disabled={locked || previews.some(item => !item.content.trim())} onClick={() => void importRecords()}><Download size={14} />添加 {previews.length} 条记忆</Button>}</div>
+          <Button size="compact" disabled={locked || !importText.trim()} onClick={() => { try { const items = parseMemoryImport(importText); if (!items.length) throw new Error("未识别到有效记忆，请检查内容"); if (!importCwd && items.some(value => value.scope === "workspace")) throw new Error("这些记忆需要工作区，请先打开对应项目"); setPreviews(items.map(input => ({ input, deriveKeyFromContent: isContentDerivedMemoryTitle(input.key, input.content) }))); setError(""); } catch (e) { setError(message(e)); } }}>预览导入</Button>
+          {previews.map(({ input: item }, index) => <div className="personal-memory__import-row" key={index}><label>第 {index + 1} 条 · {item.scope === "global" ? "个人" : "原工作区"}<textarea disabled={locked} className="form-control" maxLength={4000} value={item.content} onChange={e => {
+            const content = e.target.value;
+            setPreviews(values => values.map((value, at) => at === index ? { ...value, input: { ...value.input, content,
+              key: value.deriveKeyFromContent ? memoryTitleFromContent(content) : value.input.key } } : value));
+          }} /></label><IconButton disabled={locked} label={`移除导入项 ${index + 1}`} onClick={() => setPreviews(values => values.filter((_, at) => at !== index))}><Trash2 size={14} /></IconButton></div>)}
+          <div className="personal-memory__editor-actions"><Button size="compact" disabled={locked} onClick={() => navigate(view)}>取消导入</Button>{previews.length > 0 && <Button size="compact" variant="primary" loading={busy} disabled={locked || previews.some(({ input }) => !input.content.trim())} onClick={() => void importRecords()}><Download size={14} />添加 {previews.length} 条记忆</Button>}</div>
         </section>}
         {exportText && <section className="personal-memory__editor" aria-label="导出记忆"><label>导出内容（可复制保存）<textarea className="form-control" rows={6} readOnly value={exportText} onFocus={e => e.target.select()} /></label><Button size="compact" onClick={() => setExportText("")}>关闭导出</Button></section>}
         {(records.length > 8 || query.trim()) && <label className="personal-memory__search"><Search size={16} /><input className="form-control" aria-label="查找个人记忆" placeholder="查找记忆" value={query} disabled={!!draft || importing || locked} onChange={e => setQuery(e.target.value)} /></label>}

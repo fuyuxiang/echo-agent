@@ -295,8 +295,10 @@ async fn fail_closed_401_is_uncharged_and_turn_survives() {
 /// Real credential rejections must still terminate: when every request
 /// carries a bearer the server rejects, the escalating budget exhausts after
 /// `MAX_RETRIES` and the failure names authenticated rejections — not a
-/// generic budget message. `start_paused` auto-advances the backoff ladder.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+/// generic budget message. Use the real clock with real TCP: auto-advancing
+/// virtual time can expire the outer watchdog while peer I/O is pending.
+/// The retry ladder itself has separate virtual-clock unit coverage.
+#[tokio::test(flavor = "current_thread")]
 async fn authenticated_401s_still_exhaust_after_three_retries() {
     let local = tokio::task::LocalSet::new();
     local

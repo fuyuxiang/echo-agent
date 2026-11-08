@@ -6,6 +6,6 @@ export const memoryTitleFromContent = (content: string) => [...content.trim()].s
 export function isContentDerivedMemoryTitle(key: string, content: string): boolean {
   if (!key.trim()) return true;
   const title = normalized(key);
-  return [content.trim(), memoryTitleFromContent(content), content.trim().slice(0, 60)]
+  return [content.trim(), memoryTitleFromContent(content), content.trim().slice(0, 60), content.trim().slice(0, 80)]
     .some(value => value === key.trim() || !!title && normalized(value) === title);
 }

@@ -484,9 +484,11 @@ impl SessionActor {
                 crate::session::storage::SessionUpdate::Acp(Box::new(notification)),
             ));
     }
+    // Keep the test adapter's turn future on the heap, as the production
+    // scheduler does, instead of embedding it in every async test's state.
     #[cfg(test)]
-    pub(super) async fn handle_prompt(
-        self: &Arc<Self>,
+    pub(super) fn handle_prompt<'a>(
+        self: &'a Arc<Self>,
         prompt_id: &str,
         prompt_blocks: Vec<acp::ContentBlock>,
         prompt_mode: PromptMode,
@@ -499,8 +501,8 @@ impl SessionActor {
         json_schema: Option<serde_json::Value>,
         persist_ack: Option<oneshot::Sender<()>>,
         parsed_prompt_tx: Option<oneshot::Sender<ParsedPromptInfo>>,
-    ) -> PromptTurnResult {
-        self.handle_turn_input(TurnInputRequest {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PromptTurnResult> + 'a>> {
+        Box::pin(self.handle_turn_input(TurnInputRequest {
             prompt_id: prompt_id.to_string(),
             input_origin: InputOrigin::from_prompt_id(prompt_id),
             prompt_blocks,
@@ -514,8 +516,7 @@ impl SessionActor {
             json_schema,
             persist_ack,
             parsed_prompt_tx,
-        })
-        .await
+        }))
     }
     #[tracing::instrument(
         name = "session.handle_prompt",

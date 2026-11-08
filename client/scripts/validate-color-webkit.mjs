@@ -14,7 +14,13 @@ const output=reviewOutput(mkdtempSync(join(tmpdir(),"echo-native-colors-")));
 console.log(`Native form color evidence: ${output}`);
 const server=await createUiReviewServer(0,{fixture:"/scripts/fixtures/native-color-review.tsx"});
 try {
-  const {stdout}=await promisify(execFile)("/usr/bin/swift",["-module-cache-path",process.env.NATIVE_COLOR_MODULE_CACHE || join(output,"swift-modules"),resolve("scripts/validate-color-webkit.swift"),`http://127.0.0.1:${server.httpServer.address().port}`,output,...(active?["--active"]:[])],{timeout:360000,maxBuffer:1024*1024});
+  const executable=resolve(output,"native-color-review");
+  // Keep the Swift program's 180-second render watchdog independent of cold
+  // AppKit/WebKit compilation, as in the native Mermaid review.
+  console.log("Compiling native form color review.");
+  await promisify(execFile)("/usr/bin/swiftc",["-module-cache-path",process.env.NATIVE_COLOR_MODULE_CACHE || join(output,"swift-modules"),resolve("scripts/validate-color-webkit.swift"),"-o",executable],{timeout:360000,maxBuffer:1024*1024});
+  console.log("Running native form color review.");
+  const {stdout}=await promisify(execFile)(executable,[`http://127.0.0.1:${server.httpServer.address().port}`,output,...(active?["--active"]:[])],{timeout:210000,maxBuffer:1024*1024});
   console.log(stdout.trim());
   const results=JSON.parse(readFileSync(join(output,"native-colors.json"),"utf8"));
   assert.equal(results.length,4);

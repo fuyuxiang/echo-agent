@@ -41,6 +41,7 @@ vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("
   <button onClick={() => void props.onSend("继续分叉")}>分叉下一轮</button>
   <button onClick={() => void props.onClientSlashCommand?.({ name: "flush", args: "" })}>提取任务记忆</button>
   <button onClick={() => void props.onClientSlashCommand?.({ name: "dream", args: "" })}>整理任务记忆</button>
+  <button onClick={() => void props.onClientSlashCommand?.({ name: "remember", args: `workspace ${"🧠工作偏好".repeat(25)}` })}>记住长文本</button>
   <button onClick={() => void props.onClientSlashCommand?.({ name: "flush", args: "invalid" })}>错误参数提取</button>
 </div> }));
 vi.mock("@/lib/agent-client", async (original) => ({
@@ -52,6 +53,7 @@ vi.mock("@/lib/agent-client", async (original) => ({
   agentRenameSession: vi.fn(async () => {}),
   agentDeleteSession: vi.fn(async () => ({ memorySummariesDeleted: 1, memoryCleanupWarning: null })),
   memoryFlush: vi.fn(async () => true), memoryDream: vi.fn(async () => true),
+  memoryRecordSave: vi.fn(async () => ({})),
   internalReload: vi.fn(async () => {}), subscribeAgentEvents: vi.fn(async () => () => {}),
 }));
 
@@ -138,6 +140,16 @@ describe("会话标题同步", () => {
 });
 
 describe("manual memory commands", () => {
+  it("/remember 使用可随正文编辑的 Unicode 派生标题并保存到当前工作区", async () => {
+    await start(false);
+    fireEvent.click(screen.getByRole("button", { name: "记住长文本" }));
+    const content = "🧠工作偏好".repeat(25);
+    await waitFor(() => expect(client.memoryRecordSave).toHaveBeenCalledWith({
+      scope: "workspace", kind: "project", key: Array.from(content).slice(0, 60).join(""),
+      content, pinned: true, validUntil: null,
+    }, "/workspace"));
+  });
+
   it.each([true, false])("flush reports completion=%s without promising new content", async completed => {
     vi.mocked(client.memoryFlush).mockResolvedValueOnce(completed);
     await start(false);

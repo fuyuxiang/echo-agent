@@ -3,7 +3,7 @@
 use crate::{storage::MemoryStorage, text_utils::strip_reasoning_blocks};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io,
     path::{Path, PathBuf},
 };
@@ -215,6 +215,7 @@ fn load(storage: &MemoryStorage, scope: &str) -> io::Result<Ledger> {
             record.key = content_title(&record.content);
         }
     }
+    coalesce_derived_title_duplicates(&mut ledger.records);
     // A formatting-only edit is the same current fact, not an obsolete fact.
     // Repair old exclusion entries in memory without altering the saved file.
     let current_facts: HashSet<String> = ledger
@@ -262,22 +263,30 @@ fn content_title(content: &str) -> String {
     content.trim().chars().take(60).collect()
 }
 
-fn title_variants(content: &str) -> [String; 3] {
+fn title_variants(content: &str) -> [String; 4] {
     // The old frontend counted UTF-16 code units; retain those titles while
     // generating new ones by Unicode scalar value without splitting a pair.
-    let mut units = 0;
-    let legacy: String = content
-        .trim()
-        .chars()
-        .take_while(|c| {
-            units += c.len_utf16();
-            units <= 60
-        })
-        .collect();
-    [content.trim().into(), content_title(content), legacy]
+    let legacy = |limit| {
+        let mut units = 0;
+        content
+            .trim()
+            .chars()
+            .take_while(|c| {
+                units += c.len_utf16();
+                units <= limit
+            })
+            .collect()
+    };
+    // /remember previously used 80 UTF-16 units, while import used 60.
+    [
+        content.trim().into(),
+        content_title(content),
+        legacy(60),
+        legacy(80),
+    ]
 }
 
-fn derived_title_variants(content: &str) -> [String; 3] {
+fn derived_title_variants(content: &str) -> [String; 4] {
     title_variants(content).map(|value| normalized(&value))
 }
 
@@ -291,6 +300,67 @@ fn content_derived_title(key: &str, content: &str) -> bool {
     }
     let key = normalized(key);
     !key.is_empty() && derived_title_variants(content).contains(&key)
+}
+
+fn same_record_topic(record: &MemoryRecord, input: &RecordInput) -> bool {
+    if record.scope != input.scope || record.kind != input.kind {
+        return false;
+    }
+    let same_key = normalized(&record.key) == normalized(&input.key);
+    // Automatic task completion addresses a topic key, so task keys retain
+    // their uniqueness even when their display text is content-derived.
+    if record.kind == "task" && same_key {
+        return true;
+    }
+    if content_derived_title(&record.key, &record.content)
+        && content_derived_title(&input.key, &input.content)
+    {
+        // A generated title is a display prefix, not a unique topic. Match the
+        // complete fact across old/new title formats without conflating facts
+        // that happen to share their first 60 characters.
+        record.content == input.content
+    } else {
+        same_key
+    }
+}
+
+fn coalesce_derived_title_duplicates(records: &mut Vec<MemoryRecord>) {
+    let mut canonical: HashMap<_, usize> = HashMap::new();
+    let mut unique: Vec<MemoryRecord> = Vec::with_capacity(records.len());
+    for record in records.drain(..) {
+        if active(&record) && content_derived_title(&record.key, &record.content) {
+            // Only title-format duplicates with equivalent record semantics
+            // may merge. Preserve custom topics, expired/retired entries,
+            // different evidence, origins, pinning and validity periods.
+            let identity = (
+                record.scope.clone(),
+                record.kind.clone(),
+                record.content.clone(),
+                record.origin.clone(),
+                record.pinned,
+                record.valid_until,
+                record.evidence.clone(),
+            );
+            if let Some(&index) = canonical.get(&identity) {
+                let original = &mut unique[index];
+                for source in record.sources {
+                    if !original.sources.contains(&source) {
+                        original.sources.push(source);
+                    }
+                }
+                original.created_at = original.created_at.min(record.created_at);
+                original.updated_at = original.updated_at.max(record.updated_at);
+                original.observed_at = original.observed_at.max(record.observed_at);
+                original.confidence = original.confidence.max(record.confidence);
+                continue;
+            }
+            canonical.insert(identity, unique.len());
+        }
+        unique.push(record);
+    }
+    // Keep the first record's stable ID/revision. Reads repair only the view;
+    // the next locked mutation persists it with all sources retained.
+    *records = unique;
 }
 
 fn terms(text: &str) -> HashSet<String> {
@@ -647,7 +717,7 @@ pub fn remember(
         ledger
             .records
             .iter()
-            .position(|r| normalized(&r.key) == normalized(&input.key) && r.kind == input.kind)
+            .position(|r| same_record_topic(r, &input))
     };
     if let Some(index) = existing {
         let previous = &ledger.records[index];
@@ -662,20 +732,32 @@ pub fn remember(
         {
             input.key = content_title(&input.content);
         }
-        if ledger.records.iter().enumerate().any(|(other, r)| {
-            other != index && r.kind == input.kind && normalized(&r.key) == normalized(&input.key)
-        }) {
+        if ledger
+            .records
+            .iter()
+            .enumerate()
+            .any(|(other, r)| other != index && same_record_topic(r, &input))
+        {
             return Err(io::Error::other("已有同主题和类型的记忆，请更正原条目"));
         }
         let previous = &mut ledger.records[index];
         if !automatic && input.id.is_none() {
             if previous.content == input.content
-                && previous.key == input.key
+                && (previous.key == input.key
+                    || (content_derived_title(&previous.key, &previous.content)
+                        && content_derived_title(&input.key, &input.content)))
                 && previous.kind == input.kind
                 && previous.valid_until == input.valid_until
                 && previous.pinned == input.pinned
                 && previous.status == "active"
             {
+                if let Some(source) = source
+                    && !previous.sources.iter().any(|old| old == source)
+                {
+                    previous.sources.push(source.to_owned());
+                    previous.updated_at = now();
+                    previous.revision += 1;
+                }
                 let record = previous.clone();
                 save(storage, &input.scope, &ledger)?;
                 return Ok(Some(record));
@@ -746,13 +828,16 @@ pub fn remember(
         return Err(io::Error::other("记忆条目已满，请先整理"));
     }
     let timestamp = now();
+    // A compacted ledger can reuse an old ordinal. Include the full fact so
+    // distinct memories sharing a display title cannot inherit the same ID.
     let id = blake3::hash(
         format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}",
             input.scope,
             input.kind,
             normalized(&input.key),
-            ledger.records.len()
+            ledger.records.len(),
+            input.content
         )
         .as_bytes(),
     )
@@ -1274,10 +1359,331 @@ mod tests {
     }
 
     #[test]
+    fn repeating_legacy_derived_titles_keeps_identity_and_revision() {
+        for content in [
+            "周报使用中文，先给结论并完整说明依据。".repeat(8),
+            "🧠a".repeat(60),
+        ] {
+            for key in title_variants(&content) {
+                let dir = tempfile::tempdir().unwrap();
+                let storage = MemoryStorage::with_paths(
+                    dir.path().join("global"),
+                    dir.path().join("workspace"),
+                );
+                let original = remember(
+                    &storage,
+                    RecordInput {
+                        key,
+                        pinned: true,
+                        ..input("global", &content)
+                    },
+                    Some("original-source"),
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+                let saved = remember(
+                    &storage,
+                    RecordInput {
+                        key: content_title(&content),
+                        pinned: true,
+                        ..input("global", &content)
+                    },
+                    None,
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(saved, original);
+                assert_eq!(list(&storage, true).unwrap(), vec![original]);
+            }
+        }
+    }
+
+    #[test]
+    fn repeating_a_derived_fact_retains_new_sources_without_creating_a_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        let content = "周报使用中文，先给结论并完整说明依据。".repeat(6);
+        let original = remember(
+            &storage,
+            RecordInput {
+                key: content.chars().take(80).collect(),
+                ..input("global", &content)
+            },
+            Some("original-source"),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let repeat = || RecordInput {
+            key: content_title(&content),
+            ..input("global", &content)
+        };
+        let saved = remember(&storage, repeat(), Some("repeated-source"), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.id, original.id);
+        assert_eq!(saved.revision, original.revision + 1);
+        assert_eq!(saved.sources, ["original-source", "repeated-source"]);
+        assert_eq!(
+            remember(&storage, repeat(), Some("repeated-source"), false)
+                .unwrap()
+                .unwrap(),
+            saved
+        );
+        assert_eq!(list(&storage, true).unwrap(), vec![saved]);
+    }
+
+    #[test]
+    fn derived_title_prefixes_do_not_conflate_independent_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        let prefix = "共同的项目背景与报告格式要求。".repeat(6);
+        let first = format!("{prefix}周报使用中文。");
+        let second = format!("{prefix}月报使用英文。");
+        assert_eq!(content_title(&first), content_title(&second));
+        let save = |content: &str| {
+            remember(
+                &storage,
+                RecordInput {
+                    key: content_title(content),
+                    ..input("global", content)
+                },
+                None,
+                false,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let original = save(&first);
+        let independent = save(&second);
+        assert_ne!(original.id, independent.id);
+        assert_eq!(save(&second), independent);
+        let edited = format!("{prefix}周报改用双语。");
+        let updated = remember(
+            &storage,
+            RecordInput {
+                id: Some(original.id),
+                expected_revision: Some(original.revision),
+                key: content_title(&edited),
+                ..input("global", &edited)
+            },
+            None,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let records = list(&storage, true).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.contains(&updated) && records.contains(&independent));
+        assert!(permitted(&storage, &core_context(&storage).unwrap()).unwrap());
+        assert!(!permitted(&storage, &first).unwrap());
+    }
+
+    #[test]
+    fn compacted_legacy_ordinals_cannot_collide_with_new_shared_prefix_fact_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        let prefix = "共同的项目背景与报告格式要求。".repeat(6);
+        let first = format!("{prefix}周报使用中文。");
+        let second = format!("{prefix}月报使用英文。");
+        let key = content_title(&first);
+        let mut original = remember(
+            &storage,
+            RecordInput {
+                key: key.clone(),
+                ..input("global", &first)
+            },
+            None,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        // A legacy record created at ordinal 1 can become the only record
+        // after duplicate coalescing. The next create must not reuse its ID.
+        original.id = blake3::hash(format!("global:user:{}:1", normalized(&key)).as_bytes())
+            .to_hex()[..24]
+            .into();
+        write_json(
+            &storage.global_dir().join("records.json"),
+            &Ledger {
+                records: vec![original.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let added = remember(
+            &storage,
+            RecordInput {
+                key,
+                ..input("global", &second)
+            },
+            None,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_ne!(added.id, original.id);
+        let records = list(&storage, true).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.contains(&original) && records.contains(&added));
+    }
+
+    #[test]
+    fn shared_prefix_tasks_keep_unambiguous_completion_topics() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        let prefix = "共同的项目背景与工作要求。".repeat(6);
+        let first = format!("{prefix}本周提交周报。");
+        let second = format!("{prefix}下周提交月报。");
+        let key = content_title(&first);
+        assert_eq!(key, content_title(&second));
+        let task = |content: &str| RecordInput {
+            key: key.clone(),
+            kind: "task".into(),
+            valid_until: Some(now() + 3600),
+            ..input("global", content)
+        };
+        let original = remember(&storage, task(&first), None, false)
+            .unwrap()
+            .unwrap();
+        assert!(remember(&storage, task(&second), None, false).is_err());
+        assert_eq!(list(&storage, true).unwrap(), vec![original]);
+    }
+
+    #[test]
+    fn existing_title_duplicates_merge_sources_before_correction_without_writing_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        let old = "用户的周报使用中文，先列结论再完整说明工作依据。".repeat(6);
+        let original = remember(
+            &storage,
+            RecordInput {
+                key: old.chars().take(80).collect(),
+                pinned: true,
+                ..input("global", &old)
+            },
+            Some("original-source"),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let duplicate = MemoryRecord {
+            id: "legacy-duplicate".into(),
+            key: content_title(&old),
+            sources: vec!["duplicate-source".into(), "original-source".into()],
+            ..original.clone()
+        };
+        let path = storage.global_dir().join("records.json");
+        write_json(
+            &path,
+            &Ledger {
+                records: vec![original.clone(), duplicate],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let records = list(&storage, true).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, original.id);
+        assert_eq!(records[0].revision, original.revision);
+        assert_eq!(records[0].sources, ["original-source", "duplicate-source"]);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        let current = "用户的周报改用中英双语。";
+        let saved = remember(
+            &storage,
+            RecordInput {
+                id: Some(original.id),
+                expected_revision: Some(original.revision),
+                key: current.into(),
+                pinned: true,
+                ..input("global", current)
+            },
+            None,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(saved.sources, records[0].sources);
+        assert_eq!(saved.revision, original.revision + 1);
+        let reopened =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        assert_eq!(list(&reopened, true).unwrap(), vec![saved]);
+        let context = core_context(&reopened).unwrap();
+        assert!(context.contains(current) && !context.contains(&old));
+        assert!(permitted(&reopened, &context).unwrap());
+        assert!(!permitted(&reopened, &old).unwrap());
+        assert!(
+            !std::fs::read_to_string(reopened.global_dir().join(RECORD_DOCUMENT))
+                .unwrap()
+                .contains(&old)
+        );
+    }
+
+    #[test]
+    fn title_duplicate_migration_preserves_custom_topics_and_distinct_record_attributes() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        let content = "报告使用中文并保留完整的分析依据。".repeat(6);
+        let original = remember(
+            &storage,
+            RecordInput {
+                key: content.chars().take(80).collect(),
+                ..input("global", &content)
+            },
+            None,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let mut variants = vec![original.clone(); 7];
+        for (index, record) in variants.iter_mut().enumerate() {
+            record.id = format!("independent-{index}");
+            record.key = content_title(&content);
+        }
+        variants[0].key = "自定义主题".into();
+        variants[1].kind = "reference".into();
+        variants[2].status = "forgotten".into();
+        variants[3].valid_until = Some(now() + 3600);
+        variants[4].pinned = true;
+        variants[5].origin = "automatic".into();
+        variants[6].evidence = "不同的明确依据".into();
+        let mut expected = vec![original];
+        expected.extend(variants);
+        write_json(
+            &storage.global_dir().join("records.json"),
+            &Ledger {
+                records: expected.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let records = list(&storage, true).unwrap();
+        assert_eq!(records.len(), expected.len());
+        assert!(expected.iter().all(|record| records.contains(record)));
+    }
+
+    #[test]
     fn editing_derived_titles_keeps_current_and_independent_facts_recallable() {
         let old = "用户口令为 MEMORY-OLD。";
         let edited = "用户口令为 MEMORY-NEW。";
-        for key in [old, "用户口令为 MEMORY-OLD", "用户 口令为 memory old！"] {
+        let legacy_content = "用户口令为 MEMORY-OLD；".repeat(10);
+        let legacy_key: String = legacy_content.chars().take(80).collect();
+        for (old, key) in [
+            (old, old),
+            (old, "用户口令为 MEMORY-OLD"),
+            (old, "用户 口令为 memory old！"),
+            (legacy_content.as_str(), legacy_key.as_str()),
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let storage =
                 MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
@@ -1433,6 +1839,18 @@ mod tests {
         let content = "🧠偏好".repeat(35);
         let legacy: String = content.chars().take(45).collect(); // 60 UTF-16 units
         assert!(content_derived_title(&legacy, &content));
+        // Keep this distinct from both the 60-scalar and 60-unit variants:
+        // 26 pairs use 78 units, then one complete emoji reaches 80 units.
+        let command_content = "🧠a".repeat(60);
+        let legacy_command: String = command_content.chars().take(53).collect();
+        assert_eq!(legacy_command.encode_utf16().count(), 80);
+        assert_ne!(legacy_command, content_title(&command_content));
+        assert!(content_derived_title(&legacy_command, &command_content));
+        let long_text = "用户周报使用中文，正文需要保留完整的工作偏好。".repeat(8);
+        assert!(content_derived_title(
+            &long_text.chars().take(80).collect::<String>(),
+            &long_text
+        ));
         assert_eq!(content_title(&content).chars().count(), 60);
         assert!(!content_derived_title("unrelated topic", &content));
         assert!(content_derived_title("🧠", "🧠"));

@@ -33,8 +33,16 @@ async function runFixedCase(test, runEnv) {
   assert(listed.stdout.includes(`${test}: test`), "Refuse zero-test offline acceptance");
   return runNativeTestProcess(harness, [test, "--exact", "--ignored", "--nocapture"], { cwd: realpathSync("src-tauri"), env: runEnv });
  } else {
-  return runNativeTestProcess("cargo", ["test", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--lib", "-j", "2", test,
-    "--", "--exact", "--ignored", "--nocapture"], { env: runEnv });
+  const args = ["test", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--lib", "-j", "2", test,
+    "--", "--exact", "--ignored"];
+  // Cargo also exits successfully when an exact filter matches zero tests.
+  // Require the actual ignored test on Windows/Linux before executing it.
+  const listed = spawnSync("cargo", [...args, "--list"], {
+    env: runEnv, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"],
+  });
+  assert.equal(listed.status, 0, listed.error?.message || "Offline acceptance discovery failed");
+  assert(listed.stdout.includes(`${test}: test`), "Refuse zero-test offline acceptance");
+  return runNativeTestProcess("cargo", [...args, "--nocapture"], { env: runEnv });
  }
 }
 console.log(`Offline first-use test data: ${home}`);

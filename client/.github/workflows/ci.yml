@@ -169,6 +169,11 @@ jobs:
         env:
           PLAYWRIGHT_MODULE: ${{ runner.temp }}/app-icons-review-tools/node_modules/playwright/index.mjs
           UI_REVIEW_OUTPUT: ${{ runner.temp }}/app-icons-evidence
+      - name: Verify model settings navigation and action hit targets
+        run: pnpm test:ui:settings-actions
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/app-icons-review-tools/node_modules/playwright/index.mjs
+          UI_REVIEW_OUTPUT: ${{ runner.temp }}/app-icons-evidence
       - name: Preserve icon screenshots and checks
         if: always()
         uses: actions/upload-artifact@v4
@@ -176,6 +181,56 @@ jobs:
           name: app-icons-${{ matrix.os }}
           path: ${{ runner.temp }}/app-icons-evidence
           if-no-files-found: ignore
+
+  ui-contracts:
+    name: UI behavior, themes and rendered contrast
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.23.4'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install isolated browser review tools
+        id: tools
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ui-contract-tools" --no-package-lock --ignore-scripts playwright@1.55.0
+          node "$RUNNER_TEMP/ui-contract-tools/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Verify design surfaces and real navigation journeys
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: node scripts/validate-design-system.mjs
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/ui-contract-tools/node_modules/playwright/index.mjs
+          UI_REVIEW_OUTPUT: ${{ runner.temp }}/ui-contract-evidence/design
+      - name: Verify live theme transitions and subagent settings save requests
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: pnpm test:ui:theme-states
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/ui-contract-tools/node_modules/playwright/index.mjs
+          UI_REVIEW_OUTPUT: ${{ runner.temp }}/ui-contract-evidence/themes
+      - name: Verify rendered text contrast, overlays and reduced motion
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: pnpm test:ui:contrast
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/ui-contract-tools/node_modules/playwright/index.mjs
+          UI_REVIEW_OUTPUT: ${{ runner.temp }}/ui-contract-evidence/contrast
+      - name: Verify actual raster contrast for native selects and shared headings
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: pnpm test:ui:contrast:complex
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/ui-contract-tools/node_modules/playwright/index.mjs
+          UI_REVIEW_OUTPUT: ${{ runner.temp }}/ui-contract-evidence/raster
+      - name: Preserve UI assertions, screenshots and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-contract-evidence
+          path: ${{ runner.temp }}/ui-contract-evidence
+          if-no-files-found: ignore
+          retention-days: 7
 
   mermaid-render:
     name: Mermaid rendering / ${{ matrix.os }}
@@ -269,20 +324,9 @@ jobs:
       - name: Run isolated memory library unit tests
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: node scripts/test-rust-memory.mjs
-      - name: Verify authentication with the patched cryptography backend
+      - name: Verify the complete Runtime library, authentication and interrupted request recovery
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
-        run: |
-          mkdir -p "$ECHO_AGENT_HOME" "$GROK_HOME"
-          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
-          # GitHub treats env keys case-insensitively; set the lowercase alias in the shell.
-          export no_proxy="$NO_PROXY"
-          cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml \
-          -p echo-agent-runtime --lib auth:: -j 2
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
-          ECHO_AGENT_HOME: ${{ runner.temp }}/echo-auth-tests
-          GROK_HOME: ${{ runner.temp }}/echo-auth-tests-legacy
-          NO_PROXY: '*'
+        run: node scripts/test-rust-runtime.mjs
       - name: Validate compatible memory-safety backports
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: |
@@ -331,8 +375,14 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
       - name: Run all isolated native unit and integration tests
         run: node scripts/test-rust-desktop.mjs
+      # The dependency's own tests are separate from host tests. In particular,
+      # FSEvents path aliases need a real macOS gate on both architectures.
+      - name: Verify the complete Runtime library and native configuration watching
+        run: node scripts/test-rust-runtime.mjs
       - name: Verify isolated Runtime, MCP and resident skill reload without a model call
         run: node scripts/test-runtime-smoke.mjs
+      - name: Verify memory checkpoint and cancellation with a stalled local model
+        run: node scripts/test-memory-shutdown.mjs
 
   automation-windows:
     name: Native Runtime / Windows x64
@@ -366,6 +416,8 @@ jobs:
         run: node scripts/test-rust-desktop.mjs
       - name: Verify isolated Runtime, MCP and resident skill reload without a model call
         run: node scripts/test-runtime-smoke.mjs
+      - name: Verify memory checkpoint and cancellation with a stalled local model
+        run: node scripts/test-memory-shutdown.mjs
 
   windows-packaging-guards:
     name: Windows packaging / ${{ matrix.shell }}
@@ -406,6 +458,15 @@ jobs:
       - name: Verify shortcut recovery without building the application
         shell: powershell
         run: ./scripts/test-windows-installer-shortcuts.ps1
+        env:
+          ECHO_SHORTCUT_TEST_OUTPUT: ${{ runner.temp }}/windows-shortcut-evidence
+      - name: Preserve shortcut compiler, fixture and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-shortcut-evidence
+          path: ${{ runner.temp }}/windows-shortcut-evidence
+          if-no-files-found: ignore
 
   windows-native-addons:
     name: Windows native addons / Node ${{ matrix.node }}
@@ -492,6 +553,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
@@ -504,22 +566,34 @@ jobs:
           path: |
             vendor/theia-platform/packages/*/lib
             vendor/theia-platform/packages/*/tsconfig.tsbuildinfo
-          key: theia-types-${{ runner.os }}-${{ hashFiles('vendor/theia-platform/package-lock.json', 'vendor/theia-platform/packages/**/*.ts', 'vendor/theia-platform/configs/*.json') }}
+          key: theia-types-${{ runner.os }}-${{ hashFiles('vendor/theia-platform/package-lock.json', 'vendor/theia-platform/packages/**/*.ts', 'vendor/theia-platform/dev-packages/**/*.ts', 'vendor/theia-platform/configs/*.json') }}
       - run: npm ci --prefix vendor/theia-platform
         env:
           PUPPETEER_SKIP_DOWNLOAD: '1'
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      # Script-level filesystem tests import the root TypeScript dependency.
+      - run: pnpm install --frozen-lockfile
       - name: Verify native dependency platform metadata
         run: node vendor/theia-platform/scripts/verify-lockfile-platforms.js
       - run: node --test scripts/test-theia-archive-security.mjs scripts/test-dependency-patches.mjs scripts/test-dependency-runtime-security.mjs scripts/test-theia-scanoss.mjs
       - run: node scripts/check-theia-bridge.mjs
-      - name: Verify AI SDK streams and SCM diffs
+      - name: Compile IDE contracts
         working-directory: vendor/theia-platform
-        run: |
-          node node_modules/typescript/bin/tsc -b packages/ai-vercel-ai packages/ai-chat-ui packages/scm packages/plugin-ext
-          node node_modules/mocha/bin/mocha.js --config configs/mocharc.yml packages/ai-vercel-ai/lib/node/vercel-ai-language-model.spec.js packages/ai-chat-ui/lib/browser/chat-response-renderer/toolcall-part-renderer.spec.js packages/scm/lib/browser/dirty-diff/diff-computer.spec.js
+        run: node node_modules/typescript/bin/tsc -b packages/ai-vercel-ai packages/ai-chat-ui packages/scm packages/plugin-ext packages/core packages/filesystem packages/file-search dev-packages/request
+      - name: Verify IDE streams, RPC, filesystem and access control
+        run: pnpm test:ide:unit
+        env:
+          THEIA_UNIT_OUTPUT_DIR: ${{ runner.temp }}/theia-unit-results
+      - name: Upload IDE contract results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: theia-unit-results
+          path: ${{ runner.temp }}/theia-unit-results
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Verify pinned IDE plugins and SCM command completion
         run: |
           node scripts/manage-theia-vsix.mjs stage
-          node --test scripts/test-theia-plugin-validation.mjs scripts/test-theia-scm-command.mjs scripts/test-theia-git-windowless.mjs
+          pnpm test:ide

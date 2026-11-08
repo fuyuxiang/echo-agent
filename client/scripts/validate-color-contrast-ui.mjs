@@ -17,7 +17,8 @@ const scenarios = process.argv.includes("--full") ? [[1024,680,11], [1024,680,18
 const evidence = [];
 let browser;
 try {
-  browser = await (await reviewChromium()).launch({ headless: true, executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
+  browser = await (await reviewChromium()).launch({ headless: true,
+    ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}) });
   // Reference cases keep compositing, disabled exemptions and complex-paint
   // reporting honest without asserting implementation details of production CSS.
   const reference = await browser.newPage();
@@ -51,6 +52,7 @@ try {
     // separately, including its dimmest midpoint and reduced-motion behavior.
     const motionServer = await createUiReviewServer(0,{freezeMotion:false});
     const motionPage = await browser.newPage({viewport:{width:1280,height:800}});
+    const motionEvidence = [];
     motionPage.setDefaultNavigationTimeout(90000);
     try {
       for (const theme of ["light","dark"]) {
@@ -66,17 +68,32 @@ try {
           assert.equal(colors.controls.filter(item=>item.role==="status-icon").length,2);
           assert.deepEqual(colors.controlFailures,[],`${theme}: recording contrast fails during its animation`);
         }
+        // Timeline sampling above deliberately overrides animation playback.
+        // A script-paused animation may survive animation-name:none. Reload
+        // before observing the untouched production response to media changes.
+        await motionPage.reload({waitUntil:"networkidle"});
+        await glyph.waitFor();
+        assert.equal(await glyph.evaluate(e=>e.getAnimations().length),1,"The fresh recording animation must actually run");
+        assert.equal(await glyph.evaluate(e=>e.getAnimations()[0].playState),"running","Reduced motion must be tested without a script playback override");
         await motionPage.emulateMedia({reducedMotion:"reduce"});
-        assert.equal(await glyph.evaluate(e=>e.getAnimations().length),0,"Reduced motion must stop the recording halo");
+        const reduced = await glyph.evaluate(e=>({ matches:matchMedia("(prefers-reduced-motion: reduce)").matches,
+          animation:getComputedStyle(e).animationName, count:e.getAnimations().length }));
+        motionEvidence.push({theme,...reduced});
+        writeFileSync(join(output,"recording-motion.json"),JSON.stringify(motionEvidence,null,2));
+        assert.equal(reduced.matches,true);
+        assert.equal(reduced.animation,"none");
+        assert.equal(reduced.count,0,"Reduced motion must stop the recording halo");
       }
     } finally {await motionPage.close();await motionServer.close();}
   }
   for (const [width,height,font] of scenarios) for (const theme of ["light", "dark"]) {
-    const page = await browser.newPage({ viewport: {width,height}, colorScheme: theme });
-    const errors = [];
-    page.on("pageerror", error => errors.push(error.message));
-    page.setDefaultNavigationTimeout(60000);
     for (const spec of surfaces) {
+      // Independent surface observations must not inherit document/module
+      // state from dozens of previous full-page navigations.
+      const page = await browser.newPage({ viewport: {width,height}, colorScheme: theme });
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      page.setDefaultNavigationTimeout(60000);
       const [surface,variant,extension] = spec.split(":");
       const params = new URLSearchParams({surface,theme,extensionState:"populated",settingsDesign:"1"});
       if (variant) params.set(surface === "page" ? "label" : surface === "results" ? "resultVariant" : "state", variant);
@@ -186,8 +203,8 @@ try {
         }
       }
       assert.deepEqual(errors,[],`${spec}/${theme}: browser errors`);
+      await page.close();
     }
-    await page.close();
     // Checkpoints preserve review evidence even if a later integration fails.
     writeFileSync(join(output,"evidence.json"),JSON.stringify(evidence,null,2));
     const failures = evidence.flatMap(e => [...e.failures,...e.controlFailures].map(f => ({spec:e.spec,theme:e.theme,state:e.state,width:e.width,font:e.font,...f})));

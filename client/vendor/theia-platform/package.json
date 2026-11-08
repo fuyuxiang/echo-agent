@@ -33,6 +33,12 @@
     "stream-json": "^3.7.0",
     "extract-zip": "npm:@electron-internal/extract-zip@^1.0.5",
     "mocha": "^12.0.3",
+    "electron-mocha": {
+      "mocha": {
+        ".": "^11.8.0",
+        "diff": "^8.0.3"
+      }
+    },
     "@fastify/busboy": "^3.2.4",
     "undici@^5": "^6.29.1",
     "minimatch@>=9 <11.0.1": "^11.0.3",
@@ -121,10 +127,10 @@
     "start:browser": "cd examples/browser && npm run start",
     "start:browser-only": "cd examples/browser-only && npm run start",
     "start:electron": "cd examples/electron && npm run start",
-    "test": "npm run -s test:theia && npm run -s electron test && npm run -s browser test",
+    "test": "npm run -s test:theia && npm run -s test:electron && npm run -s test:browser",
     "test:browser": "cd examples/browser && npm run test",
     "test:electron": "cd examples/electron && npm run test",
-    "test:theia": "lerna run --scope \"@theia/!(example-)*\" test --stream --concurrency=1",
+    "test:theia": "lerna run --scope \"@theia/*\" --ignore \"@theia/example-*\" test --stream --concurrency=1",
     "test:playwright": "cd examples/playwright && npm run -s ui-tests",
     "version": "lerna run version",
     "watch:browser": "cd examples/browser && npm run -s watch",

@@ -50,17 +50,12 @@ export class NodeRequestService implements RequestService {
         if (!options.dispatcher) {
             options.dispatcher = getProxyAgent(options.url || '', process.env, {
                 proxyUrl: await this.getProxyUrl(options.url),
-                strictSSL: options.strictSSL
+                strictSSL: options.strictSSL,
+                proxyAuthorization: options.proxyAuthorization || this.authorization
             });
         }
-
-        const authorization = options.proxyAuthorization || this.authorization;
-        if (authorization) {
-            options.headers = {
-                ...(options.headers || {}),
-                'Proxy-Authorization': authorization
-            };
-        }
+        // Proxy credentials belong to the CONNECT dispatcher, never the
+        // destination request (including direct requests and redirects).
 
         return options;
     }
@@ -68,7 +63,12 @@ export class NodeRequestService implements RequestService {
     async request(options: NodeRequestOptions, token?: CancellationToken): Promise<RequestContext> {
         options = await this.processOptions(options);
 
-        const headers: Record<string, string> = { ...(options.headers || {}) };
+        // Frontends and extensions can supply raw headers, including the
+        // legacy XHR fallback's proxy header. Never forward it to an origin,
+        // even when a caller supplies a dispatcher or no proxy is configured.
+        const headers: Record<string, string> = Object.fromEntries(
+            Object.entries(options.headers || {}).filter(([name]) => name.toLowerCase() !== 'proxy-authorization')
+        );
 
         if (options.user && options.password) {
             headers['Authorization'] = 'Basic ' + Buffer.from(options.user + ':' + options.password).toString('base64');

@@ -39,7 +39,8 @@ try {
   const groups = await server("/scripts/fixtures/group-review.tsx");
   const schedules = await server("/scripts/fixtures/scheduled-tasks-review.tsx");
   const documents = await server("/scripts/fixtures/document-workspace-review.tsx");
-  browser = await (await reviewChromium()).launch({ headless: true, executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
+  browser = await (await reviewChromium()).launch({ headless: true,
+    ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}) });
   const layouts = quick ? [[1280, 800, 13]] : [[1280, 800, 13], [1280, 800, 18], [1024, 680, 13], [1024, 680, 18]];
   for (const [width, height, font] of layouts) for (const theme of ["light", "dark"]) {
     let page;
@@ -130,9 +131,15 @@ try {
 
     for (const state of ["success", "invalid", "error"]) {
       await go(targeted, { surface: "agent-settings", state });
-      await page.getByRole("spinbutton", { name: "子代理最大层级", exact: true }).fill(state === "invalid" ? "0" : "3");
-      await page.getByRole("button", { name: "保存", exact: true }).first().click();
+      const developer = page.locator('[data-setting-id="developer-options"]');
+      assert.equal(await developer.evaluate(element => element.open), false, "Developer options must start collapsed");
+      await developer.locator(":scope > summary").click();
+      const subagents = developer.locator('[data-setting-id="subagents"]');
+      await subagents.getByRole("spinbutton", { name: "子代理最大层级", exact: true }).fill(state === "invalid" ? "0" : "3");
+      await subagents.getByRole("button", { name: "保存", exact: true }).click();
       await page.locator(".settings-msg").filter({ hasText: state === "success" ? "已保存" : state === "invalid" ? "须为" : "保存失败" }).waitFor();
+      const saved = await page.evaluate(() => window.enterpriseThemeReview.calls.filter(call => call.command === "subagents_config_save"));
+      assert.deepEqual(saved, state === "invalid" ? [] : [{ command: "subagents_config_save", args: { maxDepth: 3 } }], "Validate actual persistence calls as well as visible feedback");
       await capture(`settings-feedback-${state}`);
     }
 
@@ -219,11 +226,32 @@ try {
     await capture("document-workspace");
 
     if (!baseline) {
+      const waitEditorTheme = async expectedTheme => page.waitForFunction(expected => {
+        if (document.documentElement.dataset.theme !== expected) return false;
+        // Monaco also gives its zero-size gutter the monaco-editor class.
+        const editors = [...document.querySelectorAll(".monaco-diff-editor .monaco-editor")].filter(element =>
+          element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0);
+        if (!editors.length || !editors.every(element => element.classList.contains(expected === "dark" ? "vs-dark" : "vs"))) return false;
+        const tokens = [...document.querySelectorAll(".view-lines span[class*=mtk]")].filter(element =>
+          !element.children.length && element.textContent.trim() && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0);
+        const comment = tokens.find(element => element.textContent.trim().startsWith("//"));
+        if (tokens.length < 8 || !comment) return false;
+        const probe = document.createElement("span");
+        probe.style.cssText = "position:absolute;visibility:hidden;color:var(--echo-code-comment)";
+        document.body.append(probe);
+        const expectedColor = getComputedStyle(probe).color;
+        probe.remove();
+        return getComputedStyle(comment).color === expectedColor;
+      }, expectedTheme);
       await go(targeted, { surface: "monaco" });
       await page.locator(".monaco-diff-editor").waitFor({ timeout: 90000 });
+      await waitEditorTheme(theme);
       await capture("monaco-diff");
       await page.evaluate(() => window.enterpriseThemeReview.setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
       await page.waitForFunction(previous => document.documentElement.dataset.theme !== previous, theme);
+      // The root preference changes before Monaco retokenizes its live model.
+      // Observe the actual editor paint before taking syntax/raster samples.
+      await waitEditorTheme(theme === "dark" ? "light" : "dark");
       await capture("monaco-live-switch");
     }
     errors.push(...pageErrors);

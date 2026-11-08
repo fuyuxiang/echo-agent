@@ -17,6 +17,8 @@
 import { expect } from 'chai';
 import * as assert from 'assert';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { FileSearchServiceImpl } from './file-search-service-impl';
 import { FileUri } from '@theia/core/lib/node';
 import { Container, ContainerModule } from '@theia/core/shared/inversify';
@@ -41,6 +43,21 @@ describe('search-service', function (): void {
     this.timeout(10000);
 
     let service: FileSearchServiceImpl;
+    let fixtureRoot: string;
+    before(() => {
+        // The imported snapshot omitted the Git-ignored sub-bar fixture.
+        // Own the complete tree so source checkout/ignore rules cannot remove it.
+        fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'theia-file-search-'));
+        for (const relative of ['subdir1/sub-bar/foo.txt', 'subdir1/sub2/foo.txt',
+            'subdir1/foo.txt', 'workspace-a/foo.ts', 'workspace-b/foo.ts']) {
+            const file = path.join(fixtureRoot, relative);
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, 'fixture');
+        }
+        fs.writeFileSync(path.join(fixtureRoot, '.gitignore'), 'foo.txt\n');
+        fs.writeFileSync(path.join(fixtureRoot, 'subdir1/.gitignore'), '*-bar\n!foo.txt\n');
+    });
+    after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
 
     beforeEach(() => {
         service = testContainer.get(FileSearchServiceImpl);
@@ -54,8 +71,8 @@ describe('search-service', function (): void {
         expect(testFile).to.not.be.undefined;
     });
 
-    it.skip('should respect nested .gitignore', async () => {
-        const rootUri = FileUri.create(path.resolve(__dirname, '../../test-resources')).toString();
+    it('should respect nested .gitignore', async () => {
+        const rootUri = FileUri.create(fixtureRoot).toString();
         const matches = await service.find('foo', { rootUris: [rootUri], fuzzyMatch: false });
 
         expect(matches.find(match => match.endsWith('subdir1/sub-bar/foo.txt'))).to.be.undefined;
@@ -73,17 +90,19 @@ describe('search-service', function (): void {
     });
 
     it('should perform file search across all folders in the workspace', async () => {
-        const dirA = FileUri.create(path.resolve(__dirname, '../../test-resources/subdir1/sub-bar')).toString();
-        const dirB = FileUri.create(path.resolve(__dirname, '../../test-resources/subdir1/sub2')).toString();
+        const dirA = FileUri.create(path.join(fixtureRoot, 'workspace-a')).toString();
+        const dirB = FileUri.create(path.join(fixtureRoot, 'workspace-b')).toString();
 
         const matches = await service.find('foo', { rootUris: [dirA, dirB] });
-        expect(matches).to.not.be.undefined;
-        expect(matches.length).to.eq(2);
+        expect(matches).to.have.members([
+            FileUri.create(path.join(fixtureRoot, 'workspace-a/foo.ts')).toString(),
+            FileUri.create(path.join(fixtureRoot, 'workspace-b/foo.ts')).toString()
+        ]);
     });
 
     describe('search with glob', () => {
         it('should support file searches with globs', async () => {
-            const rootUri = FileUri.create(path.resolve(__dirname, '../../test-resources/subdir1/sub2')).toString();
+            const rootUri = FileUri.create(path.join(fixtureRoot, 'subdir1/sub2')).toString();
 
             const matches = await service.find('', { rootUris: [rootUri], includePatterns: ['**/*oo.*'] });
             expect(matches).to.not.be.undefined;
@@ -91,7 +110,7 @@ describe('search-service', function (): void {
         });
 
         it('should NOT support file searches with globs without the prefixed or trailing star (*)', async () => {
-            const rootUri = FileUri.create(path.resolve(__dirname, '../../test-resources/subdir1/sub2')).toString();
+            const rootUri = FileUri.create(path.join(fixtureRoot, 'subdir1/sub2')).toString();
 
             const trailingMatches = await service.find('', { rootUris: [rootUri], includePatterns: ['*oo'] });
             expect(trailingMatches).to.not.be.undefined;
@@ -105,14 +124,15 @@ describe('search-service', function (): void {
 
     describe('search with ignored patterns', () => {
         it('should NOT ignore strings passed through the search options', async () => {
-            const rootUri = FileUri.create(path.resolve(__dirname, '../../test-resources/subdir1/sub2')).toString();
+            const rootUri = FileUri.create(path.join(fixtureRoot, 'subdir1/sub2')).toString();
 
             const matches = await service.find('', { rootUris: [rootUri], includePatterns: ['**/*oo.*'], excludePatterns: ['foo'] });
             expect(matches).to.not.be.undefined;
             expect(matches.length).to.eq(1);
         });
 
-        const ignoreGlobsUri = FileUri.create(path.resolve(__dirname, '../../test-resources/subdir1/sub2')).toString();
+        let ignoreGlobsUri: string;
+        before(() => { ignoreGlobsUri = FileUri.create(path.join(fixtureRoot, 'subdir1/sub2')).toString(); });
         it('should ignore globs passed through the search options #1', () => assertIgnoreGlobs({
             rootUris: [ignoreGlobsUri],
             includePatterns: ['**/*oo.*'],
@@ -195,14 +215,17 @@ describe('search-service', function (): void {
     });
 
     describe('search with whitespaces', () => {
-        const rootUri = FileUri.create(path.resolve(__dirname, '../../test-resources')).toString();
+        let rootUri: string;
+        before(() => { rootUri = FileUri.create(fixtureRoot).toString(); });
 
         it('should support file searches with whitespaces', async () => {
             const matches = await service.find('foo sub', { rootUris: [rootUri], fuzzyMatch: true, useGitIgnore: true, limit: 200 });
 
             expect(matches).to.be.length(2);
-            expect(matches[0].endsWith('subdir1/sub-bar/foo.txt'));
-            expect(matches[1].endsWith('subdir1/sub2/foo.txt'));
+            expect(matches).to.have.members([
+                FileUri.create(path.join(fixtureRoot, 'subdir1/foo.txt')).toString(),
+                FileUri.create(path.join(fixtureRoot, 'subdir1/sub2/foo.txt')).toString()
+            ]);
         });
 
         it('should support fuzzy file searches with whitespaces', async () => {
@@ -211,7 +234,7 @@ describe('search-service', function (): void {
 
             expect(matchesExact).to.be.length(0);
             expect(matchesFuzzy).to.be.length(1);
-            expect(matchesFuzzy[0].endsWith('subdir1/sub2/foo.txt'));
+            expect(matchesFuzzy[0]).to.equal(FileUri.create(path.join(fixtureRoot, 'subdir1/sub2/foo.txt')).toString());
         });
 
         it('should support file searches with whitespaces regardless of order', async () => {

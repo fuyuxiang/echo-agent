@@ -27,15 +27,15 @@ import { isWindows } from '@theia/core/lib/common/os';
 
 const expect = chai.expect;
 
-let terminalProcessFactory: TerminalProcessFactory;
-
-beforeEach(() => {
-    terminalProcessFactory = createProcessTestContainer().get<TerminalProcessFactory>(TerminalProcessFactory);
-});
-
 describe('TerminalProcess', function (): void {
 
     this.timeout(20_000);
+
+    let terminalProcessFactory: TerminalProcessFactory;
+
+    beforeEach(() => {
+        terminalProcessFactory = createProcessTestContainer().get<TerminalProcessFactory>(TerminalProcessFactory);
+    });
 
     it('test error on non existent path', async function (): Promise<void> {
         const error = await new Promise<ProcessErrorEvent | IProcessExitEvent>((resolve, reject) => {

@@ -602,9 +602,6 @@ async function theiaCli(): Promise<void> {
                     process.env.THEIA_CONFIG_DIR = temp.track().mkdirSync('theia-test-config-dir');
                 }
                 const args = ['--no-sandbox'];
-                if (!testInspect) {
-                    args.push('--headless=old');
-                }
                 await runTest({
                     start: () => new Promise((resolve, reject) => {
                         const serverProcess = manager.start(toStringArray(theiaArgs));
@@ -617,7 +614,7 @@ async function theiaCli(): Promise<void> {
                         // eslint-disable-next-line no-null/no-null
                         defaultViewport: null, // view port can take available space instead of 800x600 default
                         devtools: testInspect,
-                        headless: testInspect ? false : 'shell',
+                        headless: !testInspect,
                         executablePath: await executablePath(),
                         protocolTimeout: 600000,
                         timeout: 60000

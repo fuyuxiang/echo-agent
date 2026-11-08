@@ -15,6 +15,9 @@
  ********************************************************************************/
 
 import { expect } from 'chai';
+import * as assert from 'assert';
+import * as net from 'net';
+import { Duplex } from 'stream';
 import * as http from 'http';
 import { NodeRequestService } from './node-request-service';
 import { CancellationToken, RequestContext } from './common-request-service';
@@ -23,6 +26,18 @@ describe('NodeRequestService', () => {
     let service: NodeRequestService;
     let server: http.Server;
     let serverPort: number;
+
+    const proxyVariables = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
+    const savedProxyEnvironment = new Map(proxyVariables.map(key => [key, process.env[key]]));
+    before(() => {
+        // All request/CONNECT endpoints in this suite belong to this process.
+        for (const key of proxyVariables) { delete process.env[key]; }
+    });
+    after(() => {
+        for (const [key, value] of savedProxyEnvironment) {
+            if (value === undefined) { delete process.env[key]; } else { process.env[key] = value; }
+        }
+    });
 
     before(done => {
         service = new NodeRequestService();
@@ -144,15 +159,7 @@ describe('NodeRequestService', () => {
     });
 
     it('should timeout when request takes too long', async () => {
-        try {
-            await service.request({
-                url: url('/slow'),
-                timeout: 100
-            });
-            expect.fail('Should have thrown a timeout error');
-        } catch (e) {
-            expect(e).to.be.an.instanceOf(Error);
-        }
+        await assert.rejects(service.request({ url: url('/slow'), timeout: 100 }), { name: 'TimeoutError' });
     });
 
     it('should abort on cancellation', async () => {
@@ -173,12 +180,7 @@ describe('NodeRequestService', () => {
             listeners.forEach(l => l());
         }, 50);
 
-        try {
-            await promise;
-            expect.fail('Should have thrown an abort error');
-        } catch (e) {
-            expect(e).to.be.an.instanceOf(Error);
-        }
+        await assert.rejects(promise, { name: 'AbortError' });
     });
 
     it('should include response headers', async () => {
@@ -203,15 +205,61 @@ describe('NodeRequestService', () => {
             // Just verify configuration doesn't throw
         });
 
-        it('should inject Proxy-Authorization header when authorization is configured', async () => {
+        it('should never send configured proxy credentials to a direct destination', async () => {
             const configuredService = new NodeRequestService();
             await configuredService.configure({
                 proxyAuthorization: 'Basic dGVzdDp0ZXN0'
             });
-            const result = await configuredService.request({ url: url('/echo-headers') });
+            const result = await configuredService.request({ url: url('/echo-headers'), headers: {
+                'pRoXy-AuThOrIzAtIoN': 'Basic stale-xhr-fixture', Authorization: 'Bearer origin-fixture'
+            } });
             const headers = RequestContext.asJson<Record<string, string>>(result);
-            expect(headers['proxy-authorization']).to.equal('Basic dGVzdDp0ZXN0');
+            expect(headers['proxy-authorization']).to.be.undefined;
+            expect(headers.authorization).to.equal('Bearer origin-fixture');
         });
+
+        for (const mode of ['configured', 'request override', 'URL credentials'] as const) {
+            it(`should authenticate only the CONNECT proxy using ${mode}`, async () => {
+                const connections = new Set<Duplex>();
+                const observed: Array<string | undefined> = [];
+                const proxy = http.createServer();
+                proxy.on('connect', (request, client, head) => {
+                    connections.add(client);
+                    observed.push(request.headers['proxy-authorization']);
+                    const upstream = net.connect(serverPort, 'localhost', () => {
+                        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+                        if (head.length) { upstream.write(head); }
+                        client.pipe(upstream).pipe(client);
+                    });
+                    connections.add(upstream);
+                    upstream.on('error', () => client.destroy());
+                    client.on('error', () => upstream.destroy());
+                });
+                await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+                try {
+                    const port = (proxy.address() as net.AddressInfo).port;
+                    const configuredService = new NodeRequestService();
+                    await configuredService.configure({
+                        proxyUrl: `http://user%40name:pass%3Aword@127.0.0.1:${port}`,
+                        proxyAuthorization: mode === 'URL credentials' ? '' : 'Basic configured-fixture'
+                    });
+                    const result = await configuredService.request({
+                        url: url('/echo-headers'), timeout: 2000,
+                        proxyAuthorization: mode === 'request override' ? 'Bearer request-fixture' : undefined,
+                        headers: { 'pRoXy-AuThOrIzAtIoN': 'Basic stale-xhr-fixture' }
+                    });
+                    expect(result.res.statusCode).to.equal(200);
+                    expect(RequestContext.asJson<Record<string, string>>(result)['proxy-authorization']).to.be.undefined;
+                    const expected = mode === 'request override' ? 'Bearer request-fixture'
+                        : mode === 'URL credentials' ? `Basic ${Buffer.from('user@name:pass:word').toString('base64')}`
+                            : 'Basic configured-fixture';
+                    expect(observed).to.deep.equal([expected]);
+                } finally {
+                    for (const socket of connections) { socket.destroy(); }
+                    await new Promise<void>(resolve => proxy.close(() => resolve()));
+                }
+            });
+        }
     });
 
     describe('redirect handling', () => {

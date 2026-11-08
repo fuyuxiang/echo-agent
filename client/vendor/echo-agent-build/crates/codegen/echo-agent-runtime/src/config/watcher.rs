@@ -148,7 +148,10 @@ impl ConfigFileWatcher {
     ) -> Option<(Self, mpsc::UnboundedReceiver<ConfigChangeEvent>)> {
         let debounce = debounce.unwrap_or(DEFAULT_DEBOUNCE);
         let (tx, rx) = mpsc::unbounded_channel();
-        let echo_agent_home_buf = echo_agent_home.to_path_buf();
+        // FSEvents reports canonical paths even when the configured home uses
+        // a symlink (including macOS /var -> /private/var).
+        let echo_agent_home_buf =
+            dunce::canonicalize(echo_agent_home).unwrap_or_else(|_| echo_agent_home.to_path_buf());
         // `~/.claude.json` is consumed by **every**
         // session (see `load_claude_json_mcp_servers_as_configs`), so
         // a write to it must broadcast through the unit
@@ -175,39 +178,8 @@ impl ConfigFileWatcher {
             let mut batch_events: Vec<ConfigChangeEvent> = Vec::new();
             for event in events {
                 let path = &event.path;
-                let name = path.file_name().and_then(|n| n.to_str());
-                let parent = path.parent();
-
-                let change = match name {
-                    Some("auth.json") if parent == Some(echo_agent_home_buf.as_path()) => {
-                        Some(ConfigChangeEvent::AuthChanged)
-                    }
-                    Some("config.toml") if parent == Some(echo_agent_home_buf.as_path()) => {
-                        Some(ConfigChangeEvent::GlobalConfigChanged)
-                    }
-                    Some("models_cache.json") if parent == Some(echo_agent_home_buf.as_path()) => {
-                        Some(ConfigChangeEvent::ModelsCacheChanged)
-                    }
-                    Some("config.toml") => {
-                        Some(ConfigChangeEvent::ProjectConfigChanged { path: path.clone() })
-                    }
-                    // `~/.claude.json` routes through
-                    // the dedicated home-level variant so the
-                    // reloader can broadcast. Project-level
-                    // `<cwd>/.claude.json` (and any `.mcp.json`)
-                    // continues to be a per-cwd reload.
-                    Some(".claude.json")
-                        if user_home_buf
-                            .as_deref()
-                            .is_some_and(|h| parent_is_dir(parent, h)) =>
-                    {
-                        Some(ConfigChangeEvent::HomeClaudeJsonChanged)
-                    }
-                    Some(".mcp.json") | Some(".claude.json") => {
-                        Some(ConfigChangeEvent::McpConfigChanged { path: path.clone() })
-                    }
-                    _ => None,
-                };
+                let change =
+                    config_change_for_path(path, &echo_agent_home_buf, user_home_buf.as_deref());
 
                 if let Some(evt) = change
                     && !batch_events.contains(&evt)
@@ -325,6 +297,42 @@ impl ConfigFileWatcher {
             return;
         }
         unwatch_cwd_dirs(&mut self.debouncer, cwd);
+    }
+}
+
+/// Both directory references are canonicalized once when the watcher starts.
+fn config_change_for_path(
+    path: &Path,
+    echo_agent_home: &Path,
+    user_home: Option<&Path>,
+) -> Option<ConfigChangeEvent> {
+    let name = path.file_name().and_then(|n| n.to_str());
+    let parent = path.parent();
+    match name {
+        Some("auth.json") if parent_is_dir(parent, echo_agent_home) => {
+            Some(ConfigChangeEvent::AuthChanged)
+        }
+        Some("config.toml") if parent_is_dir(parent, echo_agent_home) => {
+            Some(ConfigChangeEvent::GlobalConfigChanged)
+        }
+        Some("models_cache.json") if parent_is_dir(parent, echo_agent_home) => {
+            Some(ConfigChangeEvent::ModelsCacheChanged)
+        }
+        Some("config.toml") => Some(ConfigChangeEvent::ProjectConfigChanged {
+            path: path.to_path_buf(),
+        }),
+        // `~/.claude.json` routes through
+        // the dedicated home-level variant so the
+        // reloader can broadcast. Project-level
+        // `<cwd>/.claude.json` (and any `.mcp.json`)
+        // continues to be a per-cwd reload.
+        Some(".claude.json") if user_home.is_some_and(|h| parent_is_dir(parent, h)) => {
+            Some(ConfigChangeEvent::HomeClaudeJsonChanged)
+        }
+        Some(".mcp.json") | Some(".claude.json") => Some(ConfigChangeEvent::McpConfigChanged {
+            path: path.to_path_buf(),
+        }),
+        _ => None,
     }
 }
 
@@ -800,6 +808,71 @@ mod tests {
 
     fn wait_ms(ms: u64) {
         std::thread::sleep(Duration::from_millis(ms));
+    }
+
+    fn expect_change(
+        rx: &mut mpsc::UnboundedReceiver<ConfigChangeEvent>,
+        expected: ConfigChangeEvent,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut observed = Vec::new();
+        while std::time::Instant::now() < deadline {
+            while let Ok(event) = rx.try_recv() {
+                if event == expected {
+                    return;
+                }
+                observed.push(event);
+            }
+            wait_ms(10);
+        }
+        panic!("expected {expected:?} within 2s; observed {observed:?}");
+    }
+
+    #[test]
+    fn global_config_events_are_scoped_to_the_data_home() {
+        let tmp = TempDir::new().unwrap();
+        let home = dunce::canonicalize(tmp.path()).unwrap();
+        for (name, expected) in [
+            ("auth.json", ConfigChangeEvent::AuthChanged),
+            ("config.toml", ConfigChangeEvent::GlobalConfigChanged),
+            ("models_cache.json", ConfigChangeEvent::ModelsCacheChanged),
+        ] {
+            // Routing must work for deleted files, too: only the parent exists.
+            assert_eq!(
+                config_change_for_path(&home.join(name), &home, None),
+                Some(expected)
+            );
+            let project_file = home.join("project").join(name);
+            let expected =
+                (name == "config.toml").then(|| ConfigChangeEvent::ProjectConfigChanged {
+                    path: project_file.clone(),
+                });
+            assert_eq!(config_change_for_path(&project_file, &home, None), expected);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn global_config_events_accept_symlink_and_canonical_parents() {
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("data");
+        fs::create_dir(&real).unwrap();
+        let alias = tmp.path().join("data-link");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let home = dunce::canonicalize(&alias).unwrap();
+        assert_ne!(alias, home);
+        for parent in [&alias, &home] {
+            for (name, expected) in [
+                ("auth.json", ConfigChangeEvent::AuthChanged),
+                ("config.toml", ConfigChangeEvent::GlobalConfigChanged),
+                ("models_cache.json", ConfigChangeEvent::ModelsCacheChanged),
+            ] {
+                assert_eq!(
+                    config_change_for_path(&parent.join(name), &home, None),
+                    Some(expected)
+                );
+            }
+        }
     }
 
     #[test]
@@ -1469,10 +1542,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "flaky on macOS: FSEvents does not reliably deliver events in test harness"
-    )]
     fn watcher_detects_auth_json_change() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("auth.json"), "{}").unwrap();
@@ -1482,15 +1551,7 @@ mod tests {
                 .expect("watcher should start");
 
         fs::write(tmp.path().join("auth.json"), r#"{"new":"token"}"#).unwrap();
-        wait_ms(300);
-
-        let mut found = false;
-        while let Ok(evt) = rx.try_recv() {
-            if evt == ConfigChangeEvent::AuthChanged {
-                found = true;
-            }
-        }
-        assert!(found, "should detect auth.json change");
+        expect_change(&mut rx, ConfigChangeEvent::AuthChanged);
     }
 
     /// Regression test for the MCP/skills reload storm (feedback loop):
@@ -1546,10 +1607,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "flaky on macOS: FSEvents does not reliably deliver events in test harness"
-    )]
     fn watcher_detects_config_toml_change() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("config.toml"), "").unwrap();
@@ -1559,25 +1616,13 @@ mod tests {
                 .expect("watcher should start");
 
         fs::write(tmp.path().join("config.toml"), "[ui]\ntheme = \"dark\"").unwrap();
-        wait_ms(300);
-
-        let mut found = false;
-        while let Ok(evt) = rx.try_recv() {
-            if evt == ConfigChangeEvent::GlobalConfigChanged {
-                found = true;
-            }
-        }
-        assert!(found, "should detect config.toml change");
+        expect_change(&mut rx, ConfigChangeEvent::GlobalConfigChanged);
     }
 
     /// A write to `<echo_agent_home>/models_cache.json` must surface as
     /// `ConfigChangeEvent::ModelsCacheChanged` so a long-running leader can
     /// hot-load a catalog fetched by another echoagent process.
     #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "flaky on macOS: FSEvents does not reliably deliver events in test harness"
-    )]
     fn watcher_detects_models_cache_change() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("models_cache.json"), "{}").unwrap();
@@ -1591,15 +1636,7 @@ mod tests {
             r#"{"fetched_at":"2026-01-01T00:00:00Z","models":{}}"#,
         )
         .unwrap();
-        wait_ms(300);
-
-        let mut found = false;
-        while let Ok(evt) = rx.try_recv() {
-            if evt == ConfigChangeEvent::ModelsCacheChanged {
-                found = true;
-            }
-        }
-        assert!(found, "should detect models_cache.json change");
+        expect_change(&mut rx, ConfigChangeEvent::ModelsCacheChanged);
     }
 
     #[test]

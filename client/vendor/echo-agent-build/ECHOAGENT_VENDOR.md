@@ -84,3 +84,50 @@ User message ACP updates now drain the replay log immediately instead of waiting
 in the model text merge buffer. Prior buffered chunks and failed writes retain
 FIFO ordering. This preserves the visible request after a host crash during model
 response latency; recovery does not resubmit the request or repeat tools.
+
+Legacy `/remember` titles truncated at 80 UTF-16 units are recognized alongside
+60-unit import titles, so manual corrections also replace those old fact titles.
+The ledger's Unicode/punctuation checks and custom-topic preservation remain in
+force. `pnpm test:runtime:rust` executes the complete Runtime library suite,
+including authentication and interrupted-request persistence, with private homes
+and an explicit rejection of a missing or ignored interrupted-request regression.
+Normal unit-mode credentials/home behavior is preserved; native review isolation
+is tested explicitly rather than forced on every unit test. Discovery verifies
+that the default-stack library group and the production 8 MiB SessionActor group
+are disjoint and cover the entire harness. Each group owns a separate profile.
+The Actor child also inherits that stack for unspecified worker threads; native
+host tests and the rest of the library retain their ordinary worker environment.
+
+Runtime configuration fixtures retain matching model keys after branding changes
+and expect the current 64-character chunk overlap. The test-only prompt adapter
+heap-allocates its turn future to avoid embedding it in every caller; production
+stack sizes remain unchanged. The real TCP 401 retry-budget
+test uses a real-clock watchdog; virtual-clock coverage stays in the retry
+schedule unit tests so pending peer I/O cannot cause a false timeout.
+Queue/Steer actor fixtures now read actual preferences in separate processes,
+with a receipt rejecting zero-test child success. Disk changes and removal also
+exercise cache invalidation. Retired chat-mode metadata, branded tool tokens,
+and canonical workflow paths have current behavior assertions.
+
+Global configuration watching canonicalizes the data home and compares canonical
+parents consistently with home-level MCP routing. This fixes FSEvents events
+using `/private/var` when the configured directory uses `/var`, including auth,
+config and model cache changes. Scope/deleted-file and symlink routing regressions
+run by default, and the three native global-change tests are re-enabled on macOS
+with bounded event waiting instead of a fixed sleep.
+
+Content-derived memory titles are display prefixes rather than unique topics.
+Repeated saves match the exact full fact across legacy UTF-16 and current Unicode
+titles, retaining the original ID. Unchanged retries retain the revision; newly
+attributed source sessions advance it once. Independent facts sharing a title
+prefix can be saved and corrected separately. Active title-format duplicates
+with the same scope, kind, origin, pinning, validity and evidence are coalesced in
+the read view, preserving the first ID/revision and all source sessions; the next
+locked mutation persists the repaired ledger. Custom topics and distinct record
+attributes remain separate. Dependency and host persistence regressions cover
+upgrade/repeat/correction, stale-fact exclusion and reopening the saved ledger.
+New IDs include the full fact to avoid reusing legacy ordinal-based IDs after
+coalescing; existing record IDs remain stable.
+Task topic keys remain unique because automatic task completion addresses them
+by key; shared-prefix task saves cannot silently overwrite or complete another
+task.

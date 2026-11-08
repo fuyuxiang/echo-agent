@@ -41,6 +41,9 @@ describe('Menus', function () {
     const { PropertyViewContribution } = require('@theia/property-view/lib/browser/property-view-contribution');
     const { SearchInWorkspaceFrontendContribution } = require('@theia/search-in-workspace/lib/browser/search-in-workspace-frontend-contribution');
     const { HostedPluginSupport } = require('@theia/plugin-ext/lib/hosted/browser/hosted-plugin');
+    const { nls } = require('@theia/core/lib/common/nls');
+    const { PreferenceService } = require('@theia/core/lib/common/preferences/preference-service');
+    const { PreferenceScope } = require('@theia/core/lib/common/preferences/preference-scope');
 
     const container = window.theia.container;
     const shell = container.get(ApplicationShell);
@@ -50,13 +53,23 @@ describe('Menus', function () {
     const menus = container.get(MenuModelRegistry);
     const commands = container.get(CommandRegistry);
     const contextMenuService = container.get(ContextMenuRenderer);
+    const originalMenuReadiness = menus.isReady;
+    const preferences = container.get(PreferenceService);
+    const originalMenuVisibility = preferences.inspect('window.menuBarVisibility')?.globalValue;
 
     before(async function () {
         await pluginService.didStart;
         await pluginService.activateByViewContainer('explorer');
+        // Echo Code defaults to a compact menu; this suite exercises the
+        // visible menu bar through its actual preference, then restores it.
+        await preferences.set('window.menuBarVisibility', 'visible', PreferenceScope.User);
         // Updating the menu interferes with our ability to programmatically test it
         // We simply disable the menu updating
         menus.isReady = false;
+    });
+    after(async () => {
+        menus.isReady = originalMenuReadiness;
+        await preferences.set('window.menuBarVisibility', originalMenuVisibility, PreferenceScope.User);
     });
 
     const toTearDown = new DisposableCollection();
@@ -76,12 +89,14 @@ describe('Menus', function () {
     ]) {
         it(`should toggle '${contribution.viewLabel}' view`, async () => {
             await contribution.closeView();
-            await menuBarContribution.menuBar.triggerMenuItem('View', contribution.viewLabel);
+            await menuBarContribution.menuBar.triggerMenuItem(nls.localizeByDefault('View'), contribution.viewLabel);
             await shell.waitForActivation(contribution.viewId);
         });
     }
 
     it('reveal more context menu in the explorer view container toolbar', async function () {
+        // Construct the navigator independently of earlier menu-toggle tests.
+        await container.get(FileNavigatorContribution).openView({ reveal: true });
         const viewContainer = await shell.revealWidget(EXPLORER_VIEW_CONTAINER_ID);
         if (!(viewContainer instanceof ViewContainer)) {
             assert.isTrue(viewContainer instanceof ViewContainer);

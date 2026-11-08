@@ -40,7 +40,7 @@ describe('basic-example-spec', function (): void {
         // Remove all 'exit' listeners to prevent BackendApplication.onStop from
         // calling terminateProcessTree, which crashes Chromium's GPU process on shutdown.
         process.removeAllListeners('exit');
-        process.exit(0);
+        // Let electron-mocha finish and return its assertion failure count.
     });
 
     it('should start the backend server', async () => {

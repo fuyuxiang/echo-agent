@@ -17,6 +17,138 @@ fn input(scope: &str, key: &str, content: &str) -> RecordInput {
 }
 
 #[test]
+fn repeating_a_legacy_remember_command_preserves_one_editable_fact() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("a"));
+    let old = "🧠工作偏好：周报使用中文，先给结论再说明依据。".repeat(6);
+    let legacy_key: String = old
+        .chars()
+        .scan(0, |units, ch| {
+            *units += ch.len_utf16();
+            (*units <= 80).then_some(ch)
+        })
+        .collect();
+    let mut original_input = input("global", &legacy_key, &old);
+    original_input.pinned = true;
+    let original = records::remember(&storage, original_input, Some("legacy-source"), false)
+        .unwrap()
+        .unwrap();
+    let key: String = old.chars().take(60).collect();
+    let mut repeated_input = input("global", &key, &old);
+    repeated_input.pinned = true;
+    let repeated = records::remember(&storage, repeated_input, None, false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(repeated, original);
+    let current = "周报改用双语。";
+    let mut update = input("global", current, current);
+    update.id = Some(repeated.id.clone());
+    update.expected_revision = Some(repeated.revision);
+    update.pinned = true;
+    let saved = records::remember(&storage, update, None, false)
+        .unwrap()
+        .unwrap();
+    let reopened = MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("a"));
+    assert_eq!(records::list(&reopened, true).unwrap(), vec![saved]);
+    let context = records::core_context(&reopened).unwrap();
+    assert!(context.contains(current) && !context.contains(&old));
+    assert!(!records::permitted(&reopened, &old).unwrap());
+}
+
+#[test]
+fn legacy_title_duplicates_preserve_all_sources_when_corrected_and_forgotten() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("a"));
+    let old = "用户要求周报使用中文，并先说明完整的工作结论。".repeat(6);
+    let key: String = old.chars().take(80).collect();
+    let original = records::remember(
+        &storage,
+        input("global", &key, &old),
+        Some("original-source"),
+        false,
+    )
+    .unwrap()
+    .unwrap();
+    let path = storage.global_dir().join("records.json");
+    let mut ledger: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut duplicate = ledger["records"][0].clone();
+    duplicate["id"] = "legacy-duplicate".into();
+    duplicate["key"] = old.chars().take(60).collect::<String>().into();
+    duplicate["sources"] = serde_json::json!(["duplicate-source"]);
+    ledger["records"].as_array_mut().unwrap().push(duplicate);
+    records::write_json(&path, &ledger).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let visible = records::list(&storage, true).unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].id, original.id);
+    assert_eq!(visible[0].sources, ["original-source", "duplicate-source"]);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let current = "周报改用双语。";
+    let mut update = input("global", current, current);
+    update.id = Some(visible[0].id.clone());
+    update.expected_revision = Some(visible[0].revision);
+    let saved = records::remember(&storage, update, None, false)
+        .unwrap()
+        .unwrap();
+    let reopened = MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("a"));
+    let context = records::core_context(&reopened).unwrap();
+    assert!(context.contains(current) && !context.contains(&old));
+    assert!(!records::permitted(&reopened, &old).unwrap());
+    records::retire(&reopened, "global", &saved.id, Some(saved.revision), false).unwrap();
+    assert!(records::source_blocked(&reopened, "original-source").unwrap());
+    assert!(records::source_blocked(&reopened, "duplicate-source").unwrap());
+    assert!(!records::permitted(&reopened, current).unwrap());
+    assert!(
+        records::remember(&reopened, input("global", current, current), None, false).is_err(),
+        "repeating a command must not silently revive a forgotten record"
+    );
+    assert_eq!(records::list(&reopened, true).unwrap().len(), 1);
+}
+
+#[test]
+fn correcting_a_legacy_command_title_preserves_recall_after_reopen() {
+    // Exercise the shipped dependency graph as well as the memory crate's
+    // own workspace tests: the application and upstream have separate locks.
+    let dir = tempfile::tempdir().unwrap();
+    let storage = MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("a"));
+    let old = "用户的偏好是仅使用中文，并且每份报告保持完整。".repeat(6);
+    let legacy_key: String = old.chars().take(80).collect();
+    let current = "用户现在希望报告使用中英双语。";
+    let original = records::remember(
+        &storage,
+        input("global", &legacy_key, &old),
+        Some("source-legacy"),
+        false,
+    )
+    .unwrap()
+    .unwrap();
+    records::remember(
+        &storage,
+        input("global", "独立事项", "独立的项目约定仍需保留"),
+        None,
+        false,
+    )
+    .unwrap();
+    let mut update = input("global", &legacy_key, current);
+    update.id = Some(original.id.clone());
+    update.expected_revision = Some(original.revision);
+    let saved = records::remember(&storage, update, None, false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.key, current);
+    assert_eq!(saved.revision, original.revision + 1);
+    assert_eq!(saved.sources, original.sources);
+    let reopened = MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("a"));
+    let context = records::core_context(&reopened).unwrap();
+    assert!(context.contains(current));
+    assert!(context.contains("独立的项目约定仍需保留"));
+    assert!(!context.contains(&legacy_key));
+    assert!(records::permitted(&reopened, &context).unwrap());
+    assert!(!records::permitted(&reopened, &old).unwrap());
+}
+
+#[test]
 fn saved_preferences_are_global_but_project_decisions_stay_isolated() {
     let dir = tempfile::tempdir().unwrap();
     let a = MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("a"));

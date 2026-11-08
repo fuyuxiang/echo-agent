@@ -2,7 +2,7 @@
 // doing so hides the reduced-motion label/geometry regression this guards.
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
@@ -221,10 +221,15 @@ try {
   console.log("Chromium diagram scenarios passed.");
   if (process.platform === "darwin" && process.env.MERMAID_WEBKIT !== "0") {
     const script = fileURLToPath(new URL("./validate-mermaid-webkit.swift", import.meta.url));
-    const { stdout } = await promisify(execFile)("/usr/bin/swift", ["-module-cache-path", join(output, "swift-modules"), script, base, output],
-      // A cold AppKit/WebKit module cache can take several minutes to compile
-      // on a busy machine. The Swift runner separately limits rendering time.
+    const executable = resolve(output, "mermaid-webkit-review");
+    // Cold AppKit/WebKit compilation must not consume the native rendering
+    // budget. The Swift program retains its own 180-second render watchdog.
+    console.log("Compiling native WKWebView review.");
+    await promisify(execFile)("/usr/bin/swiftc", ["-module-cache-path", join(output, "swift-modules"), script, "-o", executable],
       { timeout: 360000, maxBuffer: 1024 * 1024 });
+    console.log("Running native WKWebView review.");
+    const { stdout } = await promisify(execFile)(executable, [base, output],
+      { timeout: 210000, maxBuffer: 1024 * 1024 });
     console.log(stdout.trim());
     for (const entry of JSON.parse(readFileSync(join(output, "webkit-geometry.json"), "utf8"))) {
       if (entry.expected.kind === "flowchart") validateFlowchart(entry.result, entry.expected, entry.key);

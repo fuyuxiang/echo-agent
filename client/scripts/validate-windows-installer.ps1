@@ -20,7 +20,7 @@ $customRoot = Join-Path $env:LOCALAPPDATA ('Echo安装验收 ' + [guid]::NewGuid
 $customDir = Join-Path $customRoot '新建 工作区\客户端'
 $desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'EchoAgent.lnk'
 $menuLink = Join-Path ([Environment]::GetFolderPath('Programs')) 'EchoAgent.lnk'
-$shell = New-Object -ComObject WScript.Shell
+. (Join-Path $PSScriptRoot 'windows-shortcut.ps1')
 $assertions = 0
 $phase = 'first install'
 $transcribing = $false
@@ -64,13 +64,11 @@ function Assert-Install([string]$Directory) {
     Assert-True ($metadata.UninstallString -eq ('"' + (Join-Path $Directory 'uninstall.exe') + '"')) 'Wrong uninstaller registration'
     foreach ($link in @($desktopLink, $menuLink)) {
         Assert-True (Test-Path -LiteralPath $link) "Missing shortcut: $link"
-        $shortcut = $shell.CreateShortcut($link)
-        try {
-            $target = $shortcut.TargetPath
-            $expected = Join-Path $Directory 'echoagent.exe'
-            Write-Host "Shortcut: $link; target: $target; expected: $expected"
-            Assert-True ($target -eq $expected) "Stale shortcut during ${script:phase}: $link; expected '$expected', actual '$target'"
-        } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) }
+        $shortcut = [EchoInstallerValidation.Shortcuts]::Read($link)
+        $target = $shortcut.TargetPath
+        $expected = Join-Path $Directory 'echoagent.exe'
+        Write-Host "Shortcut (IShellLinkW): $link; target: $target; expected: $expected"
+        Assert-True ($target -eq $expected) "Stale shortcut during ${script:phase}: $link; expected '$expected', actual '$target'"
     }
 }
 
@@ -133,11 +131,7 @@ try {
         $startupArgs = ' "--background" "--data-home" "D:\用户工作 空间"'
         Set-ItemProperty -LiteralPath $runKey -Name 'echoagent-acceptance-home' -Value ('"' + (Join-Path $legacy 'echoagent.exe') + '"' + $startupArgs)
         foreach ($link in @($desktopLink, $menuLink)) {
-            $shortcut = $shell.CreateShortcut($link)
-            try {
-                $shortcut.TargetPath = Join-Path $legacy 'echoagent.exe'
-                $shortcut.Save()
-            } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) }
+            [EchoInstallerValidation.Shortcuts]::Write($link, (Join-Path $legacy 'echoagent.exe'), $legacy, '')
         }
         $mode = if ($missingUninstaller) { '/P /UPDATE' } else { '/S /UPDATE' }
         $phase = "repair legacy Temp installation (missing uninstaller: $missingUninstaller)"
@@ -180,6 +174,13 @@ try {
     $message = "Phase: $phase; assertions passed: $assertions; $($_.Exception.Message)"
     $escaped = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
     Write-Host "::error title=Windows installation acceptance failed::$escaped"
+    if ($env:ECHO_DESKTOP_VALIDATION_OUTPUT) {
+        foreach ($link in @($desktopLink, $menuLink)) {
+            if (Test-Path -LiteralPath $link -PathType Leaf) {
+                Copy-Item -LiteralPath $link -Destination (Join-Path $env:ECHO_DESKTOP_VALIDATION_OUTPUT ((Split-Path -Leaf (Split-Path -Parent $link)) + '.lnk'))
+            }
+        }
+    }
     throw
 } finally {
     try {
@@ -187,6 +188,5 @@ try {
         # Keep installed files/registration on the disposable runner for diagnostics.
     } finally {
         if ($transcribing) { Stop-Transcript | Out-Null }
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
     }
 }

@@ -40,6 +40,17 @@ async function renderManager(cwd?: string) {
 }
 
 describe("记忆设置与二级管理", () => {
+  it("编辑旧 /remember 的 80 字标题时不会保留过时事实", async () => {
+    const original = "周报使用中文并先给结论。".repeat(10);
+    const key = original.slice(0, 80);
+    saved = [{ ...record, key, content: original }];
+    render(<PersonalMemoryPanel cwd="/project-a" />); openManager();
+    fireEvent.click(await screen.findByRole("button", { name: `编辑 ${key}` }));
+    fireEvent.change(screen.getByLabelText("记忆内容"), { target: { value: "周报使用双语" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
+    await waitFor(() => expect(api.memoryRecordSave).toHaveBeenCalledWith(expect.objectContaining({ key: "周报使用双语", content: "周报使用双语" }), "/project-a"));
+  });
+
   it.each(["用户的报告专属口令为 MEMORY-OLD。", "用户的报告专属口令为 MEMORY-OLD", "用户 的 报告专属口令为 memory old！"])("编辑派生标题记忆时更新标题：%s", async key => {
     const original = "用户的报告专属口令为 MEMORY-OLD。";
     const edited = "用户的报告专属口令为 MEMORY-NEW。";
@@ -156,6 +167,10 @@ describe("记忆设置与二级管理", () => {
     fireEvent.click(screen.getByRole("button", { name: "添加 2 条记忆" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("已导入 1 条");
     expect(screen.getByRole("button", { name: "添加 1 条记忆" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("第 1 条 · 个人"), { target: { value: "周报用双语" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加 1 条记忆" }));
+    await waitFor(() => expect(api.memoryRecordSave).toHaveBeenCalledTimes(3));
+    expect(api.memoryRecordSave).toHaveBeenLastCalledWith(expect.objectContaining({ key: "周报用双语", content: "周报用双语" }), "/project-a");
     expect(api.memoryRecordSave.mock.calls.every(call => call[1] === "/project-a")).toBe(true);
   });
 
@@ -171,6 +186,23 @@ describe("记忆设置与二级管理", () => {
     fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
     expect(content).toHaveValue("报告使用双语");
     expect(api.memoryRecordSave).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [undefined, "周报使用双语"],
+    ["周报先给结论", "周报先给结论"],
+  ])("导入预览多次编辑后同步派生标题并保留自定义标题：%s", async (key, expectedKey) => {
+    await renderManager("/project-a"); openAction("导入记忆");
+    fireEvent.change(screen.getByLabelText("待导入的记忆"), { target: { value: JSON.stringify([{ content: "周报使用中文", key }]) } });
+    fireEvent.click(screen.getByRole("button", { name: "预览导入" }));
+    const preview = screen.getByLabelText("第 1 条 · 个人");
+    // Clearing and then retyping must not turn an automatic title into a custom one.
+    fireEvent.change(preview, { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "添加 1 条记忆" })).toBeDisabled();
+    fireEvent.change(preview, { target: { value: "周报先给结论" } });
+    fireEvent.change(preview, { target: { value: "周报使用双语" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加 1 条记忆" }));
+    await waitFor(() => expect(api.memoryRecordSave).toHaveBeenCalledWith(expect.objectContaining({ key: expectedKey, content: "周报使用双语" }), "/project-a"));
   });
 
   it("导出沿用有效记录格式，复制失败时仍可手动复制", async () => {

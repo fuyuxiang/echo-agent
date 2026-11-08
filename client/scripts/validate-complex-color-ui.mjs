@@ -2,19 +2,19 @@
 // Uses the PNG reader bundled in the existing optional Playwright installation;
 // no browser tooling or image dependency is added to the application bundle.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { resolve, join } from "node:path";
+import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
 import { inspectRenderedColors } from "./ui-color-audit.mjs";
+import { reviewPng } from "./ui-review-tools.mjs";
 
-const require = createRequire(import.meta.url);
-const { PNG } = require(resolve("vendor/theia-platform/node_modules/playwright-core/lib/utilsBundle.js"));
+const PNG = reviewPng();
 const output = reviewOutput(join(tmpdir(),"echo-complex-color-audit"));
 const server = await createUiReviewServer(0);
 const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review`;
 const evidence = [], manual = [];
+const projectHeaderClasses = ["capability-page__title", "capability-page__description", "echo-button__content"];
 const rgba = color => {
   assert.match(color,/^(?:rgba?\(|color\(srgb )/);
   const c = color.match(/[\d.]+/g).map(Number);
@@ -28,22 +28,26 @@ const contrast = (fg,bg) => {
 };
 let browser;
 try {
-  browser = await (await reviewChromium()).launch({headless:true,executablePath:process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"});
+  browser = await (await reviewChromium()).launch({ headless: true,
+    ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}) });
   for (const [width,height,font] of [[1024,680,11],[1024,680,18],[1280,800,13],[1920,1080,11],[1920,1080,18]]) for (const theme of ["light","dark"]) {
     const page = await browser.newPage({viewport:{width,height},deviceScaleFactor:1,colorScheme:theme});
     page.setDefaultNavigationTimeout(60_000);
     const errors = [];
     page.on("pageerror",error=>errors.push(error.message));
-    for (const spec of ["home","projects","meeting","organization-shell","controls","color-system"]) {
+    for (const spec of ["home","projects","meeting","organization-shell","controls","color-system","cloud-storage"]) {
       const [surface,label] = spec.split(":");
       const params = new URLSearchParams({surface,theme,extensionState:"populated"});
       if (label) params.set("label",label);
+      if (surface === "cloud-storage") params.set("settingsDesign","1");
       await page.goto(`${base}?${params}`,{waitUntil:"networkidle"});
       await page.evaluate(font=>document.documentElement.style.fontSize=`${16*font/13}px`,font);
       if (surface === "color-system") {
         await page.getByRole("textbox",{name:"交付说明",exact:true}).fill("修改后的交付说明");
         await page.getByRole("combobox",{name:"交付工作区",exact:true}).selectOption("team");
       }
+      const storageLabel = surface === "cloud-storage"
+        ? await page.getByRole("combobox",{name:"选择云存储源",exact:true}).evaluate(element=>element.selectedOptions[0]?.label) : null;
       const colors = await page.evaluate(inspectRenderedColors);
       const samples = await page.evaluate(items => items.flatMap(item => {
         return [...document.querySelectorAll(item.selector)].flatMap(e => {
@@ -66,7 +70,7 @@ try {
           }
           return [{...item,opacity,complexForeground,rects}];
         });
-      }),[...colors.manual, ...colors.text.filter(item => ["h2.capability-page__title", "p.capability-page__description", "span.echo-button__content"].includes(item.selector))]
+      }),[...colors.manual, ...colors.text.filter(item => item.selector.split(".").some(name => projectHeaderClasses.includes(name)))]
         .filter((item,index,items) => items.findIndex(other => other.selector === item.selector && other.text === item.text) === index));
       // Hide glyph paint only: inherited color, backgrounds, native boundaries,
       // geometry and currentColor icons retain their original computed values.
@@ -84,6 +88,12 @@ try {
         if (!pixels) continue;
         evidence.push({spec,theme,width,height,font,selector:sample.selector,text:sample.text,color:sample.color,threshold:sample.threshold,minimum,worstBackdrop:darkestBackdrop,pixels});
       }
+      if (surface === "cloud-storage") assert(storageLabel && evidence.some(item=>item.spec===spec && item.theme===theme && item.width===width && item.font===font && item.selector.startsWith("select.") && item.text===storageLabel),"The visible storage source label must be raster-sampled outside its decorative arrow");
+      if (surface === "projects") for (const name of projectHeaderClasses) {
+        // PageHeading adds its own classes. Match the actual header anatomy,
+        // and require real raster samples in every layout, not just once.
+        assert(evidence.some(item=>item.spec===spec && item.theme===theme && item.width===width && item.font===font && item.selector.split(".").includes(name)),`Project header must be raster-sampled at ${width}/${theme}/${font}: ${name}`);
+      }
       if (surface === "color-system") assert(evidence.some(item=>item.spec===spec && item.theme===theme && item.width===width && item.font===font && item.text==="团队交付工作区"),"The selected label must be sampled outside its native arrow");
       assert.deepEqual(errors,[],`${spec}/${theme}: browser errors`);
     }
@@ -91,9 +101,6 @@ try {
   }
   writeFileSync(join(output,"evidence.json"),JSON.stringify({evidence,manual},null,2));
   assert(evidence.length>0,"Raster samples must exercise real complex backgrounds");
-  for (const selector of ["h2.capability-page__title","p.capability-page__description","span.echo-button__content"]) {
-    assert(evidence.some(e=>e.selector===selector),`Project header must be raster-sampled even after replacing its decorative gradient: ${selector}`);
-  }
   assert.deepEqual(evidence.filter(e=>e.minimum<e.threshold),[],"Complex-background text contrast failures");
   console.log(JSON.stringify({observations:evidence.length,minimum:Math.min(...evidence.map(e=>e.minimum)),pixels:evidence.reduce((n,e)=>n+e.pixels,0),manual:manual.length,output}));
 } finally { await browser?.close(); await server.close(); }

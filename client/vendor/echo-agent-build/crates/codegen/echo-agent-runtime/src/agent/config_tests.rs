@@ -6627,7 +6627,7 @@ default = "echo-agent-4.5"
     let cfg = Config::new_from_toml_cfg(&value).unwrap();
     assert_eq!(cfg.models.default.as_deref(), Some("echo-agent-4.5"));
 }
-/// Reproduce the enterprise managed config bug: [model.echo_agent-build] sets
+/// Reproduce the enterprise managed config bug: [model.echo-agent-build] sets
 /// context_window=500k for model="echo-agent-4.5", but
 /// [models].default="echo-agent-4.5" resolves to the bare
 /// prefetched entry (256k) because Layer 3 only overrides key
@@ -6642,7 +6642,7 @@ fn slug_propagation_enterprise_managed_config_key_mismatch() {
             [models]
             default = "echo-agent-4.5"
 
-            [model.echo_agent-build]
+            [model.echo-agent-build]
             model = "echo-agent-4.5"
             context_window = 500000
             base_url = "https://inference.example.com/v1"
@@ -7049,7 +7049,7 @@ fn config_model_reasoning_efforts_parses_inline_tables_and_bare_strings() {
 fn resolve_model_list_config_reasoning_efforts_beats_remote() {
     let raw_config: toml::Value = toml::from_str(
         r#"
-            [model.echo_agent-x]
+            [model.echo-agent-x]
             reasoning_efforts = ["low"]
             "#,
     )

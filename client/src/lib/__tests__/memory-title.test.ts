@@ -12,9 +12,9 @@ describe("memory titles", () => {
     expect(isContentDerivedMemoryTitle("!!!", "你好")).toBe(false);
     expect(isContentDerivedMemoryTitle("", "你好")).toBe(true);
   });
-  it("keeps old UTF-16 titles recognizable and new titles free of broken surrogate pairs", () => {
-    const content = "🧠偏好".repeat(35);
+  it.each(["🧠偏好".repeat(35), "🧠".repeat(70), "周报使用中文".repeat(30)])("keeps legacy 60/80-unit titles recognizable and new titles free of broken surrogate pairs: %s", content => {
     expect(isContentDerivedMemoryTitle(content.slice(0, 60), content)).toBe(true);
+    expect(isContentDerivedMemoryTitle(content.slice(0, 80), content)).toBe(true);
     const title = memoryTitleFromContent(content);
     expect([...title]).toHaveLength(60);
     expect(isContentDerivedMemoryTitle(title, content)).toBe(true);

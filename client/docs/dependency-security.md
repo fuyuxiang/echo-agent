@@ -2,6 +2,12 @@
 
 依赖维护需要同时验证漏洞修复、调用方兼容性和最终安装包。审计通过只能说明所扫描的版本图未报告漏洞，不能代替编译、功能测试或桌面验收。
 
+Electron Mocha 13 使用 Mocha 11 的内部 CommonJS CLI，不能被全局 Mocha 12 override 替换。仅在 `electron-mocha` 子树选用 Mocha 11.8，并将其 `diff` 更新到 8.0.3+；其他 Mocha 依赖和现有安全 overrides 保持不变。兼容性检查须同时验证真实 Electron 中的通过退出 0、断言失败退出非零，以及完整依赖审计。
+
+IDE 代理认证使用独立的 `proxyAuthorization` 配置，由后端传给 CONNECT dispatcher；XHR 和目标请求头均不传递 `Proxy-Authorization`。定向契约同时验证 XHR 成功、网络错误及 HTTP 错误回退，以及真实本地 CONNECT 和直接请求，避免只测试干净的后端参数而遗漏浏览器污染请求头的调用链。
+
+UI 审计的浏览器启动和 PNG 解码共用 `scripts/ui-review-tools.mjs`，统一从 `PLAYWRIGHT_MODULE` 指定的独立安装解析 Playwright；未指定时可复用本地 IDE 工具。干净 CI 不需要安装完整 Theia 依赖，脚本回归测试覆盖仓库外工具路径及错误配置提示。
+
 ## 2026-11-03 修复依据
 
 桌面、Agent workspace 和 Markdown fuzz workspace 的 `pulldown-cmark` 均升级至 0.13.6，workspace 的最低依赖版本同步调整，修复 [RUSTSEC-2026-0433](https://rustsec.org/advisories/RUSTSEC-2026-0433.html)。当前解析配置没有启用公告所述的 `ENABLE_WIKILINKS`，仍升级依赖以消除潜在调用风险，不为旧版本添加审计例外。
@@ -100,14 +106,14 @@ pnpm office:test
 pnpm test:rust
 ```
 
-IDE 的 AI、工具卡片和 SCM 定向验证在 `vendor/theia-platform` 目录执行：
+IDE 的 AI、工具卡片、SCM、RPC、文件系统、进程 I/O 及权限契约在仓库根目录执行：
 
 ```sh
-node node_modules/typescript/bin/tsc -b packages/ai-vercel-ai packages/ai-chat-ui packages/scm
-node node_modules/mocha/bin/mocha.js --config configs/mocharc.yml packages/ai-vercel-ai/lib/node/vercel-ai-language-model.spec.js packages/ai-chat-ui/lib/browser/chat-response-renderer/toolcall-part-renderer.spec.js packages/scm/lib/browser/dirty-diff/diff-computer.spec.js
+node vendor/theia-platform/node_modules/typescript/bin/tsc -b vendor/theia-platform/packages/ai-vercel-ai vendor/theia-platform/packages/ai-chat-ui vendor/theia-platform/packages/scm vendor/theia-platform/packages/plugin-ext vendor/theia-platform/packages/core vendor/theia-platform/packages/filesystem vendor/theia-platform/packages/file-search vendor/theia-platform/dev-packages/request
+pnpm test:ide:unit
 ```
 
-认证及内存安全补丁另有 CI 检查：Agent 的 `auth::` 测试、GLib release 模式的 `variant_iter` 测试，以及两个 lru 副本的 `security` 测试。GLib 需要系统 GLib 开发库；发行包还需在各自的 macOS、Windows 环境运行 `.github/workflows/desktop-validation.yml` 的构建和验收。
+认证及内存安全补丁另有 CI 检查：`pnpm test:runtime:rust` 执行包含 `auth::` 的完整 Runtime 库测试，另执行 GLib release 模式的 `variant_iter` 测试，以及两个 lru 副本的 `security` 测试。GLib 需要系统 GLib 开发库；发行包还需在各自的 macOS、Windows 环境运行 `.github/workflows/desktop-validation.yml` 的构建和验收。
 
 日常 CI 的 `build` job 在生产构建后运行启动冒烟检查：只通过静态 HTTP 服务加载 `dist/`，验证真实侧栏和主界面已出现，并拒绝模块异常、启动错误页、其他控制台错误及资源加载失败。它使用全新的浏览器上下文，不注入成功的原生 IPC 响应；静态浏览器缺少 Tauri 宿主时，两条已知的原生 IPC 控制台提示单独记录，其余错误仍使检查失败。这项检查覆盖生产分块初始化，不能代替原生安装包验收。
 

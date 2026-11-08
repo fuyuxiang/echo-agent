@@ -23,6 +23,7 @@ import { readRecoverySessionId, saveRecoverySessionId } from "./lib/recovery-con
 import { planRecoveryAttempt, MAX_RECOVERY_ATTEMPTS } from "./lib/recovery-policy";
 import { toastMessage, type ToastMessageKind } from "./lib/toast-message";
 import { memoryDreamMessage, memoryFlushMessage } from "./lib/memory-feedback";
+import { memoryTitleFromContent } from "./lib/memory-title";
 // PermissionDialog is now inline in ChatView (PermissionInlineCard), not a global modal.
 import { ThemeProvider } from "./components/ThemeProvider";
 import type { SettingsSectionId } from "./components/SettingsPanel";
@@ -2959,7 +2960,7 @@ function Shell() {
           showToast("无法确定当前工作区，记忆未保存");
           return false;
         }
-        await memoryRecordSave({ scope: remember.scope, kind: remember.scope === "global" ? "user" : "project", key: remember.content.slice(0, 80), content: remember.content, pinned: true, validUntil: null }, memoryCwd || undefined);
+        await memoryRecordSave({ scope: remember.scope, kind: remember.scope === "global" ? "user" : "project", key: memoryTitleFromContent(remember.content), content: remember.content, pinned: true, validUntil: null }, memoryCwd || undefined);
         showToast(remember.scope === "global" ? "已保存到全局记忆" : "已保存到当前工作区记忆");
         return true;
       }

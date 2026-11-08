@@ -362,7 +362,7 @@ fn memory_config_defaults_are_correct() {
         let config = toml::Value::Table(toml::map::Map::new());
         let mem = MemoryConfig::resolve(false, false, &config, None);
         assert_eq!(mem.index.max_chunk_chars, 1600);
-        assert_eq!(mem.index.chunk_overlap_chars, 320);
+        assert_eq!(mem.index.chunk_overlap_chars, 64);
         assert_eq!(mem.embedding.provider, "api");
         assert_eq!(mem.embedding.model, None);
         assert_eq!(mem.embedding.dimensions, 1024);
@@ -514,7 +514,7 @@ max_chunk_chars = 3200
         let mem = MemoryConfig::resolve(false, false, &config, None);
         assert!(mem.enabled);
         assert_eq!(mem.index.max_chunk_chars, 3200);
-        assert_eq!(mem.index.chunk_overlap_chars, 320);
+        assert_eq!(mem.index.chunk_overlap_chars, 64);
         assert_eq!(mem.embedding.dimensions, 1024);
         assert_eq!(mem.search.max_results, 6);
         assert!(mem.flush.enabled);

@@ -26,12 +26,18 @@ describe('CredentialsService', function () {
     /** @type {import('@theia/core/lib/browser/credentials-service').CredentialsService} */
     const credentials = container.get(CredentialsService);
 
-    const serviceName = 'theia-test';
+    const serviceName = `theia-test-${crypto.randomUUID()}`;
     const accountName = 'test-account';
     const password = 'test-password';
 
     this.beforeEach(async () => {
         await credentials.deletePassword(serviceName, accountName);
+    });
+    this.afterEach(async () => {
+        // Failed assertions must not pollute a later run or another test user.
+        for (const account of [accountName, 'test-account-2', 'test-account-3']) {
+            await credentials.deletePassword(serviceName, account);
+        }
     });
 
     it('can set and retrieve stored credentials', async function () {

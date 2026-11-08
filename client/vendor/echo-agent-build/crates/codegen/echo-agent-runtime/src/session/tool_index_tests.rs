@@ -908,7 +908,7 @@ fn split_numbers_in_identifiers() {
 fn split_mixed_formats() {
     assert_eq!(
         split_identifier("echo_agent_com_slack__slack_send_message"),
-        vec!["echoagent", "com", "slack", "slack", "send", "message"]
+        vec!["echo", "agent", "com", "slack", "slack", "send", "message"]
     );
 }
 

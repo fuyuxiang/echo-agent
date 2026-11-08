@@ -2,6 +2,106 @@
 use super::support::*;
 use super::*;
 
+fn write_follow_up_fixture(path: &std::path::Path, behavior: &str, timestamp: u64) {
+    std::fs::write(path, format!("[ui]\nfollow_up_behavior = \"{behavior}\"\n")).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(timestamp)),
+        )
+        .unwrap();
+}
+
+// Exercise real persisted preferences without changing another async test's
+// process-wide home or cache. The receipt also rejects zero-test child success.
+async fn in_follow_up_fixture(case: &str, behavior: Option<&str>) -> bool {
+    const CHILD_CASE: &str = "ECHO_AGENT_TEST_FOLLOW_UP_CASE";
+    let module = module_path!().split_once("::").unwrap().1;
+    let name = format!("{module}::{case}");
+    if std::env::var(CHILD_CASE).ok().as_deref() == Some(name.as_str()) {
+        let profile = crate::util::echo_agent_home::echo_agent_home();
+        assert!(
+            profile
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("echo-followup-test-")
+        );
+        assert!(
+            profile
+                .canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
+        assert_eq!(
+            std::fs::read_to_string(profile.join(".fixture-case")).unwrap(),
+            name
+        );
+        std::fs::write(profile.join(".fixture-entered"), &name).unwrap();
+        return true;
+    }
+    let profile = tempfile::Builder::new()
+        .prefix("echo-followup-test-")
+        .tempdir()
+        .unwrap();
+    let home = profile.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(profile.path().join(".fixture-case"), &name).unwrap();
+    if let Some(behavior) = behavior {
+        write_follow_up_fixture(&profile.path().join("config.toml"), behavior, 1_900_000_001);
+    }
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command.env_clear();
+    for key in [
+        "PATH",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "SystemRoot",
+        "WINDIR",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "RUST_MIN_STACK",
+        "RUST_BACKTRACE",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        command
+            .args([name.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD_CASE, &name)
+            .env("ECHO_AGENT_HOME", profile.path())
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .env("XDG_CACHE_HOME", home.join(".cache"))
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("isolated follow-up fixture exceeded 30 seconds")
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{name}: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(profile.path().join(".fixture-entered")).unwrap(),
+        name
+    );
+    false
+}
+
 /// The shared-queue text must use a block's compact `displayText` (e.g. a
 /// locally-expanded `/loop` invocation) rather than the raw expanded wire text,
 /// so other clients' turn-start shim renders the compact user block — not the
@@ -1651,14 +1751,52 @@ async fn promote_queued_as_interjections_stops_at_send_now() {
         .await;
 }
 
+#[tokio::test]
+async fn follow_up_behavior_reloads_persisted_changes_and_discards_missing_file_cache() {
+    if !in_follow_up_fixture(
+        "follow_up_behavior_reloads_persisted_changes_and_discards_missing_file_cache",
+        None,
+    )
+    .await
+    {
+        return;
+    }
+    let path = crate::util::echo_agent_home::echo_agent_home().join("config.toml");
+    assert!(!crate::util::config::follow_up_steer_enabled().await);
+    crate::util::config::set_follow_up_behavior("steer".into())
+        .await
+        .unwrap();
+    let saved: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(saved["ui"]["follow_up_behavior"].as_str(), Some("steer"));
+    assert!(crate::util::config::follow_up_steer_enabled().await);
+    write_follow_up_fixture(&path, "queue", 1_900_000_002);
+    assert!(!crate::util::config::follow_up_steer_enabled().await);
+    write_follow_up_fixture(&path, "steer", 1_900_000_003);
+    assert!(crate::util::config::follow_up_steer_enabled().await);
+    std::fs::remove_file(&path).unwrap();
+    crate::util::config::set_follow_up_steer_cache(true);
+    assert!(
+        !crate::util::config::follow_up_steer_enabled().await,
+        "a missing file must not pin the hot-cache value"
+    );
+}
+
 /// Product gate: with Steer off, a held plain row must not promote at a
 /// safe point (queue stays; no interjection in conversation).
 #[tokio::test]
 async fn drain_at_safe_point_with_steer_off_does_not_promote_held_row() {
+    if !in_follow_up_fixture(
+        "drain_at_safe_point_with_steer_off_does_not_promote_held_row",
+        Some("queue"),
+    )
+    .await
+    {
+        return;
+    }
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            crate::util::config::set_follow_up_steer_cache(false);
+            assert!(!crate::util::config::follow_up_steer_enabled().await);
             let (actor, _rx) = build_actor().await;
             {
                 let mut state = actor.state.lock().await;
@@ -1688,10 +1826,18 @@ async fn drain_at_safe_point_with_steer_off_does_not_promote_held_row() {
 /// synthetic interjection user item.
 #[tokio::test]
 async fn drain_at_safe_point_with_steer_on_promotes_and_drains_held_row() {
+    if !in_follow_up_fixture(
+        "drain_at_safe_point_with_steer_on_promotes_and_drains_held_row",
+        Some("steer"),
+    )
+    .await
+    {
+        return;
+    }
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            crate::util::config::set_follow_up_steer_cache(true);
+            assert!(crate::util::config::follow_up_steer_enabled().await);
             let (actor, _rx) = build_actor().await;
             {
                 let mut state = actor.state.lock().await;
@@ -1925,10 +2071,18 @@ async fn promote_queued_as_interjections_stops_when_protected_is_next() {
 /// work (pair with direct promote tests above).
 #[tokio::test]
 async fn drain_at_safe_point_with_steer_on_leaves_protected_row_queued() {
+    if !in_follow_up_fixture(
+        "drain_at_safe_point_with_steer_on_leaves_protected_row_queued",
+        Some("steer"),
+    )
+    .await
+    {
+        return;
+    }
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            crate::util::config::set_follow_up_steer_cache(true);
+            assert!(crate::util::config::follow_up_steer_enabled().await);
             let (actor, _rx) = build_actor().await;
             {
                 let mut state = actor.state.lock().await;

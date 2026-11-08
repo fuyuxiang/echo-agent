@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { createServer } from "vite";
 import { createUiReviewBaseline } from "./ui-review-baseline.mjs";
 import { createUiReviewCache } from "./ui-review-cache.mjs";
+export { reviewChromium } from "./ui-review-tools.mjs";
 
 // Locked third-party entry points used by the real fixtures. Finish this batch
 // before opening a page: optimizer reloads can otherwise dismiss an active
@@ -18,15 +18,6 @@ const reviewDependencies = [
   "linkify-it", "marked", "unist-util-visit", "katex", "mermaid", "@monaco-editor/react", "monaco-editor",
   "@tiptap/react", "@tiptap/starter-kit", "@tiptap/extension-table", "@tiptap/extension-text-align",
 ];
-
-// Reuse the optional Theia browser test installation, or an explicitly supplied
-// Playwright module. Browser tooling is not shipped in the application bundle.
-export async function reviewChromium() {
-  const candidate = process.env.PLAYWRIGHT_MODULE || resolve("vendor/theia-platform/node_modules/playwright/index.mjs");
-  if (existsSync(candidate)) return (await import(pathToFileURL(candidate).href)).chromium;
-  try { return (await import("playwright")).chromium; }
-  catch { throw new Error("Set PLAYWRIGHT_MODULE to an installed Playwright index.mjs, or prepare the Theia browser test dependencies."); }
-}
 
 export function reviewOutput(fallback) {
   const output = process.env.UI_REVIEW_OUTPUT || fallback;
