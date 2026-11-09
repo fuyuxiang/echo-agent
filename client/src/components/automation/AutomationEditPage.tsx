@@ -4,7 +4,7 @@ import {
 } from "@/lib/model-presentation";
 /** Shared scheduled-task form. Basic scheduling stays visible; execution
  * options live in advanced settings. The parent owns persistence and drafts. */
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   AlarmClockIcon,
   CheckIcon,
@@ -474,6 +474,7 @@ export function AutomationEditPage({
   onOpenNotificationSettings,
   onWorkspaceCommit,
   validationError,
+  runtimeNotice,
   modelSelectionRequired = false,
 }: {
   mode: "create" | "edit";
@@ -500,6 +501,7 @@ export function AutomationEditPage({
   onOpenNotificationSettings?: () => void;
   onWorkspaceCommit?: (cwd: string) => void;
   validationError?: string | null;
+  runtimeNotice?: ReactNode;
   modelSelectionRequired?: boolean;
   onArchiveRecord: (id: string) => void;
   onRetryRecord: (automationId: string) => void;
@@ -704,6 +706,7 @@ export function AutomationEditPage({
           <input
             id={nameId}
             data-modal-initial-focus
+            data-settings-return-focus="background"
             type="text"
             className="atm-modal-input"
             value={draft.name}
@@ -877,6 +880,11 @@ export function AutomationEditPage({
           <p className="atm-form-help">
             按{localTimeZoneLabel()}执行。电脑需保持开机且 EchoAgent 持续运行。
           </p>
+          {runtimeNotice}
+          <details className="atm-form-help atm-schedule-help">
+            <summary>运行和补跑说明</summary>
+            <p>休眠、断网或完全退出会影响执行。周期任务恢复后最多合并补跑一次；一次性任务错过后可在任务详情中手动运行。</p>
+          </details>
           <div className="atm-execution-summary">
             <span title={draft.cwds}>
               工作目录：{workspaceName(draft.cwds)}

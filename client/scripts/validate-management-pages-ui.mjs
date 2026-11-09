@@ -49,12 +49,21 @@ try {
   for (const [width, height, theme, collapsed, font, platform] of (process.argv.includes("--navigation-only") ? [] : [
     [1440, 900, "light", false, 16, "mac"],
     [1440, 900, "light", true, 16, "mac"],
+    [1440, 900, "light", false, 16, "other"],
+    [1440, 900, "light", true, 16, "other"],
     [1100, 760, "dark", false, 16, "mac"],
     [768, 720, "light", true, 22, "mac"],
     [390, 680, "dark", true, 16, "mac"],
     [768, 720, "light", true, 22, "other"],
   ])) {
     const page = await browser.newPage({ viewport: { width, height } });
+    await page.addInitScript(() => {
+      const mac = new URLSearchParams(location.search).get("platform") === "mac";
+      Object.defineProperty(navigator, "userAgent", {
+        configurable: true,
+        value: mac ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      });
+    });
     page.on("pageerror", (error) => errors.push(error.message));
     for (const surface of surfaces) {
       await page.goto(
@@ -108,6 +117,8 @@ try {
           headerRightGap: main.right - header.right,
           compact: !!compact,
           compactContent: compact?.firstElementChild?.getBoundingClientRect().left,
+          compactEnd: compact?.lastElementChild?.getBoundingClientRect().right,
+          caption: bounds(".titlebar--caption-only"),
           headerDescription: !!compact?.querySelector("p, input"),
           mainPadding: parseFloat(getComputedStyle(document.querySelector(".app__main")).paddingBlockStart),
           navigation: navigation.length,
@@ -123,7 +134,7 @@ try {
         };
       });
       assert(!geometry.blankHeader, `${surface}: empty window header remains`);
-      const clearance = collapsed && platform === "mac" && !geometry.compact ? 44 : 0;
+      const clearance = (collapsed || platform === "other") && !geometry.compact ? 52 : 0;
       assert.equal(geometry.mainPadding, clearance, `${surface}: reserve only the window controls' vertical space`);
       assert(
         geometry.offset >= clearance - 1 && geometry.offset <= clearance + 36,
@@ -134,15 +145,19 @@ try {
         1,
         `${surface}: window controls must appear once`,
       );
-      assert.deepEqual(geometry.windowToggle, { x: platform === "mac" ? 88 : 12, y: platform === "mac" ? 12 : 0, width: 32, height: 32 }, `${surface}: window toggle must use the same coordinates on every page`);
+      assert.deepEqual(geometry.windowToggle, { x: platform === "mac" ? 88 : 12, y: 10, width: 32, height: 32 }, `${surface}: window toggle must use the same coordinates on every page`);
       if (surface !== "management-meetings") {
         assert(geometry.compact, `${surface}: missing shared management toolbar`);
-        assert.equal(geometry.headerHeight, 56, `${surface}: toolbar height`);
+        assert.equal(geometry.headerHeight, 52, `${surface}: toolbar height`);
         assert.equal(geometry.offset, 0, `${surface}: toolbar starts at the top`);
         assert(Math.abs(geometry.headerLeftGap) <= 1 && Math.abs(geometry.headerRightGap) <= 1, `${surface}: toolbar must span the main column`);
         assert(!geometry.headerDescription, `${surface}: description or search crowds the toolbar`);
-        if (collapsed && platform === "mac")
+        if (collapsed)
           assert(geometry.compactContent >= geometry.navigationRight + 12, `${surface}: overlaps window controls`);
+        if (platform === "other") {
+          assert.equal(geometry.caption.top, geometry.headerTop, `${surface}: Windows controls sit in the same row`);
+          assert(geometry.compactEnd <= geometry.caption.left - 12, `${surface}: page actions overlap Windows controls`);
+        }
         if (geometry.scheduleTabs)
           assert(geometry.scheduleTabs.top >= geometry.headerTop + geometry.headerHeight, "Schedule tabs belong with the list controls");
       } else if (collapsed) {
@@ -169,6 +184,7 @@ try {
     await page.close();
   }
   const navigationPage = await browser.newPage({ viewport: { width: 768, height: 760 } });
+  navigationPage.setDefaultNavigationTimeout(60_000);
   navigationPage.on("pageerror", error => errors.push(error.message));
   for (const surface of surfaces) {
     await navigationPage.goto(`${baseUrl}/__ui-review?surface=${surface}&platform=mac&collapsed=1${surface === "projects" ? "&collectionAudit=1" : ""}`);
@@ -237,9 +253,28 @@ try {
       return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
     }), "Organization capability status must stay visible on resource tabs");
   }
+  await navigationPage.goto(`${baseUrl}/__ui-review?surface=management-schedules&platform=mac&background=off`);
+  const backgroundNotice = navigationPage.getByRole("status", { name: "定时任务后台运行", exact: true });
+  await backgroundNotice.getByText(/关闭主窗口会停止本机定时任务/).waitFor();
+  await navigationPage.getByRole("button", { name: "编辑定时任务「每日 AI 新闻推送」", exact: true }).click();
+  const editor = navigationPage.getByRole("dialog", { name: "编辑定时任务", exact: true });
+  const draftName = editor.getByRole("textbox", { name: "名称", exact: true });
+  await draftName.fill("保留未保存的计划名称");
+  await editor.getByRole("button", { name: "后台运行设置", exact: true }).click();
+  const settings = navigationPage.getByRole("dialog", { name: "设置", exact: true });
+  const toggleBackground = settings.getByRole("switch", { name: "关闭窗口后继续运行", exact: true });
+  await settings.getByText(/关闭主窗口将停止任务执行和自动化调度/).waitFor();
+  assert.equal(await toggleBackground.isChecked(), false);
+  await toggleBackground.press("Space");
+  await settings.getByText("已开启后台运行。", { exact: true }).waitFor();
+  await backgroundNotice.waitFor({ state: "hidden" });
+  await settings.getByRole("button", { name: "关闭设置", exact: true }).click();
+  await settings.waitFor({ state: "hidden" });
+  assert.equal(await draftName.inputValue(), "保留未保存的计划名称");
+  assert.ok(await draftName.evaluate(element => element === document.activeElement), "Return to the draft after its background warning resolves");
   await navigationPage.close();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ output, layouts: layouts.length, navigationLayouts: 8, flows: ["expand-sidebar-on-management-pages", "collapse-sidebar-in-project-detail", "organization-load-failure/retry", "organization-capability-status"] }));
+  console.log(JSON.stringify({ output, layouts: layouts.length, navigationLayouts: 8, flows: ["expand-sidebar-on-management-pages", "collapse-sidebar-in-project-detail", "organization-load-failure/retry", "organization-capability-status", "background-settings-preserve-draft"] }));
 } finally {
   await browser.close();
   await server.close();

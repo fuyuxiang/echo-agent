@@ -33,6 +33,8 @@ describe("KnowledgeBasePanel", () => {
     });
     expect(screen.getByRole("heading", { name: "还没有添加知识源" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "搜索知识库" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "本地语义检索" })).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith("retrieval_models_status");
   });
 
   it("有 provider 显示源数与名称", async () => {

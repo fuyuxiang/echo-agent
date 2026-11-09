@@ -66,6 +66,8 @@ export type SettingsSectionId =
   | "security"
   | "help";
 
+export type SettingsDirectTarget = "background" | "local-retrieval";
+
 interface NavItem {
   id: SettingsSectionId;
   label: string;
@@ -162,6 +164,7 @@ export function SettingsPanel({
   cwd,
   initialSection = "general",
   initialModelId,
+  initialTarget,
   onRestoreSession,
   onDeleteSession,
   onOpenSession,
@@ -181,6 +184,7 @@ export function SettingsPanel({
   /** Section selected whenever the dialog is opened. */
   initialSection?: SettingsSectionId;
   initialModelId?: string;
+  initialTarget?: SettingsDirectTarget;
   onRestoreSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
   onDeleteSession?: (sessionId: string, cwd?: string) => Promise<void>;
   onOpenSession?: (sessionId: string, cwd?: string) => void | Promise<void>;
@@ -206,7 +210,9 @@ export function SettingsPanel({
   useEffect(() => {
     if (!draftBusy && !memoryBusy) setLeaveFeedback("");
   }, [draftBusy, memoryBusy]);
-  const [searchTarget, setSearchTarget] = useState<{ target?: string } | null>(null);
+  const [searchTarget, setSearchTarget] = useState<{ target?: string } | null>(
+    () => initialTarget ? { target: initialTarget } : null,
+  );
   const panelRef = useRef<HTMLDivElement>(null);
   const { requestConfirmation, dialog } = useAppDialog();
   const confirmLeave = (action: () => void) => {
@@ -235,18 +241,20 @@ export function SettingsPanel({
       action: () => { if (!isBusy()) action(); },
     });
   };
-  const selectSection = (section: SettingsSectionId, modelId?: string) => {
+  const selectSection = (section: SettingsSectionId, modelId?: string, target?: SettingsDirectTarget) => {
     const next = normalizeSection(section);
-    if (next !== active || next === "memory" || next === "model") confirmLeave(() => {
+    if (next !== active || next === "memory" || next === "model" || target) confirmLeave(() => {
       setModelTargetId(next === "model" ? modelId : undefined);
       if (next === "memory" && next === active) setMemoryEntry(value => value + 1);
       if (next === "model" && !modelId) setModelEntry(value => value + 1);
       setActive(next);
-      setSearchTarget(null);
+      setSearchTarget(target ? { target } : null);
     });
   };
   const requestClose = () => confirmLeave(onClose);
-  const modalRef = useModalFocus<HTMLDivElement>(open, requestClose);
+  const modalRef = useModalFocus<HTMLDivElement>(open, requestClose, undefined, () => initialTarget
+    ? document.querySelector<HTMLElement>(`[data-settings-return-focus="${initialTarget}"]`)
+    : null);
   const archivedCount = useSessionsStore((state) => state.independent
     .filter((session) => session.archived && !session.hidden).length);
 
@@ -256,11 +264,11 @@ export function SettingsPanel({
   // A new direct link while Settings is open follows the same draft guard.
   useEffect(() => {
     if (open) {
-      if (wasOpen.current) selectRequested.current(initialSection, initialModelId);
-      else { setActive(normalizeSection(initialSection)); setModelTargetId(initialModelId); setSearchTarget(null); setLeaveFeedback(""); }
+      if (wasOpen.current) selectRequested.current(initialSection, initialModelId, initialTarget);
+      else { setActive(normalizeSection(initialSection)); setModelTargetId(initialModelId); setSearchTarget(initialTarget ? { target: initialTarget } : null); setLeaveFeedback(""); }
     }
     wasOpen.current = open;
-  }, [initialSection, initialModelId, open]);
+  }, [initialSection, initialModelId, initialTarget, open]);
 
   useEffect(() => {
     if (!searchTarget || !open) return;
@@ -281,7 +289,8 @@ export function SettingsPanel({
       const search = modalRef.current?.querySelector<HTMLInputElement>(".settings-search input");
       if (search?.value.trim()) return;
       target.scrollIntoView?.({ block: "center" });
-      const control = target.querySelector<HTMLElement>("summary, button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), h2");
+      const control = target.querySelector<HTMLElement>("summary, button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), h2")
+        ?? target.querySelector<HTMLElement>("h3");
       const focusTarget = control ?? target;
       if (!focusTarget.matches("button,input,select,textarea,summary")) focusTarget.tabIndex = -1;
       focusTarget.focus({ preventScroll: true });
@@ -385,7 +394,7 @@ export function SettingsPanel({
               </div>
             ) : active === "memory" ? (
               <div className="settings-subview settings-personal-memory">
-                <PersonalMemoryPanel key={memoryEntry} initialView={searchTarget?.target === "memory-management" ? "manage" : "overview"} cwd={cwd} sessionId={sessionId} onToast={onToast} onOpenSession={onOpenSession} onUnsavedChange={setMemoryDirty} onBusyChange={setMemoryBusy} />
+                <PersonalMemoryPanel key={memoryEntry} initialView={searchTarget?.target === "local-retrieval" ? "support" : searchTarget?.target === "memory-management" ? "manage" : "overview"} cwd={cwd} sessionId={sessionId} onToast={onToast} onOpenSession={onOpenSession} onUnsavedChange={setMemoryDirty} onBusyChange={setMemoryBusy} />
               </div>
             ) : active === "help" ? (
               <HelpSettingsPanel />

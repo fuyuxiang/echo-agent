@@ -26,7 +26,7 @@ import { memoryDreamMessage, memoryFlushMessage } from "./lib/memory-feedback";
 import { memoryTitleFromContent } from "./lib/memory-title";
 // PermissionDialog is now inline in ChatView (PermissionInlineCard), not a global modal.
 import { ThemeProvider } from "./components/ThemeProvider";
-import type { SettingsSectionId } from "./components/SettingsPanel";
+import type { SettingsDirectTarget, SettingsSectionId } from "./components/SettingsPanel";
 
 import { ChevronLeftIcon } from "./foundation/components/Icon/icons";
 import type { ModelOption } from "./components/ModelSelector";
@@ -323,6 +323,7 @@ function Shell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("model");
   const [settingsModelId, setSettingsModelId] = useState<string>();
+  const [settingsTarget, setSettingsTarget] = useState<SettingsDirectTarget>();
   const [searchOpen, setSearchOpen] = useState(false);
   const [trayAttention, setTrayAttention] = useState<{ sessionId: string; sequence: number } | null>(null);
   const [trayNewRequest, setTrayNewRequest] = useState(0);
@@ -464,9 +465,10 @@ function Shell() {
   const modalOpen = useModalPresence();
   const { confirm: confirmAutomationExit, dismiss: dismissAutomationExit, dialog: automationExitDialog } = useAppDialog();
 
-  const openSettings = useCallback((section: SettingsSectionId = "general") => {
+  const openSettings = useCallback((section: SettingsSectionId = "general", target?: SettingsDirectTarget) => {
     setSettingsModelId(undefined);
     setSettingsSection(section);
+    setSettingsTarget(target);
     setSearchOpen(false);
     setAboutOpen(false);
     setSettingsOpen(true);
@@ -3301,7 +3303,9 @@ function Shell() {
   const codingCwd = activeCodingWorkspaceCwd || codingWorkspaceCwd
     || (codingWorkspaceActive ? activeSessionCwd || newSessionTargetCwd : "");
   const placeholderProps = {
-    onOpenAutomationSettings: (section: "general" | "notifications") => openSettings(section === "notifications" ? "notify-channels" : "general"),
+    onOpenAutomationSettings: (section: "general" | "notifications") => section === "notifications"
+      ? openSettings("notify-channels") : openSettings("general", "background"),
+    onOpenRetrievalSettings: () => openSettings("memory", "local-retrieval"),
     onNavigate: handleNavigate,
     onOpenSession: handleSelectSession,
     onGoHome: handleGoHome,
@@ -3600,6 +3604,7 @@ function Shell() {
             open
             initialSection={settingsSection}
             initialModelId={settingsModelId}
+            initialTarget={settingsTarget}
             sessionId={currentSessionId ?? undefined}
             cwd={activeSessionCwd || newSessionTargetCwd}
             onClose={() => setSettingsOpen(false)}

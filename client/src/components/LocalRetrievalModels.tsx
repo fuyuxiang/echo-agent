@@ -2,40 +2,22 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { filesystemPickDirectory, openExternalUrl } from "@/lib/agent-client";
 import { isTauriAvailable } from "@/lib/tauri-kb-reader";
+import { getRetrievalModelStatus, parseRetrievalModelStatus, RETRIEVAL_MODELS_CHANGED, type RetrievalModelStatus } from "@/lib/retrieval-model-status";
 import modelAssets from "../../vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json";
 import "@/styles/local-retrieval.css";
-
-interface ModelStatus {
-  state: "missing" | "downloading" | "verifying" | "ready" | "error" | "unsupported";
-  source?: "bundled" | "repaired" | "missing";
-  message?: string | null;
-  operationError?: string | null;
-  downloadedBytes: number;
-  totalBytes: number;
-  embeddingReady: boolean;
-  rerankerReady: boolean;
-}
-function valid(value: unknown): value is ModelStatus {
-  return !!value && typeof value === "object"
-    && ["missing","downloading","verifying","ready","error","unsupported"].includes((value as ModelStatus).state)
-    && Number.isFinite((value as ModelStatus).totalBytes)
-    && Number.isFinite((value as ModelStatus).downloadedBytes)
-    && typeof (value as ModelStatus).embeddingReady === "boolean"
-    && typeof (value as ModelStatus).rerankerReady === "boolean";
-}
 
 export function LocalRetrievalModels() {
   const alive = useRef(true);
   useEffect(() => { alive.current=true; return () => { alive.current=false; }; }, []);
-  const [status, setStatus] = useState<ModelStatus | null>(null);
+  const [status, setStatus] = useState<RetrievalModelStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const preparing = status?.state === "downloading" || status?.state === "verifying";
   useEffect(() => {
     if (!isTauriAvailable()) return;
     let mounted = true;
-    const refresh = () => void invoke<unknown>("retrieval_models_status").then(value => {
-      if (mounted && valid(value)) setStatus(value);
+    const refresh = () => void getRetrievalModelStatus().then(value => {
+      if (mounted && value) setStatus(value);
     }).catch(() => {});
     refresh();
     const timer = window.setInterval(refresh, preparing ? 750 : 5_000);
@@ -44,14 +26,13 @@ export function LocalRetrievalModels() {
   const act = async (command: string, args?: Record<string, unknown>) => {
     setBusy(true); setError(null);
     try {
-      const value = await invoke<unknown>(command, args);
-      if (alive.current && valid(value)) setStatus(value);
-      else {
-        const refreshed = await invoke<unknown>("retrieval_models_status");
-        if (alive.current && valid(refreshed)) setStatus(refreshed);
-      }
+      const value = parseRetrievalModelStatus(await invoke<unknown>(command, args)) ?? await getRetrievalModelStatus();
+      if (alive.current && value) setStatus(value);
     } catch (error) { if (alive.current) setError(String(error).replace(/^Error:\s*/, "")); }
-    finally { if (alive.current) setBusy(false); }
+    finally {
+      if (alive.current) setBusy(false);
+      window.dispatchEvent(new Event(RETRIEVAL_MODELS_CHANGED));
+    }
   };
   const importModels = async () => {
     setBusy(true); setError(null);

@@ -22,23 +22,38 @@ try {
     await page.getByRole("button", { name: "任务操作", exact: true }).click();
     await page.getByRole("menuitem", { name: label, exact: true }).click();
   };
-  for (const width of [1536, 1280, 900]) for (const theme of ["light", "dark"]) for (const platform of ["mac", "other"]) {
+  for (const width of [1536, 1280, 1024]) for (const theme of ["light", "dark"]) for (const platform of ["mac", "other"]) {
     await page.setViewportSize({width, height: 900});
-    await page.goto(`${base}&theme=${theme}&platform=${platform}`);
+    await page.goto(`${base}&theme=${theme}&platform=${platform}&windowChrome=1`);
     await page.locator(".session-header").waitFor();
     for (const collapsed of [false, true]) {
       if (collapsed) await page.getByRole("button", {name:"收起侧边栏",exact:true}).click();
       const geometry = await page.evaluate(() => {
         const rect = element => { const r = element.getBoundingClientRect(); return {x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,height:r.height}; };
         const header = document.querySelector(".session-header");
-        return { header: rect(header), scroll: rect(document.querySelector(".chatview__scroll")), buttons: [...header.querySelectorAll("button")].filter(e => getComputedStyle(e).display !== "none").map(e => ({label:e.getAttribute("aria-label"),...rect(e)})),
+        const caption = document.querySelector(".titlebar--caption-only");
+        return { header: rect(header), caption: caption && rect(caption), scroll: rect(document.querySelector(".chatview__scroll")), buttons: [...header.querySelectorAll("button")].filter(e => getComputedStyle(e).display !== "none").map(e => {
+          const bounds = rect(e);
+          return {label:e.getAttribute("aria-label"),...bounds,reachable:e.contains(document.elementFromPoint(bounds.x+bounds.width/2,bounds.y+bounds.height/2))};
+        }),
           overflow: document.documentElement.scrollWidth > innerWidth + 1, oldToolbars: document.querySelectorAll(".chatview__utility-bar").length, title: rect(document.querySelector(".main-topbar__title-area")) };
       });
       assert.equal(geometry.overflow, false, `horizontal overflow at ${width}`);
       assert.equal(geometry.oldToolbars, 0);
-      assert.equal(geometry.header.height, 56);
+      assert.equal(geometry.header.height, 52);
       assert.ok(geometry.scroll.y >= geometry.header.bottom, "message history starts behind header");
       for (const button of geometry.buttons) assert.ok(button.x >= geometry.header.x && button.right <= geometry.header.right + 1, `header button clipped: ${JSON.stringify(button)}`);
+      if (platform === "other") {
+        assert.equal(geometry.header.y, geometry.caption.y, "Windows uses one window and session header row");
+        for (const button of geometry.buttons.filter(b => ["任务操作", "展开工作区"].includes(b.label))) {
+          assert.ok(button.right < geometry.caption.x && button.reachable, `Windows caption covers ${button.label}`);
+        }
+        const workspace = page.getByRole("button", { name: "展开工作区", exact: true });
+        await workspace.click();
+        await page.getByRole("complementary", { name: "工作区面板", exact: true }).waitFor();
+        assert.equal((await page.locator(".session-header").boundingBox()).y, geometry.header.y, "Opening the workspace keeps the session header in place");
+        await page.getByRole("button", { name: "收起工作区", exact: true }).click();
+      }
       if (platform === "mac" && collapsed) assert.ok(geometry.buttons[0].x >= 84, "native traffic-light safe area");
       const before = geometry.header;
       await page.locator(".chatview__scroll").evaluate(e => { e.scrollTop = 100; e.dispatchEvent(new WheelEvent("wheel", {deltaY:-1})); });

@@ -62,13 +62,12 @@ try {
             const { x, y, width, height } = card.getBoundingClientRect();
             return { x, y, width, height };
           });
-          const runtime = document.querySelector(".atm-runtime").getBoundingClientRect();
-          return { cards, runtimeHeight: runtime.height, collectionWidth: grid.parentElement.clientWidth };
+          return { cards, collectionWidth: grid.parentElement.clientWidth };
         });
         const expectedColumns = layout.collectionWidth >= 62 * font ? 3 : layout.collectionWidth >= 40 * font ? 2 : 1;
         assert.equal(layout.cards.filter(card => Math.abs(card.y - layout.cards[0].y) < 1).length, expectedColumns, `card columns ${width}/${font}`);
         assert(layout.cards.every(card => card.width >= 270), `cards must remain readable ${width}/${font}`);
-        if (width === 1280 && font === 16) assert(layout.runtimeHeight <= 52, "runtime summary must remain compact");
+        assert.equal(await page.locator(".atm-task-list--cards > :first-child").getAttribute("aria-label"), "任务状态筛选");
         for (const label of ["新建定时任务", "从模板添加"]) {
           const entry = page.getByRole("button", { name: label, exact: true });
           assert(await entry.isVisible(), `${label}: direct entry`);
@@ -267,12 +266,6 @@ try {
     assert.equal(rows.filter(row => Math.abs(row.top - rows[0].top) < 1).length, view === 'cards' ? 3 : 1, 'wide cards form three columns; list remains one column');
     await grid.screenshot({ path: join(output, `${view}-1440-long-content.png`) });
   }
-  const help = grid.getByRole("button", { name: "运行说明", exact: true });
-  await help.click();
-  assert.equal(await help.getAttribute("aria-expanded"), "true");
-  assert(await grid.getByText(/电脑需保持开机且 EchoAgent/).isVisible());
-  await help.click();
-  assert.equal(await help.getAttribute("aria-expanded"), "false");
   await grid.screenshot({ path: join(output, "list-1440-multiple-rows.png") });
   await grid.close();
 

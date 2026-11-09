@@ -20,7 +20,7 @@ const date = (seconds?: number | null) => seconds ? new Date(seconds * 1000).toL
 const active = (record: PersonalMemoryRecord) => record.status === "active" && (!record.validUntil || record.validUntil * 1000 > Date.now());
 const message = (error: unknown) => String(error).replace(/^Error:\s*/, "");
 type View = "overview" | "manage" | "history" | "support" | "documents";
-type Props = { cwd?: string; sessionId?: string; initialView?: "overview" | "manage"; onToast?: (text: string) => void; onOpenSession?: (id: string, cwd?: string) => void | Promise<void>; onUnsavedChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void };
+type Props = { cwd?: string; sessionId?: string; initialView?: "overview" | "manage" | "support"; onToast?: (text: string) => void; onOpenSession?: (id: string, cwd?: string) => void | Promise<void>; onUnsavedChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void };
 type Draft = { input: PersonalMemoryInput; cwd?: string; baseline: string; deriveKeyFromContent: boolean };
 type ImportPreview = { input: PersonalMemoryInput; deriveKeyFromContent: boolean };
 
@@ -164,7 +164,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
 
   return <section ref={panelRef} className={`personal-memory personal-memory--${view}`} aria-label="个人记忆管理">
     {view !== "overview" && <Button size="compact" variant="ghost" className="personal-memory__back" disabled={locked} onClick={() => navigate(view === "manage" ? "overview" : "manage")}><ArrowLeft size={14} />{view === "manage" ? "返回记忆设置" : "返回管理记忆"}</Button>}
-    <header className="personal-memory__header" data-setting-id={view === "manage" ? "memory-management" : undefined}>
+    <header className="personal-memory__header" data-setting-id={view === "support" ? "local-retrieval" : view === "manage" ? "memory-management" : undefined}>
       <PageHeading title={title} level={2} description={view === "manage" ? "你可以随时更正，或让 Echo 忘记。" : view === "history" ? "已完成、已过期和已忘记的内容不会再自动参考。" : undefined} />
       {view === "manage" && <ActionMenu label="更多" menuLabel="记忆操作" resetKey={cwd} busy={locked || !!draft || importing} menuZIndex="var(--echo-layer-dialog-popover)" triggerClassName="settings-btn personal-memory__more" trigger={<>更多<ChevronDown size={14} /></>}>
         {({ close }) => <>

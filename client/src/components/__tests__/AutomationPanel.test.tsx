@@ -14,10 +14,10 @@ let snapshot: AutomationSnapshot = emptySnapshot;
 
 vi.mock("@/lib/agent-client", () => ({
   automationsSnapshot: vi.fn(async () => snapshot),
-  desktopPreferencesGet: vi.fn(async () => ({ closeToTray: true })),
   automationsResetSession: vi.fn(async () => ({ ...snapshot.automations[0], dedicatedSessionId: undefined })),
   automationRunStop: vi.fn(async () => {}),
   automationRunRetryCleanup: vi.fn(async () => {}),
+  desktopPreferencesGet: vi.fn(async () => ({ closeToTray: true, showNotificationTaskTitle: true })),
   automationRunResult: vi.fn(async () => ({ text: "本次结果", truncated: false })),
   automationsSave: vi.fn(async (a: unknown) => a),
   automationsDelete: vi.fn(async () => {}),
@@ -56,6 +56,7 @@ import {
   automationRunResult,
   automationsSave,
   automationsSnapshot,
+  desktopPreferencesGet,
   mcpList,
   providersList,
   skillsList,
@@ -1063,22 +1064,33 @@ describe("AutomationPanel（有任务/有记录）", () => {
     expect(screen.getByText("新建定时任务")).toBeInTheDocument();
   });
 
-  it("运行说明可按需展开，运行设置仍能进入系统设置", async () => {
+  it("后台运行正常时，任务列表保持简洁", async () => {
+    snapshot = { automations: [baseAutomation], records: [] };
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    try {
+      render(<AutomationPanel />);
+      expect(await screen.findByRole("button", { name: baseAutomation.name })).toBeVisible();
+      expect(screen.queryByRole("status", { name: "定时任务后台运行" })).not.toBeInTheDocument();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("读取后台运行设置失败时可重试，并根据实际设置更新提醒", async () => {
     snapshot = { automations: [baseAutomation], records: [] };
     const onOpenSettings = vi.fn();
-    render(<AutomationPanel onOpenSettings={onOpenSettings} />);
-    const help = await screen.findByRole("button", { name: "运行说明" });
-    const explanation = screen.getByText(/电脑需保持开机且 EchoAgent/);
-    expect(help).toHaveAttribute("aria-expanded", "false");
-    expect(explanation).not.toBeVisible();
-    fireEvent.click(help);
-    expect(help).toHaveAttribute("aria-expanded", "true");
-    expect(explanation).toBeVisible();
-    fireEvent.click(help);
-    expect(explanation).not.toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "运行设置" }));
-    expect(onOpenSettings).toHaveBeenCalledWith("general");
-    expect(automationsRun).not.toHaveBeenCalled();
+    vi.mocked(desktopPreferencesGet).mockRejectedValueOnce(new Error("暂时无法读取"))
+      .mockResolvedValueOnce({ closeToTray: false, showNotificationTaskTitle: true });
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    try {
+      render(<AutomationPanel onOpenSettings={onOpenSettings} />);
+      const notice = await screen.findByRole("status", { name: "定时任务后台运行" });
+      expect(notice).toHaveTextContent("暂时无法确认后台运行设置");
+      fireEvent.click(within(notice).getByRole("button", { name: "重试读取" }));
+      await waitFor(() => expect(notice).toHaveTextContent("关闭主窗口会停止本机定时任务"));
+      fireEvent.click(within(notice).getByRole("button", { name: "后台运行设置" }));
+      expect(onOpenSettings).toHaveBeenCalledWith("general");
+      fireEvent(window, new Event("echo:desktop-preferences-changed"));
+      await waitFor(() => expect(notice).not.toBeInTheDocument());
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it("运行记录：按天分组显示", async () => {

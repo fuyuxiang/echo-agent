@@ -29,7 +29,7 @@ try {
     });
     console.log(JSON.stringify({width,theme,geometry}));
     await page.screenshot({path:join(output,`${width}-${theme}-chat.png`)});
-    assert.equal(geometry.overflow,false); assert.equal(geometry.headerHeight,56); assert.equal(geometry.composerOverflow,false);
+    assert.equal(geometry.overflow,false); assert.equal(geometry.headerHeight,52); assert.equal(geometry.composerOverflow,false);
     assert.deepEqual(geometry.actions.map(b=>b.label),["任务操作","展开工作区"]);
     for(const b of geometry.actions) assert(b.x>=0 && b.right<=width+1);
     await page.screenshot({path:join(output,`${width}-${theme}-chat.png`)});

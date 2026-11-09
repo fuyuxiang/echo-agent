@@ -77,7 +77,6 @@ import {
 import { AutomationTaskCard } from "./automation/AutomationTaskCard";
 import { AutomationTaskDetail } from "./automation/AutomationTaskDetail";
 import {
-  localTimeZoneLabel,
   nextRunLabel,
   taskState,
   taskNeedsModelSelection,
@@ -96,6 +95,7 @@ import { AutomationPermissionConfirmDialog } from "./automation/AutomationPermis
 import { usePermissionConfirm } from "./automation/usePermissionConfirm";
 import type { ConnectorOption } from "./automation/ConnectorSelector";
 import { useModalFocus } from "@/lib/use-modal-focus";
+import { isTauriAvailable } from "@/lib/tauri-kb-reader";
 import { useUnsavedClose } from "@/lib/use-unsaved-close";
 import { useAppDialog } from "./AppDialog";
 import {
@@ -308,39 +308,39 @@ export function AutomationPanel({
   const [detailRecordId, setDetailRecordId] = useState<string>();
   const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
   const [statusUpdating, setStatusUpdating] = useState<Set<string>>(new Set());
-  const [backgroundEnabled, setBackgroundEnabled] = useState<boolean | null>(
-    null,
-  );
-  const [backgroundError, setBackgroundError] = useState("");
-  const [backgroundReload, setBackgroundReload] = useState(0);
-  const [runtimeHelpOpen, setRuntimeHelpOpen] = useState(false);
-  const runtimeHelpId = useId();
+  const [backgroundState, setBackgroundState] = useState<"enabled" | "disabled" | "unavailable">();
+  const [backgroundRevision, setBackgroundRevision] = useState(0);
   useEffect(() => {
-    const update = () => setBackgroundReload((value) => value + 1);
-    window.addEventListener("echo:desktop-preferences-changed", update);
-    window.addEventListener("focus", update);
-    return () => {
-      window.removeEventListener("echo:desktop-preferences-changed", update);
-      window.removeEventListener("focus", update);
+    if (!isTauriAvailable()) return;
+    let revision = 0;
+    const refresh = async () => {
+      const request = ++revision;
+      try {
+        const { closeToTray } = await desktopPreferencesGet();
+        if (request === revision) setBackgroundState(closeToTray === true ? "enabled" : closeToTray === false ? "disabled" : "unavailable");
+      } catch {
+        if (request === revision) setBackgroundState("unavailable");
+      }
     };
-  }, []);
-  useEffect(() => {
-    let live = true;
-    void Promise.resolve()
-      .then(() => desktopPreferencesGet())
-      .then((value) => {
-        if (live) {
-          setBackgroundEnabled(value.closeToTray);
-          setBackgroundError("");
-        }
-      })
-      .catch(() => {
-        if (live) setBackgroundError("后台运行设置读取失败");
-      });
+    void refresh();
+    window.addEventListener("echo:desktop-preferences-changed", refresh);
+    window.addEventListener("focus", refresh);
     return () => {
-      live = false;
+      revision++;
+      window.removeEventListener("echo:desktop-preferences-changed", refresh);
+      window.removeEventListener("focus", refresh);
     };
-  }, [backgroundReload]);
+  }, [backgroundRevision]);
+
+  const runtimeNotice = backgroundState === "disabled" || backgroundState === "unavailable" ? (
+    <div className="atm-runtime-notice" role="status" aria-label="定时任务后台运行">
+      <span>{backgroundState === "disabled"
+        ? "后台运行未开启。关闭主窗口会停止本机定时任务；需要继续运行时，请最小化窗口或开启后台运行。"
+        : "暂时无法确认后台运行设置。为确保定时任务可以运行，请保持 EchoAgent 开启。"}</span>
+      {onOpenSettings && <button type="button" className="atm-text-button" onClick={() => onOpenSettings("general")}>后台运行设置</button>}
+      {backgroundState === "unavailable" && <button type="button" className="atm-text-button" onClick={() => setBackgroundRevision((value) => value + 1)}>重试读取</button>}
+    </div>
+  ) : null;
   useLayoutEffect(() => {
     if (!notificationAutomationId) return;
     useAutomationEditorStore.getState().suspend();
@@ -1227,6 +1227,7 @@ export function AutomationPanel({
                 })
               }
               validationError={editorError}
+              runtimeNotice={draft.status === "ACTIVE" && !taskNeedsModelSelection(draft) ? runtimeNotice : undefined}
               saving={saving}
               retrying={
                 !!editingAutomation && runStartingIds.has(editingAutomation.id)
@@ -1300,6 +1301,7 @@ export function AutomationPanel({
           onToast={onToast}
           key={detailId}
           task={automationById.get(detailId)}
+          runtimeNotice={runtimeNotice}
           records={snapshot.records.filter(
             (record) => record.automationId === detailId,
           )}
@@ -1675,60 +1677,7 @@ export function AutomationPanel({
           </div>
         ) : (
           <div className="atm-task-list atm-task-list--cards">
-            <div className="atm-runtime">
-              <div className="atm-runtime-bar">
-                <div
-                  className={`atm-runtime-status${backgroundEnabled === false || backgroundError ? " atm-runtime-status--warn" : ""}`}
-                  role="status"
-                >
-                  <span>本机运行 · {localTimeZoneLabel()}</span>
-                  <span>
-                    {backgroundError ||
-                      (backgroundEnabled === null
-                        ? "正在读取后台运行设置…"
-                        : `关闭窗口后继续运行：${backgroundEnabled ? "已开启" : "未开启"}`)}
-                  </span>
-                </div>
-                <div className="atm-runtime-actions">
-                  {backgroundError && (
-                    <button
-                      type="button"
-                      className="atm-text-button"
-                      onClick={() => setBackgroundReload((value) => value + 1)}
-                    >
-                      重试
-                    </button>
-                  )}
-                  {onOpenSettings && (
-                    <button
-                      type="button"
-                      className="atm-text-button"
-                      onClick={() => onOpenSettings("general")}
-                    >
-                      运行设置
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="atm-text-button atm-runtime-help-toggle"
-                    aria-expanded={runtimeHelpOpen}
-                    aria-controls={runtimeHelpId}
-                    onClick={() => setRuntimeHelpOpen((value) => !value)}
-                  >
-                    运行说明
-                    <ChevronDownIcon width={12} height={12} />
-                  </button>
-                </div>
-              </div>
-              <p
-                className="atm-runtime-help"
-                id={runtimeHelpId}
-                hidden={!runtimeHelpOpen}
-              >
-                电脑需保持开机且 EchoAgent
-                持续运行；休眠、断网或完全退出会影响执行。周期任务恢复后合并补跑一次，一次性任务错过后可手动补跑。
-              </p>
-            </div>
+            {taskCounts.active > 0 && runtimeNotice}
             <div className="atm-task-filters" aria-label="任务状态筛选">
               {(
                 [
@@ -1742,6 +1691,7 @@ export function AutomationPanel({
                   type="button"
                   key={key}
                   className="atm-task-filter"
+                  data-settings-return-focus={key === "all" ? "background" : undefined}
                   aria-pressed={taskFilter === key}
                   onClick={() => setTaskFilter(key)}
                 >

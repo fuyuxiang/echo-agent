@@ -22,6 +22,7 @@ const SETTINGS_SEARCH: SettingsSearchEntry[] = [
   { section: "model", title: "模型与连接", category: "智能体", keywords: "模型服务 API Key Base URL OpenAI Anthropic 默认 模型名称 接口", target: "model-settings" },
   { section: "memory", title: "使用记忆", category: "记忆", keywords: "长期记忆 偏好 记住 关闭 开关", target: "memory-preference" },
   { section: "memory", title: "管理记忆", category: "记忆", keywords: "个人信息 项目 约定 跟进 更正 忘记 导入 导出", target: "memory-management" },
+  { section: "memory", title: "本地检索模型维护", category: "记忆", keywords: "知识库 语义检索 本地模型 校验 修复 离线导入 记忆状态与排查", target: "local-retrieval" },
   { section: "security", title: "操作权限", category: "安全与权限", keywords: "浏览器与电脑操作 网页 系统授权 系统权限 辅助功能 屏幕录制", target: "automation-permissions" },
   { section: "security", title: "任务浏览器", category: "安全与权限", keywords: "浏览器数据与访问范围 缓存 登录 本机 内网 隐私", target: "browser-data" },
   { section: "security", title: "高级权限规则", category: "安全与权限", keywords: "自定义工具规则 允许 拒绝 询问 权限规则 工具权限 自定义权限 bash 命令", target: "permission-rules" },

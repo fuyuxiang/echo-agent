@@ -7022,8 +7022,7 @@ button.diff__path {
   display: flex;
   flex-direction: column;
   /* Lists scroll independently. If the window cannot fit even one row per
-     section, scroll the catalog rather than compressing rows to a sliver.
-     The filter lives in the toolbar; session menus are portalled. */
+     section, scroll the catalog rather than compressing rows to a sliver. */
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -7128,10 +7127,6 @@ button.diff__path {
 
 /* ---------- Task filter dropdown (对齐 EchoAgent TaskFilterMenu) ---------- */
 
-.task-filter-wrap {
-  position: relative;
-  display: inline-flex;
-}
 .task-filter-trigger {
   position: relative;
 }
@@ -7145,20 +7140,12 @@ button.diff__path {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--echo-status-error);
+  background: var(--echo-control-selected-fg);
   border: 1px solid var(--echo-bg-primary);
 }
 .task-filter-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
   width: 220px;
-  /* Also allow room for the separate Windows/Linux title bar. */
-  max-height: calc(100vh - 96px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
   padding: 8px;
-  z-index: var(--echo-layer-popover);
   animation: taskFilterFadeIn 0.14s ease-out;
 }
 @keyframes taskFilterFadeIn {

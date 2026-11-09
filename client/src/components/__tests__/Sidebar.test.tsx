@@ -449,15 +449,20 @@ describe("Sidebar", () => {
     const filter = screen.getByRole("button", { name: "筛选任务" });
     const brand = container.querySelector(".window-sidebar-brand");
     expect(brand).toHaveTextContent("EchoAgent");
+    expect(brand?.parentElement).toBe(toggle.parentElement);
+    expect(search).toHaveClass("sidebar__task-search");
+    expect(filter.closest(".sidebar__list-section--tasks .sidebar__section-head")).not.toBeNull();
     expect(container.querySelector(".sidebar__logo-row")).toBeNull();
     toggle.focus();
     await user.keyboard("{Enter}");
     expect(screen.getByRole("button", { name: "展开侧边栏" })).toBe(toggle);
     expect(toggle).toHaveFocus();
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("button", { name: "搜索全部任务" })).toBeNull();
+    const collapsedSearch = screen.getByRole("button", { name: "搜索全部任务" });
+    expect(collapsedSearch.closest(".window-sidebar-quick-actions")).not.toBeNull();
+    expect(search.closest("aside")).toHaveAttribute("aria-hidden", "true");
     expect(screen.queryByRole("button", { name: "筛选任务" })).toBeNull();
-    expect(brand?.closest("aside")).toHaveAttribute("aria-hidden", "true");
+    expect(brand).toHaveAttribute("hidden");
     expect(container.querySelector(".window-sidebar-brand")).toBe(brand);
     expect(container.querySelectorAll(".sidebar__logo")).toHaveLength(1);
     expect(container.querySelector(".page-toolbar__navigation")).toBeNull();
@@ -482,6 +487,12 @@ describe("Sidebar", () => {
       expect(screen.getByRole("button", { name: "展开侧边栏" })).toHaveFocus();
       fireEvent.click(screen.getByRole("button", { name: "展开侧边栏" }));
     }
+    fireEvent.keyDown(screen.getByRole("button", { name: "筛选任务" }), { key: "ArrowDown" });
+    expect(screen.getByRole("menuitemradio", { name: "全部状态" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "外部切换侧栏" }));
+    expect(screen.queryByRole("menu", { name: "任务筛选" })).toBeNull();
+    expect(screen.getByRole("button", { name: "展开侧边栏" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "展开侧边栏" }));
     fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
     fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
     expect(onNewTask).toHaveBeenCalledOnce();

@@ -111,11 +111,18 @@
 
 .sidebar__content {
   --sidebar-section-gap: 16px;
-  padding: var(--sidebar-section-gap) var(--sidebar-content-inset) 14px;
+  --sidebar-collapsed-section-gap: 6px;
+  padding: calc(var(--sidebar-section-gap) + 8px) var(--sidebar-content-inset) 14px;
 }
 
 .sidebar__list-section + .sidebar__list-section {
   margin-top: var(--sidebar-section-gap);
+}
+
+/* Match the navigation row spacing when adjacent sections show only headings. */
+.sidebar__list-section:has(> .sidebar__section-head:only-child)
+  + .sidebar__list-section:has(> .sidebar__section-head:only-child) {
+  margin-top: var(--sidebar-collapsed-section-gap);
 }
 
 /* Compact navigation must leave a row in all three catalogs at the supported
@@ -126,7 +133,11 @@
   .sidebar__nav { gap: 0; padding-top: 0; }
   .sidebar__nav-item { min-height: 32px; height: auto; padding-block: 5px; }
   .sidebar__nav-item--create { min-height: 32px; margin-bottom: 4px; }
-  .sidebar__content { --sidebar-section-gap: 12px; padding-bottom: 2px; }
+  .sidebar__content {
+    --sidebar-section-gap: 12px;
+    --sidebar-collapsed-section-gap: 2px;
+    padding-bottom: 2px;
+  }
   .sidebar .sidebar__section-label { height: 28px; min-height: 28px; padding-block: 4px; }
   .sidebar__footer { height: 48px; padding: 2px 8px; }
   .sidebar__list-section:has(> .sidebar__group) { min-height: 68px; }

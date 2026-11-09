@@ -40,7 +40,7 @@ export function PageToolbar({
 }) {
   const { nested, macOS, ...navigation } = useContext(PageChromeContext);
   const layout = useContext(SidebarLayoutContext);
-  const windowNavigation = !nested && layout?.collapsed && layout.windowNavigationMounted;
+  const windowNavigation = !nested && layout?.windowNavigationMounted;
   const hasNavigation = !nested && navigation.sidebarCollapsed && !windowNavigation;
   return (
     <header

@@ -61,6 +61,7 @@ function DeferredPanel({ children }: { children: ReactNode }) {
 
 interface PlaceholderPageProps {
   onOpenAutomationSettings?: (section: "general" | "notifications") => void;
+  onOpenRetrievalSettings?: () => void;
   label: string;
   /** Navigate to another sidebar view (e.g. 自动化 → 管理连接器 → 专家·技能·连接器). */
   onNavigate?: (label: string) => void;
@@ -183,6 +184,7 @@ export function PlaceholderPage({
   notificationAutomationId,
   notificationAutomationSequence,
   onOpenAutomationSettings,
+  onOpenRetrievalSettings,
 }: PlaceholderPageProps) {
   if (label === "项目") {
     return (
@@ -291,6 +293,7 @@ export function PlaceholderPage({
       <DeferredPanel>
         <div className="placeholder-page knowledge-page">
           <KnowledgeBasePanel
+            onOpenRetrievalSettings={onOpenRetrievalSettings}
             onOpen={(id, url) => {
               const target = url ?? id;
               return /^https?:\/\//i.test(target)

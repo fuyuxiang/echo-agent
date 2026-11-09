@@ -1,78 +1,95 @@
+.app {
+  position: relative;
+  --window-chrome-height: 52px;
+  --window-caption-button-width: 46px;
+  --window-caption-width: calc(3 * var(--window-caption-button-width));
+}
+
 .app__body {
   --window-navigation-button-size: 32px;
   --window-navigation-start: 12px;
-  --window-navigation-top: 0px;
-  --window-navigation-main-overlap: 0px;
-  --window-navigation-space: calc(var(--window-navigation-start) + 2 * var(--window-navigation-button-size) + 16px);
-  --window-navigation-clearance: max(0px, calc(var(--window-navigation-main-overlap) + var(--window-navigation-top) + var(--window-navigation-button-size)));
-  --sidebar-brand-offset: 32px;
+  --window-navigation-gap: 2px;
+  --window-navigation-space: calc(var(--window-navigation-start) + 3 * var(--window-navigation-button-size) + 2 * var(--window-navigation-gap) + 16px);
+  --window-sidebar-width: var(--app-sidebar-width, 248px);
+  --window-drag-width: var(--window-sidebar-width);
 }
 
-/* The Windows title bar has room on the left when its menus are hidden. */
-.titlebar:not(:has(> .titlebar__menus)) ~ .app__body {
-  --window-navigation-top: -32px;
-  --window-navigation-space: var(--echo-page-gutter, 24px);
-  --sidebar-brand-offset: 0px;
-}
-
-.app--macos .app__body:has(> .window-sidebar-navigation) {
+.app--macos .app__body {
   --window-navigation-start: 88px;
-  --window-navigation-top: -20px;
-  --window-navigation-main-overlap: 32px;
-  --sidebar-brand-offset: 0px;
-  margin-block-start: var(--window-navigation-main-overlap);
 }
 
-.app--macos .app__body:has(> .window-sidebar-navigation) > .app__main {
-  margin-block-start: calc(-1 * var(--window-navigation-main-overlap));
+.app__body:has(> .window-sidebar-navigation) > .app__main {
+  --echo-header-height: var(--window-chrome-height);
+  padding-block-start: var(--window-page-inset, 0px);
 }
 
 .window-native-drag-region {
-  display: none;
-}
-
-.app--macos .window-native-drag-region {
-  display: block;
-  position: fixed;
+  position: absolute;
   inset: 0 auto auto 0;
-  width: var(--app-sidebar-width, 248px);
-  height: 32px;
+  width: var(--window-drag-width);
+  height: var(--window-chrome-height);
   z-index: 22;
-  background: var(--ui-sidebar);
+  border-bottom: 1px solid var(--echo-border-weak);
+  background: linear-gradient(to right, var(--ui-sidebar) var(--window-sidebar-width), var(--echo-surface-canvas) var(--window-sidebar-width));
   -webkit-app-region: drag;
 }
 
-.app--macos .app__body--collapsed .window-native-drag-region {
-  width: var(--window-navigation-start);
-  background: var(--echo-surface-canvas);
+.app__body--collapsed {
+  --window-sidebar-width: 0px;
+  --window-drag-width: var(--window-navigation-start);
 }
 
-.app--macos .app__body:has(> .window-sidebar-navigation) .sidebar-resize {
+.app__body:has(> .window-sidebar-navigation) .sidebar-resize {
   top: 0;
+}
+
+.app__body--collapsed:has(> .window-sidebar-navigation) > .app__main {
+  border-inline-start: 0;
+}
+
+.app__body--collapsed:has(> .window-sidebar-navigation) > .sidebar-resize {
+  top: var(--window-chrome-height);
+}
+
+.app__body--collapsed:has(> .window-sidebar-navigation) > .sidebar-resize:not(:hover, :focus-visible, .sidebar-resize--active)::after {
+  background: transparent;
 }
 
 .window-sidebar-navigation {
   position: absolute;
-  top: var(--window-navigation-top);
+  top: 0;
   left: var(--window-navigation-start);
   z-index: 23;
+  height: var(--window-chrome-height);
   display: flex;
   align-items: center;
+  gap: var(--window-navigation-gap);
   -webkit-app-region: no-drag;
 }
 
-.window-sidebar-task-tools:not([hidden]) {
+.window-sidebar-navigation [hidden] {
+  display: none;
+}
+
+.window-sidebar-quick-actions {
   display: flex;
+  gap: var(--window-navigation-gap);
 }
 
-.sidebar .sidebar__toolbar--window {
-  height: 48px;
-  justify-content: flex-start;
-  margin-block-start: var(--sidebar-brand-offset);
-  padding-inline: 20px;
+.window-sidebar-navigation .window-sidebar-brand {
+  margin-inline-start: 6px;
+  font-size: min(1rem, 15px);
+  user-select: none;
+  -webkit-app-region: drag;
 }
 
-.window-sidebar-navigation :is(.main-topbar__btn, .sidebar__icon-btn) {
+.window-sidebar-brand > span {
+  color: var(--echo-text-medium);
+  font-weight: 550;
+  pointer-events: none;
+}
+
+.window-sidebar-navigation .main-topbar__btn {
   width: var(--window-navigation-button-size);
   height: var(--window-navigation-button-size);
   flex: 0 0 var(--window-navigation-button-size);
@@ -80,30 +97,118 @@
   -webkit-app-region: no-drag;
 }
 
-.window-sidebar-navigation :is(.main-topbar__btn, .sidebar__icon-btn):focus-visible {
+.window-sidebar-toggle[aria-expanded="false"] {
+  background: var(--echo-bg-hover);
+  color: var(--echo-text-strong);
+}
+
+.window-sidebar-navigation ~ .sidebar {
+  padding-block-start: var(--window-chrome-height);
+}
+
+.sidebar__task-search {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 8px;
+  min-height: 32px;
+  margin: 10px var(--sidebar-content-inset) 8px;
+  padding: 4px 9px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: var(--echo-radius-control);
+  background: var(--echo-surface-canvas);
+  color: var(--echo-text-medium);
+  font: inherit;
+  font-size: .8125rem;
+  text-align: start;
+  cursor: pointer;
+}
+
+.sidebar__task-search:hover {
+  background: var(--echo-bg-hover);
+  color: var(--echo-text-strong);
+}
+
+.sidebar__task-search svg {
+  flex: none;
+}
+
+.sidebar__task-search > span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sidebar__task-search kbd {
+  margin-inline-start: auto;
+  padding-inline: 4px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: 4px;
+  font: inherit;
+  font-size: .6875rem;
+  white-space: nowrap;
+}
+
+.window-sidebar-navigation .main-topbar__btn:focus-visible,
+.sidebar__task-search:focus-visible,
+.sidebar__section-action.task-filter-trigger:focus-visible {
   outline: 2px solid var(--echo-focus-ring);
   outline-offset: -2px;
 }
 
-.window-sidebar-navigation .task-filter-popover {
-  /* Align with the first button; the panel is wider than the whole group. */
-  left: -64px;
-  right: auto;
+/* The Windows caption buttons share the first row with the active page. */
+.app:has(> .app__body > .window-sidebar-navigation) > .titlebar--caption-only {
+  position: absolute;
+  inset: 0 0 auto auto;
+  z-index: 24;
+  height: var(--window-chrome-height);
+  border-inline-start: 1px solid var(--echo-border-weak);
+  background: var(--echo-surface-canvas);
 }
 
-/* Keep content headers on their own grid below the window controls. */
-.app__body--collapsed:has(> .window-sidebar-navigation) > .app__main:has(
-  .page-toolbar--window-navigation:not(.management-toolbar), .group-chat__header, .atm-editor-host
+.app:has(> .app__body > .window-sidebar-navigation) > .titlebar--caption-only .titlebar__control {
+  width: var(--window-caption-button-width);
+  height: 100%;
+}
+
+.app__body:has(> .window-sidebar-navigation) .main-page-controls {
+  flex-basis: var(--window-chrome-height);
+  min-height: var(--window-chrome-height);
+  padding-block-start: 0;
+  align-items: center;
+}
+
+.app__body:has(> .window-sidebar-navigation) .coding-workbench {
+  grid-template-rows: max(var(--window-chrome-height), 3rem) minmax(0, 1fr);
+}
+
+.titlebar--caption-only ~ .app__body:has(> .window-sidebar-navigation) :is(
+  .page-toolbar.management-toolbar.page-toolbar--window-navigation,
+  .main-page-controls,
+  .app__main > .session-header,
+  .coding-workbench__topbar
 ) {
-  padding-block-start: var(--window-navigation-clearance);
+  padding-inline-end: calc(var(--window-caption-width) + var(--echo-page-gutter, 24px));
 }
 
-.app--macos .capability-page__inner:has(> .page-toolbar--window-navigation) {
+/* Multi-row headers keep their own layout beneath the window controls. */
+.app__body--collapsed:has(> .window-sidebar-navigation):has(
+  > .app__main :is(.page-toolbar--window-navigation:not(.management-toolbar), .group-chat__header, .atm-editor-host)
+),
+.titlebar--caption-only ~ .app__body:has(> .window-sidebar-navigation):has(
+  > .app__main :is(.page-toolbar--window-navigation:not(.management-toolbar), .group-chat__header, .atm-editor-host)
+) {
+  --window-page-inset: var(--window-chrome-height);
+  --window-drag-width: 100%;
+}
+
+.app--macos .app__body--collapsed .capability-page__inner:has(> .page-toolbar--window-navigation) {
   padding-block-start: 8px;
 }
 
 /* Single-row workbench headers share the window controls' row. */
-.app__body--collapsed:has(> .window-sidebar-navigation) :is(
+.app__body.app__body--collapsed:has(> .window-sidebar-navigation) :is(
   .main-page-controls,
   .main-topbar,
   .coding-workbench__topbar

@@ -1,4 +1,3 @@
-import { LocalRetrievalModels } from "./LocalRetrievalModels";
 /**
  * 知识库面板 —— 对齐 EchoAgent `knowledge-base-panel`(可插拔知识源)。
  *
@@ -19,6 +18,7 @@ import {
 import { isTauriAvailable } from "@/lib/tauri-kb-reader";
 import { addLocalKnowledgeSource, hydrateKnowledgeSources, removeKnowledgeSource } from "@/lib/kb-source-storage";
 import { filesystemPickDirectory } from "@/lib/agent-client";
+import { getRetrievalModelStatus, RETRIEVAL_MODELS_CHANGED, type RetrievalModelStatus } from "@/lib/retrieval-model-status";
 import {
   cancelPersonalKnowledgeSearch,
   createPersonalKnowledgeSearchRequestId,
@@ -33,9 +33,10 @@ interface KnowledgeBasePanelProps {
   onOpen?: (entryId: string, url?: string) => void | Promise<void>;
   /** 临时反馈(可选)。 */
   onToast?: (msg: string) => void;
+  onOpenRetrievalSettings?: () => void;
 }
 
-export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps) {
+export function KnowledgeBasePanel({ onOpen, onToast, onOpenRetrievalSettings }: KnowledgeBasePanelProps) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [results, setResults] = useState<KbEntry[]>([]);
@@ -48,6 +49,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchNotice, setSearchNotice] = useState<string | null>(null);
   const [semanticStatus, setSemanticStatus] = useState<PersonalKnowledgeIndexStatus | null>(null);
+  const [modelStatus, setModelStatus] = useState<RetrievalModelStatus | null>(null);
   const [searchRetryKey, setSearchRetryKey] = useState(0);
   const [sourceChangeKey, setSourceChangeKey] = useState(0);
   const [rebuildError, setRebuildError] = useState<string | null>(null);
@@ -69,6 +71,13 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
   };
   const q = debouncedQuery.trim();
   const currentQuery = query.trim();
+  const hasSources = sources.length > 0;
+  const modelPreparing = modelStatus?.state === "downloading" || modelStatus?.state === "verifying";
+  const modelNeedsRepair = modelStatus?.state === "missing" || modelStatus?.state === "error"
+    || (modelStatus?.state === "ready" && (!modelStatus.embeddingReady || !modelStatus.rerankerReady));
+  const modelNotice = modelNeedsRepair ? "本地检索模型需要维护。仍可使用关键词搜索。"
+    : modelPreparing ? "正在准备本地检索模型，期间仍可使用关键词搜索。"
+      : modelStatus?.state === "unsupported" ? "此设备不支持本地语义检索，仍可使用关键词搜索。" : null;
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -145,7 +154,32 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
       cancelled = true;
       if (timer !== undefined) window.clearInterval(timer);
     };
-  }, [refreshKey, semanticStatus?.state, rebuilding]);
+  }, [refreshKey, semanticStatus?.state, rebuilding, modelStatus?.state]);
+
+  useEffect(() => {
+    if (!hasSources) {
+      setModelStatus(null);
+      return;
+    }
+    let revision = 0;
+    const refresh = async () => {
+      const request = ++revision;
+      try {
+        const status = await getRetrievalModelStatus();
+        if (request === revision && status) setModelStatus(status);
+      } catch { /* Search and index status remain available independently. */ }
+    };
+    void refresh();
+    const timer = modelPreparing ? window.setInterval(refresh, 1_500) : undefined;
+    window.addEventListener(RETRIEVAL_MODELS_CHANGED, refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      revision++;
+      if (timer !== undefined) window.clearInterval(timer);
+      window.removeEventListener(RETRIEVAL_MODELS_CHANGED, refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [hasSources, modelPreparing, refreshKey]);
 
   /** 添加本地文件夹知识源:弹出原生目录选择 → 注册 local KbProvider。 */
   const addLocalFolder = async () => {
@@ -368,7 +402,6 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
             {rebuilding ? "刷新中…" : "↻ 刷新索引"}
           </button>
         </div>}
-      <LocalRetrievalModels />
       {feedback && <div className={`kb-panel__index-status${feedback.error ? " kb-panel__load-error" : ""}`}
         role={feedback.error ? "alert" : "status"}>
         <span>{feedback.message}</span>
@@ -447,7 +480,8 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           })()}
         </div>
       )}
-      {sources.length > 0 && !rebuilding && semanticStatus && !["ready", "idle"].includes(semanticStatus.state) && (
+      {hasSources && !rebuilding && semanticStatus && !["ready", "idle"].includes(semanticStatus.state)
+        && !(semanticStatus.state === "degraded" && modelNotice) && (
         <div
           className="kb-panel__index-status"
           role={semanticStatus.state === "error" ? "alert" : "status"}
@@ -462,10 +496,17 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
         </div>
       )}
       {sources.length > 0 && semanticStatus?.warnings?.map((warning,index) => <div key={index} className="kb-panel__index-status" role="status">{warning}</div>)}
+      {hasSources && modelNotice && <div className="kb-panel__index-status kb-panel__model-notice" role="status" aria-label="本地检索状态">
+        <span>{modelNotice}</span>
+        {(modelNeedsRepair || modelPreparing) && (onOpenRetrievalSettings
+          ? <button type="button" className="kb-panel__refresh-btn" onClick={onOpenRetrievalSettings}>模型维护</button>
+          : <span>可在设置中搜索「本地检索模型维护」。</span>)}
+      </div>}
       {sources.length > 0 && <div className="kb-panel__search">
         <Search size={18} strokeWidth={1.8} aria-hidden="true" />
         <input
           className="kb-panel__input"
+          data-settings-return-focus="local-retrieval"
           type="text"
           value={query}
           placeholder="搜索知识库…"

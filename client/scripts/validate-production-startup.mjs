@@ -91,26 +91,19 @@ try {
   const anchor = await toggle.boundingBox();
   await toggle.click();
   await page.locator("#app-sidebar").waitFor({ state: "hidden" });
-  assert.ok(await brand.isVisible(), "Collapsing the sidebar must retain the window brand");
+  assert.equal(await brand.isVisible(), false, "Collapsing the sidebar hides the wordmark");
   const collapsed = await toggle.boundingBox();
-  if (await page.locator(".app--macos").count()) {
-    // Collapsed navigation moves into the main header's native-button-safe
-    // area; expanded navigation belongs to the sidebar's lower toolbar row.
-    const brandBounds = await brand.boundingBox();
-    const mainBounds = await page.locator(".app__main").boundingBox();
-    assert(brandBounds.x >= 92, "Collapsed branding must clear native window buttons");
-    assert(brandBounds.x + brandBounds.width <= collapsed.x, "Collapsed brand and toggle must not overlap");
-    assert(collapsed.y >= mainBounds.y && collapsed.y + collapsed.height <= mainBounds.y + 56,
-      "Collapsed navigation must fit inside the main header");
-  } else {
-    assert.deepEqual(collapsed, anchor, "Production navigation must not move while collapsing");
-  }
+  assert.deepEqual(collapsed, anchor, "Production navigation must not move while collapsing");
+  assert.deepEqual(await page.locator(".window-sidebar-quick-actions button:visible").evaluateAll(
+    buttons => buttons.map(button => button.getAttribute("aria-label")),
+  ), ["搜索全部任务", "新建任务"], "Collapsed navigation keeps search and new task available");
   assert(await toggle.evaluate(element => {
     const bounds = element.getBoundingClientRect();
     return element.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2));
   }), "Collapsed navigation must remain reachable");
   await toggle.click();
   await page.locator("#app-sidebar").waitFor({ state: "visible" });
+  assert.ok(await brand.isVisible(), "Expanding restores the wordmark");
   assert.deepEqual(await toggle.boundingBox(), anchor, "Production navigation must not move while expanding");
   await page.waitForLoadState("networkidle", { timeout: 10000 });
   assertNoErrors();

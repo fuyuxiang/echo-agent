@@ -246,7 +246,7 @@ export function TitleBar({
   };
 
   return (
-    <div className="titlebar" data-tauri-drag-region>
+    <div className={hideMenus ? "titlebar titlebar--caption-only" : "titlebar"} data-tauri-drag-region>
       {!hideMenus && (
         <div className="titlebar__menus" data-tauri-drag-region>
           <button

@@ -1,20 +1,20 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { EchoNewTaskIcon, SidebarToggleIcon } from "@/foundation/components/Icon/icons";
+import { useLayoutEffect, useRef } from "react";
+import { EchoNewTaskIcon, SearchIcon, SidebarToggleIcon } from "@/foundation/components/Icon/icons";
 import { shortcutLabel } from "@/lib/platform";
 
 /** Window-owned navigation stays mounted while the sidebar and pages change. */
-export function WindowSidebarNavigation({ collapsed, onToggle, onNewTask, children }: {
+export function WindowSidebarNavigation({ collapsed, onToggle, onNewTask, onOpenSearch }: {
   collapsed: boolean;
   onToggle: () => void;
   onNewTask: () => void;
-  children: ReactNode;
+  onOpenSearch: () => void;
 }) {
   const label = collapsed ? "展开侧边栏" : "收起侧边栏";
   const toggleRef = useRef<HTMLButtonElement>(null);
-  const taskToolsRef = useRef<HTMLDivElement>(null);
+  const quickActionsRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
-    if (collapsed && taskToolsRef.current?.contains(document.activeElement)) {
+    if (!collapsed && quickActionsRef.current?.contains(document.activeElement)) {
       toggleRef.current?.focus({ preventScroll: true });
     }
   }, [collapsed]);
@@ -35,14 +35,18 @@ export function WindowSidebarNavigation({ collapsed, onToggle, onNewTask, childr
       >
         <SidebarToggleIcon size="md" />
       </button>
-      <div ref={taskToolsRef} className="window-sidebar-task-tools" hidden={collapsed}>
-        {children}
-      </div>
-      {collapsed && (
+      <span className="sidebar__logo window-sidebar-brand" hidden={collapsed} data-tauri-drag-region>
+        Echo<span>Agent</span>
+      </span>
+      <div ref={quickActionsRef} className="window-sidebar-quick-actions" hidden={!collapsed}>
+        <button type="button" className="main-topbar__btn" aria-label="搜索全部任务"
+          data-tip={`搜索全部任务（${shortcutLabel("⌘K", "Ctrl+K")}）`} onClick={onOpenSearch}>
+          <SearchIcon size="md" />
+        </button>
         <button type="button" className="main-topbar__btn" aria-label="新建任务" data-tip="新建任务" onClick={onNewTask}>
           <EchoNewTaskIcon size="md" />
         </button>
-      )}
+      </div>
     </div>
     </>
   );

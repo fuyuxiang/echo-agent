@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { PageToolbar } from "../PageToolbar";
 import {
   ArrowLeft,
@@ -38,6 +38,7 @@ import {
 
 export function AutomationTaskDetail({
   task,
+  runtimeNotice,
   records,
   starting,
   initialRecordId,
@@ -55,6 +56,7 @@ export function AutomationTaskDetail({
   onToast,
 }: {
   task?: Automation;
+  runtimeNotice?: ReactNode;
   records: AutomationRunRecord[];
   starting: boolean;
   initialRecordId?: string;
@@ -97,7 +99,7 @@ export function AutomationTaskDetail({
   return (
     <div className="atm-task-detail">
       <PageToolbar className="atm-task-detail__toolbar">
-        <button type="button" className="atm-toolbar-btn" onClick={onBack}>
+        <button type="button" className="atm-toolbar-btn" data-settings-return-focus="background" onClick={onBack}>
           <ArrowLeft size={16} />
           任务列表
         </button>
@@ -155,6 +157,7 @@ export function AutomationTaskDetail({
             <span title={task.cwds}>{workspaceName(task.cwds)}</span> ·{" "}
             {task.permissionMode === "fullAccess" ? "完全访问" : "默认权限"}
           </p>
+          {taskState(task, runs) === "active" && runtimeNotice}
           <div className="atm-task-detail__meta">
             <span>会话方式：{sessionModeLabel(task)}</span>
             {task.newSessionEachRun === false && (

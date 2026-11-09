@@ -1815,15 +1815,10 @@
 .atm-create-actions > .atm-new-task-btn { color: var(--echo-brand); border-color: color-mix(in srgb, var(--echo-brand) 40%, var(--atm-border)); }
 .automation-panel .atm-toolbar-right .atm-toolbar-btn:hover:not(:disabled) { background: var(--atm-surface-hover); }
 .atm-task-list--cards { container: scheduled-tasks / inline-size; width: 100%; max-width: var(--echo-page-width); margin: 0 auto; padding: 18px 24px 24px; box-sizing: border-box; display: flex; flex-direction: column; gap: 18px; }
-.atm-runtime { flex: none; padding-bottom: 14px; border-bottom: 1px solid var(--atm-border-soft); line-height: 1.7; }
-.atm-runtime-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
-.atm-runtime-status { display: flex; align-items: center; flex: 1 1 26rem; flex-wrap: wrap; gap: 6px 20px; padding: 0; background: transparent; color: var(--atm-text-secondary); font-size: .8125rem; }
-.atm-runtime-actions { display: flex; flex: none; align-items: center; gap: 16px; margin-left: auto; }
-.atm-runtime-status--warn { color: var(--echo-status-warning); }
-.atm-runtime-actions .atm-runtime-help-toggle { color: var(--atm-text-secondary); }
-.atm-runtime-help-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
-.atm-runtime > .atm-runtime-help { margin-top: 8px; }
-.atm-runtime-help, .atm-form-help { margin: 0; font-size: .75rem; line-height: 1.65; color: var(--atm-text-secondary); overflow-wrap: anywhere; }
+.atm-form-help { margin: 0; font-size: .75rem; line-height: 1.65; color: var(--atm-text-secondary); overflow-wrap: anywhere; }
+.atm-schedule-help summary { cursor: pointer; width: fit-content; }
+.atm-schedule-help p { margin: 6px 0 0; }
+.atm-runtime-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 12px; border-inline-start: 3px solid var(--echo-status-warning); background: var(--atm-surface-hover); color: var(--atm-text-secondary); font-size: .8125rem; line-height: 1.65; overflow-wrap: anywhere; }
 .atm-task-filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0; }
 .atm-task-filter { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 12px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--atm-text-secondary); font: inherit; font-size: .8125rem; cursor: pointer; }
 .atm-task-filter span { font-variant-numeric: tabular-nums; }

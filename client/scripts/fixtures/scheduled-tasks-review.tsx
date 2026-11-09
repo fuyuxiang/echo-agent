@@ -121,7 +121,7 @@ Object.assign(window, {
         case "automations_snapshot":
           return structuredClone({ automations: tasks, records });
         case "desktop_preferences_get":
-          return { closeToTray: params.get("background") !== "off" };
+          return { closeToTray: true, showNotificationTaskTitle: true };
         case "notify_desktop_status":
           return { enabled: true, source: "default", permission: "unknown" };
         case "notify_channels_list":

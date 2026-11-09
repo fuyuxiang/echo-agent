@@ -17,7 +17,7 @@ import { createRoot } from "react-dom/client";
 import { SidebarLayoutContext, useAppSidebarLayout } from "../../src/lib/sidebar-layout";
 import { SidebarResizeHandle } from "../../src/components/SidebarResizeHandle";
 import { ThemeProvider } from "../../src/components/ThemeProvider";
-import { SettingsPanel, type SettingsSectionId } from "../../src/components/SettingsPanel";
+import { SettingsPanel, type SettingsDirectTarget, type SettingsSectionId } from "../../src/components/SettingsPanel";
 import { PlaceholderPage } from "../../src/components/PlaceholderPage";
 import { ProjectDetailView } from "../../src/components/ProjectDetailView";
 import { WorkbenchIdentity } from "../../src/features/coding/shell/WorkbenchIdentity";
@@ -85,6 +85,7 @@ let providers: unknown[] = query.get("settingsDesign") === "1" ? [{
 }] : [];
 let channels: import("../../src/lib/notify-channels").NotifyChannel[] = [];
 let notificationTitlePreview = false;
+let closeToTray = query.get("background") !== "off";
 let notificationChannelReadFailed = false;
 let notificationDesktopReadFailed = false;
 if (query.get("notificationState") === "configured") channels = [
@@ -446,6 +447,19 @@ Object.assign(window, {
       switch (command) {
         case "agent_session_workspace_status": return {cwd:args.cwd, loaded:true, status: query.get("workspace") === "missing" && !(window as any).workspaceReady ? "missing" : "ready", message: query.get("workspace") === "missing" ? "原目录已被移动" : null};
         case "filesystem_pick_directory": return query.get("pickedFolder") ?? null;
+        case "org_local_kb_sources_get": return query.has("knowledgeSources")
+          ? [{ id: "review-knowledge", kind: "local-folder", root: "/review/知识库", label: "评审资料", enabled: true }]
+          : [];
+        case "personal_knowledge_search": {
+          if (!query.has("knowledgeSources")) return null;
+          const ready = ((window as any).__retrievalModelState ?? query.get("retrievalModels")) === "ready";
+          return {
+            items: [{ id: "review-policy", source: "review-knowledge", title: "差旅政策", snippet: "高铁出行可报销二等座", url: "/review/知识库/差旅政策.md" }],
+            retrievalMode: ready ? "hybrid-reranked" : "keyword",
+            degradedReason: ready ? null : "本次已使用关键词索引",
+            index: { state: ready ? "ready" : "degraded", fileCount: 1, chunkCount: 1, embeddedChunkCount: ready ? 1 : 0, pendingEmbeddingCount: ready ? 0 : 1, embeddingModel: "review", rerankModel: "review" },
+          };
+        }
         case "export_text_file": return "/review/exported-session.md";
         case "agent_set_session_pinned": return args.pinned;
         case "agent_set_session_archived": return args.archived;
@@ -525,8 +539,9 @@ Object.assign(window, {
         }
         case "agents_defaults_get": return { defaultModel: "", defaultPermission: "ask", rememberToolApprovals: true };
         case "agent_auth_status": return { ready: false, providers: [], runtimeReady: false, synchronized: true, runtimeModels: [], reason: "尚未配置可用模型" };
-        case "desktop_preferences_get": return { closeToTray: true, showNotificationTaskTitle: notificationTitlePreview };
-        case "desktop_notification_preview_save": notificationTitlePreview = args.showTaskTitle; return { closeToTray: true, showNotificationTaskTitle: notificationTitlePreview };
+        case "desktop_preferences_get": return { closeToTray, showNotificationTaskTitle: notificationTitlePreview };
+        case "desktop_preferences_save": closeToTray = args.closeToTray; return { closeToTray, showNotificationTaskTitle: notificationTitlePreview };
+        case "desktop_notification_preview_save": notificationTitlePreview = args.showTaskTitle; return { closeToTray, showNotificationTaskTitle: notificationTitlePreview };
         case "notification_list": return notificationEntries;
         case "notification_mark_read": notificationEntries = notificationEntries.map(entry => entry.id === args.id ? { ...entry, read: true } : entry); return;
         case "notification_mark_all_read": notificationEntries = notificationEntries.map(entry => ({ ...entry, read: true })); return;
@@ -903,6 +918,7 @@ function CodingSidebarReview({ cwd, onCwdChange }: { cwd: string; onCwdChange: (
 
 function ManagementReviewFixture({ surface }: { surface: string }) {
   const layout = useAppSidebarLayout();
+  const [settingsTarget, setSettingsTarget] = useState<SettingsDirectTarget>();
   useEffect(() => { layout.setCollapsed(query.get("collapsed") === "1"); }, []);
   const label = surface === "resource-groups" ? "专家团" : surface === "projects" ? "项目" : surface === "organization-shell" ? "组织" : surface === "management-experts" ? "专家·技能·连接器" : surface === "management-knowledge" ? "知识库" : surface === "management-meetings" ? "录音转写" : "自动化";
   return <div className={`app${query.get("platform") === "mac" ? " app--macos" : ""}`}><SidebarLayoutContext.Provider value={layout.context}>
@@ -912,11 +928,13 @@ function ManagementReviewFixture({ surface }: { surface: string }) {
       <SidebarResizeHandle layout={layout} />
       <main className="app__main">
         <PageChromeProvider macOS={query.get("platform") === "mac"} sidebarCollapsed={layout.collapsed} onToggleSidebar={() => layout.setCollapsed(false)} onNewTask={() => {}}>
-          {surface === "resource-groups" ? <GroupWorkspace cwd="/review/EchoAgent" models={[]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} /> : <PlaceholderPage label={label} cwd="/review/EchoAgent" onOpenAutomationSettings={() => {}} onStartOrganizationConversation={() => {}} />}
+          {surface === "resource-groups" ? <GroupWorkspace cwd="/review/EchoAgent" models={[]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} /> : <PlaceholderPage label={label} cwd="/review/EchoAgent" onOpenAutomationSettings={(section) => { if (section === "general") setSettingsTarget("background"); }} onOpenRetrievalSettings={() => setSettingsTarget("local-retrieval")} onStartOrganizationConversation={() => {}} />}
         </PageChromeProvider>
       </main>
     </div>
-  </SidebarLayoutContext.Provider></div>;
+  </SidebarLayoutContext.Provider>
+  {settingsTarget && <SettingsPanel open initialSection={settingsTarget === "background" ? "general" : "memory"} initialTarget={settingsTarget} onClose={() => setSettingsTarget(undefined)} />}
+  </div>;
 }
 
 function Fixture() {

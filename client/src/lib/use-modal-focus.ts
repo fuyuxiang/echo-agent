@@ -102,11 +102,15 @@ export function useModalFocus<T extends HTMLElement>(
   onEscape: () => void,
   /** Explicit invoker for actions launched from a short-lived portalled menu. */
   returnFocus?: HTMLElement | null,
+  /** A durable control when the action removed the original invoker. */
+  fallbackFocus?: () => HTMLElement | null,
 ): RefObject<T> {
   const containerRef = useRef<T>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const onEscapeRef = useRef(onEscape);
   onEscapeRef.current = onEscape;
+  const fallbackFocusRef = useRef(fallbackFocus);
+  fallbackFocusRef.current = fallbackFocus;
 
   useEffect(() => {
     if (!open) return;
@@ -188,7 +192,8 @@ export function useModalFocus<T extends HTMLElement>(
       if (stackIndex >= 0) modalStack.splice(stackIndex, 1);
       emitModalPresenceChange(cleanupPreviousLength);
       const returnTarget = returnFocusRef.current;
-      if (returnTarget?.isConnected) returnTarget.focus();
+      if (returnTarget?.isConnected && returnTarget !== document.body) returnTarget.focus();
+      else fallbackFocusRef.current?.()?.focus();
     };
   }, [open]);
 

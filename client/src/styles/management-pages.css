@@ -602,6 +602,14 @@
   border-inline-start: 3px solid var(--echo-status-error);
 }
 
+.knowledge-page .kb-panel__model-notice {
+  padding: 8px 12px;
+  border-inline-start: 3px solid var(--echo-status-warning);
+  border-radius: var(--echo-radius-control);
+  background: var(--echo-bg-hover);
+  color: var(--echo-text-medium);
+}
+
 .knowledge-page .kb-panel__search {
   display: flex;
   align-items: center;

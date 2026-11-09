@@ -35,7 +35,7 @@ try {
         list:list?.getBoundingClientRect().width,preview:preview?.clientWidth,panel:panel?.clientWidth, tools:composer?.scrollWidth>composer?.clientWidth+1};
     });
     assert.equal(geometry.overflow,false,`${name} document overflow`);
-    assert.equal(geometry.header,56);
+    assert.equal(geometry.header,52);
     assert.equal(geometry.tools,false,`${name} composer overflow`);
     if (geometry.list) {assert(geometry.preview>=360,`${name} unreadable split`); assert(geometry.list>=180 && geometry.list<=220);}
     const contrast = await page.evaluate(() => {
