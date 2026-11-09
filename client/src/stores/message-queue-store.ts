@@ -66,7 +66,7 @@ interface QueueState {
   /** 暂停 / 恢复。 */
   setStatus: (sessionId: string, id: string, status: EditableQueueItemStatus) => boolean;
   /** Hold waiting follow-ups after the user stops or the active turn fails. */
-  pauseQueued: (sessionId: string) => void;
+  pauseQueued: (sessionId: string, message?: string) => void;
   /** Atomically reserve the first queued item so completion events cannot
    *  dispatch the same long-running request twice. */
   claimNext: (sessionId: string, promptId?: string) => QueueItem | null;
@@ -215,11 +215,12 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
     });
     return claimed;
   },
-  pauseQueued: sessionId => set(state => {
+  pauseQueued: (sessionId, message) => set(state => {
     const queue = queueOf(state.queues, sessionId);
-    if (!queue.some(item => item.status === "queued")) return state;
-    return { queues: { ...state.queues, [sessionId]: queue.map(item => item.status === "queued"
-      ? { ...item, status: "paused" as const } : item) } };
+    const firstQueued = queue.findIndex(item => item.status === "queued");
+    if (firstQueued === -1) return state;
+    return { queues: { ...state.queues, [sessionId]: queue.map((item, index) => item.status === "queued"
+      ? { ...item, status: "paused" as const, ...(message && index === firstQueued ? { sendError: message } : {}) } : item) } };
   }),
   acknowledgePrompt: (sessionId, promptId) => {
     if (!sessionId || !promptId) return;

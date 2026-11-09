@@ -29,6 +29,8 @@ export interface ConfirmationOptions extends DialogBaseOptions {
   action: DialogAction;
 }
 
+export type ConfirmAction = (options: Omit<ConfirmationOptions, "action">) => Promise<boolean>;
+
 export interface PromptField {
   name: string;
   label: string;

@@ -54,7 +54,7 @@ function belongsToWorkspace(root: string, path: string): boolean {
 export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>(function TheiaIdeFrame({
   root,
   modelId,
-  completionEnabled = true,
+  completionEnabled = false,
   onCompletionStatus,
   onBeforeMutation,
   onAfterMutation,
@@ -285,6 +285,14 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
   }, [status, baseUrl, token, completionEnabled, modelId]);
 
   useEffect(() => {
+    const calls = completionCalls.current;
+    return () => {
+      for (const requestId of calls) void invoke("coding_inline_cancel", {requestId}).catch(() => undefined);
+      calls.clear();
+    };
+  }, [completionEnabled, modelId]);
+
+  useEffect(() => {
     if (status !== "ready" || !baseUrl || !previewRequest) return;
     frameRef.current?.contentWindow?.postMessage({
       type: "echo/open-preview", token, url: previewRequest.url,
@@ -382,11 +390,13 @@ export const TheiaIdeFrame = forwardRef<TheiaIdeFrameHandle, TheiaIdeFrameProps>
           // Account for completed model work even if the editor has since moved.
           if (!result.cached) recordUsage(loadUsage(), {modelId:result.modelId,promptTokens:result.inputTokens,completionTokens:result.outputTokens,
             sessionId:"inline-completion",promptId:result.requestId},loadQuotaConfig() ?? undefined);
-          if (!completionCalls.current.has(requestId)) return;
+          if (!completionCalls.current.has(requestId) || !completionConfig.current.completionEnabled
+            || completionConfig.current.modelId !== config.modelId) return;
           config.onCompletionStatus?.(`Tab ${result.elapsedMs}ms${result.cached ? " · 缓存" : ""}`);
           respond(true,{text:result.text});
         }).catch(error => {
-          if (!completionCalls.current.has(requestId)) return;
+          if (!completionCalls.current.has(requestId) || !completionConfig.current.completionEnabled
+            || completionConfig.current.modelId !== config.modelId) return;
           config.onCompletionStatus?.(`Tab 暂不可用：${String(error).replace(/^Error:\s*/, "").slice(0,180)}`);
           respond(false,undefined,String(error));
         }).finally(() => completionCalls.current.delete(requestId));

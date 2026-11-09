@@ -160,7 +160,7 @@ export function BrowserPreview({ url, onUrlChange }: BrowserPreviewProps) {
   );
 
   return (
-    <div className="browser-preview" role="region" aria-label="网页预览">
+    <div className="browser-preview" role="region" aria-label="独立网页预览">
       <div className="browser-preview__toolbar">
         <button
           type="button"
@@ -223,6 +223,7 @@ export function BrowserPreview({ url, onUrlChange }: BrowserPreviewProps) {
           <OpenExternalIcon size="sm" />
         </button>
       </div>
+      <p className="browser-preview__status">独立网页预览不会共享当前浏览器任务的登录状态。需要登录或确认任务时，请使用任务浏览器。</p>
       {externalState !== "idle" && <p className={"browser-preview__status" + (externalState === "failed" ? " browser-preview__status--error" : "")} role={externalState === "failed" ? "alert" : "status"}>
         {externalState === "opening" ? "正在打开系统浏览器…" : externalState === "opened" ? "已在系统浏览器中打开" : "打开失败，请重试或复制网址到浏览器。"}
       </p>}

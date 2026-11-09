@@ -481,8 +481,11 @@ function KnowledgeTrace({
       )}
       {personal?.state === "no-match" && (
         <div className="knowledge-trace__status">
-          已搜索 {personal.sourceCount} 个个人知识源，未找到相关内容
+          {personal.keywordOnly ? "已按关键词搜索" : "已搜索"} {personal.sourceCount} 个个人知识源，未找到相关内容
         </div>
+      )}
+      {(personal?.state === "used" || personal?.state === "no-match") && personal.notice && (
+        <div className="knowledge-trace__status is-warning">{personal.notice}</div>
       )}
       {personal?.state === "blocked" && (
         <div className="knowledge-trace__status is-warning">个人知识未使用：{personal.message}</div>
@@ -494,7 +497,7 @@ function KnowledgeTrace({
         <details className="knowledge-trace__results" open>
           <summary>
             已向模型提供 {personal.resultCount} 个相关片段
-            <small>来自 {personal.sourceCount} 个知识源</small>
+            <small>来自 {personal.sourceCount} 个知识源{personal.keywordOnly && " · 关键词检索"}</small>
           </summary>
           <div className="knowledge-trace__items">
             {personal.items.map((item, index) => {

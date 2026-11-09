@@ -510,13 +510,16 @@ pub fn green_record<'a>(
     let command = evidence.red_command.as_deref()?;
     let red_at = evidence.red_at.as_deref()?;
     let revision = set.content_revision();
-    records.iter().rev().find(|record| {
-        record.kind == VerificationKind::Test
-            && same_test_command(&record.command, command)
-            && record.status == VerificationStatus::Passed
-            && record.content_revision.as_deref() == Some(revision.as_str())
-            && at_or_after(&record.started_at, red_at)
-    })
+    records
+        .iter()
+        .rev()
+        .find(|record| {
+            record.kind == VerificationKind::Test
+                && same_test_command(&record.command, command)
+                && record.content_revision.as_deref() == Some(revision.as_str())
+                && at_or_after(&record.started_at, red_at)
+        })
+        .filter(|record| record.status == VerificationStatus::Passed)
 }
 
 #[tauri::command]
@@ -1005,8 +1008,11 @@ mod tests {
         shorthand.command = "pnpm run test".into();
         assert!(green_record(&evidence, &[shorthand], &green_set).is_some());
         assert_eq!(
-            green_record(&evidence, &[green], &green_set).map(|record| record.status),
+            green_record(&evidence, &[green.clone()], &green_set).map(|record| record.status),
             Some(VerificationStatus::Passed)
         );
+        let mut invalidated = green.clone();
+        invalidated.status = VerificationStatus::EvidenceInvalidated;
+        assert!(green_record(&evidence, &[green, invalidated], &green_set).is_none());
     }
 }

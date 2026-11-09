@@ -286,18 +286,25 @@ function workbookChart(sheet, chart) {
   const categories = range(sheet, chart.categories);
   ensure(new Set(categories.map(c => c.row)).size === 1 || new Set(categories.map(c => c.col)).size === 1, "图表分类必须为单行或单列");
   ensure(categories.length <= 500 && categories.length > 0, "图表最多 500 个数据点");
+  const chartText = (value, field) => {
+    const content = String(value);
+    // XML 1.0 permits tab/newline/CR and Unicode scalar values in these ranges.
+    ensure(!/[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/u.test(content),
+      field + " 含有无效的 XML 字符");
+    return xml(content);
+  };
   const actual = c => typeof c.value === "object" && c.value?.formula ? c.value.result : c.value ?? "";
   const ref = address => "'" + sheet.name.replace(/'/g, "''") + "'!" + address;
-  const cache = (cells, number) => '<c:ptCount val="' + cells.length + '"/>' + cells.map((c, i) => '<c:pt idx="' + i + '"><c:v>' + xml(number ? numeric(actual(c)) : actual(c)) + "</c:v></c:pt>").join("");
+  const cache = (cells, number) => '<c:ptCount val="' + cells.length + '"/>' + cells.map((c, i) => '<c:pt idx="' + i + '"><c:v>' + chartText(number ? numeric(actual(c)) : actual(c), "图表分类单元格 " + c.address) + "</c:v></c:pt>").join("");
   const series = chart.series.map((s, i) => {
     const cells = range(sheet, s.values);
     ensure(new Set(cells.map(c => c.row)).size === 1 || new Set(cells.map(c => c.col)).size === 1, "图表数值必须为单行或单列");
     ensure(cells.length === categories.length, "图表分类与数值长度不一致");
-    return '<c:ser><c:idx val="' + i + '"/><c:order val="' + i + '"/><c:tx><c:v>' + xml(text(s.name, 160)) + '</c:v></c:tx><c:cat><c:strRef><c:f>' + xml(ref(chart.categories)) + '</c:f><c:strCache>' + cache(categories, false) + '</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>' + xml(ref(s.values)) + '</c:f><c:numCache><c:formatCode>General</c:formatCode>' + cache(cells, true) + '</c:numCache></c:numRef></c:val></c:ser>';
+    return '<c:ser><c:idx val="' + i + '"/><c:order val="' + i + '"/><c:tx><c:v>' + chartText(text(s.name, 160), "第 " + (i + 1) + " 个系列名称") + '</c:v></c:tx><c:cat><c:strRef><c:f>' + chartText(ref(chart.categories), "图表分类引用") + '</c:f><c:strCache>' + cache(categories, false) + '</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>' + chartText(ref(s.values), "图表数值引用") + '</c:f><c:numCache><c:formatCode>General</c:formatCode>' + cache(cells, true) + '</c:numCache></c:numRef></c:val></c:ser>';
   }).join("");
   const tag = chart.type === "bar" ? "barChart" : "lineChart";
   const options = chart.type === "bar" ? '<c:barDir val="col"/><c:grouping val="clustered"/>' : '<c:grouping val="standard"/>';
-  const title = chart.title ? '<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>' + xml(text(chart.title, 160)) + '</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>' : "";
+  const title = chart.title ? '<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>' + chartText(text(chart.title, 160), "图表标题") + '</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>' : "";
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:lang val="zh-CN"/><c:chart>' + title + '<c:plotArea><c:layout/><c:' + tag + '>' + options + series + '<c:axId val="100"/><c:axId val="200"/></c:' + tag + '><c:catAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/><c:tickLblPos val="nextTo"/><c:crossAx val="200"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx><c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="1"/><c:tickLblPos val="nextTo"/><c:crossAx val="100"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx></c:plotArea><c:legend><c:legendPos val="b"/><c:layout/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/></c:chart></c:chartSpace>';
 }
 

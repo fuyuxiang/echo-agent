@@ -157,7 +157,7 @@ mod native {
     use super::CaptureStatus;
     use crate::meeting_minutes::{
         meeting_append_pcm, meeting_finish_recording, meeting_get, meeting_set_paused,
-        MeetingRecord,
+        MeetingRecord, MAX_RECORDING_SAMPLES,
     };
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{
@@ -614,6 +614,18 @@ mod native {
                         if let Ok(mut state) = status.lock() {
                             state.error = Some(error);
                             state.active = false;
+                        }
+                    } else if status
+                        .lock()
+                        .is_ok_and(|state| state.recorded_samples >= MAX_RECORDING_SAMPLES)
+                    {
+                        accepting.store(false, Ordering::Release);
+                        paused = true;
+                        drop(system_stream.take());
+                        drop(microphone_stream.take());
+                        if let Ok(mut state) = status.lock() {
+                            state.paused = true;
+                            state.level = 0.0;
                         }
                     }
                 }

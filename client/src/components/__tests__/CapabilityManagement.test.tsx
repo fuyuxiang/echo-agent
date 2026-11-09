@@ -132,6 +132,38 @@ describe("统一扩展管理的真实页面交互", () => {
     expect(useSessionStore.getState().sessionId).toBeNull();
   });
 
+  it("停用已落盘但会话未确认时保留告警，可原样重试停用", async () => {
+    api.mcpToggle.mockResolvedValueOnce({ persisted: true, appliedLive: false,
+      warnings: ["新工具调用已阻止，仍有会话未确认卸载"] });
+    api.mcpList.mockResolvedValueOnce([connector]).mockResolvedValue([{ ...connector, enabled: false }]);
+    render(<ConnectorsTab pills={null} />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "停用 MCP 服务 测试连接器" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("仍有会话未确认卸载");
+    const retry = screen.getByRole("button", { name: "重试切换" });
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: "启用 MCP 服务 测试连接器" })).not.toBeChecked();
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(api.mcpToggle).toHaveBeenCalledTimes(2);
+    expect(api.mcpToggle).toHaveBeenLastCalledWith(undefined, "review", false);
+  });
+
+  it("启用已落盘但会话未确认时保留告警，可原样重试启用", async () => {
+    api.mcpToggle.mockResolvedValueOnce({ persisted: true, appliedLive: false,
+      warnings: ["启用状态已保存，仍有会话未确认恢复"] });
+    api.mcpList.mockResolvedValueOnce([{ ...connector, enabled: false }]).mockResolvedValue([connector]);
+    render(<ConnectorsTab pills={null} />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "启用 MCP 服务 测试连接器" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("仍有会话未确认恢复");
+    const retry = screen.getByRole("button", { name: "重试切换" });
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: "停用 MCP 服务 测试连接器" })).toBeChecked();
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(api.mcpToggle).toHaveBeenCalledTimes(2);
+    expect(api.mcpToggle).toHaveBeenLastCalledWith(undefined, "review", true);
+  });
+
   it("待启动的连接器不会被显示为零工具故障，地址收进详情后仍可搜索", async () => {
     render(<ConnectorsTab pills={null} />);
     fireEvent.change(screen.getByRole("textbox", { name: "搜索连接器" }), { target: { value: "review-tool" } });

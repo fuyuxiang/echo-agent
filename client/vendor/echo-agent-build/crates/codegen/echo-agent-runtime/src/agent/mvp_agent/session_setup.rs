@@ -139,12 +139,10 @@ struct ReplayRouting<'a> {
     target_client_id: Option<&'a serde_json::Value>,
     cursor: Option<&'a str>,
 }
-/// The workspace a session runs in, with its MCP servers already merged.
+/// The trusted workspace a session will run in.
 struct SessionWorkspace {
     cwd: AbsPathBuf,
     remote_settings: Option<crate::util::config::RemoteSettings>,
-    initial_client_mcp_servers: Vec<acp::McpServer>,
-    mcp_servers: Vec<acp::McpServer>,
     mcp_meta_config_map: McpMetaConfigMap,
 }
 fn session_info_for(session_id: &acp::SessionId, cwd: &AbsPathBuf) -> SessionInfo {
@@ -190,24 +188,18 @@ impl MvpAgent {
     /// Resolve the workspace both pipelines run in. Folder trust is recorded
     /// before the MCP merge so an untrusted workspace's repo-local servers
     /// are dropped before anything spawns against them.
-    async fn resolve_workspace(
+    fn resolve_workspace(
         &self,
         cwd: &std::path::Path,
-        client_mcp_servers: Vec<acp::McpServer>,
         meta: Option<&acp::Meta>,
     ) -> Result<SessionWorkspace, acp::Error> {
         let cwd = AbsPathBuf::new(cwd.to_path_buf())
             .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
         let remote_settings = self.cfg.borrow().remote_settings.clone();
         folder_trust::resolve_and_record(cwd.as_path(), remote_settings.as_ref(), false);
-        let (initial_client_mcp_servers, mcp_servers) = self
-            .resolve_mcp_servers(client_mcp_servers, cwd.as_path())
-            .await;
         Ok(SessionWorkspace {
             cwd,
             remote_settings,
-            initial_client_mcp_servers,
-            mcp_servers,
             mcp_meta_config_map: parse_mcp_meta_config(meta),
         })
     }
@@ -257,16 +249,8 @@ impl MvpAgent {
         let SessionWorkspace {
             cwd,
             remote_settings,
-            initial_client_mcp_servers,
-            mcp_servers,
             mcp_meta_config_map,
-        } = self
-            .resolve_workspace(
-                &arguments.cwd,
-                arguments.mcp_servers,
-                arguments.meta.as_ref(),
-            )
-            .await?;
+        } = self.resolve_workspace(&arguments.cwd, arguments.meta.as_ref())?;
         let client_session_id = arguments
             .meta
             .as_ref()
@@ -499,6 +483,9 @@ impl MvpAgent {
         let spawn_res = {
             let mut timer = crate::instrumentation_timer!("session.spawn_session_actor");
             timer.with_field("session_id", session_id.0.as_ref());
+            // Resolve MCPs only after earlier async preparation. A global
+            // toggle must see the resident actor or precede its config read.
+            let _mcp_lifecycle = self.mcp_session_lifecycle.read().await;
             let spawn_opts = if is_chat_kind {
                 chat_session_spawn_options(
                     session_info.clone(),
@@ -509,6 +496,9 @@ impl MvpAgent {
                     session_yolo_mode,
                 )
             } else {
+                let (initial_client_mcp_servers, mcp_servers) = self
+                    .resolve_mcp_servers(arguments.mcp_servers, cwd.as_path())
+                    .await;
                 SessionSpawnOptions {
                     session_info: session_info.clone(),
                     cwd: cwd.clone(),
@@ -745,12 +735,8 @@ impl MvpAgent {
         let SessionWorkspace {
             cwd,
             remote_settings,
-            initial_client_mcp_servers,
-            mcp_servers,
             mcp_meta_config_map,
-        } = self
-            .resolve_workspace(&cwd, client_mcp_servers, request_meta.as_ref())
-            .await?;
+        } = self.resolve_workspace(&cwd, request_meta.as_ref())?;
         let mut load_timer = crate::instrumentation_timer!("session.load_session");
         load_timer.with_field("session_id", session_id.0.as_ref());
         load_timer.with_field("cwd", cwd.as_str());
@@ -920,6 +906,9 @@ impl MvpAgent {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| summary.prompt_display_cwd.clone());
+        let mcp_lifecycle = self.mcp_session_lifecycle.read().await;
+        let (initial_client_mcp_servers, mcp_servers) =
+            self.resolve_mcp_servers(client_mcp_servers, cwd.as_path()).await;
         let restored_from_disk = if !self.is_resident(&session_id) {
             tracing::info!(
                 session_id = %session_id.0,
@@ -996,6 +985,7 @@ impl MvpAgent {
             });
             false
         };
+        drop(mcp_lifecycle);
         {
             let init_meta = self
                 .initialize_request

@@ -191,7 +191,11 @@ let orgMemorySamples = Array.from({length:orgMany?245:0},(_,index)=>({
 let orgSkillSamples = Array.from({length:orgMany?67:0},(_,index)=>({
   skillId:`skill-${index}`,versionId:`version-${index}`,name:`${["需求评审","发布验证","接口诊断","文档整理"][index%4]} ${index+1}${index===0?" · 核心业务流程交付校验":""}`,
   description:"检查需求、实现与交付结果的一致性，生成可以继续使用的验证报告。",version:"1.2.0",mandatory:index%5===0,enabled:index%5===0||index%2===0,allowPersonalOverride:true,updatedAt:1,...orgScopeSample(index),
+  deviceInstallation: index%5===0 || index%2===0
+    ? { state: "installed", version: "1.2.0" }
+    : { state: "notInstalled", version: null },
 }));
+const orgSkillInstallFailure = query.get("orgSkillInstallFailure") === "1";
 const orgDocumentSamples = orgEmpty?[]:orgMany?Array.from({length:126},(_,index)=>({...orgDocuments[index%3],id:`document-${index}`,title:`${index+1}. ${index===125?"末页记录：":""}${orgDocuments[index%3].title}`,ownerId:index%2?"review-user":"other-user",...orgScopeSample(index)})):orgDocuments;
 if (orgKeywordOnly || orgSemanticPartial) orgDocumentSamples.slice(0, 1).forEach(item => Object.assign(item, {ftsStatus:"ready",vectorStatus:"degraded",chunkCount:33,vectorChunkCount:orgSemanticPartial?32:0}));
 let orgPromotionSamples = Array.from({length:orgMany?111:0},(_,index)=>({id:`promotion-${index}`,payloadType:"memory",payload:{kind:"howto",content:`经验提交 ${index+1}：记录任务处理和交付步骤。`},source:"user",state:"approved",createdAt:1,...orgScopeSample(index)}));
@@ -678,8 +682,22 @@ Object.assign(window, {
           return {items:items.slice(((args.page??1)-1)*(args.size??20),(args.page??1)*(args.size??20)),total:items.length,page:args.page??1,size:args.size??20};
         }
         case "org_logout": orgLoggedIn=false;return;
-        case "org_set_skill_preference": orgSkillSamples=orgSkillSamples.map(item=>item.skillId===args.skillId?{...item,enabled:args.enabled}:item);return {skillId:args.skillId,enabled:args.enabled};
-        case "org_sync_skills": return {installed:[],removed:[],cursor:"review",leaseUntil:1};
+        case "org_set_skill_preference": {
+          const failed = orgSkillInstallFailure && args.enabled;
+          orgSkillSamples = orgSkillSamples.map(item => item.skillId === args.skillId ? {
+            ...item, enabled: args.enabled,
+            deviceInstallation: failed ? { state: "failed", version: "1.0.0" }
+              : args.enabled ? { state: "installed", version: item.version } : { state: "notInstalled", version: null },
+          } : item);
+          if (failed) throw new Error("隔离验证：Skill 包哈希校验失败");
+          return { skillId: args.skillId, enabled: args.enabled };
+        }
+        case "org_sync_skills": {
+          orgSkillSamples = orgSkillSamples.map(item => item.deviceInstallation.state === "failed" ? {
+            ...item, deviceInstallation: { state: "installed", version: item.version },
+          } : item);
+          return { installed: orgSkillSamples.filter(item => item.deviceInstallation.state === "installed"), removed: [], cursor: "review", leaseUntil: 1 };
+        }
         case "org_publish_skill": return {state:"approved"};
         case "org_submit_memory_candidate": orgPromotionSamples=[{id:"review-new-promotion",payloadType:"memory",payload:{kind:args.kind,content:args.content},source:"user",state:"pending",createdAt:1,scopeId:args.targetScopeId,scopeKind:"team",scopeName:"产品研发团队"},...orgPromotionSamples];return {promotionId:"review-new-promotion",state:"pending"};
         case "org_session":

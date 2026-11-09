@@ -67,6 +67,28 @@ try {
   assert.match(await archive.file("xl/drawings/_rels/drawingEcho1.xml.rels").async("string"), /charts\/chart1.xml/);
   assert.match(await archive.file("[Content_Types].xml").async("string"), /drawingml.chart\+xml/);
 
+  const chartOutput = join(directory, "chart-text.xlsx");
+  const chartWorkbook = {
+    sheets: [{ name: "图表数据", rows: [["类别", "数量"], ["第一季 & \"重点\"", 123]],
+      charts: [{ type: "bar", title: "增长 <年度>", categories: "A2:A2", series: [{ name: "销售额 🚀", values: "B2:B2" }] }] }],
+  };
+  for (const [field, update] of [
+    ["分类单元格 A2", sheet => { sheet.rows[1][0] = "Q1\u0000data"; }],
+    ["第 1 个系列名称", sheet => { sheet.charts[0].series[0].name = "收入\u000b"; }],
+    ["图表标题", sheet => { sheet.charts[0].title = "标题\ud800"; }],
+  ]) {
+    const invalid = structuredClone(chartWorkbook);
+    update(invalid.sheets[0]);
+    await assert.rejects(createStructuredWorkbook(invalid, chartOutput), new RegExp(field));
+    assert.equal(existsSync(chartOutput), false, "invalid chart must not leave an output file");
+  }
+  await createStructuredWorkbook(chartWorkbook, chartOutput);
+  const validChart = await JSZip.loadAsync(await readFile(chartOutput));
+  const validChartXml = await validChart.file("xl/charts/chart1.xml").async("string");
+  assert.match(validChartXml, /第一季 &amp; &quot;重点&quot;/);
+  assert.match(validChartXml, /增长 &lt;年度&gt;/);
+  assert.match(validChartXml, /销售额 🚀/);
+
   const roundedPath = join(directory, "rounding.xlsx");
   const roundingCases = [
     ["ROUND(10.075,2)", 10.08], ["ROUND(-10.075,2)", -10.08],

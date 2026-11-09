@@ -1243,6 +1243,21 @@ impl McpError {
     }
 }
 
+type ToolDispatchGuard = fn(&str) -> Result<(), String>;
+static TOOL_DISPATCH_GUARD: std::sync::OnceLock<ToolDispatchGuard> = std::sync::OnceLock::new();
+
+/// Install the embedded host's admission policy for all MCP transports.
+pub fn install_tool_dispatch_guard(guard: ToolDispatchGuard) {
+    let _ = TOOL_DISPATCH_GUARD.set(guard);
+}
+
+pub fn check_tool_dispatch(server: &str) -> Result<(), McpError> {
+    if let Some(guard) = TOOL_DISPATCH_GUARD.get() {
+        guard(server).map_err(McpError::ClientError)?;
+    }
+    Ok(())
+}
+
 /// True when a failed refresh-token grant was a **network-level** failure
 /// that never reached the IdP (RT validity unknown, presumed good); IdP
 /// rejections and missing credentials stay terminal (escalate to browser).
@@ -1488,6 +1503,9 @@ impl echo_agent_tool_runtime::Tool for McpErasedTool {
                 false
             };
         let mcp_call_start = std::time::Instant::now();
+        check_tool_dispatch(&self.tool.server_name).map_err(|e| {
+            echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
+        })?;
         let (client, event_writer) = {
             let state = self.tool.mcp_state.lock().await;
             let c = Arc::clone(state.get_client(&self.tool.server_name).ok_or_else(|| {
@@ -1527,6 +1545,9 @@ impl echo_agent_tool_runtime::Tool for McpErasedTool {
         {
             Ok(result) => Ok(result),
             Err(first_err) if client.has_auth() && !no_replay => {
+                check_tool_dispatch(&self.tool.server_name).map_err(|e| {
+                    echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
+                })?;
                 auth_retry_attempted = true;
                 let reauth_ok = client.force_reauth(false).await;
                 ew.emit(echo_agent_session_events::Event::McpAuthRetry {
@@ -1744,6 +1765,12 @@ impl McpErasedTool {
         ew: &echo_agent_session_events::EventWriter,
         no_replay: bool,
     ) -> Result<rmcp::model::CallToolResult, echo_agent_tool_runtime::ToolError> {
+        let check_dispatch = || {
+            check_tool_dispatch(&self.tool.server_name).map_err(|e| {
+                echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
+            })
+        };
+        check_dispatch()?;
         let mcp_service = client.ensure_initialized().await.map_err(|e| {
             echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
         })?;
@@ -1752,6 +1779,7 @@ impl McpErasedTool {
         let mut params = CallToolRequestParams::new(self.tool.name.clone());
         params.arguments = raw.as_object().cloned();
 
+        check_dispatch()?;
         let result =
             tokio::time::timeout(timeout_duration, mcp_service.call_tool(params.clone())).await;
 
@@ -1854,6 +1882,9 @@ impl McpErasedTool {
                 ));
             }
         };
+        check_tool_dispatch(&self.tool.server_name).map_err(|e| {
+            echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
+        })?;
         match tokio::time::timeout(timeout_duration, mcp_service.call_tool(params)).await {
             Ok(Ok(call_result)) => Ok(call_result),
             Ok(Err(retry_err)) => Err(echo_agent_tool_runtime::ToolError::custom(
@@ -4469,7 +4500,9 @@ impl McpClient {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
+        check_tool_dispatch(&self.server_name)?;
         let mcp_service = self.ensure_initialized().await?;
+        check_tool_dispatch(&self.server_name)?;
         let result = mcp_service
             .call_tool({
                 let mut params = CallToolRequestParams::new(tool_name.to_string());

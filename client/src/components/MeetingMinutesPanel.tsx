@@ -25,6 +25,7 @@ import { meetingDrafts, type MeetingDraftConflict } from "@/lib/meeting-drafts";
 import { meetingTranscriptionIssue } from '@/lib/meeting-transcription-error';
 import {
   formatMeetingDuration,
+  MAX_MEETING_RECORDING_SAMPLES,
   meetingCaptureSupport,
   meetingDelete,
   isMiniMaxMeetingModel,
@@ -577,6 +578,8 @@ export function MeetingMinutesPanel({
           </div>}
           {recordingThis && recorder.error && <div className="meeting-workbench__notice meeting-error-text" role="alert">{recorder.error}</div>}
           {processingThis && <div className="meeting-workbench__notice" role="status"><Loader2 size={15} className="meeting-spin" />{selected.status === "summarizing" ? "音频与原文已保存，正在整理纪要…" : "录音已保存，正在补齐转写并整理纪要…"}可以先查看原文或离开页面。</div>}
+          {!recordingThis && selected.captureSource !== "imported" && selected.recordedSamples >= MAX_MEETING_RECORDING_SAMPLES &&
+            <div className="meeting-workbench__notice" role="status">已达到 24 小时录音上限，音频已保存到上限处。</div>}
           {!recordingThis && !processingThis && (selected.error || needsTranscription) && <div className="meeting-workbench__notice" role="status"><span>{selected.status === "recorded" && !selected.error ? "录音已保存，尚有内容需要转写。" : "上次处理未完成，已保存的音频与文字仍可使用。"}</span><button type="button" disabled={busy !== null} onClick={() => void (!needsTranscription && selected.transcript.length ? regenerate() : processMeeting(selected))}>{selected.status === "recorded" && !selected.error ? "继续转写并整理纪要" : "重试未完成部分"}</button>{(!selectedModel || meetingTranscriptionIssue(selected.error).settings) && onOpenModelSettings && <button type="button" onClick={onOpenModelSettings}>检查模型连接</button>}{selected.error && <details><summary>错误详情</summary><p>{selected.error}</p></details>}</div>}
           {hasTranscriptDraft && tab === "minutes" && <div className="meeting-workbench__notice" role="status">原文校对尚未保存，请先保存校对并更新纪要。</div>}
           {selected.minutesStale && !processingThis && <div className="meeting-workbench__notice" role="status">当前纪要需要根据原文核对或更新。<button type="button" disabled={readOnly || hasTranscriptDraft || hasMinutesDraft || needsTranscription} onClick={() => void regenerate()}>更新纪要</button></div>}

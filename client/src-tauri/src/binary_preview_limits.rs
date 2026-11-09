@@ -2,6 +2,17 @@ use std::path::Path;
 
 pub(super) const DEFAULT_BINARY_PREVIEW_BYTES: usize = 1024 * 1024;
 pub(super) const PDF_PREVIEW_MAX_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const OOXML_PREVIEW_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) fn is_ooxml(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["docx", "xlsx", "pptx"]
+                .iter()
+                .any(|kind| extension.eq_ignore_ascii_case(kind))
+        })
+}
 
 // Production policy shared with direct module boundary tests.
 pub(super) fn binary_preview_limit(path: &Path, requested: Option<u64>) -> usize {
@@ -11,6 +22,8 @@ pub(super) fn binary_preview_limit(path: &Path, requested: Option<u64>) -> usize
         .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
     let hard_max = if is_pdf {
         PDF_PREVIEW_MAX_BYTES
+    } else if is_ooxml(path) {
+        OOXML_PREVIEW_MAX_BYTES
     } else {
         DEFAULT_BINARY_PREVIEW_BYTES
     };
@@ -25,7 +38,13 @@ mod tests {
     use super::*;
     #[test]
     fn defaults_do_not_expand_existing_binary_reads() {
-        for path in ["image.png", "audio.mp3", "report.pdf", "data.bin"] {
+        for path in [
+            "image.png",
+            "audio.mp3",
+            "report.pdf",
+            "report.docx",
+            "data.bin",
+        ] {
             assert_eq!(
                 binary_preview_limit(Path::new(path), None),
                 DEFAULT_BINARY_PREVIEW_BYTES
@@ -54,6 +73,17 @@ mod tests {
                 DEFAULT_BINARY_PREVIEW_BYTES
             );
         }
+    }
+    #[test]
+    fn office_previews_allow_only_the_explicit_bounded_budget() {
+        for path in ["word.DOCX", "slides.pptx", "table.xlsx"] {
+            assert_eq!(
+                binary_preview_limit(Path::new(path), Some(u64::MAX)),
+                OOXML_PREVIEW_MAX_BYTES
+            );
+            assert_eq!(binary_preview_limit(Path::new(path), Some(1024)), 1024);
+        }
+        assert!(!is_ooxml(Path::new("table.xls")));
     }
     #[test]
     fn smaller_requested_limits_and_zero_are_preserved() {

@@ -70,6 +70,7 @@ vi.mock("@/lib/agent-client", async (original) => ({
   ...await original<object>(),
   agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(async () => []), agentListWorkspaces: vi.fn(async () => []),
+  agentsValidateReferences: vi.fn(async () => {}),
   agentPrepareTaskWorkspace: vi.fn(async () => "/workspace/Tasks/project-task"),
   agentLoadSession: vi.fn(), agentNewSession: vi.fn(async () => "project-session"),
   agentSendNow: vi.fn(() => new Promise<void>(() => {})), agentSend: vi.fn(async () => {}), agentSetModel: vi.fn(async () => {}),
@@ -1131,6 +1132,129 @@ describe("自动化会话模型同步", () => {
 
 
 describe("队列发送与原生接收确认", () => {
+  function moveToProject() {
+    useProjectsStore.setState({ projects: [{
+      id: "project-1", name: "测试项目", instructions: "PROJECT_CONTRACT",
+      createdAt: "2026-11-09", connectors: [], experts: [], skills: [], plans: [],
+      tasks: [], assets: [], members: [],
+      conversations: [{ sessionId: "auto-1", title: "原任务", createdAt: "2026-11-09", pendingProjectContext: true }],
+    }] });
+  }
+
+  it.each(["normal", "queued", "background", "replace"])("移入项目的下一次实际派发带原会话的约定：%s", async (route) => {
+    await start();
+    created("model-a");
+    if (route !== "background") {
+      fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "追问" })).toBeEnabled());
+    }
+    act(() => {
+      useSessionStore.getState().pushUser("上一轮", [], "auto-1");
+      if (route !== "normal") {
+        useSessionStore.getState().startStreaming("auto-1", "previous");
+        useMessageQueueStore.getState().enqueue("auto-1", "继续解释");
+      }
+      moveToProject();
+    });
+    if (route === "normal") fireEvent.click(screen.getByRole("button", { name: "追问" }));
+    else if (route === "replace") fireEvent.click(screen.getByRole("button", { name: "中断当前回复并立即发送这条" }));
+    else await act(async () => handlers.onComplete?.({ sessionId: "auto-1", promptId: "previous", stopReason: "end_turn" }));
+
+    const send = route === "replace" ? client.agentSendNow : client.agentSend;
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+    const [sessionId, prompt, , displayText, promptId] = vi.mocked(send).mock.calls[0];
+    expect({ sessionId, displayText }).toEqual({ sessionId: "auto-1", displayText: "继续解释" });
+    expect(prompt.match(/PROJECT_CONTRACT/g)).toHaveLength(1);
+    expect(promptId).toBeTruthy();
+    expect(client.agentsValidateReferences).toHaveBeenCalledWith("/workspace", []);
+    expect(useProjectsStore.getState().projects[0].conversations[0].pendingProjectContext).toBe(false);
+  });
+
+  it("引用验证期间的会话标题更新不会暂停项目队列", async () => {
+    let release!: () => void;
+    vi.mocked(client.agentsValidateReferences).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await start();
+    created("model-a");
+    act(() => {
+      useSessionStore.getState().pushUser("上一轮", [], "auto-1");
+      useSessionStore.getState().startStreaming("auto-1", "previous");
+      useMessageQueueStore.getState().enqueue("auto-1", "保持续发");
+      moveToProject();
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "previous", stopReason: "end_turn" });
+    });
+    expect(release).toBeDefined();
+    act(() => useProjectsStore.getState().updateConversationTitle("project-1", "auto-1", "新的标题"));
+    await act(async () => release());
+    expect(client.agentSend).toHaveBeenCalledWith("auto-1", expect.stringContaining("PROJECT_CONTRACT"), [], "保持续发", expect.any(String));
+  });
+
+  it("立即发送校验期间原回复结束时，保留顺序并明确暂停后续消息", async () => {
+    let release!: () => void;
+    vi.mocked(client.agentsValidateReferences).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await start();
+    created("model-a");
+    fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "追问" })).toBeEnabled());
+    act(() => {
+      useSessionStore.getState().pushUser("上一轮", [], "auto-1");
+      useSessionStore.getState().startStreaming("auto-1", "previous");
+      useMessageQueueStore.getState().enqueue("auto-1", "第一条");
+      useMessageQueueStore.getState().enqueue("auto-1", "第二条");
+      moveToProject();
+    });
+    fireEvent.click(within(screen.getAllByRole("listitem")[0]).getByRole("button", { name: "中断当前回复并立即发送这条" }));
+    expect(release).toBeDefined();
+    await act(async () => {
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "previous", stopReason: "end_turn" });
+      release();
+    });
+    expect(client.agentSendNow).not.toHaveBeenCalled();
+    expect(client.agentSend).not.toHaveBeenCalled();
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([
+      { text: "第一条", status: "paused", sendError: expect.stringContaining("原回复已结束") },
+      { text: "第二条", status: "paused", sendError: expect.stringContaining("按顺序恢复发送") },
+    ]);
+    const first = within(screen.getAllByRole("listitem")[0]);
+    fireEvent.click(first.getByRole("button", { name: "恢复" }));
+    fireEvent.click(first.getByRole("button", { name: "立即发送" }));
+    await waitFor(() => expect(client.agentSend).toHaveBeenCalledWith("auto-1", expect.stringContaining("PROJECT_CONTRACT"), [], "第一条", expect.any(String)));
+  });
+
+  it("空白项目会话原生拒绝后，重发仍带项目约定", async () => {
+    vi.mocked(client.agentSend).mockRejectedValueOnce(new Error("暂时无法接收"));
+    await start();
+    created("model-a");
+    fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "追问" })).toBeEnabled());
+    act(() => {
+      moveToProject();
+      useProjectsStore.getState().setProjectContextPending("project-1", "auto-1", false);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "追问" }));
+    await waitFor(() => expect(useProjectsStore.getState().projects[0].conversations[0].pendingProjectContext).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "追问" }));
+    await waitFor(() => expect(client.agentSend).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(client.agentSend).mock.calls[1][1]).toContain("PROJECT_CONTRACT");
+  });
+
+  it("项目引用验证失败时后台队列仍保留且不会派发", async () => {
+    vi.mocked(client.agentsValidateReferences).mockRejectedValueOnce(new Error("项目专家不存在"));
+    await start();
+    created("model-a");
+    await act(async () => {
+      useSessionStore.getState().pushUser("上一轮", [], "auto-1");
+      useSessionStore.getState().startStreaming("auto-1", "previous");
+      useMessageQueueStore.getState().enqueue("auto-1", "保留我的提示", ["/workspace/资料.md"]);
+      moveToProject();
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "previous", stopReason: "end_turn" });
+    });
+    expect(client.agentSend).not.toHaveBeenCalled();
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([
+      { text: "保留我的提示", status: "paused", attachments: ["/workspace/资料.md"] },
+    ]);
+    expect(useProjectsStore.getState().projects[0].conversations[0].pendingProjectContext).toBe(true);
+  });
+
   async function sendReplacement(next = false) {
     await start(); created("model-a");
     fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));

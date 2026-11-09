@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::{Read, Seek};
+use std::io::{ErrorKind, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tauri::{AppHandle, Manager};
@@ -18,6 +18,9 @@ enum OutputPolicy<'a> {
     Replace,
     Create {
         identity: Option<(&'a str, &'a str)>,
+    },
+    Recover {
+        original: &'a Path,
     },
 }
 
@@ -273,26 +276,51 @@ pub(crate) async fn export_for_session(
     request: DocumentExportRequest,
     session_id: Option<&str>,
 ) -> Result<Option<DocumentExportReceipt>, String> {
+    export_with_dialog(app, request, session_id, OutputPolicy::Replace).await
+}
+
+pub(crate) async fn export_recovered_for_session(
+    app: &AppHandle,
+    request: DocumentExportRequest,
+    session_id: &str,
+    original: &Path,
+) -> Result<Option<DocumentExportReceipt>, String> {
+    export_with_dialog(
+        app,
+        request,
+        Some(session_id),
+        OutputPolicy::Recover { original },
+    )
+    .await
+}
+
+async fn export_with_dialog(
+    app: &AppHandle,
+    request: DocumentExportRequest,
+    session_id: Option<&str>,
+    policy: OutputPolicy<'_>,
+) -> Result<Option<DocumentExportReceipt>, String> {
     validate_request(&request)?;
-    let filename = format!("{}.{}", safe_file_title(&request.title), request.format);
+    let (prompt, suffix) = match policy {
+        OutputPolicy::Recover { .. } => ("另存恢复的编辑稿", "-恢复稿"),
+        _ => ("导出办公文档", ""),
+    };
+    let filename = format!(
+        "{}{suffix}.{}",
+        safe_file_title(&request.title),
+        request.format
+    );
     let Some(mut destination) =
-        crate::meeting_minutes::choose_save_path(app, "导出办公文档", &filename, &request.format)
-            .await?
+        crate::meeting_minutes::choose_save_path(app, prompt, &filename, &request.format).await?
     else {
         return Ok(None);
     };
     if destination.extension().is_none() {
         destination.set_extension(&request.format);
     }
-    export_to_path_for_session(
-        app,
-        request,
-        &destination,
-        session_id,
-        OutputPolicy::Replace,
-    )
-    .await
-    .map(Some)
+    export_to_path_for_session(app, request, &destination, session_id, policy)
+        .await
+        .map(Some)
 }
 
 pub(crate) fn validate_request(request: &DocumentExportRequest) -> Result<(), String> {
@@ -348,6 +376,48 @@ pub(crate) async fn create_for_session(
     .await
 }
 
+fn validate_recovery_destination(original: &Path, destination: &Path) -> Result<(), String> {
+    const SAME_LOCATION: &str = "请选择不同的文件名或目录，恢复稿不会写回原文件位置";
+    if dunce::simplified(original) == dunce::simplified(destination) {
+        return Err(SAME_LOCATION.into());
+    }
+    let original_parent = original.parent().ok_or("无效的原文件目录")?;
+    let destination_parent = destination.parent().ok_or("无效的保存目录")?;
+    let original_name = original.file_name().ok_or("无效的原文件名")?;
+    let destination_name = destination.file_name().ok_or("无效的保存文件名")?;
+    let check_error = |error| format!("无法核对恢复稿与原文件的位置：{error}");
+
+    // Probe the selected filesystem without creating either user file. The
+    // random directory is visible through the original parent only when both
+    // directory paths refer to the same location (including parent aliases).
+    let probe = tempfile::Builder::new()
+        .prefix(".echo-recovery-")
+        .tempdir_in(destination_parent)
+        .map_err(check_error)?;
+    let probe_name = probe.path().file_name().ok_or("无法核对恢复稿的位置")?;
+    let original_probe = original_parent.join(probe_name);
+    match std::fs::symlink_metadata(&original_probe) {
+        Ok(_) => {}
+        Err(error)
+            if crate::document_workspace::original_path_absent(&error)
+                || error.kind() == ErrorKind::NotADirectory =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(check_error(error)),
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(probe.path().join(destination_name))
+        .map_err(check_error)?;
+    match std::fs::symlink_metadata(original_probe.join(original_name)) {
+        Ok(_) => Err(SAME_LOCATION.into()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(check_error(error)),
+    }
+}
+
 async fn export_to_path_for_session(
     app: &AppHandle,
     request: DocumentExportRequest,
@@ -376,8 +446,16 @@ async fn export_to_path_for_session(
     };
     let document_lock = crate::document_workspace::document_lock(destination)?;
     let _document_guard = document_lock.lock().await;
+    if let OutputPolicy::Recover { original } = policy {
+        validate_recovery_destination(original, destination)?;
+        match std::fs::symlink_metadata(destination) {
+            Ok(_) => return Err("目标文件已存在，请为恢复稿选择新文件名".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("无法确认恢复稿的保存位置：{error}")),
+        }
+    }
     let temp = match policy {
-        OutputPolicy::Create { .. } => tempfile::Builder::new()
+        OutputPolicy::Create { .. } | OutputPolicy::Recover { .. } => tempfile::Builder::new()
             .prefix(".echo-office-")
             .tempdir_in(destination.parent().ok_or("无效的保存目录")?),
         OutputPolicy::Replace => tempfile::tempdir(),
@@ -386,6 +464,9 @@ async fn export_to_path_for_session(
     let output = temp.path().join(format!("output.{}", request.format));
     generate(app, &request, &output).await?;
     let (byte_size, sha256) = validate_output(&output, &request.format)?;
+    if let OutputPolicy::Recover { original } = policy {
+        validate_recovery_destination(original, destination)?;
+    }
     let receipt = DocumentExportReceipt {
         path: destination.to_string_lossy().into_owned(),
         format: request.format,
@@ -463,6 +544,47 @@ pub async fn document_export(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovered_export_requires_a_different_path_and_preserves_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("Report.docx");
+        let destination = dir.path().join("Report-恢复稿.docx");
+        assert!(validate_recovery_destination(&original, &original).is_err());
+        validate_recovery_destination(&original, &destination).unwrap();
+
+        let generated = dir.path().join("generated.docx");
+        std::fs::write(&generated, b"recovered draft").unwrap();
+        std::fs::write(&destination, b"existing file").unwrap();
+        assert!(install_output(&generated, &destination, false).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"existing file");
+        assert!(!original.exists());
+    }
+
+    #[test]
+    fn recovered_export_checks_equivalent_names_using_the_selected_volume() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir_in(dir.path()).unwrap();
+        for (original_name, alternate_name) in [
+            ("Report.docx", "report.docx"),
+            ("Café.docx", "Cafe\u{0301}.docx"),
+            ("Straße.docx", "STRASSE.docx"),
+        ] {
+            let original = dir.path().join(original_name);
+            let alternate = dir.path().join(alternate_name);
+            std::fs::write(&alternate, b"volume probe").unwrap();
+            let volume_aliases = original.exists();
+            std::fs::remove_file(&alternate).unwrap();
+            assert_eq!(
+                validate_recovery_destination(&original, &alternate).is_err(),
+                volume_aliases
+            );
+            validate_recovery_destination(&original, &other.path().join(alternate_name)).unwrap();
+            assert!(!original.exists());
+            assert!(!alternate.exists());
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn generated_filenames_fit_multibyte_filesystem_limits() {

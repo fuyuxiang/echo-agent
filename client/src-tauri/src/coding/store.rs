@@ -219,16 +219,33 @@ pub fn with_task_transaction<T>(
     let lock_path = workspace_dir(root)
         .join(".task-locks")
         .join(format!("{task_id}.lock"));
-    ensure_parent(&lock_path)?;
+    with_exclusive_lock(&lock_path, operation)
+}
+
+pub fn with_workspace_transaction<T>(
+    root: &Path,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    with_exclusive_lock(
+        &workspace_dir(root).join("workspace.transaction.lock"),
+        operation,
+    )
+}
+
+fn with_exclusive_lock<T>(
+    lock_path: &Path,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    ensure_parent(lock_path)?;
     let lock = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
-        .open(&lock_path)
-        .map_err(|error| format!("无法创建任务事务锁：{error}"))?;
+        .open(lock_path)
+        .map_err(|error| format!("无法创建事务锁：{error}"))?;
     lock.lock_exclusive()
-        .map_err(|error| format!("无法锁定任务状态：{error}"))?;
+        .map_err(|error| format!("无法锁定事务状态：{error}"))?;
     let result = operation();
     let _ = lock.unlock();
     result

@@ -376,10 +376,17 @@ describe("Theia IDE bridge", () => {
   });
 
   it("routes native Tab to the configured model without creating a coding task, and cancellation suppresses late text", async () => {
-    render(<TheiaIdeFrame root="/repo" modelId="existing-model" completionEnabled onBeforeMutation={vi.fn()} onAfterMutation={vi.fn()} />);
+    const props = {root:"/repo",modelId:"existing-model",onBeforeMutation:vi.fn(),onAfterMutation:vi.fn()};
+    const {rerender} = render(<TheiaIdeFrame {...props} />);
     const frame = await screen.findByTitle("Echo Code IDE") as HTMLIFrameElement;
     const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
     sendFrameMessage(frame, {type:"echo/ready"});
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({type:"echo/set-inline-completion",enabled:false}), new URL(frame.src).origin);
+    sendFrameMessage(frame, {type:"echo/inline-completion",id:"before-consent",requestId:"blocked",workspace:"/repo",path:"/repo/a.ts",
+      uri:snapshot.uri,version:3,prefix:"not sent",suffix:"",language:"typescript"});
+    expect(invoke.mock.calls.some(([command]) => command === "coding_inline_complete")).toBe(false);
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({id:"before-consent",ok:true,value:{text:""}}), new URL(frame.src).origin);
+    rerender(<TheiaIdeFrame {...props} completionEnabled />);
     expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({type:"echo/set-inline-completion",enabled:true,instanceId:INSTANCE}), new URL(frame.src).origin);
     let complete!: (result: unknown) => void;
     invoke.mockImplementationOnce(command => command === "coding_inline_complete"

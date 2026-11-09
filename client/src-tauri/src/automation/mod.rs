@@ -268,6 +268,7 @@ struct BrowserApprovalPlan {
     details: Value,
     expected_url: String,
     expected_target: Option<(String, Value)>,
+    interaction: Option<browser::BrowserInteraction>,
 }
 
 struct AutomationManager {
@@ -1713,27 +1714,64 @@ async fn browser_tool(
             "browser_click" => optional_str(args, "elementRef")?,
             _ => None,
         };
-        if name == "browser_click" && reference.is_none() {
-            required_f64(args, "x")?;
-            required_f64(args, "y")?;
-        }
+        let interaction_input = match name {
+            "browser_click" => {
+                let (x, y) = if reference.is_none() {
+                    (Some(required_f64(args, "x")?), Some(required_f64(args, "y")?))
+                } else {
+                    (None, None)
+                };
+                Some(json!({ "kind": "click", "reference": reference, "x": x, "y": y,
+                    "button": optional_str(args, "button")?.unwrap_or("left") }))
+            }
+            "browser_key" => Some(json!({ "kind": "key", "key": required_str(args, "key")? })),
+            "browser_drag" => Some(json!({
+                "kind": "drag",
+                "fromX": required_f64(args, "fromX")?,
+                "fromY": required_f64(args, "fromY")?,
+                "toX": required_f64(args, "toX")?,
+                "toY": required_f64(args, "toY")?,
+            })),
+            _ => None,
+        };
         let mut guard = session.browser.lock().await;
         let browser = guard.as_mut().ok_or("浏览器已停止，请重新开始操作网页")?;
         let (url, page_title, target) = browser_approval_context(browser, reference).await?;
+        let interaction = if let Some(input) = interaction_input {
+            let interaction = browser.prepare_interaction(input).await?;
+            if interaction.url() != url {
+                return Err("网页已变化，请重新观察后再请求确认".into());
+            }
+            Some(interaction)
+        } else {
+            None
+        };
+        let preview_target = interaction.as_ref().map(browser::BrowserInteraction::target);
+        let destination = interaction.as_ref().map(browser::BrowserInteraction::destination);
+        let form_submit_url = interaction
+            .as_ref()
+            .and_then(browser::BrowserInteraction::form_submit_url);
+        let submits_form = form_submit_url.is_some();
         let common = json!({
             "url": url,
             "pageTitle": page_title,
-            "target": target,
+            "target": preview_target.as_ref().or(target.as_ref()),
+            "destination": destination,
+            "formSubmitUrl": form_submit_url,
         });
         let (title, description, details) = match name {
             "browser_click" => {
-                let high_risk = target.as_ref().is_some_and(browser_target_looks_risky);
-                let title = if high_risk {
+                let high_risk = preview_target.as_ref().or(target.as_ref()).is_some_and(browser_target_looks_risky);
+                let title = if submits_form {
+                    "确认提交网页表单"
+                } else if high_risk {
                     "确认网页上的重要点击"
                 } else {
                     "确认网页点击"
                 };
-                let description = if high_risk {
+                let description = if submits_form {
+                    "表单内容可能发送到下方地址。请核对提交地址和目标控件。"
+                } else if high_risk {
                     "该控件可能发送、购买、删除或确认重要操作。请核对网站和目标后继续。"
                 } else {
                     "代理即将点击当前网页。请核对网站和目标后继续。"
@@ -1798,8 +1836,9 @@ async fn browser_tool(
                 )
             }
             "browser_key" => (
-                "确认网页按键操作",
-                "按键或快捷键可能提交内容、执行命令或改变网站状态。",
+                if submits_form { "确认按键提交表单" } else { "确认网页按键操作" },
+                if submits_form { "表单内容可能发送到下方地址。请核对提交地址和当前焦点。" }
+                    else { "按键或快捷键可能提交内容、执行命令或改变网站状态。" },
                 merge_json(
                     common,
                     json!({
@@ -1829,6 +1868,7 @@ async fn browser_tool(
             details,
             expected_url: url,
             expected_target: reference.map(str::to_string).zip(target),
+            interaction,
         })
     } else {
         None
@@ -1854,17 +1894,23 @@ async fn browser_tool(
         let mut guard = session.browser.lock().await;
         let browser = guard.as_mut().ok_or("浏览器已停止，请重新开始操作网页")?;
         browser.enforce_current_url_policy().await?;
-        if let Some(plan) = approval_plan {
+        if let Some(plan) = approval_plan.as_ref() {
             if browser.current_url().await? != plan.expected_url {
                 return Err("等待确认期间网页已变化，为避免误操作已取消，请重新检查页面".into());
             }
-            if let Some((reference, expected)) = plan.expected_target {
-                let actual = browser_element_signature(browser, &reference).await?;
-                if actual != expected {
+            if let Some((reference, expected)) = &plan.expected_target {
+                let actual = browser_element_signature(browser, reference).await?;
+                if actual != *expected {
                     return Err("等待确认期间目标控件已变化，操作已取消".into());
                 }
             }
         }
+        let interaction = || {
+            approval_plan
+                .as_ref()
+                .and_then(|plan| plan.interaction.as_ref())
+                .ok_or("网页操作缺少已确认的目标")
+        };
         let result = match name {
             "browser_start" => {
                 serde_json::to_value(browser.status().await?).map_err(|error| error.to_string())?
@@ -1878,12 +1924,9 @@ async fn browser_tool(
                 return Ok(tool_image_result(meta, "image/png", data));
             }
             "browser_click" => {
-                let reference = optional_str(args, "elementRef")?;
                 browser
                     .click(
-                        reference,
-                        optional_f64(args, "x")?,
-                        optional_f64(args, "y")?,
+                        interaction()?,
                         optional_str(args, "button")?.unwrap_or("left"),
                         optional_u64(args, "clickCount")?.unwrap_or(1) as u32,
                     )
@@ -1914,7 +1957,7 @@ async fn browser_tool(
             "browser_key" => {
                 let key = required_str(args, "key")?;
                 browser
-                    .key(key, &optional_string_array(args, "modifiers", 4)?)
+                    .key(interaction()?, key, &optional_string_array(args, "modifiers", 4)?)
                     .await?
             }
             "browser_scroll" => {
@@ -1928,6 +1971,7 @@ async fn browser_tool(
             "browser_drag" => {
                 browser
                     .drag(
+                        interaction()?,
                         required_f64(args, "fromX")?,
                         required_f64(args, "fromY")?,
                         required_f64(args, "toX")?,

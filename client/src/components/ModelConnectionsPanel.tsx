@@ -203,6 +203,14 @@ function connectionBaseUrlError(value: string, allowInsecureHttp: boolean): stri
   return null;
 }
 
+function connectionOrigin(value: string | undefined): string | undefined {
+  try {
+    return value ? new URL(value.trim()).origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function protocolLabel(provider: ModelProviderEntry): string {
   if (provider.apiBackend === "messages") return "Anthropic Messages";
   if (provider.apiBackend === "responses") return "OpenAI Responses";
@@ -585,7 +593,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId, onOpenO
                 )}
               </div>
 
-              {selectedModels.length > 0 && <p className="model-connections__test-hint">测试会发送一次简短请求，可能消耗少量额度。耗时仅代表本次请求。</p>}
+              {selectedModels.length > 0 && <p className="model-connections__test-hint">测试会验证一次简短文本回复，可能消耗少量额度。图片和工具调用能力需另行验证。</p>}
 
               {selectedModels.length === 0 ? (
                 <div className="model-connections__models-empty">该连接还没有模型，请同步模型列表或手动添加远端模型 ID。</div>
@@ -755,6 +763,8 @@ function ConnectionEditor({
   const preset = PROVIDER_PRESETS[draft.service];
   const initialDraft = useRef(JSON.stringify(draft));
   const operationRef = useRef(false);
+  const originChanged = Boolean(original && connectionOrigin(original.baseUrl) !== connectionOrigin(draft.baseUrl));
+  const canReuseKey = original?.credentialConfigured && !originChanged;
   const { requestClose, closeDialog } = useUnsavedClose({
     dirty: JSON.stringify(draft) !== initialDraft.current || Boolean(modelInput),
     busy: saving || discovering,
@@ -762,6 +772,16 @@ function ConnectionEditor({
   });
   const cancel = () => { if (!operationRef.current) requestClose(); };
   const dialogRef = useModalFocus<HTMLDivElement>(true, cancel);
+
+  const updateAddress = (baseUrl: string) => {
+    setError(null);
+    setDraft(current => ({
+      ...current,
+      baseUrl,
+      apiKey: connectionOrigin(baseUrl) === connectionOrigin(current.baseUrl) ? current.apiKey : "",
+      allowInsecureHttp: baseUrl.trim() === current.baseUrl.trim() && current.allowInsecureHttp,
+    }));
+  };
 
   const handleKindChange = (service: ServiceKind) => {
     const next = PROVIDER_PRESETS[service];
@@ -772,6 +792,7 @@ function ConnectionEditor({
       providerKind: service === "kimi" || service === "zhipu" ? "custom" : service,
       label: !current.label || current.label === PROVIDER_PRESETS[current.service].shortLabel ? next.shortLabel : current.label,
       baseUrl: next.baseUrl,
+      apiKey: connectionOrigin(next.baseUrl) === connectionOrigin(current.baseUrl) ? current.apiKey : "",
       allowInsecureHttp: false,
       apiBackend: next.apiBackend,
       authScheme: next.authScheme,
@@ -784,7 +805,9 @@ function ConnectionEditor({
     if (!serviceChosen) return fail("model-provider-kind", "请选择模型服务商。");
     const baseUrlError = connectionBaseUrlError(draft.baseUrl, draft.allowInsecureHttp);
     if (baseUrlError) return fail("model-base-url", baseUrlError);
-    if (!original && !draft.apiKey.trim()) return fail("model-api-key", "请填写 API 密钥。");
+    if ((!original || originChanged) && (!draft.apiKey.trim() || draft.apiKey.trim().startsWith("•"))) {
+      return fail("model-api-key", originChanged ? "服务地址已更换，请填写新地址的 API 密钥。" : "请填写 API 密钥。");
+    }
     if (draft.contextWindow && (!Number.isSafeInteger(Number(draft.contextWindow)) || Number(draft.contextWindow) <= 0)) return fail("model-context-window", "上下文窗口必须是大于 0 的整数。");
     return null;
   };
@@ -890,10 +913,10 @@ function ConnectionEditor({
       <div className="model-connection-editor__body">
         <fieldset className="model-connection-editor__fields" disabled={disabled}>
           <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-provider-kind">模型服务商</label><select id="model-provider-kind" {...fieldA11y("model-provider-kind")} className="form-control models-settings-panel__select" value={serviceChosen ? draft.service : ""} onChange={event => { setEditingAddress(false); handleKindChange(event.target.value as ServiceKind); }} data-modal-initial-focus><option value="" disabled>请选择模型服务商</option>{SERVICE_GROUPS.map(group => <optgroup key={group.label} label={group.label}>{group.kinds.map(kind => <option key={kind} value={kind}>{PROVIDER_PRESETS[kind].label}</option>)}</optgroup>)}</select>{fieldError("model-provider-kind")}</div>
-          {showAddress ? <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-base-url">服务地址（Base URL）</label><input id="model-base-url" {...fieldA11y("model-base-url")} className="form-control models-settings-panel__input" value={draft.baseUrl} onChange={event => { setError(null); setDiscoveryMessage(null); setDraft(current => ({ ...current, baseUrl: event.target.value, allowInsecureHttp: event.target.value.trim() === current.baseUrl.trim() && current.allowInsecureHttp })); }} placeholder="填写服务提供方给出的 API 地址" inputMode="url" />{fieldError("model-base-url")}
+          {showAddress ? <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-base-url">服务地址（Base URL）</label><input id="model-base-url" {...fieldA11y("model-base-url")} className="form-control models-settings-panel__input" value={draft.baseUrl} onChange={event => updateAddress(event.target.value)} placeholder="填写服务提供方给出的 API 地址" inputMode="url" />{fieldError("model-base-url")}
             {draft.baseUrl.trim().toLowerCase().startsWith("http://") && <label className="model-connection-editor__help model-connection-editor__http-consent"><input type="checkbox" checked={draft.allowInsecureHttp} onChange={event => setDraft(current => ({ ...current, allowInsecureHttp: event.target.checked }))} />允许此个人连接使用 HTTP。我了解 API Key、提问和模型回复会以明文传输。</label>}
           </div> : serviceChosen && <div className="model-connection-editor__address"><span>服务地址：{draft.baseUrl}</span><Button variant="ghost" size="compact" onClick={() => setEditingAddress(true)}>修改地址</Button></div>}
-          <div className="models-settings-panel__field"><div className="model-connection-editor__model-heading"><label className="models-settings-panel__label" htmlFor="model-api-key">API 密钥</label>{serviceChosen && preset.keyUrl && <Button variant="ghost" size="compact" onClick={() => void openKeyHelp()}>获取密钥<ChevronRight size={12} /></Button>}</div><div className="models-settings-panel__input-shell"><input id="model-api-key" {...fieldA11y("model-api-key")} className="form-control models-settings-panel__input models-settings-panel__input--with-trailing-icon" type={showKey ? "text" : "password"} value={draft.apiKey} onChange={event => { setError(null); setDraft(current => ({ ...current, apiKey: event.target.value })); }} placeholder={original?.credentialConfigured ? "已保存，留空不更换" : preset.placeholderKey} autoComplete="off" /><button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only models-settings-panel__input-toggle" onClick={() => setShowKey(value => !value)} type="button" aria-label={showKey ? "隐藏 API 密钥" : "显示 API 密钥"}>{showKey ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>{fieldError("model-api-key")}<span className="model-connection-editor__help">{original?.credentialConfigured ? "留空将保留本机已保存的密钥。" : "密钥保存在本机，用于连接所选模型服务。"}</span></div>
+          <div className="models-settings-panel__field"><div className="model-connection-editor__model-heading"><label className="models-settings-panel__label" htmlFor="model-api-key">API 密钥</label>{serviceChosen && preset.keyUrl && <Button variant="ghost" size="compact" onClick={() => void openKeyHelp()}>获取密钥<ChevronRight size={12} /></Button>}</div><div className="models-settings-panel__input-shell"><input id="model-api-key" {...fieldA11y("model-api-key")} className="form-control models-settings-panel__input models-settings-panel__input--with-trailing-icon" type={showKey ? "text" : "password"} value={draft.apiKey} onChange={event => { setError(null); setDraft(current => ({ ...current, apiKey: event.target.value })); }} placeholder={canReuseKey ? "已保存，留空不更换" : preset.placeholderKey} autoComplete="off" /><button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only models-settings-panel__input-toggle" onClick={() => setShowKey(value => !value)} type="button" aria-label={showKey ? "隐藏 API 密钥" : "显示 API 密钥"}>{showKey ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>{fieldError("model-api-key")}<span className="model-connection-editor__help">{originChanged ? "地址所属服务已变更，请填写新服务的密钥。" : canReuseKey ? "留空将保留本机已保存的密钥。" : "密钥保存在本机，用于连接所选模型服务。"}</span></div>
           <div className="models-settings-panel__field">
             <div className="model-connection-editor__model-heading"><label className="models-settings-panel__label" htmlFor={modelIds.length ? undefined : "model-id-input"}>{modelIds.length ? "已配置模型" : "模型 ID"}</label>{modelIds.length === 0 && <Button variant="ghost" size="compact" onClick={() => void handleDiscover()} disabled={disabled}>{discovering ? "正在获取…" : "从服务获取模型"}</Button>}</div>
             {modelIds.length ? <><div className="model-connection-editor__chips" aria-label="已配置模型">{modelIds.map(id => <span key={id}><code>{id}</code></span>)}</div><span className="model-connection-editor__help">可在连接详情中添加、编辑和删除模型。</span></> : <input id="model-id-input" {...fieldA11y("model-id-input")} className="form-control models-settings-panel__input" value={modelInput} onChange={event => { setModelInput(event.target.value); setError(null); }} onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing && event.keyCode !== 229) event.preventDefault(); }} placeholder="填写服务商提供的模型 ID" autoComplete="off" />}{fieldError("model-id-input")}

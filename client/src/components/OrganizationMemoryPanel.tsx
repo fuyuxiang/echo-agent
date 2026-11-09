@@ -31,6 +31,7 @@ import {
   XCircle,
 } from "lucide-react";
 import {
+  listenOrgSkillsChanged,
   orgArchiveDocument,
   orgDownloadDocument,
   orgFetchDocument,
@@ -193,6 +194,22 @@ function ScopeIcon({ kind }: { kind: OrgScope["kind"] }) {
   return <Building2 size={14} />;
 }
 
+function SkillInstallation({ skill }: { skill: OrgSkill }) {
+  const device = skill.deviceInstallation;
+  const state = device?.state ?? (skill.enabled || skill.mandatory ? "pending" : "unknown");
+  const label = {
+    installed: "本机已安装",
+    failed: "本机同步失败",
+    pending: "等待本机同步",
+    notInstalled: "本机未安装",
+    unknown: "本机状态未确认",
+  }[state];
+  const tone = state === "installed" ? "ready" : state === "failed" ? "failed" : "pending";
+  return <span className={`org-state org-state--${tone}`} title={device?.error ?? undefined}>
+    {label}{device?.version && ` · v${device.version}`}
+  </span>;
+}
+
 export function OrganizationMemoryPanel({
   onToast,
   cwd,
@@ -220,6 +237,7 @@ export function OrganizationMemoryPanel({
   const skillDialogRef = useModalFocus<HTMLDivElement>(!!skillDialog, () => { if (!busyRef.current) setSkillDialog(null); }, actionInvoker);
   const [session, setSession] = useState<OrgSession | null>(null);
   const mirroredSession = useOrgSessionStore((state) => state.session);
+  const sessionBoundary = useOrgSessionStore((state) => state.boundaryRevision);
   const mirrorOrgSession = useOrgSessionStore((state) => state.setSession);
   const [loading, setLoading] = useState(true);
   const [busy, updateBusy] = useState(false);
@@ -387,6 +405,19 @@ export function OrganizationMemoryPanel({
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
   }, [loadWorkspace, mirrorOrgSession]);
+
+  useEffect(() => {
+    if (!session?.loggedIn) return;
+    let active = true;
+    let unsubscribe: (() => void) | undefined;
+    void listenOrgSkillsChanged(() => {
+      if (active && isCurrentBoundary(sessionBoundary) && !busyRef.current) library.retry("skills");
+    }).then((dispose) => {
+      if (active) unsubscribe = dispose;
+      else dispose();
+    }).catch((reason) => console.warn("[EchoAgent] Organization Skill updates unavailable:", reason));
+    return () => { active = false; unsubscribe?.(); };
+  }, [library.retry, session?.loggedIn, sessionBoundary]);
 
   useEffect(() => {
     if (!session?.loggedIn) return;
@@ -876,11 +907,21 @@ export function OrganizationMemoryPanel({
     const boundary = currentBoundary();
     if (busyRef.current) return;
     setBusy(true);
+    setError(null);
     try {
       await orgSetSkillPreference(skill.skillId, !skill.enabled);
       if (!isCurrentBoundary(boundary)) return;
       await loadWorkspace(true);
-    } catch (reason) { if (isCurrentBoundary(boundary)) setError(String(reason)); } finally { if (isCurrentBoundary(boundary)) setBusy(false); }
+    } catch (reason) {
+      if (!isCurrentBoundary(boundary)) return;
+      setError(String(reason));
+      try {
+        // The server preference may have committed before the device failed.
+        await loadWorkspace(true);
+      } catch (refreshError) {
+        if (isCurrentBoundary(boundary)) setError(`${String(reason)}。状态刷新失败：${String(refreshError)}`);
+      }
+    } finally { if (isCurrentBoundary(boundary)) setBusy(false); }
   };
 
   const publishSkill = async (skill: OrgSkill) => {
@@ -908,7 +949,13 @@ export function OrganizationMemoryPanel({
       onToast?.(`已更新 ${result.installed.length} 个技能`);
       await loadWorkspace(true);
     } catch (reason) {
-      if (isCurrentBoundary(boundary)) setError(String(reason));
+      if (!isCurrentBoundary(boundary)) return;
+      setError(String(reason));
+      try {
+        await loadWorkspace(true);
+      } catch (refreshError) {
+        if (isCurrentBoundary(boundary)) setError(`${String(reason)}。状态刷新失败：${String(refreshError)}`);
+      }
     } finally {
       if (isCurrentBoundary(boundary)) setBusy(false);
     }
@@ -1024,9 +1071,9 @@ export function OrganizationMemoryPanel({
             <div className="org-resource-filters">
               <div className="org-resource-search"><Search size={16} aria-hidden="true" /><input type="search" aria-label={`搜索${pageTitle}`} placeholder={view === "mine" ? "搜索我的提交" : `搜索${tab === "skills" ? "技能" : pageTitle}`} maxLength={2000} value={activeQuery.query} onChange={event => updateQuery({ query: event.target.value })} />{activeQuery.query && <button type="button" aria-label="清空搜索" onClick={() => updateQuery({ query: "" })}><X size={14} /></button>}</div>
               <div className="org-resource-select"><select aria-label="查看范围" value={activeQuery.scopeId} onChange={event => updateQuery({ scopeId: event.target.value })}><option value="">全部授权范围</option>{scopes.map(scope => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select><ChevronDown size={14} aria-hidden="true" /></div>
-              <div className="org-resource-select org-resource-select--status"><select aria-label={view === "mine" ? "提交状态" : tab === "memories" ? "经验类型" : tab === "documents" ? "文档状态" : "安装状态"} value={activeQuery.filter} onChange={event => updateQuery({ filter: event.target.value })}>
+              <div className="org-resource-select org-resource-select--status"><select aria-label={view === "mine" ? "提交状态" : tab === "memories" ? "经验类型" : tab === "documents" ? "文档状态" : "同步偏好"} value={activeQuery.filter} onChange={event => updateQuery({ filter: event.target.value })}>
                 <option value="">{view === "mine" ? "全部状态" : tab === "memories" ? "全部类型" : tab === "documents" ? "全部状态" : "全部技能"}</option>
-                {(view === "mine" ? [["pending", "待处理"], ["approved", "已通过"], ["rejected", "已拒绝"], ...(tab === "skills" ? [["revoked", "已撤销"]] : [["withdrawn", "已撤回"]])] : tab === "memories" ? Object.entries(memoryKindLabel) : tab === "documents" ? [["ready", "可检索"], ["processing", "处理中"], ["failed", "处理失败"], ...((librarySummary?.documentKeywordOnly !== undefined || activeQuery.filter === "keywordOnly") ? [["keywordOnly", librarySummary?.documentSemanticPartial === undefined ? "语义索引待完善" : "关键词检索"]] : []), ...((librarySummary?.documentSemanticPartial !== undefined || activeQuery.filter === "semanticPartial") ? [["semanticPartial", "部分语义可用"]] : [])] : [["installed", "已安装"], ["available", "未安装"], ["mandatory", "组织必装"]]).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                {(view === "mine" ? [["pending", "待处理"], ["approved", "已通过"], ["rejected", "已拒绝"], ...(tab === "skills" ? [["revoked", "已撤销"]] : [["withdrawn", "已撤回"]])] : tab === "memories" ? Object.entries(memoryKindLabel) : tab === "documents" ? [["ready", "可检索"], ["processing", "处理中"], ["failed", "处理失败"], ...((librarySummary?.documentKeywordOnly !== undefined || activeQuery.filter === "keywordOnly") ? [["keywordOnly", librarySummary?.documentSemanticPartial === undefined ? "语义索引待完善" : "关键词检索"]] : []), ...((librarySummary?.documentSemanticPartial !== undefined || activeQuery.filter === "semanticPartial") ? [["semanticPartial", "部分语义可用"]] : [])] : [["installed", "已启用同步"], ["available", "未启用同步"], ["mandatory", "组织必装"]]).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               </select><ChevronDown size={14} aria-hidden="true" /></div>
               <div className="org-resource-list-actions"><span className="org-resource-count" role="status">{activePage.loading ? "正在更新…" : activePage.error ? "更新失败" : folderBrowsing
                 ? `${pages.documents.folderTotal ?? 0} 个文件夹 · ${pages.documents.documentTotal ?? 0} 份文档` : `共 ${activePage.total} 项`}</span>
@@ -1050,7 +1097,7 @@ export function OrganizationMemoryPanel({
             {tab === "overview" && <section className="org-overview">
               <div className="org-workspace__welcome"><div><h3>组织知识管理中心</h3><p>集中管理组织经验、文档和技能，让团队知识助力每个任务。</p><span>{capability}</span></div><img src={organizationHeroImg} width={2172} height={724} alt="组织协作与知识共享插画" draggable={false} /></div>
               <div className="org-overview__hero"><div className="org-overview__hero-icon"><MessageSquareText size={22} /></div><div><h3>在对话中使用组织知识</h3><p>发起任务时自动选择组织知识，可连续追问，也可以让 Agent 结合组织规则直接执行。</p></div><button className="org-memory__primary" onClick={onStartConversation} disabled={!session.organizationMemoryEnabled || !onStartConversation}>发起对话</button></div>
-              {workspaceLoaded && librarySummary && <><div className="org-overview__metrics" aria-label="组织知识概况"><button type="button" onClick={() => setTab("memories")}><span>已发布经验</span><strong>{librarySummary.memories}</strong><small>{pendingMemoryCount} 条待处理</small></button><button type="button" onClick={() => setTab("documents")}><span>可检索文档</span><strong>{librarySummary.documentReady}</strong><small>{librarySummary.documentProcessing} 条处理中 · 共 {librarySummary.documents} 份文档</small></button><button type="button" onClick={() => setTab("skills")}><span>已安装 Skills</span><strong>{librarySummary.skillInstalled}/{librarySummary.skills}</strong><small>{librarySummary.skillMandatory} 个组织必装</small></button></div>
+              {workspaceLoaded && librarySummary && <><div className="org-overview__metrics" aria-label="组织知识概况"><button type="button" onClick={() => setTab("memories")}><span>已发布经验</span><strong>{librarySummary.memories}</strong><small>{pendingMemoryCount} 条待处理</small></button><button type="button" onClick={() => setTab("documents")}><span>可检索文档</span><strong>{librarySummary.documentReady}</strong><small>{librarySummary.documentProcessing} 条处理中 · 共 {librarySummary.documents} 份文档</small></button><button type="button" onClick={() => setTab("skills")}><span>已启用同步的 Skills</span><strong>{librarySummary.skillInstalled}/{librarySummary.skills}</strong><small>{librarySummary.skillMandatory} 个组织必装</small></button></div>
                 <div className="org-overview__attention"><div><h3>需要关注</h3><p>查看安全检查、发布和文档处理进度。</p></div>{pendingCount === 0 && <div className="org-library__empty">当前没有待处理事项</div>}{pendingMemoryCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingMemoryCount} 条经验待处理</span><button onClick={() => navigatePending("memories")}>查看经验</button></div>}{pendingDocumentCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingDocumentCount} 项文档正在扫描或建立索引</span><button onClick={() => { if (librarySummary.documentPending > 0) navigatePending("documents"); else { setTab("documents"); setResourceViews(previous => ({ ...previous, documents: "published" })); library.update("documents", { filter: "processing" }); } }}>查看文档</button></div>}{pendingSkillCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingSkillCount} 个 Skill 待处理</span><button onClick={() => navigatePending("skills")}>查看 Skills</button></div>}</div></>}
             </section>}
             {workspaceLoaded && tab !== "overview" && <div className={`org-resource-results${activePage.loading ? " is-loading" : ""}`} aria-busy={activePage.loading}>
@@ -1068,7 +1115,28 @@ export function OrganizationMemoryPanel({
                 const fileName = document.title.match(/\.[A-Za-z0-9]{1,8}$/) ? document.title : `${document.title}.${document.sourceType === "image" ? "png" : document.sourceType}`;
                 return <article className="org-library__row org-document-library__row" key={document.id}><div className="org-library__icon"><FileText size={19} /></div><div className="org-library__main"><strong title={document.title}>{document.title}</strong><span>{document.scopeName} · {document.sourceType.toUpperCase()} · {readableBytes(document.byteSize)}</span>{folderBrowsing && activeQuery.query && <button type="button" className="org-document-location" onClick={() => openFolder(document.folderId ?? "root", document.scopeId)} aria-label={`打开所在目录：${document.folderPath || "根目录"}`}>{document.folderPath || "根目录"}</button>}{document.failReason && <em>{document.failReason}</em>}</div><span className={`org-state org-state--${document.status}`} title={retrievalState.title}>{retrievalState.label}</span><div className="org-library__actions">{document.status === "ready" && <><button onClick={() => void showDocumentPreview(document.id, fileName, document.sourceType, false)} disabled={previewLoading}><Eye size={14} />查看</button><button onClick={() => void downloadDocument(document.id, fileName, false)}><Download size={14} />下载</button></>}{(mayManage || canPublishCopy) && <ActionMenu label={`更多文档操作：${document.title}`} menuLabel="文档操作" resetKey={document.id} busy={busy} triggerClassName="org-icon-button" trigger={<MoreHorizontal size={18} />}>{({ close, triggerRef }) => <>{canPublishCopy && <button role="menuitem" disabled={document.status !== "ready"} className="topbar-actions__item" onClick={() => { setActionInvoker(triggerRef.current); close(); setPublishDocumentTarget(document); }}>发布副本</button>}{mayManage && <><button role="menuitem" className="topbar-actions__item" disabled={document.status !== "ready"} onClick={() => { close(true); void uploadNewVersion(document); }}><History size={15} />新版本</button><button role="menuitem" className="topbar-actions__item" disabled={document.status !== "ready"} onClick={() => { setActionInvoker(triggerRef.current); close(); setRemoveTarget({ id: document.id, name: document.title, submission: false }); }}><Archive size={15} />归档</button></>}</>}</ActionMenu>}</div></article>;
               })}</div>}
-              {view === "published" && tab === "skills" && <div className="org-skill-grid">{skills.map(skill => <article className="org-skill-card" key={skill.skillId}><div><strong>{skill.name}</strong><span className="org-skill-card__version">v{skill.version}</span></div><p>{skill.description}</p><div className="org-skill-card__meta"><span className={`org-scope-badge org-scope-badge--${skill.scopeKind}`}><ScopeIcon kind={skill.scopeKind} />{skill.scopeName}</span><span className={`org-state org-state--${skill.enabled ? "ready" : "pending"}`}>{skill.mandatory ? "组织必装" : skill.enabled ? "已安装" : "未安装"}</span></div><footer>{skill.mandatory ? <span className="org-skill-card__managed"><LockKeyhole size={13} />由组织管理</span> : <button className={skill.enabled ? "echo-button" : "org-memory__primary"} disabled={busy} onClick={() => void toggleSkill(skill)}>{skill.enabled ? "卸载" : "安装"}</button>}{skill.scopeKind === "personal" && scopes.some(scope => scope.kind !== "personal") && <button className="org-skill-card__publish" disabled={busy} onClick={() => { setActionInvoker(null); setSkillDialog({ kind: "publish", skill }); }}>发布副本</button>}</footer></article>)}</div>}
+              {view === "published" && tab === "skills" && <div className="org-skill-grid">{skills.map(skill => {
+                const installed = skill.deviceInstallation?.state === "installed";
+                const needsSync = skill.deviceInstallation?.state === "failed"
+                  || (skill.enabled || skill.mandatory) !== installed;
+                return <article className="org-skill-card" key={skill.skillId}>
+                  <div><strong>{skill.name}</strong><span className="org-skill-card__version">v{skill.version}</span></div>
+                  <p>{skill.description}</p>
+                  <div className="org-skill-card__meta">
+                    <span className={`org-scope-badge org-scope-badge--${skill.scopeKind}`}><ScopeIcon kind={skill.scopeKind} />{skill.scopeName}</span>
+                    <SkillInstallation skill={skill} />
+                  </div>
+                  {skill.deviceInstallation?.state === "failed" && skill.deviceInstallation.error &&
+                    <p>{skill.deviceInstallation.error}</p>}
+                  <footer>
+                    {skill.mandatory ? <span className="org-skill-card__managed"><LockKeyhole size={13} />组织必装</span> :
+                      <button className={skill.enabled ? "echo-button" : "org-memory__primary"} disabled={busy}
+                        onClick={() => void toggleSkill(skill)}>{skill.enabled ? (installed ? "卸载" : "停止同步") : "安装"}</button>}
+                    {needsSync && <button className="echo-button" disabled={busy} onClick={() => void syncSkills()}>重试同步</button>}
+                    {skill.scopeKind === "personal" && scopes.some(scope => scope.kind !== "personal") && <button className="org-skill-card__publish" disabled={busy} onClick={() => { setActionInvoker(null); setSkillDialog({ kind: "publish", skill }); }}>发布副本</button>}
+                  </footer>
+                </article>;
+              })}</div>}
               {view === "mine" && tab === "memories" && <MemoryPromotionList promotions={memoryPromotions} />}
               {view === "mine" && tab === "skills" && <SubmissionList title="我的 Skill 提交" submissions={skillSubmissions} />}
               {view === "mine" && tab === "documents" && <div className="org-document-submissions">{documentSubmissions.map(submission => {

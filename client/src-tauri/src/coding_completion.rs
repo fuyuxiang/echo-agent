@@ -2,6 +2,7 @@
 //! CodingTask, tool bridge or transcript. Credentials stay in native memory.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -47,11 +48,13 @@ pub struct InlineResponse {
 }
 
 struct Pending {
+    workspace: PathBuf,
     document: String,
     cancel: CancellationToken,
 }
 #[derive(Default)]
 struct CompletionState {
+    consent: HashMap<PathBuf, String>,
     pending: HashMap<String, Pending>,
     requests: VecDeque<Instant>,
     cache: VecDeque<(String, Instant, InlineResponse)>,
@@ -86,6 +89,128 @@ fn validate_request(request: &InlineRequest) -> Result<(), String> {
         return Err("Tab 上下文过大或无效".into());
     }
     Ok(())
+}
+
+fn sensitive_completion_path(path: &Path) -> bool {
+    path.components().any(|part| {
+        let name = part.as_os_str().to_string_lossy().to_ascii_lowercase();
+        matches!(
+            name.as_str(),
+            ".env"
+                | ".ssh"
+                | ".aws"
+                | ".gnupg"
+                | ".git"
+                | ".npmrc"
+                | ".pypirc"
+                | ".netrc"
+                | ".docker"
+                | "secrets"
+                | "credentials"
+                | "credentials.json"
+                | "id_rsa"
+                | "id_ed25519"
+        ) || name.starts_with(".env.")
+            || [".pem", ".key", ".p12", ".pfx", ".keystore"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+    })
+}
+
+fn validate_completion_document(workspace: &Path, uri: &str) -> Result<(), String> {
+    let url = url::Url::parse(uri).map_err(|_| "Tab 补全需要工作区内的本地文件")?;
+    let path = url
+        .to_file_path()
+        .map_err(|_| "Tab 补全需要工作区内的本地文件")?;
+    if sensitive_completion_path(&path) {
+        return Err("敏感路径已关闭 Tab 补全".into());
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| "Tab 补全需要工作区内已保存的文件")?;
+    if !canonical.starts_with(workspace) || !canonical.is_file() {
+        return Err("Tab 补全需要工作区内的本地文件".into());
+    }
+    if sensitive_completion_path(&canonical) {
+        return Err("敏感路径已关闭 Tab 补全".into());
+    }
+    Ok(())
+}
+
+fn consent_identity(model_id: &str, access: &crate::providers::InlineModelAccess) -> String {
+    let mut hash = Sha256::new();
+    for part in [
+        model_id,
+        &access.endpoint,
+        &access.remote_model_id,
+        &access.api_backend,
+    ] {
+        hash.update(part.len().to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    format!("{:x}", hash.finalize())
+}
+
+#[derive(Serialize)]
+pub struct InlineConsent {
+    enabled: bool,
+    destination: String,
+    identity: String,
+}
+
+#[tauri::command]
+pub fn coding_inline_consent(
+    filesystem: State<'_, crate::shell_fs::FilesystemAccess>,
+    workspace: String,
+    model_id: String,
+    enabled: Option<bool>,
+    expected_identity: Option<String>,
+) -> Result<InlineConsent, String> {
+    let workspace = filesystem.require_workspace(&workspace)?;
+    // Revocation works even when the model's connection has since disappeared.
+    if enabled == Some(false) {
+        let mut state = completions().lock().map_err(|_| "Tab 服务状态不可用")?;
+        state.consent.remove(&workspace);
+        for pending in state
+            .pending
+            .values()
+            .filter(|pending| pending.workspace == workspace)
+        {
+            pending.cancel.cancel();
+        }
+        return Ok(InlineConsent {
+            enabled: false,
+            destination: String::new(),
+            identity: String::new(),
+        });
+    }
+    let access = crate::providers::inline_model_access(&model_id)?;
+    let destination = url::Url::parse(&access.endpoint)
+        .map_err(|_| "无法识别 Tab 补全的模型服务")?
+        .origin()
+        .ascii_serialization();
+    let identity = consent_identity(&model_id, &access);
+    let mut state = completions().lock().map_err(|_| "Tab 服务状态不可用")?;
+    if enabled == Some(true) {
+        if expected_identity.as_deref() != Some(identity.as_str()) {
+            return Err("Tab 补全模型服务已变化，请重新核对后开启".into());
+        }
+        if state.consent.get(&workspace) != Some(&identity) {
+            for pending in state
+                .pending
+                .values()
+                .filter(|pending| pending.workspace == workspace)
+            {
+                pending.cancel.cancel();
+            }
+        }
+        state.consent.insert(workspace.clone(), identity.clone());
+    }
+    Ok(InlineConsent {
+        enabled: state.consent.get(&workspace) == Some(&identity),
+        destination,
+        identity,
+    })
 }
 
 fn cache_key(request: &InlineRequest, access: &crate::providers::InlineModelAccess) -> String {
@@ -279,14 +404,19 @@ pub async fn coding_inline_complete(
     request: InlineRequest,
 ) -> Result<InlineResponse, String> {
     validate_request(&request)?;
-    filesystem.require_workspace(&request.workspace)?;
+    let workspace = filesystem.require_workspace(&request.workspace)?;
+    validate_completion_document(&workspace, &request.uri)?;
     let access = crate::providers::inline_model_access(&request.model_id)?;
+    let identity = consent_identity(&request.model_id, &access);
     let key = cache_key(&request, &access);
     let document = format!("{}\n{}", request.workspace, request.uri);
     let started = Instant::now();
     let cancel = CancellationToken::new();
     {
         let mut state = completions().lock().map_err(|_| "Tab 服务状态不可用")?;
+        if state.consent.get(&workspace) != Some(&identity) {
+            return Err("当前工作区和模型服务尚未开启 Tab 补全".into());
+        }
         // Repeated IDs are rejected, so an earlier cleanup cannot delete a new
         // request carrying the same identity.
         if state.pending.contains_key(&request.request_id) {
@@ -330,6 +460,7 @@ pub async fn coding_inline_complete(
         state.pending.insert(
             request.request_id.clone(),
             Pending {
+                workspace,
                 document,
                 cancel: cancel.clone(),
             },
@@ -532,6 +663,51 @@ mod tests {
         let mut large = request();
         large.prefix = "x".repeat(MAX_CONTEXT + 1);
         assert!(validate_request(&large).is_err());
+    }
+    #[test]
+    fn completion_accepts_only_non_sensitive_workspace_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("repo");
+        std::fs::create_dir(&workspace).unwrap();
+        let uri = |path: &Path| url::Url::from_file_path(path).unwrap().to_string();
+        let root = workspace.canonicalize().unwrap();
+        let ordinary = workspace.join("index.ts");
+        std::fs::write(&ordinary, "safe synthetic fixture").unwrap();
+        assert!(validate_completion_document(&root, &uri(&ordinary)).is_ok());
+        for path in [
+            ".env",
+            ".ENV.Local",
+            "private.pem",
+            ".npmrc",
+            "secrets/config.toml",
+        ] {
+            let path = workspace.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "synthetic blocked fixture").unwrap();
+            assert!(validate_completion_document(&root, &uri(&path)).is_err());
+        }
+        let outside = directory.path().join("outside.ts");
+        std::fs::write(&outside, "outside fixture").unwrap();
+        assert!(validate_completion_document(&root, &uri(&outside)).is_err());
+        assert!(validate_completion_document(&root, "untitled:editor.ts").is_err());
+        #[cfg(unix)]
+        {
+            let alias = workspace.join("renamed.ts");
+            std::os::unix::fs::symlink(workspace.join(".env"), &alias).unwrap();
+            assert!(validate_completion_document(&root, &uri(&alias)).is_err());
+            let outside_alias = workspace.join("outside-alias.ts");
+            std::os::unix::fs::symlink(&outside, &outside_alias).unwrap();
+            assert!(validate_completion_document(&root, &uri(&outside_alias)).is_err());
+        }
+    }
+
+    #[test]
+    fn changing_model_or_endpoint_changes_completion_consent_identity() {
+        let mut model = access("chat_completions");
+        let original = consent_identity("model", &model);
+        assert_ne!(consent_identity("other-model", &model), original);
+        model.endpoint = "http://127.0.0.1:8080/v1/chat/completions".into();
+        assert_ne!(consent_identity("model", &model), original);
     }
     /// Opt-in verification against the user's already configured model. No
     /// fallback provider is selected and no configuration is created here.

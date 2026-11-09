@@ -1,12 +1,11 @@
 //! Verification engine: detect a project's real build / lint / type-check /
 //! test commands, run them, and turn their output into structured records.
 //!
-//! A verification's pass/fail verdict comes from the process exit code alone.
-//! Output parsing only enriches a record with a test summary; when parsing
-//! fails the record is still trustworthy, just marked as unstructured.
+//! The process exit code determines its outcome. Only an outcome linked to
+//! stable workspace inputs counts as verification evidence.
 
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
@@ -103,6 +102,7 @@ pub enum VerificationStatus {
     Passed,
     Failed,
     EnvironmentUnavailable,
+    EvidenceInvalidated,
     TimedOut,
     Cancelled,
 }
@@ -206,6 +206,8 @@ pub fn configuration_revision(root: &Path) -> String {
 
 fn configuration_revision_for(config: &VerificationProjectConfig) -> String {
     let mut hasher = Sha256::new();
+    // Earlier records did not check input identity before and after execution.
+    hasher.update(b"echoagent-verification-evidence-v2\0");
     hasher.update(serde_json::to_vec(config).unwrap_or_default());
     // Relevant environment changes expire evidence without persisting secrets.
     for key in [
@@ -397,6 +399,79 @@ pub async fn workspace_tree(root: &Path) -> Option<String> {
         result = Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
     result
+}
+
+// Content checksums alone cannot distinguish an input edited and then
+// restored while the command was running. Include file identity and change
+// metadata for the same Git input scope, without reading ignored build output.
+async fn workspace_input_stamp(root: &Path) -> Option<String> {
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let output = crate::process_supervisor::background_sync_command("git")
+            .current_dir(&root)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .args([
+                "-c",
+                "core.fsmonitor=false",
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ])
+            .output();
+        let files = match output {
+            Ok(output) if output.status.success() => std::str::from_utf8(&output.stdout)
+                .ok()?
+                .split_terminator('\0')
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            _ if root.ancestors().any(|path| path.join(".git").exists()) => return None,
+            _ => crate::coding::changeset::workspace_paths(&root)
+                .ok()?
+                .into_iter()
+                .collect(),
+        };
+        let mut digest = Sha256::new();
+        for file in files {
+            let metadata = match std::fs::symlink_metadata(root.join(&file)) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return None,
+            };
+            digest.update((file.len() as u64).to_le_bytes());
+            digest.update(file.as_bytes());
+            digest.update(metadata.len().to_le_bytes());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                digest.update(metadata.dev().to_le_bytes());
+                digest.update(metadata.ino().to_le_bytes());
+                digest.update(metadata.ctime().to_le_bytes());
+                digest.update(metadata.ctime_nsec().to_le_bytes());
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                digest.update(metadata.creation_time().to_le_bytes());
+                digest.update(metadata.last_write_time().to_le_bytes());
+                digest.update(metadata.file_attributes().to_le_bytes());
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                let modified = metadata
+                    .modified()
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?;
+                digest.update(modified.as_nanos().to_le_bytes());
+            }
+        }
+        Some(format!("{:x}", digest.finalize()))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 fn label_for(kind: VerificationKind) -> &'static str {
@@ -949,6 +1024,7 @@ async fn run_with_events(
         return Err(format!("命令被原生安全策略拒绝：{reason}"));
     }
     let configuration_snapshot = project_config(&root);
+    let configuration = configuration_revision_for(&configuration_snapshot);
     let check = configuration_snapshot
         .checks
         .iter()
@@ -963,10 +1039,17 @@ async fn run_with_events(
             .ok_or_else(|| "该命令来自执行计划，运行前需要用户确认".to_string())?;
         processes.consume_verification_approval(token, &root, &task_id, &command_text)?;
     }
-    let content_revision = crate::coding::changeset::sync_changes(&root, &task_id)
-        .await?
-        .content_revision();
-    let configuration = configuration_revision_for(&configuration_snapshot);
+    let input_stamp = workspace_input_stamp(&root).await;
+    let change_set = crate::coding::changeset::sync_changes(&root, &task_id).await?;
+    if coding_task.phase == task::TaskPhase::Verifying
+        && change_set
+            .verification_started_configuration
+            .as_deref()
+            .is_some_and(|started| started != configuration)
+    {
+        return Err("检查配置在验证期间发生变化，请重新运行完整验证批次".into());
+    }
+    let content_revision = change_set.content_revision();
     let tree = workspace_tree(&root).await;
     let cwd = match check.as_ref().map(|check| check.cwd.as_str()) {
         Some(value) if !value.is_empty() && value != "." => {
@@ -1100,9 +1183,26 @@ async fn run_with_events(
         cancelled,
     );
     record.started_at = started_at;
+    if matches!(
+        record.status,
+        VerificationStatus::Passed | VerificationStatus::Failed
+    ) {
+        let final_tree = workspace_tree(&root).await;
+        let same_revision = crate::coding::changeset::sync_changes(&root, &task_id)
+            .await
+            .is_ok_and(|set| set.content_revision() == content_revision);
+        let same_configuration = configuration_revision(&root) == configuration;
+        let same_inputs =
+            input_stamp.is_some() && input_stamp == workspace_input_stamp(&root).await;
+        if !same_revision || !same_configuration || tree != final_tree || !same_inputs {
+            record.status = VerificationStatus::EvidenceInvalidated;
+        }
+    }
     record.content_revision = Some(content_revision);
     record.configuration_revision = Some(configuration);
-    record.workspace_tree = tree;
+    if record.status != VerificationStatus::EvidenceInvalidated {
+        record.workspace_tree = tree;
+    }
     record.cwd = Some(cwd.to_string_lossy().into_owned());
     let write_root = root.clone();
     let write_record = record.clone();
@@ -1924,6 +2024,73 @@ printf late > late-write
         );
         std::fs::remove_dir_all(&root).ok();
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn temporary_source_edits_invalidate_green_checks_but_ignored_outputs_do_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let result = std::process::Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "fixture@example.invalid"]);
+        git(&["config", "user.name", "Verification fixture"]);
+        std::fs::write(root.join("input.txt"), "original\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "output.log\n").unwrap();
+        git(&["add", "input.txt", ".gitignore"]);
+        git(&["commit", "-qm", "initial inputs"]);
+        let task = task::create_task(&root, "verify", "check unchanged inputs").unwrap();
+        crate::coding::changeset::capture_baseline(&root, &task.id, Vec::new()).unwrap();
+        let stable_tree = workspace_tree(&root).await.unwrap();
+        let processes = CodingProcesses::default();
+        let events = Arc::new(CapturedEvents::default());
+        for (command, expected) in [
+            (
+                "printf 'artifact\n' > output.log; test \"$(cat input.txt)\" = original",
+                VerificationStatus::Passed,
+            ),
+            (
+                "printf 'temporary\n' > input.txt; test \"$(cat input.txt)\" = temporary && printf 'original\n' > input.txt",
+                VerificationStatus::EvidenceInvalidated,
+            ),
+        ] {
+            let token = processes.approve_verification(&root, &task.id, command).unwrap();
+            let result = run_with_events(
+                events.clone(), &processes, root.clone(), task.id.clone(), VerificationKind::Test,
+                command.into(), None, None, Some(token),
+            ).await.unwrap();
+            assert_eq!(result.exit_code, Some(0));
+            assert_eq!(result.status, expected, "{result:?}");
+            assert_eq!(workspace_tree(&root).await.as_deref(), Some(stable_tree.as_str()));
+            if expected == VerificationStatus::EvidenceInvalidated {
+                assert!(result.workspace_tree.is_none());
+                assert_eq!(crate::coding::orchestrator::decide_after_verification(&[result], 0).next_phase, task::TaskPhase::Blocked);
+            }
+        }
+        let mut task = task::load(&root, &task.id).unwrap();
+        task.phase = task::TaskPhase::Delivered;
+        task::save(&root, &task).unwrap();
+        use crate::coding::orchestrator::{apply, OrchestratorEvent};
+        apply(&root, &task.id, OrchestratorEvent::VerificationStarted).unwrap();
+        std::fs::write(root.join("input.txt"), "persistently changed\n").unwrap();
+        crate::coding::changeset::sync_changes(&root, &task.id)
+            .await
+            .unwrap();
+        let (finished, _) =
+            apply(&root, &task.id, OrchestratorEvent::VerificationFinished).unwrap();
+        assert_eq!(finished.phase, task::TaskPhase::Blocked);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn independent_checks_keep_same_revision_results_and_use_project_execution_config() {
@@ -2020,6 +2187,12 @@ printf late > late-write
         let set = crate::coding::changeset::load(&root, &coding_task.id);
         assert_eq!(current_records(&root, &coding_task.id, &set).len(), 2);
         assert!(set.verification_is_current());
+        crate::coding::orchestrator::apply(
+            &root,
+            &coding_task.id,
+            crate::coding::orchestrator::OrchestratorEvent::VerificationStarted,
+        )
+        .unwrap();
         let mut changed_config = config;
         changed_config.checks[1]
             .env
@@ -2031,5 +2204,89 @@ printf late > late-write
         .unwrap();
         assert!(current_records(&root, &coding_task.id, &set).is_empty());
         assert_eq!(list_records(&root, &coding_task.id).len(), 2);
+        let error = run_with_events(
+            events,
+            &processes,
+            root.clone(),
+            coding_task.id.clone(),
+            changed_config.checks[1].kind,
+            changed_config.checks[1].command.clone(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("检查配置在验证期间发生变化"));
+        let (finished, _) = crate::coding::orchestrator::apply(
+            &root,
+            &coding_task.id,
+            crate::coding::orchestrator::OrchestratorEvent::VerificationFinished,
+        )
+        .unwrap();
+        assert_eq!(finished.phase, task::TaskPhase::Blocked);
+        assert_eq!(finished.blocker.as_deref(), Some("检查结果已失效"));
+        assert!(!crate::coding::changeset::load(&root, &coding_task.id).verification_is_current());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn configuration_changed_during_green_command_blocks_batch_completion() {
+        struct EditConfigOnOutput {
+            path: PathBuf,
+            config: VerificationProjectConfig,
+        }
+        impl VerificationEvents for EditConfigOnOutput {
+            fn output(&self, _: &Path, _: &str, _: &str, _: &'static str, line: &str) {
+                if line.trim() == "edit-config" {
+                    store::write_json(&self.path, &self.config).unwrap();
+                }
+            }
+            fn updated(&self, _: &VerificationRecord) {}
+        }
+        use crate::coding::orchestrator::{apply, OrchestratorEvent};
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let mut coding_task = task::create_task(&root, "verify", "config changes").unwrap();
+        coding_task.phase = task::TaskPhase::Delivered;
+        task::save(&root, &coding_task).unwrap();
+        crate::coding::changeset::capture_filesystem_baseline(&root, &coding_task.id).unwrap();
+        let command = "printf 'edit-config\\n'";
+        let mut config = VerificationProjectConfig {
+            checks: vec![ConfiguredCheck {
+                id: "config-change".into(),
+                kind: VerificationKind::Test,
+                command: command.into(),
+                label: "config change fixture".into(),
+                cwd: ".".into(),
+                env: BTreeMap::new(),
+                timeout_secs: Some(15),
+                auto_run: true,
+            }],
+        };
+        let path = store::workspace_dir(&root).join("verification-config.json");
+        store::write_json(&path, &config).unwrap();
+        apply(&root, &coding_task.id, OrchestratorEvent::VerificationStarted).unwrap();
+        config.checks[0].env.insert("ECHO_TEST_SETTING".into(), "new".into());
+        let result = run_with_events(
+            Arc::new(EditConfigOnOutput { path, config }),
+            &CodingProcesses::default(),
+            root.clone(),
+            coding_task.id.clone(),
+            VerificationKind::Test,
+            command.into(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.status, VerificationStatus::EvidenceInvalidated);
+        let (finished, _) =
+            apply(&root, &coding_task.id, OrchestratorEvent::VerificationFinished).unwrap();
+        assert_eq!(finished.phase, task::TaskPhase::Blocked);
+        assert_eq!(finished.blocker.as_deref(), Some("检查结果已失效"));
     }
 }

@@ -134,7 +134,9 @@ export function VerificationView({
               {stale && <b title="源码、检查配置或运行环境依据已改变">已过期</b>}
               {!record.contentRevision && <b>旧记录未绑定版本</b>}
               <span>
-                {record.testSummary
+                {record.status === "evidence_invalidated"
+                  ? "结果失效，需重跑"
+                  : record.testSummary
                   ? `${record.testSummary.passed} 通过 / ${record.testSummary.failed} 失败${
                       record.testSummary.skipped > 0 ? ` / ${record.testSummary.skipped} 跳过` : ""
                     }`

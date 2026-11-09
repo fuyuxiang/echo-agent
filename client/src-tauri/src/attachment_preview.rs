@@ -135,7 +135,13 @@ fn preview_data_sync(source: &Path) -> Result<String, String> {
     ) {
         return Err("此文件类型请用系统应用打开".into());
     }
-    let bytes = crate::shell_fs::read_regular_file_bounded(source, MAX_SOURCE_BYTES)?;
+    use crate::shell_fs::binary_preview_limits::{is_ooxml, OOXML_PREVIEW_MAX_BYTES};
+    let limit = if is_ooxml(source) {
+        OOXML_PREVIEW_MAX_BYTES as u64
+    } else {
+        MAX_SOURCE_BYTES
+    };
+    let bytes = crate::shell_fs::read_regular_file_bounded(source, limit)?;
     if supported_extension(source) {
         // Inspect headers before handing an original to the WebView. A tiny
         // compressed source must not expand into an unbounded browser bitmap.

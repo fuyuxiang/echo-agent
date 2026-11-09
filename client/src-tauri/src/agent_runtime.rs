@@ -143,6 +143,7 @@ fn legacy_model_base_urls(cfg: &AgentConfig) -> Vec<&str> {
 /// an empty `RemoteSettings` so bootstrap treats remote config as already
 /// supplied and never opens the network path.
 pub fn spawn_agent_runtime(_cwd: PathBuf) -> Result<AgentHandle> {
+    crate::mcp::install_desktop_dispatch_guard();
     // Team tools 已迁移到内嵌 MCP server（team_mcp.rs，lib.rs 启动时 serve）。
     // 这里不再需要注册 —— new_session 会把 MCP server 传给 EchoAgent，EchoAgent 以
     // client 身份连接（工具名 echoagent__create_team 等）。对 EchoAgent 零补丁。
@@ -982,7 +983,7 @@ pub async fn prompt_with_mode_and_attachments(
         mode,
         document_tool_bridge,
     )?;
-    send_prepared_prompt(tx, request).await
+    enqueue_prepared_prompt(tx, request)?.await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1030,14 +1031,16 @@ pub(crate) fn prepare_mode_prompt(
     Ok(req)
 }
 
-pub(crate) async fn send_prepared_prompt(
+pub(crate) fn enqueue_prepared_prompt(
     tx: &AcpAgentTx,
     request: acp::PromptRequest,
-) -> Result<()> {
-    let _: acp::PromptResponse = acp_send(request, tx)
-        .await
+) -> Result<impl std::future::Future<Output = Result<()>> + use<>> {
+    let response = echo_agent_acp::acp_enqueue(request, tx)
         .map_err(|error| anyhow!("prompt: {error:?}"))?;
-    Ok(())
+    Ok(async move {
+        response.await.map_err(|error| anyhow!("prompt: {error:?}"))?;
+        Ok(())
+    })
 }
 
 pub(crate) fn build_team_prompt_blocks(

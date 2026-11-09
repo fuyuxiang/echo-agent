@@ -1183,9 +1183,22 @@ pub async fn coding_task_create(
     requirement: String,
 ) -> Result<CodingTask, String> {
     let root = access.require_workspace(&root)?;
-    tokio::task::spawn_blocking(move || create_task(&root, &name, &requirement))
-        .await
-        .map_err(|error| format!("创建任务失败：{error}"))?
+    crate::coding_document_bridge::ensure_workspace_admission(&root.to_string_lossy()).await?;
+    tokio::task::spawn_blocking(move || {
+        store::with_workspace_transaction(&root, || {
+            if let Some(workspace) = crate::coding::isolation::info(&root) {
+                if !workspace.task_ids.is_empty()
+                    || !workspace.session_ids.is_empty()
+                    || !list_tasks(&root).is_empty()
+                {
+                    return Err("这个隔离工作树已有任务，请新建隔离工作树后重试".into());
+                }
+            }
+            create_task(&root, &name, &requirement)
+        })
+    })
+    .await
+    .map_err(|error| format!("创建任务失败：{error}"))?
 }
 
 #[tauri::command]

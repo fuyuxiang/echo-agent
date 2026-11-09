@@ -10,6 +10,14 @@ try{
   browser=await(await reviewChromium()).launch({headless:true,executablePath:process.env.CHROME_BIN||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
   page=await browser.newPage({viewport:{width:1536,height:960}});page.setDefaultTimeout(20000);page.setDefaultNavigationTimeout(60000);
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
+  const replaceCell = async (cell, text) => {
+    const previous = await cell.innerText();
+    await cell.click();
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowLeft' : 'Home');
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+ArrowRight' : 'Shift+End');
+    await page.waitForFunction(value => window.getSelection()?.toString() === value, previous);
+    await page.keyboard.insertText(text);
+  };
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review`);
   await page.getByRole('button',{name:'编辑',exact:true}).waitFor();
   await page.locator('.document-paper table tr').nth(2).waitFor();
@@ -20,7 +28,7 @@ try{
   await page.getByRole('button',{name:'编辑',exact:true}).click();
   const editor=page.getByRole('textbox',{name:'文档编辑区'});await editor.waitFor();
   const cell=editor.locator('td').filter({hasText:'6:30'}).locator('p');
-  await cell.click();await cell.evaluate(element=>{const range=document.createRange();range.selectNodeContents(element);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));});await page.keyboard.insertText('7:30');
+  await replaceCell(cell,'7:30');
   await page.waitForFunction(()=>JSON.stringify(window.documentReview.records['/review/家庭亲子作息表.docx'].document).includes('7:30'));
   await page.getByText('已保存 · Word 已同步',{exact:true}).waitFor();
   assert(await editor.isVisible(),'publishing must not unmount the editor');
@@ -37,7 +45,7 @@ try{
   const context=await page.evaluate(()=>window.documentEditContext);
   assert.equal(context.path,'/review/家庭亲子作息表.docx');assert(context.revision>=2);
   await page.reload();await page.getByRole('button',{name:'编辑',exact:true}).waitFor();
-  assert(await page.locator('.document-paper').getByText('7:30',{exact:true}).isVisible(),'saved source must survive reload');
+  await page.locator('.document-paper').getByText('7:30',{exact:true}).waitFor();
   await page.evaluate(()=>window.documentReview.agentUpdate('/review/家庭亲子作息表.docx','8:00'));
   await page.locator('.document-paper').getByText('8:00',{exact:true}).waitFor();
   await page.getByRole('button',{name:'文档版本历史',exact:true}).click();
@@ -47,7 +55,7 @@ try{
   await page.getByRole('button',{name:'文档版本历史',exact:true}).click();
   await page.getByRole('button',{name:'编辑',exact:true}).click();
   const again=page.getByRole('textbox',{name:'文档编辑区'});
-  const localCell=again.locator('td').filter({hasText:'7:30'}).locator('p');await localCell.click();await localCell.evaluate(element=>{const range=document.createRange();range.selectNodeContents(element);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));});await page.keyboard.insertText('9:00');
+  const localCell=again.locator('td').filter({hasText:'7:30'}).locator('p');await replaceCell(localCell,'9:00');
   await page.evaluate(()=>window.documentReview.agentUpdate('/review/家庭亲子作息表.docx','8:30'));
   await page.getByRole('alert').filter({hasText:'文档已有新修改'}).waitFor();
   assert(await again.getByText('9:00',{exact:true}).isVisible(),'conflict must preserve the local edit');
@@ -66,9 +74,7 @@ try{
   await page.getByRole('button',{name:'文档版本历史',exact:true}).click();
   // Create a saved revision in the copy so it has a real historical version.
   const edit=page.getByRole('textbox',{name:'文档编辑区'});
-  const timeCell=edit.locator('td').filter({hasText:'9:00'}).locator('p');await timeCell.click();
-  await timeCell.evaluate(element=>{const range=document.createRange();range.selectNodeContents(element);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));});
-  await page.keyboard.insertText('10:00');await page.getByText('已保存 · Word 已同步',{exact:true}).waitFor();
+  const timeCell=edit.locator('td').filter({hasText:'9:00'}).locator('p');await replaceCell(timeCell,'10:00');await page.getByText('已保存 · Word 已同步',{exact:true}).waitFor();
   await page.evaluate(()=>window.documentReview.delayRestore=true);
   await page.getByRole('button',{name:'恢复此版本',exact:true}).first().click();
   await page.getByText('正在恢复历史版本…',{exact:true}).waitFor();
@@ -79,8 +85,7 @@ try{
   assert.equal(await edit.getAttribute('contenteditable'),'true','editing must resume after restoring');
   await page.getByRole('button',{name:'文档版本历史',exact:true}).click();
   await page.evaluate(()=>window.documentReview.failPublication=true);
-  const failingCell=edit.locator('td').filter({hasText:'9:00'}).locator('p');await failingCell.click();
-  await failingCell.evaluate(element=>{const range=document.createRange();range.selectNodeContents(element);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));});await page.keyboard.insertText('11:00');
+  const failingCell=edit.locator('td').filter({hasText:'9:00'}).locator('p');await replaceCell(failingCell,'11:00');
   await page.getByRole('alert').filter({hasText:'Word 文件尚未更新'}).waitFor();
   await page.waitForTimeout(3000);
   assert(await page.getByRole('alert').filter({hasText:'Word 文件尚未更新'}).isVisible(),'background refresh must retain the sync error');
@@ -101,8 +106,34 @@ try{
       assert(await page.locator('.document-paper strong').filter({hasText:'保留格式'}).isVisible());
     }
   }
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?scenario=markdown-simple`);
+  const staleCopy=page.getByRole('button',{name:'创建可编辑副本',exact:true});
+  await staleCopy.waitFor();
+  await page.evaluate(()=>window.documentReview.replaceMarkdown('# 外部已更新\n\n这里是重新读取后的内容。'));
+  await staleCopy.click();
+  await page.getByRole('alert').filter({hasText:'原文件已变化'}).waitFor();
+  assert(await staleCopy.isDisabled());
+  await page.getByRole('button',{name:'重新读取文件',exact:true}).click();
+  await page.getByText('这里是重新读取后的内容。',{exact:true}).waitFor();
+  await staleCopy.click();
+  await page.getByRole('button',{name:'编辑',exact:true}).waitFor();
+  assert(await page.locator('.document-paper').getByText('这里是重新读取后的内容。',{exact:true}).isVisible());
+  for(const [label,format] of [['Word','docx'],['PDF','pdf']]) {
+    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?scenario=missing-source`);
+    await page.getByText('原件缺失 · 已恢复编辑稿 · 版本 2',{exact:true}).waitFor();
+    await page.getByRole('heading',{name:'已从备份恢复的内容',exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'编辑',exact:true}).count(),0);
+    assert.equal(await page.getByRole('button',{name:'保存到 Word',exact:true}).count(),0);
+    await page.getByRole('button',{name:'导出文档',exact:true}).click();
+    await page.getByRole('menuitem',{name:`另存为 ${label}`,exact:true}).click();
+    await page.getByText('已导出恢复的编辑稿',{exact:true}).waitFor();
+    await page.locator(`.file-preview__path[title="/review/导出恢复稿.${format}"]`).waitFor();
+    const calls=await page.evaluate(()=>window.documentReview.calls);
+    assert.equal(calls.filter(({command})=>command==='document_workspace_export').length,1);
+    assert(!calls.some(({command})=>command==='document_workspace_save'||command==='document_workspace_publish'));
+  }
   assert.deepEqual(errors,[]);
-  console.log(`Document preview/editing, durable saves, restore locking, sync recovery, Agent/history/conflict, faithful Markdown reading and conversion checks passed. Evidence: ${output}`);
+  console.log(`Document preview/editing, durable saves, restore locking, sync recovery, Agent/history/conflict, faithful Markdown conversion and missing-source exports passed. Evidence: ${output}`);
 }catch(error){
   if(page){await page.screenshot({path:join(output,'failure.png')});console.log('Failure evidence:',output);console.log(await page.locator('body').innerText());console.log(await page.evaluate(()=>({records:window.documentReview?.records,errors:window.documentReview?.calls.slice(-8)})));}
   throw error;

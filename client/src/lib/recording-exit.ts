@@ -23,7 +23,7 @@ export async function saveRecordingBeforeExit(): Promise<void> {
 export function createExitPreparationController(callbacks: {
   preparing: (preparing: boolean) => void;
   failed: (message: string) => void;
-  beforePrepare?: () => Promise<void>;
+  beforePrepare?: (isCurrent: () => boolean) => Promise<void>;
   cancelPrepare?: () => void;
 }) {
   let disposed = false;
@@ -68,7 +68,7 @@ export function createExitPreparationController(callbacks: {
     const id = notice.requestId;
     const isCurrent = () => !disposed && active === id && !closed.has(id);
     const save = callbacks.beforePrepare
-      ? Promise.resolve().then(callbacks.beforePrepare).then(() => isCurrent() ? saveRecordingBeforeExit() : undefined)
+      ? Promise.resolve().then(() => callbacks.beforePrepare?.(isCurrent)).then(() => isCurrent() ? saveRecordingBeforeExit() : undefined)
       : saveRecordingBeforeExit();
     void save.then(
       () => acknowledge(id, null),

@@ -61,6 +61,16 @@
   const button = (root, text) => [...(root?.querySelectorAll('button') ?? [])].find(element => visible(element) && !element.disabled && element.textContent.trim() === text);
   const record = (id, evidence) => report.checks.push({ id, evidence, result: 'passed' });
   const call = async (command, args = {}) => invoke(command, args);
+  const enableTab = async () => {
+    const menu = await wait(() => document.querySelector('button[aria-label="编辑器选项"]'), 'Tab editor options');
+    menu.click();
+    const toggle = await wait(() => [...document.querySelectorAll('.coding-editor-options [role="menuitemradio"]')]
+      .find(element => visible(element) && !element.disabled && element.textContent.includes('Tab 代码补全')), 'Workspace Tab toggle');
+    assert(toggle.getAttribute('aria-checked') === 'false', 'Tab must be off before explicit consent');
+    toggle.click();
+    (await wait(() => button(document.querySelector('[role="dialog"]'), '开启 Tab 补全'), 'Tab model destination consent')).click();
+    await wait(async () => (await call('coding_inline_consent', {workspace:cwd,modelId})).enabled, 'Native Tab consent bound to fixture model and project');
+  };
   const wait = async (check, label, timeout = 30000) => {
     report.activeStep = label; report.steps.push({ label, at: new Date().toISOString() });
     const end = Math.min(deadline, Date.now() + timeout);
@@ -240,6 +250,7 @@
       if(scope.inlineOnly===true) {
         assert((await call('coding_task_list',{root:cwd})).length===0,'Tab-only fixture already has a CodingTask');
         await wait(()=>document.querySelector('button[aria-label^="开发任务模型："]')?.getAttribute('aria-label').includes(modelId.split('/').at(-1)),'Tab-only configured personal model selection');
+        await enableTab();
         const baseline=await call('read_text_file',{path:`${cwd}/completion.cjs`,cwd,maxBytes:4096});
         const inlineStart=inline.length;
         report.hostFocusBefore=hostFocusDiagnostics();
@@ -373,6 +384,7 @@
       record('A12-two-real-projects',{from:cwd,to:`${home}/workspaces/other`,returned:cwd,sessionId:report.sessionId,taskId:report.taskId,activeFile:restored.path,bufferPreserved:true,replayedRequests:false,
         setup:'Only initial recent-project metadata and scoped native directory grants; both switches used production ProjectSwitcher UI'});
       const beforeTasks=(await call('coding_task_list',{root:cwd})).length;
+      await enableTab();
       const inlineStart=inline.length;
       await focusInlineInput();
       await frameAction('tab_setup');

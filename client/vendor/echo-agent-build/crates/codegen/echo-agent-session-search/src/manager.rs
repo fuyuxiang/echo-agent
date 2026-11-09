@@ -25,7 +25,7 @@ use crate::db::{
     with_search_index, with_search_index_blocking,
 };
 use crate::doc::{UpsertOutcome, build_session_doc, upsert_unless_unchanged};
-use crate::fts::{META_KEY_BOOTSTRAP_CLAIM, META_KEY_LAST_BOOTSTRAP, SessionSearchRow};
+use crate::fts::SessionSearchRow;
 #[cfg(test)]
 use crate::fts::{META_KEY_SCHEMA_VERSION, SessionSearchIndex};
 use crate::recovery;
@@ -88,6 +88,7 @@ enum SearchIndexJob {
     /// Re-verify the on-disk completed-bootstrap marker; re-run the full
     /// bootstrap when it is missing.
     RecheckBootstrap,
+    RefreshSubstrings,
 }
 
 enum SearchManagerCmd {
@@ -114,6 +115,13 @@ impl WorkerContext {
     fn bootstrap_once(&self, root: PathBuf) {
         self.progress.begin_bootstrapping();
         let _ = self.tx.send(SearchManagerCmd::BootstrapOnce { root });
+    }
+
+    fn refresh_substrings(&self, root: &Path) {
+        let _ = self.tx.send(SearchManagerCmd::Enqueue {
+            root: root.to_path_buf(),
+            job: SearchIndexJob::RefreshSubstrings,
+        });
     }
 }
 
@@ -267,13 +275,9 @@ pub async fn execute_search(
     let include_content = req.include_content;
     let query_owned = query.to_string();
 
-    let (query_result, claim_in_flight) = tokio::task::spawn_blocking(move || {
+    let (query_result, index_pending) = tokio::task::spawn_blocking(move || {
         with_search_index(&db_path, |index| {
-            let result =
-                index.query(&query_owned, cwd.as_deref(), limit, offset, include_content)?;
-            let claim_in_flight = index.get_meta(META_KEY_BOOTSTRAP_CLAIM)?.is_some()
-                && index.get_meta(META_KEY_LAST_BOOTSTRAP)?.is_none();
-            Ok((result, claim_in_flight))
+            index.query_with_progress(&query_owned, cwd.as_deref(), limit, offset, include_content)
         })
     })
     .await
@@ -288,7 +292,7 @@ pub async fn execute_search(
         results: query_result.results,
         next_offset: query_result.next_offset,
         total_estimate: query_result.total_estimate,
-        bootstrapping: healed || manager.progress.is_bootstrapping() || claim_in_flight,
+        bootstrapping: healed || manager.progress.is_bootstrapping() || index_pending,
     })
 }
 
@@ -370,6 +374,7 @@ async fn handle_job(
                     Some(&e),
                 ),
             }
+            context.refresh_substrings(root_dir);
         }
         SearchIndexJob::RecheckBootstrap => {
             let _bootstrapping = BootstrappingGuard::new(&context.progress);
@@ -406,6 +411,23 @@ async fn handle_job(
                         "session search bootstrap marker unreadable; skipping re-bootstrap"
                     );
                 }
+            }
+            context.refresh_substrings(root_dir);
+        }
+        SearchIndexJob::RefreshSubstrings => {
+            match with_search_index_blocking(&search_db_path(root_dir), |index| {
+                index.refresh_substring_index()
+            })
+            .await
+            {
+                Ok(true) => context.refresh_substrings(root_dir),
+                Ok(false) => {}
+                Err(error) => BOOTSTRAP_FAIL_LOG.warn(
+                    "substring index refresh failures",
+                    "session substring index refresh failed",
+                    None,
+                    Some(&error),
+                ),
             }
         }
     }
@@ -735,5 +757,55 @@ mod tests {
             !session_is_indexed(root, "a memorable title"),
             "a delete must take the row with it",
         );
+    }
+
+    #[tokio::test]
+    async fn background_backfill_finishes_without_another_search() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let path = search_db_path(root);
+        let manager = test_manager();
+        let request = SessionSearchRequest {
+            query: "验收".into(),
+            cwd: None,
+            limit: 30,
+            offset: 0,
+            include_content: false,
+        };
+        // Let the manager's once-per-launch source bootstrap finish first.
+        assert!(
+            execute_search(Some(&manager), root, &request)
+                .await
+                .unwrap()
+                .results
+                .is_empty()
+        );
+        let mut older_writer = rusqlite::Connection::open(&path).unwrap();
+        let tx = older_writer.transaction().unwrap();
+        for i in 0..24 {
+            tx.execute(
+                "INSERT INTO session_docs(session_id, cwd, updated_at, title, content, content_hash)
+                 VALUES (?1, '/ws', 1, '部署记录', '部署验收完成', '')",
+                [i.to_string()],
+            ).unwrap();
+        }
+        tx.commit().unwrap();
+        drop(older_writer);
+        manager.bootstrap_once(root.to_path_buf());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !with_search_index(&path, |index| index.substring_index_pending()).unwrap() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("worker must schedule all backfill batches");
+        let result = execute_search(Some(&manager), root, &request)
+            .await
+            .unwrap();
+        assert_eq!(result.results.len(), 24);
+        assert!(!result.bootstrapping);
     }
 }

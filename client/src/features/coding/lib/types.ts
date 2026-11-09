@@ -162,6 +162,15 @@ export interface IsolatedWorkspace {
   sourceRoot: string;
   baseHead: string;
   integratedHash?: string | null;
+  taskIds?: string[];
+  sessionIds?: string[];
+}
+
+export interface IsolatedIntegrationPlan {
+  sourceRoot: string;
+  sourceHead: string;
+  sourceRef: string;
+  commits: Array<{ hash: string; subject: string; files: string[] }>;
 }
 
 export interface CommitHunk {
@@ -178,6 +187,7 @@ export type VerificationKind =
 export type VerificationStatus =
   | "running"
   | "passed"
+  | "evidence_invalidated"
   | "failed"
   | "timed_out"
   | "cancelled"

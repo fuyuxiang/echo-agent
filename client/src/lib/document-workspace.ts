@@ -9,7 +9,10 @@ export interface EditableDocument {
   fileSha256: string; byteSize: number; document: DocumentNode; savedAt: number; actor: string;
   history: DocumentVersion[]; externalChange?: boolean;
 }
-export interface OpenDocument { document: EditableDocument | null; path: string; fileSha256: string; byteSize: number }
+export interface OpenDocument {
+  document: EditableDocument | null; path: string; fileSha256: string; byteSize: number;
+  sourceMissing?: boolean;
+}
 export interface DocumentEditContext { sessionId: string; path: string; title: string; revision: number; selectedText: string }
 export interface DocumentSnapshot {
   opened: OpenDocument | null; record: EditableDocument | null; draft: DocumentNode | null;
@@ -36,7 +39,7 @@ export class DocumentSession {
   private editEpoch = 0;
   private publishFailures = 0;
   private recoveryKey: string;
-  constructor(readonly sessionId: string, readonly path: string) {
+  constructor(readonly sessionId: string, readonly path: string, private readonly recoverMissingOnly = false) {
     this.recoveryKey = `echoagent.document-draft:${sessionId}:${path}`;
     void this.refresh();
   }
@@ -53,13 +56,17 @@ export class DocumentSession {
     if (this.disposed) throw new Error('任务已删除');
     if (this.state.operation) throw new Error('正在处理文档，请稍候再试');
   }
+  private assertWritable() {
+    this.assertAvailable();
+    if (this.recoverMissingOnly || this.state.opened?.sourceMissing) throw new Error('原件缺失，可导出已保存的编辑稿');
+  }
   private clearTimers() {
     clearTimeout(this.saveTimer);this.saveTimer=undefined;
     clearTimeout(this.publishTimer);this.publishTimer=undefined;
   }
   private schedulePublish() {
     const record=this.state.record;
-    if (this.disposed || this.dirty || this.state.operation || this.state.phase==='conflict'
+    if (this.disposed || this.state.opened?.sourceMissing || this.dirty || this.state.operation || this.state.phase==='conflict'
       || this.publication || this.publishTimer || this.publishFailures>=3
       || !record || record.externalChange || record.revision<=record.exportedRevision) return;
     const delay=this.publishFailures ? [0,2000,5000][this.publishFailures] : 1200;
@@ -71,7 +78,9 @@ export class DocumentSession {
     const epoch=this.editEpoch;
     if(discardLocal){this.clearTimers();this.update({operation:'reload'});}
     try {
-      const opened=await invoke<OpenDocument>('document_workspace_open',{sessionId:this.sessionId,path:this.path});
+      const opened=await invoke<OpenDocument>('document_workspace_open',{
+        sessionId:this.sessionId,path:this.path,...(this.recoverMissingOnly?{recoverMissingOnly:true}:{}),
+      });
       if(this.disposed)return;
       if (!opened || typeof opened.path!=='string') throw new Error('文档编辑能力暂不可用，请重新打开任务');
       const record=opened.document;
@@ -79,8 +88,17 @@ export class DocumentSession {
       // It must never roll the displayed source/revision back in time.
       if (!discardLocal && this.state.operation
         || record && this.state.record && record.revision<this.state.record.revision) return;
+      if (opened.sourceMissing) {
+        // Only the native saved revision is readable/exportable without the
+        // original. Keep newer in-memory edits parked until it returns.
+        this.clearTimers();
+        this.update({opened, record:this.dirty?this.state.record:record,
+          draft:this.dirty?this.state.draft:record?.document ?? null, phase:'ready', message:'', syncError:''});
+        return;
+      }
       if (this.dirty && (!discardLocal || epoch!==this.editEpoch)) {
         if (record?.revision!==this.state.record?.revision || discardLocal) this.update({phase:'conflict',message:'文档已有新修改，你的编辑已保留。可以读取最新稿，或将你的修改另存为副本。',opened});
+        else if(this.state.opened?.sourceMissing) this.update({opened,phase:'dirty'});
         return;
       }
       this.dirty=false;
@@ -111,7 +129,7 @@ export class DocumentSession {
     }
   }
   edit(document: DocumentNode) {
-    if(this.disposed)return;
+    if(this.disposed || this.recoverMissingOnly || this.state.opened?.sourceMissing)return;
     const draft=normalizeDocument(document);
     this.editEpoch+=1;
     this.publishFailures=0;
@@ -122,11 +140,11 @@ export class DocumentSession {
   }
   private scheduleSave() {
     this.clearTimers();
-    if(this.disposed || this.state.operation)return;
+    if(this.disposed || this.state.opened?.sourceMissing || this.state.operation)return;
     this.saveTimer=setTimeout(()=>{this.saveTimer=undefined;void this.flush().catch(()=>{});},500);
   }
   async flush(): Promise<void> {
-    this.assertAvailable();
+    this.assertWritable();
     return this.savePending();
   }
   private async savePending(): Promise<void> {
@@ -157,10 +175,10 @@ export class DocumentSession {
     try {await this.inflight;} finally {this.inflight=null;}
   }
   async publish(automatic = false): Promise<void> {
-    this.assertAvailable();
+    this.assertWritable();
     if(!automatic)this.publishFailures=0;
     await this.flush();clearTimeout(this.publishTimer);this.publishTimer=undefined;
-    this.assertAvailable();
+    this.assertWritable();
     if (this.publication) {await this.publication;if(this.state.record && this.state.record.revision>this.state.record.exportedRevision)return this.publish(automatic);return;}
     const record=this.state.record;if(!record)throw new Error('请先创建可编辑副本');
     if(record.externalChange)throw new Error('Word 文件已在其他位置修改，请将编辑稿另存为副本');
@@ -187,7 +205,7 @@ export class DocumentSession {
     try {await this.publication;} finally {this.publication=null;this.schedulePublish();}
   }
   async restore(revision:number) {
-    this.assertAvailable();this.clearTimers();this.update({operation:'restore'});
+    this.assertWritable();this.clearTimers();this.update({operation:'restore'});
     try {
       await this.publication?.catch(()=>{});
       await this.savePending();
@@ -204,20 +222,33 @@ export class DocumentSession {
     } finally {this.update({operation:null});if(this.dirty && this.state.phase!=='conflict')this.scheduleSave();}
     await this.publish();
   }
-  async export(format:'docx'|'pdf') {
-    await this.flush();const record=this.state.record;if(!record)throw new Error('请先创建可编辑副本');
-    const receipt=await invoke<DocumentExportReceipt|null>('document_workspace_export',{sessionId:this.sessionId,path:record.path,expectedRevision:record.revision,format});
+  async export(format:'docx'|'pdf', savedRevision?:number) {
+    this.assertAvailable();
+    if ((this.state.opened?.sourceMissing || savedRevision!==undefined) && this.state.failure==='read') throw new Error(this.state.message);
+    if (!this.state.opened?.sourceMissing && savedRevision===undefined) await this.flush();
+    const opened=this.state.opened;
+    const record=opened?.sourceMissing?opened.document:this.state.record;
+    if(!record)throw new Error('找不到可导出的编辑稿');
+    const receipt=await invoke<DocumentExportReceipt|null>('document_workspace_export',{
+      sessionId:this.sessionId,path:record.path,expectedRevision:savedRevision ?? record.revision,format,
+      ...(savedRevision===undefined ? {} : {recoveredCopy:true}),
+    });
     if(receipt)changed(this.sessionId);return receipt;
   }
   dispose() {this.disposed=true;this.dirty=false;this.clearTimers();this.clearRecovery();this.listeners.clear();}
-  async copy(document:DocumentNode) {
-    this.assertAvailable();this.clearTimers();this.update({operation:'copy'});
+  async copy(document:DocumentNode, sourcePreview?:string) {
+    this.assertWritable();this.clearTimers();this.update({operation:'copy'});
     const epoch=this.editEpoch;
     try {
       await this.inflight?.catch(()=>{});
-      const latest=await invoke<OpenDocument>('document_workspace_open',{sessionId:this.sessionId,path:this.path});
+      if(sourcePreview===undefined && !this.state.record)throw new Error('请重新读取原件后创建副本');
+      const source=sourcePreview===undefined
+        ? {expectedSha256:(await invoke<OpenDocument>('document_workspace_open',{sessionId:this.sessionId,path:this.path})).fileSha256}
+        : {sourcePreview};
       if(this.disposed)throw new Error('任务已删除');
-      const record=await invoke<EditableDocument>('document_workspace_import',{sessionId:this.sessionId,path:this.path,expectedSha256:latest.fileSha256,document:normalizeDocument(document)});
+      const record=await invoke<EditableDocument>('document_workspace_import',{
+        sessionId:this.sessionId,path:this.path,...source,document:normalizeDocument(document),
+      });
       if(this.disposed)throw new Error('任务已删除');
       changed(this.sessionId);
       if(epoch!==this.editEpoch)throw new Error(`副本已保存到 ${record.path}。创建期间的新输入仍保留在当前文档中，请核对后继续。`);
@@ -225,9 +256,9 @@ export class DocumentSession {
     } finally {this.update({operation:null});if(this.dirty && this.state.phase!=='conflict')this.scheduleSave();else this.schedulePublish();}
   }
 }
-export function documentSession(sessionId:string,path:string) {
-  const key=JSON.stringify([sessionId,path]);let session=sessions.get(key);
-  if(!session){session=new DocumentSession(sessionId,path);sessions.set(key,session);}
+export function documentSession(sessionId:string,path:string,recoverMissingOnly=false) {
+  const key=JSON.stringify([sessionId,path,recoverMissingOnly]);let session=sessions.get(key);
+  if(!session){session=new DocumentSession(sessionId,path,recoverMissingOnly);sessions.set(key,session);}
   return session;
 }
 export function documentEditPrompt(context:DocumentEditContext,instruction:string) {

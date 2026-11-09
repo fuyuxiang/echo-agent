@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
+  listenOrgSkillsChanged: vi.fn(),
   orgLibraryQuery: vi.fn(), orgLibrarySummary: vi.fn(),
   orgSession: vi.fn(), orgLogin: vi.fn(), orgLogout: vi.fn(),
   orgMemoryPromotionsMine: vi.fn(), orgListScopes: vi.fn(), orgListDocuments: vi.fn(),
@@ -68,6 +69,7 @@ describe("OrganizationMemoryPanel", () => {
     resetOrgSessionMirror();
     for (const mock of Object.values(api)) mock.mockReset();
     for (const mock of Object.values(agentClientMocks)) mock.mockReset();
+    api.listenOrgSkillsChanged.mockResolvedValue(vi.fn());
     agentClientMocks.filesystemPickFiles.mockResolvedValue([]);
     agentClientMocks.filesystemPickDirectory.mockResolvedValue(null);
     mockWorkspace();
@@ -487,6 +489,39 @@ describe("OrganizationMemoryPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Skills/ }));
     fireEvent.click(await screen.findByRole("button", { name: "安装" }));
     await waitFor(() => expect(api.orgSetSkillPreference).toHaveBeenCalledWith("skill-1", true));
+  });
+
+  it("远端偏好保存后设备安装失败仍显示真实版本，重试后才显示已安装", async () => {
+    const skill = {
+      skillId: "shared", versionId: "v2", name: "共享指南", description: "本机安装证据",
+      version: "2.0.0", scopeId: teamScope.id, scopeKind: "team", scopeName: teamScope.name,
+      mandatory: false, enabled: false, updatedAt: 1,
+    };
+    api.orgListSkills.mockResolvedValue([skill]);
+    api.orgSetSkillPreference.mockImplementation(async () => {
+      api.orgListSkills.mockResolvedValue([{ ...skill, enabled: true,
+        deviceInstallation: { state: "failed", version: "1.0.0", error: "package hash mismatch" } }]);
+      throw new Error("package hash mismatch");
+    });
+    api.orgSyncSkills.mockImplementation(async () => {
+      api.orgListSkills.mockResolvedValue([{ ...skill, enabled: true,
+        deviceInstallation: { state: "installed", version: "2.0.0" } }]);
+      return { installed: [{ skillId: "shared", versionId: "v2" }] };
+    });
+    render(<OrganizationMemoryPanel />);
+    await screen.findByRole("button", { name: "组织账号：Alice" });
+    fireEvent.click(screen.getByRole("button", { name: /^Skills/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "安装" }));
+    expect(await screen.findByText("本机同步失败 · v1.0.0")).toBeInTheDocument();
+    expect(screen.getByText("package hash mismatch")).toBeVisible();
+    expect(screen.queryByText(/本机已安装/)).toBeNull();
+    expect(screen.getByRole("button", { name: "停止同步" })).toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: "重试同步" });
+    await waitFor(() => expect(retry).toBeEnabled());
+    fireEvent.click(retry);
+    expect(await screen.findByText("本机已安装 · v2.0.0")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "卸载" })).toBeInTheDocument();
+    expect(api.orgSyncSkills).toHaveBeenCalledOnce();
   });
 
   it("概览按待处理类型展示并导航到正确工作区", async () => {

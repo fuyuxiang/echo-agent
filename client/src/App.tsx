@@ -58,7 +58,6 @@ import {
   type PermissionMode,
   agentPrepareTaskWorkspace,
   agentPrepareSend,
-  agentSend,
   agentSendNow,
   agentCancel,
   agentLoadSession,
@@ -132,7 +131,7 @@ import type { AutomationMode } from "./lib/automation-client";
 import { applySessionScopedFailure } from "./lib/session-scoped-failure";
 import { isGlobalShortcutBlocked } from "./lib/keyboard-scope";
 import { useModalPresence } from "./lib/use-modal-focus";
-import { useAppDialog } from "./components/AppDialog";
+import { useAppDialog, type ConfirmAction } from "./components/AppDialog";
 import { confirmAutomationEditorExit } from "./stores/automation-editor-store";
 import { hydrateKnowledgeSources } from "./lib/kb-source-storage";
 import {
@@ -261,6 +260,40 @@ export default function App() {
   );
 }
 
+function prepareExistingProjectTurn(sessionId: string, body: string) {
+  const project = useProjectsStore.getState().projects.find((item) =>
+    item.conversations.some((conversation) => conversation.sessionId === sessionId),
+  );
+  const conversation = project?.conversations.find((item) => item.sessionId === sessionId);
+  const isFirstUserTurn = !useSessionStore.getState().transcripts[sessionId]?.messages.some(
+    (message) => message.role === "user",
+  );
+  const { promptText, consumedPendingContext } = projectPromptForTurn(
+    project, conversation, isFirstUserTurn, body,
+  );
+  const appliesContext = Boolean(project && conversation && (isFirstUserTurn || consumedPendingContext));
+  const prepared = {
+    promptText,
+    setPending: (pending: boolean) => {
+      if (project && (pending ? appliesContext : consumedPendingContext)) {
+        useProjectsStore.getState().setProjectContextPending(project.id, sessionId, pending);
+      }
+    },
+  };
+  if (!project || !appliesContext) return prepared;
+  const cwd = findSessionSummary(sessionId)?.cwd;
+  if (!cwd) throw new Error("无法确认本会话的原工作目录，请重新打开任务");
+  return agentsValidateReferences(cwd, project.experts).then(() => {
+    const currentProject = useProjectsStore.getState().projects.find((item) => item.id === project.id);
+    const currentConversation = currentProject?.conversations.find((item) => item.sessionId === sessionId);
+    if (!currentProject || !currentConversation || !!currentConversation.pendingProjectContext !== consumedPendingContext
+      || buildProjectPrompt(currentProject, body) !== promptText || findSessionSummary(sessionId)?.cwd !== cwd) {
+      throw new Error("项目约定或工作目录已变更，请重新发送");
+    }
+    return prepared;
+  });
+}
+
 function Shell() {
   const notificationNavigatorRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
   const notificationAutomationNavigatorRef = useRef<(automationId: string) => Promise<void>>(async () => {});
@@ -361,8 +394,9 @@ function Shell() {
   // Dedicated Coding projects: one active project plus a persisted recent list.
   const [codingWorkspaces, setCodingWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [activeCodingWorkspaceCwd, setActiveCodingWorkspaceCwd] = useState("");
-  const codingLeaveGuardRef = useRef<(() => Promise<boolean>) | null>(null);
-  const registerCodingLeaveGuard = useCallback((guard: (() => Promise<boolean>) | null) => {
+  const codingLeaveGuardRef = useRef<((confirm?: ConfirmAction) => Promise<boolean>) | null>(null);
+  const preparingProjectTurns = useRef(new Set<string>());
+  const registerCodingLeaveGuard = useCallback((guard: ((confirm?: ConfirmAction) => Promise<boolean>) | null) => {
     codingLeaveGuardRef.current = guard;
   }, []);
 
@@ -908,6 +942,12 @@ function Shell() {
             // 队列项,取下一条继续发送,实现「回完一条自动发下一条」。
             const q = useMessageQueueStore.getState().getQueue(p.sessionId);
             if (hasActiveItems(q)) {
+              if (preparingProjectTurns.current.has(p.sessionId)) {
+                // The replacement may be rejected once it observes the completed
+                // turn. Keep later messages behind it for an explicit resume.
+                useMessageQueueStore.getState().pauseQueued(p.sessionId, "原回复已结束，后续消息已暂停，请按顺序恢复发送");
+                return;
+              }
               const queuedModelId = resolveSessionModelId(
                 modelsRef.current,
                 findSessionSummary(p.sessionId)?.currentModelId,
@@ -922,49 +962,51 @@ function Shell() {
                 return;
               }
               const queuedPromptId = createAgentPromptId();
-              const next = useMessageQueueStore.getState().claimNext(
-                p.sessionId,
-                queuedPromptId,
-              );
-              if (next) {
-                // PromptRequest resolves after the full model turn. Claim the
-                // item before sending so the completion event cannot dispatch
-                // this same item again while that promise is still pending.
-                sessionsStore.getState().upsert({ sessionId: p.sessionId, status: "working" });
-                sessionStore.getState().pushUser(next.text, next.attachments, p.sessionId);
-                sessionStore.getState().startStreaming(p.sessionId, queuedPromptId);
-                void agentSend(
-                  p.sessionId,
-                  next.documentEdit ? documentEditPrompt(next.documentEdit, next.text) : next.text,
-                  next.attachments,
-                  next.text,
-                  queuedPromptId,
-                ).catch((e) => {
-                  if (isAgentPromptSettled(p.sessionId, queuedPromptId)) return;
-                  const detail = friendlyError(e);
-                  // Preserve a rejected queued message for retry and finalize
-                  // the placeholder in the transcript it actually belongs to.
-                  useMessageQueueStore.getState().settleSending(
-                    p.sessionId,
-                    "retry",
-                    queuedPromptId,
-                  );
-                  sessionStore.getState().markComplete({
+              const next = useMessageQueueStore.getState().claimNext(p.sessionId, queuedPromptId);
+              if (!next) return;
+
+              preparingProjectTurns.current.add(p.sessionId);
+              void (async () => {
+                const retry = () => useMessageQueueStore.getState().settleSending(
+                  p.sessionId, "retry", queuedPromptId,
+                );
+                try {
+                  const body = next.documentEdit ? documentEditPrompt(next.documentEdit, next.text) : next.text;
+                  const candidate = prepareExistingProjectTurn(p.sessionId, body);
+                  const prepared = candidate instanceof Promise ? await candidate : candidate;
+                  const latest = sessionStore.getState().transcripts[p.sessionId];
+                  if (sessionsStore.getState().deletedSessionIds.includes(p.sessionId)
+                    || latest?.streamingMessageId || latest?.pendingSendNowPromptId
+                    || latest?.control || pendingInteractionStatus(p.sessionId)) {
+                    retry();
+                    return;
+                  }
+                  beginAgentTurn({
                     sessionId: p.sessionId,
+                    promptText: prepared.promptText,
+                    displayText: next.text,
+                    attachments: next.attachments,
                     promptId: queuedPromptId,
-                    stopReason: "error",
-                    agentResult: detail,
+                    allowBackgroundSession: true,
+                    onRejected: () => {
+                      prepared.setPending(true);
+                      retry();
+                    },
                   });
-                  const current = sessionStore.getState().transcripts[p.sessionId];
-                  if (!current?.streamingMessageId && !current?.pendingSendNowPromptId) {
-                    useMessageQueueStore.getState().pauseQueued(p.sessionId);
-                  }
+                  prepared.setPending(false);
+                } catch (error) {
+                  retry();
+                  useMessageQueueStore.getState().pauseQueued(p.sessionId);
                   if (sessionStore.getState().sessionId === p.sessionId) {
-                    sessionStore.getState().setError(detail, { sessionId: p.sessionId, promptId: queuedPromptId });
+                    sessionStore.getState().setError(friendlyError(error));
                   }
-                  sessionsStore.getState().upsert({ sessionId: p.sessionId, status: "failed" });
-                });
-              }
+                  if (findSessionSummary(p.sessionId)) {
+                    sessionsStore.getState().upsert({ sessionId: p.sessionId, status: "failed" });
+                  }
+                } finally {
+                  preparingProjectTurns.current.delete(p.sessionId);
+                }
+              })();
             }
           },
           onTurnUsage: (payload) => {
@@ -1357,7 +1399,13 @@ function Shell() {
     const exit = createExitPreparationController({
       preparing: setExitPreparing,
       failed: (message) => showToast(message, 8000),
-      beforePrepare: async () => {
+      beforePrepare: async (isCurrent) => {
+        const confirmEditorExit: ConfirmAction = (options) =>
+          isCurrent() ? confirmAutomationExit(options) : Promise.resolve(false);
+        if (codingLeaveGuardRef.current && !(await codingLeaveGuardRef.current(confirmEditorExit))) {
+          throw new Error("已取消退出，代码编辑器仍保留在当前窗口");
+        }
+        if (!isCurrent()) return;
         await confirmAutomationEditorExit(() => confirmAutomationExit({
         title: "退出前舍弃自动化草稿？",
         description: "自动化任务还有未保存的输入。继续编辑会保留草稿；确认退出后，这些输入将被舍弃。",
@@ -1365,6 +1413,7 @@ function Shell() {
         confirmLabel: "舍弃修改并退出",
         danger: true,
         }));
+        if (!isCurrent()) return;
         try { meetingDrafts.ensureDurable(); }
         catch (error) {
           const discard = await confirmAutomationExit({
@@ -1695,6 +1744,7 @@ function Shell() {
       return false;
     }
     if (!ensureQuotaAllowsSend()) return false;
+    if (preparingProjectTurns.current.has(sessionId)) return false;
     const queuePromptId = queueItemId ? createAgentPromptId() : undefined;
     let sendText = text;
     let sendAttachments = attachments;
@@ -1709,74 +1759,41 @@ function Shell() {
       sendAttachments = claimed.attachments ?? [];
       if (claimed.documentEdit) promptTextOverride = documentEditPrompt(claimed.documentEdit, claimed.text);
     }
+    preparingProjectTurns.current.add(sessionId);
+    const retry = () => {
+      if (queuePromptId) useMessageQueueStore.getState().settleSending(sessionId, "retry", queuePromptId);
+    };
     try {
-      // A conversation created from the project node may intentionally be
-      // empty. Bind the project contract to its first real user turn so the
-      // session does not silently behave like an ordinary workspace chat.
-      const project = useProjectsStore.getState().projects.find((item) =>
-        item.conversations.some((conversation) => conversation.sessionId === sessionId),
-      );
-      const projectConversation = project?.conversations.find((conversation) => conversation.sessionId === sessionId);
-      const isFirstUserTurn = !sessionStore.getState().messages.some(
-        (message) => message.role === "user",
-      );
-      if (project && (isFirstUserTurn || projectConversation?.pendingProjectContext)) {
-        const boundCwd = findSessionSummary(sessionId)?.cwd;
-        if (!boundCwd) throw new Error("无法确认本会话的原工作目录，请重新打开任务");
-        await agentsValidateReferences(boundCwd, project.experts);
+      const candidate = prepareExistingProjectTurn(sessionId, promptTextOverride ?? sendText);
+      const prepared = candidate instanceof Promise ? await candidate : candidate;
+      const current = sessionStore.getState();
+      if (current.sessionId !== sessionId || current.streaming || hasPendingQuestionForSession(sessionId)
+        || useContinuationStore.getState().pending[sessionId]) {
+        retry();
+        return false;
       }
-      const promptBody = promptTextOverride ?? sendText;
-      const { promptText: textForAgent, consumedPendingContext } = projectPromptForTurn(
-        project, projectConversation, isFirstUserTurn, promptBody,
-      );
       const accepted = beginAgentTurn({
         sessionId,
-        promptText: textForAgent,
+        promptText: prepared.promptText,
         displayText: sendText,
         attachments: sendAttachments,
         coding,
         promptId: queuePromptId,
-        onRejected: consumedPendingContext || queuePromptId
-          ? () => {
-              if (consumedPendingContext && project) {
-                useProjectsStore.getState().setProjectContextPending(project.id, sessionId, true);
-              }
-              if (!queuePromptId) return;
-              useMessageQueueStore.getState().settleSending(
-                sessionId,
-                "retry",
-                queuePromptId,
-              );
-            }
-          : undefined,
+        onRejected: () => {
+          prepared.setPending(true);
+          retry();
+        },
       });
-      if (!accepted) {
-        if (queuePromptId) {
-          useMessageQueueStore.getState().settleSending(
-            sessionId,
-            "retry",
-            queuePromptId,
-          );
-        }
-        showToast("当前会话已切换，请重新发送");
-        return false;
-      }
-      if (consumedPendingContext && project) {
-        useProjectsStore.getState().setProjectContextPending(project.id, sessionId, false);
-      }
-      return true;
-    } catch (e) {
-      if (queuePromptId) {
-        useMessageQueueStore.getState().settleSending(
-          sessionId,
-          "retry",
-          queuePromptId,
-        );
-      }
-      sessionStore.getState().rollbackPendingTurn();
-      sessionStore.getState().setError(friendlyError(e));
-      sessionsStore.getState().upsert({ sessionId, status: "failed" });
+      if (accepted) prepared.setPending(false);
+      else retry();
+      return accepted;
+    } catch (error) {
+      retry();
+      if (sessionStore.getState().sessionId === sessionId) sessionStore.getState().setError(friendlyError(error));
+      if (findSessionSummary(sessionId)) sessionsStore.getState().upsert({ sessionId, status: "failed" });
       return false;
+    } finally {
+      preparingProjectTurns.current.delete(sessionId);
     }
   };
 
@@ -1923,11 +1940,11 @@ function Shell() {
    * owns this as one atomic sendNow operation, so the cancelled completion of
    * the old turn cannot race a separate follow-up send.
    */
-  const handleSendNowCurrent = (
+  const handleSendNowCurrent = async (
     text: string,
     attachments: string[] = [],
     queueItemId?: string,
-  ): boolean => {
+  ): Promise<boolean> => {
     if ((!text.trim() && attachments.length === 0) || !currentSessionId) return false;
     const sessionId = currentSessionId;
     if (hasPendingQuestionForSession(sessionId)) {
@@ -1949,7 +1966,8 @@ function Shell() {
       showToast("当前会话的模型未配置，请先在输入框右下角重新选择模型");
       return false;
     }
-    if (!ensureQuotaAllowsSend()) return false;
+    if (!ensureQuotaAllowsSend() || preparingProjectTurns.current.has(sessionId)) return false;
+    const previousTurn = transcript.transcripts[sessionId]?.streamingMessageId;
 
     const promptId = createAgentPromptId();
     let sendText = text;
@@ -1966,19 +1984,47 @@ function Shell() {
       sendAttachments = claimed.attachments ?? [];
       promptText = claimed.documentEdit ? documentEditPrompt(claimed.documentEdit, claimed.text) : claimed.text;
     }
+    const hold = (message: string) => {
+      if (!queueItemId) return;
+      const queue = useMessageQueueStore.getState();
+      queue.holdSending(sessionId, promptId, false, message);
+      queue.pauseQueued(sessionId, "后续消息已暂停，请按顺序恢复发送");
+    };
+    preparingProjectTurns.current.add(sessionId);
+    let prepared: Awaited<ReturnType<typeof prepareExistingProjectTurn>>;
+    try {
+      const candidate = prepareExistingProjectTurn(sessionId, promptText);
+      prepared = candidate instanceof Promise ? await candidate : candidate;
+      const latest = sessionStore.getState();
+      const target = latest.transcripts[sessionId];
+      if (latest.sessionId !== sessionId || target?.streamingMessageId !== previousTurn
+        || !target?.streamingMessageId || target.pendingSendNowPromptId || target.control
+        || hasPendingQuestionForSession(sessionId)) {
+        hold("原回复已结束或会话已切换，请确认后继续发送");
+        return false;
+      }
+    } catch (error) {
+      const detail = friendlyError(error);
+      hold(detail);
+      showToast(`暂时无法立即发送：${detail}`, 6000);
+      return false;
+    } finally {
+      preparingProjectTurns.current.delete(sessionId);
+    }
     const codingTask = useTaskStore.getState().task;
     const coding: CodingTurnOptions | undefined = codingTask?.sessionId === sessionId ? {
       mode: transcript.agentMode === "ask" || transcript.agentMode === "plan" ? transcript.agentMode : "agent",
       documentToolBridge:true,workspace:useTaskStore.getState().root,taskId:codingTask.id,
     } : undefined;
     transcript.requestSendNow(promptId, sessionId);
+    prepared.setPending(false);
     sessionsStore.getState().upsert({ sessionId, status: "working" });
 
     // PromptRequest resolves only after the replacement turn ends. Detach it
     // so the composer can clear immediately, just like a normal admitted turn.
     void agentSendNow(
       sessionId,
-      promptText,
+      prepared.promptText,
       sendAttachments,
       sendText,
       promptId,
@@ -1991,6 +2037,7 @@ function Shell() {
       const promptWasAdmitted = targetTranscript?.messages.some(
         (message) => message.role === "assistant" && message.promptId === promptId,
       ) ?? false;
+      if (!promptWasAdmitted) prepared.setPending(true);
       latest.rejectSendNow(promptId, sessionId);
       latest.markComplete({
         sessionId,

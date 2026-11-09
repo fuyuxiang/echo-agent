@@ -55,6 +55,10 @@ fn read_at(home: &Path, session: &str) -> Result<Vec<SessionExport>, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("成果记录损坏，原文件已保留：{e}"))
 }
 
+fn receipt_path(path: &str) -> &Path {
+    dunce::simplified(Path::new(path))
+}
+
 fn record_at(
     home: &Path,
     session: &str,
@@ -67,7 +71,7 @@ fn record_at(
     if pending {
         for entry in &mut entries {
             if entry.pending
-                && entry.receipt.path == receipt.path
+                && receipt_path(&entry.receipt.path) == receipt_path(&receipt.path)
                 && staged_receipt_matches(&entry.receipt)
             {
                 entry.pending = false;
@@ -78,10 +82,16 @@ fn record_at(
     // succeeds. Promotion removes only older versions of the same output.
     let identity = entries
         .iter()
-        .find(|e| e.receipt.path == receipt.path && e.receipt.sha256 == receipt.sha256)
+        .find(|e| {
+            receipt_path(&e.receipt.path) == receipt_path(&receipt.path)
+                && e.receipt.sha256 == receipt.sha256
+        })
         .map(|e| (e.request_key.clone(), e.request_digest.clone()))
         .unwrap_or_default();
-    entries.retain(|entry| entry.receipt.path != receipt.path || (pending && !entry.pending));
+    entries.retain(|entry| {
+        receipt_path(&entry.receipt.path) != receipt_path(&receipt.path)
+            || (pending && !entry.pending)
+    });
     entries.push(SessionExport {
         receipt,
         pending,
@@ -162,7 +172,7 @@ fn identify_creation_at(
     let entry = entries
         .iter_mut()
         .rev()
-        .find(|e| e.receipt.path == path)
+        .find(|e| receipt_path(&e.receipt.path) == receipt_path(path))
         .ok_or("成果回执不存在")?;
     entry.request_key = Some(key.into());
     entry.request_digest = Some(digest.into());
@@ -205,7 +215,7 @@ pub(crate) fn stage(
 fn staged_receipt_matches(receipt: &DocumentExportReceipt) -> bool {
     // Receipt paths were canonicalized before publication. A replaced
     // ancestor/final symlink must not redirect recovery reads.
-    if dunce::canonicalize(&receipt.path).ok().as_deref() != Some(Path::new(&receipt.path)) {
+    if dunce::canonicalize(&receipt.path).ok().as_deref() != Some(receipt_path(&receipt.path)) {
         return false;
     }
     matches!(crate::document_export::validate_output(Path::new(&receipt.path), &receipt.format),
@@ -221,7 +231,7 @@ fn published_entries(entries: Vec<SessionExport>) -> Vec<SessionExport> {
             }
             entry.pending = false;
         }
-        published.insert(entry.receipt.path.clone(), entry);
+        published.insert(receipt_path(&entry.receipt.path).to_path_buf(), entry);
     }
     published.into_values().collect()
 }
@@ -231,7 +241,7 @@ pub fn session_exports_list(
     state: State<'_, crate::commands::AppState>,
     session_id: String,
 ) -> Result<Vec<SessionExport>, String> {
-    state.session_workspace(&session_id)?;
+    crate::commands::trusted_session_history_cwd(&state, &session_id, None)?;
     let _guard = WRITES.lock().map_err(|_| "成果存储锁已损坏")?;
     read_at(&crate::paths::echo_agent_home_dir(), &session_id).map(published_entries)
 }
@@ -311,7 +321,10 @@ fn verified_receipt_at(
     let entry = read_at(home, session)?
         .into_iter()
         .rev()
-        .find(|entry| entry.receipt.path == path && entry.receipt.sha256 == sha256)
+        .find(|entry| {
+            receipt_path(&entry.receipt.path) == receipt_path(path)
+                && entry.receipt.sha256 == sha256
+        })
         .ok_or("未找到此会话的导出回执，请重新打开原会话")?;
     if !staged_receipt_matches(&entry.receipt) {
         return Err("导出文件已移动、删除或内容已变化。原成果记录已保留；请重新导出，或通过文件选择器重新选择当前文件".into());
@@ -323,8 +336,22 @@ pub(crate) fn has_export_path(session: &str, path: &Path) -> Result<bool, String
     Ok(read_at(&crate::paths::echo_agent_home_dir(), session)?
         .iter()
         .any(|entry| {
-            dunce::canonicalize(&entry.receipt.path).is_ok_and(|recorded| recorded == path)
+            receipt_path(&entry.receipt.path) == dunce::simplified(path)
+                && (!entry.pending || staged_receipt_matches(&entry.receipt))
         }))
+}
+
+/// A committed receipt can identify a missing output, but never grants
+/// filesystem access to it or a replacement at the same path.
+pub(super) fn has_published_export_path_at(
+    home: &Path,
+    session: &str,
+    path: &Path,
+) -> Result<bool, String> {
+    let _guard = WRITES.lock().map_err(|_| "成果存储锁已损坏")?;
+    Ok(read_at(home, session)?.iter().any(|entry| {
+        !entry.pending && receipt_path(&entry.receipt.path) == dunce::simplified(path)
+    }))
 }
 
 pub(crate) fn forget_session(session: &str) -> Result<(), String> {
@@ -341,6 +368,68 @@ pub(crate) fn forget_session(session: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_published_receipts_identify_missing_exports_for_the_same_session() {
+        use crate::document_store::{self, EditableDocument};
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().canonicalize().unwrap();
+        let path = root.join("external.docx");
+        let missing_workspace = root.join("unmounted-workspace");
+        let receipt = DocumentExportReceipt {
+            path: dunce::simplified(&path).to_string_lossy().into_owned(),
+            format: "docx".into(),
+            byte_size: 100,
+            sha256: "a".repeat(64),
+        };
+        let draft = EditableDocument {
+            id: document_store::identity("owner", Path::new(&receipt.path)),
+            session_id: "owner".into(),
+            path: receipt.path.clone(),
+            title: "外部成果".into(),
+            revision: 2,
+            exported_revision: 1,
+            file_sha256: receipt.sha256.clone(),
+            byte_size: receipt.byte_size,
+            document: serde_json::json!({"type":"doc","content":[{"type":"paragraph"}]}),
+            saved_at: 2,
+            actor: "手动编辑".into(),
+            history: vec![],
+            pending_export: None,
+            external_change: false,
+        };
+        document_store::write(home.path(), &draft).unwrap();
+        record_at(home.path(), "owner", receipt.clone(), "外部成果", true).unwrap();
+        assert!(!has_published_export_path_at(home.path(), "owner", &path).unwrap());
+        assert!(crate::document_workspace::recovered_draft_at(
+            home.path(),
+            "owner",
+            &missing_workspace,
+            &path,
+        )
+        .is_err());
+        record_at(home.path(), "owner", receipt, "外部成果", false).unwrap();
+        assert!(has_published_export_path_at(home.path(), "owner", &path).unwrap());
+        assert!(!has_published_export_path_at(home.path(), "other", &path).unwrap());
+        let recovered = crate::document_workspace::recovered_draft_at(
+            home.path(),
+            "owner",
+            &missing_workspace,
+            &path,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!((recovered.revision, recovered.exported_revision), (2, 1));
+        assert!(crate::document_workspace::recovered_draft_at(
+            home.path(),
+            "other",
+            &missing_workspace,
+            &path,
+        )
+        .is_err());
+        assert!(!missing_workspace.exists());
+        assert!(!path.exists());
+    }
+
     #[test]
     fn creation_retries_reuse_only_the_same_verified_output_after_restart() {
         let home = tempfile::tempdir().unwrap();

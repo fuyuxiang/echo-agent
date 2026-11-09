@@ -21,6 +21,36 @@ beforeEach(()=>{
 afterEach(()=>{vi.clearAllTimers();vi.useRealTimers();});
 async function open(){const session=new DocumentSession('s',server.path);await vi.waitFor(()=>expect(session.snapshot().record?.revision).toBe(1));return session;}
 describe('document save and recovery workflow',()=>{
+  it('exports the saved revision of a missing original without publishing or flushing a newer local draft',async()=>{
+    const session=await open();
+    session.edit(text('尚未保存的修改'));
+    const original=native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation(async(command,args)=>{
+      if(command==='document_workspace_open')return {...await original(command,args),sourceMissing:true};
+      if(command==='document_workspace_export')return {path:`/work/recovered.${args.format}`,format:args.format,sha256:'b'.repeat(64),byteSize:10};
+      return original(command,args);
+    });
+    await session.refresh();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(session.snapshot().opened?.document?.document).toEqual(text('原稿'));
+    expect(session.snapshot().draft).toEqual(text('尚未保存的修改'));
+    await expect(session.export('docx',1)).resolves.toMatchObject({format:'docx'});
+    await expect(session.export('pdf',1)).resolves.toMatchObject({format:'pdf'});
+    for(const format of ['docx','pdf']) {
+      expect(native.invoke).toHaveBeenCalledWith('document_workspace_export',{sessionId:'s',path:server.path,expectedRevision:1,format,recoveredCopy:true});
+    }
+    await expect(session.publish()).rejects.toThrow('原件缺失');
+    await expect(session.restore(1)).rejects.toThrow('原件缺失');
+    const commands=native.invoke.mock.calls.map(([command])=>command);
+    expect(commands).not.toContain('document_workspace_save');
+    expect(commands).not.toContain('document_workspace_publish');
+
+    native.invoke.mockImplementation(original);
+    await session.refresh();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(server.document).toEqual(text('尚未保存的修改'));
+  });
+
   it('serializes rapid edits and saves the newest draft after an earlier response arrives',async()=>{
     const session=await open();let release!:(value:EditableDocument)=>void;
     native.invoke.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));

@@ -4,6 +4,18 @@ import { automationResolveApproval } from "@/lib/automation-client";
 import { friendlyError } from "@/lib/error-format";
 import type { AutomationSessionState } from "@/lib/use-session-automation";
 
+function publicApprovalUrl(value: unknown): string {
+  if (typeof value !== "string") return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:"
+      ? `${url.origin}${url.pathname}`.slice(0, 300)
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 function SessionApprovalCard({
   automation,
   onToast,
@@ -20,18 +32,15 @@ function SessionApprovalCard({
     const target = details.target && typeof details.target === "object"
       ? details.target as Record<string, unknown>
       : null;
-    const safeUrl = typeof details.url === "string" ? (() => {
-      try {
-        const parsed = new URL(details.url as string);
-        return `${parsed.origin}${parsed.pathname}`.slice(0, 300);
-      } catch {
-        return "";
-      }
-    })() : "";
+    const destination = details.destination && typeof details.destination === "object"
+      ? details.destination as Record<string, unknown>
+      : null;
     return [
-      ["网站", safeUrl],
+      ["网站", publicApprovalUrl(details.url)],
+      ["表单提交地址", publicApprovalUrl(details.formSubmitUrl)],
       ["页面", typeof details.pageTitle === "string" ? details.pageTitle : ""],
       ["目标控件", target && typeof target.name === "string" ? target.name : typeof details.name === "string" ? details.name : ""],
+      ["拖动目的地", destination && typeof destination.name === "string" ? destination.name : ""],
       ["目标应用", typeof details.application === "string" ? details.application : typeof details.targetName === "string" ? details.targetName : ""],
       ["目标窗口", typeof details.windowName === "string" ? details.windowName : ""],
       ["控件角色", typeof details.role === "string" ? details.role : ""],
@@ -45,7 +54,7 @@ function SessionApprovalCard({
       ["显示器", typeof details.displayId === "string" ? details.displayId : ""],
     ].filter((row): row is [string, string] => Boolean(row[1]));
   }, [request]);
-  const decisionLabels = new Set(["网站", "目标控件", "目标应用", "目标窗口", "文件"]);
+  const decisionLabels = new Set(["网站", "表单提交地址", "目标控件", "拖动目的地", "目标应用", "目标窗口", "文件"]);
   const decisionRows = detailRows.filter(([label]) => decisionLabels.has(label));
   const technicalRows = detailRows.filter(([label]) => !decisionLabels.has(label));
 

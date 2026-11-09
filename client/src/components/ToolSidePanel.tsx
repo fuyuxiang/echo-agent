@@ -1,3 +1,4 @@
+import { MAX_ZIP_INPUT_BYTES } from "@/lib/zip-reader";
 import { artifactFileKey } from "@/lib/artifact-file-key";
 /** One session-scoped container for resources, runtime details and tool inspection.
  * Narrow panels show a list or preview; a split requires a measured 360px preview.
@@ -31,7 +32,7 @@ import { FileTreeView } from "./workspace-panel/FileTreeView";
 import { ActionMenu } from "./ActionMenu";
 import { ArrowLeft, Settings2 } from "lucide-react";
 import { BrowserPreview } from "./BrowserPreview";
-import type { DocumentEditContext } from "@/lib/document-workspace";
+import type { DocumentEditContext, OpenDocument } from "@/lib/document-workspace";
 const DocumentWorkbench = lazy(() => import("./DocumentWorkbench"));
 import {
   EchoPinIcon,
@@ -689,6 +690,7 @@ function MainContent({
 type PreviewState =
   | { type: "loading" }
   | { type: "ready"; content: string }
+  | { type: "recovered" }
   | { type: "unauthorized"; message: string }
   | { type: "error"; message: string; canOpen: boolean };
 
@@ -714,14 +716,18 @@ function ArtifactFilePreview({
   onOpenOs: () => Promise<boolean>;
 }) {
   const [state, setState] = useState<PreviewState>({ type: "loading" });
+  const [sourceMissing, setSourceMissing] = useState(false);
   const [retry, setRetry] = useState(0);
   const [authorizing, setAuthorizing] = useState(false);
   const [opening, setOpening] = useState(false);
   const kind = detectPreviewKind(path);
+  const isDocument = kind === "docx" || kind === "markdown";
+  const canOpenOriginal = !sourceMissing && (state.type === "ready" || (state.type === "error" && state.canOpen));
 
   useEffect(() => {
     let cancelled = false;
     setState({ type: "loading" });
+    setSourceMissing(false);
     (async () => {
       let authorized = false;
       try {
@@ -734,6 +740,17 @@ function ArtifactFilePreview({
         const content = await loadPreviewContent(path, cwd, kind);
         if (!cancelled) setState({ type: "ready", content });
       } catch (e) {
+        if (!cancelled && sessionId && isDocument) {
+          try {
+            const opened = await invoke<OpenDocument>("document_workspace_open", { sessionId, path, recoverMissingOnly: true });
+            if (opened?.sourceMissing === true && opened.document) {
+              if (!cancelled) setState({ type: "recovered" });
+              return;
+            }
+          } catch {
+            // Keep the original preview error when the host cannot open a saved draft.
+          }
+        }
         if (!cancelled) {
           const message = errorMessage(e);
           setState(authorized && isUnauthorizedPathError(e)
@@ -745,7 +762,7 @@ function ArtifactFilePreview({
     return () => {
       cancelled = true;
     };
-  }, [path, cwd, kind, retry, sessionId, sessionId && (kind === "docx" || kind === "markdown") ? undefined : artifact?.kind, sessionId && (kind === "docx" || kind === "markdown") ? undefined : artifact?.toolCallId]);
+  }, [path, cwd, kind, isDocument, retry, sessionId, sessionId && isDocument ? undefined : artifact?.kind, sessionId && isDocument ? undefined : artifact?.toolCallId]);
 
   const authorize = async () => {
     setAuthorizing(true);
@@ -779,10 +796,10 @@ function ArtifactFilePreview({
         <span className="file-preview__path" title={path}>
           {path}
         </span>
-        {(state.type === "ready" || (state.type === "error" && state.canOpen)) && <button
+        {canOpenOriginal && <button
           type="button" className="file-preview__open" disabled={opening}
           onClick={() => void openLocalPath(path, { cwd, type: "file", onToast, revealFile: true, revealOnly: true })}>在文件夹中显示</button>}
-        {(state.type === "ready" || (state.type === "error" && state.canOpen)) && (
+        {canOpenOriginal && (
           <button
             type="button"
             className="file-preview__open"
@@ -816,10 +833,13 @@ function ArtifactFilePreview({
           )}
         </div>
       )}
-      {state.type === "ready" && sessionId && (kind === "docx" || kind === "markdown") ? (
+      {(state.type === "ready" || state.type === "recovered") && sessionId && isDocument ? (
         <Suspense fallback={<p className="tool-side-panel__empty">正在打开文档工作区…</p>}>
-          <DocumentWorkbench active={active} key={`${sessionId}:${path}`} path={path} sessionId={sessionId} cwd={cwd} content={state.content}
-            onToast={onToast} onAskAgent={onEditDocument} agentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} onReload={() => setRetry(value => value + 1)} />
+          <DocumentWorkbench active={active} key={`${sessionId}:${path}:${retry}`} path={path} sessionId={sessionId} cwd={cwd} content={state.type === "ready" ? state.content : undefined}
+            onToast={onToast} onAskAgent={onEditDocument} agentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} onSourceMissingChange={setSourceMissing} onReload={() => {
+              setState({ type: "loading" });
+              setRetry(value => value + 1);
+            }} />
         </Suspense>
       ) : state.type === "ready" && (
         <RichFilePreview
@@ -855,11 +875,11 @@ async function loadPreviewContent(
     return "";
   }
   const absolutePath = await resolveAuthorizedPath(path, cwd);
+  const office = kind === "docx" || kind === "pptx" || (kind === "sheet" && /\.xlsx$/i.test(path));
   const base64 = await invoke<string>("read_file_base64", {
     path: absolutePath,
-    // Generated CJK PDFs embed fonts and commonly exceed the generic 1 MiB cap.
-    // Native code independently enforces the PDF-only bound after authorization.
-    maxBytes: kind === "pdf" ? 32 * 1024 * 1024 : 1024 * 1024,
+    // Match the parser budget for OOXML and the native PDF ceiling.
+    maxBytes: kind === "pdf" ? 32 * 1024 * 1024 : office ? MAX_ZIP_INPUT_BYTES : 1024 * 1024,
   });
   return `data:${previewMimeType(path, kind)};base64,${base64}`;
 }

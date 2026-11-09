@@ -20,8 +20,10 @@ export type KnowledgeRetrievalStatus =
       sourceCount: number;
       titles: string[];
       items: KnowledgeRetrievalItem[];
+      keywordOnly?: boolean;
+      notice?: string;
     }
-  | { state: "no-match"; sourceCount: number }
+  | { state: "no-match"; sourceCount: number; keywordOnly?: boolean; notice?: string }
   | { state: "blocked"; message: string }
   | { state: "error"; message: string };
 

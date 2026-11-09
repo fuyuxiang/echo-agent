@@ -203,7 +203,10 @@ pub fn documentation_problem(file: Option<String>, message: String) -> Problem {
 /// Parse one verification record into problems. A passing record yields none,
 /// so text that merely looks like an error can never manufacture a problem.
 pub fn parse_record(record: &VerificationRecord) -> Vec<Problem> {
-    if record.status == VerificationStatus::Passed {
+    if matches!(
+        record.status,
+        VerificationStatus::Passed | VerificationStatus::EvidenceInvalidated
+    ) {
         return Vec::new();
     }
     let combined = format!("{}\n{}", record.stdout, record.stderr);

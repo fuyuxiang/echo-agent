@@ -394,6 +394,8 @@ fn invalidate_skill_sync(inner: &OrgInner) {
     if let Ok(mut reporting) = inner.reporting.lock() {
         reporting.skills_epoch = None;
         reporting.skills_complete = false;
+        reporting.device_skill_epoch = None;
+        reporting.device_skill_failures.clear();
     }
 }
 
@@ -497,9 +499,28 @@ fn notify_skills_changed(app: &AppHandle, reason: &str) {
             tracing::warn!(%error, %reason, "failed to hot-reload organization Skills");
         }
     }
+    emit_skills_changed(app, reason);
+}
+
+fn emit_skills_changed(app: &AppHandle, reason: &str) {
     if let Err(error) = app.emit("org://skills-changed", json!({ "reason": reason })) {
         tracing::debug!(%error, %reason, "failed to emit organization Skill change event");
     }
+}
+
+async fn apply_skills_change(app: &AppHandle, reason: &str) -> Result<(), String> {
+    let tx = app
+        .state::<crate::commands::AppState>()
+        .tx
+        .lock()
+        .unwrap()
+        .clone();
+    let result = match tx {
+        Some(tx) => crate::agent_admin::request_internal_reload_and_wait(&tx, "skills").await,
+        None => Ok(()),
+    };
+    emit_skills_changed(app, reason);
+    result.map_err(|error| format!("本机 Skill 已同步，Runtime 未确认加载：{error}"))
 }
 
 pub(crate) fn notify_models_changed(app: &AppHandle, reason: &str) {
@@ -2474,7 +2495,26 @@ pub async fn org_library_query(
             path = format!("{}?{}", url.path(), url.query().unwrap_or_default());
         }
     }
-    authenticated_json(&state.inner, Method::GET, &path, None).await
+    if resource != "skills" {
+        return authenticated_json(&state.inner, Method::GET, &path, None).await;
+    }
+    let (mut page, context) =
+        authenticated_json_with_context(&state.inner, Method::GET, &path, None).await?;
+    let inventory = skill_reporting_snapshot(&state.inner, &context).await;
+    require_account_context(&state.inner, &context).await?;
+    let failures = state
+        .inner
+        .reporting
+        .lock()
+        .ok()
+        .and_then(|reporting| {
+            (reporting.context.as_ref() == Some(&context)
+                && reporting.device_skill_epoch == Some(state.inner.skill_epoch.load(Ordering::SeqCst)))
+            .then(|| reporting.device_skill_failures.clone())
+        })
+        .unwrap_or_default();
+    annotate_device_skill_state(&mut page, inventory.as_ref(), &failures);
+    Ok(page)
 }
 
 #[tauri::command]
@@ -3413,8 +3453,11 @@ pub async fn org_set_skill_preference(
         bump_skill_revision(&mut local);
         write_json_private(&skill_state_path(), &local)
     })?;
-    sync_skills_for_context(&state.inner, Some(&request_context)).await?;
-    notify_skills_changed(&app, "preference");
+    if let Err(error) = sync_skills_for_context(&state.inner, Some(&request_context)).await {
+        emit_skills_changed(&app, "preference");
+        return Err(error);
+    }
+    apply_skills_change(&app, "preference").await?;
     Ok(result)
 }
 
@@ -4749,15 +4792,14 @@ async fn sync_skills_for_context(
         }
         .await;
         if let Err(error) = installation {
-            if receipt_shared {
-                record_skill_failure(
-                    inner,
-                    &account_context,
-                    expected_epoch,
-                    &receipt_skill_id,
-                    &receipt_version_id,
-                );
-            }
+            record_skill_failure(
+                inner,
+                &account_context,
+                expected_epoch,
+                &receipt_skill_id,
+                &receipt_version_id,
+                receipt_shared,
+            );
             return Err(error);
         }
     }
@@ -4855,6 +4897,8 @@ async fn sync_skills_for_context(
         {
             let state = reporting.for_context(&account_context);
             state.skills = Some(skill_receipts_after_commit(&base, &local));
+            state.device_skill_epoch = None;
+            state.device_skill_failures.clear();
             state.skills_complete = true;
             state.skills_epoch = Some(expected_epoch);
             state.skills_revision = Some(local.revision.clone());
@@ -4869,9 +4913,16 @@ async fn sync_skills_for_context(
 
 #[tauri::command]
 pub async fn org_sync_skills(app: AppHandle, state: State<'_, OrgState>) -> Result<Value, String> {
-    let result = sync_skills(&state.inner).await;
-    notify_skills_changed(&app, "manual-sync");
-    result
+    match sync_skills(&state.inner).await {
+        Ok(result) => {
+            apply_skills_change(&app, "manual-sync").await?;
+            Ok(result)
+        }
+        Err(error) => {
+            emit_skills_changed(&app, "manual-sync");
+            Err(error)
+        }
+    }
 }
 
 #[derive(Default)]
@@ -4880,6 +4931,8 @@ struct ClientReportingState {
     model_revision: Option<u64>,
     model_fingerprint: Option<String>,
     skills: Option<Vec<Value>>,
+    device_skill_epoch: Option<u64>,
+    device_skill_failures: Vec<Value>,
     skills_complete: bool,
     skills_epoch: Option<u64>,
     skills_revision: Option<String>,
@@ -4916,12 +4969,57 @@ fn skill_receipts_after_commit(base: &SkillSyncState, local: &SkillSyncState) ->
     receipts
 }
 
+fn annotate_device_skill_state(
+    page: &mut Value,
+    inventory: Option<&SkillSyncState>,
+    receipts: &[Value],
+) {
+    let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for skill in items {
+        let Some(skill) = skill.as_object_mut() else {
+            continue;
+        };
+        let skill_id = skill.get("skillId").and_then(Value::as_str);
+        let version_id = skill.get("versionId").and_then(Value::as_str);
+        let installed = inventory.and_then(|local| local.installed.get(skill_id?));
+        let failure = receipts.iter().find(|receipt| {
+            receipt["state"] == "failed"
+                && receipt["skillId"].as_str() == skill_id
+                && receipt["versionId"].as_str() == version_id
+        });
+        let state = if failure.is_some() {
+            "failed"
+        } else if installed.is_some_and(|item| Some(item.version_id.as_str()) == version_id) {
+            "installed"
+        } else if skill.get("enabled").and_then(Value::as_bool) == Some(true)
+            || skill.get("mandatory").and_then(Value::as_bool) == Some(true)
+        {
+            "pending"
+        } else if inventory.is_some() {
+            "notInstalled"
+        } else {
+            "unknown"
+        };
+        skill.insert(
+            "deviceInstallation".into(),
+            json!({
+                "state": state,
+                "version": installed.map(|item| item.version.as_str()),
+                "error": failure.and_then(|receipt| receipt["error"].as_str()),
+            }),
+        );
+    }
+}
+
 fn record_skill_failure(
     inner: &OrgInner,
     context: &AccountContext,
     expected_epoch: u64,
     skill_id: &str,
     version_id: &str,
+    report_shared: bool,
 ) {
     if require_account_context_generation(inner, context).is_err()
         || require_current_skill_epoch(inner, expected_epoch).is_err()
@@ -4940,10 +5038,14 @@ fn record_skill_failure(
             skill_id,
             version_id,
             "技能下载、校验或安装失败，请检查客户端并重试",
+            report_shared,
         );
-        state.skills_complete = false;
-        state.skills_epoch = Some(expected_epoch);
-        state.skills_revision = None;
+        state.device_skill_epoch = Some(expected_epoch);
+        if report_shared {
+            state.skills_complete = false;
+            state.skills_epoch = Some(expected_epoch);
+            state.skills_revision = None;
+        }
     }
 }
 
@@ -4952,14 +5054,20 @@ fn append_skill_failure(
     skill_id: &str,
     version_id: &str,
     error: &str,
+    report_shared: bool,
 ) {
-    let receipts = state.skills.get_or_insert_with(Vec::new);
-    receipts.retain(|item| item["skillId"] != skill_id || item["versionId"] != version_id);
-    if receipts.len() >= 1000 {
-        receipts.remove(0);
+    let receipt = json!({"skillId":skill_id,"versionId":version_id,"state":"failed","error":error});
+    let insert = |receipts: &mut Vec<Value>| {
+        receipts.retain(|item| item["skillId"] != skill_id || item["versionId"] != version_id);
+        if receipts.len() >= 1000 {
+            receipts.remove(0);
+        }
+        receipts.push(receipt.clone());
+    };
+    insert(&mut state.device_skill_failures);
+    if report_shared {
+        insert(state.skills.get_or_insert_with(Vec::new));
     }
-    receipts
-        .push(json!({"skillId":skill_id,"versionId":version_id,"state":"failed","error":error}));
 }
 
 fn record_skill_commit_failure(
@@ -4982,24 +5090,31 @@ fn record_skill_commit_failure(
         state.skills_complete = false;
         state.skills_epoch = Some(expected_epoch);
         state.skills_revision = None;
-        for item in local.installed.values().filter(|item| {
-            item.scope_kind != "personal" && base.installed.get(&item.skill_id) != Some(*item)
-        }) {
+        state.device_skill_epoch = Some(expected_epoch);
+        for item in local
+            .installed
+            .values()
+            .filter(|item| base.installed.get(&item.skill_id) != Some(*item))
+        {
             append_skill_failure(
                 state,
                 &item.skill_id,
                 &item.version_id,
                 "技能安装或更新未完成，请重试同步",
+                item.scope_kind != "personal",
             );
         }
-        for item in base.installed.values().filter(|item| {
-            item.scope_kind != "personal" && !local.installed.contains_key(&item.skill_id)
-        }) {
+        for item in base
+            .installed
+            .values()
+            .filter(|item| !local.installed.contains_key(&item.skill_id))
+        {
             append_skill_failure(
                 state,
                 &item.skill_id,
                 &item.version_id,
                 "技能移除未完成，请重试同步",
+                item.scope_kind != "personal",
             );
         }
     }
@@ -5007,6 +5122,8 @@ fn record_skill_commit_failure(
 
 fn record_skills_cleared(inner: &OrgInner) {
     if let Ok(mut reporting) = inner.reporting.lock() {
+        reporting.device_skill_epoch = None;
+        reporting.device_skill_failures.clear();
         if let Some(receipts) = reporting.skills.as_mut() {
             for item in receipts {
                 item["state"] = json!("removed");
@@ -6342,6 +6459,8 @@ mod tests {
             skills_complete: true,
             skills_epoch: Some(0),
             skills_revision: Some("r1".into()),
+            device_skill_epoch: None,
+            device_skill_failures: vec![],
         };
         let mut payload = json!({});
         append_client_receipts(
@@ -6381,14 +6500,14 @@ mod tests {
     async fn skill_failures_invalidate_full_success_and_obsolete_syncs_cannot_report() {
         let inner = test_org_inner("http://127.0.0.1:1");
         let context = active_account_context(&inner).await.unwrap();
-        record_skill_failure(&inner, &context, 0, "shared", "v2");
+        record_skill_failure(&inner, &context, 0, "shared", "v2", true);
         {
             let state = inner.reporting.lock().unwrap();
             assert_eq!(state.skills.as_ref().unwrap()[0]["state"], "failed");
             assert!(!state.skills_complete);
         }
         invalidate_skill_sync(&inner);
-        record_skill_failure(&inner, &context, 0, "obsolete", "v1");
+        record_skill_failure(&inner, &context, 0, "obsolete", "v1", true);
         assert_eq!(
             inner
                 .reporting
@@ -6404,6 +6523,73 @@ mod tests {
         let state = inner.reporting.lock().unwrap();
         assert_eq!(state.skills.as_ref().unwrap()[0]["state"], "removed");
         assert!(state.skills_complete);
+    }
+
+    #[tokio::test]
+    async fn personal_skill_failure_is_visible_on_device_without_a_server_receipt() {
+        let inner = test_org_inner("http://127.0.0.1:1");
+        let context = active_account_context(&inner).await.unwrap();
+        record_skill_failure(&inner, &context, 0, "personal", "v1", false);
+        let mut page = json!({"items": [{"skillId":"personal","versionId":"v1","enabled":true}]});
+        let reporting = inner.reporting.lock().unwrap();
+        annotate_device_skill_state(&mut page, None, &reporting.device_skill_failures);
+        assert_eq!(page["items"][0]["deviceInstallation"]["state"], "failed");
+        assert_eq!(reporting.device_skill_epoch, Some(0));
+        assert_eq!(reporting.skills_epoch, None);
+        assert!(reporting.skills.is_none());
+    }
+
+    #[test]
+    fn device_skill_status_keeps_preference_and_verified_version_separate() {
+        let catalog = json!({"items": [
+            {"skillId":"shared","versionId":"v2","enabled":true},
+            {"skillId":"mandatory","versionId":"v1","mandatory":true},
+            {"skillId":"disabled","versionId":"v1","enabled":false}
+        ]});
+        let mut device = SkillSyncState::default();
+        let mut old = installed("shared", "team", false);
+        old.version_id = "v1".into();
+        old.version = "1.0.0".into();
+        device.installed.insert("shared".into(), old);
+        let receipts =
+            [json!({"skillId":"shared","versionId":"v2","state":"failed","error":"package hash"})];
+        let mut failed = catalog.clone();
+        annotate_device_skill_state(&mut failed, Some(&device), &receipts);
+        assert_eq!(failed["items"][0]["enabled"], true);
+        assert_eq!(
+            failed["items"][0]["deviceInstallation"],
+            json!({"state":"failed", "version":"1.0.0", "error":"package hash"})
+        );
+        assert_eq!(failed["items"][1]["deviceInstallation"]["state"], "pending");
+        assert_eq!(
+            failed["items"][2]["deviceInstallation"]["state"],
+            "notInstalled"
+        );
+
+        let mut unavailable = catalog.clone();
+        annotate_device_skill_state(&mut unavailable, None, &[]);
+        assert_eq!(
+            unavailable["items"][0]["deviceInstallation"]["state"],
+            "pending"
+        );
+        assert_eq!(
+            unavailable["items"][2]["deviceInstallation"]["state"],
+            "unknown"
+        );
+
+        let item = device.installed.get_mut("shared").unwrap();
+        item.version_id = "v2".into();
+        item.version = "2.0.0".into();
+        let mut success = catalog;
+        annotate_device_skill_state(&mut success, Some(&device), &[]);
+        assert_eq!(
+            success["items"][0]["deviceInstallation"]["state"],
+            "installed"
+        );
+        assert_eq!(
+            success["items"][0]["deviceInstallation"]["version"],
+            "2.0.0"
+        );
     }
 
     #[tokio::test]

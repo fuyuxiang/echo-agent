@@ -980,7 +980,7 @@ pub(crate) fn trusted_existing_session_cwd(
 
 /// History belongs to the recorded session even when its execution directory
 /// is offline. A renderer-supplied path can narrow this identity, never replace it.
-fn trusted_session_history_cwd(
+pub(crate) fn trusted_session_history_cwd(
     state: &AppState,
     session_id: &str,
     claimed: Option<&str>,
@@ -1799,6 +1799,44 @@ pub async fn agent_send(
     document_tool_bridge: Option<bool>,
     review: Option<crate::coding_review_runtime::ReviewRequest>,
 ) -> Result<(), String> {
+    agent_send_impl(
+        app, state, session_id, text, attachments, display_text, prompt_id,
+        send_now, mode, document_tool_bridge, review, None,
+    )
+    .await
+}
+
+pub(crate) async fn agent_send_from_weixin(
+    app: tauri::AppHandle,
+    authorization: &crate::weixin::PromptAuthorization,
+    session_id: String,
+    text: String,
+    attachments: Vec<String>,
+    prompt_id: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    agent_send_impl(
+        app.clone(), state, session_id, text, Some(attachments), None,
+        Some(prompt_id), None, None, None, None, Some(authorization),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn agent_send_impl(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+    attachments: Option<Vec<String>>,
+    display_text: Option<String>,
+    prompt_id: Option<String>,
+    send_now: Option<bool>,
+    mode: Option<String>,
+    document_tool_bridge: Option<bool>,
+    review: Option<crate::coding_review_runtime::ReviewRequest>,
+    weixin: Option<&crate::weixin::PromptAuthorization>,
+) -> Result<(), String> {
     let _history_guard = crate::session_continuation::history_mutation_guard(&session_id)?;
     if mode
         .as_deref()
@@ -1937,12 +1975,21 @@ pub async fn agent_send(
         }
     }
     tracing::info!(%session_id, attachment_count = attachments.len(), send_now, "agent prompt send");
-    let result = agent_runtime::send_prepared_prompt(&tx, prepared_prompt)
-        .await
-        .map_err(|error| {
-            tracing::error!(%session_id, error = ?error, "agent prompt failed");
-            error.to_string()
-        });
+    let enqueue = || {
+        agent_runtime::enqueue_prepared_prompt(&tx, prepared_prompt).map_err(|error| error.to_string())
+    };
+    let response = match weixin {
+        Some(authorization) => authorization.enqueue(&app, &session_id, &workspace, enqueue),
+        None => enqueue(),
+    };
+    let submitted = response.is_ok();
+    let result = match response {
+        Ok(response) => response.await.map_err(|error| error.to_string()),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = &result {
+        tracing::error!(%session_id, %error, "agent prompt failed");
+    }
     if result.is_err() {
         if let Some(prompt_id) = prompt_id.as_deref() {
             crate::coding_review_runtime::discard(&session_id, prompt_id);
@@ -1951,7 +1998,12 @@ pub async fn agent_send(
             if document_tool_bridge {
                 let (document, runtime) = tokio::join!(
                     crate::coding_document_bridge::cancel_session_run(&session_id, Some(prompt_id)),
-                    agent_runtime::cancel(&tx, &session_id, "stop", Some(prompt_id)),
+                    async {
+                        if submitted {
+                            agent_runtime::cancel(&tx, &session_id, "stop", Some(prompt_id)).await?;
+                        }
+                        Ok::<(), anyhow::Error>(())
+                    },
                 );
                 if let Err(error) = document {
                     tracing::warn!(%error, "Failed prompt retains editor protection");

@@ -7,23 +7,25 @@ import { Bold, Italic, Underline, List, ListOrdered, AlignLeft, AlignCenter, Ali
 import { DocumentCanvas } from './DocumentCanvas';
 import { FilePreview } from './FilePreview';
 import { ActionMenu } from './ActionMenu';
-import { documentSession, type DocumentEditContext, type EditableDocument, type DocumentSnapshot } from '@/lib/document-workspace';
+import { documentSession, type DocumentEditContext, type DocumentSnapshot } from '@/lib/document-workspace';
 import { markdownToDocument, markdownDocumentLimitations, normalizeDocument, documentText } from '@/lib/document-model';
 import { importDocxDocument } from '@/lib/docx-document';
 import { readZipFromBase64, makeDocZipReader } from '@/lib/zip-reader';
 import { copyShareText } from '@/lib/share';
 import { registerDocumentArtifact } from '@/lib/artifact-catalog';
+import type { DocumentExportReceipt } from '@/lib/document-export';
 import { useSessionsStore } from '@/stores/sessions-store';
 import type { SessionArtifact } from '@/lib/session-artifacts';
 import { listen } from '@tauri-apps/api/event';
 
 export interface DocumentWorkbenchProps {
-  path: string; sessionId: string; cwd?: string; content: string;
+  path: string; sessionId: string; cwd?: string; content?: string;
   active?: boolean;
   onToast?: (message:string)=>void;
   onAskAgent?: (context:DocumentEditContext)=>void;
   onOpenArtifact?: (artifact:SessionArtifact)=>void;
   onEditModeChange?: (editing:boolean)=>void;
+  onSourceMissingChange?: (missing:boolean)=>void;
   onReload?: ()=>void;
   agentDisabled?: boolean;
 }
@@ -46,10 +48,12 @@ function documentStatus(state:DocumentSnapshot):string {
   return state.record.revision===state.record.exportedRevision?'已保存 · Word 已同步':'编辑稿已保存 · Word 待同步';
 }
 
-export default function DocumentWorkbench({path,sessionId,cwd,content,active=true,onToast,onAskAgent,onOpenArtifact,onEditModeChange,onReload,agentDisabled}:DocumentWorkbenchProps) {
-  const session=useMemo(()=>documentSession(sessionId,path),[sessionId,path]);
+export default function DocumentWorkbench({path,sessionId,cwd,content,active=true,onToast,onAskAgent,onOpenArtifact,onEditModeChange,onSourceMissingChange,onReload,agentDisabled}:DocumentWorkbenchProps) {
+  const recoverMissingOnly=content===undefined;
+  const session=useMemo(()=>documentSession(sessionId,path,recoverMissingOnly),[sessionId,path,recoverMissingOnly]);
   const state=useSyncExternalStore(session.subscribe,session.snapshot,session.snapshot);
   const [editing,setEditing]=useState(false),[busy,setBusy]=useState(false),[showHistory,setShowHistory]=useState(false);
+  const [stalePreview,setStalePreview]=useState(false);
   const [,transaction]=useState(0);
   const selection=useRef('');
   const viewEpoch=useRef(0);
@@ -61,13 +65,22 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
   const limitationsId=useId();
   const markdown=/\.(md|markdown|mdown|mdx)$/i.test(path);
   const locked=busy || Boolean(state.operation);
+  const sourceMissing=recoverMissingOnly || state.opened?.sourceMissing===true;
+  useLayoutEffect(()=>{onSourceMissingChange?.(sourceMissing);},[onSourceMissingChange,sourceMissing]);
+  const record=sourceMissing ? (state.failure==='read'?null:state.opened?.document) : state.record;
+  const editingDocument=editing && !sourceMissing;
   const initial=useMemo(()=>{
+    if (content===undefined) return null;
     try {
-      if (markdown) return {document:markdownToDocument(content),limitations:markdownDocumentLimitations(content)};
+      if (markdown) {
+        const limitations=markdownDocumentLimitations(content);
+        if (new TextEncoder().encode(content).length>256*1024) limitations.push('仅供阅读的截断内容');
+        return {document:markdownToDocument(content),limitations};
+      }
       return importDocxDocument(makeDocZipReader(readZipFromBase64(content)));
     } catch {return null;}
   },[path,content,markdown]);
-  const model=state.draft ?? initial?.document;
+  const model=sourceMissing ? record?.document : state.draft ?? initial?.document;
   const editor=useEditor({
     extensions:[StarterKit.configure({heading:{levels:[1,2,3]},link:{openOnClick:false}}),TableKit.configure({table:{resizable:false,allowTableNodeSelection:true}}),TextAlign.configure({types:['heading','paragraph']})],
     content:model ?? {type:'doc',content:[{type:'paragraph'}]},
@@ -77,12 +90,12 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
     onSelectionUpdate:({editor:current})=>{selection.current=current.state.doc.textBetween(current.state.selection.from,current.state.selection.to,'\n').slice(0,8000);transaction(value=>value+1);},
     onTransaction:()=>transaction(value=>value+1),
   },[session]);
-  useLayoutEffect(()=>{editor?.setEditable(active && editing && Boolean(state.record) && !locked, false);},[editor,active,editing,state.record?.id,locked]);
+  useLayoutEffect(()=>{editor?.setEditable(active && editingDocument && Boolean(record) && !locked, false);},[editor,active,editingDocument,record?.id,locked]);
   useEffect(()=>{
     if(!editor || !state.draft)return;
     if(JSON.stringify(normalizeDocument(editor.getJSON()))!==JSON.stringify(state.draft)) editor.commands.setContent(state.draft,{emitUpdate:false});
   },[editor,state.draft]);
-  useEffect(()=>{onEditModeChange?.(active && editing);return()=>onEditModeChange?.(false);},[active,editing,onEditModeChange]);
+  useEffect(()=>{onEditModeChange?.(active && editingDocument);return()=>onEditModeChange?.(false);},[active,editingDocument,onEditModeChange]);
   useEffect(()=>{
     if(!active)return;
     void session.refresh();
@@ -102,53 +115,87 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
     try{await action(isCurrent);}catch(error){if(isCurrent())onToast?.(String(error).replace(/^Error:\s*/,''));}
     finally{actions.pending--;if(actions.mounted)setBusy(actions.pending>0);}
   };
-  const openRecord=(record:EditableDocument,navigate=true)=>{
-    const title=useSessionsStore.getState().independent.find(item=>item.sessionId===sessionId)?.title ?? record.title;
-    const artifact=registerDocumentArtifact({path:record.path,format:'docx',sha256:record.fileSha256,byteSize:record.byteSize},sessionId,title,cwd ?? '');
+  const openExport=(receipt:DocumentExportReceipt, documentTitle:string, navigate:boolean)=>{
+    const title=useSessionsStore.getState().independent.find(item=>item.sessionId===sessionId)?.title ?? documentTitle;
+    const artifact=registerDocumentArtifact(receipt,sessionId,title,cwd ?? '');
     if(navigate)onOpenArtifact?.(artifact);
   };
-  const createCopy=()=>run(async isCurrent=>{if(!model)return;const record=await session.copy(model);openRecord(record,isCurrent());if(isCurrent())onToast?.('已创建可编辑副本，原件已保留');});
+  const exportDocument=(format:'docx'|'pdf')=>run(async isCurrent=>{
+    if(!record)return;
+    const receipt=sourceMissing ? await session.export(format,record.revision) : await session.export(format);
+    if(!receipt)return;
+    if(isCurrent())onToast?.(sourceMissing?'已导出恢复的编辑稿':'已导出当前版本');
+    if(sourceMissing || format==='docx')openExport(receipt,record.title,isCurrent());
+  });
+  const createCopy=()=>run(async isCurrent=>{
+    if(!model)return;
+    try {
+      const record=await session.copy(model,state.record?undefined:content);
+      openExport({path:record.path,format:'docx',sha256:record.fileSha256,byteSize:record.byteSize},record.title,isCurrent());
+      if(isCurrent())onToast?.('已创建可编辑副本，原件已保留');
+    } catch(error) {
+      if(isCurrent() && !state.record && String(error).includes('DOCUMENT_EXTERNAL_CHANGE:')) {
+        setStalePreview(true);
+        return;
+      }
+      throw error;
+    }
+  });
   const askAgent=()=>run(async isCurrent=>{
     await session.flush();if(!isCurrent())return;const record=session.snapshot().record;if(!record)return;
     if(record.externalChange)throw new Error('原 Word 文件已有外部修改，请先另存为副本');
     onAskAgent?.({sessionId,path:record.path,title:record.title,revision:record.revision,selectedText:selection.current});
     setEditing(false);
   });
-  const status=documentStatus(state);
+  const status=sourceMissing ? `原件缺失 · 已恢复编辑稿${record ? ` · 版本 ${record.revision}` : ''}` : documentStatus(state);
   const retryRead=state.failure==='read'||!state.record;
-  if(!model)return <div className="document-workbench"><FilePreview filename={path.split(/[\\/]/).pop() ?? path} content={content}/><p className="document-workbench__hint">此文档暂不支持编辑，请使用系统应用查看原件。</p></div>;
+  if(!model && sourceMissing)return <div className="document-workbench">
+    {state.phase==='loading' ? <p role="status">正在读取已恢复的编辑稿…</p> : <p role="alert">{state.message || '原文件已移动或删除，没有可打开的已保存编辑稿。'}</p>}
+    {state.phase!=='loading' && onReload && <button type="button" onClick={onReload}>重新检查原件</button>}
+  </div>;
+  if(!model)return <div className="document-workbench"><FilePreview filename={path.split(/[\\/]/).pop() ?? path} content={content ?? ''}/><p className="document-workbench__hint">此文档暂不支持编辑，请使用系统应用查看原件。</p></div>;
   return <section className="document-workbench" aria-label="文档工作区">
     <div className="document-workbench__actions">
       <span className="document-workbench__status" role="status">{status}</span>
-      {state.record ? <>
-        <button type="button" disabled={locked} aria-pressed={editing} onClick={()=>setEditing(value=>!value)}>{editing?<Check size={14}/>:<Pencil size={14}/>}{editing?'完成编辑':'编辑'}</button>
-        {onAskAgent && <button type="button" disabled={locked||agentDisabled||state.phase==='conflict'} onMouseDown={event=>event.preventDefault()} onClick={()=>void askAgent()}><Sparkles size={14}/>让 Agent 修改{selection.current?'选中内容':''}</button>}
-        <button type="button" disabled={locked||state.publishing||state.phase==='conflict'||state.record.externalChange} onClick={()=>void run(()=>session.publish())}>{state.syncError?'重试更新 Word':'保存到 Word'}</button>
+      {record ? <>
+        {!sourceMissing && <>
+          <button type="button" disabled={locked} aria-pressed={editing} onClick={()=>setEditing(value=>!value)}>{editing?<Check size={14}/>:<Pencil size={14}/>}{editing?'完成编辑':'编辑'}</button>
+          {onAskAgent && <button type="button" disabled={locked||agentDisabled||state.phase==='conflict'} onMouseDown={event=>event.preventDefault()} onClick={()=>void askAgent()}><Sparkles size={14}/>让 Agent 修改{selection.current?'选中内容':''}</button>}
+          <button type="button" disabled={locked||state.publishing||state.phase==='conflict'||record.externalChange} onClick={()=>void run(()=>session.publish())}>{state.syncError?'重试更新 Word':'保存到 Word'}</button>
+        </>}
         <ActionMenu busy={locked||state.phase==='conflict'} label="导出文档" menuLabel="文档导出格式" trigger={<Download size={15}/>}>
-          {({close})=><>{(['docx','pdf'] as const).map(format=><button type="button" role="menuitem" disabled={locked||state.phase==='conflict'} className="topbar-actions__item" key={format} onClick={()=>{close(true);void run(async isCurrent=>{const receipt=await session.export(format);if(receipt){if(isCurrent())onToast?.('已导出当前版本');if(format==='docx')openRecord({...state.record!,path:receipt.path,fileSha256:receipt.sha256,byteSize:receipt.byteSize},isCurrent());}});}}>另存为 {format==='docx'?'Word':'PDF'}</button>)}</>}
+          {({close})=><>{(['docx','pdf'] as const).map(format=><button type="button" role="menuitem" disabled={locked||state.phase==='conflict'} className="topbar-actions__item" key={format} onClick={()=>{close(true);void exportDocument(format);}}>另存为 {format==='docx'?'Word':'PDF'}</button>)}</>}
         </ActionMenu>
         <button type="button" aria-label="文档版本历史" aria-expanded={showHistory} onClick={()=>setShowHistory(value=>!value)}><History size={15}/></button>
-      </> : <button type="button" disabled={locked||state.phase==='loading'||Boolean(initial?.limitations.length)||!state.opened} aria-describedby={initial?.limitations.length?limitationsId:undefined} onClick={()=>void createCopy()}><Pencil size={14}/>{locked?'正在创建副本…':'创建可编辑副本'}</button>}
-      <button type="button" aria-label="复制文本" onClick={()=>{if(!active)return;const epoch=viewEpoch.current;void copyShareText(markdown&&!state.record?content:documentText(model)).then(ok=>{if(actions.mounted && viewEpoch.current===epoch)onToast?.(ok?'已复制文件内容':'复制失败');});}}><Copy size={14}/></button>
+      </> : <button type="button" disabled={locked||state.phase==='loading'||Boolean(initial?.limitations.length)||stalePreview||!state.opened} aria-describedby={initial?.limitations.length?limitationsId:undefined} onClick={()=>void createCopy()}><Pencil size={14}/>{locked?'正在创建副本…':'创建可编辑副本'}</button>}
+      <button type="button" aria-label="复制文本" onClick={()=>{if(!active)return;const epoch=viewEpoch.current;void copyShareText(markdown&&!record&&content!==undefined?content:documentText(model)).then(ok=>{if(actions.mounted && viewEpoch.current===epoch)onToast?.(ok?'已复制文件内容':'复制失败');});}}><Copy size={14}/></button>
     </div>
-    {!state.record && <p id={limitationsId} className="document-workbench__hint">{initial?.limitations.length?`此文件包含${initial.limitations.join('、')}，暂不能完整转换为可编辑 Word 副本。${markdown?'可继续阅读原文，或让 Agent 根据原文件另行整理。':'请用系统应用查看完整原件。'}`:'可查看段落和表格；创建可编辑副本后可直接调整，原文件会保留。'}</p>}
-    {(state.message||state.record?.externalChange) && <div className="document-workbench__notice" role="alert">
+    {sourceMissing && <div className="document-workbench__notice">
+      <p>当前显示已保存的编辑稿。可另存为 Word 或 PDF，原路径不会被写入。</p>
+      {onReload && <button type="button" disabled={locked} onClick={onReload}>重新检查原件</button>}
+    </div>}
+    {!record && <p id={limitationsId} className="document-workbench__hint">{initial?.limitations.length?`此文件包含${initial.limitations.join('、')}，暂不能完整转换为可编辑 Word 副本。${markdown?'可继续阅读原文，或让 Agent 根据原文件另行整理。':'请用系统应用查看完整原件。'}`:'可查看段落和表格；创建可编辑副本后可直接调整，原文件会保留。'}</p>}
+    {!record && stalePreview && <div className="document-workbench__notice" role="alert">
+      <p>原文件已变化或预览未包含完整内容，请重新读取后再创建副本。</p>
+      {onReload && <button type="button" onClick={onReload}>重新读取文件</button>}
+    </div>}
+    {!sourceMissing && (state.message||state.record?.externalChange) && <div className="document-workbench__notice" role="alert">
       <p>{state.message || 'Word 文件已在其他位置修改。编辑稿已保留，请另存为副本，避免覆盖外部修改。'}</p>
       {state.phase==='conflict' && <button type="button" disabled={locked} onClick={()=>void run(()=>session.refresh(true))}>放弃本地改动，读取最新稿</button>}
       {(state.phase==='conflict'||state.record?.externalChange) && <button type="button" disabled={locked} onClick={()=>void createCopy()}>将我的修改另存为副本</button>}
       {state.phase==='error' && <button type="button" disabled={locked} onClick={()=>void run(()=>retryRead?session.refresh():session.flush())}>{retryRead?'重试读取':'重试保存'}</button>}
       {!state.record && onReload && <button type="button" onClick={onReload}>重新读取文件</button>}
     </div>}
-    {state.syncError && !state.record?.externalChange && <div className="document-workbench__notice" role="alert">
+    {!sourceMissing && state.syncError && !state.record?.externalChange && <div className="document-workbench__notice" role="alert">
       <p>编辑稿已保留，Word 文件尚未更新：{state.syncError}</p>
       <button type="button" disabled={locked||state.publishing||state.phase==='conflict'} onClick={()=>void run(()=>session.publish())}>重试同步 Word</button>
     </div>}
-    {showHistory && state.record && <div className="document-workbench__history" aria-label="文档版本列表">
-      <p>恢复历史会创建新版本，当前版本仍会保留。</p>
-      {[...state.record.history].reverse().map(version=><div key={version.revision}><span>版本 {version.revision} · {version.actor} · {new Date(version.savedAt).toLocaleTimeString()}</span><button type="button" disabled={locked||state.phase==='conflict'} onClick={()=>void run(()=>session.restore(version.revision))}>恢复此版本</button></div>)}
-      {!state.record.history.length && <p>首次修改后会在这里保留历史版本。</p>}
+    {showHistory && record && <div className="document-workbench__history" aria-label="文档版本列表">
+      <p>{sourceMissing?'原件缺失时可查看历史版本记录。':'恢复历史会创建新版本，当前版本仍会保留。'}</p>
+      {[...record.history].reverse().map(version=><div key={version.revision}><span>版本 {version.revision} · {version.actor} · {new Date(version.savedAt).toLocaleTimeString()}</span>{!sourceMissing && <button type="button" disabled={locked||state.phase==='conflict'} onClick={()=>void run(()=>session.restore(version.revision))}>恢复此版本</button>}</div>)}
+      {!record.history.length && <p>{sourceMissing?'暂无历史版本。':'首次修改后会在这里保留历史版本。'}</p>}
     </div>}
-    {editing && editor && <fieldset disabled={locked} className="document-workbench__format" role="toolbar" aria-label="文档格式">
+    {editingDocument && editor && <fieldset disabled={locked} className="document-workbench__format" role="toolbar" aria-label="文档格式">
       <select aria-label="段落样式" value={editor.isActive('heading',{level:1})?'1':editor.isActive('heading',{level:2})?'2':editor.isActive('heading',{level:3})?'3':'0'} onChange={event=>{const level=Number(event.target.value);if(level)editor.chain().focus().toggleHeading({level:level as 1|2|3}).run();else editor.chain().focus().setParagraph().run();}}><option value="0">正文</option><option value="1">标题 1</option><option value="2">标题 2</option><option value="3">标题 3</option></select>
       {[
         ['加粗',Bold,()=>editor.chain().focus().toggleBold().run(),editor.isActive('bold')],
@@ -167,8 +214,8 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
         {({close})=><>{[['在下方添加行',()=>editor.chain().focus().addRowAfter().run()],['在右侧添加列',()=>editor.chain().focus().addColumnAfter().run()],['删除当前行',()=>editor.chain().focus().deleteRow().run()],['删除当前列',()=>editor.chain().focus().deleteColumn().run()],['删除整个表格',()=>editor.chain().focus().deleteTable().run()]].map(([label,action])=><button type="button" role="menuitem" className="topbar-actions__item" key={String(label)} onClick={()=>{close();(action as ()=>void)();}}>{String(label).startsWith('删除')?<Trash2 size={14}/>:<Plus size={14}/>}{String(label)}</button>)}</>}
       </ActionMenu>}
     </fieldset>}
-    <div className="document-workbench__canvas" onMouseUp={()=>{if(!editing){const selected=window.getSelection();selection.current=selected?.anchorNode && selected.focusNode && selected.rangeCount && selected.getRangeAt(0).commonAncestorContainer.parentElement?.closest('.document-workbench__canvas')?selected.toString().slice(0,8000):'';transaction(value=>value+1);}}}>
-      {editing?<EditorContent editor={editor}/>:markdown&&!state.record?<FilePreview filename={path.split(/[\\/]/).pop() ?? path} content={content}/>:<DocumentCanvas document={model}/>}
+    <div className="document-workbench__canvas" onMouseUp={()=>{if(!editingDocument){const selected=window.getSelection();selection.current=selected?.anchorNode && selected.focusNode && selected.rangeCount && selected.getRangeAt(0).commonAncestorContainer.parentElement?.closest('.document-workbench__canvas')?selected.toString().slice(0,8000):'';transaction(value=>value+1);}}}>
+      {editingDocument?<EditorContent editor={editor}/>:markdown&&!record&&content!==undefined?<FilePreview filename={path.split(/[\\/]/).pop() ?? path} content={content}/>:<DocumentCanvas document={model}/>}
     </div>
     <small className="document-workbench__footnote">{markdown&&!state.record?'按 Markdown 原文阅读，创建可编辑副本不会修改原文件。':'内容与基础格式实时呈现。Word 的分页和复杂排版以导出文件为准。'}</small>
   </section>;

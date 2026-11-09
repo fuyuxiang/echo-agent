@@ -37,6 +37,7 @@ import type {
   OrchestratorState,
   PhaseChangedEvent,
   ExecutionLedgerEvent,
+  IsolatedIntegrationPlan,
   IsolatedWorkspace,
   CommitHunk,
   ReviewKind,
@@ -55,6 +56,10 @@ import type {
 } from "./types";
 
 export const codingApi = {
+  inlineConsent: (workspace: string, modelId: string, enabled?: boolean, expectedIdentity?: string) =>
+    invoke<{ enabled: boolean; destination: string; identity: string }>(
+      "coding_inline_consent", { workspace, modelId, enabled, expectedIdentity },
+    ),
   externalToolsPending: (root: string) => invoke<Array<{operationId:string;sessionId:string;runId:string;toolName:string;localInflight:boolean}>>("coding_external_tools_pending",{root}),
   recoverExternalTool: (root:string, operationId:string, note:string) => invoke<void>("coding_external_tool_recover",{root,operationId,note,confirmedStopped:true}),
   verificationFreshness: (root: string, taskId: string) =>
@@ -130,8 +135,10 @@ export const codingApi = {
     invoke<IsolatedWorkspace>("coding_isolation_create", { root }),
   isolatedWorkspaceInfo: (root: string) =>
     invoke<IsolatedWorkspace | null>("coding_isolation_info", { root }),
-  integrateIsolatedTask: (root: string, taskId: string) =>
-    invoke<IsolatedWorkspace>("coding_isolation_integrate", { root, taskId }),
+  previewIsolatedIntegration: (root: string, taskId: string) =>
+    invoke<IsolatedIntegrationPlan>("coding_isolation_integration_preview", { root, taskId }),
+  integrateIsolatedTask: (root: string, taskId: string, expected: IsolatedIntegrationPlan) =>
+    invoke<IsolatedWorkspace>("coding_isolation_integrate", { root, taskId, expected }),
   confirmReview: (root: string, taskId: string, kind: ReviewKind) =>
     invoke<ReviewRecord>("coding_review_confirm", { root, taskId, kind }),
   tddStatus: (root: string, taskId: string) =>

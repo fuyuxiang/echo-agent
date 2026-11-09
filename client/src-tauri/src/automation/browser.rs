@@ -15,7 +15,34 @@ const START_TIMEOUT: Duration = Duration::from_secs(12);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CDP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const EDITABLE_TEXT_JS: &str = include_str!("editable-text.js");
+const INTERACTION_TARGET_JS: &str = include_str!("interaction-target.js");
 type CdpConnection = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+pub(super) struct BrowserInteraction {
+    target_id: String,
+    context_id: u64,
+    input: Value,
+    expected: Value,
+}
+
+impl BrowserInteraction {
+    pub(super) fn target(&self) -> Value {
+        self.expected["target"]["preview"].clone()
+    }
+
+    pub(super) fn destination(&self) -> Value {
+        self.expected["destination"]["preview"].clone()
+    }
+
+    pub(super) fn form_submit_url(&self) -> Option<String> {
+        let url = Url::parse(self.expected["submission"]["action"].as_str()?).ok()?;
+        Some(url[..url::Position::AfterPath].chars().take(300).collect())
+    }
+
+    pub(super) fn url(&self) -> &str {
+        self.expected["url"].as_str().unwrap_or_default()
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -365,61 +392,180 @@ impl BrowserController {
         Ok((data, meta))
     }
 
-    pub async fn click(
+    pub(super) async fn prepare_interaction(
         &mut self,
-        element_ref: Option<&str>,
-        x: Option<f64>,
-        y: Option<f64>,
+        input: Value,
+    ) -> Result<BrowserInteraction, String> {
+        let frames = self.call_page("Page.getFrameTree", json!({})).await?;
+        let target_id = self.target_id.clone().ok_or("无法识别浏览器标签页")?;
+        let frame_id = frames["frameTree"]["frame"]["id"]
+            .as_str()
+            .ok_or("无法识别浏览器主文档")?;
+        let world = self
+            .call_page_at(
+                Some(&target_id),
+                "Page.createIsolatedWorld",
+                json!({ "frameId": frame_id, "worldName": "EchoAgentBrowserInteraction" }),
+            )
+            .await?;
+        let context_id = world["executionContextId"]
+            .as_u64()
+            .ok_or("无法识别浏览器文档执行环境")?;
+        let mut approval = BrowserInteraction {
+            target_id,
+            context_id,
+            input,
+            expected: Value::Null,
+        };
+        let token = uuid::Uuid::now_v7().to_string();
+        let expected = self
+            .interaction_sample(&approval, Some(&token), false, None, None)
+            .await?;
+        if !expected.is_object() {
+            return Err("无法确认网页操作的实际目标，请重新观察页面".into());
+        }
+        let submission = &expected["submission"];
+        if submission.is_object() && submission["method"] != "dialog" {
+            let action = submission["action"]
+                .as_str()
+                .ok_or("无法核对表单的 HTTP/HTTPS 提交地址，请在浏览器中手动操作")?;
+            validate_navigation_url(action, self.allow_private_network).await?;
+        }
+        approval.expected = expected;
+        Ok(approval)
+    }
+
+    async fn interaction_sample(
+        &mut self,
+        approval: &BrowserInteraction,
+        new_token: Option<&str>,
+        destination_only: bool,
+        click_point: Option<(f64, f64)>,
+        form_guard: Option<&Value>,
+    ) -> Result<Value, String> {
+        let input = &approval.input;
+        let token = json!(new_token);
+        let scroll = new_token.is_some();
+        let click_point = json!(click_point.map(|(x, y)| json!({"x": x, "y": y})));
+        let form_guard = json!(form_guard);
+        let expression = format!(
+            "({INTERACTION_TARGET_JS})({input},{token},{scroll},{destination_only},{click_point},{form_guard})"
+        );
+        let evaluation = self
+            .call_page_at(
+                Some(&approval.target_id),
+                "Runtime.evaluate",
+                json!({
+                    "expression": expression,
+                    "contextId": approval.context_id,
+                    "returnByValue": true,
+                }),
+            )
+            .await?;
+        if evaluation.get("exceptionDetails").is_some() {
+            return Err("无法核对网页操作目标，操作已取消".into());
+        }
+        Ok(evaluation["result"]["value"].clone())
+    }
+
+    async fn verify_interaction(
+        &mut self,
+        approval: &BrowserInteraction,
+        destination_only: bool,
+        click_point: Option<(f64, f64)>,
+        arm_form_guard: bool,
+    ) -> Result<Value, String> {
+        let submission = &approval.expected["submission"];
+        let form_guard = (arm_form_guard && submission.is_object()).then_some(submission);
+        let actual = self
+            .interaction_sample(approval, None, destination_only, click_point, form_guard)
+            .await?;
+        let expected = &approval.expected;
+        if actual["documentToken"] != expected["documentToken"]
+            || actual["url"] != expected["url"]
+            || (!destination_only && actual["target"] != expected["target"])
+            || actual["destination"] != expected["destination"]
+            || actual["submission"] != expected["submission"]
+        {
+            return Err("网页、焦点或实际命中目标已变化，操作已取消，请重新观察页面".into());
+        }
+        Ok(actual)
+    }
+
+    async fn finish_form_guard(&mut self, approval: &BrowserInteraction) -> Result<(), String> {
+        if approval.expected["submission"].is_object() {
+            // An allowed submission can navigate and destroy this context.
+            // The guard reports a mismatch only while the original page lives.
+            let result = self
+                .interaction_sample(approval, None, false, None, Some(&json!("finish")))
+                .await;
+            if matches!(result, Ok(Value::Bool(true))) {
+                return Err("表单提交目标已变化，操作已取消，请重新核对提交地址".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn click(
+        &mut self,
+        approval: &BrowserInteraction,
         button: &str,
         click_count: u32,
     ) -> Result<Value, String> {
-        let (x, y) = match element_ref {
-            Some(reference) => {
-                let reference = serde_json::to_string(reference)
-                    .map_err(|error| format!("编码元素引用失败：{error}"))?;
-                let expression = format!(
-                    "(() => {{ const e=document.querySelector('[data-echo-ref='+CSS.escape({reference})+']'); if(!e) return null; const r=e.getBoundingClientRect(); e.scrollIntoView({{block:'center',inline:'center'}}); const q=e.getBoundingClientRect(); return {{x:q.left+q.width/2,y:q.top+q.height/2,tag:e.tagName.toLowerCase(),name:(e.innerText||e.getAttribute('aria-label')||'').trim().slice(0,200),type:e.type||''}}; }})()"
-                );
-                let location = self.evaluate(&expression, true).await?;
-                let x = location
-                    .get("x")
-                    .and_then(Value::as_f64)
-                    .ok_or_else(|| "页面元素已失效，请重新获取页面快照".to_string())?;
-                let y = location
-                    .get("y")
-                    .and_then(Value::as_f64)
-                    .ok_or_else(|| "页面元素已失效，请重新获取页面快照".to_string())?;
-                (x, y)
-            }
-            None => (
-                x.ok_or_else(|| "click 需要 elementRef 或 x/y 坐标".to_string())?,
-                y.ok_or_else(|| "click 需要 elementRef 或 x/y 坐标".to_string())?,
-            ),
-        };
         let button = match button {
             "left" | "right" | "middle" => button,
             _ => return Err("button 只能是 left、right 或 middle".into()),
         };
-        self.call_page(
+        let target_id = Some(approval.target_id.as_str());
+        let actual = self.verify_interaction(approval, false, None, false).await?;
+        let (x, y) = actual["x"]
+            .as_f64()
+            .zip(actual["y"].as_f64())
+            .ok_or("无法确定已确认控件的点击坐标")?;
+        let point = Some((x, y));
+        self.call_page_at(
+            target_id,
             "Input.dispatchMouseEvent",
             json!({ "type": "mouseMoved", "x": x, "y": y, "button": "none" }),
         )
         .await?;
-        self.call_page(
-            "Input.dispatchMouseEvent",
-            json!({ "type": "mousePressed", "x": x, "y": y, "button": button, "clickCount": click_count.clamp(1, 3) }),
-        )
-        .await?;
-        let release = json!({ "type": "mouseReleased", "x": x, "y": y, "button": button, "clickCount": click_count.clamp(1, 3) });
-        if let Err(error) = self
-            .call_page("Input.dispatchMouseEvent", release.clone())
-            .await
-        {
-            let _ = self.call_page("Input.dispatchMouseEvent", release).await;
-            return Err(error);
-        }
+        let clicked = async {
+            // Moving the pointer can reveal an overlay. Arm the form guard
+            // while verifying the approved hit before sending mouse events.
+            self.verify_interaction(approval, false, point, true).await?;
+            self.call_page_at(
+                target_id,
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mousePressed", "x": x, "y": y, "button": button, "clickCount": click_count.clamp(1, 3) }),
+            )
+            .await?;
+            // A pressed button can move and still cover the release point.
+            if let Err(error) = self.verify_interaction(approval, false, point, false).await {
+                self.release_pointer_outside(approval, button).await;
+                return Err(error);
+            }
+            let release = json!({ "type": "mouseReleased", "x": x, "y": y, "button": button, "clickCount": click_count.clamp(1, 3) });
+            if let Err(error) = self.call_page_at(target_id, "Input.dispatchMouseEvent", release).await {
+                self.release_pointer_outside(approval, button).await;
+                return Err(error);
+            }
+            Ok(())
+        }.await;
+        let form_result = self.finish_form_guard(approval).await;
+        clicked?;
+        form_result?;
         tokio::time::sleep(Duration::from_millis(250)).await;
         Ok(json!({ "clicked": true, "x": x, "y": y, "button": button }))
+    }
+
+    async fn release_pointer_outside(&mut self, approval: &BrowserInteraction, button: &str) {
+        // Clear the Chromium button state without releasing over another
+        // page control when the approved point has become invalid.
+        let _ = self.call_page_at(
+            Some(&approval.target_id),
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mouseReleased", "x": -1, "y": -1, "button": button, "clickCount": 0 }),
+        ).await;
     }
 
     pub async fn hover(&mut self, element_ref: &str) -> Result<Value, String> {
@@ -500,7 +646,10 @@ impl BrowserController {
             ), true).await?;
         } else {
             if text.is_empty() && replace {
-                self.key("Backspace", &[]).await?;
+                let approval = self
+                    .prepare_interaction(json!({ "kind": "key", "reference": element_ref }))
+                    .await?;
+                self.key(&approval, "Backspace", &[]).await?;
             } else {
                 self.call_page("Input.insertText", json!({ "text": text }))
                     .await?;
@@ -649,7 +798,12 @@ impl BrowserController {
         Ok(downloads)
     }
 
-    pub async fn key(&mut self, key: &str, modifiers: &[String]) -> Result<Value, String> {
+    pub(super) async fn key(
+        &mut self,
+        approval: &BrowserInteraction,
+        key: &str,
+        modifiers: &[String],
+    ) -> Result<Value, String> {
         if key.is_empty() || key.chars().count() > 64 {
             return Err("按键名称为空或过长".into());
         }
@@ -662,15 +816,30 @@ impl BrowserController {
             "nativeVirtualKeyCode": windows_virtual_key_code,
             "modifiers": modifiers_value,
         });
-        let mut down = base.clone();
-        down["type"] = Value::String("keyDown".into());
-        self.call_page("Input.dispatchKeyEvent", down).await?;
-        let mut up = base;
-        up["type"] = Value::String("keyUp".into());
-        if let Err(error) = self.call_page("Input.dispatchKeyEvent", up.clone()).await {
-            let _ = self.call_page("Input.dispatchKeyEvent", up).await;
-            return Err(error);
+        let target_id = Some(approval.target_id.as_str());
+        let pressed = async {
+            self.verify_interaction(approval, false, None, true).await?;
+            let mut down = base.clone();
+            down["type"] = Value::String("keyDown".into());
+            self.call_page_at(target_id, "Input.dispatchKeyEvent", down)
+                .await?;
+            let mut up = base;
+            up["type"] = Value::String("keyUp".into());
+            if let Err(error) = self
+                .call_page_at(target_id, "Input.dispatchKeyEvent", up.clone())
+                .await
+            {
+                let _ = self
+                    .call_page_at(target_id, "Input.dispatchKeyEvent", up)
+                    .await;
+                return Err(error);
+            }
+            Ok(())
         }
+        .await;
+        let form_result = self.finish_form_guard(approval).await;
+        pressed?;
+        form_result?;
         Ok(json!({ "pressed": key, "modifiers": modifiers }))
     }
 
@@ -688,19 +857,25 @@ impl BrowserController {
         Ok(json!({ "scrolled": true, "deltaX": delta_x, "deltaY": delta_y }))
     }
 
-    pub async fn drag(
+    pub(super) async fn drag(
         &mut self,
+        approval: &BrowserInteraction,
         from_x: f64,
         from_y: f64,
         to_x: f64,
         to_y: f64,
     ) -> Result<Value, String> {
-        self.call_page(
+        self.verify_interaction(approval, false, None, false).await?;
+        let target_id = Some(approval.target_id.as_str());
+        self.call_page_at(
+            target_id,
             "Input.dispatchMouseEvent",
             json!({ "type": "mouseMoved", "x": from_x, "y": from_y }),
         )
         .await?;
-        self.call_page(
+        self.verify_interaction(approval, false, None, false).await?;
+        self.call_page_at(
+            target_id,
             "Input.dispatchMouseEvent",
             json!({ "type": "mousePressed", "x": from_x, "y": from_y, "button": "left", "clickCount": 1 }),
         )
@@ -710,7 +885,8 @@ impl BrowserController {
                 let fraction = f64::from(step) / 8.0;
                 let x = from_x + (to_x - from_x) * fraction;
                 let y = from_y + (to_y - from_y) * fraction;
-                self.call_page(
+                self.call_page_at(
+                    target_id,
                     "Input.dispatchMouseEvent",
                     json!({ "type": "mouseMoved", "x": x, "y": y, "button": "left", "buttons": 1 }),
                 )
@@ -719,20 +895,22 @@ impl BrowserController {
             Ok::<(), String>(())
         }
         .await;
+        if let Err(error) = movement {
+            self.release_pointer_outside(approval, "left").await;
+            return Err(error);
+        }
+        if let Err(error) = self.verify_interaction(approval, true, None, false).await {
+            self.release_pointer_outside(approval, "left").await;
+            return Err(error);
+        }
         let release_event = json!({ "type": "mouseReleased", "x": to_x, "y": to_y, "button": "left", "clickCount": 1 });
-        let release = match self
-            .call_page("Input.dispatchMouseEvent", release_event.clone())
+        if let Err(error) = self
+            .call_page_at(target_id, "Input.dispatchMouseEvent", release_event)
             .await
         {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                let _ = self
-                    .call_page("Input.dispatchMouseEvent", release_event)
-                    .await;
-                Err(error)
-            }
-        };
-        movement.and(release)?;
+            self.release_pointer_outside(approval, "left").await;
+            return Err(error);
+        }
         Ok(json!({ "dragged": true, "from": [from_x, from_y], "to": [to_x, to_y] }))
     }
 
@@ -852,11 +1030,33 @@ impl BrowserController {
     }
 
     async fn call_page(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.call_page_at(None, method, params).await
+    }
+
+    async fn call_page_at(
+        &mut self,
+        expected_target: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
         let future = async {
             // Target discovery is part of the command deadline. Otherwise a
             // wedged local DevTools HTTP endpoint could hold the browser mutex
             // forever and make pause/stop/status appear frozen.
-            let target = self.ensure_page().await?;
+            let target = if let Some(expected) = expected_target {
+                if self.target_id.as_deref() != Some(expected) {
+                    return Err("浏览器标签页已变化，操作已取消，请重新观察页面".into());
+                }
+                self.targets()
+                    .await?
+                    .into_iter()
+                    .find(|target| {
+                        target.id == expected && !target.websocket_debugger_url.is_empty()
+                    })
+                    .ok_or("浏览器标签页已关闭，操作已取消")?
+            } else {
+                self.ensure_page().await?
+            };
             let id = self.next_cdp_id;
             self.next_cdp_id = self.next_cdp_id.saturating_add(1);
             // Check the retained session before every page action: if its
@@ -1243,6 +1443,113 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires isolated ECHO_AGENT_HOME, Chromium and desktop session"]
+    async fn controlled_browser_rejects_changed_approved_interactions() {
+        assert!(crate::paths::redirected_data_home().is_some());
+        let session = format!("browser-approval-smoke-{}", uuid::Uuid::now_v7());
+        let mut browser = BrowserController::launch(&session, false).await.unwrap();
+        browser.evaluate(r#"(() => {
+          document.body.innerHTML='<button style="position:absolute;top:20px;left:20px;width:100px;height:40px"><span>Approved</span></button><button style="position:absolute;top:20px;left:200px;width:100px;height:40px">Other</button>';
+          const style=document.createElement('style');
+          style.textContent='button:active { transform:translateY(1px) }';
+          document.head.append(style);
+          globalThis.hits=[];
+          globalThis.installCover=()=> {
+            const cover=document.createElement('button');
+            cover.id='cover';
+            cover.textContent='Not approved';
+            cover.style='position:absolute;top:20px;left:20px;width:100px;height:40px;z-index:100';
+            document.body.append(cover);
+          };
+          for (const type of ['mousedown','keydown','click']) {
+            document.addEventListener(type, event=>hits.push([type,event.target.textContent]));
+          }
+          return true;
+        })()"#, true).await.unwrap();
+        let snapshot = browser.snapshot().await.unwrap();
+        let reference = snapshot["elements"][0]["ref"].as_str().unwrap();
+        let capture_click = json!({ "kind": "click", "reference": reference });
+        let approved = browser
+            .prepare_interaction(capture_click.clone())
+            .await
+            .unwrap();
+        assert_eq!(approved.target()["name"], "Approved");
+        browser.evaluate("installCover()", true).await.unwrap();
+        assert!(browser.click(&approved, "left", 1).await.is_err());
+        browser
+            .evaluate("document.querySelector('#cover').remove()", true)
+            .await
+            .unwrap();
+        browser.click(&approved, "left", 1).await.unwrap();
+        assert_eq!(
+            browser.evaluate("hits", true).await.unwrap(),
+            json!([["mousedown", "Approved"], ["click", "Approved"]])
+        );
+
+        browser
+            .evaluate("hits=[]; document.querySelector('button').focus()", true)
+            .await
+            .unwrap();
+        let key = browser
+            .prepare_interaction(json!({"kind": "key", "key": "Enter"}))
+            .await
+            .unwrap();
+        browser
+            .evaluate("document.querySelectorAll('button')[1].focus()", true)
+            .await
+            .unwrap();
+        assert!(browser.key(&key, "Enter", &[]).await.is_err());
+
+        let coords = browser
+            .prepare_interaction(json!({
+                "kind": "click", "reference": null, "x": 70, "y": 40
+            }))
+            .await
+            .unwrap();
+        browser.evaluate("document.querySelector('button').replaceWith(document.querySelector('button').cloneNode(true))", true).await.unwrap();
+        assert!(browser.click(&coords, "left", 1).await.is_err());
+
+        let drag = browser
+            .prepare_interaction(json!({
+                "kind": "drag", "fromX": 70, "fromY": 40, "toX": 250, "toY": 40
+            }))
+            .await
+            .unwrap();
+        assert_eq!(drag.destination()["name"], "Other");
+        browser.evaluate("document.querySelectorAll('button')[1].replaceWith(document.querySelectorAll('button')[1].cloneNode(true))", true).await.unwrap();
+        assert!(browser.drag(&drag, 70.0, 40.0, 250.0, 40.0).await.is_err());
+
+        let click = browser.prepare_interaction(capture_click).await.unwrap();
+        browser.evaluate("document.querySelector('button').addEventListener('mouseover', installCover, {once:true}); document.querySelector('button').blur()", true).await.unwrap();
+        browser.scroll(0.0, 0.0).await.unwrap();
+        browser
+            .call_page(
+                "Input.dispatchMouseEvent",
+                json!({"type": "mouseMoved", "x": 400, "y": 100}),
+            )
+            .await
+            .unwrap();
+        assert!(browser.click(&click, "left", 1).await.is_err());
+        assert_eq!(browser.evaluate("hits", true).await.unwrap(), json!([]));
+
+        browser
+            .evaluate("document.querySelector('#cover').remove()", true)
+            .await
+            .unwrap();
+        let click = browser
+            .prepare_interaction(json!({
+                "kind": "click", "reference": null, "x": 70, "y": 40
+            }))
+            .await
+            .unwrap();
+        browser.new_tab(None).await.unwrap();
+        assert!(browser.click(&click, "left", 1).await.is_err());
+
+        browser.stop().await.unwrap();
+        remove_profile(&session).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires isolated ECHO_AGENT_HOME, Chromium and desktop session"]
     async fn controlled_browser_download_stays_in_task_profile_across_tabs() {
         assert!(crate::paths::redirected_data_home().is_some());
         assert!(capability().available);
@@ -1271,8 +1578,12 @@ mod tests {
                     .as_str()
                     .unwrap()
                     .to_string();
+                let approval = browser
+                    .prepare_interaction(json!({ "kind": "click", "reference": reference }))
+                    .await
+                    .expect("capture download target");
                 browser
-                    .click(Some(&reference), None, None, "left", 1)
+                    .click(&approval, "left", 1)
                     .await
                     .expect("download click");
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -1378,8 +1689,12 @@ mod tests {
             .type_text(&input_ref, "EchoAgent", true)
             .await
             .expect("type text");
+        let approval = browser
+            .prepare_interaction(json!({ "kind": "click", "reference": button_ref }))
+            .await
+            .expect("capture button");
         browser
-            .click(Some(&button_ref), None, None, "left", 1)
+            .click(&approval, "left", 1)
             .await
             .expect("click button");
         let observed = browser

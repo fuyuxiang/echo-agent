@@ -1626,7 +1626,7 @@ pub(crate) async fn search(
     if manifest.entries.is_empty() || !database_path().is_file() {
         return Ok(PersonalKnowledgeSearchResponse {
             items: Vec::new(),
-            retrieval_mode: "keyword".to_owned(),
+            retrieval_mode: "none".to_owned(),
             degraded_reason: Some("个人知识索引正在后台建立，本次暂无可检索内容".to_owned()),
             index: status,
         });

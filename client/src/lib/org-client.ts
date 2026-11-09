@@ -126,6 +126,11 @@ export interface OrgSkill {
   allowPersonalOverride: boolean;
   enabled: boolean;
   updatedAt: number;
+  deviceInstallation?: {
+    state: "installed" | "failed" | "pending" | "notInstalled" | "unknown";
+    version?: string | null;
+    error?: string | null;
+  };
 }
 
 export type OrgMemoryKind = "fact" | "decision" | "convention" | "pitfall" | "howto";

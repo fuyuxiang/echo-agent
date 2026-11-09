@@ -56,6 +56,18 @@ try{
     assert.match(await edit.getByLabel('已配置模型',{exact:true}).textContent(),/main-model.*backup-model/s);
     assert.equal(await edit.getByRole('button',{name:'添加更多模型',exact:true}).count(),0);
     await capture(page,`edit-${width}-${theme}`);
+    const address=edit.getByLabel('服务地址（Base URL）',{exact:true});
+    if (!await address.count()) await edit.getByRole('button',{name:'修改地址',exact:true}).click();
+    const originalAddress=await address.inputValue();
+    const key=edit.getByLabel('API 密钥',{exact:true});
+    await address.fill(`${new URL(originalAddress).origin}/audit-same-origin`);
+    assert.equal(await key.getAttribute('placeholder'),'已保存，留空不更换');
+    await address.fill('https://synthetic-new-origin.example/v1');
+    await edit.getByRole('button',{name:'保存',exact:true}).click();
+    assert.equal(await key.getAttribute('aria-invalid'),'true');
+    assert.equal(await page.evaluate(()=>window.modelSettingsReviewCalls.saves),0);
+    assert.match(await edit.getByRole('alert').textContent(),/新地址的 API 密钥/);
+    await address.fill(originalAddress);
     await edit.getByRole('button',{name:'取消',exact:true}).click();
     await page.getByRole('button',{name:'返回连接管理',exact:true}).click();
     await page.getByRole('button',{name:'添加模型连接',exact:true}).click();

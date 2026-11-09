@@ -4,11 +4,23 @@ import { MessageItem } from "../MessageItem";
 import { ExecutionProcess } from "../ExecutionProcess";
 import { ThemeProvider } from "../ThemeProvider";
 import type { ChatMessage, ToolCallView } from "@/stores/session-store";
-import { useKnowledgeStore } from "@/stores/knowledge-store";
+import { useKnowledgeStore, type KnowledgeRetrievalStatus } from "@/stores/knowledge-store";
 
 describe("assistant execution process", () => {
   const tool = (id: string, status: ToolCallView["status"] = "completed", streamId = "1"): ChatMessage["parts"][number] => ({
     kind: "tool_call", streamId, toolCall: { toolCallId: id, kind: "read", title: id, status, content: [] },
+  });
+
+  it("区分索引准备中与关键词未命中，并保留继续提问的提示", () => {
+    const view = (personal: KnowledgeRetrievalStatus) => (
+      <ThemeProvider><ExecutionProcess active autoExpand parts={[]} knowledgeTrace={{ selectedSources: ["personal"], personal }} /></ThemeProvider>
+    );
+    const { rerender } = render(view({ state: "blocked", message: "索引完成后可重新提问" }));
+    expect(screen.getByText("个人知识未使用：索引完成后可重新提问")).toBeVisible();
+    expect(screen.queryByText(/未找到相关内容/)).toBeNull();
+    rerender(view({ state: "no-match", sourceCount: 1, keywordOnly: true, notice: "语义索引正在后台生成" }));
+    expect(screen.getByText(/已按关键词搜索 1 个个人知识源/)).toBeVisible();
+    expect(screen.getByText("语义索引正在后台生成")).toBeVisible();
   });
 
   it("以公开阶段为标题，保留当前说明的上下文，旧阶段仍可在记录中找回", () => {

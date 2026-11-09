@@ -405,7 +405,7 @@ pub async fn mcp_toggle(
         }
     }
     let tx = state.tx.lock().unwrap().clone();
-    apply_toggle(tx.as_ref(), session_id.as_deref(), &name, enabled).await
+    apply_toggle(tx.as_ref(), &name, enabled).await
 }
 
 /// Resolve a connector's Runtime-provided setup schema and start it in the
@@ -601,39 +601,78 @@ async fn apply_delete(
 
 async fn apply_toggle(
     tx: Option<&echo_agent_acp::AcpAgentTx>,
-    session_id: Option<&str>,
     name: &str,
     enabled: bool,
 ) -> Result<McpMutationResult, String> {
-    let _ = read_mirror_servers()?;
+    // Persist first so the dispatch guard sees the new policy even if a
+    // concurrent load or a stale handle has yet to observe the live update.
+    crate::providers::update_config_checked(|root| apply_mcp_toggle(root, name, enabled))
+        .map_err(|error| format!("保存 MCP 启用状态失败：{error}"))?;
     let mut warnings = Vec::new();
+    if let Err(error) = mirror_toggle_server(name, enabled) {
+        warnings.push(format!("启停状态已保存，MCP 镜像同步失败：{error}"));
+    }
     let mut applied_live = false;
-    if let (Some(session_id), Some(tx)) = (session_id.filter(|value| !value.is_empty()), tx) {
+    if let Some(tx) = tx {
         let params = raw_params(&serde_json::json!({
-            "session_id": session_id,
+            "session_id": "",
             "server_name": name,
             "enabled": enabled,
+            "all_sessions": true,
         }));
-        let live: Result<acp::ExtResponse, _> =
-            call_ext_value(tx, "echo.agent/mcp/toggle", params).await;
-        match live {
-            Ok(_) => applied_live = true,
-            Err(error) => warnings.push(format!("当前会话热切换失败：{error}")),
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            call_ext::<McpToggleAck>(tx, "echo.agent/mcp/toggle", params),
+        )
+        .await;
+        applied_live = matches!(&result, Ok(Ok(ack)) if ack.ok);
+        if !applied_live {
+            let detail = match result {
+                Ok(Err(error)) => error.to_string(),
+                Ok(Ok(_)) => "Runtime 拒绝确认".into(),
+                Err(_) => "等待 Runtime 确认超时".into(),
+            };
+            let state = if enabled {
+                "启用状态已保存，仍有会话未确认恢复"
+            } else {
+                "新工具调用已阻止，仍有会话未确认卸载"
+            };
+            warnings.push(format!("{state}：{detail}"));
         }
-    } else if session_id.is_some() {
-        warnings.push("本地 Runtime 尚未初始化；状态将在新会话中生效".into());
-    }
-    crate::providers::update_config(|root| apply_mcp_toggle(root, name, enabled))
-        .map_err(|error| format!("保存 MCP 启用状态失败：{error}"))?;
-    mirror_toggle_server(name, enabled)?;
-    if session_id.is_none() {
-        warnings.push("状态已保存，将对新会话生效".into());
+    } else if enabled {
+        warnings.push("启用状态已保存，将在本地 Runtime 启动后生效".into());
     }
     Ok(McpMutationResult {
         persisted: true,
         applied_live,
         warnings,
     })
+}
+
+#[derive(Deserialize)]
+struct McpToggleAck {
+    ok: bool,
+}
+
+pub(crate) fn install_desktop_dispatch_guard() {
+    echo_agent_runtime::session::mcp_servers::install_tool_dispatch_guard(|name| {
+        if is_builtin_mcp(name) {
+            return Ok(());
+        }
+        let config = crate::providers::read_config_snapshot()
+            .map_err(|_| "无法验证当前的 MCP 调用权限".to_string())?;
+        if globally_disabled_mcp(&config, name) {
+            return Err(format!("MCP 服务「{name}」已在本机停用"));
+        }
+        Ok(())
+    });
+}
+
+fn globally_disabled_mcp(config: &toml::Value, name: &str) -> bool {
+    config
+        .get("disabled_mcp_servers")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|names| names.iter().any(|value| value.as_str() == Some(name)))
 }
 
 /// Translate the frontend payload to the JSON EchoAgent's `echo.agent/mcp/upsert` expects.
@@ -2232,6 +2271,171 @@ pub async fn mcp_auth_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_dispatch_policy_tracks_durable_connector_toggle() {
+        let mut config: toml::Value = r#"
+disabled_mcp_servers = ["other"]
+[mcp_servers.fixture]
+url = "https://fixture.example/mcp"
+"#
+        .parse()
+        .unwrap();
+        assert!(!globally_disabled_mcp(&config, "fixture"));
+        apply_mcp_toggle(&mut config, "fixture", false).unwrap();
+        assert!(globally_disabled_mcp(&config, "fixture"));
+        assert!(globally_disabled_mcp(&config, "other"));
+        apply_mcp_toggle(&mut config, "fixture", true).unwrap();
+        assert!(!globally_disabled_mcp(&config, "fixture"));
+        assert!(globally_disabled_mcp(&config, "other"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires an isolated ECHO_AGENT_HOME with the Runtime smoke model and loopback MCP"]
+    async fn global_toggle_applies_to_loaded_sessions_new_sessions_and_agent_pool() {
+        use axum::{extract::State as AxumState, http::{HeaderMap, StatusCode}, response::IntoResponse, Json};
+        use serde_json::{json, Value};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        assert_eq!(
+            std::env::var("ECHO_AGENT_REVIEW_ISOLATED").as_deref(),
+            Ok("1")
+        );
+        assert!(crate::paths::redirected_data_home().is_some());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let router = axum::Router::new().route("/mcp", axum::routing::post(
+            |AxumState(calls): AxumState<Arc<AtomicUsize>>, headers: HeaderMap, Json(request): Json<Value>| async move {
+                assert_eq!(headers.get("authorization").and_then(|value| value.to_str().ok()), Some("Bearer synthetic-mcp-fixture"));
+                let Some(id) = request.get("id") else { return StatusCode::ACCEPTED.into_response() };
+                let result = match request["method"].as_str().unwrap() {
+                    "initialize" => json!({"protocolVersion": request["params"]["protocolVersion"], "capabilities": {"tools": {}}, "serverInfo": {"name": "fixture", "version": "1"}}),
+                    "tools/list" => json!({"tools": [{"name": "count", "inputSchema": {"type": "object"}}]}),
+                    "tools/call" => {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        json!({"content": [{"type": "text", "text": "fixture called"}]})
+                    }
+                    "ping" => json!({}),
+                    other => panic!("unexpected fixture request: {other}"),
+                };
+                Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
+            },
+        )).with_state(calls.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        crate::providers::update_config(|config| {
+            config.as_table_mut().unwrap().insert(
+                "mcp_servers".into(),
+                format!("[fixture]\nurl = {target:?}\nheaders = {{ Authorization = 'Bearer synthetic-mcp-fixture' }}")
+                    .parse().unwrap(),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let cwd = workspace.path().to_path_buf();
+        let runtime = crate::agent_runtime::spawn_agent_runtime(cwd.clone()).unwrap();
+        let mut rx = runtime.rx;
+        let receiver = tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                match message {
+                    echo_agent_acp::AcpClientMessage::SessionNotification(args) => {
+                        let _ = args.response_tx.send(Ok(()));
+                    }
+                    echo_agent_acp::AcpClientMessage::ExtNotification(args) => {
+                        let _ = args.response_tx.send(Ok(()));
+                    }
+                    other => panic!("unexpected fixture Runtime request: {other:?}"),
+                }
+            }
+        });
+        crate::agent_runtime::initialize(&runtime.tx).await.unwrap();
+        let new_session =
+            || crate::agent_runtime::new_session_with_options(&runtime.tx, &cwd, None, None, None);
+        let a = new_session().await.unwrap();
+        let b = new_session().await.unwrap();
+        let call = |session: Option<&str>| {
+            let params = raw_params(
+                &json!({"sessionId": session, "server": "fixture", "tool": "count", "arguments": {}}),
+            );
+            call_ext::<Value>(&runtime.tx, "echo.agent/mcp/call", params)
+        };
+        for session in [Some(a.as_str()), Some(b.as_str()), None] {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    if let Ok(result) = call(session).await {
+                        assert_eq!(result["content"][0]["text"], "fixture called");
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("fixture must be callable from both resident sessions and the agent pool");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        // A call that races the fan-out still sees the durable deny before it
+        // reaches a client whose session has not processed its update yet.
+        crate::providers::update_config_checked(|config| apply_mcp_toggle(config, "fixture", false))
+            .unwrap();
+        for session in [Some(a.as_str()), Some(b.as_str()), None] {
+            assert!(call(session).await.unwrap_err().to_string().contains("已在本机停用"));
+            let resource = raw_params(&json!({
+                "sessionId": session, "server": "fixture", "uri": "fixture://resource",
+            }));
+            assert!(call_ext::<Value>(&runtime.tx, "echo.agent/mcp/read_resource", resource)
+                .await.unwrap_err().to_string().contains("已在本机停用"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let disabled = apply_toggle(Some(&runtime.tx), "fixture", false)
+            .await
+            .unwrap();
+        assert!(
+            disabled.persisted && disabled.applied_live && disabled.warnings.is_empty(),
+            "{disabled:?}"
+        );
+        let c = new_session().await.unwrap();
+        let resident_and_pool = [Some(a.as_str()), Some(b.as_str()), Some(c.as_str()), None];
+        for session in resident_and_pool {
+            assert!(call(session).await.is_err());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let (enabled, d) = tokio::join!(apply_toggle(Some(&runtime.tx), "fixture", true), new_session());
+        let enabled = enabled.unwrap();
+        assert!(enabled.persisted && enabled.applied_live && enabled.warnings.is_empty(), "{enabled:?}");
+        let d = d.unwrap();
+        for session in resident_and_pool.into_iter().chain([Some(d.as_str())]) {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    if let Ok(result) = call(session).await {
+                        assert_eq!(result["content"][0]["text"], "fixture called");
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("re-enabled connector must be callable without restarting the Runtime");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 8);
+        let mut shutdown = runtime.shutdown_complete;
+        runtime.cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(20), shutdown.wait_for(|done| *done))
+            .await
+            .expect("Runtime shutdown did not acknowledge session persistence")
+            .unwrap();
+        tokio::task::spawn_blocking(move || runtime.thread.unwrap().join().unwrap().unwrap())
+            .await
+            .unwrap();
+        receiver.abort();
+        if let Err(error) = receiver.await {
+            assert!(error.is_cancelled(), "client receiver failed: {error}");
+        }
+        server.abort();
+    }
 
     #[test]
     fn stdio_confirmation_requires_the_explicit_allow_button() {

@@ -25,7 +25,7 @@ const CHUNK_SECONDS: u64 = 420;
 const OVERLAP_SECONDS: u64 = 2;
 const WAV_HEADER_BYTES: u64 = 44;
 const MAX_APPEND_SAMPLES: usize = SAMPLE_RATE as usize * 15;
-const MAX_RECORDING_SAMPLES: u64 = SAMPLE_RATE as u64 * 60 * 60 * 24;
+pub(crate) const MAX_RECORDING_SAMPLES: u64 = SAMPLE_RATE as u64 * 60 * 60 * 24;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_API_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const SUMMARY_GROUP_CHARS: usize = 12_000;
@@ -325,18 +325,23 @@ pub fn meeting_append_pcm(meeting_id: String, samples: Vec<i16>) -> Result<Meeti
     if !matches!(record.status.as_str(), "recording" | "paused") {
         return Err("当前会议不在录音状态".into());
     }
-    if record.recorded_samples.saturating_add(samples.len() as u64) > MAX_RECORDING_SAMPLES {
-        return Err("单场会议录音不能超过 24 小时".into());
-    }
-    append_recording_samples(&mut record, &samples, save_meeting)?;
+    append_recording_samples(&mut record, &samples, MAX_RECORDING_SAMPLES, save_meeting)?;
     Ok(record)
 }
 
 fn append_recording_samples(
     record: &mut MeetingRecord,
     samples: &[i16],
+    sample_limit: u64,
     persist: impl FnOnce(&MeetingRecord) -> Result<(), String>,
 ) -> Result<(), String> {
+    let accepted = sample_limit
+        .saturating_sub(record.recorded_samples)
+        .min(samples.len() as u64) as usize;
+    let samples = &samples[..accepted];
+    if samples.is_empty() {
+        return Ok(());
+    }
     let owned_audio_path = PathBuf::from(&record.audio_path);
     let audio_path = owned_audio_path.as_path();
     let previous_samples = record.recorded_samples;
@@ -376,6 +381,9 @@ pub fn meeting_set_paused(meeting_id: String, paused: bool) -> Result<MeetingRec
     let mut record = read_meeting(&meeting_id)?;
     if !matches!(record.status.as_str(), "recording" | "paused") {
         return Err("当前会议不在录音状态".into());
+    }
+    if !paused && record.recorded_samples >= MAX_RECORDING_SAMPLES {
+        return Err("已达到 24 小时录音上限，请结束并保存".into());
     }
     record.status = if paused { "paused" } else { "recording" }.into();
     record.updated_at = now_millis();
@@ -1552,17 +1560,40 @@ mod tests {
         write_wav_header(&mut File::create(&audio_path).unwrap(), 0).unwrap();
         let mut record = test_record(audio_path.clone());
         let failed =
-            append_recording_samples(&mut record, &[1, 2, 3], |_| Err("保存会议记录失败".into()));
+            append_recording_samples(&mut record, &[1, 2, 3], MAX_RECORDING_SAMPLES, |_| {
+                Err("保存会议记录失败".into())
+            });
         assert!(failed.is_err());
         let bytes = fs::read(&audio_path).unwrap();
         assert_eq!(bytes.len(), WAV_HEADER_BYTES as usize);
         assert_eq!(&bytes[40..44], &0u32.to_le_bytes());
         // Reloading the unchanged manifest provides the original counters.
         record.recorded_samples = 0;
-        append_recording_samples(&mut record, &[1, 2, 3], |_| Ok(())).unwrap();
+        append_recording_samples(&mut record, &[1, 2, 3], MAX_RECORDING_SAMPLES, |_| Ok(()))
+            .unwrap();
         let bytes = fs::read(audio_path).unwrap();
         assert_eq!(&bytes[44..], &[1, 0, 2, 0, 3, 0]);
         assert_eq!(record.recorded_samples, 3);
+    }
+
+    #[test]
+    fn crossing_recording_limit_writes_only_remaining_samples() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("limit.wav");
+        write_wav_header(&mut File::create(&path).unwrap(), 0).unwrap();
+        let mut record = test_record(path.clone());
+        append_recording_samples(&mut record, &[1, 2], 4, |_| Ok(())).unwrap();
+        append_recording_samples(&mut record, &[3, 4, 5], 4, |record| {
+            assert_eq!(record.recorded_samples, 4);
+            Ok(())
+        })
+        .unwrap();
+        append_recording_samples(&mut record, &[6, 7], 4, |_| panic!("no write after cap"))
+            .unwrap();
+        let wav = fs::read(path).unwrap();
+        assert_eq!(&wav[40..44], &8u32.to_le_bytes());
+        assert_eq!(&wav[44..], &[1, 0, 2, 0, 3, 0, 4, 0]);
+        assert_eq!(record.duration_seconds, 4.0 / SAMPLE_RATE as f64);
     }
 
     #[test]
@@ -1571,7 +1602,8 @@ mod tests {
         let audio_path = directory.path().join("中断录音.wav");
         write_wav_header(&mut File::create(&audio_path).unwrap(), 0).unwrap();
         let mut record = test_record(audio_path.clone());
-        append_recording_samples(&mut record, &[1, -2, 3], |_| Ok(())).unwrap();
+        append_recording_samples(&mut record, &[1, -2, 3], MAX_RECORDING_SAMPLES, |_| Ok(()))
+            .unwrap();
         finalize_interrupted_recording(&mut record, false).unwrap();
         let bytes = fs::read(audio_path).unwrap();
         assert_eq!(record.status, "recorded");

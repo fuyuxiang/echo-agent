@@ -226,12 +226,26 @@ fn schedule_next_node(task: &mut CodingTask) -> Result<String, String> {
     Ok(node.plan_key.clone())
 }
 
+fn invalidated_verification() -> PhaseDecision {
+    PhaseDecision {
+        next_phase: TaskPhase::Blocked,
+        reason: "检查期间工作区输入发生变化或无法确认，请重新运行检查".into(),
+        blocker: Some("检查结果已失效".into()),
+    }
+}
+
 /// Decide where a task goes once verification finished.
 pub fn decide_after_verification(
     records: &[VerificationRecord],
     _changed_file_count: usize,
 ) -> PhaseDecision {
     let effective = latest_per_command(records);
+    if effective
+        .iter()
+        .any(|record| record.status == VerificationStatus::EvidenceInvalidated)
+    {
+        return invalidated_verification();
+    }
     if effective
         .iter()
         .any(|record| record.status == VerificationStatus::EnvironmentUnavailable)
@@ -953,9 +967,19 @@ fn apply_unlocked(
                 return Err("只有验证阶段可以报告验证完成".into());
             }
             let records = verification::current_records(root, task_id, &change_set);
-            let has_current_failure = records
-                .iter()
-                .any(|record| record.status != VerificationStatus::Passed);
+            let latest = latest_per_command(&records);
+            let inputs_changed = change_set
+                .verification_started_revision
+                .as_deref()
+                .is_some_and(|started| started != change_set.content_revision())
+                || change_set
+                    .verification_started_configuration
+                    .as_deref()
+                    .is_some_and(|started| started != verification::configuration_revision(root));
+            let has_current_failure = inputs_changed
+                || latest
+                    .iter()
+                    .any(|record| record.status != VerificationStatus::Passed);
             if task.strict_workflow && !has_current_failure {
                 let mut missing = missing_detected_commands(root, &records);
                 missing.extend(missing_planned_commands(&task, &records));
@@ -965,7 +989,7 @@ fn apply_unlocked(
                     return Err(format!("尚有验证命令未运行：{}", missing.join("、")));
                 }
             }
-            let problems: Vec<Problem> = latest_per_command(&records)
+            let problems: Vec<Problem> = latest
                 .iter()
                 .flat_map(|record| diagnostics::parse_record(record))
                 .collect();
@@ -978,14 +1002,22 @@ fn apply_unlocked(
                 .map(|round| round.problem_fingerprints.clone())
                 .unwrap_or_default();
 
-            let verdict = decide_after_verification(&records, changed_file_count);
+            let verdict = if inputs_changed {
+                invalidated_verification()
+            } else {
+                decide_after_verification(&records, changed_file_count)
+            };
             if verdict.next_phase == TaskPhase::Delivered && !records.is_empty() {
                 // Bind all green verification evidence to the exact file
                 // revision that produced it. A later external edit clears this
                 // marker during native change-set synchronization.
                 changeset::mark_verified_revision(root, task_id)?;
             }
-            if !task.strict_workflow {
+            let evidence_invalidated = inputs_changed
+                || latest
+                    .iter()
+                    .any(|record| record.status == VerificationStatus::EvidenceInvalidated);
+            if !task.strict_workflow && !evidence_invalidated {
                 PhaseDecision {
                     next_phase: TaskPhase::Delivered,
                     reason: if verdict.next_phase == TaskPhase::Delivered {

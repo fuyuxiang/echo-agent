@@ -397,8 +397,9 @@ pub(crate) fn read_config() -> Value {
     read_config_unlocked()
 }
 
-/// Read settings without quarantining or replacing unreadable user data.
-fn read_config_checked_unlocked() -> Result<Value, String> {
+/// Read the last atomically published settings without waiting on a writer.
+/// An unreadable or invalid snapshot is an error and is never rewritten here.
+pub(crate) fn read_config_snapshot() -> Result<Value, String> {
     let path = config_path();
     match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -429,7 +430,7 @@ pub(crate) fn update_config_checked<T>(
     let path = config_path();
     let _transaction = echo_agent_runtime::util::config::acquire_config_transaction_lock_at(&path)
         .map_err(|error| format!("无法锁定配置：{error}"))?;
-    let mut config = read_config_checked_unlocked()?;
+    let mut config = read_config_snapshot()?;
     let original = config.clone();
     let result = update(&mut config)?;
     if config != original {
@@ -1317,6 +1318,66 @@ fn resolve_field(
     }
 }
 
+const PROVIDER_CREDENTIAL_FIELDS: &[&str] = &[
+    "api_key",
+    "env_key",
+    "extra_headers",
+    "query_params",
+    "env_http_headers",
+    "auth_provider",
+    "auth",
+];
+
+fn provider_origin_changed(existing: &Value, base_url: &url::Url) -> bool {
+    existing
+        .get("base_url")
+        .and_then(Value::as_str)
+        .or_else(|| existing.get("api_base_url").and_then(Value::as_str))
+        .and_then(|old| url::Url::parse(old.trim()).ok())
+        .is_none_or(|old| old.origin() != base_url.origin())
+}
+
+fn validate_provider_model_retarget(
+    config: &Value,
+    provider_id: &str,
+    existing: Option<&Value>,
+    rendered: &Value,
+    legacy_models: &[ModelEntry],
+) -> Result<(), String> {
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+    let base_url = rendered["base_url"]
+        .as_str()
+        .and_then(|base| url::Url::parse(base.trim()).ok())
+        .ok_or("Base URL 格式不正确")?;
+    if !provider_origin_changed(existing, &base_url) {
+        return Ok(());
+    }
+    let Some(models) = config.get("model").and_then(Value::as_table) else {
+        return Ok(());
+    };
+    // Per-model overrides can either send the old credentials to the new
+    // endpoint or send the newly entered key to a model's previous endpoint.
+    let has_connection_override = models.iter().any(|(id, model)| {
+        if model.get("model_provider").and_then(Value::as_str) == Some(provider_id) {
+            return model.get("base_url").is_some()
+                || model.get("api_base_url").is_some()
+                || PROVIDER_CREDENTIAL_FIELDS
+                    .iter()
+                    .any(|key| model.get(*key).is_some());
+        }
+        legacy_models.iter().any(|entry| &entry.model_id == id)
+            && PROVIDER_CREDENTIAL_FIELDS
+                .iter()
+                .any(|key| !matches!(*key, "api_key" | "env_key") && model.get(*key).is_some())
+    });
+    if has_connection_override {
+        return Err("此连接的模型有独立的地址或认证配置。请为新地址添加连接。".into());
+    }
+    Ok(())
+}
+
 /// Render a `[model_providers.<id>]` table from an entry, preserving any
 /// unrecognized keys already on disk.
 fn provider_to_table(p: &ModelProviderEntry, existing: Option<&Value>) -> Result<Value, String> {
@@ -1352,6 +1413,23 @@ fn provider_to_table(p: &ModelProviderEntry, existing: Option<&Value>) -> Result
         && p.id == ORGANIZATION_PROVIDER_ID;
     let allow_insecure_http = personal_http || organization_http;
     let parsed_base_url = validate_personal_provider_base_url(&base_url, allow_insecure_http)?;
+    if existing.is_some_and(|old| provider_origin_changed(old, &parsed_base_url)) {
+        let has_credentials = PROVIDER_CREDENTIAL_FIELDS
+            .iter()
+            .any(|key| table.contains_key(*key));
+        let has_new_key = p
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|key| !key.is_empty() && !key.starts_with('•'));
+        if has_credentials && !has_new_key {
+            return Err("服务地址已更换，请填写新地址的 API Key。".into());
+        }
+        for key in PROVIDER_CREDENTIAL_FIELDS {
+            table.remove(*key);
+        }
+        table.remove("api_base_url");
+    }
     let api_backend = resolve_field(
         &p.api_backend,
         existing_str("api_backend"),
@@ -1980,9 +2058,12 @@ pub fn providers_save_provider(
     }
     update_config(|config| {
         validate_personal_provider_target(config, provider.id.trim())?;
-        let mps = ensure_table(config, "model_providers")?;
-        let existing = mps.get(&provider.id);
+        let existing = config
+            .get("model_providers")
+            .and_then(|providers| providers.get(&provider.id));
         let rendered = provider_to_table(&provider, existing)?;
+        validate_provider_model_retarget(config, &provider.id, existing, &rendered, &[])?;
+        let mps = ensure_table(config, "model_providers")?;
         mps.insert(provider.id.clone(), rendered);
         Ok(())
     })?;
@@ -2024,11 +2105,21 @@ pub fn providers_save_connection(
         provider.source = "personal".into();
 
         {
-            let providers = ensure_table(config, "model_providers")?;
-            let existing = providers
-                .get(&provider_id)
+            let existing = config
+                .get("model_providers")
+                .and_then(|providers| providers.get(&provider_id))
                 .or_else(|| legacy.as_ref().map(|(connection, _)| connection));
             let rendered = provider_to_table(&provider, existing)?;
+            let legacy_models = legacy
+                .as_ref()
+                .map_or(&[][..], |(_, models)| models.as_slice());
+            validate_provider_model_retarget(
+                config,
+                &provider_id,
+                existing,
+                &rendered,
+                legacy_models,
+            )?;
             let credential_configured = rendered
                 .as_table()
                 .and_then(resolved_provider_api_key)
@@ -2036,7 +2127,7 @@ pub fn providers_save_connection(
             if !credential_configured {
                 return Err("请填写 API Key".into());
             }
-            providers.insert(provider_id.clone(), rendered);
+            ensure_table(config, "model_providers")?.insert(provider_id.clone(), rendered);
         }
 
         // Saving any part of a legacy connection migrates all of its existing
@@ -3220,6 +3311,192 @@ base_url = "https://example.com"
             table.as_table().unwrap()["api_key"].as_str().unwrap(),
             "real-key"
         );
+    }
+
+    #[test]
+    fn provider_credentials_do_not_follow_a_new_origin() {
+        let existing: Value = r#"
+base_url = "https://old.example/v1"
+api_base_url = "https://old.example/alternate"
+api_backend = "chat_completions"
+auth_scheme = "bearer"
+api_key = "synthetic-old-key"
+env_key = ["SYNTHETIC_API_KEY"]
+auth_provider = "old-helper"
+extra_headers = { Authorization = "synthetic-old-header" }
+query_params = { token = "synthetic-old-param" }
+env_http_headers = { X-Token = "SYNTHETIC_HTTP_TOKEN" }
+auth = { command = ["synthetic-helper"] }
+custom_metadata = "keep"
+"#
+        .parse()
+        .unwrap();
+        let mut draft = ModelProviderEntry {
+            id: "custom".into(),
+            provider_kind: "custom".into(),
+            base_url: Some("https://new.example/v1".into()),
+            ..Default::default()
+        };
+        for key in [None, Some(" ".into()), Some("••••".into())] {
+            draft.api_key = key;
+            assert!(provider_to_table(&draft, Some(&existing))
+                .unwrap_err()
+                .contains("新地址"));
+        }
+        for base_url in ["https://old.example:444/v1", "http://old.example/v1"] {
+            draft.base_url = Some(base_url.into());
+            draft.allow_insecure_http = true;
+            assert!(provider_to_table(&draft, Some(&existing))
+                .unwrap_err()
+                .contains("新地址"));
+        }
+        draft.base_url = Some("https://OLD.example:443/v2".into());
+        let same_origin = provider_to_table(&draft, Some(&existing)).unwrap();
+        for key in PROVIDER_CREDENTIAL_FIELDS {
+            assert_eq!(same_origin.get(*key), existing.get(*key));
+        }
+        draft.base_url = Some("https://new.example/v1".into());
+        draft.api_key = Some("synthetic-new-key".into());
+        let retargeted = provider_to_table(&draft, Some(&existing)).unwrap();
+        assert_eq!(retargeted["api_key"].as_str(), Some("synthetic-new-key"));
+        assert_eq!(retargeted["custom_metadata"].as_str(), Some("keep"));
+        assert!(retargeted.get("api_base_url").is_none());
+        for key in PROVIDER_CREDENTIAL_FIELDS
+            .iter()
+            .filter(|key| **key != "api_key")
+        {
+            assert!(retargeted.get(*key).is_none(), "old credential field {key}");
+        }
+    }
+
+    #[test]
+    fn provider_origin_change_rejects_legacy_environment_credentials_and_model_overrides() {
+        let config: Value = r#"
+[model_providers.custom]
+base_url = "https://old.example/v1"
+api_backend = "chat_completions"
+auth_scheme = "bearer"
+env_key = "SYNTHETIC_UNUSED_API_KEY"
+
+[model.one]
+model_provider = "custom"
+extra_headers = { X-Token = "old-model-token" }
+"#
+        .parse()
+        .unwrap();
+        let existing = config["model_providers"].get("custom");
+        let mut draft = ModelProviderEntry {
+            id: "custom".into(),
+            provider_kind: "custom".into(),
+            base_url: Some("https://new.example/v1".into()),
+            ..Default::default()
+        };
+        assert!(provider_to_table(&draft, existing)
+            .unwrap_err()
+            .contains("新地址"));
+        draft.api_key = Some("synthetic-new-key".into());
+        let new_origin = provider_to_table(&draft, existing).unwrap();
+        assert!(
+            validate_provider_model_retarget(&config, "custom", existing, &new_origin, &[])
+                .is_err()
+        );
+        draft.base_url = Some("https://old.example/v2".into());
+        let same_origin = provider_to_table(&draft, existing).unwrap();
+        assert!(
+            validate_provider_model_retarget(&config, "custom", existing, &same_origin, &[])
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated ECHO_AGENT_HOME and two loopback provider endpoints"]
+    async fn unsaved_provider_probes_never_send_an_inherited_key_to_another_origin() {
+        use axum::{extract::State as AxumState, http::HeaderMap, Json};
+        use serde_json::json;
+        use std::sync::Arc;
+
+        async fn endpoint() -> (String, Arc<Mutex<Vec<String>>>, tokio::task::JoinHandle<()>) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+            let headers = Arc::new(Mutex::new(Vec::new()));
+            let router = axum::Router::new().fallback(
+                |AxumState(observed): AxumState<Arc<Mutex<Vec<String>>>>, headers: HeaderMap| async move {
+                    let key = headers.get("authorization").or_else(|| headers.get("x-api-key"))
+                        .and_then(|value| value.to_str().ok()).unwrap_or_default();
+                    observed.lock().unwrap().push(key.to_owned());
+                    Json(json!({"data":[{"id":"fixture"}],"choices":[{"message":{"content":"ok"}}]}))
+                }
+            ).with_state(headers.clone());
+            let worker = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            (base_url, headers, worker)
+        }
+
+        assert_eq!(
+            std::env::var("ECHO_AGENT_REVIEW_ISOLATED").as_deref(),
+            Ok("1")
+        );
+        assert!(crate::paths::redirected_data_home().is_some());
+        let (a, seen_a, server_a) = endpoint().await;
+        let (b, seen_b, server_b) = endpoint().await;
+        let mut draft = ModelProviderEntry {
+            id: "audit-origin".into(),
+            provider_kind: "custom".into(),
+            base_url: Some(a.clone()),
+            api_key: Some("synthetic-old-key".into()),
+            api_backend: Some("chat_completions".into()),
+            auth_scheme: Some("bearer".into()),
+            allow_insecure_http: true,
+            ..Default::default()
+        };
+        update_config(|root| {
+            ensure_table(root, "model_providers")?
+                .insert(draft.id.clone(), provider_to_table(&draft, None)?);
+            Ok(())
+        })
+        .unwrap();
+        draft.api_key = None;
+        assert_eq!(
+            providers_test_connection(draft.clone()).await.unwrap()[0].id,
+            "fixture"
+        );
+        providers_test_model_connection(draft.clone(), "fixture".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            *seen_a.lock().unwrap(),
+            ["Bearer synthetic-old-key", "Bearer synthetic-old-key"]
+        );
+
+        draft.base_url = Some(b);
+        for key in [None, Some("••••".into())] {
+            draft.api_key = key;
+            assert!(providers_test_connection(draft.clone())
+                .await
+                .unwrap_err()
+                .contains("新地址"));
+            assert!(
+                providers_test_model_connection(draft.clone(), "fixture".into())
+                    .await
+                    .unwrap_err()
+                    .contains("新地址")
+            );
+        }
+        assert!(seen_b.lock().unwrap().is_empty());
+        draft.api_key = Some("synthetic-new-key".into());
+        draft.auth_scheme = Some("x_api_key".into());
+        assert_eq!(
+            providers_test_connection(draft.clone()).await.unwrap()[0].id,
+            "fixture"
+        );
+        providers_test_model_connection(draft, "fixture".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            *seen_b.lock().unwrap(),
+            ["synthetic-new-key", "synthetic-new-key"]
+        );
+        server_a.abort();
+        server_b.abort();
     }
 
     #[test]

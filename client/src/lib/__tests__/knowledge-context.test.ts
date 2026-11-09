@@ -130,6 +130,32 @@ describe("personal knowledge prompt preparation", () => {
     });
   });
 
+  it("尚无可检索索引时保留任务，并在轮次里说明稍后重试", async () => {
+    useKnowledgeStore.getState().setSessionSources("session-indexing", ["personal"]);
+    registerKbProvider({ id: "local", label: "本地", isEnabled: () => true, list: vi.fn() });
+    semanticSearchMock.mockResolvedValue({ items: [], retrievalMode: "none",
+      degradedReason: "个人知识索引正在后台建立", index: { state: "indexing" } });
+    const result = await preparePromptWithPersonalKnowledge("session-indexing", "原始任务", "查找制度", "turn");
+    expect(result).toMatchObject({ promptText: "原始任务", resultCount: 0 });
+    expect(useKnowledgeStore.getState().turnTraces["session-indexing"].turn.personal).toEqual({
+      state: "blocked", message: "个人知识索引正在后台建立。索引完成后可重新提问",
+    });
+  });
+
+  it("区分真正未命中与仅使用关键词索引后的未命中", async () => {
+    useKnowledgeStore.getState().setSessionSources("session-empty", ["personal"]);
+    registerKbProvider({ id: "local", label: "本地", isEnabled: () => true, list: vi.fn() });
+    semanticSearchMock.mockResolvedValueOnce({ items: [], retrievalMode: "keyword",
+      degradedReason: "语义索引正在后台生成", index: { state: "degraded" } });
+    semanticSearchMock.mockResolvedValueOnce({ items: [], retrievalMode: "hybrid",
+      degradedReason: null, index: { state: "ready" } });
+    await preparePromptWithPersonalKnowledge("session-empty", "原始任务", "查找制度", "keyword");
+    await preparePromptWithPersonalKnowledge("session-empty", "原始任务", "查找制度", "hybrid");
+    const traces = useKnowledgeStore.getState().turnTraces["session-empty"];
+    expect(traces.keyword.personal).toMatchObject({ state: "no-match", keywordOnly: true, notice: "语义索引正在后台生成" });
+    expect(traces.hybrid.personal).toEqual({ state: "no-match", sourceCount: 1 });
+  });
+
   it("会话关闭知识库后完全跳过检索", async () => {
     const list = vi.fn(() => [{ id: "x", title: "不应读取" }]);
     registerKbProvider({ id: "local", label: "本地", isEnabled: () => true, list });

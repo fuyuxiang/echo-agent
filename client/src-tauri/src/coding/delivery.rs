@@ -293,6 +293,7 @@ fn verification_gate(
                 VerificationStatus::Cancelled => "已取消",
                 VerificationStatus::Running => "执行中",
                 VerificationStatus::EnvironmentUnavailable => "环境未就绪",
+                VerificationStatus::EvidenceInvalidated => "结果失效，需重跑",
             };
             let detail = record
                 .test_summary
@@ -528,7 +529,7 @@ pub fn build_report(root: &Path, task_id: &str) -> Result<DeliveryReport, String
     }
     let tdd_evidence = tdd::load(root, task_id);
     let tdd_required = tdd::needs_test_first(root, &task, &set);
-    let green = tdd::green_record(&tdd_evidence, &records, &set)
+    let green = tdd::green_record(&tdd_evidence, &current_records, &set)
         .filter(|_| set.verified_revision.as_deref() == Some(set.content_revision().as_str()));
     gates.push(QualityGate {
         id: GateId::TestFirst,

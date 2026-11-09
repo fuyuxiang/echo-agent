@@ -3,7 +3,7 @@
 //! to the existing session and interaction services; it owns no Agent state.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -46,6 +46,7 @@ struct Binding {
     allowed_workspaces: Vec<String>,
     default_workspace: Option<String>,
     shared_sessions: Vec<String>,
+    access_revision: String,
     cursor: String,
     context_token: Option<String>,
     seen_ids: VecDeque<String>,
@@ -70,6 +71,82 @@ struct OutboundText {
 struct InboundAttempt {
     message_id: String,
     description: String,
+}
+
+pub(crate) struct PromptAuthorization {
+    bot_id: String,
+    user_id: String,
+    access_revision: String,
+}
+
+impl PromptAuthorization {
+    fn from_binding(binding: &Binding) -> Self {
+        Self {
+            bot_id: binding.bot_id.clone(),
+            user_id: binding.user_id.clone(),
+            access_revision: binding.access_revision.clone(),
+        }
+    }
+
+    fn require_current(&self, binding: &Binding) -> Result<(), String> {
+        if self.bot_id != binding.bot_id || self.user_id != binding.user_id {
+            return Err("微信绑定已变化".into());
+        }
+        if self.access_revision != binding.access_revision {
+            return Err("微信访问授权已变化，请确认任务后重新发送".into());
+        }
+        Ok(())
+    }
+
+    fn with_binding<T>(&self, run: impl FnOnce(&Binding) -> Result<T, String>) -> Result<T, String> {
+        let _guard = BINDING_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let binding = load_binding()?.ok_or("微信已解除绑定")?;
+        self.require_current(&binding)?;
+        run(&binding)
+    }
+
+    fn with_session<T>(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        run: impl FnOnce(&Binding, &Path) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.with_binding(|binding| {
+            let session = crate::sessions::list_all_sessions(false)?
+                .into_iter()
+                .find(|session| session.session_id == session_id)
+                .ok_or("会话不存在或已归档")?;
+            let access = app.state::<crate::shell_fs::FilesystemAccess>();
+            let workspace = session_accessible_workspace(binding, &session, &access)
+                .ok_or("此会话未授权微信访问")?;
+            run(binding, &workspace)
+        })
+    }
+
+    pub(crate) fn enqueue<T>(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        workspace: &Path,
+        enqueue: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        // Revocation and the synchronous ACP enqueue use the same lock. The
+        // completion future does not keep the lock or delay access changes.
+        self.with_session(app, session_id, |_, current_workspace| {
+            if workspace != current_workspace {
+                return Err("会话工作区已变化，请重新选择任务".into());
+            }
+            let state = app.state::<WeixinState>();
+            let mut progress = state.progress_at.lock().unwrap();
+            let reply = enqueue()?;
+            progress.insert(session_id.to_string(), Instant::now());
+            Ok(reply)
+        })
+    }
+}
+
+fn rotate_access_revision(binding: &mut Binding) {
+    binding.access_revision = Uuid::now_v7().to_string();
 }
 
 #[derive(Clone, Debug)]
@@ -406,18 +483,15 @@ fn encrypt_media(mut bytes: Vec<u8>, key: &[u8; 16]) -> Result<Vec<u8>, String> 
 
 async fn send_workspace_file(
     app: &AppHandle,
-    binding: &Binding,
+    authorization: &PromptAuthorization,
     session_id: &str,
-    workspace: &str,
     relative: &str,
 ) -> Result<(), String> {
     use md5::Digest;
     use std::path::Component;
-    if load_binding()?.as_ref().is_none_or(|current| {
-        current.bot_id != binding.bot_id || current.user_id != binding.user_id
-    }) {
-        return Err("微信绑定已变化".into());
-    }
+    let (binding, root) = authorization.with_session(app, session_id, |binding, workspace| {
+        Ok((binding.clone(), workspace.to_path_buf()))
+    })?;
     let relative = PathBuf::from(relative.trim());
     if relative.as_os_str().is_empty()
         || relative.is_absolute()
@@ -430,9 +504,6 @@ async fn send_workspace_file(
     {
         return Err("请使用当前工作区内的相对文件路径".into());
     }
-    let root = PathBuf::from(workspace)
-        .canonicalize()
-        .map_err(|_| "当前工作区不可访问")?;
     let candidate = root.join(&relative);
     let path = candidate.canonicalize().map_err(|_| "文件不存在")?;
     let metadata = std::fs::symlink_metadata(&candidate).map_err(|_| "文件不存在")?;
@@ -502,6 +573,15 @@ async fn send_workspace_file(
     {
         return Err("微信上传地址不在允许的域名内".into());
     }
+    // The upload URL request awaited a remote response. Check before sending
+    // bytes as well as before publishing the download key to the chat.
+    let require_same_workspace = |binding: &Binding, workspace: &Path| {
+        if root != workspace {
+            return Err("会话工作区已变化，请重新选择任务".into());
+        }
+        Ok(binding.clone())
+    };
+    authorization.with_session(app, session_id, require_same_workspace)?;
     let upload = api_client(Duration::from_secs(60))?
         .post(upload_url)
         .header("Content-Type", "application/octet-stream")
@@ -527,15 +607,7 @@ async fn send_workspace_file(
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    let current = load_binding()?.ok_or("微信已解除绑定")?;
-    if current.bot_id != binding.bot_id
-        || current.user_id != binding.user_id
-        || !accessible_sessions(app, &current)
-            .iter()
-            .any(|session| session.session_id == session_id)
-    {
-        return Err("此会话未授权微信访问".into());
-    }
+    let current = authorization.with_session(app, session_id, require_same_workspace)?;
     api_post(
         &current.base_url,
         "ilink/bot/sendmessage",
@@ -911,6 +983,7 @@ pub(crate) async fn weixin_qr_poll(
             binding.bot_id = bot_id.into();
             binding.user_id = user_id.into();
             binding.base_url = base_url.into();
+            rotate_access_revision(&mut binding);
             binding.cursor.clear();
             binding.context_token = None;
             binding.seen_ids.clear();
@@ -970,6 +1043,9 @@ pub(crate) async fn weixin_set_workspaces(
     }
     let sessions = crate::sessions::list_all_sessions(false)?;
     mutate_binding(|binding| {
+        if binding.allowed_workspaces.iter().any(|cwd| !allowed.contains(cwd)) {
+            rotate_access_revision(binding);
+        }
         binding.allowed_workspaces = allowed;
         binding.default_workspace =
             preferred.or_else(|| self::default_workspace(binding).map(str::to_string));
@@ -1036,6 +1112,7 @@ fn revoke_session_access(
     }
     binding.shared_sessions.retain(|id| id != session_id);
     if !retained_access {
+        rotate_access_revision(binding);
         binding
             .outbox
             .retain(|message| message.session_id.as_deref() != Some(session_id));
@@ -1054,20 +1131,27 @@ fn session_accessible(
     session: &SessionSummary,
     access: &crate::shell_fs::FilesystemAccess,
 ) -> bool {
-    if session.hidden {
-        return false;
+    session_accessible_workspace(binding, session, access).is_some()
+}
+
+fn session_accessible_workspace(
+    binding: &Binding,
+    session: &SessionSummary,
+    access: &crate::shell_fs::FilesystemAccess,
+) -> Option<PathBuf> {
+    if session.hidden || session.archived.unwrap_or(false) {
+        return None;
     }
-    let Ok(cwd) = access.require_workspace(&session.cwd) else {
-        return false;
-    };
-    binding
+    let cwd = access.require_workspace(&session.cwd).ok()?;
+    let allowed = binding
         .allowed_workspaces
         .iter()
         .any(|root| root == &cwd.to_string_lossy())
         || binding
             .shared_sessions
             .iter()
-            .any(|id| id == &session.session_id)
+            .any(|id| id == &session.session_id);
+    allowed.then_some(cwd)
 }
 
 fn accessible_sessions(app: &AppHandle, binding: &Binding) -> Vec<SessionSummary> {
@@ -2124,25 +2208,73 @@ fn message_id(message: &Value) -> Option<String> {
     })
 }
 
-fn quoted_session_marker(reference: &Value) -> Option<String> {
+fn quoted_session_marker(reference: &Value) -> Result<Option<&str>, String> {
     let item_text = reference
         .get("message_item")
         .and_then(|item| item.get("text_item"))
         .and_then(|item| item.get("text"))
         .and_then(Value::as_str);
     let title = reference.get("title").and_then(Value::as_str);
-    [item_text, title].into_iter().flatten().find_map(|text| {
+    let mut markers = [item_text, title].into_iter().flatten().filter_map(|text| {
         let rest = text.trim_start().strip_prefix('#')?;
-        let marker: String = rest
-            .chars()
-            .take_while(|ch| ch.is_ascii_hexdigit())
-            .collect();
+        let marker = rest.split(|ch: char| !ch.is_ascii_hexdigit()).next()?;
         (marker.len() == 8).then_some(marker)
-    })
+    });
+    let marker = markers.next();
+    if let (Some(marker), Some(other)) = (marker, markers.next()) {
+        if !marker.eq_ignore_ascii_case(other) {
+            return Err("引用消息包含冲突的任务编号，请先发送“任务”并重新选择。".into());
+        }
+    }
+    Ok(marker)
+}
+
+fn quoted_session_target<'a>(
+    binding: &Binding,
+    sessions: &'a [SessionSummary],
+    all_sessions: &[SessionSummary],
+    reference: &Value,
+) -> Result<Option<&'a str>, String> {
+    let quoted_id = reference.get("svr_id").and_then(protocol_id);
+    let marker = quoted_session_marker(reference)?;
+    if let Some((_, mapped)) = quoted_id.as_deref().and_then(|quoted| {
+        binding
+            .outbound_routes
+            .iter()
+            .find(|(message_id, _)| message_id == quoted)
+    }) {
+        let session = sessions
+            .iter()
+            .find(|session| session.session_id == *mapped)
+            .ok_or("引用消息所属任务已不可通过微信访问，请在桌面检查授权。")?;
+        if marker.is_some_and(|marker| !short_id(mapped).eq_ignore_ascii_case(marker)) {
+            return Err("引用消息包含冲突的任务编号，请先发送“任务”并重新选择。".into());
+        }
+        return Ok(Some(&session.session_id));
+    }
+    if let Some(marker) = marker {
+        let mut matches = all_sessions
+            .iter()
+            .filter(|session| short_id(&session.session_id).eq_ignore_ascii_case(marker));
+        if let (Some(session), None) = (matches.next(), matches.next()) {
+            if let Some(authorized) = sessions.iter().find(|s| s.session_id == session.session_id) {
+                return Ok(Some(&authorized.session_id));
+            }
+        }
+        return Err("引用消息所属任务已不可访问或编号不唯一，请先发送“任务”并重新选择。".into());
+    }
+    if quoted_id.is_some() {
+        return Err(
+            "无法识别引用消息所属任务，请先发送“任务”并使用“切换 #编号”选择任务，再发送内容。"
+                .into(),
+        );
+    }
+    Ok(None)
 }
 
 async fn process_message(app: &AppHandle, message: &Value) -> Result<(), String> {
     let mut binding = load_binding()?.ok_or("微信未绑定")?;
+    let authorization = PromptAuthorization::from_binding(&binding);
     if message.get("message_type").and_then(Value::as_u64) == Some(2)
         && message
             .get("client_id")
@@ -2262,7 +2394,10 @@ async fn process_message(app: &AppHandle, message: &Value) -> Result<(), String>
     } else {
         input.trim()
     };
-    let result = route_message(app, &mut binding, prompt, reference, attachments).await;
+    let result = route_message(
+        app, &mut binding, &authorization, prompt, reference, attachments,
+    )
+    .await;
     if let Err(error) = result {
         send_text(&binding, &format!("无法执行：{error}"), None).await?;
     }
@@ -2278,44 +2413,38 @@ async fn process_message(app: &AppHandle, message: &Value) -> Result<(), String>
 async fn route_message(
     app: &AppHandle,
     binding: &mut Binding,
+    authorization: &PromptAuthorization,
     input: &str,
     reference: Option<&Value>,
     attachments: Vec<String>,
 ) -> Result<(), String> {
-    let sessions = accessible_sessions(app, binding);
-    if let Some(reference) = reference {
-        let quoted_id = reference.get("svr_id").and_then(protocol_id);
-        let mapped = quoted_id.as_deref().and_then(|quoted| {
-            binding
-                .outbound_routes
+    // Keep hidden and unauthorized ids for ambiguity detection, but never
+    // make them candidates for dispatch. A truncated id cannot distinguish
+    // a revoked task from a different accessible task with the same suffix.
+    let all_sessions = crate::sessions::list_all_sessions(reference.is_some()).unwrap_or_default();
+    let access = app.state::<crate::shell_fs::FilesystemAccess>();
+    let sessions: Vec<_> = all_sessions
+        .iter()
+        .filter(|session| session_accessible(binding, session, &access))
+        .cloned()
+        .collect();
+    let quoted_target = reference
+        .map(|reference| quoted_session_target(binding, &sessions, &all_sessions, reference))
+        .transpose()?
+        .flatten();
+    if let Some(target) = quoted_target {
+        *binding = mutate_binding(|current| {
+            authorization.require_current(current)?;
+            let accessible = accessible_sessions(app, current);
+            if !accessible
                 .iter()
-                .find(|(message_id, _)| message_id == quoted)
-                .map(|(_, target)| target.clone())
-        });
-        let marked = quoted_session_marker(reference).and_then(|marker| {
-            let matches: Vec<_> = sessions
-                .iter()
-                .filter(|session| short_id(&session.session_id).eq_ignore_ascii_case(&marker))
-                .collect();
-            (matches.len() == 1).then(|| matches[0].session_id.clone())
-        });
-        let target = mapped.or(marked);
-        if quoted_id.is_some() && target.is_none() {
-            return Err(
-                "无法识别引用消息所属任务，请先发送“任务”并使用“切换 #编号”选择任务，再发送内容。"
-                    .into(),
-            );
-        }
-        if let Some(target) =
-            target.filter(|target| sessions.iter().any(|session| session.session_id == *target))
-        {
-            *binding = mutate_binding(|current| {
-                current.active_session = Some(target);
-                Ok(())
-            })?;
-        } else if quoted_id.is_some() {
-            return Err("引用消息所属任务已不可通过微信访问，请在桌面检查授权。".into());
-        }
+                .any(|session| session.session_id == target)
+            {
+                return Err("引用消息所属任务已不可通过微信访问，请在桌面检查授权。".into());
+            }
+            current.active_session = Some(target.to_string());
+            Ok(())
+        })?;
     }
     if attachments.is_empty() && (input == "帮助" || input == "/help") {
         return send_text(binding, "微信继续 · 常用指令\n\n• 任务 / 任务2：查看任务、翻页\n• 切换 #编号：进入已有任务\n• 状态 / 停止：查看或停止当前任务\n\n• 工作区：查看可用目录\n•「新任务：内容」：在默认工作区创建任务\n•「新任务 2：内容」：在指定工作区创建任务\n• /文件 相对路径：取回工作区文件\n\n普通消息会继续当前任务。", None).await;
@@ -2440,7 +2569,7 @@ async fn route_message(
             .iter()
             .find(|s| Some(&s.session_id) == binding.active_session.as_ref())
             .ok_or("尚未选择任务")?;
-        send_workspace_file(app, binding, &current.session_id, &current.cwd, relative).await?;
+        send_workspace_file(app, authorization, &current.session_id, relative).await?;
         return send_text(
             binding,
             &format!(
@@ -2496,6 +2625,12 @@ async fn route_message(
         }
         .ok_or("工作区编号无效，请发送“工作区”查看可用目录")?;
         ensure_runtime(app).await?;
+        authorization.with_binding(|current| {
+            if !current.allowed_workspaces.contains(&cwd) {
+                return Err("此工作区未授权微信访问".into());
+            }
+            Ok(())
+        })?;
         let session_id = crate::commands::agent_new_session(
             app.clone(),
             app.state::<AppState>(),
@@ -2506,32 +2641,23 @@ async fn route_message(
         )
         .await?;
         *binding = mutate_binding(|current| {
+            authorization.require_current(current)?;
             current.active_session = Some(session_id.clone());
             Ok(())
         })?;
         send_text(
             binding,
-            &format!("已创建任务 #{}，正在执行。", short_id(&session_id)),
+            &format!("已创建任务 #{}，正在提交消息。", short_id(&session_id)),
             Some(&session_id),
         )
         .await?;
-        app.state::<WeixinState>()
-            .progress_at
-            .lock()
-            .unwrap()
-            .insert(session_id.clone(), Instant::now());
-        return crate::commands::agent_send(
+        return crate::commands::agent_send_from_weixin(
             app.clone(),
-            app.state::<AppState>(),
+            authorization,
             session_id,
             prompt.into(),
-            Some(attachments),
-            None,
-            Some(Uuid::now_v7().to_string()),
-            Some(false),
-            None,
-            None,
-            None,
+            attachments,
+            Uuid::now_v7().to_string(),
         )
         .await;
     }
@@ -2553,24 +2679,13 @@ async fn route_message(
         )
         .await?;
     }
-    let prompt_id = Uuid::now_v7().to_string();
-    app.state::<WeixinState>()
-        .progress_at
-        .lock()
-        .unwrap()
-        .insert(current.session_id.clone(), Instant::now());
-    crate::commands::agent_send(
+    crate::commands::agent_send_from_weixin(
         app.clone(),
-        app.state::<AppState>(),
+        authorization,
         current.session_id.clone(),
         input.into(),
-        Some(attachments),
-        None,
-        Some(prompt_id),
-        Some(false),
-        None,
-        None,
-        None,
+        attachments,
+        Uuid::now_v7().to_string(),
     )
     .await?;
     send_text(
@@ -2840,9 +2955,9 @@ mod tests {
 
     use super::{
         cdn_url, decrypt_media, default_workspace, encrypt_media, format_task_page, message_id,
-        outbound_segments, quoted_session_marker, reconcile_bot_echo, reply_context,
-        reviewable_permission_details, revoke_session_access, task_page_command, validate_base_url,
-        Binding, InboundAttempt, OutboundText,
+        outbound_segments, quoted_session_marker, quoted_session_target, reconcile_bot_echo,
+        reply_context, reviewable_permission_details, revoke_session_access, task_page_command,
+        validate_base_url, Binding, InboundAttempt, OutboundText,
     };
     use crate::sessions::SessionSummary;
     use aes::cipher::{BlockEncrypt, KeyInit};
@@ -2919,14 +3034,77 @@ mod tests {
             .iter()
             .all(|segment| segment.starts_with("#12345678\n")));
         let reference = json!({"message_item": {"text_item": {"text": segments[1]}}});
+        assert_eq!(quoted_session_marker(&reference).unwrap(), Some("12345678"));
         assert_eq!(
-            quoted_session_marker(&reference).as_deref(),
+            quoted_session_marker(&json!({"title": "#12345678《任务》"})).unwrap(),
             Some("12345678")
         );
+    }
+
+    #[test]
+    fn quoted_routing_requires_unique_authorized_identity() {
+        let session = |id| -> SessionSummary {
+            serde_json::from_value(json!({
+                "sessionId": id,
+                "title": "task",
+                "cwd": "/repo",
+                "permissionMode": "ask"
+            }))
+            .unwrap()
+        };
+        let revoked = "task-aaaaaaaa";
+        let current = "task-bbbbbbbb";
+        let binding = Binding {
+            active_session: Some(current.into()),
+            outbound_routes: [("sent-before-revoke".into(), revoked.into())].into(),
+            ..Binding::default()
+        };
+        let sessions = [session(current)];
+        for reference in [
+            json!({"title": "#aaaaaaaa revoked"}),
+            json!({"svr_id": "unrecognized"}),
+            json!({"svr_id": "sent-before-revoke", "title": "#bbbbbbbb misleading"}),
+            json!({"title": "#bbbbbbbb current", "message_item": {"text_item": {"text": "#aaaaaaaa revoked"}}}),
+        ] {
+            assert!(quoted_session_target(&binding, &sessions, &sessions, &reference).is_err());
+        }
         assert_eq!(
-            quoted_session_marker(&json!({"title": "#12345678《任务》"})).as_deref(),
-            Some("12345678")
+            quoted_session_target(
+                &binding,
+                &sessions,
+                &sessions,
+                &json!({"title": "#BBBBBBBB current"})
+            )
+            .unwrap(),
+            Some(current)
         );
+        assert_eq!(
+            quoted_session_target(
+                &binding,
+                &sessions,
+                &sessions,
+                &json!({"svr_id": "expired-mapping", "title": "#bbbbbbbb current"})
+            )
+            .unwrap(),
+            Some(current)
+        );
+        assert_eq!(
+            quoted_session_target(
+                &binding,
+                &sessions,
+                &sessions,
+                &json!({"title": "no routing marker"})
+            )
+            .unwrap(),
+            None
+        );
+        assert!(quoted_session_target(
+            &binding,
+            &sessions,
+            &[session(current), session("unauthorized-bbbbbbbb")],
+            &json!({"title": "#bbbbbbbb ambiguous"})
+        )
+        .is_err());
     }
 
     #[test]
@@ -3025,10 +3203,15 @@ mod tests {
             context_token: None,
             request_code: None,
         });
+        let admitted_message = super::PromptAuthorization::from_binding(&binding);
         revoke_session_access(&mut binding, "session", false).unwrap();
         assert!(binding.active_session.is_none());
         assert!(binding.shared_sessions.is_empty());
         assert!(binding.outbox.is_empty());
+        assert!(admitted_message.require_current(&binding).is_err());
+        binding.shared_sessions.push("session".into());
+        assert!(admitted_message.require_current(&binding).is_err());
+        assert!(super::PromptAuthorization::from_binding(&binding).require_current(&binding).is_ok());
     }
 
     #[test]
@@ -3046,10 +3229,12 @@ mod tests {
             context_token: None,
             request_code: None,
         });
+        let admitted_message = super::PromptAuthorization::from_binding(&binding);
         revoke_session_access(&mut binding, "session", true).unwrap();
         assert_eq!(binding.active_session.as_deref(), Some("session"));
         assert_eq!(binding.outbox.len(), 1);
         assert!(binding.shared_sessions.is_empty());
+        assert!(admitted_message.require_current(&binding).is_ok());
     }
 
     #[test]

@@ -8,15 +8,17 @@ import type {EditableDocument,DocumentEditContext} from '../../src/lib/document-
 import type {SessionArtifact} from '../../src/lib/session-artifacts';
 document.documentElement.setAttribute("data-theme",new URLSearchParams(location.search).get("theme") ?? "light");
 const scenario=new URLSearchParams(location.search).get('scenario');
-const path=scenario?.startsWith('markdown')?'/review/文档说明.md':'/review/家庭亲子作息表.docx';
-const markdownContent=scenario==='markdown-simple'?'# 可编辑说明\n\n**保留格式**与普通段落。':'# 原文阅读\n\n![架构示意](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGHkAAAAASUVORK5CYII=)\n\n公式 $x^2+1$\n\n```mermaid\ngraph LR; A-->B\n```';
+const missing=scenario==='missing-source';
+const path=missing?'/review/缺少原件.docx':scenario?.startsWith('markdown')?'/review/文档说明.md':'/review/家庭亲子作息表.docx';
+let markdownContent=scenario==='markdown-simple'?'# 可编辑说明\n\n**保留格式**与普通段落。':'# 原文阅读\n\n![架构示意](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGHkAAAAASUVORK5CYII=)\n\n公式 $x^2+1$\n\n```mermaid\ngraph LR; A-->B\n```';
 const initial:EditableDocument={id:'review-doc',sessionId:'document-review',path,title:'家庭亲子作息表',revision:1,exportedRevision:1,fileSha256:'a'.repeat(64),byteSize:100,document:markdownToDocument('# 家庭亲子作息表\n\n让每天的安排清晰、从容。\n\n| 时间 | 儿童安排 | 家长安排 |\n| --- | --- | --- |\n| 6:30 | 起床、洗漱 | 准备早餐 |\n| 7:00 | 早餐、整理书包 | 陪伴用餐 |'),history:[],actor:'生成文档',savedAt:Date.now()};
 const records:Record<string,EditableDocument>=JSON.parse(localStorage.getItem('document-review-records') ?? '{}');
 if(!scenario?.startsWith('markdown'))records[path]??=initial;
+if(missing)records[path]={...initial,revision:2,document:markdownToDocument('# 已从备份恢复的内容')};
 const calls:{command:string;args:any}[]=[];
 const commit=()=>localStorage.setItem('document-review-records',JSON.stringify(records));
 const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value));
-const review={calls,records,delayRestore:false,delayCopy:false,delayDraftSave:false,failPublication:false,failDraftSave:false,
+const review={calls,records,replaceMarkdown:(text:string)=>{markdownContent=text;},delayRestore:false,delayCopy:false,delayDraftSave:false,failPublication:false,failDraftSave:false,
   releaseRestore:null as null|(()=>void),releaseCopy:null as null|(()=>void),releaseDraftSave:null as null|(()=>void),agentUpdate:(path:string,text:string)=>{
   const record=records[path];record.history.push({revision:record.revision,document:clone(record.document),actor:record.actor,savedAt:record.savedAt});
   record.document=JSON.parse(JSON.stringify(record.document).replaceAll('6:30',text).replaceAll('7:00',text));record.revision++;record.exportedRevision=record.revision;record.actor='Agent 修改';record.savedAt=Date.now();commit();
@@ -25,12 +27,19 @@ Object.assign(window,{documentReview:review,__TAURI_INTERNALS__:{transformCallba
   calls.push({command,args});
   const record=records[args.path ?? path];
   if(command==='path_stat')return {absolute:args.path};
-  if(command==='session_export_authorize')return;
+  if(command==='session_export_authorize') {
+    if(missing && args.path===path)throw new Error('导出文件已移动、删除或内容已变化');
+    return;
+  }
   if(command==='read_file_base64'){
     const zip=new JSZip();zip.file('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>作息表</w:t></w:r></w:p></w:body></w:document>');return zip.generateAsync({type:'base64'});
   }
   if(command==='read_text_file')return markdownContent;
-  if(command==='document_workspace_open')return clone({document:record ?? null,path:args.path,fileSha256:record?.fileSha256 ?? 'a'.repeat(64),byteSize:record?.byteSize ?? 100});
+  if(command==='document_workspace_open') {
+    const sourceMissing=missing && args.path===path;
+    if(sourceMissing && args.recoverMissingOnly!==true)throw new Error('恢复稿应仅请求缺失的原件');
+    return clone({document:record ?? null,path:args.path,fileSha256:record?.fileSha256 ?? 'a'.repeat(64),byteSize:record?.byteSize ?? 100,sourceMissing});
+  }
   if(command==='document_workspace_save'){
     if(review.delayDraftSave)await new Promise<void>(resolve=>{review.releaseDraftSave=()=>{review.releaseDraftSave=null;resolve();};});
     if(review.failDraftSave)throw new Error('编辑稿暂时不可写，修改仍保留在本地');
@@ -46,16 +55,25 @@ Object.assign(window,{documentReview:review,__TAURI_INTERNALS__:{transformCallba
     record.document=clone(version.document);record.history.push({revision:record.revision,document:previous,actor:record.actor,savedAt:record.savedAt});record.revision++;record.actor='恢复历史';commit();return clone(record);
   }
   if(command==='document_workspace_import'){
+    if(typeof args.sourcePreview==='string' && args.sourcePreview!==markdownContent) {
+      throw new Error('DOCUMENT_EXTERNAL_CHANGE:原文件已变化');
+    }
+    if(args.sourcePreview===undefined && (!record || args.expectedSha256!==record.fileSha256)) {
+      throw new Error('DOCUMENT_EXTERNAL_CHANGE:原文件已变化');
+    }
     if(review.delayCopy)await new Promise<void>(resolve=>{review.releaseCopy=()=>{review.releaseCopy=null;resolve();};});
     const next={...clone(record ?? initial),id:'copy',path:'/review/家庭亲子作息表-可编辑副本.docx',document:clone(args.document),revision:1,exportedRevision:1,history:[]};records[next.path]=next;commit();return clone(next);
   }
-  if(command==='document_workspace_export')return {path:`/review/当前版本.${args.format}`,format:args.format,sha256:'b'.repeat(64),byteSize:100};
+  if(command==='document_workspace_export') {
+    if(missing && (args.path!==path || args.expectedRevision!==2 || args.recoveredCopy!==true))throw new Error('恢复稿导出参数不匹配');
+    return {path:`/review/${missing?'导出恢复稿':'当前版本'}.${args.format}`,format:args.format,sha256:'b'.repeat(64),byteSize:100};
+  }
   if(command==='plugin:event|listen')return 1;
   if(command==='plugin:event|unlisten')return;
   return [];
 }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
 function Review(){
-  const [artifact,setArtifact]=useState<SessionArtifact>({id:path,path,kind:'file',title:'家庭亲子作息表',toolCallId:'',status:'completed'});
+  const [artifact,setArtifact]=useState<SessionArtifact>({id:path,path,kind:missing?'document_export':'file',title:'家庭亲子作息表',toolCallId:missing?`document-export:${initial.fileSha256}`:'',status:'completed'});
   const [context,setContext]=useState<DocumentEditContext|null>(null);
   const [toast,setToast]=useState('');
   const [panelOpen,setPanelOpen]=useState(true);

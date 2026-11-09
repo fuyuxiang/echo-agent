@@ -21,9 +21,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use echo_agent_sqlite_journal::JournalMode;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::recovery;
+
+#[path = "substrings.rs"]
+mod substrings;
 
 /// Bump when making breaking schema changes that require dropping and
 /// recreating tables, or to force a rebuild of stale index content
@@ -186,6 +189,7 @@ impl SessionSearchIndex {
             // Other `meta` keys are preserved. Immediate: a deferred begin
             // can fail with SQLITE_BUSY_SNAPSHOT, which skips the handler.
             let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            substrings::reset(&tx)?;
             tx.execute_batch(
                 "
                 DROP TRIGGER IF EXISTS session_docs_ai;
@@ -253,6 +257,7 @@ impl SessionSearchIndex {
             END;
             ",
         )?;
+        substrings::initialize(&mut db)?;
 
         // Persist schema version — but never regress the row a newer
         // generation owns (it would re-trigger that binary's upgrade drop).
@@ -271,7 +276,8 @@ impl SessionSearchIndex {
     /// The content-synced FTS triggers handle updating `session_docs_fts`
     /// automatically.
     pub fn upsert_doc(&self, doc: &SessionDoc) -> Result<(), rusqlite::Error> {
-        self.db.execute(
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        let rowid = tx.query_row(
             "INSERT INTO session_docs(session_id, cwd, updated_at, title, content, content_hash)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(session_id) DO UPDATE SET
@@ -279,7 +285,8 @@ impl SessionSearchIndex {
                  updated_at = excluded.updated_at,
                  title = excluded.title,
                  content = excluded.content,
-                 content_hash = excluded.content_hash",
+                 content_hash = excluded.content_hash
+             RETURNING rowid",
             params![
                 doc.session_id,
                 doc.cwd,
@@ -288,8 +295,10 @@ impl SessionSearchIndex {
                 doc.content,
                 doc.content_hash
             ],
+            |row| row.get(0),
         )?;
-        Ok(())
+        substrings::replace(&tx, rowid, Some((&doc.title, &doc.content)))?;
+        tx.commit()
     }
 
     /// Insert a session document only if no row exists for its `session_id`.
@@ -298,10 +307,11 @@ impl SessionSearchIndex {
     /// across processes, so a two-step gate could clobber a full-content row
     /// written between the check and the insert.
     pub fn insert_doc_if_absent(&self, doc: &SessionDoc) -> Result<(), rusqlite::Error> {
-        self.db.execute(
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        let rowid = tx.query_row(
             "INSERT INTO session_docs(session_id, cwd, updated_at, title, content, content_hash)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(session_id) DO NOTHING",
+             ON CONFLICT(session_id) DO NOTHING RETURNING rowid",
             params![
                 doc.session_id,
                 doc.cwd,
@@ -309,18 +319,44 @@ impl SessionSearchIndex {
                 doc.title,
                 doc.content,
                 doc.content_hash
-            ],
-        )?;
-        Ok(())
+            ], |row| row.get(0),
+        ).optional()?;
+        if let Some(rowid) = rowid {
+            substrings::replace(&tx, rowid, Some((&doc.title, &doc.content)))?;
+        }
+        tx.commit()
+    }
+
+    pub(crate) fn substring_index_pending(&self) -> rusqlite::Result<bool> {
+        substrings::pending(&self.db)
+    }
+
+    pub(crate) fn refresh_substring_index(&self) -> rusqlite::Result<bool> {
+        substrings::refresh_batch(&self.db)
     }
 
     /// Remove a session document from the index.
     pub fn delete_doc(&self, session_id: &str) -> Result<(), rusqlite::Error> {
-        self.db.execute(
-            "DELETE FROM session_docs WHERE session_id = ?1",
-            params![session_id],
-        )?;
-        Ok(())
+        let delete = |db: &Connection| {
+            let rowid = db
+                .query_row(
+                    "DELETE FROM session_docs WHERE session_id = ?1 RETURNING rowid",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(rowid) = rowid {
+                substrings::replace(db, rowid, None)?;
+            }
+            Ok(())
+        };
+        if !self.db.is_autocommit() {
+            // Bootstrap already prunes under a fenced write transaction.
+            return delete(&self.db);
+        }
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        delete(&tx)?;
+        tx.commit()
     }
 
     /// Return the stored content_hash for a session, if any.
@@ -502,6 +538,12 @@ impl SessionSearchIndex {
             }
         }
 
+        // unicode61 treats a run of Han characters as one word. Use literal
+        // substrings for these queries, including any adjacent Latin text.
+        if uses_substring_index(query) {
+            return self.query_han_substrings(query, cwd, limit, offset, include_content);
+        }
+
         let Some((and_query, or_query)) = Self::build_match_queries(query) else {
             return Ok(QueryResult {
                 results: Vec::new(),
@@ -517,6 +559,126 @@ impl SessionSearchIndex {
             return self.run_match_query(&or_query, cwd, limit, offset, include_content);
         }
         Ok(result)
+    }
+
+    pub(crate) fn query_with_progress(
+        &self,
+        query: &str,
+        cwd: Option<&str>,
+        limit: usize,
+        offset: usize,
+        include_content: bool,
+    ) -> rusqlite::Result<(QueryResult, bool)> {
+        // The page and the completion flag must describe the same snapshot.
+        // An older writer may dirty a row or a backfill may finish at any time.
+        let snapshot = Transaction::new_unchecked(&self.db, TransactionBehavior::Deferred)?;
+        let pending = uses_substring_index(query) && self.substring_index_pending()?;
+        let claim = self.get_meta(META_KEY_BOOTSTRAP_CLAIM)?.is_some()
+            && self.get_meta(META_KEY_LAST_BOOTSTRAP)?.is_none();
+        let result = self.query(query, cwd, limit, offset, include_content)?;
+        snapshot.commit()?;
+        Ok((result, pending || claim))
+    }
+
+    fn query_han_substrings(
+        &self,
+        query: &str,
+        cwd: Option<&str>,
+        limit: usize,
+        offset: usize,
+        include_content: bool,
+    ) -> Result<QueryResult, rusqlite::Error> {
+        let mut terms = query
+            .split_whitespace()
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        if terms.len() > 16 {
+            terms = vec![query.trim().to_ascii_lowercase()];
+        }
+        let execute = |operator, count, start| {
+            self.run_substring_query(&terms, operator, cwd, count, start, include_content)
+        };
+        let result = execute(" AND ", limit, offset)?;
+        if limit > 0
+            && terms.len() > 1
+            && result.results.is_empty()
+            && (offset == 0 || execute(" AND ", 1, 0)?.results.is_empty())
+        {
+            return execute(" OR ", limit, offset);
+        }
+        Ok(result)
+    }
+
+    fn run_substring_query(
+        &self,
+        terms: &[String],
+        operator: &str,
+        cwd: Option<&str>,
+        limit: usize,
+        offset: usize,
+        include_content: bool,
+    ) -> Result<QueryResult, rusqlite::Error> {
+        // FTS enumerates matching rowids before the join. Only the selected
+        // page reads the large title/content payloads for result snippets.
+        let mut stmt = self.db.prepare(
+            "WITH page AS MATERIALIZED (
+                SELECT d.rowid FROM session_substrings
+                CROSS JOIN session_docs d ON d.rowid = session_substrings.rowid
+                WHERE session_substrings MATCH ?1 AND (?2 IS NULL OR d.cwd = ?2)
+                  AND NOT EXISTS (SELECT 1 FROM session_substrings_dirty WHERE doc_rowid = d.rowid)
+                ORDER BY d.updated_at DESC, d.session_id ASC LIMIT ?3 OFFSET ?4
+             )
+             SELECT d.session_id, d.cwd, d.title, d.updated_at, d.content FROM page
+             CROSS JOIN session_docs d ON d.rowid = page.rowid
+             ORDER BY d.updated_at DESC, d.session_id ASC",
+        )?;
+        let bindings = params![
+            substrings::match_query(terms, operator),
+            cwd,
+            limit.saturating_add(1).min(i64::MAX as usize) as i64,
+            offset.min(i64::MAX as usize) as i64,
+        ];
+        let rows = stmt.query_map(bindings, |row| {
+            let title: String = row.get(2)?;
+            let content: String = row.get(4)?;
+            let folded_content = content.to_ascii_lowercase();
+            let match_range = terms
+                .iter()
+                .filter_map(|term| {
+                    folded_content
+                        .find(term)
+                        .map(|start| (start, start + term.len()))
+                })
+                .min();
+            let mut matched_fields = Vec::new();
+            let folded_title = title.to_ascii_lowercase();
+            if terms.iter().any(|term| folded_title.contains(term)) {
+                matched_fields.push("title".into());
+            }
+            if match_range.is_some() {
+                matched_fields.push("content".into());
+            }
+            Ok(SessionSearchRow {
+                session_id: row.get(0)?,
+                cwd: row.get(1)?,
+                title,
+                updated_at_unix: row.get(3)?,
+                score: 0.0,
+                matched_fields,
+                snippet: match_range
+                    .filter(|_| include_content)
+                    .map(|(start, end)| substring_snippet(&content, start, end)),
+            })
+        })?;
+        let mut results = rows.collect::<Result<Vec<_>, _>>()?;
+        let next_offset =
+            (limit > 0 && results.len() > limit).then(|| offset.saturating_add(limit));
+        results.truncate(limit);
+        Ok(QueryResult {
+            results,
+            next_offset,
+            total_estimate: None,
+        })
     }
 
     /// Substring match on `session_docs.session_id` (not in the FTS table).
@@ -730,6 +892,30 @@ impl SessionSearchIndex {
         };
         format!("\"{stem}\" *")
     }
+}
+
+pub(crate) fn uses_substring_index(query: &str) -> bool {
+    query.chars().any(|character| matches!(character, '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{20000}'..='\u{323AF}'))
+}
+
+fn substring_snippet(text: &str, start: usize, end: usize) -> String {
+    let left = text[..start]
+        .char_indices()
+        .rev()
+        .nth(40)
+        .map_or(0, |(index, _)| index);
+    let right = text[end..]
+        .char_indices()
+        .nth(80)
+        .map_or(text.len(), |(index, _)| end + index);
+    format!(
+        "{}{}[{}]{}{}",
+        if left > 0 { "… " } else { "" },
+        &text[left..start],
+        &text[start..end],
+        &text[end..right],
+        if right < text.len() { " …" } else { "" }
+    )
 }
 
 /// True when `query` is a UUID or a hyphenated hex prefix long enough to be
@@ -1362,6 +1548,170 @@ mod tests {
         let qr = index.query("borrow checker", None, 10, 0, true).unwrap();
         assert_eq!(qr.results.len(), 1);
         assert!(qr.results[0].snippet.is_some());
+    }
+
+    #[test]
+    fn han_substrings_find_middle_and_tail_of_unsegmented_text_with_pagination() {
+        let tmp = TempDir::new().unwrap();
+        let index = open(&tmp);
+        for (id, content) in [
+            ("first", "本次交付验收通过，测试结果见API日志。"),
+            ("second", "项目明日验收"),
+            ("english", "The API check succeeded"),
+        ] {
+            index
+                .upsert_doc(&test_doc(id, "Delivery report", content))
+                .unwrap();
+        }
+        let mut other = test_doc("other", "内部验收", "另一项目");
+        other.cwd = "/other".into();
+        index.upsert_doc(&other).unwrap();
+        let cwd = Some("/test/workspace");
+
+        let first = index.query("验收", cwd, 1, 0, true).unwrap();
+        assert_eq!(first.results[0].session_id, "first");
+        assert_eq!(
+            first.results[0].snippet.as_deref(),
+            Some("本次交付[验收]通过，测试结果见API日志。")
+        );
+        assert_eq!(first.next_offset, Some(1));
+        let second = index.query("验收", cwd, 1, 1, false).unwrap();
+        assert_eq!(second.results[0].session_id, "second");
+        assert!(second.results[0].snippet.is_none());
+        assert_eq!(second.next_offset, None);
+        let mixed = index.query("验收 api日志", cwd, 10, 0, false).unwrap();
+        assert_eq!(
+            mixed
+                .results
+                .iter()
+                .map(|row| row.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first"]
+        );
+        assert_eq!(
+            index.query("API", cwd, 10, 0, false).unwrap().results.len(),
+            1
+        );
+        assert_eq!(
+            index
+                .query("验收", Some("/other"), 10, 0, false)
+                .unwrap()
+                .results[0]
+                .matched_fields,
+            ["title"]
+        );
+    }
+
+    #[test]
+    fn han_index_backfills_and_tracks_mutations_from_older_writers() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("session_search.sqlite");
+        let index = SessionSearchIndex::open_or_create(&path).unwrap();
+        index.set_meta(META_KEY_LAST_BOOTSTRAP, "123").unwrap();
+        substrings::reset(&index.db).unwrap();
+        drop(index);
+
+        let older_writer = Connection::open(&path).unwrap();
+        let write = |id, content| {
+            older_writer.execute(
+                "INSERT INTO session_docs(session_id,cwd,updated_at,title,content,content_hash)
+                 VALUES (?1, '/work', 1, '', ?2, '') ON CONFLICT(session_id) DO UPDATE SET content=excluded.content",
+                [id, content],
+            ).unwrap();
+        };
+        write("old", "项目已通过验收");
+        let index = SessionSearchIndex::open_or_create(&path).unwrap();
+        assert_eq!(
+            index.get_meta(META_KEY_LAST_BOOTSTRAP).unwrap().as_deref(),
+            Some("123")
+        );
+        assert!(index.substring_index_pending().unwrap());
+        assert!(
+            index
+                .query("验收", None, 10, 0, false)
+                .unwrap()
+                .results
+                .is_empty()
+        );
+        assert!(!index.refresh_substring_index().unwrap());
+        assert_eq!(
+            index.query("验收", None, 10, 0, false).unwrap().results[0].session_id,
+            "old"
+        );
+
+        write("old", "项目回归测试");
+        write("old", "项目已重新部署");
+        assert!(index.substring_index_pending().unwrap());
+        assert!(
+            index
+                .query("验收", None, 10, 0, false)
+                .unwrap()
+                .results
+                .is_empty()
+        );
+        assert!(!index.refresh_substring_index().unwrap());
+        assert_eq!(
+            index.query("部署", None, 10, 0, false).unwrap().results[0].session_id,
+            "old"
+        );
+
+        older_writer
+            .execute("DELETE FROM session_docs WHERE session_id = 'old'", [])
+            .unwrap();
+        write("new", "新文件");
+        assert!(
+            index
+                .query("部署", None, 10, 0, false)
+                .unwrap()
+                .results
+                .is_empty()
+        );
+        assert!(!index.refresh_substring_index().unwrap());
+        assert_eq!(
+            index.query("文件", None, 10, 0, false).unwrap().results[0].session_id,
+            "new"
+        );
+    }
+
+    #[test]
+    fn han_substrings_preserve_literal_terms_and_fallback_across_pages() {
+        let tmp = TempDir::new().unwrap();
+        let index = open(&tmp);
+        index.upsert_doc(&test_doc("a", "交付", "已验收")).unwrap();
+        index
+            .upsert_doc(&test_doc("b", "logs", "prefixXYsuffix"))
+            .unwrap();
+        let first = index.query("验收 xy", None, 1, 0, false).unwrap();
+        assert_eq!(first.results[0].session_id, "a");
+        assert_eq!(first.next_offset, Some(1));
+        assert_eq!(
+            index.query("验收 xy", None, 1, 1, false).unwrap().results[0].session_id,
+            "b"
+        );
+
+        index
+            .upsert_doc(&test_doc("c", "交付", "已验收Xy，输出\"结果\"\0终点"))
+            .unwrap();
+        assert_eq!(
+            index.query("验收 xy", None, 1, 0, false).unwrap().results[0].session_id,
+            "c"
+        );
+        assert!(
+            index
+                .query("验收 xy", None, 1, 1, false)
+                .unwrap()
+                .results
+                .is_empty()
+        );
+        let literal = index.query("输出\"结果\"\0终", None, 1, 0, true).unwrap();
+        assert_eq!(literal.results[0].session_id, "c");
+        assert!(
+            literal.results[0]
+                .snippet
+                .as_deref()
+                .unwrap()
+                .contains("[输出\"结果\"\0终]")
+        );
     }
 
     #[test]

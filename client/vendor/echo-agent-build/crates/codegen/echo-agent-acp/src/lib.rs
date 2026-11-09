@@ -7,7 +7,7 @@ mod normalize;
 mod stdin_reader;
 
 pub use self::{
-    channel::{AcpAgentChannel, AcpChannel, AcpClientChannel, acp_channels, acp_send},
+    channel::{AcpAgentChannel, AcpChannel, AcpClientChannel, acp_channels, acp_enqueue, acp_send},
     common::{
         AcpAgentRx, AcpAgentTx, AcpChannelFailure, AcpClientRx, AcpClientTx, AcpResult, AcpRxo,
         AcpTxo, acp_channel_failure, acp_internal_error,

@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/agent-client", () => ({ filesystemPickFiles: vi.fn() }));
 vi.mock("@/lib/meeting-minutes", () => ({
+  MAX_MEETING_RECORDING_SAMPLES: 16_000 * 60 * 60 * 24,
   meetingCheckConnection: mocks.checkConnection,
   isMiniMaxMeetingModel: (model: { id: string; remoteModelId?: string }) =>
     /minimax/i.test(model.remoteModelId || model.id),

@@ -36,6 +36,19 @@ where
     T: AcpRequest,
     R: From<AcpArgs<T>> + fmt::Debug,
 {
+    acp_enqueue(request, tx)?.await
+}
+
+/// Queue a request synchronously and return a future for the reply. Callers
+/// can hold a short admission lock across enqueue without blocking on the turn.
+pub fn acp_enqueue<R, T>(
+    request: T,
+    tx: &mpsc::UnboundedSender<R>,
+) -> AcpResult<impl Future<Output = AcpResult<T::Response>> + use<R, T>>
+where
+    T: AcpRequest,
+    R: From<AcpArgs<T>> + fmt::Debug,
+{
     let (response_tx, response_rx) = oneshot::channel();
     let method = request.method_name();
     let args = AcpArgs {
@@ -50,17 +63,19 @@ where
         )
     })?;
 
-    response_rx.await.map_err(|_| {
-        acp_channel_failure_error(
-            format!("unable to receive '{method}' response, channel closed"),
-            AcpChannelFailure::RecvFailed,
-        )
-    })?
+    Ok(async move {
+        response_rx.await.map_err(|_| {
+            acp_channel_failure_error(
+                format!("unable to receive '{method}' response, channel closed"),
+                AcpChannelFailure::RecvFailed,
+            )
+        })?
+    })
 }
 
 #[cfg(test)]
 mod acp_send_failure_tests {
-    use super::acp_send;
+    use super::{acp_enqueue, acp_send};
     use crate::common::{AcpChannelFailure, acp_channel_failure};
     use crate::message::AcpAgentMessage;
     use agent_client_protocol as acp;
@@ -97,6 +112,18 @@ mod acp_send_failure_tests {
         let err = send_fut.await.unwrap_err();
         assert_eq!(
             acp_channel_failure(&err),
+            Some(AcpChannelFailure::RecvFailed)
+        );
+    }
+
+    #[tokio::test]
+    async fn enqueue_sends_without_polling_the_response() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<AcpAgentMessage>();
+        let response = acp_enqueue(ext_request(), &tx).unwrap();
+        drop(tx);
+        drop(rx.try_recv().expect("enqueue must happen before awaiting the reply"));
+        assert_eq!(
+            acp_channel_failure(&response.await.unwrap_err()),
             Some(AcpChannelFailure::RecvFailed)
         );
     }

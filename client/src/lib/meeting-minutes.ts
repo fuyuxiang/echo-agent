@@ -15,6 +15,7 @@ export type MeetingStatus =
   | "completed";
 
 export type RecordingSource = "microphone" | "system" | "both";
+export const MAX_MEETING_RECORDING_SAMPLES = 16_000 * 60 * 60 * 24;
 
 export interface CaptureSupport {
   systemAudio: boolean;
@@ -494,6 +495,9 @@ class MeetingRecorder {
         const meeting = await meetingGet(status.meetingId);
         if (this.snapshot.active && this.snapshot.meeting?.id === status.meetingId) this.publish({ meeting });
       }
+      if (status.recordedSamples >= MAX_MEETING_RECORDING_SAMPLES && !status.pendingSave) {
+        void this.stop().catch(() => undefined); // finishRecording publishes any retryable failure.
+      }
     } catch (error) {
       this.publish({ error: String(error).replace(/^Error:\s*/, "") });
     } finally {
@@ -546,6 +550,13 @@ class MeetingRecorder {
             const meeting = await meetingAppendPcm(meetingId, this.writeQueue[0]);
             this.writeQueue.shift();
             this.lastWriteError = null;
+            if (meeting.recordedSamples >= MAX_MEETING_RECORDING_SAMPLES) {
+              this.writeQueue.length = 0;
+              this.pending.length = 0;
+              this.publish({ meeting, paused: true, level: 0, error: null });
+              void this.stop().catch(() => undefined); // Reuses any concurrent stop operation.
+              return;
+            }
             this.publish({ meeting, error: null });
           } catch (error) {
             this.lastWriteError = error instanceof Error ? error : new Error(String(error));

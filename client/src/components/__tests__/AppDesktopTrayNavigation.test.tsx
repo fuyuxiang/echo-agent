@@ -2,10 +2,12 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { ConfirmAction } from "../AppDialog";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
-const codingGuard = vi.hoisted(() => vi.fn<() => Promise<boolean>>());
+const codingGuard = vi.hoisted(() => vi.fn<(confirm?: ConfirmAction) => Promise<boolean>>());
 vi.mock("@/lib/kb-source-storage", () => ({ hydrateKnowledgeSources: vi.fn(async () => {}) }));
 vi.mock("@/lib/artifact-catalog", () => ({ indexTaskArtifacts: vi.fn() }));
 vi.mock("@/stores/projects-store", async original => ({
@@ -30,7 +32,7 @@ vi.mock("../ChatView", () => ({ ChatView: () => <div>真实会话已加载</div>
 vi.mock("@/features/groups/GroupWorkspace", () => ({ GroupWorkspace: () => <div>专家团工作区</div> }));
 vi.mock("../PlaceholderPage", () => ({ PlaceholderPage: ({ label, onRegisterCodingLeaveGuard }: {
   label: string;
-  onRegisterCodingLeaveGuard?: (guard: (() => Promise<boolean>) | null) => void;
+  onRegisterCodingLeaveGuard?: (guard: ((confirm?: ConfirmAction) => Promise<boolean>) | null) => void;
 }) => {
   useEffect(() => {
     if (label !== "代码开发") return;
@@ -61,6 +63,7 @@ const auth = { ready: true, runtimeReady: true, synchronized: true, providers: [
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear();
   codingGuard.mockReset().mockResolvedValue(true);
+  vi.mocked(listen).mockImplementation(async () => () => {});
   useGroupStore.setState({ groups: [], currentId: null, current: null, error: null });
   useSessionsStore.setState(useSessionsStore.getInitialState()); useSessionStore.setState(useSessionStore.getInitialState());
   useProjectsStore.setState({ ...useProjectsStore.getInitialState(), projects: [] });
@@ -234,4 +237,31 @@ describe('desktop tray group navigation', () => {
     expect(screen.getByText('项目页面')).toBeInTheDocument();
     expect(screen.queryByText('首页')).not.toBeInTheDocument();
   });
+});
+
+it("原生退出在可交互的应用对话框等待 IDE，取消或超时都不确认退出", async () => {
+  const desktop = new Map<string, (payload: unknown) => void>();
+  vi.mocked(listen).mockImplementation(async (event, handler) => {
+    desktop.set(event, payload => handler({ payload } as never));
+    return () => {};
+  });
+  codingGuard.mockImplementation(async confirm => (await confirm?.({ title: "保存未写入的文件？", confirmLabel: "保存并退出", danger: true })) ?? false);
+  await start();
+  fireEvent.click(screen.getByRole("button", { name: "导航代码开发" }));
+  await screen.findByText("代码开发页面");
+  act(() => desktop.get("desktop://prepare-exit")?.({ requestId: "ide-cancel" }));
+  const dialog = await screen.findByRole("alertdialog", { name: "保存未写入的文件？" });
+  expect(screen.queryByText("正在保存录音与任务数据并准备退出…")).toBeNull();
+  expect(invoke).not.toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "ide-cancel", error: null });
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "ide-cancel", error: "已取消退出，代码编辑器仍保留在当前窗口" }));
+  act(() => desktop.get("desktop://exit-failed")?.({ requestId: "ide-cancel", message: "取消退出" }));
+  act(() => desktop.get("desktop://prepare-exit")?.({ requestId: "ide-timeout" }));
+  await screen.findByRole("alertdialog", { name: "保存未写入的文件？" });
+  act(() => desktop.get("desktop://exit-failed")?.({ requestId: "ide-timeout", message: "退出超时" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(vi.mocked(invoke).mock.calls.some(([name, args]) => name === "desktop_exit_prepared" && (args as { requestId?: string })?.requestId === "ide-timeout")).toBe(false);
+  act(() => desktop.get("desktop://prepare-exit")?.({ requestId: "ide-save" }));
+  fireEvent.click(await screen.findByRole("button", { name: "保存并退出" }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "ide-save", error: null }));
 });

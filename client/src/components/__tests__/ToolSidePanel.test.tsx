@@ -339,12 +339,18 @@ describe("ToolSidePanel navigation collapse", () => {
   });
 
   it("keeps a changed export visible with a useful error and does not open or read it", async () => {
-    vi.mocked(invoke).mockRejectedValue(new Error("导出文件已移动、删除或内容已变化，请重新导出"));
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "session_export_authorize") throw new Error("导出文件已移动、删除或内容已变化，请重新导出");
+      if (command === "document_workspace_open") return { sourceMissing: false, document: { revision: 1 } };
+      throw new Error(`Unexpected native file access: ${command}`);
+    });
     renderPanel("artifacts", [{...artifact("C:\\outside\\report.md"), kind: "document_export", toolCallId: `document-export:${"a".repeat(64)}`}]);
     fireEvent.click(screen.getByRole("button", {name: /^report\.md/}));
     expect(await screen.findByRole("alert")).toHaveTextContent("请重新导出");
     expect(screen.queryByRole("button", {name: "用系统应用打开"})).not.toBeInTheDocument();
-    expect(vi.mocked(invoke).mock.calls.every(([command]) => command === "session_export_authorize")).toBe(true);
+    expect(screen.queryByRole("button", {name: "导出文档"})).not.toBeInTheDocument();
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual(["session_export_authorize", "document_workspace_open"]);
+    expect(invoke).toHaveBeenCalledWith("document_workspace_open", expect.objectContaining({ recoverMissingOnly: true }));
   });
 
   it("explains external-file authorization instead of offering a broken open action", async () => {

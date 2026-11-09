@@ -1,3 +1,4 @@
+import type { ConfirmAction } from "./AppDialog";
 import type { CodingTurnOptions } from "@/lib/agent-client";
 import { lazy, Suspense, type ComponentProps, type ReactNode } from "react";
 import { AgentToolIcon } from "@/foundation/components/Icon/icons";
@@ -94,7 +95,7 @@ interface PlaceholderPageProps {
   codingModelId?: string;
   onOpenModelSettings?: () => void;
   onExitCodingWorkspace?: () => void;
-  onRegisterCodingLeaveGuard?: (guard: (() => Promise<boolean>) | null) => void;
+  onRegisterCodingLeaveGuard?: (guard: ((confirm?: ConfirmAction) => Promise<boolean>) | null) => void;
   /** Start an Agent session for a coding task. Returns the new session id. */
   onStartCodingRun?: (
     root: string,

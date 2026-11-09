@@ -7,9 +7,10 @@
 .org-workspace__connection { display:flex; align-items:center; gap:6px; min-width:0; margin-left:auto; color:var(--echo-text-weak); font-size:.75rem; }
 .org-workspace__connection i { width:6px; height:6px; flex:none; border-radius:50%; background:var(--echo-text-weak); }
 .org-workspace__connection.is-active i { background:var(--echo-status-success,#008c68); }
-.org-workspace__topbar>.topbar-actions { flex:none; margin-left:auto; }
+.org-workspace__topbar>.topbar-actions { flex:0 1 auto; min-width:0; max-width:100%; margin-left:auto; }
 .org-workspace__connection+.topbar-actions { margin-left:0; }
-.org-memory .org-account-trigger { display:flex; align-items:center; gap:7px; max-width:200px; padding:7px 9px; border-color:transparent; background:transparent; }
+.org-memory .org-account-trigger { display:flex; align-items:center; gap:7px; min-width:0; max-width:min(200px,100%); padding:7px 9px; border-color:transparent; background:transparent; }
+.org-account-trigger svg { flex:none; }
 .org-account-trigger span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .org-account-details { display:flex; flex-direction:column; gap:6px; max-width:300px; padding:12px 10px; border-bottom:1px solid var(--echo-border-default); margin-bottom:4px; color:var(--echo-text-strong); font-size:.8125rem; }
 .org-account-details span,.org-account-details small { overflow-wrap:anywhere; color:var(--echo-text-weak); font-size:.75rem; line-height:1.6; }

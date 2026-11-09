@@ -13,7 +13,7 @@ use tauri_plugin_dialog::DialogExt;
 
 const TEXT_PREVIEW_MAX_BYTES: usize = 256 * 1024;
 #[path = "binary_preview_limits.rs"]
-mod binary_preview_limits;
+pub(crate) mod binary_preview_limits;
 const DIRECTORY_LIST_MAX_ENTRIES: usize = 2_000;
 const TEXT_WRITE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_AUTHORIZED_ROOTS: usize = 512;
@@ -1161,7 +1161,7 @@ fn read_text_file_authorized(
 /// Read a file's raw bytes as a base64 string (for OOXML docx/pptx/sheet zip
 /// extraction in the frontend knowledge base). Native file authorization is
 /// required, including for knowledge sources the user explicitly picks.
-/// Defaults to 1 MiB; explicitly requested PDF previews are capped at 32 MiB.
+/// Defaults to 1 MiB. Explicit OOXML and PDF previews are capped at 8 and 32 MiB.
 #[tauri::command]
 pub async fn read_file_base64(
     access: State<'_, FilesystemAccess>,

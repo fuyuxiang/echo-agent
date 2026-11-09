@@ -75,6 +75,17 @@ describe("统一会话中的自动化请求",()=>{
     expect(screen.getByText("操作详情").closest("details")).not.toHaveAttribute("open");
     expect(card.textContent).not.toMatch(/secret-query|secret-fragment|secret-input/);
   });
+  it("表单提交地址常显，并隐藏地址中的查询和片段", async () => {
+    vi.mocked(client.automationPendingApprovals).mockResolvedValue([{...request,tool:"browser_key",details:{
+      url:"https://example.com/form", formSubmitUrl:"https://submit.example.com/receive?token=secret-query#secret-fragment",
+      target:{name:"邮箱"}, key:"Enter",
+    }}]);
+    render(<Harness/>);
+    const card=await screen.findByRole("region",{name:"操作授权"});
+    expect(screen.getByText("表单提交地址")).toBeVisible();
+    expect(screen.getByText("https://submit.example.com/receive")).toBeVisible();
+    expect(card.textContent).not.toMatch(/secret-query|secret-fragment/);
+  });
   it("请求失败保留卡片和重试入口，重复点击只提交一次",async()=>{
     vi.mocked(client.automationPendingApprovals).mockResolvedValue([request]);
     let reject!:(error:Error)=>void;

@@ -4,6 +4,7 @@ import {
   createPersonalKnowledgeSearchRequestId,
   searchPersonalKnowledge,
   type PersonalKnowledgeSearchItem,
+  type PersonalKnowledgeSearchResponse,
 } from "./personal-knowledge";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { invoke } from "@tauri-apps/api/core";
@@ -92,7 +93,11 @@ async function retrieveLexical(query: string): Promise<{ entries: KbEntry[]; fai
 
 async function retrieve(
   query: string,
-): Promise<{ entries: Array<KbEntry | PersonalKnowledgeSearchItem>; failures: string[] }> {
+): Promise<{
+  entries: Array<KbEntry | PersonalKnowledgeSearchItem>;
+  failures: string[];
+  native?: PersonalKnowledgeSearchResponse;
+}> {
   const requestId = createPersonalKnowledgeSearchRequestId();
   const semantic = await withTimeout(
     searchPersonalKnowledge(query, MAX_RESULTS, requestId),
@@ -103,6 +108,7 @@ async function retrieve(
     return {
       entries: semantic.items,
       failures: [],
+      native: semantic,
     };
   }
   // Browser-only/legacy fallback. A Tauri semantic failure must fail closed
@@ -179,12 +185,22 @@ export async function preparePromptWithPersonalKnowledge(
       }, promptId);
       return { promptText, resultCount: 0, sourceCount: sources.length };
     }
-    const { entries, failures } = await withTimeout(retrieve(query), SEARCH_TIMEOUT_MS);
+    const { entries, failures, native } = await withTimeout(retrieve(query), SEARCH_TIMEOUT_MS);
+    const keywordOnly = native?.retrievalMode === "keyword" || native?.retrievalMode === "keyword-reranked";
+    const notice = native?.degradedReason;
+    const searchDetails = { ...(keywordOnly ? { keywordOnly: true } : {}), ...(notice ? { notice } : {}) };
     if (entries.length === 0) {
-      if (failures.length >= sources.length) {
+      if (native?.retrievalMode === "none") {
+        if (native.index.state === "error") {
+          store.setRetrieval(sessionId, { state: "error", message: native.index.message || "个人知识索引不可用" }, promptId);
+        } else {
+          const reason = notice || "当前没有可用的个人知识索引";
+          store.setRetrieval(sessionId, { state: "blocked", message: `${reason}。索引完成后可重新提问` }, promptId);
+        }
+      } else if (failures.length >= sources.length) {
         store.setRetrieval(sessionId, { state: "error", message: failures.join("；") }, promptId);
       } else {
-        store.setRetrieval(sessionId, { state: "no-match", sourceCount: sources.length }, promptId);
+        store.setRetrieval(sessionId, { state: "no-match", sourceCount: sources.length, ...searchDetails }, promptId);
       }
       return { promptText, resultCount: 0, sourceCount: sources.length };
     }
@@ -193,6 +209,7 @@ export async function preparePromptWithPersonalKnowledge(
       state: "used",
       resultCount: entries.length,
       sourceCount: usedSources.size,
+      ...searchDetails,
       titles: entries.map((entry) => entry.title),
       items: entries.map((entry) => ({
         title: entry.title,

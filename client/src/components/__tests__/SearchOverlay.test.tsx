@@ -3,21 +3,26 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { SearchOverlay } from "../SearchOverlay";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useGroupStore } from "@/features/groups/group-store";
+import type { SearchHit, SessionSearchPage } from "@/lib/types";
 import type { Group } from "@/features/groups/group-client";
 import { TrayActionCancelled } from "@/lib/desktop-tray-connection";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("@/lib/agent-client", () => ({
-  sessionSearch: vi.fn(),
+  sessionSearchPage: vi.fn(),
   agentListSessions: vi.fn(),
 }));
 
-const { sessionSearch, agentListSessions } = await import("@/lib/agent-client");
+const { sessionSearchPage, agentListSessions } = await import("@/lib/agent-client");
+
+const page = (results: SearchHit[] = [], nextOffset: number | null = null, bootstrapping = false): SessionSearchPage => ({
+  results, nextOffset, bootstrapping,
+});
 
 describe("SearchOverlay", () => {
   beforeEach(() => {
     useGroupStore.setState({ groups: [] });
-    vi.mocked(sessionSearch).mockReset().mockResolvedValue([]);
+    vi.mocked(sessionSearchPage).mockReset().mockResolvedValue(page([]));
     vi.mocked(agentListSessions).mockReset().mockResolvedValue([]);
     useSessionsStore.setState({ deletedSessionIds: [],
       independent: [],
@@ -48,12 +53,12 @@ describe("SearchOverlay", () => {
   });
 
   it("FTS 命中先 hydrate 完整摘要再打开", async () => {
-    vi.mocked(sessionSearch).mockResolvedValue([{
+    vi.mocked(sessionSearchPage).mockResolvedValue(page([{
       sessionId: "remote",
       title: "远程命中",
       cwd: "/workspace",
       snippet: "命中内容",
-    }]);
+    }]));
     vi.mocked(agentListSessions).mockResolvedValue([{
       sessionId: "remote",
       title: "完整标题",
@@ -129,16 +134,16 @@ describe("SearchOverlay", () => {
 
   it("全文返回替换本地重复记录时保留所选任务的键盘焦点", async () => {
     const user=userEvent.setup();
-    let finish!: (hits: {sessionId:string;title:string;cwd:string;snippet:string}[]) => void;
-    vi.mocked(sessionSearch).mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+    let finish!: (result: SessionSearchPage) => void;
+    vi.mocked(sessionSearchPage).mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
     useSessionsStore.getState().setIndependent([{sessionId:"focused",title:"交付复盘",cwd:"/workspace"}]);
     const onSelect=vi.fn();
     render(<SearchOverlay open onClose={vi.fn()} onSelect={onSelect} />);
     await user.type(screen.getByRole("textbox",{name:"搜索会话标题或内容"}),"交付");
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("button",{name:"交付复盘 /workspace"})).toHaveFocus();
-    await waitFor(()=>expect(sessionSearch).toHaveBeenCalledOnce());
-    await act(async()=>finish([{sessionId:"focused",title:"交付复盘",cwd:"/workspace",snippet:"正文命中内容"}]));
+    await waitFor(()=>expect(sessionSearchPage).toHaveBeenCalledOnce());
+    await act(async()=>finish(page([{sessionId:"focused",title:"交付复盘",cwd:"/workspace",snippet:"正文命中内容"}])));
     const result=screen.getByText("正文命中内容").closest("button");
     expect(result).toHaveFocus();
     await user.keyboard("{Enter}");
@@ -146,7 +151,7 @@ describe("SearchOverlay", () => {
   });
 
   it("FTS 失败显示错误与重试，不伪装成空结果", async () => {
-    vi.mocked(sessionSearch).mockRejectedValue(new Error("index unavailable"));
+    vi.mocked(sessionSearchPage).mockRejectedValue(new Error("index unavailable"));
     render(<SearchOverlay open onClose={vi.fn()} onSelect={vi.fn()} />);
     fireEvent.change(screen.getByRole("textbox", { name: "搜索会话标题或内容" }), {
       target: { value: "检索" },
@@ -172,7 +177,7 @@ describe("SearchOverlay", () => {
       await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
       expect(screen.getByRole("alert")).toHaveTextContent("打开失败：读取失败");
       await act(async () => { await vi.advanceTimersByTimeAsync(250); });
-      expect(sessionSearch).toHaveBeenCalledOnce();
+      expect(sessionSearchPage).toHaveBeenCalledOnce();
       expect(screen.getByRole("button", { name: "重试打开" })).toBeEnabled();
       expect(screen.getByRole("alert")).toHaveTextContent("打开失败：读取失败");
       expect(onClose).not.toHaveBeenCalled();
@@ -186,7 +191,7 @@ describe("SearchOverlay", () => {
     vi.useFakeTimers();
     try {
       let rejectSearch!: (error: Error) => void;
-      vi.mocked(sessionSearch).mockImplementationOnce(() => new Promise((_, reject) => { rejectSearch = reject; }));
+      vi.mocked(sessionSearchPage).mockImplementationOnce(() => new Promise((_, reject) => { rejectSearch = reject; }));
       useSessionsStore.getState().setIndependent([{ sessionId: "local", title: "交付复盘", cwd: "/review" }]);
       const onSelect = vi.fn().mockRejectedValueOnce(new Error("会话不可读")).mockResolvedValue(undefined);
       const onClose = vi.fn();
@@ -229,12 +234,12 @@ describe("SearchOverlay", () => {
       title: "相同会话",
       cwd: "/home",
     }]);
-    vi.mocked(sessionSearch).mockResolvedValue([{
+    vi.mocked(sessionSearchPage).mockResolvedValue(page([{
       sessionId: "same",
       title: "相同会话",
       cwd: "/home",
       snippet: "独特正文片段",
-    }]);
+    }]));
     render(<SearchOverlay open onClose={vi.fn()} onSelect={vi.fn()} />);
     fireEvent.change(screen.getByRole("textbox", { name: "搜索会话标题或内容" }), {
       target: { value: "相同" },
@@ -248,10 +253,10 @@ describe("SearchOverlay", () => {
       { sessionId: "active", title: "交付复盘", cwd: "/home", archived: false },
       { sessionId: "archived", title: "归档复盘", cwd: "/home", archived: true },
     ]);
-    vi.mocked(sessionSearch).mockResolvedValue([
+    vi.mocked(sessionSearchPage).mockResolvedValue(page([
       { sessionId: "active", title: "交付复盘", cwd: "/home", snippet: "活动内容" },
       { sessionId: "archived", title: "归档复盘", cwd: "/home", snippet: "归档内容" },
-    ]);
+    ]));
 
     render(<SearchOverlay open onClose={vi.fn()} onSelect={vi.fn()} />);
     fireEvent.change(screen.getByRole("textbox", { name: "搜索会话标题或内容" }), {
@@ -268,10 +273,10 @@ describe("SearchOverlay", () => {
       { sessionId: "parent", title: "主任务", cwd: "/home" },
       { sessionId: "child", title: "子代理记录", cwd: "/home", hidden: true },
     ]);
-    vi.mocked(sessionSearch).mockResolvedValue([
+    vi.mocked(sessionSearchPage).mockResolvedValue(page([
       { sessionId: "parent", title: "主任务", cwd: "/home", snippet: "主任务内容" },
       { sessionId: "child", title: "子代理记录", cwd: "/home", snippet: "子代理内容" },
-    ]);
+    ]));
 
     render(<SearchOverlay open onClose={vi.fn()} onSelect={vi.fn()} />);
     fireEvent.change(screen.getByRole("textbox", { name: "搜索会话标题或内容" }), {
@@ -283,13 +288,43 @@ describe("SearchOverlay", () => {
     expect(screen.queryByText("子代理内容")).toBeNull();
   });
 
+  it("在首批全文命中均已归档时继续查找可打开的会话", async () => {
+    const archived = Array.from({ length: 30 }, (_, index) => ({
+      sessionId: `archived-${index}`, title: `历史任务 ${index}`, cwd: "/home", archived: true,
+    }));
+    const active = { sessionId: "active", title: "仍在进行的任务", cwd: "/home" };
+    useSessionsStore.getState().setIndependent([...archived, active]);
+    vi.mocked(sessionSearchPage)
+      .mockResolvedValueOnce(page(archived, 30))
+      .mockResolvedValueOnce(page([{ ...active, snippet: "正文包含验收" }]));
+    const onSelect = vi.fn();
+    render(<SearchOverlay open onClose={vi.fn()} onSelect={onSelect} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索会话标题或内容" }), { target: { value: "验收" } });
+    await userEvent.click((await screen.findByText("正文包含验收")).closest("button")!);
+    expect(sessionSearchPage).toHaveBeenNthCalledWith(1, "验收", 0, 30);
+    expect(sessionSearchPage).toHaveBeenNthCalledWith(2, "验收", 30, 30);
+    expect(onSelect).toHaveBeenCalledWith("active", "/home");
+    expect(screen.queryByText("历史任务 0")).toBeNull();
+  });
+
+  it("索引未就绪时提示刷新，索引完成后才显示确实无匹配", async () => {
+    vi.mocked(sessionSearchPage).mockResolvedValueOnce(page([], null, true)).mockResolvedValueOnce(page());
+    render(<SearchOverlay open onClose={vi.fn()} onSelect={vi.fn()} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索会话标题或内容" }), { target: { value: "验收" } });
+    expect(await screen.findByText("正在建立历史索引，全文结果可能尚未完整。")).toBeInTheDocument();
+    expect(screen.queryByText("没有匹配的会话")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "刷新全文结果" }));
+    expect(await screen.findByText("没有匹配的会话")).toBeInTheDocument();
+    expect(sessionSearchPage).toHaveBeenNthCalledWith(2, "验收", 0, 30);
+  });
+
   it("迟到的隐藏子代理检索结果在打开前被拦截并给出正确入口", async () => {
-    vi.mocked(sessionSearch).mockResolvedValue([{
+    vi.mocked(sessionSearchPage).mockResolvedValue(page([{
       sessionId: "late-child",
       title: "迟到的子代理",
       cwd: "/workspace",
       snippet: "内部执行记录",
-    }]);
+    }]));
     vi.mocked(agentListSessions).mockResolvedValue([{
       sessionId: "late-child",
       title: "迟到的子代理",
@@ -313,16 +348,16 @@ describe("SearchOverlay", () => {
   it("新查询的防抖窗口内不显示旧请求晚到的全文命中", async () => {
     vi.useFakeTimers();
     try {
-      let finishOld!: (hits: Awaited<ReturnType<typeof sessionSearch>>) => void;
-      vi.mocked(sessionSearch)
+      let finishOld!: (hits: Awaited<ReturnType<typeof sessionSearchPage>>) => void;
+      vi.mocked(sessionSearchPage)
         .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
-        .mockResolvedValueOnce([{ sessionId: "new", title: "新查询结果", cwd: "/new" }]);
+        .mockResolvedValueOnce(page([{ sessionId: "new", title: "新查询结果", cwd: "/new" }]));
       render(<SearchOverlay open onClose={vi.fn()} onSelect={vi.fn()} />);
       const input = screen.getByRole("textbox", { name: "搜索会话标题或内容" });
       fireEvent.change(input, { target: { value: "旧查询" } });
       await act(async () => vi.advanceTimersByTime(250));
       fireEvent.change(input, { target: { value: "新查询" } });
-      await act(async () => finishOld([{ sessionId: "old", title: "旧查询结果", cwd: "/old" }]));
+      await act(async () => finishOld(page([{ sessionId: "old", title: "旧查询结果", cwd: "/old" }])));
       expect(screen.queryByText("旧查询结果")).not.toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent("搜索中");
       await act(async () => vi.advanceTimersByTime(250));

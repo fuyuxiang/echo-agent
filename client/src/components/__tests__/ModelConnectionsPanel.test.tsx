@@ -80,6 +80,7 @@ describe("ModelConnectionsPanel", () => {
       .mockResolvedValueOnce(undefined);
     render(<ModelConnectionsPanel />);
     await openFirstConnection();
+    expect(screen.getByText(/测试会验证一次简短文本回复.*图片和工具调用能力需另行验证/)).toBeVisible();
     const button = await screen.findByRole("button", { name: "测试模型 模型 B" });
     fireEvent.click(button);
     fireEvent.click(button);
@@ -646,6 +647,7 @@ describe("ModelConnectionsPanel", () => {
     expect(mocks.providersTestConnection).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByLabelText(/允许此个人连接使用 HTTP/));
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "test-key" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
     await waitFor(() => expect(mocks.providersTestConnection).toHaveBeenCalledWith(
       expect.objectContaining({ baseUrl: "http://example.com:60100/v1", allowInsecureHttp: true }),
@@ -656,6 +658,7 @@ describe("ModelConnectionsPanel", () => {
     expect(within(dialog).getByText(/使用 HTTP 前，请确认/)).toBeInTheDocument();
     expect(mocks.providersTestConnection).toHaveBeenCalledTimes(1);
     fireEvent.click(within(dialog).getByLabelText(/允许此个人连接使用 HTTP/));
+    fireEvent.change(within(dialog).getByLabelText("API 密钥"), { target: { value: "test-key" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "从服务获取模型" }));
     await waitFor(() => expect(mocks.providersTestConnection).toHaveBeenCalledTimes(2));
     expect(mocks.providersTestConnection).toHaveBeenLastCalledWith(
@@ -670,6 +673,31 @@ describe("ModelConnectionsPanel", () => {
     expect(mocks.providersTestConnection).toHaveBeenLastCalledWith(
       expect.objectContaining({ baseUrl: "https://secure.example.com/v1", allowInsecureHttp: false }),
     );
+  });
+
+  it("修改同源路径保留草稿密钥，换域或服务商后必须重新输入", async () => {
+    render(<ModelConnectionsPanel />);
+    await screen.findByText("还没有可用模型");
+    fireEvent.click(screen.getAllByRole("button", { name: "添加模型连接" })[0]);
+    const dialog = within(screen.getByRole("dialog", { name: "添加模型连接" }));
+    const service = dialog.getByLabelText("模型服务商");
+    fireEvent.change(service, { target: { value: "custom" } });
+    const address = dialog.getByLabelText("服务地址（Base URL）");
+    const key = dialog.getByLabelText("API 密钥");
+    fireEvent.change(address, { target: { value: "https://first.example/v1" } });
+    fireEvent.change(key, { target: { value: "first-key" } });
+    fireEvent.change(address, { target: { value: "https://first.example/compatible/v1" } });
+    expect(key).toHaveValue("first-key");
+    fireEvent.change(address, { target: { value: "https://second.example/v1" } });
+    expect(key).toHaveValue("");
+    fireEvent.click(dialog.getByRole("button", { name: "从服务获取模型" }));
+    expect(dialog.getByText("请填写 API 密钥。")).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+    expect(mocks.providersTestConnection).not.toHaveBeenCalled();
+    expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
+    fireEvent.change(key, { target: { value: "second-key" } });
+    fireEvent.change(service, { target: { value: "openai" } });
+    expect(key).toHaveValue("");
   });
 
   it("模型测试失败保留已保存的连接，不修改默认配置", async () => {

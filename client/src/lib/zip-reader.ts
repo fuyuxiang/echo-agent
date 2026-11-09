@@ -22,7 +22,7 @@ export interface ZipEntry {
   compressedSize: number;
 }
 
-const MAX_ZIP_INPUT_BYTES = 8 * 1024 * 1024;
+export const MAX_ZIP_INPUT_BYTES = 8 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 512;
 const MAX_ENTRY_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_OUTPUT_BYTES = 16 * 1024 * 1024;

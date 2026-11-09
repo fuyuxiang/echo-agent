@@ -34,6 +34,7 @@ import type {
   RewindPoint,
   RunningTask,
   SearchHit,
+  SessionSearchPage,
   SessionInfoResponse,
   SessionSummary,
   SessionSummaryEvent,
@@ -1410,6 +1411,10 @@ export async function sessionSearch(
   limit?: number,
 ): Promise<SearchHit[]> {
   return invoke<SearchHit[]>("session_search", { query, cwd: cwd ?? null, limit: limit ?? null });
+}
+
+export function sessionSearchPage(query: string, offset: number, limit: number): Promise<SessionSearchPage> {
+  return invoke<SessionSearchPage>("session_search_page", { query, offset, limit });
 }
 
 // ---------- rewind ----------

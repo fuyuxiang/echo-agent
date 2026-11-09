@@ -36,6 +36,7 @@ export function McpModal({
   const [setupDrafts, setSetupDrafts] = useState<Record<string, Record<string, string>>>({});
   const [diagnostics, setDiagnostics] = useState<Record<string, { status?: string; reason?: string; detail?: string }>>({});
   const [authError, setAuthError] = useState<{ name: string; message: string } | null>(null);
+  const [toggleWarning, setToggleWarning] = useState<{ name: string; enabled: boolean; message: string } | null>(null);
   const authInFlight = useRef(false);
   const mounted = useRef(true);
   const dialogRef = useModalFocus<HTMLDivElement>(!embedded, onClose);
@@ -153,16 +154,23 @@ export function McpModal({
 
   const handleToggle = async (server: McpServerEntry, enabled: boolean) => {
     setMutating(server.name);
+    setToggleWarning(null);
     try {
       const result = await mcpToggle(
         activeSessionId ?? undefined,
         server.name,
         enabled,
       );
-      if (result.warnings[0]) onToast?.(result.warnings[0]);
-      await reload();
+      if (result.warnings.length) {
+        const message = result.warnings.join("。 ");
+        onToast?.(message);
+        setToggleWarning({ name: server.name, enabled, message });
+      }
+      await reload(true);
     } catch (e) {
-      onToast?.(`切换失败：${String(e).replace(/^Error:\s*/, "")}`);
+      const message = `切换失败：${String(e).replace(/^Error:\s*/, "")}`;
+      setToggleWarning({ name: server.name, enabled, message });
+      onToast?.(message);
     } finally {
       setMutating(null);
     }
@@ -287,7 +295,7 @@ export function McpModal({
                     )}
                   </div>
                   <div className="resource-row__actions">
-                    <label className="sk-toggle" title={server.enabled ? "已启用" : "已停用"}>
+                    <label className="sk-toggle" title={server.enabled ? "停用本机各任务中的此连接器" : "在允许使用的任务中启用此连接器"}>
                       <input type="checkbox" checked={server.enabled}
                         aria-label={`${server.enabled ? "停用" : "启用"} MCP 服务 ${server.displayName || server.name}`}
                         disabled={mutating !== null || server.setupRequired}
@@ -299,6 +307,10 @@ export function McpModal({
                       actions={server.editable ? [{ label: `删除 MCP 服务 ${server.displayName || server.name}`, text: "删除用户配置", danger: true, onSelect: () => { void handleDelete(server); } }] : []} />
                   </div>
                 </div>
+                {toggleWarning?.name === server.name && <div className="ec-error" role="alert">
+                  {toggleWarning.message} <button type="button" className="um-btn" disabled={mutating !== null}
+                    onClick={() => void handleToggle(server, toggleWarning.enabled)}>重试切换</button>
+                </div>}
                 {authError?.name === server.name && <div className="ec-error" role="alert">授权失败：{authError.message}。可点击「授权连接」重试。</div>}
                 {isExpanded && (
                   <div className="mcp-item-details" id={detailsId}>

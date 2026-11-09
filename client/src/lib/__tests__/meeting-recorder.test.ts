@@ -61,6 +61,24 @@ describe("native meeting recorder", () => {
     expect(meetingRecorder.current()).toMatchObject({ active: false, source: null });
   });
 
+  it("automatically finalizes native capture once the persisted sample limit is reached", async () => {
+    const { meetingRecorder, MAX_MEETING_RECORDING_SAMPLES } = await import("../meeting-minutes");
+    const capped = { ...record, recordedSamples: MAX_MEETING_RECORDING_SAMPLES, durationSeconds: 86400 };
+    let finished = false;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "meeting_create") return record;
+      if (command === "meeting_capture_start") return { meetingId: record.id, active: true, recordedSamples: 0 };
+      if (command === "meeting_capture_status") return { meetingId: record.id, active: true, paused: true, level: 0, recordedSamples: capped.recordedSamples };
+      if (command === "meeting_get") return finished ? { ...capped, status: "recorded" } : capped;
+      if (command === "meeting_capture_stop") { finished = true; return { ...capped, status: "recorded" }; }
+    });
+    await meetingRecorder.start(record.title, record.modelId, record.providerId, "both");
+    await vi.waitFor(() => expect(meetingRecorder.current()).toMatchObject({
+      active: false, pendingSave: false, meeting: { recordedSamples: MAX_MEETING_RECORDING_SAMPLES, status: "recorded" },
+    }), { timeout: 1500 });
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === "meeting_capture_stop")).toHaveLength(1);
+  });
+
   it("退出先等待连接检查结束并取消启动，退出失败后可重新开始录音", async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });

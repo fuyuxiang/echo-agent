@@ -369,6 +369,9 @@ impl MvpAgent {
         let gateway = self.gateway.clone();
         let agent_mcp_state = self.agent_mcp_state.clone();
         tokio::task::spawn_local(async move {
+            // Serialize initial discovery with the desktop's global toggle so
+            // an older launch snapshot cannot replace a newly applied policy.
+            let mut state = agent_mcp_state.lock().await;
             let local_mcp_servers = match tokio::task::spawn_blocking(move || {
                     let local = crate::util::config::load_mcp_servers(&cwd, &compat);
                     folder_trust::resolve_and_record(
@@ -387,8 +390,9 @@ impl MvpAgent {
                 }
             };
             if !local_mcp_servers.is_empty() {
-                agent_mcp_state.lock().await.update_configs(local_mcp_servers.clone());
+                state.update_configs(local_mcp_servers.clone());
             }
+            drop(state);
             crate::extensions::mcp::notify_servers_updated(&gateway, &local_mcp_servers)
                 .await;
         });
@@ -397,6 +401,9 @@ impl MvpAgent {
         &self,
     ) -> std::sync::Arc<tokio::sync::Mutex<crate::session::mcp_servers::McpState>> {
         self.agent_mcp_state.clone()
+    }
+    pub(crate) fn launch_cwd(&self) -> &std::path::Path {
+        &self.launch_cwd
     }
     /// Build the launch-dir plugin registry snapshot on first use.
     ///
@@ -2509,6 +2516,7 @@ impl MvpAgent {
                     crate::session::mcp_servers::McpState::new(vec![]),
                 ),
             ),
+            mcp_session_lifecycle: tokio::sync::RwLock::new(()),
             subagent_event_tx,
             subagent_event_rx: RefCell::new(Some(subagent_event_rx)),
             subagent_presentation: RefCell::new(

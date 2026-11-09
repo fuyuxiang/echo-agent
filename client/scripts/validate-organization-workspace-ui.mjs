@@ -47,7 +47,7 @@ try {
           const rect=el.getBoundingClientRect(),style=getComputedStyle(el);
           return rect.width>0&&rect.height>0&&style.position!=='fixed'&&(rect.right>viewport.right+2||rect.left<viewport.left-2);
         }).map(el=>el.className).slice(0,10);
-        const unreachableControls=[...root.querySelectorAll('.org-workspace__page-actions button,.org-resource-filters input,.org-resource-filters select,.org-resource-filters button,.org-resource-pagination button,.org-resource-pagination select')].filter(el=>{
+        const unreachableControls=[...root.querySelectorAll('.org-account-trigger,.org-workspace__page-actions button,.org-resource-filters input,.org-resource-filters select,.org-resource-filters button,.org-resource-pagination button,.org-resource-pagination select')].filter(el=>{
           if(!el.checkVisibility())return false;
           const rect=el.getBoundingClientRect();
           return rect.top<viewport.top-1||rect.bottom>viewport.bottom+1||!el.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));
@@ -129,12 +129,12 @@ try {
   await form.waitFor({state:'hidden'});
   console.log('interaction: install');
   await page.locator('.org-memory__nav button').filter({hasText:'Skills'}).click();
-  await page.getByRole('combobox',{name:'安装状态'}).selectOption('available');
+  await page.getByRole('combobox',{name:'同步偏好'}).selectOption('available');
   await page.locator('.org-skill-card').first().waitFor();
   await page.waitForFunction(()=>!document.querySelector('.org-resource-results').classList.contains('is-loading'));
   await page.locator('.org-skill-card').first().getByRole('button',{name:'安装',exact:true}).click();
   await page.waitForFunction(()=>!document.querySelector('[aria-label="刷新"]').disabled);
-  await page.getByRole('combobox',{name:'安装状态'}).selectOption('installed');
+  await page.getByRole('combobox',{name:'同步偏好'}).selectOption('installed');
   await page.waitForFunction(()=>!document.querySelector('.org-resource-results').classList.contains('is-loading'));
   assert(await page.getByRole('button',{name:'卸载',exact:true}).count()>0);
   await page.locator('.org-memory__nav button').filter({hasText:'文档'}).click();
@@ -154,6 +154,17 @@ try {
   await page.getByRole('button',{name:'重试',exact:true}).click();
   await page.getByLabel('组织知识概况').waitFor();
   assert.equal(await page.getByRole('alert').count(),0);
+  console.log('interaction: failed install and verified retry');
+  await page.goto(`${base}&orgState=many&orgSkillInstallFailure=1`);
+  await page.getByLabel('组织知识概况').waitFor();
+  await page.locator('.org-memory__nav button').filter({hasText:'Skills'}).click();
+  const targetSkill=page.locator('.org-skill-card').filter({hasText:'发布验证 2'}).first();
+  await targetSkill.getByRole('button',{name:'安装',exact:true}).click();
+  await targetSkill.getByText('本机同步失败 · v1.0.0',{exact:true}).waitFor();
+  assert.equal(await targetSkill.getByRole('button',{name:'卸载',exact:true}).count(),0);
+  await targetSkill.getByRole('button',{name:'重试同步',exact:true}).click();
+  await targetSkill.getByText('本机已安装 · v1.2.0',{exact:true}).waitFor();
+  assert.equal(await targetSkill.getByRole('button',{name:'卸载',exact:true}).count(),1);
   for(const [width,height] of [[390,620],[768,720]]) {
     const modalPage=await browser.newPage({viewport:{width,height}});
     activePage=modalPage;

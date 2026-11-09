@@ -9,6 +9,7 @@ describe("BrowserPreview", () => {
   beforeEach(() => vi.mocked(invoke).mockReset());
   it("空 URL 显示输入提示", () => {
     render(<BrowserPreview url="" />);
+    expect(screen.getByRole("region", { name: "独立网页预览" })).toHaveTextContent("不会共享当前浏览器任务的登录状态");
     expect(screen.getByText("输入一个 https 网址以预览。")).toBeInTheDocument();
   });
 

@@ -28,7 +28,7 @@ import {
   X,
 } from "lucide-react";
 
-import { useAppDialog } from "@/components/AppDialog";
+import { useAppDialog, type ConfirmAction } from "@/components/AppDialog";
 import { ActionMenu } from "@/components/ActionMenu";
 import type { ModelOption } from "@/components/ModelSelector";
 import { usePermissionStore } from "@/stores/permission-store";
@@ -117,7 +117,7 @@ interface CodingWorkbenchProps {
   onCloseCodingWorkspace?: (cwd: string) => void;
   onToast?: (message: string) => void;
   onExit?: () => void;
-  onRegisterLeaveGuard?: (guard: (() => Promise<boolean>) | null) => void;
+  onRegisterLeaveGuard?: (guard: ((confirm?: ConfirmAction) => Promise<boolean>) | null) => void;
   onOpenSettings?: () => void;
   models?: ModelOption[];
   defaultModelId?: string;
@@ -210,6 +210,8 @@ export function CodingWorkbench({
   } = useAppDialog(cwd);
   const isWorkspaceCurrent = useCodingActionScope(cwd);
   const startGeneration = useRef(0);
+  const activeStartGeneration = useRef<number | null>(null);
+  const isolationCreation = useRef(false);
   useEffect(() => {
     startGeneration.current += 1;
     setStarting(false);
@@ -354,13 +356,51 @@ export function CodingWorkbench({
     EditorContextSnapshot["diagnostics"] | null
   >(null);
   const [planVisible, setPlanVisible] = useState(false);
-  const [completionEnabled, setCompletionEnabled] = useState(
-    () => localStorage.getItem("echo-coding-tab-enabled") !== "false",
-  );
+  const completionScope = JSON.stringify([cwd, modelId]);
+  const latestCompletionScope = useRef(completionScope);
+  latestCompletionScope.current = completionScope;
+  const [enabledCompletionScope, setEnabledCompletionScope] = useState<string>();
+  const completionEnabled = enabledCompletionScope === completionScope;
   const [completionStatus, setCompletionStatus] = useState("Tab 已启用");
   useEffect(() => {
-    localStorage.setItem("echo-coding-tab-enabled", String(completionEnabled));
-  }, [completionEnabled]);
+    if (!cwd || !modelId) return;
+    let current = true;
+    void codingApi.inlineConsent(cwd, modelId).then((status) => {
+      if (current) setEnabledCompletionScope(status?.enabled ? completionScope : undefined);
+    }).catch(() => {
+      if (current) setEnabledCompletionScope(undefined);
+    });
+    return () => { current = false; };
+  }, [cwd, modelId, completionScope]);
+
+  const changeCompletionConsent = async () => {
+    if (!cwd || !modelId) return;
+    try {
+      if (completionEnabled) {
+        setEnabledCompletionScope(undefined);
+        await codingApi.inlineConsent(cwd, modelId, false);
+        return;
+      }
+      const target = await codingApi.inlineConsent(cwd, modelId);
+      if (latestCompletionScope.current !== completionScope) return;
+      if (!target?.identity || !target.destination) throw new Error("无法识别当前模型服务");
+      const modelLabel = models.find((model) => model.id === modelId)?.label || modelId;
+      if (!(await confirmTaskAction({
+        title: "开启 Tab 代码补全？",
+        description: <>编辑时，光标前后的文本（含未保存的修改）会自动发送给 {modelLabel}（{target.destination}）。此次授权仅用于当前工程和此模型服务，关闭应用后失效。</>,
+        confirmLabel: "开启 Tab 补全",
+      })) || latestCompletionScope.current !== completionScope) return;
+      const status = await codingApi.inlineConsent(cwd, modelId, true, target.identity);
+      if (status.enabled && latestCompletionScope.current === completionScope) {
+        setCompletionStatus("Tab 已启用");
+        setEnabledCompletionScope(completionScope);
+      }
+    } catch (error) {
+      if (latestCompletionScope.current === completionScope) {
+        onToast?.(`Tab 补全设置失败：${String(error).replace(/^Error:\s*/, "")}`);
+      }
+    }
+  };
 
   const [startError, setStartError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -801,23 +841,31 @@ export function CodingWorkbench({
     };
   }, [cwd, task?.phase, task?.phase === "verifying" ? task.updatedAt : null]);
 
-  const saveTheiaBeforeLeaving = useCallback(async (): Promise<boolean> => {
+  const saveTheiaBeforeLeaving = useCallback(async (confirmForExit?: ConfirmAction): Promise<boolean> => {
     if (!cwd) return true;
+    const confirm = confirmForExit ?? confirmTaskAction;
     let dirtyCount: number;
     try {
       dirtyCount = (await theiaFrameRef.current?.getDirtyCount()) ?? -1;
     } catch (error) {
-      return confirmTaskAction({
+      return confirm({
         title: "无法确认 IDE 文件状态",
         description: `${String(error).replace(/^Error:\s*/, "")}。继续离开可能丢失未保存的编辑内容。`,
         confirmLabel: "仍要离开",
         danger: true,
       });
     }
-    if (dirtyCount < 0) return false;
+    if (dirtyCount < 0) {
+      return confirmForExit?.({
+        title: "无法确认 IDE 文件状态",
+        description: "编辑器尚未返回文件状态。继续退出可能丢失未保存的编辑内容。",
+        confirmLabel: "仍要退出",
+        danger: true,
+      }) ?? false;
+    }
     setTheiaDirtyCount(dirtyCount);
     if (dirtyCount === 0) return true;
-    const confirmed = await confirmTaskAction({
+    const confirmed = await confirm({
       title: `保存 ${dirtyCount} 个文件后离开？`,
       description:
         "当前 IDE 有未保存的编辑内容。保存成功后继续，保存失败时会留在当前项目。",
@@ -827,14 +875,14 @@ export function CodingWorkbench({
     try {
       const saved = await theiaFrameRef.current?.saveAll();
       if (saved) return true;
-      return confirmTaskAction({
+      return confirm({
         title: "仍有文件未保存",
         description: "IDE 中仍有未保存的文件。继续离开会放弃这些编辑内容。",
         confirmLabel: "放弃并离开",
         danger: true,
       });
     } catch (error) {
-      return confirmTaskAction({
+      return confirm({
         title: "IDE 文件保存失败",
         description: `${String(error).replace(/^Error:\s*/, "")}。继续离开会放弃未保存的编辑内容。`,
         confirmLabel: "放弃并离开",
@@ -914,14 +962,15 @@ export function CodingWorkbench({
 
   const openParallelWorkspace = useCallback(
     async (draft?: string, images: string[] = []) => {
-      if (creatingIsolatedWorkspace || !cwd) return false;
+      if (isolationCreation.current || !cwd) return false;
       if (!onSelectWorkspace) {
         setStartError("无法打开隔离工作树，请重新进入代码开发页面");
         return false;
       }
-      if (!(await saveTheiaBeforeLeaving())) return false;
+      isolationCreation.current = true;
       setCreatingIsolatedWorkspace(true);
       try {
+        if (!(await saveTheiaBeforeLeaving()) || !isWorkspaceCurrent()) return false;
         const workspace = await codingApi.createIsolatedWorkspace(cwd);
         if (draft) {
           try {
@@ -944,23 +993,25 @@ export function CodingWorkbench({
             // The current editor keeps the text if workspace switching fails.
           }
         }
+        if (!isWorkspaceCurrent()) return false;
         onSelectWorkspace(workspace.root);
         onToast?.("已创建隔离工作树；新任务可以与原任务并行执行");
         return true;
       } catch (error) {
         const reason = String(error).replace(/^Error:\s*/, "");
-        setStartError(`无法创建并行任务：${reason}`);
+        if (isWorkspaceCurrent()) setStartError(`无法创建并行任务：${reason}`);
         onToast?.(`无法创建并行任务：${reason}`);
         return false;
       } finally {
+        isolationCreation.current = false;
         setCreatingIsolatedWorkspace(false);
       }
     },
     [
       contextPaths,
       intent,
-      creatingIsolatedWorkspace,
       cwd,
+      isWorkspaceCurrent,
       onSelectWorkspace,
       onToast,
       saveTheiaBeforeLeaving,
@@ -980,6 +1031,7 @@ export function CodingWorkbench({
       attachments: string[] = [],
     ) => {
       if (!cwd || !onStartRun) return false;
+      if (activeStartGeneration.current === startGeneration.current) return false;
       if (codingWorkspaceCancellationBlocked(cwd)) { setStartError(cancellationMessage ?? DOCUMENT_CANCELLATION_PENDING_MESSAGE); return false; }
       const trimmedRequirement = requirement.trim();
       if (!trimmedRequirement) {
@@ -987,6 +1039,7 @@ export function CodingWorkbench({
         return false;
       }
       const generation = ++startGeneration.current;
+      activeStartGeneration.current = generation;
       const isCurrent = () =>
         isWorkspaceCurrent() &&
         generation === startGeneration.current &&
@@ -1011,7 +1064,11 @@ export function CodingWorkbench({
         assertCurrent();
         if (
           latestTasks.some((item) => isBusyPhase(item.phase)) ||
-          latestIsolation
+          (latestIsolation && (
+            latestTasks.length > 0 ||
+            latestIsolation.taskIds?.length ||
+            latestIsolation.sessionIds?.length
+          ))
         ) {
           return await openParallelWorkspace(trimmedRequirement, attachments);
         }
@@ -1037,11 +1094,6 @@ export function CodingWorkbench({
         );
         setIntent(intent);
         assertCurrent();
-        try {
-          localStorage.removeItem(codingTaskDraftKey(cwd));
-        } catch {
-          // Task creation succeeded; draft cleanup is best-effort.
-        }
         await codingApi.setTaskContext(cwd, created.id, effectiveContextPaths);
         assertCurrent();
         // Persist a task-start checkpoint before the Agent can touch the
@@ -1101,6 +1153,13 @@ export function CodingWorkbench({
         if (boundSession !== session) {
           throw new Error("Agent 返回的会话与已绑定会话不一致");
         }
+        if (isCurrent()) {
+          try {
+            localStorage.removeItem(codingTaskDraftKey(cwd));
+          } catch {
+            // The session is already bound; draft cleanup is best-effort.
+          }
+        }
         return true;
       } catch (error) {
         const reason = String(error).replace(/^Error:\s*/, "");
@@ -1118,6 +1177,7 @@ export function CodingWorkbench({
           setStartError(reason);
         return false;
       } finally {
+        if (activeStartGeneration.current === generation) activeStartGeneration.current = null;
         if (isCurrent()) setStarting(false);
       }
     },
@@ -2016,25 +2076,39 @@ export function CodingWorkbench({
 
   const integrateTask = useCallback(async () => {
     if (!cwd || !task || !isolatedWorkspace || integrating || codingWorkspaceCancellationBlocked(cwd) || codingWorkspaceCancellationBlocked(isolatedWorkspace.sourceRoot)) return;
-    const confirmed = await confirmTaskAction({
-      title: "应用到原项目",
-      description: `将隔离任务的已提交变更应用到 ${isolatedWorkspace.sourceRoot}。原项目必须没有未提交改动，也不能有正在执行的任务；如发生冲突，原项目不会被覆盖。`,
-      confirmLabel: "应用变更",
-    });
-    if (!confirmed) return;
     setIntegrating(true);
+    const isCurrentTask = () => isWorkspaceCurrent() && useTaskStore.getState().task?.id === task.id;
     try {
+      const plan = await codingApi.previewIsolatedIntegration(cwd, task.id);
+      if (!isCurrentTask()) return;
+      const confirmed = await confirmTaskAction({
+        title: "应用到原项目",
+        description: <>
+          <p>目标：{plan.sourceRoot} · {plan.sourceRef.replace(/^refs\/heads\//, "")} · {plan.sourceHead.slice(0, 8)}</p>
+          <p>将按顺序应用以下 {plan.commits.length} 个提交，包含到本任务提交为止的待应用变更。遇到冲突时原项目不会被修改。</p>
+          <ol>
+            {plan.commits.map(({ hash, subject, files }) => (
+              <li key={hash}>
+                <code>{hash.slice(0, 12)}</code> {subject}
+                {files.length > 0 && <ul>{files.map((file) => <li key={file}>{file}</li>)}</ul>}
+              </li>
+            ))}
+          </ol>
+        </>,
+        confirmLabel: "应用所列提交",
+      });
+      if (!confirmed || !isCurrentTask()) return;
       assertCodingWorkspaceCancellationClear(cwd);
-      assertCodingWorkspaceCancellationClear(isolatedWorkspace.sourceRoot);
-      const updated = await codingApi.integrateIsolatedTask(cwd, task.id);
-      setIsolatedWorkspace(updated);
+      assertCodingWorkspaceCancellationClear(plan.sourceRoot);
+      const updated = await codingApi.integrateIsolatedTask(cwd, task.id, plan);
+      if (isCurrentTask()) setIsolatedWorkspace(updated);
       onToast?.("修改已应用到原项目");
     } catch (error) {
       onToast?.(`应用失败：${String(error).replace(/^Error:\s*/, "")}`);
     } finally {
       setIntegrating(false);
     }
-  }, [confirmTaskAction, cwd, integrating, isolatedWorkspace, onToast, task]);
+  }, [confirmTaskAction, cwd, integrating, isolatedWorkspace, isWorkspaceCurrent, onToast, task]);
 
   const changeTaskModel = useCallback(
     async (nextModelId: string) => {
@@ -2182,11 +2256,11 @@ export function CodingWorkbench({
             <button
               type="button"
               className="echo-theia-toolbar-button"
-              aria-label="网页预览"
+              aria-label="开发服务预览"
               aria-expanded={theiaPreviewOpen}
               onClick={() => setTheiaPreviewOpen((open) => !open)}
             >
-              <PanelTop size={15} /> <span>网页预览</span>
+              <PanelTop size={15} /> <span>开发服务预览</span>
             </button>
             {theiaPreviewOpen && (
               <form
@@ -2231,11 +2305,10 @@ export function CodingWorkbench({
                     ))}
                   </div>
                 )}
-                <label htmlFor="echo-theia-preview-url">预览地址</label>
+                <label htmlFor="echo-theia-preview-url">开发服务地址</label>
                 <div>
                   <input
                     id="echo-theia-preview-url"
-                    aria-label="网页预览地址"
                     autoFocus
                     placeholder="localhost:5173"
                     value={theiaPreviewInput}
@@ -2275,15 +2348,16 @@ export function CodingWorkbench({
                 className="topbar-actions__item"
                 role="menuitemradio"
                 aria-checked={completionEnabled}
+                disabled={!modelId}
                 onClick={() => {
-                  setCompletionEnabled((value) => !value);
                   close(true);
+                  void changeCompletionConsent();
                 }}
               >
                 <span className="coding-editor-options__check">{completionEnabled && <Check size={14} />}</span>
                 <span className="coding-editor-options__copy">
                   <span>Tab 代码补全</span>
-                  <small>{completionEnabled ? completionStatus : "已关闭"}</small>
+                  <small>{completionEnabled ? completionStatus : modelId ? "已关闭" : "请先选择模型"}</small>
                 </span>
               </button>
               <div className="coding-project-switcher__separator" role="separator" />
@@ -2301,7 +2375,7 @@ export function CodingWorkbench({
           ref={theiaFrameRef}
           root={cwd}
           modelId={modelId}
-          completionEnabled={completionEnabled}
+          completionEnabled={active && completionEnabled}
           onCompletionStatus={setCompletionStatus}
           onBeforeMutation={beforeTheiaMutation}
           onAfterMutation={afterTheiaMutation}

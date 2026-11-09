@@ -877,6 +877,9 @@ pub struct MvpAgent {
     agent_mcp_state: std::sync::Arc<
         tokio::sync::Mutex<crate::session::mcp_servers::McpState>,
     >,
+    /// Order desktop-wide MCP changes with the final config read and
+    /// registration of sessions being created or restored.
+    pub(crate) mcp_session_lifecycle: tokio::sync::RwLock<()>,
     /// Unified sender for all subagent coordinator events.
     /// LEADER-SAFE(shared): channel is multi-producer, coordinator drains.
     subagent_event_tx: tokio::sync::mpsc::UnboundedSender<

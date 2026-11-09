@@ -739,6 +739,12 @@ export interface SearchHit {
   updatedAt?: string;
 }
 
+export interface SessionSearchPage {
+  results: SearchHit[];
+  nextOffset: number | null;
+  bootstrapping: boolean;
+}
+
 // ---------- rewind ----------
 
 /** Canonical Runtime wire values for selecting what a rewind restores. */

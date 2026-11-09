@@ -27,15 +27,18 @@ Object.assign(window, { productReview: { calls, finishPick: (path: string | null
 Object.assign(window, { __TAURI_INTERNALS__: {
   invoke: async (command: string, args: any) => {
     calls.push({ command, args });
-    if (command === "session_search") {
+    if (command === "session_search" || command === "session_search_page") {
+      const response = (results: unknown[]) => command === "session_search_page"
+        ? { results, nextOffset: null, bootstrapping: false }
+        : results;
       if (params.get("delayedMatch") === "1" && args.query === "交付复盘") {
         await new Promise<void>(resolve=>{searchResolver=resolve;});
         searchResolver=null;
-        return [{sessionId:"review-1",title:"交付复盘",cwd:"/review/客户乙/资料",snippet:"延迟返回的正文命中"}];
+        return response([{sessionId:"review-1",title:"交付复盘",cwd:"/review/客户乙/资料",snippet:"延迟返回的正文命中"}]);
       }
       await new Promise(resolve => setTimeout(resolve, 100));
       if (args.query === "失败") throw new Error("隔离测试：索引暂不可用");
-      return args.query === "正文" ? [{sessionId:"review-1", title:"交付复盘", cwd:"/review/客户乙/资料", snippet:"正文命中：已确认交付范围与后续行动。"}] : [];
+      return response(args.query === "正文" ? [{sessionId:"review-1", title:"交付复盘", cwd:"/review/客户乙/资料", snippet:"正文命中：已确认交付范围与后续行动。"}] : []);
     }
     if (command === "org_local_kb_sources_get") return { exists: true, sources: [{ id:"review-source", kind:"local-folder", root:"/review/产品资料", label:"产品资料", enabled:true }] };
     if (command === "org_local_kb_sources_set") {

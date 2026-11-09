@@ -1161,13 +1161,24 @@ pub struct SearchHit {
     pub updated_at: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPage {
+    results: Vec<SearchHit>,
+    next_offset: Option<u32>,
+    bootstrapping: bool,
+}
+
 /// `echo.agent/session/search` response shape (defensive — varies by EchoAgent version).
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum SearchResponse {
     Results {
-        #[serde(default, alias = "results")]
         results: Vec<RawSearchHit>,
+        #[serde(default, rename = "nextOffset")]
+        next_offset: Option<u32>,
+        #[serde(default)]
+        bootstrapping: bool,
     },
     Hits(Vec<RawSearchHit>),
 }
@@ -1198,10 +1209,45 @@ pub async fn session_search(
     cwd: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<SearchHit>, String> {
+    Ok(
+        search_session_page(&filesystem, &state, query, cwd, limit, 0)
+            .await?
+            .results,
+    )
+}
+
+#[tauri::command]
+pub async fn session_search_page(
+    filesystem: State<'_, FilesystemAccess>,
+    state: State<'_, AppState>,
+    query: String,
+    cwd: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<SearchPage, String> {
+    search_session_page(
+        &filesystem,
+        &state,
+        query,
+        cwd,
+        limit,
+        offset.unwrap_or_default(),
+    )
+    .await
+}
+
+async fn search_session_page(
+    filesystem: &FilesystemAccess,
+    state: &AppState,
+    query: String,
+    cwd: Option<String>,
+    limit: Option<u32>,
+    offset: u32,
+) -> Result<SearchPage, String> {
     if query.chars().count() > 4_096 {
         return Err("搜索关键词过长".into());
     }
-    let cwd = authorized_optional_cwd(&filesystem, cwd)?;
+    let cwd = authorized_optional_cwd(filesystem, cwd)?;
     let limit = limit.unwrap_or(50).clamp(1, 200);
     let tx = state
         .tx
@@ -1213,18 +1259,22 @@ pub async fn session_search(
         "query": query,
         "cwd": cwd,
         "limit": limit,
-        "offset": 0,
+        "offset": offset,
         "includeContent": true,
     });
     let params = raw_params(&payload);
     let resp: SearchResponse = call_ext(&tx, "echo.agent/session/search", params)
         .await
         .map_err(|e| e.to_string())?;
-    let raw = match resp {
-        SearchResponse::Results { results } => results,
-        SearchResponse::Hits(v) => v,
+    let (raw, next_offset, bootstrapping) = match resp {
+        SearchResponse::Results {
+            results,
+            next_offset,
+            bootstrapping,
+        } => (results, next_offset, bootstrapping),
+        SearchResponse::Hits(hits) => (hits, None, false),
     };
-    Ok(raw
+    let results = raw
         .into_iter()
         .take(limit as usize)
         .filter(|hit| valid_admin_id(&hit.session_id))
@@ -1236,7 +1286,12 @@ pub async fn session_search(
             rank: h.rank,
             updated_at: h.updated_at.map(|value| bounded_text(value, 128)),
         })
-        .collect())
+        .collect();
+    Ok(SearchPage {
+        results,
+        next_offset: next_offset.filter(|next| *next > offset),
+        bootstrapping,
+    })
 }
 
 // ========================================================================

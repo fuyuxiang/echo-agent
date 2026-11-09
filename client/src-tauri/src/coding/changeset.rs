@@ -132,6 +132,9 @@ pub struct ChangeSet {
     /// batch starts. Completion is rejected if files changed meanwhile.
     #[serde(default)]
     pub verification_started_revision: Option<String>,
+    /// Check configuration and inherited execution environment for this batch.
+    #[serde(default)]
+    pub verification_started_configuration: Option<String>,
     /// Files that exceeded the snapshot bound or could not be read safely.
     #[serde(default)]
     pub rollback_unsafe_files: Vec<String>,
@@ -257,6 +260,7 @@ pub fn load(root: &Path, task_id: &str) -> ChangeSet {
             change_hashes: BTreeMap::new(),
             verified_revision: None,
             verification_started_revision: None,
+            verification_started_configuration: None,
             rollback_unsafe_files: Vec::new(),
             committed_hash: None,
             committed_paths: Vec::new(),
@@ -555,7 +559,7 @@ fn live_file(root: &Path, path: &str) -> Result<LiveFile, String> {
     })
 }
 
-fn workspace_paths(root: &Path) -> Result<Vec<String>, String> {
+pub(super) fn workspace_paths(root: &Path) -> Result<Vec<String>, String> {
     // A rollback checkpoint is a safety boundary, not a search index. Do not
     // honor mutable .gitignore/.ignore rules here: if a task changes an ignore
     // rule, a pre-existing ignored file must never be mistaken for a new file
@@ -768,6 +772,7 @@ pub fn capture_baseline(
     set.change_hashes.clear();
     set.verified_revision = None;
     set.verification_started_revision = None;
+    set.verification_started_configuration = None;
     set.rollback_unsafe_files.clear();
     set.committed_hash = None;
     set.committed_paths.clear();
@@ -806,6 +811,7 @@ pub fn capture_filesystem_baseline(root: &Path, task_id: &str) -> Result<ChangeS
     set.change_hashes.clear();
     set.verified_revision = None;
     set.verification_started_revision = None;
+    set.verification_started_configuration = None;
     set.rollback_unsafe_files.clear();
     set.committed_hash = None;
     set.committed_paths.clear();
@@ -1908,6 +1914,7 @@ fn rollback_inner(
     set.change_hashes.clear();
     set.verified_revision = None;
     set.verification_started_revision = None;
+    set.verification_started_configuration = None;
     set.reviewed_hashes.clear();
     set.reviewed_files.clear();
     save(root, &set)?;
@@ -1935,6 +1942,7 @@ pub fn discard_file(root: &Path, task_id: &str, path: &str) -> Result<ChangeSet,
     set.change_hashes.remove(path);
     set.verified_revision = None;
     set.verification_started_revision = None;
+    set.verification_started_configuration = None;
     set.reviewed_hashes.remove(path);
     set.reviewed_files.retain(|entry| entry != path);
     save(root, &set)?;
@@ -2157,6 +2165,7 @@ pub fn mark_committed_with_baselines(
     set.committed_paths = paths.to_vec();
     set.verified_revision = None;
     set.verification_started_revision = None;
+    set.verification_started_configuration = None;
     set.reviewed_files = set.reviewed_hashes.keys().cloned().collect();
     save(root, &set)?;
     Ok(set)
@@ -2168,8 +2177,16 @@ pub fn mark_verified_revision(root: &Path, task_id: &str) -> Result<ChangeSet, S
     if set.verification_started_revision.as_deref() != Some(current.as_str()) {
         return Err("文件在验证执行期间发生变化，请重新运行完整验证批次".into());
     }
+    if set
+        .verification_started_configuration
+        .as_deref()
+        .is_some_and(|started| started != super::verification::configuration_revision(root))
+    {
+        return Err("检查配置在验证期间发生变化，请重新运行完整验证批次".into());
+    }
     set.verified_revision = Some(current);
     set.verification_started_revision = None;
+    set.verification_started_configuration = None;
     save(root, &set)?;
     Ok(set)
 }
@@ -2177,6 +2194,7 @@ pub fn mark_verified_revision(root: &Path, task_id: &str) -> Result<ChangeSet, S
 pub fn mark_verification_started(root: &Path, task_id: &str) -> Result<ChangeSet, String> {
     let mut set = load(root, task_id);
     set.verification_started_revision = Some(set.content_revision());
+    set.verification_started_configuration = Some(super::verification::configuration_revision(root));
     set.verified_revision = None;
     save(root, &set)?;
     Ok(set)

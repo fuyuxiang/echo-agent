@@ -6,6 +6,7 @@ import { reviewChromium } from "./ui-review-runtime.mjs";
 
 const source = await readFile("src-tauri/src/automation/browser.rs", "utf8");
 const editableText = await readFile("src-tauri/src/automation/editable-text.js", "utf8");
+const interactionTarget = await readFile("src-tauri/src/automation/interaction-target.js", "utf8");
 function programs(method, next) {
   const body = source.slice(source.indexOf("pub async fn " + method), source.indexOf("pub async fn " + next));
   return [...body.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(m => {
@@ -92,6 +93,34 @@ try {
   assert.equal(download.suggestedFilename(), "form_result.json");
   assert.deepEqual(JSON.parse(await readFile(await download.path(), "utf8")), { name: "张三", date: "2026-10-23", room: "b", simulation: "on" });
   assert.equal(await page.evaluate(() => window.submissions), 1);
+
+  await page.setContent(`<style>button { width:120px;height:40px } button:active { transform:translateY(1px) }</style>
+    <form action="https://portal.example/approved"><input><button data-echo-ref="submit">提交</button></form>`);
+  const sample = (input, point = null, guard = null) => page.evaluate(`(${interactionTarget})(${JSON.stringify(input)},"test-document",false,false,${JSON.stringify(point)},${JSON.stringify(guard)})`);
+  const clickTarget = { kind: "click", reference: "submit", button: "left" };
+  const before = await sample(clickTarget);
+  await page.evaluate(() => {
+    const form = document.querySelector("form");
+    form.addEventListener("submit", event => { event.preventDefault(); form.dataset.submitted = "yes"; });
+    form.setAttribute("action", "https://different.example/submit");
+    form.querySelector("input").focus();
+  });
+  assert.notDeepEqual((await sample(clickTarget)).submission, before.submission);
+  assert.equal((await sample({ kind: "key", key: "Enter" })).submission.action, "https://different.example/submit");
+  await page.locator("form").evaluate(form => form.setAttribute("action", "https://portal.example/approved"));
+  const point = { x: before.x, y: before.y };
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  assert.equal((await sample(clickTarget)).y, point.y + 1);
+  assert.deepEqual(await sample(clickTarget, point), before);
+  await page.mouse.up();
+  assert.equal(await page.locator("form").getAttribute("data-submitted"), "yes");
+  await page.locator("button").evaluate(button => {
+    button.addEventListener("click", () => button.form.setAttribute("action", "https://different.example/submit"), { once: true });
+  });
+  await sample(clickTarget, point, before.submission);
+  await page.mouse.click(point.x, point.y);
+  assert.equal(await sample(clickTarget, point, "finish"), true, "submission changed inside the click handler must be blocked");
   assert.deepEqual(errors, []);
-  console.log("Real Chromium passed: ISO controls, invalid-value preservation, credential/readonly guards, multiline/blank-line/CRLF rich editing and clearing, CDP typing, verified selection, and validated form submission with a real form_result.json download.");
+  console.log("Real Chromium passed: native inputs, verified selection, validated form download, changed submission destination and pressed-button hit testing.");
 } finally { await browser.close(); }

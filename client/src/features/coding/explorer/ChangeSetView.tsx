@@ -179,6 +179,7 @@ export function ChangeSetView({
       <div className="coding-changeset__actions">
         <button
           type="button"
+          aria-label={`提交本任务选中的 ${selectedFileCount} 个文件`}
           disabled={
             filesystemCheckpoint ||
             selectedFileCount === 0 ||
@@ -208,7 +209,7 @@ export function ChangeSetView({
           ) : (
             <GitCommitHorizontal size={12} />
           )}
-          提交选中 {selectedFileCount} 个文件
+          提交本任务 {selectedFileCount} 个文件
         </button>
         {isolatedSource && (
           <button
@@ -245,6 +246,10 @@ export function ChangeSetView({
           回滚任务
         </button>
       </div>
+
+      {!filesystemCheckpoint && (
+        <div className="coding-explorer__note">这里提交本任务选中的文件或差异块。查看整个仓库的暂存和分支状态，请使用编辑器内的源代码管理。</div>
+      )}
 
       {isolatedSource && (
         <div className="coding-explorer__note">

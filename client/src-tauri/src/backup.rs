@@ -31,6 +31,7 @@ const DIRS: &[&str] = &[
     "knowledge-traces",
     "automation-terminal-outbox",
     "session-artifacts",
+    "document-workspaces",
     "sessions",
     "memory",
     "group-memory",
@@ -184,6 +185,11 @@ fn allowed(name: &str) -> bool {
     {
         return false;
     }
+    if let Some(document) = name.strip_prefix("document-workspaces/") {
+        return document
+            .strip_suffix(".json")
+            .is_some_and(|id| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
     FILES.contains(&name) || (parts.len() > 1 && DIRS.iter().any(|dir| path.starts_with(dir)))
 }
 fn validate(manifest: &Manifest) -> Result<(), String> {
@@ -284,6 +290,11 @@ fn export(
                     .replace('\\', "/")
             };
             if !allowed(&name) {
+                if *root == "document-workspaces" {
+                    // Editors stage atomic writes in this directory. Only
+                    // committed identity-named records belong in the archive.
+                    continue;
+                }
                 return Err("备份路径超出数据范围".into());
             }
             zip.start_file(&name, options).map_err(|e| e.to_string())?;
@@ -618,6 +629,65 @@ fn rebase_session_directories(
     Ok(managed)
 }
 
+fn rebase_document_workspaces(
+    staging: &Path,
+    manifest: &mut Manifest,
+    home: &Path,
+    app_data: &Path,
+) -> Result<(), String> {
+    use crate::document_store;
+    let mut rewritten = None;
+    let mut targets = HashSet::new();
+    for index in 0..manifest.files.len() {
+        let entry = &manifest.files[index];
+        let Some(id) = entry
+            .name
+            .strip_prefix("document-workspaces/")
+            .and_then(|name| name.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        let mut record = document_store::read(staging, id)?.ok_or("备份中缺少文档编辑稿")?;
+        if record.session_id.is_empty()
+            || document_store::identity(&record.session_id, Path::new(&record.path)) != id
+        {
+            return Err("备份中的编辑稿归属无效".into());
+        }
+        for version in &record.history {
+            document_store::validate(&version.document)?;
+        }
+        let mut path = serde_json::Value::String(record.path);
+        rebase_value(&mut path, manifest, home, app_data);
+        record.path = path.as_str().ok_or("编辑稿工作区路径无效")?.to_string();
+        record.id = document_store::identity(&record.session_id, Path::new(&record.path));
+        if !targets.insert(record.id.clone()) {
+            return Err("恢复后的文档编辑稿路径冲突".into());
+        }
+
+        let snapshot = if let Some(ref snapshot) = rewritten {
+            snapshot
+        } else {
+            rewritten.insert(tempfile::tempdir_in(staging).map_err(|error| error.to_string())?)
+        };
+        document_store::write(snapshot.path(), &record)?;
+        manifest.files[index].name = format!("document-workspaces/{}.json", record.id);
+    }
+    if let Some(snapshot) = rewritten {
+        for entry in manifest
+            .files
+            .iter_mut()
+            .filter(|entry| entry.name.starts_with("document-workspaces/"))
+        {
+            let path = staging.join(&entry.name);
+            atomic_copy(&snapshot.path().join(&entry.name), &path)?;
+            let bytes = crate::shell_fs::read_regular_file_bounded(&path, 12 * 1024 * 1024)?;
+            entry.bytes = bytes.len() as u64;
+            entry.sha256 = format!("{:x}", Sha256::digest(&bytes));
+        }
+    }
+    validate(manifest)
+}
+
 fn restore_managed_task_directory(home: &Path, cwd: &Path) -> Result<(), String> {
     let root = home.join("workspaces/default/Tasks");
     let relative = cwd.strip_prefix(&root).map_err(|_| "恢复工作区超出范围")?;
@@ -687,6 +757,7 @@ fn prepare_file(
     if !name.ends_with(".json")
         || name.starts_with("clipboard-images/")
         || name.starts_with("projects/")
+        || name.starts_with("document-workspaces/")
     {
         return Ok(());
     }
@@ -829,6 +900,7 @@ fn apply_pending_at(home: &Path, app_data: &Path) -> Result<(), String> {
     let mut manifest = unpack(&pending, staging.path())?;
     let managed_task_directories =
         rebase_session_directories(staging.path(), &mut manifest, home, app_data)?;
+    rebase_document_workspaces(staging.path(), &mut manifest, home, app_data)?;
     let retaining_target_history = !manifest
         .files
         .iter()
@@ -1197,6 +1269,74 @@ pub fn backup_acknowledge_ui() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_restores_document_revisions_under_rebased_identity() {
+        use crate::document_store::{self, DocumentVersion, EditableDocument};
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let source_home = source.path().canonicalize().unwrap();
+        let target_home = target.path().canonicalize().unwrap();
+        let old_path = source_home.join("projects/report.docx");
+        let new_path = target_home.join("projects/report.docx");
+        let original = serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"原稿"}]}]});
+        let edited = serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"已保存但未导出"}]}]});
+        let mut record = EditableDocument {
+            id: document_store::identity("task-a", &old_path),
+            session_id: "task-a".into(),
+            path: old_path.to_string_lossy().into_owned(),
+            title: "report".into(),
+            revision: 2,
+            exported_revision: 1,
+            file_sha256: format!("{:x}", Sha256::digest(b"original")),
+            byte_size: 8,
+            document: edited.clone(),
+            saved_at: 2,
+            actor: "fixture".into(),
+            history: vec![DocumentVersion {
+                revision: 1,
+                saved_at: 1,
+                actor: "fixture".into(),
+                document: original.clone(),
+            }],
+            pending_export: None,
+            external_change: false,
+        };
+        document_store::write(&source_home, &record).unwrap();
+        let old_id = record.id.clone();
+        fs::write(
+            source_home.join("document-workspaces/.tmp-live-write"),
+            b"not committed",
+        )
+        .unwrap();
+        let pending = target_home.join("restore-pending.zip");
+        export(&source_home, app_data.path(), &pending, BTreeMap::new()).unwrap();
+        apply_pending_at(&target_home, app_data.path()).unwrap();
+
+        record.id = document_store::identity("task-a", &new_path);
+        assert!(document_store::read(&target_home, &old_id)
+            .unwrap()
+            .is_none());
+        let restored = crate::document_workspace::recovered_draft_at(
+            &target_home,
+            "task-a",
+            &target_home,
+            &new_path,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(restored.id, record.id);
+        assert_eq!(Path::new(&restored.path), new_path);
+        assert_eq!((restored.revision, restored.exported_revision), (2, 1));
+        assert_eq!(restored.document, edited);
+        assert_eq!(restored.history[0].document, original);
+        assert!(!new_path.exists());
+        assert!(!target
+            .path()
+            .join("document-workspaces/.tmp-live-write")
+            .exists());
+    }
 
     #[test]
     fn same_home_restore_recreates_missing_managed_tasks_without_fabricating_files() {

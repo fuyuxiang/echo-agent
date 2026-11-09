@@ -682,7 +682,7 @@ export function DataSettingsPanel() {
 
   return (
     <SettingsSection title="备份与恢复" desc="导出本机数据备份，或恢复已有备份。已归档任务可在上方单独管理。">
-      <SettingsGroup title="数据备份" settingId="backups" desc="保存会话、项目资料和应用数据。不包含密钥、组织登录凭据及外部工作目录的文件。">
+      <SettingsGroup title="数据备份" settingId="backups" desc="保存会话、项目资料、已保存的文档编辑稿和历史版本。不包含密钥、组织登录凭据及外部工作目录的文件。">
         <p className="settings-hint">备份包含聊天和资料正文，请保存在可信位置。建议等待任务结束后操作；恢复前会显示校验结果并再次确认。</p>
         <div className="settings-group__footer">
           <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
@@ -708,7 +708,7 @@ export function DataSettingsPanel() {
         </div>
       </SettingsGroup>
       <SettingsDisclosure title="本地数据与备份范围" description="查看存储位置，以及备份包含的内容">
-        <p className="settings-hint">备份包含会话、项目资料、代码任务记录、记忆、粘贴附件、草稿、队列和本机用量。恢复会替换同名记录，其他数据保留。历史外部文件仍依赖原工作目录。</p>
+        <p className="settings-hint">备份包含会话、项目资料、代码任务记录、记忆、粘贴附件、草稿、队列和本机用量。恢复会替换同名记录，其他数据保留。历史外部文件仍依赖原工作目录。原件缺失时，可从所属任务的成果面板打开已恢复的编辑稿并另存为 Word 或 PDF。</p>
         <SettingsGroup title="本地数据目录" settingId="data-directory" desc="会话、项目、自动化、通知和配置都保存在此目录。">
           <div className="settings-row settings-row--comfortable settings-row--path">
             <div className="settings-row__label settings-row__label--stacked">

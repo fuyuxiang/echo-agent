@@ -29,7 +29,9 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveTime, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, Local, MappedLocalTime, NaiveDate, NaiveDateTime, NaiveTime, Weekday,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -1989,9 +1991,17 @@ fn parse_date(s: &str) -> Option<NaiveDate> {
 }
 
 fn at_local(date: NaiveDate, h: u32, m: u32) -> Option<DateTime<Local>> {
-    date.and_time(NaiveTime::from_hms_opt(h, m, 0)?)
-        .and_local_timezone(Local)
-        .single()
+    resolve_local_time(date.and_time(NaiveTime::from_hms_opt(h, m, 0)?))
+}
+
+fn resolve_local_time(time: NaiveDateTime) -> Option<DateTime<Local>> {
+    // A repeated wall-clock slot runs only at its first occurrence. A gap
+    // has no instant; recurring rules continue to the next matching slot.
+    match time.and_local_timezone(Local) {
+        MappedLocalTime::Single(time) => Some(time),
+        MappedLocalTime::Ambiguous(a, b) => Some(a.min(b)),
+        MappedLocalTime::None => None,
+    }
 }
 
 fn weekday_code(date: NaiveDate) -> &'static str {
@@ -2021,8 +2031,9 @@ fn recurring_next(
     let m = sched.byminute.min(59);
     match sched.freq {
         ScheduleFreq::DAILY => {
-            for i in 0..2 {
-                let date = from.date_naive() + Duration::days(i);
+            // Look past a skipped wall-clock slot (or a skipped local date).
+            for i in 0..=7 {
+                let date = from.date_naive().checked_add_signed(Duration::days(i))?;
                 if let Some(candidate) = at_local(date, h, m) {
                     if candidate > from {
                         return Some(candidate);
@@ -2034,7 +2045,7 @@ fn recurring_next(
         ScheduleFreq::WEEKLY => {
             let interval = sched.interval.clamp(1, 2) as i64;
             let anchor_week = week_start(anchor.date_naive());
-            for i in 0..(7 * interval + 7) {
+            for i in 0..=(14 * interval) {
                 let date = from.date_naive() + Duration::days(i);
                 if !sched.byday.iter().any(|d| d == weekday_code(date)) {
                     continue;
@@ -2054,7 +2065,7 @@ fn recurring_next(
             if sched.bymonthday.is_empty() {
                 return None;
             }
-            for i in 0..62 {
+            for i in 0..=124 {
                 let date = from.date_naive() + Duration::days(i);
                 if !sched.bymonthday.contains(&date.day()) {
                     continue;
@@ -2095,7 +2106,7 @@ fn recurring_next(
             } else {
                 sched.byday.clone()
             };
-            for i in 0..8 {
+            for i in 0..=14 {
                 let date = from.date_naive() + Duration::days(i);
                 if !byday.iter().any(|d| d == weekday_code(date)) {
                     continue;
@@ -2137,7 +2148,13 @@ fn compute_next_run(a: &Automation, from: DateTime<Local>) -> Option<String> {
     }
     // Clamp the search start to the validity window's first day.
     let search_from = match valid_from {
-        Some(fd) if from.date_naive() < fd => at_local(fd, 0, 0)? - Duration::minutes(1),
+        Some(fd) if from.date_naive() < fd => {
+            let midnight = fd.and_hms_opt(0, 0, 0)?;
+            let first = (0..=24 * 60).find_map(|minute| {
+                resolve_local_time(midnight.checked_add_signed(Duration::minutes(minute))?)
+            })?;
+            first - Duration::minutes(1)
+        }
         _ => from,
     };
     let anchor = DateTime::parse_from_rfc3339(&a.created_at)
@@ -4585,6 +4602,66 @@ mod tests {
             recurring_next(&sched, &from, from),
             Some(local(2026, 11, 1, 9, 0))
         );
+
+        let mut gap = sched.clone();
+        gap.byhour = 2;
+        gap.byminute = 30;
+        let before_gap = local(2026, 3, 7, 2, 31);
+        assert_eq!(
+            recurring_next(&gap, &before_gap, before_gap),
+            Some(local(2026, 3, 9, 2, 30))
+        );
+        assert_eq!(at_local(date(2026, 3, 8), 2, 30), None);
+        let fortnightly = AutomationSchedule {
+            freq: ScheduleFreq::WEEKLY,
+            interval: 2,
+            byday: vec!["SU".into()],
+            ..gap.clone()
+        };
+        let before_fortnight_gap = local(2026, 2, 22, 2, 31);
+        assert_eq!(
+            recurring_next(&fortnightly, &before_fortnight_gap, before_fortnight_gap),
+            Some(local(2026, 3, 22, 2, 30))
+        );
+        let hourly = AutomationSchedule {
+            freq: ScheduleFreq::HOURLY,
+            byday: vec!["SU".into()],
+            interval_hours: 24,
+            ..gap.clone()
+        };
+        let before_hourly_gap = local(2026, 3, 1, 2, 31);
+        assert_eq!(
+            recurring_next(&hourly, &before_hourly_gap, before_hourly_gap),
+            Some(local(2026, 3, 15, 2, 30))
+        );
+
+        let mut fold = gap.clone();
+        fold.byhour = 1;
+        let before_fold = local(2026, 10, 31, 1, 31);
+        let MappedLocalTime::Ambiguous(a, b) = Local.with_ymd_and_hms(2026, 11, 1, 1, 30, 0) else {
+            panic!("New York fall transition must have two wall-clock matches");
+        };
+        let (first, second) = (a.min(b), a.max(b));
+        assert_eq!(first.to_rfc3339(), "2026-11-01T01:30:00-04:00");
+        assert_eq!(second.to_rfc3339(), "2026-11-01T01:30:00-05:00");
+        assert_eq!(recurring_next(&fold, &before_fold, before_fold), Some(first));
+        // Claiming at the earlier instant, or reconstructing the schedule
+        // after a restart before the second instant, never enqueues twice.
+        for from in [first, first + Duration::minutes(15), second] {
+            assert_eq!(
+                recurring_next(&fold, &before_fold, from),
+                Some(local(2026, 11, 2, 1, 30))
+            );
+        }
+        let mut once = test_automation();
+        once.schedule_type = "once".into();
+        once.scheduled_date = Some("2026-11-01".into());
+        once.scheduled_time = Some("01:30".into());
+        assert_eq!(compute_next_run(&once, before_fold), Some(first.to_rfc3339()));
+        assert_eq!(compute_next_run(&once, first), None);
+        once.scheduled_date = Some("2026-03-08".into());
+        once.scheduled_time = Some("02:30".into());
+        assert_eq!(compute_next_run(&once, before_gap), None);
     }
 
     // --- parse_hhmm ---

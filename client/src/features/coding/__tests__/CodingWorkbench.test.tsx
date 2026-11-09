@@ -364,17 +364,27 @@ describe("Theia workbench", () => {
 
   it("creates an isolated Git worktree for a parallel task in the same project", async () => {
     const onSelectWorkspace = vi.fn();
+    const isolated = { root: "/managed/parallel", sourceRoot: "/repo", baseHead: "abc123", taskIds: [], sessionIds: [] };
+    const firstTask = verificationTask({ id: "parallel-task", phase: "idle" });
     invoke.mockImplementation(async (command: string, args?: unknown): Promise<unknown> => {
+    const root = (args as { root?: string } | undefined)?.root;
     if (command === "coding_document_editor_attach") return (args as {root:string} | undefined)?.root;
     if (command === "coding_verification_config_get") return {checks:[]};
     if (["coding_checkpoint_list","coding_git_commit_history","coding_review_list"].includes(command)) return [];
-      if (command === "coding_task_list") return [{ id: "running-task", name: "正在开发", phase: "implementing", updatedAt: "now" }];
+      if (command === "coding_task_list") return root === "/repo" ? [{ id: "running-task", name: "正在开发", phase: "implementing", updatedAt: "now" }] : [];
       if (command === "coding_verification_detect") return [];
       if (command === "coding_theia_start") return { url: "http://127.0.0.1:41773/", embedToken: "test-embed-token" };
-      if (command === "coding_isolation_create") return { root: "/managed/parallel", sourceRoot: "/repo", baseHead: "abc123" };
+      if (command === "coding_isolation_create") return isolated;
+      if (command === "coding_isolation_info") return root === isolated.root ? isolated : null;
+      if (command === "coding_task_create" || command === "coding_task_get") return firstTask;
       return null;
     });
-    const onStartRun = vi.fn();
+    const onStartRun = vi.fn<NonNullable<React.ComponentProps<typeof CodingWorkbench>["onStartRun"]>>(
+      async (_workspace, _requirement, _modelId, _contextPaths, bindSession) => {
+        await bindSession?.("parallel-session");
+        return "parallel-session";
+      },
+    );
     const { rerender } = render(<CodingWorkbench
       cwd="/repo"
       models={[{ id: "model-1" }]}
@@ -383,17 +393,20 @@ describe("Theia workbench", () => {
       onStartRun={onStartRun}
       onSelectWorkspace={onSelectWorkspace}
     />);
-    const frame = await screen.findByTitle("Echo Code IDE") as HTMLIFrameElement;
-    const origin = new URL(frame.src).origin;
-    const token = JSON.parse(frame.name.slice("echo-embed:".length)).bridgeToken;
-    const send = (data: object) => act(() => window.dispatchEvent(new MessageEvent("message", {origin, source: frame.contentWindow, data: {...data, token, instanceId:"parallel-editor"}})));
-    vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation((data: unknown) => {
-      const message = data as {type: string; id: string};
-      if (message.type === "echo/get-dirty") queueMicrotask(() => send({type: "echo/response", id: message.id, ok: true, value: 0}));
-      if (message.type === "echo/get-context") queueMicrotask(() => send({type:"echo/response",id:message.id,ok:true,value:{workspace:"/repo",document:null,openDocuments:[],diagnostics:[],diagnosticsTruncated:false,terminal:null,truncated:false}}));
-    });
-    send({type: "echo/ready",protocolVersion:1,capabilities:["document-snapshots"]});
-    send({type: "echo/dirty-state", count: 0});
+    const readyEditor = async (workspace: string) => {
+      const frame = await screen.findByTitle("Echo Code IDE") as HTMLIFrameElement;
+      const origin = new URL(frame.src).origin;
+      const token = bridgeToken(frame);
+      const send = (data: object) => act(() => window.dispatchEvent(new MessageEvent("message", {origin, source: frame.contentWindow, data: {...data, token, instanceId:"parallel-editor"}})));
+      vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation((data: unknown) => {
+        const message = data as {type: string; id: string};
+        if (message.type === "echo/get-dirty") queueMicrotask(() => send({type: "echo/response", id: message.id, ok: true, value: 0}));
+        if (message.type === "echo/get-context") queueMicrotask(() => send({type:"echo/response",id:message.id,ok:true,value:{workspace,document:null,openDocuments:[],diagnostics:[],diagnosticsTruncated:false,terminal:null,truncated:false}}));
+      });
+      send({type: "echo/ready",protocolVersion:1,capabilities:["document-snapshots"]});
+      send({type: "echo/dirty-state", count: 0});
+    };
+    await readyEditor("/repo");
     expect(await screen.findByText("当前项目有任务正在执行；提交新任务时会创建隔离工作树。")).toBeInTheDocument();
     act(() => useAiDraftStore.getState().setDraft({ prompt: "", contextPaths: ["src/orders.ts"], source: "context-menu" }));
     expect(await screen.findByText("orders.ts")).toBeInTheDocument();
@@ -416,6 +429,57 @@ describe("Theia workbench", () => {
     expect(await screen.findByRole("textbox", { name: "任务描述" })).toHaveValue("实现新的订单流程");
     expect(await screen.findByText("orders.ts")).toBeInTheDocument();
     expect(window.localStorage.getItem(codingTaskContextDraftKey("/managed/parallel"))).toBeNull();
+    await readyEditor(isolated.root);
+    const start = screen.getByRole("button", { name: "开始 Agent 任务" });
+    fireEvent.click(start);
+    fireEvent.click(start);
+    await waitFor(() => expect(onStartRun).toHaveBeenCalledTimes(1));
+    expect(onStartRun).toHaveBeenCalledWith(isolated.root, "实现新的订单流程", "model-1", ["src/orders.ts"], expect.any(Function), expect.any(String), expect.objectContaining({ workspace: isolated.root, taskId: firstTask.id }));
+    expect(invoke).toHaveBeenCalledWith("coding_task_bind_runtime", expect.objectContaining({ root: isolated.root, taskId: firstTask.id, sessionId: "parallel-session" }));
+    expect(invoke.mock.calls.filter(([command]) => command === "coding_isolation_create")).toHaveLength(1);
+    expect(invoke.mock.calls.filter(([command]) => command === "coding_task_create")).toHaveLength(1);
+  });
+
+  it("shows the exact source branch, prior commits and affected files before applying an isolation range", async () => {
+    const isolated = { root: "/managed/parallel", sourceRoot: "/repo", baseHead: "basehead" };
+    const task = verificationTask({ id: "parallel-task", phase: "delivered" });
+    const changeSet = { taskId: task.id, changes: [], reviewedFiles: [], createdAt: task.createdAt, committedHash: "taskhash" };
+    const plan = {
+      sourceRoot: isolated.sourceRoot,
+      sourceHead: isolated.baseHead,
+      sourceRef: "refs/heads/main",
+      commits: [
+        { hash: "manualhash", subject: "manual predecessor", files: ["manual.txt"] },
+        { hash: "taskhash", subject: "task result", files: ["result.txt"] },
+      ],
+    };
+    const ordinary = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "coding_isolation_info") return isolated;
+      if (command === "coding_task_get") return task;
+      if (command === "coding_orchestrator_state") return { task, problems: [], repairRounds: [] };
+      if (command === "coding_changeset_get") return changeSet;
+      if (command === "coding_isolation_integration_preview") return plan;
+      if (command === "coding_isolation_integrate") return { ...isolated, integratedHash: "updated" };
+      return ordinary(command, args);
+    });
+    useTaskStore.setState({ root: isolated.root, task, changeSet });
+    render(<CodingWorkbench cwd={isolated.root} models={[]} />);
+    await userEvent.click(await screen.findByRole("button", { name: "变更" }));
+    const applyButton = await screen.findByRole("button", { name: "应用到原项目" });
+    await waitFor(() => expect(applyButton).toBeEnabled());
+    await userEvent.click(applyButton);
+    expect(await screen.findByRole("dialog", { name: "应用到原项目" })).toBeInTheDocument();
+    expect(screen.getByText("目标：/repo · main · basehead")).toBeInTheDocument();
+    expect(screen.getByText("manual predecessor", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("manual.txt")).toBeInTheDocument();
+    expect(screen.getByText("result.txt")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("coding_isolation_integrate", expect.anything());
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(invoke).not.toHaveBeenCalledWith("coding_isolation_integrate", expect.anything());
+    await userEvent.click(screen.getByRole("button", { name: "应用到原项目" }));
+    await userEvent.click(await screen.findByRole("button", { name: "应用所列提交" }));
+    expect(invoke).toHaveBeenCalledWith("coding_isolation_integrate", { root: isolated.root, taskId: task.id, expected: plan });
   });
 
   it("saves dirty Theia editors before switching projects", async () => {
@@ -452,10 +516,19 @@ describe("Theia workbench", () => {
     await waitFor(() => expect(onSelectWorkspace).toHaveBeenCalledWith("/next"));
   });
 
-  it("keeps worktree management and the persisted Tab preference reachable in their contextual menus", async () => {
+  it("keeps worktree management reachable and requires explicit workspace/model consent for Tab", async () => {
     const user = userEvent.setup();
-    localStorage.removeItem("echo-coding-tab-enabled");
-    render(<CodingWorkbench cwd="/repo" models={[]} />);
+    const originalInvoke = invoke.getMockImplementation()!;
+    let granted = false;
+    invoke.mockImplementation(async (command, args) => {
+      if (command !== "coding_inline_consent") return originalInvoke(command, args);
+      const input = args as {workspace: string; enabled?: boolean};
+      if (input.enabled !== undefined) granted = input.enabled;
+      return {enabled: input.workspace === "/repo" && granted, destination:"https://fixture.invalid", identity:"model-target"};
+    });
+    // Older builds automatically persisted "true"; it is never proof of opt-in.
+    localStorage.setItem("echo-coding-tab-enabled", "true");
+    const {rerender} = render(<CodingWorkbench cwd="/repo" models={[{id:"model",label:"测试模型"}]} defaultModelId="model" />);
     await screen.findByTitle("Echo Code IDE");
     await user.click(screen.getByRole("button", { name: "切换项目" }));
     await user.click(screen.getByRole("menuitem", { name: "管理工作树…" }));
@@ -463,9 +536,17 @@ describe("Theia workbench", () => {
     await user.click(screen.getByRole("button", { name: "关闭工作树管理" }));
     await user.click(screen.getByRole("button", { name: "编辑器选项" }));
     const completion = screen.getByRole("menuitemradio", { name: /Tab 代码补全/ });
-    expect(completion).toHaveAttribute("aria-checked", "true");
+    expect(completion).toHaveAttribute("aria-checked", "false");
     await user.click(completion);
-    expect(localStorage.getItem("echo-coding-tab-enabled")).toBe("false");
+    expect(await screen.findByText(/fixture\.invalid/)).toHaveTextContent("未保存");
+    expect(granted).toBe(false);
+    await user.click(screen.getByRole("button", {name:"开启 Tab 补全"}));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("coding_inline_consent", {
+      workspace: "/repo", modelId: "model", enabled: true, expectedIdentity: "model-target",
+    }));
+    await user.click(screen.getByRole("button", { name: "编辑器选项" }));
+    expect(screen.getByRole("menuitemradio", { name: /Tab 代码补全/ })).toHaveAttribute("aria-checked", "true");
+    rerender(<CodingWorkbench cwd="/other" models={[{id:"model",label:"测试模型"}]} defaultModelId="model" />);
     await user.click(screen.getByRole("button", { name: "编辑器选项" }));
     expect(screen.getByRole("menuitemradio", { name: /Tab 代码补全/ })).toHaveAttribute("aria-checked", "false");
     localStorage.removeItem("echo-coding-tab-enabled");
@@ -476,11 +557,11 @@ describe("Theia workbench", () => {
     const { container } = render(<CodingWorkbench cwd="/repo" models={[]} />);
     await screen.findByTitle("Echo Code IDE");
 
-    expect(screen.queryByRole("textbox", { name: "网页预览地址" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "网页预览" }));
-    expect(screen.getByRole("textbox", { name: "网页预览地址" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "开发服务地址" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "开发服务预览" }));
+    expect(screen.getByRole("textbox", { name: "开发服务地址" })).toBeInTheDocument();
     await user.keyboard("{Escape}");
-    expect(screen.queryByRole("textbox", { name: "网页预览地址" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "开发服务地址" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "收起 Agent 面板" }));
     expect(container.querySelector(".coding-workbench--agent-closed")).toBeInTheDocument();

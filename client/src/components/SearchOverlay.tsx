@@ -2,10 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Keyboar
 import { Search, X, Clock, FileText } from "lucide-react";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useGroupStore } from "@/features/groups/group-store";
-import { agentListSessions, sessionSearch } from "@/lib/agent-client";
+import { agentListSessions, sessionSearchPage } from "@/lib/agent-client";
 import type { SearchHit, SessionSummary } from "@/lib/types";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { TrayActionCancelled } from "@/lib/desktop-tray-connection";
+
+const FULL_TEXT_PAGE_SIZE = 30;
+const MAX_AUTO_SEARCH_PAGES = 5;
 
 /**
  * Session search overlay — now powered by EchoAgent's FTS5 full-text index.
@@ -33,6 +36,7 @@ export function SearchOverlay({
 }) {
   // The local catalog already spans every historical working directory.
   const independent = useSessionsStore((s) => s.independent);
+  const deletedSessionIds = useSessionsStore((s) => s.deletedSessionIds);
   const groups = useGroupStore(state => state.groups);
   // Archive means leaving active work surfaces. Archived content is searched
   // and managed exclusively in Settings > Archived until it is restored.
@@ -42,8 +46,10 @@ export function SearchOverlay({
     && (!query.trim() || group.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())))
     .sort((a, b) => b.updatedAt - a.updatedAt) : [];
   const [remoteHits, setRemoteHits] = useState<SearchHit[]>([]);
+  const [nextRemoteOffset, setNextRemoteOffset] = useState<number | null>(null);
+  const [indexBootstrapping, setIndexBootstrapping] = useState(false);
   const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<{ message: string; offset: number } | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [localLimit, setLocalLimit] = useState(30);
   const [groupLimit, setGroupLimit] = useState(30);
@@ -64,6 +70,8 @@ export function SearchOverlay({
       const lifecycleGeneration = ++lifecycleGenerationRef.current;
       setQuery("");
       setRemoteHits([]);
+      setNextRemoteOffset(null);
+      setIndexBootstrapping(false);
       setSearchError(null);
       setSearching(false);
       setOpeningId(null);
@@ -93,10 +101,12 @@ export function SearchOverlay({
   });
 
   // Debounced remote search. Only kicks in for queries ≥ 2 chars.
-  const runRemoteSearch = useCallback(async (q: string) => {
+  const runRemoteSearch = useCallback(async (q: string, offset = 0) => {
     const generation = ++searchGenerationRef.current;
     if (q.trim().length < 2) {
       setRemoteHits([]);
+      setNextRemoteOffset(null);
+      setIndexBootstrapping(false);
       setSearchError(null);
       setSearching(false);
       return;
@@ -104,12 +114,33 @@ export function SearchOverlay({
     setSearching(true);
     setSearchError(null);
     try {
-      const hits = await sessionSearch(q.trim(), undefined, 30);
-      if (searchGenerationRef.current === generation) setRemoteHits(hits);
+      const hits = new Map<string, SearchHit>();
+      let nextOffset: number | null = offset;
+      let bootstrapping = false;
+      for (let pageIndex = 0; pageIndex < MAX_AUTO_SEARCH_PAGES && nextOffset !== null; pageIndex++) {
+        const requestedOffset: number = nextOffset;
+        const page = await sessionSearchPage(q.trim(), requestedOffset, FULL_TEXT_PAGE_SIZE);
+        if (searchGenerationRef.current !== generation) return;
+        for (const hit of page.results) hits.set(hit.sessionId, hit);
+        nextOffset = page.nextOffset !== null && page.nextOffset > requestedOffset ? page.nextOffset : null;
+        bootstrapping = page.bootstrapping;
+        const { independent, deletedSessionIds } = useSessionsStore.getState();
+        const unavailable = new Set([
+          ...deletedSessionIds,
+          ...independent.filter(session => session.archived || session.hidden).map(session => session.sessionId),
+        ]);
+        if (bootstrapping || page.results.some(hit => !unavailable.has(hit.sessionId))) break;
+      }
+      setRemoteHits((previous) => {
+        if (offset === 0) return [...hits.values()];
+        const seen = new Set(previous.map(hit => hit.sessionId));
+        return [...previous, ...[...hits.values()].filter(hit => !seen.has(hit.sessionId))];
+      });
+      setNextRemoteOffset(nextOffset);
+      setIndexBootstrapping(bootstrapping);
     } catch (error) {
       if (searchGenerationRef.current === generation) {
-        setRemoteHits([]);
-        setSearchError(String(error).replace(/^Error:\s*/, ""));
+        setSearchError({ message: String(error).replace(/^Error:\s*/, ""), offset });
       }
     } finally {
       if (searchGenerationRef.current === generation) setSearching(false);
@@ -123,6 +154,8 @@ export function SearchOverlay({
     if (!open) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     setRemoteHits([]);
+    setNextRemoteOffset(null);
+    setIndexBootstrapping(false);
     setSearchError(null);
     setFailedOpen(null);
     setLocalLimit(30);
@@ -148,9 +181,9 @@ export function SearchOverlay({
 
   // Prefer the FTS result for duplicate ids because it carries the matching
   // message snippet; keep title-only local rows for ids FTS did not return.
-  const unavailableIds = new Set(independent
+  const unavailableIds = new Set([...deletedSessionIds, ...independent
     .filter((session) => session.archived || session.hidden)
-    .map((session) => session.sessionId));
+    .map((session) => session.sessionId)]);
   const visibleRemoteHits = remoteHits.filter((hit) => !unavailableIds.has(hit.sessionId));
   const remoteIds = new Set(visibleRemoteHits.map((hit) => hit.sessionId));
   const localOnly = localMatches.filter((session) => !remoteIds.has(session.sessionId));
@@ -267,6 +300,8 @@ export function SearchOverlay({
             onChange={(e) => {
               searchGenerationRef.current += 1;
               setRemoteHits([]);
+              setNextRemoteOffset(null);
+              setIndexBootstrapping(false);
               setSearchError(null);
               setFailedOpen(null);
               setSearching(e.target.value.trim().length >= 2);
@@ -313,9 +348,9 @@ export function SearchOverlay({
           )}
           {searchError && (
             <div className="conversation-search-modal__error" role="alert">
-              <div>搜索失败：{searchError}</div>
+              <div>搜索失败：{searchError.message}</div>
               {query.trim().length >= 2 && (
-                <button type="button" className="conversation-search-modal__retry" disabled={searching} onClick={() => void runRemoteSearch(query)}>重试搜索</button>
+                <button type="button" className="conversation-search-modal__retry" disabled={searching} onClick={() => void runRemoteSearch(query, searchError.offset)}>重试搜索</button>
               )}
             </div>
           )}
@@ -358,9 +393,6 @@ export function SearchOverlay({
               <div className="conversation-search-modal__count">
                 全文检索结果 ({visibleRemoteHits.length})
               </div>
-              {remoteHits.length >= 30 && <div className="conversation-search-modal__count">
-                全文检索每次最多返回 30 条，可补充关键词缩小范围。
-              </div>}
               <ul className="conversation-search-modal__list">
                 {visibleRemoteHits.map((h) => (
                   <li key={h.sessionId}>
@@ -399,9 +431,23 @@ export function SearchOverlay({
             </>
           )}
 
+          {indexBootstrapping && (
+            <div className="conversation-search-modal__count" role="status">
+              正在建立历史索引，全文结果可能尚未完整。
+              <button type="button" className="conversation-search-modal__more" disabled={searching || openingId !== null}
+                onClick={() => void runRemoteSearch(query)}>刷新全文结果</button>
+            </div>
+          )}
+          {!indexBootstrapping && nextRemoteOffset !== null && !searchError && (
+            <button type="button" className="conversation-search-modal__more" disabled={searching || openingId !== null}
+              onClick={() => void runRemoteSearch(query, nextRemoteOffset)}>继续检索历史正文</button>
+          )}
+
           {!searching &&
             !searchError &&
             !failedOpen &&
+            !indexBootstrapping &&
+            nextRemoteOffset === null &&
             localOnly.length === 0 &&
             matchingGroups.length === 0 &&
             visibleRemoteHits.length === 0 &&

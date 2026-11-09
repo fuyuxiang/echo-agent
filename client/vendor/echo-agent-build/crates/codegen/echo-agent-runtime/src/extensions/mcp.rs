@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as TokioMutex;
 // rmcp is quarantined in echo-agent-mcp; see that crate's docs.
 use echo_agent_mcp::rmcp;
+use echo_agent_mcp::servers::check_tool_dispatch;
 // `wire::MCP_CALL` is the one cross-SDK contract literal; the agent-only siblings
 // live in `mcp_methods` below.
 use echo_agent_mcp::wire;
@@ -742,7 +743,6 @@ async fn ensure_agent_pool_initialized(mcp_state: &Arc<TokioMutex<McpState>>) {
         drop(state);
         let cwd = std::env::current_dir().unwrap_or_default();
         init_agent_mcp_pool(mcp_state, &cwd).await;
-        return;
     }
 }
 
@@ -752,21 +752,25 @@ pub(crate) async fn init_agent_mcp_pool(
     mcp_state: &Arc<TokioMutex<McpState>>,
     cwd: &std::path::Path,
 ) {
-    use crate::session::mcp_servers::start_mcp_servers;
+    use crate::session::mcp_servers::{mcp_server_name, start_mcp_servers};
 
-    let configs = {
+    let (configs, generation) = {
         let mut state = mcp_state.lock().await;
         if !state.try_start_init() {
             return;
         }
-        state.configs.clone()
+        let configs: Vec<_> = state
+            .configs
+            .iter()
+            .filter(|server| !state.owned_clients.contains_key(mcp_server_name(server)))
+            .cloned()
+            .collect();
+        if configs.is_empty() {
+            state.finish_init();
+            return;
+        }
+        (configs, state.generation)
     };
-
-    if configs.is_empty() {
-        let mut state = mcp_state.lock().await;
-        state.finish_init();
-        return;
-    }
 
     let noop = echo_agent_session_events::EventWriter::noop();
     // session_less picks Interactive to preserve prior deferred-OAuth behavior. A session-less SDK
@@ -775,23 +779,22 @@ pub(crate) async fn init_agent_mcp_pool(
     let meta = Default::default();
     let oauth = Default::default();
     let results = start_mcp_servers(configs, Some(cwd), &meta, &oauth, &ctx).await;
-    let clients: echo_agent_mcp::owned_clients::OwnedClients = results
-        .into_iter()
-        .filter_map(|r| match r {
+    let mut state = mcp_state.lock().await;
+    if state.generation != generation {
+        return; // A newer config owns initialization and its clients.
+    }
+    for result in results {
+        match result {
             Ok(client) => {
                 tracing::info!("Agent MCP server '{}' spawned", client.server_name());
                 let name = client.server_name().to_string();
-                Some((name, Arc::new(client)))
+                state.owned_clients.insert(name, Arc::new(client));
             }
             Err(e) => {
                 tracing::warn!("Failed to spawn agent MCP server: {}", e);
-                None
             }
-        })
-        .collect();
-
-    let mut state = mcp_state.lock().await;
-    state.owned_clients = clients;
+        }
+    }
     state.finish_init();
     tracing::info!(
         "Agent MCP pool: {} servers ready",
@@ -1189,6 +1192,7 @@ pub(crate) async fn read_mcp_resource(
     server_name: &str,
     uri: &str,
 ) -> Result<McpReadResourceResponse, String> {
+    check_tool_dispatch(server_name).map_err(|error| error.to_string())?;
     let client = {
         let state = mcp_state.lock().await;
         Arc::clone(
@@ -1202,6 +1206,7 @@ pub(crate) async fn read_mcp_resource(
         .ensure_initialized()
         .await
         .map_err(|e| format!("MCP init failed: {}", e))?;
+    check_tool_dispatch(server_name).map_err(|error| error.to_string())?;
 
     let result = mcp_service
         .read_resource(rmcp::model::ReadResourceRequestParams::new(uri))
@@ -1297,6 +1302,12 @@ impl echo_agent_tools::types::resources::McpResourceProvider for McpStateResourc
 
         let mut resources = Vec::new();
         for (server_name, client) in clients {
+            if let Err(error) = check_tool_dispatch(&server_name) {
+                if server.is_some() {
+                    return Err(error.to_string());
+                }
+                continue;
+            }
             let mcp_service = match client.ensure_initialized().await {
                 Ok(s) => s,
                 Err(e) => {
@@ -1308,6 +1319,12 @@ impl echo_agent_tools::types::resources::McpResourceProvider for McpStateResourc
                     continue;
                 }
             };
+            if let Err(error) = check_tool_dispatch(&server_name) {
+                if server.is_some() {
+                    return Err(error.to_string());
+                }
+                continue;
+            }
 
             match mcp_service.list_all_resources().await {
                 Ok(all_resources) => {
@@ -1343,6 +1360,7 @@ impl echo_agent_tools::types::resources::McpResourceProvider for McpStateResourc
         server: String,
         uri: String,
     ) -> Result<echo_agent_tools::types::resources::McpResourceReadResult, String> {
+        check_tool_dispatch(&server).map_err(|error| error.to_string())?;
         let client = {
             let state = self.0.lock().await;
             Arc::clone(
@@ -1356,6 +1374,7 @@ impl echo_agent_tools::types::resources::McpResourceProvider for McpStateResourc
             .ensure_initialized()
             .await
             .map_err(|e| format!("MCP init failed: {e}"))?;
+        check_tool_dispatch(&server).map_err(|error| error.to_string())?;
 
         let result = mcp_service
             .read_resource(rmcp::model::ReadResourceRequestParams::new(uri.clone()))
@@ -1707,6 +1726,8 @@ struct McpToggleRequest {
     session_id: String,
     server_name: String,
     enabled: bool,
+    #[serde(default)]
+    all_sessions: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -1714,8 +1735,97 @@ struct McpToggleResponse {
     ok: bool,
 }
 
+async fn toggle_all_local_sessions(agent: &MvpAgent, req: McpToggleRequest) -> ExtResult {
+    use crate::session::mcp_servers::mcp_server_name;
+
+    if managed_gateway_connector_id(&req.server_name).is_some() {
+        return Err(
+            acp::Error::invalid_params().data("all_sessions only toggles local MCP servers")
+        );
+    }
+    let session_lifecycle = agent.mcp_session_lifecycle.write().await;
+    let sessions = agent
+        .resident_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let cwd = agent.get_session_cwd(&id)?;
+            agent.resident_handle(&id).map(|handle| (cwd, handle))
+        })
+        .collect::<Vec<_>>();
+    let pool = agent.agent_mcp_state();
+    let mut state = pool.lock().await;
+    let resolved = if req.enabled {
+        let mut workspaces = sessions
+            .iter()
+            .map(|(cwd, _)| cwd.clone())
+            .collect::<HashSet<_>>();
+        workspaces.insert(agent.launch_cwd().to_path_buf());
+        let compat = agent.cfg.borrow().compat_resolved;
+        let plugins = agent.plugin_registry_snapshot();
+        let name = req.server_name.clone();
+        tokio::task::spawn_blocking(move || {
+            workspaces
+                .into_iter()
+                .filter_map(|cwd| {
+                    crate::session::managed_mcp::merge_managed_mcp_servers_with_policy(
+                        vec![],
+                        &cwd,
+                        plugins.as_deref(),
+                        &compat,
+                    )
+                    .into_iter()
+                    .find(|entry| {
+                        entry.disabled_reason.is_none() && mcp_server_name(&entry.server) == name
+                    })
+                    .map(|entry| (cwd, entry.server))
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .await
+        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?
+    } else {
+        HashMap::new()
+    };
+    let mut configs = state.configs.clone();
+    configs.retain(|server| mcp_server_name(server) != req.server_name);
+    configs.extend(resolved.get(agent.launch_cwd()).cloned());
+    configs.sort_by(|a, b| mcp_server_name(a).cmp(mcp_server_name(b)));
+    state.update_configs_diff(configs);
+    drop(state);
+    // Later arrivals read the persisted setting themselves. They need not
+    // wait for the already-captured actors to finish initializing transports.
+    drop(session_lifecycle);
+
+    let results = futures::future::join_all(sessions.iter().map(|(cwd, handle)| {
+        let config = resolved.get(cwd).cloned();
+        let name = req.server_name.clone();
+        async move {
+            // Workspaces without this connector, including policy-denied ones,
+            // must not inherit a config resolved in another workspace.
+            if req.enabled && config.is_none() {
+                return Ok(());
+            }
+            handle
+                .toggle_mcp_server_session_scoped(name, req.enabled, config)
+                .await
+        }
+    }))
+    .await;
+    let failed = results.iter().filter(|result| result.is_err()).count();
+    if failed > 0 {
+        let action = if req.enabled { "恢复" } else { "卸载" };
+        return Err(
+            acp::Error::internal_error().data(format!("{failed} 个会话未确认已{action}连接器"))
+        );
+    }
+    to_ext_response(Ok(McpToggleResponse { ok: true }))
+}
+
 async fn handle_toggle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let req = parse_params::<McpToggleRequest>(args)?;
+    if req.all_sessions {
+        return toggle_all_local_sessions(agent, req).await;
+    }
     let acp_id = acp::SessionId::new(req.session_id.clone());
 
     let handle = agent
