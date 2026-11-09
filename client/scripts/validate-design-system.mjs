@@ -34,7 +34,7 @@ function checkBrandAction(control, label, theme, state = "default") {
 }
 async function checkSearch(page) {
   const input = page.locator(".capability-search input");
-  const header = page.locator(".capability-page__header");
+  const header = page.locator(".capability-page__header, .project-management .resource-collection__toolbar");
   const before = await header.boundingBox();
   await input.fill("用于检查清除按钮位置的搜索词");
   const boxes = await page.locator(".capability-search").evaluate(root => {
@@ -147,20 +147,18 @@ try {
       }
       if(await page.locator(".capability-search input").count()) await checkSearch(page);
       if(spec === "page:项目") {
-        const image = page.getByRole("img", {name:"项目工作台插画"});
-        assert.ok(await image.isVisible(), "Project introduction lost its illustration");
-        assert.ok(await image.evaluate(e => e.complete && e.naturalWidth > 0), "Project illustration failed to load");
         // A wide sidebar reduces available content independently of the window.
         const container = page.locator(".project-management");
         await container.evaluate(e => e.style.width = "calc(100% - 360px)");
         const bounds = await container.evaluate(e => {
           const area = e.getBoundingClientRect();
-          return [...e.querySelectorAll(".capability-page__header img, .capability-page__controls input, .capability-page__actions button")].map(child => {
+          return [...e.querySelectorAll(".management-toolbar button, .project-list-tools input")].map(child => {
             const box = child.getBoundingClientRect();
             return {visible:box.width > 0 && box.height > 0, inside:box.left >= area.left && box.right <= area.right};
           });
         });
-        assert.ok(bounds.every(box => box.visible && box.inside), "Project artwork or actions overflow a narrow content area");
+        assert.equal(bounds.length, 2);
+        assert.ok(bounds.every(box => box.visible && box.inside), "Project search or creation overflows a narrow content area");
         await container.evaluate(e => e.style.removeProperty("width"));
       }
       if(surface==="automation-edit") {

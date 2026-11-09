@@ -29,20 +29,36 @@ const surfaces = [
   "management-knowledge",
   "organization-shell",
   "management-schedules",
+  "automation-templates",
+  "management-meetings",
 ];
+
+async function assertProjectAlignment(page) {
+  const elements = page.locator(".project-section__title, .project-grid, .template-grid");
+  const positions = await elements.evaluateAll(nodes => nodes.map(node => ({
+    className: node.className,
+    left: node.getBoundingClientRect().left,
+  })));
+  assert.equal(positions.length, 4, "Both project sections must be visible");
+  assert(positions.every(({ left }) => Math.abs(left - positions[0].left) < 1),
+    `Project content edges must align: ${JSON.stringify(positions)}`);
+}
+
 console.log(`Management page screenshots: ${output}`);
 try {
-  for (const [width, height, theme, collapsed, font] of (process.argv.includes("--navigation-only") ? [] : [
-    [1440, 900, "light", false, 16],
-    [1100, 760, "dark", false, 16],
-    [768, 720, "light", true, 22],
-    [390, 760, "dark", true, 16],
+  for (const [width, height, theme, collapsed, font, platform] of (process.argv.includes("--navigation-only") ? [] : [
+    [1440, 900, "light", false, 16, "mac"],
+    [1440, 900, "light", true, 16, "mac"],
+    [1100, 760, "dark", false, 16, "mac"],
+    [768, 720, "light", true, 22, "mac"],
+    [390, 680, "dark", true, 16, "mac"],
+    [768, 720, "light", true, 22, "other"],
   ])) {
     const page = await browser.newPage({ viewport: { width, height } });
     page.on("pageerror", (error) => errors.push(error.message));
     for (const surface of surfaces) {
       await page.goto(
-        `${baseUrl}/__ui-review?surface=${surface}&platform=mac&theme=${theme}&collapsed=${collapsed ? 1 : 0}&extensionState=populated`,
+        `${baseUrl}/__ui-review?surface=${surface}&platform=${platform}&windowChrome=1&theme=${theme}&collapsed=${collapsed ? 1 : 0}&extensionState=populated${surface === "projects" ? "&collectionAudit=1" : ""}`,
       );
       await page.locator(".page-toolbar").first().waitFor();
       await page.addStyleTag({
@@ -50,12 +66,17 @@ try {
       });
       await page.waitForTimeout(250);
       const geometry = await page.evaluate(() => {
+        const bounds = (selector) => {
+          const rect = document.querySelector(selector)?.getBoundingClientRect();
+          return rect && { left: rect.left, top: rect.top, right: rect.right };
+        };
         const main = document
           .querySelector(".app__main")
           .getBoundingClientRect();
         const header = document
           .querySelector(".page-toolbar")
           .getBoundingClientRect();
+        const compact = document.querySelector(".management-toolbar");
         const navigation = [
           ...document.querySelectorAll(".window-sidebar-navigation"),
         ].filter((element) => element.getBoundingClientRect().width > 0);
@@ -63,7 +84,8 @@ try {
           .filter((element) => {
             if (
               element.closest('[hidden], [aria-hidden="true"]') ||
-              !element.checkVisibility()
+              !element.checkVisibility() ||
+              element.closest(".management-toolbar nav .panel-navigation__links")
             )
               return false;
             const rect = element.getBoundingClientRect();
@@ -80,10 +102,20 @@ try {
         return {
           header: { className: document.querySelector(".page-toolbar").className, padding: getComputedStyle(document.querySelector(".page-toolbar")).padding, display: getComputedStyle(document.querySelector(".page-toolbar")).display, background: getComputedStyle(document.querySelector(".page-toolbar")).background, radius: getComputedStyle(document.querySelector(".page-toolbar")).borderRadius },
           offset: header.top - main.top,
+          headerTop: header.top,
+          headerHeight: header.height,
+          headerLeftGap: header.left - main.left,
+          headerRightGap: main.right - header.right,
+          compact: !!compact,
+          compactContent: compact?.firstElementChild?.getBoundingClientRect().left,
+          headerDescription: !!compact?.querySelector("p, input"),
+          mainPadding: parseFloat(getComputedStyle(document.querySelector(".app__main")).paddingBlockStart),
           navigation: navigation.length,
           overflow,
           blankHeader: !!document.querySelector(".main-page-controls"),
           navigationLeft: navigation[0]?.getBoundingClientRect().left,
+          navigationRight: navigation[0]?.getBoundingClientRect().right,
+          scheduleTabs: bounds(".atm-tabs"),
           windowToggle: (() => {
             const { x, y, width, height } = document.querySelector(".window-sidebar-toggle").getBoundingClientRect();
             return { x, y, width, height };
@@ -91,8 +123,10 @@ try {
         };
       });
       assert(!geometry.blankHeader, `${surface}: empty window header remains`);
+      const clearance = collapsed && platform === "mac" && !geometry.compact ? 44 : 0;
+      assert.equal(geometry.mainPadding, clearance, `${surface}: reserve only the window controls' vertical space`);
       assert(
-        geometry.offset <= 36,
+        geometry.offset >= clearance - 1 && geometry.offset <= clearance + 36,
         `${surface}: unnecessary leading space (${geometry.offset})`,
       );
       assert.equal(
@@ -100,21 +134,36 @@ try {
         1,
         `${surface}: window controls must appear once`,
       );
-      assert.deepEqual(geometry.windowToggle, { x: 120, y: 44, width: 32, height: 32 }, `${surface}: window toggle must use the same coordinates on every page`);
-      if (collapsed)
+      assert.deepEqual(geometry.windowToggle, { x: platform === "mac" ? 88 : 12, y: platform === "mac" ? 12 : 0, width: 32, height: 32 }, `${surface}: window toggle must use the same coordinates on every page`);
+      if (surface !== "management-meetings") {
+        assert(geometry.compact, `${surface}: missing shared management toolbar`);
+        assert.equal(geometry.headerHeight, 56, `${surface}: toolbar height`);
+        assert.equal(geometry.offset, 0, `${surface}: toolbar starts at the top`);
+        assert(Math.abs(geometry.headerLeftGap) <= 1 && Math.abs(geometry.headerRightGap) <= 1, `${surface}: toolbar must span the main column`);
+        assert(!geometry.headerDescription, `${surface}: description or search crowds the toolbar`);
+        if (collapsed && platform === "mac")
+          assert(geometry.compactContent >= geometry.navigationRight + 12, `${surface}: overlaps window controls`);
+        if (geometry.scheduleTabs)
+          assert(geometry.scheduleTabs.top >= geometry.headerTop + geometry.headerHeight, "Schedule tabs belong with the list controls");
+      } else if (collapsed) {
         assert(
-          geometry.windowToggle.y >= 44,
-          `${surface}: native traffic lights overlap navigation`,
+          geometry.headerTop >= geometry.windowToggle.y + geometry.windowToggle.height,
+          `${surface}: window controls overlap the page header`,
         );
+      }
       assert.deepEqual(
         geometry.overflow,
         [],
         `${surface} ${width}: horizontal overflow`,
       );
-      layouts.push({ surface, width, theme, font, ...geometry });
+      if (surface === "projects") {
+        await page.locator(".project-grid").waitFor();
+        await assertProjectAlignment(page);
+      }
+      layouts.push({ surface, width, theme, font, platform, collapsed, ...geometry });
       writeFileSync(join(output, "layouts.json"), JSON.stringify(layouts, null, 2));
       await page.screenshot({
-        path: join(output, `${surface}-${width}-${theme}.png`),
+        path: join(output, `${surface}-${width}-${theme}-${platform}-${collapsed ? "closed" : "open"}.png`),
       });
     }
     await page.close();
@@ -122,7 +171,7 @@ try {
   const navigationPage = await browser.newPage({ viewport: { width: 768, height: 760 } });
   navigationPage.on("pageerror", error => errors.push(error.message));
   for (const surface of surfaces) {
-    await navigationPage.goto(`${baseUrl}/__ui-review?surface=${surface}&platform=mac&collapsed=1`);
+    await navigationPage.goto(`${baseUrl}/__ui-review?surface=${surface}&platform=mac&collapsed=1${surface === "projects" ? "&collectionAudit=1" : ""}`);
     await navigationPage.getByRole("button", { name: "展开侧边栏", exact: true }).waitFor();
     const toggle = navigationPage.locator(".window-sidebar-toggle");
     const before = await toggle.boundingBox();
@@ -133,6 +182,28 @@ try {
     assert.deepEqual(await toggle.boundingBox(), before, `${surface}: toggle moves while expanding`);
     assert.ok(await toggle.evaluate((element, original) => element === original, original), `${surface}: toggle replaced while expanding`);
     await original.dispose();
+    if (surface === "projects") {
+      await navigationPage.locator(".project-grid").waitFor();
+      await assertProjectAlignment(navigationPage);
+      const search = navigationPage.getByRole("textbox", { name: "搜索项目", exact: true });
+      await search.fill("没有这个项目");
+      await navigationPage.getByText("没有匹配的项目", { exact: true }).waitFor();
+      await navigationPage.getByRole("button", { name: "清空搜索项目", exact: true }).click();
+      assert.equal(await search.inputValue(), "");
+      await navigationPage.getByRole("button", { name: "列表视图", exact: true }).click();
+      await navigationPage.locator('.project-grid[data-view="list"]').waitFor();
+      await navigationPage.getByRole("button", { name: "卡片视图", exact: true }).click();
+      await navigationPage.getByRole("button", { name: "打开项目 产品需求全流程", exact: true }).click();
+      await navigationPage.locator(".pd-crumb").waitFor();
+      await toggle.click();
+      await navigationPage.locator(".pd-topbar.page-toolbar--window-navigation").waitFor();
+      const crumb = await navigationPage.locator(".pd-crumb").boundingBox();
+      const tabs = await navigationPage.locator(".pd-tabs-row").boundingBox();
+      assert.equal(crumb.x, tabs.x, "Project breadcrumb and detail tabs must align after collapsing");
+      assert(crumb.y >= before.y + before.height, "Project breadcrumb must clear the window controls");
+      await navigationPage.getByRole("button", { name: "参与者", exact: true }).click();
+      await navigationPage.getByText("项目参与者（本机备注）", { exact: true }).waitFor();
+    }
   }
   for (const platform of ["mac", "other"]) for (const width of [1280, 768]) for (const surface of ["collapsed-project", "collapsed-capabilities"]) {
     await navigationPage.setViewportSize({ width, height: 760 });
@@ -152,9 +223,23 @@ try {
   await navigationPage.getByRole("button", { name: "重试", exact: true }).click();
   await navigationPage.getByLabel("组织知识概况").waitFor();
   assert.equal(await navigationPage.getByRole("alert").count(), 0);
+  for (const [capability, label, text] of [
+    ["unavailable", "组织知识暂不可用", "暂不可用"],
+    ["no-scope", "暂无团队或组织共享权限", "无共享权限"],
+  ]) {
+    await navigationPage.setViewportSize({ width: 1024, height: 680 });
+    await navigationPage.goto(`${baseUrl}/__ui-review?surface=organization-shell&platform=mac&orgCapability=${capability}`);
+    await navigationPage.getByRole("navigation", { name: "组织功能" }).getByRole("button", { name: /^文档/ }).click();
+    const status = navigationPage.getByRole("status", { name: label, exact: true });
+    assert.equal(await status.innerText(), text);
+    assert.ok(await status.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+    }), "Organization capability status must stay visible on resource tabs");
+  }
   await navigationPage.close();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ output, layouts: layouts.length, navigationLayouts: 8, flows: ["expand-sidebar-on-five-pages", "organization-load-failure/retry"] }));
+  console.log(JSON.stringify({ output, layouts: layouts.length, navigationLayouts: 8, flows: ["expand-sidebar-on-management-pages", "collapse-sidebar-in-project-detail", "organization-load-failure/retry", "organization-capability-status"] }));
 } finally {
   await browser.close();
   await server.close();

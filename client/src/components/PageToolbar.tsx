@@ -56,3 +56,14 @@ export function PageToolbar({
     </header>
   );
 }
+
+export function ManagementToolbar({ title, className = "", children }: {
+  title?: ReactNode;
+  className?: string;
+  children?: ReactNode;
+}) {
+  return <PageToolbar className={`management-toolbar ${className}`}>
+    {title && <h1 className="management-toolbar__title">{title}</h1>}
+    {children}
+  </PageToolbar>;
+}

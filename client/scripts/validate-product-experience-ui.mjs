@@ -27,9 +27,11 @@ const inspect = async (page, id, condition) => {
   assert.equal(geometry.overflow, false);
   assert(geometry.elements.every(r=>r.x>=0 && r.right<=condition.width+1 && r.y>=0 && r.bottom<=condition.height+1), JSON.stringify(geometry));
   const colors = await page.evaluate(inspectRenderedColors);
-  const measuredRole = geometry.observations.results > 0
-    ? "conversation-search-modal__item-title" : "kb-panel__title";
-  assert(colors.text.some(item=>item.selector.includes(measuredRole)), "Color audit did not observe the actual page content");
+  const isKnowledge = geometry.elements.some(element => element.selector === ".kb-panel__head");
+  const observedContent = colors.text.some(item => isKnowledge
+    ? item.selector.startsWith("h1.") && item.text === "知识库"
+    : item.selector.includes(".conversation-search-modal__item-title"));
+  assert(observedContent, "Color audit did not observe the actual page content");
   if (!baseline && id.startsWith("PX02")) assert(colors.text.some(item=>item.selector.includes("conversation-search-modal__item-cwd")), "Directory text was not measured");
   if (!baseline) assert.deepEqual([...colors.failures,...colors.controlFailures],[]);
   const filename = `${id}-${condition.width}-${condition.theme}-${condition.font}.png`;

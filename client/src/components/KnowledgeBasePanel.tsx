@@ -1,5 +1,4 @@
 import { LocalRetrievalModels } from "./LocalRetrievalModels";
-import { PageHeading } from "./PageHeading";
 /**
  * 知识库面板 —— 对齐 EchoAgent `knowledge-base-panel`(可插拔知识源)。
  *
@@ -7,8 +6,9 @@ import { PageHeading } from "./PageHeading";
  * lib/knowledge-base)。本面板提供搜索框 + 跨源结果列表。无 provider 时显示空态。
  */
 import { useEffect, useRef, useState } from "react";
-import { PageToolbar } from "./PageToolbar";
-import { FolderOpen, Info, Search } from "lucide-react";
+import { ManagementToolbar } from "./PageToolbar";
+import { Button } from "./Button";
+import { FolderOpen, Info, Plus, Search } from "lucide-react";
 import {
   searchKbWithDiagnostics,
   listKbProvidersWithStats,
@@ -342,21 +342,22 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
   };
 
   return (
-    <div className="kb-panel" role="region" aria-label="知识库">
-      <PageToolbar className="kb-panel__head">
-        <PageHeading title="知识库" description="管理知识源并搜索其中的资料"
-          className="kb-panel__heading" titleClassName="kb-panel__title" />
+    <div className="kb-panel management-workspace" role="region" aria-label="知识库">
+      <ManagementToolbar title="知识库" className="kb-panel__head">
+        {isTauriAvailable() && <Button
+          size="compact"
+          className="management-toolbar__action"
+          onClick={() => void addLocalFolder()}
+          disabled={sourceAction !== null || openingEntry !== null}
+          title="添加本地文件夹作为知识源"
+        >
+          {sourceAction === "add" ? "选择文件夹中…" : <><Plus aria-hidden="true" />添加本地文件夹</>}
+        </Button>}
+      </ManagementToolbar>
+      <div className="kb-panel__scroll">
+      <div className="kb-panel__body">
         {sources.length > 0 && <div className="kb-panel__head-right">
           <span className="kb-panel__sources">{sources.length} 个知识源</span>
-          {isTauriAvailable() && <button
-            type="button"
-            className="kb-panel__add-btn"
-            onClick={() => void addLocalFolder()}
-            disabled={sourceAction !== null || openingEntry !== null}
-            title="添加本地文件夹作为知识源"
-          >
-            {sourceAction === "add" ? "选择文件夹中…" : "+ 添加本地文件夹"}
-          </button>}
           <button
             type="button"
             className="kb-panel__refresh-btn"
@@ -367,7 +368,6 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
             {rebuilding ? "刷新中…" : "↻ 刷新索引"}
           </button>
         </div>}
-      </PageToolbar>
       <LocalRetrievalModels />
       {feedback && <div className={`kb-panel__index-status${feedback.error ? " kb-panel__load-error" : ""}`}
         role={feedback.error ? "alert" : "status"}>
@@ -398,11 +398,7 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           <div className="kb-panel__empty-icon" aria-hidden="true"><FolderOpen size={30} strokeWidth={1.7} /></div>
           <h2>还没有添加知识源</h2>
           <p>选择一个存放资料的本地文件夹，添加后即可在这里搜索内容，并在任务中引用来源。</p>
-          {isTauriAvailable() ? (
-            <button type="button" className="kb-panel__add-btn" onClick={() => void addLocalFolder()} disabled={sourceAction !== null || openingEntry !== null}>
-              {sourceAction === "add" ? "选择文件夹中…" : "+ 添加本地文件夹"}
-            </button>
-          ) : (
+          {!isTauriAvailable() && (
             <span className="kb-panel__desktop-hint">请在桌面应用中添加本地文件夹</span>
           )}
           <span className="kb-panel__privacy-hint">文件保留在原目录；向量生成与相关性排序在本机完成。</span>
@@ -533,6 +529,8 @@ export function KnowledgeBasePanel({ onOpen, onToast }: KnowledgeBasePanelProps)
           </ul>
         </>
       )}
+      </div>
+      </div>
     </div>
   );
 }

@@ -40,6 +40,7 @@ import { useAppDialog } from "./AppDialog";
 import { GroupSidebar } from "@/features/groups/GroupSidebar";
 import { SidebarMenuCustomizer } from "./SidebarMenuCustomizer";
 import { WindowSidebarNavigation } from "./WindowSidebarNavigation";
+import { SidebarCatalogList, SidebarCatalogMore, useSidebarCatalog } from "./SidebarCatalog";
 
 /** Compact, locale-friendly relative time for the sidebar row tail. */
 function relativeTime(iso: string, now: number): string {
@@ -593,6 +594,29 @@ export function Sidebar({
   // Real project entities are the only nodes shown in the 项目 section.
   const projects = useProjectsStore((s) => s.projects);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const catalog = useSidebarCatalog();
+  const { setActive: setCatalogSection } = catalog;
+  const revealProject = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    const id = revealProject.current;
+    if (!id) return;
+    const list = catalog.ref.current?.querySelector<HTMLElement>("#sidebar-project-list");
+    const project = Array.from(list?.querySelectorAll<HTMLElement>("[data-catalog-project]") ?? [])
+      .find(row => row.dataset.catalogProject === id);
+    if (!list || !project || catalog.active !== "projects") {
+      revealProject.current = null;
+      return;
+    }
+    const viewport = list.getBoundingClientRect();
+    const start = project.getBoundingClientRect().top;
+    const end = project.querySelector(".sidebar__children > :first-child")?.getBoundingClientRect().bottom
+      ?? project.getBoundingClientRect().bottom;
+    // Wait for the catalog to make room for the heading and first child.
+    if (end - start > viewport.height + 1) return;
+    revealProject.current = null;
+    if (start < viewport.top || end > viewport.bottom) list.scrollTop += start - viewport.top;
+  }, [catalog.active, catalog.previews.projects, catalog.ref, expandedProjects]);
 
   const [filterOpen, setFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement>(null);
@@ -625,12 +649,12 @@ export function Sidebar({
     pendingFilterFocus.current = null;
   }, [filterOpen]);
 
-  const openFilterFromKeyboard = (edge: "first" | "last") => {
+  const openFilter = (edge?: "first" | "last") => {
     if (filterOpen) {
-      focusMenuEdge(filterMenuRef.current, edge);
+      if (edge) focusMenuEdge(filterMenuRef.current, edge);
       return;
     }
-    pendingFilterFocus.current = edge;
+    pendingFilterFocus.current = edge ?? null;
     setFilterOpen(true);
   };
 
@@ -809,9 +833,10 @@ export function Sidebar({
     if (!session || session.hidden || session.archived) throw new Error("该会话已不在任务列表中，请刷新后重试");
     await useProjectsStore.getState().moveSessionToProject(projectId, session);
     setProjectsOpen(true);
+    setCatalogSection("projects");
     setExpandedProjects((current) => ({ ...current, [projectId]: true }));
     setFocusMovedSessionId(session.sessionId);
-  }, [moveDialog, onToast, setProjectsOpen]);
+  }, [moveDialog, setCatalogSection, setProjectsOpen]);
 
   useEffect(() => {
     if (!focusMovedSessionId || moveDialog || !projectsOpen) return;
@@ -946,14 +971,63 @@ export function Sidebar({
   const scopedIndependentCount = taskSessions.filter((session) => !session.archived).length;
   const showEmptyTaskState = scopedIndependentCount === 0 && projects.length === 0
     && !sessionsLoading && !sessionsError && !hasFilter;
-  const visibleProjectRowCount = projects.reduce((count, project) => {
-    if (!expandedProjects[project.id]) return count + 1;
-    const conversationCount = project.conversations.filter((conversation) => (
-      !(sessionSummaryById.get(conversation.sessionId)?.archived ?? conversation.archived)
-      && !hiddenSessionIds.has(conversation.sessionId)
-    )).length;
-    return count + 1 + Math.max(1, conversationCount);
-  }, 0);
+
+  const taskTools = (
+    <>
+      <button type="button" className="sidebar__icon-btn" aria-label="搜索全部任务"
+        data-tip={`搜索全部任务（${shortcutLabel("⌘K", "Ctrl+K")}）`} onClick={onOpenSearch}>
+        <SearchIcon size="md" />
+      </button>
+      <div className="task-filter-wrap" ref={filterRef}>
+        <button
+          ref={filterTriggerRef}
+          type="button"
+          className={"sidebar__icon-btn task-filter-trigger" + (hasFilter ? " task-filter-trigger--active" : "")}
+          aria-label="筛选任务"
+          data-tip={hasFilter ? "筛选任务（已启用）" : "筛选任务"}
+          aria-haspopup="menu"
+          aria-expanded={filterOpen}
+          aria-controls={filterOpen ? "sidebar-task-filter-menu" : undefined}
+          onClick={() => filterOpen ? setFilterOpen(false) : openFilter()}
+          onKeyDown={(event) => {
+            if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
+              event.preventDefault();
+              openFilter(event.key === "ArrowUp" ? "last" : "first");
+            } else if (event.key === "Escape" && filterOpen) {
+              event.preventDefault();
+              setFilterOpen(false);
+            }
+          }}
+        >
+          <FilterIcon size="md" />
+          {hasFilter && <span className="task-filter-trigger__dot" />}
+        </button>
+        {filterOpen && (
+          <div
+            ref={filterMenuRef}
+            id="sidebar-task-filter-menu"
+            className="task-filter-popover"
+            role="menu"
+            aria-label="任务筛选"
+            onKeyDown={(event) => handleMenuKeyDown(event, () => {
+              setFilterOpen(false);
+              filterTriggerRef.current?.focus();
+            })}
+          >
+            <TaskFilterMenu
+              filterStatus={filterStatus}
+              filterDate={filterDate}
+              hasFilter={hasFilter}
+              onSelectStatus={setFilterStatus}
+              onSelectDate={setFilterDate}
+              onClear={clearFilters}
+            />
+          </div>
+        )}
+      </div>
+    </>
+  );
+  const toolbarVariant = registerWindowNavigation ? "sidebar__toolbar--window" : IS_WINDOWS ? "sidebar__toolbar--branded" : "";
 
   return (
     <>
@@ -961,15 +1035,14 @@ export function Sidebar({
       collapsed={sidebarLayout?.collapsed ?? false}
       onToggle={() => sidebarLayout?.collapsed ? sidebarLayout.expandSidebar() : collapseSidebar?.()}
       onNewTask={onNewSession}
-    />}
+    >{taskTools}</WindowSidebarNavigation>}
     <aside id="app-sidebar" ref={sidebarRef} className="sidebar" aria-hidden={sidebarLayout?.collapsed || undefined}>
-      {/* The window header owns branding when mounted; isolated sidebars keep their fallback. */}
-      <div className={"sidebar__toolbar" + (IS_WINDOWS ? " sidebar__toolbar--branded" : "")} {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
-        {!registerWindowNavigation && IS_WINDOWS && (
-          <span className="sidebar__logo sidebar__toolbar-brand"><span className="sidebar__logo-echo">Echo</span><span className="sidebar__logo-agent">Agent</span></span>
+      <div className={`sidebar__toolbar ${toolbarVariant}`} {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
+        {(registerWindowNavigation || IS_WINDOWS) && (
+          <span className={"sidebar__logo sidebar__toolbar-brand" + (registerWindowNavigation ? " window-sidebar-brand" : "")}><span className="sidebar__logo-echo">Echo</span><span className="sidebar__logo-agent">Agent</span></span>
         )}
-        <div className="sidebar__toolbar-actions" role="group" aria-label="侧边栏工具">
-          {!registerWindowNavigation && collapseSidebar && <button
+        {!registerWindowNavigation && <div className="sidebar__toolbar-actions" role="group" aria-label="侧边栏工具">
+          {collapseSidebar && <button
             type="button"
             className="sidebar__icon-btn"
             aria-label="收起侧边栏"
@@ -980,58 +1053,8 @@ export function Sidebar({
           >
             <SidebarToggleIcon size="md" />
           </button>}
-          <button type="button" className="sidebar__icon-btn" aria-label="搜索全部任务"
-            data-tip={`搜索全部任务（${shortcutLabel("⌘K", "Ctrl+K")}）`} onClick={onOpenSearch}>
-            <SearchIcon size="md" />
-          </button>
-          <div className="task-filter-wrap" ref={filterRef}>
-            <button
-              ref={filterTriggerRef}
-              type="button"
-              className={"sidebar__icon-btn task-filter-trigger" + (hasFilter ? " task-filter-trigger--active" : "")}
-              aria-label="筛选任务"
-              data-tip={hasFilter ? "筛选任务（已启用）" : "筛选任务"}
-              aria-haspopup="menu"
-              aria-expanded={filterOpen}
-              aria-controls={filterOpen ? "sidebar-task-filter-menu" : undefined}
-              onClick={() => setFilterOpen((v) => !v)}
-              onKeyDown={(event) => {
-                if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
-                  event.preventDefault();
-                  openFilterFromKeyboard(event.key === "ArrowUp" ? "last" : "first");
-                } else if (event.key === "Escape" && filterOpen) {
-                  event.preventDefault();
-                  setFilterOpen(false);
-                }
-              }}
-            >
-              <FilterIcon size="md" />
-              {hasFilter && <span className="task-filter-trigger__dot" />}
-            </button>
-            {filterOpen && (
-              <div
-                ref={filterMenuRef}
-                id="sidebar-task-filter-menu"
-                className="task-filter-popover"
-                role="menu"
-                aria-label="任务筛选"
-                onKeyDown={(event) => handleMenuKeyDown(event, () => {
-                  setFilterOpen(false);
-                  filterTriggerRef.current?.focus();
-                })}
-              >
-                <TaskFilterMenu
-                  filterStatus={filterStatus}
-                  filterDate={filterDate}
-                  hasFilter={hasFilter}
-                  onSelectStatus={setFilterStatus}
-                  onSelectDate={setFilterDate}
-                  onClear={clearFilters}
-                />
-              </div>
-            )}
-          </div>
-        </div>
+          {taskTools}
+        </div>}
       </div>
       {!registerWindowNavigation && !IS_WINDOWS && (
         <div className="sidebar__logo-row" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>
@@ -1076,7 +1099,7 @@ export function Sidebar({
         onSave={next => setMenuLayout(saveSidebarMenuLayout(next))}
         onClose={() => setCustomizingMenu(false)} />}
 
-      <div className="sidebar__content">
+      <div ref={catalog.ref} className="sidebar__content" data-catalog-ready={Object.keys(catalog.previews).length ? "" : undefined}>
         {sessionsError && (
           <div className="sidebar__empty" role="alert">
             <span>会话目录加载失败：{sessionsError}</span>
@@ -1093,14 +1116,17 @@ export function Sidebar({
           </div>
         )}
         {/* 任务分组: 所有未归属项目的会话，cwd 不参与分类。 */}
-        <div className={"sidebar__list-section sidebar__list-section--tasks" + (tasksOpen && filteredIndependent.length > 3 ? " sidebar__list-section--long" : "")}>
+        <div className="sidebar__list-section sidebar__list-section--tasks">
         {!showEmptyTaskState && <div className="sidebar__section-head">
           <button
             type="button"
             className="sidebar__section-label"
             aria-expanded={tasksOpen}
             aria-controls="sidebar-task-list"
-            onClick={() => setTasksOpen(!tasksOpen)}
+            onClick={() => {
+              if (tasksOpen && catalog.active === "tasks") setCatalogSection(null);
+              setTasksOpen(!tasksOpen);
+            }}
           >
             <span>任务 ({hasFilter ? `${filteredIndependent.length}/${scopedIndependentCount}` : scopedIndependentCount})</span>
             <ChevronDownIcon
@@ -1108,9 +1134,10 @@ export function Sidebar({
               className={"sidebar__chevron" + (tasksOpen ? "" : " sidebar__chevron--collapsed")}
             />
           </button>
+          {tasksOpen && <SidebarCatalogMore section="tasks" catalog={catalog} />}
         </div>}
         {(tasksOpen || showEmptyTaskState) && (
-          <div id="sidebar-task-list" className="sidebar__group">
+          <SidebarCatalogList section="tasks" catalog={catalog} label="任务列表">
             {filteredIndependent.length === 0 && scopedIndependentCount > 0 && (
               <div className="sidebar__empty sidebar__empty--filter">无匹配筛选条件的任务</div>
             )}
@@ -1120,18 +1147,22 @@ export function Sidebar({
               </div>
             )}
             {sortPinnedFirst(filteredIndependent).map((session) => renderConv(session))}
-          </div>
+          </SidebarCatalogList>
         )}
         </div>
 
         {/* 项目分组: 仅展示真实项目实体。 */}
-        {projects.length > 0 && <div className={"sidebar__list-section sidebar__list-section--projects" + (projectsOpen && visibleProjectRowCount > 3 ? " sidebar__list-section--long" : "")}>
+        {projects.length > 0 && <div className="sidebar__list-section sidebar__list-section--projects">
+        <div className="sidebar__section-head">
         <button
           type="button"
           className="sidebar__section-label"
           aria-expanded={projectsOpen}
           aria-controls="sidebar-project-list"
-          onClick={() => setProjectsOpen(!projectsOpen)}
+          onClick={() => {
+            if (projectsOpen && catalog.active === "projects") setCatalogSection(null);
+            setProjectsOpen(!projectsOpen);
+          }}
         >
           <span>项目 ({projects.length})</span>
           <ChevronDownIcon
@@ -1139,25 +1170,26 @@ export function Sidebar({
             className={"sidebar__chevron" + (projectsOpen ? "" : " sidebar__chevron--collapsed")}
           />
         </button>
+        {projectsOpen && <SidebarCatalogMore section="projects" catalog={catalog} />}
+        </div>
         {projectsOpen && (
-          <div id="sidebar-project-list" className="sidebar__group">
-            {projects.length === 0 && (
-              <div className="sidebar__empty">还没有项目，给下一件大事安个家吧</div>
-            )}
+          <SidebarCatalogList section="projects" catalog={catalog} label="项目列表">
             {projects.map((proj) => {
-              const open = !!expandedProjects[proj.id];
+              const open = catalog.active === "projects" && !!expandedProjects[proj.id];
               const projectConversations = proj.conversations.filter((conversation) => (
                 !(sessionSummaryById.get(conversation.sessionId)?.archived ?? conversation.archived)
                 && !hiddenSessionIds.has(conversation.sessionId)
               ));
               return (
-                <div key={proj.id} className="sidebar__node-wrap">
+                <div key={proj.id} className="sidebar__node-wrap" data-catalog-project={proj.id} data-project-expanded={open || undefined}>
                   <div
                     className="sidebar__node sidebar__node--project"
+                    data-catalog-project-heading
                     title={proj.name}
                   >
                     <button
                       type="button"
+                      title={open && onOpenProject ? `在项目页查看会话 · ${proj.name}` : undefined}
                       onClick={() => onOpenProject?.(proj.id)}
                       style={{
                         display: "flex",
@@ -1192,7 +1224,12 @@ export function Sidebar({
                       className="sidebar__node-action"
                       aria-label={`${open ? "收起" : "展开"}${proj.name}对话`}
                       aria-expanded={open}
-                      onClick={() => setExpandedProjects((prev) => ({ ...prev, [proj.id]: !prev[proj.id] }))}
+                      aria-controls={open ? `sidebar-project-conversations-${proj.id}` : undefined}
+                      onClick={() => {
+                        revealProject.current = proj.id;
+                        if (!open) setCatalogSection("projects");
+                        setExpandedProjects(prev => ({ ...prev, [proj.id]: !open }));
+                      }}
                       style={{ border: 0, padding: 0, background: "transparent" }}
                     >
                       <ChevronDownIcon
@@ -1202,7 +1239,7 @@ export function Sidebar({
                     </button>
                   </div>
                   {open && (
-                    <div className="sidebar__children">
+                    <div id={`sidebar-project-conversations-${proj.id}`} className="sidebar__children">
                       {projectConversations.length === 0 && (
                         <div className="sidebar__empty">
                           还没有对话，从项目页开启第一轮吧
@@ -1225,10 +1262,11 @@ export function Sidebar({
                 </div>
               );
             })}
-          </div>
+          </SidebarCatalogList>
         )}
         </div>}
         <GroupSidebar
+          catalog={catalog}
           active={activeNav === "专家团"}
           onOpen={() => onNavigate("专家团")}
         />

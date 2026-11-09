@@ -12,8 +12,15 @@ function savedView(key: string, fallback: ResourceView): ResourceView {
 }
 
 /** Shared collection chrome. Features retain ownership of actions and state. */
-export function ResourceList({ className = "", collectionKey, layout = "grid", defaultView = "cards", summary, children, ...props }:
-  HTMLAttributes<HTMLDivElement> & { collectionKey?: CollectionKey; layout?: "grid" | "compact"; defaultView?: ResourceView; summary?: ReactNode }) {
+export function ResourceList({ className = "", collectionKey, layout = "grid", defaultView = "cards", summary, toolbarStart, emptyState, children, ...props }:
+  HTMLAttributes<HTMLDivElement> & {
+    collectionKey?: CollectionKey;
+    layout?: "grid" | "compact";
+    defaultView?: ResourceView;
+    summary?: ReactNode;
+    toolbarStart?: ReactNode;
+    emptyState?: ReactNode;
+  }) {
   const storageKey = `echo.resource-view.${collectionKey}`;
   const [view, setView] = useState<ResourceView>(() => savedView(storageKey, defaultView));
   useEffect(() => {
@@ -26,9 +33,9 @@ export function ResourceList({ className = "", collectionKey, layout = "grid", d
   }, [storageKey, defaultView]);
   const label = props["aria-label"] || "资源";
   return <div className="resource-collection">
-    {collectionKey && <div className="resource-collection__toolbar">
-      <span className="resource-collection__count">{summary ?? `${Children.count(children)} 项`}</span>
-      <div className="resource-view" role="group" aria-label={`${label}显示方式`}>
+    {(collectionKey || toolbarStart) && <div className="resource-collection__toolbar">
+      {toolbarStart ?? <span className="resource-collection__count">{summary ?? `${Children.count(children)} 项`}</span>}
+      {collectionKey && <div className="resource-view" role="group" aria-label={`${label}显示方式`}>
         {(["cards", "list"] as const).map(value => <button key={value} type="button"
           aria-label={value === "cards" ? "卡片视图" : "列表视图"} aria-pressed={view === value}
           onClick={() => {
@@ -38,10 +45,10 @@ export function ResourceList({ className = "", collectionKey, layout = "grid", d
           {value === "cards" ? <LayoutGrid size={15} aria-hidden="true" /> : <List size={15} aria-hidden="true" />}
           <span>{value === "cards" ? "卡片" : "列表"}</span>
         </button>)}
-      </div>
+      </div>}
     </div>}
-    <div role="list" {...props} data-view={collectionKey ? view : "list"} data-layout={layout}
-      className={`resource-list ${className}`}>{children}</div>
+    {emptyState ?? <div role="list" {...props} data-view={collectionKey ? view : "list"} data-layout={layout}
+      className={`resource-list ${className}`}>{children}</div>}
   </div>;
 }
 

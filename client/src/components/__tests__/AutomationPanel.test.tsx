@@ -494,7 +494,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
   it("离开页面再返回时保留尚未提交的自动化输入，不创建实际任务", async () => {
     const first = render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    fireEvent.click(await screen.findByRole("button", { name: "新建定时任务" }));
     openAdvanced();
     fireEvent.change(document.querySelector(".atm-modal-input")!, { target: { value: "跨页保留的草稿" } });
     first.unmount();
@@ -538,7 +538,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
   it("定时任务空态：hero 文案 + 添加按钮 + 12 个模板", async () => {
     render(<AutomationPanel />);
     await waitFor(() => expect(screen.getByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument());
-    expect(screen.getByText("+ 新建定时任务")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新建定时任务" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "自动化任务模板" })).toBeInTheDocument();
     expect(screen.getByText("每日 AI 新闻推送")).toBeInTheDocument();
     expect(screen.getByText("可爱萌宠手机壁纸")).toBeInTheDocument();
@@ -552,7 +552,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
   it("取消自动化编辑前保护未保存的输入，继续编辑保留内容，确认后退出", async () => {
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    fireEvent.click(await screen.findByRole("button", { name: "新建定时任务" }));
     openAdvanced();
     fireEvent.change(document.querySelector(".atm-modal-input")!, { target: { value: "不能丢失的定时任务" } });
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
@@ -566,7 +566,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
   it("自动化工具条下拉支持 Escape 关闭并把焦点还给触发按钮", async () => {
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    fireEvent.click(await screen.findByRole("button", { name: "新建定时任务" }));
     openAdvanced();
     const trigger = screen.getByRole("button", { name: /^技能/ });
     fireEvent.click(trigger);
@@ -588,10 +588,10 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     expect(await screen.findByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
   });
 
-  it("点击「+ 新建定时任务」进入表单（截图 2 字段）", async () => {
+  it("点击「新建定时任务」进入表单（截图 2 字段）", async () => {
     render(<AutomationPanel />);
-    await waitFor(() => screen.getByText("+ 新建定时任务"));
-    fireEvent.click(screen.getByText("+ 新建定时任务"));
+    await waitFor(() => screen.getByRole("button", { name: "新建定时任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "新建定时任务" }));
     openAdvanced();
     await waitFor(() => expect(screen.getByRole("heading", { name: "新建定时任务" })).toBeInTheDocument());
     expect(screen.getByText("名称")).toBeInTheDocument();
@@ -621,7 +621,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       synchronized: true, runtimeModels: ["ready-model"], defaultModelId: "ready-model",
     });
     render(<AutomationPanel cwd="/recent" />);
-    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    fireEvent.click(await screen.findByRole("button", { name: "新建定时任务" }));
     openAdvanced();
 
     const input = document.querySelector("#automation-workspace-path") as HTMLInputElement;
@@ -648,7 +648,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       { name: "review", displayName: "代码审查", enabled: true },
     ]);
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    fireEvent.click(await screen.findByRole("button", { name: "新建定时任务" }));
     openAdvanced();
 
     const alert = await screen.findByRole("alert");
@@ -675,7 +675,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       defaultModelId: "minimax-m3",
     });
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    fireEvent.click(await screen.findByRole("button", { name: "新建定时任务" }));
     openAdvanced();
 
     fireEvent.click(await screen.findByRole("button", { name: /选择定时任务模型：MiniMax-M3/ }));
@@ -755,7 +755,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       defaultModelId: "minimax-m3",
     });
     render(<AutomationPanel />);
-    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    fireEvent.click(await screen.findByRole("button", { name: "新建定时任务" }));
     openAdvanced();
 
     expect(await screen.findByRole("button", { name: /选择定时任务模型：MiniMax-M3/ })).toBeInTheDocument();
@@ -771,7 +771,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
   it("Auto 没有可用默认模型时阻止保存并给出可操作提示", async () => {
     const onToast = vi.fn();
     render(<AutomationPanel onToast={onToast} />);
-    fireEvent.click(await screen.findByText("+ 新建定时任务"));
+    fireEvent.click(await screen.findByRole("button", { name: "新建定时任务" }));
     openAdvanced();
 
     fireEvent.change(document.querySelector(".atm-modal-input") as HTMLInputElement, { target: { value: "Auto 报告" } });
@@ -794,8 +794,8 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
   it("频率切换：按间隔显示 每 N 小时，单次显示日期选择", async () => {
     render(<AutomationPanel />);
-    await waitFor(() => screen.getByText("+ 新建定时任务"));
-    fireEvent.click(screen.getByText("+ 新建定时任务"));
+    await waitFor(() => screen.getByRole("button", { name: "新建定时任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "新建定时任务" }));
     openAdvanced();
     await waitFor(() => screen.getByText("执行频率"));
     fireEvent.click(screen.getByText("按间隔"));

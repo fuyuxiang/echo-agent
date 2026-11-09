@@ -1,17 +1,30 @@
-/* Coordinates belong to the window, independently of sidebar width or page. */
 .app__body {
-  --window-navigation-left: 120px;
-  --window-navigation-space: 200px;
+  --window-navigation-button-size: 32px;
+  --window-navigation-start: 12px;
+  --window-navigation-top: 0px;
+  --window-navigation-main-overlap: 0px;
+  --window-navigation-space: calc(var(--window-navigation-start) + 2 * var(--window-navigation-button-size) + 16px);
+  --window-navigation-clearance: max(0px, calc(var(--window-navigation-main-overlap) + var(--window-navigation-top) + var(--window-navigation-button-size)));
+  --sidebar-brand-offset: 32px;
 }
 
-/* Keep the sidebar below macOS's native buttons. The main column extends into
- * that row so every page header starts at the top of the window. */
+/* The Windows title bar has room on the left when its menus are hidden. */
+.titlebar:not(:has(> .titlebar__menus)) ~ .app__body {
+  --window-navigation-top: -32px;
+  --window-navigation-space: var(--echo-page-gutter, 24px);
+  --sidebar-brand-offset: 0px;
+}
+
 .app--macos .app__body:has(> .window-sidebar-navigation) {
-  margin-block-start: 32px;
+  --window-navigation-start: 88px;
+  --window-navigation-top: -20px;
+  --window-navigation-main-overlap: 32px;
+  --sidebar-brand-offset: 0px;
+  margin-block-start: var(--window-navigation-main-overlap);
 }
 
 .app--macos .app__body:has(> .window-sidebar-navigation) > .app__main {
-  margin-block-start: -32px;
+  margin-block-start: calc(-1 * var(--window-navigation-main-overlap));
 }
 
 .window-native-drag-region {
@@ -30,17 +43,8 @@
 }
 
 .app--macos .app__body--collapsed .window-native-drag-region {
-  width: 92px;
+  width: var(--window-navigation-start);
   background: var(--echo-surface-canvas);
-}
-
-.app--macos .app__body--collapsed {
-  --window-navigation-space: 280px;
-}
-
-.app--macos .app__body--collapsed .window-sidebar-navigation {
-  top: -20px;
-  left: 100px;
 }
 
 .app--macos .app__body:has(> .window-sidebar-navigation) .sidebar-resize {
@@ -49,55 +53,59 @@
 
 .window-sidebar-navigation {
   position: absolute;
-  top: 12px;
-  left: 20px;
-  z-index: 22;
+  top: var(--window-navigation-top);
+  left: var(--window-navigation-start);
+  z-index: 23;
   display: flex;
   align-items: center;
-  gap: 4px;
   -webkit-app-region: no-drag;
 }
 
-.window-sidebar-brand {
-  flex: 0 0 92px;
-  width: 92px;
-  max-width: 92px;
-  margin-inline-end: 4px;
-  font-size: min(1rem, 16px);
-  user-select: none;
-  -webkit-app-region: drag;
+.window-sidebar-task-tools:not([hidden]) {
+  display: flex;
 }
 
-.window-sidebar-navigation .main-topbar__btn {
-  flex: 0 0 32px;
+.sidebar .sidebar__toolbar--window {
+  height: 48px;
+  justify-content: flex-start;
+  margin-block-start: var(--sidebar-brand-offset);
+  padding-inline: 20px;
+}
+
+.window-sidebar-navigation :is(.main-topbar__btn, .sidebar__icon-btn) {
+  width: var(--window-navigation-button-size);
+  height: var(--window-navigation-button-size);
+  flex: 0 0 var(--window-navigation-button-size);
   padding: 0;
   -webkit-app-region: no-drag;
 }
 
-.window-sidebar-navigation .main-topbar__btn:focus-visible {
+.window-sidebar-navigation :is(.main-topbar__btn, .sidebar__icon-btn):focus-visible {
   outline: 2px solid var(--echo-focus-ring);
   outline-offset: -2px;
 }
 
-/* Keep all three tools adjacent to the same fixed anchor as the toggle. */
-.app__body:has(> .window-sidebar-navigation) .sidebar__toolbar-actions {
-  position: absolute;
-  top: 12px;
-  left: calc(var(--window-navigation-left) + 36px);
-}
-
-/* The filter menu opens below the compact group and stays inside the window. */
-.app__body:has(> .window-sidebar-navigation) .task-filter-popover {
+.window-sidebar-navigation .task-filter-popover {
+  /* Align with the first button; the panel is wider than the whole group. */
+  left: -64px;
   right: auto;
-  left: min(0px, calc(100vw - var(--window-navigation-left) - 72px - 220px - 12px));
-  max-width: calc(100vw - 24px);
 }
 
-/* Reserve space inside existing page headers for the persistent brand and tools. */
+/* Keep content headers on their own grid below the window controls. */
+.app__body--collapsed:has(> .window-sidebar-navigation) > .app__main:has(
+  .page-toolbar--window-navigation:not(.management-toolbar), .group-chat__header, .atm-editor-host
+) {
+  padding-block-start: var(--window-navigation-clearance);
+}
+
+.app--macos .capability-page__inner:has(> .page-toolbar--window-navigation) {
+  padding-block-start: 8px;
+}
+
+/* Single-row workbench headers share the window controls' row. */
 .app__body--collapsed:has(> .window-sidebar-navigation) :is(
   .main-page-controls,
   .main-topbar,
-  .page-toolbar--window-navigation,
   .coding-workbench__topbar
 ) {
   padding-inline-start: var(--window-navigation-space);

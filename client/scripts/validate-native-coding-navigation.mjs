@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const script = readFileSync(new URL('./fixtures/native-coding-review.js', import.meta.url), 'utf8');
-async function run({ legacy = false, sidebarCollapsed = false, missingRow = false, saveScenario = false, legacySave = false } = {}) {
+async function run({ legacy = false, sidebarCollapsed = false, missingRow = false, hiddenProject = false, saveScenario = false, legacySave = false } = {}) {
   let clock = 0;
   let sectionOpen = false;
   let projectOpen = false;
@@ -22,8 +22,10 @@ async function run({ legacy = false, sidebarCollapsed = false, missingRow = fals
   });
   const section = element({ 'aria-expanded': () => String(sectionOpen) }, () => { sectionOpen = true; clicks.push('section'); });
   const expand = element({ 'aria-expanded': () => String(projectOpen) }, () => { projectOpen = true; clicks.push('project'); });
-  const node = element({ title: '原生验收项目' }, () => {}, () => sectionOpen);
+  const more = element({}, () => { hiddenProject = false; clicks.push('more'); });
+  const node = element({ title: '原生验收项目', 'data-catalog-project': 'retained-project' }, () => {}, () => sectionOpen);
   node.querySelector = () => expand;
+  node.closest = (selector) => selector === '[data-catalog-project]' || (selector === '[inert]' && hiddenProject) ? node : null;
   const row = element({ 'aria-current': () => selected ? 'page' : null }, () => { selected = true; clicks.push('session'); });
   const sidebarExpand = element({}, () => { sidebarCollapsed = false; clicks.push('sidebar'); });
   const newTask = element({}, () => { confirmationOpen = true; clicks.push('new-task'); }, () => !sidebarCollapsed);
@@ -40,7 +42,8 @@ async function run({ legacy = false, sidebarCollapsed = false, missingRow = fals
       if (selector === '.app__body--collapsed') return sidebarCollapsed ? {} : null;
       if (selector === 'button[aria-label="展开侧边栏"]') return sidebarExpand;
       if (selector === '.sidebar__nav') return { querySelectorAll: () => [newTask] };
-      if (selector === '.sidebar__list-section--projects > .sidebar__section-label') return section;
+      if (selector === '.sidebar__list-section--projects .sidebar__section-label') return section;
+      if (selector === '.sidebar__list-section--projects .sidebar__catalog-more[aria-expanded="false"]') return hiddenProject ? more : null;
       if (selector.startsWith('[data-session-id=')) {
         return !missingRow && sectionOpen && projectOpen && (!selector.includes('aria-current') || selected) ? row : null;
       }
@@ -94,6 +97,9 @@ assert.match(after.report.errors[0], /No unique untouched failed Code task/);
 const collapsed = await run({ sidebarCollapsed: true });
 assert.deepEqual(collapsed.clicks, ['sidebar', 'section', 'project', 'session']);
 assert.equal(collapsed.report.navigation.projectId, 'retained-project');
+const overflow = await run({ hiddenProject: true });
+assert.deepEqual(overflow.clicks, ['section', 'more', 'project', 'session']);
+assert.equal(overflow.report.navigation.selectedViaProductionUi, true);
 const missing = await run({ missingRow: true });
 assert.match(missing.report.errors[0], /session-navigation:retained-session-row-visible/);
 assert.equal(missing.report.activeStep, 'session-navigation:retained-session-row-visible');
@@ -104,4 +110,4 @@ assert.match(oldSave.saveError, /Timed out.*nav\('新建任务'\)/);
 const newSave = await run({ saveScenario: true });
 assert.deepEqual(newSave.clicks, ['sidebar', 'new-task', 'cancel']);
 assert.match(newSave.saveError, /production IDE iframe is missing/); // Stop before buffer inspection; no fake editor.
-console.log('Synthetic Code navigation guards passed: 6 cases, including old missing-expansion and collapsed-Code leave reproduction, visible-header expansion, cancel path and named timeout diagnostics. No app, real IPC, Theia, or Rust was exercised.');
+console.log('Synthetic Code navigation guards passed: 7 cases, including collapsed-sidebar recovery, project overflow disclosure, cancel path and named timeout diagnostics. No app, real IPC, Theia, or Rust was exercised.');

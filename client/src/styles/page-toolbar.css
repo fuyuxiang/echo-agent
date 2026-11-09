@@ -49,21 +49,11 @@
 .capability-page__header--illustrated .capability-page__metadata {
   min-height: 0;
 }
-.org-login-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
-  min-height: 36px;
-}
 .org-memory--login {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-}
-.org-login-toolbar {
-  align-self: stretch;
 }
 .org-login-card {
   width: min(100%, 460px);

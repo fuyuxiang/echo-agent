@@ -69,20 +69,32 @@ window.__echoNativeCodingReview = async ({ invoke, home, cwd, nonce, sessionId, 
     if (owners.length > 1) throw new Error('The retained session belongs to multiple projects');
     const section = owners.length ? '.sidebar__list-section--projects' : '.sidebar__list-section--tasks';
     const sectionButton = await waitFor(() => {
-      const button = document.querySelector(`${section} > .sidebar__section-label`);
+      const button = document.querySelector(`${section} .sidebar__section-label`);
       return visible(button) ? button : null;
     }, 20000, 'session-navigation:find-retained-session-section');
     if (sectionButton.getAttribute('aria-expanded') !== 'true') {
       sectionButton.click();
       await waitFor(() => sectionButton.getAttribute('aria-expanded') === 'true', 20000, 'session-navigation:section-expanded');
     }
+    const revealCatalogItem = (element) => {
+      if (!visible(element)) return null;
+      if (element.closest('[inert]')) {
+        const more = document.querySelector(`${section} .sidebar__catalog-more[aria-expanded="false"]`);
+        if (visible(more)) more.click();
+        return null;
+      }
+      element.scrollIntoView?.({ block: 'nearest' });
+      return element;
+    };
     if (owners.length) {
       const project = owners[0];
       const node = await waitFor(() => {
-        const nodes = [...document.querySelectorAll('.sidebar__node--project')]
-          .filter((element) => element.getAttribute('title') === project.name && visible(element));
-        if (nodes.length > 1) throw new Error('The retained project has an ambiguous visible title');
-        return nodes[0];
+        const nodes = [...document.querySelectorAll('.sidebar__node--project')].filter((element) => {
+          const projectId = element.closest('[data-catalog-project]')?.getAttribute('data-catalog-project');
+          return visible(element) && (projectId ? projectId === project.id : element.getAttribute('title') === project.name);
+        });
+        if (nodes.length > 1) throw new Error('The retained project has multiple visible rows');
+        return revealCatalogItem(nodes[0]);
       }, 20000, 'session-navigation:find-retained-project');
       const toggle = node.querySelector('button[aria-expanded]');
       if (!toggle) throw new Error('The retained project has no production conversation expander');
@@ -93,10 +105,8 @@ window.__echoNativeCodingReview = async ({ invoke, home, cwd, nonce, sessionId, 
       report.navigation = { sessionId, projectId: project.id, projectName: project.name, expandedViaProductionUi: true };
     }
     const selector = `[data-session-id="${CSS.escape(sessionId)}"] .sidebar__conv-select`;
-    const row = await waitFor(() => {
-      const element = document.querySelector(selector);
-      return visible(element) ? element : null;
-    }, 20000, 'session-navigation:retained-session-row-visible');
+    const row = await waitFor(() => revealCatalogItem(document.querySelector(selector)),
+      20000, 'session-navigation:retained-session-row-visible');
     row.click();
     await waitFor(() => document.querySelector(`${selector}[aria-current="page"]`), 20000, 'session-navigation:retained-session-selected');
     report.navigation = { ...report.navigation, sessionId, selectedViaProductionUi: true };

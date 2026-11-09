@@ -3,8 +3,7 @@ import { modelChoiceLabel } from "@/lib/model-presentation";
 /**
  * 项目面板 — 对齐 EchoAgent 项目列表页 + 新建项目弹窗。
  *
- *  - CapabilityPage: 共享标题、搜索和主操作，保留项目工作台插画
- *  - 我的项目: 搜索 + 卡片网格（点击进入详情）
+ *  - 我的项目: 搜索、视图切换和项目列表（点击进入详情）
  *  - 从模版创建: 业务模板卡片
  *  - CreateProjectDialog: 对齐目标截图（项目名称 + 指令[选择模板] + 连接器/专家/技能 +添加 + 取消/确定）
  *  - 内部 openId 切换 列表 / ProjectDetailView（无需改 App 路由）
@@ -22,8 +21,8 @@ import { createPortal } from "react-dom";
 import { AddIcon, MoreDotsIcon, ChevronDownIcon } from "@/foundation/components/Icon/icons";
 import { Button } from "./Button";
 import { TemplateCard } from "./TemplateCard";
-import { CapabilityPage, CapabilityEmptyState } from "./experts-panel/shared/CapabilityPage";
-import heroImg from "@/assets/landing-hero.png";
+import { CapabilitySearch, CapabilityEmptyState } from "./experts-panel/shared/CapabilityPage";
+import { ManagementToolbar } from "./PageToolbar";
 import { useProjectsStore, type ProjectMeta, type RefItem } from "@/stores/projects-store";
 import {
   TEMPLATE_OPTIONS,
@@ -210,12 +209,14 @@ export function ProjectsPanel({
   };
 
   return (
-    <CapabilityPage title="项目" className="project-management"
-      description="集中管理项目资料、任务对话和交付成果"
-      metadata={projects.length === 0 ? <span>提供 {FROM_TEMPLATES.length} 个常用模板</span> : undefined}
-      illustration={projects.length === 0 ? <img src={heroImg} width={2172} height={724} alt="项目工作台插画" draggable={false} /> : undefined}
-      search={{ value: query, onChange: setQuery, label: "搜索项目" }}
-      actions={<Button ref={createButtonRef} variant="primary" onClick={() => setCreate({})}><AddIcon size="sm" />新建项目</Button>}>
+    <section className="management-workspace project-management" aria-label="项目">
+      <ManagementToolbar title="项目">
+        <Button ref={createButtonRef} size="compact" className="management-toolbar__action" onClick={() => setCreate({})}>
+          <AddIcon size="sm" />新建项目
+        </Button>
+      </ManagementToolbar>
+      <div className="capability-page">
+        <div className="capability-page__inner capability-page__content">
       {persistError && (
         <div className="project-persist-alert" role="alert">
           <span>项目已保存在本机缓存，但项目文件保存失败，请重试：{persistError}</span>
@@ -225,15 +226,18 @@ export function ProjectsPanel({
         </div>
       )}
       <section className="project-section">
-        <div className="project-section__head">
-          <h3 className="project-section__title">我的项目</h3>
-        </div>
-        {filtered.length === 0 ? (
-          <CapabilityEmptyState title={projects.length === 0 ? "还没有项目" : "没有匹配的项目"}
-            description={projects.length === 0 ? "点击“新建项目”，或从下方模板创建。" : "试试其他项目名称。"}
-            onClear={query ? () => setQuery("") : undefined} />
-        ) : (
-          <ResourceList collectionKey="projects" className="project-grid" aria-label="我的项目">
+          <ResourceList collectionKey={projects.length ? "projects" : undefined} className="project-grid" aria-label="我的项目"
+            toolbarStart={<div className="project-list-tools">
+              <div className="project-list-tools__label">
+                <h2 className="project-section__title">我的项目</h2>
+                <span className="resource-collection__count">{filtered.length} 项</span>
+              </div>
+              <CapabilitySearch value={query} onChange={setQuery} label="搜索项目" />
+            </div>}
+            emptyState={filtered.length === 0 ? <CapabilityEmptyState icon={<ProjectGlyph />}
+              title={projects.length === 0 ? "还没有项目" : "没有匹配的项目"}
+              description={projects.length === 0 ? "可以新建项目，也可以从下方模板开始。" : "试试其他项目名称。"}
+              onClear={query ? () => setQuery("") : undefined} /> : undefined}>
             {filtered.map((p) => (
               <ProjectCard
                 key={p.id}
@@ -258,12 +262,11 @@ export function ProjectsPanel({
               />
             ))}
           </ResourceList>
-        )}
       </section>
 
       <section className="project-section">
         <div className="project-section__head">
-          <h3 className="project-section__title">从模板创建</h3>
+          <h2 className="project-section__title">从模板创建</h2>
         </div>
         <div className="template-grid">
           {FROM_TEMPLATES.map((t) => (
@@ -277,6 +280,8 @@ export function ProjectsPanel({
           ))}
         </div>
       </section>
+        </div>
+      </div>
 
       {create && (
         <CreateProjectDialog
@@ -304,7 +309,7 @@ export function ProjectsPanel({
         />
       )}
       {dialog}
-    </CapabilityPage>
+    </section>
   );
 }
 

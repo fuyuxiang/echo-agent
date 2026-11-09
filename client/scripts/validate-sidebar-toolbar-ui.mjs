@@ -146,7 +146,7 @@ try {
       await page.goto(`${base}?surface=home&theme=${theme}&platform=${platform}&windowChrome=1`);
       await page.getByRole("group", { name: "侧边栏工具" }).waitFor();
       await page.locator(".echo-composer").waitFor();
-      await page.locator(".sidebar").evaluate((element, width) => element.style.setProperty("--app-sidebar-width", `${width}px`), sidebarWidth);
+      await page.locator(".app__body").evaluate((element, width) => element.style.setProperty("--app-sidebar-width", `${width}px`), sidebarWidth);
       await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
       const name = `${width}-${sidebarWidth}-${font}-${theme}-${platform}`;
       const geometry = await page.evaluate(() => {
@@ -163,7 +163,7 @@ try {
           brandCount: document.querySelectorAll(".sidebar__logo").length,
           brandOverflow: document.querySelector(".sidebar__logo").scrollWidth > document.querySelector(".sidebar__logo").clientWidth,
           nav: rect(document.querySelector(".sidebar__nav")),
-          tools: [...document.querySelectorAll(".sidebar__toolbar-actions button")].map(element => ({ label: element.getAttribute("aria-label"), ...rect(element) })),
+          tools: [...document.querySelectorAll(".window-sidebar-navigation .sidebar__icon-btn")].map(element => ({ label: element.getAttribute("aria-label"), ...rect(element) })),
           toggle: rect(document.querySelector(".window-sidebar-toggle")),
           duplicateCollapse: document.querySelectorAll('button[aria-label="收起侧边栏"]').length,
           overflow: document.documentElement.scrollWidth > innerWidth + 1,
@@ -172,7 +172,7 @@ try {
       assert.equal(geometry.overflow, false, `${name}: page overflow`);
       assert.equal(geometry.main.y, platform === "mac" ? 0 : 32, `${name}: main header starts directly below native chrome`);
       assert.equal(geometry.main.bottom, height, `${name}: main column fills the window`);
-      assert.equal(geometry.toolbar.height, 56, `${name}: toolbar must leave breathing room`);
+      assert.equal(geometry.toolbar.height, 48, `${name}: wordmark row height`);
       assert.equal(geometry.duplicateCollapse, 1, `${name}: one collapse control`);
       assert.equal(geometry.brandCount, 1, `${name}: one brand wordmark`);
       assert.equal(geometry.brandOverflow, false, `${name}: keep the full brand wordmark readable`);
@@ -180,24 +180,22 @@ try {
       assert.equal(geometry.toggle.width, 32, `${name}: toggle width`);
       assert.equal(geometry.toggle.height, 32, `${name}: toggle height`);
       assert.equal(geometry.toggle.y, geometry.tools[0].y, `${name}: window and sidebar controls share a center line`);
-      assert.equal(geometry.tools[0].x - geometry.toggle.right, 4, `${name}: keep the toggle, search and filter in one compact group`);
+      assert.equal(geometry.tools[0].x, geometry.toggle.right, `${name}: contiguous compact targets`);
       for (const [index, tool] of geometry.tools.entries()) {
-        assert.ok(tool.width === 32 && tool.height === 32 && tool.right <= geometry.sidebar.right - 16, `${name}: inconsistent tool targets`);
-        assert.equal(tool.y - geometry.toolbar.y, 12, `${name}: toolbar top inset`);
-        assert.equal(geometry.toolbar.bottom - tool.bottom, 12, `${name}: toolbar bottom inset`);
+        assert.ok(tool.width === 32 && tool.height === 32, `${name}: inconsistent tool targets`);
         assert.equal(tool.y, geometry.tools[0].y, `${name}: tools must align`);
-        if (index) assert.equal(tool.x - geometry.tools[index - 1].right, 4, `${name}: tool spacing`);
+        if (index) assert.equal(tool.x, geometry.tools[index - 1].right, `${name}: tool spacing`);
       }
-      assert.equal(geometry.brandRow, null, `${name}: branding must share the tools row`);
+      assert.equal(geometry.brandRow, null, `${name}: no duplicate wordmark row`);
       assert.ok(geometry.brand.y >= geometry.toolbar.y && geometry.brand.bottom <= geometry.toolbar.bottom, `${name}: branding stays inside the toolbar`);
-      assert.ok(Math.abs(geometry.brand.y + geometry.brand.height / 2 - geometry.toggle.y - geometry.toggle.height / 2) <= 1, `${name}: brand and tools must share a center line`);
-      assert.ok(geometry.brand.right <= geometry.toggle.x - 8, `${name}: branding must not overlap tools`);
-      assert.equal(geometry.nav.y, geometry.toolbar.bottom, `${name}: navigation moves directly below the unified header`);
+      assert.ok(geometry.brand.y >= geometry.toggle.bottom, `${name}: wordmark clears the window tools`);
+      assert.equal(geometry.nav.y, geometry.toolbar.bottom, `${name}: navigation follows the wordmark`);
       assert.equal(geometry.toolbar.y, 32, `${name}: native window row reservation`);
       if (platform === "mac") {
-        // AppKit controls center 2pt below the configured inset. Keep the entire
-        // application row below those native buttons, with a usable drag strip.
-        assert.ok(geometry.toggle.y >= macWindow.trafficLightPosition.y + 2 + 7 + 8, `${name}: toolbar overlaps native window controls`);
+        assert.equal(geometry.toggle.y + geometry.toggle.height / 2, macWindow.trafficLightPosition.y + 2, `${name}: align with the native controls`);
+        assert.ok(geometry.toggle.x >= macWindow.trafficLightPosition.x + 64, `${name}: toolbar overlaps native window controls`);
+      } else {
+        assert.equal(geometry.toggle.y, 0, `${name}: toolbar belongs to the title bar`);
       }
       await page.mouse.move(width - 10, height - 10);
       await page.screenshot({ path: join(output, `expanded-${name}.png`) });
@@ -226,31 +224,20 @@ try {
 
       const collapse = page.getByRole("button", { name: "收起侧边栏", exact: true });
       const persistentToggle = await collapse.elementHandle();
-      const persistentBrand = await page.locator(".window-sidebar-brand").elementHandle();
-      const brandAnchor = await persistentBrand.boundingBox();
+      const brand = page.locator(".window-sidebar-brand");
       await collapse.focus();
       await collapse.press("Enter");
       const expand = page.getByRole("button", { name: "展开侧边栏", exact: true });
       await expand.waitFor();
       assert.ok(await expand.evaluate(element => element === document.activeElement), `${name}: collapse focus transfer`);
-      assert.deepEqual(await page.locator(".window-sidebar-navigation button").evaluateAll(buttons => buttons.map(button => button.getAttribute("aria-label"))), ["展开侧边栏", "新建任务"]);
+      assert.deepEqual(await page.locator(".window-sidebar-navigation button:visible").evaluateAll(buttons => buttons.map(button => button.getAttribute("aria-label"))), ["展开侧边栏", "新建任务"]);
       assert.equal(await page.locator(".main-page-controls button").count(), 0, `${name}: page must not duplicate window controls`);
       assert.ok(await expand.evaluate((element, original) => element === original, persistentToggle), `${name}: toggle must remain mounted`);
-      const collapsedToggle = await expand.boundingBox();
-      assert.equal(await page.locator(".sidebar__logo").count(), 1, `${name}: collapse duplicated branding`);
-      assert.ok(await page.locator(".window-sidebar-brand").evaluate((element, original) => element === original, persistentBrand), `${name}: collapse replaced branding`);
-      if (platform === "mac") {
-        const brand = await page.locator(".window-sidebar-brand").boundingBox();
-        const header = await page.locator(".main-page-controls").boundingBox();
-        assert.ok(brand.x >= 92, `${name}: collapsed branding clears native buttons`);
-        assert.ok(brand.x + brand.width <= collapsedToggle.x, `${name}: branding clears the toggle`);
-        assert.ok(collapsedToggle.y >= header.y && collapsedToggle.y + collapsedToggle.height <= header.y + header.height, `${name}: collapsed navigation stays inside the top header`);
-      } else {
-        assert.equal(collapsedToggle.x, geometry.toggle.x, `${name}: toggle jumped horizontally`);
-        assert.equal(collapsedToggle.y, geometry.toggle.y, `${name}: toggle jumped vertically`);
-        assert.deepEqual(await page.locator(".window-sidebar-brand").boundingBox(), brandAnchor, `${name}: collapse moved branding`);
-      }
-      await page.getByRole("button", { name: "新建任务", exact: true }).click();
+      assert.equal(await brand.isVisible(), false, `${name}: collapsed sidebar still shows the brand`);
+      assert.deepEqual(await expand.boundingBox(), { x:geometry.toggle.x, y:geometry.toggle.y, width:geometry.toggle.width, height:geometry.toggle.height }, `${name}: collapse moved the toggle`);
+      const newTask = page.getByRole("button", { name: "新建任务", exact: true });
+      assert.equal((await newTask.boundingBox()).x, geometry.toggle.right, `${name}: new task sits next to the toggle`);
+      await newTask.click();
       assert.ok(await page.evaluate(() => window.workbenchNewTask), `${name}: new task callback`);
       assert.ok(await page.locator(".echo-composer").isVisible(), `${name}: collapsed page content`);
       await page.mouse.move(width - 10, height - 10);
@@ -258,6 +245,9 @@ try {
       await expand.click();
       assert.ok(await collapse.evaluate(element => element === document.activeElement), `${name}: expand focus return`);
       assert.equal(await menu.count(), 0, `${name}: stale filter menu after collapse`);
+      for (const [control, prior] of [[search, geometry.tools[0]], [filter, geometry.tools[1]]]) {
+        assert.deepEqual(await control.boundingBox(), { x: prior.x, y: prior.y, width: prior.width, height: prior.height }, `${name}: restoring moved a toolbar control`);
+      }
       // Collapse and restore remain reachable; the expanded sidebar stays fixed.
       for (let turn = 0; turn < 4; turn++) {
         const target = await page.locator(".window-sidebar-toggle").boundingBox();
@@ -266,7 +256,6 @@ try {
       }
       assert.deepEqual(await collapse.boundingBox(), { x:geometry.toggle.x, y:geometry.toggle.y, width:geometry.toggle.width, height:geometry.toggle.height }, `${name}: restoring changed the sidebar toolbar position`);
       await persistentToggle.dispose();
-      await persistentBrand.dispose();
       evidence.push({ name, ...geometry, menu: bounds });
     }
   }
@@ -284,9 +273,10 @@ try {
   for (const height of (process.argv.includes("--navigation-only") ? [] : [600, 680, 760, 800])) for (const font of [16, 16 * 18 / 13]) {
     for (const theme of ["light", "dark"]) for (const platform of ["mac", "other"]) {
       await catalogPage.setViewportSize({ width: 1024, height });
-      await catalogPage.goto(`${base}?surface=sidebar-scroll&variant=both&groups=12&theme=${theme}&platform=${platform}`);
-      await catalogPage.getByRole("region", { name: "最近专家团" }).waitFor();
+      await catalogPage.goto(`${base}?surface=home&sidebarCatalog=both&groups=12&windowChrome=1&theme=${theme}&platform=${platform}`);
+      await catalogPage.locator(".sidebar__content[data-catalog-ready]").waitFor();
       await catalogPage.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
+      await catalogPage.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       const name = `catalog-${height}-${font.toFixed(2)}-${theme}-${platform}`;
       const geometry = await catalogPage.evaluate(() => {
         const rect = element => {
@@ -301,7 +291,6 @@ try {
           lists: [...content.querySelectorAll(".sidebar__group")].map(list => ({
             id: list.id, ...rect(list), clientHeight: list.clientHeight, scrollHeight: list.scrollHeight,
             firstRow: rect(list.querySelector(".sidebar__conv, .sidebar__node, .group-sidebar__row")),
-            tallestRow: Math.max(...[...list.querySelectorAll(".sidebar__conv, .sidebar__node, .group-sidebar__row")].map(element => element.getBoundingClientRect().height)),
           })),
         };
       });
@@ -310,12 +299,10 @@ try {
       assert.equal(geometry.lists.length, 3);
       assert.ok(geometry.content.bottom <= geometry.footer.y + 1, `catalog overlaps account controls: ${context}`);
       for (const list of geometry.lists) {
-        assert.ok(list.height >= list.tallestRow - 1, `catalog must retain even a wrapped row: ${context}`);
-        if (height >= 680) assert.ok(list.firstRow.y >= geometry.content.y && list.firstRow.bottom <= geometry.content.bottom + 1, `supported window must show a full row in every catalog: ${context}`);
-        const locator = catalogPage.locator(`#${list.id}`);
-        const scroll = await locator.evaluate(element => { element.scrollTop = element.scrollHeight; return element.scrollTop; });
-        assert.ok(scroll > 0, `catalog must remain independently scrollable: ${context}`);
-        await locator.evaluate(element => { element.scrollTop = 0; });
+        assert.ok(list.height >= list.firstRow.height - 1, `catalog must retain a complete first row: ${context}`);
+        if (geometry.content.scrollHeight <= geometry.content.clientHeight + 1) {
+          assert.ok(list.firstRow.y >= geometry.content.y && list.firstRow.bottom <= geometry.content.bottom + 1, `a fitting catalog must show every first row: ${context}`);
+        }
       }
       await catalogPage.getByRole("button", { name: "筛选任务", exact: true }).click();
       const menu = catalogPage.getByRole("menu", { name: "任务筛选", exact: true });
@@ -326,12 +313,28 @@ try {
       await catalogPage.keyboard.press("Escape");
       // At heights below the native minimum the outer catalog may scroll;
       // moving focus to its final item must still reveal the item fully.
+      const groupsMore = catalogPage.locator('.sidebar__catalog-more[aria-controls="sidebar-group-list"]');
+      if (height >= macWindow.minHeight) {
+        assert.ok(await groupsMore.evaluate(button => {
+          const box = button.getBoundingClientRect();
+          const content = button.closest(".sidebar__content").getBoundingClientRect();
+          return box.top >= content.top && box.bottom <= content.bottom
+            && button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+        }), `More groups must be fully visible at a supported window height: ${context}`);
+      }
+      const firstHidden = await catalogPage.locator("#sidebar-group-list [inert] .group-sidebar__item > span").first().innerText();
+      await groupsMore.focus();
+      await catalogPage.keyboard.press("Enter");
+      await catalogPage.locator("#sidebar-group-list:not([data-catalog-preview])").waitFor();
+      assert.equal(await catalogPage.locator("#sidebar-group-list .group-sidebar__item:focus > span").innerText(), firstHidden);
       await catalogPage.locator("#sidebar-group-list .group-sidebar__item").last().focus();
       assert.ok(await catalogPage.locator("#sidebar-group-list .group-sidebar__item").last().evaluate(element => {
         const box = element.getBoundingClientRect();
         const content = element.closest(".sidebar__content").getBoundingClientRect();
         return box.y >= content.y - 1 && box.bottom <= content.bottom + 1;
       }), `final catalog item must be reachable by keyboard: ${context}`);
+      await catalogPage.keyboard.press("Escape");
+      assert.ok(await groupsMore.evaluate(button => button === document.activeElement));
       await catalogPage.locator(".sidebar__content").evaluate(element => { element.scrollTop = 0; });
       await catalogPage.locator("#sidebar-group-list").evaluate(element => { element.scrollTop = 0; });
       await catalogPage.screenshot({ path: join(output, `${name}.png`) });
@@ -346,19 +349,25 @@ try {
   const toggle = codingPage.locator(".window-sidebar-toggle");
   await toggle.waitFor();
   const original = await toggle.elementHandle();
-  const anchor = await toggle.boundingBox();
+  const initialToggle = await toggle.boundingBox();
+  const sidebar = codingPage.locator(".sidebar");
+  const initialSidebar = await sidebar.boundingBox();
   const divider = await codingPage.getByRole("separator", { name: "调整侧边栏宽度", exact: true }).boundingBox();
   await codingPage.mouse.move(divider.x + divider.width / 2, 250);
   await codingPage.mouse.down();
   await codingPage.mouse.move(360, 250, { steps: 8 });
   await codingPage.mouse.up();
-  assert.deepEqual(await toggle.boundingBox(), anchor, "resizing the sidebar moved window navigation");
+  const anchor = await toggle.boundingBox();
+  const resizedSidebar = await sidebar.boundingBox();
+  assert.ok(resizedSidebar.width > initialSidebar.width, "sidebar did not resize");
+  assert.deepEqual(anchor, initialToggle, "resizing the sidebar moved the window toolbar");
   await codingPage.mouse.click(anchor.x + 16, anchor.y + 16);
   await codingPage.getByRole("button", { name: "展开侧边栏", exact: true }).waitFor();
   assert.equal(await codingPage.getByRole("button", { name: "展开侧边栏", exact: true }).count(), 1, "coding page duplicated sidebar restoration");
   const collapsedAnchor = await toggle.boundingBox();
   const identity = await codingPage.locator(".coding-workbench__topbar-left").boundingBox();
-  assert.ok(identity.x >= collapsedAnchor.x + 68, "coding identity overlaps window controls");
+  const windowTools = await codingPage.locator(".window-sidebar-navigation").boundingBox();
+  assert.ok(identity.x >= windowTools.x + windowTools.width, "coding identity overlaps window controls");
   await codingPage.screenshot({ path: join(output, "coding-collapsed-fixed-navigation.png") });
   await codingPage.getByRole("button", { name: "新建任务", exact: true }).click();
   await codingPage.locator(".app__coding-surface[hidden]").waitFor({ state: "attached" });
@@ -374,7 +383,7 @@ try {
   await codingPage.close();
   assert.deepEqual(errors, [], "sidebar toolbar page errors");
   writeFileSync(join(output, "report.json"), JSON.stringify({ passed: true, evidence, catalogEvidence, hierarchyEvidence }, null, 2));
-  console.log(`Sidebar toolbar passed: ${evidence.length * 2 + catalogEvidence.length} layouts, ${hierarchyEvidence.length} navigation hierarchy scenarios, search, filters, new task, catalog scrolling and keyboard focus; fixed navigation across coding, resize and page changes.`);
+  console.log(`Sidebar toolbar passed: ${evidence.length * 2 + catalogEvidence.length} layouts, ${hierarchyEvidence.length} navigation hierarchy scenarios, search, filters, new task, catalog scrolling and keyboard focus; toolbar alignment across resizing and page changes.`);
 } finally {
   await browser?.close();
   await server.close();

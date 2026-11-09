@@ -66,9 +66,8 @@ import { organizationSessionBoundary, useOrgSessionStore } from "@/stores/org-se
 import { filesystemPickDirectory, filesystemPickFiles } from "@/lib/agent-client";
 import { FilePreview } from "./FilePreview";
 import { Button } from "./Button";
-import { CapabilityPage } from "./experts-panel/shared/CapabilityPage";
 import organizationHeroImg from "@/assets/organization-hero.png";
-import { PageToolbar } from "./PageToolbar";
+import { ManagementToolbar } from "./PageToolbar";
 import { ActionMenu } from "./ActionMenu";
 import { useOrganizationLibrary } from "./organization/use-organization-library";
 import { useModalFocus } from "@/lib/use-modal-focus";
@@ -984,19 +983,21 @@ export function OrganizationMemoryPanel({
 
   if (loading) {
     return (
-      <CapabilityPage title="组织" headingLevel={1} className="organization-loading">
+      <section className="management-workspace organization-loading" aria-label="组织">
+        <ManagementToolbar title="组织" />
         <div className="organization-loading__status" role="status">
           <Loader2 className="org-memory__spin" size={20} aria-hidden="true" />
           <span>正在连接组织服务…</span>
         </div>
-      </CapabilityPage>
+      </section>
     );
   }
 
   if (!session?.loggedIn) {
     return (
-      <div className="org-memory org-memory--login">
-        <PageToolbar className="org-login-toolbar"><span className="capability-page__title">组织</span></PageToolbar>
+      <section className="management-workspace" aria-label="组织">
+        <ManagementToolbar title="组织" />
+        <div className="org-memory org-memory--login">
         <div className="org-login-card">
           <div className="org-login-card__mark"><Building2 size={28} /></div>
           <h1>连接组织</h1>
@@ -1016,7 +1017,8 @@ export function OrganizationMemoryPanel({
           </form>
           <div className="org-login-card__security"><LockKeyhole size={14} />密码不会保存；自动续期凭据由系统安全存储保护，访问令牌只留在内存中。</div>
         </div>
-      </div>
+        </div>
+      </section>
     );
   }
 
@@ -1025,13 +1027,11 @@ export function OrganizationMemoryPanel({
   const pendingSkillCount = librarySummary?.skillPending ?? 0;
   const pendingCount = pendingMemoryCount + pendingDocumentCount + pendingSkillCount;
   const pageTitle = tab === "overview" ? "组织知识" : tab === "memories" ? "经验" : tab === "documents" ? "文档" : "组织 Skills";
-  const pageDescription = tab === "overview" ? "让团队经验、文档和技能服务于每个任务。"
-    : tab === "memories" ? "沉淀可复用的决策、规范和处理经验。"
-      : tab === "documents" ? "查找、阅读和管理授权范围内的文档。" : "发现组织共享技能，安装到当前设备使用。";
   const orgName = session.bootstrap?.scopes.find(scope => scope.kind === "org")?.name ?? "组织";
   const identity = session.user?.displayName || session.user?.username || session.username || "组织账号";
+  const hasSharedScope = session.bootstrap?.scopes.some(scope => scope.kind !== "personal");
   const capability = session.organizationMemoryEnabled ? "组织知识已启用"
-    : session.bootstrap?.scopes.some(scope => scope.kind !== "personal") ? "组织知识暂不可用" : "暂无团队或组织共享权限";
+    : hasSharedScope ? "组织知识暂不可用" : "暂无团队或组织共享权限";
   const navigatePending = (next: Tab) => {
     setTab(next);
     setResourceViews(previous => ({ ...previous, [next]: "mine" }));
@@ -1039,15 +1039,17 @@ export function OrganizationMemoryPanel({
 
   return (
     <section className="org-memory org-workspace" aria-label="组织">
-      <PageToolbar className="org-workspace__topbar">
-        <div className="org-workspace__brand"><Building2 size={20} aria-hidden="true" /><h1>{orgName}</h1></div>
-        <span className={`org-workspace__connection ${session.organizationMemoryEnabled ? "is-active" : ""}`} role="status"><i />{capability}</span>
+      <ManagementToolbar title={orgName} className="org-workspace__topbar">
+        <span className={`org-workspace__connection ${session.organizationMemoryEnabled ? "is-active" : ""}`} role="status" aria-label={capability} title={capability}>
+          <i aria-hidden="true" />
+          {!session.organizationMemoryEnabled && (hasSharedScope ? "暂不可用" : "无共享权限")}
+        </span>
         <ActionMenu label={`组织账号：${identity}`} menuLabel="组织账号" triggerClassName="org-account-trigger" resetKey={session.user?.id}
           trigger={<><UserRound size={16} aria-hidden="true" /><span>{identity}</span><ChevronDown size={14} aria-hidden="true" /></>}>
-          {({ close }) => <><div className="org-account-details"><strong>{identity}</strong><span>{session.serverUrl}</span><small>退出登录不会退出组织成员关系</small></div>
+          {({ close }) => <><div className="org-account-details"><strong>{identity}</strong><span>{session.serverUrl}</span><span>{capability}</span><small>退出登录不会退出组织成员关系</small></div>
             <button type="button" role="menuitem" className="topbar-actions__item" disabled={busy} onClick={() => { close(); void handleLogout(); }}><LogOut size={15} />退出登录</button></>}
         </ActionMenu>
-      </PageToolbar>
+      </ManagementToolbar>
       <div className="org-workspace__body">
         <nav className="org-memory__nav" aria-label="组织功能">
           {([["overview", "概览", LayoutDashboard], ["memories", "经验", BrainCircuit], ["documents", "文档", FileText], ["skills", "Skills", PackageOpen]] as const).map(([key, label, Icon]) =>
@@ -1055,7 +1057,7 @@ export function OrganizationMemoryPanel({
         </nav>
         <main className="org-memory__content">
           <header className="org-workspace__page-header">
-            <div><h2>{pageTitle}</h2><p>{pageDescription}</p></div>
+            <h2>{pageTitle}</h2>
             <div className="org-workspace__page-actions">
               {tab === "overview" && !workspaceUnavailable && <button type="button" className="org-icon-button" aria-label="刷新" title="更新组织资料" disabled={busy} onClick={() => void refreshWorkspace()}><RefreshCw size={16} className={busy ? "org-memory__spin" : undefined} /></button>}
               {tab === "memories" && <button className="org-memory__primary" disabled={busy || !writeScope} onClick={() => { setMemoryWorkspace(value => value || cwd || ""); setShowMemoryForm(true); }}><Plus size={15} />提交经验</button>}

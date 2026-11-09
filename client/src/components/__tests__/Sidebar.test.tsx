@@ -445,6 +445,8 @@ describe("Sidebar", () => {
     const user = userEvent.setup();
     const { container, rerender } = render(<WindowShell page="项目" />);
     const toggle = screen.getByRole("button", { name: "收起侧边栏" });
+    const search = screen.getByRole("button", { name: "搜索全部任务" });
+    const filter = screen.getByRole("button", { name: "筛选任务" });
     const brand = container.querySelector(".window-sidebar-brand");
     expect(brand).toHaveTextContent("EchoAgent");
     expect(container.querySelector(".sidebar__logo-row")).toBeNull();
@@ -453,6 +455,9 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: "展开侧边栏" })).toBe(toggle);
     expect(toggle).toHaveFocus();
     expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "搜索全部任务" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "筛选任务" })).toBeNull();
+    expect(brand?.closest("aside")).toHaveAttribute("aria-hidden", "true");
     expect(container.querySelector(".window-sidebar-brand")).toBe(brand);
     expect(container.querySelectorAll(".sidebar__logo")).toHaveLength(1);
     expect(container.querySelector(".page-toolbar__navigation")).toBeNull();
@@ -464,14 +469,20 @@ describe("Sidebar", () => {
     expect(toggle).toHaveFocus();
     expect(container.querySelectorAll(".window-sidebar-toggle")).toHaveLength(1);
     expect(container.querySelector(".window-sidebar-brand")).toBe(brand);
+    expect(screen.getByRole("button", { name: "搜索全部任务" })).toBe(search);
+    expect(screen.getByRole("button", { name: "筛选任务" })).toBe(filter);
   });
 
   it("从侧栏内部收起时将焦点交给窗口开关，并保留新建任务入口", () => {
     const onNewTask = vi.fn();
     render(<WindowShell page="项目" onNewTask={onNewTask} />);
-    screen.getByRole("button", { name: "搜索全部任务" }).focus();
-    fireEvent.click(screen.getByRole("button", { name: "外部切换侧栏" }));
-    expect(screen.getByRole("button", { name: "展开侧边栏" })).toHaveFocus();
+    for (const label of ["新建任务", "筛选任务"]) {
+      screen.getByRole("button", { name: label }).focus();
+      fireEvent.click(screen.getByRole("button", { name: "外部切换侧栏" }));
+      expect(screen.getByRole("button", { name: "展开侧边栏" })).toHaveFocus();
+      fireEvent.click(screen.getByRole("button", { name: "展开侧边栏" }));
+    }
+    fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
     fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
     expect(onNewTask).toHaveBeenCalledOnce();
   });

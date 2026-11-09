@@ -63,7 +63,7 @@
 
 .sidebar__nav {
   gap: 4px;
-  padding: 8px var(--sidebar-content-inset) 20px;
+  padding: 8px var(--sidebar-content-inset) 0;
 }
 
 .sidebar__nav-item {
@@ -110,7 +110,12 @@
 }
 
 .sidebar__content {
-  padding: 6px var(--sidebar-content-inset) 14px;
+  --sidebar-section-gap: 16px;
+  padding: var(--sidebar-section-gap) var(--sidebar-content-inset) 14px;
+}
+
+.sidebar__list-section + .sidebar__list-section {
+  margin-top: var(--sidebar-section-gap);
 }
 
 /* Compact navigation must leave a row in all three catalogs at the supported
@@ -118,10 +123,10 @@
    also preserves that budget when the user increases the reading size. */
 @container app-sidebar (max-height: 800px) or (max-height: 48rem) {
   .sidebar__logo-row { height: 32px; }
-  .sidebar__nav { gap: 0; padding-top: 0; padding-bottom: 4px; }
+  .sidebar__nav { gap: 0; padding-top: 0; }
   .sidebar__nav-item { min-height: 32px; height: auto; padding-block: 5px; }
   .sidebar__nav-item--create { min-height: 32px; margin-bottom: 4px; }
-  .sidebar__content { padding-top: 2px; padding-bottom: 2px; }
+  .sidebar__content { --sidebar-section-gap: 12px; padding-bottom: 2px; }
   .sidebar .sidebar__section-label { height: 28px; min-height: 28px; padding-block: 4px; }
   .sidebar__footer { height: 48px; padding: 2px 8px; }
   .sidebar__list-section:has(> .sidebar__group) { min-height: 68px; }
@@ -130,6 +135,10 @@
   .sidebar .group-sidebar__item { height: 30px; flex-direction: row; align-items: center; gap: 6px; padding: 4px 12px; }
   .sidebar .group-sidebar__item > span { flex: 1; min-width: 0; }
   .sidebar .group-sidebar__item small { flex: none; white-space: nowrap; }
+}
+
+@container app-sidebar (max-height: 680px) {
+  .sidebar__content { --sidebar-section-gap: 8px; }
 }
 
 .sidebar__empty-state {
@@ -190,6 +199,50 @@
 .sidebar__section-action.task-filter-trigger--active {
   background: var(--ui-surface);
   color: var(--echo-text-strong);
+}
+
+.sidebar__content[data-catalog-ready] > .sidebar__list-section {
+  position: relative;
+  flex: none;
+  min-height: 0;
+}
+
+.sidebar__content[data-catalog-ready] .sidebar__group[data-catalog-list] {
+  flex: none;
+  scrollbar-gutter: stable;
+}
+
+.sidebar__content[data-catalog-ready] .sidebar__group[data-catalog-preview] {
+  overflow-y: hidden;
+  overscroll-behavior-y: auto;
+}
+
+.sidebar__catalog-rows {
+  display: flow-root;
+}
+
+.sidebar__catalog-more {
+  flex: 0 0 auto;
+  width: auto;
+  padding-inline: 7px;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+.sidebar__node-wrap[data-project-expanded] > .sidebar__node {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: var(--ui-sidebar);
+}
+
+.sidebar__node--project:focus-within .sidebar__node-action,
+.sidebar__node-action[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.sidebar__children .sidebar__conv button {
+  scroll-margin-block-start: 36px;
 }
 
 .sidebar__more-popover {

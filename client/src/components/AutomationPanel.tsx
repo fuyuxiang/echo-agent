@@ -1,7 +1,7 @@
-import { PageHeading } from "./PageHeading";
 import { ResourceList } from "./ResourceList";
 import { findModelDisplayName } from "@/lib/model-presentation";
-import { PageToolbar } from "./PageToolbar";
+import { ManagementToolbar } from "./PageToolbar";
+import { Button } from "./Button";
 /** Local scheduled-task workspace: plans, scoped run results and a draft-safe editor. */
 import {
   useCallback,
@@ -1383,10 +1383,9 @@ export function AutomationPanel({
   // 列表态渲染（截图 1 / 3）
   // ============================================================
   return (
-    <div className="automation-panel echo-agent-automation">
-      {/* ---------- 工具栏(顶部拖拽条,Tauri 2 需 data-tauri-drag-region) ---------- */}
+    <div className="management-workspace echo-agent-automation">
       {showTemplatePage ? (
-        <PageToolbar className="atm-toolbar atm-toolbar--breadcrumb">
+        <ManagementToolbar>
           <div className="atm-toolbar-left">
             <div className="atm-detail-breadcrumb">
               <span className="atm-detail-status-icon">
@@ -1403,12 +1402,20 @@ export function AutomationPanel({
               <span className="atm-detail-breadcrumb-current">从模板添加</span>
             </div>
           </div>
-        </PageToolbar>
+        </ManagementToolbar>
       ) : (
-        <PageToolbar className="atm-toolbar">
+        <ManagementToolbar title="定时任务">
+          {activeTab === "tasks" && !isBatchMode && (
+            <Button size="compact" className="management-toolbar__action" onClick={() => handleCreate()}>
+              <AddIcon size="sm" />新建定时任务
+            </Button>
+          )}
+        </ManagementToolbar>
+      )}
+      <div className="automation-panel echo-agent-automation">
+      {!showTemplatePage && (
+        <div className="atm-toolbar atm-toolbar--filters">
           <div className="atm-toolbar-left">
-            <PageHeading title="定时任务" titleClassName="atm-page-title"
-              description="按计划执行任务，跟进运行记录与交付结果。" />
             {isBatchMode ? (
               <div className="atm-batch-info">
                 <button
@@ -1538,30 +1545,20 @@ export function AutomationPanel({
                       <AtmBatchManageIcon />
                       <span>批量管理</span>
                     </button>
-                    <div className="atm-create-actions">
-                      <button
+                    <button
                         type="button"
                         className="atm-toolbar-btn"
                         onClick={() => setShowTemplatePage(true)}
                       >
                         <AtmAddFromTemplateIcon />
                         <span>从模板添加</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="atm-toolbar-btn atm-new-task-btn"
-                        onClick={() => handleCreate()}
-                      >
-                        <AddIcon />
-                        <span>新建定时任务</span>
-                      </button>
-                    </div>
+                    </button>
                   </>
                 )}
               </>
             )}
           </div>
-        </PageToolbar>
+        </div>
       )}
 
       {snapshot && snapshotError && (
@@ -1666,15 +1663,6 @@ export function AutomationPanel({
               </div>
               <div className="atm-empty-state-text">
                 安排任务，让 EchoAgent 按时为你处理
-              </div>
-              <div className="atm-empty-state-actions">
-                <button
-                  type="button"
-                  className="atm-empty-action-btn"
-                  onClick={() => handleCreate()}
-                >
-                  + 新建定时任务
-                </button>
               </div>
             </div>
             <div className="atm-empty-state-templates">
@@ -1899,6 +1887,7 @@ export function AutomationPanel({
           onCancel={() => setConfirmState(null)}
         />
       )}
+      </div>
     </div>
   );
 }

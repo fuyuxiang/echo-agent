@@ -1,10 +1,6 @@
 /* The organization workspace has one content scroll owner and persistent navigation. */
 .org-workspace.org-memory { display:flex; flex-direction:column; width:100%; height:100%; min-width:0; min-height:0; padding:0; overflow:hidden; background:var(--echo-surface-canvas); container:organization / inline-size; }
-.org-workspace__topbar { display:flex; flex:none; align-items:center; gap:16px; min-height:var(--echo-header-height); padding:12px 24px; border-bottom:1px solid var(--echo-border-weak); }
-.org-workspace__brand { display:flex; align-items:center; gap:9px; min-width:0; }
-.org-workspace__brand>svg { flex:none; color:var(--echo-brand); }
-.org-workspace__brand h1 { overflow:hidden; margin:0; font-size:1.125rem; font-weight:700; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
-.org-workspace__connection { display:flex; align-items:center; gap:6px; min-width:0; margin-left:auto; color:var(--echo-text-weak); font-size:.75rem; }
+.org-workspace__connection { display:flex; align-items:center; flex:none; gap:6px; color:var(--echo-text-medium); font-size:.75rem; white-space:nowrap; }
 .org-workspace__connection i { width:6px; height:6px; flex:none; border-radius:50%; background:var(--echo-text-weak); }
 .org-workspace__connection.is-active i { background:var(--echo-status-success,#008c68); }
 .org-workspace__topbar>.topbar-actions { flex:0 1 auto; min-width:0; max-width:100%; margin-left:auto; }
@@ -20,9 +16,7 @@
 .org-workspace .org-memory__nav button em { font-size:.6875rem; font-variant-numeric:tabular-nums; }
 .org-workspace .org-memory__content { container:organization-content / inline-size; display:flex; flex-direction:column; min-width:0; min-height:0; padding:0 var(--echo-page-gutter) 24px; overflow:hidden; }
 .org-workspace__page-header { display:flex; flex:none; align-items:center; justify-content:space-between; gap:16px; padding:var(--echo-page-top) 0 24px; }
-.org-workspace__page-header>div:first-child { min-width:0; }
-.org-workspace__page-header h2 { margin:0 0 5px; font-size:var(--echo-page-title-size); font-weight:var(--echo-page-title-weight); line-height:var(--echo-page-title-line-height); }
-.org-workspace__page-header p { margin:0; color:var(--echo-text-medium); font-size:.8125rem; line-height:1.6; }
+.org-workspace__page-header h2 { min-width:0; margin:0; font-size:var(--echo-page-title-size); font-weight:var(--echo-page-title-weight); line-height:var(--echo-page-title-line-height); overflow-wrap:anywhere; }
 .org-workspace__page-actions { display:flex; flex:none; align-items:center; justify-content:flex-end; gap:8px; }
 .org-memory .org-icon-button { display:inline-flex; align-items:center; justify-content:center; flex:none; width:34px; height:34px; padding:0; border:1px solid transparent; background:transparent; color:var(--echo-text-medium); }
 .org-memory .org-icon-button:hover { background:var(--echo-bg-hover); }
@@ -139,16 +133,12 @@
   .org-workspace .org-overview__metrics button:first-child { border-top:0; }
 }
 @container organization (max-width:620px) {
-  .org-workspace__topbar { flex-wrap:wrap; gap:8px 12px; min-height:60px; padding:14px 16px; }
-  .org-workspace__connection { order:3; flex-basis:100%; margin-left:0; font-size:.6875rem; }
-  .org-workspace__connection+.topbar-actions { margin-left:auto; }
   .org-workspace__body { display:flex; flex-direction:column; gap:0; padding:0 16px 10px; }
   .org-workspace .org-memory__nav { display:flex; flex:none; flex-direction:row; gap:4px; padding:10px 0; border-right:0; border-bottom:1px solid var(--echo-border-default); overflow-x:auto; }
   .org-workspace .org-memory__nav button { display:flex; flex:none; width:auto; gap:6px; min-height:36px; padding:7px 10px; }
   .org-workspace .org-memory__nav button em { display:none; }
   .org-workspace .org-memory__content { flex:1; padding:0 0 8px; }
   .org-workspace__page-header { padding:16px 0 12px; }
-  .org-workspace__page-header p { display:none; }
   .org-workspace__page-header h2 { margin:0; font-size:1.125rem; }
   .org-workspace__page-actions { flex-wrap:wrap; gap:6px; }
   .org-workspace__page-actions button { font-size:.75rem; padding-inline:9px; }

@@ -4,18 +4,20 @@ import { PageToolbar } from "@/components/PageToolbar";
 import { Button, IconButton } from "@/components/Button";
 import { PageHeading } from "@/components/PageHeading";
 
+interface SearchProps {
+  value: string;
+  onChange: (value: string) => void;
+  label: string;
+  placeholder?: string;
+}
+
 interface Props {
   title: string;
   headingLevel?: 1 | 2;
   description?: string;
   metadata?: ReactNode;
   className?: string;
-  search?: {
-    value: string;
-    onChange: (value: string) => void;
-    label: string;
-    placeholder?: string;
-  };
+  search?: SearchProps;
   actions?: ReactNode;
   illustration?: ReactNode;
   summary?: ReactNode;
@@ -24,7 +26,6 @@ interface Props {
 
 /** The extension pages share one toolbar, content gutter and scroll owner. */
 export function CapabilityPage({ title, headingLevel = 2, description, metadata, className = "", search, actions, illustration, summary, children }: Props) {
-  const searchRef = useRef<HTMLInputElement>(null);
   return (
     <section className={`capability-page ${className}`} aria-label={title}>
       <div className="capability-page__inner">
@@ -35,18 +36,7 @@ export function CapabilityPage({ title, headingLevel = 2, description, metadata,
             {metadata && <div className="capability-page__metadata">{metadata}</div>}
           </PageHeading>
           <div className="capability-page__controls">
-            {search && (
-              <div className="capability-search">
-                <SearchIcon size="sm" className="capability-search__icon" />
-                <input ref={searchRef} type="text" aria-label={search.label}
-                  placeholder={search.placeholder ?? search.label}
-                  value={search.value} onChange={(event) => search.onChange(event.target.value)} />
-                {search.value && <IconButton className="capability-search__clear"
-                  label={`清空${search.label}`} onClick={() => { search.onChange(""); searchRef.current?.focus(); }}>
-                  <XCloseIcon size="sm" />
-                </IconButton>}
-              </div>
-            )}
+            {search && <CapabilitySearch {...search} />}
             {actions && <div className="capability-page__actions">{actions}</div>}
           </div>
           {illustration && <div className="capability-page__illustration">{illustration}</div>}
@@ -56,6 +46,19 @@ export function CapabilityPage({ title, headingLevel = 2, description, metadata,
       </div>
     </section>
   );
+}
+
+export function CapabilitySearch({ value, onChange, label, placeholder = label }: SearchProps) {
+  const input = useRef<HTMLInputElement>(null);
+  return <div className="capability-search">
+    <SearchIcon size="sm" className="capability-search__icon" />
+    <input ref={input} type="text" aria-label={label} placeholder={placeholder}
+      value={value} onChange={event => onChange(event.target.value)} />
+    {value && <IconButton className="capability-search__clear"
+      label={`清空${label}`} onClick={() => { onChange(""); input.current?.focus(); }}>
+      <XCloseIcon size="sm" />
+    </IconButton>}
+  </div>;
 }
 
 export function CapabilityEmptyState({ icon, title, description, onClear }: {

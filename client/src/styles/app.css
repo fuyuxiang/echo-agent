@@ -7033,13 +7033,9 @@ button.diff__path {
 }
 .sidebar__list-section {
   display: flex;
+  /* Start at the rendered rows' height and shrink only when space runs out. */
   flex: 0 1 auto;
   flex-direction: column;
-  min-height: 0;
-}
-/* Keep short sections at their natural height; divide the rest between long lists. */
-.sidebar__list-section--long {
-  flex: 1 1 0;
   min-height: 0;
 }
 .sidebar__list-section:has(> .sidebar__group) { min-height: 76px; }
@@ -7049,9 +7045,6 @@ button.diff__path {
   min-height: calc(38px + max(36px, 2.2rem + 10px));
 }
 .sidebar__list-section--chats:has(> .sidebar__group) { min-height: calc(38px + max(40px, 3rem)); }
-.sidebar__list-section + .sidebar__list-section {
-  margin-top: 6px;
-}
 .sidebar__list-section > .sidebar__section-head,
 .sidebar__list-section > .sidebar__section-label {
   flex: none;

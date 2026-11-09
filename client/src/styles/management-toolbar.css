@@ -1,0 +1,130 @@
+.management-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--echo-surface-canvas);
+}
+
+.page-toolbar.management-toolbar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 var(--echo-header-height);
+  flex-wrap: nowrap;
+  gap: 12px;
+  width: 100%;
+  height: var(--echo-header-height);
+  min-height: 0;
+  padding: 0 var(--echo-page-gutter);
+  border-bottom: 1px solid var(--echo-border-weak);
+  background: var(--echo-surface-canvas);
+  box-sizing: border-box;
+}
+
+.page-toolbar.management-toolbar.page-toolbar--native-controls {
+  padding-inline-start: 84px;
+}
+
+.app__body--collapsed .management-toolbar.page-toolbar--window-navigation {
+  padding-inline-start: var(--window-navigation-space);
+}
+
+.management-toolbar__title {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0 auto 0 0;
+  color: var(--echo-text-strong);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.management-toolbar > :is(button, .topbar-actions) {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.management-toolbar > button {
+  min-height: var(--echo-size-control-sm);
+}
+
+.management-toolbar > nav {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-app-region: no-drag;
+}
+
+.management-toolbar .panel-navigation__links {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.project-list-tools,
+.project-list-tools__label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.project-list-tools {
+  flex: 1 1 280px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.project-list-tools__label {
+  margin-inline-end: auto;
+}
+
+.project-list-tools .capability-search {
+  flex: 0 1 240px;
+  width: 240px;
+  max-width: 100%;
+}
+
+.project-management .resource-collection__toolbar {
+  justify-content: flex-end;
+}
+
+.project-management .capability-page__inner {
+  padding-block-start: 20px;
+}
+
+.management-workspace > .automation-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+.automation-panel .atm-toolbar--filters {
+  position: relative;
+  min-height: 0;
+  padding-block: 10px;
+}
+
+.atm-toolbar--filters .atm-toolbar-right:empty {
+  display: none;
+}
+
+.management-toolbar__action {
+  --button-bg: transparent;
+}
+
+@container app-main (max-width: 520px) {
+  .page-toolbar.management-toolbar {
+    padding-inline-end: 16px;
+  }
+
+  .management-toolbar .panel-navigation__links {
+    gap: 2px;
+  }
+
+  .management-toolbar .panel-navigation__links button {
+    padding-inline: 4px;
+    font-size: .75rem;
+  }
+}

@@ -167,6 +167,8 @@ const orgScopes = [
   { id: "mine", kind: "personal", name: "我的空间", canPublishDocuments: true },
   { id: "team", kind: "team", name: "产品研发团队", canPublishDocuments: true },
 ];
+const orgCapability = query.get("orgCapability");
+if (orgCapability === "no-scope") orgScopes.splice(1);
 if (query.get("orgName")) orgScopes.push({ id: "org", kind: "org", name: query.get("orgName")!, canPublishDocuments: true });
 const orgDocuments = [
   { id: "review-docx", title: "自动化分析报告功能介绍.docx", sourceType: "docx", status: "ready", byteSize: 453740, scopeId: "team", scopeKind: "team", scopeName: "产品研发团队", ownerId: "another-user", chunkCount: 12, tags: [], updatedAt: 1 },
@@ -284,14 +286,14 @@ if (["conversation", "conversation-layout", "workbench", "queue"].includes(query
     chat.markComplete({ sessionId: "review-conversation", promptId: "recovery-turn", stopReason: "cancelled", cancellationCategory: "PermissionRejected" });
   }
 }
-if (query.get("surface") === "sidebar-scroll") {
-  const variant = query.get("variant") ?? "both";
-  const taskCount = ["projects", "short"].includes(variant) ? 2 : 54;
-  const projectCount = ["tasks", "short"].includes(variant) ? 2 : 18;
-  useGroupStore.setState({ groups: Array.from({length: Math.min(12, Number(query.get("groups")) || 0)}, (_, index) => ({
+if (query.get("surface") === "sidebar-scroll" || query.has("sidebarCatalog")) {
+  const variant = query.get("sidebarCatalog") ?? query.get("variant") ?? "both";
+  const taskCount = variant === "fits" ? 8 : ["projects", "short"].includes(variant) ? 2 : 54;
+  const projectCount = ["tasks", "short", "fits"].includes(variant) ? 2 : 18;
+  useGroupStore.setState({ groups: Array.from({length: Math.min(100, Number(query.get("groups")) || 0)}, (_, index) => ({
     id:`sidebar-group-${index}`, name:`群聊 ${index + 1}`, goal:"侧栏协作", cwd:"/review/EchoAgent", sourceSessionId:null, sourceTeamId:null,
     coordinatorId:"coordinator", members:[], messages:[], works:[], decisions:[], archived:false, pinned:false, paused:false,
-    revision:1, updatedAt:12-index,
+    revision:1, updatedAt:100-index,
   })) });
   useSessionsStore.setState({
     independent: Array.from({ length: taskCount }, (_, index) => ({
@@ -312,7 +314,10 @@ if (query.get("surface") === "sidebar-scroll") {
       name: `项目 ${String(index + 1).padStart(2, "0")} · EchoAgent 工作区`,
       cwd: `/review/project-${index}`,
       createdAt: new Date().toISOString(),
-      connectors: [], experts: [], skills: [], plans: [], tasks: [], assets: [], members: [], conversations: [],
+      connectors: [], experts: [], skills: [], plans: [], tasks: [], assets: [], members: [],
+      conversations: index === 0 && query.has("projectSessions") ? Array.from({length: 14}, (_, session) => ({
+        sessionId: `sidebar-child-${session}`, title: `项目会话 ${session + 1}`, createdAt: new Date().toISOString(),
+      })) : [],
     })),
   });
   if (query.get("sessionTimes") === "1") {
@@ -702,7 +707,7 @@ Object.assign(window, {
         case "org_submit_memory_candidate": orgPromotionSamples=[{id:"review-new-promotion",payloadType:"memory",payload:{kind:args.kind,content:args.content},source:"user",state:"pending",createdAt:1,scopeId:args.targetScopeId,scopeKind:"team",scopeName:"产品研发团队"},...orgPromotionSamples];return {promotionId:"review-new-promotion",state:"pending"};
         case "org_session":
           await organizationConnectionReady;
-          return { loggedIn: orgLoggedIn && query.get("surface") !== "organization-login", organizationMemoryEnabled: true, serverUrl: "https://10.132.19.82:8787", user: orgUser, bootstrap: { apiVersion: 1, user: orgUser, scopes: orgScopes, policy: { allowPersonalCloud: true, allowSkillSubmission: true }, serverTime: 1 } };
+          return { loggedIn: orgLoggedIn && query.get("surface") !== "organization-login", organizationMemoryEnabled: !orgCapability, serverUrl: "https://10.132.19.82:8787", user: orgUser, bootstrap: { apiVersion: 1, user: orgUser, scopes: orgScopes, policy: { allowPersonalCloud: true, allowSkillSubmission: true }, serverTime: 1 } };
         case "org_list_scopes":
           if (query.get("orgError") === "1" && organizationScopeAttempts++ === 0) throw new Error("refresh organization session: error sending request for url (https://review.invalid/api/v1/auth/refresh)");
           return orgScopes;
@@ -899,7 +904,7 @@ function CodingSidebarReview({ cwd, onCwdChange }: { cwd: string; onCwdChange: (
 function ManagementReviewFixture({ surface }: { surface: string }) {
   const layout = useAppSidebarLayout();
   useEffect(() => { layout.setCollapsed(query.get("collapsed") === "1"); }, []);
-  const label = surface === "resource-groups" ? "专家团" : surface === "projects" ? "项目" : surface === "organization-shell" ? "组织" : surface === "management-experts" ? "专家·技能·连接器" : surface === "management-knowledge" ? "知识库" : "自动化";
+  const label = surface === "resource-groups" ? "专家团" : surface === "projects" ? "项目" : surface === "organization-shell" ? "组织" : surface === "management-experts" ? "专家·技能·连接器" : surface === "management-knowledge" ? "知识库" : surface === "management-meetings" ? "录音转写" : "自动化";
   return <div className={`app${query.get("platform") === "mac" ? " app--macos" : ""}`}><SidebarLayoutContext.Provider value={layout.context}>
     <ReviewWindowChrome />
     <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "") + (layout.resizing ? " app__body--sidebar-resizing" : "")}>
@@ -1031,7 +1036,7 @@ function Fixture() {
     }} onCancel={() => {}} title={query.has("scheduledReplay") ? "定时任务执行报告" : "评审投影仪性能与内存泄漏"} /></main>
     {recoverySent && query.has("recovery") && <p role="note" style={{position:"absolute",top:0,left:0,maxWidth:"100%",background:"var(--echo-bg-secondary)",fontSize:12,padding:8}}>{recoverySent}</p>}
   </div>;
-  if (["resource-groups", "projects", "organization-shell", "automation-templates", "management-experts", "management-knowledge", "management-schedules"].includes(surface)) return <ManagementReviewFixture surface={surface} />;
+  if (["resource-groups", "projects", "organization-shell", "automation-templates", "management-experts", "management-knowledge", "management-schedules", "management-meetings"].includes(surface)) return <ManagementReviewFixture surface={surface} />;
   if (surface === "organization" || surface === "organization-login") return <div style={{ height: "100%", overflow: "auto" }}><OrganizationMemoryPanel onStartConversation={() => {}} /></div>;
   if (surface === "meeting") return <MeetingMinutesPanel modelId="review/MiniMax-M3" models={[{ id: "review/MiniMax-M3", label: "MiniMax M3", providerId: "review", providerKind: "custom", source: "personal" }]} />;
   if (surface === "permission-picker") return <div style={{ position: "relative", height: "100%", background: "var(--echo-bg-secondary)" }}>
