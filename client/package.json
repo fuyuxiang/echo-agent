@@ -12,7 +12,7 @@
     "ide:stage": "node scripts/stage-theia-runtime.mjs",
     "ide:prepare": "node scripts/prepare-theia.mjs",
     "office:build": "node scripts/build-office-worker.mjs",
-    "retrieval:prepare": "node scripts/prepare-retrieval-models.mjs",
+    "retrieval:prepare": "node --use-env-proxy scripts/prepare-retrieval-models.mjs",
     "retrieval:check": "node scripts/prepare-retrieval-models.mjs --check",
     "test:retrieval-packaging": "node --test scripts/test-retrieval-models.mjs",
     "test:retrieval-offline": "node scripts/test-bundled-retrieval.mjs",

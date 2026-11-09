@@ -118,7 +118,7 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 
 向量生成和重排在本机完成；参与回答的资料和自动整理记忆的内容仍会交给当前对话模型。离线模型目录结构为 `embedding/{model.onnx,tokenizer.json}` 与 `reranker/{model.onnx,tokenizer.json}`；准确下载版本、文件名和 SHA256 在 `vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json`。原模型说明：[Embedding](https://huggingface.co/BAAI/bge-base-zh-v1.5)、[Reranker](https://huggingface.co/BAAI/bge-reranker-base)。
 
-开发与打包时自动运行 `pnpm retrieval:prepare`，按固定版本下载并校验模型到被 Git 忽略的 `src-tauri/resources/retrieval-models/`；不将权重提交到源码仓库。离线构建可先运行 `pnpm retrieval:prepare --source /path/to/models`，或设置 `ECHO_RETRIEVAL_MODELS_SOURCE` 指向上述离线目录。`pnpm retrieval:check` 检查所有文件的 SHA256；Release 编译也会强制校验，缺失或损坏会中止构建，避免产出缺模型的客户端。安装包携带相应模型与推理运行时的许可说明。
+开发与打包时自动运行 `pnpm retrieval:prepare`，优先复用 `src-tauri/resources/retrieval-models/` 中已通过校验的模型。需要补齐时从固定的 [GitHub Release](https://github.com/fuyuxiang/echo-agent-desktop/releases/tag/retrieval-models-v1) 下载模型包，校验压缩包的 SHA256 后用系统 `tar` 解包，再逐文件校验。离线构建可运行 `pnpm retrieval:prepare --source /path/to/models`，或设置 `ECHO_RETRIEVAL_MODELS_SOURCE` 指向上述离线目录。`pnpm retrieval:check` 检查所有文件的 SHA256；Release 编译也会强制校验，缺失或损坏会中止构建。安装包携带模型与推理运行时的许可说明。
 
 `pnpm test:retrieval-packaging` 验证资源准备与损坏处理；准备真实模型后，`pnpm test:retrieval-offline` 分别使用全新数据目录验证内置模型离线首用（不复制权重）和离线包导入（写入用户目录），覆盖真实向量生成、重排和文件校验。
 
