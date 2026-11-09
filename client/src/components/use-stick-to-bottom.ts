@@ -109,6 +109,11 @@ export function useStickToBottom({
 
   const pauseFollowing = useCallback(() => {
     updateFollowing(false);
+    const element = scrollRef.current;
+    if (element) {
+      lastScrollTopRef.current = element.scrollTop;
+      lastScrollRangeRef.current = Math.max(0, element.scrollHeight - element.clientHeight);
+    }
     rememberPosition();
     cancelScheduledAlignment();
   }, [cancelScheduledAlignment, updateFollowing, rememberPosition]);
@@ -188,8 +193,8 @@ export function useStickToBottom({
       // following immediately, including for tiny scrollbar/trackpad moves.
       if (nextScrollTop < lastScrollTopRef.current - 0.5 && !clampedToBottom) {
         pauseFollowing();
-      } else if (isNearScrollBottom(scrollElement, threshold)) {
-        // Following resumes naturally only after the user reaches the bottom.
+      } else if (nextScrollTop > lastScrollTopRef.current && isNearScrollBottom(scrollElement, threshold)) {
+        // An unchanged position can be a late scroll event from a prior alignment.
         updateFollowing(true);
       }
       lastScrollTopRef.current = nextScrollTop;

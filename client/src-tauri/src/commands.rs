@@ -1309,14 +1309,17 @@ pub fn agent_prepare_task_workspace(
     request_id: String,
 ) -> Result<String, String> {
     crate::policy::require_feature("sessions")?;
-    let base = default_cwd()?;
-    let filesystem = app.state::<crate::shell_fs::FilesystemAccess>();
-    filesystem.require_workspace(&base.to_string_lossy())?;
-    let directory = crate::session_workspace::prepare_task_directory(&base, &request_id)?;
-    Ok(filesystem
-        .require_workspace(&directory.to_string_lossy())?
-        .to_string_lossy()
-        .into_owned())
+    let prepare = || -> Result<String, String> {
+        let base = default_cwd()?;
+        let filesystem = app.state::<crate::shell_fs::FilesystemAccess>();
+        filesystem.require_workspace(&base.to_string_lossy())?;
+        let directory = crate::session_workspace::prepare_task_directory(&base, &request_id)?;
+        Ok(filesystem
+            .require_workspace(&directory.to_string_lossy())?
+            .to_string_lossy()
+            .into_owned())
+    };
+    prepare().map_err(|error| format!("无法分配默认任务目录：{error}"))
 }
 
 #[derive(serde::Serialize)]
@@ -1369,6 +1372,7 @@ pub async fn agent_new_session(
     cwd: String,
     model_id: Option<String>,
     permission_mode: Option<String>,
+    expected_permission_mode: Option<String>,
 ) -> Result<String, String> {
     crate::policy::require_feature("sessions")?;
     crate::org::enforce_skill_lease();
@@ -1382,8 +1386,10 @@ pub async fn agent_new_session(
     let _permission_transition_guard = crate::permission_config::permission_transition_lock()
         .lock()
         .await;
-    let permission_mode =
-        crate::permission_config::resolve_new_session_permission_mode(permission_mode.as_deref())?;
+    let permission_mode = crate::permission_config::require_new_session_permission_preview(
+        crate::permission_config::resolve_new_session_permission_mode(permission_mode.as_deref()),
+        expected_permission_mode.as_deref(),
+    )?;
     ensure_runtime_ready(&app, &state, model_id.as_deref()).await?;
     let tx = state
         .tx

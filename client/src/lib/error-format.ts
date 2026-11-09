@@ -297,3 +297,8 @@ export function friendlyError(e: unknown): string {
   const raw = String(e);
   return formatAgentError(raw) ?? raw.replace(/^Error:\s*/, "");
 }
+
+/** Errors returned by the native workspace checks before a session is created. */
+export function isTaskWorkspaceError(error: unknown): boolean {
+  return /^(?:Error:\s*)?(?:无法解析会话工作区|会话工作区必须是|会话工作区未经用户授权|无法访问工作目录|无法分配默认任务目录)/.test(String(error));
+}

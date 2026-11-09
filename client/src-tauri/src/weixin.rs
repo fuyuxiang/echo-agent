@@ -2502,6 +2502,7 @@ async fn route_message(
             cwd,
             None,
             Some("ask".into()),
+            None,
         )
         .await?;
         *binding = mutate_binding(|current| {

@@ -34,28 +34,28 @@ import {
   type ProjectPickerOptions,
 } from "./project-picker";
 import { ProjectDetailView } from "./ProjectDetailView";
-import { projectAssetsRemoveAll } from "@/lib/agent-client";
+import { projectAssetsRemoveAll, type PermissionMode, type WorkspaceInfo } from "@/lib/agent-client";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { useUnsavedClose } from "@/lib/use-unsaved-close";
 import { useAnchoredFloating } from "@/lib/use-anchored-floating";
 import { useAppDialog } from "./AppDialog";
 import type { ModelOption } from "./ModelSelector";
 import type { SlashCommandInvocation } from "@/lib/slash-commands";
+import type { StartProjectConversation } from "@/lib/project-context";
+import { displayPath } from "@/lib/display-path";
+import { PermissionPicker } from "./PermissionPicker";
+import { selectProjectPermissionMode, usePermissionModeStore } from "@/stores/permission-mode-store";
 
 interface ProjectsPanelProps {
   cwd?: string;
   onSelectWorkspace?: (cwd: string) => void;
   onToast?: (msg: string) => void;
-  onStartProject?: (project: ProjectMeta) => void;
+  onStartProject?: (project: ProjectMeta, expectedPermissionMode: PermissionMode) => void | Promise<void>;
   /** Internal project navigation supersedes pending task-opening requests. */
   onNavigate?: () => void;
   /** Start a new conversation within a project (creates a real EchoAgent session). */
-  onStartProjectConversation?: (
-    projectId: string,
-    message: string,
-    modelId?: string,
-    attachments?: string[],
-  ) => Promise<string | undefined>;
+  onStartProjectConversation?: StartProjectConversation;
+  workspaces?: WorkspaceInfo[];
   onOpenSession?: (sessionId: string, cwd?: string) => void;
   onRenameSession?: (sessionId: string, title: string, cwd?: string) => Promise<void>;
   onArchiveSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
@@ -92,6 +92,7 @@ export function ProjectsPanel({
   onStartProject,
   onNavigate,
   onStartProjectConversation,
+  workspaces,
   onOpenSession,
   onRenameSession,
   onArchiveSession,
@@ -113,27 +114,30 @@ export function ProjectsPanel({
   const rename = useProjectsStore((s) => s.rename);
   const remove = useProjectsStore((s) => s.remove);
   const activeProjectId = useProjectsStore((s) => s.activeProjectId);
+  const focusProjectDraft = useProjectsStore((s) => s.focusProjectDraft);
   const setActiveProjectId = useProjectsStore((s) => s.setActiveProjectId);
   const [query, setQuery] = useState("");
   const [create, setCreate] = useState<CreatePreset | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [draftFocusRequest, setDraftFocusRequest] = useState(0);
   const [deleteTarget, setDeleteTarget] = useState<ProjectMeta | null>(null);
   const [deleting, setDeleting] = useState(false);
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const picker = useProjectPickerOptions(cwd);
-  const { requestInput, dialog } = useAppDialog(openId);
-  const navigateProject = useCallback((id: string | null) => {
+  const { requestInput, requestConfirmation, dialog } = useAppDialog(openId);
+  const navigateProject = useCallback((id: string | null, focusDraft = false) => {
     onNavigate?.();
     setOpenId(id);
+    setDraftFocusRequest(current => focusDraft ? current + 1 : 0);
   }, [onNavigate]);
 
   // Auto-open a project when navigated from the sidebar.
   useEffect(() => {
     if (activeProjectId) {
-      navigateProject(activeProjectId);
+      navigateProject(activeProjectId, focusProjectDraft);
       setActiveProjectId(null);
     }
-  }, [activeProjectId, setActiveProjectId, navigateProject]);
+  }, [activeProjectId, focusProjectDraft, setActiveProjectId, navigateProject]);
 
   const filtered = projects.filter((p) =>
     p.name.toLowerCase().includes(query.toLowerCase()),
@@ -144,7 +148,10 @@ export function ProjectsPanel({
     return (
       <>
         <ProjectDetailView
+          key={openProject.id}
           project={openProject}
+          draftFocusRequest={draftFocusRequest}
+          workspaces={workspaces}
           onBack={() => navigateProject(null)}
           onToast={onToast}
           onStartConversation={onStartProjectConversation}
@@ -232,7 +239,20 @@ export function ProjectsPanel({
                 key={p.id}
                 project={p}
                 onEnter={() => navigateProject(p.id)}
-                onStart={() => onStartProject?.(p)}
+                onStart={onStartProject ? (returnFocus) => requestConfirmation({
+                  title: `开始「${p.name}」的项目对话？`,
+                  description: <>
+                    <p>工作目录为{p.cwd ? `「${displayPath(p.cwd)}」` : "自动分配的独立任务目录"}。确认后立即发送项目开场消息。</p>
+                    <div>任务默认权限 <PermissionPicker inheritTaskDefault showLockedAsText /></div>
+                  </>,
+                  confirmLabel: "开始项目对话",
+                  returnFocus,
+                  action: () => {
+                    const permissionMode = selectProjectPermissionMode(usePermissionModeStore.getState());
+                    if (!permissionMode) throw new Error("请确认任务默认权限后重试。");
+                    return onStartProject(p, permissionMode);
+                  },
+                }) : undefined}
                 onRename={() => handleRename(p)}
                 onDelete={() => setDeleteTarget(p)}
               />
@@ -361,7 +381,7 @@ function ProjectCard({
 }: {
   project: ProjectMeta;
   onEnter: () => void;
-  onStart: () => void;
+  onStart?: (returnFocus: HTMLButtonElement | null) => void;
   onRename: () => void;
   onDelete: () => void;
 }) {
@@ -503,7 +523,10 @@ function ProjectCard({
           onClick={(e) => e.stopPropagation()}
         >
           <button type="button" role="menuitem" className="project-card2__menu-item" onClick={() => { closeMenu(); onEnter(); }}>进入项目</button>
-          <button type="button" role="menuitem" className="project-card2__menu-item" onClick={() => { closeMenu(); onStart(); }}>开始项目对话</button>
+          {onStart && <button type="button" role="menuitem" className="project-card2__menu-item" onClick={() => {
+            closeMenu();
+            onStart(triggerRef.current);
+          }}>开始项目对话</button>}
           <button type="button" role="menuitem" className="project-card2__menu-item" onClick={() => { closeMenu(); onRename(); }}>重命名</button>
           <div className="project-card2__menu-sep" role="separator" />
           <button

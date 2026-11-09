@@ -202,7 +202,8 @@ interface ProjectsState {
   retryPersist: () => void;
   /** Sidebar → ProjectsPanel communication: when set, the panel auto-opens this project. */
   activeProjectId: string | null;
-  setActiveProjectId: (id: string | null) => void;
+  focusProjectDraft: boolean;
+  setActiveProjectId: (id: string | null, focusDraft?: boolean) => void;
   add: (p: {
     name: string;
     cwd?: string;
@@ -275,7 +276,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     persistError: null,
     retryPersist: () => persist(get().projects),
     activeProjectId: null,
-    setActiveProjectId: (id) => set({ activeProjectId: id }),
+    focusProjectDraft: false,
+    setActiveProjectId: (id, focusDraft = false) => set({ activeProjectId: id, focusProjectDraft: focusDraft }),
     add: (p) => {
       const item: ProjectMeta = {
         id: uid("proj"),

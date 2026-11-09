@@ -23,12 +23,13 @@ try {
     await page.locator(".session-header").waitFor();
     if (width < 900) await page.getByRole("button", {name:"收起侧边栏",exact:true}).click();
     assert.equal(await page.locator(".session-header").getByRole("button", {name:"打开工作目录"}).count(), 0);
+    await page.getByRole("button", {name:/^打开工作目录：/}).click();
+    await page.waitForFunction(() => window.workbenchCalls.some(c => c.command === "open_path" && c.args.path.includes("desktop-client")));
     await openWorkspaceView(page, "文件");
     const directory = page.getByRole("region", {name:"本任务工作目录"});
     await directory.waitFor();
-    await page.getByRole("button", {name:"打开工作目录",exact:true}).click();
-    await page.waitForFunction(() => window.workbenchCalls.some(c => c.command === "open_path" && c.args.path.includes("desktop-client")));
-    assert.equal(await directory.getByRole("button").count(), 1, "Files must not offer a live directory switch");
+    await directory.getByRole("button", { name: "打开文件夹", exact: true }).click();
+    await page.waitForFunction(() => window.workbenchCalls.filter(c => c.command === "open_path" && c.args.path.includes("desktop-client")).length === 2);
     const fits = await directory.evaluate(element => {
       const rect = element.getBoundingClientRect();
       return rect.x >= 0 && rect.right <= innerWidth + 1 && element.scrollWidth <= element.clientWidth + 1;
@@ -49,14 +50,16 @@ try {
     await page.getByRole("button", {name:"重试连接",exact:true}).click();
     assert.equal(await input.inputValue(), "保留这条草稿");
     await openWorkspaceView(page, "文件");
-    assert.ok(await page.getByRole("button", {name:"打开工作目录",exact:true}).isDisabled());
+    const openFolder = directory.getByRole("button", {name:"打开文件夹",exact:true});
+    assert.ok(await openFolder.isDisabled());
     await page.screenshot({path:join(output, `missing-${width}-${theme}.png`)});
     await page.evaluate(() => { window.workspaceReady = true; });
     await page.getByRole("button", {name:"恢复连接",exact:true}).click();
     await page.waitForFunction(() => window.workspaceReloaded);
     await page.getByRole("alert").filter({hasText:"本任务的工作目录已找不到"}).waitFor({state:"detached"});
     assert.equal(await input.inputValue(), "保留这条草稿");
-    assert.ok(await page.getByRole("button", {name:"打开工作目录",exact:true}).isEnabled());
+    await openFolder.click();
+    await page.waitForFunction(() => window.workbenchCalls.some(c => c.command === "open_path" && c.args.path.includes("desktop-client")));
     assert.ok(await retry.isEnabled(), "restoring the directory must restore reply actions");
     await page.getByRole("button", {name:"关闭面板",exact:true}).click();
   }

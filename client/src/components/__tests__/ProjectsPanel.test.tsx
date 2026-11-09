@@ -22,6 +22,9 @@ vi.mock("@/lib/agent-client", async () => {
     ...actual,
     projectsSave: vi.fn().mockResolvedValue(undefined),
     projectAssetsRemoveAll: vi.fn().mockResolvedValue(undefined),
+    permissionModeGet: vi.fn().mockResolvedValue({
+      permissionMode: "always-approve", configuredPermissionMode: "always-approve", locked: true,
+    }),
   };
 });
 
@@ -85,6 +88,21 @@ describe("ProjectsPanel 项目操作菜单", () => {
     expect(menu).toHaveStyle({ position: "fixed", zIndex: "var(--echo-layer-popover)" });
     expect(menu).toHaveAttribute("data-placement", "bottom");
     expect(screen.getByRole("menuitem", { name: "删除" })).toBeVisible();
+  });
+
+  it("快速启动确认显示工作目录和锁定的实际权限，再执行开场消息", async () => {
+    const item = { ...project, cwd: "/project" };
+    useProjectsStore.setState({ projects: [item] });
+    const onStartProject = vi.fn();
+    render(<ProjectsPanel onStartProject={onStartProject} />);
+    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "开始项目对话" }));
+    const confirmation = screen.getByRole("dialog", { name: "开始「测试项目」的项目对话？" });
+    expect(confirmation).toHaveTextContent("/project");
+    await waitFor(() => expect(confirmation).toHaveTextContent("免审批"));
+    expect(onStartProject).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole("button", { name: "开始项目对话" }));
+    await waitFor(() => expect(onStartProject).toHaveBeenCalledWith(item, "always-approve"));
   });
 
   it("底部空间不足时向上展开，避免与“从模版创建”卡片重叠", () => {

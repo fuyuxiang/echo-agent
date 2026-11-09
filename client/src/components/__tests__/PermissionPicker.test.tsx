@@ -25,7 +25,7 @@ import type {
   PermissionModeStatus,
 } from "@/lib/agent-client";
 import type { PermissionRequest, SessionSummary } from "@/lib/types";
-import { usePermissionModeStore } from "@/stores/permission-mode-store";
+import { selectProjectPermissionMode, usePermissionModeStore } from "@/stores/permission-mode-store";
 import { usePermissionStore } from "@/stores/permission-store";
 import { useSessionsStore } from "@/stores/sessions-store";
 
@@ -98,6 +98,7 @@ describe("PermissionPicker", () => {
       homeMode: "ask",
       statuses: {},
       capabilityStatus: null,
+      projectPermissionRead: null,
     });
     usePermissionStore.setState({ queues: {}, closedRequestIds: [] });
     useSessionsStore.setState({ independent: [], pendingSessionPatches: {} });
@@ -427,6 +428,80 @@ describe("PermissionPicker", () => {
 
     expect(screen.getByText("权限模式已被组织策略锁定为 ask")).toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: /^自动判断/ })).toBeDisabled();
+    expect(mocks.permissionModeSet).not.toHaveBeenCalled();
+  });
+
+  it("项目默认权限独立于首页草稿，并显示组织锁定后的实际值", async () => {
+    usePermissionModeStore.setState({ homeMode: "always-approve" });
+    const { container } = render(<PermissionPicker inheritTaskDefault showLockedAsText />);
+    expect(screen.getByRole("status")).toHaveTextContent("正在读取任务默认权限");
+    expect(container.querySelector(".permission-picker__value")).toBeNull();
+    await waitFor(() => expect(container.querySelector(".permission-picker__value")).toHaveTextContent("请求批准"));
+    expect(selectProjectPermissionMode(usePermissionModeStore.getState())).toBe("ask");
+    await act(async () => usePermissionModeStore.getState().setStatus(modeStatus(undefined, {
+      locked: true, permissionMode: "auto", configuredPermissionMode: "auto", lockedReason: "组织统一使用自动判断",
+    })));
+    expect(screen.getByRole("button", { name: /自动判断.*组织锁定/ })).toBeVisible();
+    expect(selectProjectPermissionMode(usePermissionModeStore.getState())).toBe("auto");
+    expect(usePermissionModeStore.getState().homeMode).toBe("always-approve");
+  });
+
+  it("项目权限读取失败时隐藏旧预览，重试成功后恢复发送所需的模式", async () => {
+    const user = userEvent.setup();
+    usePermissionModeStore.setState({ capabilityStatus: modeStatus() });
+    mocks.permissionModeGet.mockRejectedValueOnce(new Error("Runtime 未连接"));
+    render(<PermissionPicker inheritTaskDefault showLockedAsText />);
+    expect(screen.queryByText("请求批准")).toBeNull();
+    expect(selectProjectPermissionMode(usePermissionModeStore.getState())).toBeUndefined();
+    const retry = await screen.findByRole("button", { name: "重试读取权限" });
+    expect(screen.getByRole("status")).toHaveTextContent("Runtime 未连接");
+    await user.tab();
+    expect(retry).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("请求批准")).toBeVisible();
+    expect(screen.getByRole("group", { name: "任务默认权限" })).toHaveFocus();
+    expect(selectProjectPermissionMode(usePermissionModeStore.getState())).toBe("ask");
+  });
+
+  it("重试后仅在权限设置仍拥有焦点时聚焦锁定说明", async () => {
+    const user = userEvent.setup();
+    let complete: (status: PermissionModeStatus) => void = () => {};
+    mocks.permissionModeGet.mockRejectedValueOnce(new Error("读取失败"))
+      .mockImplementationOnce(() => new Promise<PermissionModeStatus>(resolve => { complete = resolve; }));
+    render(<><PermissionPicker inheritTaskDefault showLockedAsText /><button>其他设置</button></>);
+    await user.click(await screen.findByRole("button", { name: "重试读取权限" }));
+    expect(screen.getByRole("group", { name: "任务默认权限" })).toHaveFocus();
+    const other = screen.getByRole("button", { name: "其他设置" });
+    await user.click(other);
+    await act(async () => complete(modeStatus(undefined, { locked: true })));
+    expect(screen.getByRole("button", { name: /请求批准.*组织锁定/ })).toBeVisible();
+    expect(other).toHaveFocus();
+  });
+
+  it("组织要求的项目权限不可用时不会把降级状态当成可创建的预览", async () => {
+    mocks.permissionModeGet.mockResolvedValue(modeStatus(undefined, {
+      locked: true, configuredPermissionMode: "auto", autoModeAvailable: false,
+      autoModeUnavailableReason: "组织要求自动判断，但分类器不可用",
+    }));
+    render(<PermissionPicker inheritTaskDefault showLockedAsText />);
+    expect(await screen.findByText("组织要求自动判断，但分类器不可用")).toBeVisible();
+    expect(screen.queryByText("请求批准")).toBeNull();
+    expect(selectProjectPermissionMode(usePermissionModeStore.getState())).toBeUndefined();
+  });
+
+  it("会话权限的组织锁定和离线原因可通过键盘展开", async () => {
+    const user = userEvent.setup();
+    mocks.permissionModeGet.mockResolvedValue(modeStatus("session-1", {
+      permissionMode: "auto", locked: true, lockedReason: "组织统一使用自动判断",
+      runtimeSyncState: "offline", runtimeSyncError: "Runtime 尚未连接",
+    }));
+    render(<PermissionPicker sessionId="session-1" showLockedAsText />);
+    const reason = await screen.findByRole("button", { name: /自动判断.*组织锁定/ });
+    await user.tab();
+    expect(reason).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(reason).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("组织统一使用自动判断。Runtime 尚未连接")).toBeVisible();
     expect(mocks.permissionModeSet).not.toHaveBeenCalled();
   });
 

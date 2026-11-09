@@ -454,6 +454,21 @@ pub(crate) fn resolve_new_session_permission_mode(
     Ok(requested.to_string())
 }
 
+/// A preview is a comparison, not authority to override managed policy.
+pub(crate) fn require_new_session_permission_preview(
+    resolved: Result<String, String>,
+    expected: Option<&str>,
+) -> Result<String, String> {
+    let Some(expected) = expected else {
+        return resolved;
+    };
+    let actual = resolved.map_err(|error| format!("任务默认权限已变化，无法创建任务：{error}"))?;
+    if actual != expected {
+        return Err("任务默认权限已变化，请确认当前权限后重新发送".into());
+    }
+    Ok(actual)
+}
+
 fn configured_session_permission_mode(session_id: Option<&str>) -> String {
     match session_id {
         Some(session_id) => crate::groups::configured_permission_mode_for_session(session_id)
@@ -1065,6 +1080,25 @@ mod tests {
         assert!(validate_permission_mode_selection("always-approve", true, true).is_ok());
         assert!(validate_permission_mode_selection("always-approve", true, false).is_err());
         assert!(validate_permission_mode_selection("invalid", true, true).is_err());
+    }
+
+    #[test]
+    fn session_creation_requires_the_previewed_mode_when_provided() {
+        assert_eq!(
+            require_new_session_permission_preview(Ok("auto".into()), Some("auto")),
+            Ok("auto".into())
+        );
+        for resolved in [Ok("always-approve".into()), Err("分类器不可用".into())] {
+            assert!(
+                require_new_session_permission_preview(resolved, Some("auto"))
+                    .unwrap_err()
+                    .starts_with("任务默认权限已变化")
+            );
+        }
+        assert_eq!(
+            require_new_session_permission_preview(Err("配置无效".into()), None),
+            Err("配置无效".into())
+        );
     }
 
     #[tokio::test]

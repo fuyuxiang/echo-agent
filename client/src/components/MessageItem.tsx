@@ -116,6 +116,7 @@ export const MessageItem = memo(function MessageItem({
   findQuery,
   authorName,
   autoExpandProcess = false,
+  onReviewProcess,
   runtimeError,
   suppressStoppedNotice = false,
   onContinueExecution,
@@ -136,6 +137,7 @@ export const MessageItem = memo(function MessageItem({
   waitingForModel?: boolean;
   waitingReason?: string;
   autoExpandProcess?: boolean;
+  onReviewProcess?: () => void;
   runtimeError?: string;
   suppressStoppedNotice?: boolean;
   onContinueExecution?: (prompt: string) => boolean | void | Promise<boolean | void>;
@@ -418,6 +420,7 @@ export const MessageItem = memo(function MessageItem({
                 active={streaming && !message.complete}
                 settled={isExecutionSettled(message)}
                 autoExpand={autoExpandProcess}
+                onReview={onReviewProcess}
                 startedAt={message.startedAt}
                 completedAt={message.completedAt}
                 lastActivityAt={message.lastActivityAt}

@@ -10,11 +10,12 @@ export async function validateExecutionReview(page, output) {
   await page.locator('[data-execution-ready="true"]').waitFor();
   const process = page.locator(".execution-process__header").first();
   await process.waitFor();
-  assert.equal(await process.getAttribute("aria-expanded"), "false", "records default to collapsed");
+  assert.equal(await process.getAttribute("aria-expanded"), "true", "running records default to expanded");
   assert.ok(await page.locator(".execution-process--running").count(), "interim commentary incorrectly completes active work");
+  assert.equal(await page.locator(".toolcall--run").count(), 3, "running records expose unfinished tools");
+  await process.click();
   assert.equal(await page.locator(".toolcall--run").count(), 0);
   await process.click();
-  assert.equal(await page.locator(".toolcall--run").count(), 3, "one disclosure exposes unfinished tools");
   await page.locator(".execution-process__body").waitFor();
   await page.locator(".toolcall").filter({ hasText: "pnpm test" }).first().click();
   await page.locator(".tool-side-panel").waitFor();
@@ -24,10 +25,7 @@ export async function validateExecutionReview(page, output) {
 
   await page.goto(`${base}/__ui-review?surface=execution&state=running&theme=dark`);
   await page.locator('[data-execution-ready="true"]').waitFor();
-  const scroll = page.locator(".chatview__scroll");
-  await page.locator(".execution-process__header").click();
-  await page.getByText("分析详情", { exact: true }).click();
-  await page.getByRole("button", { name: "展开全文", exact: true }).click();
+  const scroll = page.locator(".execution-process__body");
   // Add enough real chunks to require scrolling, then use an actual wheel
   // gesture to express reading intent before subsequent content grows.
   for (let i = 0; i < 5; i++) await page.getByRole("button", { name: "追加流式内容", exact: true }).click();

@@ -91,7 +91,7 @@ export function AgentPane({
       ? "检查未执行"
       : `已记录 ${checks.length} 项检查，结果与版本见详情`;
 
-  const { scrollRef, contentRef, following, scrollToBottom } = useStickToBottom(
+  const { scrollRef, contentRef, following, pauseFollowing, scrollToBottom } = useStickToBottom(
     {
       contentVersion: messages,
       streaming,
@@ -301,7 +301,7 @@ export function AgentPane({
                     entry.stopReason !== "end_turn",
                 );
                 return (
-                  <div className="coding-agent__assistant" key={entry.id}>
+                  <div className="coding-agent__assistant" key={`${sessionId}:${entry.id}`}>
                     {(groups.processParts.length > 0 || hasTerminalStatus) && (
                       <ExecutionProcess
                         sessionId={sessionId ?? undefined}
@@ -315,6 +315,7 @@ export function AgentPane({
                         cancellationCategory={entry.cancellationCategory}
                         agentResult={entry.agentResult}
                         hasFinalAnswer={hasFinalAnswer}
+                        onReview={pauseFollowing}
                         onOpenKnowledgePath={onOpenFile}
                       />
                     )}
@@ -341,7 +342,7 @@ export function AgentPane({
               title="回到最新消息并恢复自动跟随"
             >
               <span aria-hidden="true">↓</span>
-              回到最新
+              回到最新消息
             </button>
           )}
         </div>

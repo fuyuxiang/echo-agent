@@ -23,6 +23,7 @@ import { groupPermissionModeGet, groupPermissionModeSet } from "@/features/group
 import { useAnchoredFloating } from "@/lib/use-anchored-floating";
 import {
   permissionModeStatusFromEvent,
+  projectPermissionUnavailableReason,
   usePermissionModeStore,
 } from "@/stores/permission-mode-store";
 import { useSessionsStore } from "@/stores/sessions-store";
@@ -56,6 +57,8 @@ export function PermissionPicker({
   groupId,
   groupPermissionMode,
   disabled = false,
+  inheritTaskDefault = false,
+  showLockedAsText = false,
 }: {
   onToast?: (msg: string) => void;
   /** 覆盖触发按钮文字（如本地助理页固定显示「默认权限」）；缺省显示当前模式名。 */
@@ -68,13 +71,20 @@ export function PermissionPicker({
   groupId?: string;
   groupPermissionMode?: PermissionMode;
   disabled?: boolean;
+  /** Use the Runtime's new-task default without reading or changing the Home draft. */
+  inheritTaskDefault?: boolean;
+  /** Expose non-editable modes with a reason instead of mode choices. */
+  showLockedAsText?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [readOnlyOpen, setReadOnlyOpen] = useState(false);
   const [confirmingAlways, setConfirmingAlways] = useState(false);
   const homeMode = usePermissionModeStore((state) => state.homeMode);
   const taskStatus = usePermissionModeStore((state) => sessionId
     ? state.statuses[sessionId] ?? null
     : state.capabilityStatus);
+  const projectPermissionRead = usePermissionModeStore((state) => inheritTaskDefault ? state.projectPermissionRead : null);
+  const refreshProjectPermission = usePermissionModeStore((state) => state.refreshProjectPermission);
   const [groupStatus, setGroupStatus] = useState<PermissionModeStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -96,6 +106,8 @@ export function PermissionPicker({
   const popoverRef = useRef<HTMLDivElement>(null);
   const alwaysOptionRef = useRef<HTMLButtonElement>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
+  const readOnlyTriggerRef = useRef<HTMLButtonElement>(null);
+  const projectPreviewRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef(0);
   const activeScopeRef = useRef(scopeKey);
   activeScopeRef.current = scopeKey;
@@ -126,9 +138,13 @@ export function PermissionPicker({
       ? runtimeMode ?? groupPermissionMode ?? "ask"
     : sessionId
       ? runtimeMode ?? catalogMode ?? "ask"
-      : homeMode;
+      : inheritTaskDefault ? status?.permissionMode ?? "ask" : homeMode;
 
   useEffect(() => {
+    if (inheritTaskDefault) {
+      void refreshProjectPermission();
+      return;
+    }
     const request = ++requestRef.current;
     if (groupId) { setGroupStatus(null); setError(null); }
     (groupId ? groupPermissionModeGet(groupId) : permissionModeGet(sessionId))
@@ -162,7 +178,7 @@ export function PermissionPicker({
     return () => {
       if (requestRef.current === request) requestRef.current += 1;
     };
-  }, [groupId, groupPermissionMode, groupCapabilityRefresh, sessionId, setHomeMode, setStatus, refresh]);
+  }, [groupId, groupPermissionMode, groupCapabilityRefresh, sessionId, inheritTaskDefault, setHomeMode, setStatus, refresh, refreshProjectPermission]);
 
   const closePicker = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -179,6 +195,7 @@ export function PermissionPicker({
 
   useEffect(() => {
     closePicker(false);
+    setReadOnlyOpen(false);
     setBusy(false);
     setError(null);
   }, [scopeKey, closePicker]);
@@ -293,6 +310,64 @@ export function PermissionPicker({
       : runtimeUnavailable
         ? "当前任务正在加载，权限模式暂不可切换"
         : null);
+  const readOnlyReason = showLockedAsText && status?.locked
+    ? status.lockedReason || "权限模式由组织策略锁定"
+    : showLockedAsText && runtimeUnavailable ? syncWarning : null;
+  useEffect(() => {
+    if (readOnlyReason && open) closePicker(false);
+  }, [closePicker, open, readOnlyReason]);
+  useEffect(() => {
+    if (projectPermissionRead?.phase === "ready" && document.activeElement === projectPreviewRef.current) {
+      readOnlyTriggerRef.current?.focus({ preventScroll: true });
+    }
+  }, [projectPermissionRead]);
+
+  const modeValue = <>
+    <current.icon className="permission-picker__trigger-icon" size={14} aria-hidden="true" />
+    <span>{modeLabel(current)}</span>
+  </>;
+
+  const readOnlyValue = readOnlyReason && (
+    <div className="permission-picker__read-only">
+      <button type="button" className="echo-composer-meta__btn permission-picker__value" data-mode-id={current.id}
+        ref={readOnlyTriggerRef} aria-expanded={readOnlyOpen} aria-controls={`${popoverId}-reason`}
+        onClick={() => setReadOnlyOpen(value => !value)}>
+        {modeValue}
+        <span className="permission-picker__readonly-label">{status?.locked ? "组织锁定" : "暂不可切换"}</span>
+        <ChevronDownIcon size="sm" aria-hidden="true" />
+      </button>
+      <p id={`${popoverId}-reason`} hidden={!readOnlyOpen}>{readOnlyReason}{status?.locked && runtimeUnavailable && syncWarning ? `。${syncWarning}` : ""}</p>
+    </div>
+  );
+
+  if (inheritTaskDefault) {
+    const failed = projectPermissionRead?.phase === "failed";
+    const waiting = !projectPermissionRead || projectPermissionRead.phase === "loading";
+    const unavailableReason = status && projectPermissionUnavailableReason(status);
+    return (
+      <div className="permission-picker__preview" ref={projectPreviewRef} tabIndex={-1} role="group" aria-label="任务默认权限">
+        {waiting || failed || unavailableReason || !status ? <>
+          <span className="echo-composer-meta__value" role="status">
+            {failed ? `未能读取任务默认权限：${projectPermissionRead.message}`
+              : waiting ? "正在读取任务默认权限…"
+                : unavailableReason ?? "未能读取任务默认权限"}
+          </span>
+          {!waiting && <button type="button" className="permission-picker__retry echo-composer-meta__btn" onClick={() => {
+            projectPreviewRef.current?.focus({ preventScroll: true });
+            void refreshProjectPermission();
+          }}>重试读取权限</button>}
+        </> : readOnlyValue || (
+          <span className="echo-composer-meta__value permission-picker__value" data-mode-id={current.id} role="status">
+            {modeValue}
+            <span className="permission-picker__readonly-label">任务默认权限</span>
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  if (readOnlyValue) return readOnlyValue;
+
   const modeDescription = (item: (typeof MODES)[number]) => {
     if (item.id === "auto" && autoUnavailable) {
       return status?.autoModeUnavailableReason ?? "自动判断当前不可用";

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -15,15 +15,16 @@ vi.mock("@/components/TitleBar", () => ({ TitleBar: () => null }));
 vi.mock("@/components/HomePage", () => ({HomePage: () => <div>首页</div>}));
 vi.mock("@/components/PlaceholderPage", () => ({PlaceholderPage: (props: ComponentProps<typeof import("@/components/PlaceholderPage").PlaceholderPage>) =>
   <ProjectsPanel cwd="/workspace" models={[{ id: "model-a", label: "Model A" }]} defaultModelId="model-a"
-    onNavigate={props.onProjectNavigate} onStartProject={props.onStartProject} onStartProjectConversation={props.onStartProjectConversation} />}));
-vi.mock("@/components/Composer", () => ({ Composer: () => null }));
+    onNavigate={props.onProjectNavigate} onStartProject={props.onStartProject} onStartProjectConversation={props.onStartProjectConversation}
+    onToast={props.onToast} />}));
 vi.mock("@/components/TasksPanel", () => ({ TasksPanel: () => null }));
 vi.mock("@/components/SecondarySidebar", () => ({ SecondarySidebar: () => null }));
 vi.mock("@/components/TopbarActions", () => ({ TopbarActions: () => null }));
 vi.mock("@/components/FolderTrustDialog", () => ({ FolderTrustDialog: () => null }));
 vi.mock("@/components/Sidebar", () => ({Sidebar: (props: ComponentProps<typeof import("@/components/Sidebar").Sidebar>) => <aside>
-  <button onClick={() => props.onStartProjectConversation?.("project-no-cwd")}>新建项目对话</button>
-  <button onClick={() => props.onStartProjectConversation?.("project-b")}>新建 B 对话</button>
+  <button onClick={() => props.onOpenProjectDraft?.("project-no-cwd")}>新建项目对话</button>
+  <button onClick={() => props.onOpenProjectDraft?.("project-b")}>新建 B 对话</button>
+  <button onClick={() => props.onOpenProject?.("project-b")}>打开 B 项目</button>
   <button onClick={() => props.onNavigate?.("项目")}>查看项目</button>
   <button onClick={() => props.onNewSession()}>返回首页</button>
   <button onClick={() => props.onNavigate?.("代码开发")}>打开 Code</button>
@@ -46,6 +47,7 @@ import { useSessionsStore } from "@/stores/sessions-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
+import { usePermissionModeStore } from "@/stores/permission-mode-store";
 import { resetOrgSessionMirror } from "@/stores/org-session-store";
 
 import { usePendingExpertStore } from "@/stores/pending-expert-store";
@@ -55,6 +57,7 @@ beforeEach(() => {
   resetOrgSessionMirror();
   useKnowledgeStore.setState({defaultSources:[],defaultOrganizationScopeIds:[],sessionSources:{},sessionOrganizationScopeIds:{}});
   useSessionsStore.setState(useSessionsStore.getInitialState()); useSessionStore.setState(useSessionStore.getInitialState());
+  usePermissionModeStore.setState(usePermissionModeStore.getInitialState());
   useProjectsStore.setState({ ...useProjectsStore.getInitialState(), projects: [] }); usePendingExpertStore.getState().clear();
   vi.mocked(client.agentInit).mockResolvedValue({ ok:true,cwd:"/workspace",auth } as never);
   vi.mocked(client.agentAuthStatus).mockResolvedValue(auth);
@@ -62,12 +65,153 @@ beforeEach(() => {
   vi.mocked(client.agentListAllSessions).mockResolvedValue([]);
   vi.mocked(client.agentNewSession).mockReset().mockResolvedValue("new-session");
   vi.mocked(client.agentPrepareTaskWorkspace).mockReset().mockImplementation(async id => `/workspace/Tasks/${id}`);
-  vi.mocked(invoke).mockImplementation(async command => ["notification_take_pending_opens", "coding_task_list"].includes(String(command)) ? [] : null);
+  vi.mocked(invoke).mockImplementation(async command => command === "permission_mode_get"
+    ? { permissionMode: "ask", configuredPermissionMode: "ask", locked: false }
+    : ["notification_take_pending_opens", "coding_task_list"].includes(String(command)) ? [] : null);
 });
 async function start() {
   useProjectsStore.setState({projects:[{id:"project-no-cwd",name:"Project",createdAt:"2026-10-26T00:00:00Z",connectors:[],experts:[],skills:[],assets:[],members:[],plans:[],tasks:[],conversations:[]}]});
   render(<App />); await screen.findByText("首页"); await waitFor(()=>expect(client.providersList).toHaveBeenCalled()); await act(async()=>{}); }
 
+async function sendProjectDraft() {
+  const input = await screen.findByRole("textbox", { name: "输入问题或任务" });
+  fireEvent.change(input, { target: { value: "执行项目任务" } });
+  await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+}
+
+it("侧栏加号聚焦并复用项目草稿，只在发送时绑定任务目录", async () => {
+  await start();
+  const project = { ...useProjectsStore.getState().projects[0], cwd: "/project" };
+  act(() => {
+    useProjectsStore.setState({ projects: [project] });
+    useSessionsStore.getState().setDraft("project:project-no-cwd", "未发送的草稿");
+    useSessionsStore.getState().setDraft("project-workspace:project-no-cwd", "/task");
+  });
+  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  const input = await screen.findByRole("textbox", { name: "输入问题或任务" });
+  expect(input).toHaveFocus();
+  expect(input).toHaveValue("未发送的草稿");
+  expect(client.agentNewSession).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/task", "model-a", undefined, "ask"));
+  await waitFor(() => expect(screen.getByTestId("session-cwd")).toHaveTextContent("/task"));
+  expect(useProjectsStore.getState().projects[0].cwd).toBe("/project");
+});
+
+it("项目资料准备期间切换项目，晚完成的原任务留在后台", async () => {
+  await start();
+  const project = useProjectsStore.getState().projects[0];
+  const assetPath = "/private-project/A.md";
+  act(() => {
+    useProjectsStore.setState({ projects: [
+      { ...project, assets: [{ id: "a", kind: "file", name: "A.md", path: assetPath }] },
+      { ...project, id: "project-b", name: "项目 B" },
+    ] });
+    useSessionsStore.getState().setDraft(`project-assets:${project.id}`, '["a"]');
+  });
+  let releaseAsset!: (paths: string[]) => void;
+  const prepareAsset = new Promise<string[]>(resolve => { releaseAsset = resolve; });
+  const previousInvoke = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "project_assets_use") return prepareAsset;
+    if (command === "filesystem_attachment_stats") {
+      return { files: [{ inputPath: assetPath, path: assetPath, sizeBytes: 12 }], rejected: [] };
+    }
+    return previousInvoke(command, args);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  await sendProjectDraft();
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("project_assets_use", expect.any(Object)));
+  expect(client.agentNewSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "打开 B 项目" }));
+  await act(async () => releaseAsset([assetPath]));
+  await waitFor(() => expect(client.agentSend).toHaveBeenCalledOnce());
+  expect(useSessionsStore.getState().currentSessionId).toBeNull();
+  expect(document.querySelector(".pd-crumb__name")).toHaveTextContent("项目 B");
+});
+
+it("分配默认任务目录失败后显示真实原因和选取现有目录的入口", async () => {
+  await start();
+  vi.mocked(client.agentPrepareTaskWorkspace).mockRejectedValueOnce("无法分配默认任务目录：磁盘空间不足");
+  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  await sendProjectDraft();
+  const settings = screen.getByRole("group", { name: "任务执行设置" });
+  const error = await within(settings).findByRole("alert");
+  expect(error).toHaveTextContent("请选择一个现有文件夹后重试");
+  expect(error).toHaveTextContent("磁盘空间不足");
+  expect(screen.getByRole("textbox", { name: "输入问题或任务" })).toHaveValue("执行项目任务");
+  expect(client.agentNewSession).not.toHaveBeenCalled();
+});
+
+it("离开项目后收到目录失败时标记来源并保留原草稿", async () => {
+  await start();
+  const original = useProjectsStore.getState().projects[0];
+  act(() => useProjectsStore.setState({ projects: [original, { ...original, id: "project-b", name: "项目 B" }] }));
+  let failWorkspace!: (error: Error) => void;
+  vi.mocked(client.agentPrepareTaskWorkspace).mockImplementationOnce(() => new Promise((_, reject) => { failWorkspace = reject; }));
+
+  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  await sendProjectDraft();
+  await waitFor(() => expect(client.agentPrepareTaskWorkspace).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole("button", { name: "打开 B 项目" }));
+  await act(async () => failWorkspace(new Error("无法分配默认任务目录：磁盘空间不足")));
+
+  expect(await screen.findByText(/项目「Project」发送失败.*磁盘空间不足/)).toBeInTheDocument();
+  expect(document.querySelector(".pd-crumb__name")).toHaveTextContent("项目 B");
+  expect(useSessionsStore.getState().drafts[`project:${original.id}`]).toBe("执行项目任务");
+  expect(client.agentNewSession).not.toHaveBeenCalled();
+});
+
+it("临时目录不支持项目专家时保留草稿并说明如何恢复", async () => {
+  await start();
+  const project = useProjectsStore.getState().projects[0];
+  const experts = [{ id: "/project/.echo-agent/agents/reviewer.md", name: "reviewer" }];
+  act(() => {
+    useProjectsStore.setState({ projects: [{ ...project, cwd: "/project", experts }] });
+    useSessionsStore.getState().setDraft(`project-workspace:${project.id}`, "/other");
+  });
+  vi.mocked(client.agentsValidateReferences).mockRejectedValueOnce("专家 reviewer 在当前工作区由另一份定义生效");
+  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  await sendProjectDraft();
+  const error = await screen.findByText(/无法验证项目专家/);
+  expect(error.closest('[role="alert"]')).toHaveTextContent("请换回项目默认目录");
+  expect(error).toHaveTextContent("专家 reviewer 在当前工作区由另一份定义生效");
+  expect(screen.getByRole("textbox", { name: "输入问题或任务" })).toHaveValue("执行项目任务");
+  expect(client.agentsValidateReferences).toHaveBeenCalledWith("/other", experts);
+  expect(client.agentNewSession).not.toHaveBeenCalled();
+});
+
+it("权限变化时刷新预览并保留草稿，用户确认后才按新权限执行", async () => {
+  await start();
+  const previousInvoke = vi.mocked(invoke).getMockImplementation()!;
+  let policyChanged = false;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "permission_mode_get" && policyChanged) {
+      return { permissionMode: "always-approve", configuredPermissionMode: "always-approve", locked: true };
+    }
+    return previousInvoke(command, args);
+  });
+  vi.mocked(client.agentNewSession).mockImplementationOnce(async () => {
+    policyChanged = true;
+    throw new Error("任务默认权限已变化，请确认当前权限后重新发送");
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  await sendProjectDraft();
+  await screen.findByText(/任务默认权限已变化，请确认当前权限后重新发送/);
+  const settings = screen.getByRole("group", { name: "任务执行设置" });
+  await waitFor(() => expect(settings).toHaveTextContent("免审批"));
+  expect(screen.getByRole("textbox", { name: "输入问题或任务" })).toHaveValue("执行项目任务");
+  expect(client.agentNewSession).toHaveBeenCalledOnce();
+  expect(client.agentNewSession).toHaveBeenLastCalledWith(expect.any(String), "model-a", undefined, "ask");
+  expect(client.agentSend).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  await waitFor(() => expect(client.agentSend).toHaveBeenCalledOnce());
+  expect(client.agentNewSession).toHaveBeenLastCalledWith(expect.any(String), "model-a", undefined, "always-approve");
+});
 
 it("创建对话期间通过项目面包屑返回列表，迟到结果只注册原项目", async () => {
   await start();
@@ -76,7 +220,7 @@ it("创建对话期间通过项目面包屑返回列表，迟到结果只注册�
   await screen.findByRole("button", { name: "项目" });
   let finish!: (id: string) => void;
   vi.mocked(client.agentNewSession).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  await sendProjectDraft();
   await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledOnce());
   fireEvent.click(screen.getByRole("button", { name: "项目" }));
   expect(document.querySelector(".project-card2__main")).not.toBeNull();
@@ -94,8 +238,9 @@ it("等待原项目创建时进入另一项目，仍保留当前项目页面", a
   let finish!: (id: string) => void;
   vi.mocked(client.agentNewSession).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  await sendProjectDraft();
   await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledOnce());
-  fireEvent.click(document.querySelectorAll(".project-card2__main")[1]);
+  fireEvent.click(screen.getByRole("button", { name: "打开 B 项目" }));
   await act(async () => { finish("project-a-background"); });
   expect(useSessionsStore.getState().currentSessionId).toBeNull();
   expect(document.querySelector(".pd-crumb__name")).toHaveTextContent("项目 B");
@@ -112,8 +257,10 @@ it("两个项目连续创建时，仅最后发起的任务可以打开前台", a
     .mockImplementationOnce(() => new Promise(resolve => { finishA = resolve; }))
     .mockImplementationOnce(() => new Promise(resolve => { finishB = resolve; }));
   fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  await sendProjectDraft();
   await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "新建 B 对话" }));
+  await sendProjectDraft();
   await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledTimes(2));
   await act(async () => { finishB("project-b-foreground"); });
   expect(useSessionsStore.getState().currentSessionId).toBe("project-b-foreground");

@@ -55,6 +55,7 @@ import { usePendingExpertStore } from "./stores/pending-expert-store";
 import {
   agentInit,
   agentNewSession,
+  type PermissionMode,
   agentPrepareTaskWorkspace,
   agentPrepareSend,
   agentSend,
@@ -126,7 +127,7 @@ import {
 } from "./lib/telemetry-contract";
 import { defaultHttpSender, exportEventsBatch, type OtlpConfig } from "./lib/otlp-exporter";
 import { IS_MACOS, IS_WINDOWS } from "./lib/platform";
-import { friendlyError } from "./lib/error-format";
+import { friendlyError, isTaskWorkspaceError } from "./lib/error-format";
 import type { AutomationMode } from "./lib/automation-client";
 import { applySessionScopedFailure } from "./lib/session-scoped-failure";
 import { isGlobalShortcutBlocked } from "./lib/keyboard-scope";
@@ -139,7 +140,7 @@ import {
   usePermissionModeStore,
 } from "./stores/permission-mode-store";
 import { agentsValidateReferences } from "./lib/agent-client";
-import { buildProjectPrompt, projectPromptForTurn } from "./lib/project-context";
+import { buildProjectPrompt, projectPromptForTurn, type ProjectConversationOptions, type StartProjectConversation } from "./lib/project-context";
 import { migrateCatalogRootStorage } from "./lib/catalog-root-storage";
 import { parseRememberArguments, type SlashCommandInvocation } from "./lib/slash-commands";
 import { useUpdateStore } from "./stores/update-store";
@@ -1527,9 +1528,8 @@ function Shell() {
   };
 
   // Sidebar project node click → open the Projects panel with that project selected.
-  const handleOpenProjectFromSidebar = (projectId: string) => {
-    useProjectsStore.getState().setActiveProjectId(projectId);
-    handleNavigate("项目");
+  const handleOpenProjectFromSidebar = (projectId: string, focusDraft = false) => {
+    navigateWithGuard("项目", () => useProjectsStore.getState().setActiveProjectId(projectId, focusDraft));
   };
 
   const ensureQuotaAllowsSend = (): boolean => {
@@ -3066,14 +3066,15 @@ function Shell() {
     handleGoHome();
   };
 
-  const createProjectSession = async (project: ProjectMeta, modelId: string) => {
+  const createProjectSession = async (project: ProjectMeta, modelId: string, options: ProjectConversationOptions) => {
     const requests = projectSessionRequestsRef.current;
     const previous = requests.get(project.id);
     if (previous?.pending) {
       showToast("正在创建项目对话，请稍候");
       return undefined;
     }
-    const context = JSON.stringify([project.cwd || null, modelId]);
+    const requestedCwd = options.cwd;
+    const context = JSON.stringify([requestedCwd || null, modelId]);
     const request = previous?.context === context
       ? previous : { context, requestId: crypto.randomUUID(), pending: false };
     request.pending = true;
@@ -3081,18 +3082,28 @@ function Shell() {
     // A duplicate click does not take navigation ownership from its pending task.
     const creation = captureTaskCreation();
     try {
-      const cwd = project.cwd || await agentPrepareTaskWorkspace(request.requestId);
-      await agentsValidateReferences(cwd, project.experts);
-      const sessionId = await agentNewSession(cwd, modelId);
+      const attachments = options.prepareAttachments ? await options.prepareAttachments() : [];
+      assertTaskCreationKnowledge(creation);
+      const cwd = requestedCwd || await agentPrepareTaskWorkspace(request.requestId);
+      try {
+        await agentsValidateReferences(cwd, project.experts);
+      } catch (error) {
+        if (isTaskWorkspaceError(error)) throw error;
+        const recovery = project.cwd && cwd !== project.cwd
+          ? "请换回项目默认目录，或核对项目默认专家能否在所选目录使用。"
+          : "请检查项目默认专家配置和所选目录。";
+        throw new Error(`无法验证项目专家。 ${recovery} ${String(error).replace(/^Error:\s*/, "")}`);
+      }
+      const sessionId = await agentNewSession(cwd, modelId, undefined, options.expectedPermissionMode);
       requests.delete(project.id);
-      return { sessionId, cwd, creation };
+      return { sessionId, cwd, creation, attachments };
     } finally {
       request.pending = false;
     }
   };
 
   // 进入本地项目：在项目关联目录中新建会话，并注入项目说明作为种子消息。
-  const handleStartProject = async (project: ProjectMeta) => {
+  const handleStartProject = async (project: ProjectMeta, expectedPermissionMode: PermissionMode) => {
     const modelId = project.defaultModelId
       ? requireExplicitProjectModel(project.defaultModelId)
       : requireConfiguredModel();
@@ -3101,13 +3112,18 @@ function Shell() {
     let startedSessionId: string | undefined;
     let startedSessionCwd: string | undefined;
     try {
-      const created = await createProjectSession(project, modelId);
+      const created = await createProjectSession(project, modelId, {
+        cwd: project.cwd ?? null,
+        expectedPermissionMode,
+      });
       if (!created) return;
       const { sessionId, cwd, creation } = created;
       startedSessionId = sessionId;
       startedSessionCwd = cwd;
+      const latestProject = useProjectsStore.getState().projects.find(item => item.id === project.id);
+      if (!latestProject) throw new Error("原项目已删除，消息尚未发送");
       bindCreatedTaskKnowledge(sessionId, creation);
-      if (!project.defaultModelId) {
+      if (!latestProject.defaultModelId) {
         useProjectsStore.getState().updateConfig(project.id, { defaultModelId: modelId });
       }
       if (selectionGenerationRef.current === creation.selection) {
@@ -3122,7 +3138,7 @@ function Shell() {
         cwd,
         status: "working",
         currentModelId: modelId,
-        permissionMode: "ask",
+        permissionMode: expectedPermissionMode,
       });
       // Register the session as a project conversation.
       useProjectsStore.getState().addConversation(project.id, {
@@ -3145,45 +3161,39 @@ function Shell() {
           setCurrentError: (message) => sessionStore.getState().setError(message),
         });
       }
-      showToast(`启动项目失败：${friendlyError(e)}`);
+      if (friendlyError(e).startsWith("任务默认权限已变化")) {
+        void usePermissionModeStore.getState().refreshProjectPermission();
+      }
+      if (isTaskWorkspaceError(e)) {
+        throw new Error(`${String(e).replace(/^Error:\s*/, "")}。可以进入项目，选择其他工作目录后发送任务。`);
+      }
+      throw e;
     }
   };
 
-  // 在项目中新建对话（从侧栏 + 按钮或项目详情页 Composer 触发）。
-  // 创建 EchoAgent 会话 → 注册到项目 conversations → 打开 ChatView → 可选发送首条消息。
-  const handleStartProjectConversation = async (
-    projectId: string,
-    message?: string,
-    requestedModelId?: string,
-    attachments: string[] = [],
-  ) => {
+  // Sending the project draft binds its workspace and creates the conversation.
+  const handleStartProjectConversation: StartProjectConversation = async (projectId, message, requestedModelId, options) => {
     const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
-    if (!project) return;
-    const persistedModelId = requestedModelId || project.defaultModelId;
-    let modelId: string | undefined;
-    if (persistedModelId) {
-      modelId = requireExplicitProjectModel(persistedModelId);
-    } else if (message) {
-      showToast("请先在项目中选择本次任务使用的模型");
-    } else {
-      modelId = requireConfiguredModel();
-    }
+    if (!project) throw new Error("原项目已删除，消息尚未发送");
+    const modelId = requireExplicitProjectModel(requestedModelId);
     if (!modelId) return;
-    if (message && !ensureQuotaAllowsSend()) return;
+    if (!ensureQuotaAllowsSend()) return;
     let startedSessionId: string | undefined;
     let startedSessionCwd: string | undefined;
     try {
-      const created = await createProjectSession(project, modelId);
+      const created = await createProjectSession(project, modelId, options);
       if (!created) return undefined;
-      const { sessionId, cwd, creation } = created;
+      const { sessionId, cwd, creation, attachments } = created;
       startedSessionId = sessionId;
       startedSessionCwd = cwd;
+      const latestProject = useProjectsStore.getState().projects.find(item => item.id === projectId);
+      if (!latestProject) throw new Error("原项目已删除，消息尚未发送");
       bindCreatedTaskKnowledge(sessionId, creation);
-      if (!project.defaultModelId && !requestedModelId) {
+      if (!latestProject.defaultModelId && options.rememberModel) {
         useProjectsStore.getState().updateConfig(projectId, { defaultModelId: modelId });
       }
 
-      const title = message ? deriveTitle(message) : `${project.name} 对话`;
+      const title = deriveTitle(message);
 
       // Register conversation in the project.
       useProjectsStore.getState().addConversation(projectId, {
@@ -3204,17 +3214,13 @@ function Shell() {
         sessionId,
         title,
         cwd,
-        status: message ? "working" : "pending",
+        status: "working",
         currentModelId: modelId,
-        permissionMode: "ask",
+        permissionMode: options.expectedPermissionMode,
       });
 
-      if (message) {
-        // Every new runtime session needs the project contract; previous
-        // project conversations do not share an ACP context window.
-        const prompt = buildProjectPrompt(project, message);
-        beginAgentTurn({ sessionId, promptText: prompt, displayText: message, attachments, allowBackgroundSession: true });
-      }
+      const prompt = buildProjectPrompt(project, message);
+      beginAgentTurn({ sessionId, promptText: prompt, displayText: message, attachments, allowBackgroundSession: true });
       return sessionId;
     } catch (e) {
       if (startedSessionId && !sessionsStore.getState().independent.some(entry => entry.sessionId === startedSessionId)) {
@@ -3228,8 +3234,10 @@ function Shell() {
           setCurrentError: (message) => sessionStore.getState().setError(message),
         });
       }
-      showToast(`创建项目对话失败：${friendlyError(e)}`);
-      return undefined;
+      if (friendlyError(e).startsWith("任务默认权限已变化")) {
+        void usePermissionModeStore.getState().refreshProjectPermission();
+      }
+      throw e;
     }
   };
 
@@ -3335,7 +3343,7 @@ function Shell() {
           onPlaceholder={handlePlaceholder}
           onToast={showToast}
           onOpenProject={handleOpenProjectFromSidebar}
-          onStartProjectConversation={handleStartProjectConversation}
+          onOpenProjectDraft={projectId => handleOpenProjectFromSidebar(projectId, true)}
           onRenameSession={handleRenameSession}
           onArchiveSession={handleArchiveSession}
           onDeleteSession={handleDeleteSession}

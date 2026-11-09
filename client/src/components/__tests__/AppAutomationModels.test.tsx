@@ -30,9 +30,9 @@ vi.mock("../PlaceholderPage", () => ({ PlaceholderPage: ({
   onStartProjectConversation,
 }: {
   label: string;
-  onStartProjectConversation?: (projectId: string, message: string, modelId?: string) => Promise<string | undefined>;
+  onStartProjectConversation?: import("@/lib/project-context").StartProjectConversation;
 }) => label === "项目" ? (
-  <button onClick={() => void onStartProjectConversation?.("project-1", "执行项目任务", "model-a")}>
+  <button onClick={() => void onStartProjectConversation?.("project-1", "执行项目任务", "model-a", { cwd: "/workspace", expectedPermissionMode: "ask" })}>
     执行项目任务
   </button>
 ) : null }));
@@ -1087,7 +1087,7 @@ describe("自动化会话模型同步", () => {
     fireEvent.click(screen.getByText("打开项目页"));
     fireEvent.click(await screen.findByRole("button", { name: "执行项目任务" }));
 
-    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/workspace", "model-a"));
+    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/workspace", "model-a", undefined, "ask"));
     await waitFor(() => expect(client.agentSend).toHaveBeenCalledWith(
       "project-session",
       expect.stringContaining("执行项目任务"),

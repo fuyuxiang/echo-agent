@@ -1,9 +1,9 @@
 import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { draftAttachments, saveDraftAttachments } from "@/lib/draft-attachments";
 import { draftRevision, useDraftRevision } from "@/lib/draft-lifecycle";
 import { useStorageHealth } from "@/lib/durable-ui-state";
-import { ArrowUp, Square, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, Square, Folder, FolderOpen, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
 import { ChevronDownIcon } from "@/foundation/components/Icon/icons";
 import { ModelSelector, type ModelOption } from "./ModelSelector";
 import { ThumbImg } from "./experts-panel/shared/ThumbImg";
@@ -21,6 +21,7 @@ import {
   type InputHistory,
 } from "@/lib/input-history";
 import { WorkspacePicker } from "./WorkspacePicker";
+import { displayPath } from "@/lib/display-path";
 import { PermissionPicker } from "./PermissionPicker";
 import { AutomationBoundaryNotice, type PermissionRole } from "./AutomationBoundaryNotice";
 import { usePermissionModeStore } from "@/stores/permission-mode-store";
@@ -63,7 +64,7 @@ import {
   extractFilesFromClipboard,
   blobToBytes,
 } from "@/lib/clipboard-paste";
-import { AttachmentKind, classifyAttachment } from "@/lib/user-message";
+import { AttachmentKind, attachmentBasename, classifyAttachment } from "@/lib/user-message";
 import {
   parseSessionControlIntent,
   type SessionControlAction,
@@ -99,7 +100,7 @@ function discardUnsentAttachments(paths: string[]) {
 
 /**
  * EchoAgent 风格输入卡片(圆角16):左下 +,右下 Auto 下拉/麦克风/发送;
- * showMeta 时卡片内部底部显示“选择工作目录/默认权限”。
+ * showMeta 时在卡片下方显示工作目录和权限。
  * showDisclaimer 时卡片下方渲染免责声明行。
  * apiReady=false 时输入禁用,点击卡片引导打开设置。
  */
@@ -121,6 +122,9 @@ export function Composer({
   onOpenSettings,
   onToast,
   showMeta = false,
+  focusRequest = 0,
+  compact = false,
+  inheritTaskPermission = false,
   showDisclaimer = false,
   permissionInline = false,
   permissionControl,
@@ -136,6 +140,10 @@ export function Composer({
   onSelectWorkspace,
   automaticWorkspace,
   defaultWorkspaceCwd,
+  projectWorkspaceDefault,
+  workspaceError,
+  onOpenWorkspace,
+  openWorkspaceDisabled,
   // Seed text (from HomePage chips). Consumed once, then cleared via callback.
   initialText,
   onInitialTextConsumed,
@@ -214,6 +222,11 @@ export function Composer({
   /** Surface transient feedback (permission rule save errors, etc.). */
   onToast?: (msg: string) => void;
   showMeta?: boolean;
+  focusRequest?: number;
+  /** Keep the card compact when showing the task settings row. */
+  compact?: boolean;
+  /** Project conversations start with the Runtime's new-task default. */
+  inheritTaskPermission?: boolean;
   /** Show "内容由 AI 生成" disclaimer below card (chat page). */
   showDisclaimer?: boolean;
   /** 把权限选择器放进卡片内 footer（+ 之后），匹配 EchoAgent 本地助理页；为 true 时不再渲染卡片外 meta 行。 */
@@ -231,9 +244,13 @@ export function Composer({
   /** Currently active working directory. */
   cwd?: string;
   workspaces?: WorkspaceInfo[];
-  onSelectWorkspace?: (cwd: string) => void;
+  onSelectWorkspace?: (cwd: string, trigger?: HTMLButtonElement | null) => void;
   automaticWorkspace?: boolean;
   defaultWorkspaceCwd?: string;
+  projectWorkspaceDefault?: { cwd?: string };
+  workspaceError?: string;
+  onOpenWorkspace?: () => void;
+  openWorkspaceDisabled?: boolean;
   /** Optional initial text to seed the input (one-shot, then cleared). */
   initialText?: string;
   onInitialTextConsumed?: () => void;
@@ -498,7 +515,9 @@ export function Composer({
   const cost = useMemo(() => estimateSendCost(text), [text]);
   const contextRefreshSignal = useMemo(() => ({ usageRefreshSignal, modelId, modelLoading }), [usageRefreshSignal, modelId, modelLoading]);
   const boundaryRole: PermissionRole | null = usePermissionModeStore((state) =>
-    commandSessionId ? state.statuses[commandSessionId]?.permissionMode ?? null : state.homeMode,
+    commandSessionId ? state.statuses[commandSessionId]?.permissionMode ?? null
+      : state.capabilityStatus?.locked || inheritTaskPermission ? state.capabilityStatus?.permissionMode ?? "ask"
+        : state.homeMode,
   );
   // 输入历史(arrow-key recall,对齐 EchoAgent use-input-history):内存中按发送追加,
   // ↑/↓ 在输入框回溯。draftRef 暂存「回到输入框」时恢复的草稿。
@@ -521,6 +540,10 @@ export function Composer({
   const mountedRef = useRef(true);
   const onDraftChangeRef = useRef(onDraftChange);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const workspaceErrorId = useId();
+  useEffect(() => {
+    if (focusRequest) ref.current?.focus();
+  }, [focusRequest]);
 
   const cancelVoice = () => {
     voiceSessionRef.current += 1;
@@ -1135,12 +1158,24 @@ export function Composer({
 
   const showModelPicker = !!onModelChange && !!models;
   const showWorkspacePicker = !!onSelectWorkspace && !!workspaces;
+  const homeLayout = showMeta && !compact;
+  const workspacePath = cwd ? displayPath(cwd) : undefined;
+  const workspaceLabel = workspacePath ? attachmentBasename(workspacePath) : automaticWorkspace ? "默认任务目录" : "工作目录未记录";
+  const showBoundaryInCard = permissionInline || Boolean(showMeta && commandSessionId);
+  const knowledgePicker = <KnowledgePicker
+    sessionId={knowledgeSessionId}
+    deferRuntimeSync={knowledgeDeferred}
+    disabled={!apiReady || awaitingQuestion || disabled || sendDisabled || workspacePickingRef.current || streaming}
+    onManage={onOpenKnowledgeBase}
+    onOpenOrganization={onOpenOrganization}
+    onToast={onToast}
+  />;
 
   const composerCls = [
     "echo-composer",
     !apiReady && "echo-composer--disabled",
     !apiReady && !onOpenSettings && "echo-composer--waiting",
-    showMeta && "echo-composer--home",
+    homeLayout && "echo-composer--home",
   ].filter(Boolean).join(" ");
   const hasDraft = Boolean(text.trim() || attachments.length);
   const stopAction = streaming && !hasDraft;
@@ -1159,7 +1194,7 @@ export function Composer({
   return (
     <div
       className={
-        "echo-composer-wrap" + (showMeta ? " echo-composer-wrap--home" : "")
+        "echo-composer-wrap" + (homeLayout ? " echo-composer-wrap--home" : "")
       }
     >
       {Object.keys(storageErrors).length > 0 && <div role="alert" className="composer-storage-error">本机保存失败，当前输入仍保留在窗口中。请先复制内容或到「设置 → 数据管理 → 备份与目录」导出备份，再重试保存。{Object.values(storageErrors)[0]}</div>}
@@ -1426,7 +1461,7 @@ export function Composer({
             }
           }}
         />
-        {permissionInline && (
+        {showBoundaryInCard && (
           <AutomationBoundaryNotice role={boundaryRole} automationMode={automationMode} />
         )}
         <div className="echo-composer__footer">
@@ -1453,6 +1488,7 @@ export function Composer({
             automationModeDisabled={automationModeDisabled}
             onAutomationModeChange={onAutomationModeChange}
           />
+          {showMeta && knowledgePicker}
           {showAutomationModeBadge && automationMode !== "default" && (
             <span
               className={`echo-composer__automation-badge echo-composer__automation-badge--${automationMode}`}
@@ -1499,14 +1535,7 @@ export function Composer({
             </span>
           )}
           {permissionInline && (permissionControl ?? <PermissionPicker onToast={onToast} sessionId={commandSessionId} />)}
-          <KnowledgePicker
-            sessionId={knowledgeSessionId}
-            deferRuntimeSync={knowledgeDeferred}
-            disabled={!apiReady || awaitingQuestion || disabled || sendDisabled || workspacePickingRef.current || streaming}
-            onManage={onOpenKnowledgeBase}
-            onOpenOrganization={onOpenOrganization}
-            onToast={onToast}
-          />
+          {!showMeta && knowledgePicker}
           <div className="echo-composer__spacer" />
           <div className="composer-primary-tools">
           <ContextUsagePill key={usageSessionId ?? "new-task"} sessionId={usageSessionId} active={streaming} onRefreshSignal={contextRefreshSignal}
@@ -1570,9 +1599,8 @@ export function Composer({
           ref.current?.setSelectionRange(...selection);
           setCursorPos(selection[0]);
         }} />}
-      {/* EchoAgent: meta 行在白卡外下方,透明背景,与卡片间距4px(仅首页) */}
       {showMeta && !permissionInline && (
-        <div className="echo-composer-meta">
+        <div className="echo-composer-meta" role="group" aria-label="任务执行设置">
           {showWorkspacePicker ? (
             <WorkspacePicker
               cwd={cwd}
@@ -1580,15 +1608,29 @@ export function Composer({
               onSelectWorkspace={onSelectWorkspace!}
               automaticWorkspace={automaticWorkspace}
               defaultWorkspaceCwd={defaultWorkspaceCwd}
+              projectDefault={projectWorkspaceDefault}
+              workspaceErrorId={workspaceError ? workspaceErrorId : undefined}
               disabled={disabled || sending}
               onBusyChange={busy => { workspacePickingRef.current = busy; setWorkspacePicking(busy); }}
             />
-          ) : null}
-          <AutomationBoundaryNotice
-            role={boundaryRole}
-            automationMode={automationMode}
-          />
-          <PermissionPicker onToast={onToast} sessionId={commandSessionId} />
+          ) : workspacePath && onOpenWorkspace ? (
+            <button type="button" className="echo-composer-meta__btn echo-composer-meta__workspace echo-composer-meta__open-workspace"
+              disabled={openWorkspaceDisabled} aria-label={`打开工作目录：${workspacePath}`}
+              title={`打开文件夹 · ${workspacePath}`} onClick={onOpenWorkspace}>
+              <FolderOpen size={14} strokeWidth={1.75} aria-hidden="true" />
+              <span className="workspace-picker__label">{workspaceLabel}</span>
+            </button>
+          ) : (
+            <span className="echo-composer-meta__value echo-composer-meta__workspace"
+              title={workspacePath ?? (automaticWorkspace ? "创建时自动分配独立文件夹" : workspaceLabel)}>
+              <Folder size={14} strokeWidth={1.75} aria-hidden="true" />
+              <span className="workspace-picker__label"><span className="sr-only">工作目录：</span>{workspaceLabel}</span>
+            </span>
+          )}
+          <PermissionPicker onToast={onToast} sessionId={commandSessionId}
+            inheritTaskDefault={inheritTaskPermission} showLockedAsText />
+          {workspaceError && <p id={workspaceErrorId} role="alert" className="echo-composer-meta__workspace-error">{workspaceError}</p>}
+          {!showBoundaryInCard && <AutomationBoundaryNotice role={boundaryRole} automationMode={automationMode} />}
         </div>
       )}
       {showDisclaimer && (

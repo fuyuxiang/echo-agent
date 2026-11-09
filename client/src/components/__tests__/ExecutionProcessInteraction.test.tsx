@@ -5,8 +5,120 @@ import { ExecutionProcess } from "../ExecutionProcess";
 import { ToolCallDetailBody } from "../ToolCallCard";
 import { MessageItem } from "../MessageItem";
 import { ThemeProvider } from "../ThemeProvider";
+import type { MessagePart } from "@/stores/session-store";
 
 describe("execution record control and result consistency", () => {
+  it("follows streamed records until the reader scrolls up, then preserves the view when the answer starts", () => {
+    const onReview = vi.fn();
+    const view = (length: number, hasFinalAnswer = false) => <ThemeProvider><ExecutionProcess
+      active autoExpand hasFinalAnswer={hasFinalAnswer} onReview={onReview}
+      parts={Array.from({ length }, (_, index) => ({ kind: "text", phase: "commentary", text: `进展 ${index}` }))} /></ThemeProvider>;
+    const { rerender } = render(view(8));
+    const body = screen.getByRole("region", { name: "执行过程详情" });
+    let height = 400;
+    Object.defineProperties(body, { clientHeight: { value: 150 }, scrollHeight: { get: () => height } });
+    rerender(view(9));
+    expect(body.scrollTop).toBe(250);
+
+    fireEvent.keyDown(body, { key: "ArrowUp" });
+    expect(body.scrollTop).toBeLessThan(250);
+    expect(onReview).toHaveBeenCalledOnce();
+    const position = body.scrollTop;
+    height = 500;
+    rerender(view(10, true));
+    expect(body).toBeVisible();
+    expect(body.scrollTop).toBe(position);
+
+    fireEvent.click(screen.getByRole("button", { name: "回到最新进展" }));
+    expect(body).toHaveFocus();
+    expect(body.scrollTop).toBe(350);
+    expect(screen.queryByRole("button", { name: "回到最新进展" })).toBeNull();
+    height = 600;
+    rerender(view(11, true));
+    expect(body.scrollTop).toBe(450);
+  });
+
+  it.each(["keyboard focus", "text selection"])("preserves %s at the latest record when the answer starts", interaction => {
+    const parts: MessagePart[] = [
+      { kind: "text", phase: "commentary", text: "进度说明。" },
+      { kind: "tool_call", toolCall: { toolCallId: "review-focus", kind: "read_file", title: "检查资料", status: "completed", content: [] } },
+    ];
+    const view = (hasFinalAnswer: boolean) => <ThemeProvider><ExecutionProcess
+      active autoExpand hasFinalAnswer={hasFinalAnswer} parts={[...parts]} /></ThemeProvider>;
+    const { rerender } = render(view(false));
+    const body = screen.getByRole("region", { name: "执行过程详情" });
+    const tool = screen.getByRole("button", { name: "read_file 检查资料 完成" });
+    const heading = body.querySelector("h4")!;
+    const selection = document.getSelection()!;
+    if (interaction === "keyboard focus") {
+      tool.focus();
+    } else {
+      const range = document.createRange();
+      range.selectNode(heading.lastChild!);
+      selection.addRange(range);
+    }
+
+    rerender(view(true));
+    expect(body).toBeVisible();
+    if (interaction === "keyboard focus") expect(tool).toHaveFocus();
+    else expect(selection.toString()).toBe("进度说明。");
+    selection.removeAllRanges();
+  });
+
+  it.each(["button", "ArrowDown"])("returns keyboard focus to the header if following resumes via %s", action => {
+    const view = (hasFinalAnswer: boolean) => <ThemeProvider><ExecutionProcess
+      active autoExpand hasFinalAnswer={hasFinalAnswer} parts={[{ kind: "thought", text: "检查资料。" }]} /></ThemeProvider>;
+    const { rerender } = render(view(false));
+    const body = screen.getByRole("region", { name: "执行过程详情" });
+    Object.defineProperties(body, { clientHeight: { value: 150 }, scrollHeight: { value: 400 } });
+    rerender(view(false));
+    body.focus();
+    fireEvent.keyDown(body, { key: "ArrowUp" });
+    if (action === "button") fireEvent.click(screen.getByRole("button", { name: "回到最新进展" }));
+    else fireEvent.keyDown(body, { key: action });
+    expect(body).toHaveFocus();
+
+    rerender(view(true));
+    expect(screen.queryByRole("region", { name: "执行过程详情" })).toBeNull();
+    expect(screen.getByRole("button", { name: /展开过程$/ })).toHaveFocus();
+  });
+
+  it("restores an execution's expanded analysis and scroll position after remounting", () => {
+    const analysis = "已保留执行记录。".repeat(100) + "完整记录末尾";
+    const view = (sessionId: string, active = true) => <ThemeProvider><ExecutionProcess
+      key={sessionId} sessionId={sessionId} messageId="review-remount"
+      active={active} autoExpand parts={[{ kind: "thought", text: analysis }]} /></ThemeProvider>;
+    const { rerender } = render(view("review-first"));
+    const body = screen.getByRole("region", { name: "执行过程详情" });
+    fireEvent.click(screen.getByText("分析详情"));
+    fireEvent.click(screen.getByRole("button", { name: "展开全文" }));
+    Object.defineProperties(body, { clientHeight: { value: 150 }, scrollHeight: { value: 400 } });
+    body.scrollTop = 120;
+    fireEvent.scroll(body);
+
+    rerender(view("review-second"));
+    expect(screen.getByRole("region", { name: "执行过程详情" }).scrollTop).toBe(0);
+    rerender(view("review-first", false));
+    expect(screen.getByRole("region", { name: "执行过程详情" }).scrollTop).toBe(120);
+    expect(screen.getByText(/完整记录末尾/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "回到最新进展" }));
+    rerender(view("review-second"));
+    rerender(view("review-first", false));
+    expect(screen.queryByRole("region", { name: "执行过程详情" })).toBeNull();
+  });
+
+  it.each(["等待你补充信息", "等待你批准操作", "等待你确认计划"])("%s 时保留过程，处理后随正文收起", waitingReason => {
+    const parts = [{ kind: "thought" as const, text: "检查输入。" }];
+    const view = (reason?: string) => <ThemeProvider><ExecutionProcess
+      active autoExpand hasFinalAnswer parts={parts} waitingReason={reason} /></ThemeProvider>;
+    const { rerender } = render(view());
+    expect(screen.queryByRole("region", { name: "执行过程详情" })).toBeNull();
+    rerender(view(waitingReason));
+    expect(screen.getByRole("region", { name: "执行过程详情" })).toBeVisible();
+    rerender(view());
+    expect(screen.queryByRole("region", { name: "执行过程详情" })).toBeNull();
+  });
+
   it.each([
     [true, undefined, "展开过程"],
     [false, "end_turn", "查看过程"],

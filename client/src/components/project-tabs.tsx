@@ -589,6 +589,7 @@ export function TaskTab({
   models = [],
   defaultModelId,
   onRun,
+  runDisabled = false,
   onOpenSession,
   onRestoreSession,
   onToast,
@@ -598,6 +599,7 @@ export function TaskTab({
   models?: ModelOption[];
   defaultModelId?: string;
   onRun?: (message: string, modelId: string) => Promise<string | undefined>;
+  runDisabled?: boolean;
   onOpenSession?: (sessionId: string) => void;
   onRestoreSession?: (sessionId: string) => Promise<void>;
   onToast?: (message: string) => void;
@@ -642,7 +644,7 @@ export function TaskTab({
   };
 
   const runWithAgent = async (task: (typeof tasks)[number], modelId?: string) => {
-    if (!onRun) return;
+    if (!onRun || runDisabled) return;
     if (runningTaskIdsRef.current.has(task.id)) return;
     if (!modelId) {
       onToast?.("请先为该任务选择一个可用模型");
@@ -728,8 +730,8 @@ export function TaskTab({
             <button
               className="pd-btn pd-btn--small"
               onClick={() => void runWithAgent(t, selectedModelId)}
-              disabled={!selectedModelId || running}
-              title={!selectedModelId ? "请先选择可用模型" : `使用 ${modelLabel(models, selectedModelId)} 执行`}
+              disabled={!selectedModelId || running || runDisabled}
+              title={runDisabled ? "确认任务权限后可执行" : !selectedModelId ? "请先选择可用模型" : `使用 ${modelLabel(models, selectedModelId)} 执行`}
             >
               {running ? "启动中…" : "交给 Agent"}
             </button>

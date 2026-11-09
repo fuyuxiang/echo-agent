@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import { agentSessionWorkspaceStatus, filesystemPickDirectory } from "@/lib/agent-client";
 import { SessionWorkspaceDirectory, SessionWorkspaceWarning } from "../SessionWorkspace";
-import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
 vi.mock("@/lib/tauri-kb-reader", () => ({ isTauriAvailable: () => true }));
@@ -11,10 +10,11 @@ vi.mock("@/lib/agent-client", () => ({ agentSessionWorkspaceStatus: vi.fn(), fil
 const reload = vi.fn(async () => {});
 const toast = vi.fn();
 const newTask = vi.fn();
+const openDirectory = vi.fn();
 function Fixture({ id = "s1", cwd = "/original" }: { id?: string; cwd?: string }) {
   const workspace = useSessionWorkspace(id, cwd, null, reload, toast);
   return <><SessionWorkspaceWarning workspace={workspace} onNewTask={newTask} />
-    <SessionWorkspaceDirectory workspace={workspace} onToast={toast} />
+    <SessionWorkspaceDirectory workspace={workspace} onOpen={openDirectory} />
     <button disabled={!workspace.available || workspace.busy}>发送任务</button></>;
 }
 beforeEach(() => {
@@ -24,13 +24,12 @@ beforeEach(() => {
 });
 
 describe("fixed session workspace", () => {
-  it("keeps the path in Files and opens it without exposing a directory switch", async () => {
+  it("opens the bound directory directly from Files", async () => {
     render(<Fixture />);
     await waitFor(() => expect(screen.getByRole("button", { name: "发送任务" })).toBeEnabled());
     expect(screen.getByText("/original")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "打开工作目录" }));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_path", { path: "/original", cwd: "/original" }));
-    expect(screen.queryByRole("button", { name: /选择工作目录/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "打开文件夹" }));
+    expect(openDirectory).toHaveBeenCalledOnce();
   });
 
   it("preserves a missing directory, blocks send, and reloads the same session on recovery", async () => {
@@ -38,10 +37,11 @@ describe("fixed session workspace", () => {
     render(<Fixture />);
     expect(await screen.findByRole("alert")).toHaveTextContent("工作目录已找不到");
     expect(screen.getByRole("button", { name: "发送任务" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "打开工作目录" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "打开文件夹" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "重试连接" }));
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
     await waitFor(() => expect(screen.getByRole("button", { name: "发送任务" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "打开文件夹" })).toBeEnabled();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(vi.mocked(agentSessionWorkspaceStatus).mock.calls.every(([id, cwd]) => id === "s1" && cwd === "/original")).toBe(true);
   });

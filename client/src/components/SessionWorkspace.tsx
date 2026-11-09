@@ -1,6 +1,5 @@
 import { FolderOpen } from "lucide-react";
 import { displayPath } from "@/lib/display-path";
-import { openLocalPath } from "@/lib/markdown-host";
 import type { useSessionWorkspace } from "@/lib/use-session-workspace";
 
 type Workspace = ReturnType<typeof useSessionWorkspace>;
@@ -20,11 +19,14 @@ export function SessionWorkspaceWarning({ workspace, onNewTask }: { workspace: W
   </div>;
 }
 
-export function SessionWorkspaceDirectory({ workspace, onToast }: { workspace: Workspace; onToast?: (message: string) => void }) {
+export function SessionWorkspaceDirectory({ workspace, onOpen }: {
+  workspace: Workspace;
+  onOpen: () => void;
+}) {
   return <section className="session-workspace-directory" aria-label="本任务工作目录">
-    <div className="session-workspace-directory__heading"><strong>工作目录</strong>
-      <button type="button" disabled={!workspace.cwd || !workspace.available || workspace.busy} aria-label="打开工作目录"
-        onClick={() => { if (workspace.cwd) void openLocalPath(workspace.cwd, { cwd: workspace.cwd, type: "directory", onToast }); }}>
+    <div className="session-workspace-directory__heading">
+      <strong>工作目录</strong>
+      <button type="button" disabled={!workspace.cwd || !workspace.available || workspace.busy} onClick={onOpen}>
         <FolderOpen size={14} aria-hidden="true" />打开文件夹
       </button>
     </div>

@@ -519,7 +519,7 @@ export function Sidebar({
   onPlaceholder,
   onToast,
   onOpenProject,
-  onStartProjectConversation,
+  onOpenProjectDraft,
   onRenameSession,
   onArchiveSession,
   onDeleteSession,
@@ -542,7 +542,7 @@ export function Sidebar({
   /** Open a project detail view from the sidebar. */
   onOpenProject?: (projectId: string) => void;
   /** Start a new conversation within a project. */
-  onStartProjectConversation?: (projectId: string) => void;
+  onOpenProjectDraft?: (projectId: string) => void;
   /** Application-owned session lifecycle actions shared by every session surface. */
   onRenameSession?: (sessionId: string, title: string, cwd?: string) => Promise<void>;
   onArchiveSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
@@ -1182,7 +1182,7 @@ export function Sidebar({
                       className="sidebar__node-action"
                       aria-label={`在${proj.name}中新建对话`}
                       data-tip="新建对话"
-                      onClick={() => onStartProjectConversation?.(proj.id)}
+                      onClick={() => onOpenProjectDraft?.(proj.id)}
                       style={{ border: 0, padding: 0, background: "transparent" }}
                     >
                       <AddIcon size="sm" />

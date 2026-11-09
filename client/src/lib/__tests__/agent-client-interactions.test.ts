@@ -184,6 +184,18 @@ describe("agent interaction command contracts", () => {
     });
   });
 
+  it("passes the project permission preview separately from a requested mode", async () => {
+    invokeMock.mockResolvedValue("session-1");
+
+    await expect(agentNewSession("/repo", "model-1", undefined, "auto")).resolves.toBe("session-1");
+    expect(invokeMock).toHaveBeenCalledWith("agent_new_session", {
+      cwd: "/repo",
+      modelId: "model-1",
+      permissionMode: null,
+      expectedPermissionMode: "auto",
+    });
+  });
+
   it("returns the durable automation run record id", async () => {
     invokeMock.mockResolvedValue("run-123");
     await expect(automationsRun("automation-1")).resolves.toBe("run-123");

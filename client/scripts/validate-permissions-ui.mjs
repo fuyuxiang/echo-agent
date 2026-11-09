@@ -166,7 +166,7 @@ try {
     await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
     const samples = await checkModeIcons(page, `${width}-${theme}-${font}`);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
-    if (width === 350) assert.equal(await page.locator(".permission-picker__label").isVisible(), false, "the smallest chat keeps the mode identifiable through its icon");
+    assert(await page.locator(".echo-composer-meta .permission-picker__label").isVisible(), "the current mode stays readable below the card");
     assert.deepEqual(errors, []);
     iconEvidence.push({ viewportWidth: width, theme, font, modes: samples });
     await page.close();

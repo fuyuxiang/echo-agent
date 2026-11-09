@@ -114,11 +114,10 @@
 @container chat-main (max-width:600px) {
   .composer-primary-tools { max-width:60%; }
   .composer-primary-tools .model-selector__label { max-width:110px; }
-  .echo-composer__footer .permission-picker__trigger { max-width:100px; overflow:hidden; }
 }
 @container chat-main (max-width:460px) {
   .chatview .echo-composer__footer { flex-wrap:wrap; }
-  .composer-primary-tools { flex:1 1 100%; max-width:100%; justify-content:flex-end; }
+  .composer-primary-tools { max-width:100%; justify-content:flex-end; }
   .composer-primary-tools .model-selector__label { max-width:70px; }
 }
 
@@ -174,21 +173,13 @@
   .chatview .chatview__inner { padding-top:44px; }
 }
 @media (prefers-reduced-motion:reduce) { .conversation-nav__mark span { transition:none; } }
-@container chat-main (max-width:460px) {
-  .chatview .permission-picker { flex:none; min-width:0; }
-  .chatview .permission-picker__label { white-space:nowrap; }
-}
-@container chat-main (max-width:360px) {
-  .chatview .permission-picker__label { display:none; }
-  .chatview .permission-picker .echo-composer-meta__btn { min-width:32px; padding-inline:4px; }
-}
 @media (hover:none), (pointer:coarse) {
   .chatview .msg__action-btn { min-width:36px; min-height:36px; }
 }
 
 /* The fixed directory belongs with files, not the conversation title. */
 .session-workspace-directory { flex: none; padding: 12px 16px; display: grid; gap: 7px; border-bottom: 1px solid var(--echo-border-default); min-width: 0; }
-.session-workspace-directory__heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.session-workspace-directory__heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .session-workspace-directory__heading strong { font-size: 0.8125rem; font-weight: 500; }
 .session-workspace-directory button, .session-workspace-warning button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--echo-border-default); background: var(--echo-bg-primary); color: var(--echo-text-strong); border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 0.75rem; cursor: pointer; }
 .session-workspace-directory button:hover, .session-workspace-warning button:hover { background: var(--echo-bg-hover); }
@@ -199,7 +190,7 @@
 .session-workspace-warning__path, .session-workspace-warning details { overflow-wrap: anywhere; font-size: 0.75rem; color: var(--echo-text-medium); }
 .session-workspace-warning details p { margin: 4px 0; }
 .session-workspace-warning__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 3px; }
-.workspace-picker__hint { padding: 0 12px 8px; max-width: 300px; font-size: 0.6875rem; color: var(--echo-text-medium); line-height: 1.5; }
+.workspace-picker__hint { padding: 0 12px 8px; max-width: 300px; font-size: 0.6875rem; color: var(--echo-text-medium); line-height: 1.5; overflow-wrap: anywhere; }
 .file-preview__bar { flex-wrap: wrap; }
 .file-preview__bar .file-preview__path { flex: 1 1 100%; }
 

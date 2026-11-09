@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { ToolCallCard } from "./ToolCallCard";
 import { documentProgressSummary } from "@/lib/document-progress";
@@ -9,10 +9,16 @@ import type { MessagePart, ToolCallView } from "@/stores/session-store";
 import { formatProcessDuration, summarizeExecutionProcess } from "@/lib/execution-process";
 import type { KnowledgeTurnTrace } from "@/stores/knowledge-store";
 import type { ExecutionNotice } from "@/lib/execution-notice";
+import { isNearScrollBottom } from "./use-stick-to-bottom";
 import {
   forgetExecutionDisclosureChoice,
   getExecutionDisclosureChoice,
+  getExecutionReadingPosition,
+  getExecutionReasoningChoices,
   rememberExecutionDisclosureChoice,
+  rememberExecutionReadingPosition,
+  rememberExecutionReasoningChoice,
+  type ReasoningDisclosureChoice,
 } from "@/lib/execution-disclosure";
 
 interface ExecutionProcessProps {
@@ -22,6 +28,7 @@ interface ExecutionProcessProps {
   active: boolean;
   settled?: boolean;
   autoExpand?: boolean;
+  onReview?: () => void;
   startedAt?: number;
   completedAt?: number;
   lastActivityAt?: number;
@@ -65,20 +72,26 @@ function groupStageRows(parts: MessagePart[]): ProcessRow[] {
   return rows;
 }
 
-function ReasoningDisclosure({ parts, active, markdownConfig, theme }: {
+function ReasoningDisclosure({ parts, active, markdownConfig, theme, savedChoice, onChange }: {
   parts: ReasoningPart[];
   active: boolean;
   markdownConfig?: MarkdownConfig;
   theme: "light" | "dark";
+  savedChoice?: ReasoningDisclosureChoice;
+  onChange: (choice: ReasoningDisclosureChoice) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [full, setFull] = useState(false);
+  const [choice, setChoice] = useState(savedChoice ?? { open: false, full: false });
+  const { open, full } = choice;
+  const change = (next: ReasoningDisclosureChoice) => {
+    setChoice(next);
+    onChange(next);
+  };
   const contentId = useId();
   const text = parts.map(part => part.text).join("\n\n");
   const preview = Array.from(text.split("\n").slice(0, 10).join("\n")).slice(0, 600).join("");
   const shortened = preview.length < text.length;
   return <details className="execution-process__reasoning" open={open}>
-    <summary onClick={event => { event.preventDefault(); setOpen(value => !value); }}>分析详情</summary>
+    <summary onClick={event => { event.preventDefault(); change({ open: !open, full }); }}>分析详情</summary>
     {open && <>
       {shortened && !full && <p className="execution-process__hint">内容较长，当前展示开头片段。</p>}
       <div id={contentId} className="execution-process__reasoning-body">
@@ -86,7 +99,7 @@ function ReasoningDisclosure({ parts, active, markdownConfig, theme }: {
           config={markdownConfig}>{shortened && !full ? `${preview}\n\n…` : text}</Markdown>
       </div>
       {shortened && <button type="button" className="execution-process__read-more"
-        aria-expanded={full} aria-controls={contentId} onClick={() => setFull(value => !value)}>
+        aria-expanded={full} aria-controls={contentId} onClick={() => change({ open, full: !full })}>
         {full ? "收起全文" : "展开全文"}
       </button>}
     </>}
@@ -109,27 +122,40 @@ function StageTools({ parts, recoveredById, onOpenTool, active }: {
   </div>;
 }
 
+function hasRecordSelection(body: HTMLDivElement): boolean {
+  const selection = body.ownerDocument.getSelection();
+  return Boolean(selection?.rangeCount && !selection.isCollapsed && selection.getRangeAt(0).intersectsNode(body));
+}
+
 /** Task progress first; one disclosure for the complete chronological record. */
 export function ExecutionProcess({
-  sessionId, messageId, parts, active, settled, autoExpand = false, startedAt, completedAt,
+  sessionId, messageId, parts, active, settled, autoExpand = false, onReview, startedAt, completedAt,
   lastActivityAt, stopReason, cancelTrigger, cancellationCategory, agentResult,
   resultNotice, hasFinalAnswer = false, waitingReason, markdownConfig, findQuery, onOpenTool,
   knowledgeTrace, onOpenKnowledgePath, revealRequest = 0,
 }: ExecutionProcessProps) {
   const { theme } = useTheme();
   const bodyId = useId();
+  const detailsRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLButtonElement>(null);
   const returnToOverview = useRef(false);
+  const restoreReadingTop = useRef(getExecutionReadingPosition(sessionId, messageId));
+  const [reviewing, setReviewing] = useState(restoreReadingTop.current !== undefined);
+  const reviewingRef = useRef(reviewing);
+  const lastScrollTop = useRef(0);
+  const followWhileBodyFocused = useRef(false);
   const summary = useMemo(() => summarizeExecutionProcess(parts, active, stopReason,
     cancellationCategory, cancelTrigger, { settled }),
   [active, cancellationCategory, cancelTrigger, parts, settled, stopReason]);
   const hasUnfinishedTools = parts.some(part => part.kind === "tool_call" && part.toolCall.status === "in_progress");
   const finalAnswerStarted = hasFinalAnswer && !waitingReason && !hasUnfinishedTools
     && knowledgeTrace?.personal?.state !== "searching";
-  const shouldOpenAutomatically = autoExpand && active && !finalAnswerStarted;
+  const shouldOpenAutomatically = active && (Boolean(waitingReason) || autoExpand && !finalAnswerStarted);
   const savedChoice = getExecutionDisclosureChoice(sessionId, messageId);
-  const [open, setOpen] = useState(savedChoice ?? shouldOpenAutomatically);
+  const reasoningChoices = getExecutionReasoningChoices(sessionId, messageId);
+  const [open, setOpen] = useState(savedChoice ?? (reviewing || shouldOpenAutomatically));
   const [collapsedSearch, setCollapsedSearch] = useState<string>();
   const searchMatch = Boolean(findQuery && parts.some(part => part.kind === "text"
     && part.phase !== "commentary" && part.text.toLocaleLowerCase().includes(findQuery.toLocaleLowerCase())));
@@ -140,6 +166,56 @@ export function ExecutionProcess({
   const userToggled = useRef(savedChoice !== undefined);
   const [resumedAt, setResumedAt] = useState(0);
   const previousWaiting = useRef(waitingReason);
+
+  const updateReviewing = useCallback((next: boolean) => {
+    if (!next) restoreReadingTop.current = undefined;
+    rememberExecutionReadingPosition(sessionId, messageId, next ? bodyRef.current?.scrollTop : undefined);
+    if (reviewingRef.current === next) return;
+    reviewingRef.current = next;
+    setReviewing(next);
+    if (next) onReview?.();
+  }, [messageId, onReview, sessionId]);
+
+  const hasReadingInteraction = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body) return false;
+    const focused = body.ownerDocument.activeElement;
+    return (detailsRef.current?.contains(focused) && !(focused === body && followWhileBodyFocused.current))
+      || hasRecordSelection(body);
+  }, []);
+
+  const scrollToLatest = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    body.scrollTop = body.scrollHeight - body.clientHeight;
+    lastScrollTop.current = body.scrollTop;
+  }, []);
+
+  const followLatest = useCallback(() => {
+    if (reviewingRef.current) return;
+    if (hasReadingInteraction()) updateReviewing(true);
+    else scrollToLatest();
+  }, [hasReadingInteraction, scrollToLatest, updateReviewing]);
+
+  const alignRecords = useCallback(() => {
+    const target = restoreReadingTop.current;
+    if (target === undefined) {
+      if (active) followLatest();
+      return;
+    }
+    const body = bodyRef.current;
+    if (!body) return;
+    body.scrollTop = target;
+    lastScrollTop.current = body.scrollTop;
+    // Markdown images can extend the scroll range after the initial render.
+    if (body.scrollTop >= target - 1) restoreReadingTop.current = undefined;
+  }, [active, followLatest]);
+
+  const cancelPendingRestore = () => {
+    if (restoreReadingTop.current === undefined) return;
+    restoreReadingTop.current = undefined;
+    updateReviewing(true);
+  };
 
   useEffect(() => { setCollapsedSearch(undefined); }, [findQuery]);
 
@@ -165,27 +241,42 @@ export function ExecutionProcess({
     previousWaiting.current = waitingReason;
   }, [waitingReason]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const beganNewRun = active && !previousActive.current;
+    const endedRun = !active && previousActive.current;
     if (beganNewRun) {
       userToggled.current = false;
+      updateReviewing(false);
       setResumedAt(Date.now());
       forgetExecutionDisclosureChoice(sessionId, messageId);
     }
-    if (!userToggled.current && (beganNewRun || previousAutomaticOpen.current !== shouldOpenAutomatically)) {
-      setOpen(shouldOpenAutomatically);
+    if (!userToggled.current && (beganNewRun || endedRun || previousAutomaticOpen.current !== shouldOpenAutomatically)) {
+      if (shouldOpenAutomatically) setOpen(true);
+      else if (hasReadingInteraction()) updateReviewing(true);
+      else if (!reviewingRef.current) {
+        const body = bodyRef.current;
+        if (body && body === body.ownerDocument.activeElement) headerRef.current?.focus({ preventScroll: true });
+        setOpen(false);
+      }
     }
     previousActive.current = active;
     previousAutomaticOpen.current = shouldOpenAutomatically;
-  }, [active, messageId, sessionId, shouldOpenAutomatically]);
+  }, [active, hasReadingInteraction, messageId, sessionId, shouldOpenAutomatically, updateReviewing]);
 
   useLayoutEffect(() => {
-    if (!expanded) return;
+    if (expanded && !searchMatch) alignRecords();
+  }, [alignRecords, expanded, knowledgeTrace, parts, searchMatch]);
+
+  useLayoutEffect(() => {
     const body = bodyRef.current;
-    return () => {
-      if (body?.contains(document.activeElement)) headerRef.current?.focus({ preventScroll: true });
-    };
-  }, [expanded]);
+    const content = contentRef.current;
+    if ((!active && restoreReadingTop.current === undefined) || !expanded || searchMatch
+      || !body || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(alignRecords);
+    observer.observe(body);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [active, alignRecords, expanded, searchMatch]);
 
   useLayoutEffect(() => {
     if (expanded || !returnToOverview.current) return;
@@ -215,7 +306,7 @@ export function ExecutionProcess({
   const waitingFor = knowledgeTrace?.personal?.state === "searching" ? "知识库" : hasUnfinishedTools ? "操作" : "模型";
   const description = progress.startsWith(title)
     ? progress.slice(title.length).replace(/^[。！？!?\s]+/, "") : progress;
-  const showProgress = active && !finalAnswerStarted && Boolean(description);
+  const showProgress = !expanded && active && !finalAnswerStarted && Boolean(description);
   const meta = [stageOperationSummary(tools, recoveredIds, !active)];
   if (summary.changedFiles.length) meta.push(`${summary.changedFiles.length} 个文件已更新`);
   const documentSummary = documentProgressSummary(tools.flatMap(tool => tool.documentProgress ? [tool.documentProgress] : []));
@@ -223,6 +314,7 @@ export function ExecutionProcess({
   if (knowledgeTrace?.personal?.state === "used") meta.push(`${knowledgeTrace.personal.resultCount} 个知识片段`);
   const changeOpen = (next: boolean) => {
     userToggled.current = true;
+    if (!next) updateReviewing(false);
     setCollapsedSearch(!next && searchMatch ? findQuery : undefined);
     rememberExecutionDisclosureChoice(sessionId, messageId, next);
     setOpen(next);
@@ -258,43 +350,102 @@ export function ExecutionProcess({
     {longWait && <p className="execution-process__waiting-note" role="note">
       已 {formatProcessDuration(idleMs)} 未收到新进展，正在等待{waitingFor}返回。可继续等待，或停止本次执行。
     </p>}
-    {expanded && <div className="execution-process__body" id={bodyId} ref={bodyRef}
-      data-chat-reading="true"
-      tabIndex={0} role="region" aria-label="执行过程详情">
-      {summary.description && <p id={`${bodyId}-summary`} className="execution-process__outcome-detail">{summary.description}</p>}
-      {summary.recoveredTools.length > 0 && <p className="execution-process__recovery-detail">
-        {summary.recoveredTools.length} 次中间失败已由后续同一操作的重试恢复，原始记录保留如下。
-      </p>}
-      {!active && agentResult && <p className="execution-process__terminal-detail">{agentResult}</p>}
-      {knowledgeTrace && <KnowledgeTrace trace={knowledgeTrace} active={active} onOpenPath={onOpenKnowledgePath} />}
-      <ol className="execution-process__stages" aria-label="执行记录">
-        {stages.map((stage, index) => {
-          const rows = groupStageRows(stage.parts);
-          const headingPart = !stage.planned ? stage.progress[0] : undefined;
-          const headingIsProgress = Boolean(headingPart && stage.parts[0] === headingPart
-            && headingPart.text.trim().replace(/[。！？!?]+$/, "") === stage.title);
-          const state = executionStageState(stage, index === stages.length - 1, active, Boolean(waitingReason), recoveredIds);
-          return <li key={stage.id} data-stage-id={stage.id} data-stage-state={state}
-            className={`execution-process__stage${stage.planned ? "" : " execution-process__stage--activity"}${active && index === stages.length - 1 ? " execution-process__stage--current" : ""}`}>
-            <div className="execution-process__stage-heading">
-              <h4><span className="execution-process__stage-index" aria-hidden="true">{stageNumbers[index] ?? "·"}</span>{headingIsProgress && headingPart ? headingPart.text.trim() : stage.title.replace(/^正在/, "")}</h4>
-              <span className="execution-process__stage-state">{state}</span>
-            </div>
-            {rows.map((row, rowIndex) => {
-              const rowActive = active && index === stages.length - 1 && rowIndex === rows.length - 1;
-              if (row.kind === "thought") return <ReasoningDisclosure key={row.index} parts={row.parts} active={rowActive} markdownConfig={markdownConfig} theme={theme} />;
-              if (row.kind === "tools") return <StageTools key={row.index} parts={row.parts} recoveredById={recoveredById} onOpenTool={onOpenTool} active={active} />;
-              if (headingIsProgress && row.part === headingPart && !findQuery) return null;
-              return <div className="execution-process__progress" key={row.index}>
-                <Markdown complete={!rowActive} theme={theme} config={markdownConfig}
-                  findQuery={row.part.phase !== "commentary" ? findQuery : undefined}>{row.part.text}</Markdown>
-              </div>;
+    {expanded && <div className="execution-process__details" ref={detailsRef}>
+      <div className="execution-process__body" id={bodyId} ref={bodyRef}
+        data-chat-reading="true" tabIndex={0} role="region" aria-label="执行过程详情"
+        onFocus={cancelPendingRestore}
+        onPointerDown={cancelPendingRestore}
+        onBlur={event => {
+          if (event.target === event.currentTarget) followWhileBodyFocused.current = false;
+        }}
+        onScroll={event => {
+          const body = event.currentTarget;
+          const movedDown = body.scrollTop > lastScrollTop.current;
+          lastScrollTop.current = body.scrollTop;
+          if (searchMatch || restoreReadingTop.current !== undefined) return;
+          if (!isNearScrollBottom(body)) updateReviewing(true);
+          else if (movedDown && !hasRecordSelection(body)) {
+            followWhileBodyFocused.current = body === body.ownerDocument.activeElement;
+            updateReviewing(false);
+          }
+        }}
+        onWheel={event => {
+          cancelPendingRestore();
+          if (event.deltaY < 0 && event.currentTarget.scrollTop > 0) updateReviewing(true);
+        }}
+        onKeyDown={event => {
+          const body = event.currentTarget;
+          if (event.target !== body || event.defaultPrevented || event.altKey || event.metaKey || event.ctrlKey
+            || (event.key !== "ArrowUp" && event.key !== "ArrowDown") || body.scrollHeight <= body.clientHeight) return;
+          cancelPendingRestore();
+          event.preventDefault();
+          const up = event.key === "ArrowUp";
+          if (up && body.scrollTop > 0) updateReviewing(true);
+          const lineHeight = parseFloat(getComputedStyle(body).lineHeight) || 24;
+          body.scrollTop += (up ? -1 : 1) * lineHeight;
+          if (!up && isNearScrollBottom(body) && !hasRecordSelection(body)) {
+            followWhileBodyFocused.current = true;
+            updateReviewing(false);
+          }
+        }}
+        onClick={event => {
+          if (active && event.target instanceof Element && event.target.closest("summary, .execution-process__read-more")) {
+            updateReviewing(true);
+          }
+        }}>
+        <div ref={contentRef}>
+          {summary.description && <p id={`${bodyId}-summary`} className="execution-process__outcome-detail">{summary.description}</p>}
+          {summary.recoveredTools.length > 0 && <p className="execution-process__recovery-detail">
+            {summary.recoveredTools.length} 次中间失败已由后续同一操作的重试恢复，原始记录保留如下。
+          </p>}
+          {!active && agentResult && <p className="execution-process__terminal-detail">{agentResult}</p>}
+          {knowledgeTrace && <KnowledgeTrace trace={knowledgeTrace} active={active} onOpenPath={onOpenKnowledgePath} />}
+          <ol className="execution-process__stages" aria-label="执行记录">
+            {stages.map((stage, index) => {
+              const rows = groupStageRows(stage.parts);
+              const headingPart = !stage.planned ? stage.progress[0] : undefined;
+              const headingIsProgress = Boolean(headingPart && stage.parts[0] === headingPart
+                && headingPart.text.trim().replace(/[。！？!?]+$/, "") === stage.title);
+              const state = executionStageState(stage, index === stages.length - 1, active, Boolean(waitingReason), recoveredIds);
+              return <li key={stage.id} data-stage-id={stage.id} data-stage-state={state}
+                className={`execution-process__stage${stage.planned ? "" : " execution-process__stage--activity"}${active && index === stages.length - 1 ? " execution-process__stage--current" : ""}`}>
+                <div className="execution-process__stage-heading">
+                  <h4><span className="execution-process__stage-index" aria-hidden="true">{stageNumbers[index] ?? "·"}</span>{headingIsProgress && headingPart ? headingPart.text.trim() : stage.title.replace(/^正在/, "")}</h4>
+                  <span className="execution-process__stage-state">{state}</span>
+                </div>
+                {rows.map((row, rowIndex) => {
+                  const rowActive = active && index === stages.length - 1 && rowIndex === rows.length - 1;
+                  if (row.kind === "thought") {
+                    const rowId = `${stage.id}:${row.index}`;
+                    return <ReasoningDisclosure key={row.index} parts={row.parts} active={rowActive}
+                      markdownConfig={markdownConfig} theme={theme} savedChoice={reasoningChoices?.get(rowId)}
+                      onChange={choice => rememberExecutionReasoningChoice(sessionId, messageId, rowId, choice)} />;
+                  }
+                  if (row.kind === "tools") return <StageTools key={row.index} parts={row.parts} recoveredById={recoveredById} onOpenTool={onOpenTool} active={active} />;
+                  if (headingIsProgress && row.part === headingPart && !findQuery) return null;
+                  return <div className="execution-process__progress" key={row.index}>
+                    <Markdown complete={!rowActive} theme={theme} config={markdownConfig}
+                      findQuery={row.part.phase !== "commentary" ? findQuery : undefined}>{row.part.text}</Markdown>
+                  </div>;
+                })}
+              </li>;
             })}
-          </li>;
-        })}
-      </ol>
+          </ol>
+        </div>
+      </div>
       <div className="execution-process__footer">
         {summary.toolCount > 0 && onOpenTool && <p className="execution-process__hint">选择操作可在右侧查看输入、输出和文件变更</p>}
+        {reviewing && <button type="button" className="execution-process__latest" aria-controls={bodyId}
+          title="回到最新进展并恢复执行记录跟随"
+          onClick={() => {
+            const body = bodyRef.current;
+            if (!body) return;
+            if (hasRecordSelection(body)) body.ownerDocument.getSelection()?.removeAllRanges();
+            body.focus({ preventScroll: true });
+            followWhileBodyFocused.current = true;
+            updateReviewing(false);
+            scrollToLatest();
+          }}>回到最新进展</button>}
         <button type="button" className="execution-process__collapse"
           aria-expanded={true} aria-controls={bodyId}
           onClick={() => { returnToOverview.current = true; changeOpen(false); }}>

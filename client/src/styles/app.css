@@ -2300,7 +2300,8 @@
   white-space: nowrap;
 }
 .execution-process__header,
-.execution-process__collapse {
+.execution-process__collapse,
+.execution-process__latest {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2318,9 +2319,11 @@
   cursor: pointer;
 }
 .execution-process__header:hover,
-.execution-process__collapse:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.execution-process__collapse:hover,
+.execution-process__latest:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 .execution-process__header:focus-visible,
 .execution-process__collapse:focus-visible,
+.execution-process__latest:focus-visible,
 .execution-process__read-more:focus-visible {
   outline: 2px solid var(--echo-brand);
   outline-offset: 2px;
@@ -2364,15 +2367,21 @@
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
-.execution-process__body {
-  margin: 10px 0 0 17px;
-  padding: 8px 0 2px;
+.execution-process__details {
+  margin-top: 10px;
   border-top: 1px solid var(--echo-border-default);
-  /* The transcript owns scrolling. Expanding a record must not create a
-     second scroll area or jump past its first stage. */
   min-width: 0;
 }
-.execution-process__body:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 3px; }
+.execution-process__body {
+  /* Seven lines at the process text's typical line height. */
+  line-height: 1.4rem;
+  max-height: 9.8rem;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
+  padding: 8px 0 2px 17px;
+}
+.execution-process__body:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: -2px; }
 .execution-process__stages { margin: 8px 0 0; padding: 0; list-style: none; }
 .execution-process__stage { padding: 0 4px 20px 20px; margin-left: 5px; border-left: 1px solid var(--echo-border-subtle); min-width: 0; }
 .execution-process__stage:last-child { padding-bottom: 2px; }
@@ -2506,7 +2515,7 @@
   justify-content: flex-end;
   gap: 4px 12px;
   margin-top: 10px;
-  padding-top: 6px;
+  padding: 6px 0 0 17px;
   border-top: 1px solid var(--echo-border-subtle, var(--echo-border-default));
 }
 .execution-process__footer > .execution-process__hint {
@@ -2516,6 +2525,7 @@
   border: 0;
 }
 .execution-process__collapse { margin-left: auto; }
+.execution-process__latest { color: var(--echo-color-text-brand-default); }
 .knowledge-trace {
   display: flex;
   flex-direction: column;
@@ -5921,13 +5931,36 @@ button.diff__path {
 .echo-composer-meta {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 32px;
-  /* EchoAgent: meta 行在白卡外下方,透明背景,距卡片4px,横向12px对齐卡片内容 */
+  flex-wrap: wrap;
+  gap: 0 4px;
+  min-height: 32px;
   margin-top: 4px;
   padding: 0 12px;
   background: transparent;
 }
+.echo-composer-meta__value {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  gap: 6px;
+  padding: 0 8px;
+  color: var(--echo-text-medium);
+  font-size: 0.8125rem;
+}
+.echo-composer-meta__value > svg { flex: none; }
+.echo-composer-meta__workspace { min-width: 0; max-width: min(180px, 100%); }
+.echo-composer-meta__open-workspace { min-height: 32px; }
+.echo-composer-meta__open-workspace > svg { flex: none; }
+.echo-composer-meta__open-workspace:disabled { color: var(--echo-control-disabled-fg); cursor: default; background: transparent; }
+.echo-composer-meta__workspace-error {
+  flex-basis: 100%;
+  margin: 2px 8px 4px;
+  color: var(--echo-status-error);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.echo-composer-meta > .automation-boundary-notice { flex: 0 0 100%; }
+.echo-composer-meta .permission-picker__trigger { min-height: 32px; }
 .echo-composer-meta__btn {
   display: flex;
   align-items: center;
@@ -5940,7 +5973,7 @@ button.diff__path {
   border-radius: 8px;
   padding: 0 8px;
 }
-.echo-composer-meta__btn:hover {
+.echo-composer-meta__btn:hover:not(:disabled) {
   background: var(--echo-bg-hover);
 }
 .echo-composer__disclaimer {
@@ -6564,7 +6597,7 @@ button.diff__path {
 
 @media (max-width: 720px) {
   /* 窄屏:项目 composer 顶部的注入摘要只保留项目名 + 注入标签,节省横向空间。 */
-  .pd-composer-header__count,
+  .pd-composer-header__count:not(.pd-composer-header__instruction),
   .pd-composer-header__label + .pd-composer-header__sep {
     display: none;
   }

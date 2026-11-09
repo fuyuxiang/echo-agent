@@ -45,6 +45,26 @@ describe("WorkspacePicker", () => {
     expect(isAutomaticTaskWorkspace("/default", "/default/Tasks/my-project")).toBe(false);
   });
 
+  it("项目目录菜单显示并聚焦没有历史会话的临时目录", async () => {
+    const select = vi.fn();
+    const projectDefault = { cwd: "/project" };
+    const props = { projectDefault, workspaces: [], onSelectWorkspace: select };
+    vi.mocked(filesystemPickDirectory).mockResolvedValueOnce("/outside/new");
+    const view = render(<WorkspacePicker {...props} cwd="/project" />);
+    fireEvent.click(screen.getByRole("button", { name: /工作目录：\/project/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "选择文件夹…" }));
+    await waitFor(() => expect(select).toHaveBeenCalledWith("/outside/new", expect.any(HTMLButtonElement)));
+    view.rerender(<WorkspacePicker {...props} cwd="/outside/new" />);
+    const trigger = screen.getByRole("button", { name: /工作目录：\/outside\/new/ });
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    const current = screen.getByRole("menuitemradio", { name: "本次任务目录", checked: true });
+    expect(current).toHaveAccessibleDescription("/outside/new");
+    await waitFor(() => expect(current).toHaveFocus());
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "项目默认目录", checked: false }));
+    expect(select).toHaveBeenLastCalledWith("", trigger);
+    expect(trigger).toHaveFocus();
+  });
+
   it("创建期间关闭目录菜单，阻止切换；系统选择框期间其他候选也保持锁定", async () => {
     let resolve!: (cwd: string | null) => void;
     vi.mocked(filesystemPickDirectory).mockImplementationOnce(() => new Promise(accept => { resolve = accept; }));

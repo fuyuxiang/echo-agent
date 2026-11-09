@@ -1,7 +1,7 @@
 import type { CodingTurnOptions } from "@/lib/agent-client";
-import { lazy, Suspense, type ReactNode } from "react";
+import { lazy, Suspense, type ComponentProps, type ReactNode } from "react";
 import { AgentToolIcon } from "@/foundation/components/Icon/icons";
-import type { ProjectMeta } from "@/stores/projects-store";
+import type { StartProjectConversation } from "@/lib/project-context";
 import { openExternalUrl, openLocalPath } from "@/lib/agent-client";
 import type { WorkspaceInfo } from "@/lib/agent-client";
 import type { ModelOption } from "./ModelSelector";
@@ -117,15 +117,10 @@ interface PlaceholderPageProps {
   /** Current session id (for plugin actions that need a session). */
   sessionId?: string;
   /** 项目页：进入项目（新建会话并注入说明）。 */
-  onStartProject?: (project: ProjectMeta) => void;
+  onStartProject?: ComponentProps<typeof ProjectsPanel>["onStartProject"];
   onProjectNavigate?: () => void;
   /** 项目页：在项目中新建对话（创建真实 EchoAgent 会话）。 */
-  onStartProjectConversation?: (
-    projectId: string,
-    message: string,
-    modelId?: string,
-    attachments?: string[],
-  ) => Promise<string | undefined>;
+  onStartProjectConversation?: StartProjectConversation;
   projectModels?: ModelOption[];
   projectDefaultModelId?: string;
   meetingModelId?: string;
@@ -198,6 +193,7 @@ export function PlaceholderPage({
           onStartProject={onStartProject}
           onNavigate={onProjectNavigate}
           onStartProjectConversation={onStartProjectConversation}
+          workspaces={workspaces}
           models={projectModels}
           defaultModelId={projectDefaultModelId}
           onOpenModelSettings={onOpenModelSettings}

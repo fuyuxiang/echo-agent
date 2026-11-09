@@ -346,6 +346,16 @@ describe("useStickToBottom", () => {
     expect(scroller.scrollTop).toBe(800);
   });
 
+  it("stays paused when a delayed scroll event reports the same bottom position", () => {
+    const { getByTestId } = render(<Harness version={1} streaming />);
+    const scroller = getByTestId("scroll");
+    setScrollMetrics(scroller, { scrollHeight: 1_000, clientHeight: 400, scrollTop: 600 });
+    fireEvent.click(getByTestId("resume"));
+    fireEvent.click(getByTestId("record-action"));
+    fireEvent.scroll(scroller);
+    expect(getByTestId("following")).toHaveTextContent("false");
+  });
+
   it("does not steal the reader's position when a queued response starts", () => {
     const { getByTestId, rerender } = render(
       <Harness version={1} streaming={false} />,

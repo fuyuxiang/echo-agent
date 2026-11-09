@@ -1,6 +1,16 @@
 /* Task approval uses the same restrained surfaces as the session composer. */
 .permission-picker { position: relative; }
 .permission-picker__trigger-icon { flex: none; }
+.permission-picker__preview { display: flex; flex-wrap: wrap; align-items: center; min-width: 0; max-width: 100%; }
+.permission-picker__preview > [role="status"] { min-width: 0; overflow-wrap: anywhere; }
+.permission-picker__retry { min-height: 32px; color: var(--echo-color-text-brand-default); }
+.permission-picker__read-only { min-width: 0; max-width: 100%; }
+.permission-picker__read-only > button { min-height: 32px; }
+.permission-picker__read-only > button:focus-visible, .permission-picker__retry:focus-visible {
+  outline: 2px solid var(--echo-brand); outline-offset: -2px;
+}
+.permission-picker__read-only > p { max-width: 20rem; margin: 0 8px 6px; color: var(--echo-text-medium); font-size: .75rem; overflow-wrap: anywhere; }
+.permission-picker__readonly-label { color: var(--echo-text-medium); font-size: .75rem; }
 .permission-picker__popover {
   position: fixed; z-index: var(--echo-layer-popover); display: flex; flex-direction: column;
   width: max-content; min-width: min(224px, calc(100vw - 24px)); max-width: min(320px, calc(100vw - 24px)); padding: 6px; gap: 2px;
@@ -26,6 +36,7 @@
 .permission-picker__mode-check { position: absolute; top: 12px; right: 10px; width: 14px; height: 14px; color: var(--echo-text-medium); }
 .permission-picker__trigger[data-mode-id="always-approve"] .permission-picker__trigger-icon,
 .permission-picker__trigger[data-mode-id="always-approve"] .permission-picker__label,
+.permission-picker__value[data-mode-id="always-approve"],
 .permission-picker__mode[data-mode-id="always-approve"] .permission-picker__mode-label,
 .permission-picker__mode[data-mode-id="always-approve"] .permission-picker__mode-icon { color: var(--echo-color-text-warning-default); }
 .permission-picker__scope { padding: 6px 10px 4px; border-top: 1px solid var(--echo-border-default); color: var(--echo-text-weak); font-size: .625rem; line-height: 1.4; }

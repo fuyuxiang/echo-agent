@@ -143,15 +143,18 @@ export async function desktopNotificationPreviewSave(showTaskTitle: boolean): Pr
 // `modelId` is passed as `_meta.modelId` to EchoAgent so the session binds to
 // that model from the start (avoids the default `echo-agent-build` model whose
 // sampling config has no key in a BYOK-only setup).
+// `expectedPermissionMode` compares a displayed preview with native policy.
 export async function agentNewSession(
   cwd: string,
   modelId?: string,
-  permissionMode: PermissionMode = "ask",
+  permissionMode?: PermissionMode,
+  expectedPermissionMode?: PermissionMode,
 ): Promise<string> {
   const invocation = invoke<string>("agent_new_session", {
     cwd,
     modelId: modelId ?? null,
-    permissionMode,
+    permissionMode: permissionMode ?? (expectedPermissionMode === undefined ? "ask" : null),
+    ...(expectedPermissionMode === undefined ? {} : { expectedPermissionMode }),
   });
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {

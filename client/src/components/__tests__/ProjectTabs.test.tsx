@@ -13,6 +13,7 @@ vi.mock("@/lib/agent-client", () => ({
   projectAssetMakeDir: vi.fn(),
   projectAssetRemove: vi.fn(),
   projectAssetsImport: vi.fn(),
+  permissionModeGet: vi.fn().mockResolvedValue({ permissionMode: "ask", configuredPermissionMode: "ask", locked: false }),
 }));
 
 const project: ProjectMeta = {
@@ -501,13 +502,14 @@ describe("项目计划/任务与 Agent 会话闭环", () => {
     );
     const composer = screen.getByPlaceholderText(/Shift\+Enter/);
     fireEvent.change(composer, { target: { value: "请生成发布清单" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     await waitFor(() => {
       const alerts = screen.getAllByRole("alert");
       expect(alerts.some((node) => node.textContent?.includes("消息尚未发送"))).toBe(true);
     });
-    expect(onStartConversation).toHaveBeenCalledWith("p1", "请生成发布清单", "model-a", []);
+    expect(onStartConversation).toHaveBeenCalledWith("p1", "请生成发布清单", "model-a", expect.objectContaining({ cwd: "/workspace" }));
     expect(composer).toHaveValue("请生成发布清单");
   });
 
@@ -527,13 +529,14 @@ describe("项目计划/任务与 Agent 会话闭环", () => {
     fireEvent.click(screen.getByRole("button", { name: /模型 A/ }));
     fireEvent.click(screen.getByRole("option", { name: /模型 B/ }));
     fireEvent.change(screen.getByPlaceholderText(/Shift\+Enter/), { target: { value: "执行发布" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     await waitFor(() => expect(onStartConversation).toHaveBeenCalledWith(
       "p1",
       "执行发布",
       "model-b",
-      [],
+      expect.objectContaining({ cwd: "/workspace", expectedPermissionMode: "ask" }),
     ));
     expect(useProjectsStore.getState().projects[0].defaultModelId).toBe("model-b");
   });

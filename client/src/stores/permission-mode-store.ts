@@ -1,5 +1,7 @@
 import { create } from "zustand";
-import type { PermissionMode, PermissionModeStatus } from "@/lib/agent-client";
+import { permissionModeGet, type PermissionMode, type PermissionModeStatus } from "@/lib/agent-client";
+
+type ProjectPermissionRead = { phase: "loading" | "ready" } | { phase: "failed"; message: string };
 
 interface PermissionModeState {
   /** Selection for the one unsent task draft on Home; reset after creation. */
@@ -8,16 +10,35 @@ interface PermissionModeState {
   statuses: Record<string, PermissionModeStatus>;
   /** Organization/device capability envelope used by a new-task draft. */
   capabilityStatus: PermissionModeStatus | null;
+  projectPermissionRead: ProjectPermissionRead | null;
+  refreshProjectPermission: () => Promise<void>;
   setHomeMode: (mode: PermissionMode) => void;
   resetHomeMode: () => void;
   setStatus: (status: PermissionModeStatus) => void;
   clearSession: (sessionId: string) => void;
 }
 
-export const usePermissionModeStore = create<PermissionModeState>((set) => ({
+export const usePermissionModeStore = create<PermissionModeState>((set, get) => ({
   homeMode: "ask",
   statuses: {},
   capabilityStatus: null,
+  projectPermissionRead: null,
+  refreshProjectPermission: async () => {
+    const reading: ProjectPermissionRead = { phase: "loading" };
+    const previous = get().capabilityStatus;
+    set({ projectPermissionRead: reading });
+    try {
+      const result = permissionModeStatusFromEvent(await permissionModeGet());
+      if (!result || result.sessionId) throw new Error("任务默认权限状态无效");
+      if (get().projectPermissionRead !== reading) return;
+      const current = get().capabilityStatus;
+      // A policy update published during the read owns the latest preview.
+      set({ projectPermissionRead: { phase: "ready" }, capabilityStatus: current !== previous && current ? current : result });
+    } catch (error) {
+      if (get().projectPermissionRead !== reading) return;
+      set({ projectPermissionRead: { phase: "failed", message: String(error).replace(/^Error:\s*/, "") } });
+    }
+  },
   setHomeMode: (homeMode) => set({ homeMode }),
   resetHomeMode: () => set({ homeMode: "ask" }),
   setStatus: (status) => set((state) => status.sessionId
@@ -30,6 +51,18 @@ export const usePermissionModeStore = create<PermissionModeState>((set) => ({
     return { statuses };
   }),
 }));
+
+export function projectPermissionUnavailableReason(status: PermissionModeStatus): string | undefined {
+  if (!status.locked || status.configuredPermissionMode === status.permissionMode) return undefined;
+  return (status.configuredPermissionMode === "auto" ? status.autoModeUnavailableReason : status.alwaysApproveUnavailableReason)
+    || "组织锁定的任务默认权限当前不可用";
+}
+
+export function selectProjectPermissionMode(state: PermissionModeState): PermissionMode | undefined {
+  const status = state.capabilityStatus;
+  if (state.projectPermissionRead?.phase !== "ready" || !status || projectPermissionUnavailableReason(status)) return undefined;
+  return status.permissionMode;
+}
 
 function asPermissionMode(value: unknown): PermissionMode | null {
   return value === "ask" || value === "auto" || value === "always-approve" ? value : null;

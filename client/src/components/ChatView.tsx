@@ -10,7 +10,7 @@ import { useSessionsStore } from "@/stores/sessions-store";
 import { useContinuationStore } from "@/stores/continuation-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { hydrateKnowledgeTraces } from "@/lib/knowledge-traces-client";
-import { createMarkdownHostConfig } from "@/lib/markdown-host";
+import { createMarkdownHostConfig, openLocalPath } from "@/lib/markdown-host";
 import { rewindExecute, rewindPoints, setCodingMode, sessionContinue, type ContinuationRequest } from "@/lib/agent-client";
 import { continuationTargets, inheritedMessageIds, continuationAnchor, latestContinuationTarget } from "@/lib/session-continuation";
 import { ConversationOrigin, ContinuationLinks } from "./ConversationContinuation";
@@ -211,6 +211,11 @@ export function ChatView({
   const runtimeErrorContext = useSessionStore(s => s.runtimeErrorContext);
   const workspaceRefreshSignal = useMemo(() => ({error, revision:taskRefreshSignal}), [error, taskRefreshSignal]);
   const workspace = useSessionWorkspace(sessionId, cwd, workspaceRefreshSignal, onReloadWorkspace, onToast);
+  const openWorkspaceDirectory = () => {
+    if (workspace.cwd && workspace.available && !workspace.busy) {
+      void openLocalPath(workspace.cwd, { cwd: workspace.cwd, type: "directory", onToast });
+    }
+  };
   const hasVisiblePlan = Boolean(plan && (plan.entries.length > 0 || planRevisionDirty) || planApproval?.sessionId === sessionId && planApproval);
   const traceLoadError = useKnowledgeStore(state => sessionId ? state.traceLoadErrors[sessionId] : undefined);
   const agentMode = useSessionStore((s) => s.agentMode);
@@ -1078,7 +1083,8 @@ export function ChatView({
                       onContinueInNewConversation={forkTargets.has(m.id) && onForked ? () => { void startContinuation(forkTargets.get(m.id)); } : undefined}
                       continuationDisabled={continuationDisabled || replacingTurn}
                       continuationDisabledReason={continuationPending ? "正在创建新对话，请稍候" : continuationDisabled || replacingTurn ? "请等待当前执行和待处理操作结束后再继续" : undefined}
-                      autoExpandProcess={false}
+                      autoExpandProcess
+                      onReviewProcess={pauseFollowing}
                       runtimeError={isLastAssistant ? inlineRuntimeError : undefined}
                       suppressStoppedNotice={isLastAssistant && Boolean(taskFeedback)}
                       turnFeedback={m.id === feedbackTarget ? taskFeedback : undefined}
@@ -1209,7 +1215,7 @@ export function ChatView({
               title="回到最新消息并恢复自动跟随"
             >
               <span aria-hidden="true">↓</span>
-              回到最新
+              回到最新消息
             </button>
           )}
         </div>
@@ -1277,9 +1283,12 @@ export function ChatView({
               modelLoading={modelLoading}
             models={models}
             onModelChange={onModelChange}
-            cwd={cwd}
+            cwd={workspace.cwd}
+            onOpenWorkspace={openWorkspaceDirectory}
+            openWorkspaceDisabled={!workspace.available || workspace.busy}
             showDisclaimer
-            permissionInline
+            showMeta
+            compact
             onToast={onToast}
             draft={draft}
             draftKey={sessionId ?? undefined}
@@ -1368,7 +1377,7 @@ export function ChatView({
         previewPath={previewPath}
         previewRequestId={previewRequest?.sequence}
         navigationRequestId={workspaceNavigationId}
-        workspaceInfo={<SessionWorkspaceDirectory workspace={workspace} onToast={onToast} />}
+        workspaceInfo={<SessionWorkspaceDirectory workspace={workspace} onOpen={openWorkspaceDirectory} />}
         workspaceAvailable={workspace.available}
         cwd={cwd}
         messages={messages}

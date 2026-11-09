@@ -45,6 +45,14 @@ export function atTokenAtCursor(text: string, cursor: number): AtToken | null {
   };
 }
 
+/** A pasted or restored @ reference is also resolved against the task directory. */
+export function hasRelativeWorkspaceMention(text: string): boolean {
+  return [...text.matchAll(/(?:^|[\s([{])@([^\s]+)/gu)].some(([, reference]) => {
+    const path = reference.replace(/^["'`]/, "");
+    return path && !/^(?:[/\\]|[a-z]:[/\\]|[a-z][a-z0-9+.-]*:\/\/)/i.test(path);
+  });
+}
+
 /**
  * Splice a chosen mention string (e.g. `"@src/foo.ts"`) into the buffer at the
  * active @-token's position. A trailing space is appended so the user can keep

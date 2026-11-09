@@ -15,7 +15,11 @@ vi.mock("@/components/ThemeProvider", () => ({ ThemeProvider: ({ children }: { c
 vi.mock("@/components/TitleBar", () => ({ TitleBar: () => null }));
 vi.mock("@/components/HomePage", () => ({HomePage: () => <div>首页</div>}));
 vi.mock("@/components/PlaceholderPage", () => ({PlaceholderPage: (props: ComponentProps<typeof import("@/components/PlaceholderPage").PlaceholderPage>) =>
-  <><button onClick={() => {const project=useProjectsStore.getState().projects[0]; if(project) void props.onStartProject?.(project);}}>启动项目</button>
+  <><button onClick={() => {const project=useProjectsStore.getState().projects[0]; if(project) void Promise.resolve(props.onStartProject?.(project, "ask")).catch(error => props.onToast?.(`启动项目失败：${String(error).replace(/^Error:\s*/, "")}`));}}>启动项目</button>
+  <button onClick={() => void props.onStartProjectConversation?.("project-no-cwd", "项目任务", "model-a", {
+    cwd: useProjectsStore.getState().projects[0]?.cwd ?? null,
+    expectedPermissionMode: "ask",
+  }).catch(error => props.onToast?.(`发送失败：${String(error).replace(/^Error:\s*/, "")}`))}>发送项目草稿</button>
   <button onClick={() => void props.onStartCodingRun?.("/work/code", "代码任务", "model-a", [], coding.bind)}>启动 Code 任务</button>
   <button onClick={props.onExitCodingWorkspace}>退出 Code</button>
   <output data-testid="coding-active">{String(props.codingActive)}</output></>}));
@@ -24,7 +28,6 @@ vi.mock("@/components/SecondarySidebar", () => ({ SecondarySidebar: () => null }
 vi.mock("@/components/TopbarActions", () => ({ TopbarActions: () => null }));
 vi.mock("@/components/FolderTrustDialog", () => ({ FolderTrustDialog: () => null }));
 vi.mock("@/components/Sidebar", () => ({Sidebar: (props: ComponentProps<typeof import("@/components/Sidebar").Sidebar>) => <aside>
-  <button onClick={() => props.onStartProjectConversation?.("project-no-cwd")}>新建项目对话</button>
   <button onClick={() => props.onNavigate?.("项目")}>查看项目</button>
   <button onClick={() => props.onNewSession()}>返回首页</button>
   <button onClick={() => props.onNavigate?.("代码开发")}>打开 Code</button>
@@ -72,8 +75,8 @@ async function start() {
   render(<App />); await screen.findByText("首页"); await waitFor(()=>expect(client.providersList).toHaveBeenCalled()); await act(async()=>{}); }
 
 
-async function create(entry: "新建项目对话" | "启动项目") {
-  if (entry === "启动项目" && !screen.queryByRole("button",{name:entry})) {
+async function create(entry: "发送项目草稿" | "启动项目") {
+  if (!screen.queryByRole("button",{name:entry})) {
     fireEvent.click(screen.getByRole("button",{name:"查看项目"}));
     await screen.findByRole("button",{name:entry});
   }
@@ -146,7 +149,7 @@ it("Code 会话创建期间返回首页，原任务仍发送到原代码目录�
   expect(useSessionsStore.getState().independent.find(entry => entry.sessionId === "background-code-task")?.cwd).toBe("/work/code");
   expect(vi.mocked(client.agentSend).mock.calls[0][0]).toBe("background-code-task");
 });
-describe.each(["新建项目对话","启动项目"] as const)("%s creation recovery", entry => {
+describe.each(["发送项目草稿","启动项目"] as const)("%s creation recovery", entry => {
   it("创建期间离开项目，迟到结果注册原项目但不重新选择会话", async () => {
     await start();
     let finish!: (id: string) => void;
@@ -158,10 +161,8 @@ describe.each(["新建项目对话","启动项目"] as const)("%s creation recov
     expect(useSessionsStore.getState().currentSessionId).toBeNull();
     expect(useSessionStore.getState().sessionId).toBeNull();
     expect(useProjectsStore.getState().projects[0].conversations.some(item => item.sessionId === "background-project-task")).toBe(true);
-    if (entry === "启动项目") {
-      expect(vi.mocked(client.agentSend).mock.calls[0][0]).toBe("background-project-task");
-      expect(useSessionStore.getState().transcripts["background-project-task"].messages.some(message => message.role === "user")).toBe(true);
-    }
+    expect(vi.mocked(client.agentSend).mock.calls[0][0]).toBe("background-project-task");
+    expect(useSessionStore.getState().transcripts["background-project-task"].messages.some(message => message.role === "user")).toBe(true);
   });
   it("超时重试沿用原目录，成功后的新任务才分配另一目录", async () => {
     await start();
@@ -189,13 +190,13 @@ describe.each(["新建项目对话","启动项目"] as const)("%s creation recov
     await act(async () => finish("created-once"));
     await waitFor(() => expect(useSessionsStore.getState().currentSessionId).toBe("created-once"));
     expect(useProjectsStore.getState().projects[0].conversations).toHaveLength(1);
-    expect(client.agentSend).toHaveBeenCalledTimes(entry === "启动项目" ? 1 : 0);
+    expect(client.agentSend).toHaveBeenCalledOnce();
   });
   it("手动指定的项目目录保持固定且不分配默认目录", async () => {
     await start();
     act(() => useProjectsStore.setState({projects:useProjectsStore.getState().projects.map(project => ({...project,cwd:"/manual-repository"}))}));
     await create(entry);
-    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/manual-repository","model-a"));
+    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/manual-repository", "model-a", undefined, "ask"));
     expect(client.agentPrepareTaskWorkspace).not.toHaveBeenCalled();
   });
 });

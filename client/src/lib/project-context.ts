@@ -1,4 +1,20 @@
 import type { ProjectMeta, ProjectConversation, RefItem } from "@/stores/projects-store";
+import type { PermissionMode } from "@/lib/agent-client";
+
+export interface ProjectConversationOptions {
+  /** The directory shown at submission, or null to allocate an independent directory. */
+  cwd: string | null;
+  expectedPermissionMode: PermissionMode;
+  prepareAttachments?: () => Promise<string[]>;
+  rememberModel?: boolean;
+}
+
+export type StartProjectConversation = (
+  projectId: string,
+  message: string,
+  modelId: string,
+  options: ProjectConversationOptions,
+) => Promise<string | undefined>;
 
 function names(items: RefItem[]): string {
   return items.map((item) => `${item.name} (id: ${item.id})`).join("、");
