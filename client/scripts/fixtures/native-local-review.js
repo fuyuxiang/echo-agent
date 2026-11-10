@@ -170,20 +170,20 @@ window.__echoNativeLocalReview = async ({ invoke, context, scope }) => {
     add.click();
     const meetingEntry = await waitFor(() => [...document.querySelectorAll('[aria-label="添加内容"] .iam-item')]
       .find((element) => visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true'
-        && element.querySelector('.iam-item__label')?.textContent === '会议录音与纪要'), 'Actual meeting-history menu entry without ASR');
+        && element.querySelector('.iam-item__label')?.textContent === '会议录音与纪要'), 'Actual meeting-history menu entry without a configured model');
     meetingEntry.click();
-    await waitFor(() => visible(meetingPanel()) && meetingPanel().querySelector('h1')?.textContent === '录音转写', 'Actual meeting page without an ASR model');
+    await waitFor(() => visible(meetingPanel()) && meetingPanel().querySelector('h1')?.textContent === '录音转写', 'Actual meeting page without a configured model');
     if (!meetingPanel().querySelector('.meeting-start')) await click(meetingPanel, '新建录音');
-    assert(meetingPanel().textContent.includes('尚未配置转写连接，可以先录音，配置后再补转。'), 'Missing-ASR capability feedback was lost');
+    assert(meetingPanel().textContent.includes('录音和转写在本机处理'), 'Local transcription notice was lost');
     const start = [...meetingPanel().querySelectorAll('button')].find((element) => element.textContent.trim() === '开始录音');
-    assert(visible(start) && !start.disabled, 'Local recording unavailable without optional ASR connection');
+    assert(visible(start) && !start.disabled, 'Local recording unavailable without a configured chat model');
     const library = meetingPanel().querySelector('button[aria-label="展开录音列表"]');
     if (library) library.click();
     const selected = await waitFor(() => [...meetingPanel().querySelectorAll('.meeting-library__item')]
       .find((element) => element.querySelector('strong')?.textContent === report.expected.meetingTitle), 'Actual isolated meeting list');
     selected.click();
     await waitFor(() => meetingPanel()?.querySelector('.meeting-workbench__record-header h2')?.textContent === report.expected.meetingTitle
-      && visible(meetingPanel().querySelector('[aria-label="录音播放器"]')) && button(meetingPanel(), '编辑纪要'), 'Selected isolated meeting and saved controls without ASR');
+      && visible(meetingPanel().querySelector('[aria-label="录音播放器"]')) && button(meetingPanel(), '编辑纪要'), 'Selected isolated meeting and saved controls without a configured model');
   };
   let active = required[0];
   try {

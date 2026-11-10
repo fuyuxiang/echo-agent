@@ -1,0 +1,15 @@
+[package]
+name = "echo-meeting-speech"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sherpa-onnx = "=1.13.8"
+
+[patch.crates-io]
+sherpa-onnx-sys = { path = "sherpa-onnx-sys" }

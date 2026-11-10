@@ -1184,10 +1184,9 @@ pub fn run() {
             // send, thumbnails, ACP metadata) keeps working.
             attachment_blob::save_attachment_blob,
             attachment_blob::discard_attachment_blob,
-            // Durable long-form recording, MiniMax ASR, minutes and exports.
+            // Durable long-form recording, local speech recognition, minutes and exports.
             meeting_minutes::meeting_create,
             meeting_minutes::live::meeting_transcribe_live,
-            meeting_minutes::live::meeting_set_transcription_connection,
             meeting_minutes::live::meeting_restore_minutes,
             meeting_minutes::audio::meeting_audio_token,
             meeting_capture::meeting_capture_support,
@@ -1195,12 +1194,12 @@ pub fn run() {
             meeting_capture::meeting_capture_status,
             meeting_capture::meeting_capture_pause,
             meeting_capture::meeting_capture_stop,
-            meeting_minutes::meeting_check_connection,
             meeting_minutes::meeting_append_pcm,
             meeting_minutes::meeting_set_paused,
             meeting_minutes::meeting_finish_recording,
             meeting_minutes::meeting_import_audio,
             meeting_minutes::meeting_process,
+            meeting_minutes::meeting_minutes_target,
             meeting_minutes::meeting_regenerate_minutes,
             meeting_minutes::meeting_update,
             meeting_minutes::meeting_list,

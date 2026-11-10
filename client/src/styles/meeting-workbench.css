@@ -46,6 +46,7 @@
 .meeting-transcript__passage.is-playing { background: var(--echo-brand-soft); }
 .meeting-transcript__metadata { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; color: var(--echo-text-secondary); font-size: .75rem; margin-bottom: 7px; }
 .meeting-workbench .meeting-transcript__metadata button { border: 0; padding: 0; min-height: 24px; background: transparent; font-size: .75rem; color: var(--echo-brand); font-variant-numeric: tabular-nums; }
+.meeting-transcript__metadata button { max-width: 100%; overflow-wrap: anywhere; }
 .meeting-transcript__passage p { margin: 0; font-size: .875rem; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
 .meeting-transcript__metadata input { width: 150px; max-width: 100%; padding: 4px 7px; background: var(--echo-bg-primary); color: var(--echo-text-primary); border: 1px solid var(--echo-border-control); border-radius: 5px; font: inherit; }
 .meeting-transcript__passage textarea { display: block; width: 100%; resize: vertical; box-sizing: border-box; padding: 10px; background: var(--echo-bg-primary); color: var(--echo-text-primary); border: 1px solid var(--echo-border-control); border-radius: 6px; font: inherit; line-height: 1.8; }
@@ -81,6 +82,11 @@
 .meeting-start__source strong { font-size: .8125rem; font-weight: 500; }
 .meeting-start__source small { color: var(--echo-text-secondary); font-size: .6875rem; line-height: 1.5; }
 .meeting-workbench .meeting-start__source.is-selected { background: var(--echo-brand-soft); border-color: var(--echo-brand); }
+.meeting-start__minutes { margin-top: 18px; overflow-wrap: anywhere; }
+.meeting-start__minutes label { display: inline-flex; align-items: center; gap: 6px; }
+.meeting-start__minutes input { margin: 0; accent-color: var(--echo-brand); }
+.meeting-start__minutes p { margin: 6px 0 0; }
+.meeting-start__minutes-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .meeting-start__actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
 .meeting-workbench__empty { min-height: 160px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 8px; padding: 30px 24px; text-align: center; color: var(--echo-text-secondary); }
 .meeting-workbench__empty h3 { margin: 0; color: var(--echo-text-primary); font-size: 1rem; }

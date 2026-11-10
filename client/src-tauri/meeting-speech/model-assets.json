@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "assets": [
+    { "path": "encoder.int8.onnx", "size": 161015713, "sha256": "7f6aa62056efd8af9da13e0faa81cd3f284d2fb2e3b63de56fd2dfd3450910dc", "source": "xasr", "member": "encoder-epoch-99-avg-1.int8.onnx" },
+    { "path": "decoder.onnx", "size": 11309084, "sha256": "72f47405d3c1033bebccbef82f90071e7b4ba3e71b9c986f2b74244b25723aed", "source": "xasr", "member": "decoder-epoch-99-avg-1.onnx" },
+    { "path": "joiner.int8.onnx", "size": 2581422, "sha256": "aedb7fa697b2ab43f20499826fff7c997eea7d67db77be97769aeeeb726e63b3", "source": "xasr", "member": "joiner-epoch-99-avg-1.int8.onnx" },
+    { "path": "tokens.txt", "size": 58806, "sha256": "b818a60878b9aae978cbb8ad594acbd403d76d1af2e31ef4197c84e2dbdba27c", "source": "xasr", "member": "tokens.txt" },
+    { "path": "pyannote.onnx", "size": 5992913, "sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079", "source": "pyannote", "member": "model.onnx" },
+    { "path": "eres2net.onnx", "size": 39593761, "sha256": "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b", "source": "eres2net" }
+  ]
+}

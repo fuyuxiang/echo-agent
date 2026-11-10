@@ -9,27 +9,15 @@ const record = {
   captureSource: "both", recordedSamples: 0, durationSeconds: 0, transcript: [], chunks: [],
 };
 
-describe("meeting processing model binding", () => {
-  beforeEach(() => {
-    mocks.invoke.mockReset();
-    mocks.invoke.mockResolvedValue(record);
-  });
-  it("sends the selected connection for processing and regeneration", async () => {
-    const { meetingProcess, meetingRegenerateMinutes } = await import("../meeting-minutes");
-    const binding = { modelId: "replacement/MiniMax", providerId: "replacement" };
-    await meetingProcess(record.id, binding);
-    await meetingRegenerateMinutes(record.id, binding);
-    expect(mocks.invoke).toHaveBeenCalledWith("meeting_process", { meetingId: record.id, ...binding });
-    expect(mocks.invoke).toHaveBeenCalledWith("meeting_regenerate_minutes", { meetingId: record.id, ...binding });
-  });
-  it("keeps legacy callers on the saved meeting binding", async () => {
-    const { meetingProcess } = await import("../meeting-minutes");
-    await meetingProcess(record.id);
-    expect(mocks.invoke).toHaveBeenCalledWith("meeting_process", expect.objectContaining({ meetingId: record.id }));
-    const args = mocks.invoke.mock.calls[0][1];
-    expect(args.modelId ?? null).toBeNull();
-    expect(args.providerId ?? null).toBeNull();
-  });
+it("transcribes locally and requires the confirmed target to generate minutes", async () => {
+  mocks.invoke.mockReset();
+  mocks.invoke.mockResolvedValue(record);
+  const { meetingProcess, meetingRegenerateMinutes } = await import("../meeting-minutes");
+  const target = { modelId: "personal/chat", recipient: "https://review.example", revision: "confirmed" };
+  await meetingProcess(record.id);
+  await meetingRegenerateMinutes(record.id, target);
+  expect(mocks.invoke).toHaveBeenCalledWith("meeting_process", { meetingId: record.id });
+  expect(mocks.invoke).toHaveBeenCalledWith("meeting_regenerate_minutes", { meetingId: record.id, target });
 });
 
 describe("native meeting recorder", () => {
@@ -47,7 +35,7 @@ describe("native meeting recorder", () => {
 
   it("starts, pauses and saves a mixed system and microphone recording", async () => {
     const { meetingRecorder } = await import("../meeting-minutes");
-    await meetingRecorder.start(record.title, record.modelId, record.providerId, "both");
+    await meetingRecorder.start(record.title, "both");
     expect(mocks.invoke).toHaveBeenCalledWith("meeting_create", expect.objectContaining({ captureSource: "both" }));
     expect(mocks.invoke).toHaveBeenCalledWith("meeting_capture_start", { meetingId: record.id, mode: "both" });
     expect(meetingRecorder.current()).toMatchObject({ active: true, source: "both" });
@@ -72,37 +60,36 @@ describe("native meeting recorder", () => {
       if (command === "meeting_get") return finished ? { ...capped, status: "recorded" } : capped;
       if (command === "meeting_capture_stop") { finished = true; return { ...capped, status: "recorded" }; }
     });
-    await meetingRecorder.start(record.title, record.modelId, record.providerId, "both");
+    await meetingRecorder.start(record.title, "both");
     await vi.waitFor(() => expect(meetingRecorder.current()).toMatchObject({
       active: false, pendingSave: false, meeting: { recordedSamples: MAX_MEETING_RECORDING_SAMPLES, status: "recorded" },
     }), { timeout: 1500 });
     expect(mocks.invoke.mock.calls.filter(([command]) => command === "meeting_capture_stop")).toHaveLength(1);
   });
 
-  it("退出先等待连接检查结束并取消启动，退出失败后可重新开始录音", async () => {
+  it("退出先等待录音记录创建并取消启动，退出失败后可重新开始录音", async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });
     mocks.invoke.mockImplementation(async (command: string) => {
-      if (command === "meeting_check_connection") { await pending; return; }
-      if (command === "meeting_create") return record;
+      if (command === "meeting_create") { await pending; return record; }
       if (command === "meeting_capture_start") return { meetingId: record.id, active: true };
       if (command === "meeting_capture_stop") return { ...record, status: "recorded" };
     });
     const { meetingRecorder } = await import("../meeting-minutes");
     const { saveRecordingBeforeExit } = await import("../recording-exit");
-    const started = meetingRecorder.start(record.title, record.modelId, record.providerId, "both").catch((error) => error);
+    const started = meetingRecorder.start(record.title, "both").catch((error) => error);
     let exitFinished = false;
     const exit = saveRecordingBeforeExit().then(() => { exitFinished = true; });
     await Promise.resolve();
     expect(exitFinished).toBe(false);
-    await expect(meetingRecorder.start(record.title, record.modelId, record.providerId, "both")).rejects.toThrow("正在准备退出");
+    await expect(meetingRecorder.start(record.title, "both")).rejects.toThrow("正在准备退出");
     release();
     expect(await started).toBeInstanceOf(Error);
     await exit;
     expect(meetingRecorder.current().active).toBe(false);
     expect(mocks.invoke.mock.calls.some(([command]) => command === "meeting_capture_start")).toBe(false);
     meetingRecorder.resumeAfterExitFailure();
-    await meetingRecorder.start(record.title, record.modelId, record.providerId, "both");
+    await meetingRecorder.start(record.title, "both");
     await meetingRecorder.stop();
   });
 
@@ -116,7 +103,7 @@ describe("native meeting recorder", () => {
     });
     const { meetingRecorder } = await import("../meeting-minutes");
     const { saveRecordingBeforeExit } = await import("../recording-exit");
-    const started = meetingRecorder.start(record.title, record.modelId, record.providerId, "both");
+    const started = meetingRecorder.start(record.title, "both");
     await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("meeting_capture_start", expect.anything()));
     const exit = saveRecordingBeforeExit();
     release();
@@ -134,7 +121,7 @@ describe("native meeting recorder", () => {
     const { meetingRecorder } = await import("../meeting-minutes");
     const { saveRecordingBeforeExit } = await import("../recording-exit");
     try {
-      const started = meetingRecorder.start(record.title, record.modelId, record.providerId).catch((error) => error);
+      const started = meetingRecorder.start(record.title).catch((error) => error);
       await vi.waitFor(() => expect(release).toBeDefined());
       const exit = saveRecordingBeforeExit();
       meetingRecorder.resumeAfterExitFailure();
@@ -161,7 +148,7 @@ describe("native meeting recorder", () => {
       return undefined;
     });
     const { meetingRecorder } = await import("../meeting-minutes");
-    await meetingRecorder.start(record.title, record.modelId, record.providerId, "both");
+    await meetingRecorder.start(record.title, "both");
     const pause = meetingRecorder.setPaused(true);
     const exit = meetingRecorder.stop();
     try {
@@ -185,7 +172,7 @@ describe("native meeting recorder", () => {
       return undefined;
     });
     const { meetingRecorder } = await import("../meeting-minutes");
-    await meetingRecorder.start(record.title, record.modelId, record.providerId, "both");
+    await meetingRecorder.start(record.title, "both");
     const toolbar = meetingRecorder.stop();
     const exit = meetingRecorder.stop();
     try {
@@ -211,10 +198,10 @@ describe("native meeting recorder", () => {
       return undefined;
     });
     const { meetingRecorder } = await import("../meeting-minutes");
-    await meetingRecorder.start(record.title, record.modelId, record.providerId, "both");
+    await meetingRecorder.start(record.title, "both");
     await expect(meetingRecorder.stop()).rejects.toThrow("磁盘已满");
     expect(meetingRecorder.current()).toMatchObject({ active: true, paused: true, pendingSave: true, source: "both" });
-    await expect(meetingRecorder.start(record.title, record.modelId, record.providerId, "both")).rejects.toThrow("已有会议");
+    await expect(meetingRecorder.start(record.title, "both")).rejects.toThrow("已有会议");
     await meetingRecorder.stop();
     expect(meetingRecorder.current()).toMatchObject({ active: false, pendingSave: false, error: null });
   });
@@ -226,7 +213,7 @@ describe("native meeting recorder", () => {
       return undefined;
     });
     const { meetingRecorder } = await import("../meeting-minutes");
-    await expect(meetingRecorder.start(record.title, record.modelId, record.providerId, "both")).rejects.toThrow("未授权系统音频录制");
+    await expect(meetingRecorder.start(record.title, "both")).rejects.toThrow("未授权系统音频录制");
     expect(mocks.invoke).toHaveBeenCalledWith("meeting_delete", { meetingId: record.id });
     expect(meetingRecorder.current().active).toBe(false);
   });
@@ -258,7 +245,7 @@ describe("microphone save recovery", () => {
     const { meetingRecorder } = await import("../meeting-minutes");
     const event = { inputBuffer: { numberOfChannels: 1, length: 80000, sampleRate: 16000, getChannelData: () => new Float32Array(80000).fill(0.2) } };
     try {
-      await meetingRecorder.start(record.title, record.modelId, record.providerId);
+      await meetingRecorder.start(record.title);
       processor.onaudioprocess?.(event);
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(meetingRecorder.current()).toMatchObject({ active: true, paused: true, error: "磁盘已满", pendingSave: false });
@@ -303,7 +290,7 @@ describe("microphone save recovery", () => {
     const { meetingRecorder } = await import("../meeting-minutes");
     const event = { inputBuffer: { numberOfChannels: 1, length: 160, sampleRate: 16000, getChannelData: () => new Float32Array(160).fill(0.2) } };
     try {
-      await meetingRecorder.start(record.title, record.modelId, record.providerId);
+      await meetingRecorder.start(record.title);
       processor.onaudioprocess?.(event);
       const pausing = meetingRecorder.setPaused(true);
       expect(meetingRecorder.current().paused).toBe(true);
@@ -349,7 +336,7 @@ describe("microphone save recovery", () => {
     });
     const { meetingRecorder } = await import("../meeting-minutes");
     try {
-      await meetingRecorder.start(record.title, record.modelId, record.providerId);
+      await meetingRecorder.start(record.title);
       processor.onaudioprocess?.({ inputBuffer: {
         numberOfChannels: 1, length: 160, sampleRate: 16000,
         getChannelData: () => new Float32Array(160).fill(0.2),
@@ -357,7 +344,7 @@ describe("microphone save recovery", () => {
       await expect(meetingRecorder.stop()).rejects.toThrow("磁盘已满");
       expect(stopTrack).toHaveBeenCalledOnce();
       expect(meetingRecorder.current()).toMatchObject({ active: true, paused: true, pendingSave: true, source: "microphone" });
-      await expect(meetingRecorder.start(record.title, record.modelId, record.providerId)).rejects.toThrow("已有会议");
+      await expect(meetingRecorder.start(record.title)).rejects.toThrow("已有会议");
       await expect(meetingRecorder.setPaused(false)).rejects.toThrow("重试保存");
       diskFull = false;
       await meetingRecorder.stop();

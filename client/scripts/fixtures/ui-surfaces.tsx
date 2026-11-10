@@ -740,7 +740,6 @@ Object.assign(window, {
         case "meeting_list": return [];
         case "meeting_capture_status": return null;
         case "meeting_capture_support": return { systemAudio: true, detail: "首次使用需允许系统音频录制" };
-        case "meeting_check_connection": return;
         default: return [];
       }
     },
@@ -1056,7 +1055,7 @@ function Fixture() {
   </div>;
   if (["resource-groups", "projects", "organization-shell", "automation-templates", "management-experts", "management-knowledge", "management-schedules", "management-meetings"].includes(surface)) return <ManagementReviewFixture surface={surface} />;
   if (surface === "organization" || surface === "organization-login") return <div style={{ height: "100%", overflow: "auto" }}><OrganizationMemoryPanel onStartConversation={() => {}} /></div>;
-  if (surface === "meeting") return <MeetingMinutesPanel modelId="review/MiniMax-M3" models={[{ id: "review/MiniMax-M3", label: "MiniMax M3", providerId: "review", providerKind: "custom", source: "personal" }]} />;
+  if (surface === "meeting") return <MeetingMinutesPanel />;
   if (surface === "permission-picker") return <div style={{ position: "relative", height: "100%", background: "var(--echo-bg-secondary)" }}>
     <div style={{ position: "absolute", left: "46%", top: "63%" }}><PermissionPicker /></div>
   </div>;

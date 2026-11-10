@@ -18,14 +18,13 @@ describe("process lifetime meeting transcription",()=>{
       }
       if(command==="meeting_capture_stop"){active=false;record={...record,status:"recorded"};return {...record};}
       if(command==="meeting_process")return new Promise(resolve=>{processResolve=resolve;});
-      if(command==='meeting_set_transcription_connection'){record={...record,modelId:args.modelId,providerId:args.providerId};return {...record};}
       throw new Error("Unexpected command "+command+JSON.stringify(args));
     });
   });
   afterEach(()=>vi.useRealTimers());
   it("records without a network probe, publishes incremental results, and completes after local save",async()=>{
     const {meetingRecorder}=await import("../meeting-minutes");
-    await meetingRecorder.start("录音","MiniMax","personal","both");
+    await meetingRecorder.start("录音","both");
     expect(mocks.invoke.mock.calls.some(([command])=>command==="meeting_check_connection")).toBe(false);
     record={...record,recordedSamples:64000,durationSeconds:4};
     await vi.advanceTimersByTimeAsync(1200);
@@ -39,43 +38,45 @@ describe("process lifetime meeting transcription",()=>{
     expect(meetingRecorder.current().meeting?.minutes).toBe("自动纪要");
     expect(meetingRecorder.current().processingIds).toEqual([]);
   });
-  it("keeps capture active on ASR errors and retries immediately after the online event",async()=>{
+  it("keeps capture active on ASR errors and retries locally after backoff",async()=>{
     const {meetingRecorder}=await import("../meeting-minutes");
-    await meetingRecorder.start("录音","MiniMax","personal","both");record={...record,recordedSamples:64000,durationSeconds:4};fail=true;
+    await meetingRecorder.start("录音","both");record={...record,recordedSamples:64000,durationSeconds:4};fail=true;
     await vi.advanceTimersByTimeAsync(1200);
     expect(meetingRecorder.current()).toMatchObject({active:true,transcription:{state:"unavailable"},error:null});
     const calls=mocks.invoke.mock.calls.filter(([command])=>command==="meeting_transcribe_live").length;
     await vi.advanceTimersByTimeAsync(500);expect(mocks.invoke.mock.calls.filter(([command])=>command==="meeting_transcribe_live")).toHaveLength(calls);
-    fail=false;window.dispatchEvent(new Event("online"));await vi.advanceTimersByTimeAsync(1);
+    fail=false;await vi.advanceTimersByTimeAsync(4500);
     expect(meetingRecorder.current().meeting?.live?.processedSamples).toBe(64000);
     await meetingRecorder.prepareForExit();await meetingRecorder.stop();
     expect(mocks.invoke.mock.calls.some(([command])=>command==="meeting_process")).toBe(false);
   });
   it("does not replace a new active recording when the previous recording finishes its minutes",async()=>{
     const {meetingRecorder}=await import("../meeting-minutes");
-    await meetingRecorder.start("第一场","MiniMax","personal","both");
+    await meetingRecorder.start("第一场","both");
     record={...record,recordedSamples:64000,durationSeconds:4};
     await vi.advanceTimersByTimeAsync(1200);await meetingRecorder.stop();await vi.advanceTimersByTimeAsync(1);
     const first={...record,status:"completed",minutes:"第一场纪要"};
     record={...record,id:"live-2",status:"recording",recordedSamples:0,durationSeconds:0,transcript:[],live:{processedSamples:0}};
-    await meetingRecorder.start("第二场","MiniMax","personal","both");
+    await meetingRecorder.start("第二场","both");
     processResolve(first);await vi.advanceTimersByTimeAsync(1);
     expect(meetingRecorder.current()).toMatchObject({active:true,meeting:{id:"live-2",status:"recording"}});
     await meetingRecorder.prepareForExit();await meetingRecorder.stop();
   });
-  it('waits for credential repair and can rebind a live recording without stopping capture',async()=>{
-    const {meetingRecorder}=await import('../meeting-minutes');
-    await meetingRecorder.start('本地录音','','','both');record={...record,recordedSamples:64000,durationSeconds:4};
-    fail=true;failureReason='会议模型 API Key 未配置或已失效';
+  it("manually retries a local inference failure without stopping capture", async () => {
+    const { meetingRecorder } = await import("../meeting-minutes");
+    await meetingRecorder.start("本地录音", "both");
+    record = { ...record, recordedSamples: 64000, durationSeconds: 4 };
+    fail = true;
+    failureReason = "本地转写程序意外退出，可重试";
     await vi.advanceTimersByTimeAsync(1200);
-    const count=mocks.invoke.mock.calls.filter(([command])=>command==='meeting_transcribe_live').length;
-    window.dispatchEvent(new Event('online'));await vi.advanceTimersByTimeAsync(30000);
-    expect(mocks.invoke.mock.calls.filter(([command])=>command==='meeting_transcribe_live')).toHaveLength(count);
-    expect(meetingRecorder.current()).toMatchObject({active:true,transcription:{state:'unavailable',error:failureReason}});
-    fail=false;await meetingRecorder.retryTranscription({modelId:'repaired/MiniMax',providerId:'repaired'});
-    expect(mocks.invoke).toHaveBeenCalledWith('meeting_set_transcription_connection',{meetingId:'live-1',modelId:'repaired/MiniMax',providerId:'repaired'});
-    expect(meetingRecorder.current()).toMatchObject({active:true,meeting:{modelId:'repaired/MiniMax',providerId:'repaired',live:{processedSamples:64000}},transcription:{state:'listening'}});
-    expect(mocks.invoke.mock.calls.some(([command])=>command==='meeting_capture_stop')).toBe(false);
-    await meetingRecorder.prepareForExit();await meetingRecorder.stop();
+    expect(meetingRecorder.current()).toMatchObject({ active: true, transcription: { state: "unavailable", error: failureReason } });
+    fail = false;
+    await meetingRecorder.retryTranscription();
+    expect(meetingRecorder.current()).toMatchObject({
+      active: true, meeting: { live: { processedSamples: 64000 } }, transcription: { state: "listening" },
+    });
+    expect(mocks.invoke.mock.calls.some(([command]) => command === "meeting_capture_stop")).toBe(false);
+    await meetingRecorder.prepareForExit();
+    await meetingRecorder.stop();
   });
 });

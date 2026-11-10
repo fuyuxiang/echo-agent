@@ -1,0 +1,41 @@
+EchoAgent local meeting transcription
+
+X-ASR-zh-en with punctuation, INT8 (sherpa-onnx release 2026-06-03)
+Authors: X-ASR project contributors (GilgameshWind).
+https://huggingface.co/GilgameshWind/X-ASR-zh-en
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models
+
+ERes2Net-Base speaker embedding model, from 3D-Speaker
+Authors: 3D-Speaker project contributors, Alibaba DAMO Academy.
+https://github.com/modelscope/3D-Speaker
+https://www.modelscope.cn/models/iic/speech_eres2net_base_sv_zh-cn_3dspeaker_16k
+https://huggingface.co/csukuangfj/speaker-embedding-models
+
+sherpa-onnx and sherpa-onnx-sys 1.13.8
+Authors: sherpa-onnx contributors, k2-fsa.
+https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.8
+
+Additional Apache-2.0 speech dependencies in the native build:
+Kaldi Decoder, Kaldi FST, and Kaldi Native Fbank (k2-fsa contributors)
+https://github.com/k2-fsa/kaldi-decoder
+https://github.com/k2-fsa/kaldifst
+https://github.com/k2-fsa/kaldi-native-fbank
+OpenFst
+https://www.openfst.org/
+SentencePiece (Google)
+https://github.com/google/sentencepiece
+
+The above works are distributed under Apache License 2.0. A copy is
+included in ../retrieval/ort-APACHE-2.0.txt.
+
+KissFFT (Mark Borgerding)
+https://github.com/mborgerding/kissfft
+See kissfft-BSD-3-Clause.txt.
+
+pyannote segmentation 3.0 (ONNX conversion from sherpa-onnx)
+https://huggingface.co/pyannote/segmentation-3.0
+See pyannote-MIT.txt.
+
+ONNX Runtime 1.28.2 is included in the native sherpa-onnx build.
+https://github.com/microsoft/onnxruntime/tree/v1.28.2
+See ../retrieval/onnxruntime-MIT.txt and onnxruntime-1.28.2-ThirdPartyNotices.txt.

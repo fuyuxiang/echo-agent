@@ -1,3 +1,5 @@
 # Theia runtime staging updates hundreds of bundled files. Keep native dev
 # rebuilds tied to Rust/config edits; Vite handles frontend changes separately.
 resources/theia/
+resources/meeting-speech/
+binaries/

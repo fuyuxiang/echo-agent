@@ -37,27 +37,15 @@ describe("Composer meeting history entry", () => {
     mocks.filesystemPickFiles.mockResolvedValue([]);
   });
 
-  it("opens history while speech capability is pending, unsupported, or the selected model is ineligible", async () => {
-    let rejectProbe!: (error: Error) => void;
-    const probe = new Promise<void>((_resolve, reject) => { rejectProbe = reject; });
-    mocks.invoke.mockImplementation((command: string) => command === "meeting_check_connection"
-      ? probe : Promise.resolve(undefined));
+  it("opens recording independently of the selected chat model", async () => {
     const { rerender } = render(<Composer {...base} modelId={models[0].id} models={models} modelLoading />);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "添加" })); });
     fireEvent.click(screen.getByRole("menuitem", { name: meetingLabel }));
-    expect(base.onOpenMeetingMinutes).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke).toHaveBeenCalledWith("meeting_check_connection", {
-      modelId: models[0].id, providerId: models[0].providerId,
-    });
-    await act(async () => { rejectProbe(new Error("当前端点不支持语音转写")); });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "添加" })); });
-    fireEvent.click(screen.getByRole("menuitem", { name: meetingLabel }));
-    expect(base.onOpenMeetingMinutes).toHaveBeenCalledTimes(2);
     rerender(<Composer {...base} modelId={models[1].id} models={models} />);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "添加" })); });
     fireEvent.click(screen.getByRole("menuitem", { name: meetingLabel }));
-    expect(base.onOpenMeetingMinutes).toHaveBeenCalledTimes(3);
-    expect(mocks.invoke.mock.calls.filter(([command]) => command === "meeting_check_connection")).toHaveLength(1);
+    expect(base.onOpenMeetingMinutes).toHaveBeenCalledTimes(2);
+    expect(mocks.invoke.mock.calls.some(([command]) => command === "meeting_check_connection")).toBe(false);
   });
 
   it("with no ready chat service allows only history navigation through the real menu", async () => {

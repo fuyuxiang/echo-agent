@@ -232,6 +232,7 @@ if [[ $BUILD_RC -eq 0 ]]; then
         exit 1
     fi
     node "$PROJECT_ROOT/scripts/prepare-retrieval-models.mjs" --check --directory "$APP_BUNDLE/Contents/Resources/retrieval-models"
+    node "$PROJECT_ROOT/scripts/prepare-meeting-speech.mjs" --installed-app "$APP_BUNDLE/Contents/MacOS/echoagent"
 
     APP_PLIST="$APP_BUNDLE/Contents/Info.plist"
     BUNDLE_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$APP_PLIST")"
@@ -247,6 +248,11 @@ if [[ $BUILD_RC -eq 0 ]]; then
     fi
     if ! lipo -archs "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" | tr ' ' '\n' | grep -Fxq "$ARCH"; then
         log_err "App executable does not contain expected architecture: $ARCH"
+        exit 1
+    fi
+    SPEECH_EXECUTABLE="$APP_BUNDLE/Contents/MacOS/echo-meeting-speech"
+    if [[ ! -x "$SPEECH_EXECUTABLE" ]] || ! lipo -archs "$SPEECH_EXECUTABLE" | tr ' ' '\n' | grep -Fxq "$ARCH"; then
+        log_err "Bundled meeting transcription executable is missing or has the wrong architecture: $ARCH"
         exit 1
     fi
     THEIA_ENTRY="$APP_BUNDLE/Contents/Resources/theia/browser/lib/backend/main.js"

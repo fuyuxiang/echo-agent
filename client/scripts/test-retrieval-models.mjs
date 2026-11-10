@@ -116,5 +116,5 @@ test("Tauri packages the model directory and prepares it for development and rel
   const config = JSON.parse(await readFile(new URL("../src-tauri/tauri.conf.json", import.meta.url)));
   assert.equal(config.bundle.resources["resources/retrieval-models"], "retrieval-models");
   for (const hook of ["beforeDevCommand", "beforeBuildCommand"]) assert.match(config.build[hook], /^pnpm retrieval:prepare &&/);
-  assert.equal(config.build.beforeBundleCommand, "pnpm retrieval:check");
+  assert.match(config.build.beforeBundleCommand, /^pnpm retrieval:check(?: && |$)/);
 });

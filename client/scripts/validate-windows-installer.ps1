@@ -167,6 +167,8 @@ try {
     Remove-Item -LiteralPath $scratch -Recurse -Force
     Assert-Install $defaultDir
     $phase = 'launch repaired desktop'
+    node (Join-Path $PSScriptRoot 'prepare-meeting-speech.mjs') --installed-app (Join-Path $defaultDir 'echoagent.exe')
+    if ($LASTEXITCODE -ne 0) { throw 'Installed meeting speech verification failed.' }
     node (Join-Path $PSScriptRoot 'validate-packaged-desktop.mjs') (Join-Path $defaultDir 'echoagent.exe')
     if ($LASTEXITCODE -ne 0) { throw 'Repaired desktop WebView/IPC/IDE validation failed' }
     Write-Host "Windows installation acceptance passed ($assertions assertions)."

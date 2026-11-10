@@ -125,9 +125,7 @@ interface PlaceholderPageProps {
   onStartProjectConversation?: StartProjectConversation;
   projectModels?: ModelOption[];
   projectDefaultModelId?: string;
-  meetingModelId?: string;
-  meetingModels?: ModelOption[];
-  onOpenMeetingMinutes?: (modelId?: string) => void;
+  onOpenMeetingMinutes?: () => void;
   onClientSlashCommand?: (invocation: SlashCommandInvocation) => boolean | void | Promise<boolean | void>;
   onRenameSession?: (sessionId: string, title: string, cwd?: string) => Promise<void>;
   onArchiveSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
@@ -173,8 +171,6 @@ export function PlaceholderPage({
   onStartProjectConversation,
   projectModels,
   projectDefaultModelId,
-  meetingModelId,
-  meetingModels,
   onOpenMeetingMinutes,
   onClientSlashCommand,
   onRenameSession,
@@ -311,8 +307,6 @@ export function PlaceholderPage({
     return (
       <DeferredPanel>
         <MeetingMinutesPanel
-          modelId={meetingModelId}
-          models={meetingModels ?? []}
           onToast={onToast}
           onOpenModelSettings={onOpenModelSettings}
         />

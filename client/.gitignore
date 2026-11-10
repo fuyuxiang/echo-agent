@@ -99,3 +99,9 @@ resources/python-standalone-*.tar.gz
 
 # 历史说话人分离模型缓存；当前构建不使用此路径。
 resources/models/diarization/
+
+# Verified meeting inference resources staged for the installer.
+/src-tauri/resources/meeting-speech/*
+!/src-tauri/resources/meeting-speech/.keep
+/src-tauri/binaries/echo-meeting-speech-*
+/src-tauri/meeting-speech/target/

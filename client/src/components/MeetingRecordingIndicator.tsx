@@ -6,7 +6,7 @@ export function MeetingRecordingIndicator({
   onOpen,
   onToast,
 }: {
-  onOpen: (modelId?: string) => void;
+  onOpen: () => void;
   onToast?: (message: string) => void;
 }) {
   const [snapshot, setSnapshot] = useState(meetingRecorder.current());
@@ -31,9 +31,9 @@ export function MeetingRecordingIndicator({
   const stop = async () => {
     setPending(true);
     try {
-      await meetingRecorder.stop();
-      onOpen(snapshot.meeting?.modelId);
-      onToast?.("录音已保存，正在补齐转写并自动整理纪要");
+      const record = await meetingRecorder.stop();
+      onOpen();
+      onToast?.(record.autoMinutesTarget ? "录音已保存，将按本次设置生成纪要" : "录音已保存，原文在本机转写");
     } catch (error) {
       onToast?.(`结束录音失败：${String(error).replace(/^Error:\s*/, "")}`);
     } finally {
@@ -43,7 +43,7 @@ export function MeetingRecordingIndicator({
 
   return (
     <div className="meeting-global-recorder" role="status" aria-live="polite">
-      <button className="meeting-global-recorder__main" type="button" onClick={() => onOpen(snapshot.meeting?.modelId)} title="打开录音转写工作台">
+      <button className="meeting-global-recorder__main" type="button" onClick={onOpen} title="打开录音转写工作台">
         <span className="meeting-global-recorder__dot">{snapshot.source === "microphone" ? <Mic size={14} /> : <MonitorPlay size={14} />}</span>
         <span><strong>{snapshot.error ? "录音需要处理" : snapshot.paused ? "录音已暂停" : "正在录音"}</strong><small>{snapshot.source === "both" ? "双方声音" : snapshot.source === "system" ? "系统声音" : "麦克风"} · {formatMeetingDuration(snapshot.meeting.durationSeconds)}</small></span>
       </button>

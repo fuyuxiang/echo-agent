@@ -203,3 +203,12 @@ package manifest. Exact package versions are pinned in `pnpm-lock.yaml`.
 - Fixed INT8 ONNX conversions: `Xenova/bge-base-zh-v1.5` revision `71e50dc531959f9e04ebf190ea25b00261a0a186`, and `onnx-community/bge-reranker-base-ONNX` revision `f131ae72114cb18333648a2ee6b0942849e8ab95` on Hugging Face.
 
 Weights are downloaded and verified at build time and bundled in application resources. At runtime, only explicit repair of missing or damaged files may download weights; users can also import a verified offline model package. Weights are not checked into this repository. The asset manifest retains exact upstream revisions and SHA256 digests. Bundled inference license copies are in `licenses/retrieval/` in application resources.
+
+## Local meeting transcription
+
+- X-ASR-zh-en INT8 with punctuation and ERes2Net-Base from 3D-Speaker (Apache-2.0).
+- pyannote segmentation 3.0 (MIT).
+- sherpa-onnx 1.13.8, including its native speech recognition and speaker diarization dependencies. The app links the upstream build without text-to-speech.
+
+The model sources, licenses, and attribution are listed in `LICENSES/meeting-speech/`.
+The app bundles verified model weights and a separate native inference executable.

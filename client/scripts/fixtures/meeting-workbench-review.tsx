@@ -18,6 +18,7 @@ const text = (offset: number, value: string) => [...value].forEach((letter, inde
 text(0, "RIFF"); wav.setUint32(4, audioBytes.byteLength - 8, true); text(8, "WAVEfmt "); wav.setUint32(16, 16, true); wav.setUint16(20, 1, true); wav.setUint16(22, 1, true); wav.setUint32(24, rate, true); wav.setUint32(28, rate * 2, true); wav.setUint16(32, 2, true); wav.setUint16(34, 16, true); text(36, "data"); wav.setUint32(40, audioBytes.byteLength - 44, true);
 for (let index = 0; index < rate * seconds; index += 1) wav.setInt16(44 + index * 2, Math.sin(index * Math.PI * 2 * 220 / rate) * 250, true);
 const audioUrl = URL.createObjectURL(new Blob([audioBytes], { type: "audio/wav" }));
+const minutesTarget = { modelId: "review/chat", recipient: "https://review.example", revision: "fixture" };
 const base: MeetingRecord = {
   id: "019a0000-0000-7000-8000-000000000001", title: "产品评审周会", createdAt: Date.now(), updatedAt: Date.now(),
   status: scenario.startsWith("recording") ? "recording" : scenario === "failed" ? "partial" : "completed",
@@ -27,20 +28,21 @@ const base: MeetingRecord = {
   minutes: scenario === "failed" || scenario.startsWith("recording") ? undefined : "## 会议摘要\n\n本次评审确定，实时转写与页面内回听作为首期核心能力。\n\n## 结论与待办\n\n- 结束录音后自动整理纪要。[00:00:08]\n- 林悦于本周五完成交互稿。[00:00:16]\n\n## 待确认\n\n电脑声音采集的各平台支持范围。",
   live: { processedSamples: scenario.startsWith("recording") ? rate * 40 : rate * 60 },
   error: scenario === "failed" ? "服务连接暂时中断" : undefined,
+  autoMinutesTarget: scenario.startsWith("recording") ? minutesTarget : undefined,
 };
 let record = { ...base };
-let records = scenario === "empty" ? [] : [record];
+let records = scenario === "empty" || scenario === "local-only" ? [] : [record];
 let nativeCapture = scenario.startsWith("recording");
 let paused = false;
 let pendingSave = false;
 let job = false;
 let liveCalls = 0;
 let stopFailures = scenario === "save-error" ? 1 : 0;
-let credentialsRepaired=scenario!=='recording-credentials';
+let speechRepaired = scenario !== "recording-retry";
 const calls: { command: string; args: Record<string, unknown> }[] = [];
 const update = (next: Partial<MeetingRecord>) => { record = { ...record, ...next, updatedAt: Date.now() }; records = [record]; return record; };
 Object.assign(window, {
-  __meetingWorkbench: { calls, getRecord: () => record, replaceTranscript: () => update({ transcript: record.transcript.map((segment,index) => index === 0 ? { ...segment, text: "服务端更正后的原文" } : segment) }) },
+  __meetingWorkbench: { calls, repairSpeech: () => { speechRepaired = true; }, getRecord: () => record, replaceTranscript: () => update({ transcript: record.transcript.map((segment,index) => index === 0 ? { ...segment, text: "服务端更正后的原文" } : segment) }) },
   __TAURI_INTERNALS__: {
     transformCallback: () => 1,
     convertFileSrc: () => audioUrl,
@@ -50,9 +52,10 @@ Object.assign(window, {
         case "meeting_list": return records;
         case "meeting_get": return record;
         case "meeting_capture_support": return { systemAudio: true };
+        case "meeting_minutes_target": return minutesTarget;
         case "meeting_job_active": return job;
         case "meeting_audio_token": if (scenario === "audio-error") throw new Error("missing audio"); return "fixture-token";
-        case "meeting_create": return update({ ...base, title: String(args.title), status: "recording", recordedSamples: 0, durationSeconds: 0, transcript: [], minutes: undefined, live: { processedSamples: 0 }, error: undefined, captureSource: args.captureSource as MeetingRecord["captureSource"] });
+        case "meeting_create": return update({ ...base, title: String(args.title), status: "recording", recordedSamples: 0, durationSeconds: 0, transcript: [], minutes: undefined, live: { processedSamples: 0 }, error: undefined, captureSource: args.captureSource as MeetingRecord["captureSource"], autoMinutesTarget: args.autoMinutesTarget as MeetingRecord["autoMinutesTarget"] });
         case "meeting_capture_start": nativeCapture = true; paused = false; return { meetingId: record.id, active: true, paused, level: .3, recordedSamples: record.recordedSamples };
         case "meeting_capture_status":
           if (!nativeCapture) return null;
@@ -64,7 +67,7 @@ Object.assign(window, {
           nativeCapture = false; pendingSave = false; return update({ status: "recorded" });
         case "meeting_transcribe_live": {
           liveCalls += 1;
-          if(!credentialsRepaired)throw new Error('会议模型 API Key 未配置或已失效');
+          if (!speechRepaired) throw new Error("本地转写程序意外退出，可重试");
           if (scenario === "recording-error" && liveCalls < 2) throw new Error("temporary unavailable");
           const start = (record.live?.processedSamples ?? 0) / rate;
           if (record.durationSeconds - start < 1 && !args.finalize) return { record, waiting: true };
@@ -73,12 +76,13 @@ Object.assign(window, {
           if (end > start) update({ transcript: [...record.transcript, { id: record.transcript.length, start, end, speaker: "说话人1", text: `增量转写 ${liveCalls}：录音保存与文字更新相互独立。` }], live: { processedSamples: record.recordedSamples } });
           return { record, waiting: false };
         }
-        case 'meeting_set_transcription_connection':return update({modelId:String(args.modelId),providerId:String(args.providerId)});
-        case "meeting_process":
-          job = true; update({ status: "summarizing", error: undefined });
+        case "meeting_process": {
+          const automatic = args.autoMinutes && record.autoMinutesTarget;
+          job = true; update({ status: automatic ? "summarizing" : "transcribing", error: undefined });
           await new Promise(resolve => setTimeout(resolve, 900));
-          job = false; return update({ status: "completed", minutes: base.minutes ?? "## 会议摘要\n\n短句转写已完成，结束后自动生成纪要。", error: undefined, minutesStale: false });
-        case "meeting_regenerate_minutes": return update({ previousMinutes: record.minutes, minutes: "## 更新后的纪要\n\n已根据校对原文重新整理。", minutesStale: false });
+          job = false; return update({ status: automatic ? "completed" : "transcribed", minutes: automatic ? base.minutes ?? "## 会议摘要\n\n短句转写已完成，结束后自动生成纪要。" : record.minutes, error: undefined, minutesStale: false });
+        }
+        case "meeting_regenerate_minutes": return update({ status: "completed", previousMinutes: record.minutes, minutes: "## 更新后的纪要\n\n已根据校对原文重新整理。", minutesStale: false });
         case "meeting_restore_minutes": return update({ minutes: record.previousMinutes, previousMinutes: record.minutes });
         case "meeting_update": {
           if (args.expectedContent) {
@@ -101,7 +105,7 @@ function Fixture() {
   return <div className="meeting-review-shell">
     {!collapsed && <aside className="meeting-review-sidebar"><strong>EchoAgent</strong><span>新建任务</span><span>项目</span><span>录音转写</span></aside>}
     <PageChromeProvider sidebarCollapsed={collapsed} macOS={query.get("platform") === "macos"} onToggleSidebar={() => setCollapsed(value => !value)} onNewTask={() => setFeedback("新建任务")}>
-      <MeetingMinutesPanel models={[{ id: "review/MiniMax-M3", providerId: "review", source: "personal" }]} onToast={setFeedback} onOpenModelSettings={()=>{credentialsRepaired=true;setFeedback('连接已在设置中修复，请重试转写');}} />
+      <MeetingMinutesPanel onToast={setFeedback} onOpenModelSettings={() => setFeedback("默认纪要模型设置")} />
     </PageChromeProvider>
     {feedback && <output className="meeting-review-feedback">{feedback}</output>}
   </div>;

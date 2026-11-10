@@ -24,7 +24,12 @@ pub struct CaptureSupport {
 }
 
 #[tauri::command]
-pub fn meeting_capture_support() -> CaptureSupport {
+pub fn meeting_capture_support(app: tauri::AppHandle) -> CaptureSupport {
+    crate::meeting_minutes::preload_speech(&app);
+    capture_support()
+}
+
+fn capture_support() -> CaptureSupport {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         #[cfg(target_os = "macos")]
@@ -72,7 +77,7 @@ pub async fn meeting_capture_start(
 ) -> Result<CaptureStatus, String> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        if !meeting_capture_support().system_audio {
+        if !capture_support().system_audio {
             return Err("当前系统版本不支持系统声音采集".into());
         }
         tokio::task::spawn_blocking(move || native::start(meeting_id, mode))

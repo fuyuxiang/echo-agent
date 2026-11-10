@@ -270,36 +270,8 @@ fn parse_completion(
     value: &serde_json::Value,
     backend: &str,
 ) -> Result<(String, u64, u64), String> {
-    let text = match backend {
-        "responses" => value
-            .get("output")
-            .and_then(serde_json::Value::as_array)
-            .map(|output| {
-                output
-                    .iter()
-                    .filter(|item| item["type"] == "message")
-                    .filter_map(|item| item.get("content").and_then(serde_json::Value::as_array))
-                    .flatten()
-                    .filter(|item| item["type"] == "output_text")
-                    .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
-                    .collect::<String>()
-            }),
-        "messages" => value
-            .get("content")
-            .and_then(serde_json::Value::as_array)
-            .map(|content| {
-                content
-                    .iter()
-                    .filter(|item| item["type"] == "text")
-                    .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
-                    .collect::<String>()
-            }),
-        _ => value
-            .pointer("/choices/0/message/content")
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
-    }
-    .ok_or("模型响应不支持 Tab 文本补全")?;
+    let text = crate::providers::model_response_text(value, backend)
+        .ok_or("模型响应不支持 Tab 文本补全")?;
     if value.get("error").is_some() || text.is_empty() {
         return Err("模型没有返回 Tab 建议".into());
     }
@@ -355,21 +327,11 @@ async fn infer(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "无法创建 Tab 请求")?;
-    let mut builder = client
-        .post(&access.endpoint)
-        .json(&payload(request, access));
-    for (name, value) in &access.extra_headers {
-        builder = builder.header(name, value);
-    }
-    if !access.api_key.is_empty() {
-        builder = if access.auth_scheme == "x_api_key" {
-            builder
-                .header("x-api-key", &access.api_key)
-                .header("anthropic-version", "2023-06-01")
-        } else {
-            builder.bearer_auth(&access.api_key)
-        };
-    }
+    let builder = access.authorize(
+        client
+            .post(&access.endpoint)
+            .json(&payload(request, access)),
+    );
     let response = builder.send().await.map_err(|error| {
         if error.is_timeout() {
             "Tab 模型请求超时"

@@ -78,7 +78,8 @@ export function createMeetingDraftStore(storage?: DraftStorage) {
     }
   };
   const changed = () => { exitWithoutSaving = false; if (ready) { try { ensureDurable(); } catch { /* visible error + exit veto */ } } };
-  const transcripts = new DraftMap<Draft<TranscriptSegment[]>>(changed);
+  type TranscriptDraft = Draft<TranscriptSegment[]> & { speakerRenames?: [string, string][] };
+  const transcripts = new DraftMap<TranscriptDraft>(changed);
   const minutes = new DraftMap<Draft<string> & { transcriptBase: string }>(changed);
   if (storage) {
     try {
@@ -95,6 +96,11 @@ export function createMeetingDraftStore(storage?: DraftStorage) {
         for (const entry of data.transcripts) {
           if (!Array.isArray(entry) || typeof entry[0] !== "string" || !validSegments(entry[1]?.base)
             || !validSegments(entry[1]?.value) || !validConflict(entry[1]?.conflict)) throw new Error("校对草稿格式损坏");
+          const renames = entry[1].speakerRenames;
+          if (renames !== undefined && (!Array.isArray(renames) || !renames.every(pair =>
+            Array.isArray(pair) && pair.length === 2 && pair.every(name => typeof name === "string")))) {
+            throw new Error("说话人更名草稿格式损坏");
+          }
           transcripts.set(entry[0], entry[1]);
         }
         for (const entry of data.minutes) {
@@ -113,7 +119,7 @@ export function createMeetingDraftStore(storage?: DraftStorage) {
   }
   ready = true;
 
-  const transcript = (record: MeetingRecord): Draft<TranscriptSegment[]> => {
+  const transcript = (record: MeetingRecord): TranscriptDraft => {
     const draft = transcripts.get(record.id);
     if (!draft) return { base: record.transcript, value: record.transcript };
     // Processing clears the manifest before the new complete/partial result.
@@ -145,7 +151,7 @@ export function createMeetingDraftStore(storage?: DraftStorage) {
       original: draft.conflict?.original ?? transcriptText(draft.value),
       canKeep: !missing && (draft.conflict?.canKeep ?? true),
     } : undefined;
-    const next = { base: copySegments(record.transcript), value: merged, conflict };
+    const next = { ...draft, base: copySegments(record.transcript), value: merged, conflict };
     if (!conflict && same(merged, record.transcript)) transcripts.delete(record.id);
     else transcripts.set(record.id, next);
     return next;
@@ -184,10 +190,15 @@ export function createMeetingDraftStore(storage?: DraftStorage) {
     persistenceError: () => persistenceError,
     transcript,
     minutes: minute,
-    editTranscript(record: MeetingRecord, value: TranscriptSegment[]) {
+    editTranscript(record: MeetingRecord, value: TranscriptSegment[], rename?: [string, string]) {
       const draft = transcript(record);
       if (!draft.conflict && same(value, record.transcript)) transcripts.delete(record.id);
-      else transcripts.set(record.id, { ...draft, base: copySegments(draft.base), value: copySegments(value) });
+      else {
+        const speakerRenames = rename
+          ? [...(draft.speakerRenames ?? []).filter(([from]) => from !== rename[0]), rename]
+          : draft.speakerRenames;
+        transcripts.set(record.id, { ...draft, base: copySegments(draft.base), value: copySegments(value), speakerRenames });
+      }
     },
     editMinutes(record: MeetingRecord, value: string) {
       const draft = minute(record);
@@ -197,7 +208,7 @@ export function createMeetingDraftStore(storage?: DraftStorage) {
     acceptTranscript(record: MeetingRecord) {
       const draft = transcript(record);
       if (draft.conflict?.canKeep === false) return;
-      transcripts.set(record.id, { base: copySegments(record.transcript), value: copySegments(draft.value) });
+      transcripts.set(record.id, { ...draft, base: copySegments(record.transcript), value: copySegments(draft.value), conflict: undefined });
     },
     acceptMinutes(record: MeetingRecord) {
       const draft = minute(record);

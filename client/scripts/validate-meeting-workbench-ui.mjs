@@ -47,37 +47,49 @@ try {
     assert.deepEqual(errors,[]);layouts+=1;await page.close();
   }
   const repair=await browser.newPage({viewport:{width:720,height:800}});
-  await repair.goto(`${base}?scenario=recording-credentials`);
-  await repair.getByText(/转写连接需要处理/).waitFor();
-  await repair.getByRole('button',{name:'检查模型连接',exact:true}).click();
-  await repair.getByText('连接已在设置中修复，请重试转写',{exact:true}).waitFor();
+  await repair.goto(`${base}?scenario=recording-retry`);
+  await repair.getByText(/本地短句转写暂不可用/).waitFor();
+  await repair.evaluate(() => window.__meetingWorkbench.repairSpeech());
   await repair.getByRole('button',{name:'重试转写',exact:true}).click();
   await repair.getByText(/增量转写 \d+/).first().waitFor();
-  assert.equal(await repair.locator('.meeting-recording-controls').count(),1,'credential repair must keep the active recording');
+  assert.equal(await repair.locator('.meeting-recording-controls').count(),1,'local retry must keep the active recording');
   assert.equal(await repair.evaluate(()=>window.__meetingWorkbench.calls.filter(call=>call.command==='meeting_capture_stop').length),0);
-  assert.equal(await repair.evaluate(()=>window.__meetingWorkbench.calls.filter(call=>call.command==='meeting_set_transcription_connection').length),1);
-  await repair.screenshot({path:join(output,'credentials-repaired.png')});
+  assert.equal(await repair.evaluate(()=>window.__meetingWorkbench.calls.filter(call=>call.command==='meeting_set_transcription_connection').length),0);
+  await repair.screenshot({path:join(output,'local-inference-retried.png')});
   await repair.getByRole('button',{name:'结束录音',exact:true}).click();
   await repair.getByRole('heading',{name:'会议摘要',exact:true}).waitFor();
   await repair.close();
-  for(const scenario of ["empty","recording-error"]) {
+  for(const scenario of ["empty","recording-error","local-only"]) {
     const page=await browser.newPage({viewport:{width:1024,height:800}});
     await page.goto(`${base}?scenario=${scenario}`);
-    if(scenario==="empty") {
+    if(scenario==="empty" || scenario==="local-only") {
       const both=page.getByRole("button",{name:/两者都录/});await both.waitFor();await both.click();
+      const automatic=page.getByRole("checkbox",{name:"录音结束后自动生成会议纪要"});
+      assert.equal(await automatic.isChecked(),false);
+      if(scenario==="empty") await automatic.check();
       await page.getByRole("button",{name:"开始录音",exact:true}).click();
     }
     if(scenario==="recording-error") {
       await page.getByText(/短句转写暂不可用/).waitFor();
-      await page.evaluate(()=>window.dispatchEvent(new Event("online")));
+      await page.getByRole("button", { name: "重试转写", exact: true }).click();
     }
     await page.getByText(/增量转写 \d+/).first().waitFor();
     await page.getByRole("button",{name:"暂停录音",exact:true}).click();
     await page.getByRole("button",{name:"继续录音",exact:true}).click();
     await page.screenshot({path:join(output,`${scenario}-live.png`)});
     await page.getByRole("button",{name:"结束录音",exact:true}).click();
-    await page.getByRole("heading",{name:"会议摘要",exact:true}).waitFor();
-    assert.equal(await page.getByRole("tab",{name:"会议纪要"}).getAttribute("aria-selected"),"true");
+    if(scenario==="local-only") {
+      await page.getByText(/转写已完成/).waitFor();
+      await page.getByRole("tab",{name:"会议纪要"}).click();
+      const calls=await page.evaluate(()=>window.__meetingWorkbench.calls.filter(call=>call.command==="meeting_process"||call.command==="meeting_regenerate_minutes"));
+      assert.deepEqual(calls.map(call=>[call.command,Boolean(call.args.autoMinutes)]),[["meeting_process",false]]);
+      page.once("dialog",async dialog=>{assert.match(dialog.message(),/review\.example/);await dialog.accept();});
+      await page.getByRole("button",{name:"生成会议纪要",exact:true}).click();
+      await page.getByRole("heading",{name:"更新后的纪要",exact:true}).waitFor();
+    } else {
+      await page.getByRole("heading",{name:"会议摘要",exact:true}).waitFor();
+      assert.equal(await page.getByRole("tab",{name:"会议纪要"}).getAttribute("aria-selected"),"true");
+    }
     assert.equal(await page.locator(".meeting-recording-controls").count(),0);
     assert.equal(await page.evaluate(()=>window.__meetingWorkbench.calls.filter(call=>call.command==="meeting_process").length),1);
     await page.close();
@@ -91,6 +103,7 @@ try {
   await save.goto(`${base}?scenario=save-error`);
   await save.getByRole("button",{name:"新建录音",exact:true}).click();
   await save.getByRole("button",{name:/两者都录/}).click();
+  await save.getByRole("checkbox",{name:"录音结束后自动生成会议纪要"}).check();
   await save.getByRole("button",{name:"开始录音",exact:true}).click();
   await save.getByText(/增量转写 \d+/).first().waitFor();
   await save.getByRole("button",{name:"结束录音",exact:true}).click();
@@ -115,5 +128,5 @@ try {
   await long.getByRole("textbox",{name:"查找原文"}).fill("第 1800 段");
   assert.equal(await long.locator(".meeting-transcript__passage").count(),1);
   await long.close();
-  console.log(`Passed ${layouts} meeting layouts, actual WAV playback/seeking/speed, draft retention, incremental updates, network retry, automatic minutes, 1800 passages and fallback. Evidence: ${output}`);
+  console.log(`Passed ${layouts} meeting layouts, actual WAV playback/seeking/speed, draft retention, incremental updates, local transcription retry, automatic minutes, 1800 passages and fallback. Evidence: ${output}`);
 } finally {await browser.close();await server.close();}

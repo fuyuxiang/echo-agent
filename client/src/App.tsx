@@ -340,7 +340,6 @@ function Shell() {
   const [placeholderView, setPlaceholderView] = useState<string | null>(null);
   const [hasOpenedCodingWorkspace, setHasOpenedCodingWorkspace] = useState(false);
   const [createExpertRequested, setCreateExpertRequested] = useState(false);
-  const [meetingLaunchModelId, setMeetingLaunchModelId] = useState<string | undefined>();
   const sidebarLayout = useAppSidebarLayout();
   const { collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed } = sidebarLayout;
   const { toasts, enqueueToast, dismissToast, pauseToast } = useToastQueue();
@@ -3327,12 +3326,7 @@ function Shell() {
     projectDefaultModelId: newSessionModelId,
     onProjectNavigate: handleProjectNavigation,
     codingActive: codingWorkspaceActive,
-    meetingModelId: meetingLaunchModelId ?? activeSessionModelId ?? newSessionModelId,
-    meetingModels: models,
-    onOpenMeetingMinutes: (modelId?: string) => {
-      setMeetingLaunchModelId(modelId);
-      handleNavigate("录音转写");
-    },
+    onOpenMeetingMinutes: () => handleNavigate("录音转写"),
     onOpenModelSettings: () => openSettings("model"),
     onClientSlashCommand: handleClientSlashCommand,
     onExitCodingWorkspace: () => {
@@ -3518,10 +3512,7 @@ function Shell() {
                   subagentScrollRestore={subagentScrollRestore}
                   onNavigateConnectors={() => setPlaceholderView("专家·技能·连接器")}
                   onOpenKnowledgeBase={() => handleNavigate("知识库")}
-                  onOpenMeetingMinutes={() => {
-                    setMeetingLaunchModelId(activeSessionModelId);
-                    handleNavigate("录音转写");
-                  }}
+                  onOpenMeetingMinutes={() => handleNavigate("录音转写")}
                   onOpenOrganization={() => handleNavigate("组织")}
                   commandRefreshKey={commandRefreshKey}
                   onClientSlashCommand={handleClientSlashCommand}
@@ -3548,10 +3539,7 @@ function Shell() {
                   onSelectExpert={handleStartWithExpert}
                   onNavigateConnectors={() => setPlaceholderView("专家·技能·连接器")}
                   onOpenKnowledgeBase={() => handleNavigate("知识库")}
-                  onOpenMeetingMinutes={() => {
-                    setMeetingLaunchModelId(currentModelId);
-                    handleNavigate("录音转写");
-                  }}
+                  onOpenMeetingMinutes={() => handleNavigate("录音转写")}
                   onOpenOrganization={() => handleNavigate("组织")}
                   commandRefreshKey={commandRefreshKey}
                   onClientSlashCommand={handleClientSlashCommand}
@@ -3581,10 +3569,7 @@ function Shell() {
       </div>
       <Suspense fallback={null}>
         <MeetingRecordingIndicator
-          onOpen={(modelId) => {
-            setMeetingLaunchModelId(modelId);
-            handleNavigate("录音转写");
-          }}
+          onOpen={() => handleNavigate("录音转写")}
           onToast={showToast}
         />
       </Suspense>

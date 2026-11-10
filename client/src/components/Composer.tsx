@@ -38,7 +38,6 @@ import { atTokenAtCursor, replaceAtToken } from "@/lib/at-commands";
 import { InputAddMenu } from "./InputAddMenu";
 import { AttachmentList } from "./AttachmentList";
 import { ExpandedDraftEditor } from "./ExpandedDraftEditor";
-import { useMeetingTranscriptionCapability } from "@/lib/use-meeting-transcription-capability";
 import { KnowledgePicker } from "./KnowledgePicker";
 import {
   automationCapabilities,
@@ -321,11 +320,6 @@ export function Composer({
   /** Opens organization login/connection management. */
   onOpenOrganization?: () => void;
 }) {
-  const meetingModel = models?.find((model) => model.id === modelId);
-  useMeetingTranscriptionCapability(
-    onOpenMeetingMinutes ? meetingModel : undefined,
-    models,
-  );
   const storageErrors = useStorageHealth((state) => state.errors);
   const draftScopeRef = useRef(draftKey === undefined ? undefined : String(draftKey));
   const persistedRevision = useDraftRevision(draftKey === undefined ? undefined : String(draftKey));

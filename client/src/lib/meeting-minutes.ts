@@ -1,5 +1,4 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { meetingTranscriptionIssue } from './meeting-transcription-error';
 
 export type MeetingStatus =
   | "recording"
@@ -70,15 +69,23 @@ export interface MeetingRecord {
   live?: { processedSamples: number; error?: string };
   minutesStale?: boolean;
   previousMinutes?: string;
+  autoMinutesTarget?: MeetingMinutesTarget;
+}
+
+export interface MeetingMinutesTarget {
+  modelId: string;
+  recipient: string;
+  revision: string;
 }
 
 export interface MeetingEditBase {
   transcript: TranscriptSegment[];
   minutes: string | null;
+  speakerRenames?: [string, string][];
 }
 
-export function meetingCreate(title: string, modelId: string, providerId: string, captureSource: RecordingSource = "microphone"): Promise<MeetingRecord> {
-  return invoke("meeting_create", { title, modelId, providerId, captureSource });
+export function meetingCreate(title: string, captureSource: RecordingSource = "microphone", autoMinutesTarget?: MeetingMinutesTarget): Promise<MeetingRecord> {
+  return invoke("meeting_create", { title, captureSource, ...(autoMinutesTarget && { autoMinutesTarget }) });
 }
 
 export function meetingCaptureSupport(): Promise<CaptureSupport> {
@@ -101,18 +108,6 @@ export function meetingCaptureStop(meetingId: string): Promise<MeetingRecord> {
   return invoke("meeting_capture_stop", { meetingId });
 }
 
-export function meetingCheckConnection(modelId: string, providerId: string): Promise<void> {
-  return invoke("meeting_check_connection", { modelId, providerId });
-}
-
-export function isMiniMaxMeetingModel(model: {
-  id: string;
-  remoteModelId?: string;
-}): boolean {
-  const slug = model.remoteModelId?.trim() || model.id;
-  return /minimax/i.test(slug);
-}
-
 export function meetingAppendPcm(meetingId: string, samples: number[]): Promise<MeetingRecord> {
   return invoke("meeting_append_pcm", { meetingId, samples });
 }
@@ -125,34 +120,20 @@ export function meetingFinishRecording(meetingId: string): Promise<MeetingRecord
   return invoke("meeting_finish_recording", { meetingId });
 }
 
-export function meetingImportAudio(
-  sourcePath: string,
-  title: string,
-  modelId: string,
-  providerId: string,
-): Promise<MeetingRecord> {
-  return invoke("meeting_import_audio", { sourcePath, title, modelId, providerId });
+export function meetingImportAudio(sourcePath: string, title: string): Promise<MeetingRecord> {
+  return invoke("meeting_import_audio", { sourcePath, title });
 }
 
-export interface MeetingModelBinding {
-  modelId: string;
-  providerId: string;
+export function meetingProcess(meetingId: string, autoMinutes = false): Promise<MeetingRecord> {
+  return invoke("meeting_process", { meetingId, ...(autoMinutes && { autoMinutes }) });
 }
 
-export function meetingProcess(meetingId: string, binding?: MeetingModelBinding): Promise<MeetingRecord> {
-  return invoke("meeting_process", {
-    meetingId,
-    modelId: binding?.modelId ?? null,
-    providerId: binding?.providerId ?? null,
-  });
+export function meetingMinutesTarget(): Promise<MeetingMinutesTarget> {
+  return invoke("meeting_minutes_target");
 }
 
-export function meetingRegenerateMinutes(meetingId: string, binding?: MeetingModelBinding): Promise<MeetingRecord> {
-  return invoke("meeting_regenerate_minutes", {
-    meetingId,
-    modelId: binding?.modelId ?? null,
-    providerId: binding?.providerId ?? null,
-  });
+export function meetingRegenerateMinutes(meetingId: string, target: MeetingMinutesTarget): Promise<MeetingRecord> {
+  return invoke("meeting_regenerate_minutes", { meetingId, target });
 }
 
 export function meetingUpdate(
@@ -256,10 +237,6 @@ class MeetingRecorder {
   private liveRequest: Promise<LiveReply> | null = null;
   private retryAt = 0;
   private liveFailures = 0;
-  private retryLive = () => {
-    if(meetingTranscriptionIssue(this.snapshot.transcription?.error).settings)return;
-    this.retryAt = 0; void this.transcribeNext();
-  };
   private completionJobs = new Map<string, Promise<void>>();
   private snapshot: RecorderSnapshot = {
     meeting: null,
@@ -298,13 +275,13 @@ class MeetingRecorder {
     for (const listener of this.listeners) listener(this.snapshot);
   }
 
-  start(title: string, modelId: string, providerId: string, source: RecordingSource = "microphone"): Promise<MeetingRecord> {
+  start(title: string, source: RecordingSource = "microphone", autoMinutesTarget?: MeetingMinutesTarget): Promise<MeetingRecord> {
     if (this.exitPreparing) return Promise.reject(new Error("应用正在准备退出，暂不能开始录音"));
     if (this.snapshot.active || this.starting || this.stopOperation) return Promise.reject(new Error("已有会议正在录音，请先结束当前录音"));
     const attempt = { cancelled: false };
     this.startAttempt = attempt;
     this.starting = true;
-    this.startOperation = this.startRecording(title, modelId, providerId, source, attempt).finally(() => {
+    this.startOperation = this.startRecording(title, source, attempt, autoMinutesTarget).finally(() => {
       this.starting = false;
       this.startOperation = null;
       this.startAttempt = null;
@@ -327,13 +304,13 @@ class MeetingRecorder {
     if (attempt.cancelled || this.exitPreparing) throw new Error("录音启动已取消：应用正在准备退出");
   }
 
-  private async startRecording(title: string, modelId: string, providerId: string, source: RecordingSource, attempt: { cancelled: boolean }): Promise<MeetingRecord> {
+  private async startRecording(title: string, source: RecordingSource, attempt: { cancelled: boolean }, autoMinutesTarget?: MeetingMinutesTarget): Promise<MeetingRecord> {
     this.publish({ error: null });
     this.ensureStartAllowed(attempt);
     if (source !== "microphone") {
       let meeting: MeetingRecord | null = null;
       try {
-        meeting = await meetingCreate(title, modelId, providerId, source);
+        meeting = await meetingCreate(title, source, autoMinutesTarget);
         this.ensureStartAllowed(attempt);
         const status = await meetingCaptureStart(meeting.id, source);
         this.publish({ meeting, active: true, paused: status.paused, level: status.level, error: status.error ?? null, source, pendingSave: status.pendingSave ?? false });
@@ -346,10 +323,10 @@ class MeetingRecorder {
       }
     }
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前系统不支持麦克风录音");
-    return this.startMicrophone(title, modelId, providerId, attempt);
+    return this.startMicrophone(title, attempt, autoMinutesTarget);
   }
 
-  private async startMicrophone(title: string, modelId: string, providerId: string, attempt: { cancelled: boolean }): Promise<MeetingRecord> {
+  private async startMicrophone(title: string, attempt: { cancelled: boolean }, autoMinutesTarget?: MeetingMinutesTarget): Promise<MeetingRecord> {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -361,7 +338,7 @@ class MeetingRecorder {
     let meeting: MeetingRecord | null = null;
     try {
       this.ensureStartAllowed(attempt);
-      meeting = await meetingCreate(title, modelId, providerId, "microphone");
+      meeting = await meetingCreate(title, "microphone", autoMinutesTarget);
       this.ensureStartAllowed(attempt);
       const context = new AudioContext();
       const source = context.createMediaStreamSource(stream);
@@ -414,23 +391,17 @@ class MeetingRecorder {
     if (this.liveTimer !== null) window.clearInterval(this.liveTimer);
     this.liveRequest = null; // A previous recording's tail has its own completion job.
     this.retryAt = 0; this.liveFailures = 0;
-    window.addEventListener("online", this.retryLive);
     this.publish({ transcription: { state: "connecting" } });
     this.liveTimer = window.setInterval(() => void this.transcribeNext(), 500);
   }
 
-  async retryTranscription(binding?: MeetingModelBinding): Promise<void> {
-    const meeting=this.snapshot.meeting;
-    if(!meeting || !this.snapshot.active || this.snapshot.pendingSave)throw new Error('当前录音已结束，请在录音详情中继续处理');
-    await this.liveRequest?.catch(()=>{});
-    if(this.snapshot.meeting?.id!==meeting.id || !this.snapshot.active)throw new Error('录音状态已变化，请重新打开当前录音');
-    if(binding){
-      const updated=await invoke<MeetingRecord>('meeting_set_transcription_connection',{meetingId:meeting.id,...binding});
-      if(this.snapshot.meeting?.id!==meeting.id || !this.snapshot.active)return;
-      this.publish({meeting:updated});
-    }
-    this.retryAt=0;this.liveFailures=0;
-    this.publish({transcription:{state:'connecting'}});
+  async retryTranscription(): Promise<void> {
+    const meeting = this.snapshot.meeting;
+    if (!meeting || !this.snapshot.active || this.snapshot.pendingSave) throw new Error("当前录音已结束，请在录音详情中继续处理");
+    await this.liveRequest?.catch(() => undefined);
+    if (this.snapshot.meeting?.id !== meeting.id || !this.snapshot.active) throw new Error("录音状态已变化，请重新打开当前录音");
+    this.retryAt = 0;
+    this.liveFailures = 0;
     await this.transcribeNext();
   }
 
@@ -449,7 +420,7 @@ class MeetingRecorder {
     } catch (error) {
       if (this.snapshot.meeting?.id !== meeting.id) return;
       this.liveFailures += 1;
-      this.retryAt = meetingTranscriptionIssue(String(error)).settings ? Infinity : Date.now() + Math.min(20_000, 1000 * 2 ** Math.min(this.liveFailures, 4));
+      this.retryAt = Date.now() + Math.min(20_000, 1000 * 2 ** Math.min(this.liveFailures, 4));
       this.publish({ transcription: { state: "unavailable", error: String(error).replace(/^Error:\s*/, "") } });
     } finally { if (this.liveRequest === request) this.liveRequest = null; }
   }
@@ -457,7 +428,6 @@ class MeetingRecorder {
   private saved(record: MeetingRecord) {
     if (this.liveTimer !== null) window.clearInterval(this.liveTimer);
     this.liveTimer = null;
-    window.removeEventListener("online", this.retryLive);
     if (this.exitPreparing || this.completionJobs.has(record.id)) return;
     const pending = this.liveRequest;
     const job = Promise.resolve().then(async () => {
@@ -469,7 +439,7 @@ class MeetingRecorder {
         try { const reply = await meetingTranscribeLive(record.id, true); if (reply?.waiting) break; }
         catch { break; }
       }
-      await meetingProcess(record.id);
+      await meetingProcess(record.id, Boolean(record.autoMinutesTarget));
     }).catch(() => undefined).finally(async () => {
       this.completionJobs.delete(record.id);
       const latest = await meetingGet(record.id).catch(() => null);

@@ -631,6 +631,17 @@ fn is_upstream_branded_model_id(id: &str) -> bool {
         .any(|token| normalized.contains(token))
 }
 
+pub(crate) fn meeting_default_model_id(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<String, String> {
+    let status = auth_status_with_runtime_reload(app, state);
+    validate_runtime_ready(&status, None)?;
+    status
+        .default_model_id
+        .ok_or_else(|| "请在设置中配置默认聊天模型，再生成会议纪要".into())
+}
+
 fn strip_upstream_branded_ids(ids: Vec<String>) -> Vec<String> {
     ids.into_iter()
         .filter(|id| !is_upstream_branded_model_id(id))

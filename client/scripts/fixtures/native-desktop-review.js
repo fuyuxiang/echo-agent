@@ -390,27 +390,25 @@ void (async () => {
         report.project = { id: associated.id, name: associated.name };
         localStorage.setItem(reviewKey, JSON.stringify({ version: 1, session: { ...expected, modelResponsePassed }, project: report.project }));
         if (nativeContext.mediaRequested) {
-          const modelId = 'organization/MiniMax-M3.1-Flash-Preview';
-          const providerId = 'echoagent-organization';
-          await invoke('meeting_check_connection', { modelId, providerId });
           const meeting = await invoke('meeting_import_audio', {
-            sourcePath: `${session.cwd}/中文会议验收.wav`, title: '原生中文会议验收', modelId, providerId,
+            sourcePath: `${session.cwd}/中文会议验收.wav`, title: '原生中文会议验收',
           });
           record('native-meeting-import', meeting.durationSeconds > 5 && meeting.durationSeconds < 8 ? 'passed' : 'failed', {
-            id: meeting.id, audioPath: meeting.audioPath, durationSeconds: meeting.durationSeconds, modelId: meeting.modelId, providerId: meeting.providerId,
+            id: meeting.id, audioPath: meeting.audioPath, durationSeconds: meeting.durationSeconds,
           });
-          const processed = await invoke('meeting_process', { meetingId: meeting.id, modelId, providerId });
-          const processedOk = processed.status === 'completed' && processed.transcriptText?.includes('任务状态')
-            && /任务|状态/.test(processed.minutes || '') && /明天|次日/.test(processed.minutes || '') && !processed.error;
+          const processed = await invoke('meeting_process', { meetingId: meeting.id });
+          const processedOk = processed.status === 'transcribed' && processed.transcriptText?.includes('任务状态')
+            && !processed.minutes && !processed.error;
           record('native-meeting-process', processedOk ? 'passed' : 'failed', {
             id: processed.id, status: processed.status, transcriptText: processed.transcriptText,
             minutes: processed.minutes, error: processed.error,
           });
-          if (!processedOk) throw new Error('Native meeting processing did not complete with actual transcript and minutes');
+          if (!processedOk) throw new Error('Native local transcription did not finish');
           const transcript = processed.transcript.map((segment) => ({ ...segment, text: segment.text.replaceAll('复合', '复核') }));
           await invoke('meeting_update', { meetingId: meeting.id, transcript, title: null, minutes: null });
-          const regenerated = await invoke('meeting_regenerate_minutes', { meetingId: meeting.id, modelId, providerId });
-          if (regenerated.status !== 'completed' || !regenerated.minutes?.includes('复核') || regenerated.error) {
+          const target = await invoke('meeting_minutes_target');
+          const regenerated = await invoke('meeting_regenerate_minutes', { meetingId: meeting.id, target });
+          if (regenerated.status !== 'completed' || !regenerated.minutes?.includes('复核') || !/明天|次日/.test(regenerated.minutes) || regenerated.error) {
             throw new Error('Regenerated minutes did not reflect the corrected transcript');
           }
           const minutes = `${regenerated.minutes || ''}\n\n## 人工复核\n\n- 验收人工编辑：明天完成复核。\n`;

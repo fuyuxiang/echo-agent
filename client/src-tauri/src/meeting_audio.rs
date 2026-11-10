@@ -1,5 +1,6 @@
 //! Range-based playback of app-owned meeting WAV files. No renderer paths.
 use super::*;
+use std::collections::HashMap;
 use tauri::http::{Request, Response, StatusCode};
 const MAX_RANGE_BYTES: u64 = 2 * 1024 * 1024;
 static TOKENS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();

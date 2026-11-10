@@ -828,106 +828,60 @@ fn inline_model_access_from_config(
     })
 }
 
-/// Secret-bearing provider context used only by native meeting jobs.  It is
-/// deliberately never serialized across the Tauri boundary.
-pub(crate) struct MeetingProviderAccess {
-    pub api_key: String,
-    pub base_url: String,
-    pub remote_model_id: String,
-}
-
-/// Resolve a meeting model's chat connection without exposing its credential
-/// to the frontend. Speech-to-Text support is checked against the actual
-/// endpoint separately; neither the model name nor the provider brand proves it.
-fn meeting_provider_access_from_config(
-    config: &Value,
-    model_id: &str,
-    expected_provider_id: &str,
-) -> Result<MeetingProviderAccess, String> {
-    let model = config
-        .get("model")
-        .and_then(Value::as_table)
-        .and_then(|models| models.get(model_id))
-        .and_then(Value::as_table)
-        .ok_or("当前模型已不存在，请重新选择会议模型")?;
-    // Current configurations reference a shared provider. Legacy BYOK models
-    // stored the same fields directly in `[model.<id>]`; keep those usable so
-    // adding meeting support does not force a destructive settings migration.
-    let referenced_provider_id = model.get("model_provider").and_then(Value::as_str);
-    if referenced_provider_id.is_some_and(|provider_id| provider_id != expected_provider_id) {
-        return Err("会议任务的模型提供商已变化，请新建会议后重试".into());
-    }
-    let provider = if let Some(provider_id) = referenced_provider_id {
-        config
-            .get("model_providers")
-            .and_then(Value::as_table)
-            .and_then(|providers| providers.get(provider_id))
-            .and_then(Value::as_table)
-            .ok_or("会议模型连接已被删除")?
-    } else {
-        model
-    };
-    if expected_provider_id == REMOVED_PROVIDER_ID
-        || model_id.starts_with(REMOVED_MODEL_PREFIX)
-        || provider.get(MANAGED_BY_KEY).and_then(Value::as_str) == Some(REMOVED_MANAGED_BY)
-    {
-        return Err("此模型已移除，请重新选择会议模型".into());
-    }
-    if provider.get(MANAGED_BY_KEY).and_then(Value::as_str) == Some(MANAGED_BY_ORGANIZATION) {
-        let lease_until = provider
-            .get(LEASE_UNTIL_KEY)
-            .and_then(Value::as_integer)
-            .unwrap_or(0);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        if lease_until <= now {
-            return Err("组织模型配置已过期，请重新同步".into());
+impl InlineModelAccess {
+    pub(crate) fn authorize(
+        &self,
+        mut builder: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        for (name, value) in &self.extra_headers {
+            builder = builder.header(name, value);
+        }
+        if self.api_key.is_empty() {
+            builder
+        } else if self.auth_scheme == "x_api_key" {
+            builder
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+        } else {
+            builder.bearer_auth(&self.api_key)
         }
     }
-    let base_url = provider
-        .get("base_url")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or("会议模型 Base URL 未配置")?
-        .trim_end_matches('/')
-        .to_string();
-    if provider.get("api_backend").and_then(Value::as_str) != Some("chat_completions")
-        || provider.get("auth_scheme").and_then(Value::as_str) != Some("bearer")
-    {
-        return Err("会议纪要需要使用 Bearer Key 的 Chat Completions 模型连接".into());
+
+    pub(crate) fn response_text(&self, value: &serde_json::Value) -> Option<String> {
+        model_response_text(value, &self.api_backend)
     }
-    let allow_http = provider
-        .get(ALLOW_INSECURE_HTTP_KEY)
-        .and_then(Value::as_bool)
-        == Some(true);
-    validate_provider_base_url_with_options(&base_url, false, allow_http)?;
-    let api_key = resolved_provider_api_key(provider).ok_or("会议模型 API Key 未配置或已失效")?;
-    let remote_model_id = model
-        .get("model")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(model_id)
-        .to_string();
-    if !remote_model_id.to_ascii_lowercase().contains("minimax") {
-        return Err("当前会议模型不是 MiniMax 模型".into());
-    }
-    Ok(MeetingProviderAccess {
-        api_key,
-        base_url,
-        remote_model_id,
-    })
 }
 
-pub(crate) fn meeting_provider_access(
-    model_id: &str,
-    expected_provider_id: &str,
-) -> Result<MeetingProviderAccess, String> {
-    crate::policy::require_model(model_id)?;
-    meeting_provider_access_from_config(&read_config(), model_id, expected_provider_id)
+pub(crate) fn model_response_text(value: &serde_json::Value, backend: &str) -> Option<String> {
+    match backend {
+        "responses" => value
+            .get("output")
+            .and_then(serde_json::Value::as_array)
+            .map(|output| {
+                output
+                    .iter()
+                    .filter(|item| item["type"] == "message")
+                    .filter_map(|item| item.get("content").and_then(serde_json::Value::as_array))
+                    .flatten()
+                    .filter(|item| item["type"] == "output_text")
+                    .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
+                    .collect::<String>()
+            }),
+        "messages" => value
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .map(|content| {
+                content
+                    .iter()
+                    .filter(|item| item["type"] == "text")
+                    .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
+                    .collect::<String>()
+            }),
+        _ => value
+            .pointer("/choices/0/message/content")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+    }
 }
 
 /// Mask helper: returns `Some("••••")` only when a static key or referenced
@@ -2998,7 +2952,7 @@ base_url = "https://example.com"
     }
 
     #[test]
-    fn infer_minimax_enables_meeting_capability_without_model_name_matching() {
+    fn infer_minimax_from_connection_url() {
         let mut table = Map::new();
         table.insert(
             "api_backend".into(),
@@ -3009,113 +2963,6 @@ base_url = "https://example.com"
             Value::String("https://api.minimax.cn/v1".into()),
         );
         assert_eq!(infer_provider_kind(&table), "minimax");
-    }
-
-    #[test]
-    fn meeting_access_accepts_personal_and_organization_compatible_speech_gateways() {
-        let mut config: Value = r#"
-            [model_providers.personal]
-            base_url = "https://gateway.example/v1"
-            api_backend = "chat_completions"
-            auth_scheme = "bearer"
-            api_key = "personal-key"
-            [model_providers.echoagent-organization]
-            base_url = "http://managed.example/v1"
-            api_backend = "chat_completions"
-            auth_scheme = "bearer"
-            api_key = "organization-key"
-            echoagent_allow_insecure_http = true
-            echoagent_managed_by = "organization"
-            echoagent_lease_until = 9223372036854775807
-            organization_provider = "openai-compatible"
-            [model."personal/MiniMax-M3"]
-            model_provider = "personal"
-            model = "MiniMax-M3"
-            [model."organization/MiniMax-M3"]
-            model_provider = "echoagent-organization"
-            model = "MiniMax-M3"
-        "#
-        .parse()
-        .unwrap();
-        let personal =
-            meeting_provider_access_from_config(&config, "personal/MiniMax-M3", "personal")
-                .unwrap();
-        assert_eq!(personal.base_url, "https://gateway.example/v1");
-        assert_eq!(personal.remote_model_id, "MiniMax-M3");
-        let organization = meeting_provider_access_from_config(
-            &config,
-            "organization/MiniMax-M3",
-            ORGANIZATION_PROVIDER_ID,
-        )
-        .unwrap();
-        assert_eq!(organization.base_url, "http://managed.example/v1");
-        assert_eq!(organization.api_key, "organization-key");
-        config
-            .get_mut("model_providers")
-            .and_then(Value::as_table_mut)
-            .and_then(|providers| providers.get_mut(ORGANIZATION_PROVIDER_ID))
-            .and_then(Value::as_table_mut)
-            .unwrap()
-            .insert(LEASE_UNTIL_KEY.into(), Value::Integer(0));
-        assert!(meeting_provider_access_from_config(
-            &config,
-            "organization/MiniMax-M3",
-            ORGANIZATION_PROVIDER_ID,
-        )
-        .err()
-        .unwrap()
-        .contains("过期"));
-    }
-
-    #[test]
-    fn meeting_access_rejects_unapproved_http_and_unsupported_chat_protocol() {
-        let mut config: Value = r#"
-            [model_providers.personal]
-            base_url = "http://gateway.example/v1"
-            api_backend = "chat_completions"
-            auth_scheme = "bearer"
-            api_key = "personal-key"
-            [model.meeting]
-            model_provider = "personal"
-            model = "MiniMax-M3"
-        "#
-        .parse()
-        .unwrap();
-        assert!(meeting_provider_access_from_config(&config, "meeting", "personal").is_err());
-        let provider = config
-            .get_mut("model_providers")
-            .and_then(Value::as_table_mut)
-            .and_then(|providers| providers.get_mut("personal"))
-            .and_then(Value::as_table_mut)
-            .unwrap();
-        provider.insert(ALLOW_INSECURE_HTTP_KEY.into(), Value::Boolean(true));
-        provider.insert("api_backend".into(), Value::String("messages".into()));
-        assert!(meeting_provider_access_from_config(&config, "meeting", "personal").is_err());
-    }
-
-    #[test]
-    fn meeting_access_rejects_builtin_even_with_a_minimax_model_name() {
-        let config: Value = r#"
-            [model_providers.echoagent-ojlab]
-            base_url = "https://example.com/v1"
-            api_backend = "chat_completions"
-            auth_scheme = "bearer"
-            api_key = "test-key"
-            echoagent_managed_by = "builtin"
-            [model."echoagent-ojlab/MiniMax-M3"]
-            model_provider = "echoagent-ojlab"
-            model = "MiniMax-M3"
-        "#
-        .parse()
-        .unwrap();
-        let error = meeting_provider_access_from_config(
-            &config,
-            "echoagent-ojlab/MiniMax-M3",
-            REMOVED_PROVIDER_ID,
-        )
-        .err()
-        .unwrap();
-        assert!(error.contains("已移除"));
     }
 
     #[test]

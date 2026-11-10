@@ -1,11 +1,11 @@
 //! Durable long-form meeting recording, Speech-to-Text, and minutes generation.
 //!
-//! Audio is normalized to mono 16 kHz PCM WAV and split into bounded seven
-//! minute requests.  API credentials never leave the native process.
+//! Audio is stored as mono 16 kHz PCM and recognized locally in bounded windows.
+//! The default chat model receives only the persisted transcript for minutes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -19,15 +19,18 @@ use tauri_plugin_dialog::DialogExt;
 pub(crate) mod audio;
 #[path = "meeting_live.rs"]
 pub(crate) mod live;
+#[path = "meeting_speech.rs"]
+mod speech;
 
 const SAMPLE_RATE: u32 = 16_000;
-const CHUNK_SECONDS: u64 = 420;
-const OVERLAP_SECONDS: u64 = 2;
 const WAV_HEADER_BYTES: u64 = 44;
 const MAX_APPEND_SAMPLES: usize = SAMPLE_RATE as usize * 15;
 pub(crate) const MAX_RECORDING_SAMPLES: u64 = SAMPLE_RATE as u64 * 60 * 60 * 24;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_API_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: usize = 32 * 1024 * 1024;
+const MANIFEST_METADATA_RESERVE: usize = 64 * 1024;
+const MANIFEST_LIMIT_ERROR: &str = "会议文字已达本机存储上限。已保存的音频与文字仍可使用";
 const SUMMARY_GROUP_CHARS: usize = 12_000;
 
 static ACTIVE_JOBS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -86,6 +89,8 @@ pub struct TranscriptSegment {
 pub struct MeetingEditBase {
     transcript: Vec<TranscriptSegment>,
     minutes: Option<String>,
+    #[serde(default)]
+    speaker_renames: Vec<(String, String)>,
 }
 
 fn check_edit_base(record: &MeetingRecord, base: &MeetingEditBase) -> Result<(), String> {
@@ -141,23 +146,26 @@ pub struct MeetingRecord {
     pub minutes_stale: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_minutes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_minutes_target: Option<MeetingMinutesTarget>,
+    #[serde(skip)]
+    speakers: speech::Speakers,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct AsrResponse {
-    #[serde(default)]
-    text: String,
-    #[serde(default)]
-    segments: Vec<AsrSegment>,
-    trace_id: Option<String>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingMinutesTarget {
+    model_id: String,
+    recipient: String,
+    revision: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct AsrSegment {
-    start: f64,
-    end: f64,
-    speaker: Option<String>,
-    text: String,
+#[derive(Deserialize)]
+struct StoredMeeting {
+    #[serde(flatten)]
+    record: MeetingRecord,
+    #[serde(default, rename = "localSpeakers")]
+    speakers: speech::Speakers,
 }
 
 fn now_millis() -> i64 {
@@ -185,15 +193,117 @@ fn manifest_path(id: &str) -> Result<PathBuf, String> {
 
 fn read_meeting(id: &str) -> Result<MeetingRecord, String> {
     let path = manifest_path(id)?;
-    let bytes = crate::shell_fs::read_regular_file_bounded(&path, 16 * 1024 * 1024)
+    let bytes = crate::shell_fs::read_regular_file_bounded(&path, MAX_MANIFEST_BYTES as u64)
         .map_err(|error| format!("读取会议记录失败：{error}"))?;
-    serde_json::from_slice(&bytes).map_err(|error| format!("会议记录已损坏：{error}"))
+    let mut stored: StoredMeeting =
+        serde_json::from_slice(&bytes).map_err(|error| format!("会议记录已损坏：{error}"))?;
+    stored.record.speakers = stored.speakers;
+    stored.record.live.processed_samples = covered_samples(&stored.record);
+    Ok(stored.record)
+}
+
+fn covered_samples(record: &MeetingRecord) -> u64 {
+    let mut covered = record.live.processed_samples.min(record.recorded_samples);
+    // The legacy batch wrote chunk status before publishing the merged text.
+    // Only a published result and contiguous, completed chunks prove coverage.
+    if !matches!(
+        record.status.as_str(),
+        "completed" | "transcribed" | "summarizing"
+    ) || record.transcript.is_empty()
+        || record
+            .chunks
+            .iter()
+            .any(|chunk| chunk.status != "completed")
+    {
+        return covered;
+    }
+    let mut ranges: Vec<_> = record
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.start.is_finite() && chunk.end.is_finite() && chunk.end > chunk.start)
+        .map(|chunk| {
+            (
+                seconds_to_samples(chunk.start),
+                seconds_to_samples(chunk.end),
+            )
+        })
+        .collect();
+    ranges.sort_unstable();
+    for (start, end) in ranges {
+        if start > covered {
+            break;
+        }
+        covered = covered.max(end).min(record.recorded_samples);
+    }
+    covered
+}
+
+fn seconds_to_samples(seconds: f64) -> u64 {
+    (seconds * f64::from(SAMPLE_RATE)).round() as u64
+}
+
+struct ManifestBytes {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for ManifestBytes {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.limit - self.bytes.len() {
+            return Err(std::io::Error::other(MANIFEST_LIMIT_ERROR));
+        }
+        self.bytes.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn save_meeting(record: &MeetingRecord) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(record)
-        .map_err(|error| format!("序列化会议记录失败：{error}"))?;
-    crate::paths::write_private_file(&manifest_path(&record.id)?, &bytes)
+    save_manifest(record, MAX_MANIFEST_BYTES)
+}
+
+fn save_meeting_content(record: &MeetingRecord) -> Result<(), String> {
+    // Recording counters and recovery errors still need to be writable when
+    // a new passage or edit runs out of document space.
+    save_manifest(record, MAX_MANIFEST_BYTES - MANIFEST_METADATA_RESERVE)
+}
+
+fn save_manifest(record: &MeetingRecord, limit: usize) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct Stored<'a> {
+        #[serde(flatten)]
+        record: &'a MeetingRecord,
+        #[serde(rename = "localSpeakers")]
+        speakers: &'a speech::Speakers,
+    }
+    let mut bytes = ManifestBytes {
+        bytes: Vec::new(),
+        limit,
+    };
+    serde_json::to_writer(
+        &mut bytes,
+        &Stored {
+            record,
+            speakers: &record.speakers,
+        },
+    )
+    .map_err(|error| format!("序列化会议记录失败：{error}"))?;
+    crate::paths::write_private_file(&manifest_path(&record.id)?, &bytes.bytes)
+}
+
+fn retain_processing_failure(id: &str, status: &str, error: &str) {
+    if let Ok(mut saved) = read_meeting(id) {
+        if saved.error.as_deref() != Some(error) {
+            saved.status = status.into();
+            saved.error = Some(error.into());
+            saved.updated_at = now_millis();
+            if let Err(persist_error) = save_meeting(&saved) {
+                tracing::warn!(meeting_id = id, %persist_error, "could not save meeting failure");
+            }
+        }
+    }
 }
 
 fn safe_title(raw: &str) -> String {
@@ -260,12 +370,10 @@ fn append_samples(path: &Path, samples: &[i16]) -> Result<(), String> {
 #[tauri::command]
 pub fn meeting_create(
     title: String,
-    model_id: String,
-    provider_id: String,
     capture_source: Option<String>,
+    auto_minutes_target: Option<MeetingMinutesTarget>,
 ) -> Result<MeetingRecord, String> {
-    // Recording is local and remains usable without a network or ASR key.
-    // Resolve credentials only when sending audio or generating minutes.
+    // Capture can start immediately, even if model initialization later fails.
     let id = uuid::Uuid::now_v7().to_string();
     let directory = meeting_dir(&id)?;
     let chunks = directory.join("chunks");
@@ -285,8 +393,8 @@ pub fn meeting_create(
         created_at,
         updated_at: created_at,
         status: "recording".into(),
-        model_id: model_id.trim().into(),
-        provider_id: provider_id.trim().into(),
+        model_id: String::new(),
+        provider_id: String::new(),
         duration_seconds: 0.0,
         recorded_samples: 0,
         audio_path: audio_path.to_string_lossy().into_owned(),
@@ -305,6 +413,8 @@ pub fn meeting_create(
         live: live::LiveProgress::default(),
         minutes_stale: false,
         previous_minutes: None,
+        auto_minutes_target,
+        speakers: speech::Speakers::default(),
     };
     save_meeting(&record)?;
     Ok(record)
@@ -578,16 +688,13 @@ pub async fn meeting_import_audio(
     access: State<'_, crate::shell_fs::FilesystemAccess>,
     source_path: String,
     title: String,
-    model_id: String,
-    provider_id: String,
 ) -> Result<MeetingRecord, String> {
-    crate::providers::meeting_provider_access(model_id.trim(), provider_id.trim())?;
     let source = access.require_authorized_file(Path::new(&source_path))?;
     let metadata = fs::metadata(&source).map_err(|error| format!("读取音频信息失败：{error}"))?;
     if metadata.len() > MAX_IMPORT_BYTES {
         return Err("导入音频不能超过 2GB".into());
     }
-    let mut record = meeting_create(title, model_id, provider_id, Some("imported".into()))?;
+    let mut record = meeting_create(title, Some("imported".into()), None)?;
     record.status = "importing".into();
     record.original_file_name = source
         .file_name()
@@ -633,162 +740,6 @@ pub async fn meeting_import_audio(
     Ok(record)
 }
 
-fn create_wav_slice(
-    source: &Path,
-    destination: &Path,
-    start_sample: u64,
-    sample_count: u64,
-) -> Result<(), String> {
-    let byte_count = sample_count.checked_mul(2).ok_or("音频分片过大")?;
-    let data_bytes = u32::try_from(byte_count).map_err(|_| "音频分片过大")?;
-    let mut reader =
-        BufReader::new(File::open(source).map_err(|error| format!("打开录音失败：{error}"))?);
-    reader
-        .seek(SeekFrom::Start(WAV_HEADER_BYTES + start_sample * 2))
-        .map_err(|error| format!("定位录音分片失败：{error}"))?;
-    let mut writer = BufWriter::new(
-        File::create(destination).map_err(|error| format!("创建音频分片失败：{error}"))?,
-    );
-    write_wav_header(&mut writer, data_bytes).map_err(|error| error.to_string())?;
-    std::io::copy(&mut reader.take(byte_count), &mut writer)
-        .map_err(|error| format!("写入音频分片失败：{error}"))?;
-    writer
-        .flush()
-        .map_err(|error| format!("刷新音频分片失败：{error}"))?;
-    drop(writer);
-    crate::paths::harden_private_file(destination)
-}
-
-fn chunk_ranges(total_samples: u64) -> Vec<(u64, u64)> {
-    let chunk_samples = CHUNK_SECONDS * SAMPLE_RATE as u64;
-    let step = (CHUNK_SECONDS - OVERLAP_SECONDS) * SAMPLE_RATE as u64;
-    let mut ranges = Vec::new();
-    let mut start = 0u64;
-    while start < total_samples {
-        let count = chunk_samples.min(total_samples - start);
-        ranges.push((start, count));
-        if start + count >= total_samples {
-            break;
-        }
-        start = start.saturating_add(step);
-    }
-    ranges
-}
-
-fn prepare_chunks(record: &mut MeetingRecord) -> Result<Vec<PathBuf>, String> {
-    let directory = meeting_dir(&record.id)?.join("chunks");
-    fs::create_dir_all(&directory).map_err(|error| format!("创建分片目录失败：{error}"))?;
-    crate::paths::harden_private_dir(&directory)?;
-    let mut paths = Vec::new();
-    let mut chunks = Vec::new();
-    let offset = record.live.processed_samples.min(record.recorded_samples);
-    for (index, (relative_start, count)) in chunk_ranges(record.recorded_samples - offset)
-        .into_iter()
-        .enumerate()
-    {
-        let start = offset + relative_start;
-        let stem = if offset == 0 {
-            format!("chunk-{index:04}")
-        } else {
-            format!("tail-{offset}-{index:04}")
-        };
-        let path = directory.join(format!("{stem}.wav"));
-        let result_path = path.with_extension("json");
-        let cached_result =
-            crate::shell_fs::read_regular_file_bounded(&result_path, MAX_API_RESPONSE_BYTES as u64)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<AsrResponse>(&bytes).ok())
-                .is_some();
-        if !cached_result && !path.is_file() {
-            create_wav_slice(Path::new(&record.audio_path), &path, start, count)?;
-        }
-        paths.push(path);
-        chunks.push(MeetingChunk {
-            index,
-            start: start as f64 / SAMPLE_RATE as f64,
-            end: (start + count) as f64 / SAMPLE_RATE as f64,
-            status: if cached_result {
-                "completed".into()
-            } else {
-                "pending".into()
-            },
-            trace_id: None,
-            error: None,
-        });
-    }
-    record.chunks = chunks;
-    Ok(paths)
-}
-
-fn asr_endpoint(base_url: &str) -> String {
-    let base = base_url.trim_end_matches('/');
-    if base.ends_with("/v1") {
-        format!("{base}/speech_to_text")
-    } else {
-        format!("{base}/v1/speech_to_text")
-    }
-}
-
-fn probe_confirms_speech_endpoint(status: reqwest::StatusCode, body: &str) -> bool {
-    if status.is_success() {
-        return serde_json::from_str::<serde_json::Value>(body)
-            .ok()
-            .is_some_and(|value| value.get("text").is_some() || value.get("segments").is_some());
-    }
-    if status != reqwest::StatusCode::BAD_REQUEST
-        && status != reqwest::StatusCode::UNPROCESSABLE_ENTITY
-    {
-        return false;
-    }
-    let message = body.to_ascii_lowercase();
-    message.contains("file")
-        && (message.contains("missing")
-            || message.contains("required")
-            || message.contains("缺少")
-            || message.contains("必填")
-            || message.contains("未提供"))
-}
-
-/// Check the actual Speech-to-Text route with the selected connection's key.
-/// No recording or sample audio is sent during this check. Both personal and
-/// organization connections use this path, regardless of provider branding.
-#[tauri::command]
-pub async fn meeting_check_connection(model_id: String, provider_id: String) -> Result<(), String> {
-    let access = crate::providers::meeting_provider_access(&model_id, &provider_id)?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| format!("创建转写接口检测请求失败：{error}"))?;
-    let form = reqwest::multipart::Form::new()
-        .text("model", "asr-1.0")
-        .text("response_format", "verbose_json");
-    let response = client
-        .post(asr_endpoint(&access.base_url))
-        .bearer_auth(&access.api_key)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|error| format!("无法连接转写接口：{error}"))?;
-    let status = response.status();
-    let body = String::from_utf8_lossy(&response_bytes_bounded(response).await?).into_owned();
-    if probe_confirms_speech_endpoint(status, &body) {
-        return Ok(());
-    }
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Err("转写接口拒绝当前 API Key，请检查凭据和语音权限".into());
-    }
-    if status == reqwest::StatusCode::NOT_FOUND {
-        return Err("当前连接没有 /speech_to_text 转写接口，请选择支持该接口的连接".into());
-    }
-    if status.is_redirection() {
-        return Err("转写接口返回重定向，请直接配置最终地址".into());
-    }
-    let detail = body.chars().take(200).collect::<String>();
-    Err(format!("转写接口检测失败（{status}）：{detail}"))
-}
-
 async fn response_bytes_bounded(response: reqwest::Response) -> Result<Vec<u8>, String> {
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
@@ -800,122 +751,6 @@ async fn response_bytes_bounded(response: reqwest::Response) -> Result<Vec<u8>, 
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
-}
-
-async fn transcribe_chunk(
-    client: &reqwest::Client,
-    endpoint: &str,
-    api_key: &str,
-    path: &Path,
-) -> Result<AsrResponse, String> {
-    let bytes = fs::read(path).map_err(|error| format!("读取音频分片失败：{error}"))?;
-    transcribe_bytes(client, endpoint, api_key, bytes).await
-}
-
-async fn transcribe_bytes(
-    client: &reqwest::Client,
-    endpoint: &str,
-    api_key: &str,
-    bytes: Vec<u8>,
-) -> Result<AsrResponse, String> {
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name("meeting.wav")
-        .mime_str("audio/wav")
-        .map_err(|error| format!("构建音频请求失败：{error}"))?;
-    let form = reqwest::multipart::Form::new()
-        .text("model", "asr-1.0")
-        .text("response_format", "verbose_json")
-        .part("file", part);
-    let response = client
-        .post(endpoint)
-        .bearer_auth(api_key)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|error| format!("连接转写服务失败：{error}"))?;
-    let status = response.status();
-    let bytes = response_bytes_bounded(response).await?;
-    if !status.is_success() {
-        let detail = serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
-            .and_then(|value| {
-                value
-                    .pointer("/error/message")
-                    .and_then(serde_json::Value::as_str)
-                    .map(String::from)
-            })
-            .unwrap_or_else(|| String::from_utf8_lossy(&bytes).chars().take(300).collect());
-        return Err(format!("转写服务返回 {status}：{detail}"));
-    }
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|error| format!("解析转写服务响应失败：{error}"))?;
-    if value
-        .pointer("/base_resp/status_code")
-        .and_then(serde_json::Value::as_i64)
-        .is_some_and(|code| code != 0)
-        || value.get("error").is_some()
-    {
-        let message = value
-            .pointer("/base_resp/status_msg")
-            .or_else(|| value.pointer("/error/message"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("语音服务暂不可用");
-        return Err(format!("转写服务未完成识别：{message}"));
-    }
-    if value.get("text").is_none() && value.get("segments").is_none() {
-        return Err("转写服务未返回有效识别结果，音频片段已保留".into());
-    }
-    serde_json::from_value(value).map_err(|error| format!("解析转写服务响应失败：{error}"))
-}
-
-fn normalize_transcript(
-    chunks: &[(MeetingChunk, AsrResponse)],
-    saved: &[TranscriptSegment],
-) -> Vec<TranscriptSegment> {
-    let mut output = Vec::new();
-    let mut last_end = 0.0f64;
-    // Cached ASR ranges stay stable across retries, unlike sequential IDs.
-    // Preserve saved corrections even if a recovered earlier chunk overlaps.
-    let mut corrections: HashMap<_, _> = saved
-        .iter()
-        .map(|segment| ((segment.start.to_bits(), segment.end.to_bits()), segment))
-        .collect();
-    for (chunk, response) in chunks {
-        let fallback = if response.segments.is_empty() && !response.text.trim().is_empty() {
-            vec![AsrSegment {
-                start: 0.0,
-                end: (chunk.end - chunk.start).max(0.0),
-                speaker: Some("S1".into()),
-                text: response.text.clone(),
-            }]
-        } else {
-            Vec::new()
-        };
-        for segment in response.segments.iter().chain(fallback.iter()) {
-            let start = chunk.start + segment.start;
-            let end = chunk.start + segment.end;
-            let correction = corrections.remove(&(start.to_bits(), end.to_bits()));
-            // A two-second overlap protects words at a cut. Discard contained
-            // ASR duplicates unless they carry saved corrections. Overlapping
-            // speech remains editable rather than being silently truncated.
-            if (end <= last_end + 0.05 && correction.is_none()) || segment.text.trim().is_empty() {
-                continue;
-            }
-            output.push(TranscriptSegment {
-                id: output.len(),
-                start,
-                end,
-                speaker: correction
-                    .map(|saved| saved.speaker.clone())
-                    .unwrap_or_else(|| segment.speaker.clone().unwrap_or_else(|| "S1".into())),
-                text: correction
-                    .map(|saved| saved.text.clone())
-                    .unwrap_or_else(|| segment.text.trim().to_string()),
-            });
-            last_end = last_end.max(end);
-        }
-    }
-    output
 }
 
 fn format_time(seconds: f64) -> String {
@@ -935,7 +770,11 @@ fn transcript_as_text(segments: &[TranscriptSegment]) -> String {
             format!(
                 "[{}] {}: {}",
                 format_time(segment.start),
-                segment.speaker,
+                if segment.speaker.is_empty() {
+                    "说话人未确定"
+                } else {
+                    &segment.speaker
+                },
                 segment.text
             )
         })
@@ -956,51 +795,86 @@ fn visible_completion_text(value: &str) -> &str {
 
 async fn chat_completion(
     client: &reqwest::Client,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
+    access: &crate::providers::InlineModelAccess,
     system: &str,
     user: &str,
 ) -> Result<String, String> {
-    let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let response = client
-        .post(endpoint)
-        .bearer_auth(api_key)
-        .json(&serde_json::json!({
-            "model": model,
+    let body = match access.api_backend.as_str() {
+        "responses" => serde_json::json!({
+            "model": access.remote_model_id, "instructions": system, "input": user,
+            "max_output_tokens": 4096, "stream": false,
+        }),
+        "messages" => serde_json::json!({
+            "model": access.remote_model_id, "system": system, "max_tokens": 4096,
+            "messages": [{ "role": "user", "content": user }], "stream": false,
+        }),
+        _ => serde_json::json!({
+            "model": access.remote_model_id,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ],
-            "temperature": 0.2,
-            "stream": false
-        }))
+            "stream": false,
+        }),
+    };
+    let response = access
+        .authorize(client.post(&access.endpoint).json(&body))
         .send()
         .await
-        .map_err(|error| format!("请求会议纪要模型失败：{error}"))?;
+        .map_err(|_| "无法连接默认会议纪要模型")?;
     let status = response.status();
-    let bytes = response_bytes_bounded(response).await?;
     if !status.is_success() {
-        let detail = String::from_utf8_lossy(&bytes)
-            .chars()
-            .take(400)
-            .collect::<String>();
-        return Err(format!("会议纪要模型返回 {status}：{detail}"));
+        return Err(format!("默认会议纪要模型返回 HTTP {status}"));
     }
+    let bytes = response_bytes_bounded(response).await?;
     let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|error| format!("解析会议纪要响应失败：{error}"))?;
-    value
-        .pointer("/choices/0/message/content")
-        .and_then(serde_json::Value::as_str)
-        .map(visible_completion_text)
-        .filter(|value| !value.is_empty())
-        .map(String::from)
-        .ok_or("纪要模型没有返回文本".into())
+        serde_json::from_slice(&bytes).map_err(|_| "会议纪要模型返回了无效响应")?;
+    check_minutes_response_complete(&value, &access.api_backend)?;
+    let text = access
+        .response_text(&value)
+        .ok_or("会议纪要模型没有返回文本")?;
+    let visible = visible_completion_text(&text);
+    if visible.is_empty() || value.get("error").is_some_and(|error| !error.is_null()) {
+        return Err("会议纪要模型没有返回文本".into());
+    }
+    if access.api_key.is_empty() {
+        Ok(visible.to_owned())
+    } else {
+        Ok(visible.replace(&access.api_key, "[REDACTED]"))
+    }
+}
+
+fn check_minutes_response_complete(value: &serde_json::Value, backend: &str) -> Result<(), String> {
+    let incomplete = match backend {
+        "responses" => value["status"]
+            .as_str()
+            .is_some_and(|status| status != "completed"),
+        "messages" => matches!(
+            value["stop_reason"].as_str(),
+            Some(
+                "max_tokens"
+                    | "model_context_window_exceeded"
+                    | "pause_turn"
+                    | "refusal"
+                    | "tool_use"
+            )
+        ),
+        _ => matches!(
+            value
+                .pointer("/choices/0/finish_reason")
+                .and_then(serde_json::Value::as_str),
+            Some("length" | "content_filter" | "tool_calls" | "function_call")
+        ),
+    };
+    if incomplete {
+        return Err("纪要模型未完成输出，请重试或在设置中更换默认模型".into());
+    }
+    Ok(())
 }
 
 async fn generate_minutes_text(
     client: &reqwest::Client,
-    access: &crate::providers::MeetingProviderAccess,
+    access: &crate::providers::InlineModelAccess,
     title: &str,
     transcript: &str,
 ) -> Result<String, String> {
@@ -1008,15 +882,7 @@ async fn generate_minutes_text(
     let groups = split_chars(transcript, SUMMARY_GROUP_CHARS);
     if groups.len() == 1 {
         let prompt = format!("根据下面的会议原文生成简洁 Markdown 纪要，不重复标题。只包含：## 会议摘要；## 结论与待办（仅写原文明确的负责人和时间，缺少则待确认）；存在未决问题时增加 ## 待确认。短录音不填充模板。保留原文中真实的 [HH:MM:SS] 依据，不编造时间。\n会议：{title}\n<transcript>\n{transcript}\n</transcript>");
-        return chat_completion(
-            client,
-            &access.base_url,
-            &access.api_key,
-            &access.remote_model_id,
-            system,
-            &prompt,
-        )
-        .await;
+        return chat_completion(client, access, system, &prompt).await;
     }
     let mut interim = Vec::new();
     for (index, group) in groups.iter().enumerate() {
@@ -1026,17 +892,7 @@ async fn generate_minutes_text(
             groups.len(),
             group
         );
-        interim.push(
-            chat_completion(
-                client,
-                &access.base_url,
-                &access.api_key,
-                &access.remote_model_id,
-                system,
-                &prompt,
-            )
-            .await?,
-        );
+        interim.push(chat_completion(client, access, system, &prompt).await?);
     }
     let synthesis = format!(
         "请将以下分段摘要合并为简洁、可直接使用的 Markdown 会议纪要。不要重复文档标题。包含：## 会议摘要；## 结论与待办（任务及原文明确的负责人、截止时间）；仅存在未决问题时增加 ## 待确认。短录音只写有依据的内容，不要填充模板。未明确的负责人或时间标记“待确认”。保留真实的 [HH:MM:SS] 时间依据，不得编造时间。\n\n标题：{title}\n\n<partial_summaries>\n{}\n</partial_summaries>",
@@ -1047,15 +903,7 @@ async fn generate_minutes_text(
             .collect::<Vec<_>>()
             .join("\n\n")
     );
-    chat_completion(
-        client,
-        &access.base_url,
-        &access.api_key,
-        &access.remote_model_id,
-        system,
-        &synthesis,
-    )
-    .await
+    chat_completion(client, access, system, &synthesis).await
 }
 
 fn split_chars(value: &str, limit: usize) -> Vec<String> {
@@ -1086,211 +934,227 @@ fn api_client() -> Result<reqwest::Client, String> {
         .map_err(|error| format!("创建会议服务客户端失败：{error}"))
 }
 
-fn processing_provider(
-    record: &mut MeetingRecord,
-    model_id: Option<String>,
-    provider_id: Option<String>,
-) -> Result<crate::providers::MeetingProviderAccess, String> {
-    let (model_id, provider_id) = match (model_id, provider_id) {
-        (None, None) => (record.model_id.clone(), record.provider_id.clone()),
-        (Some(model), Some(provider))
-            if !model.trim().is_empty() && !provider.trim().is_empty() =>
-        {
-            (model.trim().to_string(), provider.trim().to_string())
+async fn process_transcript(record: &mut MeetingRecord, models: PathBuf) -> Result<(), String> {
+    record.live.processed_samples = covered_samples(record);
+    if record.status == "failed"
+        && record.transcript.is_empty()
+        && record.live.processed_samples == record.recorded_samples
+    {
+        record.live = live::LiveProgress::default();
+        record.speakers = speech::Speakers::default();
+    }
+    // The cursor now owns the remaining work, even if a subsequent retry fails.
+    record.chunks.clear();
+    record.status = "transcribing".into();
+    record.error = None;
+    save_meeting(record)?;
+    let mut preserved: Vec<_> = record
+        .transcript
+        .iter()
+        .map(|segment| {
+            (
+                seconds_to_samples(segment.start),
+                seconds_to_samples(segment.end),
+            )
+        })
+        .filter(|(from, to)| to > from && *to > record.live.processed_samples)
+        .collect();
+    preserved.sort_unstable();
+    let mut preserved = preserved.into_iter().peekable();
+    let mut unsaved_windows = 0;
+    while record.live.processed_samples < record.recorded_samples {
+        let start = record.live.processed_samples;
+        // A legacy batch can already have preserved passages past the current
+        // cursor. Transcribe the gaps without decoding across those passages.
+        while preserved.peek().is_some_and(|&(_, end)| end <= start) {
+            preserved.next();
         }
-        _ => return Err("请完整选择会议模型及连接".into()),
-    };
-    // Validate first: a deleted/expired connection must not erase corrections
-    // or replace the saved binding. Both processing commands hold the job guard.
-    let access = crate::providers::meeting_provider_access(&model_id, &provider_id)?;
-    record.model_id = model_id;
-    record.provider_id = provider_id;
+        let mut limit = record.recorded_samples;
+        if let Some(&(from, to)) = preserved.peek() {
+            if from <= start {
+                record.live.processed_samples = to.min(limit);
+                continue;
+            }
+            limit = limit.min(from);
+        }
+        let end = start + (limit - start).min(u64::from(SAMPLE_RATE) * 8);
+        match live::infer_window(&record.id, models.clone(), start, end).await {
+            Ok(window) => {
+                if record.minutes.is_some() {
+                    record.minutes_stale = true;
+                }
+                speech::append_window(record, start, end, window);
+            }
+            Err(error) => {
+                record.status = "partial".into();
+                record.error = Some(error.clone());
+                record.live.error = Some(error.clone());
+                record.transcript_text = Some(transcript_as_text(&record.transcript));
+                record.updated_at = now_millis();
+                save_meeting_content(record)?;
+                return Err(error);
+            }
+        }
+        unsaved_windows += 1;
+        if unsaved_windows == 4 {
+            record.transcript_text = Some(transcript_as_text(&record.transcript));
+            record.updated_at = now_millis();
+            save_meeting_content(record)?;
+            unsaved_windows = 0;
+        }
+    }
+    record.live.error = None;
+    record.transcript_text = Some(transcript_as_text(&record.transcript));
+    record.updated_at = now_millis();
+    record.status = "transcribed".into();
+    if record.transcript.is_empty() {
+        let error = "录音中未识别到可用语音，请检查录音内容或麦克风".to_string();
+        record.status = "failed".into();
+        record.error = Some(error.clone());
+        save_meeting(record)?;
+        return Err(error);
+    }
+    save_meeting_content(record)
+}
+
+pub(crate) fn preload_speech(app: &tauri::AppHandle) {
+    if let Ok(models) = speech::model_directory(app) {
+        speech::preload(models);
+    }
+}
+
+fn resolve_minutes_target(
+    app: &tauri::AppHandle,
+    state: &crate::commands::AppState,
+) -> Result<(MeetingMinutesTarget, crate::providers::InlineModelAccess), String> {
+    let revision = crate::providers::model_config_revision();
+    let model_id = crate::commands::meeting_default_model_id(app, state)?;
+    let access = crate::providers::inline_model_access(&model_id)
+        .map_err(|error| error.replace("Tab 模型", "默认会议纪要模型"))?;
+    if revision != crate::providers::model_config_revision() {
+        return Err("默认模型配置正在更新，请重新确认纪要接收方".into());
+    }
+    let endpoint = url::Url::parse(&access.endpoint).map_err(|_| "默认纪要模型地址无效")?;
+    let recipient = endpoint.origin().ascii_serialization();
+    Ok((
+        MeetingMinutesTarget {
+            model_id,
+            recipient,
+            revision,
+        },
+        access,
+    ))
+}
+
+#[tauri::command]
+pub fn meeting_minutes_target(
+    app: tauri::AppHandle,
+    state: State<'_, crate::commands::AppState>,
+) -> Result<MeetingMinutesTarget, String> {
+    resolve_minutes_target(&app, &state).map(|(target, _)| target)
+}
+
+fn confirmed_minutes_access(
+    expected: &MeetingMinutesTarget,
+    resolved: Result<(MeetingMinutesTarget, crate::providers::InlineModelAccess), String>,
+) -> Result<crate::providers::InlineModelAccess, String> {
+    let (target, access) = resolved?;
+    if &target != expected {
+        return Err("默认纪要模型或连接已变更，请重新确认接收方后生成纪要".into());
+    }
     Ok(access)
+}
+
+async fn summarize(
+    record: &mut MeetingRecord,
+    access: Result<crate::providers::InlineModelAccess, String>,
+) -> Result<(), String> {
+    let transcript = record
+        .transcript_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+        .ok_or("当前会议还没有可用的转写文本")?;
+    record.status = "summarizing".into();
+    record.error = None;
+    record.updated_at = now_millis();
+    save_meeting(record)?;
+
+    let result = async {
+        let access = access?;
+        generate_minutes_text(&api_client()?, &access, &record.title, transcript).await
+    }
+    .await;
+
+    record.updated_at = now_millis();
+    match result {
+        Ok(minutes) => {
+            record.previous_minutes = record.minutes.replace(minutes);
+            record.minutes_stale = false;
+            record.status = "completed".into();
+            if let Err(error) = save_meeting_content(record) {
+                retain_processing_failure(&record.id, "transcribed", &error);
+                return Err(error);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            record.status = "transcribed".into();
+            record.error = Some(error.clone());
+            save_meeting(record)?;
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn meeting_process(
+    app: tauri::AppHandle,
+    state: State<'_, crate::commands::AppState>,
     meeting_id: String,
-    model_id: Option<String>,
-    provider_id: Option<String>,
+    auto_minutes: Option<bool>,
 ) -> Result<MeetingRecord, String> {
+    let _request = live::RequestGuard::acquire(&meeting_id)?;
     let _job = MeetingJobGuard::acquire(&meeting_id)?;
     let mut record = read_meeting(&meeting_id)?;
     if record.recorded_samples == 0 {
         return Err("会议没有可转写的录音".into());
     }
-    if matches!(record.status.as_str(), "recording" | "paused") {
+    if matches!(record.status.as_str(), "recording" | "paused" | "importing") {
         return Err("请先结束录音，再处理完整纪要".into());
     }
-    let provider = match processing_provider(&mut record, model_id, provider_id) {
-        Ok(provider) => provider,
-        Err(error) => {
-            if record.status != "completed" {
-                record.error = Some(error.clone());
-                save_meeting(&record)?;
-            }
-            return Err(error);
-        }
+    let transcript_result = match speech::model_directory(&app) {
+        Ok(models) => process_transcript(&mut record, models).await,
+        Err(error) => Err(error),
     };
-    record.status = "transcribing".into();
-    record.error = None;
-    // Keep the last durable transcript while processing; a crash or failure
-    // must not erase saved corrections before a replacement is persisted.
-    if record.minutes.is_some() {
-        record.minutes_stale = true;
-    }
-    let paths = prepare_chunks(&mut record)?;
-    save_meeting(&record)?;
-
-    let client = api_client()?;
-    let endpoint = asr_endpoint(&provider.base_url);
-    let mut completed = Vec::new();
-    let mut pending = Vec::new();
-    for (index, path) in paths.iter().enumerate() {
-        let result_path = path.with_extension("json");
-        if result_path.is_file() {
-            let cached = crate::shell_fs::read_regular_file_bounded(
-                &result_path,
-                MAX_API_RESPONSE_BYTES as u64,
-            )
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<AsrResponse>(&bytes).ok());
-            if let Some(response) = cached {
-                record.chunks[index].status = "completed".into();
-                record.chunks[index].trace_id.clone_from(&response.trace_id);
-                completed.push((record.chunks[index].clone(), response));
-                continue;
-            }
-        }
-        record.chunks[index].status = "processing".into();
-        record.chunks[index].error = None;
-        pending.push((index, path.clone()));
-    }
-    save_meeting(&record)?;
-
-    let mut jobs = futures::stream::iter(pending.into_iter().map(|(index, path)| {
-        let client = client.clone();
-        let endpoint = endpoint.clone();
-        let api_key = provider.api_key.clone();
-        async move {
-            let result = transcribe_chunk(&client, &endpoint, &api_key, &path).await;
-            (index, path, result)
-        }
-    }))
-    .buffer_unordered(2);
-    let mut first_error = None;
-    while let Some((index, path, result)) = jobs.next().await {
-        let result_path = path.with_extension("json");
-        match result {
-            Ok(response) => {
-                let encoded = serde_json::to_vec(&response)
-                    .map_err(|error| format!("保存分片转写失败：{error}"))?;
-                crate::paths::write_private_file(&result_path, &encoded)?;
-                let _ = fs::remove_file(&path);
-                record.chunks[index].status = "completed".into();
-                record.chunks[index].trace_id.clone_from(&response.trace_id);
-                completed.push((record.chunks[index].clone(), response));
-                save_meeting(&record)?;
-            }
-            Err(error) => {
-                record.chunks[index].status = "failed".into();
-                record.chunks[index].error = Some(error.clone());
-                first_error.get_or_insert_with(|| format!("第 {} 段转写失败：{error}", index + 1));
-                save_meeting(&record)?;
-            }
-        }
-    }
-    completed.sort_by_key(|(chunk, _)| chunk.index);
-    let boundary =
-        record.live.processed_samples.min(record.recorded_samples) as f64 / SAMPLE_RATE as f64;
-    let mut merged: Vec<_> = record
-        .transcript
-        .iter()
-        .filter(|segment| segment.end <= boundary + 0.05)
-        .cloned()
-        .collect();
-    merged.extend(normalize_transcript(&completed, &record.transcript));
-    for (id, segment) in merged.iter_mut().enumerate() {
-        segment.id = id;
-    }
-    record.transcript = merged;
-    let transcript = transcript_as_text(&record.transcript);
-    record.transcript_text = Some(transcript.clone());
-    if let Some(error) = first_error {
-        record.status = "partial".into();
-        record.error = Some(error.clone());
-        record.updated_at = now_millis();
-        save_meeting(&record)?;
+    if let Err(error) = transcript_result {
+        retain_processing_failure(&record.id, "partial", &error);
         return Err(error);
     }
-    if transcript.trim().is_empty() {
-        let error = "录音中未识别到可用语音，请检查录音内容或麦克风".to_string();
-        record.status = "failed".into();
-        record.error = Some(error.clone());
-        record.updated_at = now_millis();
-        save_meeting(&record)?;
-        return Err(error);
-    }
-    record.status = "summarizing".into();
-    record.updated_at = now_millis();
-    save_meeting(&record)?;
-    match generate_minutes_text(&client, &provider, &record.title, &transcript).await {
-        Ok(minutes) => {
-            record.previous_minutes = record.minutes.clone();
-            record.minutes = Some(minutes);
-            record.minutes_stale = false;
-            record.live.processed_samples = record.recorded_samples;
-            record.status = "completed".into();
-            record.error = None;
-        }
-        Err(error) => {
-            record.status = "transcribed".into();
-            record.error = Some(error.clone());
-            record.updated_at = now_millis();
-            save_meeting(&record)?;
-            return Err(error);
+    if auto_minutes == Some(true) {
+        if let Some(target) = &record.auto_minutes_target {
+            let access = confirmed_minutes_access(target, resolve_minutes_target(&app, &state));
+            summarize(&mut record, access).await?;
         }
     }
-    record.updated_at = now_millis();
-    save_meeting(&record)?;
     Ok(record)
 }
 
 #[tauri::command]
 pub async fn meeting_regenerate_minutes(
+    app: tauri::AppHandle,
+    state: State<'_, crate::commands::AppState>,
     meeting_id: String,
-    model_id: Option<String>,
-    provider_id: Option<String>,
+    target: MeetingMinutesTarget,
 ) -> Result<MeetingRecord, String> {
     let _job = MeetingJobGuard::acquire(&meeting_id)?;
     let mut record = read_meeting(&meeting_id)?;
-    let transcript = record
-        .transcript_text
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or("当前会议还没有可用的转写文本")?;
-    let provider = processing_provider(&mut record, model_id, provider_id)?;
-    record.status = "summarizing".into();
-    record.error = None;
-    save_meeting(&record)?;
-    let client = api_client()?;
-    let minutes = match generate_minutes_text(&client, &provider, &record.title, &transcript).await
+    if matches!(record.status.as_str(), "recording" | "paused" | "importing")
+        || record.live.processed_samples < record.recorded_samples
     {
-        Ok(minutes) => minutes,
-        Err(error) => {
-            record.status = "transcribed".into();
-            record.error = Some(error.clone());
-            record.updated_at = now_millis();
-            save_meeting(&record)?;
-            return Err(error);
-        }
-    };
-    record.previous_minutes = record.minutes.clone();
-    record.minutes = Some(minutes);
-    record.minutes_stale = false;
-    record.status = "completed".into();
-    record.updated_at = now_millis();
-    save_meeting(&record)?;
+        return Err("请先完成录音转写，再生成会议纪要".into());
+    }
+    let access = confirmed_minutes_access(&target, resolve_minutes_target(&app, &state));
+    summarize(&mut record, access).await?;
     Ok(record)
 }
 
@@ -1304,8 +1168,9 @@ pub fn meeting_update(
 ) -> Result<MeetingRecord, String> {
     let _job = MeetingJobGuard::acquire(&meeting_id)?;
     let mut record = read_meeting(&meeting_id)?;
-    if let Some(base) = expected_content {
-        check_edit_base(&record, &base)?;
+    let updating_content = transcript.is_some() || minutes.is_some();
+    if let Some(base) = &expected_content {
+        check_edit_base(&record, base)?;
     }
     if let Some(title) = title {
         record.title = safe_title(&title);
@@ -1319,16 +1184,16 @@ pub fn meeting_update(
             segment.text = segment.text.trim().chars().take(10_000).collect();
             segment.speaker = segment.speaker.trim().chars().take(80).collect();
         }
+        let renames = expected_content
+            .as_ref()
+            .map_or(&[][..], |base| base.speaker_renames.as_slice());
+        record
+            .speakers
+            .preserve_names(&record.transcript, &transcript, renames);
         record.transcript = transcript;
         record.transcript_text = Some(transcript_as_text(&record.transcript));
         record.minutes_stale = record.minutes.is_some();
-        record.status = if record.status == "partial"
-            || record.status == "transcribing"
-            || record
-                .chunks
-                .iter()
-                .any(|chunk| chunk.status != "completed")
-        {
+        record.status = if record.live.processed_samples < record.recorded_samples {
             "partial"
         } else {
             "transcribed"
@@ -1341,12 +1206,19 @@ pub fn meeting_update(
         }
         record.previous_minutes = record.minutes.clone();
         record.minutes = Some(minutes);
-        record.minutes_stale = false;
-        record.status = "completed".into();
-        record.error = None;
+        let unfinished = record.live.processed_samples < record.recorded_samples;
+        record.minutes_stale = unfinished;
+        if !unfinished {
+            record.status = "completed".into();
+            record.error = None;
+        }
     }
     record.updated_at = now_millis();
-    save_meeting(&record)?;
+    if updating_content {
+        save_meeting_content(&record)?;
+    } else {
+        save_meeting(&record)?;
+    }
     Ok(record)
 }
 
@@ -1550,6 +1422,8 @@ mod tests {
             live: live::LiveProgress::default(),
             minutes_stale: false,
             previous_minutes: None,
+            auto_minutes_target: None,
+            speakers: speech::Speakers::default(),
         }
     }
 
@@ -1649,42 +1523,6 @@ mod tests {
     }
 
     #[test]
-    fn saved_corrections_survive_recovered_earlier_and_overlapping_chunks() {
-        let saved = vec![TranscriptSegment {
-            id: 0,
-            start: 1.0,
-            end: 2.0,
-            speaker: "张三".into(),
-            text: "已保存的人工校对".into(),
-        }];
-        let chunk = |index, start, end| MeetingChunk {
-            index,
-            start,
-            end,
-            status: "completed".into(),
-            trace_id: None,
-            error: None,
-        };
-        let response = |text: &str| AsrResponse {
-            text: text.into(),
-            segments: vec![],
-            trace_id: None,
-        };
-        for prefix_end in [1.0, 3.0] {
-            let chunks = vec![
-                (chunk(0, 0.0, prefix_end), response("新恢复的前段")),
-                (chunk(1, 1.0, 2.0), response("缓存中的未校对原文")),
-            ];
-            let result = normalize_transcript(&chunks, &saved);
-            assert_eq!(result.len(), 2);
-            assert_eq!(result[0].text, "新恢复的前段");
-            assert_eq!(result[1].id, 1);
-            assert_eq!(result[1].text, saved[0].text);
-            assert_eq!(result[1].speaker, saved[0].speaker);
-        }
-    }
-
-    #[test]
     fn edited_minutes_survive_a_native_record_reload() {
         let directory = tempfile::tempdir().unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -1722,6 +1560,7 @@ mod tests {
         let stale = MeetingEditBase {
             transcript: record.transcript.clone(),
             minutes: record.minutes.clone(),
+            speaker_renames: Vec::new(),
         };
         let error = meeting_update(
             record.id.clone(),
@@ -1736,6 +1575,13 @@ mod tests {
             read_meeting(&record.id).unwrap().minutes.as_deref(),
             Some(markdown)
         );
+        let mut oversized = updated;
+        oversized.transcript_text = Some("x".repeat(MAX_MANIFEST_BYTES));
+        assert!(save_meeting(&oversized).unwrap_err().contains("存储上限"));
+        assert_eq!(
+            read_meeting(&record.id).unwrap().minutes.as_deref(),
+            Some(markdown)
+        );
         assert!(meeting_update(record.id.clone(), None, None, Some(" ".into()), None).is_err());
         assert_eq!(
             read_meeting(&record.id).unwrap().minutes.as_deref(),
@@ -1744,197 +1590,236 @@ mod tests {
     }
 
     #[test]
-    fn invalid_processing_model_keeps_saved_minutes_and_binding() {
-        let directory = tempfile::tempdir().unwrap();
+    fn local_audio_fixture_with_live_and_history_recovery() {
+        let Ok(fixture) = std::env::var("ECHO_MEETING_TEST_WAV") else {
+            return;
+        };
+        let home = tempfile::tempdir().unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "meeting_minutes::tests::processing_model_selection_child",
+                "meeting_minutes::tests::local_audio_fixture_child",
                 "--nocapture",
             ])
-            .env("ECHO_AGENT_HOME", directory.path())
-            .env("ECHO_MEETING_MODEL_CHILD", "1")
+            .env("ECHO_AGENT_HOME", home.path())
+            .env("ECHO_MEETING_LOCAL_CHILD", "1")
+            .env("ECHO_MEETING_TEST_WAV", fixture)
+            .env("ECHO_AGENT_ALLOW_INSECURE_LOOPBACK_HTTP", "1")
+            .env("NO_PROXY", "127.0.0.1")
             .output()
             .unwrap();
         assert!(
             output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
     }
 
     #[tokio::test]
-    async fn processing_model_selection_child() {
-        if std::env::var("ECHO_MEETING_MODEL_CHILD").as_deref() != Ok("1") {
+    async fn local_audio_fixture_child() {
+        if std::env::var("ECHO_MEETING_LOCAL_CHILD").as_deref() != Ok("1") {
             return;
         }
-        let mut record = test_record(meetings_root().join("录音.wav"));
-        record.recorded_samples = SAMPLE_RATE as u64;
-        record.status = "completed".into();
-        record.transcript_text = Some("已校对的转写".into());
-        record.minutes = Some("# 已校对的纪要".into());
+        let models = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/meeting-speech");
+        let input = PathBuf::from(std::env::var_os("ECHO_MEETING_TEST_WAV").unwrap());
+        let mut record =
+            meeting_create("中文多人离线验收".into(), Some("microphone".into()), None).unwrap();
+        let path = Path::new(&record.audio_path);
+        let total = decode_audio_to_wav(&input, path).unwrap();
+        let live_samples = u64::from(SAMPLE_RATE) * 4;
+        assert!(total > live_samples);
+        record.recorded_samples = live_samples;
         save_meeting(&record).unwrap();
-        let original = serde_json::to_string(&read_meeting(&record.id).unwrap()).unwrap();
-        assert!(meeting_process(
-            record.id.clone(),
-            Some("missing/MiniMax".into()),
-            Some("missing".into())
-        )
-        .await
-        .is_err());
-        assert!(meeting_regenerate_minutes(
-            record.id.clone(),
-            Some("missing/MiniMax".into()),
-            Some("missing".into())
-        )
-        .await
-        .is_err());
-        assert!(
-            meeting_process(record.id.clone(), Some("test/MiniMax".into()), None)
-                .await
-                .unwrap_err()
-                .contains("完整选择")
-        );
-        assert_eq!(
-            serde_json::to_string(&read_meeting(&record.id).unwrap()).unwrap(),
-            original
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn partial_transcript_is_saved_even_when_a_remaining_chunk_fails() {
-        let directory = tempfile::tempdir().unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "meeting_minutes::tests::partial_transcript_persistence_child",
-                "--nocapture",
-            ])
-            .env("ECHO_AGENT_HOME", directory.path())
-            .env("ECHO_MEETING_PARTIAL_CHILD", "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn partial_transcript_persistence_child() {
-        use std::os::unix::fs::PermissionsExt;
-        if std::env::var("ECHO_MEETING_PARTIAL_CHILD").as_deref() != Ok("1") {
-            return;
-        }
-        // Exercise production processing with a real cached first response and
-        // an unreadable second chunk. No model or ASR network request is made.
-        let home = crate::paths::echo_agent_home_dir();
-        crate::paths::write_private_file(
-            &home.join("config.toml"),
-            br#"
-            [model_providers.test]
-            base_url = "http://127.0.0.1:9/v1"
-            api_backend = "chat_completions"
-            auth_scheme = "bearer"
-            api_key = "isolated-test-key"
-            echoagent_allow_insecure_http = true
-            [model."test/MiniMax"]
-            model_provider = "test"
-            model = "MiniMax"
-        "#,
-        )
-        .unwrap();
-        let mut record = test_record(home.join("audio.wav"));
-        // The original connection was deleted. Explicitly reselecting a valid
-        // connection must recover this existing recording, not require import.
-        record.model_id = "deleted/MiniMax".into();
-        record.provider_id = "deleted".into();
-        record.recorded_samples = SAMPLE_RATE as u64 * 421;
-        record.duration_seconds = 421.0;
-        record.status = "recorded".into();
-        let mut wav = File::create(&record.audio_path).unwrap();
-        write_wav_header(&mut wav, (record.recorded_samples * 2) as u32).unwrap();
-        wav.set_len(WAV_HEADER_BYTES + record.recorded_samples * 2)
-            .unwrap();
-        drop(wav);
-        save_meeting(&record).unwrap();
-        let chunks = meeting_dir(&record.id).unwrap().join("chunks");
-        fs::create_dir_all(&chunks).unwrap();
-        crate::paths::write_private_file(
-            &chunks.join("chunk-0000.json"),
-            br#"{"text":"completed chunk text","segments":[],"trace_id":null}"#,
-        )
-        .unwrap();
-        let failing_chunk = chunks.join("chunk-0001.wav");
-        fs::write(&failing_chunk, b"unreadable chunk").unwrap();
-        fs::set_permissions(&failing_chunk, fs::Permissions::from_mode(0o000)).unwrap();
-        assert!(fs::read(&failing_chunk).is_err());
-        assert!(meeting_process(record.id.clone(), None, None)
+        let live = live::transcribe_live(record.id.clone(), false, models.clone())
             .await
-            .unwrap_err()
-            .contains("不存在"));
-        let result = meeting_process(
-            record.id.clone(),
-            Some("test/MiniMax".into()),
-            Some("test".into()),
-        )
-        .await;
-        fs::set_permissions(&failing_chunk, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(result.unwrap_err().contains("第 2 段"));
+            .unwrap();
+        assert!(!live.waiting);
+        assert!(!live.record.transcript.is_empty());
+        assert!(live.record.live.processed_samples <= live_samples);
+        let mut record = read_meeting(&record.id).unwrap();
+        let original = record.transcript[0].clone();
+        record.recorded_samples = total;
+        record.duration_seconds = total as f64 / f64::from(SAMPLE_RATE);
+        save_meeting(&record).unwrap();
+        let mut record = meeting_finish_recording(record.id).unwrap();
+        let audio = PathBuf::from(&record.audio_path);
+        let backup = audio.with_extension("backup");
+        fs::rename(&audio, &backup).unwrap();
+        assert!(process_transcript(&mut record, models.clone())
+            .await
+            .is_err());
+        fs::rename(&backup, &audio).unwrap();
+        let mut record = read_meeting(&record.id).unwrap();
+        assert_eq!(record.status, "partial");
+        assert_eq!(record.transcript[0], original);
+        let mut corrected = record.transcript.clone();
+        corrected[0].text = "录音中已校对的原文".into();
+        record =
+            meeting_update(record.id.clone(), None, Some(corrected.clone()), None, None).unwrap();
+        process_transcript(&mut record, models.clone())
+            .await
+            .unwrap();
+        assert_eq!(record.live.processed_samples, total);
+        assert_eq!(record.transcript[0].text, corrected[0].text);
+        assert_eq!(record.transcript[0].start, original.start);
+        let speakers: HashSet<_> = record
+            .transcript
+            .iter()
+            .map(|part| part.speaker.as_str())
+            .filter(|speaker| !speaker.is_empty())
+            .collect();
+        assert!(speakers.len() >= 2, "{speakers:?}");
+        assert!(record.transcript.iter().all(|part| part.start >= 0.0
+            && part.end > part.start
+            && part.end <= record.duration_seconds));
+        assert!(record
+            .transcript
+            .iter()
+            .any(|part| part.text.chars().any(|ch| ('一'..='鿿').contains(&ch))));
+        let mut edited = record.transcript.clone();
+        edited[0].speaker = "校对后的发言人".into();
+        edited[0].text = "校对后的原文".into();
+        meeting_update(record.id.clone(), None, Some(edited.clone()), None, None).unwrap();
+        let mut record = read_meeting(&record.id).unwrap();
+        process_transcript(&mut record, models).await.unwrap();
+        assert_eq!(record.transcript, edited);
+        assert!(summarize(&mut record, Err("默认模型不可用".into()))
+            .await
+            .is_err());
         let saved = read_meeting(&record.id).unwrap();
-        assert_eq!(saved.status, "partial");
-        assert_eq!(saved.model_id, "test/MiniMax");
-        assert_eq!(saved.provider_id, "test");
-        assert_eq!(saved.transcript.len(), 1);
-        assert!(saved
-            .transcript_text
-            .as_deref()
-            .unwrap()
-            .contains("completed chunk text"));
-        assert!(export_text(&saved, "transcript")
-            .unwrap()
-            .2
-            .contains("completed chunk text"));
-        assert!(chunks.join("chunk-0000.json").is_file());
-        assert_eq!(saved.chunks[1].status, "failed");
-        let mut corrected = saved.transcript.clone();
-        corrected[0].text = "保存后重试也不能丢失的校对".into();
-        corrected[0].speaker = "张三".into();
-        let edited = meeting_update(
-            saved.id.clone(),
-            None,
-            Some(corrected.clone()),
-            None,
-            Some(MeetingEditBase {
-                transcript: saved.transcript,
-                minutes: saved.minutes,
-            }),
+        assert_eq!(saved.status, "transcribed");
+        assert_eq!(saved.transcript, edited);
+        assert_eq!(saved.live.processed_samples, total);
+
+        let truncate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let server_truncate = truncate.clone();
+        let server = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(
+                move |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    assert_eq!(body["model"], "configured-chat");
+                    assert!(body["input"].as_str().unwrap().contains("校对后的原文"));
+                    axum::Json(serde_json::json!({
+                        "error": null,
+                        "status": if server_truncate.load(std::sync::atomic::Ordering::Relaxed) { "incomplete" } else { "completed" },
+                        "output": [{ "type": "message", "content": [
+                            { "type": "output_text", "text": "## 会议摘要\n本机测试纪要" }
+                        ] }]
+                    }))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+        fs::write(
+            crate::paths::echo_agent_home_dir().join("config.toml"),
+            format!(
+                r#"[models]
+default = "local/preferred"
+[model_providers.local]
+base_url = "http://{addr}/v1"
+api_key = "test-only"
+api_backend = "responses"
+[model."local/alternative"]
+model_provider = "local"
+model = "other-chat"
+[model."local/preferred"]
+model_provider = "local"
+model = "configured-chat"
+"#
+            ),
         )
         .unwrap();
+        let mut complete = saved;
+        complete.minutes = Some("现有纪要".into());
+        let access = || crate::providers::inline_model_access("local/preferred");
+        assert!(summarize(&mut complete, access()).await.is_err());
+        complete = read_meeting(&complete.id).unwrap();
+        assert_eq!(complete.status, "transcribed");
+        assert_eq!(complete.minutes.as_deref(), Some("现有纪要"));
+        truncate.store(false, std::sync::atomic::Ordering::Relaxed);
+        summarize(&mut complete, access()).await.unwrap();
+        assert_eq!(complete.transcript, edited);
+        assert_eq!(complete.status, "completed");
+        assert_eq!(complete.previous_minutes.as_deref(), Some("现有纪要"));
         assert_eq!(
-            edited.status, "partial",
-            "saving must keep the retry action available"
+            complete.minutes.as_deref(),
+            Some("## 会议摘要\n本机测试纪要")
         );
-        fs::set_permissions(&failing_chunk, fs::Permissions::from_mode(0o000)).unwrap();
-        let retry = meeting_process(edited.id.clone(), None, None).await;
-        fs::set_permissions(&failing_chunk, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(retry.unwrap_err().contains("第 2 段"));
-        assert_eq!(read_meeting(&edited.id).unwrap().transcript, corrected);
-        // A crash can leave every cache complete before the final assembly.
-        // Correcting that interrupted snapshot must still allow assembly retry.
-        let mut interrupted = read_meeting(&edited.id).unwrap();
-        interrupted.status = "transcribing".into();
-        for chunk in &mut interrupted.chunks {
-            chunk.status = "completed".into();
+        server.abort();
+    }
+
+    #[test]
+    fn legacy_coverage_requires_published_contiguous_chunks() {
+        let mut record = test_record(PathBuf::new());
+        record.status = "transcribed".into();
+        record.recorded_samples = seconds_to_samples(60.0);
+        record.live.processed_samples = seconds_to_samples(48.0);
+        record.transcript.push(TranscriptSegment {
+            id: 0,
+            start: 0.0,
+            end: 48.0,
+            speaker: String::new(),
+            text: "校对后的前半段".into(),
+        });
+        assert_eq!(covered_samples(&record), seconds_to_samples(48.0));
+        record.chunks.push(MeetingChunk {
+            index: 0,
+            start: 49.0,
+            end: 60.0,
+            status: "completed".into(),
+            trace_id: None,
+            error: None,
+        });
+        assert_eq!(covered_samples(&record), seconds_to_samples(48.0));
+        record.chunks[0].start = 48.0;
+        assert_eq!(covered_samples(&record), record.recorded_samples);
+        record.status = "transcribing".into();
+        assert_eq!(covered_samples(&record), seconds_to_samples(48.0));
+    }
+
+    #[test]
+    fn incomplete_minutes_are_rejected_for_every_protocol() {
+        use serde_json::json;
+        for (backend, response) in [
+            (
+                "responses",
+                json!({"status":"incomplete","output":[{"type":"message","content":[{"type":"output_text","text":"部分文字"}]}]}),
+            ),
+            (
+                "messages",
+                json!({"stop_reason":"max_tokens","content":[{"type":"text","text":"部分文字"}]}),
+            ),
+            (
+                "chat_completions",
+                json!({"choices":[{"finish_reason":"length","message":{"content":"部分文字"}}]}),
+            ),
+        ] {
+            assert!(crate::providers::model_response_text(&response, backend).is_some());
+            assert!(check_minutes_response_complete(&response, backend).is_err());
         }
-        save_meeting(&interrupted).unwrap();
-        let edited = meeting_update(interrupted.id, None, Some(corrected), None, None).unwrap();
-        assert_eq!(edited.status, "partial");
+    }
+
+    #[test]
+    fn confirmation_expires_when_model_destination_changes() {
+        let target = MeetingMinutesTarget {
+            model_id: "personal/model".into(),
+            recipient: "https://personal.example".into(),
+            revision: "one".into(),
+        };
+        let mut changed = target.clone();
+        changed.revision = "two".into();
+        let access = crate::providers::InlineModelAccess {
+            api_key: String::new(),
+            endpoint: "https://organization.example/v1/responses".into(),
+            remote_model_id: "model".into(),
+            api_backend: "responses".into(),
+            auth_scheme: "bearer".into(),
+            extra_headers: Vec::new(),
+        };
+        assert!(confirmed_minutes_access(&target, Ok((changed, access))).is_err());
     }
 
     #[test]
@@ -1944,30 +1829,6 @@ mod tests {
             "# 会议纪要"
         );
         assert_eq!(visible_completion_text("<think>unfinished"), "");
-    }
-
-    #[test]
-    fn speech_probe_requires_a_real_route_that_rejects_missing_audio() {
-        assert!(probe_confirms_speech_endpoint(
-            reqwest::StatusCode::BAD_REQUEST,
-            r#"{"detail":"missing required form field: file"}"#,
-        ));
-        assert!(!probe_confirms_speech_endpoint(
-            reqwest::StatusCode::UNAUTHORIZED,
-            r#"{"detail":"invalid api key"}"#,
-        ));
-        assert!(!probe_confirms_speech_endpoint(
-            reqwest::StatusCode::NOT_FOUND,
-            r#"{"detail":"Not Found"}"#,
-        ));
-        assert!(!probe_confirms_speech_endpoint(
-            reqwest::StatusCode::BAD_REQUEST,
-            r#"{"detail":"unsupported model"}"#,
-        ));
-        assert!(!probe_confirms_speech_endpoint(
-            reqwest::StatusCode::OK,
-            "<html>sign in</html>",
-        ));
     }
 
     #[test]
@@ -1987,22 +1848,5 @@ mod tests {
     #[test]
     fn timestamps_are_valid_srt() {
         assert_eq!(srt_timestamp(3661.234), "01:01:01,234");
-    }
-
-    #[test]
-    fn two_hour_recording_is_split_under_the_asr_limit_with_overlap() {
-        let ranges = chunk_ranges(SAMPLE_RATE as u64 * 60 * 60 * 2);
-        assert_eq!(ranges.len(), 18);
-        assert!(ranges
-            .iter()
-            .all(|(_, count)| *count <= CHUNK_SECONDS * SAMPLE_RATE as u64));
-        for pair in ranges.windows(2) {
-            assert_eq!(
-                pair[1].0,
-                pair[0].0 + (CHUNK_SECONDS - OVERLAP_SECONDS) * SAMPLE_RATE as u64
-            );
-        }
-        let (start, count) = ranges.last().copied().expect("at least one chunk");
-        assert_eq!(start + count, SAMPLE_RATE as u64 * 60 * 60 * 2);
     }
 }

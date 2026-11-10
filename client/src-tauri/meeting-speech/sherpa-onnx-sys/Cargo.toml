@@ -1,0 +1,12 @@
+[package]
+name = "sherpa-onnx-sys"
+version = "1.13.8"
+edition = "2021"
+license = "Apache-2.0"
+links = "sherpa-onnx"
+publish = false
+
+[features]
+default = ["static"]
+static = []
+shared = []
