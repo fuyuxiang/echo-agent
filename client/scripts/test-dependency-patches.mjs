@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { createTheiaRuntimeManifest } from "./theia-runtime-manifest.mjs";
 import { assertSupportedNodeVersion, assertSupportedNpmVersion } from "./node-runtime-version.mjs";
+import "./test-rust-audit-coverage.mjs";
 
 const require = createRequire(import.meta.url);
 const braces = require(resolve("vendor/theia-platform/security/braces"));
@@ -59,16 +60,6 @@ test("npm ci installs the reviewed deepmerge workspace for a registry version re
       assert.deepEqual(lock.packages["node_modules/deepmerge"], { resolved: "security/deepmerge", link: true });
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("dependency audit covers every tracked Rust lockfile, including the native harness", () => {
-  const result = spawnSync("git", ["ls-files", "-z", "--", "*Cargo.lock"], { encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
-  const tracked = result.stdout.split("\0").filter(Boolean).sort();
-  assert.ok(tracked.length > 0);
-  const source = readFileSync("scripts/audit-dependencies.py", "utf8");
-  const audited = [...source.matchAll(/"([^"\n]+\/Cargo\.lock)"/g)].map(match => match[1]).sort();
-  assert.deepEqual(audited, tracked);
 });
 
 test("both IDE body parsers survive late compressed tails, drain requests and preserve other consumers", () => {

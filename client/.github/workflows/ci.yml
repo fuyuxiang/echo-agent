@@ -88,7 +88,7 @@ jobs:
       - run: pnpm exec tsc --noEmit
       - run: pnpm icons:check
       - name: Require audit coverage for every Rust lockfile
-        run: node --test --test-name-pattern="dependency audit covers every tracked Rust lockfile" scripts/test-dependency-patches.mjs
+        run: node --test scripts/test-rust-audit-coverage.mjs
 
   unit:
     runs-on: ubuntu-latest
