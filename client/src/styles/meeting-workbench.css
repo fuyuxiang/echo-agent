@@ -30,6 +30,9 @@
 .meeting-workbench__notice { flex-shrink: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 9px; padding: 9px 24px; background: var(--echo-bg-secondary); font-size: .75rem; line-height: 1.6; overflow-wrap: anywhere; }
 .meeting-workbench__notice details { width: 100%; max-height: 100px; overflow: auto; }
 .meeting-workbench__notice details p { white-space: pre-wrap; }
+.meeting-workbench__notice--quality { border-inline-start: 3px solid var(--echo-status-warning); background: var(--echo-status-warning-soft); }
+.meeting-capture-issues { display: grid; gap: 6px; padding-inline-start: 1.25rem; }
+.meeting-capture-issues li button { margin-inline-start: 8px; }
 .meeting-workbench__menu { flex-shrink: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 8px 24px 12px; border-bottom: 1px solid var(--echo-border-weak); }
 .meeting-workbench .meeting-tabs { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 0 var(--echo-page-gutter); }
 .meeting-tabs > div { display: flex; align-items: center; gap: 16px; min-width: 0; }

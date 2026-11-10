@@ -22,13 +22,19 @@ describe("process lifetime meeting transcription",()=>{
     });
   });
   afterEach(()=>vi.useRealTimers());
-  it("records without a network probe, publishes incremental results, and completes after local save",async()=>{
+  it.each(["system", "both"] as const)("publishes successive native transcription results and saves in %s mode", async (mode) => {
     const {meetingRecorder}=await import("../meeting-minutes");
-    await meetingRecorder.start("录音","both");
+    await meetingRecorder.start("录音", mode);
+    expect(mocks.invoke).toHaveBeenCalledWith("meeting_capture_start", { meetingId: "live-1", mode });
     expect(mocks.invoke.mock.calls.some(([command])=>command==="meeting_check_connection")).toBe(false);
     record={...record,recordedSamples:64000,durationSeconds:4};
     await vi.advanceTimersByTimeAsync(1200);
     expect(meetingRecorder.current().meeting?.transcript[0]?.text).toBe("增量结果");
+    record = { ...record, recordedSamples: 128000, durationSeconds: 8 };
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(meetingRecorder.current()).toMatchObject({
+      active: true, paused: false, error: null, meeting: { live: { processedSamples: 128000 } },
+    });
     const saved=await meetingRecorder.stop();expect(saved.status).toBe("recorded");expect(meetingRecorder.current().active).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(mocks.invoke).toHaveBeenCalledWith("meeting_process",expect.objectContaining({meetingId:"live-1"}));
@@ -49,6 +55,28 @@ describe("process lifetime meeting transcription",()=>{
     expect(meetingRecorder.current().meeting?.live?.processedSamples).toBe(64000);
     await meetingRecorder.prepareForExit();await meetingRecorder.stop();
     expect(mocks.invoke.mock.calls.some(([command])=>command==="meeting_process")).toBe(false);
+  });
+  it("keeps newly saved capture issues when an older live transcription replies", async () => {
+    const { meetingRecorder } = await import("../meeting-minutes");
+    const invoke = mocks.invoke.getMockImplementation()!;
+    let finishLive!: (reply: unknown) => void;
+    const pendingLive = new Promise(resolve => { finishLive = resolve; });
+    mocks.invoke.mockImplementation((command, args) => command === "meeting_transcribe_live" ? pendingLive : invoke(command, args));
+    await meetingRecorder.start("混合录音", "both");
+    const earlier = { ...record, recordedSamples: 16_000, durationSeconds: 1, live: { processedSamples: 16_000 } };
+    record = { ...record, recordedSamples: 16_000, durationSeconds: 1 };
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(mocks.invoke).toHaveBeenCalledWith("meeting_transcribe_live", { meetingId: "live-1", finalize: false });
+    const captureIssues = [{ source: "system", startSample: 16_000, endSample: 17_600, occurrences: 2 }];
+    record = { ...record, recordedSamples: 32_000, durationSeconds: 2, captureIssues };
+    await vi.advanceTimersByTimeAsync(500);
+    finishLive({ record: earlier, waiting: false });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(meetingRecorder.current()).toMatchObject({
+      active: true, error: null, meeting: { captureIssues, live: { processedSamples: 16_000 } },
+    });
+    await meetingRecorder.prepareForExit();
+    expect(await meetingRecorder.stop()).toMatchObject({ status: "recorded", captureIssues });
   });
   it("does not replace a new active recording when the previous recording finishes its minutes",async()=>{
     const {meetingRecorder}=await import("../meeting-minutes");

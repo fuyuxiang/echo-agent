@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 
+use crate::meeting_capture::CaptureIssue;
+
 #[path = "meeting_audio.rs"]
 pub(crate) mod audio;
 #[path = "meeting_live.rs"]
@@ -22,13 +24,14 @@ pub(crate) mod live;
 #[path = "meeting_speech.rs"]
 mod speech;
 
-const SAMPLE_RATE: u32 = 16_000;
+pub(crate) const SAMPLE_RATE: u32 = 16_000;
 const WAV_HEADER_BYTES: u64 = 44;
 const MAX_APPEND_SAMPLES: usize = SAMPLE_RATE as usize * 15;
 pub(crate) const MAX_RECORDING_SAMPLES: u64 = SAMPLE_RATE as u64 * 60 * 60 * 24;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_API_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CAPTURE_ISSUES_PER_SOURCE: usize = 32;
 const MANIFEST_METADATA_RESERVE: usize = 64 * 1024;
 const MANIFEST_LIMIT_ERROR: &str = "会议文字已达本机存储上限。已保存的音频与文字仍可使用";
 const SUMMARY_GROUP_CHARS: usize = 12_000;
@@ -128,6 +131,8 @@ pub struct MeetingRecord {
     pub audio_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) capture_issues: Vec<CaptureIssue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_file_name: Option<String>,
     #[serde(default)]
@@ -404,6 +409,7 @@ pub fn meeting_create(
                 "microphone" | "system" | "both" | "imported"
             )
         }),
+        capture_issues: Vec::new(),
         original_file_name: None,
         transcript: Vec::new(),
         transcript_text: None,
@@ -422,21 +428,61 @@ pub fn meeting_create(
 
 #[tauri::command]
 pub fn meeting_append_pcm(meeting_id: String, samples: Vec<i16>) -> Result<MeetingRecord, String> {
-    let lock = live::write_lock(&meeting_id)?;
+    append_capture_pcm(&meeting_id, &samples, &[])
+}
+
+pub(crate) fn append_capture_pcm(
+    meeting_id: &str,
+    samples: &[i16],
+    capture_issues: &[CaptureIssue],
+) -> Result<MeetingRecord, String> {
+    let lock = live::write_lock(meeting_id)?;
     let _lock = lock.lock().map_err(|_| "录音保存状态不可用")?;
-    let _job = MeetingJobGuard::acquire(&meeting_id)?;
-    if samples.is_empty() {
-        return read_meeting(&meeting_id);
+    let _job = MeetingJobGuard::acquire(meeting_id)?;
+    if samples.is_empty() && capture_issues.is_empty() {
+        return read_meeting(meeting_id);
     }
     if samples.len() > MAX_APPEND_SAMPLES {
         return Err("单次录音分片过大".into());
     }
-    let mut record = read_meeting(&meeting_id)?;
+    let mut record = read_meeting(meeting_id)?;
     if !matches!(record.status.as_str(), "recording" | "paused") {
         return Err("当前会议不在录音状态".into());
     }
-    append_recording_samples(&mut record, &samples, MAX_RECORDING_SAMPLES, save_meeting)?;
+    let end = record
+        .recorded_samples
+        .saturating_add(samples.len() as u64)
+        .min(MAX_RECORDING_SAMPLES);
+    for issue in capture_issues {
+        let mut issue = *issue;
+        issue.end_sample = issue.end_sample.min(end);
+        if issue.start_sample < issue.end_sample {
+            merge_capture_issue(&mut record.capture_issues, issue);
+        }
+    }
+    // Commit notices together with the PCM and its length, so a failed write
+    // can retry both. A final notice can arrive after the last PCM flush.
+    if end > record.recorded_samples {
+        append_recording_samples(&mut record, samples, MAX_RECORDING_SAMPLES, save_meeting)?;
+    } else if !capture_issues.is_empty() {
+        save_meeting(&record)?;
+    }
     Ok(record)
+}
+
+fn merge_capture_issue(issues: &mut Vec<CaptureIssue>, issue: CaptureIssue) {
+    let mut same_source = issues.iter_mut().filter(|item| item.source == issue.source);
+    if let Some(last) = same_source.next_back() {
+        if issue.start_sample.saturating_sub(last.end_sample) <= 2 * u64::from(SAMPLE_RATE)
+            || same_source.count() >= MAX_CAPTURE_ISSUES_PER_SOURCE - 1
+        {
+            last.start_sample = last.start_sample.min(issue.start_sample);
+            last.end_sample = last.end_sample.max(issue.end_sample);
+            last.occurrences = last.occurrences.saturating_add(issue.occurrences);
+            return;
+        }
+    }
+    issues.push(issue);
 }
 
 fn append_recording_samples(
@@ -543,6 +589,10 @@ fn finalize_interrupted_recording(
         MAX_RECORDING_SAMPLES,
     )?;
     record.duration_seconds = record.recorded_samples as f64 / SAMPLE_RATE as f64;
+    record.capture_issues.retain_mut(|issue| {
+        issue.end_sample = issue.end_sample.min(record.recorded_samples);
+        issue.start_sample < issue.end_sample
+    });
     if record.recorded_samples > 0 {
         record.status = "recorded".into();
     } else {
@@ -1400,6 +1450,33 @@ pub fn meeting_open_audio(meeting_id: String) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn capture_issue_ranges_merge_nearby_events_and_stay_bounded_per_source() {
+        use crate::meeting_capture::CaptureSource;
+        let mut issues = Vec::new();
+        let issue = |source, second| CaptureIssue {
+            source,
+            start_sample: second * u64::from(SAMPLE_RATE),
+            end_sample: second * u64::from(SAMPLE_RATE) + 1_600,
+            occurrences: 1,
+        };
+        merge_capture_issue(&mut issues, issue(CaptureSource::System, 0));
+        merge_capture_issue(&mut issues, issue(CaptureSource::Microphone, 1));
+        merge_capture_issue(&mut issues, issue(CaptureSource::System, 2));
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].occurrences, 2);
+        assert_eq!(issues[1].occurrences, 1);
+
+        for second in (5..145).step_by(4) {
+            merge_capture_issue(&mut issues, issue(CaptureSource::System, second));
+        }
+        assert_eq!(issues.len(), MAX_CAPTURE_ISSUES_PER_SOURCE + 1);
+        assert_eq!(
+            issues.last().unwrap().end_sample,
+            issue(CaptureSource::System, 141).end_sample
+        );
+    }
+
     pub(super) fn test_record(audio_path: PathBuf) -> MeetingRecord {
         MeetingRecord {
             id: uuid::Uuid::now_v7().to_string(),
@@ -1413,6 +1490,7 @@ mod tests {
             recorded_samples: 0,
             audio_path: audio_path.to_string_lossy().into_owned(),
             capture_source: Some("microphone".into()),
+            capture_issues: vec![],
             original_file_name: None,
             transcript: vec![],
             transcript_text: None,

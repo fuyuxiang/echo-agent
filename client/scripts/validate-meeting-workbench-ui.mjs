@@ -59,6 +59,22 @@ try {
   await repair.getByRole('button',{name:'结束录音',exact:true}).click();
   await repair.getByRole('heading',{name:'会议摘要',exact:true}).waitFor();
   await repair.close();
+  for (const theme of ["light", "dark"]) {
+    const quality = await browser.newPage({ viewport: { width: 360, height: 800 } });
+    await quality.goto(`${base}?scenario=recording-quality&theme=${theme}&font=18`);
+    await quality.getByRole("status").filter({ hasText: "系统声音曾多次出现采集异常" }).waitFor();
+    assert(await quality.getByRole("button", { name: "暂停录音", exact: true }).isEnabled());
+    await quality.screenshot({ path: join(output, `capture-quality-${theme}-live.png`) });
+    await quality.getByRole("button", { name: "结束录音", exact: true }).click();
+    await quality.getByText("部分声音可能缺失 · 查看受影响片段").click();
+    await quality.waitForFunction(() => document.querySelector("audio")?.readyState >= 1);
+    await quality.getByRole("button", { name: /回听 系统声音/ }).click();
+    await quality.getByRole("button", { name: "暂停播放", exact: true }).waitFor();
+    assert(await quality.locator("audio").evaluate(audio => audio.currentTime >= 8 && audio.currentTime < 11));
+    assert.equal(await quality.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await quality.screenshot({ path: join(output, `capture-quality-${theme}-saved.png`) });
+    await quality.close();
+  }
   for(const scenario of ["empty","recording-error","local-only"]) {
     const page=await browser.newPage({viewport:{width:1024,height:800}});
     await page.goto(`${base}?scenario=${scenario}`);

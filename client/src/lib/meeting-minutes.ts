@@ -14,7 +14,15 @@ export type MeetingStatus =
   | "completed";
 
 export type RecordingSource = "microphone" | "system" | "both";
-export const MAX_MEETING_RECORDING_SAMPLES = 16_000 * 60 * 60 * 24;
+export const MEETING_SAMPLE_RATE = 16_000;
+export const MAX_MEETING_RECORDING_SAMPLES = MEETING_SAMPLE_RATE * 60 * 60 * 24;
+
+export interface CaptureIssue {
+  source: Exclude<RecordingSource, "both">;
+  startSample: number;
+  endSample: number;
+  occurrences: number;
+}
 
 export interface CaptureSupport {
   systemAudio: boolean;
@@ -61,6 +69,7 @@ export interface MeetingRecord {
   audioPath: string;
   originalFileName?: string;
   captureSource?: RecordingSource | "imported";
+  captureIssues?: CaptureIssue[];
   transcript: TranscriptSegment[];
   transcriptText?: string;
   minutes?: string;
@@ -208,6 +217,10 @@ interface RecorderSnapshot {
 
 type RecorderListener = (snapshot: RecorderSnapshot) => void;
 
+function captureIssueCount(issues: CaptureIssue[] = []): number {
+  return issues.reduce((count, issue) => count + issue.occurrences, 0);
+}
+
 /**
  * Process-lifetime recorder. It lives outside React so navigating away from
  * the workbench does not silently stop a long meeting.
@@ -265,6 +278,9 @@ class MeetingRecorder {
       if (current.recordedSamples > next.recordedSamples) {
         next.recordedSamples = current.recordedSamples;
         next.durationSeconds = current.durationSeconds;
+      }
+      if (captureIssueCount(current.captureIssues) > captureIssueCount(next.captureIssues)) {
+        next.captureIssues = current.captureIssues;
       }
       if ((current.live?.processedSamples ?? 0) > (next.live?.processedSamples ?? 0) || this.snapshot.active && ["recording", "paused"].includes(next.status) && (current.live?.processedSamples ?? 0) === (next.live?.processedSamples ?? 0)) {
         next.live = current.live; next.transcript = current.transcript; next.transcriptText = current.transcriptText;

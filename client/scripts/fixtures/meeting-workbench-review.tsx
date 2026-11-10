@@ -24,6 +24,7 @@ const base: MeetingRecord = {
   status: scenario.startsWith("recording") ? "recording" : scenario === "failed" ? "partial" : "completed",
   modelId: "review/MiniMax-M3", providerId: "review", durationSeconds: 60, recordedSamples: rate * 60,
   captureSource: "both", audioPath: "/isolated-review/recording.wav", chunks: [],
+  captureIssues: scenario === "recording-quality" ? [{ source: "system", startSample: 9 * rate, endSample: 11 * rate, occurrences: 2 }] : undefined,
   transcript: Array.from({ length: scenario === "long" ? 1800 : 6 }, (_, index) => ({ id: index, start: index * (scenario === "long" ? 4 : 8), end: (index + 1) * (scenario === "long" ? 4 : 8), speaker: index % 2 ? "林悦" : "陈晨", text: `第 ${index + 1} 段：优先完成录音、短句增量转写和应用内回听。结束后自动生成纪要，人工校对的内容需要可靠保留。` })),
   minutes: scenario === "failed" || scenario.startsWith("recording") ? undefined : "## 会议摘要\n\n本次评审确定，实时转写与页面内回听作为首期核心能力。\n\n## 结论与待办\n\n- 结束录音后自动整理纪要。[00:00:08]\n- 林悦于本周五完成交互稿。[00:00:16]\n\n## 待确认\n\n电脑声音采集的各平台支持范围。",
   live: { processedSamples: scenario.startsWith("recording") ? rate * 40 : rate * 60 },

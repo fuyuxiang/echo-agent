@@ -14,12 +14,14 @@ const mocks = vi.hoisted(() => ({
   meetingProcess: vi.fn(),
   meetingMinutesTarget: vi.fn(),
   meetingRegenerateMinutes: vi.fn(),
+  player: vi.fn(),
   listener: null as null | ((snapshot: unknown) => void),
 }));
 
 vi.mock("@/lib/agent-client", () => ({ filesystemPickFiles: vi.fn() }));
 vi.mock("@/lib/meeting-minutes", () => ({
   MAX_MEETING_RECORDING_SAMPLES: 16_000 * 60 * 60 * 24,
+  MEETING_SAMPLE_RATE: 16_000,
   meetingList: mocks.meetingList,
   meetingCaptureSupport: mocks.captureSupport,
   meetingGet: mocks.meetingGet,
@@ -38,7 +40,7 @@ vi.mock("@/lib/meeting-minutes", () => ({
   formatMeetingDuration: () => "00:00:00",
 }));
 
-vi.mock("../MeetingAudioPlayer", () => ({ MeetingAudioPlayer: () => null }));
+vi.mock("../MeetingAudioPlayer", () => ({ MeetingAudioPlayer: (props: unknown) => { mocks.player(props); return null; } }));
 
 import { MeetingMinutesPanel } from "../MeetingMinutesPanel";
 import { meetingDrafts } from "@/lib/meeting-drafts";
@@ -95,6 +97,21 @@ describe("MeetingMinutesPanel recording first workflow", () => {
     expect(screen.getByText("本地转写程序意外退出，可重试")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "重试转写" }));
     await waitFor(() => expect(mocks.retryTranscription).toHaveBeenCalledWith());
+  });
+  it("reports repeated capture issues by source without disabling recording controls", async () => {
+    render(<MeetingMinutesPanel />);
+    await screen.findByRole("button", { name: "开始录音" });
+    const snapshot = { active: true, paused: false, level: .6, source: "both", error: null };
+    const issue = { source: "system", startSample: 16_000, endSample: 17_600, occurrences: 1 };
+    const meeting = { id: "live-quality", title: "正在录音", status: "recording", createdAt: 0,
+      recordedSamples: 32_000, durationSeconds: 2, transcript: [], chunks: [] };
+    act(() => mocks.listener?.({ ...snapshot, meeting: { ...meeting, captureIssues: [issue] } }));
+    expect(screen.queryByText(/曾多次出现采集异常/)).toBeNull();
+
+    act(() => mocks.listener?.({ ...snapshot, meeting: { ...meeting, captureIssues: [{ ...issue, occurrences: 2 }] } }));
+    expect(screen.getByText(/系统声音曾多次出现采集异常/)).toHaveAttribute("role", "status");
+    expect(screen.getByRole("button", { name: "暂停录音" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "结束录音" })).toBeEnabled();
   });
   it("passes the mixed audio source without a model binding", async () => {
     const record = { id: "record-1", title: "测试会议", status: "recording", transcript: [], chunks: [], recordedSamples: 0 };
@@ -160,6 +177,19 @@ describe("meeting content preservation", () => {
     mocks.meetingJobActive.mockResolvedValue(false);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     mocks.captureSupport.mockResolvedValue({ systemAudio: true });
+  });
+  it("reopens saved capture issues and seeks to the affected audio with context", async () => {
+    const record = { ...historic, recordedSamples: 96_000, durationSeconds: 6,
+      captureIssues: [{ source: "microphone", startSample: 64_000, endSample: 70_400, occurrences: 1 }] };
+    mocks.meetingList.mockResolvedValue([record]);
+    render(<MeetingMinutesPanel />);
+    fireEvent.click(await screen.findByText(/查看受影响片段/));
+    fireEvent.click(screen.getByRole("button", { name: /回听 麦克风/ }));
+    expect(screen.getByRole("tab", { name: "转写原文" })).toHaveAttribute("aria-selected", "true");
+    expect(mocks.player).toHaveBeenLastCalledWith(expect.objectContaining({
+      record: expect.objectContaining({ id: record.id }),
+      request: expect.objectContaining({ time: 3, autoplay: true }),
+    }));
   });
   it("retains historical selection and unsaved transcription during recorder updates", async () => {
     render(<MeetingMinutesPanel />);

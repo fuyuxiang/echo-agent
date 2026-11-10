@@ -2,7 +2,23 @@
 //! recording keeps the WebView path (and its echo cancellation); system and
 //! combined recording use the platform's Core Audio/WASAPI loopback stream.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CaptureSource {
+    System,
+    Microphone,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CaptureIssue {
+    pub(crate) source: CaptureSource,
+    pub(crate) start_sample: u64,
+    pub(crate) end_sample: u64,
+    pub(crate) occurrences: u32,
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,31 +175,26 @@ pub(crate) async fn finish_before_exit() -> Result<(), String> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native {
-    use super::CaptureStatus;
+    use super::{CaptureIssue, CaptureSource as Source, CaptureStatus};
     use crate::meeting_minutes::{
-        meeting_append_pcm, meeting_finish_recording, meeting_get, meeting_set_paused,
-        MeetingRecord, MAX_RECORDING_SAMPLES,
+        append_capture_pcm, meeting_finish_recording, meeting_get, meeting_set_paused,
+        MeetingRecord, MAX_RECORDING_SAMPLES, SAMPLE_RATE,
     };
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{
-        Data, FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig,
+        Data, ErrorKind, FromSample, Sample, SampleFormat, SizedSample, Stream,
+        SupportedStreamConfig,
     };
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
 
-    const RATE: usize = 16_000;
+    const RATE: usize = SAMPLE_RATE as usize;
     const TICK_SAMPLES: usize = RATE / 10;
     const QUEUE_LIMIT: usize = RATE;
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Source {
-        System,
-        Microphone,
-    }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Mode {
@@ -411,6 +422,26 @@ mod native {
         }
     }
 
+    fn handle_stream_error(
+        error: cpal::Error,
+        accepting: &AtomicBool,
+        status: &Mutex<CaptureStatus>,
+        xruns: &AtomicU32,
+    ) {
+        if error.kind() == ErrorKind::Xrun {
+            // The stream can continue. The real-time callback only records a counter.
+            if accepting.load(Ordering::Acquire) {
+                xruns.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
+        accepting.store(false, Ordering::Release);
+        if let Ok(mut state) = status.lock() {
+            state.error = Some(format!("音频设备已中断：{error}"));
+            state.active = false;
+        }
+    }
+
     fn stream_for(
         device: &cpal::Device,
         config: SupportedStreamConfig,
@@ -418,6 +449,7 @@ mod native {
         sender: SyncSender<Message>,
         status: Arc<Mutex<CaptureStatus>>,
         accepting: Arc<AtomicBool>,
+        xruns: Arc<AtomicU32>,
     ) -> Result<Stream, String> {
         if !matches!(
             config.sample_format(),
@@ -460,13 +492,7 @@ mod native {
                     }
                 }
             },
-            move |error| {
-                error_accepting.store(false, Ordering::Release);
-                if let Ok(mut state) = error_status.lock() {
-                    state.error = Some(format!("音频设备已中断：{error}"));
-                    state.active = false;
-                }
-            }, None,
+            move |error| handle_stream_error(error, &error_accepting, &error_status, &xruns), None,
         ).map_err(|error| {
             if source == Source::System && cfg!(target_os = "macos") {
                 format!("无法打开系统声音：{error}。请检查系统设置 > 隐私与安全性 > 系统音频录制中的授权")
@@ -484,56 +510,73 @@ mod native {
         }
     }
 
-    fn flush(
-        meeting_id: &str,
-        pending: &mut Vec<i16>,
-        status: &Arc<Mutex<CaptureStatus>>,
-    ) -> Result<MeetingRecord, String> {
-        let record = if pending.is_empty() {
-            meeting_get(meeting_id.to_string())?
-        } else {
-            let samples = std::mem::take(pending);
-            match meeting_append_pcm(meeting_id.to_string(), samples.clone()) {
-                Ok(record) => record,
-                Err(error) => {
-                    *pending = samples;
-                    return Err(error);
-                }
-            }
-        };
-        if let Ok(mut state) = status.lock() {
-            state.recorded_samples = record.recorded_samples;
-        }
-        Ok(record)
+    #[derive(Default)]
+    struct CaptureBuffer {
+        system: VecDeque<f32>,
+        microphone: VecDeque<f32>,
+        system_xruns: Arc<AtomicU32>,
+        microphone_xruns: Arc<AtomicU32>,
+        pending: Vec<i16>,
+        issues: Vec<CaptureIssue>,
+        recorded_samples: u64,
     }
 
-    fn record_samples(
-        mode: Mode,
-        system: &mut VecDeque<f32>,
-        microphone: &mut VecDeque<f32>,
-        pending: &mut Vec<i16>,
-        status: &Arc<Mutex<CaptureStatus>>,
-        meeting_id: &str,
-        count: usize,
-    ) -> Result<(), String> {
-        let mut peak = 0.0f32;
-        for _ in 0..count {
-            let output = system.pop_front().unwrap_or(0.0);
-            let mixed = if mode == Mode::Both {
-                (output * 0.8 + microphone.pop_front().unwrap_or(0.0) * 0.8).clamp(-1.0, 1.0)
-            } else {
-                output
-            };
-            peak = peak.max(mixed.abs());
-            pending.push((mixed * 32767.0).round() as i16);
+    impl CaptureBuffer {
+        fn record(&mut self, mode: Mode, count: usize, status: &Mutex<CaptureStatus>) {
+            let start = self.recorded_samples + self.pending.len() as u64;
+            let mut peak = 0.0f32;
+            for _ in 0..count {
+                let output = self.system.pop_front().unwrap_or(0.0);
+                let mixed = if mode == Mode::Both {
+                    (output * 0.8 + self.microphone.pop_front().unwrap_or(0.0) * 0.8)
+                        .clamp(-1.0, 1.0)
+                } else {
+                    output
+                };
+                peak = peak.max(mixed.abs());
+                self.pending.push((mixed * 32767.0).round() as i16);
+            }
+            let end = start + count as u64;
+            for (source, xruns) in [
+                (Source::System, &self.system_xruns),
+                (Source::Microphone, &self.microphone_xruns),
+            ] {
+                let occurrences = xruns.swap(0, Ordering::Relaxed);
+                if occurrences > 0 && end > 0 {
+                    // CPAL reports the event without a timestamp. Include the preceding tick
+                    // because audio can already be queued when the worker sees the notice.
+                    self.issues.push(CaptureIssue {
+                        source,
+                        start_sample: start.saturating_sub(TICK_SAMPLES as u64),
+                        end_sample: end,
+                        occurrences,
+                    });
+                }
+            }
+            if let Ok(mut state) = status.lock() {
+                state.level = (peak * 2.5).min(1.0);
+            }
         }
-        if let Ok(mut state) = status.lock() {
-            state.level = (peak * 2.5).min(1.0);
+
+        fn flush(&mut self, meeting_id: &str, status: &Mutex<CaptureStatus>) -> Result<(), String> {
+            let record = append_capture_pcm(meeting_id, &self.pending, &self.issues)?;
+            self.pending.clear();
+            self.issues.clear();
+            self.recorded_samples = record.recorded_samples;
+            if let Ok(mut state) = status.lock() {
+                state.recorded_samples = record.recorded_samples;
+            }
+            Ok(())
         }
-        if pending.len() >= RATE {
-            flush(meeting_id, pending, status)?;
+
+        fn tail(&self) -> usize {
+            self.system.len().max(self.microphone.len())
         }
-        Ok(())
+
+        fn clear_queues(&mut self) {
+            self.system.clear();
+            self.microphone.clear();
+        }
     }
 
     fn run_worker(
@@ -545,6 +588,10 @@ mod native {
         accepting: Arc<AtomicBool>,
         ready: SyncSender<Result<(), String>>,
     ) {
+        let buffer = CaptureBuffer {
+            pending: Vec::with_capacity(RATE),
+            ..CaptureBuffer::default()
+        };
         let setup = (|| -> Result<(Stream, Option<Stream>), String> {
             let host = cpal::default_host();
             let output = host.default_output_device().ok_or("未找到系统播放设备")?;
@@ -558,6 +605,7 @@ mod native {
                 sender.clone(),
                 Arc::clone(&status),
                 Arc::clone(&accepting),
+                Arc::clone(&buffer.system_xruns),
             )?;
             let microphone_stream = if mode == Mode::Both {
                 let input = host.default_input_device().ok_or("未找到麦克风设备")?;
@@ -571,6 +619,7 @@ mod native {
                     sender,
                     Arc::clone(&status),
                     Arc::clone(&accepting),
+                    Arc::clone(&buffer.microphone_xruns),
                 )?)
             } else {
                 None
@@ -593,37 +642,47 @@ mod native {
             }
         };
         if let Ok(mut state) = status.lock() {
-            state.active = true;
+            state.active = state.error.is_none();
         }
         let _ = ready.send(Ok(()));
-        let mut system_stream = Some(system_stream);
-        let mut microphone_stream = microphone_stream;
-        let mut system = VecDeque::new();
-        let mut microphone = VecDeque::new();
-        let mut pending = Vec::with_capacity(RATE);
+        capture_loop(
+            &meeting_id,
+            mode,
+            receiver,
+            &status,
+            &accepting,
+            (Some(system_stream), microphone_stream),
+            buffer,
+        );
+    }
+
+    fn capture_loop(
+        meeting_id: &str,
+        mode: Mode,
+        receiver: Receiver<Message>,
+        status: &Mutex<CaptureStatus>,
+        accepting: &AtomicBool,
+        (mut system_stream, mut microphone_stream): (Option<Stream>, Option<Stream>),
+        mut buffer: CaptureBuffer,
+    ) {
         let mut next_tick = Instant::now() + Duration::from_millis(100);
         let mut paused = false;
         loop {
             if next_tick <= Instant::now() {
                 if !paused && accepting.load(Ordering::Acquire) {
-                    if let Err(error) = record_samples(
-                        mode,
-                        &mut system,
-                        &mut microphone,
-                        &mut pending,
-                        &status,
-                        &meeting_id,
-                        TICK_SAMPLES,
-                    ) {
+                    buffer.record(mode, TICK_SAMPLES, status);
+                    let result = if buffer.pending.len() >= RATE {
+                        buffer.flush(meeting_id, status)
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(error) = result {
                         accepting.store(false, Ordering::Release);
                         if let Ok(mut state) = status.lock() {
                             state.error = Some(error);
                             state.active = false;
                         }
-                    } else if status
-                        .lock()
-                        .is_ok_and(|state| state.recorded_samples >= MAX_RECORDING_SAMPLES)
-                    {
+                    } else if buffer.recorded_samples >= MAX_RECORDING_SAMPLES {
                         accepting.store(false, Ordering::Release);
                         paused = true;
                         drop(system_stream.take());
@@ -643,39 +702,26 @@ mod native {
                         continue;
                     }
                     if source == Source::System {
-                        push_bounded(&mut system, samples);
+                        push_bounded(&mut buffer.system, samples);
                     } else {
-                        push_bounded(&mut microphone, samples);
+                        push_bounded(&mut buffer.microphone, samples);
                     }
                 }
                 Ok(Message::Pause(next, reply)) => {
                     let result = if next {
-                        let tail = system.len().max(if mode == Mode::Both {
-                            microphone.len()
-                        } else {
-                            0
-                        });
-                        let result = record_samples(
-                            mode,
-                            &mut system,
-                            &mut microphone,
-                            &mut pending,
-                            &status,
-                            &meeting_id,
-                            tail,
-                        )
-                        .and_then(|_| flush(&meeting_id, &mut pending, &status))
-                        .and_then(|_| meeting_set_paused(meeting_id.clone(), true));
+                        buffer.record(mode, buffer.tail(), status);
+                        let result = buffer
+                            .flush(meeting_id, status)
+                            .and_then(|_| meeting_set_paused(meeting_id.into(), true));
                         paused = result.is_ok();
-                        system.clear();
-                        microphone.clear();
+                        buffer.clear_queues();
                         result
                     } else {
                         let failure = status.lock().ok().and_then(|state| state.error.clone());
                         let result = if let Some(error) = failure {
                             Err(error)
                         } else {
-                            meeting_set_paused(meeting_id.clone(), false)
+                            meeting_set_paused(meeting_id.into(), false)
                         };
                         if result.is_ok() {
                             paused = false;
@@ -694,34 +740,19 @@ mod native {
                     accepting.store(false, Ordering::Release);
                     drop(system_stream.take());
                     drop(microphone_stream.take());
-                    let tail = system.len().max(if mode == Mode::Both {
-                        microphone.len()
-                    } else {
-                        0
-                    });
-                    let empty_recording = pending.is_empty()
-                        && status
-                            .lock()
-                            .map(|state| state.recorded_samples == 0)
-                            .unwrap_or(false);
-                    let result = record_samples(
-                        mode,
-                        &mut system,
-                        &mut microphone,
-                        &mut pending,
-                        &status,
-                        &meeting_id,
-                        if tail == 0 && empty_recording {
+                    let tail = buffer.tail();
+                    let count =
+                        if tail == 0 && buffer.pending.is_empty() && buffer.recorded_samples == 0 {
                             TICK_SAMPLES
                         } else if paused {
                             0
                         } else {
                             tail
-                        },
-                    );
-                    let result = result
-                        .and_then(|_| flush(&meeting_id, &mut pending, &status))
-                        .and_then(|_| meeting_finish_recording(meeting_id.clone()));
+                        };
+                    buffer.record(mode, count, status);
+                    let result = buffer
+                        .flush(meeting_id, status)
+                        .and_then(|_| meeting_finish_recording(meeting_id.into()));
                     let finished = result.is_ok();
                     if let Ok(mut state) = status.lock() {
                         state.active = false;
@@ -731,8 +762,7 @@ mod native {
                         state.level = 0.0;
                     }
                     paused = !finished;
-                    system.clear();
-                    microphone.clear();
+                    buffer.clear_queues();
                     let _ = reply.send(result);
                     if finished {
                         break;
@@ -748,6 +778,162 @@ mod native {
     mod tests {
         use super::*;
         use cpal::SupportedBufferSize;
+
+        #[test]
+        fn xrun_keeps_capture_active_and_fatal_errors_still_stop_it() {
+            for kind in [ErrorKind::DeviceNotAvailable, ErrorKind::StreamInvalidated] {
+                let accepting = AtomicBool::new(true);
+                let xruns = AtomicU32::new(0);
+                let status = Mutex::new(CaptureStatus {
+                    meeting_id: "test".into(),
+                    active: true,
+                    paused: false,
+                    level: 0.0,
+                    recorded_samples: 160,
+                    error: None,
+                    pending_save: false,
+                });
+
+                accepting.store(false, Ordering::Release);
+                handle_stream_error(ErrorKind::Xrun.into(), &accepting, &status, &xruns);
+                assert_eq!(xruns.load(Ordering::Relaxed), 0);
+                accepting.store(true, Ordering::Release);
+                handle_stream_error(ErrorKind::Xrun.into(), &accepting, &status, &xruns);
+                assert!(accepting.load(Ordering::Acquire));
+                {
+                    let state = status.lock().unwrap();
+                    assert!(state.active);
+                    assert!(state.error.is_none());
+                }
+
+                let error = cpal::Error::new(kind);
+                let message = format!("音频设备已中断：{error}");
+                handle_stream_error(error, &accepting, &status, &xruns);
+                handle_stream_error(ErrorKind::Xrun.into(), &accepting, &status, &xruns);
+                assert!(!accepting.load(Ordering::Acquire));
+                assert_eq!(xruns.load(Ordering::Relaxed), 1);
+                let state = status.lock().unwrap();
+                assert!(!state.active);
+                assert_eq!(state.error.as_deref(), Some(message.as_str()));
+            }
+        }
+
+        #[test]
+        fn xrun_saves_following_pcm_and_source_markers_through_retry() {
+            use crate::meeting_minutes::meeting_create;
+            use std::{fs, path::Path};
+
+            if std::env::var("ECHO_MEETING_CAPTURE_TEST").as_deref() != Ok("1") {
+                let home = tempfile::tempdir().unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "meeting_capture::native::tests::xrun_saves_following_pcm_and_source_markers_through_retry",
+                        "--nocapture",
+                    ])
+                    .env("ECHO_AGENT_HOME", home.path())
+                    .env("ECHO_MEETING_CAPTURE_TEST", "1")
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                return;
+            }
+
+            for (mode, name, source, gain) in [
+                (Mode::System, "system", Source::System, 1.0_f32),
+                (Mode::Both, "both", Source::Microphone, 0.8),
+            ] {
+                let record = meeting_create("采集测试".into(), Some(name.into()), None).unwrap();
+                let status = Arc::new(Mutex::new(CaptureStatus {
+                    meeting_id: record.id.clone(),
+                    active: true,
+                    paused: false,
+                    level: 0.0,
+                    recorded_samples: 0,
+                    error: None,
+                    pending_save: false,
+                }));
+                let accepting = Arc::new(AtomicBool::new(true));
+                let buffer = CaptureBuffer::default();
+                let xruns = match source {
+                    Source::System => &buffer.system_xruns,
+                    Source::Microphone => &buffer.microphone_xruns,
+                };
+                let (sender, receiver) = mpsc::sync_channel(4);
+                sender
+                    .send(Message::Audio(source, vec![0.25; 160]))
+                    .unwrap();
+                for _ in 0..2 {
+                    handle_stream_error(ErrorKind::Xrun.into(), &accepting, &status, xruns);
+                }
+                assert!(accepting.load(Ordering::Acquire));
+                sender
+                    .send(Message::Audio(source, vec![0.75; 160]))
+                    .unwrap();
+
+                let wav = Path::new(&record.audio_path);
+                let backup = wav.with_extension("backup");
+                fs::rename(wav, &backup).unwrap();
+                let (first_reply, first_result) = mpsc::sync_channel(1);
+                sender.send(Message::Stop(first_reply)).unwrap();
+                let worker_id = record.id.clone();
+                let worker_status = Arc::clone(&status);
+                let worker = thread::spawn(move || {
+                    capture_loop(
+                        &worker_id,
+                        mode,
+                        receiver,
+                        &worker_status,
+                        &accepting,
+                        (None, None),
+                        buffer,
+                    );
+                });
+                assert!(first_result.recv().unwrap().is_err());
+                assert!(status.lock().unwrap().pending_save);
+                assert!(meeting_get(record.id.clone())
+                    .unwrap()
+                    .capture_issues
+                    .is_empty());
+                fs::rename(backup, wav).unwrap();
+
+                let (retry_reply, retry_result) = mpsc::sync_channel(1);
+                sender.send(Message::Stop(retry_reply)).unwrap();
+                let saved = retry_result.recv().unwrap().unwrap();
+                worker.join().unwrap();
+                assert_eq!(saved.status, "recorded");
+                assert_eq!(saved.capture_issues.len(), 1);
+                let issue = saved.capture_issues[0];
+                assert_eq!(issue.source, source);
+                assert_eq!(issue.occurrences, 2);
+                assert!(
+                    issue.start_sample < issue.end_sample
+                        && issue.end_sample <= saved.recorded_samples
+                );
+                assert_eq!(
+                    meeting_get(record.id).unwrap().capture_issues,
+                    saved.capture_issues
+                );
+
+                let audio = fs::read(wav).unwrap();
+                let pcm: Vec<_> = audio[44..]
+                    .chunks_exact(2)
+                    .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+                    .filter(|sample| *sample != 0)
+                    .collect();
+                let expected: Vec<_> = [0.25, 0.75]
+                    .into_iter()
+                    .flat_map(|sample| vec![(sample * gain * 32767.0).round() as i16; 160])
+                    .collect();
+                assert_eq!(pcm, expected);
+            }
+        }
 
         #[test]
         fn failed_stop_keeps_capture_handle_for_a_save_retry() {

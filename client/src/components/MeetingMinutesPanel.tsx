@@ -24,6 +24,7 @@ import { meetingDrafts, type MeetingDraftConflict } from "@/lib/meeting-drafts";
 import {
   formatMeetingDuration,
   MAX_MEETING_RECORDING_SAMPLES,
+  MEETING_SAMPLE_RATE,
   meetingCaptureSupport,
   meetingDelete,
   meetingExport,
@@ -451,6 +452,9 @@ export function MeetingMinutesPanel({
   };
 
   const recordingThis = recorder.active && recorder.meeting?.id === selected?.id;
+  const captureIssues = selected?.captureIssues ?? [];
+  const unstableSources = [...new Set(captureIssues.filter(issue => issue.occurrences > 1)
+    .map(issue => SOURCE_LABELS[issue.source]))];
   const processingThis = Boolean(selected && (recorder.processingIds?.includes(selected.id) || NATIVE_JOB_STATUSES.includes(selected.status) && activeJobs[selected.id] !== false));
   const selectedJobActive = selected ? activeJobs[selected.id] : false;
   const readOnly = recordingThis || processingThis || busy !== null || selectedJobActive === undefined;
@@ -593,6 +597,26 @@ export function MeetingMinutesPanel({
               {tab === "minutes" ? <button type="button" disabled={readOnly || hasTranscriptDraft || !!minutesConflict || !selected.minutes} onClick={() => setEditingMinutes(true)}><Pencil size={14} />编辑纪要</button> : <button type="button" disabled={readOnly || !!transcriptConflict || !selected.transcript.length} onClick={() => setEditingTranscript(true)}><Pencil size={14} />校对原文</button>}
             </div>
           </nav>}
+          {recordingThis && unstableSources.length > 0 && <div className="meeting-workbench__notice meeting-workbench__notice--quality" role="status">
+            {unstableSources.join("、")}曾多次出现采集异常，部分声音可能缺失。{!recorder.paused && !recorder.error && !recorder.pendingSave && "录音仍在进行。"}
+          </div>}
+          {!recordingThis && captureIssues.length > 0 && <div className="meeting-workbench__notice meeting-workbench__notice--quality">
+            <details>
+              <summary>部分声音可能缺失 · 查看受影响片段</summary>
+              <ul className="meeting-capture-issues">
+                {captureIssues.map(issue => {
+                  const start = issue.startSample / MEETING_SAMPLE_RATE;
+                  const end = Math.ceil(issue.endSample / MEETING_SAMPLE_RATE);
+                  const label = `${SOURCE_LABELS[issue.source]} · 约 ${formatMeetingDuration(start)}–${formatMeetingDuration(end)}`;
+                  return <li key={`${issue.source}-${issue.startSample}`}>
+                    <span>{label}</span>
+                    {!recorder.active && <button type="button" aria-label={`回听 ${label}`} onClick={() => seekTo(Math.max(0, start - 1), true)}>回听</button>}
+                  </li>;
+                })}
+              </ul>
+              {recorder.active && <p>结束当前录音后可回听。</p>}
+            </details>
+          </div>}
           {recordingThis && recorder.transcription?.state === "unavailable" && <div className="meeting-workbench__notice" role="status">
             <span>本地短句转写暂不可用，录音继续保存在本机。</span>
             <button type="button" disabled={busy!==null||recorder.pendingSave} onClick={()=>void retryTranscription()}>{busy==='retry-transcription'?'正在重试…':'重试转写'}</button>
