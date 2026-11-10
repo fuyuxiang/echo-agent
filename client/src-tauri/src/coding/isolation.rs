@@ -195,6 +195,7 @@ struct IntegrationIndex {
     path: PathBuf,
     lock: PathBuf,
     original: std::fs::File,
+    permissions: std::fs::Permissions,
     checkout: tempfile::TempPath,
 }
 
@@ -205,9 +206,10 @@ impl IntegrationIndex {
         let mut lock_name = path.as_os_str().to_os_string();
         lock_name.push(".lock");
         let lock = PathBuf::from(lock_name);
+        let directory = path.parent().ok_or("无法确认 Git 暂存区目录")?;
         let mut checkout = tempfile::Builder::new()
             .prefix("echo-integration-index-")
-            .tempfile_in(path.parent().ok_or("无法确认 Git 暂存区目录")?)
+            .tempfile_in(directory)
             .map_err(|error| format!("无法创建临时 Git 暂存区：{error}"))?;
         let guard = std::fs::OpenOptions::new()
             .create_new(true)
@@ -215,11 +217,21 @@ impl IntegrationIndex {
             .open(&lock)
             .map_err(|error| format!("Git 暂存区正在被其他操作占用，请稍后重试：{error}"))?;
         drop(guard);
-        let original = match std::fs::File::open(&path) {
-            Ok(original) => original,
+        // Keep the rollback copy independent of the live index. Windows cannot
+        // replace the live index while our read handle is still open.
+        let snapshot = (|| -> std::io::Result<_> {
+            let mut live = std::fs::File::open(&path)?;
+            let permissions = live.metadata()?.permissions();
+            let mut original = tempfile::tempfile_in(directory)?;
+            std::io::copy(&mut live, &mut original)?;
+            original.rewind()?;
+            Ok((original, permissions))
+        })();
+        let (original, permissions) = match snapshot {
+            Ok(snapshot) => snapshot,
             Err(error) => {
                 let _ = std::fs::remove_file(&lock);
-                return Err(format!("无法读取 Git 暂存区：{error}"));
+                return Err(format!("无法备份 Git 暂存区：{error}"));
             }
         };
         let copied = std::io::copy(&mut &original, checkout.as_file_mut());
@@ -227,6 +239,7 @@ impl IntegrationIndex {
             path,
             lock,
             original,
+            permissions,
             checkout: checkout.into_temp_path(),
         };
         copied.map_err(|error| format!("无法复制 Git 暂存区：{error}"))?;
@@ -257,17 +270,19 @@ impl IntegrationIndex {
     }
 
     fn write_index(&self, bytes: &mut impl Read) -> Result<(), String> {
-        let write = (|| -> std::io::Result<()> {
+        let write = (|| -> std::io::Result<tempfile::TempPath> {
             let mut temporary = tempfile::NamedTempFile::new_in(self.path.parent().unwrap())?;
             std::io::copy(bytes, &mut temporary)?;
             temporary
                 .as_file()
-                .set_permissions(self.original.metadata()?.permissions())?;
+                .set_permissions(self.permissions.clone())?;
             temporary.as_file().sync_all()?;
-            temporary.persist(&self.path)?;
-            Ok(())
+            Ok(temporary.into_temp_path())
         })();
-        write.map_err(|error| format!("无法更新 Git 暂存区：{error}"))
+        let temporary = write.map_err(|error| format!("无法写入临时 Git 暂存区：{error}"))?;
+        temporary
+            .persist(&self.path)
+            .map_err(|error| format!("无法替换 Git 暂存区：{}", error.error))
     }
 
     fn install(&self) -> Result<(), String> {
