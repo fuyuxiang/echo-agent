@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
+import { annotateUiReviewFailure, createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
 import { inspectRenderedColors } from "./ui-color-audit.mjs";
 import { reviewPng } from "./ui-review-tools.mjs";
 
@@ -14,7 +14,12 @@ const output = reviewOutput(join(tmpdir(),"echo-complex-color-audit"));
 const server = await createUiReviewServer(0);
 const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review`;
 const evidence = [], manual = [];
-const projectHeaderClasses = ["capability-page__title", "capability-page__description", "echo-button__content"];
+const projectHeader = [
+  { className: "management-toolbar__title", text: "项目" },
+  { className: "echo-button__content", text: "新建项目" },
+];
+const headerClasses = ["capability-page__title", "capability-page__description",
+  ...projectHeader.map(({ className }) => className)];
 const rgba = color => {
   assert.match(color,/^(?:rgba?\(|color\(srgb )/);
   const c = color.match(/[\d.]+/g).map(Number);
@@ -42,6 +47,11 @@ try {
       if (surface === "cloud-storage") params.set("settingsDesign","1");
       await page.goto(`${base}?${params}`,{waitUntil:"networkidle"});
       await page.evaluate(font=>document.documentElement.style.fontSize=`${16*font/13}px`,font);
+      if (surface === "projects") {
+        const toolbar = page.locator(".project-management .management-toolbar");
+        await toolbar.getByRole("heading", { name: "项目", exact: true }).waitFor();
+        await toolbar.getByRole("button", { name: "新建项目", exact: true }).waitFor();
+      }
       if (surface === "color-system") {
         await page.getByRole("textbox",{name:"交付说明",exact:true}).fill("修改后的交付说明");
         await page.getByRole("combobox",{name:"交付工作区",exact:true}).selectOption("team");
@@ -70,7 +80,7 @@ try {
           }
           return [{...item,opacity,complexForeground,rects}];
         });
-      }),[...colors.manual, ...colors.text.filter(item => item.selector.split(".").some(name => projectHeaderClasses.includes(name)))]
+      }),[...colors.manual, ...colors.text.filter(item => item.selector.split(".").some(name => headerClasses.includes(name)))]
         .filter((item,index,items) => items.findIndex(other => other.selector === item.selector && other.text === item.text) === index));
       // Hide glyph paint only: inherited color, backgrounds, native boundaries,
       // geometry and currentColor icons retain their original computed values.
@@ -89,10 +99,10 @@ try {
         evidence.push({spec,theme,width,height,font,selector:sample.selector,text:sample.text,color:sample.color,threshold:sample.threshold,minimum,worstBackdrop:darkestBackdrop,pixels});
       }
       if (surface === "cloud-storage") assert(storageLabel && evidence.some(item=>item.spec===spec && item.theme===theme && item.width===width && item.font===font && item.selector.startsWith("select.") && item.text===storageLabel),"The visible storage source label must be raster-sampled outside its decorative arrow");
-      if (surface === "projects") for (const name of projectHeaderClasses) {
-        // PageHeading adds its own classes. Match the actual header anatomy,
-        // and require real raster samples in every layout, not just once.
-        assert(evidence.some(item=>item.spec===spec && item.theme===theme && item.width===width && item.font===font && item.selector.split(".").includes(name)),`Project header must be raster-sampled at ${width}/${theme}/${font}: ${name}`);
+      if (surface === "projects") for (const { className, text } of projectHeader) {
+        assert(evidence.some(item=>item.spec===spec && item.theme===theme && item.width===width && item.font===font
+          && item.text === text && item.selector.split(".").includes(className)),
+        `Project header must be raster-sampled at ${width}/${theme}/${font}: ${text}`);
       }
       if (surface === "color-system") assert(evidence.some(item=>item.spec===spec && item.theme===theme && item.width===width && item.font===font && item.text==="团队交付工作区"),"The selected label must be sampled outside its native arrow");
       assert.deepEqual(errors,[],`${spec}/${theme}: browser errors`);
@@ -103,4 +113,10 @@ try {
   assert(evidence.length>0,"Raster samples must exercise real complex backgrounds");
   assert.deepEqual(evidence.filter(e=>e.minimum<e.threshold),[],"Complex-background text contrast failures");
   console.log(JSON.stringify({observations:evidence.length,minimum:Math.min(...evidence.map(e=>e.minimum)),pixels:evidence.reduce((n,e)=>n+e.pixels,0),manual:manual.length,output}));
-} finally { await browser?.close(); await server.close(); }
+} catch (error) {
+  annotateUiReviewFailure(error);
+  throw error;
+} finally {
+  await browser?.close();
+  await server.close();
+}

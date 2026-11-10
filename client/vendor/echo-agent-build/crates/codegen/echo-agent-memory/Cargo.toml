@@ -28,7 +28,7 @@ notify = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 # rusqlite 0.37 + bundled = self-contained SQLite (>= 3.50.2) with FTS5.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }
 serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 toml = { workspace = true }

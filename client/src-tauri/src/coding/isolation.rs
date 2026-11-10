@@ -190,11 +190,12 @@ fn git_path(root: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 /// Use Git's real index lock to prevent checkout/staging during installation.
-/// The lock doubles as a private index for the detached helper checkout.
+/// The detached helper writes a separate index while the source stays locked.
 struct IntegrationIndex {
     path: PathBuf,
     lock: PathBuf,
     original: std::fs::File,
+    checkout: tempfile::TempPath,
 }
 
 impl IntegrationIndex {
@@ -204,33 +205,37 @@ impl IntegrationIndex {
         let mut lock_name = path.as_os_str().to_os_string();
         lock_name.push(".lock");
         let lock = PathBuf::from(lock_name);
-        let mut output = std::fs::OpenOptions::new()
+        let mut checkout = tempfile::Builder::new()
+            .prefix("echo-integration-index-")
+            .tempfile_in(path.parent().ok_or("无法确认 Git 暂存区目录")?)
+            .map_err(|error| format!("无法创建临时 Git 暂存区：{error}"))?;
+        let guard = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(&lock)
             .map_err(|error| format!("Git 暂存区正在被其他操作占用，请稍后重试：{error}"))?;
+        drop(guard);
         let original = match std::fs::File::open(&path) {
             Ok(original) => original,
             Err(error) => {
-                drop(output);
                 let _ = std::fs::remove_file(&lock);
                 return Err(format!("无法读取 Git 暂存区：{error}"));
             }
         };
+        let copied = std::io::copy(&mut &original, checkout.as_file_mut());
         let index = Self {
             path,
             lock,
             original,
+            checkout: checkout.into_temp_path(),
         };
-        let copied = std::io::copy(&mut &index.original, &mut output);
-        drop(output);
         copied.map_err(|error| format!("无法复制 Git 暂存区：{error}"))?;
         if !git(root, &["rev-parse", "--shared-index-path"])?.is_empty() {
             run_git(
                 crate::process_supervisor::background_sync_command("git")
                     .arg("-C")
                     .arg(root)
-                    .env("GIT_INDEX_FILE", &index.lock)
+                    .env("GIT_INDEX_FILE", index.git_checkout_path(root))
                     .args([
                         "-c",
                         "core.splitIndex=false",
@@ -240,6 +245,15 @@ impl IntegrationIndex {
             )?;
         }
         Ok(index)
+    }
+
+    fn git_checkout_path(&self, root: &Path) -> &Path {
+        // Git runs with `-C root`. A relative path avoids the verbatim
+        // Windows prefix, including when the project path is long.
+        // A linked worktree's index can live outside its root.
+        self.checkout
+            .strip_prefix(root)
+            .unwrap_or_else(|_| dunce::simplified(&self.checkout))
     }
 
     fn write_index(&self, bytes: &mut impl Read) -> Result<(), String> {
@@ -257,7 +271,7 @@ impl IntegrationIndex {
     }
 
     fn install(&self) -> Result<(), String> {
-        let mut checkout = std::fs::File::open(&self.lock)
+        let mut checkout = std::fs::File::open(&self.checkout)
             .map_err(|error| format!("无法读取回并后的 Git 暂存区：{error}"))?;
         self.write_index(&mut checkout)
     }
@@ -411,7 +425,7 @@ fn install_integration(
                 .args(["--git-dir", &gitdir, "--work-tree"])
                 .arg(source)
                 .args(["-c", &no_hooks, "-c", "core.splitIndex=false"])
-                .env("GIT_INDEX_FILE", &index.lock)
+                .env("GIT_INDEX_FILE", index.git_checkout_path(source))
                 .args(arguments),
         )
     };
@@ -1009,6 +1023,30 @@ mod tests {
             .unwrap()
             .integrated_hash
             .is_none());
+    }
+
+    #[test]
+    fn helper_index_can_change_while_the_source_index_stays_locked() {
+        let source = repository();
+        let root = source.path().canonicalize().unwrap();
+        let index = IntegrationIndex::acquire(&root).unwrap();
+        let remove = ["update-index", "--force-remove", "--", "a.txt"];
+        assert!(git(&root, &remove).is_err());
+        run_git(
+            crate::process_supervisor::background_sync_command("git")
+                .arg("-C")
+                .arg(&root)
+                .env("GIT_INDEX_FILE", index.git_checkout_path(&root))
+                .args(remove),
+        )
+        .unwrap();
+        assert_eq!(git(&root, &["ls-files", "--", "a.txt"]).unwrap(), "a.txt");
+        index.install().unwrap();
+        assert!(git(&root, &["ls-files", "--", "a.txt"]).unwrap().is_empty());
+        index.restore().unwrap();
+        assert_eq!(git(&root, &["ls-files", "--", "a.txt"]).unwrap(), "a.txt");
+        drop(index);
+        git(&root, &remove).unwrap();
     }
 
     #[test]

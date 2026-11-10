@@ -7,7 +7,7 @@ description = "MCP integration crate. Quarantines rmcp + reqwest 0.13 (rmcp 2.1 
 authors = ["EchoAgent"]
 
 [dependencies]
-rmcp = { version = "2.1", features = [
+rmcp = { version = "3.9.0", features = [
     "auth",
     "client",
     "transport-async-rw",

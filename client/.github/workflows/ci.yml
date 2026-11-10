@@ -87,6 +87,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
       - run: pnpm icons:check
+      - name: Require audit coverage for every Rust lockfile
+        run: node --test --test-name-pattern="dependency audit covers every tracked Rust lockfile" scripts/test-dependency-patches.mjs
 
   unit:
     runs-on: ubuntu-latest
@@ -288,6 +290,19 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+  fast-checks:
+    name: Fast checks
+    needs: [typecheck, unit, rustfmt]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require type checks, unit tests and Rust formatting
+        run: |
+          test '${{ needs.typecheck.result }}' = success
+          test '${{ needs.unit.result }}' = success
+          test '${{ needs.rustfmt.result }}' = success
 
   rust:
     runs-on: ubuntu-24.04

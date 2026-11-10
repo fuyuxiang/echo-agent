@@ -1035,10 +1035,12 @@ pub(crate) fn enqueue_prepared_prompt(
     tx: &AcpAgentTx,
     request: acp::PromptRequest,
 ) -> Result<impl std::future::Future<Output = Result<()>> + use<>> {
-    let response = echo_agent_acp::acp_enqueue(request, tx)
-        .map_err(|error| anyhow!("prompt: {error:?}"))?;
+    let response =
+        echo_agent_acp::acp_enqueue(request, tx).map_err(|error| anyhow!("prompt: {error:?}"))?;
     Ok(async move {
-        response.await.map_err(|error| anyhow!("prompt: {error:?}"))?;
+        response
+            .await
+            .map_err(|error| anyhow!("prompt: {error:?}"))?;
         Ok(())
     })
 }

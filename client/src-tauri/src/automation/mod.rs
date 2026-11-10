@@ -1957,7 +1957,11 @@ async fn browser_tool(
             "browser_key" => {
                 let key = required_str(args, "key")?;
                 browser
-                    .key(interaction()?, key, &optional_string_array(args, "modifiers", 4)?)
+                    .key(
+                        interaction()?,
+                        key,
+                        &optional_string_array(args, "modifiers", 4)?,
+                    )
                     .await?
             }
             "browser_scroll" => {

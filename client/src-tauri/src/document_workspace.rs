@@ -197,6 +197,15 @@ fn recovery_scope_contains(
     crate::session_artifacts::has_published_export_path_at(home, session, path)
 }
 
+fn recovery_request_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    // Joining onto a verbatim Windows path normalizes "..". Validate the
+    // request while those components are still present.
+    if path.components().any(|part| part == Component::ParentDir) {
+        return Err("文档路径无效".into());
+    }
+    Ok(root.join(path))
+}
+
 pub(super) fn recovered_draft_at(
     home: &Path,
     session: &str,
@@ -321,7 +330,7 @@ async fn open_document(
                 None,
             )?),
         };
-        let requested = history_root.join(path);
+        let requested = recovery_request_path(&history_root, Path::new(path))?;
         let missing = if recovery_scope_contains(&home, session, &history_root, &requested)? {
             canonical_missing_path(&requested)?
         } else {
@@ -735,7 +744,7 @@ mod source_preview_tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"existing").unwrap();
         assert_eq!(canonical_missing_path(&path).unwrap(), None);
-        assert!(canonical_missing_path(&workspace.join("../foreign.docx")).is_err());
+        assert!(recovery_request_path(&workspace, Path::new("../foreign.docx")).is_err());
     }
 
     #[cfg(windows)]

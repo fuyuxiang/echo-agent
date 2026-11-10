@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { verifyAsset } from "./prepare-retrieval-models.mjs";
+import { withMeetingSpeechLock } from "./lib/meeting-speech-lock.mjs";
 
 const run = promisify(execFile);
 const project = fileURLToPath(new URL("../src-tauri/", import.meta.url));
@@ -145,9 +146,15 @@ async function stageWorker(target, input, offline) {
   const library = join(cache, archive, "lib");
   const marker = join(cache, archive, "archive.sha256");
   if (await readFile(marker, "utf8").catch(() => "") !== sha256) {
-    await rm(join(cache, archive), { recursive: true, force: true });
-    await run("tar", ["-xf", path, "-C", cache]);
-    await writeFile(marker, sha256);
+    const scratch = await mkdtemp(join(cache, "runtime-"));
+    try {
+      await run("tar", ["-xf", path, "-C", scratch]);
+      await writeFile(join(scratch, archive, "archive.sha256"), sha256);
+      await rm(join(cache, archive), { recursive: true, force: true });
+      await rename(join(scratch, archive), join(cache, archive));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
   }
   const build = join(project, "target/meeting-speech");
   const extension = target.includes("windows") ? ".exe" : "";
@@ -197,16 +204,13 @@ try {
       ? `${process.env.TAURI_ENV_ARCH}-${platform}`
       : undefined;
     const target = option("--target") ?? process.env.CARGO_BUILD_TARGET ?? tauriTarget ?? host;
-    await mkdir(cache, { recursive: true });
-    const lock = join(cache, ".prepare");
-    await mkdir(lock).catch(() => { throw new Error(`语音资源正在准备，或上次构建中断：${lock}`); });
-    try {
+    // This lock is workspace state, not a restorable build cache entry.
+    await withMeetingSpeechLock(join(project, ".meeting-speech-prepare"), async () => {
+      await mkdir(cache, { recursive: true });
       await stageModels(manifest, raw, input && resolve(input), offline);
       await stageWorker(target, input && resolve(input), offline);
       console.log(`内置录音转写已准备：${target}`);
-    } finally {
-      await rm(lock, { recursive: true, force: true });
-    }
+    });
   }
 } catch (error) {
   console.error(`内置录音转写准备失败：${error.message}`);

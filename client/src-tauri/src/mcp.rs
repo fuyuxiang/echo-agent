@@ -2293,7 +2293,12 @@ url = "https://fixture.example/mcp"
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires an isolated ECHO_AGENT_HOME with the Runtime smoke model and loopback MCP"]
     async fn global_toggle_applies_to_loaded_sessions_new_sessions_and_agent_pool() {
-        use axum::{extract::State as AxumState, http::{HeaderMap, StatusCode}, response::IntoResponse, Json};
+        use axum::{
+            extract::State as AxumState,
+            http::{HeaderMap, StatusCode},
+            response::IntoResponse,
+            Json,
+        };
         use serde_json::{json, Value};
         use std::sync::{
             atomic::{AtomicUsize, Ordering},
@@ -2379,15 +2384,26 @@ url = "https://fixture.example/mcp"
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         // A call that races the fan-out still sees the durable deny before it
         // reaches a client whose session has not processed its update yet.
-        crate::providers::update_config_checked(|config| apply_mcp_toggle(config, "fixture", false))
-            .unwrap();
+        crate::providers::update_config_checked(|config| {
+            apply_mcp_toggle(config, "fixture", false)
+        })
+        .unwrap();
         for session in [Some(a.as_str()), Some(b.as_str()), None] {
-            assert!(call(session).await.unwrap_err().to_string().contains("已在本机停用"));
+            assert!(call(session)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("已在本机停用"));
             let resource = raw_params(&json!({
                 "sessionId": session, "server": "fixture", "uri": "fixture://resource",
             }));
-            assert!(call_ext::<Value>(&runtime.tx, "echo.agent/mcp/read_resource", resource)
-                .await.unwrap_err().to_string().contains("已在本机停用"));
+            assert!(
+                call_ext::<Value>(&runtime.tx, "echo.agent/mcp/read_resource", resource)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("已在本机停用")
+            );
         }
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         let disabled = apply_toggle(Some(&runtime.tx), "fixture", false)
@@ -2403,9 +2419,15 @@ url = "https://fixture.example/mcp"
             assert!(call(session).await.is_err());
         }
         assert_eq!(calls.load(Ordering::SeqCst), 3);
-        let (enabled, d) = tokio::join!(apply_toggle(Some(&runtime.tx), "fixture", true), new_session());
+        let (enabled, d) = tokio::join!(
+            apply_toggle(Some(&runtime.tx), "fixture", true),
+            new_session()
+        );
         let enabled = enabled.unwrap();
-        assert!(enabled.persisted && enabled.applied_live && enabled.warnings.is_empty(), "{enabled:?}");
+        assert!(
+            enabled.persisted && enabled.applied_live && enabled.warnings.is_empty(),
+            "{enabled:?}"
+        );
         let d = d.unwrap();
         for session in resident_and_pool.into_iter().chain([Some(d.as_str())]) {
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -2423,10 +2445,13 @@ url = "https://fixture.example/mcp"
         assert_eq!(calls.load(Ordering::SeqCst), 8);
         let mut shutdown = runtime.shutdown_complete;
         runtime.cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(20), shutdown.wait_for(|done| *done))
-            .await
-            .expect("Runtime shutdown did not acknowledge session persistence")
-            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            shutdown.wait_for(|done| *done),
+        )
+        .await
+        .expect("Runtime shutdown did not acknowledge session persistence")
+        .unwrap();
         tokio::task::spawn_blocking(move || runtime.thread.unwrap().join().unwrap().unwrap())
             .await
             .unwrap();

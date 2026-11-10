@@ -233,15 +233,19 @@ esac`);
     ECHO_TEST_PACKAGE_COMMANDS: path.join(root, "commands.log"),
     RUNNER_TEMP: path.join(root, "runner-temp"),
   };
-  const run = (args, extraEnv = {}) => spawnSync("bash", args, {
-    cwd: root, env: { ...env, ...extraEnv }, encoding: "utf8", timeout: 10_000,
-  });
+  const run = (args, extraEnv = {}) => {
+    const result = spawnSync("bash", args, {
+      cwd: root, env: { ...env, ...extraEnv }, encoding: "utf8", timeout: 30_000,
+    });
+    if (result.error) throw result.error;
+    return result;
+  };
   return { root, bin, scripts, run, commands: () => fs.readFileSync(env.ECHO_TEST_PACKAGE_COMMANDS, "utf8").trim().split("\n").filter(line => line.startsWith("tauri ")) };
 }
 
-// Each packaging subprocess has a 10s deadline; allow its parent test to collect
-// the exit status and diagnostics when other CI jobs are using the same runner.
-describe.skipIf(process.platform === "win32")("macOS packaging failure diagnostics", { timeout: 15_000 }, () => {
+// Allow the mock packaging subprocess to finish under runner contention while
+// keeping a deadline and asserting its actual exit code and diagnostics.
+describe.skipIf(process.platform === "win32")("macOS packaging failure diagnostics", { timeout: 45_000 }, () => {
   it("preserves compilation failure and never attempts to package an older binary", () => {
     const project = macosPackagingProject();
     const result = project.run(["scripts/build.sh"], { ECHO_TEST_COMPILE_EXIT: "41" });

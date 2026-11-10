@@ -2194,7 +2194,8 @@ pub fn mark_verified_revision(root: &Path, task_id: &str) -> Result<ChangeSet, S
 pub fn mark_verification_started(root: &Path, task_id: &str) -> Result<ChangeSet, String> {
     let mut set = load(root, task_id);
     set.verification_started_revision = Some(set.content_revision());
-    set.verification_started_configuration = Some(super::verification::configuration_revision(root));
+    set.verification_started_configuration =
+        Some(super::verification::configuration_revision(root));
     set.verified_revision = None;
     save(root, &set)?;
     Ok(set)

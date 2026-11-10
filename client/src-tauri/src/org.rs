@@ -2509,7 +2509,8 @@ pub async fn org_library_query(
         .ok()
         .and_then(|reporting| {
             (reporting.context.as_ref() == Some(&context)
-                && reporting.device_skill_epoch == Some(state.inner.skill_epoch.load(Ordering::SeqCst)))
+                && reporting.device_skill_epoch
+                    == Some(state.inner.skill_epoch.load(Ordering::SeqCst)))
             .then(|| reporting.device_skill_failures.clone())
         })
         .unwrap_or_default();

@@ -2267,8 +2267,15 @@ printf late > late-write
         };
         let path = store::workspace_dir(&root).join("verification-config.json");
         store::write_json(&path, &config).unwrap();
-        apply(&root, &coding_task.id, OrchestratorEvent::VerificationStarted).unwrap();
-        config.checks[0].env.insert("ECHO_TEST_SETTING".into(), "new".into());
+        apply(
+            &root,
+            &coding_task.id,
+            OrchestratorEvent::VerificationStarted,
+        )
+        .unwrap();
+        config.checks[0]
+            .env
+            .insert("ECHO_TEST_SETTING".into(), "new".into());
         let result = run_with_events(
             Arc::new(EditConfigOnOutput { path, config }),
             &CodingProcesses::default(),
@@ -2284,8 +2291,12 @@ printf late > late-write
         .unwrap();
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.status, VerificationStatus::EvidenceInvalidated);
-        let (finished, _) =
-            apply(&root, &coding_task.id, OrchestratorEvent::VerificationFinished).unwrap();
+        let (finished, _) = apply(
+            &root,
+            &coding_task.id,
+            OrchestratorEvent::VerificationFinished,
+        )
+        .unwrap();
         assert_eq!(finished.phase, task::TaskPhase::Blocked);
         assert_eq!(finished.blocker.as_deref(), Some("检查结果已失效"));
     }

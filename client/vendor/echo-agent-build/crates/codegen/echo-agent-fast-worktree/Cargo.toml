@@ -42,7 +42,7 @@ num_cpus = { workspace = true }
 
 reflink-copy = { workspace = true }
 rapidhash = "4.2.0"
-rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio-util = { workspace = true }
@@ -59,7 +59,7 @@ serde_json = { workspace = true }
 echo-agent-test-utils = { workspace = true }
 # Unconditional because cargo doesn't support feature-gated dev-deps cleanly.
 # Only used by tests behind #[cfg(feature = "metadata")] in db/tests.rs.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

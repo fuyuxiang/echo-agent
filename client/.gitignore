@@ -105,3 +105,4 @@ resources/models/diarization/
 !/src-tauri/resources/meeting-speech/.keep
 /src-tauri/binaries/echo-meeting-speech-*
 /src-tauri/meeting-speech/target/
+/src-tauri/.meeting-speech-prepare/

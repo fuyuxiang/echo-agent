@@ -25,6 +25,13 @@ export function reviewOutput(fallback) {
   return output;
 }
 
+export function annotateUiReviewFailure(error) {
+  if (process.env.GITHUB_ACTIONS !== "true") return;
+  const detail = String(error?.message ?? error).slice(0, 3500)
+    .replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+  console.error(`::error::${detail}`);
+}
+
 export async function createUiReviewServer(port = 1439, {
   freezeMotion = true,
   fixture = "/scripts/fixtures/ui-surfaces.tsx",

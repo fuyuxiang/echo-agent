@@ -6,6 +6,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
+use std::time::Duration;
 
 const RG_VER: &str = "15.2.0";
 const BFS_VER: &str = "4.1";
@@ -82,6 +83,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn download_release_asset(url: &str) -> Result<Vec<u8>, reqwest::Error> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(90))
+        .build()?;
+    for attempt in 1.. {
+        match client
+            .get(url)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .and_then(reqwest::blocking::Response::bytes)
+        {
+            Ok(bytes) => return Ok(bytes.to_vec()),
+            Err(error)
+                if attempt < 3
+                    && error.status().is_none_or(|status| {
+                        status.is_server_error() || matches!(status.as_u16(), 408 | 429)
+                    }) =>
+            {
+                println!("cargo:warning=Release asset download attempt {attempt} failed: {error}");
+                std::thread::sleep(Duration::from_secs(2 * attempt));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!()
+}
+
 /// Download + embed fd as an optional vendored file-search binary, mirroring
 /// the ripgrep bundling
 /// (release-only or `ECHO_AGENT_TOOLS_BUNDLE_FD_PATH` override), plus pinned
@@ -148,21 +176,11 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
         "https://github.com/sharkdp/fd/releases/download/v{ver}/fd-v{ver}-{asset_triple}.tar.gz"
     );
 
-    let bytes: Vec<u8> = {
-        let resp = reqwest::blocking::get(&url).map_err(|e| {
-            format!(
-                "Failed to download fd: {e}\nSet ECHO_AGENT_TOOLS_BUNDLE_FD_PATH to a local fd for offline builds."
-            )
-        })?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "HTTP {} downloading fd. Set ECHO_AGENT_TOOLS_BUNDLE_FD_PATH for offline builds.",
-                resp.status()
-            )
-            .into());
-        }
-        resp.bytes()?.to_vec()
-    };
+    let bytes = download_release_asset(&url).map_err(|e| {
+        format!(
+            "Failed to download fd: {e}\nSet ECHO_AGENT_TOOLS_BUNDLE_FD_PATH to a local fd for offline builds."
+        )
+    })?;
 
     // Verify the tarball against the pinned per-asset hash before unpacking.
     let expected_sha = FD_TARBALL_SHA256
@@ -261,8 +279,7 @@ fn bundle_search_tool(
     Ok(())
 }
 
-/// Download + embed ripgrep. Unchanged behavior; split out of `main` so the new
-/// search-tool bundling runs regardless of ripgrep's early returns.
+/// Download, verify and embed ripgrep for the current target.
 fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
     // Only bundle in release builds to avoid slowing down cargo check.
     println!("cargo:rerun-if-env-changed=ECHO_AGENT_TOOLS_BUNDLE_RG_PATH");
@@ -331,22 +348,11 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
         t = asset_triple
     );
 
-    let bytes: Vec<u8> = {
-        let resp = reqwest::blocking::get(&url).map_err(|e| {
-            format!(
-                "Failed to download ripgrep: {}\nSet ECHO_AGENT_TOOLS_BUNDLE_RG_PATH to a local rg for offline builds.",
-                e
-            )
-        })?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "HTTP {} downloading ripgrep. Set ECHO_AGENT_TOOLS_BUNDLE_RG_PATH for offline builds.",
-                resp.status()
-            )
-            .into());
-        }
-        resp.bytes()?.to_vec()
-    };
+    let bytes = download_release_asset(&url).map_err(|e| {
+        format!(
+            "Failed to download ripgrep: {e}\nSet ECHO_AGENT_TOOLS_BUNDLE_RG_PATH to a local rg for offline builds."
+        )
+    })?;
 
     let expected_sha = RG_ARCHIVE_SHA256
         .iter()

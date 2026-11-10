@@ -98,7 +98,10 @@ impl PromptAuthorization {
         Ok(())
     }
 
-    fn with_binding<T>(&self, run: impl FnOnce(&Binding) -> Result<T, String>) -> Result<T, String> {
+    fn with_binding<T>(
+        &self,
+        run: impl FnOnce(&Binding) -> Result<T, String>,
+    ) -> Result<T, String> {
         let _guard = BINDING_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let binding = load_binding()?.ok_or("微信已解除绑定")?;
         self.require_current(&binding)?;
@@ -1043,7 +1046,11 @@ pub(crate) async fn weixin_set_workspaces(
     }
     let sessions = crate::sessions::list_all_sessions(false)?;
     mutate_binding(|binding| {
-        if binding.allowed_workspaces.iter().any(|cwd| !allowed.contains(cwd)) {
+        if binding
+            .allowed_workspaces
+            .iter()
+            .any(|cwd| !allowed.contains(cwd))
+        {
             rotate_access_revision(binding);
         }
         binding.allowed_workspaces = allowed;
@@ -2395,7 +2402,12 @@ async fn process_message(app: &AppHandle, message: &Value) -> Result<(), String>
         input.trim()
     };
     let result = route_message(
-        app, &mut binding, &authorization, prompt, reference, attachments,
+        app,
+        &mut binding,
+        &authorization,
+        prompt,
+        reference,
+        attachments,
     )
     .await;
     if let Err(error) = result {
@@ -3211,7 +3223,9 @@ mod tests {
         assert!(admitted_message.require_current(&binding).is_err());
         binding.shared_sessions.push("session".into());
         assert!(admitted_message.require_current(&binding).is_err());
-        assert!(super::PromptAuthorization::from_binding(&binding).require_current(&binding).is_ok());
+        assert!(super::PromptAuthorization::from_binding(&binding)
+            .require_current(&binding)
+            .is_ok());
     }
 
     #[test]

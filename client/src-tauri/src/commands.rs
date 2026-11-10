@@ -1811,8 +1811,18 @@ pub async fn agent_send(
     review: Option<crate::coding_review_runtime::ReviewRequest>,
 ) -> Result<(), String> {
     agent_send_impl(
-        app, state, session_id, text, attachments, display_text, prompt_id,
-        send_now, mode, document_tool_bridge, review, None,
+        app,
+        state,
+        session_id,
+        text,
+        attachments,
+        display_text,
+        prompt_id,
+        send_now,
+        mode,
+        document_tool_bridge,
+        review,
+        None,
     )
     .await
 }
@@ -1827,8 +1837,18 @@ pub(crate) async fn agent_send_from_weixin(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     agent_send_impl(
-        app.clone(), state, session_id, text, Some(attachments), None,
-        Some(prompt_id), None, None, None, None, Some(authorization),
+        app.clone(),
+        state,
+        session_id,
+        text,
+        Some(attachments),
+        None,
+        Some(prompt_id),
+        None,
+        None,
+        None,
+        None,
+        Some(authorization),
     )
     .await
 }
@@ -1987,7 +2007,8 @@ async fn agent_send_impl(
     }
     tracing::info!(%session_id, attachment_count = attachments.len(), send_now, "agent prompt send");
     let enqueue = || {
-        agent_runtime::enqueue_prepared_prompt(&tx, prepared_prompt).map_err(|error| error.to_string())
+        agent_runtime::enqueue_prepared_prompt(&tx, prepared_prompt)
+            .map_err(|error| error.to_string())
     };
     let response = match weixin {
         Some(authorization) => authorization.enqueue(&app, &session_id, &workspace, enqueue),
@@ -2011,7 +2032,8 @@ async fn agent_send_impl(
                     crate::coding_document_bridge::cancel_session_run(&session_id, Some(prompt_id)),
                     async {
                         if submitted {
-                            agent_runtime::cancel(&tx, &session_id, "stop", Some(prompt_id)).await?;
+                            agent_runtime::cancel(&tx, &session_id, "stop", Some(prompt_id))
+                                .await?;
                         }
                         Ok::<(), anyhow::Error>(())
                     },

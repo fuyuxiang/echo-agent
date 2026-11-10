@@ -43,9 +43,14 @@ impl McpTransport for McpClientTransportAdapter {
                 "no peer info after init".into(),
             )
         })?;
+        let server = info.server_info.as_ref().ok_or_else(|| {
+            echo_agent_computer_hub_mcp_adapter::McpError::Transport(
+                "no server identity after init".into(),
+            )
+        })?;
         Ok(McpServerInfo {
-            name: info.server_info.name.clone(),
-            version: info.server_info.version.clone(),
+            name: server.name.clone(),
+            version: server.version.clone(),
             capabilities: serde_json::to_value(&info.capabilities).unwrap_or_default(),
         })
     }

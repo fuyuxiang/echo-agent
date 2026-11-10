@@ -36,7 +36,7 @@ tauri-plugin-updater = { path = "../vendor/tauri-plugin-updater", version = "=2.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }
 echo-agent-core = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-core" }
 # In-process team MCP server (team_mcp.rs) — streamable-http JSON-RPC.
 # Already in Cargo.lock as a transitive dependency of the embedded upstream

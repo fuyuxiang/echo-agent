@@ -111,7 +111,10 @@ export function inspectRenderedColors() {
       if (!fill && !stroke) continue;
       const paint = [...rgba(fill ? s.fill : s.stroke)];
       paint[3] *= Number(fill ? s.fillOpacity : s.strokeOpacity);
-      controls.push({selector:label(svg.parentElement),role:svg.closest(".meeting-player__play,.echo-composer__send") ? "action-icon" : "selection-mark",ratio:ratio(pixel(e,paint),pixel(e,[0,0,0,0])),threshold:3});
+      const option = svg.closest(".task-filter-menu__option");
+      controls.push({selector:label(svg.parentElement),role:svg.closest(".meeting-player__play,.echo-composer__send") ? "action-icon" : "selection-mark",
+        ...(option && { text: option.textContent.trim() }),
+        ratio:ratio(pixel(e,paint),pixel(e,[0,0,0,0])),threshold:3});
     }
   }
   return { text, failures: text.filter(x => x.ratio < x.threshold), controls, controlFailures: controls.filter(x => x.ratio < x.threshold), disabled, manual };

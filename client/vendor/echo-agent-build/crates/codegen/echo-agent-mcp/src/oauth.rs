@@ -72,7 +72,7 @@ static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// If another task or process is already running the flow for the same server,
 /// waits for it instead of opening another browser tab. The provided
 /// `AuthorizationManager` must already have metadata set (from
-/// `discover_metadata`). On success, the manager's credentials are updated
+/// `resolve_metadata`). On success, the manager's credentials are updated
 /// and persisted via its `CredentialStore`.
 ///
 /// When `force` is true (user-initiated auth), any existing in-flight entry

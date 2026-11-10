@@ -30,7 +30,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{
-    DateTime, Datelike, Duration, Local, MappedLocalTime, NaiveDate, NaiveDateTime, NaiveTime, Weekday,
+    DateTime, Datelike, Duration, Local, MappedLocalTime, NaiveDate, NaiveDateTime, NaiveTime,
+    Weekday,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -4644,7 +4645,10 @@ mod tests {
         let (first, second) = (a.min(b), a.max(b));
         assert_eq!(first.to_rfc3339(), "2026-11-01T01:30:00-04:00");
         assert_eq!(second.to_rfc3339(), "2026-11-01T01:30:00-05:00");
-        assert_eq!(recurring_next(&fold, &before_fold, before_fold), Some(first));
+        assert_eq!(
+            recurring_next(&fold, &before_fold, before_fold),
+            Some(first)
+        );
         // Claiming at the earlier instant, or reconstructing the schedule
         // after a restart before the second instant, never enqueues twice.
         for from in [first, first + Duration::minutes(15), second] {
@@ -4657,7 +4661,10 @@ mod tests {
         once.schedule_type = "once".into();
         once.scheduled_date = Some("2026-11-01".into());
         once.scheduled_time = Some("01:30".into());
-        assert_eq!(compute_next_run(&once, before_fold), Some(first.to_rfc3339()));
+        assert_eq!(
+            compute_next_run(&once, before_fold),
+            Some(first.to_rfc3339())
+        );
         assert_eq!(compute_next_run(&once, first), None);
         once.scheduled_date = Some("2026-03-08".into());
         once.scheduled_time = Some("02:30".into());

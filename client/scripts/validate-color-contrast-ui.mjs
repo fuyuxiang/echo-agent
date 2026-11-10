@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
+import { annotateUiReviewFailure, createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
 import { inspectRenderedColors } from "./ui-color-audit.mjs";
 
 const baseline = process.argv.includes("--baseline");
@@ -153,16 +153,27 @@ try {
         evidence.push({spec,theme,width,height,font,state:"approved-paused-queue",...await page.evaluate(inspectRenderedColors)});
       }
       if (process.argv.includes("--open-overlays")) {
-        const capture = async state => {
-          evidence.push({spec,theme,width,height,font,state,...await page.evaluate(inspectRenderedColors)});
+        const capture = async (state, colors) => {
+          evidence.push({spec,theme,width,height,font,state,...(colors ?? await page.evaluate(inspectRenderedColors))});
           if (font === 13 || width === 1024 && font === 18) await page.screenshot({path:join(output,`${spec.replace(":","-")}-${state}-${theme}-${width}-${font}.png`)});
         };
         if (surface === "workbench") {
           await page.getByRole("button", {name:"筛选任务",exact:true}).click();
-          await page.getByRole("menu", {name:"任务筛选",exact:true}).waitFor();
-          const glyphs = await page.evaluate(inspectRenderedColors);
-          assert(glyphs.controls.filter(control=>control.role==="selection-mark").length >= 2, "Both sidebar filter marks must be measured");
-          await capture("sidebar-selected-filter");
+          const menu = page.getByRole("menu", {name:"任务筛选",exact:true});
+          await menu.waitFor();
+          const checked = menu.getByRole("menuitemradio", { checked: true });
+          assert.equal(await checked.count(), 2, "Both sidebar filter groups must have a selection");
+          // At compact sizes the popover scrolls. Measure the actual paint of
+          // each selected item when it is reachable and visible in that menu.
+          for (const [index, item] of (await checked.all()).entries()) {
+            await item.locator(".task-filter-menu__option-check").scrollIntoViewIfNeeded();
+            const label = (await item.innerText()).trim();
+            const colors = await page.evaluate(inspectRenderedColors);
+            assert(colors.controls.some(control => control.role === "selection-mark"
+              && control.selector === "span.task-filter-menu__option-check" && control.text === label),
+            `Sidebar filter mark must be measured: ${label}`);
+            await capture(`sidebar-selected-filter-${index + 1}`, colors);
+          }
           await page.keyboard.press("Escape");
         }
         if (surface === "workspace-picker") {
@@ -216,4 +227,10 @@ try {
   writeFileSync(join(output,"failures.json"),JSON.stringify(failures,null,2));
   console.log(JSON.stringify({observations:evidence.length,text:evidence.reduce((n,e)=>n+e.text.length,0),failures:failures.length,manual:evidence.reduce((n,e)=>n+e.manual.length,0),output}));
   if (!auditOnly && !baseline) assert.deepEqual(failures,[],`Rendered text contrast failures; see ${output}/failures.json`);
-} finally { await browser?.close(); await server.close(); }
+} catch (error) {
+  annotateUiReviewFailure(error);
+  throw error;
+} finally {
+  await browser?.close();
+  await server.close();
+}

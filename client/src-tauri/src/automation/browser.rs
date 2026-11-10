@@ -517,7 +517,9 @@ impl BrowserController {
             _ => return Err("button 只能是 left、right 或 middle".into()),
         };
         let target_id = Some(approval.target_id.as_str());
-        let actual = self.verify_interaction(approval, false, None, false).await?;
+        let actual = self
+            .verify_interaction(approval, false, None, false)
+            .await?;
         let (x, y) = actual["x"]
             .as_f64()
             .zip(actual["y"].as_f64())
@@ -865,7 +867,8 @@ impl BrowserController {
         to_x: f64,
         to_y: f64,
     ) -> Result<Value, String> {
-        self.verify_interaction(approval, false, None, false).await?;
+        self.verify_interaction(approval, false, None, false)
+            .await?;
         let target_id = Some(approval.target_id.as_str());
         self.call_page_at(
             target_id,
@@ -873,7 +876,8 @@ impl BrowserController {
             json!({ "type": "mouseMoved", "x": from_x, "y": from_y }),
         )
         .await?;
-        self.verify_interaction(approval, false, None, false).await?;
+        self.verify_interaction(approval, false, None, false)
+            .await?;
         self.call_page_at(
             target_id,
             "Input.dispatchMouseEvent",
