@@ -22,9 +22,11 @@ describe("SettingsSearch", () => {
     expect(onSelect).not.toHaveBeenCalled();
 
     fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).not.toBe(selected);
+    const nextOption = screen.getAllByRole("option")[1];
+    expect(input).toHaveAttribute("aria-activedescendant", nextOption.id);
+    expect(nextOption.id).not.toBe(selected);
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ section: "usage" }), expect.any(Function));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ title: nextOption.firstElementChild?.textContent }), expect.any(Function));
   });
 
   it("WebView 未提供组合标志时仍保留输入，结束组合后恢复正常搜索", () => {

@@ -22,6 +22,11 @@ function fmtToken(t: number, useWan: boolean): string {
   return String(t);
 }
 
+function fmtPercent(pct: number): string {
+  if (pct > 0 && pct < 0.1) return "<0.1%";
+  return `${Number(pct.toFixed(1))}%`;
+}
+
 interface CategoryRow {
   key: string;
   label: string;
@@ -42,17 +47,14 @@ function buildRows(ctx: ContextInfo): CategoryRow[] {
   if (mcp && mcp.tokens > 0) {
     rows.push({ key: "mcp", label: "MCP", tokens: mcp.tokens, detail: mcp.detail });
   }
-  // 守恒收敛(参照 EchoAgent distributeWithConservation):EchoAgent 的各项是独立
-  // 估算,口径与 used 不完全一致(可能重叠),总和可能超过 used。超过时按比例
-  // 缩放到 used,保证各项占比之和恒为 100%;不足时差额归入「其他」。
+  // 分类估算可能重叠。超出已用量时按比例缩放，保留小数以免改变色段的总宽度。
+  // 分类合计不足已用量时，差额归入「其他」。
   const known = rows.reduce((s, r) => s + r.tokens, 0);
-  if (known > ctx.used && known > 0) {
+  if (known > ctx.used) {
     const scale = ctx.used / known;
-    for (const r of rows) r.tokens = Math.round(r.tokens * scale);
-    rows.push({ key: "other", label: "其他", tokens: Math.max(0, ctx.used - rows.reduce((s, r) => s + r.tokens, 0)) });
-  } else {
-    rows.push({ key: "other", label: "其他", tokens: Math.max(0, ctx.used - known) });
+    for (const row of rows) row.tokens *= scale;
   }
+  rows.push({ key: "other", label: "其他", tokens: Math.max(0, ctx.used - known) });
   return rows;
 }
 
@@ -87,7 +89,10 @@ export function ContextUsagePill({ sessionId, active = false, onRefreshSignal, e
 
   const pct = ctx?.usagePct ?? 0;
   const useWan = (ctx?.total ?? 0) >= 1_000_000;
-  const rows = ctx ? buildRows(ctx) : [];
+  const rows = ctx ? buildRows(ctx).map((row) => ({
+    ...row,
+    percent: (row.tokens / ctx.total) * 100,
+  })) : [];
   const cacheHit =
     usage && usage.inputTokens > 0
       ? `${((usage.cachedReadTokens / usage.inputTokens) * 100).toFixed(1)}%`
@@ -127,29 +132,32 @@ export function ContextUsagePill({ sessionId, active = false, onRefreshSignal, e
           {ctx && <><div className="context-usage__popover-header">
             <span className="context-usage__popover-title">上下文容量</span>
             <span className="context-usage__popover-summary">
-              {fmtToken(ctx.used, useWan)}/{fmtToken(ctx.total, useWan)}（{pct}%）
+              {fmtToken(ctx.used, useWan)}/{fmtToken(ctx.total, useWan)}（{fmtPercent((ctx.used / ctx.total) * 100)}）
             </span>
           </div>
-          <div className="context-usage__bar">
-            <div
-              className="context-usage__bar-fill"
-              style={{ width: `${Math.min(100, Math.max(0, (ctx.used / ctx.total) * 100))}%` }}
-            />
+          <div className="context-usage__bar" aria-hidden="true">
+            {rows.filter((row) => row.percent > 0).map((row) => (
+              <span
+                key={row.key}
+                className={`context-usage__bar-segment context-usage__color--${row.key}`}
+                style={{ width: `${row.percent}%` }}
+              />
+            ))}
           </div>
           <p className="context-usage__estimate">
             {typeof ctx.autoCompactThresholdPercent === "number" && <>自动整理阈值 {ctx.autoCompactThresholdPercent}%。</>}
-            单次请求超出模型输入预算时也可能提前整理。下方各项占比为估算。
+            单次请求超出模型输入预算时也可能提前整理。各项占比为估算，按模型总容量计算。
           </p>
           <ul className="context-usage__rows">
             {rows.map((r) => (
               <li key={r.key} className="context-usage__row">
-                <span className={`context-usage__swatch context-usage__swatch--${r.key}`} />
+                <span className={`context-usage__swatch context-usage__color--${r.key}`} />
                 <span className="context-usage__row-label">
                   {r.label}
                   {r.detail ? <span className="context-usage__row-detail">{r.detail}</span> : null}
                 </span>
                 <span className="context-usage__row-value">
-                  {ctx.used > 0 ? `${((r.tokens / ctx.used) * 100).toFixed(1)}%` : "0%"}
+                  {fmtPercent(r.percent)}
                 </span>
               </li>
             ))}

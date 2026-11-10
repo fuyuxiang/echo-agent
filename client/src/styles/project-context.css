@@ -1,11 +1,9 @@
-.project-task-context { display: grid; gap: 8px; padding: 12px 14px; margin-bottom: 10px; border: 1px solid var(--echo-border-default); border-radius: 12px; background: var(--echo-bg-secondary); font-size: .8125rem; }
-.project-task-context > div:first-child { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
-.project-task-context p { margin: 0; color: var(--echo-text-medium); }
-.project-task-context span, .project-assets-context-hint { color: var(--echo-text-medium); }
-.project-task-context button { width: fit-content; border: 0; background: transparent; color: var(--echo-brand); cursor: pointer; font: inherit; }
-.project-task-context__chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.project-task-context .project-context-chip { padding: 5px 9px; max-width: 100%; overflow-wrap: anywhere; border-radius: 8px; background: var(--echo-bg-tertiary); color: var(--echo-text-strong); }
-.project-assets-context-hint { font-size: .8125rem; line-height: 1.6; }
+.project-draft-assets { align-items: center; max-height: 5.5rem; overflow-y: auto; }
+.project-draft-assets__name { overflow: hidden; text-overflow: ellipsis; }
+.project-draft-assets > [role="alert"] { color: var(--echo-status-error); font-size: .75rem; }
+.echo-composer:has(.project-draft-assets) .echo-composer__setup-hint { position: static; min-height: 50px; }
+.echo-composer--disabled:has(.project-draft-assets) .echo-composer__input:placeholder-shown { display: none; }
+.project-assets-context-hint { color: var(--echo-text-medium); font-size: .8125rem; line-height: 1.6; }
 
 .project-context-sidebar { display: flex; flex-direction: column; gap: 20px; }
 .project-context-summary { font-size: .8125rem; line-height: 1.65; overflow-wrap: anywhere; }
@@ -19,4 +17,8 @@
 .project-default-preference { display: grid; grid-template-columns: 1fr auto 12px; align-items: center; gap: 8px; width: 100%; padding: 10px 4px; border: 0; border-bottom: 1px solid var(--echo-border-default); background: transparent; text-align: left; cursor: pointer; color: var(--echo-text-strong); font: inherit; }
 .project-default-preference span:nth-child(2) { color: var(--echo-text-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
 .project-default-preference:hover { background: var(--echo-bg-secondary); }
+.project-participant-notes { border-top: 1px solid var(--echo-border-default); padding-top: 16px; font-size: .8125rem; }
+.project-participant-notes summary { cursor: pointer; font-weight: 600; }
+.project-participant-notes ul { margin: 8px 0 0; padding-inline-start: 20px; overflow-wrap: anywhere; }
+.project-work-item-permission { margin: 0 0 8px; color: var(--echo-text-medium); font-size: .75rem; }
 @media (max-width: 900px) { .pd-page .project-context-sidebar { width: 230px; padding: 14px; } }

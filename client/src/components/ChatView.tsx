@@ -9,7 +9,7 @@ import { useSessionStore, type ChatMessage, type ToolCallView } from "@/stores/s
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useContinuationStore } from "@/stores/continuation-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
-import { hydrateKnowledgeTraces } from "@/lib/knowledge-traces-client";
+import { restoreKnowledgeTraces } from "@/lib/knowledge-traces-client";
 import { createMarkdownHostConfig, openLocalPath } from "@/lib/markdown-host";
 import { rewindExecute, rewindPoints, setCodingMode, sessionContinue, type ContinuationRequest } from "@/lib/agent-client";
 import { continuationTargets, inheritedMessageIds, continuationAnchor, latestContinuationTarget } from "@/lib/session-continuation";
@@ -35,7 +35,7 @@ import { buildConversationTurns } from "@/lib/conversation-navigation";
 import { FileChangesPanel } from "./FileChangesPanel";
 import { SubagentPanel, mergePanelItems } from "./SubagentPanel";
 import { TeamStatusView } from "./TeamStatusView";
-import { SessionHeader, type SessionNavigationProps, type WorkspaceTarget } from "./SessionHeader";
+import { SessionHeader, type ProjectSessionBreadcrumb, type SessionNavigationProps, type WorkspaceTarget } from "./SessionHeader";
 import { aggregateFileChanges } from "@/lib/file-changes";
 import { getExecutionNotice } from "@/lib/execution-notice";
 import { deriveSubagents } from "@/lib/subagents";
@@ -118,6 +118,10 @@ export function ChatView({
   onOpenOrganization,
   apiReady = true,
   setupHint,
+  setupRequiresSettings = true,
+  draftOnly = false,
+  sessionRestoreError,
+  onRetrySessionRestore,
   onOpenSettings,
   onOpenSecuritySettings,
   cancelling = false,
@@ -128,6 +132,7 @@ export function ChatView({
   onRename,
   navigation,
   headerLeading,
+  projectBreadcrumb,
   notice,
   taskRefreshSignal,
   attentionRequest,
@@ -178,6 +183,10 @@ export function ChatView({
   /** False when this session has no configured model or usable credential. */
   apiReady?: boolean;
   setupHint?: string;
+  setupRequiresSettings?: boolean;
+  draftOnly?: boolean;
+  sessionRestoreError?: string;
+  onRetrySessionRestore?: () => void;
   onOpenSettings?: () => void;
   onOpenSecuritySettings?: () => void;
   cancelling?: boolean;
@@ -190,6 +199,7 @@ export function ChatView({
   onRename?: (title: string) => Promise<void>;
   navigation?: SessionNavigationProps;
   headerLeading?: ReactNode;
+  projectBreadcrumb?: ProjectSessionBreadcrumb;
   notice?: ReactNode;
   taskRefreshSignal?: number;
   onOpenTeamGroup?: (team: import("@/lib/agent-client").RuntimeTeamInfo) => void;
@@ -308,9 +318,9 @@ export function ChatView({
   const currentRuntime = runtimePanelKey(workspaceView);
   if (currentRuntime) visitedRuntime.current.views.add(currentRuntime);
   const [historyAction, setHistoryAction] = useState<"rewind" | null>(null);
-  const historyDisabled = !workspace.available || workspace.busy || modelLoading || historyIsBusy({ streaming, sendNowPending, control });
-  const modelLoadingRef = useRef(modelLoading);
-  modelLoadingRef.current = modelLoading;
+  const historyDisabled = !workspace.available || workspace.busy || draftOnly || modelLoading || historyIsBusy({ streaming, sendNowPending, control });
+  const modelLoadingRef = useRef(modelLoading || draftOnly);
+  modelLoadingRef.current = modelLoading || draftOnly;
   // Invalidate the workflow, rather than reopening its old confirmation when
   // the next turn finishes. RewindBar also checks the live store before IPC.
   useLayoutEffect(() => {
@@ -1102,7 +1112,7 @@ export function ChatView({
                       latest={isLastAssistant || idx > latestQuestionIndex && forkTargets.has(m.id)}
                       retrying={isLastAssistant && Boolean(sessionId && retryingSessions.has(sessionId))}
                       retryDisabled={retryBlocked || !apiReady || modelLoading || replacingTurn || sendNowPending || continuationPending}
-                      retryDisabledReason={continuationPending ? "正在创建新对话，请稍候" : !workspace.available || workspace.busy ? "请先恢复本任务的工作目录，再重试回复" : !apiReady ? "请先配置可用模型" : modelLoading ? "正在同步模型，请稍候" : undefined}
+                      retryDisabledReason={continuationPending ? "正在创建新对话，请稍候" : draftOnly ? setupHint : !workspace.available || workspace.busy ? "请先恢复本任务的工作目录，再重试回复" : !apiReady ? "请先配置可用模型" : modelLoading ? "正在同步模型，请稍候" : undefined}
                       onRetry={
                         isLastAssistant && !execution && !inheritedIds.has(m.id) && !streaming && m.complete && !taskFeedback
                           ? handleRetry
@@ -1120,6 +1130,7 @@ export function ChatView({
     <>
     {sessionId && <SessionHeader key={sessionId} sessionId={sessionId} title={title || "新任务"}
       onRename={onRename} navigation={navigation ?? { onNewTask }} leading={headerLeading}
+      projectBreadcrumb={projectBreadcrumb}
       actions={{ onToast,
         onStop: streaming ? () => { void cancelTask("stop"); } : undefined,
         stopping: cancellationPending,
@@ -1153,7 +1164,11 @@ export function ChatView({
         {!modelLoading && <SessionWorkspaceWarning workspace={workspace} onNewTask={onNewTask} />}
         {traceLoadError && <div className="chatview__error-banner" role="alert">
           <span>{traceLoadError}</span>
-          <button type="button" onClick={() => { if (sessionId) void hydrateKnowledgeTraces(sessionId).then(() => useKnowledgeStore.getState().setTraceLoadError(sessionId)).catch(error => onToast?.(`恢复来源失败：${friendlyError(error)}`)); }}>重试恢复知识来源</button>
+          <button type="button" disabled={draftOnly} onClick={() => { if (sessionId) void restoreKnowledgeTraces(sessionId); }}>重试恢复知识来源</button>
+        </div>}
+        {sessionRestoreError && sessionRestoreError !== workspace.value?.message && <div className="chatview__error-banner" role="alert">
+          <span className="chatview__error-text">{formatAgentError(sessionRestoreError) ?? sessionRestoreError}</span>
+          <button type="button" onClick={onRetrySessionRestore}>重试恢复会话</button>
         </div>}
         {error && !inlineRuntimeError && error !== workspace.value?.message && (
           <div className="chatview__error-banner" role="alert">
@@ -1233,7 +1248,7 @@ export function ChatView({
               sessionId={sessionId}
               streaming={streaming}
               sendNowPending={sendNowPending}
-              awaitingQuestion={awaitingQuestion || awaitingDecision || awaitingPlan || replacingTurn || cancellationPending || continuationPending}
+              awaitingQuestion={draftOnly || !workspace.available || workspace.busy || awaitingQuestion || awaitingDecision || awaitingPlan || replacingTurn || cancellationPending || continuationPending}
               onSendNow={streaming ? onSendNow : onSend}
             />
           )}
@@ -1244,11 +1259,12 @@ export function ChatView({
           </div>}
           <Composer
             streaming={streaming}
-            sendDisabled={!workspace.available || workspace.busy || replacingTurn || continuationPending}
+            sendDisabled={draftOnly || !workspace.available || workspace.busy || replacingTurn || continuationPending}
             disabled={control?.phase === "pausing" || control?.phase === "stopping"}
             apiReady={apiReady}
+            draftOnly={draftOnly}
             setupHint={setupHint}
-            onOpenSettings={onOpenSettings}
+            onOpenSettings={setupRequiresSettings ? onOpenSettings : undefined}
             onSend={sendDocumentMessage}
             sendNowPending={sendNowPending}
             awaitingQuestion={awaitingQuestion || awaitingDecision || awaitingPlan}
@@ -1280,12 +1296,12 @@ export function ChatView({
             onControl={handleTextControl}
             cancelling={cancellationPending}
             modelId={modelId}
-              modelLoading={modelLoading}
+            modelLoading={modelLoading}
             models={models}
             onModelChange={onModelChange}
             cwd={workspace.cwd}
             onOpenWorkspace={openWorkspaceDirectory}
-            openWorkspaceDisabled={!workspace.available || workspace.busy}
+            openWorkspaceDisabled={draftOnly || !workspace.available || workspace.busy}
             showDisclaimer
             showMeta
             compact
@@ -1301,7 +1317,7 @@ export function ChatView({
             onSelectExpert={onSelectExpert}
             onNavigateConnectors={onNavigateConnectors}
             automationMode={automationMode}
-            automationModeDisabled={automationModeChanging}
+            automationModeDisabled={draftOnly || automationModeChanging}
             onAutomationModeChange={handleAutomationModeChange}
             knowledgeSessionId={sessionId ?? undefined}
             onOpenKnowledgeBase={onOpenKnowledgeBase}

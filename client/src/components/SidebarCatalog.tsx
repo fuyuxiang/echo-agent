@@ -26,6 +26,8 @@ export function useSidebarCatalog() {
   const ref = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState<CatalogSection | null>(null);
   const [previews, setPreviews] = useState<Partial<Record<CatalogSection, Preview>>>({});
+  const [compactDisclosures, setCompactDisclosures] = useState(false);
+  const disclosureFocus = useRef<string>();
   const reveal = useRef<{ section: CatalogSection; index: number } | null>(null);
 
   useLayoutEffect(() => {
@@ -45,6 +47,7 @@ export function useSidebarCatalog() {
       if (!catalog.clientHeight || !catalog.clientWidth) return;
       const targets = new Set<Element>([catalog]);
       const style = getComputedStyle(catalog);
+      const moreHeight = pixels(style.getPropertyValue("--sidebar-catalog-more-height"));
       let space = catalog.clientHeight - pixels(style.paddingBlockStart) - pixels(style.paddingBlockEnd);
       const lists = Array.from(catalog.children).flatMap(section => {
         const list = section.querySelector<HTMLElement>(":scope > .sidebar__group[data-catalog-list]");
@@ -56,8 +59,8 @@ export function useSidebarCatalog() {
         }
 
         space -= margins(section) + margins(list);
-        for (const heading of section.children) {
-          if (heading === list) continue;
+        const heading = section.querySelector(":scope > .sidebar__section-head");
+        if (heading) {
           targets.add(heading);
           space -= outerHeight(heading);
         }
@@ -75,15 +78,21 @@ export function useSidebarCatalog() {
               height + margins(conversations) + outerHeight(conversations.firstElementChild));
           }
         }
-        return [{ id, rows, sizes, projectContextHeight,
+        return [{ id, rows, sizes, projectContextHeight, hasHeading: Boolean(heading),
           count: rows.children.length, visible: Math.min(1, rows.children.length) }];
       });
       for (const element of observed) if (!targets.has(element)) resize.unobserve(element);
       for (const element of targets) if (!observed.has(element)) resize.observe(element);
       observed = targets;
 
+      const rowHeight = (list: typeof lists[number], visible: number) =>
+        Math.ceil(Math.max(list.sizes[visible], list.projectContextHeight));
+      const minimumWithFooters = lists.reduce((total, list) =>
+        total + rowHeight(list, list.visible) + (list.visible < list.count ? moreHeight : 0), 0);
+      const compact = minimumWithFooters > space;
+      if (compact !== compactDisclosures) setCompactDisclosures(compact);
       const cost = (list: typeof lists[number], visible: number) =>
-        Math.max(list.sizes[visible], list.projectContextHeight);
+        rowHeight(list, visible) + (visible < list.count && !(compact && list.hasHeading) ? moreHeight : 0);
 
       // Reserve a whole row per section and room for an open project's heading
       // and first conversation before giving any section additional preview rows.
@@ -103,10 +112,17 @@ export function useSidebarCatalog() {
 
       const next: Partial<Record<CatalogSection, Preview>> = {};
       for (const list of lists) {
-        const height = cost(list, list.visible);
+        const height = rowHeight(list, list.visible);
         const extra = active === "projects" && list.projectContextHeight
           ? Math.max(0, Math.min(space, list.rows.getBoundingClientRect().height - height)) : 0;
         next[list.id] = { height: Math.ceil(height + extra), remaining: list.count - list.visible, visible: list.visible };
+      }
+      const focused = document.activeElement;
+      if (focused?.classList.contains("sidebar__catalog-more") && catalog.contains(focused)) {
+        const section = lists.find(list => listIds[list.id] === focused.getAttribute("aria-controls"))?.id;
+        if (section && (compact !== compactDisclosures || !next[section]?.remaining)) {
+          disclosureFocus.current = listIds[section];
+        }
       }
       setPreviews(previous => (Object.keys(listIds) as CatalogSection[]).every(id =>
         previous[id]?.height === next[id]?.height && previous[id]?.remaining === next[id]?.remaining
@@ -121,9 +137,17 @@ export function useSidebarCatalog() {
       resize.disconnect();
       mutations.disconnect();
     };
-  }, [active]);
+  }, [active, compactDisclosures]);
 
-  return { ref, active, setActive, previews, reveal };
+  useLayoutEffect(() => {
+    const listId = disclosureFocus.current;
+    if (!listId) return;
+    disclosureFocus.current = undefined;
+    const list = ref.current?.querySelector<HTMLElement>(`#${listId}`);
+    if (list && document.activeElement === document.body) focusCatalogDisclosure(list);
+  }, [compactDisclosures, previews]);
+
+  return { ref, active, setActive, previews, reveal, compactDisclosures };
 }
 
 export type SidebarCatalogState = ReturnType<typeof useSidebarCatalog>;
@@ -134,23 +158,23 @@ function focusCatalogDisclosure(list: HTMLElement) {
     section?.querySelector<HTMLElement>(".sidebar__section-label"))?.focus();
 }
 
-export function SidebarCatalogMore({ section, catalog }: {
+export function SidebarCatalogMore({ section, catalog, inHeading = false }: {
   section: CatalogSection;
   catalog?: SidebarCatalogState;
+  inHeading?: boolean;
 }) {
   const preview = catalog?.previews[section];
-  if (!catalog || !preview) return null;
+  if (!catalog || !preview?.remaining || inHeading !== catalog.compactDisclosures) return null;
   const expanded = catalog.active === section;
-  if (!preview.remaining && (!expanded || section === "projects")) return null;
   const label = expanded ? `收起更多${sectionNames[section]}`
     : `查看更多${sectionNames[section]}（${preview.remaining}）`;
-  return <button type="button" className="sidebar__section-action sidebar__catalog-more"
+  return <button type="button" className={`sidebar__catalog-more${inHeading ? " sidebar__catalog-more--compact" : ""}`}
     aria-controls={listIds[section]} aria-expanded={expanded} aria-label={label} title={label}
     onClick={() => {
       catalog.reveal.current = expanded ? null : { section, index: preview.visible };
       catalog.setActive(expanded ? null : section);
     }}>
-    {expanded ? "收起" : "更多"}
+    {expanded ? "收起" : inHeading ? `更多 ${preview.remaining}` : `查看更多（${preview.remaining}）`}
   </button>;
 }
 
@@ -190,7 +214,8 @@ export function SidebarCatalogList({ section, catalog, label, className = "", ch
     }
   }, [catalog?.reveal, children, expanded, preview, section]);
 
-  return <div id={id} ref={listRef} className={`sidebar__group ${className}`} data-catalog-list={section}
+  return <>
+    <div id={id} ref={listRef} className={`sidebar__group ${className}`} data-catalog-list={section}
       data-catalog-preview={preview && !expanded ? "" : undefined} style={preview ? { height: preview.height } : undefined}
       role="region" aria-label={label} tabIndex={expanded ? 0 : undefined}
       onKeyDown={event => {
@@ -201,5 +226,7 @@ export function SidebarCatalogList({ section, catalog, label, className = "", ch
         catalog.setActive(null);
       }}>
       <div ref={rowsRef} className="sidebar__catalog-rows">{children}</div>
-  </div>;
+    </div>
+    <SidebarCatalogMore section={section} catalog={catalog} />
+  </>;
 }

@@ -323,10 +323,11 @@ try {
       assert.equal(geometry.overflow, false, `catalog horizontal overflow: ${context}`);
       assert.equal(geometry.lists.length, 3);
       assert.ok(geometry.content.bottom <= geometry.footer.y + 1, `catalog overlaps account controls: ${context}`);
+      const catalogFits = geometry.content.scrollHeight <= geometry.content.clientHeight + 1;
       for (const list of geometry.lists) {
         assert.ok(list.height >= list.firstRow.height - 1, `catalog must retain a complete first row: ${context}`);
-        if (geometry.content.scrollHeight <= geometry.content.clientHeight + 1) {
-          assert.ok(list.firstRow.y >= geometry.content.y && list.firstRow.bottom <= geometry.content.bottom + 1, `a fitting catalog must show every first row: ${context}`);
+        if (catalogFits || height >= macWindow.minHeight) {
+          assert.ok(list.firstRow.y >= geometry.content.y && list.firstRow.bottom <= geometry.content.bottom + 1, `every first row must be visible at supported heights: ${context}`);
         }
       }
       await catalogPage.getByRole("button", { name: "筛选任务", exact: true }).click();
@@ -336,19 +337,21 @@ try {
         return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + 12));
       }), `catalog scrolling must not clip the toolbar filter: ${context}`);
       await catalogPage.keyboard.press("Escape");
-      // At heights below the native minimum the outer catalog may scroll;
-      // moving focus to its final item must still reveal the item fully.
+      // When all sections and their footer controls exceed the available space,
+      // focusing the last disclosure must scroll it fully into view.
       const groupsMore = catalogPage.locator('.sidebar__catalog-more[aria-controls="sidebar-group-list"]');
-      if (height >= macWindow.minHeight) {
-        assert.ok(await groupsMore.evaluate(button => {
-          const box = button.getBoundingClientRect();
-          const content = button.closest(".sidebar__content").getBoundingClientRect();
-          return box.top >= content.top && box.bottom <= content.bottom
-            && button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
-        }), `More groups must be fully visible at a supported window height: ${context}`);
+      const groupsMoreVisible = () => groupsMore.evaluate(button => {
+        const box = button.getBoundingClientRect();
+        const content = button.closest(".sidebar__content").getBoundingClientRect();
+        return box.top >= content.top && box.bottom <= content.bottom + 1
+          && button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+      });
+      if (catalogFits || height >= macWindow.minHeight) {
+        assert.ok(await groupsMoreVisible(), `More groups must be fully visible at supported heights: ${context}`);
       }
       const firstHidden = await catalogPage.locator("#sidebar-group-list [inert] .group-sidebar__item > span").first().innerText();
       await groupsMore.focus();
+      assert.ok(await groupsMoreVisible(), `Focusing More groups must reveal the full control: ${context}`);
       await catalogPage.keyboard.press("Enter");
       await catalogPage.locator("#sidebar-group-list:not([data-catalog-preview])").waitFor();
       assert.equal(await catalogPage.locator("#sidebar-group-list .group-sidebar__item:focus > span").innerText(), firstHidden);
@@ -364,6 +367,21 @@ try {
       await catalogPage.locator("#sidebar-group-list").evaluate(element => { element.scrollTop = 0; });
       await catalogPage.screenshot({ path: join(output, `${name}.png`) });
       catalogEvidence.push({ name, ...geometry });
+    }
+  }
+  if (!process.argv.includes("--navigation-only")) {
+    await catalogPage.setViewportSize({ width: 1024, height: 800 });
+    await catalogPage.goto(`${base}?surface=home&sidebarCatalog=both&groups=12&windowChrome=1&theme=light&platform=mac`);
+    const disclosure = catalogPage.locator('.sidebar__catalog-more[aria-controls="sidebar-group-list"]');
+    await catalogPage.locator('.sidebar__catalog-more:not(.sidebar__catalog-more--compact)[aria-controls="sidebar-group-list"]').waitFor();
+    await disclosure.focus();
+    for (const height of [680, 800]) {
+      await catalogPage.setViewportSize({ width: 1024, height });
+      await catalogPage.waitForFunction(compact => {
+        const button = document.querySelector('.sidebar__catalog-more[aria-controls="sidebar-group-list"]');
+        return button && document.activeElement === button
+          && button.classList.contains("sidebar__catalog-more--compact") === compact;
+      }, height === 680, { timeout: 5000 });
     }
   }
   await checkNavigationHierarchy(browser);

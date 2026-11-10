@@ -5,7 +5,7 @@ import { useKnowledgeStore } from "@/stores/knowledge-store";
 /**
  * 项目详情页 — 对齐目标截图（图3-6）。
  *
- *  布局: 顶部面包屑(📁 项目 / 名) + 右上「邀请」 + tab 栏(动态/计划/任务/资产)
+ *  布局: 顶部面包屑(📁 项目 / 名) + tab 栏(动态/工作项/项目资料)
  *        + 右侧「项目配置」栏(指令/连接器/专家/技能/自动化) + 底部项目级 Composer。
  *  项目元数据由 Rust 数据文件持久；计划/任务可编辑，资产是已复制
  *  到项目私有目录的真实文件，专家/技能/MCP 选项来自当前运行时。
@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useProjectsStore,
   type ProjectMeta,
+  type ProjectTab,
   type RefItem,
 } from "@/stores/projects-store";
 import {
@@ -41,10 +42,9 @@ import { selectProjectPermissionMode, usePermissionModeStore } from "@/stores/pe
 import { flushProjectPersistence } from "@/stores/projects-store";
 import "@/styles/project-context.css";
 
-type TabKey = "activity" | "task" | "asset";
 type DrawerKey = "instruction" | "model" | "connectors" | "experts" | "skills" | "automation";
 
-const TABS: { key: TabKey; label: string }[] = [
+const TABS: { key: ProjectTab; label: string }[] = [
   { key: "activity", label: "动态" },
   { key: "task", label: "工作项" },
   { key: "asset", label: "项目资料" },
@@ -61,12 +61,14 @@ const CONFIG_CARDS: { key: DrawerKey; title: string; desc: string }[] = [
 
 export function ProjectDetailView({
   project,
+  initialTab = "activity",
   draftFocusRequest,
   workspaces = [],
   onBack,
   onToast,
   onStartConversation,
   onOpenSession,
+  onOpenProjectWorkItemSession,
   onRenameSession,
   onArchiveSession,
   onDeleteSession,
@@ -82,6 +84,7 @@ export function ProjectDetailView({
   onOpenOrganization,
 }: {
   project: ProjectMeta;
+  initialTab?: ProjectTab;
   draftFocusRequest?: number;
   workspaces?: WorkspaceInfo[];
   onBack: () => void;
@@ -89,6 +92,7 @@ export function ProjectDetailView({
   /** Start a new conversation within this project (creates a real EchoAgent session). */
   onStartConversation?: StartProjectConversation;
   onOpenSession?: (sessionId: string, cwd?: string) => void;
+  onOpenProjectWorkItemSession?: (projectId: string, sessionId: string, cwd?: string) => void;
   onRenameSession?: (sessionId: string, title: string, cwd?: string) => Promise<void>;
   onArchiveSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
   onDeleteSession?: (sessionId: string, cwd?: string) => Promise<void>;
@@ -106,8 +110,8 @@ export function ProjectDetailView({
 }) {
   // 读最新（交互后 store 更新，父传入的快照可能过期）。
   const live = useProjectsStore((s) => s.projects.find((p) => p.id === project.id)) ?? project;
+  const participantNotes = live.members.filter(note => typeof note === "string" && note.trim());
   const updateConfig = useProjectsStore((s) => s.updateConfig);
-  const addMember = useProjectsStore((s) => s.addMember);
 
   const selectedKnowledge = useKnowledgeStore(state => state.defaultSources);
   const draftKey = `project:${project.id}`;
@@ -120,13 +124,14 @@ export function ProjectDetailView({
   let selectedAssetIds: string[] = [];
   try { const parsed: unknown = JSON.parse(selectedAssetDraft); if (Array.isArray(parsed)) selectedAssetIds = parsed.filter((id): id is string => typeof id === "string"); } catch { /* An invalid optional selection never changes the text draft. */ }
   const selectedAssets = live.assets.filter(asset => selectedAssetIds.includes(asset.id) && asset.kind === "file" && asset.path);
+  const hasInvalidAssetSelection = selectedAssetIds.some(id => !selectedAssets.some(asset => asset.id === id));
   const selectAssets = (ids: string[]) => {
     touchDraft(assetDraftKey);
     useSessionsStore.getState().setDraft(assetDraftKey, ids.length ? JSON.stringify(ids) : "");
   };
   const selectAsset = (id: string) => selectAssets([...new Set([...selectedAssetIds, id])]);
   const prepareProjectAttachments = async (attachments: string[] = []) => {
-    if (selectedAssetIds.some(id => !selectedAssets.some(asset => asset.id === id))) throw new Error("部分已选项目资料已删除或没有文件，请移除失效选择后重试");
+    if (hasInvalidAssetSelection) throw new Error("部分已选项目资料已删除或没有文件，请移除失效选择后重试");
     await flushProjectPersistence();
     const granted = selectedAssets.length ? await projectAssetsUse(live.id, selectedAssets.map(asset => asset.path!)) : [];
     const all = [...new Set([...attachments, ...granted])];
@@ -138,22 +143,23 @@ export function ProjectDetailView({
     }
     return all;
   };
-  const [tab, setTab] = useState<TabKey>("activity");
+  const [tab, setTab] = useState<ProjectTab>(initialTab);
   const [drawer, setDrawer] = useState<DrawerKey | null>(null);
-  const [membersOpen, setMembersOpen] = useState(false);
   const [pickerFor, setPickerFor] = useState<null | "connectors" | "experts" | "skills">(null);
   // Composer 失败原因。Composer 内部不持有"失败 alert",必须由调用方展示,
   // 否则用户看到"按了发送但什么都没发生"。
   const [sendError, setSendError] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<{ cwd?: string; message: string }>();
   const [composerExpert, setComposerExpert] = useState<AgentEntry | null>(null);
-  const { requestInput, requestConfirmation, dialog } = useAppDialog(live.id);
+  const { requestConfirmation, dialog } = useAppDialog(live.id);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
-  const projectPermissionMode = usePermissionModeStore(selectProjectPermissionMode);
+  const permissionDraft = useProjectsStore(state => state.draftPermissions[live.id]);
+  const projectPermissionMode = usePermissionModeStore(state => selectProjectPermissionMode(state, permissionDraft?.mode));
+  const workItemPermissionMode = usePermissionModeStore(selectProjectPermissionMode);
   const mentionCandidates = useWorkspaceMentions(taskCwd);
   const configuredProjectModelAvailable = !live.defaultModelId
     || models.some((model) => model.id === live.defaultModelId);
@@ -187,21 +193,6 @@ export function ProjectDetailView({
     setPickerFor(null);
   };
 
-  const invite = () => {
-    requestInput({
-      title: "添加参与者备注",
-      description: "可以填写姓名、职责或角色。该备注仅保存在本机项目中。",
-      fields: [{ name: "name", label: "姓名或角色", required: true, maxLength: 100 }],
-      confirmLabel: "添加",
-      action: ({ name }) => {
-        const trimmed = name.trim();
-        addMember(live.id, trimmed);
-
-        setMembersOpen(false);
-      },
-    });
-  };
-
   const selectWorkspace = (cwd: string, trigger?: HTMLButtonElement | null) => {
     if (!mounted.current) return;
     const next = cwd || live.cwd;
@@ -233,7 +224,8 @@ export function ProjectDetailView({
       onToast?.("当前项目无法启动会话");
       return;
     }
-    if (projectPermissionMode === undefined) return;
+    const expectedPermissionMode = fromDraft ? projectPermissionMode : workItemPermissionMode;
+    if (expectedPermissionMode === undefined) return;
     setSendError(null);
     setWorkspaceError(undefined);
     const submittedRevision = draftRevision(draftKey);
@@ -242,13 +234,18 @@ export function ProjectDetailView({
     try {
       const sessionId = await onStartConversation(live.id, text, modelId, {
         cwd: taskCwd ?? null,
-        expectedPermissionMode: projectPermissionMode,
+        requestedPermissionMode: fromDraft ? permissionDraft?.mode : undefined,
+        expectedPermissionMode,
         prepareAttachments: () => prepareProjectAttachments(attachments),
         rememberModel: fromDraft,
+        sourceTab: fromDraft ? "activity" : "task",
       });
       if (!sessionId) {
         setSendError(fromDraft ? "消息尚未发送，请查看提示后重试。" : "工作项尚未启动，请查看提示后重试。");
       } else {
+        if (fromDraft && permissionDraft) {
+          useProjectsStore.getState().consumeDraftPermission(live.id, permissionDraft);
+        }
         const drafts = useSessionsStore.getState();
         const draftUnchanged = draftRevision(draftKey) === submittedRevision;
         const hasSeparateDraft = !fromDraft && Boolean(drafts.drafts[draftKey]?.trim() || draftAttachments(draftKey).length);
@@ -276,14 +273,6 @@ export function ProjectDetailView({
     }
   };
 
-  const hasInstructions = typeof live.instructions === "string" && live.instructions.trim().length > 0;
-  const hasCapabilities = Boolean(live.experts.length || live.skills.length || live.connectors.length);
-  const projectHeaderAria = hasCapabilities
-    ? `项目「${live.name}」已配置 ${live.experts.length} 个专家、${live.skills.length} 个技能、${live.connectors.length} 个连接器${hasInstructions ? "，已配置项目指令" : ""}`
-    : hasInstructions
-      ? `项目「${live.name}」已配置项目指令`
-      : `项目「${live.name}」尚未配置指令、专家、技能或连接器`;
-
   return (
     <div className="pd-page">
       <PageToolbar className="pd-topbar">
@@ -292,22 +281,6 @@ export function ProjectDetailView({
           <button className="pd-crumb__link" onClick={onBack}>项目</button>
           <span className="pd-crumb__sep">/</span>
           <span className="pd-crumb__name">{live.name}</span>
-        </div>
-        <div className="pd-topbar__right">
-          <button className="pd-invite" onClick={() => setMembersOpen((v) => !v)}>参与者</button>
-          {membersOpen && (
-            <div className="pd-members-pop">
-              <div className="pd-members-pop__head">项目参与者（本机备注）</div>
-              {live.members.length === 0 ? (
-                <div className="pd-members-pop__empty">暂无成员</div>
-              ) : (
-                live.members.map((m) => (
-                  <div className="pd-members-pop__item" key={m}>{m}</div>
-                ))
-              )}
-              <button className="pd-members-pop__add" onClick={invite}>+ 添加参与者</button>
-            </div>
-          )}
         </div>
       </PageToolbar>
 
@@ -345,8 +318,11 @@ export function ProjectDetailView({
                 models={models}
                 defaultModelId={projectModelId}
                 onRun={onStartConversation ? (message, modelId) => runProjectConversation(message, modelId, [], false) : undefined}
-                runDisabled={projectPermissionMode === undefined}
-                onOpenSession={onOpenSession ? (sessionId) => onOpenSession(sessionId, live.cwd) : undefined}
+                runDisabled={workItemPermissionMode === undefined}
+                runPermissionMode={workItemPermissionMode}
+                onOpenSession={onOpenProjectWorkItemSession
+                  ? sessionId => onOpenProjectWorkItemSession(live.id, sessionId, live.cwd)
+                  : onOpenSession && (sessionId => onOpenSession(sessionId, live.cwd))}
                 onRestoreSession={onArchiveSession
                   ? (sessionId) => onArchiveSession(sessionId, false, live.cwd)
                   : undefined}
@@ -357,52 +333,46 @@ export function ProjectDetailView({
           </div>
 
           <div className="pd-composer-shell">
-            <section className="project-task-context" aria-label="本次任务上下文">
-              <div><strong>本次任务上下文</strong><span>发送消息或将工作项交给 Agent 时，会使用所选工作目录、项目资料和项目默认偏好。</span></div>
-              <div className="project-task-context__chips">{selectedAssets.map(asset => <button type="button" className="project-context-chip" key={asset.id} onClick={() => selectAssets(selectedAssetIds.filter(id => id !== asset.id))} aria-label={`移除本次资料 ${asset.name}`}>{asset.name}<span aria-hidden="true"> ×</span></button>)}</div>
-              {selectedAssetIds.length !== selectedAssets.length && <p role="alert">部分资料已失效。<button type="button" onClick={() => selectAssets(selectedAssets.map(asset => asset.id))}>移除失效选择</button></p>}
-              {!selectedAssets.length && <p>本次未选用项目资料。<button type="button" onClick={() => setTab("asset")}>从项目资料中选择</button></p>}
-              {selectedAssets.length > 0 && <button type="button" onClick={() => selectAssets([])}>清除本次资料选择</button>}
-            </section>
-            <div
-              className="pd-composer-header"
-              role="status"
-              aria-label={projectHeaderAria}
-              title={projectHeaderAria}
-            >
-              <span className="pd-composer-header__icon" aria-hidden="true">
-                <FolderIcon size="sm" />
-              </span>
-              <span className="pd-composer-header__name">{live.name}</span>
-              <span className="pd-composer-header__sep" aria-hidden="true">·</span>
-              <span className="pd-composer-header__label">项目默认偏好：</span>
-              {hasInstructions && (
-                <span className="pd-composer-header__count pd-composer-header__count--active pd-composer-header__instruction">项目指令</span>
-              )}
-              {!hasCapabilities && !hasInstructions && (
-                <span className="pd-composer-header__count">尚未配置任务参考信息</span>
-              )}
-              {hasCapabilities && (
-                <>
-                  <span className={`pd-composer-header__count${live.experts.length > 0 ? " pd-composer-header__count--active" : ""}`}>
-                    {live.experts.length} 专家
-                  </span>
-                  <span className="pd-composer-header__sep" aria-hidden="true">·</span>
-                  <span className={`pd-composer-header__count${live.skills.length > 0 ? " pd-composer-header__count--active" : ""}`}>
-                    {live.skills.length} 技能
-                  </span>
-                  <span className="pd-composer-header__sep" aria-hidden="true">·</span>
-                  <span className={`pd-composer-header__count${live.connectors.length > 0 ? " pd-composer-header__count--active" : ""}`}>
-                    {live.connectors.length} 连接器
-                  </span>
-                </>
-              )}
-            </div>
             <Composer
               draftKey={draftKey}
               draft={projectDraft}
               focusRequest={draftFocusRequest}
               onDraftChange={(value) => useSessionsStore.getState().setDraft(draftKey, value)}
+              draftAttachmentControls={selectedAssetIds.length > 0 ? (
+                <div
+                  className="composer-blocks project-draft-assets"
+                  role="group"
+                  aria-label="本次项目资料"
+                  onClick={event => event.stopPropagation()}
+                >
+                  {selectedAssets.map(asset => (
+                    <span className="composer-blocks__chip" key={asset.id}>
+                      <span className="project-draft-assets__name" title={asset.name}>{asset.name}</span>
+                      <button
+                        type="button"
+                        className="composer-blocks__chip-remove"
+                        onClick={() => selectAssets(selectedAssetIds.filter(id => id !== asset.id))}
+                        aria-label={`移除本次资料 ${asset.name}`}
+                      >
+                        <span aria-hidden="true">×</span>
+                      </button>
+                    </span>
+                  ))}
+                  {hasInvalidAssetSelection && (
+                    <>
+                      <span role="alert">部分项目资料已失效</span>
+                      <button type="button" className="pd-btn pd-btn--small" onClick={() => selectAssets(selectedAssets.map(asset => asset.id))}>
+                        移除失效选择
+                      </button>
+                    </>
+                  )}
+                  {selectedAssets.length > 1 && (
+                    <button type="button" className="pd-btn pd-btn--small" onClick={() => selectAssets([])}>
+                      清除本次资料选择
+                    </button>
+                  )}
+                </div>
+              ) : null}
               streaming={false}
               onSend={async (text, attachments) => Boolean(await runProjectConversation(text, projectModelId!, attachments ?? [], true))}
               sendDisabled={projectPermissionMode === undefined}
@@ -430,7 +400,7 @@ export function ProjectDetailView({
               automaticWorkspace={!taskCwd}
               showMeta
               compact
-              inheritTaskPermission
+              projectDraftPermission={{ mode: permissionDraft?.mode, onChange: mode => useProjectsStore.getState().setDraftPermission(live.id, mode) }}
               onSelectExpert={addComposerExpert}
               activeExpertName={composerExpert?.name}
               onDismissExpert={() => setComposerExpert(null)}
@@ -470,6 +440,12 @@ export function ProjectDetailView({
             <p>这些偏好会提供给新任务。资料仍需为每次任务单独选择。</p>
             {CONFIG_CARDS.map(c => <button type="button" key={c.key} className="project-default-preference" aria-label={`配置项目默认${c.title}`} onClick={() => setDrawer(c.key)} title={c.desc}><span>{c.title}</span><span>{c.key === "model" ? findModelChoiceLabel(models, projectModelId, "待选择") : c.key === "instruction" ? live.instructions?.trim() ? "已配置" : "未配置" : c.key === "experts" ? `${live.experts.length} 个` : c.key === "skills" ? `${live.skills.length} 个` : c.key === "connectors" ? `${live.connectors.length} 个` : "管理"}</span><span aria-hidden="true">›</span></button>)}
           </details>
+          {participantNotes.length > 0 && (
+            <details className="project-participant-notes">
+              <summary>参与者备注（本机）</summary>
+              <ul>{participantNotes.map((note, index) => <li key={index}>{note}</li>)}</ul>
+            </details>
+          )}
         </aside>
       </div>
 

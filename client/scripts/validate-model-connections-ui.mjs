@@ -16,17 +16,33 @@ try {
     page.setDefaultNavigationTimeout(60000);
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
-    await page.addInitScript(font => localStorage.setItem("echoagent.fontSize", String(font)), font);
+    await page.addInitScript(font => {
+      localStorage.setItem("echoagent.fontSize", String(font));
+      window.scrolledModelIds = [];
+      const scrollIntoView = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (options) {
+        if (this.dataset?.modelId) window.scrolledModelIds.push(this.dataset.modelId);
+        return scrollIntoView.call(this, options);
+      };
+    }, font);
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=model&theme=${theme}&modelTesting=1&initialModelId=test-personal/b`);
     const detail = page.getByRole("region", { name: "我的网关连接详情" });
     await detail.waitFor();
     await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
-    assert.equal(await detail.locator('[data-model-highlighted="true"]').getAttribute("data-model-id"), "test-personal/b");
+    const row = detail.locator('[data-model-id="test-personal/b"]');
+    assert.ok(await page.evaluate(() => window.scrolledModelIds.includes("test-personal/b")));
+    assert.deepEqual(await row.evaluate(element => ({
+      focused: document.activeElement === element,
+      outline: getComputedStyle(element).outlineStyle,
+      outlineWidth: getComputedStyle(element).outlineWidth,
+      sameBorder: getComputedStyle(element).borderColor === getComputedStyle(element.previousElementSibling).borderColor,
+    })), { focused: true, outline: "solid", outlineWidth: "2px", sameBorder: true });
     const test = detail.getByRole("button", { name: "测试模型 备用模型", exact: true });
+    await page.keyboard.press("Tab");
+    assert.equal(await test.evaluate(element => element.matches(":focus-visible")), true);
     await test.click();
     assert.equal(await test.isDisabled(), true);
     assert.equal(await detail.getByRole("button", { name: "测试模型 个人模型", exact: true }).isEnabled(), true);
-    const row = detail.locator('[data-model-id="test-personal/b"]');
     await row.getByRole("status").waitFor();
     assert.match(await row.getByRole("status").textContent(), /上次测试失败.*429/s);
     await row.scrollIntoViewIfNeeded();

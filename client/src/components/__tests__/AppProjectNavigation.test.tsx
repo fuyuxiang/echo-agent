@@ -16,6 +16,7 @@ vi.mock("@/components/HomePage", () => ({HomePage: () => <div>首页</div>}));
 vi.mock("@/components/PlaceholderPage", () => ({PlaceholderPage: (props: ComponentProps<typeof import("@/components/PlaceholderPage").PlaceholderPage>) =>
   <ProjectsPanel cwd="/workspace" models={[{ id: "model-a", label: "Model A" }]} defaultModelId="model-a"
     onNavigate={props.onProjectNavigate} onStartProject={props.onStartProject} onStartProjectConversation={props.onStartProjectConversation}
+    onOpenSession={props.onOpenSession} onOpenProjectWorkItemSession={props.onOpenProjectWorkItemSession}
     onToast={props.onToast} />}));
 vi.mock("@/components/TasksPanel", () => ({ TasksPanel: () => null }));
 vi.mock("@/components/SecondarySidebar", () => ({ SecondarySidebar: () => null }));
@@ -25,11 +26,22 @@ vi.mock("@/components/Sidebar", () => ({Sidebar: (props: ComponentProps<typeof i
   <button onClick={() => props.onOpenProjectDraft?.("project-no-cwd")}>新建项目对话</button>
   <button onClick={() => props.onOpenProjectDraft?.("project-b")}>新建 B 对话</button>
   <button onClick={() => props.onOpenProject?.("project-b")}>打开 B 项目</button>
+  <button onClick={() => props.onSelect("work-session", "/workspace")}>从侧栏打开项目会话</button>
   <button onClick={() => props.onNavigate?.("项目")}>查看项目</button>
   <button onClick={() => props.onNewSession()}>返回首页</button>
   <button onClick={() => props.onNavigate?.("代码开发")}>打开 Code</button>
 </aside>}));
-vi.mock("@/components/ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("@/components/ChatView").ChatView>) => <div>已进入会话<span data-testid="session-cwd">{props.cwd}</span><button onClick={props.onNewTask}>从任务新建</button></div> }));
+vi.mock("@/components/ChatView", async () => {
+  const { SessionHeader } = await import("@/components/SessionHeader");
+  return { ChatView: (props: ComponentProps<typeof import("@/components/ChatView").ChatView>) => <>
+    <SessionHeader sessionId={useSessionsStore.getState().currentSessionId!} title={props.title ?? ""}
+      projectBreadcrumb={props.projectBreadcrumb} onRename={props.onRename}
+      summary={{ searchable: false, hasContent: false, changeCount: 0, artifactCount: 0, hasPlan: false,
+        planCompleted: 0, planTotal: 0, subagentCount: 0, runningSubagents: 0, teamCount: 0 }}
+      activeView={null} onView={() => {}} onCloseView={() => {}} onFind={() => {}} findOpen={false} />
+    <div>已进入会话<span data-testid="session-cwd">{props.cwd}</span><button onClick={props.onNewTask}>从任务新建</button></div>
+  </> };
+});
 vi.mock("@/lib/agent-client", async (original) => ({
   ...await original<object>(), agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
@@ -87,16 +99,22 @@ it("侧栏加号聚焦并复用项目草稿，只在发送时绑定任务目录"
     useProjectsStore.setState({ projects: [project] });
     useSessionsStore.getState().setDraft("project:project-no-cwd", "未发送的草稿");
     useSessionsStore.getState().setDraft("project-workspace:project-no-cwd", "/task");
+    usePermissionModeStore.getState().setHomeMode("always-approve");
   });
   fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
   const input = await screen.findByRole("textbox", { name: "输入问题或任务" });
   expect(input).toHaveFocus();
   expect(input).toHaveValue("未发送的草稿");
   expect(client.agentNewSession).not.toHaveBeenCalled();
+  fireEvent.click(await screen.findByRole("button", { name: "请求批准" }));
+  fireEvent.click(screen.getByRole("menuitemradio", { name: /^自动判断/ }));
+  expect(screen.getByRole("button", { name: "自动判断" })).toBeVisible();
   await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
-  await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/task", "model-a", undefined, "ask"));
+  await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/task", "model-a", "auto", "auto"));
   await waitFor(() => expect(screen.getByTestId("session-cwd")).toHaveTextContent("/task"));
+  expect(useSessionsStore.getState().independent.find(item => item.sessionId === "new-session")?.permissionMode).toBe("auto");
+  expect(usePermissionModeStore.getState().homeMode).toBe("always-approve");
   expect(useProjectsStore.getState().projects[0].cwd).toBe("/project");
 });
 
@@ -228,6 +246,58 @@ it("创建对话期间通过项目面包屑返回列表，迟到结果只注册�
   expect(useSessionsStore.getState().currentSessionId).toBeNull();
   expect(document.querySelector(".project-card2__main")).not.toBeNull();
   expect(useProjectsStore.getState().projects[0].conversations.some(item => item.sessionId === "breadcrumb-late-task")).toBe(true);
+});
+
+it("项目会话显示可返回的路径，并按打开入口回到工作项或动态", async () => {
+  await start();
+  const project = useProjectsStore.getState().projects[0];
+  act(() => {
+    useProjectsStore.setState({ projects: [{
+      ...project,
+      conversations: [{ sessionId: "work-session", title: "已保存的会话标题", createdAt: project.createdAt }],
+      tasks: [{ id: "work", title: "验收工作项", scope: "personal", source: "manual",
+        status: "in_progress", sessionId: "work-session" }],
+    }] });
+    useSessionsStore.getState().upsert({ sessionId: "work-session", cwd: "/workspace", currentModelId: "model-a" });
+    useSessionsStore.getState().setDraft("work-session", "未发送的会话草稿");
+  });
+  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  fireEvent.click(await screen.findByRole("button", { name: "工作项" }));
+  fireEvent.click(screen.getByRole("button", { name: "打开会话" }));
+  const path = await screen.findByRole("navigation", { name: "项目会话路径" });
+  expect(within(path).getByText("已保存的会话标题")).toBeVisible();
+  expect(within(path).getByRole("button", { name: "编辑标题" })).toBeInTheDocument();
+
+  fireEvent.click(within(path).getByRole("button", { name: "Project" }));
+  expect(await screen.findByText("验收工作项")).toBeVisible();
+  expect(useSessionsStore.getState().drafts["work-session"]).toBe("未发送的会话草稿");
+
+  fireEvent.click(screen.getByRole("button", { name: "从侧栏打开项目会话" }));
+  const reopenedPath = await screen.findByRole("navigation", { name: "项目会话路径" });
+  fireEvent.click(within(reopenedPath).getByRole("button", { name: "Project" }));
+  const activity = await screen.findByRole("list", { name: "最近项目对话" });
+  fireEvent.click(within(activity).getByText("已保存的会话标题", { exact: true }));
+  const activityPath = await screen.findByRole("navigation", { name: "项目会话路径" });
+  fireEvent.click(within(activityPath).getByRole("button", { name: "项目" }));
+  expect(await screen.findByRole("button", { name: "打开项目 Project" })).toBeVisible();
+});
+
+it("从工作项启动的新会话也可以回到工作项", async () => {
+  await start();
+  const project = useProjectsStore.getState().projects[0];
+  act(() => useProjectsStore.setState({ projects: [{
+    ...project,
+    tasks: [{ id: "work", title: "生成报告", scope: "personal", source: "manual", status: "pending" }],
+  }] }));
+  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  fireEvent.click(await screen.findByRole("button", { name: "工作项" }));
+  const run = screen.getByRole("button", { name: "交给 Agent" });
+  await waitFor(() => expect(run).toBeEnabled());
+  fireEvent.click(run);
+  const path = await screen.findByRole("navigation", { name: "项目会话路径" });
+  fireEvent.click(within(path).getByRole("button", { name: "Project" }));
+  expect(await screen.findByText("生成报告")).toBeVisible();
+  expect(await screen.findByRole("button", { name: "打开会话" })).toBeVisible();
 });
 
 it("等待原项目创建时进入另一项目，仍保留当前项目页面", async () => {

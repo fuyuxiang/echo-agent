@@ -55,7 +55,7 @@ import { useSessionStore, type PlanApprovalRequest } from "@/stores/session-stor
 import { useSubagentStore } from "@/stores/subagent-store";
 import { isUpstreamBrandedModelId } from "@/lib/model-branding";
 import { preparePromptWithPersonalKnowledge } from "@/lib/knowledge-context";
-import { hydrateKnowledgeTraces, persistKnowledgeTrace } from "@/lib/knowledge-traces-client";
+import { invalidateKnowledgeTraceLoad, persistKnowledgeTrace, restoreKnowledgeTraces } from "@/lib/knowledge-traces-client";
 import {
   organizationScopeIdsForSession,
   useKnowledgeStore,
@@ -205,11 +205,18 @@ export function agentLoadSession(sessionId: string, cwd: string): Promise<string
   }
   // Register ownership before touching stores or invoking native replay. Any
   // reentrant navigation then joins the same projection and request.
-  const promise = Promise.resolve().then(() => loadSessionHistory(sessionId, cwd)).finally(() => {
-    if (sessionLoads.get(sessionId)?.promise === promise) {
-      sessionLoads.delete(sessionId);
-      useSessionStore.getState().finishHistoryReplay(sessionId);
-    }
+  let successful = false;
+  const promise = Promise.resolve().then(async () => {
+    const model = await loadSessionHistory(sessionId, cwd);
+    successful = true;
+    return model;
+  }).finally(() => {
+    if (sessionLoads.get(sessionId)?.promise !== promise) return;
+    sessionLoads.delete(sessionId);
+    // Citations have their own request ownership. A later open must read the
+    // current model from the runtime even while those citations are loading.
+    if (successful) void restoreKnowledgeTraces(sessionId);
+    useSessionStore.getState().finishHistoryReplay(sessionId, successful);
   });
   sessionLoads.set(sessionId, { cwd, promise });
   return promise;
@@ -226,6 +233,7 @@ export async function agentReloadSession(sessionId: string, cwd: string): Promis
       // A failed old snapshot does not prevent reading the rewritten history.
     }
   }
+  invalidateKnowledgeTraceLoad(sessionId);
   useSessionStore.getState().dropSessionCache(sessionId);
   return agentLoadSession(sessionId, cwd);
 }
@@ -238,14 +246,7 @@ async function loadSessionHistory(sessionId: string, cwd: string): Promise<strin
   // A load can recreate the resident Runtime session, so any renderer-side MCP
   // acknowledgement for the previous resident instance is stale.
   invalidateAgentKnowledgeSourceSync(sessionId);
-  const model = await invoke<string | null>("agent_load_session", { sessionId, cwd });
-  try {
-    await hydrateKnowledgeTraces(sessionId);
-    useKnowledgeStore.getState().setTraceLoadError(sessionId);
-  } catch (error) {
-    useKnowledgeStore.getState().setTraceLoadError(sessionId, `历史知识来源恢复失败：${String(error).replace(/^Error:\s*/, "")}。对话仍可继续；原记录已保留，可重试加载。`);
-  }
-  return model;
+  return invoke<string | null>("agent_load_session", { sessionId, cwd });
 }
 
 export async function agentListSessions(
@@ -668,6 +669,10 @@ export async function agentDeleteSession(
     sessionId,
     cwd: cwd ?? null,
   });
+  const replaying = agentSessionLoadInFlight(sessionId);
+  sessionLoads.delete(sessionId);
+  if (replaying) useSessionStore.getState().finishHistoryReplay(sessionId);
+  invalidateKnowledgeTraceLoad(sessionId);
   invalidateAgentKnowledgeSourceSync(sessionId);
   useKnowledgeStore.getState().forgetSession(sessionId);
   return result;

@@ -181,6 +181,11 @@
   display: none;
 }
 
+.chatview .echo-composer--draft-only .echo-composer__setup-hint {
+  min-height: 0;
+  cursor: default;
+}
+
 .chatview__main > .findbar {
   top: 54px;
 }

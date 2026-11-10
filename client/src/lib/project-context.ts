@@ -1,12 +1,20 @@
-import type { ProjectMeta, ProjectConversation, RefItem } from "@/stores/projects-store";
+import type { ProjectMeta, ProjectConversation, ProjectTab, RefItem } from "@/stores/projects-store";
 import type { PermissionMode } from "@/lib/agent-client";
 
 export interface ProjectConversationOptions {
   /** The directory shown at submission, or null to allocate an independent directory. */
   cwd: string | null;
+  /** Explicit choice for this task, if the draft overrides the default. */
+  requestedPermissionMode?: PermissionMode;
   expectedPermissionMode: PermissionMode;
   prepareAttachments?: () => Promise<string[]>;
   rememberModel?: boolean;
+  sourceTab?: ProjectTab;
+}
+
+export function projectSessionTitle(sessionTitle?: string, projectTitle?: string): string {
+  const title = sessionTitle?.trim();
+  return title && title !== "未命名会话" ? title : projectTitle?.trim() || "未命名会话";
 }
 
 export type StartProjectConversation = (

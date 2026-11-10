@@ -121,6 +121,7 @@ interface PlaceholderPageProps {
   /** 项目页：进入项目（新建会话并注入说明）。 */
   onStartProject?: ComponentProps<typeof ProjectsPanel>["onStartProject"];
   onProjectNavigate?: () => void;
+  onOpenProjectWorkItemSession?: ComponentProps<typeof ProjectsPanel>["onOpenProjectWorkItemSession"];
   /** 项目页：在项目中新建对话（创建真实 EchoAgent 会话）。 */
   onStartProjectConversation?: StartProjectConversation;
   projectModels?: ModelOption[];
@@ -168,6 +169,7 @@ export function PlaceholderPage({
   sessionId,
   onStartProject,
   onProjectNavigate,
+  onOpenProjectWorkItemSession,
   onStartProjectConversation,
   projectModels,
   projectDefaultModelId,
@@ -202,6 +204,7 @@ export function PlaceholderPage({
           onOpenMeetingMinutes={onOpenMeetingMinutes ?? (() => onNavigate?.("录音转写"))}
           onOpenOrganization={() => onNavigate?.("组织")}
           onOpenSession={onOpenSession}
+          onOpenProjectWorkItemSession={onOpenProjectWorkItemSession}
           onRenameSession={onRenameSession}
           onArchiveSession={onArchiveSession}
           onDeleteSession={onDeleteSession}

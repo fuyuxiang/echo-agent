@@ -166,6 +166,7 @@ export interface SessionTranscript {
    * Older runtimes do not attach promptId to that first echo. */
   awaitingUserEchoPromptId?: string;
   suppressReplay: boolean;
+  incompleteReplay?: boolean;
   /** Prompt ids whose pause/stop was explicitly resumed. Late duplicate
    * terminal events for these turns must not re-arm the control state. */
   dismissedControlPromptIds: string[];
@@ -247,7 +248,7 @@ interface SessionState {
   clearReplaySuppression: (id?: string) => void;
   /** Begin/end the one owned native replay; refocusing must not fence its tail. */
   beginHistoryReplay: (id: string) => void;
-  finishHistoryReplay: (id: string) => void;
+  finishHistoryReplay: (id: string, successful?: boolean) => void;
   /** Finish only a replay-created, unterminated historical tail after
    *  agentLoadSession returns. A process exit can leave the durable log at a
    *  tool_call with no turn_completed event; that must not look live forever.
@@ -1365,6 +1366,13 @@ export const useSessionStore = create<SessionState>((set, get) => {
 
     beginHistoryReplay: (id) => {
       historyReplays.add(id);
+      const cached = get().transcripts[id];
+      if (cached?.incompleteReplay && !cached.pendingSendNowPromptId) {
+        const active = cached.messages.find(message => message.id === cached.streamingMessageId);
+        // A failed cold replay is visible until retry, but is not a complete
+        // cache. An admitted live turn still owns its existing projection.
+        if (!active || active.replayed) get().dropSessionCache(id);
+      }
       if (!get().transcripts[id]) return;
       applyToTranscript(id, (t) => ({
         ...t,
@@ -1372,8 +1380,12 @@ export const useSessionStore = create<SessionState>((set, get) => {
       }));
     },
 
-    finishHistoryReplay: (id) => {
+    finishHistoryReplay: (id, successful = true) => {
       historyReplays.delete(id);
+      const cached = get().transcripts[id];
+      if (!successful && cached && !cached.suppressReplay && cached.messages.length) {
+        applyToTranscript(id, t => ({ ...t, incompleteReplay: true }));
+      }
       get().clearReplaySuppression(id);
     },
 

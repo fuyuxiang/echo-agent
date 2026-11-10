@@ -166,18 +166,23 @@ fn load_page_at(home: &Path, session: &str, cursor: Option<&str>) -> Result<Trac
 }
 
 #[tauri::command]
-pub fn knowledge_traces_load(
+pub async fn knowledge_traces_load(
     state: State<'_, crate::commands::AppState>,
     session_id: String,
     cursor: Option<String>,
 ) -> Result<TracePage, String> {
     state.session_workspace(&session_id)?;
-    let _guard = WRITES.lock().map_err(|_| "知识来源存储锁已损坏")?;
-    load_page_at(
-        &crate::paths::echo_agent_home_dir(),
-        &session_id,
-        cursor.as_deref(),
-    )
+    // Records are published atomically. Reading a page can run alongside a
+    // new turn's write without blocking it on the historical records.
+    tokio::task::spawn_blocking(move || {
+        load_page_at(
+            &crate::paths::echo_agent_home_dir(),
+            &session_id,
+            cursor.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("读取历史知识来源失败：{error}"))?
 }
 #[tauri::command]
 pub fn knowledge_trace_save(

@@ -413,11 +413,10 @@
 
 .model-connections__model-actions { flex-wrap: wrap; }
 .model-connections__edit-actions { display: inline-flex; flex-shrink: 0; gap: 6px; }
-.model-connections__model-list li:focus-visible {
-  outline: 2px solid var(--echo-color-text-brand-default);
-  outline-offset: 2px;
+.model-connections__model-list li[tabindex="-1"]:focus {
+  outline: 2px solid var(--echo-focus-ring);
+  outline-offset: -2px;
 }
-.model-connections__model-list li[data-model-highlighted] { border-color: var(--echo-color-text-brand-default); }
 .model-connections__test-hint {
   margin: 0 0 10px;
   color: var(--echo-text-medium);

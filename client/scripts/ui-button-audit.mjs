@@ -9,7 +9,7 @@ const primarySelector = [
   ".meeting-primary", ".kb-panel__add-btn", ".org-memory__primary",
   ".feedback-dialog__btn--primary", ".browser-preview__go", ".um-btn--primary",
   ".plan-panel__approve-btn", ".plan-panel__add-btn", ".plan-panel__row-edit-save",
-  ".coding-primary-btn", ".pd-invite", ".pd-btn--primary",
+  ".coding-primary-btn", ".pd-btn--primary",
   ".echo-composer__send", ".context-menu__rename-save", ".coding-agent__send", ".echo-theia-agent__send",
   ".coding-agent__decision button.is-primary", ".perm-inline__action--allow",
 ].join(",");

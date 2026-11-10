@@ -22,7 +22,7 @@ import {
 } from "@/lib/input-history";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { displayPath } from "@/lib/display-path";
-import { PermissionPicker } from "./PermissionPicker";
+import { PermissionPicker, type ProjectDraftPermission } from "./PermissionPicker";
 import { AutomationBoundaryNotice, type PermissionRole } from "./AutomationBoundaryNotice";
 import { usePermissionModeStore } from "@/stores/permission-mode-store";
 import { SlashCommands, type SlashCommandsHandle } from "./SlashCommands";
@@ -101,7 +101,7 @@ function discardUnsentAttachments(paths: string[]) {
  * EchoAgent 风格输入卡片(圆角16):左下 +,右下 Auto 下拉/麦克风/发送;
  * showMeta 时在卡片下方显示工作目录和权限。
  * showDisclaimer 时卡片下方渲染免责声明行。
- * apiReady=false 时输入禁用,点击卡片引导打开设置。
+ * 会话恢复期间可编辑本地文本草稿，提交与运行时操作等到就绪。
  */
 export function Composer({
   streaming,
@@ -116,14 +116,15 @@ export function Composer({
   onCancel,
   onControl,
   placeholder,
-  apiReady = true,
+  apiReady: sessionApiReady = true,
+  draftOnly = false,
   setupHint = "请先在「设置 → 模型」检查可用模型和连接",
   onOpenSettings,
   onToast,
   showMeta = false,
   focusRequest = 0,
   compact = false,
-  inheritTaskPermission = false,
+  projectDraftPermission,
   showDisclaimer = false,
   permissionInline = false,
   permissionControl,
@@ -158,6 +159,7 @@ export function Composer({
   draft,
   draftKey,
   onDraftChange,
+  draftAttachmentControls,
   onSelectExpert,
   onSelectSkill,
   onNavigateConnectors,
@@ -214,6 +216,7 @@ export function Composer({
   /** Empty-input guidance, optionally resolved from admitted attachments. */
   placeholder?: string | ((attachmentCount: number) => string);
   apiReady?: boolean;
+  draftOnly?: boolean;
   /** Message shown when the composer is unavailable. */
   setupHint?: string;
   onOpenSettings?: () => void;
@@ -224,8 +227,8 @@ export function Composer({
   focusRequest?: number;
   /** Keep the card compact when showing the task settings row. */
   compact?: boolean;
-  /** Project conversations start with the Runtime's new-task default. */
-  inheritTaskPermission?: boolean;
+  /** Permission for the next project task, independent of the Home draft. */
+  projectDraftPermission?: ProjectDraftPermission;
   /** Show "内容由 AI 生成" disclaimer below card (chat page). */
   showDisclaimer?: boolean;
   /** 把权限选择器放进卡片内 footer（+ 之后），匹配 EchoAgent 本地助理页；为 true 时不再渲染卡片外 meta 行。 */
@@ -275,6 +278,8 @@ export function Composer({
   draftKey?: string | number;
   /** 用户输入时回调,父组件据此把草稿写回 store。 */
   onDraftChange?: (text: string) => void;
+  /** Controls for draft attachments managed by the caller. */
+  draftAttachmentControls?: ReactNode;
   /** 加号菜单:选择专家。 */
   onSelectExpert?: (agent: AgentEntry) => void;
   /** 加号菜单:选择技能(插入 /skillName)。 */
@@ -320,6 +325,9 @@ export function Composer({
   /** Opens organization login/connection management. */
   onOpenOrganization?: () => void;
 }) {
+  const apiReady = sessionApiReady && !draftOnly;
+  const canEditDraft = apiReady || draftOnly;
+  const openSetup = draftOnly ? undefined : onOpenSettings;
   const storageErrors = useStorageHealth((state) => state.errors);
   const draftScopeRef = useRef(draftKey === undefined ? undefined : String(draftKey));
   const persistedRevision = useDraftRevision(draftKey === undefined ? undefined : String(draftKey));
@@ -328,6 +336,8 @@ export function Composer({
   const isCurrentDraftEpoch = (epoch: number) => mountedRef.current && scopeEpochRef.current === epoch;
   const [text, setText] = useState("");
   const textRef = useRef("");
+  const draftOnlyRef = useRef(draftOnly);
+  draftOnlyRef.current = draftOnly;
   const [stopping, setStopping] = useState(false);
   const stopPendingRef = useRef<number | null>(null);
   const [attachments, setAttachments] = useState<string[]>([]);
@@ -421,6 +431,7 @@ export function Composer({
   ): Promise<AttachmentAdmissionSummary> => {
     await currentAttachmentBytes(epoch);
     if (!isCurrentDraftEpoch(epoch)) throw new Error("任务已切换");
+    if (draftOnlyRef.current) throw new Error("会话正在恢复");
     const next = [...attachmentsRef.current];
     // Another admission can finish while this call is waiting for native size
     // inspection. Recompute from the latest ref after the final await so count
@@ -483,6 +494,7 @@ export function Composer({
   };
 
   const addPathAttachments = async (paths: string[]) => {
+    if (draftOnlyRef.current) return;
     const epoch = scopeEpochRef.current;
     const unique = [...new Set(paths)];
     const supported = unique.filter(
@@ -493,13 +505,14 @@ export function Composer({
     const uninspected = supported.length - inspectable.length;
     try {
       const inspected = await filesystemAttachmentStats(inspectable);
+      if (draftOnlyRef.current || !isCurrentDraftEpoch(epoch)) return;
       const summary = await admitAttachmentFiles(inspected.files, epoch);
       summary.countLimited += uninspected;
       onToast?.(
         attachmentAdmissionMessage(summary, unsupported, inspected.rejected.length),
       );
     } catch (error) {
-      if (!isCurrentDraftEpoch(epoch)) return;
+      if (draftOnlyRef.current || !isCurrentDraftEpoch(epoch)) return;
       onToast?.(`添加附件失败：${String(error).replace(/^Error:\s*/, "")}`);
     }
   };
@@ -510,7 +523,8 @@ export function Composer({
   const contextRefreshSignal = useMemo(() => ({ usageRefreshSignal, modelId, modelLoading }), [usageRefreshSignal, modelId, modelLoading]);
   const boundaryRole: PermissionRole | null = usePermissionModeStore((state) =>
     commandSessionId ? state.statuses[commandSessionId]?.permissionMode ?? null
-      : state.capabilityStatus?.locked || inheritTaskPermission ? state.capabilityStatus?.permissionMode ?? "ask"
+      : state.capabilityStatus?.locked ? state.capabilityStatus.permissionMode
+        : projectDraftPermission ? projectDraftPermission.mode ?? state.capabilityStatus?.permissionMode ?? "ask"
         : state.homeMode,
   );
   // 输入历史(arrow-key recall,对齐 EchoAgent use-input-history):内存中按发送追加,
@@ -780,6 +794,10 @@ export function Composer({
             | { type: string; paths?: string[] }
             | undefined;
           if (!payload) return;
+          if (draftOnlyRef.current) {
+            setDragHovering(false);
+            return;
+          }
           switch (payload.type) {
             case "enter":
             case "over":
@@ -1127,7 +1145,7 @@ export function Composer({
 
   // Cursor tracking for slash-command autocomplete.
   const [cursorPos, setCursorPos] = useState(0);
-  const mentionCandidates = useWorkspaceMentions(cwd, Boolean(atTokenAtCursor(text, cursorPos)) && filePaths === undefined);
+  const mentionCandidates = useWorkspaceMentions(cwd, !draftOnly && Boolean(atTokenAtCursor(text, cursorPos)) && filePaths === undefined);
   const slashCommandsRef = useRef<SlashCommandsHandle>(null);
   const atMenuRef = useRef<AtMentionHandle>(null);
   const composingRef = useRef(false);
@@ -1167,8 +1185,9 @@ export function Composer({
 
   const composerCls = [
     "echo-composer",
-    !apiReady && "echo-composer--disabled",
-    !apiReady && !onOpenSettings && "echo-composer--waiting",
+    draftOnly && "echo-composer--draft-only",
+    !apiReady && !draftOnly && "echo-composer--disabled",
+    !apiReady && !draftOnly && !openSetup && "echo-composer--waiting",
     homeLayout && "echo-composer--home",
   ].filter(Boolean).join(" ");
   const hasDraft = Boolean(text.trim() || attachments.length);
@@ -1195,7 +1214,7 @@ export function Composer({
       <section
         className={composerCls}
         onClick={(event) => {
-          if (!apiReady) { onOpenSettings?.(); return; }
+          if (!apiReady && !draftOnly) { openSetup?.(); return; }
           const target = event.target as Element;
           if (target.closest('button, input, textarea, select, a, [role="button"], [role="menu"], [role="listbox"], [contenteditable], .composer-attachments, .composer-blocks')) return;
           const input = ref.current;
@@ -1209,12 +1228,13 @@ export function Composer({
           // covers the JS-only event with `application/x-echo-paths` mime.
           if (event.dataTransfer.types.includes("application/x-echo-paths")) {
             event.preventDefault();
-            event.dataTransfer.dropEffect = "copy";
+            event.dataTransfer.dropEffect = draftOnly ? "none" : "copy";
           }
         }}
         onDrop={(event) => {
           if (!event.dataTransfer.types.includes("application/x-echo-paths")) return;
           event.preventDefault();
+          if (draftOnly) return;
           const raw = event.dataTransfer.getData("application/x-echo-paths");
           if (!raw) return;
           try {
@@ -1231,12 +1251,12 @@ export function Composer({
         {!apiReady && (
           <div
             className="echo-composer__setup-hint"
-            role={onOpenSettings ? "button" : "status"}
-            tabIndex={onOpenSettings ? 0 : undefined}
+            role={openSetup ? "button" : "status"}
+            tabIndex={openSetup ? 0 : undefined}
             onKeyDown={(event) => {
-              if (onOpenSettings && (event.key === "Enter" || event.key === " ")) {
+              if (openSetup && (event.key === "Enter" || event.key === " ")) {
                 event.preventDefault();
-                onOpenSettings();
+                openSetup();
               }
             }}
           >
@@ -1273,6 +1293,7 @@ export function Composer({
           </div>
         )}
 
+        {draftAttachmentControls}
         <AttachmentList key={draftKey ?? "unsaved"} paths={attachments} cwd={cwd} sizes={attachmentSizesRef.current}
           onRemove={path => {
             discardOwnedAttachments([path]);
@@ -1308,7 +1329,7 @@ export function Composer({
             现在明确列出支持的类型(图片 / PDF / 现代 Office / 代码 / 文本 / 数据),
             并在 hover/over 时如能拿到 paths 则即时给出「已添加 N / 跳过 M」的
             预览反馈(只是 hover 提示,真正的反馈在 drop 后的 toast)。 */}
-        {dragHovering && (
+        {!draftOnly && dragHovering && (
           <div
             className="echo-composer__dropzone"
             role="status"
@@ -1328,11 +1349,11 @@ export function Composer({
           aria-label="输入问题或任务"
           rows={1}
           value={text}
-          disabled={!apiReady || awaitingQuestion || disabled}
+          disabled={!canEditDraft || awaitingQuestion || disabled}
           placeholder={
             awaitingQuestion
               ? "请先处理上方需要确认的事项"
-              : apiReady
+              : canEditDraft
               ? sceneTag
                 ? "" // 有操作类型标签时不显示占位文案(匹配 EchoAgent)
                 : typeof placeholder === "function"
@@ -1349,7 +1370,7 @@ export function Composer({
           onSelect={(e) =>
             setCursorPos((e.target as HTMLTextAreaElement).selectionStart ?? cursorPos)
           }
-          onPaste={handlePaste}
+          onPaste={draftOnly ? undefined : handlePaste}
           onCompositionStart={() => { composingRef.current = true; }}
           onCompositionEnd={() => { composingRef.current = false; }}
           onBlur={() => { composingRef.current = false; }}
@@ -1364,6 +1385,7 @@ export function Composer({
             // and keyCode=229. Do not send, choose a menu row or navigate
             // history until composition has actually finished.
             if (composingRef.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+            if (draftOnly) return;
             if (
               !e.nativeEvent.isComposing
               && atMenuRef.current?.handleKeyDown(e as unknown as KeyboardEvent)
@@ -1439,7 +1461,7 @@ export function Composer({
           />
         )}
         {/* SP4: @-mention autocomplete */}
-        <AtMentionMenu
+        {!draftOnly && <AtMentionMenu
           ref={atMenuRef}
           text={text}
           cursor={cursorPos}
@@ -1454,7 +1476,7 @@ export function Composer({
               setCursorPos(result.cursor);
             }
           }}
-        />
+        />}
         {showBoundaryInCard && (
           <AutomationBoundaryNotice role={boundaryRole} automationMode={automationMode} />
         )}
@@ -1538,6 +1560,8 @@ export function Composer({
             <ModelSelector
               modelId={modelId}
               modelLoading={modelLoading}
+              showCurrentWhileLoading={draftOnly}
+              disabled={draftOnly}
               models={models!}
               onModelChange={onModelChange!}
             />
@@ -1622,7 +1646,7 @@ export function Composer({
             </span>
           )}
           <PermissionPicker onToast={onToast} sessionId={commandSessionId}
-            inheritTaskDefault={inheritTaskPermission} showLockedAsText />
+            projectDraftPermission={projectDraftPermission} disabled={draftOnly} showLockedAsText />
           {workspaceError && <p id={workspaceErrorId} role="alert" className="echo-composer-meta__workspace-error">{workspaceError}</p>}
           {!showBoundaryInCard && <AutomationBoundaryNotice role={boundaryRole} automationMode={automationMode} />}
         </div>

@@ -23,7 +23,7 @@ export function GroupSidebar({ onOpen, active = false, catalog }: { onOpen: () =
         <span>专家团 ({visible.length})</span>
         <ChevronDownIcon size="sm" className={`sidebar__chevron${collapsed ? " sidebar__chevron--collapsed" : ""}`} />
       </button>
-      {!collapsed && <SidebarCatalogMore section="groups" catalog={catalog} />}
+      {!collapsed && <SidebarCatalogMore section="groups" catalog={catalog} inHeading />}
       <button type="button" className="sidebar__section-action group-sidebar__all" aria-label="查看全部专家团" title="查看全部专家团" onClick={() => { void useGroupStore.getState().select(null); onOpen(); }}>全部</button>
     </div>
     {!collapsed && <SidebarCatalogList section="groups" catalog={catalog} className="group-sidebar__list" label="最近专家团">

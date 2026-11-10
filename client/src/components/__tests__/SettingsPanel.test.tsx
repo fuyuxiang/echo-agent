@@ -1074,6 +1074,29 @@ it("通知记录按用户目的分组，连接异常归入异常且不误归为�
   expect(screen.queryByText("模型目录更新")).toBeNull();
 });
 
+it("通知记录只将成功完成的任务结果标为成功色", async () => {
+  const entries = [
+    { kind: "session_complete", title: "任务《整理周报》的回复已完成", severity: "info", tone: "success", read: true },
+    { kind: "session_complete", title: "自动化《发送周报》已完成", severity: "info", tone: "success", read: false },
+    { kind: "session_complete", title: "自动化《归档周报》已停止", severity: "info", tone: "info", read: false },
+    { kind: "session_complete", title: "自动化《被截断的长标题", body: "本次运行已停止，后续计划不受影响", severity: "info", tone: "info", read: false },
+    { kind: "session_complete", title: "自动化《汇总周报》已人工接管", severity: "warn", tone: "warn", read: false },
+    { kind: "error", title: "自动化《统计周报》运行失败", severity: "error", tone: "error", read: false },
+    { kind: "permission", title: "任务需要授权", severity: "warn", tone: "warn", read: false },
+    { kind: "models_update", title: "模型目录已更新", severity: "info", tone: "info", read: false },
+  ];
+  vi.mocked(notificationList).mockResolvedValueOnce(entries.map(({ tone, ...entry }, index) => ({
+    ...entry, id: index + 1, at: "2026-10-18T10:00:00Z",
+  })));
+  render(<ThemeProvider><SettingsPanel open initialSection="agent-mail" onClose={() => {}} /></ThemeProvider>);
+  await screen.findByText(entries[0].title);
+  for (const { title, tone, read } of entries) {
+    const row = screen.getByText(title).closest<HTMLElement>(".notification-row")!;
+    expect(row.querySelector(".notification-row__dot")).toHaveClass(`notification-row__dot--${tone}`);
+    expect(within(row).queryAllByText("未读")).toHaveLength(read ? 0 : 1);
+  }
+});
+
 it("普通通知说明直接可读，结构化诊断信息需要展开查看", async () => {
   vi.mocked(notificationList).mockResolvedValueOnce([
     { id: 1, kind: "mcp_status", title: "工具连接异常", body: '{"status":"disconnected","detail":"internal-diagnostic"}', severity: "warn", read: false, at: "2026-10-18T10:00:00Z" },

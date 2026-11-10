@@ -2,7 +2,7 @@ import { QueuePanel } from "../QueuePanel";
 import { useAutomationEditorStore } from "@/stores/automation-editor-store";
 import { buildDraft } from "../automation/schedule-utils";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -18,11 +18,11 @@ vi.mock("@/lib/meeting-minutes", async (original) => ({
   ...await original<object>(), meetingRecorder: recorder,
 }));
 vi.mock("@/lib/kb-source-storage", () => ({ hydrateKnowledgeSources: vi.fn(async () => {}) }));
-vi.mock("@/lib/artifact-catalog", () => ({ indexTaskArtifacts: vi.fn() }));
+vi.mock("@/lib/artifact-catalog", async original => ({ ...await original<object>(), indexTaskArtifacts: vi.fn() }));
 vi.mock("@/stores/projects-store", async (original) => ({
   ...await original<object>(), hydrateProjectsFromBackend: vi.fn(async () => {}),
 }));
-vi.mock("../ThemeProvider", () => ({ ThemeProvider: ({ children }: { children: ReactNode }) => children }));
+vi.mock("../ThemeProvider", () => ({ ThemeProvider: ({ children }: { children: ReactNode }) => children, useTheme: () => ({ theme: "light" }) }));
 vi.mock("../TitleBar", () => ({ TitleBar: () => null }));
 vi.mock("../HomePage", () => ({ HomePage: () => <div>首页</div> }));
 vi.mock("../PlaceholderPage", () => ({ PlaceholderPage: ({
@@ -54,7 +54,9 @@ vi.mock("../Sidebar", () => ({ Sidebar: ({
   </>
 ) }));
 // Keep the real shell, event handlers and stores; expose its composer contract.
+const chatViewHarness = vi.hoisted(() => ({ actual: undefined as typeof import("../ChatView").ChatView | undefined }));
 vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("../ChatView").ChatView>) => (
+  chatViewHarness.actual ? <chatViewHarness.actual {...props} /> : (
   <div>
     {useSessionStore.getState().sessionId && <QueuePanel sessionId={useSessionStore.getState().sessionId!}
       streaming={useSessionStore.getState().streaming} sendNowPending={useSessionStore.getState().sendNowPending}
@@ -65,7 +67,7 @@ vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("
     <button onClick={() => props.onModelChange?.("model-b")}>切换模型</button>
     <button onClick={() => void props.onCancel("stop")}>停止执行</button>
   </div>
-) }));
+)) }));
 vi.mock("@/lib/agent-client", async (original) => ({
   ...await original<object>(),
   agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
@@ -88,6 +90,7 @@ import { usePermissionStore } from "@/stores/permission-store";
 import { useQuestionStore } from "@/stores/question-store";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
 import { useSubagentStore } from "@/stores/subagent-store";
+import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { resetOrgSessionMirror } from "@/stores/org-session-store";
 
 let handlers: Parameters<typeof client.subscribeAgentEvents>[0];
@@ -127,6 +130,10 @@ beforeEach(() => {
   vi.mocked(client.subscribeAgentEvents).mockImplementation(async (value) => { handlers = value; return () => {}; });
   vi.mocked(listen).mockImplementation(async () => () => {});
   vi.mocked(invoke).mockImplementation(async (command) => command === "notification_take_pending_opens" ? [] : null);
+});
+afterEach(() => {
+  chatViewHarness.actual = undefined;
+  vi.unstubAllGlobals();
 });
 
 describe("自动化会话模型同步", () => {
@@ -1004,7 +1011,7 @@ describe("自动化会话模型同步", () => {
     await start();
     created();
     fireEvent.click(screen.getByText("打开自动化"));
-    expect(await screen.findByRole("status")).toHaveTextContent("正在加载会话信息");
+    expect(await screen.findByRole("status")).toHaveTextContent("正在恢复会话");
     expect(screen.getByText("追问")).toBeDisabled();
     expect(useSessionStore.getState().error).toBeNull();
     await act(async () => complete("model-a"));
@@ -1018,6 +1025,118 @@ describe("自动化会话模型同步", () => {
     fireEvent.click(screen.getByText("打开自动化"));
     await waitFor(() => expect(screen.getByText("追问")).toBeEnabled());
     expect(screen.getByTestId("model")).toHaveTextContent("model-a");
+  });
+
+  it.each(["慢读取", "读取失败"])("历史引用%s时可先写草稿，并在恢复后用会话模型发送", async traceOutcome => {
+    chatViewHarness.actual = (await vi.importActual<typeof import("../ChatView")>("../ChatView")).ChatView;
+    const actual = await vi.importActual<typeof client>("@/lib/agent-client");
+    vi.mocked(client.agentLoadSession).mockImplementationOnce(actual.agentLoadSession);
+    vi.mocked(client.agentSend).mockImplementationOnce(actual.agentSend);
+    useKnowledgeStore.setState({ defaultSources: [], sessionSources: {}, turnTraces: {}, traceLoadErrors: {} });
+    let finishLoad!: (model: string) => void;
+    let finishTraces!: (page: unknown) => void;
+    let rejectTraces!: (error: Error) => void;
+    let loaded = false;
+    vi.mocked(invoke).mockImplementation(async command => {
+      switch (command) {
+        case "notification_take_pending_opens": return [];
+        case "agent_load_session": return new Promise(resolve => {
+          finishLoad = model => { loaded = true; resolve(model); };
+        });
+        case "agent_session_workspace_status": return { cwd: "/workspace", status: "ready", loaded };
+        case "knowledge_traces_load": return new Promise((resolve, reject) => { finishTraces = resolve; rejectTraces = reject; });
+        case "agent_set_knowledge_sources": return { personalSelected: false, personalAttached: false, organizationSelected: false, organizationAttached: false };
+        default: return null;
+      }
+    });
+    await start();
+    vi.stubGlobal("__TAURI_INTERNALS__", { metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } } });
+    const scheduled = traceOutcome === "读取失败";
+    const id = scheduled ? "auto-1" : "other";
+    if (scheduled) created("model-a");
+    else act(() => useSessionsStore.getState().upsert({ sessionId: id, cwd: "/workspace", currentModelId: "model-a", status: "completed" }));
+    fireEvent.click(screen.getByText(scheduled ? "打开自动化" : "打开其他任务"));
+
+    const input = await screen.findByRole("textbox", { name: "输入问题或任务" });
+    expect(screen.getByText("正在恢复会话…")).toHaveAttribute("role", "status");
+    expect(screen.getByRole("button", { name: "模型 A" })).toBeDisabled();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "停止" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveValue("停止");
+    fireEvent.change(input, { target: { value: "继续解释" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(useSessionsStore.getState().drafts[id]).toBe("继续解释");
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(client.agentSend).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith("agent_cancel", expect.anything());
+
+    await act(async () => finishLoad("model-a"));
+    expect(invoke).toHaveBeenCalledWith("agent_load_session", { sessionId: id, cwd: "/workspace" });
+    expect(invoke).toHaveBeenCalledWith("knowledge_traces_load", { sessionId: id, cursor: null });
+    if (scheduled) {
+      await act(async () => rejectTraces(new Error("引用磁盘读取失败")));
+      expect(screen.getByText(/引用磁盘读取失败/)).toBeVisible();
+    }
+    const send = screen.getByRole("button", { name: "发送" });
+    await waitFor(() => expect(send).toBeEnabled());
+    expect(screen.getByRole("button", { name: "模型 A" })).toBeEnabled();
+    expect(input).toHaveValue("继续解释");
+    fireEvent.click(send);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("agent_send", expect.objectContaining({ sessionId: id, text: "继续解释" })));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "agent_send")).toHaveLength(1);
+    expect(client.agentSetModel).not.toHaveBeenCalled();
+    if (!scheduled) await act(async () => finishTraces({ traces: {}, nextCursor: null }));
+  }, 15_000);
+
+  it("后台引用尚未读取完成时，重开会话仍显示切换后的实际模型", async () => {
+    const actual = await vi.importActual<typeof client>("@/lib/agent-client");
+    vi.mocked(client.agentLoadSession).mockImplementationOnce(actual.agentLoadSession).mockImplementationOnce(actual.agentLoadSession);
+    let runtimeModel = "model-a";
+    let finishTraces: ((page: unknown) => void) | undefined;
+    vi.mocked(client.agentSetModel).mockImplementationOnce(async (_sessionId, model) => { runtimeModel = model; });
+    vi.mocked(invoke).mockImplementation(async command => {
+      if (command === "agent_load_session") return runtimeModel;
+      if (command === "knowledge_traces_load") return new Promise(resolve => { finishTraces = resolve; });
+      return command === "notification_take_pending_opens" ? [] : null;
+    });
+    await start();
+    vi.stubGlobal("__TAURI_INTERNALS__", { metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } } });
+    act(() => useSessionsStore.getState().upsert({ sessionId: "other", cwd: "/workspace", currentModelId: "model-a" }));
+    try {
+      fireEvent.click(screen.getByText("打开其他任务"));
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("knowledge_traces_load", { sessionId: "other", cursor: null }));
+      fireEvent.click(screen.getByRole("button", { name: "切换模型" }));
+      await waitFor(() => expect(screen.getByTestId("model")).toHaveTextContent("model-b"));
+      fireEvent.click(screen.getByText("打开项目页"));
+      await screen.findByText("执行项目任务");
+      fireEvent.click(screen.getByText("打开其他任务"));
+      await waitFor(() => expect(screen.getByRole("button", { name: "追问" })).toBeEnabled());
+      expect(screen.getByTestId("model")).toHaveTextContent("model-b");
+      expect(useSessionsStore.getState().independent.find(session => session.sessionId === "other")?.currentModelId).toBe("model-b");
+    } finally {
+      await act(async () => finishTraces?.({ traces: {}, nextCursor: null }));
+    }
+  });
+
+  it("已有摘要模型的会话恢复失败后保留草稿，重试成功前不能发送", async () => {
+    chatViewHarness.actual = (await vi.importActual<typeof import("../ChatView")>("../ChatView")).ChatView;
+    let failLoad!: (error: Error) => void;
+    vi.mocked(client.agentLoadSession).mockImplementationOnce(() => new Promise((_, reject) => { failLoad = reject; }));
+    await start();
+    act(() => useSessionsStore.getState().upsert({ sessionId: "other", cwd: "/workspace", currentModelId: "model-a" }));
+    fireEvent.click(screen.getByText("打开其他任务"));
+    const input = await screen.findByRole("textbox", { name: "输入问题或任务" });
+    fireEvent.change(input, { target: { value: "保留此草稿" } });
+    await act(async () => failLoad(new Error("运行时恢复失败")));
+    expect(screen.getByText("运行时恢复失败")).toBeVisible();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue("保留此草稿");
+    fireEvent.click(screen.getByRole("button", { name: "重试恢复会话" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    expect(input).toHaveValue("保留此草稿");
+    expect(client.agentLoadSession).toHaveBeenCalledTimes(2);
   });
 
   it("兼容未返回模型的加载响应，保留创建事件的确定模型", async () => {

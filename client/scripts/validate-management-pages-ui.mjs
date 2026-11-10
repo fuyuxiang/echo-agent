@@ -211,14 +211,16 @@ try {
       await navigationPage.getByRole("button", { name: "卡片视图", exact: true }).click();
       await navigationPage.getByRole("button", { name: "打开项目 产品需求全流程", exact: true }).click();
       await navigationPage.locator(".pd-crumb").waitFor();
+      const participants = navigationPage.locator("summary").filter({ hasText: "参与者备注（本机）" });
+      await participants.click();
+      await navigationPage.getByText("发布负责人 · 林", { exact: true }).waitFor();
       await toggle.click();
       await navigationPage.locator(".pd-topbar.page-toolbar--window-navigation").waitFor();
       const crumb = await navigationPage.locator(".pd-crumb").boundingBox();
       const tabs = await navigationPage.locator(".pd-tabs-row").boundingBox();
       assert.equal(crumb.x, tabs.x, "Project breadcrumb and detail tabs must align after collapsing");
       assert(crumb.y >= before.y + before.height, "Project breadcrumb must clear the window controls");
-      await navigationPage.getByRole("button", { name: "参与者", exact: true }).click();
-      await navigationPage.getByText("项目参与者（本机备注）", { exact: true }).waitFor();
+      await navigationPage.getByText("发布负责人 · 林", { exact: true }).waitFor();
     }
   }
   for (const platform of ["mac", "other"]) for (const width of [1280, 768]) for (const surface of ["collapsed-project", "collapsed-capabilities"]) {

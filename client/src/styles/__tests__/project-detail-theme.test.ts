@@ -27,11 +27,9 @@ describe("project detail theme contract", () => {
   });
 
   it("keeps project primary controls legible in both themes", () => {
-    for (const selector of [".pd-invite", ".pd-btn--primary"]) {
-      const block = rule(selector);
-      expect(block).toContain("background: var(--echo-button-primary-bg);");
-      expect(block).toContain("color: var(--echo-button-primary-fg);");
-    }
+    const primaryButton = rule(".pd-btn--primary");
+    expect(primaryButton).toContain("background: var(--echo-button-primary-bg);");
+    expect(primaryButton).toContain("color: var(--echo-button-primary-fg);");
 
     expect(rule(".pd-pill--on")).toContain("background: var(--echo-control-selected-bg);");
     expect(rule(".pd-pill--on")).toContain("color: var(--echo-control-selected-fg);");

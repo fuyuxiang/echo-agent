@@ -150,6 +150,21 @@ export async function validateSidebarScroll(page, output) {
     const groupList = page.getByRole("region",{name:"最近专家团"});
     await ready();
     await validateHeadings();
+    for (const id of ["sidebar-task-list", "sidebar-project-list", "sidebar-group-list"]) {
+      const disclosure = more(id);
+      const layout = await disclosure.evaluate(button => {
+        const list = document.getElementById(button.getAttribute("aria-controls"));
+        return {
+          inHeading: Boolean(button.closest(".sidebar__section-head")),
+          belowList: button.previousElementSibling === list
+            && button.getBoundingClientRect().top >= list.getBoundingClientRect().bottom,
+          remaining: list.querySelectorAll(":scope > .sidebar__catalog-rows > [inert]").length,
+        };
+      });
+      assert.ok((layout.inHeading || layout.belowList) && layout.remaining > 0, `${id}: disclosure belongs to its preview`);
+      assert.equal(await disclosure.textContent(), layout.inHeading ? `更多 ${layout.remaining}` : `查看更多（${layout.remaining}）`);
+    }
+    assert.equal(await page.locator(".sidebar__section-head .group-sidebar__all").textContent(), "全部");
     const before = await snapshot();
     assert.ok(before.tasks.clientHeight >= 36 && before.projects.clientHeight >= 36, `all groups must retain a full row at height ${height}: ${JSON.stringify(before)}`);
     assert.ok(before.projectHeader.bottom <= before.content.bottom + 1, "groups must not push projects outside the sidebar");
@@ -220,8 +235,9 @@ export async function validateSidebarScroll(page, output) {
   for (const theme of ["light", "dark"]) {
     await page.setViewportSize({ width: 1024, height: 720 });
     await page.goto(`http://127.0.0.1:1439/__ui-review?surface=sidebar-scroll&variant=short&groups=1&theme=${theme}`);
-    await page.getByRole("region", { name: "最近专家团" }).waitFor();
+    await ready();
     await validateHeadings();
+    assert.equal(await page.locator(".sidebar__catalog-more").count(), 0, "lists that fit need no disclosure");
     await page.locator(".sidebar").screenshot({ path: join(output, `sidebar-short-chats-${theme}.png`) });
     layouts++;
   }

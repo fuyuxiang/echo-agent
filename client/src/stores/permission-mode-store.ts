@@ -58,10 +58,13 @@ export function projectPermissionUnavailableReason(status: PermissionModeStatus)
     || "组织锁定的任务默认权限当前不可用";
 }
 
-export function selectProjectPermissionMode(state: PermissionModeState): PermissionMode | undefined {
+export function selectProjectPermissionMode(state: PermissionModeState, requestedMode?: PermissionMode): PermissionMode | undefined {
   const status = state.capabilityStatus;
   if (state.projectPermissionRead?.phase !== "ready" || !status || projectPermissionUnavailableReason(status)) return undefined;
-  return status.permissionMode;
+  if (status.locked || !requestedMode) return status.permissionMode;
+  if ((requestedMode === "auto" && !status.autoModeAvailable) ||
+      (requestedMode === "always-approve" && !status.alwaysApproveAvailable)) return undefined;
+  return requestedMode;
 }
 
 function asPermissionMode(value: unknown): PermissionMode | null {

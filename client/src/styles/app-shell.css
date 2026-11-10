@@ -112,6 +112,7 @@
 .sidebar__content {
   --sidebar-section-gap: 16px;
   --sidebar-collapsed-section-gap: 6px;
+  --sidebar-catalog-more-height: 28px;
   padding: calc(var(--sidebar-section-gap) + 8px) var(--sidebar-content-inset) 14px;
 }
 
@@ -233,10 +234,31 @@
 }
 
 .sidebar__catalog-more {
-  flex: 0 0 auto;
-  width: auto;
-  padding-inline: 7px;
-  font-size: 0.6875rem;
+  flex: none;
+  height: var(--sidebar-catalog-more-height);
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--echo-radius-control);
+  background: transparent;
+  color: var(--echo-text-tertiary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sidebar__catalog-more:hover {
+  background: var(--echo-bg-hover);
+  color: var(--echo-text-strong);
+}
+
+.sidebar__catalog-more--compact { padding-inline: 6px; font-size: .6875rem; }
+.sidebar__section-head:has(> .sidebar__catalog-more--compact) .sidebar__section-label { padding-inline-end: 4px; }
+.sidebar__section-head:has(> .sidebar__catalog-more--compact) .sidebar__section-label > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

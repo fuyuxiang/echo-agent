@@ -48,7 +48,7 @@ const picker = {
 };
 
 function resetStores(project: ProjectMeta = baseProject) {
-  useProjectsStore.setState({ projects: [structuredClone(project)] });
+  useProjectsStore.setState({ projects: [structuredClone(project)], draftPermissions: {} });
   useSessionsStore.setState({ independent: [], drafts: {} });
   usePermissionModeStore.setState(usePermissionModeStore.getInitialState());
 }
@@ -75,12 +75,30 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     fireEvent.click(screen.getByRole("button", { name: "项目资料" }));
     const row = screen.getByRole("row", { name: /A.md/ });
     fireEvent.click(within(row).getByRole("button", { name: "用于本次任务" }));
-    expect(screen.getByRole("button", { name: "移除本次资料 A.md" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "动态" }));
+    const composer = screen.getByPlaceholderText(/Shift\+Enter/).closest(".echo-composer") as HTMLElement;
+    expect(within(composer).getByRole("button", { name: "移除本次资料 A.md" })).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText(/Shift\+Enter/), { target: { value: "use chosen evidence" } });
     await send();
     await waitFor(() => expect(start).toHaveBeenCalledWith("p1", "use chosen evidence", "model-a", expect.objectContaining({ cwd: "/workspace" })));
     await waitFor(() => expect(screen.queryByRole("button", { name: "移除本次资料 A.md" })).toBeNull());
     expect(projectAssetsUse).toHaveBeenLastCalledWith("p1", ["/private-project/A.md"]);
+  });
+
+  it("allows stale and valid project selections to be removed with no model configured", () => {
+    const project = { ...baseProject, assets: [{ id: "a", name: "A.md", path: "/private-project/A.md", kind: "file" as const }] };
+    resetStores(project);
+    useSessionsStore.getState().setDraft("project-assets:p1", '["a","deleted"]');
+    const openModelSettings = vi.fn();
+    render(<ProjectDetailView project={project} onBack={vi.fn()} onOpenModelSettings={openModelSettings} picker={picker} />);
+    const controls = screen.getByRole("group", { name: "本次项目资料" });
+    expect(within(controls).getByRole("alert")).toHaveTextContent("部分项目资料已失效");
+    fireEvent.click(within(controls).getByRole("button", { name: "移除失效选择" }));
+    expect(useSessionsStore.getState().drafts["project-assets:p1"]).toBe('["a"]');
+    fireEvent.click(within(controls).getByRole("button", { name: "移除本次资料 A.md" }));
+    expect(screen.queryByRole("group", { name: "本次项目资料" })).toBeNull();
+    expect(useSessionsStore.getState().drafts["project-assets:p1"]).toBeUndefined();
+    expect(openModelSettings).not.toHaveBeenCalled();
   });
 
   it("native project-asset rejection preserves both selection and task draft", async () => {
@@ -170,24 +188,46 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
       expect(await options?.prepareAttachments?.()).toEqual(["/private-project/A.md"]);
       return "work-session";
     });
-    render(<ProjectDetailView project={project} onBack={vi.fn()} onStartConversation={start} models={models} picker={picker} />);
+    const detail = <ProjectDetailView project={project} onBack={vi.fn()} onStartConversation={start} models={models} picker={picker} />;
+    const page = render(detail);
+    fireEvent.click(await screen.findByRole("button", { name: "请求批准" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^本任务免审批/ }));
+    fireEvent.click(screen.getByRole("button", { name: "确认开启" }));
     fireEvent.click(screen.getByRole("button", { name: "工作项" }));
     const run = screen.getByRole("button", { name: "交给 Agent" });
     await waitFor(() => expect(run).toBeEnabled());
+    expect(screen.getByText(/交给 Agent 时使用任务默认权限/)).toHaveTextContent("请求批准");
     fireEvent.click(run);
     await waitFor(() => expect(useProjectsStore.getState().projects[0].tasks[0].sessionId).toBe("work-session"));
-    expect(start).toHaveBeenCalledWith("p1", expect.stringContaining("核对发布"), "model-b", expect.objectContaining({ cwd: "/task", rememberModel: false }));
+    expect(start).toHaveBeenCalledWith("p1", expect.stringContaining("核对发布"), "model-b", expect.objectContaining({
+      cwd: "/task", rememberModel: false, requestedPermissionMode: undefined, expectedPermissionMode: "ask",
+    }));
+    expect(screen.getByRole("button", { name: "本任务免审批" })).toBeInTheDocument();
     expect(useProjectsStore.getState().projects[0].defaultModelId).toBe("model-a");
     expect(useSessionsStore.getState().drafts["project-assets:p1"]).toBe(hasSeparateDraft ? '["a"]' : undefined);
     expect(useSessionsStore.getState().drafts["project-workspace:p1"]).toBe(hasSeparateDraft ? "/task" : undefined);
     expect(screen.getByRole("textbox", { name: "输入问题或任务" })).toHaveValue(text);
+    if (hasSeparateDraft) {
+      page.unmount();
+      start.mockResolvedValueOnce("draft-session");
+      render(detail);
+      expect(await screen.findByRole("button", { name: "本任务免审批" })).toBeVisible();
+      await send();
+      await waitFor(() => expect(start).toHaveBeenLastCalledWith("p1", text, "model-a", expect.objectContaining({
+        requestedPermissionMode: "always-approve", expectedPermissionMode: "always-approve",
+      })));
+      expect(await screen.findByRole("button", { name: "请求批准" })).toBeVisible();
+    }
   });
 
-  it("header chip 显示项目名与 0 项降级文案", () => {
-    resetStores();
+  it.each([
+    baseProject,
+    { ...baseProject, instructions: "只在完成时保存", experts: [{ id: "a1", name: "需求分析师" }] },
+  ])("omits the composer summaries and keeps project preferences in the sidebar", project => {
+    resetStores(project);
     render(
       <ProjectDetailView
-        project={baseProject}
+        project={project}
         onBack={vi.fn()}
         onStartConversation={vi.fn()}
         models={models}
@@ -195,13 +235,14 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
         picker={picker}
       />,
     );
-    const header = screen.getByRole("status", { name: /项目「发布项目」/ });
-    expect(header.textContent).toContain("发布项目");
-    expect(header.textContent).toContain("尚未配置任务参考信息");
-    expect(header.querySelector(".pd-composer-header__count--active")).toBeNull();
+    expect(screen.queryByText("本次任务上下文")).toBeNull();
+    expect(screen.queryByText("项目默认偏好：")).toBeNull();
+    expect(screen.queryByRole("group", { name: "本次项目资料" })).toBeNull();
+    const preferences = within(screen.getByRole("complementary")).getByText("项目默认偏好");
+    expect(preferences.closest("details")).toBeInTheDocument();
   });
 
-  it("header chip 在含项目指令但无 Agent/Skill/MCP 时显示「项目指令」", async () => {
+  it("在项目输入框下方显示任务执行设置", async () => {
     resetStores({ ...baseProject, instructions: "只在完成时保存" });
     render(
       <ProjectDetailView
@@ -213,56 +254,14 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
         picker={picker}
       />,
     );
-    const header = screen.getByRole("status", { name: /已配置项目指令/ });
-    expect(header.textContent).toContain("项目指令");
-    expect(header.textContent).not.toContain("Agent");
-    expect(header.textContent).not.toContain("Skill");
     const settings = screen.getByRole("group", { name: "任务执行设置" });
     expect(settings).toHaveTextContent("workspace");
-    await waitFor(() => expect(settings).toHaveTextContent("请求批准"));
+    const permissions = await within(settings).findByRole("button", { name: "请求批准" });
     expect(within(settings).getByRole("button", { name: /工作目录：\/workspace/ })).toBeInTheDocument();
-    expect(within(settings).queryByRole("button", { name: /请求批准/ })).toBeNull();
+    expect(permissions).toHaveAttribute("aria-haspopup", "menu");
     const card = screen.getByRole("textbox").closest(".echo-composer");
     expect(card).not.toHaveClass("echo-composer--home");
     expect(card?.nextElementSibling).toBe(settings);
-    expect(header.textContent).not.toContain("MCP");
-  });
-
-  it("header chip 在含 Agent/Skill/MCP 时按计数 > 0 高亮并显示完整摘要", () => {
-    resetStores({
-      ...baseProject,
-      experts: [{ id: "a1", name: "需求分析师" }],
-      skills: [
-        { id: "s1", name: "code-review" },
-        { id: "s2", name: "release-notes" },
-      ],
-      connectors: [],
-    });
-    render(
-      <ProjectDetailView
-        project={{
-          ...baseProject,
-          experts: [{ id: "a1", name: "需求分析师" }],
-          skills: [
-            { id: "s1", name: "code-review" },
-            { id: "s2", name: "release-notes" },
-          ],
-          connectors: [],
-        }}
-        onBack={vi.fn()}
-        onStartConversation={vi.fn()}
-        models={models}
-        defaultModelId="model-a"
-        picker={picker}
-      />,
-    );
-    const header = screen.getByRole("status", { name: /已配置 1 个专家、2 个技能、0 个连接器/ });
-    expect(header.textContent).toContain("1 专家");
-    expect(header.textContent).toContain("2 技能");
-    expect(header.textContent).toContain("0 连接器");
-    // Agent/Skill > 0 高亮;MCP = 0 不高亮。
-    const activeCounts = header.querySelectorAll(".pd-composer-header__count--active");
-    expect(activeCounts.length).toBe(2);
   });
 
   it("模型列表为空 + defaultModelId 不可用时显示外置 alert + 前往设置模型按钮", () => {

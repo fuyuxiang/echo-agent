@@ -1264,7 +1264,7 @@ export function NotificationCenterSettingsPanel({
               }`}
             >
               <div
-                className={`notification-row__dot notification-row__dot--${severityToDot(entry.severity)}`}
+                className={`notification-row__dot notification-row__dot--${notificationDotTone(entry)}`}
               />
               <div className="notification-row__body">
                 <div className="notification-row__head">
@@ -1335,12 +1335,18 @@ function kindLabel(kind: NotificationKind | string): string {
   return map[String(kind)] ?? String(kind);
 }
 
-function severityToDot(severity: string): string {
-  switch (severity) {
+function notificationDotTone(entry: NotificationEntry): string {
+  switch (entry.severity) {
     case "error":
-      return "error";
     case "warn":
-      return "warn";
+      return entry.severity;
+    case "info": {
+      if (entry.kind !== "session_complete") return "info";
+      // Stopped automations also use info. Their body preserves the stop reason if the title is truncated.
+      const stopped = entry.title.endsWith("》已停止")
+        || entry.body?.startsWith("本次运行已停止，后续计划不受影响");
+      return stopped ? "info" : "success";
+    }
     default:
       return "info";
   }

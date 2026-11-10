@@ -4,6 +4,7 @@ import { SlidersHorizontal } from "lucide-react";
 import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 import { useSessionsStore, selectHasFilter } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
+import { projectSessionTitle } from "@/lib/project-context";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import { IS_MACOS, IS_WINDOWS, shortcutLabel } from "@/lib/platform";
 import { useModalPresence } from "@/lib/use-modal-focus";
@@ -1164,7 +1165,7 @@ export function Sidebar({
               className={"sidebar__chevron" + (tasksOpen ? "" : " sidebar__chevron--collapsed")}
             />
           </button>
-          {tasksOpen && <SidebarCatalogMore section="tasks" catalog={catalog} />}
+          {tasksOpen && <SidebarCatalogMore section="tasks" catalog={catalog} inHeading />}
           {registerWindowNavigation && taskFilter}
         </div>}
         {(tasksOpen || (!registerWindowNavigation && showEmptyTaskState)) && (
@@ -1201,7 +1202,7 @@ export function Sidebar({
             className={"sidebar__chevron" + (projectsOpen ? "" : " sidebar__chevron--collapsed")}
           />
         </button>
-        {projectsOpen && <SidebarCatalogMore section="projects" catalog={catalog} />}
+        {projectsOpen && <SidebarCatalogMore section="projects" catalog={catalog} inHeading />}
         </div>
         {projectsOpen && (
           <SidebarCatalogList section="projects" catalog={catalog} label="项目列表">
@@ -1280,7 +1281,7 @@ export function Sidebar({
                         const summary = sessionSummaryById.get(conversation.sessionId);
                         return renderConv({
                           sessionId: conversation.sessionId,
-                          title: conversation.title || summary?.title || "未命名会话",
+                          title: projectSessionTitle(summary?.title, conversation.title),
                           cwd: summary?.cwd || proj.cwd || "",
                           updatedAt: summary?.updatedAt || conversation.createdAt,
                           pinned: summary?.pinned,

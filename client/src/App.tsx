@@ -95,7 +95,7 @@ import type { AgentEntry, SessionSummary, ContinuationTarget, ConversationNaviga
 import { buildCodingWorkflowPrompt } from "./features/coding/lib/workflow";
 import { CodingTaskRuntimeManager } from "./features/coding/lib/coding-task-runtime";
 import { codingQueueOwner, settleCodingQueueTurn } from "./features/coding/lib/coding-followup";
-import { hydrateProjectsFromBackend, useProjectsStore, type ProjectMeta } from "./stores/projects-store";
+import { hydrateProjectsFromBackend, projectOwnsSession, useProjectsStore, type ProjectMeta, type ProjectTab } from "./stores/projects-store";
 import {
   onSessionStatusPersistenceIssue,
   retryPendingSessionStatuses,
@@ -139,7 +139,7 @@ import {
   usePermissionModeStore,
 } from "./stores/permission-mode-store";
 import { agentsValidateReferences } from "./lib/agent-client";
-import { buildProjectPrompt, projectPromptForTurn, type ProjectConversationOptions, type StartProjectConversation } from "./lib/project-context";
+import { buildProjectPrompt, projectPromptForTurn, projectSessionTitle, type ProjectConversationOptions, type StartProjectConversation } from "./lib/project-context";
 import { migrateCatalogRootStorage } from "./lib/catalog-root-storage";
 import { parseRememberArguments, type SlashCommandInvocation } from "./lib/slash-commands";
 import { useUpdateStore } from "./stores/update-store";
@@ -189,7 +189,8 @@ const MeetingRecordingIndicator = lazy(() => import("./components/MeetingRecordi
 
 type SessionSelectionIntent =
   | { kind: "subagent"; source: SubagentOpenContext }
-  | { kind: "return"; point: SubagentReturnPoint };
+  | { kind: "return"; point: SubagentReturnPoint }
+  | { kind: "project-work-item"; projectId: string };
 
 class SessionNavigationSupersededError extends Error {
   constructor() {
@@ -373,8 +374,9 @@ function Shell() {
   const [modelCatalogLoading, setModelCatalogLoading] = useState(true);
   const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
   const [modelSwitching, setModelSwitching] = useState(false);
-  const [loadingSession, setLoadingSession] = useState<{ sessionId: string; generation: number } | null>(null);
+  const [sessionRestore, setSessionRestore] = useState<{ sessionId: string; generation: number; error?: string } | null>(null);
   const [subagentTrail, setSubagentTrail] = useState<SubagentReturnPoint[]>([]);
+  const [projectWorkItemSource, setProjectWorkItemSource] = useState<{ projectId: string; sessionId: string } | null>(null);
   const [subagentScrollRestore, setSubagentScrollRestore] = useState<SubagentScrollRestore | null>(null);
   const subagentRestoreSequenceRef = useRef(0);
   const [conversationNavigation, setConversationNavigation] = useState<ConversationNavigationRequest | null>(null);
@@ -1319,6 +1321,7 @@ function Shell() {
             if (disposed) return;
             if (sessionsStore.getState().currentSessionId === entry.sessionId && !sessionsStore.getState().deletedSessionIds.includes(entry.sessionId)) {
               sessionsStore.getState().upsert({ sessionId: entry.sessionId, currentModelId: loadedModel ?? entry.currentModelId });
+              setSessionRestore(pending => pending?.sessionId === entry.sessionId && pending.error !== undefined ? null : pending);
             }
           } else if (sessionId && !sessionsStore.getState().deletedSessionIds.includes(sessionId)) {
             throw new Error("无法确定当前会话的工作目录，请从任务列表重新打开会话后重试。");
@@ -1367,19 +1370,29 @@ function Shell() {
     if (!id) return undefined;
     return s.independent.find((x) => x.sessionId === id);
   });
-  const currentTitle = currentEntry?.title || "";
+  const currentProject = useProjectsStore(state => currentSessionId
+    ? state.projects.find(project => projectOwnsSession(project, currentSessionId))
+    : undefined);
+  const currentTitle = currentProject
+    ? projectSessionTitle(currentEntry?.title, currentProject.conversations.find(item => item.sessionId === currentSessionId)?.title)
+    : currentEntry?.title || "";
   const activeSessionCwd = currentEntry?.cwd;
   const streaming = sessionStore((s) => s.streaming);
   const newSessionModelId = resolveConfiguredModelId(models, currentModelId);
   const activeSessionModelId = resolveSessionModelId(models, currentEntry?.currentModelId);
-  const sessionLoading = !!currentSessionId && loadingSession?.sessionId === currentSessionId;
+  const currentRestore = sessionRestore?.sessionId === currentSessionId ? sessionRestore : null;
+  const sessionRestoreError = currentRestore?.error;
+  const sessionLoading = currentRestore !== null && sessionRestoreError === undefined;
+  const sessionNotReady = currentRestore !== null;
   const modelConfigured = currentSessionId
     ? activeSessionModelId !== undefined
     : newSessionModelId !== undefined;
-  const chatReady = !!init?.auth.ready && !!activeSessionModelId && !modelSwitching && !sessionLoading;
+  const chatReady = !!init?.auth.ready && !!activeSessionModelId && !modelSwitching && !sessionNotReady;
   const runtimeSetupHint = init?.auth.reason ?? "请先在「设置 → 模型」检查可用模型和连接";
   const chatSetupHint = sessionLoading
-    ? "正在加载会话信息…"
+    ? "正在恢复会话…"
+    : sessionRestoreError !== undefined
+    ? "会话恢复失败，可继续编辑草稿"
     : modelSwitching
     ? "正在切换模型…"
     : models.length === 0
@@ -1577,9 +1590,8 @@ function Shell() {
     showToast(`${label} 即将上线`);
   };
 
-  // Sidebar project node click → open the Projects panel with that project selected.
-  const handleOpenProjectFromSidebar = (projectId: string, focusDraft = false) => {
-    navigateWithGuard("项目", () => useProjectsStore.getState().setActiveProjectId(projectId, focusDraft));
+  const handleOpenProject = (projectId: string | null, focusDraft = false, tab: ProjectTab = "activity") => {
+    navigateWithGuard("项目", () => useProjectsStore.getState().setActiveProjectId(projectId, focusDraft, tab));
   };
 
   const ensureQuotaAllowsSend = (): boolean => {
@@ -1731,8 +1743,8 @@ function Shell() {
     // render tick; the store flag is the source of truth. A second pushUser +
     // startStreaming would orphan an empty placeholder that never completes.
     if (sessionStore.getState().streaming) return false;
-    if (modelSwitching || sessionLoading) {
-      showToast(sessionLoading ? "正在加载会话，请稍候" : "正在切换模型，请稍候");
+    if (modelSwitching || sessionNotReady) {
+      showToast(sessionNotReady ? chatSetupHint : "正在切换模型，请稍候");
       return false;
     }
     if (!init?.auth.ready) {
@@ -1801,8 +1813,8 @@ function Shell() {
   const handlePrepareRetry = async (sessionId: string): Promise<boolean> => {
     if (useContinuationStore.getState().pending[sessionId]) return false;
     if (sessionStore.getState().transcripts[sessionId]?.streamingMessageId) return false;
-    if (modelSwitching || sessionLoading) {
-      showToast(sessionLoading ? "正在加载会话，请稍候" : "正在切换模型，请稍候");
+    if (modelSwitching || sessionNotReady) {
+      showToast(sessionNotReady ? chatSetupHint : "正在切换模型，请稍候");
       return false;
     }
     if (!init?.auth.ready) {
@@ -1954,8 +1966,8 @@ function Shell() {
     }
     const transcript = sessionStore.getState();
     if (!transcript.streaming || transcript.sendNowPending) return false;
-    if (modelSwitching || sessionLoading) {
-      showToast(sessionLoading ? "正在加载会话，请稍候" : "正在切换模型，请稍候");
+    if (modelSwitching || sessionNotReady) {
+      showToast(sessionNotReady ? chatSetupHint : "正在切换模型，请稍候");
       return false;
     }
     if (!init?.auth.ready) {
@@ -2167,7 +2179,7 @@ function Shell() {
       setCurrentModelId(modelId);
       return;
     }
-    if (modelSwitching || sessionLoading) return;
+    if (modelSwitching || sessionNotReady) return;
 
     const sessionId = currentSessionId;
     const commit = () => {
@@ -2458,8 +2470,10 @@ function Shell() {
     const focusedSessionId = sessionsStore.getState().currentSessionId;
     if (intent?.kind === "subagent" && focusedSessionId !== intent.source.parentSessionId) return;
     if (intent?.kind === "return" && focusedSessionId !== intent.point.childSessionId) return;
+    const isSubagentNavigation = intent?.kind === "subagent" || intent?.kind === "return";
+    const refreshingFocusedSession = preservePlaceholder && sessionId === focusedSessionId;
     const generation = ++selectionGenerationRef.current;
-    if (!intent && !preservePlaceholder) {
+    if (!isSubagentNavigation && !preservePlaceholder) {
       let ownerId: string | null;
       try {
         ownerId = await resolveGroupForSession(sessionId, useGroupStore.getState().groups);
@@ -2535,11 +2549,10 @@ function Shell() {
       ], 6000);
       return;
     }
-    setLoadingSession({ sessionId, generation });
     const persistedModelId = entry.currentModelId;
     const selectedModelId = resolveSessionModelId(models, persistedModelId);
     let codingOwner: { root: string; taskId: string } | null = null;
-    if (!intent && entry.cwd) {
+    if (!isSubagentNavigation && !refreshingFocusedSession && entry.cwd) {
       const detail = await codingApi.taskForSession(entry.cwd,sessionId).catch(() => null);
       if (detail) codingOwner = {root:entry.cwd,taskId:detail.id};
       if (selectionGenerationRef.current !== generation) return;
@@ -2554,6 +2567,11 @@ function Shell() {
       await useTaskStore.getState().selectTask(codingOwner.taskId);
       if (selectionGenerationRef.current !== generation) return;
     } else if (!preservePlaceholder) setPlaceholderView(null);
+    if (intent?.kind === "project-work-item") {
+      setProjectWorkItemSource({ projectId: intent.projectId, sessionId });
+    } else if (!isSubagentNavigation && !refreshingFocusedSession) {
+      setProjectWorkItemSource(null);
+    }
     if (intent?.kind === "subagent") {
       const point = { ...intent.source, childSessionId: sessionId };
       setSubagentTrail((trail) => pushSubagentReturnPoint(trail, point));
@@ -2561,11 +2579,12 @@ function Shell() {
     } else if (intent?.kind === "return") {
       setSubagentTrail((trail) => popSubagentReturnPoint(trail, intent.point));
       setSubagentScrollRestore({ ...intent.point, sequence: ++subagentRestoreSequenceRef.current });
-    } else {
+    } else if (!refreshingFocusedSession) {
       // An unrelated task selection is not a move up the subagent hierarchy.
       setSubagentTrail([]);
       setSubagentScrollRestore(null);
     }
+    setSessionRestore({ sessionId, generation });
     sessionsStore.getState().setCurrent(sessionId);
     // Reflect the model actually persisted by this session. Do not fall back to
     // the first configured model: that would only change the picker, not the
@@ -2580,6 +2599,7 @@ function Shell() {
     // transcript. Either way the focused mirror is refreshed in one step.
     sessionStore.getState().setSession(sessionId);
     let historyLoaded = false;
+    let restoreError: string | undefined;
     try {
       // Load with the session's own cwd. Opening history must not re-aim the
       // working directory selected for the next new task.
@@ -2606,7 +2626,8 @@ function Shell() {
         );
       }
     } catch (e) {
-      if (selectionGenerationRef.current === generation && sessionsStore.getState().currentSessionId === sessionId) {
+      if (!historyLoaded) restoreError = friendlyError(e);
+      else if (selectionGenerationRef.current === generation && sessionsStore.getState().currentSessionId === sessionId) {
         sessionStore.getState().setError(friendlyError(e));
       }
       if (strict) throw e;
@@ -2618,10 +2639,11 @@ function Shell() {
         sessionId,
         historyLoaded && findSessionSummary(sessionId)?.status === "completed",
       );
-      setLoadingSession((pending) => pending?.generation === generation ? null : pending);
       // Replay window is over: a *new* turn's updates for this session must be
       // ingested again. (No-op when there was no cached transcript to suppress.)
       if (!agentSessionLoadInFlight(sessionId)) sessionStore.getState().clearReplaySuppression(sessionId);
+      setSessionRestore(pending => pending?.generation !== generation ? pending
+        : restoreError === undefined ? null : { ...pending, error: restoreError });
     }
   };
 
@@ -3053,7 +3075,7 @@ function Shell() {
         const permission = Boolean(usePermissionStore.getState().queues[sessionId]?.length || usePermissionStore.getState().queues.__global?.length);
         const question = Boolean(useQuestionStore.getState().queues[sessionId]?.length || useQuestionStore.getState().queues.__global?.length);
         if (live.streaming || live.sendNowPending || live.control?.phase === "pausing" || live.control?.phase === "stopping"
-          || live.planApproval?.sessionId === sessionId || permission || question || loadingSession?.sessionId === sessionId) {
+          || live.planApproval?.sessionId === sessionId || permission || question || sessionRestore?.sessionId === sessionId) {
           showToast("请等待当前执行和待处理操作结束后再继续"); return false;
         }
         const target = latestContinuationTarget(live.messages);
@@ -3142,7 +3164,7 @@ function Shell() {
           : "请检查项目默认专家配置和所选目录。";
         throw new Error(`无法验证项目专家。 ${recovery} ${String(error).replace(/^Error:\s*/, "")}`);
       }
-      const sessionId = await agentNewSession(cwd, modelId, undefined, options.expectedPermissionMode);
+      const sessionId = await agentNewSession(cwd, modelId, options.requestedPermissionMode, options.expectedPermissionMode);
       requests.delete(project.id);
       return { sessionId, cwd, creation, attachments };
     } finally {
@@ -3253,6 +3275,7 @@ function Shell() {
 
       // Open only if this creation still owns the navigation intent.
       if (selectionGenerationRef.current === creation.selection) {
+        setProjectWorkItemSource(options.sourceTab === "task" ? { projectId, sessionId } : null);
         setPlaceholderView(null);
         setCurrentModelId(modelId);
         sessionsStore.getState().setCurrent(sessionId);
@@ -3325,6 +3348,8 @@ function Shell() {
     projectModels: models,
     projectDefaultModelId: newSessionModelId,
     onProjectNavigate: handleProjectNavigation,
+    onOpenProjectWorkItemSession: (projectId: string, sessionId: string, cwd?: string) =>
+      handleSelectSession(sessionId, cwd, false, false, { kind: "project-work-item", projectId }),
     codingActive: codingWorkspaceActive,
     onOpenMeetingMinutes: () => handleNavigate("录音转写"),
     onOpenModelSettings: () => openSettings("model"),
@@ -3387,8 +3412,8 @@ function Shell() {
           onOpenSearch={openSearch}
           onPlaceholder={handlePlaceholder}
           onToast={showToast}
-          onOpenProject={handleOpenProjectFromSidebar}
-          onOpenProjectDraft={projectId => handleOpenProjectFromSidebar(projectId, true)}
+          onOpenProject={handleOpenProject}
+          onOpenProjectDraft={projectId => handleOpenProject(projectId, true)}
           onRenameSession={handleRenameSession}
           onArchiveSession={handleArchiveSession}
           onDeleteSession={handleDeleteSession}
@@ -3470,6 +3495,13 @@ function Shell() {
                     handleNavigate("专家团");
                   }}
                   title={currentTitle}
+                  projectBreadcrumb={currentProject ? {
+                    name: currentProject.name,
+                    onOpenProjects: () => handleOpenProject(null),
+                    onOpenProject: () => handleOpenProject(currentProject.id, false,
+                      projectWorkItemSource?.projectId === currentProject.id && projectWorkItemSource.sessionId === currentSessionId
+                        ? "task" : "activity"),
+                  } : undefined}
                   attentionRequest={trayAttention?.sessionId === currentSessionId ? trayAttention.sequence : undefined}
                   notice={modelCatalogNotice}
                   onRename={handleRenameTitle}
@@ -3485,6 +3517,10 @@ function Shell() {
                   apiReady={chatReady}
                   setupHint={chatSetupHint}
                   onOpenSettings={() => openSettings("model")}
+                  setupRequiresSettings={!modelSwitching && (!init.auth.ready || models.length === 0)}
+                  draftOnly={sessionNotReady}
+                  sessionRestoreError={sessionRestoreError}
+                  onRetrySessionRestore={() => { void handleSelectSession(currentSessionId, activeSessionCwd, true); }}
                   onOpenSecuritySettings={() => openSettings("security")}
                   modelId={activeSessionModelId}
                   modelLoading={sessionLoading || modelSwitching}

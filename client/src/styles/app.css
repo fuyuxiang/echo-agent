@@ -6256,22 +6256,12 @@ button.diff__path {
 
 /* ===== 项目详情页（图3-6） ===== */
 .pd-page { height: 100%; display: flex; flex-direction: column; min-height: 0; background: transparent; }
-.pd-topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; flex-shrink: 0; }
+.pd-topbar { display: flex; align-items: center; gap: 12px; padding: 14px 24px; flex-shrink: 0; }
 .pd-crumb { display: flex; align-items: center; gap: 8px; font-size: 0.875rem; color: var(--echo-text-medium); }
 .pd-crumb__link { border: none; background: none; font: inherit; color: inherit; cursor: pointer; padding: 0; }
 .pd-crumb__link:hover { text-decoration: underline; }
 .pd-crumb__sep { color: var(--echo-text-tertiary); }
 .pd-crumb__name { color: var(--echo-text-strong); font-weight: 600; }
-.pd-topbar__right { position: relative; }
-.pd-invite { background: var(--echo-button-primary-bg); color: var(--echo-button-primary-fg); border: none; border-radius: 8px; padding: 7px 18px; font-size: 0.8125rem; cursor: pointer; }
-.pd-invite:hover { background: var(--echo-button-primary-bg-hover); }
-.pd-invite:active { background: var(--echo-button-primary-bg-active); }
-.pd-members-pop { position: absolute; right: 0; top: 42px; z-index: 30; min-width: 200px; padding: 8px; background: var(--echo-surface-raised); border: 1px solid var(--echo-border-default, #ececec); border-radius: 10px; box-shadow: var(--echo-shadow-popover); }
-.pd-members-pop__head { font-size: 0.8125rem; font-weight: 600; padding: 6px 8px; color: var(--echo-text-strong); }
-.pd-members-pop__empty { font-size: 0.75rem; color: var(--echo-text-tertiary); padding: 8px; }
-.pd-members-pop__item { font-size: 0.8125rem; padding: 6px 8px; color: var(--echo-text-medium); }
-.pd-members-pop__add { display: block; width: 100%; margin-top: 4px; padding: 8px; border: none; background: none; text-align: left; color: var(--echo-brand); font-size: 0.8125rem; cursor: pointer; border-radius: 6px; }
-.pd-members-pop__add:hover { background: var(--echo-bg-hover); }
 .pd-body { flex: 1; min-height: 0; display: flex; }
 .pd-main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 0 24px; }
 .pd-tabs-row { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--echo-border-default, #ececec); flex-shrink: 0; }
@@ -6525,41 +6515,8 @@ button.diff__path {
 .pd-asset-icon { margin-right: 8px; }
 .pd-asset-empty { text-align: center; color: var(--echo-text-tertiary); padding: 40px 0; }
 .pd-asset-del { border: none; background: none; color: var(--echo-text-tertiary); cursor: pointer; }
-/* 项目级 Composer:复用首页 `<Composer>` 组件,
-   .pd-composer-shell 仅承载 header chip + Composer 卡片 + 外置 alert。 */
+/* 项目输入框复用 Composer，发送错误显示在卡片下方。 */
 .pd-composer-shell { padding: 0 0 12px; flex-shrink: 0; }
-.pd-composer-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 4px;
-  font-size: 0.75rem;
-  color: var(--echo-text-tertiary);
-  min-width: 0;
-  flex-wrap: wrap;
-}
-.pd-composer-header__icon { color: var(--echo-text-medium); flex: none; display: inline-flex; }
-.pd-composer-header__name {
-  color: var(--echo-text-strong);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 240px;
-}
-.pd-composer-header__sep { color: var(--echo-text-tertiary); }
-.pd-composer-header__label { color: var(--echo-text-tertiary); }
-.pd-composer-header__count {
-  padding: 2px 8px;
-  border-radius: 999px;
-  color: var(--echo-text-medium);
-  background: transparent;
-  font-variant-numeric: tabular-nums;
-}
-.pd-composer-header__count--active {
-  color: var(--echo-brand);
-  background: var(--echo-brand-soft);
-}
 /* Composer 卡片下方的错误降级 alert。Composer 内部 setupHint 覆盖卡片
    内部,本 alert 处理的是项目级降级场景(原项目模型不可用 / 发送失败)。 */
 .pd-composer-warning {
@@ -6593,15 +6550,6 @@ button.diff__path {
   .pd-conversation-row__open .pd-task-item__meta { flex-basis: 100%; justify-content: flex-start; }
   .pd-task-item__actions { flex-basis: 100%; margin-left: 0; justify-content: flex-start; }
   .pd-task-item__del { margin-left: auto; }
-}
-
-@media (max-width: 720px) {
-  /* 窄屏:项目 composer 顶部的注入摘要只保留项目名 + 注入标签,节省横向空间。 */
-  .pd-composer-header__count:not(.pd-composer-header__instruction),
-  .pd-composer-header__label + .pd-composer-header__sep {
-    display: none;
-  }
-  .pd-composer-header__label { display: none; }
 }
 
 /* ===== HomePage (EchoAgent echo-home-page,实测:标题36/600/lh48) ===== */
@@ -11770,6 +11718,7 @@ body:has([aria-modal="true"]) .global-tooltip:not(.global-tooltip--dialog) {
 }
 .notification-row__dot--error { background: var(--echo-status-error); }
 .notification-row__dot--warn { background: var(--echo-status-warning); }
+.notification-row__dot--success { background: var(--echo-status-success); }
 .notification-row__dot--info { background: var(--echo-brand); }
 .notification-row__body {
   flex: 1;
@@ -12723,16 +12672,16 @@ body:has([aria-modal="true"]) .global-tooltip:not(.global-tooltip--dialog) {
   white-space: nowrap;
 }
 .context-usage__bar {
-  height: 6px;
+  display: flex;
+  height: 8px;
   border-radius: 999px;
   background: var(--echo-bg-hover);
   overflow: hidden;
   margin-bottom: 10px;
 }
-.context-usage__bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--echo-accent, #6366f1);
+.context-usage__bar-segment {
+  /* If the snapshot exceeds capacity, keep all categories visible in proportion. */
+  flex: 0 1 auto;
   transition: width 0.2s ease;
 }
 .context-usage__rows {
@@ -12755,12 +12704,12 @@ body:has([aria-modal="true"]) .global-tooltip:not(.global-tooltip--dialog) {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.context-usage__swatch--messages { background: var(--echo-status-info); }
-.context-usage__swatch--tools    { background: var(--echo-status-purple); }
-.context-usage__swatch--skills   { background: var(--echo-status-success); }
-.context-usage__swatch--system   { background: var(--echo-status-warning); }
-.context-usage__swatch--mcp      { background: var(--echo-status-pink); }
-.context-usage__swatch--other    { background: var(--echo-text-weak); }
+.context-usage__color--messages { background: var(--echo-status-info); }
+.context-usage__color--tools    { background: var(--echo-status-purple); }
+.context-usage__color--skills   { background: var(--echo-status-success); }
+.context-usage__color--system   { background: var(--echo-status-warning); }
+.context-usage__color--mcp      { background: var(--echo-status-pink); }
+.context-usage__color--other    { background: var(--echo-text-weak); }
 .context-usage__row-label {
   flex: 1;
   color: var(--echo-text-medium);

@@ -19,11 +19,11 @@ describe("single agent runtime architecture", () => {
 
   it("does not bundle a second agent runtime for a model provider", () => {
     const manifest = readProjectFile("package.json");
-    const tauriConfig = readProjectFile("src-tauri/tauri.conf.json");
+    const tauriConfig = JSON.parse(readProjectFile("src-tauri/tauri.conf.json"));
     const rustModules = readProjectFile("src-tauri/src/lib.rs");
 
     expect(manifest).not.toContain("@openai/codex");
-    expect(tauriConfig).not.toContain("externalBin");
+    expect(tauriConfig.bundle.externalBin).toEqual(["binaries/echo-meeting-speech"]);
     expect(rustModules).not.toContain("mod codex_app_server");
   });
 });

@@ -1,6 +1,6 @@
 import { isRemovedModelId } from "@/lib/retired-models";
 import { create } from "zustand";
-import { projectsLoad, projectsSave } from "@/lib/agent-client";
+import { projectsLoad, projectsSave, type PermissionMode } from "@/lib/agent-client";
 import type { SessionSummary } from "@/lib/types";
 
 /**
@@ -26,6 +26,12 @@ export interface ProjectConversation {
   archived?: boolean;
   /** An existing task moved into this project receives its project contract on its next turn. */
   pendingProjectContext?: boolean;
+}
+
+export type ProjectTab = "activity" | "task" | "asset";
+
+interface ProjectDraftPermissionSelection {
+  mode: PermissionMode;
 }
 
 export type PlanStatus = "pending" | "in_progress" | "paused" | "completed";
@@ -87,9 +93,16 @@ export interface ProjectMeta {
   schemaVersion?: 2;
   tasks: TaskItem[];
   assets: AssetItem[];
+  /** Legacy local participant notes, preserved when saving existing projects. */
   members: string[];
   /** 项目下的真实对话（EchoAgent 会话列表），按创建时间倒序。 */
   conversations: ProjectConversation[];
+}
+
+export function projectOwnsSession(project: ProjectMeta, sessionId: string): boolean {
+  return project.conversations.some(item => item.sessionId === sessionId)
+    || project.tasks.some(item => item.sessionId === sessionId)
+    || project.plans.some(item => item.sessionId === sessionId);
 }
 
 /** 计划看板列定义（对齐目标截图：待开始/进行中/暂停/完成）。 */
@@ -203,7 +216,12 @@ interface ProjectsState {
   /** Sidebar → ProjectsPanel communication: when set, the panel auto-opens this project. */
   activeProjectId: string | null;
   focusProjectDraft: boolean;
-  setActiveProjectId: (id: string | null, focusDraft?: boolean) => void;
+  activeProjectTab: ProjectTab;
+  setActiveProjectId: (id: string | null, focusDraft?: boolean, tab?: ProjectTab) => void;
+  /** One-shot composer selections, kept in memory across project navigation. */
+  draftPermissions: Partial<Record<string, ProjectDraftPermissionSelection>>;
+  setDraftPermission: (id: string, mode: PermissionMode) => void;
+  consumeDraftPermission: (id: string, selection: ProjectDraftPermissionSelection) => void;
   add: (p: {
     name: string;
     cwd?: string;
@@ -228,7 +246,6 @@ interface ProjectsState {
   addAsset: (id: string, a: Pick<AssetItem, "name" | "kind"> & Partial<AssetItem>) => void;
   addAssets: (id: string, assets: Array<Pick<AssetItem, "name" | "kind"> & Partial<AssetItem>>) => void;
   removeAsset: (id: string, assetId: string) => void;
-  addMember: (id: string, name: string) => void;
   addConversation: (id: string, conv: ProjectConversation) => void;
   removeConversation: (id: string, sessionId: string) => void;
   /** Move a catalog task into one project without changing the runtime session. */
@@ -277,7 +294,18 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     retryPersist: () => persist(get().projects),
     activeProjectId: null,
     focusProjectDraft: false,
-    setActiveProjectId: (id, focusDraft = false) => set({ activeProjectId: id, focusProjectDraft: focusDraft }),
+    activeProjectTab: "activity",
+    setActiveProjectId: (id, focusDraft = false, tab = "activity") =>
+      set({ activeProjectId: id, focusProjectDraft: focusDraft, activeProjectTab: tab }),
+    draftPermissions: {},
+    setDraftPermission: (id, mode) =>
+      set(state => ({ draftPermissions: { ...state.draftPermissions, [id]: { mode } } })),
+    consumeDraftPermission: (id, selection) => set(state => {
+      if (state.draftPermissions[id] !== selection) return state;
+      const draftPermissions = { ...state.draftPermissions };
+      delete draftPermissions[id];
+      return { draftPermissions };
+    }),
     add: (p) => {
       const item: ProjectMeta = {
         id: uid("proj"),
@@ -304,7 +332,9 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     rename: (id, name) => patch(id, (p) => ({ ...p, name })),
     remove: (id) => {
       const next = get().projects.filter((p) => p.id !== id);
-      set({ projects: next });
+      const draftPermissions = { ...get().draftPermissions };
+      delete draftPermissions[id];
+      set({ projects: next, draftPermissions });
       persist(next);
     },
     updateConfig: (id, cfg) => patch(id, (p) => ({ ...p, ...cfg })),
@@ -374,10 +404,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     },
     removeAsset: (id, assetId) =>
       patch(id, (p) => ({ ...p, assets: p.assets.filter((a) => a.id !== assetId) })),
-    addMember: (id, name) =>
-      patch(id, (p) =>
-        p.members.includes(name) ? p : { ...p, members: [...p.members, name] },
-      ),
     addConversation: (id, conv) =>
       patch(id, (p) => ({
         ...p,
@@ -395,11 +421,9 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       const projects = get().projects;
       const target = projects.find((project) => project.id === id);
       if (!target) throw new Error("目标项目不存在");
-      if (projects.some((project) =>
-        project.conversations.some((item) => item.sessionId === session.sessionId)
-        || project.plans.some((item) => item.sessionId === session.sessionId)
-        || project.tasks.some((item) => item.sessionId === session.sessionId)
-      )) throw new Error("该会话已归属项目，请先移出原项目");
+      if (projects.some(project => projectOwnsSession(project, session.sessionId))) {
+        throw new Error("该会话已归属项目，请先移出原项目");
+      }
       const now = new Date().toISOString();
       const next = projects.map((project) => project.id === id ? {
         ...project,
@@ -419,15 +443,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         throw new Error("分叉会话标识无效");
       }
       const projects = get().projects;
-      const owns = (project: ProjectMeta, sessionId: string) => (
-        project.conversations.some((item) => item.sessionId === sessionId)
-        || project.plans.some((item) => item.sessionId === sessionId)
-        || project.tasks.some((item) => item.sessionId === sessionId)
-      );
-      const sources = projects.filter((project) => owns(project, sourceSessionId));
+      const sources = projects.filter(project => projectOwnsSession(project, sourceSessionId));
       if (sources.length === 0) return null;
       if (sources.length !== 1) throw new Error("源会话的项目归属冲突，请先检查项目关联");
-      if (projects.some((project) => owns(project, fork.sessionId))) {
+      if (projects.some(project => projectOwnsSession(project, fork.sessionId))) {
         throw new Error("分叉会话已归属项目");
       }
       const source = sources[0];
@@ -451,11 +470,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     detachSessionFromProject: async (id, sessionId) => {
       const projects = get().projects;
       const project = projects.find((item) => item.id === id);
-      if (!project || !(
-        project.conversations.some((item) => item.sessionId === sessionId)
-        || project.plans.some((item) => item.sessionId === sessionId)
-        || project.tasks.some((item) => item.sessionId === sessionId)
-      )) throw new Error("会话已不在该项目中");
+      if (!project || !projectOwnsSession(project, sessionId)) throw new Error("会话已不在该项目中");
       const next = projects.map((project) => {
         if (project.id !== id) return project;
         const plans = project.plans.map((plan) => {

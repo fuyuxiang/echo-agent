@@ -34,6 +34,7 @@ export interface ModelOption {
 export function ModelSelector({
   modelId,
   modelLoading = false,
+  showCurrentWhileLoading = false,
   disabled = false,
   models,
   onModelChange,
@@ -48,6 +49,7 @@ export function ModelSelector({
   /** Internal model id. The trigger displays its friendly name. */
   modelId?: string;
   modelLoading?: boolean;
+  showCurrentWhileLoading?: boolean;
   disabled?: boolean;
   models: ModelOption[];
   onModelChange: (id: string) => void;
@@ -179,12 +181,12 @@ export function ModelSelector({
   };
 
   const current = models.find((m) => m.id === modelId);
+  const showCurrent = !modelLoading || showCurrentWhileLoading;
   const hasModels = models.length > 0;
-  const triggerLabel = modelLoading
-    ? "正在同步模型…"
-    : hasModels
-    ? current ? modelDisplayName(current) : "请选择模型"
-    : manageModels ? "配置模型" : "未配置模型";
+  const triggerLabel = !showCurrent ? "正在同步模型…"
+    : current ? modelDisplayName(current)
+    : showCurrentWhileLoading ? "模型待确认"
+    : hasModels ? "请选择模型" : manageModels ? "配置模型" : "未配置模型";
 
   const openManagement = () => {
     // Settings captures this stable invoker and restores it when dismissed.
@@ -206,8 +208,8 @@ export function ModelSelector({
         disabled={disabled || modelLoading || (!hasModels && !manageModels)}
         aria-busy={modelLoading}
         aria-label={ariaLabel ? `${ariaLabel}：${triggerLabel}` : undefined}
-        aria-description={current && !modelLoading ? choiceLabel(current) : undefined}
-        title={!hasModels ? "请先在设置中配置模型" : current && !modelLoading ? choiceLabel(current) : triggerLabel}
+        aria-description={current && showCurrent ? choiceLabel(current) : undefined}
+        title={current && showCurrent ? choiceLabel(current) : modelLoading || hasModels ? triggerLabel : "请先在设置中配置模型"}
         aria-haspopup={hasModels ? "dialog" : undefined}
         aria-expanded={open}
         aria-controls={open ? `${listboxId}-popover` : undefined}
@@ -219,7 +221,7 @@ export function ModelSelector({
           }
         }}
       >
-        {current && !modelLoading && <ModelIdentity model={current} />}
+        {current && showCurrent && <ModelIdentity model={current} />}
         <span className="model-selector__label">{triggerLabel}</span>
         {hasModels || modelLoading ? <ChevronDown size={14} strokeWidth={1.75} className="model-selector__arrow" aria-hidden="true" />
           : <Settings2 size={14} strokeWidth={1.75} className="model-selector__arrow" aria-hidden="true" />}

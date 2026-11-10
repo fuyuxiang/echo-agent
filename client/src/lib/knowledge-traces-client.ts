@@ -18,12 +18,38 @@ export async function persistKnowledgeTrace(sessionId: string, promptId?: string
   await invoke("knowledge_trace_save", { sessionId, promptId, trace });
 }
 
-export async function hydrateKnowledgeTraces(sessionId: string): Promise<void> {
+const traceLoads = new Map<string, Promise<void>>();
+
+export function invalidateKnowledgeTraceLoad(sessionId: string): void {
+  traceLoads.delete(sessionId);
+  useKnowledgeStore.getState().setTraceLoadError(sessionId);
+}
+
+export function restoreKnowledgeTraces(sessionId: string): Promise<void> {
+  const pending = traceLoads.get(sessionId);
+  if (pending) return pending;
+
+  const isCurrent = () => traceLoads.get(sessionId) === request;
+  const request: Promise<void> = Promise.resolve()
+    .then(() => hydrateKnowledgeTraces(sessionId, isCurrent))
+    .then(() => {
+      if (isCurrent()) useKnowledgeStore.getState().setTraceLoadError(sessionId);
+    }, error => {
+      if (isCurrent()) useKnowledgeStore.getState().setTraceLoadError(sessionId, `历史知识来源恢复失败：${String(error).replace(/^Error:\s*/, "")}。对话仍可继续，原记录已保留。`);
+    })
+    .finally(() => { if (isCurrent()) traceLoads.delete(sessionId); });
+  traceLoads.set(sessionId, request);
+  return request;
+}
+
+export async function hydrateKnowledgeTraces(sessionId: string, isCurrent = () => true): Promise<void> {
   if (!isTauriAvailable()) return;
   let cursor: string | null = null;
   const seen = new Set<string>();
   do {
+    if (!isCurrent()) return;
     const raw: { traces: unknown; nextCursor: string | null } | null = await invoke<{ traces: unknown; nextCursor: string | null } | null>("knowledge_traces_load", { sessionId, cursor });
+    if (!isCurrent()) return;
     if (raw == null) return; // A legacy bridge/fixture has no provenance payload.
     if (!raw.traces || typeof raw.traces !== "object" || Array.isArray(raw.traces)) throw new Error("历史知识来源记录格式无效");
     const restored: Record<string, KnowledgeTurnTrace> = {};

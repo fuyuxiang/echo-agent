@@ -605,7 +605,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId, onOpenO
                     const limits = modelLimitsText(model, selectedProvider);
                     const testResult = modelTests[model.modelId];
                     return (
-                      <li key={model.modelId} tabIndex={-1} data-model-id={model.modelId} data-model-highlighted={model.modelId === initialModelId || undefined} ref={element => {
+                      <li key={model.modelId} tabIndex={-1} data-model-id={model.modelId} ref={element => {
                         if (element) modelRowsRef.current.set(model.modelId, element);
                         else modelRowsRef.current.delete(model.modelId);
                       }}>

@@ -105,7 +105,8 @@ if (collectionAudit) {
   useProjectsStore.setState({ projects: ["产品需求全流程", "市场调研与竞品分析", "团队知识库"].map((name, index) => ({
     id: `collection-project-${index}`, name, createdAt: new Date().toISOString(),
     instructions: "整理项目资料，持续跟进任务、讨论与交付成果。", cwd: "/review/EchoAgent",
-    connectors: [], experts: [], skills: [], plans: [], tasks: [], assets: [], members: [], conversations: [],
+    connectors: [], experts: [], skills: [], plans: [], tasks: [], assets: [],
+    members: index === 0 ? ["发布负责人 · 林"] : [], conversations: [],
   })) });
   useGroupStore.setState({ current: null, currentId: null, loading: false, groups: ["产品评审专家团", "内容创作团队", "数据分析工作组"].map((name, index) => ({
     id: `collection-group-${index}`, name, goal: "汇集不同专业视角，围绕共同目标持续协作与交付。",

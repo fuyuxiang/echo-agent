@@ -23,7 +23,7 @@ import { Button } from "./Button";
 import { TemplateCard } from "./TemplateCard";
 import { CapabilitySearch, CapabilityEmptyState } from "./experts-panel/shared/CapabilityPage";
 import { ManagementToolbar } from "./PageToolbar";
-import { useProjectsStore, type ProjectMeta, type RefItem } from "@/stores/projects-store";
+import { useProjectsStore, type ProjectMeta, type ProjectTab, type RefItem } from "@/stores/projects-store";
 import {
   TEMPLATE_OPTIONS,
   getTemplate,
@@ -56,6 +56,7 @@ interface ProjectsPanelProps {
   onStartProjectConversation?: StartProjectConversation;
   workspaces?: WorkspaceInfo[];
   onOpenSession?: (sessionId: string, cwd?: string) => void;
+  onOpenProjectWorkItemSession?: (projectId: string, sessionId: string, cwd?: string) => void;
   onRenameSession?: (sessionId: string, title: string, cwd?: string) => Promise<void>;
   onArchiveSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
   onDeleteSession?: (sessionId: string, cwd?: string) => Promise<void>;
@@ -93,6 +94,7 @@ export function ProjectsPanel({
   onStartProjectConversation,
   workspaces,
   onOpenSession,
+  onOpenProjectWorkItemSession,
   onRenameSession,
   onArchiveSession,
   onDeleteSession,
@@ -114,29 +116,32 @@ export function ProjectsPanel({
   const remove = useProjectsStore((s) => s.remove);
   const activeProjectId = useProjectsStore((s) => s.activeProjectId);
   const focusProjectDraft = useProjectsStore((s) => s.focusProjectDraft);
+  const activeProjectTab = useProjectsStore((s) => s.activeProjectTab);
   const setActiveProjectId = useProjectsStore((s) => s.setActiveProjectId);
   const [query, setQuery] = useState("");
   const [create, setCreate] = useState<CreatePreset | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [initialTab, setInitialTab] = useState<ProjectTab>("activity");
   const [draftFocusRequest, setDraftFocusRequest] = useState(0);
   const [deleteTarget, setDeleteTarget] = useState<ProjectMeta | null>(null);
   const [deleting, setDeleting] = useState(false);
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const picker = useProjectPickerOptions(cwd);
   const { requestInput, requestConfirmation, dialog } = useAppDialog(openId);
-  const navigateProject = useCallback((id: string | null, focusDraft = false) => {
+  const navigateProject = useCallback((id: string | null, focusDraft = false, tab: ProjectTab = "activity") => {
     onNavigate?.();
     setOpenId(id);
+    setInitialTab(tab);
     setDraftFocusRequest(current => focusDraft ? current + 1 : 0);
   }, [onNavigate]);
 
   // Auto-open a project when navigated from the sidebar.
   useEffect(() => {
     if (activeProjectId) {
-      navigateProject(activeProjectId, focusProjectDraft);
+      navigateProject(activeProjectId, focusProjectDraft, activeProjectTab);
       setActiveProjectId(null);
     }
-  }, [activeProjectId, focusProjectDraft, setActiveProjectId, navigateProject]);
+  }, [activeProjectId, activeProjectTab, focusProjectDraft, setActiveProjectId, navigateProject]);
 
   const filtered = projects.filter((p) =>
     p.name.toLowerCase().includes(query.toLowerCase()),
@@ -149,12 +154,14 @@ export function ProjectsPanel({
         <ProjectDetailView
           key={openProject.id}
           project={openProject}
+          initialTab={initialTab}
           draftFocusRequest={draftFocusRequest}
           workspaces={workspaces}
           onBack={() => navigateProject(null)}
           onToast={onToast}
           onStartConversation={onStartProjectConversation}
           onOpenSession={onOpenSession}
+          onOpenProjectWorkItemSession={onOpenProjectWorkItemSession}
           onRenameSession={onRenameSession}
           onArchiveSession={onArchiveSession}
           onDeleteSession={onDeleteSession}

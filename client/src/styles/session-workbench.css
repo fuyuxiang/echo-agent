@@ -51,6 +51,23 @@
 .session-header__identity .main-topbar__title { min-width: 0; max-width: 100%; margin-left: 0; text-align: center; }
 .session-header__identity .main-topbar__title-edit { position: absolute; right: 0; width: 24px; }
 .session-header__identity .main-topbar__title-input { width: 360px; min-width: 0; max-width: 100%; margin-left: 0; text-align: center; }
+.session-header__project-path {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  color: var(--echo-text-medium); font-size: .875rem; white-space: nowrap;
+}
+.session-header__project-list, .session-header__project-name {
+  border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit;
+  min-height: 32px; padding: 0 2px; cursor: pointer; -webkit-app-region: no-drag;
+}
+.session-header__project-list { display: inline-flex; align-items: center; flex: none; gap: 4px; }
+.session-header__project-name { min-width: 2em; max-width: min(14rem, 30cqi); overflow: hidden; text-overflow: ellipsis; }
+.session-header__project-list:hover, .session-header__project-name:hover { text-decoration: underline; color: var(--echo-text-strong); }
+.session-header__project-current { display: flex; align-items: center; min-width: 0; }
+.session-header__project-current .main-topbar__title-area,
+.session-header__project-current .main-topbar__title,
+.session-header__project-current .main-topbar__title-input { margin-left: 0; min-width: 0; max-width: 100%; }
+.session-header__project-current .main-topbar__title-input,
+.session-header__project-current .main-topbar__title-edit { -webkit-app-region: no-drag; }
 .session-header__actions { margin-left: auto; -webkit-app-region: no-drag; }
 .session-header__workspace, .session-header__context, .share-menu__trigger {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 8px;
@@ -87,6 +104,8 @@
 @container session-header (max-width: 560px) {
   .session-header__workspace > span { display: none; }
   .session-header__navigation .main-topbar__return span { display: none; }
+  .session-header__project-path { gap: 4px; }
+  .session-header__project-list svg { display: none; }
 }
 @media (hover: none), (pointer: coarse) {
   .msg__actions--footer { opacity: 1; }

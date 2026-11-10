@@ -49,6 +49,15 @@ const MODES = [
   },
 ] as const;
 
+export function permissionModeLabel(mode: PermissionMode): string {
+  return (MODES.find(item => item.id === mode) ?? MODES[0]).label;
+}
+
+export interface ProjectDraftPermission {
+  mode?: PermissionMode;
+  onChange: (mode: PermissionMode) => void;
+}
+
 export function PermissionPicker({
   onToast,
   triggerLabel,
@@ -58,6 +67,7 @@ export function PermissionPicker({
   groupPermissionMode,
   disabled = false,
   inheritTaskDefault = false,
+  projectDraftPermission,
   showLockedAsText = false,
 }: {
   onToast?: (msg: string) => void;
@@ -73,6 +83,8 @@ export function PermissionPicker({
   disabled?: boolean;
   /** Use the Runtime's new-task default without reading or changing the Home draft. */
   inheritTaskDefault?: boolean;
+  /** Editable selection for the next task in the current project. */
+  projectDraftPermission?: ProjectDraftPermission;
   /** Expose non-editable modes with a reason instead of mode choices. */
   showLockedAsText?: boolean;
 }) {
@@ -83,7 +95,8 @@ export function PermissionPicker({
   const taskStatus = usePermissionModeStore((state) => sessionId
     ? state.statuses[sessionId] ?? null
     : state.capabilityStatus);
-  const projectPermissionRead = usePermissionModeStore((state) => inheritTaskDefault ? state.projectPermissionRead : null);
+  const readsTaskDefault = inheritTaskDefault || projectDraftPermission !== undefined;
+  const projectPermissionRead = usePermissionModeStore((state) => readsTaskDefault ? state.projectPermissionRead : null);
   const refreshProjectPermission = usePermissionModeStore((state) => state.refreshProjectPermission);
   const [groupStatus, setGroupStatus] = useState<PermissionModeStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -108,6 +121,7 @@ export function PermissionPicker({
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const readOnlyTriggerRef = useRef<HTMLButtonElement>(null);
   const projectPreviewRef = useRef<HTMLDivElement>(null);
+  const restoreProjectFocus = useRef(false);
   const requestRef = useRef(0);
   const activeScopeRef = useRef(scopeKey);
   activeScopeRef.current = scopeKey;
@@ -138,10 +152,10 @@ export function PermissionPicker({
       ? runtimeMode ?? groupPermissionMode ?? "ask"
     : sessionId
       ? runtimeMode ?? catalogMode ?? "ask"
-      : inheritTaskDefault ? status?.permissionMode ?? "ask" : homeMode;
+      : readsTaskDefault ? projectDraftPermission?.mode ?? status?.permissionMode ?? "ask" : homeMode;
 
   useEffect(() => {
-    if (inheritTaskDefault) {
+    if (readsTaskDefault) {
       void refreshProjectPermission();
       return;
     }
@@ -178,7 +192,7 @@ export function PermissionPicker({
     return () => {
       if (requestRef.current === request) requestRef.current += 1;
     };
-  }, [groupId, groupPermissionMode, groupCapabilityRefresh, sessionId, inheritTaskDefault, setHomeMode, setStatus, refresh, refreshProjectPermission]);
+  }, [groupId, groupPermissionMode, groupCapabilityRefresh, sessionId, readsTaskDefault, setHomeMode, setStatus, refresh, refreshProjectPermission]);
 
   const closePicker = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -261,7 +275,8 @@ export function PermissionPicker({
       setError(null);
       try {
         if (!sessionId && !groupId) {
-          setHomeMode(next);
+          if (projectDraftPermission) projectDraftPermission.onChange(next);
+          else setHomeMode(next);
           closePicker(true);
           return;
         }
@@ -288,7 +303,7 @@ export function PermissionPicker({
         if (mountedRef.current && activeScopeRef.current === scopeKey) setBusy(false);
       }
     },
-    [closePicker, mode, onToast, sessionId, groupId, scopeKey, setHomeMode, setStatus, status],
+    [closePicker, mode, onToast, sessionId, groupId, scopeKey, projectDraftPermission, setHomeMode, setStatus, status],
   );
 
   const select = useCallback((next: PermissionMode) => {
@@ -303,6 +318,9 @@ export function PermissionPicker({
   const modeLabel = (item: (typeof MODES)[number]) => item.id === "always-approve" ? `${scope}免审批` : item.label;
   const autoUnavailable = status?.autoModeAvailable === false;
   const alwaysUnavailable = status?.alwaysApproveAvailable === false;
+  const selectedModeUnavailable = projectDraftPermission &&
+    ((mode === "auto" && autoUnavailable) || (mode === "always-approve" && alwaysUnavailable));
+  const currentLabel = modeLabel(current) + (selectedModeUnavailable ? "（不可用）" : "");
   const runtimeUnavailable = Boolean(sessionId) && status?.runtimeSyncState === "offline";
   const syncWarning = status?.runtimeSyncError ??
     (status?.runtimeSyncState === "syncing"
@@ -317,10 +335,14 @@ export function PermissionPicker({
     if (readOnlyReason && open) closePicker(false);
   }, [closePicker, open, readOnlyReason]);
   useEffect(() => {
-    if (projectPermissionRead?.phase === "ready" && document.activeElement === projectPreviewRef.current) {
-      readOnlyTriggerRef.current?.focus({ preventScroll: true });
+    if (!restoreProjectFocus.current || !projectPermissionRead || projectPermissionRead.phase === "loading") return;
+    restoreProjectFocus.current = false;
+    if (projectPermissionRead.phase !== "ready") return;
+    const active = document.activeElement;
+    if (active === projectPreviewRef.current || (projectDraftPermission && active === document.body)) {
+      (readOnlyTriggerRef.current ?? triggerRef.current)?.focus({ preventScroll: true });
     }
-  }, [projectPermissionRead]);
+  }, [projectPermissionRead, projectDraftPermission]);
 
   const modeValue = <>
     <current.icon className="permission-picker__trigger-icon" size={14} aria-hidden="true" />
@@ -340,10 +362,10 @@ export function PermissionPicker({
     </div>
   );
 
-  if (inheritTaskDefault) {
-    const failed = projectPermissionRead?.phase === "failed";
-    const waiting = !projectPermissionRead || projectPermissionRead.phase === "loading";
-    const unavailableReason = status && projectPermissionUnavailableReason(status);
+  const failed = projectPermissionRead?.phase === "failed";
+  const waiting = !projectPermissionRead || projectPermissionRead.phase === "loading";
+  const unavailableReason = readsTaskDefault && status && projectPermissionUnavailableReason(status);
+  if (readsTaskDefault && (inheritTaskDefault || waiting || failed || unavailableReason || !status)) {
     return (
       <div className="permission-picker__preview" ref={projectPreviewRef} tabIndex={-1} role="group" aria-label="任务默认权限">
         {waiting || failed || unavailableReason || !status ? <>
@@ -353,6 +375,7 @@ export function PermissionPicker({
                 : unavailableReason ?? "未能读取任务默认权限"}
           </span>
           {!waiting && <button type="button" className="permission-picker__retry echo-composer-meta__btn" onClick={() => {
+            restoreProjectFocus.current = true;
             projectPreviewRef.current?.focus({ preventScroll: true });
             void refreshProjectPermission();
           }}>重试读取权限</button>}
@@ -399,14 +422,14 @@ export function PermissionPicker({
         onKeyDown={(event) => {
           if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); if (!open && groupId && groupStatus) setRefresh(value => value + 1); setOpen(true); }
         }}
-        aria-label={triggerLabel ?? (groupId ? `专家团权限：${modeLabel(current)}` : modeLabel(current))}
+        aria-label={triggerLabel ?? (groupId ? `专家团权限：${currentLabel}` : currentLabel)}
         title={`权限模式 · ${modeLabel(current)} · ${modeDescription(current)}${error || syncWarning ? ` · ${error ?? syncWarning}` : ""}`}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? popoverId : undefined}
       >
         <current.icon className="permission-picker__trigger-icon" size={14} aria-hidden="true" />
-        {!compact && <span className="permission-picker__label">{triggerLabel ?? modeLabel(current)}</span>}
+        {!compact && <span className="permission-picker__label">{triggerLabel ?? currentLabel}</span>}
         {!compact && <ChevronDownIcon size="sm" />}
       </button>
       {open && typeof document !== "undefined" && createPortal(
@@ -468,7 +491,7 @@ export function PermissionPicker({
               </button>
             ))}
           </div>
-          <div className="permission-picker__scope">{groupId ? "仅限当前专家团，协调员与全部成员共用。只读讨论始终保持只读。" : "仅限当前任务"}</div>
+          <div className="permission-picker__scope">{groupId ? "仅限当前专家团，协调员与全部成员共用。只读讨论始终保持只读。" : projectDraftPermission ? "仅用于从此输入框发送的下一条任务。工作项使用任务默认权限。" : "仅限当前任务"}</div>
           {confirmingAlways && (
             <div
               className="permission-picker__confirm"
@@ -482,11 +505,11 @@ export function PermissionPicker({
                 }
               }}
             >
-              <strong>允许{scope}免审批？</strong>
+              <strong>{projectDraftPermission ? "允许此草稿发送后的任务免审批？" : `允许${scope}免审批？`}</strong>
               <span>{groupId ? "协调员与全部成员后续的命令和文件修改将自动批准，设置会保留到你再次修改。只读讨论、组织策略及网页与电脑操作的授权限制仍生效。现有请求仍需单独确认。" : "后续命令和文件修改将自动批准。网页与电脑操作仍遵守各自的授权规则，现有请求仍需单独确认。"}</span>
               <div className="permission-picker__confirm-actions">
                 <button ref={confirmCancelRef} type="button" className="btn btn--ghost" disabled={busy} onClick={cancelAlwaysConfirmation}>取消</button>
-                <button type="button" className="btn btn--danger" disabled={busy} onClick={() => void applySelection("always-approve")}>
+                <button type="button" className="btn btn--danger" disabled={modeDisabled(MODES[2])} onClick={() => void applySelection("always-approve")}>
                   {busy ? "正在切换…" : "确认开启"}
                 </button>
               </div>

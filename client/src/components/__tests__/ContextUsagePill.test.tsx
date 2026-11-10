@@ -35,10 +35,13 @@ describe("context disclosure", () => {
     render(<ContextUsagePill sessionId="incident" />);
     fireEvent.click(await screen.findByRole("button", { name: "上下文已使用 50%" }));
     const dialog = screen.getByRole("dialog", { name: "上下文详情" });
-    expect(dialog).toHaveTextContent("258.1K/512.0K（50%）");
+    expect(dialog).toHaveTextContent("258.1K/512.0K（50.4%）");
     expect(dialog).toHaveTextContent("自动整理阈值 85%");
     expect(dialog).toHaveTextContent("单次请求超出模型输入预算时也可能提前整理");
-    expect(dialog).toHaveTextContent("各项占比为估算");
+    expect(dialog).toHaveTextContent("各项占比为估算，按模型总容量计算");
+    const segments = Array.from(dialog.querySelectorAll<HTMLElement>(".context-usage__bar-segment"));
+    const occupiedWidth = segments.reduce((sum, segment) => sum + parseFloat(segment.style.width), 0);
+    expect(occupiedWidth).toBeCloseTo((258126 / 512000) * 100, 8);
   });
   it("迟到的旧会话快照不会覆盖新会话", async () => {
     let resolveA!: (value: never) => void;
@@ -105,6 +108,39 @@ describe("live context capacity", () => {
     await tick();
     expect(ring(70)).toBeVisible();
     expect(agentSessionInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("色段与图例同色同序，切换模型时按新总容量计算", async () => {
+    const context = {
+      used: 96100, total: 512000, usagePct: 19,
+      messageTokens: 81300, toolDefinitionsTokens: 9800, systemPromptTokens: 1400,
+      usageCategories: [{ label: "Skills", tokens: 3500 }, { label: "MCP servers", tokens: 100 }],
+    };
+    vi.mocked(agentSessionInfo).mockResolvedValue({ context } as never);
+    const view = render(<ContextUsagePill sessionId="a" onRefreshSignal="model-a" />);
+    await tick();
+    fireEvent.click(ring(19));
+    await tick();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("96.1K/512.0K（18.8%）");
+    const segments = dialog.querySelectorAll<HTMLElement>(".context-usage__bar-segment");
+    const swatches = dialog.querySelectorAll(".context-usage__swatch");
+    const tokens = [81300, 9800, 3500, 1400, 100];
+    expect(segments).toHaveLength(tokens.length);
+    segments.forEach((segment, index) => {
+      expect(segment).toHaveClass(swatches[index].classList[1]);
+      expect(parseFloat(segment.style.width)).toBeCloseTo((tokens[index] / context.total) * 100, 8);
+    });
+    expect(screen.getByText("15.9%")).toBeVisible();
+    expect(screen.getByText("<0.1%")).toBeVisible();
+
+    const total = 256000;
+    vi.mocked(agentSessionInfo).mockResolvedValue({ context: { ...context, total, usagePct: 38 } } as never);
+    view.rerender(<ContextUsagePill sessionId="a" onRefreshSignal="model-b" />);
+    await tick();
+    expect(dialog).toHaveTextContent("96.1K/256.0K（37.5%）");
+    expect(screen.getByText("31.8%")).toBeVisible();
+    expect(parseFloat(segments[0].style.width)).toBeCloseTo((context.messageTokens / total) * 100, 8);
   });
 
   it("弹层用量接口慢不会阻塞容量刷新，弹层打开时也持续同步", async () => {

@@ -1,7 +1,7 @@
 import { useContext, useLayoutEffect, useRef, type ReactNode } from "react";
 import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 import { PanelRight } from "lucide-react";
-import { SidebarToggleIcon, EchoNewTaskIcon } from "@/foundation/components/Icon/icons";
+import { SidebarToggleIcon, EchoNewTaskIcon, FolderIcon } from "@/foundation/components/Icon/icons";
 import { TopbarTitle } from "./TopbarTitle";
 import { TopbarActions, type TopbarActionsProps } from "./TopbarActions";
 
@@ -24,6 +24,12 @@ export interface SessionNavigationProps {
   onNewTask?: () => void;
 }
 
+export interface ProjectSessionBreadcrumb {
+  name: string;
+  onOpenProjects: () => void;
+  onOpenProject: () => void;
+}
+
 export function SessionNavigation({ sidebarCollapsed, onToggleSidebar, onNewTask }: SessionNavigationProps) {
   const layout = useContext(SidebarLayoutContext);
   if (!sidebarCollapsed || layout?.windowNavigationMounted) return null;
@@ -38,7 +44,7 @@ export function SessionNavigation({ sidebarCollapsed, onToggleSidebar, onNewTask
 
 /** One non-scrolling session header. Domain state and workspace navigation stay in ChatView. */
 export function SessionHeader({ sessionId, title, onRename, actions, summary, activeView,
-  onView, onCloseView, onToggleWorkspace, onFind, findOpen, navigation, leading, historyDisabled,
+  onView, onCloseView, onToggleWorkspace, onFind, findOpen, navigation, leading, historyDisabled, projectBreadcrumb,
 }: {
   sessionId: string;
   title: string;
@@ -54,6 +60,7 @@ export function SessionHeader({ sessionId, title, onRename, actions, summary, ac
   navigation?: SessionNavigationProps;
   leading?: ReactNode;
   historyDisabled?: boolean;
+  projectBreadcrumb?: ProjectSessionBreadcrumb;
 }) {
   const headerRef = useRef<HTMLElement>(null);
   const navigationRef = useRef<HTMLDivElement>(null);
@@ -79,11 +86,26 @@ export function SessionHeader({ sessionId, title, onRename, actions, summary, ac
     return () => observer?.disconnect();
   }, []);
 
+  const sessionTitle = onRename
+    ? <TopbarTitle key={sessionId} title={title} onRename={onRename} />
+    : <span className="main-topbar__title" title={title}>{title}</span>;
+
   return <header ref={headerRef} className="main-topbar session-header" data-tauri-drag-region>
     <div ref={navigationRef} className="session-header__navigation"><SessionNavigation {...navigation} />{leading}</div>
-    <div className="session-header__identity" data-tauri-drag-region>
-      {onRename ? <TopbarTitle key={sessionId} title={title} onRename={onRename} /> : <span className="main-topbar__title" title={title}>{title}</span>}
-    </div>
+    {projectBreadcrumb ? (
+      <nav className="session-header__project-path" aria-label="项目会话路径">
+        <button type="button" className="session-header__project-list" onClick={projectBreadcrumb.onOpenProjects}>
+          <FolderIcon size="sm" aria-hidden="true" />
+          项目
+        </button>
+        <span aria-hidden="true">/</span>
+        <button type="button" className="session-header__project-name" title={projectBreadcrumb.name} onClick={projectBreadcrumb.onOpenProject}>
+          {projectBreadcrumb.name}
+        </button>
+        <span aria-hidden="true">/</span>
+        <span className="session-header__project-current" aria-current="page">{sessionTitle}</span>
+      </nav>
+    ) : <div className="session-header__identity" data-tauri-drag-region>{sessionTitle}</div>}
     <div ref={actionsRef} className="session-header__actions">
       {summary.hasPlan && <button type="button" className="session-header__context"
         aria-label={summary.planTotal ? `查看执行计划，已完成 ${summary.planCompleted}/${summary.planTotal} 步` : "查看执行计划"}

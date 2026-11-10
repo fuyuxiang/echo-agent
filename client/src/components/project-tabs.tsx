@@ -8,13 +8,15 @@ import { findModelChoiceLabel, modelChoiceLabel, modelDisplayName } from "@/lib/
  */
 import { useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useProjectsStore, PLAN_COLUMNS, type PlanStatus, type AssetItem } from "@/stores/projects-store";
+import { projectSessionTitle } from "@/lib/project-context";
 import { useSessionsStore } from "@/stores/sessions-store";
-import { filesystemPickFiles, openLocalPath, projectAssetMakeDir, projectAssetRemove, projectAssetsImport } from "@/lib/agent-client";
+import { filesystemPickFiles, openLocalPath, projectAssetMakeDir, projectAssetRemove, projectAssetsImport, type PermissionMode } from "@/lib/agent-client";
 import { formatFileSize } from "@/lib/file-utils";
 import { useAppDialog } from "./AppDialog";
 import { SessionContextMenu } from "./SessionContextMenu";
 import { weixinHandoff } from "@/lib/weixin-client";
 import type { ModelOption } from "./ModelSelector";
+import { permissionModeLabel } from "./PermissionPicker";
 import { MoreDotsIcon } from "@/foundation/components/Icon/icons";
 import type { SessionStatus } from "@/lib/types";
 
@@ -275,6 +277,7 @@ export function ActivityTab({
       return {
         conversation,
         summary,
+        title: projectSessionTitle(summary?.title, conversation.title),
         archived: effectiveSessionArchived(conversation.sessionId, conversation.archived, summaryById),
         status: activityStatusMeta(summary?.status),
         updatedAt: summary?.updatedAt || conversation.createdAt,
@@ -323,7 +326,8 @@ export function ActivityTab({
 
   const openMenu = (
     event: ReactMouseEvent<HTMLElement>,
-    conversation: (typeof allConversations)[number],
+    sessionId: string,
+    title: string,
     archived: boolean,
     fromPointer: boolean,
   ) => {
@@ -336,8 +340,8 @@ export function ActivityTab({
     setMenu({
       x: fromPointer ? event.clientX : rect.right - 160,
       y: fromPointer ? event.clientY : rect.bottom + 4,
-      sessionId: conversation.sessionId,
-      title: conversation.title || "未命名会话",
+      sessionId,
+      title,
       archived,
       returnFocus: focused && event.currentTarget.contains(focused)
         ? focused
@@ -492,11 +496,11 @@ export function ActivityTab({
       ) : (
         <>
           <ul className="pd-task-list" aria-label={view === "archived" ? "已归档项目对话" : "最近项目对话"}>
-            {visibleConversations.map(({ conversation, summary, archived, status, updatedAt }) => (
+            {visibleConversations.map(({ conversation, summary, title, archived, status, updatedAt }) => (
               <li
                 key={conversation.sessionId}
                 className="pd-conversation-row"
-                onContextMenu={(event) => openMenu(event, conversation, archived, true)}
+                onContextMenu={(event) => openMenu(event, conversation.sessionId, title, archived, true)}
               >
                 <button
                   type="button"
@@ -507,7 +511,7 @@ export function ActivityTab({
                   )}
                   disabled={!onOpenSession}
                 >
-                  <span className="pd-task-item__title">{summary?.title || conversation.title}</span>
+                  <span className="pd-task-item__title">{title}</span>
                   <span className="pd-task-item__meta">
                     <span
                       className={`pd-session-status pd-session-status--${status.tone}`}
@@ -532,10 +536,10 @@ export function ActivityTab({
                 <button
                   type="button"
                   className="pd-conversation-row__action"
-                  aria-label={`${conversation.title || "未命名会话"}的会话操作`}
+                  aria-label={`${title}的会话操作`}
                   aria-haspopup="menu"
                   aria-expanded={menu?.sessionId === conversation.sessionId}
-                  onClick={(event) => openMenu(event, conversation, archived, false)}
+                  onClick={(event) => openMenu(event, conversation.sessionId, title, archived, false)}
                 >
                   <MoreDotsIcon size="sm" />
                 </button>
@@ -590,6 +594,7 @@ export function TaskTab({
   defaultModelId,
   onRun,
   runDisabled = false,
+  runPermissionMode,
   onOpenSession,
   onRestoreSession,
   onToast,
@@ -600,6 +605,7 @@ export function TaskTab({
   defaultModelId?: string;
   onRun?: (message: string, modelId: string) => Promise<string | undefined>;
   runDisabled?: boolean;
+  runPermissionMode?: PermissionMode;
   onOpenSession?: (sessionId: string) => void;
   onRestoreSession?: (sessionId: string) => Promise<void>;
   onToast?: (message: string) => void;
@@ -731,7 +737,7 @@ export function TaskTab({
               className="pd-btn pd-btn--small"
               onClick={() => void runWithAgent(t, selectedModelId)}
               disabled={!selectedModelId || running || runDisabled}
-              title={runDisabled ? "确认任务权限后可执行" : !selectedModelId ? "请先选择可用模型" : `使用 ${modelLabel(models, selectedModelId)} 执行`}
+              title={runDisabled ? "确认任务权限后可执行" : !selectedModelId ? "请先选择可用模型" : `使用 ${modelLabel(models, selectedModelId)} 执行${runPermissionMode ? ` · ${permissionModeLabel(runPermissionMode)}` : ""}`}
             >
               {running ? "启动中…" : "交给 Agent"}
             </button>
@@ -790,6 +796,13 @@ export function TaskTab({
         </div>
       </div>
 
+      {onRun && (runPermissionMode || runDisabled) && (
+        <p className="project-work-item-permission">
+          {runPermissionMode
+            ? <>交给 Agent 时使用任务默认权限：<strong>{permissionModeLabel(runPermissionMode)}</strong></>
+            : "任务默认权限暂不可用，请查看输入框下方的权限提示。"}
+        </p>
+      )}
       {filtered.length === 0 ? (
         <div className="pd-empty">{q ? "没有符合条件的任务" : "暂无任务，点击「新建任务」开始。"}</div>
       ) : (
@@ -887,7 +900,7 @@ export function AssetsTab({ projectId, onToast, onUseAsset, selectedAssetIds = [
         </div>
       </div>
 
-      <p className="project-assets-context-hint">导入的副本会保存在本项目中。选择“用于本次任务”后才会作为附件发送；每个文件最多20MB。</p>
+      <p className="project-assets-context-hint">导入的副本会保存在本项目中，每个文件最多20MB。选择「用于本次任务」后，发送消息或将工作项交给 Agent 时会附上所选资料。</p>
 
       <table className="pd-asset-table">
         <thead>

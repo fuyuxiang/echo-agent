@@ -589,7 +589,7 @@ describe("Sidebar", () => {
 
   it("项目会话只在其真实项目下展示", () => {
     useSessionsStore.setState({ deletedSessionIds: [],
-      independent: [{ sessionId: "project-session", title: "项目对话", cwd: "/workspace", status: "awaiting_answer" }],
+      independent: [{ sessionId: "project-session", title: "未命名会话", cwd: "/workspace", status: "awaiting_answer" }],
     });
     useProjectsStore.setState({
       projects: [{
@@ -616,6 +616,9 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: /项目对话 · 等待回答/ })).not.toHaveTextContent("等待回答");
     expect(screen.getByRole("img", { name: "等待回答" })).toHaveAttribute("title", "等待回答");
     expect(screen.getByRole("button", { name: /^\u4efb\u52a1/ })).toHaveTextContent("任务 (0)");
+    act(() => useSessionsStore.getState().upsert({ sessionId: "project-session", title: "已重命名的项目对话" }));
+    expect(screen.getByText("已重命名的项目对话", { exact: true })).toBeVisible();
+    expect(screen.queryByText("项目对话", { exact: true })).toBeNull();
   });
 
   it("任务会话可选择项目移入，保留原工作目录和会话记录", async () => {

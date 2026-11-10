@@ -31,6 +31,7 @@ vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("
   const child = props.title === "母任务" ? "child" : "grandchild";
   return <div>
     {props.headerLeading}
+    {props.sessionRestoreError && <button onClick={props.onRetrySessionRestore}>重试恢复会话</button>}
     <span data-testid="active-task">{props.title}</span>
     <span data-testid="restored-row">{props.subagentScrollRestore?.subagentKey ?? ""}</span>
     {props.title !== "孙子代理记录" && <button onClick={() => void props.onOpenSubagentSession?.(child, "/workspace", {
@@ -129,15 +130,20 @@ describe("子代理任务层级导航", () => {
     expect(screen.getByTestId("active-task")).toHaveTextContent("其他任务");
     expect(client.agentLoadSession).not.toHaveBeenCalledWith("old-group-session",expect.anything());
   });
-  it("返回母任务并恢复进入时的子代理条目，嵌套时逐级返回", async () => {
+  it.each([false, true])("嵌套子代理可逐级返回并定位原条目，需要重试=%s", async retry => {
     await start();
     fireEvent.click(screen.getByRole("button", { name: "打开母任务" }));
     expect(await screen.findByTestId("active-task")).toHaveTextContent("母任务");
     fireEvent.click(screen.getByRole("button", { name: "打开子代理" }));
     await waitFor(() => expect(screen.getByTestId("active-task")).toHaveTextContent("子代理记录"));
     expect(screen.getByRole("button", { name: /返回上级任务：母任务/ })).toBeInTheDocument();
+    if (retry) vi.mocked(client.agentLoadSession).mockRejectedValueOnce(new Error("历史回放中断"));
     fireEvent.click(screen.getByRole("button", { name: "打开子代理" }));
     await waitFor(() => expect(screen.getByTestId("active-task")).toHaveTextContent("孙子代理记录"));
+    if (retry) {
+      fireEvent.click(await screen.findByRole("button", { name: "重试恢复会话" }));
+      await waitFor(() => expect(screen.queryByRole("button", { name: "重试恢复会话" })).toBeNull());
+    }
     fireEvent.click(screen.getByRole("button", { name: /返回上级任务：子代理记录/ }));
     await waitFor(() => expect(screen.getByTestId("active-task")).toHaveTextContent("子代理记录"));
     expect(screen.getByTestId("restored-row")).toHaveTextContent("grandchild");
