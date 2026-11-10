@@ -79,6 +79,98 @@ const userMessageTextForTest = (m: ReturnType<typeof useSessionStore.getState>["
 describe("session-store transcripts", () => {
   beforeEach(resetStore);
 
+  it("消息时间在切换会话和冷回放后保持一致", () => {
+    const sentAt = Date.UTC(2026, 10, 9, 15, 59);
+    const endedAt = Date.UTC(2026, 10, 9, 16, 1);
+    const emitTurn = (isReplay: boolean) => {
+      const store = useSessionStore.getState();
+      const meta = { promptId: "timed-prompt", promptIndex: 0, isReplay };
+      store.applyUpdate({ ...userChunk({ type: "text", text: "核对资料" }, "A"), _meta: { ...meta, agentTimestampMs: sentAt } });
+      store.applyUpdate({ ...userChunk({ type: "image", mimeType: "image/png", data: "", uri: "/review/source.png" }, "A"), _meta: { ...meta, agentTimestampMs: sentAt + 60_000 } });
+      store.applyUpdate({ ...chunk("资料已核对。", "A"), _meta: meta });
+      store.applyUpdate({
+        __sessionId: "A", sessionUpdate: "turn_completed", prompt_id: meta.promptId,
+        stop_reason: "end_turn", _meta: { ...meta, agentTimestampMs: endedAt },
+      });
+    };
+    const expectTimes = () => {
+      const messages = useSessionStore.getState().messages;
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({ role: "user", sentAt, attachments: ["/review/source.png"] });
+      expect(messages[1]).toMatchObject({ role: "assistant", complete: true, endedAt });
+    };
+
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.pushUser("核对资料");
+    store.startStreaming("A", "timed-prompt");
+    expect(useSessionStore.getState().messages[0].sentAt).toBeUndefined();
+    store.setSession("B");
+    emitTurn(false);
+    expect(useSessionStore.getState().messages).toEqual([]);
+    store.setSession("A");
+    expectTimes();
+    expect(useSessionStore.getState().messages[1].completedAt).toBe(endedAt);
+
+    resetStore();
+    store.setSession("A");
+    store.beginHistoryReplay("A");
+    emitTurn(true);
+    store.finishHistoryReplay("A");
+    expectTimes();
+    expect(useSessionStore.getState().messages[1].startedAt).toBeUndefined();
+    expect(useSessionStore.getState().messages[1].completedAt).toBeUndefined();
+  });
+
+  it("有结束时间的历史轮次不会用该时间推断工具操作顺序", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.beginHistoryReplay("A");
+    const meta = { promptId: "legacy-tool", isReplay: true };
+    const exported = {
+      id: "exported", path: "/work/report.docx", kind: "document_export", title: "报告",
+      toolCallId: "document-export:receipt", status: "completed" as const, producedAt: 200,
+    };
+    store.applyUpdate({
+      __sessionId: "A", sessionUpdate: "tool_call", toolCallId: "delete-report", kind: "delete",
+      title: "Delete", status: "completed", rawInput: { path: exported.path }, _meta: meta,
+    });
+    store.applyUpdate({
+      __sessionId: "A", sessionUpdate: "turn_completed", prompt_id: meta.promptId,
+      stop_reason: "end_turn", _meta: { ...meta, agentTimestampMs: 300 },
+    });
+    store.finishHistoryReplay("A");
+
+    const { messages } = useSessionStore.getState();
+    expect(messages[0]).toMatchObject({ complete: true, endedAt: 300 });
+    expect(collectSessionArtifacts(messages, "/work", [exported])).toEqual([
+      expect.objectContaining({ kind: "document_export", toolCallId: exported.toolCallId, producedAt: exported.producedAt }),
+    ]);
+  });
+
+  it("旧消息和没有持久结束时间的轮次不以渲染器的时间补齐", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    const meta = { promptId: "legacy", isReplay: true };
+    store.applyUpdate({ ...userChunk({ type: "text", text: "旧请求" }, "A"), _meta: { ...meta, promptIndex: 0 } });
+    store.applyUpdate({ ...chunk("旧回复", "A"), _meta: meta });
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "turn_completed", prompt_id: meta.promptId, stop_reason: "end_turn", _meta: meta });
+    expect(useSessionStore.getState().messages[0].sentAt).toBeUndefined();
+    expect(useSessionStore.getState().messages[1].endedAt).toBeUndefined();
+
+    store.startStreaming("A", "live");
+    store.applyUpdate({ ...chunk("尚无持久结束事件", "A"), _meta: { promptId: "live" } });
+    store.markComplete({ ...complete("A"), promptId: "live" });
+    const { messages } = useSessionStore.getState();
+    const reply = messages[messages.length - 1];
+    expect(reply.completedAt).toBeDefined();
+    expect(reply.endedAt).toBeUndefined();
+    const endedAt = Date.UTC(2026, 10, 9, 16, 1);
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "turn_completed", prompt_id: "live",
+      stop_reason: "end_turn", _meta: { agentTimestampMs: endedAt } });
+    expect(useSessionStore.getState().messages.find(message => message.id === reply.id)).toMatchObject({ endedAt });
+  });
+
   it.each([false, true])("真实 Runtime 无 phase 的成果在工具、切换会话和中止后仍可阅读及导出：回放=%s", isReplay => {
     const store = useSessionStore.getState();
     store.setSession("A");

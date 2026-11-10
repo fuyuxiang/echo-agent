@@ -550,10 +550,11 @@
   display: block;
   text-align: right;
 }
-/* 右对齐气泡容器：inline-block 使其按内容收缩，max-width 限制不超过 75% 行宽，
-   父级 text-align:right 把它推到右侧。文本在容器内恢复左对齐。 */
+/* 气泡与操作栏分别按内容收缩，再沿右边缘对齐。 */
 .msg--user > div {
-  display: inline-block;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
   max-width: 75%;
   text-align: left;
 }
@@ -659,10 +660,21 @@
 }
 
 /* ---- Message actions ---- */
+.msg__footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  max-width: 100%;
+  margin-top: 10px;
+}
+.msg--user .msg__footer {
+  justify-content: flex-end;
+  margin-top: 4px;
+}
 .msg__actions {
   display: flex;
   gap: 4px;
-  margin-top: 4px;
   opacity: 0;
   transition: opacity 0.15s ease;
   justify-content: flex-end;
@@ -670,6 +682,17 @@
 .msg:hover .msg__actions,
 .msg:focus-within .msg__actions {
   opacity: 1;
+}
+.msg--user .msg__actions {
+  align-items: center;
+  flex-wrap: wrap;
+}
+.msg__time {
+  color: var(--echo-text-weak);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  white-space: nowrap;
 }
 .msg__actions--inline {
   margin-top: 0;
@@ -682,8 +705,6 @@
   flex-wrap: wrap;
   gap: 8px;
   min-height: 28px;
-  margin-top: 10px;
-  opacity: 0;
 }
 .msg__actions--footer.msg__actions--latest,
 .msg__actions--footer.msg__actions--active {
@@ -7293,6 +7314,7 @@ button.diff__path {
 }
 .sidebar__conv:hover .sidebar__conv-action,
 .sidebar__conv:focus-within .sidebar__conv-action,
+.group-sidebar__row:is(:hover, :focus-within) > .sidebar__conv-action,
 .sidebar__conv-action[aria-expanded="true"] {
   opacity: 1;
   pointer-events: auto;

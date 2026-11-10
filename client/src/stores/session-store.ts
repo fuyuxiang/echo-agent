@@ -26,6 +26,7 @@ import { terminalSessionStatus } from "@/lib/turn-status";
 import { readTurnIdentity, type ExecutionTurn } from "@/lib/execution-turn";
 import { officeReceiptFromRawOutput, type DocumentExportReceipt } from "@/lib/document-export";
 import { knowledgeToolContent } from "@/lib/knowledge-tool-output";
+import { readMessageTimestamp } from "@/lib/message-time";
 import { settleQueuedPrompt, useMessageQueueStore } from "./message-queue-store";
 
 /**
@@ -52,6 +53,9 @@ export interface ChatMessage {
   execution?: ExecutionTurn;
   /** False while the assistant is still streaming this message. */
   complete: boolean;
+  /** Original Runtime event times for the message action bars. */
+  sentAt?: number;
+  endedAt?: number;
   /** Local wall-clock metadata for live turns. Historical replay may omit it. */
   startedAt?: number;
   completedAt?: number;
@@ -602,6 +606,7 @@ function completeStreamingAssistant(
       ? { cancellationCategory: completion.cancellationCategory }
       : {}),
     ...(completion.agentResult ? { agentResult: completion.agentResult } : {}),
+    ...(completion.completedAt != null ? { endedAt: completion.completedAt } : {}),
   };
   const activeIndex = transcript.streamingMessageId
     ? transcript.messages.findIndex((message) => message.id === transcript.streamingMessageId)
@@ -720,6 +725,7 @@ interface ReplayedUserChunk {
   agentText?: string;
   attachments: string[];
   promptIndex?: number;
+  sentAt?: number;
   hasText: boolean;
   hidden: boolean;
 }
@@ -731,6 +737,7 @@ function normalizeUserChunk(update: Record<string, unknown>): ReplayedUserChunk 
   const chunkMeta = (update._meta ?? {}) as Record<string, unknown>;
   const promptIndexValue = chunkMeta.promptIndex ?? chunkMeta.prompt_index;
   const promptIndex = typeof promptIndexValue === "number" ? promptIndexValue : undefined;
+  const sentAt = readMessageTimestamp(chunkMeta.agentTimestampMs);
   const hidden = chunkMeta.hideFromScrollback === true || chunkMeta.hide_from_scrollback === true;
   const structuredAttachments = normalizeAttachmentPaths(contentMeta[ATTACHMENTS_META_KEY]);
   const imagePath = content.type === "image" && typeof content.uri === "string"
@@ -743,6 +750,7 @@ function normalizeUserChunk(update: Record<string, unknown>): ReplayedUserChunk 
       agentText: undefined,
       attachments: mergePaths(structuredAttachments, imagePath),
       promptIndex,
+      sentAt,
       hasText: false,
       hidden,
     };
@@ -760,6 +768,7 @@ function normalizeUserChunk(update: Record<string, unknown>): ReplayedUserChunk 
     agentText: transport.text && transport.text !== visibleText ? transport.text : undefined,
     attachments: mergePaths(structuredAttachments, legacy.attachments),
     promptIndex,
+    sentAt,
     hasText: true,
     hidden,
   };
@@ -785,6 +794,7 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk,
         parts: nextText,
         agentText: chunk.agentText ?? current.agentText,
         attachments: mergePaths(current.attachments, chunk.attachments),
+        sentAt: current.sentAt ?? chunk.sentAt,
       };
       return { ...transcript, messages };
     }
@@ -811,6 +821,7 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk,
       promptIndex: chunk.promptIndex,
       agentText: chunk.agentText ?? optimistic.agentText,
       attachments: mergePaths(optimistic.attachments, chunk.attachments),
+      sentAt: optimistic.sentAt ?? chunk.sentAt,
     };
     return { ...transcript, messages };
   }
@@ -822,6 +833,7 @@ function applyUserChunk(transcript: SessionTranscript, chunk: ReplayedUserChunk,
     agentText: chunk.agentText,
     attachments: chunk.attachments,
     promptIndex: chunk.promptIndex,
+    sentAt: chunk.sentAt,
     ...(promptId ? { promptId } : {}),
     complete: true,
   };
@@ -1574,7 +1586,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
           const messages = [...tr.messages];
           messages[userIndex] = { ...user, promptIndex: chunk.promptIndex,
             agentText: chunk.agentText ?? user.agentText,
-            attachments: mergePaths(user.attachments, chunk.attachments) };
+            attachments: mergePaths(user.attachments, chunk.attachments),
+            sentAt: user.sentAt ?? chunk.sentAt };
           return { ...tr, messages };
         }
         if (isReplay && tr.suppressReplay && REPLAY_SUPPRESSED.has(t)) {
@@ -1905,9 +1918,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
               const meta = raw._meta && typeof raw._meta === "object"
                 ? raw._meta as Record<string, unknown>
                 : {};
-              const completedAt = typeof meta.agentTimestampMs === "number"
-                ? meta.agentTimestampMs
-                : undefined;
+              const completedAt = readMessageTimestamp(meta.agentTimestampMs);
               const promptId = boundedString(raw.prompt_id ?? raw.promptId ?? updatePromptId, 4_096);
               const targetsOlderTurn = !!promptId && !!activePromptId && promptId !== activePromptId;
               const completed = completeStreamingAssistant(tr, {

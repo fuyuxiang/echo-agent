@@ -3,25 +3,58 @@ import { createPortal } from "react-dom";
 import { create } from "zustand";
 import { Archive, ArchiveRestore, CopyPlus, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
 import { useAppDialog } from "@/components/AppDialog";
+import { MoreDotsIcon } from "@/foundation/components/Icon/icons";
 import { Toast, type ToastAction } from "@/components/Toast";
 import { useToastQueue } from "@/lib/use-toast-queue";
 import { groupControl, groupMetadata, groupSaveTeam, groupSnapshot, terminalWork, type Group } from "./group-client";
 import { useGroupStore } from "./group-store";
 
-type Menu = { id: string; x: number; y: number; anchor: HTMLElement };
+type Menu = { id: string; x: number; y: number; trigger: HTMLButtonElement; returnFocus: HTMLElement };
 const useActions = create<{ menu: Menu | null; busy: Record<string, boolean> }>(() => ({ menu: null, busy: {} }));
 const errorText = (error: unknown) => String(error).replace(/^Error:\s*/, "");
 
 export function openGroupMenu(id: string, event: MouseEvent<HTMLElement>) {
-  event.preventDefault(); event.stopPropagation();
-  const box = event.currentTarget.getBoundingClientRect();
-  useActions.setState({ menu: { id, x: event.type === "contextmenu" ? event.clientX : box.right, y: event.type === "contextmenu" ? event.clientY : box.bottom + 4, anchor: event.currentTarget } });
+  event.preventDefault();
+  event.stopPropagation();
+  const source = event.currentTarget;
+  const trigger = source instanceof HTMLButtonElement ? source
+    : source.querySelector<HTMLButtonElement>("[data-group-menu-trigger]");
+  if (!trigger || trigger.disabled) return;
+
+  const contextMenu = event.type === "contextmenu";
+  if (!contextMenu && useActions.getState().menu?.trigger === trigger) {
+    useActions.setState({ menu: null });
+    trigger.focus({ preventScroll: true });
+    return;
+  }
+
+  const focused = document.activeElement;
+  const returnFocus = contextMenu && focused instanceof HTMLElement && source.contains(focused) ? focused : trigger;
+  const atPointer = contextMenu && (event.clientX !== 0 || event.clientY !== 0);
+  const box = trigger.getBoundingClientRect();
+  useActions.setState({ menu: {
+    id, trigger, returnFocus,
+    x: atPointer ? event.clientX : box.right,
+    y: atPointer ? event.clientY : box.bottom + 4,
+  } });
 }
 
-export function GroupActionButton({ group }: { group: Group }) {
+export function GroupActionButton({ group, sidebar = false }: { group: Group; sidebar?: boolean }) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const busy = useActions(state => !!state.busy[group.id]);
-  const expanded = useActions(state => state.menu?.id === group.id);
-  return <button type="button" className="groups-icon group-action-trigger" aria-label={`管理专家团 ${group.name}`} aria-haspopup="menu" aria-expanded={expanded} aria-controls={expanded ? "group-action-menu" : undefined} disabled={busy} onClick={event => openGroupMenu(group.id, event)}><MoreHorizontal size={16} /></button>;
+  const expanded = useActions(({ menu }) => menu?.id === group.id && menu.trigger === triggerRef.current);
+  useEffect(() => {
+    const trigger = triggerRef.current;
+    return () => {
+      if (useActions.getState().menu?.trigger === trigger) useActions.setState({ menu: null });
+    };
+  }, []);
+  return <button ref={triggerRef} type="button" data-group-menu-trigger className={sidebar ? "sidebar__conv-action" : "groups-icon group-action-trigger"}
+    aria-label={`管理专家团 ${group.name}`} aria-haspopup="menu" aria-expanded={expanded}
+    aria-controls={expanded ? "group-action-menu" : undefined} data-tip={sidebar ? "专家团操作" : undefined}
+    disabled={busy} onClick={event => openGroupMenu(group.id, event)}>
+    {sidebar ? <MoreDotsIcon size="sm" /> : <MoreHorizontal size={16} />}
+  </button>;
 }
 
 async function refreshGroup(id: string) {
@@ -48,9 +81,9 @@ export function GroupActionsHost({ onFeedback }: { onFeedback?: (message: string
   const [position, setPosition] = useState({ left: 0, top: 0 });
   const menuRef = useRef<HTMLDivElement>(null);
   const close = (restore = true) => {
-    const anchor = useActions.getState().menu?.anchor;
+    const returnFocus = useActions.getState().menu?.returnFocus;
     useActions.setState({ menu: null });
-    if (restore && anchor?.isConnected) anchor.focus();
+    if (restore && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
   };
   const notify = (message: string, actions: ToastAction[] = []) => { if (onFeedback) onFeedback(message, actions); else enqueueToast(message, actions); };
   useEffect(() => { if (menu && !group) useActions.setState({ menu: null }); }, [menu, group]);
@@ -58,11 +91,14 @@ export function GroupActionsHost({ onFeedback }: { onFeedback?: (message: string
     if (!menu || !menuRef.current) return;
     const box = menuRef.current.getBoundingClientRect();
     setPosition({ left: Math.max(8, Math.min(menu.x - box.width, window.innerWidth - box.width - 8)), top: Math.max(8, Math.min(menu.y, window.innerHeight - box.height - 8)) });
-    menuRef.current.querySelector<HTMLButtonElement>('button[role="menuitem"]')?.focus();
-  }, [menu?.id, menu?.x, menu?.y]);
+    menuRef.current.querySelector<HTMLButtonElement>('button[role="menuitem"]')?.focus({ preventScroll: true });
+  }, [menu]);
   useEffect(() => {
     if (!menu) return;
-    const outside = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as Node)) close(false); };
+    const outside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !menuRef.current?.contains(target) && !menu.trigger.contains(target)) close(false);
+    };
     const reposition = () => close(false);
     document.addEventListener("pointerdown", outside);
     window.addEventListener("resize", reposition);
@@ -78,7 +114,7 @@ export function GroupActionsHost({ onFeedback }: { onFeedback?: (message: string
   const perform = (action: () => Promise<void>) => { void action().catch(error => notify(errorText(error))); };
   const request = (kind: "rename" | "save" | "delete" | "archive") => {
     if (!group) return;
-    const target = group, returnFocus = menu?.anchor;
+    const target = group, returnFocus = menu?.returnFocus;
     close(false);
     const active = target.works.some(work => !terminalWork(work.status));
     if (kind === "rename" || kind === "save") {

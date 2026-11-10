@@ -31,7 +31,7 @@ export function GroupSidebar({ onOpen, active = false, catalog }: { onOpen: () =
       <button type="button" className="group-sidebar__item" title={group.name} onClick={() => { void useGroupStore.getState().select(group.id); onOpen(); }}>
         <span>{group.pinned && <Pin size={11} />}{group.name}{groupPublicSeq(group) > (read[group.id] ?? 0) && <i className="group-unread" aria-label="有新动态" />}</span><small>{groupStatus(group)}</small>
       </button>
-      <GroupActionButton group={group} />
+      <GroupActionButton group={group} sidebar />
     </div>)}
     </SidebarCatalogList>}
   </section>;

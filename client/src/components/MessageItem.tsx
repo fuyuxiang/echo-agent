@@ -36,6 +36,7 @@ import type { SessionArtifact } from "@/lib/session-artifacts";
 import { registerDocumentArtifact } from "@/lib/artifact-catalog";
 import { isExecutionSettled, partitionAssistantParts } from "@/lib/execution-process";
 import { executionContinuationPrompt, getExecutionNotice } from "@/lib/execution-notice";
+import { formatMessageTime } from "@/lib/message-time";
 import {
   messageRetryKind,
   messageRetryLabel,
@@ -50,6 +51,12 @@ import {
 } from "@/lib/voice-contract";
 
 let webSpeechTtsRegistered = false;
+
+function MessageTime({ time, label }: { time: ReturnType<typeof formatMessageTime>; label: string }) {
+  if (!time) return null;
+  const description = `${label} ${time.exact}`;
+  return <time className="msg__time" dateTime={time.iso} title={description} aria-label={description}>{time.text}</time>;
+}
 
 function ensureWebSpeechTtsRegistered(): void {
   if (webSpeechTtsRegistered || typeof window === "undefined") return;
@@ -91,6 +98,7 @@ function speechText(markdown: string): string {
  */
 export const MessageItem = memo(function MessageItem({
   message,
+  messageDay,
   executionLabel,
   executionDescription,
   streaming,
@@ -125,6 +133,7 @@ export const MessageItem = memo(function MessageItem({
   turnFeedback,
 }: {
   message: ChatMessage;
+  messageDay?: number;
   executionLabel?: string;
   executionDescription?: string;
   authorName?: string;
@@ -363,34 +372,40 @@ export const MessageItem = memo(function MessageItem({
               );
             })}
           </div>
-          {/* Hover actions */}
-          <div className="msg__actions">
-            <button
-              type="button"
-              className="msg__action-btn msg__action-btn--copy"
-              data-chat-copy="true"
-              onClick={() => void copyText(plainText, "plain")}
-              title={copiedKind === "plain" ? "已复制" : "复制"}
-              aria-label={copiedKind === "plain" ? "已复制" : "复制"}
-              aria-live="polite"
-            >
-              {copiedKind === "plain" ? <Check size={14} /> : <Copy size={14} />}
-            </button>
-            {onEditResend && (
+          <div className="msg__footer">
+            <div className="msg__actions">
               <button
                 type="button"
-                className="msg__action-btn"
-                onClick={() => onEditResend(plainText, attachments)}
-                data-tip="编辑并重新发送" title="编辑并重新发送" aria-label="编辑并重新发送"
+                className="msg__action-btn msg__action-btn--copy"
+                data-chat-copy="true"
+                onClick={() => void copyText(plainText, "plain")}
+                title={copiedKind === "plain" ? "已复制" : "复制"}
+                aria-label={copiedKind === "plain" ? "已复制" : "复制"}
+                aria-live="polite"
               >
-                <Pencil size={14} />
+                {copiedKind === "plain" ? <Check size={14} /> : <Copy size={14} />}
               </button>
-            )}
+              {onEditResend && (
+                <button
+                  type="button"
+                  className="msg__action-btn"
+                  onClick={() => onEditResend(plainText, attachments)}
+                  data-tip="编辑并重新发送" title="编辑并重新发送" aria-label="编辑并重新发送"
+                >
+                  <Pencil size={14} />
+                </button>
+              )}
+            </div>
+            <MessageTime time={formatMessageTime(message.sentAt, messageDay)} label="发送于" />
           </div>
         </div>
       </div>
     );
   }
+
+  const endTime = message.complete ? formatMessageTime(message.endedAt, messageDay) : undefined;
+  const showReplyRetry = onRetry && !continueAction && !retryAction && !notice?.modelSettings && notice?.kind !== "environment";
+  const showReplyActions = message.complete && (hasAnswerText || showReplyRetry);
 
   return (
     <div className={"msg msg--assistant" + (compactIdentity ? " msg--continuation" : "")}>
@@ -475,8 +490,9 @@ export const MessageItem = memo(function MessageItem({
           </div>}
           {turnFeedback}
         </div>
-        {message.complete && (hasAnswerText || onRetry && !notice?.modelSettings && notice?.kind !== "environment") && (
-          <div className={"msg__actions msg__actions--footer" + (latest ? " msg__actions--latest" : "") + (speaking || exporting || retrying ? " msg__actions--active" : "")}
+        {(showReplyActions || endTime) && <div className="msg__footer">
+          <MessageTime time={endTime} label={message.stopReason === "cancelled" ? "执行停止于" : "本轮结束于"} />
+          {showReplyActions && <div className={"msg__actions msg__actions--footer" + (latest ? " msg__actions--latest" : "") + (speaking || exporting || retrying ? " msg__actions--active" : "")}
             role="group" aria-label="回复操作">
             {hasAnswerText && <button type="button" className="msg__action-btn" data-chat-copy="true"
               onClick={() => void copyText(plainText, "plain")} title={copyMainLabel} data-tip={copyMainLabel} aria-label={copyMainLabel} aria-live="polite">
@@ -484,7 +500,7 @@ export const MessageItem = memo(function MessageItem({
             </button>}
             {hasAnswerText && <button type="button" className="msg__action-btn" onClick={toggleSpeak} aria-label={speaking ? "停止朗读" : "朗读回复"}
               data-tip={speaking ? "停止朗读" : "朗读回复"} aria-pressed={speaking}>{speaking ? <Square size={14} /> : <Volume2 size={14} />}</button>}
-            {onRetry && !continueAction && !retryAction && !notice?.modelSettings && notice?.kind !== "environment" && <button type="button" className="msg__action-btn" onClick={() => onRetry(retryKind)}
+            {showReplyRetry && <button type="button" className="msg__action-btn" onClick={() => onRetry(retryKind)}
               aria-label={retryLabel} data-tip={retryDisabledReason ?? messageRetryTitle(retryKind)} title={retryDisabledReason ?? messageRetryTitle(retryKind)} disabled={retrying || retryDisabled} aria-busy={retrying}>
               <RefreshCw size={14} className={retrying ? "msg__action-spin" : undefined} />
               {(retryKind === "retry" || !hasAnswerText || message.stopReason && message.stopReason !== "end_turn" || retrying) && retryLabel}
@@ -522,8 +538,8 @@ export const MessageItem = memo(function MessageItem({
                 </>}
               </>}
             </ActionMenu>}
-          </div>
-        )}
+          </div>}
+        </div>}
         {exportedArtifact && onOpenArtifact && <button type="button" className="msg__exported-artifact" title={exportedArtifact.path}
           onClick={() => onOpenArtifact(exportedArtifact)}><FileText size={15} /><span>{attachmentBasename(exportedArtifact.path)}</span><span>查看成果 →</span></button>}
         {sessionId && <FeedbackDialog open={feedbackDialog !== null} sessionId={sessionId} messageId={message.id}

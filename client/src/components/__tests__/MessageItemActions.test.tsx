@@ -4,6 +4,7 @@ import { MessageItem } from "../MessageItem";
 import { ThemeProvider } from "../ThemeProvider";
 import type { ChatMessage } from "@/stores/session-store";
 import { useFeedbackStore } from "@/stores/feedback-store";
+import { useMessageDay } from "@/lib/message-time";
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 
@@ -34,6 +35,68 @@ function openReplyItem(name: string, click = true) {
   if (click) fireEvent.click(item);
   return item;
 }
+
+it("操作栏时间使用本地自然日，跨午夜时当前会话无需重载", () => {
+  const sentAt = new Date(2026, 10, 9, 23, 58, 10).getTime();
+  const endedAt = new Date(2026, 10, 9, 23, 59, 59).getTime();
+  const user: ChatMessage = { id: "timed-user", role: "user", complete: true, sentAt, parts: [{ kind: "text", text: "核对资料" }] };
+  function Conversation() {
+    const messageDay = useMessageDay();
+    return <ThemeProvider>
+      <MessageItem message={user} messageDay={messageDay} streaming={false} />
+      <MessageItem message={{ ...completedMessage, endedAt }} messageDay={messageDay} streaming={false} latest />
+    </ThemeProvider>;
+  }
+  vi.useFakeTimers();
+  vi.setSystemTime(endedAt);
+  try {
+    const view = render(<Conversation />);
+    const [sent, ended] = [...view.container.querySelectorAll("time")];
+    expect(sent).toHaveTextContent("23:58");
+    expect(sent?.previousElementSibling).toContainElement(screen.getByRole("button", { name: "复制" }));
+    expect(ended).toHaveTextContent("23:59");
+    expect(ended?.nextElementSibling).toHaveClass("msg__actions--latest");
+    expect(ended).toHaveAttribute("title", "本轮结束于 2026年11月9日 23:59:59");
+    expect(ended).toHaveAttribute("datetime", new Date(endedAt).toISOString());
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(sent).toHaveTextContent("昨天 23:58");
+    expect(ended).toHaveTextContent("昨天 23:59");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("旧记录和生成中的回复没有结束时间，停止后的部分回复有独立提示", () => {
+  const endedAt = new Date(2026, 0, 1, 0, 1).getTime();
+  const messageDay = new Date(2026, 0, 1).getTime();
+  const old = renderMessage({ ...completedMessage, completedAt: endedAt }, { messageDay });
+  expect(old.container.querySelector("time")).toBeNull();
+  old.unmount();
+  const running = renderMessage({ ...completedMessage, endedAt, complete: false }, { streaming: true, messageDay });
+  expect(running.container.querySelector("time")).toBeNull();
+  running.unmount();
+  const stopped = renderMessage({ ...completedMessage, endedAt, stopReason: "cancelled" }, { messageDay });
+  expect(stopped.container.querySelector("time")).toHaveAttribute("title", "执行停止于 2026年1月1日 00:01:00");
+});
+
+it.each([
+  { scenario: "模型额度用尽", stopReason: "error", agentResult: "quota exhausted", parts: [], label: "本轮结束于" },
+  { scenario: "需要系统权限", stopReason: "error", agentResult: "需要授予 EchoAgent 屏幕录制权限。", parts: [], label: "本轮结束于" },
+  { scenario: "停止且无正文", stopReason: "cancelled", parts: [], label: "执行停止于" },
+  { scenario: "历史工具轮次", stopReason: "end_turn", parts: [{ kind: "tool_call", toolCall: {
+    toolCallId: "report", title: "写入报告", kind: "write", status: "completed", content: [],
+  } }], label: "本轮结束于" },
+] satisfies Array<Pick<ChatMessage, "stopReason" | "agentResult" | "parts"> & { scenario: string; label: string }>)
+  ("$scenario 有持久结束时间时可以单独展示时间", ({ stopReason, agentResult, parts, label }) => {
+    const endedAt = new Date(2026, 0, 1, 8, 23, 45).getTime();
+    const { container } = renderMessage({ ...completedMessage, endedAt, stopReason, agentResult, parts }, {
+      messageDay: new Date(2026, 0, 1).getTime(),
+    });
+    const time = container.querySelector("time");
+    expect(time).toHaveTextContent("08:23");
+    expect(time).toHaveAttribute("aria-label", `${label} 2026年1月1日 08:23:45`);
+    expect(screen.queryByRole("group", { name: "回复操作" })).toBeNull();
+  });
 
 describe("assistant message actions", () => {
   it("回复菜单可以从当前轮次在新对话中继续，并说明禁用原因", () => {

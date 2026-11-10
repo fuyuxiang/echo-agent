@@ -45,6 +45,7 @@ import { QueuePanel } from "./QueuePanel";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
 import { selectQuestionForSession, useQuestionStore } from "@/stores/question-store";
 import { buildTimeline } from "@/lib/timeline-utils";
+import { useMessageDay } from "@/lib/message-time";
 import { formatAgentError, friendlyError } from "@/lib/error-format";
 import { useSubagentStore } from "@/stores/subagent-store";
 import { stoppedTaskLabel, type SessionControl, type SessionControlAction } from "@/lib/session-control";
@@ -235,6 +236,7 @@ export function ChatView({
   const awaitingDecision = Boolean(pendingPermission || automation.approvals.length);
   // 会话内查找(对齐 EchoAgent chat-search)。
   const timeline = useMemo(() => buildTimeline(messages), [messages]);
+  const messageDay = useMessageDay();
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [findOccurrences, setFindOccurrences] = useState<FindOccurrence[]>([]);
@@ -1075,6 +1077,7 @@ export function ChatView({
                   <div key={`${sessionId}:${m.id}`} className={"msg-wrap" + findCls + (m.id === jumpTargetId ? " msg-wrap--jump-target" : "")} data-msg-id={m.id} tabIndex={-1}>
                     <MessageItem
                       message={m}
+                      messageDay={messageDay}
                       executionLabel={execution?.label}
                       executionDescription={execution?.description}
                       streaming={streaming && m.id === streamingMessageId}

@@ -144,7 +144,7 @@
   .sidebar__list-section:has(> .sidebar__group) { min-height: 68px; }
   .sidebar__list-section--tasks:has(> .sidebar__group),
   .sidebar__list-section--projects:has(> .sidebar__group) { min-height: calc(32px + max(36px, 2.2rem + 10px)); }
-  .sidebar .group-sidebar__item { height: 30px; flex-direction: row; align-items: center; gap: 6px; padding: 4px 12px; }
+  .sidebar .group-sidebar__item { height: 30px; flex-direction: row; align-items: center; gap: 6px; padding-block: 4px; }
   .sidebar .group-sidebar__item > span { flex: 1; min-width: 0; }
   .sidebar .group-sidebar__item small { flex: none; white-space: nowrap; }
 }

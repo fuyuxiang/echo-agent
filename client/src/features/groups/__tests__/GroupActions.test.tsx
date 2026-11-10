@@ -97,3 +97,39 @@ it("菜单支持键盘导航，Escape 返回入口且不会触发全局快捷键
     expect(globalEscape).not.toHaveBeenCalled();
   } finally {document.removeEventListener("keydown",globalEscape);}
 });
+
+it("同一个专家团的菜单只展开实际触发按钮，再次点击可关闭", () => {
+  mount();
+  const triggers = screen.getAllByRole("button", { name: "管理专家团 生命周期验证组" });
+  for (const trigger of triggers) {
+    fireEvent.click(trigger);
+    const menu = screen.getByRole("menu");
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(trigger).toHaveAttribute("aria-controls", menu.id);
+    const other = triggers.find(button => button !== trigger);
+    expect(other).toHaveAttribute("aria-expanded", "false");
+    expect(other).not.toHaveAttribute("aria-controls");
+
+    fireEvent.pointerDown(trigger);
+    fireEvent.click(trigger);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+  }
+});
+
+it("在侧栏条目上打开右键菜单时，只展开侧栏入口并将焦点还给原控件", () => {
+  mount();
+  const sidebar = screen.getByRole("region", { name: "最近专家团" });
+  const item = within(sidebar).getByRole("button", { name: /^生命周期验证组/ });
+  const [sidebarTrigger, cardTrigger] = screen.getAllByRole("button", { name: "管理专家团 生命周期验证组" });
+  item.focus();
+  fireEvent.contextMenu(item, { clientX: 32, clientY: 48 });
+
+  expect(sidebarTrigger).toHaveAttribute("aria-expanded", "true");
+  expect(cardTrigger).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("menuitem", { name: "重命名" })).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(item).toHaveFocus();
+});
