@@ -102,13 +102,6 @@
 .sidebar__nav-item--active:active { background: var(--echo-control-selected-bg-active); }
 .sidebar__nav-item:is(:hover, .sidebar__nav-item--active) .sidebar__nav-sub { color: inherit; }
 
-/* Task creation stays available as a neutral action. Selected surfaces belong
- * to the current module; page-specific creation buttons retain primary color. */
-.sidebar__nav-item--create {
-  min-height: var(--echo-size-control-md);
-  margin-bottom: 8px;
-}
-
 .sidebar__content {
   --sidebar-section-gap: 16px;
   --sidebar-collapsed-section-gap: 6px;
@@ -133,7 +126,6 @@
   .sidebar__logo-row { height: 32px; }
   .sidebar__nav { gap: 0; padding-top: 0; }
   .sidebar__nav-item { min-height: 32px; height: auto; padding-block: 5px; }
-  .sidebar__nav-item--create { min-height: 32px; margin-bottom: 4px; }
   .sidebar__content {
     --sidebar-section-gap: 12px;
     --sidebar-collapsed-section-gap: 2px;

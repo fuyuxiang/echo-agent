@@ -1098,7 +1098,7 @@ export function Sidebar({
       <nav className="sidebar__nav" aria-label="主导航">
         <button
           type="button"
-          className="sidebar__nav-item sidebar__nav-item--create"
+          className="sidebar__nav-item"
           onClick={onNewSession}
         >
           <EchoNewTaskIcon size="md" />
