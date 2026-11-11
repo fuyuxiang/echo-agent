@@ -1,7 +1,7 @@
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { copyFile, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -39,12 +39,12 @@ const platforms = {
   "x86_64-unknown-linux-gnu": ["linux-x64-static-no-tts-lib", 21755415, "36f2ebd0b9aa09248ff6461a30dcb7edfe7eecf2deb67dfb0ceb3aaf4906051f"],
 };
 
-async function runPreparationPhase(label, command, args, { timeout, env = process.env }) {
+async function runPreparationPhase(label, command, args, { timeout, env = process.env, cwd, stdin = "ignore" }) {
   console.log(label);
   // Forward progress and diagnostics as they happen. In particular, Cargo's
   // lock and compiler messages must survive a cancelled packaging job.
   const child = spawn(command, args, {
-    env, windowsHide: true, stdio: ["ignore", "inherit", "inherit"],
+    env, cwd, windowsHide: true, stdio: [stdin, "inherit", "inherit"],
     signal: AbortSignal.timeout(timeout), killSignal: "SIGKILL",
   });
   await new Promise((resolve, reject) => {
@@ -57,6 +57,20 @@ async function runPreparationPhase(label, command, args, { timeout, env = proces
       else reject(new Error(`${label}失败（${signal ?? `退出码 ${code}`}）`));
     });
   });
+}
+
+async function extractBzipArchive(label, archive, directory, members = []) {
+  // Git for Windows can supply GNU tar, where a drive colon in an archive
+  // argument can select a remote archive. Give either tar a local file as
+  // standard input and explicitly select bzip2 for input without a filename.
+  const input = await open(archive, "r");
+  try {
+    await runPreparationPhase(label, "tar", ["-xjf", "-", ...(members.length ? ["--", ...members] : [])], {
+      cwd: directory, stdin: input.fd, timeout: 600_000,
+    });
+  } finally {
+    await input.close();
+  }
 }
 
 async function checkedFile(path, { size, sha256 }) {
@@ -138,9 +152,8 @@ async function stageModels(manifest, raw, input, offline) {
       const archive = await sourceFile(source, input, offline);
       const assets = manifest.assets.filter(asset => asset.source === key);
       if (source.archive) {
-        await runPreparationPhase(`解包语音模型 ${source.archive}`, "tar",
-          ["-xf", archive, "-C", scratch, "--", ...assets.map(asset => `${source.archive}/${asset.member}`)],
-          { timeout: 600_000 });
+        await extractBzipArchive(`解包语音模型 ${source.archive}`, archive, scratch,
+          assets.map(asset => `${source.archive}/${asset.member}`));
       }
       for (const asset of assets) {
         await copyFile(source.archive ? join(scratch, source.archive, asset.member) : archive, join(scratch, asset.path));
@@ -173,7 +186,7 @@ async function stageWorker(target, input, offline) {
   if (await readFile(marker, "utf8").catch(() => "") !== sha256) {
     const scratch = await mkdtemp(join(cache, "runtime-"));
     try {
-      await runPreparationPhase(`解包语音运行库 ${archive}`, "tar", ["-xf", path, "-C", scratch], { timeout: 600_000 });
+      await extractBzipArchive(`解包语音运行库 ${archive}`, path, scratch);
       await writeFile(join(scratch, archive, "archive.sha256"), sha256);
       await rm(join(cache, archive), { recursive: true, force: true });
       await rename(join(scratch, archive), join(cache, archive));
