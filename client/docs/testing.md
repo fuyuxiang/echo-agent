@@ -37,7 +37,7 @@ Rust 检查与格式门禁分别为 `cargo clippy --locked --manifest-path src-t
 
 配置 `main` 的必需状态检查时，选择 `Fast checks`。它汇总类型检查、Rust 锁文件审计覆盖、单元测试和 Rust 格式检查。发布仍须核对同一提交的常规 CI 和三个安装包作业。
 
-macOS 宿主和 Runtime 库分别运行完整测试，避免两个 Cargo 工作区在同一作业中重编译并耗尽 Intel runner 的时间预算。Windows 先独立验证语音资源和推理，再执行完整安装包验证；解包使用系统自带的 `System32\tar.exe`，避免 PATH 中的 MSYS tar/bzip2 对盘符及原生文件句柄的解释差异。
+macOS 宿主和 Runtime 库分别运行完整测试，避免两个 Cargo 工作区在同一作业中重编译并耗尽 Intel runner 的时间预算。Windows 先独立验证语音资源和推理，再执行完整安装包验证；语音 `.bz2` 归档通过现有 Python 工具链的标准库在进程内解压，避免系统 tar 委托给 MSYS bzip2 后卡在原生管道上。归档固定哈希、模型文件校验和真实离线推理均保留。
 
 主干打包保留已启动的完整矩阵，新推送仅替换等待中的版本，避免长时间构建被连续提交反复取消；PR 仍优先验证最新版本。报告上传放在应用验证之后，服务超时仍会报错，但不会提前截断后续安装和 Runtime 检查。
 

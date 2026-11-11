@@ -84,6 +84,7 @@ jobs:
       - run: bash -n scripts/build.sh scripts/prepare-update-artifacts.sh scripts/publish-update.sh scripts/publish-all-updates.sh
       - run: python3 -m unittest discover -s deploy/update-server -p 'test_*.py'
       - run: python3 -m unittest discover -s scripts -p 'test_setup_protoc.py'
+      - run: python3 -m unittest discover -s scripts -p 'test_extract_meeting_speech.py'
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
       - run: pnpm icons:check
@@ -482,12 +483,18 @@ jobs:
         with:
           node-version: '22.23.4'
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        id: python
+        with:
+          python-version: '3.12'
       - name: Verify pinned speech resources, native worker and offline inference
         shell: powershell
         run: |
           . ./scripts/windows-packaging.ps1
           $null = Initialize-PackagingMsvc
           Invoke-PackagingCommand node @('scripts/test-meeting-speech-runtime.mjs')
+        env:
+          PYTHON: ${{ steps.python.outputs.python-path }}
 
   automation-windows:
     name: Native Runtime / Windows x64

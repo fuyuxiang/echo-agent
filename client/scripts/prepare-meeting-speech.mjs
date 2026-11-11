@@ -65,15 +65,13 @@ async function runPreparationPhase(label, command, args, { timeout, env = proces
 
 async function extractBzipArchive(label, archive, directory, members = []) {
   if (process.platform === "win32") {
-    // Tauri's Windows build environment can put Git's MSYS tar/bzip2 first
-    // in PATH. They do not share Node's native Windows handle conventions.
-    // The Windows-provided bsdtar supports local drive paths and bzip2 itself.
-    const windows = process.env.SystemRoot ?? process.env.WINDIR;
-    if (!windows) throw new Error("无法定位 Windows 系统归档工具：缺少 SystemRoot");
-    const tar = join(windows, "System32", "tar.exe");
-    await runPreparationPhase(`${label}（Windows 系统 tar）`, tar,
-      ["-xf", archive, ...(members.length ? ["--", ...members] : [])],
-      { cwd: directory, timeout: 600_000 });
+    // Windows bsdtar can delegate bzip2 to a Git/MSYS executable, which hangs
+    // on native pipe handles. Python's standard library decodes bz2 in-process;
+    // Windows source builds already require Python for the native IDE modules.
+    const extractor = fileURLToPath(new URL("./extract_meeting_speech.py", import.meta.url));
+    await runPreparationPhase(`${label}（Python bz2）`, process.env.PYTHON || "python",
+      [extractor, "--archive", archive, "--directory", directory, "--", ...members],
+      { timeout: 600_000 });
     return;
   }
   // A source path containing a colon can select a remote archive in GNU tar.
@@ -187,7 +185,7 @@ async function stageModels(manifest, raw, input, offline) {
     await writeFile(join(scratch, "verified.json"), raw);
     await rename(join(scratch, "verified.json"), join(directory, "verified.json"));
   } finally {
-    await rm(scratch, { recursive: true, force: true });
+    await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -207,7 +205,7 @@ async function stageWorker(target, input, offline) {
       await rm(join(cache, archive), { recursive: true, force: true });
       await rename(join(scratch, archive), join(cache, archive));
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }
   const build = join(project, "target/meeting-speech");
