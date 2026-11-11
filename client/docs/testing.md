@@ -20,6 +20,7 @@
 | Rust 宿主 | `pnpm test:rust` | 独立数据目录中的宿主单元与集成测试 |
 | Runtime 与记忆库 | `pnpm test:runtime:rust`、`pnpm test:memory:rust` | 依赖库自身的单测；宿主测试不能替代 |
 | Runtime 启停 | `pnpm test:runtime-smoke`、`pnpm test:memory-shutdown` | 真实 Runtime、受控服务、取消和检查点恢复 |
+| 离线语音 | `pnpm test:meeting-speech` | 固定资源解包、原生语音进程编译及实际离线推理；安装包仍须单独验证 |
 | 原生控件模块 | `pnpm test:desktop-native` | 生产 AX/UIA 模块；不等于真实桌面输入 |
 | 异常恢复 | `pnpm test:stability`、`pnpm test:stability:native` | 恢复协议，以及独立原生程序的窗口和进程故障注入 |
 | UI 与主题 | `pnpm test:ui`；专题入口见 [体验约定](product-experience.md)、[主题设计](theme-design.md) | 生产组件的浏览器渲染和受控 IPC，不替代 OS 或真实服务 |
@@ -35,6 +36,8 @@ Rust 检查与格式门禁分别为 `cargo clippy --locked --manifest-path src-t
 `ci` 和 `desktop-validation` 是独立流程；同一提交的两套流程及全部平台通过后，才能认为 CI 已通过。被后续推送取消、尚未运行到的步骤和本机定向测试都不能替代该结果。
 
 配置 `main` 的必需状态检查时，选择 `Fast checks`。它汇总类型检查、Rust 锁文件审计覆盖、单元测试和 Rust 格式检查。发布仍须核对同一提交的常规 CI 和三个安装包作业。
+
+macOS 宿主和 Runtime 库分别运行完整测试，避免两个 Cargo 工作区在同一作业中重编译并耗尽 Intel runner 的时间预算。Windows 先独立验证语音资源和推理，再执行完整安装包验证；解包使用系统自带的 `System32\tar.exe`，避免 PATH 中的 MSYS tar/bzip2 对盘符及原生文件句柄的解释差异。
 
 主干打包保留已启动的完整矩阵，新推送仅替换等待中的版本，避免长时间构建被连续提交反复取消；PR 仍优先验证最新版本。报告上传放在应用验证之后，服务超时仍会报错，但不会提前截断后续安装和 Runtime 检查。
 

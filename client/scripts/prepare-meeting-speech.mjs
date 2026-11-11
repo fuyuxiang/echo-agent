@@ -48,21 +48,37 @@ async function runPreparationPhase(label, command, args, { timeout, env = proces
     signal: AbortSignal.timeout(timeout), killSignal: "SIGKILL",
   });
   await new Promise((resolve, reject) => {
-    child.once("error", error => reject(new Error(
-      error.name === "AbortError" ? `${label}超时（${timeout / 1000} 秒）` : `${label}：${error.message}`,
-      { cause: error },
-    )));
-    child.once("exit", (code, signal) => {
-      if (code === 0) resolve();
+    let failure;
+    child.once("error", error => { failure = error; });
+    // Even after an abort, wait for termination before deleting the child's
+    // working directory. Otherwise Windows can mask the real error with EBUSY.
+    child.once("close", (code, signal) => {
+      if (failure) reject(new Error(
+        failure.name === "AbortError" ? `${label}超时（${timeout / 1000} 秒）` : `${label}：${failure.message}`,
+        { cause: failure },
+      ));
+      else if (code === 0) resolve();
       else reject(new Error(`${label}失败（${signal ?? `退出码 ${code}`}）`));
     });
   });
 }
 
 async function extractBzipArchive(label, archive, directory, members = []) {
-  // Git for Windows can supply GNU tar, where a drive colon in an archive
-  // argument can select a remote archive. Give either tar a local file as
-  // standard input and explicitly select bzip2 for input without a filename.
+  if (process.platform === "win32") {
+    // Tauri's Windows build environment can put Git's MSYS tar/bzip2 first
+    // in PATH. They do not share Node's native Windows handle conventions.
+    // The Windows-provided bsdtar supports local drive paths and bzip2 itself.
+    const windows = process.env.SystemRoot ?? process.env.WINDIR;
+    if (!windows) throw new Error("无法定位 Windows 系统归档工具：缺少 SystemRoot");
+    const tar = join(windows, "System32", "tar.exe");
+    await runPreparationPhase(`${label}（Windows 系统 tar）`, tar,
+      ["-xf", archive, ...(members.length ? ["--", ...members] : [])],
+      { cwd: directory, timeout: 600_000 });
+    return;
+  }
+  // A source path containing a colon can select a remote archive in GNU tar.
+  // Give POSIX tar a local file as standard input and explicitly select bzip2
+  // for input without a filename.
   const input = await open(archive, "r");
   try {
     await runPreparationPhase(label, "tar", ["-xjf", "-", ...(members.length ? ["--", ...members] : [])], {

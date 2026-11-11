@@ -410,10 +410,6 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
       - name: Run all isolated native unit and integration tests
         run: node scripts/test-rust-desktop.mjs
-      # The dependency's own tests are separate from host tests. In particular,
-      # FSEvents path aliases need a real macOS gate on both architectures.
-      - name: Verify Runtime configuration watching and tool reminder contracts
-        run: node scripts/test-rust-runtime.mjs
       - name: Verify isolated Runtime, MCP and resident skill reload without a model call
         run: node scripts/test-runtime-smoke.mjs
       - name: Verify memory checkpoint and cancellation with a stalled local model
@@ -426,6 +422,72 @@ jobs:
           name: native-test-results-${{ github.job }}-${{ runner.arch }}
           path: ci-artifacts/native-tests
           if-no-files-found: ignore
+
+  runtime-libraries-macos:
+    name: Runtime libraries / macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    # Building both Cargo workspaces in the host job exceeded its budget on
+    # cold Intel runners. Keep the complete library suites in their own job.
+    env:
+      NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: x64
+          - os: macos-15
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.23.4'
+      - name: Verify native runner architecture
+        run: node -e "require('node:assert/strict').equal(process.arch, process.env.EXPECTED_RUNTIME_ARCH)"
+        env:
+          EXPECTED_RUNTIME_ARCH: ${{ matrix.arch }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install verified pinned protoc
+        uses: ./.github/actions/setup-protoc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: 'true'
+      # The dependency's own tests include macOS FSEvents path aliases and
+      # remain required on both architectures alongside the host tests.
+      - name: Verify Runtime configuration watching and tool reminder contracts
+        run: node scripts/test-rust-runtime.mjs
+      - name: Preserve complete native test output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-test-results-${{ github.job }}-${{ runner.arch }}
+          path: ci-artifacts/native-tests
+          if-no-files-found: ignore
+
+  meeting-speech-windows:
+    name: Meeting speech / Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.23.4'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify pinned speech resources, native worker and offline inference
+        shell: powershell
+        run: |
+          . ./scripts/windows-packaging.ps1
+          $null = Initialize-PackagingMsvc
+          Invoke-PackagingCommand node @('scripts/test-meeting-speech-runtime.mjs')
 
   automation-windows:
     name: Native Runtime / Windows x64
