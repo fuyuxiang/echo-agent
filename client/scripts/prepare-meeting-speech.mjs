@@ -1,4 +1,4 @@
-import { execFile, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -39,6 +39,26 @@ const platforms = {
   "x86_64-unknown-linux-gnu": ["linux-x64-static-no-tts-lib", 21755415, "36f2ebd0b9aa09248ff6461a30dcb7edfe7eecf2deb67dfb0ceb3aaf4906051f"],
 };
 
+async function runPreparationPhase(label, command, args, { timeout, env = process.env }) {
+  console.log(label);
+  // Forward progress and diagnostics as they happen. In particular, Cargo's
+  // lock and compiler messages must survive a cancelled packaging job.
+  const child = spawn(command, args, {
+    env, windowsHide: true, stdio: ["ignore", "inherit", "inherit"],
+    signal: AbortSignal.timeout(timeout), killSignal: "SIGKILL",
+  });
+  await new Promise((resolve, reject) => {
+    child.once("error", error => reject(new Error(
+      error.name === "AbortError" ? `${label}超时（${timeout / 1000} 秒）` : `${label}：${error.message}`,
+      { cause: error },
+    )));
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${label}失败（${signal ?? `退出码 ${code}`}）`));
+    });
+  });
+}
+
 async function checkedFile(path, { size, sha256 }) {
   const info = await lstat(path);
   if (!info.isFile() || info.size !== size) throw new Error(`语音资源大小错误：${path}`);
@@ -62,8 +82,11 @@ async function sourceFile(spec, input, offline) {
   try {
     const part = join(temp, file);
     const url = `${release}/${file}`;
-    await run("curl", ["--fail", "--location", "--silent", "--show-error", "--retry", "2", "--retry-all-errors",
-      "--connect-timeout", "30", "--max-time", "900", "--output", part, url]);
+    await runPreparationPhase(`下载语音资产 ${file}`, "curl", [
+      "--fail", "--location", "--silent", "--show-error", "--retry", "2", "--retry-all-errors",
+      "--connect-timeout", "30", "--speed-limit", "8192", "--speed-time", "60",
+      "--max-time", "900", "--retry-max-time", "900", "--output", part, url,
+    ], { timeout: 960_000 });
     await checkedFile(part, spec);
     await rm(path, { force: true });
     await rename(part, path);
@@ -115,7 +138,9 @@ async function stageModels(manifest, raw, input, offline) {
       const archive = await sourceFile(source, input, offline);
       const assets = manifest.assets.filter(asset => asset.source === key);
       if (source.archive) {
-        await run("tar", ["-xf", archive, "-C", scratch, "--", ...assets.map(asset => `${source.archive}/${asset.member}`)]);
+        await runPreparationPhase(`解包语音模型 ${source.archive}`, "tar",
+          ["-xf", archive, "-C", scratch, "--", ...assets.map(asset => `${source.archive}/${asset.member}`)],
+          { timeout: 600_000 });
       }
       for (const asset of assets) {
         await copyFile(source.archive ? join(scratch, source.archive, asset.member) : archive, join(scratch, asset.path));
@@ -148,7 +173,7 @@ async function stageWorker(target, input, offline) {
   if (await readFile(marker, "utf8").catch(() => "") !== sha256) {
     const scratch = await mkdtemp(join(cache, "runtime-"));
     try {
-      await run("tar", ["-xf", path, "-C", scratch]);
+      await runPreparationPhase(`解包语音运行库 ${archive}`, "tar", ["-xf", path, "-C", scratch], { timeout: 600_000 });
       await writeFile(join(scratch, archive, "archive.sha256"), sha256);
       await rm(join(cache, archive), { recursive: true, force: true });
       await rename(join(scratch, archive), join(cache, archive));
@@ -158,10 +183,10 @@ async function stageWorker(target, input, offline) {
   }
   const build = join(project, "target/meeting-speech");
   const extension = target.includes("windows") ? ".exe" : "";
-  await run("cargo", ["build", "--manifest-path", join(project, "meeting-speech/Cargo.toml"),
+  await runPreparationPhase(`编译语音进程 ${target}`, "cargo", ["build", "--manifest-path", join(project, "meeting-speech/Cargo.toml"),
     "--locked", "--release", "--target", target, ...(offline ? ["--offline"] : [])], {
     env: { ...process.env, CARGO_TARGET_DIR: build, SHERPA_ONNX_LIB_DIR: library },
-    maxBuffer: 4 * 1024 * 1024,
+    timeout: 1_800_000,
   });
   await mkdir(binaries, { recursive: true });
   const staged = join(binaries, `echo-meeting-speech-${target}${extension}`);
@@ -196,14 +221,19 @@ try {
   } else {
     const input = option("--source") ?? process.env.ECHO_MEETING_SPEECH_SOURCE;
     const offline = args.includes("--offline") || process.env.CARGO_NET_OFFLINE === "true";
-    const host = (await run("rustc", ["-vV"])).stdout.match(/^host: (.+)$/m)?.[1];
     const platform = { darwin: "apple-darwin", windows: "pc-windows-msvc", linux: "unknown-linux-gnu" }[
       process.env.TAURI_ENV_PLATFORM
     ];
     const tauriTarget = platform && process.env.TAURI_ENV_ARCH
       ? `${process.env.TAURI_ENV_ARCH}-${platform}`
       : undefined;
-    const target = option("--target") ?? process.env.CARGO_BUILD_TARGET ?? tauriTarget ?? host;
+    let target = option("--target") ?? process.env.CARGO_BUILD_TARGET ?? tauriTarget;
+    if (!target) {
+      console.log("检测语音进程的 Rust 构建目标");
+      target = (await run("rustc", ["-vV"], { timeout: 120_000, windowsHide: true })).stdout.match(/^host: (.+)$/m)?.[1];
+    }
+    if (!platforms[target]) throw new Error(`内置语音暂不支持构建目标 ${target ?? "（未能检测）"}`);
+    console.log(`校验语音模型与运行库：${target}`);
     // This lock is workspace state, not a restorable build cache entry.
     await withMeetingSpeechLock(join(project, ".meeting-speech-prepare"), async () => {
       await mkdir(cache, { recursive: true });
