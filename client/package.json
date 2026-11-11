@@ -1,7 +1,7 @@
 {
   "name": "echoagent",
   "private": true,
-  "version": "0.3.11",
+  "version": "1.11.11",
   "type": "module",
   "description": "EchoAgent — an open-source desktop agent workspace built on Tauri.",
   "scripts": {

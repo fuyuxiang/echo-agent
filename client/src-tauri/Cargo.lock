@@ -4186,7 +4186,7 @@ dependencies = [
 
 [[package]]
 name = "echoagent"
-version = "0.3.11"
+version = "1.11.11"
 dependencies = [
  "aes 0.8.4",
  "agent-client-protocol",

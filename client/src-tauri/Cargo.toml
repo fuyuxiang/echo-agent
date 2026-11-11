@@ -1,6 +1,6 @@
 [package]
 name = "echoagent"
-version = "0.3.11"
+version = "1.11.11"
 description = "EchoAgent — a source-available desktop agent workspace built on Tauri"
 authors = ["EchoAgent"]
 edition = "2021"
