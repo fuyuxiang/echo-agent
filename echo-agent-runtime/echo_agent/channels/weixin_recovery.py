@@ -14,6 +14,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from echo_agent.channels.base import DeliveryRecoverySummary
+
 
 class WeixinDeliveryRecovery:
     WINDOW_MS = 24 * 60 * 60 * 1000
@@ -76,7 +78,7 @@ class WeixinDeliveryRecovery:
         self.login_required = False
         self.save()
 
-    def summary(self) -> dict:
+    def summary(self) -> DeliveryRecoverySummary:
         return {"pending_conversations": len(self.chats),
                 "retry_at_ms": min((s["retry_at_ms"] for s in self.chats.values()), default=0),
                 "retry_attempts": max((s["attempts"] for s in self.chats.values()), default=0)}

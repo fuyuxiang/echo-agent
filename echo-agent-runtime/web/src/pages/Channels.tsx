@@ -20,7 +20,7 @@ interface Channel {
   allow_from_count?: number;
   group_policy?: string;
   delivery_health?: string;
-  delivery_recovery?: { retry_at_ms?: number };
+  delivery_recovery?: { pending_conversations: number; retry_at_ms: number; retry_attempts: number };
 }
 
 export function Channels() {
@@ -30,7 +30,7 @@ export function Channels() {
   const canWrite = isAdmin !== false;
   const [inflight, setInflight] = useState<string | null>(null);
   useEffect(() => {
-    if (!data?.channels.some(channel => channel.name === "weixin" && channel.running)) return;
+    if (!data?.channels.some(channel => channel.enabled || channel.running)) return;
     const timer = window.setInterval(() => { void refetch(); }, 15000);
     return () => window.clearInterval(timer);
   }, [data, refetch]);
@@ -90,50 +90,53 @@ export function Channels() {
       >
         {(d) => (
           <div className="space-y-2">
-            {d.channels.map((ch) => (
-              <div key={ch.name} className="bg-white border rounded-lg p-4 flex items-center gap-4">
-                <span className={`w-3 h-3 rounded-full ${ch.running ? "bg-green-500" : ch.enabled ? "bg-yellow-400" : "bg-gray-300"}`} />
-                <div className="flex-1">
-                  <div className="font-medium text-sm">{ch.name}</div>
-                  {ch.restart_required && <div className="text-xs text-amber-700">{t("savedPending")}</div>}
-                  {ch.enabled_managed && <div className="text-xs text-gray-500">{t("managedEnabled")}</div>}
-                  {ch.running && ch.delivery_health && <p className={`text-xs mt-1 ${ch.delivery_health === "ready" ? "text-gray-500" : "text-amber-700"}`}>
-                    {t(`deliveryHealth.${ch.delivery_health}`)}
-                    {ch.delivery_recovery?.retry_at_ms ? ` · ${t("delivery.retryAt", { time: dateTime(ch.delivery_recovery.retry_at_ms) })}` : ""}
-                  </p>}
-                  <div className="text-xs text-gray-500 flex gap-3">
-                    <span>{ch.enabled ? t("common:enabled") : t("common:disabled")}</span>
-                    {ch.group_policy && <span>{t("groupPolicy", { policy: ch.group_policy })}</span>}
-                    {ch.allow_from_count != null && ch.allow_from_count > 0 && (
-                      <span>{t("allowFrom", { count: ch.allow_from_count })}</span>
-                    )}
+            {d.channels.map((ch) => {
+              const deliveryBlocked = ch.running && !!ch.delivery_health && ch.delivery_health !== "ready";
+              return (
+                <div key={ch.name} className="bg-white border rounded-lg p-4 flex items-center gap-4">
+                  <span aria-hidden="true" className={`w-3 h-3 shrink-0 rounded-full ${deliveryBlocked ? "bg-yellow-400" : ch.running ? "bg-green-500" : ch.enabled ? "bg-yellow-400" : "bg-gray-300"}`} />
+                  <div className="flex-1">
+                    <div className="font-medium text-sm">{ch.name}</div>
+                    {ch.restart_required && <div className="text-xs text-amber-700">{t("savedPending")}</div>}
+                    {ch.enabled_managed && <div className="text-xs text-gray-500">{t("managedEnabled")}</div>}
+                    {ch.running && ch.delivery_health && <p className={`text-xs mt-1 ${ch.delivery_health === "ready" ? "text-gray-500" : "text-amber-700"}`}>
+                      {t(`deliveryHealth.${ch.delivery_health}`, { defaultValue: t("deliveryPending") })}
+                      {ch.delivery_health === "cooling_down" && ch.delivery_recovery?.retry_at_ms ? ` · ${t("delivery.retryAt", { time: dateTime(ch.delivery_recovery.retry_at_ms) })}` : ""}
+                    </p>}
+                    <div className="text-xs text-gray-500 flex gap-3">
+                      <span>{ch.enabled ? t("common:enabled") : t("common:disabled")}</span>
+                      {ch.group_policy && <span>{t("groupPolicy", { policy: ch.group_policy })}</span>}
+                      {ch.allow_from_count != null && ch.allow_from_count > 0 && (
+                        <span>{t("allowFrom", { count: ch.allow_from_count })}</span>
+                      )}
+                    </div>
+                  </div>
+                  <span role="status" className={`text-xs px-2 py-0.5 rounded ${deliveryBlocked ? "bg-yellow-100 text-yellow-700" : ch.running ? "bg-green-100 text-green-700" : ch.enabled ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-500"}`}>
+                    {deliveryBlocked ? t("deliveryPending") : ch.running ? t("common:online") : ch.enabled ? t("notConnected") : t("common:offline")}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {ch.running && <button onClick={() => lifecycle(ch, "stop")}
+                      disabled={!canWrite || inflight !== null}
+                      aria-label={t("stopAria", { name: ch.name })} title={t("stopHint")}
+                      className="p-1.5 rounded text-red-600 hover:bg-red-50 disabled:opacity-40">
+                      <Power size={15} />
+                    </button>}
+                    {ch.enabled && <button onClick={() => lifecycle(ch, ch.running ? "restart" : "start")}
+                      disabled={!canWrite || inflight !== null}
+                      aria-label={t(ch.running ? "restartAria" : "startAria", { name: ch.name })}
+                      className="p-1.5 rounded hover:bg-gray-100 disabled:opacity-40">
+                      {ch.running ? <RotateCw size={15} className={inflight === `${ch.name}:restart` ? "animate-spin" : ""} /> : <Power size={15} />}
+                    </button>}
+                    <button role="switch" aria-checked={ch.enabled} onClick={() => toggleEnabled(ch)}
+                      disabled={!canWrite || inflight !== null || ch.enabled_managed}
+                      aria-label={t(ch.enabled ? "disableAria" : "enableAria", { name: ch.name })}
+                      className={`w-10 h-5 rounded-full transition-colors disabled:opacity-40 ${ch.enabled ? "bg-blue-600" : "bg-gray-300"}`}>
+                      <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${ch.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                    </button>
                   </div>
                 </div>
-                <span className={`text-xs px-2 py-0.5 rounded ${ch.running ? "bg-green-100 text-green-700" : ch.enabled ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-500"}`}>
-                  {ch.running ? t("common:online") : ch.enabled ? t("notConnected") : t("common:offline")}
-                </span>
-                <div className="flex items-center gap-1">
-                  {ch.running && <button onClick={() => lifecycle(ch, "stop")}
-                    disabled={!canWrite || inflight !== null}
-                    aria-label={t("stopAria", { name: ch.name })} title={t("stopHint")}
-                    className="p-1.5 rounded text-red-600 hover:bg-red-50 disabled:opacity-40">
-                    <Power size={15} />
-                  </button>}
-                  {ch.enabled && <button onClick={() => lifecycle(ch, ch.running ? "restart" : "start")}
-                    disabled={!canWrite || inflight !== null}
-                    aria-label={t(ch.running ? "restartAria" : "startAria", { name: ch.name })}
-                    className="p-1.5 rounded hover:bg-gray-100 disabled:opacity-40">
-                    {ch.running ? <RotateCw size={15} className={inflight === `${ch.name}:restart` ? "animate-spin" : ""} /> : <Power size={15} />}
-                  </button>}
-                  <button role="switch" aria-checked={ch.enabled} onClick={() => toggleEnabled(ch)}
-                    disabled={!canWrite || inflight !== null || ch.enabled_managed}
-                    aria-label={t(ch.enabled ? "disableAria" : "enableAria", { name: ch.name })}
-                    className={`w-10 h-5 rounded-full transition-colors disabled:opacity-40 ${ch.enabled ? "bg-blue-600" : "bg-gray-300"}`}>
-                    <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${ch.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Loadable>

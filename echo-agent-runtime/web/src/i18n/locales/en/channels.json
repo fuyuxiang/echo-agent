@@ -2,6 +2,7 @@
   "title": "Channels",
   "empty": "No configured channels",
   "notConnected": "Not connected",
+  "deliveryPending": "Delivery needs attention",
   "savedPending": "Saved settings differ from runtime; start or restart this channel to apply them",
   "groupPolicy": "Group: {{policy}}",
   "allowFrom": "Allowlist: {{count}}",

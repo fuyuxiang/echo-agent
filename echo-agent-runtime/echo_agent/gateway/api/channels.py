@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aiohttp import web
+from loguru import logger
 
 if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
@@ -17,6 +18,30 @@ class ChannelsAPI:
 
     def _admin_guard(self, request: web.Request, action: str) -> web.Response | None:
         return self._server._require_admin_token(request, action=action)
+
+    @staticmethod
+    def _delivery_status(adapter, name: str) -> dict:
+        """Optional adapter telemetry must not break the channel list.
+
+        Validate and copy only public summary fields at the API boundary;
+        plugins may return unsupported values or include private state.
+        """
+        status = {}
+        for method in ("delivery_health", "delivery_recovery"):
+            try:
+                report = getattr(adapter, method, None)
+                value = report() if callable(report) else None
+                if method == "delivery_health":
+                    if isinstance(value, str):
+                        status[method] = value
+                elif isinstance(value, dict):
+                    keys = ("pending_conversations", "retry_at_ms", "retry_attempts")
+                    if all(type(value.get(key)) is int and 0 <= value[key] <= 2**53 - 1 for key in keys):
+                        status[method] = {key: value[key] for key in keys}
+            except Exception:
+                # Do not echo adapter errors, which may contain credentials.
+                logger.warning("Could not read {} for channel {}", method, name)
+        return status
 
     async def list_channels(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "channels_list")
@@ -74,14 +99,7 @@ class ChannelsAPI:
                 "enabled_managed": ConfigAPI._is_managed(f"channels.{name}.enabled", managed_paths),
             }
             adapter = manager.get_channel(name)
-            delivery_health = getattr(adapter, "delivery_health", None)
-            if callable(delivery_health):
-                health = delivery_health()
-                if isinstance(health, str):
-                    entry["delivery_health"] = health
-            recovery = getattr(adapter, "delivery_recovery", None)
-            if callable(recovery):
-                entry["delivery_recovery"] = recovery()
+            entry.update(self._delivery_status(adapter, name))
             if enabled:
                 allow_from = getattr(ch_cfg, "allow_from", None)
                 if isinstance(allow_from, (list, tuple)) and allow_from:

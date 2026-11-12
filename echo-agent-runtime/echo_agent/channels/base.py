@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypedDict
 
 from loguru import logger
 
@@ -44,6 +44,18 @@ class SendResult:
 
 class DeliveryRejected(RuntimeError):
     """A request was explicitly refused and can safely be retried."""
+
+
+class DeliveryRecoverySummary(TypedDict):
+    """Public recovery status: nonnegative counts and a Unix timestamp in ms.
+
+    Keep credentials, peer identifiers, and internal retry state out of this
+    summary. A zero retry_at_ms means no retry is scheduled.
+    """
+
+    pending_conversations: int
+    retry_at_ms: int
+    retry_attempts: int
 
 
 class BaseChannel(ABC):
@@ -93,6 +105,14 @@ class BaseChannel(ABC):
     @abstractmethod
     async def send(self, event: OutboundEvent) -> SendResult | None:
         """Send a message through this channel."""
+
+    def delivery_health(self) -> str | None:
+        """Return known delivery health, or None when this is not reported."""
+        return None
+
+    def delivery_recovery(self) -> DeliveryRecoverySummary | None:
+        """Return a public recovery summary, or None when unsupported."""
+        return None
 
     async def send_parts(self, event: OutboundEvent, parts: list[str], sender,
                          *, fingerprint: str = "", namespace: str = "", before_send=None,

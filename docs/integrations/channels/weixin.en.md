@@ -70,7 +70,9 @@ send attempts per 24-hour window. Cooldown state survives restarts. Successful d
 inbound context resets the cooldown; a new inbound message can also trigger earlier recovery.
 Scheduled turns omit progress heartbeats to reserve proactive-send allowance.
 
-The dashboard shows the planned retry time. Known delivery outages make `/api/v1/ready` return
+The Channels page marks blocked delivery with an amber “Delivery needs attention” badge and
+refreshes connection and recovery status automatically, returning to Online after recovery.
+The dashboard shows the planned retry time during cooldown. Known delivery outages make `/api/v1/ready` return
 503 with a `channel_delivery` status even when inbound polling is connected. Recovery reuses saved content and confirmed multipart receipts without re-running
 the agent. Unknown outcomes, such as a timeout after a request started, still require operator verification.
 The dashboard provides authenticated downloads of saved reports while the channel is unavailable.

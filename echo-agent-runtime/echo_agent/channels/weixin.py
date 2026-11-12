@@ -25,7 +25,7 @@ from loguru import logger
 
 from echo_agent.bus.events import ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel, SendResult
+from echo_agent.channels.base import BaseChannel, DeliveryRecoverySummary, SendResult
 from echo_agent.channels.weixin_recovery import WeixinDeliveryRecovery
 from echo_agent.config.schema import WeixinChannelConfig
 from echo_agent.media.silk import encode_to_silk
@@ -547,7 +547,7 @@ class WeixinChannel(BaseChannel):
                                          for s in self._delivery_recovery.chats.values()) else "retrying"
         return "ready" if self._token_store._cache else "no_context"
 
-    def delivery_recovery(self) -> dict:
+    def delivery_recovery(self) -> DeliveryRecoverySummary:
         return self._delivery_recovery.summary()
 
     def automatic_delivery_recovery(self, chat_id: str) -> bool:

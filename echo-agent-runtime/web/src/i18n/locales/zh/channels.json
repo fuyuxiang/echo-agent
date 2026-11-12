@@ -2,6 +2,7 @@
   "title": "通道",
   "empty": "暂无已配置的通道",
   "notConnected": "未连接",
+  "deliveryPending": "投递待恢复",
   "savedPending": "保存配置与运行配置不同，请启动或重启此通道以应用",
   "groupPolicy": "群聊: {{policy}}",
   "allowFrom": "白名单: {{count}} 人",
