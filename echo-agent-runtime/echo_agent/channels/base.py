@@ -38,6 +38,8 @@ class SendResult:
     # Machine-readable recovery information; the dashboard localizes the action.
     error_code: str = ""
     recovery_action: str = ""
+    retry_at_ms: int = 0
+    retry_attempts: int = 0
 
 
 class DeliveryRejected(RuntimeError):

@@ -26,6 +26,7 @@ from loguru import logger
 from echo_agent.bus.events import ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
+from echo_agent.channels.weixin_recovery import WeixinDeliveryRecovery
 from echo_agent.config.schema import WeixinChannelConfig
 from echo_agent.media.silk import encode_to_silk
 from echo_agent.utils.text import split_message
@@ -520,16 +521,19 @@ class WeixinChannel(BaseChannel):
         self._poll_task: asyncio.Task | None = None
         # Strong refs for per-message tasks (see asyncio.create_task docs).
         self._msg_tasks: set[asyncio.Task] = set()
-        self._blocked_chats: set[str] = set()
-        self._login_required = False
+        self._delivery_recovery = WeixinDeliveryRecovery(
+            self._data_dir, self._account_id, self._token, _atomic_write_json)
+        self._login_required = self._delivery_recovery.login_required
 
     def delivery_readiness(self, chat_id: str) -> SendResult | None:
         if self._login_required:
             return SendResult(False, error="Weixin login expired; scan the login QR code again",
                               error_code="weixin_login_required", recovery_action="relogin")
-        if chat_id in self._blocked_chats:
-            return SendResult(False, error="Weixin rejected this conversation; send the bot a new message to restore delivery",
-                              error_code="weixin_context_rejected", recovery_action="send_message")
+        state = self._delivery_recovery.chats.get(chat_id)
+        if state and state["retry_at_ms"] > self._delivery_recovery.now_ms():
+            return SendResult(False, error="Weixin refused delivery; saved results will retry after cooldown",
+                              error_code="weixin_send_cooldown", recovery_action="retry_later",
+                              retry_at_ms=state["retry_at_ms"], retry_attempts=state["attempts"])
         if not self._token_store.get(self._account_id, chat_id):
             return SendResult(False, error="Weixin conversation context is missing; send the bot a message to restore delivery",
                               error_code="weixin_context_required", recovery_action="send_message")
@@ -538,20 +542,30 @@ class WeixinChannel(BaseChannel):
     def delivery_health(self) -> str:
         if self._login_required:
             return "login_required"
-        if self._blocked_chats:
-            return "needs_message"
+        if self._delivery_recovery.chats:
+            return "cooling_down" if any(s["retry_at_ms"] > self._delivery_recovery.now_ms()
+                                         for s in self._delivery_recovery.chats.values()) else "retrying"
         return "ready" if self._token_store._cache else "no_context"
+
+    def delivery_recovery(self) -> dict:
+        return self._delivery_recovery.summary()
+
+    def automatic_delivery_recovery(self, chat_id: str) -> bool:
+        return not self._login_required and bool(self._token_store.get(self._account_id, chat_id))
 
     def _send_failure(self, chat_id: str, response: dict[str, Any], error: str) -> SendResult:
         if _is_session_expired(response):
             self._login_required = True
+            self._delivery_recovery.login_required = True
+            self._delivery_recovery.save()
             return SendResult(False, error=error, error_code="weixin_login_required", recovery_action="relogin")
         if any(str(response.get(key)) == "-2" for key in ("ret", "errcode")):
-            # -2 is an upstream refusal, not a documented fixed TTL or rate
-            # limit. Stop repeating the request until fresh inbound activity.
-            self._blocked_chats.add(chat_id)
+            # Do not discard credentials or permanently block a conversation:
+            # -2 does not distinguish a temporary quota from stale context.
+            state = self._delivery_recovery.reject(chat_id)
             return SendResult(False, error=error, error_code="weixin_context_rejected",
-                              recovery_action="send_message")
+                              recovery_action="retry_later", retry_at_ms=state["retry_at_ms"],
+                              retry_attempts=state["attempts"])
         return SendResult(False, error=error)
 
     def _spawn_msg_task(self, coro: Any) -> asyncio.Task:
@@ -646,10 +660,9 @@ class WeixinChannel(BaseChannel):
             return SendResult(success=True, skipped=True)
         if not self._send_session or not self._token:
             return SendResult(success=False, error="no session or no token")
-        context_token = self._token_store.get(self._account_id, chat_id)
         chunks = self._split_text(text)
         async def send_part(index, chunk):
-            return await self._send_text_chunk(chat_id, chunk, context_token=context_token)
+            return await self._send_text_chunk(chat_id, chunk)
 
         async def before_send(index, chunk):
             if index > 0:
@@ -681,6 +694,7 @@ class WeixinChannel(BaseChannel):
             error = self.safe_delivery_error(exc)
             logger.error("weixin send failed to {}: {}", chat_id[:8] if chat_id else "?", error)
             return SendResult(success=False, error=error, delivery_unknown=True)
+        self._delivery_recovery.accepted(chat_id)
         return SendResult(success=True, message_id=_server_message_id(resp))
 
     @staticmethod
@@ -859,6 +873,7 @@ class WeixinChannel(BaseChannel):
         if failure:
             logger.warning("weixin media send error: {}", failure)
             return self._send_failure(chat_id, resp, f"sendmessage {failure}")
+        self._delivery_recovery.accepted(chat_id)
         # Prefer the server receipt; code-only responses keep the local id
         # solely for event correlation.
         return SendResult(success=True, message_id=_server_message_id(resp) or str(msg["client_id"]))
@@ -937,6 +952,8 @@ class WeixinChannel(BaseChannel):
                 if failure:
                     if _is_session_expired(response):
                         self._login_required = True
+                        self._delivery_recovery.login_required = True
+                        self._delivery_recovery.save()
                         logger.error("weixin: session expired, pausing 10 minutes")
                         await asyncio.sleep(600)
                         consecutive_failures = 0
@@ -1023,7 +1040,7 @@ class WeixinChannel(BaseChannel):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             self._token_store.set(self._account_id, sender_id, context_token)
-            self._blocked_chats.discard(sender_id)
+            self._delivery_recovery.fresh_context(sender_id)
             self._login_required = False
             self.bus.notify_channel_ready(self.name, sender_id)
 

@@ -21,7 +21,7 @@ interface CronRun {
   report_file?: string;
   report_title?: string;
   archive_error?: string;
-  deliveries?: { recovery_action?: string }[];
+  deliveries?: { recovery_action?: string; retry_at_ms?: number }[];
 }
 
 /**
@@ -114,7 +114,11 @@ export function CronRunsDrawer({ job, onClose }: { job: CronJob; onClose: () => 
                   {t("generationStatus")}: {t(`generationOutcome.${run.generation_status}`, { defaultValue: run.generation_status })}
                 </p>}
                 {run.status === "delivery_pending" && <div role="status" className="text-xs rounded bg-amber-50 p-2 text-amber-900">
-                  {t(run.deliveries?.some(d => d.recovery_action === "relogin") ? "restoreLoginHint" : "restoreMessageHint")}
+                  {t(run.deliveries?.some(d => d.recovery_action === "retry_later") ? "automaticRecoveryHint" :
+                    run.deliveries?.some(d => d.recovery_action === "relogin") ? "restoreLoginHint" : "restoreMessageHint")}
+                  {run.deliveries?.find(d => d.retry_at_ms)?.retry_at_ms ? <p className="mt-1">
+                    {t("retryAt", { time: dateTime(run.deliveries.find(d => d.retry_at_ms)!.retry_at_ms!) })}
+                  </p> : null}
                 </div>}
                 {run.generation_status === "incomplete" && <p className="text-xs text-amber-800">{t("draftSavedHint")}</p>}
                 {run.error && <details className="text-xs whitespace-pre-wrap break-words text-gray-600">

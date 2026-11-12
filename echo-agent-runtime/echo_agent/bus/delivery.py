@@ -88,6 +88,9 @@ class DeliveryResult:
             detail["error_code"] = sr.error_code
         if sr.recovery_action:
             detail["recovery_action"] = sr.recovery_action
+        if getattr(sr, "retry_at_ms", 0):
+            detail["retry_at_ms"] = sr.retry_at_ms
+            detail["retry_attempts"] = sr.retry_attempts
         return cls(
             DeliveryStage.FAILED,
             channel,

@@ -145,6 +145,15 @@ class TurnRunStore:
         )
         return rows
 
+    async def waiting_outbound_routes(self) -> list[dict]:
+        """Find waiting scheduled routes without starvation by unrelated failures."""
+        return await self._storage.fetch_sql(
+            "SELECT json_extract(payload,'$.channel') AS channel, "
+            "json_extract(payload,'$.chat_id') AS chat_id FROM outbound_messages "
+            "WHERE status='awaiting_context' AND json_extract(payload,'$.metadata.scheduled_output')=1 "
+            "GROUP BY channel,chat_id ORDER BY MIN(created_at)",
+        )
+
     async def outbound_parts(self, event_id: str, channel: str) -> list[dict]:
         prefix = f"{channel}:{event_id}:"
         escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

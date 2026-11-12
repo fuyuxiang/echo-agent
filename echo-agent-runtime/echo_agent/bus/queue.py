@@ -214,7 +214,7 @@ class MessageBus:
                 await self._turn_run_store.update_outbound(
                     event.event_id, "delivered" if result.ok else
                     "unknown" if result.detail.get("delivery_unknown") else
-                    "awaiting_context" if result.detail.get("recovery_action") in {"send_message", "relogin"}
+                    "awaiting_context" if result.detail.get("recovery_action") in {"send_message", "relogin", "retry_later"}
                     else "failed", result.error or "", detail=result.detail,
                 )
             except Exception:

@@ -51,12 +51,17 @@
     "errorDetails": "查看失败详情",
     "download": "下载报告",
     "downloadFailed": "报告下载失败",
-    "waitingContext": "报告已保存，等待恢复发送。"
+    "waitingContext": "报告已保存，等待恢复发送。",
+    "cooldown": "微信暂时拒收，报告已保存，系统正在等待冷却后自动恢复。",
+    "retryAt": "计划重试时间：{{time}}",
+    "automaticRecovery": "无需重新运行任务。系统会逐步延长重试间隔，已确认送达的内容不会重复发送；收到新消息也会提前尝试恢复。"
   },
   "deliveryHealth": {
     "ready": "已保存会话上下文，发送仍以微信回执为准",
     "no_context": "接收连接已启动；请先给机器人发消息以建立发送会话",
     "needs_message": "部分会话被微信拒收；给机器人发消息后恢复补发",
-    "login_required": "微信登录已失效，需要重新扫码"
+    "login_required": "微信登录已失效，需要重新扫码",
+    "cooling_down": "微信投递受阻，冷却后自动重试",
+    "retrying": "正在等待自动恢复投递"
   }
 }

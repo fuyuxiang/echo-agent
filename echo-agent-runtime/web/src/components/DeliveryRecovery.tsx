@@ -6,12 +6,14 @@ import { apiDownload, apiFetch } from "../lib/api";
 import { runMutation } from "../stores/toast";
 import { useConfirm } from "./ConfirmDialog";
 import { Loadable } from "./Loadable";
+import { dateTime } from "../lib/datetime";
 
 interface Delivery {
   event_id: string; channel: string; chat_id: string; status: string; preview: string;
   attachments: number; confirmed_parts: number; unknown_parts: number;
   error?: string; recovery_action?: string; can_retry?: boolean; auto_retry?: boolean;
   created_at?: number;
+  retry_at_ms?: number; retry_attempts?: number;
 }
 
 function DeliveryContent({ id }: { id: string }) {
@@ -90,8 +92,11 @@ export function DeliveryRecovery({ scheduledOnly = false }: { scheduledOnly?: bo
         <p className="text-sm">{t(message.recovery_action ? "delivery.waitingContext" : message.status === "pending" || message.status === "retrying" ? "delivery.sending" :
           message.unknown_parts ? "delivery.unknown" : "delivery.unsent")}</p>
         {message.recovery_action && <div role="status" className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          <p>{t(message.recovery_action === "relogin" ? "delivery.relogin" : "delivery.sendMessage")}</p>
-          {message.auto_retry && <p className="mt-1">{t("delivery.autoRetry")}</p>}
+          <p>{t(message.recovery_action === "retry_later" ? "delivery.cooldown" : message.recovery_action === "relogin" ? "delivery.relogin" : "delivery.sendMessage")}</p>
+          {message.recovery_action === "retry_later" && message.retry_at_ms ? <p className="mt-1">
+            {t("delivery.retryAt", { time: dateTime(message.retry_at_ms) })}
+          </p> : null}
+          {message.auto_retry && <p className="mt-1">{t(message.recovery_action === "retry_later" ? "delivery.automaticRecovery" : "delivery.autoRetry")}</p>}
         </div>}
         {message.error && <details className="text-xs text-gray-500">
           <summary className="cursor-pointer">{t("delivery.errorDetails")}</summary>

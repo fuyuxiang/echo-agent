@@ -172,7 +172,9 @@ class ProgressHeartbeat:
         self._sealed = False
 
     async def start(self, activity: SharedActivityState) -> None:
-        if not self._config.enabled:
+        # Nobody is waiting in chat for a scheduled turn. Extra text beats also
+        # consume scarce proactive-send allowance on transports such as iLink.
+        if not self._config.enabled or getattr(self._event, "unattended", False):
             return
         self._activity = activity
         self._task = asyncio.create_task(self._run())

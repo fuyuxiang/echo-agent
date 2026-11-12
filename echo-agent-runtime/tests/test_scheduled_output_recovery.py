@@ -68,6 +68,95 @@ async def refresh(runtime):
 
 
 @pytest.mark.asyncio
+async def test_rejected_report_automatically_recovers_without_a_user_message(runtime):
+    from echo_agent.channels.weixin_recovery import WeixinDeliveryRecovery
+    from echo_agent.channels.weixin import _atomic_write_json
+
+    r = runtime
+    now = [100_000.0]
+    r.channel._delivery_recovery._clock = lambda: now[0]
+    r.channel._token_store.set("test@im.bot", "user", "saved-context")
+    r.transport.return_value = {"ret": -2, "errmsg": "prepare failed"}
+    first = await r.bus.publish_outbound(r.outbound())
+    assert not first.ok and first.detail["recovery_action"] == "retry_later"
+    run_id = r.job.run_history[-1]["run_id"]
+    await r.scheduler.record_run_outcome(r.job.id, "completed", run_id=run_id)
+    assert r.job.last_status == "delivery_pending"
+    # Restore the channel's disk state as a new process would. Restarting cannot
+    # spend another send attempt or permanently lose the recovery deadline.
+    r.channel._delivery_recovery = WeixinDeliveryRecovery(
+        r.channel._data_dir, "test@im.bot", "secret", _atomic_write_json, clock=lambda: now[0])
+    await r.outputs.resume_waiting(lambda _: r.channel)
+    assert not r.outputs._recoveries
+    r.transport.assert_awaited_once()
+    now[0] = first.detail["retry_at_ms"] / 1000 + 1
+    r.transport.return_value = {"message_id": 456}
+    r.outputs.recovery_interval_seconds = 0.01
+    # Exercise the real background scanner, not just a manual recovery call.
+    r.outputs._recovery_loop.cancel()
+    await asyncio.gather(r.outputs._recovery_loop, return_exceptions=True)
+    r.outputs._recovery_loop = None
+    await r.outputs.resume_waiting(lambda _: r.channel)
+    for _ in range(100):
+        if not await r.store.list_outbound():
+            break
+        await asyncio.sleep(0.01)
+    assert await r.store.list_outbound() == []
+    assert r.job.last_status == "delivery_recovered"
+    assert r.channel.delivery_health() == "ready"
+    assert r.channel._token_store.get("test@im.bot", "user") == "saved-context"
+    assert r.transport.await_count == 2
+    await r.outputs._scan_waiting(lambda _: r.channel)
+    assert r.transport.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_automatic_scanner_never_replays_an_unknown_send(runtime):
+    r = runtime
+    r.channel._token_store.set("test@im.bot", "user", "saved-context")
+    r.transport.side_effect = TimeoutError("receipt lost")
+    await r.bus.publish_outbound(r.outbound())
+    await r.outputs.resume_waiting(lambda _: r.channel)
+    await r.outputs._scan_waiting(lambda _: r.channel)
+    assert not r.outputs._recoveries
+    r.transport.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_uncertain_part_overrides_an_older_automatic_recovery_hint(runtime):
+    r = runtime
+    r.channel._token_store.set("test@im.bot", "user", "saved-context")
+    r.transport.return_value = {"ret": -2, "errmsg": "prepare failed"}
+    event = r.outbound()
+    await r.bus.publish_outbound(event)
+    part_id = f"weixin:{event.event_id}:blocks:0"
+    await r.store.claim_outbound_part(part_id, "fingerprint")
+    await r.store.mark_outbound_unknown(part_id)
+    server = SimpleNamespace(_agent_loop=SimpleNamespace(_turn_runs=r.store),
+                             channel_manager=SimpleNamespace(get_channel=lambda _: r.channel),
+                             _require_admin_token=lambda *a, **kw: None)
+    row = json.loads((await DeliveriesAPI(server).list_messages(MagicMock())).text)["messages"][0]
+    assert row["unknown_parts"] == 1
+    assert not row["auto_retry"] and not row["recovery_action"]
+    await r.outputs._scan_waiting(lambda _: r.channel)
+    assert not r.outputs._recoveries
+
+
+@pytest.mark.asyncio
+async def test_automatic_recovery_remains_available_after_a_scan_failure(runtime, monkeypatch):
+    r = runtime
+    r.outputs.recovery_interval_seconds = 0.01
+    await r.outputs.resume_waiting(lambda _: r.channel)
+    scan = AsyncMock(side_effect=[OSError("temporary storage failure"), None, None, None])
+    monkeypatch.setattr(r.outputs, "_scan_waiting", scan)
+    for _ in range(50):
+        if scan.await_count >= 2:
+            break
+        await asyncio.sleep(0.01)
+    assert scan.await_count >= 2 and not r.outputs._recovery_loop.done()
+
+
+@pytest.mark.asyncio
 async def test_finalization_archives_before_send_and_history_contains_report_sources(runtime):
     from echo_agent.artifacts.store import ArtifactStore
     from echo_agent.agent.tools.artifact import ArtifactFinalizeTool, ArtifactDeliverTool
@@ -181,13 +270,13 @@ async def test_missing_context_retains_report_and_fresh_message_recovers_exactly
 
 
 @pytest.mark.asyncio
-async def test_upstream_rejection_stops_retries_and_caption_changes_do_not_duplicate_report(runtime):
+async def test_upstream_rejection_cools_down_and_caption_changes_do_not_duplicate_report(runtime):
     r = runtime
     r.channel._token_store.set("test@im.bot", "user", "old-context")
     r.transport.return_value = {"ret": -2, "errmsg": "prepare failed"}
     first = r.outbound()
     result = await r.bus.publish_outbound(first)
-    assert result.detail["recovery_action"] == "send_message"
+    assert result.detail["recovery_action"] == "retry_later"
     second = r.outbound("Another caption chosen by the model")
     result = await r.bus.publish_outbound(second)
     assert not result.ok and first.event_id == second.event_id
@@ -298,6 +387,7 @@ async def test_startup_recovery_uses_saved_context_and_receipts(runtime):
     await asyncio.wait_for(asyncio.gather(*list(outputs._recoveries.values())), 3)
     r.channel._send_file.assert_awaited_once()
     assert await r.store.list_outbound() == []
+    await outputs.stop()
 
 
 @pytest.mark.asyncio

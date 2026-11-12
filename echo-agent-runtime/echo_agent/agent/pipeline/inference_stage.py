@@ -1198,6 +1198,8 @@ class InferenceStage:
             if counters.delivery_pending:
                 response_text = ("报告已生成并保存。请重新登录微信，恢复后将自动补发。"
                                  if counters.delivery_pending.get("recovery_action") == "relogin" else
+                                 "报告已生成并保存。微信暂时拒收，系统将在冷却后自动重试，无需重新执行任务。"
+                                 if counters.delivery_pending.get("recovery_action") == "retry_later" else
                                  "报告已生成并保存。请给微信机器人发送一条消息，恢复会话后将自动补发。")
                 delivery_pending = True
                 loop_exhausted = False

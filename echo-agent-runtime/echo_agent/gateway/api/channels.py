@@ -79,6 +79,9 @@ class ChannelsAPI:
                 health = delivery_health()
                 if isinstance(health, str):
                     entry["delivery_health"] = health
+            recovery = getattr(adapter, "delivery_recovery", None)
+            if callable(recovery):
+                entry["delivery_recovery"] = recovery()
             if enabled:
                 allow_from = getattr(ch_cfg, "allow_from", None)
                 if isinstance(allow_from, (list, tuple)) and allow_from:

@@ -79,19 +79,22 @@ class DeliveriesAPI:
             readiness = getattr(channel, "delivery_readiness", None)
             issue = readiness(payload["chat_id"]) if callable(readiness) else None
             detail = row.get("detail") or {}
+            unknown_parts = sum(not part["message_id"] and part["state"] == "unknown" for part in row["parts"])
             preview = "\n".join(block.get("text", "") for block in payload["content"] if block.get("text"))
             messages.append({
                 "event_id": row["event_id"], "channel": payload["channel"], "chat_id": payload["chat_id"],
                 "status": row["status"], "preview": preview[:500],
                 "attachments": sum(bool(block.get("url")) for block in payload["content"]),
                 "confirmed_parts": sum(bool(part["message_id"]) for part in row["parts"]),
-                "unknown_parts": sum(not part["message_id"] and part["state"] == "unknown" for part in row["parts"]),
+                "unknown_parts": unknown_parts,
                 "created_at": row["created_at"],
                 "error": row.get("error", ""),
                 "error_code": issue.error_code if issue else detail.get("error_code", ""),
-                "recovery_action": issue.recovery_action if issue else "",
+                "recovery_action": "" if unknown_parts else issue.recovery_action if issue else detail.get("recovery_action", ""),
                 "can_retry": issue is None and channel is not None and channel.is_running,
-                "auto_retry": bool(metadata.get("scheduled_output") and row["status"] == "awaiting_context"),
+                "auto_retry": bool(not unknown_parts and metadata.get("scheduled_output") and row["status"] == "awaiting_context"),
+                "retry_at_ms": issue.retry_at_ms if issue else detail.get("retry_at_ms", 0),
+                "retry_attempts": issue.retry_attempts if issue else detail.get("retry_attempts", 0),
                 "job_id": metadata.get("job_id", ""),
             })
         return web.json_response({"messages": messages, "durable": True})

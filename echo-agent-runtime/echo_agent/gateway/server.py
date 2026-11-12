@@ -1646,13 +1646,36 @@ class GatewayServer:
                 clear_session_vars(tokens)
 
     async def _handle_health(self, request: web.Request) -> web.Response:
-        status = await self.health.check()
+        status = self._with_delivery_health(await self.health.check())
         code = 200 if status["status"] != "unhealthy" else 503
         return web.json_response(status, status=code)
 
     async def _handle_ready(self, request: web.Request) -> web.Response:
-        status = self.health.readiness()
+        status = self._with_delivery_health(self.health.readiness())
         return web.json_response(status, status=200 if status["ready"] else 503)
+
+    def _with_delivery_health(self, status: dict) -> dict:
+        """A healthy receive loop must not hide a known delivery outage."""
+        status = dict(status)
+        delivery = {}
+        for name in self.channel_manager.active_channels:
+            adapter = self.channel_manager.get_channel(name)
+            health = getattr(adapter, "delivery_health", None)
+            state = health() if callable(health) else None
+            if isinstance(state, str):
+                delivery[name] = state
+        if delivery:
+            status["channel_delivery"] = delivery
+            blocked = any(state != "ready" for state in delivery.values())
+            status["checks"] = {**status.get("checks", {}),
+                                "channel_delivery": {"ok": not blocked,
+                                                     "reason": "delivery_unavailable" if blocked else "ok"}}
+            if blocked:
+                if "ready" in status:
+                    status["ready"] = False
+                if status.get("status") in {"healthy", "ready", None}:
+                    status["status"] = "degraded"
+        return status
 
     async def _handle_list_sessions(self, request: web.Request) -> web.Response:
         guard = self._require_admin_token(request, action="list_sessions")

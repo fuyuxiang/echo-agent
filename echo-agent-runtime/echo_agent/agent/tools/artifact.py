@@ -52,7 +52,7 @@ def _receipt_is_deferred(receipt: object) -> bool:
 
 def _delivery_failure(receipt, error: str, *, scheduled: bool = False) -> ToolResult:
     detail = getattr(receipt, "detail", {}) or {}
-    pending = detail.get("recovery_action") in {"send_message", "relogin"} and not detail.get("delivery_unknown")
+    pending = detail.get("recovery_action") in {"send_message", "relogin", "retry_later"} and not detail.get("delivery_unknown")
     return ToolResult(success=False, error=error,
                       error_kind="business" if pending else "dependency",
                       metadata={"delivery_pending": pending and scheduled, "recovery_action": detail.get("recovery_action", ""),

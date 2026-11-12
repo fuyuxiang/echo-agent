@@ -51,12 +51,17 @@
     "errorDetails": "Failure details",
     "download": "Download report",
     "downloadFailed": "Report download failed",
-    "waitingContext": "Report saved; waiting for delivery to resume."
+    "waitingContext": "Report saved; waiting for delivery to resume.",
+    "cooldown": "Weixin temporarily refused delivery. The saved report will retry after cooldown.",
+    "retryAt": "Scheduled retry: {{time}}",
+    "automaticRecovery": "No need to rerun the task. Retries use increasing delays and skip confirmed content. A new message can also trigger earlier recovery."
   },
   "deliveryHealth": {
     "ready": "Conversation context saved; delivery still depends on Weixin acceptance",
     "no_context": "Listening; send this bot a message to establish a delivery conversation",
     "needs_message": "Weixin rejected a conversation; send the bot a message to resume saved results",
-    "login_required": "Weixin login expired; scan the login QR code again"
+    "login_required": "Weixin login expired; scan the login QR code again",
+    "cooling_down": "Weixin delivery is unavailable; retrying after cooldown",
+    "retrying": "Waiting for automatic delivery recovery"
   }
 }

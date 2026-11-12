@@ -71,7 +71,11 @@
   "deliveryPendingHint": "Result saved; delivery will resume when the conversation is restored",
   "deliveryStatus": "Message delivery",
   "generationStatus": "Report generation",
-  "generationOutcome": { "generating": "Generating; draft saved", "ready": "Generated and saved", "incomplete": "Incomplete; draft saved" },
+  "generationOutcome": {
+    "generating": "Generating; draft saved",
+    "ready": "Generated and saved",
+    "incomplete": "Incomplete; draft saved"
+  },
   "restoreMessageHint": "Your report is saved. Send the Weixin bot a message to restore the conversation; delivery will resume automatically without rerunning the job.",
   "restoreLoginHint": "Your report is saved. Sign in to Weixin again on the Channels page; delivery will resume automatically without rerunning the job.",
   "draftSavedHint": "Progress is saved, but this report is incomplete. Ask to continue in the original conversation.",
@@ -97,5 +101,7 @@
     "unknown": "Needs verification",
     "failed": "Delivery failed",
     "partial": "Partially delivered"
-  }
+  },
+  "automaticRecoveryHint": "The report is saved. Delivery will retry after cooldown; there is no need to rerun the task.",
+  "retryAt": "Scheduled retry: {{time}}"
 }

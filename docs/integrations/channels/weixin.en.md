@@ -64,8 +64,14 @@ conversation context from a recent inbound user message. Missing context and exp
 rejections retain scheduled results and show an actionable recovery message. The runtime does not
 interpret `-2` as a documented fixed expiration period or rate limit.
 
-A fresh message from the same recipient resumes explicitly rejected scheduled outputs, including
-after a restart. Recovery reuses saved content and confirmed multipart receipts without re-running
+A background scanner retries explicitly rejected scheduled output after 15 minutes, then uses
+1-hour and 3-hour cooldowns. During consecutive refusals, each conversation permits at most four
+send attempts per 24-hour window. Cooldown state survives restarts. Successful delivery or fresh
+inbound context resets the cooldown; a new inbound message can also trigger earlier recovery.
+Scheduled turns omit progress heartbeats to reserve proactive-send allowance.
+
+The dashboard shows the planned retry time. Known delivery outages make `/api/v1/ready` return
+503 with a `channel_delivery` status even when inbound polling is connected. Recovery reuses saved content and confirmed multipart receipts without re-running
 the agent. Unknown outcomes, such as a timeout after a request started, still require operator verification.
 The dashboard provides authenticated downloads of saved reports while the channel is unavailable.
 

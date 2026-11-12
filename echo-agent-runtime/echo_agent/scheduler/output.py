@@ -28,6 +28,9 @@ class ScheduledOutputs:
         self.artifact_deliver = None
         self._recoveries: dict[tuple[str, str], asyncio.Task] = {}
         self._history_lock = asyncio.Lock()
+        self._recovery_loop: asyncio.Task | None = None
+        self._stopping = False
+        self.recovery_interval_seconds = 30.0
 
     def register(self, event) -> None:
         if event.event_type == EventType.CRON:
@@ -215,12 +218,14 @@ class ScheduledOutputs:
             return
         status = ("delivered" if result.ok and not result.detail.get("skipped") and not result.detail.get("deferred")
                   else "unknown" if result.detail.get("delivery_unknown")
-                  else "awaiting_context" if result.detail.get("recovery_action") in {"send_message", "relogin"}
+                  else "awaiting_context" if result.detail.get("recovery_action") in {"send_message", "relogin", "retry_later"}
                   else "failed")
         item = {
             "event_id": event.event_id, "artifact_id": event.metadata.get("_artifact_id", ""),
             "status": status, "error": result.error or "", "error_code": result.detail.get("error_code", ""),
             "recovery_action": result.detail.get("recovery_action", ""),
+            "retry_at_ms": result.detail.get("retry_at_ms", 0),
+            "retry_attempts": result.detail.get("retry_attempts", 0),
             "channel": event.channel, "chat_id": event.chat_id,
             "part": event.metadata.get("scheduled_part", 0),
             "total_parts": event.metadata.get("scheduled_parts", 1),
@@ -238,6 +243,8 @@ class ScheduledOutputs:
                                 "pending_delivery" if run.get("deliveries") else "failed")
 
     def channel_ready(self, channel: str, chat_id: str) -> None:
+        if self._stopping:
+            return
         key = (channel, chat_id)
         if key not in self._recoveries:
             task = asyncio.create_task(self._recover(channel, chat_id))
@@ -245,14 +252,27 @@ class ScheduledOutputs:
             task.add_done_callback(lambda _: self._recoveries.pop(key, None))
 
     async def resume_waiting(self, channel_lookup) -> None:
-        for row in await self.store.list_outbound():
-            if row["status"] != "awaiting_context" or not row["payload"].get("metadata", {}).get("scheduled_output"):
-                continue
-            payload = row["payload"]
-            channel = channel_lookup(payload["channel"])
+        await self._scan_waiting(channel_lookup, startup=True)
+        if self._recovery_loop is None and not self._stopping:
+            self._recovery_loop = asyncio.create_task(self._watch_waiting(channel_lookup), name="scheduled-delivery-recovery")
+
+    async def _watch_waiting(self, channel_lookup) -> None:
+        while not self._stopping:
+            await asyncio.sleep(self.recovery_interval_seconds)
+            try:
+                await self._scan_waiting(channel_lookup)
+            except Exception:
+                logger.exception("Could not scan waiting scheduled deliveries; recovery will continue")
+
+    async def _scan_waiting(self, channel_lookup, *, startup=False) -> None:
+        for route in await self.store.waiting_outbound_routes():
+            channel = channel_lookup(route["channel"])
             readiness = getattr(channel, "delivery_readiness", None)
-            if channel is not None and channel.is_running and callable(readiness) and readiness(payload["chat_id"]) is None:
-                self.channel_ready(payload["channel"], payload["chat_id"])
+            automatic = getattr(channel, "automatic_delivery_recovery", None)
+            if (channel is not None and channel.is_running and callable(readiness)
+                    and readiness(route["chat_id"]) is None
+                    and (startup or callable(automatic) and automatic(route["chat_id"]))):
+                self.channel_ready(route["channel"], route["chat_id"])
 
     async def _recover(self, channel: str, chat_id: str) -> None:
         try:
@@ -312,7 +332,11 @@ class ScheduledOutputs:
                 self._recovery_sources.pop(source.event_id, None)
 
     async def stop(self) -> None:
+        self._stopping = True
         tasks = list(self._recoveries.values())
+        if self._recovery_loop is not None:
+            tasks.append(self._recovery_loop)
+            self._recovery_loop = None
         for task in tasks:
             task.cancel()
         if tasks:

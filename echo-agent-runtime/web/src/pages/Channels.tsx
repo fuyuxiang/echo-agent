@@ -8,6 +8,7 @@ import { Loadable } from "../components/Loadable";
 import { RefreshCw, Power, RotateCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { DeliveryRecovery } from "../components/DeliveryRecovery";
+import { dateTime } from "../lib/datetime";
 
 interface Channel {
   name: string;
@@ -19,6 +20,7 @@ interface Channel {
   allow_from_count?: number;
   group_policy?: string;
   delivery_health?: string;
+  delivery_recovery?: { retry_at_ms?: number };
 }
 
 export function Channels() {
@@ -97,6 +99,7 @@ export function Channels() {
                   {ch.enabled_managed && <div className="text-xs text-gray-500">{t("managedEnabled")}</div>}
                   {ch.running && ch.delivery_health && <p className={`text-xs mt-1 ${ch.delivery_health === "ready" ? "text-gray-500" : "text-amber-700"}`}>
                     {t(`deliveryHealth.${ch.delivery_health}`)}
+                    {ch.delivery_recovery?.retry_at_ms ? ` · ${t("delivery.retryAt", { time: dateTime(ch.delivery_recovery.retry_at_ms) })}` : ""}
                   </p>}
                   <div className="text-xs text-gray-500 flex gap-3">
                     <span>{ch.enabled ? t("common:enabled") : t("common:disabled")}</span>

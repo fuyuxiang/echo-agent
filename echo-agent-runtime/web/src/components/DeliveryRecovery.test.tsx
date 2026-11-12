@@ -70,4 +70,15 @@ describe("投递恢复", () => {
     await screen.findByText("暂无需要处理的投递");
     expect(fetch).toHaveBeenCalledWith("/deliveries?scheduled=true", expect.anything());
   });
+
+  it("暂时拒收展示自动恢复和计划时间，不要求用户发消息或强行重试", async () => {
+    setup({ ...delivery, status: "awaiting_context", unknown_parts: 0,
+      recovery_action: "retry_later", can_retry: false, auto_retry: true,
+      retry_at_ms: 1794502800000 } as typeof delivery);
+    expect(await screen.findByRole("status")).toHaveTextContent("系统正在等待冷却后自动恢复");
+    expect(screen.getByRole("status")).toHaveTextContent("计划重试时间");
+    expect(screen.getByRole("status")).toHaveTextContent("无需重新运行任务");
+    expect(screen.getByRole("status")).not.toHaveTextContent("请先在微信给这个机器人发一条消息");
+    expect(screen.getByRole("button", { name: "继续发送未送达的内容" })).toBeDisabled();
+  });
 });
