@@ -24,6 +24,8 @@ UI 审计的浏览器启动和 PNG 解码共用 `scripts/ui-review-tools.mjs`，
 
 ## Runtime 与 IDE 依赖
 
+桌面、Agent workspace、原生验收和桌面恢复 harness 的 `rustix 1.x` 锁至 `1.1.6`，修复 [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486.html)。旧版扩展属性函数在零长度缓冲区查询时，可能把未写入的内存标记为已初始化；四份独立锁文件须分别更新。文档编辑 harness 已使用修复版本，`rustix 0.38.44` 不受该公告影响，保留兼容分支，不添加审计例外。
+
 宿主和 Runtime 的 Tokio 锁至 1.53.3、ctutils 锁至 0.4.4，分别处理 [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html) 和 [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)。两个 workspace 分别更新，不以其中一个锁文件代替另一个。
 
 Theia 的 body-parser 保留 1.x / 2.x API，分别要求 1.20.9+ / 2.4.0+；multer 要求 2.5.0+，serialize-javascript 要求 7.1.3+。Puppeteer / puppeteer-core 在同一 25.x 内升级，移除旧 Chromium BiDi 的 Zod 3 依赖。构建 manifest 和生产运行时 manifest 继承同一 overrides，并分别重建锁文件。
