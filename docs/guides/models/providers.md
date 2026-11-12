@@ -138,6 +138,15 @@ models:
   models: ["deepseek-ai/DeepSeek-V2.5", "Qwen/Qwen2.5-72B-Instruct"]
 ```
 
+### Runcrate
+
+```yaml
+- name: "runcrate"
+  api_key: "your-runcrate-api-key"
+  api_base: "https://api.runcrate.ai/v1"
+  models: ["deepseek-ai/DeepSeek-V4-Flash", "meta-llama/Llama-3.3-70B-Instruct-Turbo"]
+```
+
 !!! tip "OpenAI 兼容服务通用规则"
     所有兼容 OpenAI Chat Completions API 的服务均可通过设置 `api_base` 接入。`name` 字段可自定义命名，仅用于标识。
 
