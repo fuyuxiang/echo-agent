@@ -373,6 +373,7 @@ export const MessageItem = memo(function MessageItem({
             })}
           </div>
           <div className="msg__footer">
+            <MessageTime time={formatMessageTime(message.sentAt, messageDay)} label="发送于" />
             <div className="msg__actions">
               <button
                 type="button"
@@ -396,7 +397,6 @@ export const MessageItem = memo(function MessageItem({
                 </button>
               )}
             </div>
-            <MessageTime time={formatMessageTime(message.sentAt, messageDay)} label="发送于" />
           </div>
         </div>
       </div>
@@ -491,7 +491,6 @@ export const MessageItem = memo(function MessageItem({
           {turnFeedback}
         </div>
         {(showReplyActions || endTime) && <div className="msg__footer">
-          <MessageTime time={endTime} label={message.stopReason === "cancelled" ? "执行停止于" : "本轮结束于"} />
           {showReplyActions && <div className={"msg__actions msg__actions--footer" + (latest ? " msg__actions--latest" : "") + (speaking || exporting || retrying ? " msg__actions--active" : "")}
             role="group" aria-label="回复操作">
             {hasAnswerText && <button type="button" className="msg__action-btn" data-chat-copy="true"
@@ -539,6 +538,7 @@ export const MessageItem = memo(function MessageItem({
               </>}
             </ActionMenu>}
           </div>}
+          <MessageTime time={endTime} label={message.stopReason === "cancelled" ? "执行停止于" : "本轮结束于"} />
         </div>}
         {exportedArtifact && onOpenArtifact && <button type="button" className="msg__exported-artifact" title={exportedArtifact.path}
           onClick={() => onOpenArtifact(exportedArtifact)}><FileText size={15} /><span>{attachmentBasename(exportedArtifact.path)}</span><span>查看成果 →</span></button>}

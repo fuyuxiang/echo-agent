@@ -53,9 +53,9 @@ it("操作栏时间使用本地自然日，跨午夜时当前会话无需重载"
     const view = render(<Conversation />);
     const [sent, ended] = [...view.container.querySelectorAll("time")];
     expect(sent).toHaveTextContent("23:58");
-    expect(sent?.previousElementSibling).toContainElement(screen.getByRole("button", { name: "复制" }));
+    expect(sent?.nextElementSibling).toContainElement(screen.getByRole("button", { name: "复制" }));
     expect(ended).toHaveTextContent("23:59");
-    expect(ended?.nextElementSibling).toHaveClass("msg__actions--latest");
+    expect(ended?.previousElementSibling).toHaveClass("msg__actions--latest");
     expect(ended).toHaveAttribute("title", "本轮结束于 2026年11月9日 23:59:59");
     expect(ended).toHaveAttribute("datetime", new Date(endedAt).toISOString());
     act(() => vi.advanceTimersByTime(1_000));

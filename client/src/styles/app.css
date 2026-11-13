@@ -688,11 +688,17 @@
   flex-wrap: wrap;
 }
 .msg__time {
+  flex-shrink: 0;
   color: var(--echo-text-weak);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   line-height: 18px;
   white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.msg:hover .msg__time {
+  opacity: 1;
 }
 .msg__actions--inline {
   margin-top: 0;
@@ -802,6 +808,9 @@
 
 }
 @media (prefers-reduced-motion: reduce) {
+  .msg__time {
+    transition: none;
+  }
   .msg__action-spin {
     animation: none;
   }
