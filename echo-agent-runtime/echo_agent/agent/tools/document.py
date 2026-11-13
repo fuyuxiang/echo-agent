@@ -21,13 +21,13 @@ class ReadDocumentTool(Tool):
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Local path to the document."},
+            "attachment_id": {"type": "string", "description": "Saved attachment ID in the current conversation; use instead of path."},
             "unit": {
                 "type": ["integer", "string"],
                 "description": "Optional: PDF/PPTX page number, or XLSX sheet name/index. Omit for full doc.",
             },
             "max_chars": {"type": "integer", "description": "Optional cap on returned characters."},
         },
-        "required": ["path"],
     }
 
     def __init__(self, workspace: str, restrict: bool = False, spill_root: Path | None = None):
@@ -36,7 +36,17 @@ class ReadDocumentTool(Tool):
         self._spill_root = spill_root
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
-        path = params["path"]
+        path = params.get("path", "")
+        if params.get("attachment_id"):
+            from echo_agent.attachments import AttachmentStore
+            store = AttachmentStore(Path(self._workspace))
+            try:
+                record = store.get(ctx.session_key if ctx else "", params["attachment_id"])
+                path = str(store.path(record))
+            except (ValueError, OSError) as exc:
+                return ToolResult(success=False, error=str(exc))
+        if not path:
+            return ToolResult(success=False, error="Provide path or attachment_id")
         # spill 产物是 .txt,extract 认得它,故这里同样是一条会话无关的读取路径。
         violation = check_read(path, self._workspace, spill_root=self._spill_root)
         if violation:
@@ -49,6 +59,10 @@ class ReadDocumentTool(Tool):
                 return ToolResult(success=False, error=f"Path {path} is outside workspace {self._workspace}")
         target = resolve_path(path, self._workspace)
         res = extract(target, max_chars=params.get("max_chars"), unit=params.get("unit"))
+        if params.get("attachment_id"):
+            store.update_extraction(ctx.session_key, params["attachment_id"],
+                                    "ready" if res.text else "failed" if res.meta.get("error") else "no_text",
+                                    str(res.meta.get("error") or ""))
         if not res.text:
             err = res.meta.get("error") or f"no extractable text ({res.meta.get('format')})"
             return ToolResult(success=False, error=err, metadata=res.meta)

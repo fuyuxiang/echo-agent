@@ -91,6 +91,9 @@ def build_scheduled_job_handler(bus: Any, *, inspection_runner: Any = None) -> C
         if payload.get("_inspection_tick") and inspection_runner is not None:
             await inspection_runner()
             return "inspection"
+        if payload.get("delivery_mode") == "reminder":
+            from echo_agent.scheduler.reminders import deliver_reminder
+            return await deliver_reminder(bus, job)
         event = inbound_event_from_job(job)
         outputs = getattr(bus, "scheduled_outputs", None)
         if outputs is not None:

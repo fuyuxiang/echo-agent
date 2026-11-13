@@ -136,6 +136,8 @@ class ContentBlock:
 class InboundEvent:
     """Unified inbound event from any channel source."""
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    # Internal preparation result, never copied from caller-supplied metadata.
+    resolved_media: list[dict[str, Any]] | None = field(default=None, repr=False)
     event_type: EventType = EventType.MESSAGE
     channel: str = ""
     sender_id: str = ""

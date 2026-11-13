@@ -63,7 +63,8 @@ def main():
     parser.add_argument("--output", "-o", help="Save to file")
     args = parser.parse_args()
 
-    ext = Path(args.file).suffix.lower()
+    from echo_agent.attachments import document_extension
+    ext = document_extension(Path(args.file))
     extractor = EXTRACTORS.get(ext)
     if not extractor:
         sys.exit(f"Unsupported format: {ext}\nSupported: {list(EXTRACTORS.keys())}")

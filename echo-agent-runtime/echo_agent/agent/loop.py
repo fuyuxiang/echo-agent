@@ -343,6 +343,10 @@ class AgentLoop:
             doc_max_chars=config.tools.inbound_document_max_chars,
             understanders=understanders,
         )
+        self.bus.attachments = self.context.attachments
+        self.context.attachments.configure(retention_days=config.attachments.retention_days,
+                                           max_mb=config.attachments.max_mb)
+        self.context.attachments.trusted_roots.add((workspace / config.gateway.media_cache_dir).resolve())
         # Resolve the default model's real window up front so the gauge and
         # compression threshold start correct, before any LLM round runs. The
         # inference stage re-syncs this per round to the model that answers.
@@ -2120,6 +2124,20 @@ class AgentLoop:
             self.clarify.clear_im_pending(event.session_key)
             await self.sessions.save(session)
 
+        if (event.media_items and event.event_type == EventType.MESSAGE
+                and not event.text.strip() and not event.unattended and not event.is_control
+                and not event.clarification_answer):
+            media = await self.context.prepare_event_media(event)
+            from echo_agent.scheduler.reminders import bind_pending_attachments
+            ids = [item["attachment_id"] for item in media if item.get("attachment_id")]
+            bound = bind_pending_attachments(self.scheduler, self.context.attachments, event.session_key, ids)
+            if bound and not event.text.strip():
+                refs = self._context_stage._build_media_refs(media)
+                session.add_message("user", "\n".join(self.context.attachments.describe(
+                    self.context.attachments.get(event.session_key, attachment_id)) for attachment_id in ids), media_refs=refs)
+                session.add_message("assistant", bound)
+                await self.sessions.save(session)
+                return _ProcessResult(response_text=bound)
         recorder = self.evolution.recorder if self.evolution is not None else None
         if recorder is not None and not _is_ephemeral_session(event.session_key, event.channel):
             try:

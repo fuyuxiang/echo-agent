@@ -31,13 +31,14 @@ class SendFileTool(Tool):
             "channel": {"type": "string", "description": "Target channel name (e.g. weixin)."},
             "chat_id": {"type": "string", "description": "Target chat ID."},
             "file_path": {"type": "string", "description": "Local path to the file to send."},
+            "attachment_id": {"type": "string", "description": "Saved original attachment ID in the current conversation; use instead of file_path."},
             "caption": {"type": "string", "description": "Optional text sent before the file."},
             "as_image": {
                 "type": "boolean",
                 "description": "Force image rendering. Omit to infer from the file's MIME type.",
             },
         },
-        "required": ["channel", "chat_id", "file_path"],
+        "required": ["channel", "chat_id"],
     }
 
     def __init__(self, workspace: str, restrict: bool = False, publish_fn=None,
@@ -81,7 +82,17 @@ class SendFileTool(Tool):
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         if not self._publish:
             return ToolResult(success=False, error="Message bus not connected")
-        file_path = params["file_path"]
+        file_path = params.get("file_path", "")
+        if params.get("attachment_id"):
+            from echo_agent.attachments import AttachmentStore
+            store = AttachmentStore(Path(self._workspace))
+            try:
+                record = store.get(ctx.session_key if ctx else "", params["attachment_id"])
+                file_path = str(store.path(record))
+            except (ValueError, OSError) as exc:
+                return ToolResult(success=False, error=str(exc))
+        if not file_path:
+            return ToolResult(success=False, error="Provide file_path or attachment_id")
 
         violation = check_read(file_path, self._workspace, spill_root=self._spill_root)
         if violation:

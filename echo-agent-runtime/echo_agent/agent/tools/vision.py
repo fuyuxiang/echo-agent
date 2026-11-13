@@ -56,6 +56,10 @@ class VisionTool(Tool):
                 return ToolResult(success=False, error="Image path is outside workspace", error_kind="business")
             if not image_path.exists():
                 return ToolResult(success=False, error=f"Image not found: {image}")
+            with image_path.open("rb") as handle:
+                from echo_agent.attachments import is_pdf_header
+                if is_pdf_header(handle.read(1024)):
+                    return ToolResult(success=False, error="This is a PDF, not an image. Use read_document; render pages before image analysis.", error_kind="validation")
             try:
                 mime, b64 = _encode_image(str(image_path))
                 image_content = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}

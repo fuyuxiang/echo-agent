@@ -331,7 +331,8 @@ async def bootstrap(
             except Exception as e:
                 logger.warning("Failed to attach evolution engine: {}", e)
 
-        channels = ChannelManager(config.channels, bus, on_cli_exit=on_cli_exit)
+        channels = ChannelManager(config.channels, bus, on_cli_exit=on_cli_exit,
+                                  media_cache_root=(ws / config.gateway.media_cache_dir).resolve())
         stack.push_async_callback(_rollback, "channels", channels.stop_all)
         if scheduler is not None and agent.turn_runs is not None:
             from echo_agent.scheduler.output import ScheduledOutputs
@@ -347,6 +348,10 @@ async def bootstrap(
         # into discover_tools because the manager is built after the agent; the
         # tool holds a late-bound callable, so the order does not matter.
         _send_file_tool = agent.tools.get("send_file")
+        bus.channel_lookup = channels.get_channel
+        _cronjob_tool = agent.tools.get("cronjob")
+        if _cronjob_tool is not None:
+            _cronjob_tool._channel_lookup = channels.get_channel
         if _send_file_tool is not None:
             _send_file_tool._channel_lookup = channels.get_channel
         _artifact_deliver_tool = agent.tools.get("artifact_deliver")

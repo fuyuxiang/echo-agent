@@ -8,11 +8,12 @@
     "command": "Command (required, instruction for the Agent)",
     "deliverChannel": "Deliver channel (deliver_channel, optional)",
     "deliverChatId": "Chat ID (deliver_chat_id, optional)",
-    "sourceSessionKey": "Session target source_session_key (optional, auto-resolves channel)"
+    "sourceSessionKey": "Session target source_session_key (optional, auto-resolves channel)",
+    "reminderText": "Reminder text (sent as written)"
   },
   "col": {
     "name": "Name",
-    "cron": "Cron",
+    "cron": "Schedule",
     "status": "Status",
     "lastResult": "Last result",
     "nextRun": "Next run",
@@ -93,15 +94,39 @@
     "interrupted": "Interrupted",
     "delivery_pending": "Awaiting delivery recovery",
     "delivery_recovered": "Delivery recovered",
-    "skipped": "Skipped"
+    "skipped": "Skipped",
+    "delivery_cancelled": "Pending delivery stopped"
   },
   "deliveryOutcome": {
     "delivered": "Confirmed by channel",
     "awaiting_context": "Waiting for conversation",
     "unknown": "Needs verification",
     "failed": "Delivery failed",
-    "partial": "Partially delivered"
+    "partial": "Partially delivered",
+    "cancelled": "Remaining delivery stopped"
   },
   "automaticRecoveryHint": "The report is saved. Delivery will retry after cooldown; there is no need to rerun the task.",
-  "retryAt": "Scheduled retry: {{time}}"
+  "retryAt": "Scheduled retry: {{time}}",
+  "scheduleType": "Schedule type",
+  "once": "Once",
+  "recurring": "Recurring",
+  "onceTime": "Reminder time",
+  "localTimeHint": "Uses your browser’s local time and saves a fixed instant.",
+  "fixedReminder": "Send this reminder directly (no model generation)",
+  "attachedCount": "{{count}} original attachment(s) included",
+  "attachmentPending": "Attachment pending association; confirmation follows when received",
+  "futureTimeRequired": "Choose a future reminder time",
+  "cancelled": "Cancelled",
+  "scheduleFinished": "Triggered; schedule finished",
+  "attachmentMissingHint": "The reminder text was sent, but attachments were incomplete. Check the linked originals.",
+  "stopPendingDelivery": "Pending delivery (click to stop)",
+  "deliveryCancelReason": {
+    "task_edited": "Reminder edited; old delivery stopped",
+    "task_paused": "Task paused; old delivery stopped"
+  },
+  "keepAttachments": "Attachments to keep with this reminder",
+  "unnamedAttachment": "Attachment {{index}}",
+  "attachmentUnavailable": "Original unavailable",
+  "unlinkAttachmentHint": "Unchecking removes the link from this reminder; the saved original remains in the conversation. Request replacements in the original conversation.",
+  "attachmentBindingExpired": "Attachment pending; auto-link window expired. Specify a file in the original conversation."
 }

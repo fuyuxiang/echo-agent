@@ -1045,6 +1045,8 @@ class WeixinChannel(BaseChannel):
             self.bus.notify_channel_ready(self.name, sender_id)
 
         item_list = message.get("item_list") or []
+        logger.info("weixin inbound: message_id={} received_at_ms={} item_types={}",
+                    message_id, int(time.time() * 1000), [item.get("type") for item in item_list])
         text, reply_to_text, reply_to_sender = _extract_text(item_list)
 
         media: list[dict[str, str]] = []

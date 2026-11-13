@@ -4559,6 +4559,19 @@ class CostConfig(_Base):
     )
 
 
+class AttachmentsConfig(_Base):
+    retention_days: int = Field(default=30, ge=1, le=3650, json_schema_extra={
+        "status": "effective", "ref": "attachments.py",
+        "desc_zh": "未被提醒引用的原件保存天数；未来/暂停提醒和待投递记录引用的原件受保护",
+        "desc_en": "Days to retain unreferenced originals; future/paused reminders and pending deliveries pin their files",
+    })
+    max_mb: int = Field(default=1024, ge=1, le=1048576, json_schema_extra={
+        "status": "effective", "ref": "attachments.py",
+        "desc_zh": "工作区原始附件容量上限(MB)，不会为腾出空间删除被提醒引用的文件",
+        "desc_en": "Workspace original-attachment limit (MB); referenced originals are never evicted to make room",
+    })
+
+
 class Config(_Base):
     # Program-owned policy is private: never serialize plugins or secrets into configuration.
     _runtime_extension: object | None = PrivateAttr(default=None)
@@ -4585,6 +4598,7 @@ class Config(_Base):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     spill: SpillConfig = Field(default_factory=SpillConfig)
     artifacts: ArtifactConfig = Field(default_factory=ArtifactConfig)
+    attachments: AttachmentsConfig = Field(default_factory=AttachmentsConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)

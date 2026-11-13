@@ -191,8 +191,11 @@ class ScheduledOutputs:
             # with the transport's durable multipart fingerprints.
             retry = event.metadata.get("_delivery_retry")
             event.content, event.metadata = saved.content, dict(saved.metadata)
+            event.delivery_origin = saved.delivery_origin
             if retry:
                 event.metadata["_delivery_retry"] = True
+        if event.metadata.get("reminder_delivery"):
+            event.metadata["_tool_delivery"] = True
         if artifact_id:
             event.metadata.update(_artifact_id=artifact_id, _tool_delivery=True)
             if part:
@@ -252,6 +255,8 @@ class ScheduledOutputs:
             task.add_done_callback(lambda _: self._recoveries.pop(key, None))
 
     async def resume_waiting(self, channel_lookup) -> None:
+        from echo_agent.scheduler.reminders import resume_reminders
+        await resume_reminders(self)
         await self._scan_waiting(channel_lookup, startup=True)
         if self._recovery_loop is None and not self._stopping:
             self._recovery_loop = asyncio.create_task(self._watch_waiting(channel_lookup), name="scheduled-delivery-recovery")
@@ -281,7 +286,14 @@ class ScheduledOutputs:
             for row in await self.store.waiting_outbound(channel, chat_id):
                 event = await self.store.get_outbound_event(row["event_id"])
                 job, run = self._run(event)
-                if not job or not run or not event.metadata.get("scheduled_output"):
+                if event is None or not event.metadata.get("scheduled_output"):
+                    continue
+                if event.metadata.get("reminder_delivery"):
+                    from echo_agent.scheduler.reminders import reminder_delivery_allowed
+                    if not reminder_delivery_allowed(job, run):
+                        await self.store.update_outbound(event.event_id, "superseded", "Reminder paused or edited")
+                        continue
+                if not job or not run:
                     continue
                 if any(not part["message_id"] for part in await self.store.outbound_parts(event.event_id, channel)):
                     continue
@@ -297,6 +309,12 @@ class ScheduledOutputs:
     async def retry(self, event):
         """The same complete artifact resume powers automatic and operator recovery."""
         job, run = self._run(event)
+        if event.metadata.get("reminder_delivery"):
+            from echo_agent.scheduler.reminders import reminder_delivery_allowed
+            if not reminder_delivery_allowed(job, run):
+                await self.store.update_outbound(event.event_id, "superseded", "Reminder paused or edited")
+                return DeliveryResult(DeliveryStage.FAILED, event.channel, error="Reminder paused or edited",
+                                      detail={"cancelled": True})
         artifact_id = event.metadata.get("scheduled_artifact_id")
         if not job or not run or not artifact_id or self.artifact_deliver is None:
             return await asyncio.wait_for(self.bus.publish_outbound(event), 180)

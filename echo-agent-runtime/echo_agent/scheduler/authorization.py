@@ -102,6 +102,9 @@ def compute_fingerprint(job: Any) -> str:
     }
     if payload.get("report_history_path"):
         material["report_history_path"] = payload["report_history_path"]
+    if payload.get("delivery_mode") == "reminder":
+        material["reminder"] = {key: payload.get(key) for key in (
+            "delivery_text", "attachment_ids", "await_attachment", "attachment_window_start", "attachment_window_end")}
     blob = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

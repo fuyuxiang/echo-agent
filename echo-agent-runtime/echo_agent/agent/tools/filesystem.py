@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
+from echo_agent.attachments import is_pdf_header
 from echo_agent.security.path_policy import check_read, check_write, resolve_path
 
 
@@ -45,6 +46,9 @@ class ReadFileTool(Tool):
                 return ToolResult(success=False, error=f"Path {path} is outside workspace {self._workspace}")
         try:
             target = resolve_path(path, self._workspace)
+            with target.open("rb") as probe:
+                if is_pdf_header(probe.read(1024)):
+                    return ToolResult(success=False, error="这是 PDF 文档，请使用 read_document 提取正文；保存、绑定提醒或发送原件无需正文解析。")
             with open(target, encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
             offset = params.get("offset", 0)

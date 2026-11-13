@@ -434,6 +434,14 @@ class Scheduler:
             job.active_run_id = ""
             if not (job.enabled and job.status == JobStatus.ACTIVE):
                 continue
+            if (job.trigger == TriggerKind.ONCE and job.payload.get("delivery_mode") == "reminder"
+                    and any(run.get("scheduled_at_ms") == job.at_ms for run in job.run_history)):
+                # The durable reminder outbox resumes the ORIGINAL execution.
+                # Scheduling a second run here would create fresh delivery IDs
+                # and resend already-confirmed text/files after an abrupt kill.
+                job.status = JobStatus.COMPLETED
+                job.next_run_ms = None
+                continue
             if job.trigger == TriggerKind.ONCE and job.at_ms and job.at_ms <= now:
                 # Due during downtime — fire on the first tick instead of
                 # silently never firing while staying ACTIVE forever.
@@ -537,6 +545,10 @@ class Scheduler:
         payload: dict[str, Any] | None = None,
         authorization: JobAuthorization | None = None,
         set_authorization: bool = False,
+        trigger: TriggerKind | None = None,
+        at_ms: int | None = None,
+        timezone: str | None = None,
+        delete_after_run: bool | None = None,
     ) -> ScheduledJob | None:
         """Apply an edit and recompute the firing schedule if it changed.
 
@@ -556,6 +568,14 @@ class Scheduler:
             return None
 
         reschedule = False
+        previous_content = (deepcopy(job.payload), job.trigger, job.at_ms, job.cron_expr, job.timezone)
+        if job.active_run_id and (payload is not None or cron_expr is not None or trigger is not None or at_ms is not None):
+            raise ValueError("Cannot update a running scheduled task")
+        for field_name, value in (("trigger", trigger), ("at_ms", at_ms), ("timezone", timezone),
+                                  ("delete_after_run", delete_after_run)):
+            if value is not None and getattr(job, field_name) != value:
+                setattr(job, field_name, value)
+                reschedule = True
         if name is not None:
             job.name = name
         if cron_expr is not None and cron_expr != job.cron_expr:
@@ -577,9 +597,26 @@ class Scheduler:
         if set_authorization:
             job.authorization = authorization
 
+        # Pausing or editing must also cancel an older pending delivery. Resuming
+        # schedules future occurrences; it never resurrects cancelled outbox work.
+        content_changed = previous_content != (job.payload, job.trigger, job.at_ms, job.cron_expr, job.timezone)
+        if not job.enabled or content_changed:
+            for run in job.run_history:
+                if (run.get("reminder_payload") is not None
+                        and run.get("delivery_status") != "delivered"):
+                    run["delivery_cancelled"] = True
+                    run["delivery_cancel_reason"] = "task_edited" if content_changed else "task_paused"
+                    run["delivery_status"] = "cancelled"
+                    if run.get("status") in {"dispatching", "queued", "running", "interrupted", "delivery_pending"}:
+                        run.update(status="delivery_cancelled", error=run["delivery_cancel_reason"])
+                        if run is job.run_history[-1]:
+                            job.last_status, job.last_error = run["status"], run["error"]
+
         if reschedule:
             previous = job.next_run_ms
             job.next_run_ms = _compute_next_run(job, _now_ms())
+            if job.status == JobStatus.COMPLETED and job.enabled and job.next_run_ms and job.next_run_ms > _now_ms():
+                job.status = JobStatus.ACTIVE
             if job.next_run_ms is None and job.enabled:
                 logger.warning(
                     "Job {} ('{}') has no computable next run after update; it will not fire",
@@ -772,6 +809,9 @@ class Scheduler:
         job.last_error = ""
         run = {"run_id": run_id, "ts": job.last_run_ms, "status": "dispatching", "error": "",
                "run_count": job.run_count, "completed_ts": None}
+        if job.payload.get("delivery_mode") == "reminder":
+            run["reminder_payload"] = deepcopy(job.payload)
+            run["scheduled_at_ms"] = job.at_ms
         job.run_history.append(run)
         if len(job.run_history) > 100:
             del job.run_history[:-100]
@@ -848,6 +888,9 @@ class Scheduler:
         stale: list[str] = []
         for job in self._jobs.values():
             if not (job.enabled and job.status == JobStatus.ACTIVE):
+                continue
+            if job.payload.get("delivery_mode") == "reminder":
+                # Fixed text/original delivery never invokes privileged tools.
                 continue
             if verify_authorization(job):
                 continue

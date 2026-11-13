@@ -33,13 +33,16 @@ def extract(
     *,
     max_chars: int | None = None,
     unit: int | str | None = None,
+    filename: str = "",
+    mime_type: str = "",
 ) -> ExtractResult:
     p = Path(path)
     if not p.exists() or not p.is_file():
         return ExtractResult(meta={"format": "missing", "error": f"file not found: {p}"})
-    ext = p.suffix.lower()
     size = p.stat().st_size
     try:
+        from echo_agent.attachments import document_extension
+        ext = document_extension(p, filename, mime_type)
         if ext == ".pdf":
             return _extract_pdf(p, max_chars, unit, size)
         if ext == ".docx":
@@ -52,7 +55,7 @@ def extract(
             return _extract_text(p, max_chars, size)
     except Exception as exc:  # noqa: BLE001 — inbound path must never raise
         logger.warning("document extract failed for {}: {}", p.name, exc)
-        return ExtractResult(meta={"format": ext.lstrip("."), "size_bytes": size, "error": str(exc)})
+        return ExtractResult(meta={"format": p.suffix.lstrip("."), "size_bytes": size, "error": str(exc)})
     return ExtractResult(meta={"format": "unsupported", "size_bytes": size})
 
 
@@ -77,14 +80,19 @@ def _extract_pdf(p: Path, max_chars: int | None, unit: int | str | None, size: i
     try:
         total = doc.page_count
         parts: list[str] = []
+        has_text = False
         target_page = int(unit) if isinstance(unit, (int, str)) and str(unit).isdigit() else None
         for i in range(total):
             if target_page is not None and (i + 1) != target_page:
                 continue
             page_text = doc[i].get_text()
+            has_text = has_text or bool(page_text.strip())
             parts.append(f"--- 第{i + 1}页 ---\n{page_text}")
             if max_chars is not None and sum(len(x) for x in parts) >= max_chars:
                 break
+        if not has_text:
+            return ExtractResult(meta={"format": "pdf", "size_bytes": size, "pages": total,
+                                       "needs_ocr": True}, unit_count=total)
         joined = "\n".join(parts)
         text, truncated = _apply_cap(joined, max_chars)
         return ExtractResult(text=text, meta={"format": "pdf", "size_bytes": size, "pages": total},

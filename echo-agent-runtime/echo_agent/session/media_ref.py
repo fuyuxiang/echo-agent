@@ -1,4 +1,4 @@
-"""Lightweight media reference for persisting image metadata across turns."""
+"""Lightweight cached-media pointers, with optional attachment fields on session refs."""
 
 from __future__ import annotations
 

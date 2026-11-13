@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
 
 MINIMAL_TOOLS = frozenset({
+    "attachment_list",
+    "read_document",
     "agents_list",
     "agents_route",
     "artifact_append",
@@ -41,6 +43,8 @@ MINIMAL_TOOLS = frozenset({
 })
 
 MESSAGING_TOOLS = MINIMAL_TOOLS | frozenset({
+    "attachment_delete",
+    "send_file",
     "image_generate",
     "memory",
     "text_to_speech",

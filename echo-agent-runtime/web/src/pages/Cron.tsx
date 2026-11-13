@@ -16,11 +16,15 @@ export interface CronJob {
   id: string;
   name: string;
   cron_expr: string;
+  trigger?: string;
+  at_ms?: number;
+  timezone?: string;
   enabled: boolean;
   status: string;
   last_status: string;
   last_error?: string;
   delivery_status?: string;
+  attachment_details?: { id: string; name: string; available: boolean }[];
   active_run_id?: string;
   next_run_ms: number | null;
   config_valid?: boolean;
@@ -88,6 +92,9 @@ export function Cron() {
   const [inflightOps, setInflightOps] = useState<Set<string>>(new Set());
   const [name, setName] = useState("");
   const [expr, setExpr] = useState("");
+  const [scheduleType, setScheduleType] = useState("cron");
+  const [at, setAt] = useState("");
+  const [fixedReminder, setFixedReminder] = useState(false);
   const [command, setCommand] = useState("");
   const [deliverChannel, setDeliverChannel] = useState("");
   const [deliverChatId, setDeliverChatId] = useState("");
@@ -111,9 +118,12 @@ export function Cron() {
   // a valid grant for content nobody ever read. Consent covers what was on screen,
   // so a mismatch at submit time revokes it rather than travelling with the edit.
   const [authorizedSnapshot, setAuthorizedSnapshot] = useState("");
+  const [attachmentIds, setAttachmentIds] = useState<string[]>([]);
 
   const resetForm = () => {
     setName(""); setExpr(""); setCommand("");
+    setScheduleType("cron"); setAt(""); setFixedReminder(false);
+    setAttachmentIds([]);
     setDeliverChannel(""); setDeliverChatId(""); setSourceSessionKey("");
     setCommandKey("command");
     setPayloadKeys({ channel: null, chatId: null, sessionKey: null });
@@ -145,6 +155,11 @@ export function Cron() {
     const [sessionKeyKey, sessionKeyValue] = slotOf("sessionKey");
     setName(job.name);
     setExpr(job.cron_expr);
+    setScheduleType(job.trigger === "once" ? "once" : "cron");
+    const moment = job.at_ms ? new Date(job.at_ms) : null;
+    setAt(moment ? new Date(moment.getTime() - moment.getTimezoneOffset() * 60000).toISOString().slice(0, 19) : "");
+    setFixedReminder(p.delivery_mode === "reminder");
+    setAttachmentIds(Array.isArray(p.attachment_ids) ? p.attachment_ids.filter((id): id is string => typeof id === "string") : []);
     // The backend accepts either key as the instruction; remember which one this
     // job actually uses so a save does not rewrite `message` into `command`.
     setCommandKey("message" in p && !("command" in p) ? "message" : "command");
@@ -215,7 +230,7 @@ export function Cron() {
   // string. Built in one place so the dialog and the submit-time check can never
   // disagree about which fields consent covers.
   const consentDigest = () =>
-    JSON.stringify([command.trim(), expr.trim(), deliveryTarget()]);
+    JSON.stringify([command.trim(), scheduleType === "once" ? at : expr.trim(), deliveryTarget(), fixedReminder]);
 
   // 勾选授权前先让人看清自己在授权什么:指令全文、频率、投递目标。拒绝确认就保持
   // 关闭,不存在"点了一下就授权了"这条路径。
@@ -230,7 +245,7 @@ export function Cron() {
       title: t("authorizeConfirmTitle"),
       message: t("authorizeConfirmMessage", {
         command: command.trim() || t("authorizeUnset"),
-        expr: expr.trim() || t("authorizeUnset"),
+        expr: (scheduleType === "once" ? at : expr.trim()) || t("authorizeUnset"),
         target: deliveryTarget() || t("authorizeNoTarget"),
       }),
       confirmLabel: t("authorizeConfirmLabel"),
@@ -247,12 +262,29 @@ export function Cron() {
     if (!command.trim()) {
       return; // 任务内容必填:与后端 400 校验双保险
     }
+    const existingAt = data?.jobs.find(job => job.id === editingId)?.at_ms;
+    if (scheduleType === "once" && (!at || Number.isNaN(new Date(at).getTime()) ||
+      new Date(at).getTime() <= Date.now() && (!existingAt || Math.abs(new Date(at).getTime() - existingAt) >= 1000))) {
+      toast.error(t("futureTimeRequired"));
+      return;
+    }
     // payload 只带本表单管的字段,由后端与已存 payload 合并(PUT 是合并语义)。
     // 此前这里重建整个 payload,把表单没有的字段全部丢掉,一次改名就会顺带改掉任务
     // 的行为。这里只声明真正改了什么,未知字段留在服务端。
     // 授权不再走 payload:它是 ScheduledJob 的一等字段,只能通过 authorize_unattended
     // 这个显式标记签发,payload 里的同名键不再有任何作用。
-    const payload: Record<string, string> = { [commandKey]: command.trim() };
+    const payload: Record<string, unknown> = { [commandKey]: command.trim() };
+    if (fixedReminder) {
+      payload.delivery_mode = "reminder";
+      payload.delivery_text = command.trim();
+      const previousIds = data?.jobs.find(job => job.id === editingId)?.payload?.attachment_ids;
+      if (editingId && JSON.stringify(attachmentIds) !== JSON.stringify(previousIds ?? [])) {
+        payload.attachment_ids = attachmentIds;
+        payload.await_attachment = false;
+      }
+    } else if (editingId && data?.jobs.find(job => job.id === editingId)?.payload?.delivery_mode === "reminder") {
+      payload.delivery_mode = "agent";
+    }
     const optional: [DeliverySlot, string][] = [
       ["channel", deliverChannel.trim()],
       ["chatId", deliverChatId.trim()],
@@ -282,10 +314,13 @@ export function Cron() {
     // Only send the flag when it is on. Sending `false` explicitly would be
     // equivalent, but omitting it keeps "absence is not consent" visible in the
     // wire format itself.
+    const timing = scheduleType === "once"
+      ? (existingAt && Math.abs(new Date(at).getTime() - existingAt) < 1000 ? {} : { trigger: "once", at: new Date(at).toISOString() })
+      : { cron_expr: expr, ...(editingId && data?.jobs.find(job => job.id === editingId)?.trigger === "once" ? { trigger: "cron" } : {}) };
     const body = JSON.stringify(
       authorizeUnattended && !consentStale
-        ? { name, cron_expr: expr, payload, authorize_unattended: true }
-        : { name, cron_expr: expr, payload },
+        ? { name, ...timing, payload, authorize_unattended: true }
+        : { name, ...timing, payload },
     );
     const ok = editingId
       ? await runMutation(
@@ -323,9 +358,24 @@ export function Cron() {
           )}
           <div className="flex flex-wrap gap-3">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("form.name")} aria-label={t("form.name")} className="border rounded px-3 py-1.5 flex-1 min-w-48" />
-            <input value={expr} onChange={(e) => setExpr(e.target.value)} placeholder={t("form.expr")} aria-label={t("form.expr")} className="border rounded px-3 py-1.5 w-40" />
+            <select value={scheduleType} onChange={e => setScheduleType(e.target.value)} aria-label={t("scheduleType")} className="border rounded px-3 py-1.5">
+              <option value="once">{t("once")}</option>
+              <option value="cron">{t("recurring")}</option>
+            </select>
+            {scheduleType === "once"
+              ? <input type="datetime-local" step="1" value={at} onChange={e => setAt(e.target.value)} aria-label={t("onceTime")} className="border rounded px-3 py-1.5" />
+              : <input value={expr} onChange={(e) => setExpr(e.target.value)} placeholder={t("form.expr")} aria-label={t("form.expr")} className="border rounded px-3 py-1.5 w-40" />}
           </div>
-          <textarea value={command} onChange={(e) => setCommand(e.target.value)} placeholder={t("form.command")} aria-label={t("form.command")} className="border rounded px-3 py-1.5" rows={2} />
+          {scheduleType === "once" && <p className="text-xs text-gray-500">{t("localTimeHint")}</p>}
+          <label className="flex gap-2 text-sm"><input type="checkbox" checked={fixedReminder} onChange={e => { setFixedReminder(e.target.checked); setAuthorizeUnattended(false); setAuthorizedSnapshot(""); }} />{t("fixedReminder")}</label>
+          <textarea value={command} onChange={(e) => setCommand(e.target.value)} placeholder={t(fixedReminder ? "form.reminderText" : "form.command")} aria-label={t(fixedReminder ? "form.reminderText" : "form.command")} className="border rounded px-3 py-1.5" rows={2} />
+          {fixedReminder && editingId && data?.jobs.find(job => job.id === editingId)?.attachment_details?.length
+            ? <fieldset className="text-sm space-y-1"><legend>{t("keepAttachments")}</legend>
+              {data.jobs.find(job => job.id === editingId)!.attachment_details!.map((file, index) => <label key={file.id} className="flex gap-2 items-center">
+                <input type="checkbox" checked={attachmentIds.includes(file.id)} onChange={e => setAttachmentIds(ids => e.target.checked ? [...ids, file.id] : ids.filter(id => id !== file.id))} />
+                {file.name || t("unnamedAttachment", { index: index + 1 })}{!file.available && <span className="text-amber-700">{t("attachmentUnavailable")}</span>}
+              </label>)}<p className="text-xs text-gray-500">{t("unlinkAttachmentHint")}</p>
+            </fieldset> : null}
           <div className="flex flex-wrap gap-3">
             <input value={deliverChannel} onChange={(e) => setDeliverChannel(e.target.value)} placeholder={t("form.deliverChannel")} aria-label={t("form.deliverChannel")} className="border rounded px-3 py-1.5 flex-1 min-w-48" />
             <input value={deliverChatId} onChange={(e) => setDeliverChatId(e.target.value)} placeholder={t("form.deliverChatId")} aria-label={t("form.deliverChatId")} className="border rounded px-3 py-1.5 flex-1 min-w-48" />
@@ -333,7 +383,7 @@ export function Cron() {
           <input value={sourceSessionKey} onChange={(e) => setSourceSessionKey(e.target.value)} placeholder={t("form.sourceSessionKey")} aria-label={t("form.sourceSessionKey")} className="border rounded px-3 py-1.5" />
           {/* htmlFor + aria-describedby rather than a wrapping label: the hint is
               a description, not part of the control's name. */}
-          <div className="flex items-start gap-2 text-sm">
+          {!fixedReminder && <div className="flex items-start gap-2 text-sm">
             <input
               id="cron-authorize-unattended"
               type="checkbox"
@@ -348,7 +398,7 @@ export function Cron() {
                 {t("authorizeHint")}
               </span>
             </div>
-          </div>
+          </div>}
           <div className="flex gap-2 self-start">
             <button type="submit" disabled={!command.trim()} className="bg-green-600 text-white px-3 py-1.5 rounded text-sm disabled:opacity-50">
               {editingId ? t("save") : t("create")}
@@ -390,7 +440,7 @@ export function Cron() {
                       {job.config_valid === false && (
                         <span className="ml-2 text-xs px-1.5 rounded bg-red-100 text-red-700">{t("invalidConfig")}</span>
                       )}
-                      <span
+                      {job.payload?.delivery_mode === "reminder" ? <span className="ml-2 text-xs text-gray-500">{t("fixedReminder")}</span> : <span
                         className={`ml-2 px-1.5 py-0.5 rounded text-xs ${AUTH_BADGE[authStateOf(job)]}`}
                         title={
                           authStateOf(job) === "stale"
@@ -404,30 +454,35 @@ export function Cron() {
                         }
                       >
                         {t(`authState.${authStateOf(job)}`)}
-                      </span>
+                      </span>}
+                      {Array.isArray(job.payload?.attachment_ids) && job.payload.attachment_ids.length > 0 &&
+                        <div className="text-xs text-gray-500">{t("attachedCount", { count: job.payload.attachment_ids.length })}</div>}
+                      {job.payload?.await_attachment === true && <div className="text-xs text-amber-700">{t(Number(job.payload?.attachment_window_end ?? 0) * 1000 < Date.now() ? "attachmentBindingExpired" : "attachmentPending")}</div>}
                     </td>
-                    <td className="font-mono text-xs">{job.cron_expr}</td>
+                    <td className="text-xs">{job.trigger === "once" ? <><span>{t("once")}</span><div>{dateTime(job.at_ms ?? job.next_run_ms)}</div></> : <span className="font-mono">{job.cron_expr}</span>}</td>
                     <td>
                       <button
                         role="switch"
                         aria-checked={job.enabled}
                         aria-label={t(job.enabled ? "pauseAria" : "resumeAria", { name: job.name || job.id })}
                         onClick={() => toggleEnabled(job)}
-                        disabled={!canWrite || inflightOps.has(`${job.id}:toggle`)}
+                        disabled={!canWrite || job.status === "cancelled" || (job.status === "completed" && !(job.enabled && job.last_status === "delivery_pending")) || inflightOps.has(`${job.id}:toggle`)}
                         title={canWrite ? undefined : t("common:adminOnly")}
                         className={`text-xs px-1.5 py-0.5 rounded hover:ring-1 hover:ring-blue-300 disabled:opacity-50 ${
                           job.enabled ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"
                         }`}
                       >
-                        {job.enabled ? t("active") : t("paused")}
+                        {job.status === "completed" ? t(job.enabled && job.last_status === "delivery_pending" ? "stopPendingDelivery" : "scheduleFinished") : job.status === "cancelled" ? t("cancelled") : job.enabled ? t("active") : t("paused")}
                       </button>
                     </td>
                     <td className="text-xs max-w-64">
                       <span className={job.last_status === "delivery_pending" ? "text-amber-700" : job.last_status === "error" ? "text-red-700" : ""}>
                         {job.last_status ? t(`outcome.${job.last_status}`, { defaultValue: job.last_status }) : "-"}
                       </span>
+                      {job.delivery_status && <p className="mt-1 text-gray-600">{t(`deliveryOutcome.${job.delivery_status}`, { defaultValue: job.delivery_status })}</p>}
+                      {job.last_error === "attachment_missing" && <p className="mt-1 text-amber-700">{t("attachmentMissingHint")}</p>}
                       {job.last_status === "delivery_pending" && <p className="mt-1 text-gray-500">{t("deliveryPendingHint")}</p>}
-                      {job.last_error && job.last_status !== "delivery_pending" && <p className="mt-1 text-gray-500 break-words" title={job.last_error}>{job.last_error}</p>}
+                      {job.last_error && job.last_status !== "delivery_pending" && <p className="mt-1 text-gray-500 break-words" title={job.last_error}>{t(`deliveryCancelReason.${job.last_error}`, { defaultValue: job.last_error })}</p>}
                     </td>
                     <td className="text-xs">{dateTime(job.next_run_ms)}</td>
                     <td className="flex gap-1 py-2">

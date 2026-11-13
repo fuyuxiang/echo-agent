@@ -8,11 +8,12 @@
     "command": "任务内容(必填,交给 Agent 执行的指令)",
     "deliverChannel": "投递渠道(deliver_channel,可选)",
     "deliverChatId": "会话/群 ID(deliver_chat_id,可选)",
-    "sourceSessionKey": "会话目标 source_session_key(可选,填了可自动解析渠道)"
+    "sourceSessionKey": "会话目标 source_session_key(可选,填了可自动解析渠道)",
+    "reminderText": "提醒内容（届时原文发送）"
   },
   "col": {
     "name": "名称",
-    "cron": "Cron",
+    "cron": "执行计划",
     "status": "状态",
     "lastResult": "最近结果",
     "nextRun": "下次执行",
@@ -93,15 +94,39 @@
     "interrupted": "执行中断",
     "delivery_pending": "等待投递恢复",
     "delivery_recovered": "已补发",
-    "skipped": "已跳过"
+    "skipped": "已跳过",
+    "delivery_cancelled": "补发已停止"
   },
   "deliveryOutcome": {
     "delivered": "渠道已确认",
     "awaiting_context": "等待恢复会话",
     "unknown": "发送结果待核对",
     "failed": "投递失败",
-    "partial": "部分内容已送达"
+    "partial": "部分内容已送达",
+    "cancelled": "尚未发送的部分已停止投递"
   },
   "automaticRecoveryHint": "报告已生成并保存。系统将在冷却后自动重试，无需重新运行任务。",
-  "retryAt": "计划重试时间：{{time}}"
+  "retryAt": "计划重试时间：{{time}}",
+  "scheduleType": "执行方式",
+  "once": "仅执行一次",
+  "recurring": "重复执行",
+  "onceTime": "提醒时间",
+  "localTimeHint": "按当前浏览器的本地时间设置，保存后固定为同一时刻。",
+  "fixedReminder": "直接发送提醒内容（无需模型生成）",
+  "attachedCount": "已绑定 {{count}} 份原始附件",
+  "attachmentPending": "附件待关联，收到后会另行确认",
+  "futureTimeRequired": "请选择未来的提醒时间",
+  "cancelled": "已取消",
+  "scheduleFinished": "已触发，调度结束",
+  "attachmentMissingHint": "正文已投递，但附件未完整送达；请检查关联的原件。",
+  "stopPendingDelivery": "等待补发（点击停止）",
+  "deliveryCancelReason": {
+    "task_edited": "提醒已修改，旧补发已停止",
+    "task_paused": "任务已暂停，旧补发已停止"
+  },
+  "keepAttachments": "随提醒发送的附件（勾选保留）",
+  "unnamedAttachment": "附件 {{index}}",
+  "attachmentUnavailable": "原件不可用",
+  "unlinkAttachmentHint": "取消勾选只解除本提醒的关联，原件仍保留在会话中。需要更换文件时可在原会话中指定。",
+  "attachmentBindingExpired": "附件待关联，自动匹配已到期，请在原会话中指定文件"
 }

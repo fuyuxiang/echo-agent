@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
+from pathlib import Path
 
 from loguru import logger
 
@@ -84,8 +85,10 @@ def _emoji(channel_name: str, kind: str) -> str:
 class ChannelManager:
     """Manages the lifecycle of all enabled channel adapters."""
 
-    def __init__(self, config: ChannelsConfig, bus: MessageBus, on_cli_exit: Callable[[], None] | None = None):
+    def __init__(self, config: ChannelsConfig, bus: MessageBus, on_cli_exit: Callable[[], None] | None = None,
+                 *, media_cache_root: Path | None = None):
         self.config = config
+        self._media_cache_root = media_cache_root
         self.bus = bus
         self._channels: dict[str, BaseChannel] = {}
         self._send_progress = config.send_progress
@@ -732,6 +735,7 @@ class ChannelManager:
             channel = cls(channel_config, self.bus, on_exit=self._on_cli_exit)
         else:
             channel = cls(channel_config, self.bus)
+        channel._media_cache_root = self._media_cache_root
         if self.config.transcription_api_key:
             channel.transcription_api_key = self.config.transcription_api_key
         return channel

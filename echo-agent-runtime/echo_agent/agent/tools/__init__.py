@@ -64,6 +64,9 @@ def discover_tools(
     tools.append(ListDirTool(ws, restrict, spill_root=spill_root))
     from echo_agent.agent.tools.document import ReadDocumentTool
     tools.append(ReadDocumentTool(ws, restrict, spill_root=spill_root))
+    from echo_agent.agent.tools.attachments import AttachmentListTool, AttachmentDeleteTool
+    tools.append(AttachmentListTool(workspace))
+    tools.append(AttachmentDeleteTool(workspace))
     from echo_agent.agent.tools.read_spill import ReadSpillTool
     tools.append(ReadSpillTool(spill_root=spill_root))
     if config.tools.web.enabled and config.execution.network_policy != "deny":
@@ -179,7 +182,8 @@ def discover_tools(
 
     if scheduler:
         from echo_agent.agent.tools.cronjob import CronjobTool
-        tools.append(CronjobTool(scheduler=scheduler))
+        from echo_agent.attachments import AttachmentStore
+        tools.append(CronjobTool(scheduler=scheduler, attachments=AttachmentStore(workspace)))
 
     if skill_store:
         from echo_agent.agent.tools.skills import SkillsListTool, SkillViewTool, SkillManageTool
