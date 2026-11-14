@@ -2,7 +2,7 @@
 
 **Scope: standalone Python Runtime.** For Desktop operations, see the [Desktop guide](../desktop/index.md).
 
-Echo Agent ships 41 built-in tools. The tool names, parameters and capability tags on this page are taken from the registrations in code: a tool's name is the `name` attribute of its class (under `echo_agent/agent/tools/`), capability tags come from `TOOL_CAPABILITIES` in `echo_agent/security/capabilities.py`, and profile membership comes from `echo_agent/security/tool_policy.py`.
+Echo Agent ships 43 built-in tools. The tool names, parameters and capability tags on this page are taken from the registrations in code: a tool's name is the `name` attribute of its class (under `echo_agent/agent/tools/`), capability tags come from `TOOL_CAPABILITIES` in `echo_agent/security/capabilities.py`, and profile membership comes from `echo_agent/security/tool_policy.py`.
 
 !!! note "A tool's name is not its module name"
     Tool names frequently differ from the file that implements them, and calls must use the tool name. For example `shell.py` registers `exec`, `code_exec.py` registers `execute_code`, `tts.py` registers `text_to_speech`, and `web.py` registers both `web_fetch` and `web_search`.
@@ -26,6 +26,8 @@ The table below shows which `tools.profile` tiers expose each tool. `full` permi
 |------|--------|:-------:|:---------:|:------:|-----------------|
 | `agents_list` | none (see below) | ✅ | ✅ | ✅ | `agent.read` |
 | `agents_route` | none (see below) | ✅ | ✅ | ✅ | `agent.dispatch` |
+| `attachment_list` | `attachments.py` | ✅ | ✅ | ✅ | `fs.read` |
+| `attachment_delete` | `attachments.py` | ❌ | ✅ | ✅ | `fs.write` |
 | `artifact_create` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
 | `artifact_append` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
 | `artifact_validate` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.read` |
@@ -59,8 +61,8 @@ The table below shows which `tools.profile` tiers expose each tool. `full` permi
 | `exec` | `shell.py` | ❌ | ❌ | ❌ | `process.exec` |
 | `execute_code` | `code_exec.py` | ❌ | ❌ | ❌ | `code.exec` `process.exec` |
 | `process` | `process.py` | ❌ | ❌ | ❌ | `process.exec` `process.manage` |
-| `read_document` | `document.py` | ❌ | ❌ | ❌ | unclassified |
-| `send_file` | `send_file.py` | ❌ | ❌ | ❌ | `fs.read` `message.send` |
+| `read_document` | `document.py` | ✅ | ✅ | ✅ | `fs.read` |
+| `send_file` | `send_file.py` | ❌ | ✅ | ✅ | `fs.read` `message.send` |
 | `skill_install` | `skill_install.py` | ❌ | ❌ | ❌ | `skill.install` `network.outbound` `fs.write` |
 | `skill_manage` | `skills.py` | ❌ | ❌ | ❌ | `skill.write` `fs.write` |
 | `skill_run` | `skill_run.py` | ❌ | ❌ | ❌ | `process.exec` `code.exec` `skill.read` |
@@ -70,7 +72,7 @@ The table below shows which `tools.profile` tiers expose each tool. `full` permi
 
 Tools marked "unclassified" have no entry in `TOOL_CAPABILITIES`, so `tool_capabilities()` returns an empty set for them and capability-based deny rules never match. Such tools are constrained only by rules that name them directly.
 
-`agents_list` and `agents_route` appear only in the policy tables (`capabilities.py`, `tool_policy.py`, `risk_classifier.py`); there is no implementation under `echo_agent/agent/tools/`, so they cannot currently be called. They are reserved names for multi-agent collaboration, and this page does not document parameters for them. Every one of the 41 implemented tools is documented below.
+`agents_list` and `agents_route` appear only in the policy tables (`capabilities.py`, `tool_policy.py`, `risk_classifier.py`); there is no implementation under `echo_agent/agent/tools/`, so they cannot currently be called. They are reserved names for multi-agent collaboration, and this page does not document parameters for them. Every one of the 43 implemented tools is documented below.
 
 ## High-risk tools
 
@@ -163,6 +165,24 @@ Retrieve a tool output artifact that was spilled to disk, using the path given i
 | `offset` | integer | | Starting position |
 | `limit` | integer | | Length to read |
 | `pattern` | string | | Filter pattern |
+
+### Conversation attachments
+
+#### attachment_list
+
+List saved original attachments in the current conversation, including IDs retained across restarts, file information and storage usage. Use the IDs with `read_document`, `send_file` or `cronjob`. Attachments from other conversations are not listed.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|:--------:|---------|-------------|
+| `limit` | integer | | `10` | Number of recent attachments to return, from 1 to 50 |
+
+#### attachment_delete
+
+Permanently delete an original attachment in the current conversation when the user explicitly requests it. Deletion is rejected while reminders or pending deliveries reference the attachment; remove those references or cancel the task first. Chat history and extracted text are retained.
+
+| Parameter | Type | Required | Description |
+|-----------|------|:--------:|-------------|
+| `attachment_id` | string | ✅ | Current-conversation attachment ID returned by `attachment_list` |
 
 ### User artifacts
 

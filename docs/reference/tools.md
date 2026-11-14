@@ -2,7 +2,7 @@
 
 **适用范围：独立 Python Runtime。** 桌面端操作见 [Desktop 使用指南](../desktop/index.md)。
 
-Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均取自代码中的注册信息：工具名是各工具类的 `name` 属性（定义在 `echo_agent/agent/tools/` 下），能力标签取自 `echo_agent/security/capabilities.py` 的 `TOOL_CAPABILITIES`，档位归属取自 `echo_agent/security/tool_policy.py`。
+Echo Agent 内置 43 个工具。本页的工具名、参数、能力标签均取自代码中的注册信息：工具名是各工具类的 `name` 属性（定义在 `echo_agent/agent/tools/` 下），能力标签取自 `echo_agent/security/capabilities.py` 的 `TOOL_CAPABILITIES`，档位归属取自 `echo_agent/security/tool_policy.py`。
 
 !!! note "工具名不等于模块名"
     工具名与实现它的模块文件名往往不同，调用时必须使用工具名。例如 `shell.py` 注册的工具是 `exec`，`code_exec.py` 注册的是 `execute_code`，`tts.py` 注册的是 `text_to_speech`，`web.py` 同时注册 `web_fetch` 与 `web_search`。
@@ -26,6 +26,8 @@ Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均�
 |------|----------|:-------:|:---------:|:------:|----------|
 | `agents_list` | 无实现（见下） | ✅ | ✅ | ✅ | `agent.read` |
 | `agents_route` | 无实现（见下） | ✅ | ✅ | ✅ | `agent.dispatch` |
+| `attachment_list` | `attachments.py` | ✅ | ✅ | ✅ | `fs.read` |
+| `attachment_delete` | `attachments.py` | ❌ | ✅ | ✅ | `fs.write` |
 | `artifact_create` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
 | `artifact_append` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
 | `artifact_validate` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.read` |
@@ -59,8 +61,8 @@ Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均�
 | `exec` | `shell.py` | ❌ | ❌ | ❌ | `process.exec` |
 | `execute_code` | `code_exec.py` | ❌ | ❌ | ❌ | `code.exec` `process.exec` |
 | `process` | `process.py` | ❌ | ❌ | ❌ | `process.exec` `process.manage` |
-| `read_document` | `document.py` | ❌ | ❌ | ❌ | 未分类 |
-| `send_file` | `send_file.py` | ❌ | ❌ | ❌ | `fs.read` `message.send` |
+| `read_document` | `document.py` | ✅ | ✅ | ✅ | `fs.read` |
+| `send_file` | `send_file.py` | ❌ | ✅ | ✅ | `fs.read` `message.send` |
 | `skill_install` | `skill_install.py` | ❌ | ❌ | ❌ | `skill.install` `network.outbound` `fs.write` |
 | `skill_manage` | `skills.py` | ❌ | ❌ | ❌ | `skill.write` `fs.write` |
 | `skill_run` | `skill_run.py` | ❌ | ❌ | ❌ | `process.exec` `code.exec` `skill.read` |
@@ -70,7 +72,7 @@ Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均�
 
 标记为「未分类」的工具在 `TOOL_CAPABILITIES` 中没有条目，`tool_capabilities()` 对它们返回空集合，因此基于能力的拦截规则不会命中它们；这类工具只受工具名维度的策略约束。
 
-`agents_list` 与 `agents_route` 只出现在策略表（`capabilities.py`、`tool_policy.py`、`risk_classifier.py`）中，`echo_agent/agent/tools/` 下没有对应实现，因此当前不可调用。它们是为多 Agent 协作预留的名字，本页不为其提供参数说明。除这两项外，下文为全部 41 个已实现的工具逐一列出参数。
+`agents_list` 与 `agents_route` 只出现在策略表（`capabilities.py`、`tool_policy.py`、`risk_classifier.py`）中，`echo_agent/agent/tools/` 下没有对应实现，因此当前不可调用。它们是为多 Agent 协作预留的名字，本页不为其提供参数说明。除这两项外，下文为全部 43 个已实现的工具逐一列出参数。
 
 ## 高风险工具
 
@@ -163,6 +165,24 @@ Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均�
 | `offset` | integer | | 起始位置 |
 | `limit` | integer | | 读取长度 |
 | `pattern` | string | | 过滤模式 |
+
+### 会话附件
+
+#### attachment_list
+
+列出当前会话保存的附件原件，包括重启后仍保留的附件 ID、文件信息和保存用量。附件 ID 可供 `read_document`、`send_file` 或 `cronjob` 使用；不能列出其他会话的附件。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|:----:|--------|------|
+| `limit` | integer | | `10` | 返回的最近附件数，范围 1–50 |
+
+#### attachment_delete
+
+在用户明确要求时，永久删除当前会话中指定的附件原件。仍被提醒或待投递任务引用的附件会拒绝删除；先解除相关引用或取消任务。历史聊天和已提取正文保留。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `attachment_id` | string | ✅ | `attachment_list` 返回的当前会话附件 ID |
 
 ### 用户产物
 
