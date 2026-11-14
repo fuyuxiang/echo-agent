@@ -339,7 +339,7 @@ jobs:
       - run: node scripts/verify-vendored-runtime.mjs
         id: verify_runtime
       - name: Check Rust warnings and lints
-        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
+        run: node scripts/check-rust-desktop.mjs
       - name: Run isolated Rust unit and integration tests
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: node scripts/test-rust-desktop.mjs
