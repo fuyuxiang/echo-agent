@@ -2691,6 +2691,16 @@ mod tests {
             Some(serde_json::json!({"variant":"UseTool","tool_name":target,"tool_input":{}})),
         );
         assert!(is_builtin_computer_permission(&wrapped));
+        let begin = "echoagent-automation__automation_begin";
+        assert!(is_builtin_computer_permission(&make(
+            begin, begin, "mcp", None
+        )));
+        assert!(is_builtin_computer_permission(&make(
+            begin,
+            "use_tool",
+            "echo_agent_build",
+            Some(serde_json::json!({"variant":"UseTool","tool_name":begin,"tool_input":{}})),
+        )));
         assert!(is_builtin_computer_permission(&make(
             "echoagent-automation__browser_click",
             "echoagent-automation__browser_click",

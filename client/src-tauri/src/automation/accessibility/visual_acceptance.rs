@@ -319,10 +319,10 @@ fn actual_opaque_canvas_flow() {
         );
         std::fs::write(directory.join("other-overlay-command"), "hide").unwrap();
         assert_eq!(wait_file(&directory, "other-overlay-hidden"), "READY");
-        std::fs::write(directory.join("other-overlay-command"),"quit").unwrap();
-        assert_eq!(wait_file(&directory,"other-quit"),"READY");
+        std::fs::write(directory.join("other-overlay-command"), "quit").unwrap();
+        assert_eq!(wait_file(&directory, "other-quit"), "READY");
         std::fs::remove_file(directory.join("other-pid")).unwrap();
-        other=launch("other",false);
+        other = launch("other", false);
         restore.owned.push(other);
     }
     let deadline = Instant::now() + Duration::from_secs(4);
@@ -591,14 +591,21 @@ fn observe_wechat(inspect_settings: bool) {
             serde_json::to_vec_pretty(&ocr).unwrap(),
         )
         .unwrap();
-        if std::env::var("ECHO_NATIVE_WECHAT_SENT_PROOF").as_deref()==Ok("1") {
+        if std::env::var("ECHO_NATIVE_WECHAT_SENT_PROOF").as_deref() == Ok("1") {
             let proof=c.run("_verify_visual",&json!({"ref":target,"checks":[
                 {"text":"文件传输助手","region":{"x":0.35,"y":0.012,"width":0.13,"height":0.045}},
                 {"text":"EchoAgent 微信端到端测试，请忽略。","region":{"x":0.648,"y":0.687,"width":0.28,"height":0.05}},
                 {"text":"长按鼠标 语音输入","region":{"x":0.365,"y":0.773,"width":0.15,"height":0.035}}
             ]}),&token).unwrap();
-            assert_eq!(proof["verified"],true,"read-only sent-history proof: {proof}");
-            std::fs::write(directory.join("sent-proof.json"),serde_json::to_vec_pretty(&proof).unwrap()).unwrap();
+            assert_eq!(
+                proof["verified"], true,
+                "read-only sent-history proof: {proof}"
+            );
+            std::fs::write(
+                directory.join("sent-proof.json"),
+                serde_json::to_vec_pretty(&proof).unwrap(),
+            )
+            .unwrap();
         }
         println!("Window observation saved in {}", directory.display());
     }

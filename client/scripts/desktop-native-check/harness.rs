@@ -34,11 +34,16 @@ mod host_probe {
     }
 }
 
+#[path = "../../src-tauri/src/automation/admission.rs"]
+mod admission;
 #[path = "../../src-tauri/src/automation/task.rs"]
 mod task;
 
 #[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/helpers/tool_input_parsing.rs"]
 mod tool_input_parsing;
+
+#[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/helpers/host_prompt_context.rs"]
+mod host_prompt_context;
 
 #[path = "../../src-tauri/src/automation/arguments.rs"]
 mod arguments;

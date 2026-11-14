@@ -1013,7 +1013,7 @@ export function ChatView({
   // Native pauses and chat cancellations share feedback beside their turn.
   // Passive capability probes never create a mode-specific toolbar.
   const nativePaused = !streaming && automationMode !== "default" && automation.status?.mode === automationMode
-    && automation.status.paused && (!automation.status.task || ["paused","stopped"].includes(automation.status.task.phase)) && (automationMode === "browser_use" || automation.status.task?.scope);
+    && automation.status.paused && automation.status.task?.scope && ["paused","stopped"].includes(automation.status.task.phase);
   const controlPhase = control?.phase ?? (nativePaused ? automation.status?.task?.phase === "stopped" ? "stopped" : "paused" : undefined);
   const continuationNeedsScope = automationMode === "computer_use" && automation.status && !automation.status.task?.scope;
   const feedbackTarget = terminalMessage?.id;

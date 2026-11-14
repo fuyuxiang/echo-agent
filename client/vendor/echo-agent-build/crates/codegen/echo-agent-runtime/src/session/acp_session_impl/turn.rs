@@ -656,6 +656,23 @@ impl SessionActor {
                 .handle_direct_bash_command(prompt_id, bash_command, &prompt_blocks)
                 .await;
         }
+        // Keep host instructions out of the text consumed by slash commands.
+        // Capture before skill/goal rewrites, which may replace prompt blocks.
+        let host_automation_context = policy
+            .authority
+            .is_human_intent()
+            .then(|| {
+                prompt_blocks.iter().find_map(|block| {
+                    let acp::ContentBlock::Text(text) = block else {
+                        return None;
+                    };
+                    text.meta
+                        .as_ref()
+                        .and_then(crate::session::helpers::host_prompt_context::automation_context)
+                        .map(str::to_owned)
+                })
+            })
+            .flatten();
         let slash_skills = self.slash_skills_for_resolve().await;
         let skill_rewrite = if crate::session::is_cursor_user_template(
             &self.agent.borrow().definition().user_message_template,
@@ -997,8 +1014,8 @@ impl SessionActor {
             &skill_info,
             is_cursor,
         );
-        let pre_truncation_text = assembled.clone();
-        let (user_message, truncated_local_path) = if verbatim {
+        let mut pre_truncation_text = assembled.clone();
+        let (mut user_message, truncated_local_path) = if verbatim {
             (assembled, None)
         } else {
             self.maybe_truncate_large_prompt_with_skills(
@@ -1010,6 +1027,14 @@ impl SessionActor {
             )
             .await
         };
+        crate::session::helpers::host_prompt_context::append_model_context(
+            &mut user_message,
+            host_automation_context.as_deref(),
+        );
+        crate::session::helpers::host_prompt_context::append_model_context(
+            &mut pre_truncation_text,
+            host_automation_context.as_deref(),
+        );
         let was_truncated = truncated_local_path.is_some();
         if let Some(tx) = parsed_prompt_tx {
             let _ = tx.send(ParsedPromptInfo {

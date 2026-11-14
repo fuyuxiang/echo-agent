@@ -1609,9 +1609,19 @@ describe("所有工具模式统一使用会话交互", () => {
   });
   it("原生浏览器中断后保留普通对话，不显示继续按钮", () => {
     setStore({agentMode:"default",streaming:false,streamingMessageId:null,messages:[{id:"a",role:"assistant",complete:true,parts:[{kind:"text",text:"网页结果"}]}]});
-    automationState.status={sessionId:"unified",mode:"browser_use",paused:true,allowPrivateNetwork:false,
+    automationState.status={sessionId:"unified",mode:"browser_use",paused:true,task:{phase:"paused",reason:"user_paused",scope:"整理网页报告",authorized:false,generation:1},allowPrivateNetwork:false,
       browser:{available:true},browserRunning:true,browserHasData:true,computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
     renderChat();expect(screen.queryByRole("button",{name:"继续任务"})).toBeNull();expect(screen.getByRole("textbox")).toBeEnabled();
+    expect(screen.getByText("操作已中断，可直接发送消息继续或调整要求")).toBeInTheDocument();
+  });
+  it.each(["browser_use", "computer_use"] as const)("仅选择 %s 偏好且没有任务时不显示虚假的中断提示", mode => {
+    setStore({agentMode:"default",streaming:false,streamingMessageId:null,messages:[{id:"a",role:"assistant",complete:true,parts:[{kind:"text",text:"之前的任务已完成"}]}]});
+    automationState.status={sessionId:"unified",mode,paused:true,allowPrivateNetwork:false,
+      browser:{available:true},browserRunning:false,browserHasData:false,computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
+    renderChat();
+    expect(screen.queryByText("操作已中断，可直接发送消息继续或调整要求")).toBeNull();
+    expect(screen.getByText("之前的任务已完成")).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toBeEnabled();
   });
   it.each(["default","browser_use","computer_use"] as const)("%s 运行时只显示普通停止按钮，没有专属状态栏", mode => {
     setStore({agentMode:mode});const {container}=renderChat();

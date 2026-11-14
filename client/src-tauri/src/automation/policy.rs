@@ -185,7 +185,7 @@ pub fn effect_allowed(scope: &str, effect: &str) -> Result<bool, String> {
     // Within one instruction, a repeated action word cannot erase a negation
     // or a request to ask first. Quoted message/document contents grant nothing.
     let mut confirmation_required = false;
-    for instruction in scope.rsplit("\n[用户补充]\n") {
+    for (instruction, grants_permission) in super::task::scope_instructions(scope) {
         let text = instruction_text(instruction);
         let body_start = [
             "内容是",
@@ -341,7 +341,7 @@ pub fn effect_allowed(scope: &str, effect: &str) -> Result<bool, String> {
         }
         // A declared message body or a quoted button name alone is not a
         // positive request for every action word contained in that content.
-        if !quoted_restriction && direct_request {
+        if grants_permission && !quoted_restriction && direct_request {
             return Ok(!confirmation_required);
         }
     }

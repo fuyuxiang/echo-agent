@@ -270,6 +270,74 @@ fn yolo_alias_resolves_to_always_approve() {
     ));
 }
 
+#[test]
+fn host_automation_metadata_never_becomes_builtin_command_arguments() {
+    use crate::session::helpers::host_prompt_context::AUTOMATION_CONTEXT_KEY;
+    for command in [
+        "/yolo off",
+        "/always-approve off",
+        "/memory off",
+        "/compact preserve auth",
+    ] {
+        let block = acp::TextContent::new(command.to_owned()).meta(acp::Meta::from_iter([
+            (
+                AUTOMATION_CONTEXT_KEY.into(),
+                serde_json::json!("[Host automation capability selection]\nturnId=current"),
+            ),
+            ("displayText".into(), serde_json::json!(command)),
+        ]));
+        let outcome = resolve(
+            vec![acp::ContentBlock::Text(block)],
+            &[],
+            all_gated(),
+            SkillSlashRewrite::default(),
+            &[],
+        )
+        .unwrap_err();
+        match outcome {
+            SlashCommandOutcome::Builtin(BuiltinAction::SetYolo { enabled }) => assert!(!enabled),
+            SlashCommandOutcome::Builtin(BuiltinAction::MemoryToggle { enabled }) => {
+                assert!(!enabled)
+            }
+            SlashCommandOutcome::Builtin(BuiltinAction::Compact { user_context }) => {
+                assert_eq!(user_context.as_deref(), Some("preserve auth"))
+            }
+            _ => panic!("host context changed command resolution"),
+        }
+    }
+}
+
+#[test]
+fn desktop_skill_receives_original_arguments_and_keeps_the_host_turn_metadata() {
+    use crate::session::helpers::host_prompt_context::{
+        AUTOMATION_CONTEXT_KEY, automation_context,
+    };
+    let block =
+        acp::TextContent::new("/desktop-task 保存报告".to_owned()).meta(acp::Meta::from_iter([(
+            AUTOMATION_CONTEXT_KEY.into(),
+            serde_json::json!("turnId=current"),
+        )]));
+    let outcome = resolve(
+        vec![acp::ContentBlock::Text(block)],
+        &[make_skill("desktop-task", true)],
+        all_gated(),
+        SkillSlashRewrite::default(),
+        &[],
+    )
+    .unwrap_err();
+    let SlashCommandOutcome::InvokeSkill { blocks, skills } = outcome else {
+        panic!("expected the requested skill");
+    };
+    assert_eq!(skills[0].args, "保存报告");
+    let acp::ContentBlock::Text(text) = &blocks[0] else {
+        panic!("missing user input")
+    };
+    assert_eq!(
+        automation_context(text.meta.as_ref().unwrap()),
+        Some("turnId=current")
+    );
+}
+
 // ── resolve ─────────────────────────────────────────────────────
 
 #[test]

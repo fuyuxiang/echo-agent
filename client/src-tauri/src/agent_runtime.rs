@@ -1637,15 +1637,31 @@ mod tests {
             let task = tokio::spawn(async move {
                 suggest_prompt(&client.tx, "中文会话", 42, Some("configured-small")).await
             });
-            let echo_agent_acp::AcpAgentMessage::ExtMethod(arguments) = agent.rx.recv().await.unwrap() else {
+            let echo_agent_acp::AcpAgentMessage::ExtMethod(arguments) =
+                agent.rx.recv().await.unwrap()
+            else {
                 panic!("prediction must use an extension, never admit a prompt");
             };
-            assert_eq!(arguments.request.method.as_ref(), "echo.agent/suggestPrompt");
-            let params: serde_json::Value = serde_json::from_str(arguments.request.params.get()).unwrap();
-            assert_eq!(params, serde_json::json!({"sessionId":"中文会话", "generation":42, "model":"configured-small"}));
+            assert_eq!(
+                arguments.request.method.as_ref(),
+                "echo.agent/suggestPrompt"
+            );
+            let params: serde_json::Value =
+                serde_json::from_str(arguments.request.params.get()).unwrap();
+            assert_eq!(
+                params,
+                serde_json::json!({"sessionId":"中文会话", "generation":42, "model":"configured-small"})
+            );
             let payload = serde_json::json!({"suggestion":"按这个方案实现", "generation":42});
-            let response = if wrapped { serde_json::json!({"result":payload}) } else { payload };
-            arguments.response_tx.send(Ok(acp::ExtResponse::new(crate::ext::raw_params(&response)))).unwrap();
+            let response = if wrapped {
+                serde_json::json!({"result":payload})
+            } else {
+                payload
+            };
+            arguments
+                .response_tx
+                .send(Ok(acp::ExtResponse::new(crate::ext::raw_params(&response))))
+                .unwrap();
             let result = task.await.unwrap().unwrap();
             assert_eq!(result.suggestion.as_deref(), Some("按这个方案实现"));
             assert_eq!(result.generation, 42);

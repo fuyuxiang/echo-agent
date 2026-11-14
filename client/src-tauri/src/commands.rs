@@ -1696,10 +1696,7 @@ pub async fn agent_load_session(
             tracing::warn!(%error, %session_id, %agent_mode, "failed to restore task agent mode");
         }
     }
-    let automation_mode = crate::automation::AutomationMode::parse(&agent_mode)
-        .unwrap_or(crate::automation::AutomationMode::Default);
-    if let Err(error) = crate::automation::restore_session_mode(&session_id, automation_mode).await
-    {
+    if let Err(error) = crate::automation::restore_session(&session_id).await {
         tracing::warn!(%error, %session_id, %agent_mode, "failed to restore automation mode");
     }
     Ok(current_model_id)
@@ -1965,19 +1962,22 @@ async fn agent_send_impl(
     .map_err(|error| error.to_string())?;
     crate::coding_document_bridge::ensure_workspace_admission(&workspace.to_string_lossy()).await?;
     let task_admitted = crate::automation::prepare_user_prompt(
-        &tx,
         &session_id,
         display_text.as_deref().unwrap_or(&text),
-        !attachments.is_empty(),
         send_now,
         prompt_id.as_deref(),
+        mode.as_deref(),
     )
     .await?;
-    if let Some(context) = crate::automation::prompt_context(&session_id).await {
+    if let Some((_, context)) = &task_admitted {
         if let Some(agent_client_protocol::ContentBlock::Text(block)) =
             prepared_prompt.prompt.first_mut()
         {
-            block.text.push_str(&context);
+            block.meta.get_or_insert_with(Default::default).insert(
+                echo_agent_runtime::session::helpers::host_prompt_context::AUTOMATION_CONTEXT_KEY
+                    .into(),
+                serde_json::json!(context),
+            );
         }
     }
     if let Some(review) = review {
@@ -1988,7 +1988,7 @@ async fn agent_send_impl(
             mode.as_deref(),
             review,
         ) {
-            if let Some(generation) = task_admitted {
+            if let Some((generation, _)) = task_admitted {
                 crate::automation::prompt_admission_failed(&session_id, generation).await;
             }
             return Err(error);
@@ -2007,7 +2007,7 @@ async fn agent_send_impl(
             if let Some(prompt_id) = prompt_id.as_deref() {
                 crate::coding_review_runtime::discard(&session_id, prompt_id);
             }
-            if let Some(generation) = task_admitted {
+            if let Some((generation, _)) = task_admitted {
                 crate::automation::prompt_admission_failed(&session_id, generation).await;
             }
             return Err(error);
@@ -2055,7 +2055,7 @@ async fn agent_send_impl(
             }
         }
     }
-    if let Some(generation) = task_admitted {
+    if let Some((generation, _)) = task_admitted {
         if result.is_err() {
             crate::automation::prompt_admission_failed(&session_id, generation).await;
         } else {
@@ -2739,7 +2739,8 @@ pub async fn agent_suggest_prompt(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if model.is_some_and(|value| value.chars().count() > 256 || value.chars().any(char::is_control)) {
+    if model.is_some_and(|value| value.chars().count() > 256 || value.chars().any(char::is_control))
+    {
         return Err("预测模型 ID 无效或过长".into());
     }
     state.session_workspace(&session_id)?;

@@ -362,13 +362,7 @@ mod scope_tests {
         let path = root.join("new output.txt");
         let original = "请在 TextEdit 新建文稿并保存";
         let update = format!("把它保存到 \"{}\"", path.display());
-        let scope = super::super::task::updated_scope(
-            Some(original),
-            super::super::task::UserIntent::TaskUpdate,
-            &update,
-        )
-        .unwrap()
-        .unwrap();
+        let scope = super::super::task::updated_scope(Some(original), true, &update).unwrap();
         assert!(path_in_scope(Some(&scope), &path, &locations));
         assert!(!path_in_scope(Some(original), &path, &locations));
         let only_longer = format!("{}.bak", path.display());
@@ -376,7 +370,7 @@ mod scope_tests {
     }
     #[test]
     fn successive_location_and_filename_answers_verify_the_saved_file_read_only() {
-        use super::super::task::{updated_scope, user_intent};
+        use super::super::task::updated_scope;
         let root = std::env::temp_dir().join(format!("echo-answer-path-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("New Report.txt");
@@ -388,9 +382,7 @@ mod scope_tests {
         };
         let mut scope = "请在 TextEdit 新建文稿并保存".to_owned();
         for answer in ["桌面", "文件名为 New Report.txt。"] {
-            scope = updated_scope(Some(&scope), user_intent(answer, false), answer)
-                .unwrap()
-                .unwrap();
+            scope = updated_scope(Some(&scope), true, answer).unwrap();
         }
         assert!(verify_file_at(
             Some(&scope),
