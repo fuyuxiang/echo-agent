@@ -34,6 +34,8 @@ Theia 源码与生产图中的 Hono 要求 4.13.16+、`@hono/node-server` 要求
 
 前端 `@tauri-apps/api` 与打包 CLI 同步锁定 `2.12.4`。Tauri 打包器要求前端 API 和 Rust SDK 的主、次版本一致；`scripts/test-rust-audit-coverage.mjs` 会同时检查 pnpm 和 Cargo 的实际锁定版本，在快速类型检查和安装包前置校验阶段发现不一致，避免直到耗时的安装包构建才失败。
 
+Windows 自定义安装模板同步基于 CLI `2.12.4`，使用 NSIS `3.13` 的 Restart Manager 宏，并传入当前安装位置的完整可执行文件路径。保留项目的稳定安装目录、旧注册恢复和快捷方式修复；同步上游的降级拦截、语言兼容和文件关联路径引号修复。`scripts/validate-windows-installer-template.mjs` 用锁定的真实打包器编译完整生产模板，仅封装临时占位文件，不运行安装器；Windows 快速 CI 在应用构建前执行此检查，并保留原有快捷方式行为验收。
+
 Windows 渲染进程恢复回调使用与 Wry 一致的 `webview2-com 0.39.1` 和 `windows-core 0.62` 接口。其他原生自动化接口保留自己的 Windows 绑定版本，不能在 WebView2 回调边界混用不同版本的 COM 类型。
 
 复用生产恢复代码的 `scripts/stability-check` 必须同步更新 SDK 和锁文件。`scripts/test-rust-audit-coverage.mjs` 检查主程序与验收工程的 Tauri、构建库和 WebView2 版本一致，并确认恢复回调直接依赖的 Windows core ABI 一致，避免独立验收工程仍按旧接口编译。

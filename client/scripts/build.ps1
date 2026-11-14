@@ -142,10 +142,10 @@ try {
 
     # ---------------------------------------------------------------------------
     # 5. NSIS tool cache (work around GitHub download timeouts in CN).
-    #    Pre-place nsis-3.11 + nsis_tauri_utils.dll in Tauri's cache so the
+    #    Pre-place nsis-3.13 + nsis_tauri_utils.dll in Tauri's cache so the
     #    bundler skips its own (often failing) download.
     #
-    #    Tauri's expected layout (flat — zip's top-level nsis-3.11/ prefix is
+    #    Tauri's expected layout (flat — zip's top-level nsis-3.13/ prefix is
     #    stripped on extract):
     #      %LOCALAPPDATA%\tauri\NSIS\makensis.exe
     #      %LOCALAPPDATA%\tauri\NSIS\Plugins\x86-unicode\additional\nsis_tauri_utils.dll
@@ -161,12 +161,12 @@ try {
         $tmpDir = Join-Path $env:TEMP "echoagent-nsis-prep"
         New-Item -ItemType Directory -Force -Path $tmpDir -ErrorAction Stop | Out-Null
 
-        $nsisZipUrl = "https://gh-proxy.com/https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip"
+        $nsisZipUrl = "https://gh-proxy.com/https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.13/nsis-3.13.zip"
         $dllUrl     = "https://gh-proxy.com/https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll"
-        $nsisZip    = Join-Path $tmpDir "nsis-3.11.zip"
+        $nsisZip    = Join-Path $tmpDir "nsis-3.13.zip"
         $utilsDll   = Join-Path $tmpDir "nsis_tauri_utils.dll"
 
-        $expectedZipHash = "EF7FF767E5CBD9EDD22ADD3A32C9B8F4500BB10D"
+        $expectedZipHash = "DB14F8AF2EA346B786C6AE19343F61AAF5E09B8E"
         $expectedDllHash = "75197FEE3C6A814FE035788D1C34EAD39349B860"
 
         # Helper: download a URL to a file with up to 2 attempts, verifying SHA1.
@@ -195,19 +195,19 @@ try {
 
         $downloadOk = $true
         try {
-            $zipOk = Download-Verified $nsisZipUrl $nsisZip $expectedZipHash "nsis-3.11.zip"
+            $zipOk = Download-Verified $nsisZipUrl $nsisZip $expectedZipHash "nsis-3.13.zip"
             $dllOk = Download-Verified $dllUrl     $utilsDll $expectedDllHash "nsis_tauri_utils.dll"
             $downloadOk = $zipOk -and $dllOk
 
             if ($downloadOk) {
                 if (Test-Path -LiteralPath $nsisCacheRoot) { Remove-Item -LiteralPath $nsisCacheRoot -Recurse -Force -ErrorAction Stop }
-                # Extract to a staging dir first, then flatten the nsis-3.11/ prefix
+                # Extract to a staging dir first, then flatten the nsis-3.13/ prefix
                 # so files land directly under $nsisCacheRoot (matching Tauri's layout).
                 $staging = Join-Path $tmpDir "nsis-extract"
                 if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop }
                 Expand-Archive -LiteralPath $nsisZip -DestinationPath $staging -Force -ErrorAction Stop
                 New-Item -ItemType Directory -Force -Path $nsisCacheRoot -ErrorAction Stop | Out-Null
-                $inner = Join-Path $staging "nsis-3.11"
+                $inner = Join-Path $staging "nsis-3.13"
                 Get-ChildItem -LiteralPath $inner -Force | ForEach-Object {
                     Copy-Item -LiteralPath $_.FullName -Destination $nsisCacheRoot -Recurse -Force -ErrorAction Stop
                 }
