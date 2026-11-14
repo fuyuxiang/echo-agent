@@ -71,6 +71,8 @@ jobs:
         run: New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -PropertyType DWord -Value 1 -Force
       # Fail on application regressions before installing the native packaging toolchain.
       - run: pnpm install --frozen-lockfile
+      - name: Verify native SDK and audited lockfiles before packaging
+        run: node --test scripts/test-rust-audit-coverage.mjs
       - name: Run frontend and script unit tests
         id: unit_tests
         run: pnpm test --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit="${{ runner.temp }}/echo-unit-tests.xml"

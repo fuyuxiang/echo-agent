@@ -30,3 +30,17 @@ test("native recovery fixture exercises the production Tauri and WebView2 versio
   assert.equal(coreAbi("scripts/stability-check/Cargo.toml"), productionAbi,
     "The shared recovery callback needs the same Windows core ABI in its fixture");
 });
+
+test("Tauri frontend API and packaging CLI match the native SDK release line", () => {
+  const native = readFileSync("src-tauri/Cargo.lock", "utf8").split("[[package]]")
+    .find(block => /^name\s*=\s*"tauri"$/m.test(block))
+    ?.match(/^version\s*=\s*"(\d+\.\d+)\./m)?.[1];
+  assert.ok(native, "The native Tauri SDK must be locked");
+  const lock = readFileSync("pnpm-lock.yaml", "utf8").replaceAll("\r\n", "\n");
+  for (const name of ["@tauri-apps/api", "@tauri-apps/cli"]) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const resolved = lock.match(new RegExp(`^      '${escaped}':\\n        specifier: [^\\n]+\\n        version: (\\d+\\.\\d+)\\.`, "m"))?.[1];
+    assert.equal(resolved, native,
+      `${name} must match tauri ${native}: mismatched minor versions prevent packaging`);
+  }
+});
