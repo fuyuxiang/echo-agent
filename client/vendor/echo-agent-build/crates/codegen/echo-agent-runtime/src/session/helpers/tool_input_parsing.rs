@@ -94,12 +94,10 @@ mod tests {
 
     #[test]
     fn test_no_extract_for_array() {
-        assert!(
-            try_extract_concatenated_json_objects(
-                r#"[{"target_file": "a.java"}, {"target_file": "b.java"}]"#
-            )
-            .is_none()
-        );
+        assert!(try_extract_concatenated_json_objects(
+            r#"[{"target_file": "a.java"}, {"target_file": "b.java"}]"#
+        )
+        .is_none());
     }
 
     #[test]
@@ -221,10 +219,12 @@ mod computer_preflight_tests {
             ),
             (Some("computer_use"), "search_tool", "computer_screenshot"),
         ] {
-            assert!(
-                computer_dispatch_correction(agent, outer, &serde_json::json!({"tool_name":name}))
-                    .is_none()
-            );
+            assert!(computer_dispatch_correction(
+                agent,
+                outer,
+                &serde_json::json!({"tool_name":name})
+            )
+            .is_none());
         }
     }
 }

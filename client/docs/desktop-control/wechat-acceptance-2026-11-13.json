@@ -1,0 +1,89 @@
+{
+  "date": "2026-11-13",
+  "platform": "macOS 15.8.3 Intel",
+  "wechatVersion": "4.2.0",
+  "model": "MiniMax-M3.1-Flash",
+  "flow": "normal Composer -> ACP Runtime -> production MCP -> native window UI",
+  "recipient": "文件传输助手",
+  "text": "EchoAgent 微信端到端测试，请忽略。",
+  "actualMessageSent": true,
+  "bodyTypeCount": 1,
+  "sendButtonClickCount": 1,
+  "uniqueToolRequests": 26,
+  "toolCounts": {
+    "computer_installed_apps": 1,
+    "computer_open_app": 1,
+    "computer_context": 1,
+    "computer_screenshot": 9,
+    "computer_click": 5,
+    "computer_type": 4,
+    "computer_verify_visual": 3,
+    "automation_complete": 2
+  },
+  "taskPhase": "completed",
+  "runtimeVerified": true,
+  "desktopAcceptance": true,
+  "verifiedRunSignedBinarySha256": "35966df1083296afc6f05a73d9d3de823e78afb9595ee1e815c07106b51be9a0",
+  "sentHistoryReceiptId": "01a1d577-f86b-7210-9666-b6ed283c1661",
+  "freshIndependentOcrChecks": [
+    {
+      "matched": true,
+      "minimumConfidence": 0.5,
+      "recognizedText": "文件传输助手",
+      "region": {
+        "height": 0.045,
+        "width": 0.13,
+        "x": 0.35,
+        "y": 0.012
+      },
+      "text": "文件传输助手"
+    },
+    {
+      "matched": true,
+      "minimumConfidence": 0.5,
+      "recognizedText": "EchoAgent 微信端到端测试，请忽略。",
+      "region": {
+        "height": 0.05,
+        "width": 0.28,
+        "x": 0.648,
+        "y": 0.687
+      },
+      "text": "EchoAgent 微信端到端测试，请忽略。"
+    },
+    {
+      "matched": true,
+      "minimumConfidence": 0.5,
+      "recognizedText": "长按鼠标 语音输入",
+      "region": {
+        "height": 0.035,
+        "width": 0.15,
+        "x": 0.365,
+        "y": 0.773
+      },
+      "text": "长按鼠标 语音输入"
+    }
+  ],
+  "independentVisualObservation": {
+    "correctRecipientTitle": true,
+    "exactTextInSentBubble": true,
+    "composerEmpty": true,
+    "sendButtonDisabled": true,
+    "noVisibleFailureMarker": true
+  },
+  "rejectedInvalidAttempts": {
+    "consumedFrame": 2,
+    "staleCompletionEvidence": 1
+  },
+  "verificationScope": "visible sent history in the local WeChat client; no server delivery or read receipt assertion",
+  "nativeTests": {
+    "passed": 189,
+    "ignored": 6,
+    "foregroundVideoAndTransientGui": "passed",
+    "backgroundGui": "passed",
+    "scriptsPassed": 120,
+    "workspacePickerPassed": 15,
+    "windowsTypeCheck": "passed; not Windows live acceptance"
+  },
+  "postAcceptanceClarification": "Clarified single-use frame parameter descriptions and stale-frame recovery guidance; no additional message sent.",
+  "finalDeliveryBinarySha256": "08a5dbe8af220010df1b87c2d7957871add46fbaa78cd4072fda15fec3e9eace"
+}

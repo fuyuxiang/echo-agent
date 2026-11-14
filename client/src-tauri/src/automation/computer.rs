@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::io::Cursor;
 use std::time::Duration;
 
+pub(super) const INPUT_EVENT_TAG: i64 = 0x4543484f435541;
 const MAX_SCREENSHOT_WIDTH: u32 = 1920;
 const MAX_SCREENSHOT_HEIGHT: u32 = 1200;
 const MAX_FRAME_AGE_MS: u64 = 30 * 1_000;
@@ -60,6 +61,7 @@ pub struct ScreenshotFrame {
 #[derive(Debug, Default)]
 pub struct ComputerController {
     last_frame: Option<StoredFrame>,
+    input_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 // Crate-internal dispatch used only by the native worker after its retained
@@ -70,9 +72,28 @@ pub(super) fn key_after_native_focus(key: &str, modifiers: &[String]) -> Result<
     platform::key(key, modifiers)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn click_after_native_target(x: f64, y: f64, count: u32) -> Result<(), String> {
     platform::click(x, y, "left", count)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(super) fn click_button_after_native_target(
+    x: f64,
+    y: f64,
+    button: &str,
+    count: u32,
+) -> Result<(), String> {
+    platform::click(x, y, button, count)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn targeted_key(pid: i32, key: &str, modifiers: &[String]) -> Result<(), String> {
+    platform::key_to_pid(pid, key, modifiers)
+}
+#[cfg(target_os = "macos")]
+pub(super) fn targeted_text(pid: i32, text: &str) -> Result<(), String> {
+    platform::text_to_pid(pid, text)
 }
 
 pub(super) fn text_after_native_focus(text: &str) -> Result<(), String> {
@@ -84,6 +105,9 @@ struct StoredFrame {
     meta: FrameMeta,
     visual_signature: Vec<u8>,
     foreground_target: Option<ForegroundTarget>,
+    pixels: Option<image::GrayImage>,
+    native_window: bool,
+    native_witness: Option<(std::time::Instant, Option<(f64, f64)>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,13 +117,132 @@ struct ForegroundTarget {
 }
 
 impl ComputerController {
+    pub fn window_frame(
+        &mut self,
+        data: &str,
+        bounds: [f64; 4],
+        target: &str,
+    ) -> Result<ScreenshotFrame, String> {
+        if bounds.iter().any(|n| !n.is_finite()) || bounds[2] <= 0.0 || bounds[3] <= 0.0 {
+            return Err("invalid_window_bounds".into());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| "invalid_window_image")?;
+        let pixels = image::load_from_memory(&bytes).map_err(|_| "invalid_window_image")?;
+        if pixels.width() == 0
+            || pixels.height() == 0
+            || pixels.width().saturating_mul(pixels.height()) > 32_000_000
+        {
+            return Err("invalid_window_image".into());
+        }
+        let meta = FrameMeta {
+            frame_id: uuid::Uuid::now_v7().to_string(),
+            display_id: "window".into(),
+            image_width: pixels.width(),
+            image_height: pixels.height(),
+            origin_x: bounds[0],
+            origin_y: bounds[1],
+            logical_width: bounds[2],
+            logical_height: bounds[3],
+            scale_factor: f64::from(pixels.width()) / bounds[2],
+            captured_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            target_name: Some(target.into()),
+        };
+        self.last_frame = Some(StoredFrame {
+            meta: meta.clone(),
+            visual_signature: visual_signature(&pixels),
+            foreground_target: platform::foreground_target(),
+            pixels: Some(pixels.to_luma8()),
+            native_window: true,
+            native_witness: None,
+        });
+        Ok(ScreenshotFrame {
+            meta,
+            png_base64: data.into(),
+        })
+    }
+
+    pub fn verify_window_frame(
+        &mut self,
+        id: &str,
+        data: &str,
+        bounds: [f64; 4],
+        point: Option<(f64, f64)>,
+    ) -> Result<(), String> {
+        let stored = self.require_frame(id)?;
+        if !stored.native_window
+            || [
+                stored.meta.origin_x,
+                stored.meta.origin_y,
+                stored.meta.logical_width,
+                stored.meta.logical_height,
+            ] != bounds
+        {
+            return Err(
+                "target_changed: window geometry changed; capture the bound window again".into(),
+            );
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| "invalid_window_image")?;
+        let image = image::load_from_memory(&bytes).map_err(|_| "invalid_window_image")?;
+        let global_match = image.width() == stored.meta.image_width
+            && image.height() == stored.meta.image_height
+            && visual_signatures_match(&stored.visual_signature, &visual_signature(&image));
+        let matched = if let Some((x, y)) = point {
+            global_match
+                && stored
+                    .pixels
+                    .as_ref()
+                    .is_some_and(|before| local_region_matches(before, &image.to_luma8(), x, y))
+        } else {
+            image.width() == stored.meta.image_width
+                && image.height() == stored.meta.image_height
+                && visual_signatures_match(&stored.visual_signature, &visual_signature(&image))
+        };
+        if !matched {
+            return Err("target_changed: target window pixels changed; capture this window again before input".into());
+        }
+        self.last_frame.as_mut().unwrap().native_witness = Some((std::time::Instant::now(), point));
+        Ok(())
+    }
+
+    pub fn is_window_frame(&self, id: &str) -> bool {
+        self.last_frame
+            .as_ref()
+            .is_some_and(|f| f.meta.frame_id == id && f.native_window)
+    }
+    pub fn validate_visual_point(
+        &mut self,
+        frame_id: &str,
+        x: f64,
+        y: f64,
+    ) -> Result<(f64, f64), String> {
+        self.verify_frame_unchanged(frame_id, Some((x, y)))?;
+        let point = self.resolve_point(frame_id, x, y)?;
+        self.last_frame = None;
+        Ok(point)
+    }
+    pub fn bind_input_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.input_token = Some(token);
+    }
     pub fn capability() -> ComputerCapability {
-        platform::capability()
+        let mut capability = platform::capability();
+        if !capability.accessibility.supported {
+            capability.available = false;
+            capability.input_control = false;
+            capability.reason = Some("当前平台未实现桌面任务所需的原生焦点与命中保护".into());
+        }
+        capability
     }
 
     pub fn request_permissions() -> Result<ComputerCapability, String> {
         platform::request_permissions()?;
-        Ok(platform::capability())
+        Ok(Self::capability())
     }
 
     pub fn displays() -> Result<Vec<DisplayInfo>, String> {
@@ -107,14 +250,66 @@ impl ComputerController {
     }
 
     pub fn screenshot(&mut self, display_id: Option<&str>) -> Result<ScreenshotFrame, String> {
+        self.screenshot_region(display_id, None)
+    }
+    pub fn screenshot_region(
+        &mut self,
+        display_id: Option<&str>,
+        region: Option<[f64; 4]>,
+    ) -> Result<ScreenshotFrame, String> {
         let foreground_target = platform::foreground_target();
-        let captured = platform::capture(display_id)?;
+        let selected = if display_id.is_none() {
+            region.and_then(|r| {
+                platform::displays().ok().and_then(|items| {
+                    items
+                        .into_iter()
+                        .find(|d| {
+                            r[0] + r[2] / 2.0 >= d.origin_x
+                                && r[0] + r[2] / 2.0 < d.origin_x + d.logical_width
+                                && r[1] + r[3] / 2.0 >= d.origin_y
+                                && r[1] + r[3] / 2.0 < d.origin_y + d.logical_height
+                        })
+                        .map(|d| d.id)
+                })
+            })
+        } else {
+            None
+        };
+        let mut captured = platform::capture(display_id.or(selected.as_deref()))?;
         if captured.width == 0 || captured.height == 0 {
             return Err("屏幕截图尺寸无效".into());
         }
         let image = RgbaImage::from_raw(captured.width, captured.height, captured.rgba)
             .ok_or_else(|| "屏幕截图像素数据不完整".to_string())?;
         let mut dynamic = DynamicImage::ImageRgba8(image);
+        if let Some([x, y, width, height]) = region {
+            if [x, y, width, height].iter().any(|v| !v.is_finite()) || width <= 0.0 || height <= 0.0
+            {
+                return Err("invalid_window_bounds".into());
+            }
+            let sx = captured.width as f64 / captured.logical_width;
+            let sy = captured.height as f64 / captured.logical_height;
+            let left = ((x - captured.origin_x) * sx)
+                .max(0.0)
+                .min(captured.width as f64) as u32;
+            let top = ((y - captured.origin_y) * sy)
+                .max(0.0)
+                .min(captured.height as f64) as u32;
+            let right = ((x + width - captured.origin_x) * sx)
+                .max(0.0)
+                .min(captured.width as f64) as u32;
+            let bottom = ((y + height - captured.origin_y) * sy)
+                .max(0.0)
+                .min(captured.height as f64) as u32;
+            if right <= left || bottom <= top {
+                return Err("window_not_on_display".into());
+            }
+            dynamic = dynamic.crop_imm(left, top, right - left, bottom - top);
+            captured.origin_x += left as f64 / sx;
+            captured.origin_y += top as f64 / sy;
+            captured.logical_width = (right - left) as f64 / sx;
+            captured.logical_height = (bottom - top) as f64 / sy;
+        }
         if dynamic.width() > MAX_SCREENSHOT_WIDTH || dynamic.height() > MAX_SCREENSHOT_HEIGHT {
             dynamic = dynamic.resize(
                 MAX_SCREENSHOT_WIDTH,
@@ -154,7 +349,10 @@ impl ComputerController {
         self.last_frame = Some(StoredFrame {
             meta: meta.clone(),
             visual_signature,
+            pixels: Some(dynamic.to_luma8()),
             foreground_target,
+            native_window: false,
+            native_witness: None,
         });
         Ok(ScreenshotFrame {
             png_base64: base64::engine::general_purpose::STANDARD.encode(png.into_inner()),
@@ -163,7 +361,7 @@ impl ComputerController {
     }
 
     pub fn move_pointer(&mut self, frame_id: &str, x: f64, y: f64) -> Result<(f64, f64), String> {
-        self.verify_frame_unchanged(frame_id)?;
+        self.verify_frame_unchanged(frame_id, None)?;
         let (desktop_x, desktop_y) = self.resolve_point(frame_id, x, y)?;
         // Hover effects, menus and tooltips can change the visual target even
         // when the pointer only moves. Invalidate before dispatch so a partial
@@ -181,7 +379,7 @@ impl ComputerController {
         button: &str,
         count: u32,
     ) -> Result<(f64, f64), String> {
-        self.verify_frame_unchanged(frame_id)?;
+        self.verify_frame_unchanged(frame_id, Some((x, y)))?;
         let (desktop_x, desktop_y) = self.resolve_point(frame_id, x, y)?;
         self.last_frame = None;
         platform::click(desktop_x, desktop_y, button, count.clamp(1, 3))?;
@@ -197,7 +395,7 @@ impl ComputerController {
         to_y: f64,
         duration_ms: u64,
     ) -> Result<(), String> {
-        self.verify_frame_unchanged(frame_id)?;
+        self.verify_frame_unchanged(frame_id, Some((from_x, from_y)))?;
         let (desktop_from_x, desktop_from_y) = self.resolve_point(frame_id, from_x, from_y)?;
         let (desktop_to_x, desktop_to_y) = self.resolve_point(frame_id, to_x, to_y)?;
         self.last_frame = None;
@@ -207,14 +405,38 @@ impl ComputerController {
             desktop_to_x,
             desktop_to_y,
             duration_ms.clamp(100, 5_000),
+            self.input_token
+                .as_ref()
+                .unwrap_or(&tokio_util::sync::CancellationToken::new()),
         )?;
         Ok(())
     }
 
     pub fn scroll(&mut self, frame_id: &str, delta_x: i32, delta_y: i32) -> Result<(), String> {
-        self.verify_frame_unchanged(frame_id)?;
-        self.require_frame(frame_id)?;
+        self.scroll_at(frame_id, delta_x, delta_y, None)
+    }
+    pub fn scroll_at(
+        &mut self,
+        frame_id: &str,
+        delta_x: i32,
+        delta_y: i32,
+        point: Option<(f64, f64)>,
+    ) -> Result<(), String> {
+        let meta = &self.require_frame(frame_id)?.meta;
+        let (x, y) = point.unwrap_or((
+            f64::from(meta.image_width) / 2.,
+            f64::from(meta.image_height) / 2.,
+        ));
+        self.verify_frame_unchanged(frame_id, Some((x, y)))?;
+        let (dx, dy) = self.resolve_point(frame_id, x, y)?;
         self.last_frame = None;
+        if self.input_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+            return Err("cancelled: no scroll dispatched".into());
+        }
+        platform::move_pointer(dx, dy)?;
+        if self.input_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+            return Err("cancelled: scroll interrupted".into());
+        }
         platform::scroll(
             delta_x.clamp(-10_000, 10_000),
             delta_y.clamp(-10_000, 10_000),
@@ -223,18 +445,35 @@ impl ComputerController {
     }
 
     pub fn type_text(&mut self, frame_id: &str, text: &str) -> Result<(), String> {
-        self.verify_frame_unchanged(frame_id)?;
+        self.verify_frame_unchanged(frame_id, None)?;
         self.require_frame(frame_id)?;
         if text.len() > 64 * 1024 {
             return Err("单次输入不能超过 64KB".into());
         }
+        let target = self
+            .last_frame
+            .as_ref()
+            .and_then(|f| f.foreground_target.as_ref().map(|f| f.id.clone()));
         self.last_frame = None;
-        platform::type_text(text)?;
+        for chunk in text_chunks(text) {
+            if self.input_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+                return Err("cancelled: text input interrupted; observe before retry".into());
+            }
+            if target.as_ref().is_some_and(|target| {
+                platform::foreground_target().as_ref().map(|f| &f.id) != Some(target)
+            }) {
+                return Err(
+                    "focus_changed: foreground changed during text input; inspect before retry"
+                        .into(),
+                );
+            }
+            platform::type_text(chunk)?;
+        }
         Ok(())
     }
 
     pub fn key(&mut self, frame_id: &str, key: &str, modifiers: &[String]) -> Result<(), String> {
-        self.verify_frame_unchanged(frame_id)?;
+        self.verify_frame_unchanged(frame_id, None)?;
         self.require_frame(frame_id)?;
         if key.is_empty() || key.chars().count() > 64 || modifiers.len() > 4 {
             return Err("按键参数无效".into());
@@ -275,27 +514,68 @@ impl ComputerController {
             .last_frame
             .as_ref()
             .filter(|frame| frame.meta.frame_id == frame_id)
-            .ok_or_else(|| "截图已过期，请先重新调用 computer_screenshot".to_string())?;
+            .ok_or_else(|| "截图已过期，请先重新调用 computer_screenshot。当前输入未执行；每个 frameId 仅能执行一次输入。重新截图后直接做下一步，不要重复已成功的点击。".to_string())?;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis()
             .min(u128::from(u64::MAX)) as u64;
         if now_ms.saturating_sub(frame.meta.captured_at_ms) > MAX_FRAME_AGE_MS {
-            return Err("截图已超过 30 秒，为避免错位操作，请重新截图".into());
+            return Err("stale_frame: 截图已超过 30 秒，为避免错位操作，请重新截取目标窗口".into());
         }
         Ok(frame)
     }
 
-    fn verify_frame_unchanged(&self, frame_id: &str) -> Result<(), String> {
+    fn verify_frame_unchanged(
+        &self,
+        frame_id: &str,
+        point: Option<(f64, f64)>,
+    ) -> Result<(), String> {
         let stored = self.require_frame(frame_id)?;
         if let Some(target) = stored.foreground_target.as_ref() {
-            platform::restore_foreground(target)?;
-            // Activation is asynchronous on both macOS and Windows. Give the
-            // compositor one short frame to settle before comparing pixels.
-            std::thread::sleep(Duration::from_millis(180));
+            if platform::foreground_target()
+                .as_ref()
+                .map(|current| &current.id)
+                != Some(&target.id)
+            {
+                return Err("focus_changed: user selected another application; no input dispatched; capture current state without stealing focus".into());
+            }
         }
-        let captured = platform::capture(Some(&stored.meta.display_id))?;
+        if stored.native_window {
+            if stored
+                .native_witness
+                .as_ref()
+                .is_some_and(|(at, verified_point)| {
+                    at.elapsed() < Duration::from_secs(2)
+                        && (point.is_none() || *verified_point == point)
+                })
+            {
+                return Ok(());
+            }
+            return Err(
+                "stale_frame: native window must be revalidated immediately before input".into(),
+            );
+        }
+        let mut captured = platform::capture(Some(&stored.meta.display_id))?;
+        let source_x = captured.origin_x;
+        let source_y = captured.origin_y;
+        let sx = captured.width as f64 / captured.logical_width;
+        let sy = captured.height as f64 / captured.logical_height;
+        let left = ((stored.meta.origin_x - source_x) * sx).round() as i64;
+        let top = ((stored.meta.origin_y - source_y) * sy).round() as i64;
+        let width = (stored.meta.logical_width * sx).round() as u32;
+        let height = (stored.meta.logical_height * sy).round() as u32;
+        if left < 0
+            || top < 0
+            || left as u32 + width > captured.width
+            || top as u32 + height > captured.height
+        {
+            return Err("display_layout_changed: capture a fresh frame".into());
+        }
+        captured.origin_x = stored.meta.origin_x;
+        captured.origin_y = stored.meta.origin_y;
+        captured.logical_width = stored.meta.logical_width;
+        captured.logical_height = stored.meta.logical_height;
         if (captured.origin_x - stored.meta.origin_x).abs() > f64::EPSILON
             || (captured.origin_y - stored.meta.origin_y).abs() > f64::EPSILON
             || (captured.logical_width - stored.meta.logical_width).abs() > f64::EPSILON
@@ -305,7 +585,8 @@ impl ComputerController {
         }
         let image = RgbaImage::from_raw(captured.width, captured.height, captured.rgba)
             .ok_or_else(|| "屏幕验证像素数据不完整".to_string())?;
-        let mut dynamic = DynamicImage::ImageRgba8(image);
+        let mut dynamic =
+            DynamicImage::ImageRgba8(image).crop_imm(left as u32, top as u32, width, height);
         if dynamic.width() > MAX_SCREENSHOT_WIDTH || dynamic.height() > MAX_SCREENSHOT_HEIGHT {
             dynamic = dynamic.resize(
                 MAX_SCREENSHOT_WIDTH,
@@ -319,8 +600,60 @@ impl ComputerController {
         {
             return Err("屏幕内容在截图后已明显变化，为避免点错窗口或控件，请重新截图".into());
         }
+        if let (Some((x, y)), Some(before)) = (point, stored.pixels.as_ref()) {
+            if !local_region_matches(before, &dynamic.to_luma8(), x, y) {
+                return Err(
+                    "target_changed: pixels near the intended click changed; capture a fresh frame"
+                        .into(),
+                );
+            }
+        }
         Ok(())
     }
+}
+
+fn local_region_matches(
+    before: &image::GrayImage,
+    after: &image::GrayImage,
+    x: f64,
+    y: f64,
+) -> bool {
+    if before.dimensions() != after.dimensions() || !x.is_finite() || !y.is_finite() {
+        return false;
+    }
+    let (width, height) = before.dimensions();
+    let (left, top) = ((x as u32).saturating_sub(32), (y as u32).saturating_sub(24));
+    let (right, bottom) = (
+        (x as u32).saturating_add(32).min(width),
+        (y as u32).saturating_add(24).min(height),
+    );
+    let (mut total, mut changed, mut count) = (0u64, 0u64, 0u64);
+    for py in top..bottom {
+        for px in left..right {
+            let d = before.get_pixel(px, py)[0].abs_diff(after.get_pixel(px, py)[0]);
+            total += d as u64;
+            changed += u64::from(d > 24);
+            count += 1;
+        }
+    }
+    count > 0 && total as f64 / count as f64 <= 4.0 && changed as f64 / count as f64 <= 0.05
+}
+
+fn text_chunks(text: &str) -> Vec<&str> {
+    let (mut start, mut units) = (0, 0);
+    let mut chunks = vec![];
+    for (offset, c) in text.char_indices() {
+        if units + c.len_utf16() > 20 {
+            chunks.push(&text[start..offset]);
+            start = offset;
+            units = 0;
+        }
+        units += c.len_utf16();
+    }
+    if start < text.len() {
+        chunks.push(&text[start..]);
+    }
+    chunks
 }
 
 fn visual_signature(image: &DynamicImage) -> Vec<u8> {
@@ -371,6 +704,16 @@ mod platform {
     };
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use objc2_app_kit::NSRunningApplication;
+
+    trait TaggedPost {
+        fn post_tagged(&self, location: CGEventTapLocation);
+    }
+    impl TaggedPost for CGEvent {
+        fn post_tagged(&self, location: CGEventTapLocation) {
+            self.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, INPUT_EVENT_TAG);
+            self.post(location);
+        }
+    }
 
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
@@ -583,7 +926,7 @@ mod platform {
         )
         .map_err(|_| "创建鼠标移动事件失败".to_string())?;
         event.set_flags(CGEventFlags::CGEventFlagNull);
-        event.post(CGEventTapLocation::HID);
+        event.post_tagged(CGEventTapLocation::HID);
         Ok(())
     }
 
@@ -639,8 +982,8 @@ mod platform {
                 mouse_button,
                 i64::from(click_number),
             )?;
-            down_event.post(CGEventTapLocation::HID);
-            up_event.post(CGEventTapLocation::HID);
+            down_event.post_tagged(CGEventTapLocation::HID);
+            up_event.post_tagged(CGEventTapLocation::HID);
             std::thread::sleep(Duration::from_millis(60));
         }
         Ok(())
@@ -677,6 +1020,7 @@ mod platform {
         to_x: f64,
         to_y: f64,
         duration_ms: u64,
+        token: &tokio_util::sync::CancellationToken,
     ) -> Result<(), String> {
         move_pointer(from_x, from_y)?;
         CGEvent::new_mouse_event(
@@ -686,10 +1030,13 @@ mod platform {
             CGMouseButton::Left,
         )
         .map_err(|_| "创建拖拽按下事件失败".to_string())?
-        .post(CGEventTapLocation::HID);
+        .post_tagged(CGEventTapLocation::HID);
         let steps = (duration_ms / 16).clamp(4, 120);
         let movement = (|| {
             for step in 1..=steps {
+                if token.is_cancelled() {
+                    return Err("cancelled: drag movement stopped".into());
+                }
                 let ratio = step as f64 / steps as f64;
                 let x = from_x + (to_x - from_x) * ratio;
                 let y = from_y + (to_y - from_y) * ratio;
@@ -700,7 +1047,7 @@ mod platform {
                     CGMouseButton::Left,
                 )
                 .map_err(|_| "创建拖拽移动事件失败".to_string())?
-                .post(CGEventTapLocation::HID);
+                .post_tagged(CGEventTapLocation::HID);
                 std::thread::sleep(Duration::from_millis(16));
             }
             Ok(())
@@ -712,14 +1059,14 @@ mod platform {
             CGMouseButton::Left,
         )
         .map_err(|_| "创建拖拽释放事件失败".to_string())
-        .map(|event| event.post(CGEventTapLocation::HID));
+        .map(|event| event.post_tagged(CGEventTapLocation::HID));
         movement.and(release)
     }
 
     pub fn scroll(delta_x: i32, delta_y: i32) -> Result<(), String> {
         CGEvent::new_scroll_event(source()?, ScrollEventUnit::PIXEL, 2, -delta_y, -delta_x, 0)
             .map_err(|_| "创建滚动事件失败".to_string())?
-            .post(CGEventTapLocation::HID);
+            .post_tagged(CGEventTapLocation::HID);
         Ok(())
     }
 
@@ -728,12 +1075,12 @@ mod platform {
             .map_err(|_| "创建键盘输入事件失败".to_string())?;
         down.set_flags(CGEventFlags::CGEventFlagNull);
         down.set_string(text);
-        down.post(CGEventTapLocation::HID);
+        down.post_tagged(CGEventTapLocation::HID);
         let up = CGEvent::new_keyboard_event(source()?, 0, false)
             .map_err(|_| "创建键盘释放事件失败".to_string())?;
         up.set_flags(CGEventFlags::CGEventFlagNull);
         up.set_string(text);
-        up.post(CGEventTapLocation::HID);
+        up.post_tagged(CGEventTapLocation::HID);
         Ok(())
     }
 
@@ -743,14 +1090,49 @@ mod platform {
         let down = CGEvent::new_keyboard_event(source()?, keycode, true)
             .map_err(|_| "创建按键事件失败".to_string())?;
         down.set_flags(flags);
-        down.post(CGEventTapLocation::HID);
+        down.post_tagged(CGEventTapLocation::HID);
         let up = CGEvent::new_keyboard_event(source()?, keycode, false)
             .map_err(|_| "创建按键释放事件失败".to_string())?;
         up.set_flags(flags);
-        up.post(CGEventTapLocation::HID);
+        up.post_tagged(CGEventTapLocation::HID);
         Ok(())
     }
 
+    fn post_to_app(event: &CGEvent, pid: i32) {
+        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, INPUT_EVENT_TAG);
+        event.post_to_pid(pid);
+    }
+    pub fn key_to_pid(pid: i32, key: &str, modifiers: &[String]) -> Result<(), String> {
+        let code = keycode(key)?;
+        let flags = modifier_flags(modifiers)?;
+        let down = CGEvent::new_keyboard_event(source()?, code, true)
+            .map_err(|_| "native_failure: keyboard event allocation")?;
+        let up = CGEvent::new_keyboard_event(source()?, code, false)
+            .map_err(|_| "native_failure: keyboard release allocation")?;
+        down.set_flags(flags);
+        up.set_flags(flags);
+        // PID-directed events bypass HID keyboard-layout translation. AppKit
+        // menu equivalents need actual characters as well as the virtual key.
+        if key.chars().count() == 1 {
+            down.set_string(key);
+            up.set_string(key);
+        }
+        post_to_app(&down, pid);
+        post_to_app(&up, pid);
+        Ok(())
+    }
+    pub fn text_to_pid(pid: i32, text: &str) -> Result<(), String> {
+        let down = CGEvent::new_keyboard_event(source()?, 0, true)
+            .map_err(|_| "native_failure: text event allocation")?;
+        let up = CGEvent::new_keyboard_event(source()?, 0, false)
+            .map_err(|_| "native_failure: text release allocation")?;
+        for event in [&down, &up] {
+            event.set_flags(CGEventFlags::CGEventFlagNull);
+            event.set_string(text);
+            post_to_app(event, pid);
+        }
+        Ok(())
+    }
     fn modifier_flags(modifiers: &[String]) -> Result<CGEventFlags, String> {
         let mut flags = CGEventFlags::CGEventFlagNull;
         for modifier in modifiers {
@@ -1070,7 +1452,7 @@ mod platform {
                     mouseData: data,
                     dwFlags: flags,
                     time: 0,
-                    dwExtraInfo: 0,
+                    dwExtraInfo: INPUT_EVENT_TAG as usize,
                 },
             },
         };
@@ -1104,12 +1486,16 @@ mod platform {
         to_x: f64,
         to_y: f64,
         duration_ms: u64,
+        token: &tokio_util::sync::CancellationToken,
     ) -> Result<(), String> {
         move_pointer(from_x, from_y)?;
         mouse(MOUSEEVENTF_LEFTDOWN, 0)?;
         let steps = (duration_ms / 16).clamp(4, 120);
         let movement = (|| {
             for step in 1..=steps {
+                if token.is_cancelled() {
+                    return Err("cancelled: drag movement stopped".into());
+                }
                 let ratio = step as f64 / steps as f64;
                 move_pointer(
                     from_x + (to_x - from_x) * ratio,
@@ -1142,7 +1528,7 @@ mod platform {
                     wScan: scan,
                     dwFlags: flags,
                     time: 0,
-                    dwExtraInfo: 0,
+                    dwExtraInfo: INPUT_EVENT_TAG as usize,
                 },
             },
         };
@@ -1537,12 +1923,16 @@ mod platform {
         to_x: f64,
         to_y: f64,
         duration_ms: u64,
+        token: &tokio_util::sync::CancellationToken,
     ) -> Result<(), String> {
         move_pointer(from_x, from_y)?;
         mouse_button(1, true)?;
         let steps = (duration_ms / 16).clamp(4, 120);
         let movement = (|| {
             for step in 1..=steps {
+                if token.is_cancelled() {
+                    return Err("cancelled: drag movement stopped".into());
+                }
                 let ratio = step as f64 / steps as f64;
                 move_pointer(
                     from_x + (to_x - from_x) * ratio,
@@ -1757,6 +2147,22 @@ compile_error!("Computer Use has no backend for this target OS");
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn small_target_changes_are_rejected_even_when_whole_screen_looks_similar() {
+        let before = image::GrayImage::from_pixel(1000, 800, image::Luma([100]));
+        let mut after = before.clone();
+        for y in 380..420 {
+            for x in 480..520 {
+                after.put_pixel(x, y, image::Luma([230]));
+            }
+        }
+        assert!(visual_signatures_match(
+            &visual_signature(&DynamicImage::ImageLuma8(before.clone())),
+            &visual_signature(&DynamicImage::ImageLuma8(after.clone()))
+        ));
+        assert!(!local_region_matches(&before, &after, 500.0, 400.0));
+        assert!(local_region_matches(&before, &after, 100.0, 100.0));
+    }
 
     #[test]
     fn stale_frames_are_rejected() {
@@ -1780,7 +2186,11 @@ mod tests {
                 },
                 visual_signature: vec![0; 32 * 18],
                 foreground_target: None,
+                pixels: None,
+                native_window: false,
+                native_witness: None,
             }),
+            input_token: None,
         };
         assert!(controller.resolve_point("old", 10.0, 10.0).is_err());
         assert_eq!(
@@ -1804,5 +2214,47 @@ mod tests {
         assert!(visual_signatures_match(&baseline, &minor));
         let replaced = vec![220_u8; 32 * 18];
         assert!(!visual_signatures_match(&baseline, &replaced));
+    }
+}
+
+#[cfg(test)]
+mod window_frame_tests {
+    use super::*;
+    fn png(changed: Option<(u32, u32)>) -> String {
+        let mut image = image::RgbaImage::from_pixel(320, 200, image::Rgba([50, 100, 160, 255]));
+        if let Some((x, y)) = changed {
+            for dx in 0..50 {
+                for dy in 0..40 {
+                    image.put_pixel(x + dx, y + dy, image::Rgba([250, 250, 250, 255]));
+                }
+            }
+        }
+        let mut out = Cursor::new(vec![]);
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut out, ImageFormat::Png)
+            .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(out.into_inner())
+    }
+    #[test]
+    fn bound_frames_require_a_fresh_native_witness_and_reject_geometry_or_local_changes() {
+        let mut c = ComputerController::default();
+        let data = png(None);
+        let bounds = [-200., 10., 640., 400.];
+        let frame = c.window_frame(&data, bounds, "canvas").unwrap();
+        let id = &frame.meta.frame_id;
+        assert!(c
+            .validate_visual_point(id, 70., 70.)
+            .unwrap_err()
+            .starts_with("stale_frame"));
+        assert!(c
+            .verify_window_frame(id, &data, [0., 10., 640., 400.], Some((70., 70.)))
+            .is_err());
+        assert!(c
+            .verify_window_frame(id, &png(Some((50, 50))), bounds, Some((70., 70.)))
+            .is_err());
+        c.verify_window_frame(id, &png(Some((250, 150))), bounds, Some((70., 70.)))
+            .unwrap();
+        assert_eq!(c.validate_visual_point(id, 70., 70.).unwrap(), (-60., 150.));
+        assert!(c.frame_meta(id).is_err());
     }
 }

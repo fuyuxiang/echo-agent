@@ -42,6 +42,8 @@ describe.skipIf(process.platform !== 'darwin')('native Core workspace confirmati
     expect(confirmNativeCoreWorkspace(scope, run)).toBe(true);
     expect(run.mock.calls[0][0]).toBe('/usr/bin/osascript');
     expect(run.mock.calls[0][2].timeout).toBe(10000);
+    expect(run.mock.calls[0][1].at(-1)).toContain('processes.at(processIndex)');
+    expect(run.mock.calls[0][1].at(-1)).toContain(`p.unixId() !== ${scope.pid}`);
     for (const result of [{ selected: true, pid: 999, cwd }, { selected: true, pid: scope.pid, cwd: '/' }, { selected: false, ...scope }]) {
       run.mockReturnValue(JSON.stringify(result));
       expect(() => confirmNativeCoreWorkspace(scope, run)).toThrow();

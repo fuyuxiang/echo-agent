@@ -20,9 +20,13 @@ export function confirmNativeReviewWorkspace({ pid, home, cwd, kind }, run = exe
       && !(info.mode & 0o077) && realpathSync(path) === path, 'Picker workspace must be ordinary, private and owned');
   }
   const script = `JSON.stringify((() => {
-    const matches = Application('System Events').applicationProcesses.whose({unixId:${pid}})();
-    if (matches.length !== 1) return {waiting:true};
-    const p = matches[0];
+    // Do not evaluate process objects into name-based references: two apps
+    // named echoagent otherwise both resolve to the first running instance.
+    const processes = Application('System Events').applicationProcesses;
+    const processIndex = processes.unixId().indexOf(${pid});
+    if (processIndex < 0) return {waiting:true};
+    const p = processes.at(processIndex);
+    if (p.unixId() !== ${pid}) throw new Error('Owned PID changed during picker lookup');
     if (p.name().toLowerCase() !== 'echoagent') throw new Error('Owned PID is not EchoAgent');
     const panel = () => p.windows().flatMap(w => [w,...w.sheets()]).find(w =>
       w.role() === 'AXSheet' && w.staticTexts().some(t => t.name() === '选择 EchoAgent 可访问的文件夹'));

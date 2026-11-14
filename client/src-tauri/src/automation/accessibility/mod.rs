@@ -10,11 +10,26 @@ use macos::Backend as Platform;
 use windows::Backend as Platform;
 #[cfg(any(target_os = "windows", test))]
 mod app_names;
+#[cfg(target_os = "windows")]
+pub(super) fn windows_application_names(path: &str) -> (String, Vec<String>) {
+    app_names::windows_names(path, &windows::application_descriptions(path))
+}
 mod context;
+mod helper;
+pub fn run_helper() -> Result<(), String> {
+    helper::main()
+}
 mod file_dialog;
+#[cfg(target_os = "macos")]
+mod macos_screencapture;
+#[cfg(target_os = "macos")]
+mod macos_video_capture;
+#[cfg(target_os = "macos")]
+mod macos_vision;
 mod paging;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod unsupported;
+mod visual_text;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use unsupported::Backend as Platform;
 
@@ -175,14 +190,78 @@ pub fn normalize_integer_options(method: &str, args: &Value) -> Result<Value, St
     Ok(normalized)
 }
 
+/// Capability is per action, not a promise that every operation is background.
+pub fn foreground_required(method: &str, args: &Value) -> bool {
+    match method {
+        "computer_activate_window" => true,
+        "computer_open_app" | "_open_app" => {
+            args["foreground"] == true || !cfg!(target_os = "macos")
+        }
+        "computer_key_window" | "computer_click_control" | "computer_file_dialog" => {
+            !cfg!(target_os = "macos")
+        }
+        "computer_set_value" => args["inputMethod"] == "keyboard" && !cfg!(target_os = "macos"),
+        "computer_invoke" => args["action"] == "focus" && !cfg!(target_os = "macos"),
+        _ => false,
+    }
+}
+
 pub trait Native: Sized {
     type Element: Clone;
     fn new() -> Result<Self, String>;
+    fn process_id(&self, _element: &Self::Element) -> Option<u32> {
+        None
+    }
+    fn process_ids(&self, element: &Self::Element) -> Vec<u32> {
+        self.process_id(element).into_iter().collect()
+    }
+    fn application_bundle_path(&self, _element: &Self::Element) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn prepare_input_window(&self, element: &Self::Element) -> Result<bool, String> {
+        self.activate(element)
+    }
+    fn capture_window(&self, _element: &Self::Element) -> Result<Value, String> {
+        Err(
+            "unsupported_action: background window capture unavailable; use native observation"
+                .into(),
+        )
+    }
+    fn recognize_text(&self, _png: &[u8]) -> Result<Vec<visual_text::Line>, String> {
+        Err(
+            "unsupported_action: system visual text recognition is unavailable on this platform"
+                .into(),
+        )
+    }
+    fn focused_target(&self) -> Result<(Self::Element, Self::Element), String> {
+        Err("unsupported_action: trustworthy input focus unavailable on this platform".into())
+    }
+    fn foreground_window(&self) -> Result<Self::Element, String> {
+        self.focused_target().map(|(window, _)| window)
+    }
+    fn keyboard_focus(&self, window: &Self::Element) -> Result<Option<Self::Element>, String> {
+        let (current, focus) = self.focused_target()?;
+        if !self.same_element(window, &current) {
+            return Err("focus_changed: foreground window changed".into());
+        }
+        Ok(Some(focus))
+    }
+    fn hit_target(
+        &self,
+        _window: &Self::Element,
+        _x: f64,
+        _y: f64,
+    ) -> Result<Self::Element, String> {
+        Err("unsupported_action: native hit testing unavailable".into())
+    }
     fn check_session(&self) -> Result<(), String> {
         Ok(())
     }
     fn open_app(&self, _path: &str) -> Result<bool, String> {
         Err("unsupported_platform: application launch unavailable".into())
+    }
+    fn reopen_app(&self, path: &str) -> Result<bool, String> {
+        self.open_app(path)
     }
     fn apps(&self) -> Result<Listing<Self::Element>, String>;
     fn windows(&self, app: Option<&Self::Element>) -> Result<Listing<Self::Element>, String>;
@@ -233,6 +312,18 @@ pub trait Native: Sized {
     ) -> Result<(), String> {
         Err("unsupported_action: window-bound keyboard input is unavailable".into())
     }
+    fn key_cancellable(
+        &self,
+        element: &Self::Element,
+        key: &str,
+        modifiers: &[String],
+        token: &CancellationToken,
+    ) -> Result<(), String> {
+        if token.is_cancelled() {
+            return Err("cancelled: no key dispatched".into());
+        }
+        self.key(element, key, modifiers)
+    }
     fn click_control(
         &self,
         _element: &Self::Element,
@@ -254,6 +345,24 @@ pub trait Native: Sized {
     fn emit_text(&self, _element: &Self::Element, text: &str) -> Result<(), String> {
         super::computer::text_after_native_focus(text)
     }
+    fn select_all_text(
+        &self,
+        _element: &Self::Element,
+        window: &Self::Element,
+        token: &CancellationToken,
+    ) -> Result<(), String> {
+        self.key_cancellable(
+            window,
+            "a",
+            &[if cfg!(target_os = "macos") {
+                "cmd"
+            } else {
+                "ctrl"
+            }
+            .into()],
+            token,
+        )
+    }
     fn replace_text(
         &self,
         element: &Self::Element,
@@ -261,7 +370,7 @@ pub trait Native: Sized {
         value: &str,
         token: &CancellationToken,
     ) -> Result<(), String> {
-        if !self.activate(window)? {
+        if !self.prepare_input_window(window)? {
             return Err(
                 "focus_changed: original text window did not activate; no input dispatched".into(),
             );
@@ -279,18 +388,9 @@ pub trait Native: Sized {
             self.verify_text_focus(element, window)
         };
         verify()?;
-        self.key(
-            window,
-            "a",
-            &[if cfg!(target_os = "macos") {
-                "cmd"
-            } else {
-                "ctrl"
-            }
-            .into()],
-        )?;
+        self.select_all_text(element, window, token)?;
         verify()?;
-        self.key(window, "backspace", &[])?;
+        self.key_cancellable(window, "backspace", &[], token)?;
         for chunk in unicode_input_chunks(value) {
             verify()?;
             self.emit_text(element, chunk)?;
@@ -503,7 +603,7 @@ fn matches(node: &Node, args: &Value) -> bool {
 impl<B: Native> Context<B> {
     fn insert(&mut self, reference: Reference<B::Element>) -> Result<Value, String> {
         self.refs
-            .retain(|_, r| r.kind != "element" || r.created.elapsed() < REF_AGE);
+            .retain(|_, r| !matches!(r.kind, "element" | "input") || r.created.elapsed() < REF_AGE);
         let existing = if reference.kind != "element" {
             self.refs
                 .iter()
@@ -539,7 +639,7 @@ impl<B: Native> Context<B> {
         Ok(value)
     }
     fn resolve(&self, id: &str) -> Result<Reference<B::Element>, String> {
-        let reference = self.refs.get(id).filter(|r| r.kind != "element" || r.created.elapsed() < REF_AGE)
+        let reference = self.refs.get(id).filter(|r| !matches!(r.kind,"element"|"input") || r.created.elapsed() < REF_AGE)
             .ok_or("stale_reference: unknown, expired, or belongs to another session; refresh discovery/snapshot")?;
         self.backend
             .validate(&reference.element, reference.window.as_ref())?;
@@ -768,7 +868,8 @@ impl<B: Native> Context<B> {
         token: &CancellationToken,
     ) -> Result<Value, String> {
         if method == "_invalidate_elements" {
-            self.refs.retain(|_, r| r.kind != "element");
+            self.refs
+                .retain(|_, r| !matches!(r.kind, "element" | "input"));
             self.approvals.clear();
             self.pages.clear();
             return Ok(json!({"invalidated":true}));
@@ -874,9 +975,205 @@ impl<B: Native> Context<B> {
         self.approvals
             .retain(|_, r| r.created.elapsed() < Duration::from_secs(300));
         match method {
+            "_verify_visual" => {
+                visual_text::validate(args)?;
+                let before = self.run_inner("_guard_window", args, token)?;
+                let target =
+                    self.resolve(before["windowRef"].as_str().ok_or("window_required")?)?;
+                let image = self.backend.capture_window(&target.element)?;
+                let mut result = visual_text::verify(&image, args, token, |png| {
+                    self.backend.recognize_text(png)
+                })?;
+                let after = self.run_inner("_guard_window", args, token)?;
+                if !super::visual_target::same_window(&before, &after) {
+                    return Err(
+                        "target_changed: requested window changed during visual verification"
+                            .into(),
+                    );
+                }
+                result["window"] = after;
+                Ok(result)
+            }
+            "_capture_foreground_frame" => {
+                let before = self.run_inner("_guard_window", args, token)?;
+                let target =
+                    self.resolve(before["windowRef"].as_str().ok_or("window_required")?)?;
+                let image = self.backend.capture_window(&target.element)?;
+                let after = self.run_inner("_guard_window", args, token)?;
+                if !super::visual_target::same_window(&before, &after) {
+                    return Err("target_changed: requested window changed during capture".into());
+                }
+                Ok(json!({"guard":after,"capture":image}))
+            }
+            "_guard_point" => {
+                let window = self.backend.foreground_window()?;
+                if let Some(expected) = args["windowRef"].as_str() {
+                    if !self
+                        .backend
+                        .same_element(&window, &self.resolve(expected)?.element)
+                    {
+                        return Err("foreground_required: the requested window is not foreground; no input dispatched".into());
+                    }
+                }
+                let x = args["x"]
+                    .as_f64()
+                    .filter(|v| v.is_finite())
+                    .ok_or("invalid_point")?;
+                let y = args["y"]
+                    .as_f64()
+                    .filter(|v| v.is_finite())
+                    .ok_or("invalid_point")?;
+                let hit = self.backend.hit_target(&window, x, y)?;
+                self.backend.validate(&hit, Some(&window))?;
+                let node = redact(self.backend.inspect(&hit)?);
+                if node.protected {
+                    return Err("protected: visual target requires user takeover".into());
+                }
+                let process_ids = self.backend.process_ids(&window);
+                let window_info = self.backend.inspect(&window)?;
+                let document = self.backend.document_url(&window)?;
+                let reference = self.insert(Reference {
+                    element: hit,
+                    window: Some(window),
+                    window_ref: None,
+                    kind: "element",
+                    observed: node.clone(),
+                    observed_document: document,
+                    approved_window: Some(window_info),
+                    created: Instant::now(),
+                })?;
+                Ok(
+                    json!({"ref":reference["ref"],"application":node.application,"name":node.name,"role":node.role,"identifier":node.identifier,"processIds":process_ids}),
+                )
+            }
+            "_click_point" => {
+                let target = self.resolve(string(args, "ref")?)?;
+                let window = target.window.as_ref().ok_or("window_required")?;
+                let x = args["x"].as_f64().ok_or("invalid_point")?;
+                let y = args["y"].as_f64().ok_or("invalid_point")?;
+                let focused = self.backend.foreground_window()?;
+                if !self.backend.same_element(window, &focused) {
+                    return Err("focus_changed: no visual click dispatched".into());
+                }
+                if let Some(expected) = &target.approved_window {
+                    let mut expected = expected.clone();
+                    let mut current = self.backend.inspect(window)?;
+                    expected.focused = false;
+                    current.focused = false;
+                    if current != expected
+                        || self.backend.document_url(window)? != target.observed_document
+                    {
+                        return Err("target_changed: original visual window changed".into());
+                    }
+                }
+                let hit = self.backend.hit_target(window, x, y)?;
+                let node = redact(self.backend.inspect(&hit)?);
+                let mut before = target.observed.clone();
+                let mut current = node.clone();
+                before.focused = false;
+                current.focused = false;
+                if !self.backend.same_element(&hit, &target.element) || before != current {
+                    return Err(
+                        "target_changed: visual hit target changed; no click dispatched".into(),
+                    );
+                }
+                if node.protected || !node.enabled || node.visible == Some(false) {
+                    return Err("protected: target unavailable".into());
+                }
+                if token.is_cancelled() {
+                    return Err("cancelled: no click dispatched".into());
+                }
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                let result = super::computer::click_button_after_native_target(
+                    x,
+                    y,
+                    args["button"].as_str().unwrap_or("left"),
+                    args["clickCount"].as_u64().unwrap_or(1).clamp(1, 3) as u32,
+                );
+                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                let result: Result<(), String> =
+                    Err("unsupported_action: verified visual click unavailable".into());
+                self.refs
+                    .retain(|_, r| !matches!(r.kind, "element" | "input"));
+                Ok(match result {
+                    Ok(()) => {
+                        json!({"clicked":true,"verified":false,"status":"dispatched_unverified","frameInvalidated":true})
+                    }
+                    Err(error) => {
+                        json!({"status":"result_unknown","verified":false,"error":error,"replaySafe":false})
+                    }
+                })
+            }
+            "_guard_window" | "_guard_input" => {
+                let window = self.backend.foreground_window()?;
+                if let Some(expected) = args["ref"].as_str() {
+                    let expected = self.resolve(expected)?;
+                    if expected.kind != "window"
+                        || !self.backend.same_element(&window, &expected.element)
+                    {
+                        return Err("foreground_required: activate the explicitly requested window before foreground input; observation must not switch to another app".into());
+                    }
+                }
+                let info = self.backend.inspect(&window)?;
+                let document = self.backend.document_url(&window)?;
+                let process_ids = self.backend.process_ids(&window);
+                let identifier = self.backend.application_identifier(&window);
+                let focused = if method == "_guard_input" {
+                    self.backend.keyboard_focus(&window)?
+                } else {
+                    None
+                };
+                let node = focused
+                    .as_ref()
+                    .map(|focused| -> Result<Node, String> {
+                        self.backend.validate(focused, Some(&window))?;
+                        let node = self.backend.inspect(focused)?;
+                        if node.protected {
+                            return Err(
+                                "protected: user takeover required; no visual input dispatched"
+                                    .into(),
+                            );
+                        }
+                        Ok(node)
+                    })
+                    .transpose()?;
+                let reference = self.insert(Reference {
+                    element: window.clone(),
+                    window: None,
+                    window_ref: None,
+                    kind: "window",
+                    observed: info.clone(),
+                    observed_document: None,
+                    approved_window: None,
+                    created: Instant::now(),
+                })?;
+                let focus = if let (Some(focused), Some(node)) = (focused, node) {
+                    Some(self.insert(Reference {
+                        element: focused,
+                        window: Some(window),
+                        window_ref: reference["ref"].as_str().map(str::to_owned),
+                        kind: "input",
+                        observed: node,
+                        observed_document: None,
+                        approved_window: None,
+                        created: Instant::now(),
+                    })?)
+                } else {
+                    None
+                };
+                Ok(
+                    json!({"windowRef":reference["ref"],"focusRef":focus.as_ref().map(|f|f["ref"].clone()),"focusAvailable":focus.is_some(),"application":info.application,"applicationIdentifier":identifier,"windowName":info.name,"windowBounds":info.bounds,"documentUrl":document,"processIds":process_ids}),
+                )
+            }
             "computer_context" => self.desktop_context(args, token),
             "_open_app" => {
-                let verified = match self.backend.open_app(string(args, "appPath")?) {
+                let foreground = args["foreground"] == true;
+                let opened = if foreground {
+                    self.backend.reopen_app(string(args, "appPath")?)
+                } else {
+                    self.backend.open_app(string(args, "appPath")?)
+                };
+                let verified = match opened {
                     Ok(verified) => verified,
                     Err(error) => {
                         return Ok(
@@ -885,7 +1182,7 @@ impl<B: Native> Context<B> {
                     }
                 };
                 Ok(
-                    json!({"executed":true,"verified":verified,"status":if verified {"verified"} else {"executed_unverified"},"replaySafe":false}),
+                    json!({"executed":true,"verified":verified,"runningVerified":verified,"windowVerified":false,"foregroundRequested":foreground,"guidance":"Read computer_context for this app. If it has no usable window, foreground=true explicitly asks the OS to reopen its main window. Running alone does not verify a usable window.","status":if verified {"verified"} else {"executed_unverified"},"replaySafe":false}),
                 )
             }
             "computer_list_apps" | "computer_list_windows" => {
@@ -1113,10 +1410,18 @@ impl<B: Native> Context<B> {
                 } else {
                     target.approved_window.as_ref().map(|n| n.name.clone())
                 };
-                let result = json!({"proof":proof,"target":{"application":target.observed.application,"applicationIdentifier":self.backend.application_identifier(&target.element),"windowName":window_name,"windowRef":target.window_ref,"role":target.observed.role,"name":target.observed.name,"identifier":target.observed.identifier,"bounds":target.observed.bounds,"kind":target.kind}});
+                let result = json!({"proof":proof,"target":{"processId":self.backend.process_id(&target.element),"processIds":self.backend.process_ids(&target.element),"application":target.observed.application,"applicationIdentifier":self.backend.application_identifier(&target.element),"windowName":window_name,"windowRef":target.window_ref,"role":target.observed.role,"name":target.observed.name,"identifier":target.observed.identifier,"bounds":target.observed.bounds,"kind":target.kind}});
                 target.created = Instant::now();
                 self.approvals.insert(proof, target);
                 Ok(result)
+            }
+            "computer_capture_window" => {
+                let target = self.resolve(string(args, "ref")?)?;
+                if target.kind != "window" {
+                    return Err("invalid_argument: observed window ref required".into());
+                }
+                self.backend.validate(&target.element, None)?;
+                self.backend.capture_window(&target.element)
             }
             "computer_activate_window"
             | "computer_invoke"
@@ -1170,7 +1475,8 @@ impl<B: Native> Context<B> {
                         string(args, "path")?,
                         token,
                     );
-                    self.refs.retain(|_, r| r.kind != "element");
+                    self.refs
+                        .retain(|_, r| !matches!(r.kind, "element" | "input"));
                     self.pages.retain(|_, p| p.window_ref.is_none());
                     return Ok(result.unwrap_or_else(|error| json!({"prepared":false,"verified":false,"status":"result_unknown","error":error,"replaySafe":false})));
                 }
@@ -1179,7 +1485,7 @@ impl<B: Native> Context<B> {
                         return Err("invalid_argument: requires an observed window ref".into());
                     }
                     let (key, modifiers) = window_key_input(args)?;
-                    match self.backend.activate(&target.element) {
+                    match self.backend.prepare_input_window(&target.element) {
                         Ok(true) => {}
                         focus => {
                             return Ok(
@@ -1192,8 +1498,11 @@ impl<B: Native> Context<B> {
                             json!({"executed":false,"keyDispatched":false,"focusVerified":true,"verified":false,"status":"cancelled","phase":"before_key","replaySafe":false}),
                         );
                     }
-                    let result = self.backend.key(&target.element, key, &modifiers);
-                    self.refs.retain(|_, r| r.kind != "element");
+                    let result =
+                        self.backend
+                            .key_cancellable(&target.element, key, &modifiers, token);
+                    self.refs
+                        .retain(|_, r| !matches!(r.kind, "element" | "input"));
                     self.pages.retain(|_, p| p.window_ref.is_none());
                     return Ok(match result {
                         Ok(()) => {
@@ -1285,7 +1594,8 @@ impl<B: Native> Context<B> {
                 };
                 // A native call may have performed the action before returning an
                 // error. Consume all control refs and never automatically replay.
-                self.refs.retain(|_, r| r.kind != "element");
+                self.refs
+                    .retain(|_, r| !matches!(r.kind, "element" | "input"));
                 self.pages.retain(|_, page| page.window_ref.is_none());
                 if let Err(error) = result {
                     return Ok(
@@ -1346,7 +1656,8 @@ fn fatal_observation_error(error: &str) -> bool {
 }
 
 pub struct ExecutionLease {
-    pub _desktop: tokio::sync::OwnedMutexGuard<()>,
+    pub _desktop: Option<super::desktop_coordinator::DesktopLease>,
+    pub _input: Vec<super::desktop_coordinator::InputLease>,
     pub _session: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 struct Request {
@@ -1414,7 +1725,16 @@ impl Controller {
             .spawn(move || {
                 let _slot = slot;
                 let _life = life;
-                let backend = Platform::new();
+                let backend = if cfg!(test) {
+                    Platform::new()
+                } else {
+                    Err("native objects live in helper".into())
+                };
+                let mut process = if cfg!(test) {
+                    None
+                } else {
+                    Some(helper::Process::new())
+                };
                 let mut context = backend.map(|backend| Context {
                     backend,
                     refs: HashMap::new(),
@@ -1425,20 +1745,29 @@ impl Controller {
                     if request.reply.is_closed() || request.token.is_cancelled() {
                         continue;
                     }
-                    let result = match context.as_mut() {
-                        Ok(c) => {
-                            #[cfg(target_os = "macos")]
-                            {
-                                objc2::rc::autoreleasepool(|_| {
-                                    c.run(&request.method, &request.args, &request.token)
-                                })
+                    let result = if let Some(process) = process.as_mut() {
+                        match process {
+                            Ok(process) => {
+                                process.call(&request.method, &request.args, &request.token)
                             }
-                            #[cfg(not(target_os = "macos"))]
-                            {
-                                c.run(&request.method, &request.args, &request.token)
-                            }
+                            Err(error) => Err(error.clone()),
                         }
-                        Err(e) => Err(e.clone()),
+                    } else {
+                        match context.as_mut() {
+                            Ok(c) => {
+                                #[cfg(target_os = "macos")]
+                                {
+                                    objc2::rc::autoreleasepool(|_| {
+                                        c.run(&request.method, &request.args, &request.token)
+                                    })
+                                }
+                                #[cfg(not(target_os = "macos"))]
+                                {
+                                    c.run(&request.method, &request.args, &request.token)
+                                }
+                            }
+                            Err(e) => Err(e.clone()),
+                        }
                     };
                     if result.is_ok()
                         && matches!(
@@ -1461,7 +1790,15 @@ impl Controller {
                     }) {
                         PROBED.store(2, std::sync::atomic::Ordering::Relaxed);
                     }
+                    let fatal = result.as_ref().is_err_and(|e| {
+                        e.starts_with("native_timeout")
+                            || e.starts_with("native_failure")
+                            || e.starts_with("helper_")
+                    });
                     let _ = request.reply.send(result);
+                    if fatal && process.is_some() {
+                        break;
+                    }
                 }
             })
             .ok();
@@ -1552,3 +1889,6 @@ pub fn macos_probe() -> Result<(), String> {
     );
     Ok(())
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod visual_acceptance;

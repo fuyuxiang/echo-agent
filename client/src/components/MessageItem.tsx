@@ -1,3 +1,4 @@
+import type { AutomationStatus } from "@/lib/automation-client";
 import { memo, useCallback, useEffect, useId, useRef, useState, useMemo, type ReactNode } from "react";
 import {
   Check,
@@ -99,6 +100,7 @@ function speechText(markdown: string): string {
 export const MessageItem = memo(function MessageItem({
   message,
   messageDay,
+  automationStatus,
   executionLabel,
   executionDescription,
   streaming,
@@ -158,6 +160,7 @@ export const MessageItem = memo(function MessageItem({
   cwd?: string;
   /** Current session id — needed to key feedback entries. */
   sessionId?: string;
+  automationStatus?: AutomationStatus;
   onToast?: (msg: string) => void;
   /** Open tool detail in the right-side panel (Phase 2). */
   onOpenTool?: (tc: ToolCallView) => void;
@@ -195,7 +198,8 @@ export const MessageItem = memo(function MessageItem({
   const continueGuard = useRef(false);
   const [continueError, setContinueError] = useState<string | null>(null);
   const outcome = useMemo(() => getExecutionNotice(message, streaming, runtimeError), [message, streaming, runtimeError]);
-  const notice = outcome?.kind === "stopped" && suppressStoppedNotice ? null : outcome;
+  const desktopWaiting = automationStatus?.task?.phase === "waiting_user" && !automationStatus.task.authorized && automationStatus.task.outcome;
+  const notice = desktopWaiting || (outcome?.kind === "stopped" && suppressStoppedNotice) ? null : outcome;
   const hasToolWork = message.parts.some((part) => part.kind === "tool_call");
   const continueAction = Boolean(notice && notice.kind !== "environment" && !notice.modelSettings && onContinueExecution && hasToolWork);
   const retryAction = Boolean(notice && notice.kind !== "environment" && !notice.modelSettings && !hasToolWork && onRetry);
@@ -292,7 +296,7 @@ export const MessageItem = memo(function MessageItem({
       || knowledgeTrace?.organization?.state === "unavailable",
   );
   const hasExecutionProcess = Boolean(assistantGroups && (
-    assistantGroups.processParts.length > 0 || hasTerminalProcessStatus || hasKnowledgeTrace || notice
+    assistantGroups.processParts.length > 0 || hasTerminalProcessStatus || hasKnowledgeTrace || notice || automationStatus
   ));
   const generatingAnswer = streaming && waitingForModel && !message.complete && hasFinalAnswer
     && !assistantGroups?.processParts.some(part => part.kind === "tool_call" && part.toolCall.status === "in_progress")
@@ -423,7 +427,7 @@ export const MessageItem = memo(function MessageItem({
           {authorName ? <span className="msg__name">{authorName}</span> : <span className="sr-only">EchoAgent</span>}
         </div>}
         <div className="msg__body">
-          {streaming && waitingForModel && !message.complete && message.parts.length === 0 && !hasKnowledgeTrace && (
+          {streaming && waitingForModel && !message.complete && message.parts.length === 0 && !hasKnowledgeTrace && !automationStatus && (
             <LoadingRow key={`${sessionId}:${message.id}`} startedAt={message.startedAt} />
           )}
           {assistantGroups && hasExecutionProcess
@@ -431,6 +435,7 @@ export const MessageItem = memo(function MessageItem({
               <ExecutionProcess
                 sessionId={sessionId}
                 messageId={message.id}
+                automationStatus={automationStatus}
                 parts={assistantGroups.processParts}
                 active={streaming && !message.complete}
                 settled={isExecutionSettled(message)}

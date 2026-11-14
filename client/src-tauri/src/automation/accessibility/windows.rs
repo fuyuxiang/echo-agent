@@ -52,7 +52,7 @@ fn error(e: windows::core::Error) -> String {
 }
 // Version.dll follows the installed MUI resources for the user's language.
 // Failure is optional metadata: keep executable names and native identity.
-fn application_descriptions(path: &str) -> Vec<String> {
+pub(super) fn application_descriptions(path: &str) -> Vec<String> {
     use windows::Win32::Storage::FileSystem::{
         GetFileVersionInfoExW, GetFileVersionInfoSizeExW, VerQueryValueW, FILE_VER_GET_LOCALISED,
     };
@@ -244,6 +244,151 @@ impl Backend {
     }
 }
 impl Native for Backend {
+    fn hit_target(&self, window: &Element, x: f64, y: f64) -> Result<Element, String> {
+        let hit = self.wrap(
+            unsafe {
+                self.ui.ElementFromPoint(windows::Win32::Foundation::POINT {
+                    x: x.round() as i32,
+                    y: y.round() as i32,
+                })
+            }
+            .map_err(error)?,
+        )?;
+        self.validate(&hit, Some(window))?;
+        Ok(hit)
+    }
+
+    fn commands(&self, e: &Element) -> Result<Option<Vec<serde_json::Value>>, String> {
+        let mut pending = std::collections::VecDeque::from([e.clone()]);
+        let mut result = vec![];
+        let start = Instant::now();
+        let mut count = 0;
+        while let Some(item) = pending.pop_front() {
+            count += 1;
+            if count > 450 || start.elapsed() > std::time::Duration::from_millis(700) {
+                break;
+            }
+            unsafe {
+                if item.ui.CurrentControlType().map_err(error)? == UIA_MenuItemControlTypeId {
+                    let shortcut = item.ui.CurrentAcceleratorKey().map_err(error)?.to_string();
+                    if !shortcut.is_empty() {
+                        result.push(serde_json::json!({"label":item.ui.CurrentName().map_err(error)?.to_string(),"shortcut":shortcut.to_lowercase().replace("control+","ctrl+"),"enabled":item.ui.CurrentIsEnabled().map_err(error)?.as_bool()}));
+                    }
+                }
+            }
+            if let Ok((children, _)) = self.children(&item, 64) {
+                pending.extend(children);
+            }
+        }
+        Ok(Some(result))
+    }
+    fn file_dialog(
+        &self,
+        window: &Element,
+    ) -> Result<Option<super::file_dialog::Dialog<Element>>, String> {
+        self.validate(window, None)?;
+        let class = unsafe { window.ui.CurrentClassName() }
+            .map_err(error)?
+            .to_string();
+        if class != "#32770" {
+            return Ok(None);
+        }
+        let mut pending = std::collections::VecDeque::from([window.clone()]);
+        let mut field = None;
+        let mut save = false;
+        let mut count = 0;
+        while let Some(item) = pending.pop_front() {
+            count += 1;
+            if count > 200 {
+                break;
+            }
+            let node = self.inspect(&item)?;
+            if node.role == "edit" && ["1148", "1001"].contains(&node.identifier.as_str()) {
+                field = Some(item.clone());
+            }
+            if node.identifier == "1"
+                && ["save", "保存", "保存(&s)"].contains(&node.name.to_lowercase().as_str())
+            {
+                save = true;
+            }
+            if let Ok((children, _)) = self.children(&item, 64) {
+                pending.extend(children);
+            }
+        }
+        Ok(field.map(|filename| super::file_dialog::Dialog {
+            kind: if save { "save" } else { "open" },
+            root: window.clone(),
+            path: None,
+            filename: Some(filename),
+        }))
+    }
+    fn click_control(
+        &self,
+        e: &Element,
+        window: &Element,
+        count: u32,
+        token: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), String> {
+        self.validate(e, Some(window))?;
+        if !self.activate(window)? {
+            return Err("focus_changed: no click dispatched".into());
+        }
+        let node = self.inspect(e)?;
+        if node.protected || !node.enabled || node.visible == Some(false) {
+            return Err("target_unavailable".into());
+        }
+        let [x, y, width, height] = node.bounds.ok_or("bounds_unavailable")?;
+        if width <= 0.0 || height <= 0.0 {
+            return Err("bounds_unavailable".into());
+        }
+        let (x, y) = (x + width / 2.0, y + height / 2.0);
+        unsafe {
+            let hit = self.wrap(
+                self.ui
+                    .ElementFromPoint(windows::Win32::Foundation::POINT {
+                        x: x.round() as i32,
+                        y: y.round() as i32,
+                    })
+                    .map_err(error)?,
+            )?;
+            self.validate(&hit, Some(e))?;
+            if self.inspect(&hit)?.protected {
+                return Err("protected: user takeover required".into());
+            }
+        }
+        if token.is_cancelled() {
+            return Err("cancelled: no click dispatched".into());
+        }
+        super::super::computer::click_after_native_target(x, y, count)
+    }
+    fn foreground_window(&self) -> Result<Element, String> {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.0.is_null() {
+                return Err("focus_unavailable: no foreground window".into());
+            }
+            self.wrap(self.ui.ElementFromHandle(hwnd).map_err(error)?)
+        }
+    }
+    fn keyboard_focus(&self, window: &Element) -> Result<Option<Element>, String> {
+        let focus = unsafe { self.ui.GetFocusedElement() };
+        let focus = match focus {
+            Ok(focus) => focus,
+            Err(e) if e.code().0 as u32 == 0x80070005 => return Err(error(e)),
+            Err(_) => return Ok(None),
+        };
+        let focus = self.wrap(focus)?;
+        self.validate(&focus, Some(window))?;
+        Ok(Some(focus))
+    }
+    fn focused_target(&self) -> Result<(Element, Element), String> {
+        let window = self.foreground_window()?;
+        let focus = self
+            .keyboard_focus(&window)?
+            .ok_or("focus_unavailable: no control")?;
+        Ok((window, focus))
+    }
+
     fn same_element(&self, a: &Element, b: &Element) -> bool {
         unsafe {
             self.ui
@@ -357,6 +502,9 @@ impl Native for Backend {
             self.validate(app, None)?;
         }
         Ok(output)
+    }
+    fn process_id(&self, e: &Element) -> Option<u32> {
+        u32::try_from(e.pid).ok()
     }
     #[allow(non_upper_case_globals)]
     fn inspect(&self, e: &Element) -> Result<Node, String> {

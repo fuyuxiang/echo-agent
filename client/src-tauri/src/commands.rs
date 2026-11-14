@@ -1952,7 +1952,7 @@ async fn agent_send_impl(
     }
     // All local payload/attachment/team validation completes before acquiring
     // native execution authority. A rejected local payload leaves no live run.
-    let prepared_prompt = agent_runtime::prepare_mode_prompt(
+    let mut prepared_prompt = agent_runtime::prepare_mode_prompt(
         &session_id,
         &text,
         &attachments,
@@ -1970,8 +1970,16 @@ async fn agent_send_impl(
         display_text.as_deref().unwrap_or(&text),
         !attachments.is_empty(),
         send_now,
+        prompt_id.as_deref(),
     )
     .await?;
+    if let Some(context) = crate::automation::prompt_context(&session_id).await {
+        if let Some(agent_client_protocol::ContentBlock::Text(block)) =
+            prepared_prompt.prompt.first_mut()
+        {
+            block.text.push_str(&context);
+        }
+    }
     if let Some(review) = review {
         if let Err(error) = crate::coding_review_runtime::begin(
             &workspace,
@@ -2047,8 +2055,12 @@ async fn agent_send_impl(
             }
         }
     }
-    if let (true, Some(generation)) = (result.is_err(), task_admitted) {
-        crate::automation::prompt_admission_failed(&session_id, generation).await;
+    if let Some(generation) = task_admitted {
+        if result.is_err() {
+            crate::automation::prompt_admission_failed(&session_id, generation).await;
+        } else {
+            crate::automation::prompt_turn_finished(&session_id, generation).await;
+        }
     }
     result
 }
@@ -2093,7 +2105,11 @@ pub async fn agent_cancel(
     if let Err(ref error) = automation_result {
         tracing::warn!(%error, %session_id, cancel_trigger, "failed to stop automation while cancelling turn");
     }
-    runtime_result.map_err(|error| error.to_string())?;
+    if let Err(error) = runtime_result {
+        if !error.to_string().contains("session not found") {
+            return Err(error.to_string());
+        }
+    }
     document_result.and(automation_result)
 }
 
@@ -2708,10 +2724,37 @@ pub fn agent_set_session_pinned(
     crate::meta::set_pinned(&session_id, pinned)
 }
 
-/// Fetch the session's context-window snapshot (`echo.agent/session/info`) for the
-/// composer's context-usage pill/popover. Fails when the session isn't live
-/// in the agent (e.g. an old session never loaded this launch) — the
-/// frontend treats that as "no data" and hides the pill.
+/// Predict optional next-message text without submitting a conversation turn.
+#[tauri::command]
+pub async fn agent_suggest_prompt(
+    state: State<'_, AppState>,
+    session_id: String,
+    generation: u64,
+    model: Option<String>,
+) -> Result<agent_runtime::PromptSuggestionResponse, String> {
+    if !valid_session_id(&session_id) {
+        return Err("会话 ID 无效或过长".into());
+    }
+    let model = model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if model.is_some_and(|value| value.chars().count() > 256 || value.chars().any(char::is_control)) {
+        return Err("预测模型 ID 无效或过长".into());
+    }
+    state.session_workspace(&session_id)?;
+    let tx = state
+        .tx
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("agent not initialized")?;
+    agent_runtime::suggest_prompt(&tx, &session_id, generation, model)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Fetch the session's context-window snapshot for the context-usage pill.
 #[tauri::command]
 pub async fn agent_session_info(
     state: State<'_, AppState>,

@@ -3,6 +3,7 @@ use std::cell::RefCell;
 
 #[derive(Default)]
 struct Fake {
+    bundles: RefCell<HashMap<u32, std::path::PathBuf>>,
     nodes: RefCell<HashMap<u32, Node>>,
     alive: RefCell<bool>,
     calls: RefCell<Vec<String>>,
@@ -24,9 +25,28 @@ struct Fake {
     file_panel_kind: RefCell<Option<&'static str>>,
     file_goto: RefCell<bool>,
     text_focus: RefCell<Option<u32>>,
+    hit: RefCell<Option<u32>>,
+    background_input: RefCell<bool>,
+    missing_focus: RefCell<bool>,
+    foreground: RefCell<Option<u32>>,
 }
 impl Native for Fake {
     type Element = u32;
+    fn application_bundle_path(&self, e: &u32) -> Option<std::path::PathBuf> {
+        self.bundles.borrow().get(e).cloned()
+    }
+    fn foreground_window(&self) -> Result<u32, String> {
+        Ok(self.foreground.borrow().unwrap_or(2))
+    }
+    fn keyboard_focus(&self, _: &u32) -> Result<Option<u32>, String> {
+        Ok((!*self.missing_focus.borrow()).then_some(3))
+    }
+    fn focused_target(&self) -> Result<(u32, u32), String> {
+        Ok((2, 3))
+    }
+    fn hit_target(&self, _: &u32, _: f64, _: f64) -> Result<u32, String> {
+        Ok(self.hit.borrow().unwrap_or(3))
+    }
     fn same_element(&self, a: &u32, b: &u32) -> bool {
         a == b
     }
@@ -134,6 +154,19 @@ impl Native for Fake {
         }
         Ok(())
     }
+    fn prepare_input_window(&self, e: &u32) -> Result<bool, String> {
+        if *self.background_input.borrow() {
+            self.calls
+                .borrow_mut()
+                .push(format!("application-focus:{e}"));
+            Ok(*self.focus_ok.borrow())
+        } else {
+            self.activate(e)
+        }
+    }
+    fn process_id(&self, _: &u32) -> Option<u32> {
+        Some(10001)
+    }
     fn activate(&self, e: &u32) -> Result<bool, String> {
         self.calls.borrow_mut().push(format!("activate:{e}"));
         if let Some(token) = self.cancel_on_activate.borrow().as_ref() {
@@ -240,6 +273,44 @@ impl Native for Fake {
         Ok((value.chars().skip(offset).take(limit).collect(), more))
     }
 }
+
+#[test]
+fn custom_drawn_windows_can_be_observed_and_hit_tested_without_keyboard_focus() {
+    let mut c = context();
+    let token = CancellationToken::new();
+    *c.backend.missing_focus.borrow_mut() = true;
+    *c.backend.hit.borrow_mut() = Some(2);
+    let window = c.run("_guard_window", &json!({}), &token).unwrap();
+    let input = c
+        .run("_guard_input", &json!({"ref":window["windowRef"]}), &token)
+        .unwrap();
+    assert_eq!(input["focusAvailable"], false);
+    assert!(super::super::visual_target::same_window(&window, &input));
+    assert!(c
+        .run(
+            "_guard_point",
+            &json!({"windowRef":window["windowRef"],"x":0,"y":10}),
+            &token
+        )
+        .is_ok());
+    *c.backend.foreground.borrow_mut() = Some(4);
+    assert!(c
+        .run("_guard_window", &json!({"ref":window["windowRef"]}), &token)
+        .unwrap_err()
+        .starts_with("foreground_required"));
+}
+
+#[test]
+fn window_observation_never_requires_password_focus_but_input_still_rejects_it() {
+    let mut c = context();
+    let token = CancellationToken::new();
+    c.backend.nodes.borrow_mut().get_mut(&3).unwrap().protected = true;
+    assert!(c.run("_guard_window", &json!({}), &token).is_ok());
+    assert!(c
+        .run("_guard_input", &json!({}), &token)
+        .unwrap_err()
+        .starts_with("protected"));
+}
 fn context() -> Context<Fake> {
     let backend = Fake::default();
     *backend.alive.borrow_mut() = true;
@@ -272,6 +343,60 @@ fn context() -> Context<Fake> {
         approvals: HashMap::new(),
         pages: HashMap::new(),
     }
+}
+
+#[test]
+fn visual_click_rejects_changed_hit_identity_window_and_document_before_dispatch() {
+    for mutation in ["hit", "window", "document", "name"] {
+        let mut c = context();
+        let token = CancellationToken::new();
+        let target = c
+            .run("_guard_point", &json!({"x":0,"y":10}), &token)
+            .unwrap();
+        match mutation {
+            "hit" => *c.backend.hit.borrow_mut() = Some(4),
+            "window" => c.backend.nodes.borrow_mut().get_mut(&2).unwrap().name = "different".into(),
+            "document" => {
+                *c.backend.document_location.borrow_mut() = Some("file:///different".into())
+            }
+            _ => c.backend.nodes.borrow_mut().get_mut(&3).unwrap().name = "different".into(),
+        }
+        let error = c
+            .run(
+                "_click_point",
+                &json!({"ref":target["ref"],"x":0,"y":10}),
+                &token,
+            )
+            .unwrap_err();
+        assert!(error.starts_with("target_changed"), "{mutation}: {error}");
+        assert!(c.backend.calls.borrow().is_empty());
+    }
+}
+
+#[test]
+fn visual_click_rejects_protected_targets_and_cancelled_work() {
+    let mut c = context();
+    let token = CancellationToken::new();
+    *c.backend.hit.borrow_mut() = Some(5);
+    assert!(c
+        .run("_guard_point", &json!({"x":0,"y":10}), &token)
+        .unwrap_err()
+        .starts_with("protected"));
+    assert!(c.refs.is_empty());
+    *c.backend.hit.borrow_mut() = None;
+    let target = c
+        .run("_guard_point", &json!({"x":0,"y":10}), &token)
+        .unwrap();
+    token.cancel();
+    assert!(c
+        .run(
+            "_click_point",
+            &json!({"ref":target["ref"],"x":0,"y":10}),
+            &token
+        )
+        .unwrap_err()
+        .starts_with("cancelled"));
+    assert!(c.backend.calls.borrow().is_empty());
 }
 fn large_page(c: &mut Context<Fake>, w: Option<&str>) -> Value {
     let items: Vec<_> = (0..80)
@@ -1083,7 +1208,10 @@ async fn dropped_http_caller_cannot_release_desktop_during_native_dispatch() {
     let desktop = Arc::new(tokio::sync::Mutex::new(()));
     let gate = Arc::new(tokio::sync::RwLock::new(()));
     let lease = ExecutionLease {
-        _desktop: desktop.clone().lock_owned().await,
+        _desktop: Some(super::super::desktop_coordinator::DesktopLease::for_test(
+            desktop.clone().lock_owned().await,
+        )),
+        _input: vec![],
         _session: gate.clone().read_owned().await,
     };
     let (sender, receiver) = mpsc::sync_channel::<Request>(1);
@@ -2057,4 +2185,332 @@ fn application_alias_ambiguity_never_selects_the_first_native_process() {
     assert_eq!(state["status"], "ambiguous_app");
     assert_eq!(state["candidates"].as_array().unwrap().len(), 2);
     assert!(c.backend.calls.borrow().is_empty());
+}
+
+#[test]
+fn matching_helpers_inside_the_main_app_bundle_do_not_create_false_ambiguity() {
+    for (helper_path, excluded) in [
+        ("/Applications/Target.app/Contents/MacOS/TargetEx.app", true),
+        ("/Applications/Other.app", false),
+        (
+            "/Applications/Target.app-neighbor/Contents/TargetEx.app",
+            false,
+        ),
+    ] {
+        let mut c = context();
+        let mut main = c.backend.nodes.borrow().get(&1).unwrap().clone();
+        main.name = "Target UI".into();
+        main.identifier = "observed.main".into();
+        let mut helper = main.clone();
+        helper.identifier = "observed.helper".into();
+        c.backend.nodes.borrow_mut().insert(1, main);
+        c.backend.nodes.borrow_mut().insert(6, helper);
+        c.backend
+            .bundles
+            .borrow_mut()
+            .insert(1, "/Applications/Target.app".into());
+        c.backend.bundles.borrow_mut().insert(6, helper_path.into());
+        let state = call(&mut c, "computer_context", json!({"app":"Target UI"})).unwrap();
+        if excluded {
+            assert_ne!(state["status"], "ambiguous_app");
+            assert_eq!(
+                state["appResolution"]["excludedHelperIdentifiers"],
+                json!(["observed.helper"])
+            );
+        } else {
+            assert_eq!(state["status"], "ambiguous_app");
+        }
+        let explicit = call(&mut c, "computer_context", json!({"app":"observed.helper"})).unwrap();
+        assert!(
+            explicit.get("appResolution").is_none(),
+            "an explicit helper identity remains addressable"
+        );
+        assert_eq!(
+            c.refs[explicit["appRef"].as_str().unwrap()]
+                .observed
+                .identifier,
+            "observed.helper"
+        );
+    }
+}
+
+#[test]
+fn application_targeted_text_and_shortcuts_never_activate_a_global_window() {
+    let mut c = context();
+    *c.backend.background_input.borrow_mut() = true;
+    let w = window(&mut c);
+    let id = edit(&mut c, &w);
+    let proof = prepare(&mut c, &id);
+    let output = call(
+        &mut c,
+        "computer_set_value",
+        json!({"ref":id,"_proof":proof,"value":"后台输入\n完整正文","inputMethod":"keyboard"}),
+    )
+    .unwrap();
+    assert_eq!(output["verified"], true);
+    let proof = prepare(&mut c, &w);
+    let output = call(
+        &mut c,
+        "computer_key_window",
+        json!({"ref":w,"_proof":proof,"shortcut":"cmd+s"}),
+    )
+    .unwrap();
+    assert_eq!(output["keyDispatched"], true);
+    assert!(c
+        .backend
+        .calls
+        .borrow()
+        .iter()
+        .any(|s| s.starts_with("application-focus:")));
+    assert!(!c
+        .backend
+        .calls
+        .borrow()
+        .iter()
+        .any(|s| s.starts_with("activate:")));
+}
+#[test]
+fn unsupported_window_capture_does_not_fall_back_to_display_capture_or_activate() {
+    let mut c = context();
+    let w = window(&mut c);
+    let result = call(&mut c, "computer_capture_window", json!({"ref":w}));
+    assert!(result.unwrap_err().starts_with("unsupported_action"));
+    assert!(c.backend.calls.borrow().is_empty());
+}
+#[test]
+fn input_lane_is_chosen_per_operation_not_for_the_whole_application() {
+    assert!(!foreground_required("computer_snapshot", &json!({})));
+    assert!(!foreground_required(
+        "computer_set_value",
+        &json!({"inputMethod":"value"})
+    ));
+    assert!(!foreground_required(
+        "computer_invoke",
+        &json!({"action":"AXPress"})
+    ));
+    assert!(foreground_required("computer_activate_window", &json!({})));
+    assert_eq!(
+        foreground_required("computer_key_window", &json!({})),
+        !cfg!(target_os = "macos")
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "Creates only disposable native fixture apps; requires an unlocked macOS graphical session and AX/screen-recording consent"]
+fn actual_background_roundtrip() {
+    use core_graphics::{
+        event::CGEvent,
+        event_source::{CGEventSource, CGEventSourceStateID},
+    };
+    let directory = std::env::var("ECHO_NATIVE_BACKGROUND_FIXTURES")
+        .expect("Use scripts/test-desktop-background.mjs");
+    let directory = std::fs::canonicalize(directory).unwrap();
+    assert!(directory
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("echo-background-native-"));
+    let original = macos::foreground_pid().unwrap();
+    struct Restore(Option<i32>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                let _ = macos_restore_foreground(pid);
+            }
+        }
+    }
+    let _restore = Restore(original);
+    let token = CancellationToken::new();
+    let wait_file = |name: &str| {
+        let end = Instant::now() + Duration::from_secs(8);
+        loop {
+            if let Ok(value) = std::fs::read_to_string(directory.join(name)) {
+                return value;
+            }
+            assert!(Instant::now() < end, "fixture output missing: {name}");
+            std::thread::sleep(Duration::from_millis(80));
+        }
+    };
+    for role in ["target", "other"] {
+        let mut launch = std::process::Command::new("/usr/bin/open");
+        if role == "target" {
+            launch.arg("-g");
+        }
+        assert!(launch
+            .arg("-a")
+            .arg(directory.join(format!("{role}.app")))
+            .arg("--args")
+            .arg(&directory)
+            .arg(role)
+            .status()
+            .unwrap()
+            .success());
+        wait_file(&format!("{role}-pid"));
+    }
+    let other_pid = wait_file("other-pid").parse::<i32>().unwrap();
+    let end = Instant::now() + Duration::from_secs(3);
+    while macos::foreground_pid().unwrap() != Some(other_pid) {
+        assert!(Instant::now() < end, "foreground fixture did not activate");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let pointer = || {
+        CGEvent::new(CGEventSource::new(CGEventSourceStateID::CombinedSessionState).unwrap())
+            .unwrap()
+            .location()
+    };
+    super::super::emergency_stop::start(|_| {});
+    let monitor_deadline = Instant::now() + Duration::from_secs(1);
+    while !super::super::emergency_stop::monitor_available() && Instant::now() < monitor_deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let monitor_available = super::super::emergency_stop::monitor_available();
+    println!("Native input conflict monitor available: {monitor_available}");
+    let before_pointer = pointer();
+    let mut c = Context {
+        backend: Platform::new().unwrap(),
+        refs: HashMap::new(),
+        approvals: HashMap::new(),
+        pages: HashMap::new(),
+    };
+    let app_id = format!(
+        "com.echoagent.fixture.background.target.{}",
+        directory
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .replace('-', "")
+            .to_lowercase()
+    );
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let state = loop {
+        let state = c
+            .run("computer_context", &json!({"app":app_id}), &token)
+            .unwrap();
+        if state["windowRef"].is_string() {
+            break state;
+        }
+        assert!(Instant::now() < deadline, "fixture window ref: {state}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let window = state["windowRef"].as_str().unwrap().to_owned();
+    let find = |c: &mut Context<Platform>, identifier: &str| {
+        let output = c
+            .run(
+                "computer_find",
+                &json!({"windowRef":window,"identifier":identifier}),
+                &token,
+            )
+            .unwrap();
+        assert_eq!(output["status"], "unique", "{output}");
+        output["candidates"][0]["ref"].as_str().unwrap().to_owned()
+    };
+    for (method, value) in [
+        ("value", "AX-DIRECT"),
+        (
+            "keyboard",
+            "后台输入 Echo🧪 Unicode 0123456789 abcdefghijklmnopqrstuvwxyz 中文完成",
+        ),
+    ] {
+        let field = find(&mut c, "echo-background-input");
+        let proof = c.run("_prepare", &json!({"ref":field}), &token).unwrap();
+        let result = c
+            .run(
+                "computer_set_value",
+                &json!({"ref":field,"_proof":proof["proof"],"value":value,"inputMethod":method}),
+                &token,
+            )
+            .unwrap();
+        assert_eq!(result["verified"], true, "{method}: {result}");
+        assert_eq!(
+            macos::foreground_pid().unwrap(),
+            Some(other_pid),
+            "background text stole focus"
+        );
+    }
+    let proof = c.run("_prepare", &json!({"ref":window}), &token).unwrap();
+    let result = c
+        .run(
+            "computer_key_window",
+            &json!({"ref":window,"_proof":proof["proof"],"shortcut":"cmd+shift+k"}),
+            &token,
+        )
+        .unwrap();
+    assert_eq!(result["keyDispatched"], true, "{result}");
+    assert_eq!(wait_file("target-key"), "KEY-RECEIVED");
+    let field = find(&mut c, "echo-background-input");
+    let proof = c.run("_prepare", &json!({"ref":field}), &token).unwrap();
+    let result = c
+        .run(
+            "computer_click_control",
+            &json!({"ref":field,"_proof":proof["proof"],"clickCount":1}),
+            &token,
+        )
+        .unwrap();
+    assert!(
+        result["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("background_pointer_unavailable")),
+        "{result}"
+    );
+    assert_ne!(result["executed"], true);
+    assert!(
+        !directory.join("target-click").exists(),
+        "unsupported pointer input was dispatched"
+    );
+    assert!(
+        !directory.join("target-mouse-event").exists(),
+        "unsupported mouse event reached the app"
+    );
+    let button = find(&mut c, "echo-background-commit");
+    let proof = c.run("_prepare", &json!({"ref":button}), &token).unwrap();
+    let result = c
+        .run(
+            "computer_click_control",
+            &json!({"ref":button,"_proof":proof["proof"],"clickCount":1}),
+            &token,
+        )
+        .unwrap();
+    assert_eq!(result["executed"], true, "{result}");
+    assert_eq!(
+        wait_file("target-commit"),
+        "后台输入 Echo🧪 Unicode 0123456789 abcdefghijklmnopqrstuvwxyz 中文完成"
+    );
+    assert!(
+        !directory.join("other-change").exists(),
+        "foreground text was changed"
+    );
+    assert_eq!(
+        macos::foreground_pid().unwrap(),
+        Some(other_pid),
+        "background action stole focus"
+    );
+    let after_pointer = pointer();
+    assert_eq!(
+        (after_pointer.x, after_pointer.y),
+        (before_pointer.x, before_pointer.y),
+        "background action moved system pointer"
+    );
+    let capture = c
+        .run("computer_capture_window", &json!({"ref":window}), &token)
+        .unwrap();
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(capture["data"].as_str().unwrap())
+        .unwrap();
+    let image = image::load_from_memory(&bytes).unwrap().to_rgba8();
+    let red = image
+        .pixels()
+        .filter(|p| p[0] > 130 && p[1] < 100 && p[2] < 100)
+        .count();
+    assert!(
+        red as f64 / f64::from(image.width() * image.height()) > 0.3,
+        "capture did not contain the occluded target's red background"
+    );
+    std::fs::write(directory.join("target-window.png"), bytes).unwrap();
+    std::fs::write(directory.join("evidence.json"),json!({"backgroundValue":true,"backgroundKeyboard":true,"backgroundShortcut":true,"backgroundPress":true,"backgroundPointer":false,"unsupportedPointerRejected":true,"inputMonitorAvailable":monitor_available,"foregroundUnchanged":true,"pointerUnchanged":true,"occludedWindowCapture":true}).to_string()).unwrap();
+    println!(
+        "Real isolated native background checks passed: {}",
+        directory.display()
+    );
 }

@@ -329,7 +329,7 @@ describe("SettingsPanel", () => {
     const close = screen.getByRole("button", { name: "关闭设置" });
     expect(close).toHaveFocus();
     const dialog = screen.getByRole("dialog", { name: "设置" });
-    const focusable = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button:not([disabled])"));
+    const focusable = Array.from(dialog.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])"));
     focusable[focusable.length - 1]?.focus();
     fireEvent.keyDown(document, { key: "Tab" });
     expect(focusable[0]).toHaveFocus();
@@ -491,7 +491,7 @@ describe("SettingsPanel", () => {
 
     expect(await screen.findByRole("heading", { name: "操作权限", level: 3 }))
       .toBeInTheDocument();
-    expect(screen.getByText(/任务输入框的 \+ 菜单单独开启/)).toBeInTheDocument();
+    expect(screen.getByText(/在聊天中说明电脑任务即可开始/)).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /默认.*操作电脑/ })).toBeNull();
   });
 

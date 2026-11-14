@@ -16,6 +16,7 @@ import { PageHeading } from "./PageHeading";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSettingsDraft } from "@/lib/settings-drafts";
 import { BrowserTaskSettings } from "./BrowserTaskSettings";
+import { PromptPredictionSettings } from "./PromptPredictionSettings";
 import {
   Sun,
   Moon,
@@ -574,7 +575,7 @@ export function SecuritySettingsPanel() {
     <div className="security-settings">
     <SettingsSection title="安全与权限" desc="查看系统授权，管理任务浏览器和高级权限规则。">
       <section className="security-settings__capabilities" data-setting-id="automation-permissions" aria-label="操作权限">
-        <header className="security-settings__capability-header"><div><h3>操作权限</h3><p>浏览器和电脑操作需从任务输入框的 + 菜单单独开启。</p></div>
+        <header className="security-settings__capability-header"><div><h3>操作权限</h3><p>在聊天中说明电脑任务即可开始，也可从输入框的 + 菜单选择操作能力。</p></div>
           <button type="button" className="settings-btn settings-btn--ghost" aria-label={automationError ? "重试检查权限" : "重新检查权限"} disabled={automationLoading || automationBusy} onClick={() => void loadAutomationSupport()}><RefreshCw size={14} />{automationLoading ? "检查中…" : automationError ? "重试" : "刷新"}</button>
         </header>
         <div className="security-settings__capability" role="group" aria-label="浏览器操作状态">
@@ -586,6 +587,7 @@ export function SecuritySettingsPanel() {
         </div>
         {automationError && <p className="settings-msg settings-msg--warn" role="alert">检查失败：{automationError}</p>}
         {automationFeedback && <p className={automationFeedback.startsWith("无法") ? "settings-msg settings-msg--warn" : "security-settings__feedback"} role={automationFeedback.startsWith("无法") ? "alert" : "status"}>{automationFeedback}</p>}
+        <p className="settings-hint">{isMac ? "支持的原生操作按应用定向执行；坐标操作仍使用前台。" : "支持的原生控件可直接操作；真实鼠标键盘输入仍使用前台。"}移动鼠标不会暂停任务；与目标应用发生输入冲突时会让出当前操作。</p>
         <p className="security-settings__privacy">使用时，相关网页或屏幕内容可能作为任务上下文发送给当前模型。</p>
       </section>
       <SettingsDisclosure title="任务浏览器" settingId="browser-data" description="管理所选任务的登录数据和访问范围">
@@ -791,6 +793,9 @@ export function GeneralSettingsPanel() {
       title="通用"
     >
       <AppearanceSettingsGroup />
+      <SettingsGroup title="输入框" settingId="composer-predictions" meta={<span>立即生效</span>}>
+        <PromptPredictionSettings />
+      </SettingsGroup>
       <SettingsGroup title="后台运行" settingId="background">
         <div className="settings-row settings-row--comfortable">
           <div className="settings-row__label settings-row__label--stacked">

@@ -6,6 +6,7 @@
     nodes: new WeakMap(),
     next: 0,
   };
+  const queryAll=(selector,root=document)=>{const result=[...root.querySelectorAll(selector)];for(const element of root.querySelectorAll('*'))if(element.shadowRoot)result.push(...queryAll(selector,element.shadowRoot));return result;};
   const actionable = 'a[href],button,input,textarea,select,summary,label,[role],[contenteditable],[tabindex]';
   const nodeId = node => {
     if (!state.nodes.has(node)) state.nodes.set(node, ++state.next);
@@ -45,9 +46,9 @@
     if (!implicit || element.localName !== 'input' || !implicitInputTypes.has(element.type)) return null;
     // The default button is the first submitter in tree order, including
     // controls associated by the form attribute and image buttons.
-    const submitter = Array.from(document.querySelectorAll('button,input'))
+    const submitter = Array.from(queryAll('button,input'))
       .find(candidate => candidate.form === form && isSubmitter(candidate)) || null;
-    if (!submitter && Array.from(document.querySelectorAll('input')).filter(candidate =>
+    if (!submitter && Array.from(queryAll('input')).filter(candidate =>
       candidate.form === form && implicitInputTypes.has(candidate.type)).length > 1) return null;
     return describeForm(form, submitter);
   };
@@ -85,10 +86,9 @@
     if (!element || !hit) return null;
     // The top document cannot verify the actual recipient inside a frame or
     // a separate tree. Do not approve its host as if it were the recipient.
-    if (hit.closest('iframe,frame,object,embed') || hit.shadowRoot ||
-        hit.localName.includes('-')) return null;
+    if (hit.closest('iframe,frame,object,embed')) return null;
     const labelled = (element.getAttribute('aria-labelledby') || '').split(/\s+/)
-      .map(id => document.getElementById(id)?.textContent || '').join(' ').trim();
+      .map(id => element.getRootNode().getElementById?.(id)?.textContent || '').join(' ').trim();
     const label = Array.from(element.labels || [])
       .map(item => item.innerText || item.textContent || '').join(' ').trim();
     const tag = element.localName;
@@ -107,7 +107,7 @@
     };
   };
   const at = (x, y, reference = null) => {
-    const hit = document.elementFromPoint(x, y);
+    let hit = document.elementFromPoint(x, y);for(let depth=0;hit?.shadowRoot && depth<16;depth++){const inner=hit.shadowRoot.elementFromPoint(x,y);if(!inner || inner===hit)break;hit=inner;}
     const nearest = hit?.closest(actionable);
     if (reference && (!hit || !reference.contains(hit) ||
         (nearest && nearest !== reference && reference.contains(nearest)))) return null;
@@ -123,7 +123,7 @@
       let { x, y } = input;
       let reference = null;
       if (input.reference !== null) {
-        const candidates = document.querySelectorAll('[data-echo-ref=' + CSS.escape(input.reference) + ']');
+        const candidates = queryAll('[data-echo-ref=' + CSS.escape(input.reference) + ']');
         if (candidates.length !== 1) return null;
         reference = candidates[0];
         if (scroll) reference.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
@@ -142,9 +142,9 @@
       return { ...context, target, submission, x, y };
     }
     case 'key': {
-      const active = document.activeElement;
+      let active = document.activeElement;for(let depth=0;active?.shadowRoot?.activeElement && depth<16;depth++)active=active.shadowRoot.activeElement;
       if (input.reference && active?.getAttribute('data-echo-ref') !== input.reference) return null;
-      const target = active && !active.shadowRoot && describe(active);
+      const target = active && describe(active);
       if (!target) return null;
       const key = input.key?.toLowerCase();
       const submission = key === 'enter' || key === 'return' ? describeSubmission(active, true) :

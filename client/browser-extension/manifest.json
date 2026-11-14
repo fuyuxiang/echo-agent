@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "EchoAgent Browser Control",
+  "version": "1.0.0",
+  "minimum_chrome_version": "116",
+  "description": "Pair selected signed-in tabs with one EchoAgent desktop task.",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

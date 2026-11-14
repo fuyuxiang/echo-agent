@@ -71,7 +71,8 @@
       "resources/office": "office",
       "resources/retrieval-models": "retrieval-models",
       "resources/meeting-speech": "meeting-speech",
-      "../LICENSES/meeting-speech": "licenses/meeting-speech"
+      "../LICENSES/meeting-speech": "licenses/meeting-speech",
+      "../browser-extension": "browser-extension"
     }
   },
   "plugins": {

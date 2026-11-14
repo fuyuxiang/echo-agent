@@ -1,0 +1,27 @@
+.echo-composer__editor {
+  display: grid;
+  min-width: 0;
+}
+.echo-composer__editor > .echo-composer__input,
+.echo-composer__prediction {
+  grid-area: 1 / 1;
+}
+.echo-composer__prediction {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-bottom: 4px;
+  color: var(--echo-text-weak);
+  font-size: 0.875rem;
+  line-height: 25px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  user-select: none;
+}
+.echo-composer__prediction-hint {
+  color: var(--echo-text-tertiary);
+  font-size: 0.75rem;
+  line-height: 18px;
+}

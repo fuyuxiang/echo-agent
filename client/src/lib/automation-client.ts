@@ -27,12 +27,36 @@ export interface ComputerCapability {
   reason?: string | null;
 }
 
+export interface InstalledApplication { id: string; name: string; path: string }
+export interface DesktopReceipt {
+  id: string; tool: string; status: string; verified: boolean;
+  write: boolean; evidence: boolean; atMs: number;
+}
+export interface ComputerTask {
+  phase: "running" | "waiting_user" | "verifying" | "paused" | "stopped" | "completed" | "failed" | "result_unknown";
+  reason: string | null;
+  scope: string | null;
+  authorized: boolean;
+  generation: number;
+  taskId?: string;
+  promptId?: string | null;
+  runId?: string;
+  currentTool?: string | null;
+  targets?: string[];
+  receipts?: DesktopReceipt[];
+  outcome?: string | null;
+}
 export interface AutomationStatus {
   sessionId: string;
   mode: AutomationMode;
   paused: boolean;
   computerAuthorized?: boolean;
-  task?: {phase: "running" | "paused" | "stopped"; reason: string | null; scope: string | null; authorized: boolean; generation: number};
+  task?: ComputerTask;
+  revision?:number;
+  selectedTarget?:InstalledApplication|null;
+  activeWindow?:{application?:string;identifier?:string;windowRef?:string}|null;
+  extensionConnected?:boolean;
+  execution?:{nativeIsolation:string;backgroundNativeActions?:boolean;backgroundPointerInput?:boolean;foregroundCoordinateInput?:boolean;humanInputPolicy?:string;inputConflictDetection?:boolean;browserSource?:string;emergencyShortcut?:boolean;backgroundInput:boolean;inputMode:string;platform:string;fileDialog:boolean;windowClick:boolean};
   allowPrivateNetwork: boolean;
   browser: BrowserCapability;
   computer: ComputerCapability;
@@ -107,3 +131,10 @@ export const onAutomationApprovalClosed = (
   "automation://approval-closed",
   (event) => callback(event.payload),
 );
+
+export const automationTargets=()=>invoke<InstalledApplication[]>("automation_targets");
+export const automationSelectTarget=(sessionId:string,applicationId:string)=>invoke<AutomationStatus>("automation_select_target",{sessionId,applicationId});
+export const automationPreview=(sessionId:string)=>invoke<{data:string;meta:unknown}>("automation_preview",{sessionId});
+export const automationPairBrowser=(sessionId:string)=>invoke<{endpoint:string;extensionPath:string;expiresInSeconds:number}>("automation_pair_browser",{sessionId});
+export const automationDisconnectBrowser=(sessionId:string)=>invoke<void>("automation_disconnect_browser",{sessionId});
+export const automationUseIsolatedBrowser=(sessionId:string)=>invoke<AutomationStatus>("automation_use_isolated_browser",{sessionId});

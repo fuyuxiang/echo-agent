@@ -8,6 +8,7 @@ impl<B: Native> Context<B> {
         args: &Value,
         token: &CancellationToken,
     ) -> Result<Value, String> {
+        let mut excluded_helpers = vec![];
         if let Some(id) = args.get("windowRef").and_then(Value::as_str) {
             let window = self.resolve(id)?;
             if window.kind != "window" {
@@ -30,6 +31,37 @@ impl<B: Native> Context<B> {
             let mut apps = self.backend.apps()?;
             apps.items
                 .retain(|(_, n)| matches(n, &json!({"name":query})) || n.identifier == query);
+            if apps.items.len() > 1 {
+                let bundles: Vec<_> = apps
+                    .items
+                    .iter()
+                    .map(|(e, _)| self.backend.application_bundle_path(e))
+                    .collect();
+                let excluded: Vec<_> = bundles
+                    .iter()
+                    .enumerate()
+                    .map(|(i, child)| {
+                        child.as_ref().is_some_and(|child| {
+                            bundles.iter().enumerate().any(|(j, host)| {
+                                i != j
+                                    && host.as_ref().is_some_and(|host| {
+                                        host.extension().is_some_and(|e| e == "app")
+                                            && child.starts_with(host.join("Contents"))
+                                    })
+                            })
+                        })
+                    })
+                    .collect();
+                let mut index = 0;
+                apps.items.retain(|(_, node)| {
+                    let keep = !excluded[index];
+                    index += 1;
+                    if !keep {
+                        excluded_helpers.push(node.identifier.clone());
+                    }
+                    keep
+                });
+            }
             if apps.items.len() != 1 {
                 return Ok(
                     json!({"status":if apps.items.is_empty(){if apps.issues.is_empty(){"app_not_found"}else{"app_discovery_incomplete"}}else{"ambiguous_app"},"appDiscoveryIssueCount":apps.issues.len(),"appDiscoveryIssues":apps.issues.iter().take(4).map(|(app,error)|json!({"application":app.chars().take(64).collect::<String>(),"error":error.chars().take(160).collect::<String>()})).collect::<Vec<_>>(),"nodes":[],"candidates":apps.items.iter().map(|(_,n)|json!({"name":n.name,"identifier":n.identifier,"aliases":n.aliases})).collect::<Vec<_>>(),"hint":if apps.items.is_empty()&&!apps.issues.is_empty(){"Application discovery was incomplete; absence is not proven. Inspect computer_list_apps with the exact name/identifier or an already observed appRef before launching another instance."}else if apps.items.is_empty(){"No running application matches this name, executable alias or identifier. Do not repeat global discovery. Open the requested installed app with computer_open_app, then call computer_context once. App activation does not create a document."}else{"Use an exact observed app name, bundle/executable alias or identifier; never choose the first ambiguous match."}}),
@@ -38,6 +70,9 @@ impl<B: Native> Context<B> {
             apps.items.remove(0).0
         };
         let mut result = self.context_for_app(app, None, token, true)?;
+        if !excluded_helpers.is_empty() {
+            result["appResolution"] = json!({"basis":"matching_main_bundle_contains_helpers","excludedHelperIdentifiers":excluded_helpers});
+        }
         if args.get("app").is_some() {
             result["textEntryGuidance"]=json!("Prefer computer_set_value(inputMethod=keyboard) for user text in focusable form, filename and directory fields. Native value readback alone does not prove application change handlers ran. If dependent UI stays unchanged, enter using keyboard before confirming; do not repeat an ineffective confirm/open action.");
             result["documentCreationGuidance"]=json!("An empty/untitled window is not proof of creating a new document. If the user requests a new document, execute the observed New command once in this task before input, even when app launch shows an empty document. Do not reuse a restored or existing document. After that command, use its returned state directly. Before the first Save, compare the requested file format with the observed document/menu state and set the required format using actual controls/commands. Do not open Save just to discover a format mismatch and cancel/reopen it.");
@@ -288,6 +323,26 @@ impl<B: Native> Context<B> {
             result["structuralNodesOmitted"] = json!(observed_count - nodes.len());
             result["coverage"] = json!("compact_provider_controls; empty structural containers omitted, parentRef may be outside this view; use snapshot only if structural context is needed");
             result["nodes"] = json!(nodes);
+            let inputs = nodes
+                .iter()
+                .filter(|n| {
+                    n["writable"] == true
+                        || n["actions"]
+                            .as_array()
+                            .is_some_and(|a| a.iter().any(|a| a == "focus"))
+                })
+                .count();
+            let named_actions = nodes
+                .iter()
+                .filter(|n| {
+                    n["name"].as_str().is_some_and(|n| !n.is_empty())
+                        && n["actions"]
+                            .as_array()
+                            .is_some_and(|a| a.iter().any(|a| a == "AXPress" || a == "invoke"))
+                })
+                .count();
+            result["interaction"] = json!({"nativeTextInputs":inputs,"namedNativeActions":named_actions,"visualFallbackRecommended":inputs==0 && named_actions==0,"guidance":if inputs==0 && named_actions==0 {"Only window chrome is exposed. Use computer_capture_window for visual observation, then explicitly activate this window and computer_screenshot(windowRef) for protected foreground input. Do not repeat native control searches."}else{"Prefer the exposed native controls and observed menu commands."}});
+
             result["nodeDefaults"] = json!({"focused":false,"protected":false,"writable":false,"textTruncated":false,"childrenTruncated":false});
         }
         Ok(result)

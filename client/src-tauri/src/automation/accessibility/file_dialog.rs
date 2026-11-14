@@ -95,50 +95,65 @@ pub(super) fn prepare<B: Native>(
             "unsupported_panel: start from the Open/Save panel, not its nested path editor".into(),
         );
     }
-    let filename = target
-        .file_name()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .ok_or("invalid_argument: file basename required")?;
-    let navigation = if original.kind == "save" {
-        // A trailing separator asks the system to navigate a directory, rather
-        // than ambiguously treating the last component as a file candidate.
-        target
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new(std::path::MAIN_SEPARATOR_STR))
-            .join("")
-            .display()
-            .to_string()
-    } else {
-        path.to_owned()
-    };
-    if !backend.activate(window)? {
-        return Err("focus_changed: file panel did not activate".into());
-    }
-    guard(backend, window, token)?;
-    backend.validate(&original.root, Some(window))?;
-    backend.key(window, "g", &["cmd".into(), "shift".into()])?;
-    let goto = wait(backend, window, "goto", token)?;
-    let field = goto
-        .path
-        .ok_or("unsupported_panel: system path input unavailable")?;
-    replace(backend, window, &field, &navigation, token)?;
-    guard(backend, window, token)?;
-    backend.validate(&goto.root, Some(window))?;
-    backend.key(window, "return", &[])?;
-    let panel = wait(backend, window, original.kind, token)?;
-    if !backend.same_element(&original.root, &panel.root) {
-        return Err(
-            "target_changed: original file panel was replaced; no final action dispatched".into(),
+    #[cfg(target_os = "windows")]
+    {
+        let field = original
+            .filename
+            .as_ref()
+            .ok_or("unsupported_panel: filename field unavailable")?;
+        replace(backend, window, field, path, token)?;
+        return Ok(
+            json!({"prepared":true,"verified":false,"status":"prepared_not_submitted","panelKind":original.kind,"requestedPath":path,"pathInputVerified":true,"finalActionDispatched":false,"replaySafe":false,"guidance":"Absolute filename was read back in the standard Windows file panel. Invoke its final Open/Save button once, then verify the actual result."}),
         );
     }
-    if panel.kind == "save" {
-        let field = panel
-            .filename
-            .ok_or("unsupported_panel: save filename field unavailable")?;
-        replace(backend, window, &field, filename, token)?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        let filename = target
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .ok_or("invalid_argument: file basename required")?;
+        let navigation = if original.kind == "save" {
+            // A trailing separator asks the system to navigate a directory, rather
+            // than ambiguously treating the last component as a file candidate.
+            target
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(std::path::MAIN_SEPARATOR_STR))
+                .join("")
+                .display()
+                .to_string()
+        } else {
+            path.to_owned()
+        };
+        if !backend.prepare_input_window(window)? {
+            return Err("focus_changed: file panel did not activate".into());
+        }
+        guard(backend, window, token)?;
+        backend.validate(&original.root, Some(window))?;
+        backend.key_cancellable(window, "g", &["cmd".into(), "shift".into()], token)?;
+        let goto = wait(backend, window, "goto", token)?;
+        let field = goto
+            .path
+            .ok_or("unsupported_panel: system path input unavailable")?;
+        replace(backend, window, &field, &navigation, token)?;
+        guard(backend, window, token)?;
+        backend.validate(&goto.root, Some(window))?;
+        backend.key_cancellable(window, "return", &[], token)?;
+        let panel = wait(backend, window, original.kind, token)?;
+        if !backend.same_element(&original.root, &panel.root) {
+            return Err(
+                "target_changed: original file panel was replaced; no final action dispatched"
+                    .into(),
+            );
+        }
+        if panel.kind == "save" {
+            let field = panel
+                .filename
+                .ok_or("unsupported_panel: save filename field unavailable")?;
+            replace(backend, window, &field, filename, token)?;
+        }
+        Ok(
+            json!({"prepared":true,"verified":false,"status":"prepared_not_submitted","panelKind":panel.kind,"requestedPath":path,"pathInputVerified":true,"panelReturned":true,"finalActionDispatched":false,"replaySafe":false,"guidance":"Path entry and panel return were observed, not final save/selection. Use the returned current OK button once, then verify actual output/selection. Do not reopen the panel or repeat navigation. Overwrite/error dialogs require a new decision from their actual state."}),
+        )
     }
-    Ok(
-        json!({"prepared":true,"verified":false,"status":"prepared_not_submitted","panelKind":panel.kind,"requestedPath":path,"pathInputVerified":true,"panelReturned":true,"finalActionDispatched":false,"replaySafe":false,"guidance":"Path entry and panel return were observed, not final save/selection. Use the returned current OK button once, then verify actual output/selection. Do not reopen the panel or repeat navigation. Overwrite/error dialogs require a new decision from their actual state."}),
-    )
 }

@@ -1261,13 +1261,33 @@ pub async fn close_session(tx: &AcpAgentTx, session_id: &str) -> Result<()> {
     }
 }
 
-/// Fetch a session's context-window snapshot via EchoAgent's `echo.agent/session/info`
-/// extension method (session/handlers/session.rs). The response is the
-/// camelCase `SessionInfoResponse` — its `context` field carries
-/// used/total/usagePct plus the token breakdown (system prompt, tool
-/// definitions, messages, skills/MCP categories) shown by the composer pill.
-/// Returned as raw JSON: the wire shape is owned by EchoAgent, so we pass it
-/// through rather than mirroring the struct in Rust.
+/// Optional next-message text returned by the read-only prediction extension.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptSuggestionResponse {
+    pub suggestion: Option<String>,
+    pub generation: u64,
+}
+
+/// Uses the existing tool-free prediction extension, without admitting a turn.
+pub async fn suggest_prompt(
+    tx: &AcpAgentTx,
+    session_id: &str,
+    generation: u64,
+    model: Option<&str>,
+) -> Result<PromptSuggestionResponse> {
+    let params = crate::ext::raw_params(&serde_json::json!({
+        "sessionId": session_id, "generation": generation, "model": model,
+    }));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(48),
+        crate::ext::call_ext(tx, "echo.agent/suggestPrompt", params),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("生成输入建议超时"))?
+}
+
+/// Fetch the context-window snapshot owned by the Runtime wire protocol.
 pub async fn session_info(tx: &AcpAgentTx, session_id: &str) -> Result<serde_json::Value> {
     let params = crate::ext::raw_params(&serde_json::json!({
         "sessionId": session_id,
@@ -1608,6 +1628,29 @@ mod tests {
             task.await.expect("model list task").expect("model list"),
             vec!["model-a".to_string(), "model-b".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn prompt_prediction_preserves_scope_and_never_sends_a_prompt() {
+        for wrapped in [false, true] {
+            let (client, mut agent) = echo_agent_acp::acp_channels();
+            let task = tokio::spawn(async move {
+                suggest_prompt(&client.tx, "中文会话", 42, Some("configured-small")).await
+            });
+            let echo_agent_acp::AcpAgentMessage::ExtMethod(arguments) = agent.rx.recv().await.unwrap() else {
+                panic!("prediction must use an extension, never admit a prompt");
+            };
+            assert_eq!(arguments.request.method.as_ref(), "echo.agent/suggestPrompt");
+            let params: serde_json::Value = serde_json::from_str(arguments.request.params.get()).unwrap();
+            assert_eq!(params, serde_json::json!({"sessionId":"中文会话", "generation":42, "model":"configured-small"}));
+            let payload = serde_json::json!({"suggestion":"按这个方案实现", "generation":42});
+            let response = if wrapped { serde_json::json!({"result":payload}) } else { payload };
+            arguments.response_tx.send(Ok(acp::ExtResponse::new(crate::ext::raw_params(&response)))).unwrap();
+            let result = task.await.unwrap().unwrap();
+            assert_eq!(result.suggestion.as_deref(), Some("按这个方案实现"));
+            assert_eq!(result.generation, 42);
+            assert!(agent.rx.try_recv().is_err());
+        }
     }
 
     #[tokio::test]

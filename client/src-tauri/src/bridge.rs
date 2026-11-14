@@ -2691,9 +2691,14 @@ mod tests {
             Some(serde_json::json!({"variant":"UseTool","tool_name":target,"tool_input":{}})),
         );
         assert!(is_builtin_computer_permission(&wrapped));
+        assert!(is_builtin_computer_permission(&make(
+            "echoagent-automation__browser_click",
+            "echoagent-automation__browser_click",
+            "mcp",
+            None
+        )));
         for target in [
             "other-server__computer_set_value",
-            "echoagent-automation__browser_click",
             "echoagent-automation___proof",
             "echoagent-automation__computer_unknown",
         ] {

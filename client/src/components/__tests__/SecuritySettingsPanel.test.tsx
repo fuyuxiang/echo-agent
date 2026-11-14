@@ -34,7 +34,7 @@ describe("安全与权限设置", () => {
     const { container } = render(<SecuritySettingsPanel />);
     expect(await screen.findByText("已授权")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "浏览器操作状态" })).toHaveTextContent("已就绪");
-    expect(screen.getByText(/任务输入框的 \+ 菜单单独开启/)).toBeVisible();
+    expect(screen.getByText(/在聊天中说明电脑任务即可开始/)).toBeVisible();
     expect(container.querySelectorAll("details[open]")).toHaveLength(0);
     openRules();
     const list = screen.getByRole("list", { name: "权限规则列表" });

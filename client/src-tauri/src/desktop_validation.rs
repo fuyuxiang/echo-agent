@@ -495,6 +495,27 @@ pub async fn desktop_validation_ready(
             let cross_app =
                 std::env::var("ECHO_DESKTOP_REVIEW_CONTROLS_CROSS_APP").as_deref() == Ok("1");
             let scope = serde_json::json!({"home":home,"cwd":cwd,"modelId":model_id,"smoke":smoke,"crossApp":cross_app});
+            if std::env::var("ECHO_DESKTOP_REVIEW_CONTROLS_WECHAT").as_deref() == Ok("1") {
+                if std::env::var("ECHO_DESKTOP_REVIEW_WECHAT_SEND").as_deref() != Ok("1") {
+                    return Err(
+                        "Real WeChat acceptance requires explicit send authorization".into(),
+                    );
+                }
+                return window
+                    .eval(format!(
+                        "{}\nwindow.__echoDesktopWechatFlow({scope});",
+                        include_str!("../../scripts/fixtures/native-desktop-wechat-flow.js")
+                    ))
+                    .map_err(|e| e.to_string());
+            }
+            if std::env::var("ECHO_DESKTOP_REVIEW_CONTROLS_OPAQUE").as_deref() == Ok("1") {
+                return window
+                    .eval(format!(
+                        "{}\nwindow.__echoDesktopVisualFlow({scope});",
+                        include_str!("../../scripts/fixtures/native-desktop-visual-flow.js")
+                    ))
+                    .map_err(|e| e.to_string());
+            }
             if std::env::var("ECHO_DESKTOP_REVIEW_CONTROLS_TASK_FLOW").as_deref() == Ok("1") {
                 return window
                     .eval(format!(

@@ -1,3 +1,6 @@
+import type { AutomationStatus } from "@/lib/automation-client";
+import { ComputerExecutionDetails } from "./ComputerExecutionDetails";
+import { computerTaskLabel } from "@/lib/computer-task";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { ToolCallCard } from "./ToolCallCard";
@@ -23,6 +26,7 @@ import {
 
 interface ExecutionProcessProps {
   sessionId?: string;
+  automationStatus?: AutomationStatus;
   messageId?: string;
   parts: MessagePart[];
   active: boolean;
@@ -129,7 +133,7 @@ function hasRecordSelection(body: HTMLDivElement): boolean {
 
 /** Task progress first; one disclosure for the complete chronological record. */
 export function ExecutionProcess({
-  sessionId, messageId, parts, active, settled, autoExpand = false, onReview, startedAt, completedAt,
+  sessionId, messageId, automationStatus, parts, active, settled, autoExpand = false, onReview, startedAt, completedAt,
   lastActivityAt, stopReason, cancelTrigger, cancellationCategory, agentResult,
   resultNotice, hasFinalAnswer = false, waitingReason, markdownConfig, findQuery, onOpenTool,
   knowledgeTrace, onOpenKnowledgePath, revealRequest = 0,
@@ -294,7 +298,7 @@ export function ExecutionProcess({
   const recoveredById = new Map(summary.recoveredTools.map(item => [item.failedToolCallId, item.successfulToolCallId]));
   const recoveredIds = new Set(recoveredById.keys());
   const recovered = summary.state === "complete" && recoveredIds.size > 0;
-  const title = !active ? resultNotice?.title ?? (summary.state === "complete" ? "本次处理已结束" : summary.title)
+  const title = automationStatus ? computerTaskLabel(automationStatus) : !active ? resultNotice?.title ?? (summary.state === "complete" ? "本次处理已结束" : summary.title)
     : waitingReason ?? (knowledgeTrace?.personal?.state === "searching" ? "正在检索个人知识库"
       : finalAnswerStarted ? "正在生成回复"
         : currentStage && (currentStage.planned || currentStage.progress.length > 0) ? currentStage.title : summary.title);
@@ -351,6 +355,7 @@ export function ExecutionProcess({
       已 {formatProcessDuration(idleMs)} 未收到新进展，正在等待{waitingFor}返回。可继续等待，或停止本次执行。
     </p>}
     {expanded && <div className="execution-process__details" ref={detailsRef}>
+      {automationStatus && <ComputerExecutionDetails status={automationStatus} />}
       <div className="execution-process__body" id={bodyId} ref={bodyRef}
         data-chat-reading="true" tabIndex={0} role="region" aria-label="执行过程详情"
         onFocus={cancelPendingRestore}

@@ -24,7 +24,7 @@ export function useSessionAutomation(sessionId: string | null): AutomationSessio
   const [connection, setConnection] = useState(0);
   const reconnect = useCallback(() => setConnection(value => value + 1), []);
   const owner = useMemo(() => ({ sessionId, active: false, statusRevision: 0,
-    approvalRevision: 0, refreshRevision: 0, epoch: 0, closed: new Set<string>() }), [sessionId, connection]);
+    approvalRevision: 0, refreshRevision: 0, epoch: 0, serverRevision: -1, closed: new Set<string>() }), [sessionId, connection]);
   const [snapshot, setSnapshot] = useState<{ owner: typeof owner; status: AutomationStatus | null;
     approvals: AutomationApproval[]; error: string | null }>({ owner, status: null, approvals: [], error: null });
   const update = useCallback((change: (current: typeof snapshot) => typeof snapshot) => {
@@ -34,6 +34,8 @@ export function useSessionAutomation(sessionId: string | null): AutomationSessio
   const isActive = useCallback(() => owner.active, [owner]);
   const applyStatus = useCallback((status: AutomationStatus) => {
     if (!owner.active || status.sessionId !== sessionId) return;
+    if(status.revision!=null && status.revision<owner.serverRevision)return;
+    if(status.revision!=null)owner.serverRevision=status.revision;
     owner.statusRevision++;
     update(current => ({ ...current, status }));
   }, [owner, sessionId, update]);
@@ -55,7 +57,7 @@ export function useSessionAutomation(sessionId: string | null): AutomationSessio
     const [statusResult, approvalsResult] = await Promise.allSettled([
       automationStatus(sessionId).then(status => {
         if (isCurrent() && owner.statusRevision === statusRevision && status.sessionId === sessionId) {
-          update(current => ({ ...current, status }));
+          applyStatus(status);
         }
       }),
       automationPendingApprovals(sessionId).then(approvals => {
@@ -68,7 +70,7 @@ export function useSessionAutomation(sessionId: string | null): AutomationSessio
     if (!isCurrent()) return;
     const failure = [statusResult, approvalsResult].find(result => result.status === "rejected");
     update(current => ({ ...current, error: failure?.status === "rejected" ? friendlyError(failure.reason) : null }));
-  }, [owner, sessionId, update]);
+  }, [owner, sessionId, applyStatus, update]);
 
   useEffect(() => {
     owner.active = true;

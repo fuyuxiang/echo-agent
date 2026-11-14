@@ -1,3 +1,4 @@
+import { computerOutcome } from "@/lib/computer-outcome";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ToolCallView } from "@/stores/session-store";
 import { documentProgressCount, documentProgressLabel } from "@/lib/document-progress";
@@ -59,7 +60,8 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false, executionEnd
     </button>
   );
 
-  const pendingResult = executionEnded && tc.status === "in_progress";
+  const outcome = computerOutcome(tc);
+  const pendingResult = (executionEnded && tc.status === "in_progress") || !!outcome?.unknown || (tc.status === "completed" && !!outcome?.pendingVerification);
   const statusCls = pendingResult ? "toolcall--pending" :
     tc.status === "completed"
       ? "toolcall--ok"
@@ -68,7 +70,7 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false, executionEnd
         : "toolcall--run";
 
   const statusLabel =
-    pendingResult ? "结果待确认" : tc.status === "completed" ? "完成" : tc.status === "failed" ? "失败" : "运行中";
+    pendingResult ? outcome?.label ?? "结果待确认" : tc.status === "completed" ? outcome?.label??"完成" : tc.status === "failed" ? "失败" : "运行中";
 
   // 状态符号：完成态用 SVG 对勾（文本 "✓" U+2713 在 macOS WKWebView 下依赖
   // 字体回退，可能渲染成 tofu/emoji 样式）；"!" / "…" 是 ASCII/通用字符，安全。
@@ -167,7 +169,8 @@ export function ToolCallDetailBody({
   onOpenPath?: (path: string) => void;
   executionEnded?: boolean;
 }) {
-  const pendingResult = executionEnded && tc.status === "in_progress";
+  const outcome = computerOutcome(tc);
+  const pendingResult = (executionEnded && tc.status === "in_progress") || !!outcome?.unknown || (tc.status === "completed" && !!outcome?.pendingVerification);
   const diff = tc.content.find((c) => c.type === "diff") as DiffContent | undefined;
   const cmd = tc.content.find((c) => c.type === "command_output") as
     | CommandOutputContent
@@ -196,8 +199,8 @@ export function ToolCallDetailBody({
       <div className="tool-detail__meta">
         <span className="toolcall__kind">{officeTool ? "文档" : renderer === "knowledge" ? "知识检索" : renderer === "personal-knowledge" ? "个人知识" : prettyKind(tc.kind)}</span>
         <span className={"tool-detail__status tool-detail__status--" + (pendingResult ? "pending" : tc.status)}>
-          {pendingResult ? "结果待确认" : tc.status === "completed"
-            ? "已完成"
+          {pendingResult ? outcome?.label ?? "结果待确认" : tc.status === "completed"
+            ? outcome?.label??"已完成"
             : tc.status === "failed"
               ? "失败"
               : "运行中"}

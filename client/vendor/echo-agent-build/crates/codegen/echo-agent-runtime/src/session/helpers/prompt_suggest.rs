@@ -16,7 +16,6 @@
 
 use crate::config::PromptSuggestModelPin;
 use crate::sampling::ConversationItem;
-use crate::session::helpers::chat::floor_char_boundary;
 
 /// Model used for suggestion calls when nothing pins one (no env /
 /// `[models] prompt_suggestion` / remote setting / client hint — see
@@ -56,10 +55,10 @@ pub(crate) fn effective_suggest_model(
     Some(model.to_owned())
 }
 
-/// Total character budget for the compact transcript (~6k tokens at the
+/// Total UTF-8 byte budget for the compact transcript (~6k English tokens at the
 /// bytes/4 estimate). Keeps the per-turn cost of the feature trivial even on
 /// long sessions.
-const TRANSCRIPT_BUDGET_CHARS: usize = 24_000;
+const TRANSCRIPT_BUDGET_BYTES: usize = 24_000;
 
 /// Per-message character cap inside the transcript. Long messages (pasted
 /// logs, big diffs) carry little signal for next-prompt prediction.
@@ -76,7 +75,7 @@ const SUGGESTION_MAX_WORDS: usize = 16;
 /// Short replies that are useful suggestions despite being a single word.
 const ONE_WORD_ALLOWLIST: &[&str] = &[
     "yes", "yeah", "yep", "no", "ok", "okay", "continue", "proceed", "push", "commit", "deploy",
-    "stop", "check", "retry", "undo", "merge",
+    "stop", "check", "retry", "undo", "merge", "好", "是", "否", "对", "行", "嗯",
 ];
 
 /// System prompt for the suggestion call. The model sees a compact transcript
@@ -105,7 +104,7 @@ Once a request was handled, predict the step AFTER it, never the request again \
     - New ideas the user never asked about\n\
     - Multiple sentences\n\n\
     Stay silent if the next step is not obvious from what the user said: reply with the single word NONE.\n\n\
-    Format: 2-12 words, matching the user's own style and casing.\n\
+    Format: 2-12 words, or a short phrase for languages without spaces (such as Chinese). Match the user's language, style and casing.\n\
     Reply with ONLY the suggestion text (or NONE) — no quotes, no markdown, no explanation.";
 
 /// One transcript line: role label + flattened text content.
@@ -115,8 +114,7 @@ fn transcript_line(role: &str, text: &str) -> Option<String> {
         return None;
     }
     let mut text = text;
-    if text.len() > MESSAGE_CAP_CHARS {
-        let cut = floor_char_boundary(text, MESSAGE_CAP_CHARS);
+    if let Some((cut, _)) = text.char_indices().nth(MESSAGE_CAP_CHARS) {
         text = &text[..cut];
     }
     Some(format!("{role}: {text}"))
@@ -155,7 +153,7 @@ pub(crate) fn build_transcript(conversation: &[ConversationItem]) -> Option<Stri
             _ => continue,
         };
         let Some(line) = line else { continue };
-        if used + line.len() > TRANSCRIPT_BUDGET_CHARS && !lines.is_empty() {
+        if used + line.len() > TRANSCRIPT_BUDGET_BYTES && !lines.is_empty() {
             break;
         }
         used += line.len();
@@ -190,7 +188,7 @@ fn normalize_for_repeat(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .trim_end_matches(['.', '!', '?'])
+        .trim_end_matches(['.', '!', '?', '。', '！', '？'])
         .to_ascii_lowercase()
 }
 
@@ -204,7 +202,13 @@ pub(crate) fn is_repeat_of_user_message(
     suggestion: &str,
     conversation: &[ConversationItem],
 ) -> bool {
-    if suggestion.split_whitespace().count() < REPEAT_MIN_WORDS {
+    if suggestion.split_whitespace().count() < REPEAT_MIN_WORDS
+        && suggestion
+            .chars()
+            .filter(|c| is_unsegmented_script(*c))
+            .count()
+            < 8
+    {
         return false;
     }
     let needle = normalize_for_repeat(suggestion);
@@ -216,12 +220,13 @@ pub(crate) fn is_repeat_of_user_message(
     })
 }
 
-/// Filter/normalize the raw model output into a usable suggestion.
-///
-/// Returns `None` for anything that should not be shown as ghost text:
-/// meta/no-op replies, agent-voice phrasing, multi-sentence or multi-line
-/// output, markdown, or over-long text. Mirrors typical coding-agent suggestion
-/// filters, adapted to the compact-transcript prompt above.
+/// Scripts whose ordinary phrases need not contain whitespace separators.
+fn is_unsegmented_script(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF
+        | 0x20000..=0x323AF | 0x3040..=0x30FF | 0xAC00..=0xD7AF)
+}
+
+/// Filter/normalize model output, rejecting meta replies, agent voice and overlong text.
 pub(crate) fn sanitize_suggestion(raw: &str) -> Option<String> {
     // First line only; the prompt asks for a single line but models drift.
     let line = raw.trim().lines().next()?.trim();
@@ -232,7 +237,10 @@ pub(crate) fn sanitize_suggestion(raw: &str) -> Option<String> {
         .trim_end_matches(['"', '\'', '`', '”', '’'])
         .trim();
 
-    if line.is_empty() || line.len() >= SUGGESTION_MAX_CHARS {
+    if line.is_empty()
+        || line.chars().count() > SUGGESTION_MAX_CHARS
+        || line.chars().any(char::is_control)
+    {
         return None;
     }
 
@@ -246,11 +254,14 @@ pub(crate) fn sanitize_suggestion(raw: &str) -> Option<String> {
         "(silence)",
         "silence",
         "null",
+        "暂无建议",
+        "没有建议",
+        "无建议",
     ];
-    if meta
-        .iter()
-        .any(|m| lowered == *m || lowered.starts_with(&format!("{m}.")))
-    {
+    if meta.iter().any(|m| {
+        lowered.trim_end_matches(['.', '!', '?', '。', '！', '？']) == *m
+            || lowered.starts_with(&format!("{m}."))
+    }) {
         return None;
     }
 
@@ -268,6 +279,13 @@ pub(crate) fn sanitize_suggestion(raw: &str) -> Option<String> {
         "here's ",
         "here is ",
         "i'm going to ",
+        "我会",
+        "我来",
+        "让我",
+        "以下是",
+        "建议：",
+        "用户：",
+        "预测：",
     ];
     if agent_voice.iter().any(|p| lowered.starts_with(p)) {
         return None;
@@ -302,8 +320,8 @@ pub(crate) fn sanitize_suggestion(raw: &str) -> Option<String> {
     if words > SUGGESTION_MAX_WORDS {
         return None;
     }
-    if words == 1 {
-        let bare = lowered.trim_end_matches(['.', '!']);
+    if words == 1 && line.chars().filter(|c| is_unsegmented_script(*c)).count() < 2 {
+        let bare = lowered.trim_end_matches(['.', '!', '?', '。', '！', '？']);
         if !ONE_WORD_ALLOWLIST.contains(&bare) && !bare.starts_with('/') {
             return None;
         }
@@ -466,6 +484,52 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_accepts_chinese_and_mixed_language_without_spaces() {
+        for text in [
+            "好",
+            "好。",
+            "继续",
+            "按这个方案实现",
+            "补充测试并验证结果",
+            "运行 pnpm test 验证中文输入",
+            "この設計を実装して",
+        ] {
+            assert_eq!(sanitize_suggestion(text).as_deref(), Some(text));
+        }
+        let text = "验".repeat(SUGGESTION_MAX_CHARS);
+        assert_eq!(sanitize_suggestion(&text).as_deref(), Some(text.as_str()));
+        assert_eq!(sanitize_suggestion(&format!("{text}证")), None);
+        assert_eq!(sanitize_suggestion("运行\u{0}测试"), None);
+        for text in [
+            "暂无建议",
+            "暂无建议。",
+            "没有建议",
+            "我会运行测试",
+            "建议：运行测试",
+        ] {
+            assert_eq!(sanitize_suggestion(text), None);
+        }
+    }
+
+    #[test]
+    fn chinese_repeat_filter_keeps_short_confirmations_but_rejects_old_tasks() {
+        let task = "按这个方案实现并验证中文输入";
+        let conv = vec![user(task), user("继续")];
+        assert!(is_repeat_of_user_message(task, &conv));
+        assert!(is_repeat_of_user_message(&format!("{task}。"), &conv));
+        assert!(!is_repeat_of_user_message("继续", &conv));
+        assert!(!is_repeat_of_user_message("补充测试并验证结果", &conv));
+    }
+
+    #[test]
+    fn transcript_caps_chinese_by_characters_without_splitting_utf8() {
+        let text = "中".repeat(MESSAGE_CAP_CHARS + 10);
+        let transcript = build_transcript(&[user(&text), assistant("完成")]).unwrap();
+        assert_eq!(transcript.matches('中').count(), MESSAGE_CAP_CHARS);
+        assert!(transcript.ends_with("Agent: 完成"));
+    }
+
+    #[test]
     fn sanitize_allows_colon_after_multiword_head() {
         // Only single-word alphabetic label heads are rejected.
         assert_eq!(
@@ -578,7 +642,7 @@ mod tests {
         conv.push(user("newest question"));
         conv.push(assistant("newest answer"));
         let t = build_transcript(&conv).unwrap();
-        assert!(t.len() <= TRANSCRIPT_BUDGET_CHARS + MESSAGE_CAP_CHARS + 64);
+        assert!(t.len() <= TRANSCRIPT_BUDGET_BYTES + MESSAGE_CAP_CHARS + 64);
         assert!(t.contains("newest question"));
         assert!(t.ends_with("Agent: newest answer"));
     }

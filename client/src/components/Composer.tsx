@@ -2,6 +2,8 @@ import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { draftAttachments, saveDraftAttachments } from "@/lib/draft-attachments";
 import { draftRevision, useDraftRevision } from "@/lib/draft-lifecycle";
+import type { PromptPrediction } from "@/lib/use-prompt-prediction";
+import "@/styles/prompt-prediction.css";
 import { useStorageHealth } from "@/lib/durable-ui-state";
 import { ArrowUp, Square, Folder, FolderOpen, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
 import { ChevronDownIcon } from "@/foundation/components/Icon/icons";
@@ -116,6 +118,8 @@ export function Composer({
   onCancel,
   onControl,
   placeholder,
+  prediction,
+  onDismissPrediction,
   apiReady: sessionApiReady = true,
   draftOnly = false,
   setupHint = "请先在「设置 → 模型」检查可用模型和连接",
@@ -215,6 +219,9 @@ export function Composer({
   ) => boolean | void | Promise<boolean | void>;
   /** Empty-input guidance, optionally resolved from admitted attachments. */
   placeholder?: string | ((attachmentCount: number) => string);
+  /** Ghost text is separate from the durable draft until explicitly accepted. */
+  prediction?: PromptPrediction | null;
+  onDismissPrediction?: () => void;
   apiReady?: boolean;
   draftOnly?: boolean;
   /** Message shown when the composer is unavailable. */
@@ -335,6 +342,13 @@ export function Composer({
   const scopeEpochRef = useRef(0);
   const isCurrentDraftEpoch = (epoch: number) => mountedRef.current && scopeEpochRef.current === epoch;
   const [text, setText] = useState("");
+  const [composing, setComposing] = useState(false);
+  const [dismissedPrediction, setDismissedPrediction] = useState<string>();
+  const predictionKey = prediction ? JSON.stringify([prediction.sessionId, prediction.turnId, prediction.generation]) : undefined;
+  const dismissPrediction = () => {
+    setDismissedPrediction(predictionKey);
+    onDismissPrediction?.();
+  };
   const textRef = useRef("");
   const draftOnlyRef = useRef(draftOnly);
   draftOnlyRef.current = draftOnly;
@@ -549,6 +563,7 @@ export function Composer({
   const onDraftChangeRef = useRef(onDraftChange);
   const ref = useRef<HTMLTextAreaElement>(null);
   const workspaceErrorId = useId();
+  const predictionDescriptionId = useId();
   useEffect(() => {
     if (focusRequest) ref.current?.focus();
   }, [focusRequest]);
@@ -595,7 +610,10 @@ export function Composer({
   // 回填(draftKey 变化)时不走这里,避免把"恢复出来的字"再当成用户输入回写。
   const updateText = (next: string | ((prev: string) => string)) => {
     const value = typeof next === "function" ? next(textRef.current) : next;
-    if (value !== textRef.current) localRevisionRef.current += 1;
+    if (value !== textRef.current) {
+      localRevisionRef.current += 1;
+      dismissPrediction();
+    }
     textRef.current = value;
     setText(value);
     onDraftChangeRef.current?.(value);
@@ -1153,6 +1171,11 @@ export function Composer({
   // resolution. The shared parser supports qualified names such as
   // `/plugin-name:skill-name`.
   const slashVisible = slashCommandsEnabled && !!slashTokenAtCursor(text, cursorPos) && apiReady && !streaming;
+  const visiblePrediction = prediction && prediction.sessionId === String(draftKey)
+    && predictionKey !== dismissedPrediction && !text.length && !(draft ?? "").length
+    && !attachments.length && !listening && !composing && !expandedDraft && !sceneTag
+    && apiReady && !streaming && !sending && !cancelling && !sendNowPending
+    && !awaitingQuestion && !disabled && !sendDisabled && !slashVisible ? prediction : null;
 
   const handleSlashPick = (command: string) => {
     const replacement = replaceSlashToken(text, cursorPos, command);
@@ -1343,15 +1366,17 @@ export function Composer({
           </div>
         )}
 
+        <div className="echo-composer__editor">
         <textarea
           ref={ref}
           className="echo-composer__input"
           aria-label="输入问题或任务"
+          aria-describedby={visiblePrediction ? predictionDescriptionId : undefined}
           rows={1}
           value={text}
           disabled={!canEditDraft || awaitingQuestion || disabled}
           placeholder={
-            awaitingQuestion
+            visiblePrediction ? "" : awaitingQuestion
               ? "请先处理上方需要确认的事项"
               : canEditDraft
               ? sceneTag
@@ -1371,9 +1396,9 @@ export function Composer({
             setCursorPos((e.target as HTMLTextAreaElement).selectionStart ?? cursorPos)
           }
           onPaste={draftOnly ? undefined : handlePaste}
-          onCompositionStart={() => { composingRef.current = true; }}
-          onCompositionEnd={() => { composingRef.current = false; }}
-          onBlur={() => { composingRef.current = false; }}
+          onCompositionStart={() => { composingRef.current = true; setComposing(true); dismissPrediction(); }}
+          onCompositionEnd={() => { composingRef.current = false; setComposing(false); }}
+          onBlur={() => { composingRef.current = false; setComposing(false); }}
           onClick={(e) =>
             setCursorPos((e.target as HTMLTextAreaElement).selectionStart ?? cursorPos)
           }
@@ -1386,6 +1411,11 @@ export function Composer({
             // history until composition has actually finished.
             if (composingRef.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
             if (draftOnly) return;
+            if (visiblePrediction && e.key === "Escape") {
+              e.preventDefault();
+              dismissPrediction();
+              return;
+            }
             if (
               !e.nativeEvent.isComposing
               && atMenuRef.current?.handleKeyDown(e as unknown as KeyboardEvent)
@@ -1394,6 +1424,19 @@ export function Composer({
               !e.nativeEvent.isComposing
               && slashCommandsRef.current?.handleKeyDown(e)
             ) {
+              return;
+            }
+            if (visiblePrediction && e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+              e.preventDefault();
+              const epoch = scopeEpochRef.current;
+              // Only populate the draft. Enter/send remains a separate action.
+              updateText(visiblePrediction.text);
+              setCursorPos(visiblePrediction.text.length);
+              requestAnimationFrame(() => {
+                if (isCurrentDraftEpoch(epoch) && textRef.current === visiblePrediction.text) {
+                  ref.current?.setSelectionRange(visiblePrediction.text.length, visiblePrediction.text.length);
+                }
+              });
               return;
             }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -1443,6 +1486,12 @@ export function Composer({
             }
           }}
         />
+        {visiblePrediction && <div className="echo-composer__prediction" aria-hidden="true" data-testid="composer-prediction">
+          <span>{visiblePrediction.text}</span>
+          <span className="echo-composer__prediction-hint">Tab 接受 · 可编辑后发送</span>
+        </div>}
+        {visiblePrediction && <span className="sr-only" id={predictionDescriptionId} role="status">输入建议：{visiblePrediction.text}。按 Tab 填入草稿，再发送。</span>}
+        </div>
         {(text.length > 400 || text.split("\n").length > 8) && <button type="button" className="composer-expand-draft"
           disabled={!apiReady || awaitingQuestion || disabled} onClick={event => {
             event.stopPropagation();

@@ -1,5 +1,5 @@
 //! Trusted user intent and execution lifecycle. Never called from MCP tool text.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserIntent {
@@ -81,6 +81,123 @@ fn non_execution(text: &str) -> bool {
     .any(|prefix| text.starts_with(prefix))
 }
 
+pub fn suspends_execution(text: &str) -> bool {
+    non_execution(&request_body(text))
+}
+
+/// A positive, narrow missing-input check. Never invent outbound message text.
+pub fn message_text_required(text: &str) -> bool {
+    let body = request_body(text);
+    if non_execution(&body) {
+        return false;
+    }
+    [
+        "发条消息",
+        "发一条消息",
+        "发个消息",
+        "发消息",
+        "发送消息",
+        "发条信息",
+        "发一条信息",
+        "发送一条消息",
+    ]
+    .iter()
+    .any(|ending| body.ends_with(ending))
+}
+
+#[derive(Debug)]
+pub struct MessageAnswer {
+    pub text: String,
+    pub instructions: String,
+}
+
+pub fn message_answer(text: &str) -> Option<MessageAnswer> {
+    let original = text.trim();
+    if original.is_empty() || original.len() > 64000 {
+        return None;
+    }
+    let body = request_body(original);
+    let mut payload = original;
+    let mut declared = false;
+    for prefix in [
+        "内容必须精确为",
+        "内容就是",
+        "内容是",
+        "内容为",
+        "正文是",
+        "就发",
+        "发送内容为",
+    ] {
+        if let Some(tail) = original.strip_prefix(prefix) {
+            payload = tail.trim_start_matches(['：', ':', ' ', '\n']);
+            declared = true;
+            break;
+        }
+    }
+    if payload.trim().is_empty() {
+        return None;
+    }
+    if payload.starts_with('"') {
+        let mut stream = serde_json::Deserializer::from_str(payload).into_iter::<String>();
+        let message = stream.next()?.ok()?;
+        let consumed = stream.byte_offset();
+        return (!message.is_empty()).then(|| MessageAnswer {
+            text: message,
+            instructions: payload[consumed..]
+                .trim_start_matches(['。', '，', ';', '；', ' ', '\n'])
+                .into(),
+        });
+    }
+    if let Some(tail) = payload.strip_prefix('“') {
+        let end = tail.find('”')?;
+        let message = &tail[..end];
+        return (!message.is_empty()).then(|| MessageAnswer {
+            text: message.into(),
+            instructions: tail[end + '”'.len_utf8()..]
+                .trim_start_matches(['。', '，', ';', '；', ' ', '\n'])
+                .into(),
+        });
+    }
+    if !declared
+        && ([
+            "继续",
+            "接着",
+            "恢复",
+            "resume",
+            "continue",
+            "暂停",
+            "停止",
+            "取消",
+            "等一下",
+            "先等",
+            "不发",
+            "别发",
+            "不要发",
+            "不用发",
+            "先不要",
+            "先别",
+        ]
+        .iter()
+        .any(|p| body.starts_with(p))
+            || (non_execution(&body) && !body.starts_with("不要") && !body.starts_with("别")))
+    {
+        return None;
+    }
+    if ["，不要发", "，先别发", "。不要发", "；不要发", "，先不要发"]
+        .iter()
+        .any(|p| payload.contains(p))
+    {
+        return None;
+    }
+    Some(MessageAnswer {
+        text: payload.into(),
+        instructions: String::new(),
+    })
+}
+pub fn is_missing_input_answer(text: &str) -> bool {
+    message_answer(text).is_some()
+}
+
 fn occurrences(text: &str, word: &str) -> Option<usize> {
     text.match_indices(word).find_map(|(start, _)| {
         let end = start + word.len();
@@ -94,8 +211,61 @@ fn occurrences(text: &str, word: &str) -> Option<usize> {
 }
 fn first_action(text: &str) -> Option<usize> {
     [
-        "输入", "填写", "保存", "点击", "打开", "启动", "新建", "键入", "编辑", "切换", "执行",
-        "操作", "改为", "命名", "type", "save", "click", "open", "create", "edit", "launch",
+        "输入",
+        "填写",
+        "保存",
+        "点击",
+        "打开",
+        "启动",
+        "新建",
+        "键入",
+        "编辑",
+        "切换",
+        "执行",
+        "操作",
+        "改为",
+        "改成",
+        "写入",
+        "补充",
+        "删除",
+        "命名",
+        "查看",
+        "读取",
+        "查找",
+        "核对",
+        "检查",
+        "发送",
+        "提交",
+        "发布",
+        "上传",
+        "支付",
+        "付款",
+        "购买",
+        "覆盖",
+        "替换",
+        "发条消息",
+        "发一条消息",
+        "发个消息",
+        "发消息",
+        "发给",
+        "type",
+        "save",
+        "click",
+        "open",
+        "create",
+        "edit",
+        "launch",
+        "send",
+        "submit",
+        "publish",
+        "upload",
+        "pay",
+        "purchase",
+        "buy",
+        "delete",
+        "remove",
+        "overwrite",
+        "replace",
     ]
     .iter()
     .filter_map(|action| occurrences(text, action))
@@ -125,6 +295,164 @@ fn known_application(text: &str) -> bool {
     ]
     .iter()
     .any(|name| occurrences(text, name).is_some())
+}
+
+fn application_phrase(text: &str) -> Option<&str> {
+    let tail = text.strip_prefix("在")?;
+    let end = tail.find(['中', '里'])?;
+    let name = tail[..end].trim();
+    (!name.is_empty()
+        && name.len() <= 128
+        && !["代码", "脚本", "源码", "React", "代码仓库"]
+            .iter()
+            .any(|s| name.contains(s)))
+    .then_some(name)
+}
+/// An unrecognized launch name needs an exact host catalog match. Short file
+/// names such as README are not evidence of a desktop request.
+pub fn catalog_intent(
+    intent: UserIntent,
+    text: &str,
+    browser_selected: bool,
+    installed: impl Fn(&str) -> bool,
+) -> UserIntent {
+    if intent != UserIntent::Ordinary {
+        return intent;
+    }
+    let body = request_body(text);
+    let head = body
+        .split(['\n', '，', ',', '。', '；', ';', '！', '!', '？', '?'])
+        .next()
+        .unwrap_or("");
+    let name = ["打开", "启动", "open ", "launch "]
+        .iter()
+        .find_map(|prefix| head.strip_prefix(prefix))
+        .map(str::trim);
+    if name.is_some_and(|name| !name.is_empty() && name.len() <= 512 && installed(name)) {
+        if browser_selected {
+            UserIntent::TaskUpdate
+        } else {
+            UserIntent::DesktopTask
+        }
+    } else {
+        intent
+    }
+}
+
+pub fn selected_target_request(text: &str) -> bool {
+    let body = request_body(text);
+    desktop_action(&body)
+        && ![
+            "不要",
+            "别",
+            "do not ",
+            "don't ",
+            "解释",
+            "分析",
+            "讨论",
+            "告诉我",
+            "如何",
+            "怎么",
+        ]
+        .iter()
+        .any(|p| body.starts_with(p))
+        && !["代码", "源码", "脚本", " code", " script"]
+            .iter()
+            .any(|word| body.contains(word))
+}
+
+pub fn selected_target_intent(intent: UserIntent, text: &str, has_scope: bool) -> UserIntent {
+    if matches!(intent, UserIntent::Ordinary | UserIntent::TaskUpdate)
+        && (intent == UserIntent::TaskUpdate || selected_target_request(text))
+    {
+        if has_scope {
+            UserIntent::TaskUpdate
+        } else {
+            UserIntent::DesktopTask
+        }
+    } else {
+        intent
+    }
+}
+
+/// Contextual imperatives are ordinary follow-ups, not a special resume command.
+/// Discussions, questions and quoted material never revive a stopped task.
+pub fn contextual_intent(intent: UserIntent, text: &str, has_scope: bool) -> UserIntent {
+    if !has_scope || !matches!(intent, UserIntent::Ordinary | UserIntent::DesktopTask) {
+        return intent;
+    }
+    let body = request_body(text);
+    if body.contains(['？', '?'])
+        || non_execution(&body)
+        || body.starts_with(['"', '\'', '“', '‘', '`', '>'])
+    {
+        return intent;
+    }
+    if intent == UserIntent::DesktopTask {
+        // An application qualifier does not turn "continue saving in X" into
+        // a new task that loses the original output path and restrictions.
+        let directive = body.split(['"', '\'', '“', '‘', '`']).next().unwrap_or("");
+        return if ["继续", "接着", "刚才", "原任务", "continue", "resume"]
+            .iter()
+            .any(|word| occurrences(directive, word).is_some())
+        {
+            UserIntent::TaskUpdate
+        } else {
+            intent
+        };
+    }
+    let imperative = [
+        "标题",
+        "正文",
+        "格式",
+        "这个",
+        "这里",
+        "刚才",
+        "接下来",
+        "按",
+        "照",
+        "然后",
+        "再",
+        "完成",
+        "写入",
+        "保存",
+        "编辑",
+        "补充",
+        "删除",
+        "发送",
+        "发给",
+        "提交",
+        "发布",
+        "上传",
+        "支付",
+        "付款",
+        "购买",
+        "覆盖",
+        "替换",
+        "先问",
+        "先确认",
+        "先征求",
+        "先征得",
+        "send",
+        "submit",
+        "publish",
+        "pay",
+        "purchase",
+        "buy",
+        "delete",
+        "remove",
+        "overwrite",
+        "replace",
+        "ask me",
+        "ask first",
+    ]
+    .iter()
+    .any(|prefix| body.starts_with(prefix));
+    if imperative && desktop_action(&body) {
+        UserIntent::TaskUpdate
+    } else {
+        intent
+    }
 }
 
 fn explicit_desktop_directive(head: &str) -> bool {
@@ -187,7 +515,7 @@ pub fn user_intent(text: &str, has_attachments: bool) -> UserIntent {
     }
     let continuation = ["继续", "接着", "恢复", "resume", "continue"]
         .iter()
-        .find_map(|prefix| body.strip_prefix(prefix));
+        .find_map(|prefix| head.strip_prefix(prefix));
     if body == "/resume"
         || continuation.is_some_and(|tail| {
             let tail = tail.trim();
@@ -241,6 +569,13 @@ pub fn user_intent(text: &str, has_attachments: bool) -> UserIntent {
     {
         return UserIntent::Ordinary;
     }
+    if head
+        .find("检查")
+        .is_some_and(|i| first_action(head) == Some(i))
+        && ["代码", "源码", "脚本"].iter().any(|s| head.contains(s))
+    {
+        return UserIntent::Ordinary;
+    }
     let explicit_desktop = explicit_desktop_directive(head);
     let in_application = ["在", "使用", "用", "通过", "in ", "using ", "use "]
         .iter()
@@ -254,6 +589,7 @@ pub fn user_intent(text: &str, has_attachments: bool) -> UserIntent {
             || head.contains("电脑上")
             || head.contains("桌面上")
             || ((head.contains("中") || head.contains("里")) && head.contains("应用"))
+            || application_phrase(head).is_some()
             || head.strip_prefix("在").is_some_and(|tail| {
                 tail.trim_start()
                     .chars()
@@ -442,15 +778,20 @@ pub fn updated_scope(
     Ok(next)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     Running,
+    WaitingUser,
+    Verifying,
     Paused,
     Stopped,
+    Completed,
+    Failed,
+    ResultUnknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskExecution {
     pub phase: Phase,
@@ -458,9 +799,63 @@ pub struct TaskExecution {
     pub scope: Option<String>,
     pub authorized: bool,
     pub generation: u64,
+    pub task_id: String,
+    pub run_id: String,
+    #[serde(default)]
+    pub prompt_id: Option<String>,
+    pub current_tool: Option<String>,
+    #[serde(default)]
+    pub current_write: bool,
+    pub targets: Vec<String>,
+    pub receipts: Vec<ActionReceipt>,
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub message_text_required: bool,
+    #[serde(default)]
+    pub message_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionReceipt {
+    pub id: String,
+    pub tool: String,
+    pub status: String,
+    pub verified: bool,
+    pub write: bool,
+    pub evidence: bool,
+    pub at_ms: u64,
+}
+
+pub struct ApprovalState {
+    generation: u64,
+    phase: Phase,
 }
 impl TaskExecution {
+    pub fn begin_approval(&mut self) -> Option<ApprovalState> {
+        if !self.authorized
+            || !matches!(
+                self.phase,
+                Phase::Running | Phase::Verifying | Phase::ResultUnknown
+            )
+        {
+            return None;
+        }
+        let state = ApprovalState {
+            generation: self.generation,
+            phase: self.phase,
+        };
+        self.phase = Phase::WaitingUser;
+        Some(state)
+    }
+
+    pub fn finish_approval(&mut self, state: ApprovalState) {
+        if self.generation == state.generation && self.phase == Phase::WaitingUser {
+            self.phase = state.phase;
+        }
+    }
     pub fn new(restored: bool, scope: Option<String>) -> Self {
+        let pending_message = scope.as_deref().is_some_and(message_text_required);
         Self {
             phase: if restored {
                 Phase::Paused
@@ -471,12 +866,36 @@ impl TaskExecution {
             scope,
             authorized: false,
             generation: 0,
+            task_id: uuid::Uuid::now_v7().to_string(),
+            run_id: uuid::Uuid::now_v7().to_string(),
+            prompt_id: None,
+            current_tool: None,
+            current_write: false,
+            targets: vec![],
+            receipts: vec![],
+            outcome: None,
+            message_text_required: pending_message,
+            message_text: None,
         }
     }
     pub fn paused(&self) -> bool {
-        self.phase != Phase::Running
+        !matches!(
+            self.phase,
+            Phase::Running | Phase::Verifying | Phase::WaitingUser | Phase::ResultUnknown
+        )
     }
     pub fn revoke(&mut self) {
+        if self.current_write {
+            if let Some(tool) = self.current_tool.take() {
+                self.record(
+                    &tool,
+                    &serde_json::json!({"status":"result_unknown","verified":false}),
+                    true,
+                );
+            }
+        }
+        self.current_tool = None;
+        self.current_write = false;
         self.authorized = false;
         self.generation += 1;
     }
@@ -489,17 +908,425 @@ impl TaskExecution {
         self.pause("user_stopped");
         self.phase = Phase::Stopped;
     }
+    pub fn wait_for_user(&mut self, generation: u64, reason: &str, message: &str) -> bool {
+        if self.generation != generation || self.paused() {
+            return false;
+        }
+        self.revoke();
+        self.phase = Phase::WaitingUser;
+        self.reason = Some(reason.into());
+        self.outcome = Some(message.into());
+        true
+    }
     pub fn resume(&mut self, authorize: bool) {
         self.revoke();
-        self.phase = Phase::Running;
-        self.reason = None;
-        self.authorized = authorize;
+        self.phase = if self.message_text_required {
+            Phase::WaitingUser
+        } else {
+            Phase::Running
+        };
+        self.reason = self
+            .message_text_required
+            .then(|| "message_text_required".into());
+        self.authorized = authorize && !self.message_text_required;
+        self.run_id = uuid::Uuid::now_v7().to_string();
+        self.current_tool = None;
+        self.outcome = self
+            .message_text_required
+            .then(|| "请告诉我需要发送的消息内容。".into());
+        // Human takeover can change the outcome without a tool write. Earlier
+        // readbacks remain history, but cannot complete this resumed run.
+        for receipt in &mut self.receipts {
+            receipt.evidence = false;
+        }
+    }
+
+    pub fn begin(&mut self, tool: &str, write: bool) {
+        self.current_tool = Some(tool.to_owned());
+        self.current_write = write;
+        self.phase = if tool.contains("verify")
+            || tool.contains("wait_for")
+            || tool == "automation_complete"
+        {
+            Phase::Verifying
+        } else {
+            Phase::Running
+        };
+    }
+
+    pub fn record(&mut self, tool: &str, value: &serde_json::Value, write: bool) -> String {
+        let status = value["status"].as_str().unwrap_or(if write {
+            "dispatched_unverified"
+        } else {
+            "observed"
+        });
+        let verified = value["verified"] == true;
+        // Evidence is produced by host verification tools, never by arbitrary model text.
+        let evidence = verified
+            && ((tool == "computer_verify_file" && value["status"] == "verified_exact_text")
+                || tool == "computer_verify_document"
+                || (tool == "computer_verify_visual" && value["status"] == "verified_visual_text")
+                || tool == "browser_wait_for"
+                || tool == "computer_wait_for");
+        let id = uuid::Uuid::now_v7().to_string();
+        self.receipts.push(ActionReceipt {
+            id: id.clone(),
+            tool: tool.into(),
+            status: status.into(),
+            verified,
+            write,
+            evidence,
+            at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        });
+        if self.receipts.len() > 64 {
+            self.receipts.remove(0);
+        }
+        self.current_tool = None;
+        self.current_write = false;
+        if !self.paused() && self.phase != Phase::WaitingUser {
+            self.phase = if status == "result_unknown" {
+                Phase::ResultUnknown
+            } else {
+                Phase::Running
+            };
+        }
+        id
+    }
+
+    pub fn complete(&mut self, evidence_ids: &[String], summary: &str) -> Result<(), String> {
+        if self.paused() || !self.authorized {
+            return Err("task_inactive: resume before completing".into());
+        }
+        if summary.trim().is_empty() || summary.len() > 2000 || evidence_ids.is_empty() {
+            return Err(
+                "evidence_required: supply host verification receipt IDs and a bounded summary"
+                    .into(),
+            );
+        }
+        let last_write = self.receipts.iter().rposition(|r| r.write);
+        if !evidence_ids.iter().all(|id| {
+            self.receipts
+                .iter()
+                .enumerate()
+                .any(|(i, r)| &r.id == id && r.evidence && last_write.is_none_or(|w| i > w))
+        }) {
+            let valid: Vec<_> = self
+                .receipts
+                .iter()
+                .enumerate()
+                .filter(|(i, r)| r.evidence && last_write.is_none_or(|w| *i > w))
+                .map(|(_, r)| r.id.as_str())
+                .collect();
+            return Err(format!("evidence_required: verification must belong to this task and follow its latest write; valid fresh evidenceIds: {}", serde_json::to_string(&valid).unwrap_or_default()));
+        }
+        self.revoke();
+        self.phase = Phase::Completed;
+        self.current_tool = None;
+        self.outcome = Some(summary.into());
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn approval_preserves_lifecycle_and_cannot_revive_a_stopped_or_replaced_run() {
+        for phase in [
+            Phase::Paused,
+            Phase::Stopped,
+            Phase::Completed,
+            Phase::Failed,
+            Phase::WaitingUser,
+        ] {
+            let mut task = TaskExecution::new(false, Some("任务".into()));
+            task.phase = phase;
+            task.outcome = Some("保留成果".into());
+            assert!(task.begin_approval().is_none());
+            assert_eq!(task.phase, phase);
+            assert_eq!(task.outcome.as_deref(), Some("保留成果"));
+        }
+        for phase in [Phase::Running, Phase::Verifying, Phase::ResultUnknown] {
+            let mut task = TaskExecution::new(false, Some("任务".into()));
+            task.resume(true);
+            task.phase = phase;
+            let state = task.begin_approval().unwrap();
+            assert_eq!(task.phase, Phase::WaitingUser);
+            task.finish_approval(state);
+            assert_eq!(task.phase, phase);
+            let state = task.begin_approval().unwrap();
+            task.stop();
+            task.finish_approval(state);
+            assert_eq!(task.phase, Phase::Stopped);
+            task.resume(true);
+            let state = task.begin_approval().unwrap();
+            task.resume(true);
+            task.finish_approval(state);
+            assert_eq!(task.phase, Phase::Running);
+        }
+    }
+    #[test]
+    fn consequential_followups_preserve_scope_and_confirmation_requirements() {
+        let original = "在 TextEdit 中保存报告到 /tmp/report.txt，不要覆盖";
+        for text in [
+            "发送之前先问我",
+            "先问我再发送",
+            "付款前先确认",
+            "覆盖之前先征求同意",
+            "ask me before you send",
+            "在 TextEdit 中继续保存",
+        ] {
+            let intent = contextual_intent(user_intent(text, false), text, true);
+            assert_eq!(intent, UserIntent::TaskUpdate, "{text}");
+            let scope = updated_scope(Some(original), intent, text)
+                .unwrap()
+                .unwrap();
+            assert!(
+                scope.contains("/tmp/report.txt")
+                    && scope.contains("不要覆盖")
+                    && scope.contains(text)
+            );
+        }
+        assert_eq!(
+            contextual_intent(
+                user_intent("在微信发送“继续”给张三", false),
+                "在微信发送“继续”给张三",
+                true
+            ),
+            UserIntent::DesktopTask
+        );
+        assert_eq!(
+            contextual_intent(
+                user_intent("先分析如何删除文件", false),
+                "先分析如何删除文件",
+                true
+            ),
+            UserIntent::Ordinary
+        );
+    }
+    #[test]
+    fn visual_proof_requires_the_host_tool_positive_status_and_freshness() {
+        let mut task = TaskExecution::new(false, Some("在微信给文件传输助手发送测试消息".into()));
+        task.resume(true);
+        let fake = task.record(
+            "computer_screenshot",
+            &serde_json::json!({"verified":true,"status":"verified_visual_text"}),
+            false,
+        );
+        assert!(task.complete(&[fake], "sent").is_err());
+        let mismatch = task.record(
+            "computer_verify_visual",
+            &serde_json::json!({"verified":false,"status":"visual_mismatch"}),
+            false,
+        );
+        assert!(task.complete(&[mismatch], "sent").is_err());
+        let old = task.record(
+            "computer_verify_visual",
+            &serde_json::json!({"verified":true,"status":"verified_visual_text"}),
+            false,
+        );
+        task.record(
+            "computer_key",
+            &serde_json::json!({"keyDispatched":true}),
+            true,
+        );
+        assert!(task.complete(&[old], "sent").is_err());
+        let proof = task.record(
+            "computer_verify_visual",
+            &serde_json::json!({"verified":true,"status":"verified_visual_text"}),
+            false,
+        );
+        task.complete(&[proof], "sent and visible in conversation")
+            .unwrap();
+    }
+    #[test]
+    fn missing_message_survives_stop_restore_and_bare_continue() {
+        let mut task = TaskExecution::new(true, Some("打开微信给测试联系人发条消息".into()));
+        assert!(task.message_text_required);
+        for stop in [false, true] {
+            if stop {
+                task.stop();
+            } else {
+                task.pause("user_instruction");
+            }
+            assert!(message_answer("继续").is_none());
+            task.resume(true);
+            assert_eq!(task.phase, Phase::WaitingUser);
+            assert!(!task.authorized);
+            assert_eq!(task.reason.as_deref(), Some("message_text_required"));
+        }
+        task.message_text = Some(message_answer("内容是：\"你明天来吗？\"").unwrap().text);
+        task.message_text_required = false;
+        task.resume(true);
+        assert!(task.authorized);
+        assert_eq!(task.phase, Phase::Running);
+    }
+    #[test]
+    fn outgoing_content_is_separate_from_execution_instructions() {
+        for literal in ["不要发送", "删除所有文件", "为什么？"] {
+            let answer = message_answer(&format!(
+                "内容是：{}。只填写，不发送",
+                serde_json::to_string(literal).unwrap()
+            ))
+            .unwrap();
+            assert_eq!(answer.text, literal);
+            assert_eq!(answer.instructions, "只填写，不发送");
+            assert!(!answer.instructions.contains(literal));
+        }
+        let answer = message_answer("“明天下午三点见”").unwrap();
+        assert_eq!(answer.text, "明天下午三点见");
+        assert!(answer.instructions.is_empty());
+        for control in [
+            "内容是：",
+            "正文是：   ",
+            "内容是：\"\"",
+            "继续",
+            "先不要发送，解释一下",
+            "停止",
+            "你好，先不要发送",
+        ] {
+            assert!(message_answer(control).is_none(), "{control}");
+        }
+    }
+    #[test]
+    fn trusted_discussion_or_prohibition_revokes_an_idle_desktop_grant() {
+        assert!(suspends_execution("不要保存，先解释"));
+        assert!(suspends_execution("请检查这段代码"));
+        assert!(!suspends_execution("保存到桌面"));
+    }
+    #[test]
+    fn selected_target_keeps_updates_and_continue_in_the_existing_task() {
+        assert_eq!(
+            selected_target_intent(UserIntent::TaskUpdate, "保存到桌面", true),
+            UserIntent::TaskUpdate
+        );
+        assert_eq!(
+            selected_target_intent(UserIntent::TaskUpdate, "新建文稿", false),
+            UserIntent::DesktopTask
+        );
+        assert_eq!(
+            selected_target_intent(UserIntent::Continue, "继续保存", true),
+            UserIntent::Continue
+        );
+        assert_eq!(
+            selected_target_intent(UserIntent::Ordinary, "检查这段代码", false),
+            UserIntent::Ordinary
+        );
+    }
+    #[test]
+    fn takeover_requires_new_evidence_even_if_no_further_tool_writes() {
+        let mut task = TaskExecution::new(false, Some("保存文件".into()));
+        task.resume(true);
+        let id = task.record(
+            "computer_verify_file",
+            &serde_json::json!({"verified":true,"status":"verified_exact_text"}),
+            false,
+        );
+        task.pause("user_takeover");
+        task.resume(true);
+        assert!(task.complete(&[id], "saved").is_err());
+    }
+    #[test]
+    fn cancellation_keeps_a_pending_write_unknown_and_never_restores_authority() {
+        let mut task = TaskExecution::new(false, Some("输入内容".into()));
+        task.resume(true);
+        task.begin("computer_type", true);
+        task.pause("user_takeover");
+        task.pause("user_takeover");
+        assert!(!task.authorized);
+        assert!(task.current_tool.is_none());
+        assert_eq!(task.receipts.len(), 1);
+        assert_eq!(task.receipts[0].status, "result_unknown");
+        assert!(task.receipts[0].write);
+    }
+    #[test]
+    fn outcomes_need_fresh_host_evidence_and_revoke_authority() {
+        use serde_json::json;
+        let mut task = TaskExecution::new(false, Some("保存文稿".into()));
+        task.resume(true);
+        let old = task.record(
+            "computer_verify_file",
+            &json!({"verified":true,"status":"verified_exact_text"}),
+            false,
+        );
+        task.record(
+            "computer_set_value",
+            &json!({"verified":true,"status":"verified_exact_text"}),
+            true,
+        );
+        assert!(task.complete(&[old], "已完成").is_err());
+        assert!(task.complete(&["invented".into()], "已完成").is_err());
+        let current = task.record(
+            "computer_verify_file",
+            &json!({"verified":true,"status":"verified_exact_text"}),
+            false,
+        );
+        task.complete(&[current], "文件已核验").unwrap();
+        assert_eq!(task.phase, Phase::Completed);
+        assert!(!task.authorized);
+    }
+    #[test]
+    fn unknown_actions_and_user_waits_never_become_verified() {
+        use serde_json::json;
+        let mut task = TaskExecution::new(false, Some("文稿".into()));
+        task.resume(true);
+        let id = task.record(
+            "computer_invoke",
+            &json!({"status":"result_unknown","verified":false}),
+            true,
+        );
+        assert_eq!(task.phase, Phase::ResultUnknown);
+        assert!(task.complete(&[id], "完成").is_err());
+        task.phase = Phase::WaitingUser;
+        task.record("computer_snapshot", &json!({}), false);
+        assert_eq!(task.phase, Phase::WaitingUser);
+    }
+    #[test]
+    fn desktop_read_tasks_and_unlisted_apps_are_routed() {
+        for text in [
+            "请在微信中查看聊天记录",
+            "请在 Excel 中检查 A1 的数值",
+            "请在钉钉中点击工作台",
+        ] {
+            assert_eq!(user_intent(text, false), UserIntent::DesktopTask, "{text}");
+        }
+        assert!(selected_target_request("检查 A1 的数值"));
+        assert!(!selected_target_request("检查这段代码"));
+    }
+    #[test]
+    fn unknown_launches_need_a_real_installed_application() {
+        for text in ["打开 README", "打开测试", "启动服务", "请打开钉钉"] {
+            let intent = user_intent(text, false);
+            assert_eq!(intent, UserIntent::Ordinary, "{text}");
+            assert_eq!(
+                catalog_intent(intent, text, false, |_| false),
+                UserIntent::Ordinary
+            );
+        }
+        for text in ["请打开钉钉", "launch Acme"] {
+            let known = |name: &str| ["钉钉", "acme"].contains(&name);
+            assert_eq!(
+                catalog_intent(user_intent(text, false), text, false, known),
+                UserIntent::DesktopTask
+            );
+            assert_eq!(
+                catalog_intent(user_intent(text, false), text, true, known),
+                UserIntent::TaskUpdate
+            );
+        }
+        assert_eq!(
+            catalog_intent(
+                user_intent("不要打开钉钉", false),
+                "不要打开钉钉",
+                false,
+                |_| true
+            ),
+            UserIntent::Ordinary
+        );
+    }
     #[test]
     fn direct_intent_only() {
         for s in [
@@ -703,5 +1530,92 @@ mod tests {
             "保存到 /tmp/a.txt"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod conversation_continuation_tests {
+    use super::*;
+    #[test]
+    fn ordinary_continuation_preserves_amended_constraints() {
+        let text = "继续，但不要发送";
+        let intent = user_intent(text, false);
+        assert_eq!(intent, UserIntent::Continue);
+        assert!(updated_scope(Some("整理并发送报告"), intent, text)
+            .unwrap()
+            .unwrap()
+            .contains("不要发送"));
+        for text in [
+            "标题改成会议记录",
+            "正文补充今天的结论",
+            "按照刚才的要求保存文件",
+        ] {
+            let intent = contextual_intent(user_intent(text, false), text, true);
+            assert_eq!(intent, UserIntent::TaskUpdate);
+            assert_ne!(
+                contextual_intent(UserIntent::Ordinary, text, false),
+                UserIntent::TaskUpdate
+            );
+        }
+        for text in [
+            "解释一下刚才做了什么",
+            "这个标题为什么要修改？",
+            "`保存并发送`",
+        ] {
+            assert_eq!(
+                contextual_intent(user_intent(text, false), text, true),
+                UserIntent::Ordinary
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod missing_message_tests {
+    use super::*;
+    #[test]
+    fn delayed_blocker_never_overrides_a_new_user_run_or_a_stop() {
+        let mut t = TaskExecution::new(false, Some("在微信发送消息：验收".into()));
+        t.resume(true);
+        let old = t.generation;
+        t.resume(true);
+        let current = t.generation;
+        assert!(!t.wait_for_user(old, "input_conflict", "wait"));
+        assert!(t.authorized);
+        assert!(t.wait_for_user(current, "input_conflict", "等待你继续"));
+        assert_eq!(t.phase, Phase::WaitingUser);
+        assert!(!t.authorized);
+        assert!(t.scope.is_some());
+        t.resume(true);
+        let running = t.generation;
+        t.stop();
+        assert!(!t.wait_for_user(running, "input_conflict", "wait"));
+        assert_eq!(t.phase, Phase::Stopped);
+    }
+    #[test]
+    fn outbound_text_is_required_only_for_an_explicit_but_unspecified_message() {
+        for text in [
+            "帮我打开微信给测试联系人发条消息",
+            "请在飞书给测试联系人发一条消息。",
+        ] {
+            assert!(message_text_required(text), "{text}");
+        }
+        for text in [
+            "微信里发送消息：测试内容",
+            "给测试联系人发条消息说我已经到了",
+            "打开微信",
+            "解释微信如何发送消息",
+            "在 TextEdit 中保存文稿",
+        ] {
+            assert!(!message_text_required(text), "{text}");
+        }
+        assert_eq!(
+            user_intent("请用微信给测试联系人发条消息", false),
+            UserIntent::DesktopTask
+        );
+        assert!(is_missing_input_answer("内容就是：明天下午三点见"));
+        assert!(is_missing_input_answer("“明天下午三点见”"));
+        assert!(!is_missing_input_answer("先不要发送，解释一下"));
+        assert!(!is_missing_input_answer("为什么？"));
     }
 }

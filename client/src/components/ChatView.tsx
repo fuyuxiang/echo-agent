@@ -6,6 +6,7 @@ import { Play } from "lucide-react";
 import { TasksPanel } from "./TasksPanel";
 import { executionSource, resolveExecutionTurn, turnPresentation } from "@/lib/execution-turn";
 import { useSessionStore, type ChatMessage, type ToolCallView } from "@/stores/session-store";
+import { usePromptPrediction } from "@/lib/use-prompt-prediction";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useContinuationStore } from "@/stores/continuation-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
@@ -55,6 +56,7 @@ import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { isGlobalShortcutBlocked } from "@/lib/keyboard-scope";
 import { stripAttachmentTransportContext } from "@/lib/user-message";
+import { computerTaskRunning } from "@/lib/computer-task";
 import { AutomationApprovalCard } from "./AutomationControls";
 import { useSessionAutomation } from "@/lib/use-session-automation";
 import { type AutomationMode } from "@/lib/automation-client";
@@ -219,6 +221,7 @@ export function ChatView({
   const trayAttentionRef = useRef<HTMLDivElement>(null);
   const handledAttentionRef = useRef<number | undefined>(undefined);
   const automation = useSessionAutomation(sessionId);
+  const taskRunning = streaming || computerTaskRunning(automation.status);
   const runtimeErrorContext = useSessionStore(s => s.runtimeErrorContext);
   const workspaceRefreshSignal = useMemo(() => ({error, revision:taskRefreshSignal}), [error, taskRefreshSignal]);
   const workspace = useSessionWorkspace(sessionId, cwd, workspaceRefreshSignal, onReloadWorkspace, onToast);
@@ -753,6 +756,12 @@ export function ChatView({
   const searchable = messages.some(m => m.parts.some(p => p.kind === "text" && p.text.trim()));
   const hasContent = messages.some(m => m.parts.length > 0 || m.attachments?.length);
   const awaitingPlan = planApproval?.sessionId === sessionId;
+  const { prediction, dismiss: dismissPrediction } = usePromptPrediction({
+    sessionId, messages, draft, models,
+    busy: taskRunning || Boolean(sendNowPending || replacingTurn || cancellationPending || continuationPending
+      || awaitingQuestion || awaitingDecision || awaitingPlan || control || draftOnly || !apiReady
+      || modelLoading || error || !workspace.available || workspace.busy),
+  });
   // A terminal runtime error belongs beside its reply. Other errors (workspace,
   // loading, cancellation, etc.) keep their existing dedicated banner.
   const inlineRuntimeError = error && terminalMessage && terminalMessage === messages[messages.length - 1]
@@ -1004,20 +1013,22 @@ export function ChatView({
   // Native pauses and chat cancellations share feedback beside their turn.
   // Passive capability probes never create a mode-specific toolbar.
   const nativePaused = !streaming && automationMode !== "default" && automation.status?.mode === automationMode
-    && automation.status.paused && (automationMode === "browser_use" || automation.status.task?.scope);
+    && automation.status.paused && (!automation.status.task || ["paused","stopped"].includes(automation.status.task.phase)) && (automationMode === "browser_use" || automation.status.task?.scope);
   const controlPhase = control?.phase ?? (nativePaused ? automation.status?.task?.phase === "stopped" ? "stopped" : "paused" : undefined);
   const continuationNeedsScope = automationMode === "computer_use" && automation.status && !automation.status.task?.scope;
   const feedbackTarget = terminalMessage?.id;
   const blockingNotice = terminalMessage && getExecutionNotice(terminalMessage, streaming, inlineRuntimeError);
-  const taskFeedback = controlPhase && !inlineRuntimeError && !error && (!blockingNotice || blockingNotice.kind === "stopped") ? (
+  const desktopBlocker = automation.status?.task?.phase === "waiting_user" && !automation.status.task.authorized
+    ? automation.status.task.outcome : null;
+  const taskFeedback = desktopBlocker ? <div className="yield-banner session-turn-feedback" role="status"><span>{desktopBlocker}</span></div> : controlPhase && !inlineRuntimeError && !error && (!blockingNotice || blockingNotice.kind === "stopped") ? (
     <div className="yield-banner session-turn-feedback" role="status">
       <span>
         {controlPhase === "pausing" && "正在暂停任务…"}
-        {controlPhase === "paused" && (continuationNeedsScope ? "任务已暂停，可发送新消息说明接下来要做什么" : "任务已暂停，可继续执行")}
+        {controlPhase === "paused" && (continuationNeedsScope ? "任务已暂停，可发送新消息说明接下来要做什么" : automationMode === "default" ? "任务已暂停，可继续执行" : "操作已中断，可直接发送消息继续或调整要求")}
         {controlPhase === "stopping" && "正在停止任务…"}
         {controlPhase === "stopped" && stoppedTaskLabel(stoppedCategory)}
       </span>
-      {controlPhase === "paused" && !continuationNeedsScope && <button type="button" className="btn btn--ghost" disabled={continuing || streaming || sendNowPending || replacingTurn || continuationPending || !workspace.available || workspace.busy || !apiReady || modelLoading || awaitingQuestion || awaitingDecision || awaitingPlan}
+      {controlPhase === "paused" && !continuationNeedsScope && automationMode==="default" && <button type="button" className="btn btn--ghost" disabled={continuing || streaming || sendNowPending || replacingTurn || continuationPending || !workspace.available || workspace.busy || !apiReady || modelLoading || awaitingQuestion || awaitingDecision || awaitingPlan}
         onClick={() => void continueTask()}><Play size={14} />{continuing ? "正在继续…" : "继续任务"}</button>}
     </div>
   ) : null;
@@ -1088,6 +1099,9 @@ export function ChatView({
                       markdownConfig={markdownConfig}
                       cwd={cwd}
                       sessionId={sessionId ?? undefined}
+                      automationStatus={automation.status?.task?.scope && (automation.status.task.promptId
+                        ? m.promptId === automation.status.task.promptId && m.role === "assistant" && !messages.slice(idx + 1).some(next => next.role === "assistant" && next.promptId === m.promptId)
+                        : isLastAssistant && !streaming) ? automation.status : undefined}
                       onToast={onToast}
                       onOpenTool={handleOpenTool}
                       onOpenArtifact={handleSelectArtifact}
@@ -1103,7 +1117,7 @@ export function ChatView({
                       turnFeedback={m.id === feedbackTarget ? taskFeedback : undefined}
                       onOpenModelSettings={onOpenSettings}
                       onOpenSecuritySettings={onOpenSecuritySettings}
-                      onContinueExecution={isLastAssistant && !inheritedIds.has(m.id) ? async (prompt) => {
+                      onContinueExecution={automationMode === "default" && isLastAssistant && !inheritedIds.has(m.id) ? async (prompt) => {
                         const live = useSessionStore.getState();
                         if (!sessionId || live.sessionId !== sessionId || live.messages[live.messages.length - 1]?.id !== m.id || live.streaming || retryBlockedRef.current || modelLoading
                           || !apiReady || !workspace.available || workspace.busy || replacingTurn || sendNowPending
@@ -1135,7 +1149,7 @@ export function ChatView({
       onRename={onRename} navigation={navigation ?? { onNewTask }} leading={headerLeading}
       projectBreadcrumb={projectBreadcrumb}
       actions={{ onToast,
-        onStop: streaming ? () => { void cancelTask("stop"); } : undefined,
+        onStop: taskRunning ? () => { void cancelTask("stop"); } : undefined,
         stopping: cancellationPending,
         stopDisabled: sendNowPending || replacingTurn,
         onRewind: hasContent ? () => setHistoryAction("rewind") : undefined,
@@ -1261,7 +1275,7 @@ export function ChatView({
             <button type="button" aria-label="取消文档修改上下文" onClick={() => setDocumentEdit(null)}>取消</button>
           </div>}
           <Composer
-            streaming={streaming}
+            streaming={taskRunning}
             sendDisabled={draftOnly || !workspace.available || workspace.busy || replacingTurn || continuationPending}
             disabled={control?.phase === "pausing" || control?.phase === "stopping"}
             apiReady={apiReady}
@@ -1311,6 +1325,8 @@ export function ChatView({
             onToast={onToast}
             draft={draft}
             draftKey={sessionId ?? undefined}
+            prediction={prediction}
+            onDismissPrediction={dismissPrediction}
             onDraftChange={
               sessionId ? (t) => setDraft(sessionId, t) : undefined
             }

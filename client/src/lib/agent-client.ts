@@ -710,6 +710,16 @@ export async function agentSetSessionArchived(
  * in the agent (e.g. an old session never loaded this launch) — callers
  * should treat that as "no data" and hide the pill.
  */
+export interface PromptSuggestionResponse {
+  suggestion: string | null;
+  generation: number;
+}
+
+/** Read-only prediction: this command never submits a user message. */
+export async function agentSuggestPrompt(sessionId: string, generation: number, model?: string): Promise<PromptSuggestionResponse> {
+  return invoke<PromptSuggestionResponse>("agent_suggest_prompt", { sessionId, generation, model: model ?? null });
+}
+
 export async function agentSessionInfo(sessionId: string): Promise<SessionInfoResponse> {
   return invoke<SessionInfoResponse>("agent_session_info", { sessionId });
 }

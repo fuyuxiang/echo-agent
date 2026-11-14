@@ -13,6 +13,7 @@ export interface SettingsSearchEntry {
 const SETTINGS_SEARCH: SettingsSearchEntry[] = [
   { section: "general", title: "外观模式", category: "通用", keywords: "主题 浅色 深色 系统 appearance theme", target: "appearance" },
   { section: "general", title: "字体大小", category: "通用", keywords: "字号 缩放 阅读 font size", target: "font-size" },
+  { section: "general", title: "显示输入建议", category: "通用", keywords: "输入框 预测 下一条消息 草稿 Tab 预测模型 suggestions predictions", target: "composer-predictions" },
   { section: "general", title: "关闭窗口后继续运行", category: "通用", keywords: "后台运行 托盘 退出 任务 自动化", target: "background" },
   { section: "shortcuts", title: "快捷键", category: "通用", keywords: "键盘 shortcut 发送 换行" },
   { section: "notify-channels", title: "桌面通知", category: "通知", keywords: "桌面提醒 系统 勿扰 权限 测试", target: "desktop-notifications" },

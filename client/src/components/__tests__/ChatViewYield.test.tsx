@@ -1247,13 +1247,25 @@ it("电脑任务可直接输入继续保存，恢复只由同一次可信发送�
   expect(input).toBeEnabled();
   expect(screen.queryByRole("button",{name:"恢复"})).toBeNull();
   expect(screen.queryByRole("button",{name:"恢复并继续"})).toBeNull();
-  const continuation = screen.getByRole("button",{name:"继续任务"});
-  expect(continuation.closest(".chatview__scroll")).not.toBeNull();
-  expect(continuation.closest(".chatview__footer")).toBeNull();
+  expect(screen.queryByRole("button",{name:"继续任务"})).toBeNull();
+  expect(screen.queryByRole("region",{name:"电脑任务控制"})).toBeNull();
   fireEvent.change(input,{target:{value:"继续保存"}});
   fireEvent.keyDown(input,{key:"Enter",code:"Enter"});
   await waitFor(()=>expect(baseProps.onSend).toHaveBeenCalledWith("继续保存",[]));
   expect(automationResume).not.toHaveBeenCalled();
+});
+it("原生任务在模型文字结束后仍使用现有停止按钮，过程只挂到对应轮次", async () => {
+  setStore({agentMode:"computer_use",streaming:false,streamingMessageId:null,control:undefined,
+    messages:[{id:"a",promptId:"p",role:"assistant",complete:true,parts:[{kind:"text",text:"正在处理文稿"}]}]});
+  automationState.status={sessionId:"s1",mode:"computer_use",paused:false,
+    task:{phase:"running",reason:null,scope:"整理文稿",authorized:true,generation:1,promptId:"p"},
+    allowPrivateNetwork:false,browser:{available:true},browserRunning:false,browserHasData:false,
+    computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
+  renderChat();
+  expect(screen.queryByRole("button",{name:"暂停并接管"})).toBeNull();
+  expect(screen.queryByRole("button",{name:"继续任务"})).toBeNull();
+  fireEvent.click(screen.getByRole("button",{name:/停止生成|停止任务|停止执行/}));
+  await waitFor(()=>expect(baseProps.onCancel).toHaveBeenCalledWith("stop"));
 });
 it("两轮模型调用之间仍能通过停一下撤销电脑执行", async () => {
   setStore({agentMode:"computer_use",streaming:false,control:undefined});
@@ -1595,11 +1607,11 @@ describe("所有工具模式统一使用会话交互", () => {
     await waitFor(()=>expect(baseProps.onToast).toHaveBeenCalledWith("当前任务没有正在运行的内容"));
     expect(baseProps.onCancel).not.toHaveBeenCalled();
   });
-  it("原生浏览器暂停状态在 Runtime 默认模式下仍显示继续入口", () => {
+  it("原生浏览器中断后保留普通对话，不显示继续按钮", () => {
     setStore({agentMode:"default",streaming:false,streamingMessageId:null,messages:[{id:"a",role:"assistant",complete:true,parts:[{kind:"text",text:"网页结果"}]}]});
     automationState.status={sessionId:"unified",mode:"browser_use",paused:true,allowPrivateNetwork:false,
       browser:{available:true},browserRunning:true,browserHasData:true,computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
-    renderChat();expect(screen.getByRole("button",{name:"继续任务"})).toBeEnabled();
+    renderChat();expect(screen.queryByRole("button",{name:"继续任务"})).toBeNull();expect(screen.getByRole("textbox")).toBeEnabled();
   });
   it.each(["default","browser_use","computer_use"] as const)("%s 运行时只显示普通停止按钮，没有专属状态栏", mode => {
     setStore({agentMode:mode});const {container}=renderChat();
@@ -1613,9 +1625,18 @@ describe("所有工具模式统一使用会话交互", () => {
       messages:[{id:"a",role:"assistant",complete:true,stopReason:"cancelled",parts:[{kind:"text",text:"已整理的内容"}]}]});
     let finish!:(value:boolean)=>void;baseProps.onSend.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
     const {container}=renderChat();const input=screen.getByRole("textbox");fireEvent.change(input,{target:{value:"保留的草稿"}});
-    const resume=screen.getByRole("button",{name:"继续任务"});expect(resume.closest('[data-msg-id="a"]')).not.toBeNull();expect(resume.closest(".chatview__footer")).toBeNull();
-    fireEvent.click(resume);fireEvent.click(resume);expect(baseProps.onSend).toHaveBeenCalledTimes(1);expect(baseProps.onSend).toHaveBeenCalledWith("继续",[]);
-    await act(async()=>finish(false));expect(input).toHaveValue("保留的草稿");expect(screen.getByRole("button",{name:"继续任务"})).toBeEnabled();
+    if (mode !== "default") {
+      expect(screen.queryByRole("button",{name:"继续任务"})).toBeNull();
+      expect(input).toHaveValue("保留的草稿");
+      fireEvent.change(input,{target:{value:"继续，保留刚才修改的内容"}});
+      fireEvent.keyDown(input,{key:"Enter",code:"Enter"});
+      expect(baseProps.onSend).toHaveBeenCalledExactlyOnceWith("继续，保留刚才修改的内容",[]);
+      await act(async()=>finish(true));
+    } else {
+      const resume=screen.getByRole("button",{name:"继续任务"});expect(resume.closest('[data-msg-id="a"]')).not.toBeNull();expect(resume.closest(".chatview__footer")).toBeNull();
+      fireEvent.click(resume);fireEvent.click(resume);expect(baseProps.onSend).toHaveBeenCalledTimes(1);expect(baseProps.onSend).toHaveBeenCalledWith("继续",[]);
+      await act(async()=>finish(false));expect(input).toHaveValue("保留的草稿");expect(screen.getByRole("button",{name:"继续任务"})).toBeEnabled();
+    }
     expect(container.querySelectorAll(".session-turn-feedback")).toHaveLength(1);expect(automationResume).not.toHaveBeenCalled();
     expect(screen.queryByRole("button",{name:/^重试$|^重新执行$/})).toBeNull();
   });
@@ -1624,7 +1645,10 @@ describe("所有工具模式统一使用会话交互", () => {
     automationState.status={sessionId:"unified",mode:"computer_use",paused:true,task:{phase:"paused",reason:"application_restarted",scope:"编辑报告",authorized:false,generation:2},
       allowPrivateNetwork:false,browser:{available:true},browserRunning:false,browserHasData:false,computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
     baseProps.onSend.mockResolvedValue(true);const view=renderChat();
-    fireEvent.click(screen.getByRole("button",{name:"继续任务"}));await waitFor(()=>expect(baseProps.onSend).toHaveBeenCalledWith("继续",[]));
+    expect(screen.queryByRole("button",{name:"继续任务"})).toBeNull();
+    fireEvent.change(screen.getByRole("textbox"),{target:{value:"接着完成刚才的任务"}});
+    fireEvent.keyDown(screen.getByRole("textbox"),{key:"Enter",code:"Enter"});
+    await waitFor(()=>expect(baseProps.onSend).toHaveBeenCalledWith("接着完成刚才的任务",[]));
     setStore({sessionId:"other",messages:[],control:undefined});view.rerender(<ThemeProvider><ChatView {...baseProps}/></ThemeProvider>);
     expect(screen.queryByRole("button",{name:"继续任务"})).toBeNull();
   });

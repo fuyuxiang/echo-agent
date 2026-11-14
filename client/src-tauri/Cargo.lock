@@ -4194,6 +4194,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "block2",
  "bytes",
  "chrono",
  "core-graphics",

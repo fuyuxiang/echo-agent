@@ -1,7 +1,8 @@
-use super::{Listing, Native, Node};
+#[path = "macos_capture.rs"]
+mod capture;
+use super::{CancellationToken, Listing, Native, Node};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
-use objc2_foundation::{NSString, NSURL};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -27,6 +28,7 @@ unsafe extern "C" {
     fn AXUIElementPerformAction(e: Raw, a: Raw) -> i32;
     fn AXUIElementSetMessagingTimeout(e: Raw, timeout: f32) -> i32;
     fn AXValueGetValue(v: Raw, t: u32, result: *mut c_void) -> bool;
+    fn AXValueCreate(t: u32, value: *const c_void) -> Raw;
     fn AXValueGetTypeID() -> usize;
     fn AXUIElementGetPid(e: Raw, pid: *mut i32) -> i32;
     fn AXUIElementGetTypeID() -> usize;
@@ -113,13 +115,6 @@ fn api_disabled(process_trusted: bool) -> String {
         "permission_denied: Accessibility permission missing/revoked for this EchoAgent process"
             .into()
     }
-}
-fn composite_hit_parent(target: &str, hit: &str) -> bool {
-    matches!(hit, "AXRow" | "AXCell")
-        && matches!(
-            target,
-            "AXList" | "AXStaticText" | "AXTextField" | "AXImage"
-        )
 }
 fn exposed_descendant<T: Clone>(
     root: T,
@@ -457,13 +452,121 @@ pub(super) fn element_pid(e: &Element) -> i32 {
     e.app.processIdentifier()
 }
 pub(super) fn foreground_pid() -> Result<Option<i32>, String> {
-    let system = owned(unsafe { AXUIElementCreateSystemWide() })?;
-    let Some(app) = element_attr(system.0, "AXFocusedApplication")? else {
-        return Ok(None);
-    };
+    // The helper owns no AppKit application run loop. Workspace's cached
+    // frontmostApplication can remain stale there; query the OS process focus
+    // synchronously, then verify window/control through the target's AX tree.
+    #[repr(C)]
+    struct ProcessSerialNumber {
+        high: u32,
+        low: u32,
+    }
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn GetFrontProcess(process: *mut ProcessSerialNumber) -> i16;
+        fn GetProcessPID(process: *const ProcessSerialNumber, pid: *mut i32) -> i32;
+    }
+    let mut process = ProcessSerialNumber { high: 0, low: 0 };
     let mut pid = 0;
-    check(unsafe { AXUIElementGetPid(app.0, &mut pid) })?;
+    if unsafe { GetFrontProcess(&mut process) } != 0
+        || unsafe { GetProcessPID(&process, &mut pid) } != 0
+    {
+        return Err(
+            "focus_unavailable: OS foreground process unavailable; no input dispatched".into(),
+        );
+    }
     Ok((pid > 0).then_some(pid))
+}
+
+/// Use the app's current, unique advertised menu item for command shortcuts.
+/// Inactive AppKit applications can accept text events but ignore command-key
+/// equivalents; native menu actions preserve background execution semantics.
+fn invoke_menu_shortcut(
+    app: Raw,
+    key: &str,
+    modifiers: &[String],
+    token: &CancellationToken,
+) -> Result<bool, String> {
+    if key.chars().count() != 1 || modifiers.is_empty() {
+        return Ok(false);
+    }
+    let mut mask = 8u32;
+    for modifier in modifiers {
+        match modifier.as_str() {
+            "cmd" | "command" | "meta" => mask &= !8,
+            "ctrl" | "control" => mask |= 4,
+            "alt" | "option" => mask |= 2,
+            "shift" => mask |= 1,
+            _ => return Err("invalid_argument: unknown shortcut modifier".into()),
+        }
+    }
+    let Some(menu) = element_attr(app, "AXMenuBar")? else {
+        return Ok(false);
+    };
+    let mut pending = vec![(menu, 0usize)];
+    let mut matches = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(800);
+    let mut visited = 0;
+    while let Some((node, depth)) = pending.pop() {
+        if token.is_cancelled() {
+            return Err("cancelled: no shortcut dispatched".into());
+        }
+        if visited >= 1000 || Instant::now() >= deadline {
+            return Err("incomplete_menu: cannot verify unique background shortcut; use observed control action".into());
+        }
+        visited += 1;
+        if string(node.0, "AXRole", 128)? == "AXMenuItem" {
+            let character = string(node.0, "AXMenuItemCmdChar", 16)?;
+            let flags = attr(node.0, "AXMenuItemCmdModifiers")?
+                .and_then(|v| readable(&v, 32))
+                .and_then(|v| v.0.parse::<f64>().ok())
+                .unwrap_or(0.0) as u32;
+            if character.eq_ignore_ascii_case(key)
+                && flags == mask
+                && boolean(node.0, "AXEnabled")? == Some(true)
+            {
+                matches.push(node.clone());
+            }
+        }
+        if depth < 8 {
+            if let Some(children) = attr(node.0, "AXChildren")? {
+                for child in array(&children, 128) {
+                    pending.push((child, depth + 1));
+                }
+            }
+        }
+    }
+    if matches.len() > 1 {
+        return Err(
+            "ambiguous_shortcut: multiple enabled native menu items; no action dispatched".into(),
+        );
+    }
+    if let Some(item) = matches.first() {
+        if token.is_cancelled() {
+            return Err("cancelled: no shortcut dispatched".into());
+        }
+        check(unsafe { AXUIElementPerformAction(item.0, cf("AXPress").0) })?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+pub(super) fn pump_capture_events() {
+    refresh_workspace_events();
+}
+
+fn refresh_workspace_events() {
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRunLoopRunInMode(mode: Raw, seconds: f64, return_after_source: u8) -> i32;
+        static kCFRunLoopDefaultMode: Raw;
+    }
+    // A pipe-driven helper must let Workspace refresh process metadata without
+    // installing an NSApplication or a second UI event loop.
+    for _ in 0..4 {
+        if unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.001, 1) } != 4 {
+            break;
+        }
+    }
 }
 fn visible_app_order() -> HashMap<i32, usize> {
     let mut order = HashMap::new();
@@ -491,16 +594,20 @@ fn visible_app_order() -> HashMap<i32, usize> {
 }
 impl Backend {
     fn has_window_focus(&self, window: &Element) -> Result<bool, String> {
+        Ok(foreground_pid()? == Some(window.app.processIdentifier())
+            && self.has_app_window_focus(window)?)
+    }
+    fn has_app_window_focus(&self, window: &Element) -> Result<bool, String> {
         self.alive(window)?;
-        if foreground_pid()? != Some(window.app.processIdentifier()) {
-            return Ok(false);
-        }
         let app = owned(unsafe { AXUIElementCreateApplication(window.app.processIdentifier()) })?;
         let Some(raw) = element_attr(app.0, "AXFocusedWindow")? else {
             return Ok(false);
         };
         let focused = Element::for_host(raw, window.app.clone());
         self.alive(&focused)?;
+        if self.same_element(&focused, window) {
+            return Ok(true);
+        }
         window_focus_matches(
             &focused.raw,
             &window.raw,
@@ -527,6 +634,69 @@ impl Backend {
     }
 }
 impl Native for Backend {
+    fn application_bundle_path(&self, element: &Element) -> Option<std::path::PathBuf> {
+        let path = element.app.bundleURL()?.path()?.to_string();
+        std::fs::canonicalize(path).ok()
+    }
+    fn hit_target(&self, window: &Element, x: f64, y: f64) -> Result<Element, String> {
+        let root = owned(unsafe { AXUIElementCreateSystemWide() })?;
+        let mut hit = ptr::null();
+        let status =
+            unsafe { AXUIElementCopyElementAtPosition(root.0, x as f32, y as f32, &mut hit) };
+        if status == -25208 {
+            // Some custom-drawn apps expose windows but not AX point lookup.
+            // WindowServer must independently prove the exact topmost window.
+            capture::verify_point(self, window, x, y)?;
+            return Ok(window.clone());
+        }
+        check(status)?;
+        let hit = Element::for_host(owned(hit)?, window.app.clone());
+        if let Err(error) = self.validate(&hit, Some(window)) {
+            if error.starts_with("stale_reference: control has no verified path")
+                && self.process_id(&hit) == Some(window.app.processIdentifier() as u32)
+                && !self.inspect(&hit)?.protected
+                && capture::verify_point(self, window, x, y)?
+            {
+                // A verified same-app transient is represented in the bound
+                // parent frame. Keep the parent identity for physical input.
+                return Ok(window.clone());
+            }
+            return Err(error);
+        }
+        Ok(hit)
+    }
+
+    fn foreground_window(&self) -> Result<Element, String> {
+        self.check_session()?;
+        let pid = foreground_pid()?.ok_or("focus_unavailable: no foreground application")?;
+        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .ok_or("application_exited")?;
+        let raw = owned(unsafe { AXUIElementCreateApplication(pid) })?;
+        let window = Element::for_host(
+            element_attr(raw.0, "AXFocusedWindow")?.ok_or("focus_unavailable: no window")?,
+            app.clone(),
+        );
+        Ok(window)
+    }
+    fn keyboard_focus(&self, window: &Element) -> Result<Option<Element>, String> {
+        self.alive(window)?;
+        let raw = owned(unsafe { AXUIElementCreateApplication(window.app.processIdentifier()) })?;
+        element_attr(raw.0, "AXFocusedUIElement")?
+            .map(|raw| {
+                let focused = Element::for_host(raw, window.app.clone());
+                self.validate(&focused, Some(window))?;
+                Ok(focused)
+            })
+            .transpose()
+    }
+    fn focused_target(&self) -> Result<(Element, Element), String> {
+        let window = self.foreground_window()?;
+        let focus = self
+            .keyboard_focus(&window)?
+            .ok_or("focus_unavailable: no control")?;
+        Ok((window, focus))
+    }
+
     fn application_window(&self, app: &Element) -> Result<Option<Element>, String> {
         let Some(raw) = element_attr(app.raw.0, "AXFocusedWindow")? else {
             return Ok(None);
@@ -588,7 +758,21 @@ impl Native for Backend {
     }
     type Element = Element;
     fn same_element(&self, a: &Element, b: &Element) -> bool {
-        unsafe { CFEqual(a.raw.0, b.raw.0) }
+        if unsafe { CFEqual(a.raw.0, b.raw.0) } {
+            return true;
+        }
+        // Some providers recreate AXWindow proxies during ordinary editing.
+        // Only windows may use this fallback, backed by an exact native ID.
+        if a.app.processIdentifier() != b.app.processIdentifier()
+            || string(a.raw.0, "AXRole", 128).ok().as_deref() != Some("AXWindow")
+            || string(b.raw.0, "AXRole", 128).ok().as_deref() != Some("AXWindow")
+        {
+            return false;
+        }
+        match (capture::window_id(self, a), capture::window_id(self, b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
     }
     fn application_element(&self, e: &Element) -> Result<Option<Element>, String> {
         self.alive(e)?;
@@ -677,15 +861,22 @@ impl Native for Backend {
         Ok(Self)
     }
     fn check_session(&self) -> Result<(), String> {
+        refresh_workspace_events();
         desktop_available()
     }
     fn open_app(&self, path: &str) -> Result<bool, String> {
-        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-        if !NSWorkspace::sharedWorkspace().openURL(&url) {
+        // LaunchServices' -g option opens without activating the application.
+        if !std::process::Command::new("/usr/bin/open")
+            .args(["-g", "-a", path])
+            .status()
+            .map_err(|e| format!("launch_failed: {e}"))?
+            .success()
+        {
             return Err("launch_failed: macOS refused application URL".into());
         }
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
+            refresh_workspace_events();
             if NSWorkspace::sharedWorkspace()
                 .runningApplications()
                 .iter()
@@ -697,6 +888,31 @@ impl Native for Backend {
                 })
             {
                 return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Ok(false)
+    }
+    fn reopen_app(&self, path: &str) -> Result<bool, String> {
+        if !std::process::Command::new("/usr/bin/open")
+            .args(["-a", path])
+            .status()
+            .map_err(|e| format!("launch_failed: {e}"))?
+            .success()
+        {
+            return Err("launch_failed: OS refused to reopen the application".into());
+        }
+        let until = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < until {
+            refresh_workspace_events();
+            for app in NSWorkspace::sharedWorkspace().runningApplications().iter() {
+                let same = app.bundleURL().and_then(|url| url.path()).is_some_and(|p| {
+                    std::fs::canonicalize(p.to_string()).ok().as_deref()
+                        == Some(std::path::Path::new(path))
+                });
+                if same && foreground_pid()? == Some(app.processIdentifier()) {
+                    return Ok(true);
+                }
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -1045,7 +1261,7 @@ impl Native for Backend {
         self.alive(e)?;
         if let Some(w) = window {
             self.alive(w)?;
-            if !unsafe { CFEqual(e.raw.0, w.raw.0) } {
+            if !self.same_element(e, w) {
                 let mut belongs = belongs_to_window(
                     &e.raw,
                     &w.raw,
@@ -1157,22 +1373,139 @@ impl Native for Backend {
             check(unsafe { AXUIElementPerformAction(e.raw.0, cf(action).0) })
         }
     }
+    fn process_id(&self, e: &Element) -> Option<u32> {
+        Some(e.app.processIdentifier() as u32)
+    }
+    fn process_ids(&self, e: &Element) -> Vec<u32> {
+        let mut pids = vec![e.app.processIdentifier() as u32];
+        if let Ok(provider) = &e.provider {
+            let pid = provider.processIdentifier() as u32;
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        pids
+    }
+    fn recognize_text(&self, png: &[u8]) -> Result<Vec<super::visual_text::Line>, String> {
+        super::macos_vision::recognize(png)
+    }
+    fn capture_window(&self, e: &Element) -> Result<Value, String> {
+        capture::capture(self, e)
+    }
+
+    fn prepare_input_window(&self, window: &Element) -> Result<bool, String> {
+        if self.has_app_window_focus(window)? {
+            return Ok(true);
+        }
+        let app = owned(unsafe { AXUIElementCreateApplication(window.app.processIdentifier()) })?;
+        // Change only the application's own focused window. Never raise or
+        // activate the app as a hidden fallback for a background request.
+        check(unsafe { AXUIElementSetAttributeValue(app.0, cf("AXFocusedWindow").0, window.raw.0) })
+            .map_err(|_| "background_focus_unavailable: target app cannot focus this window without activation; use another native action or request foreground access".to_string())?;
+        self.has_app_window_focus(window)
+    }
+    fn select_all_text(
+        &self,
+        e: &Element,
+        window: &Element,
+        token: &CancellationToken,
+    ) -> Result<(), String> {
+        self.verify_text_focus(e, window)?;
+        let mut settable = 0;
+        check(unsafe {
+            AXUIElementIsAttributeSettable(e.raw.0, cf("AXSelectedTextRange").0, &mut settable)
+        })?;
+        if settable == 0 {
+            return self.key_cancellable(window, "a", &["cmd".into()], token);
+        }
+        let value =
+            attr(e.raw.0, "AXValue")?.ok_or("unsupported_action: text length unavailable")?;
+        if unsafe { CFGetTypeID(value.0) != CFStringGetTypeID() } {
+            return Err("unsupported_action: text range requires string value".into());
+        }
+        let range = Range {
+            location: 0,
+            length: unsafe { CFStringGetLength(value.0) },
+        };
+        let selection = owned(unsafe { AXValueCreate(4, &range as *const _ as *const c_void) })?;
+        if token.is_cancelled() {
+            return Err("cancelled: no selection dispatched".into());
+        }
+        check(unsafe {
+            AXUIElementSetAttributeValue(e.raw.0, cf("AXSelectedTextRange").0, selection.0)
+        })?;
+        let actual = attr(e.raw.0, "AXSelectedTextRange")?
+            .ok_or("input_unverified: selected range unavailable")?;
+        let mut observed = Range {
+            location: -1,
+            length: -1,
+        };
+        if !unsafe { AXValueGetValue(actual.0, 4, &mut observed as *mut _ as *mut c_void) }
+            || observed.location != 0
+            || observed.length != range.length
+        {
+            return Err(
+                "input_unverified: select-all range did not match; no replacement input dispatched"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+    fn emit_text(&self, e: &Element, text: &str) -> Result<(), String> {
+        self.alive(e)?;
+        super::super::computer::targeted_text(
+            e.provider
+                .as_ref()
+                .map_err(Clone::clone)?
+                .processIdentifier(),
+            text,
+        )
+    }
     fn key(&self, e: &Element, key: &str, modifiers: &[String]) -> Result<(), String> {
+        self.key_cancellable(e, key, modifiers, &CancellationToken::new())
+    }
+    fn key_cancellable(
+        &self,
+        e: &Element,
+        key: &str,
+        modifiers: &[String],
+        token: &CancellationToken,
+    ) -> Result<(), String> {
+        if token.is_cancelled() {
+            return Err("cancelled: no key dispatched".into());
+        }
         self.alive(e)?;
         let app = owned(unsafe { AXUIElementCreateApplication(e.app.processIdentifier()) })?;
-        let focused = attr(app.0, "AXFocusedUIElement")?
-            .ok_or("unsupported_action: provider does not expose keyboard focus")?;
-        let focused = Element::for_host(focused, e.app.clone());
-        self.validate(&focused, Some(e))?;
-        if self.inspect(&focused)?.protected {
+        let focused = self.keyboard_focus(e)?;
+        if focused
+            .as_ref()
+            .map(|f| self.inspect(f))
+            .transpose()?
+            .is_some_and(|n| n.protected)
+        {
             return Err("protected: keyboard focus requires user takeover".into());
         }
-        if !self.has_window_focus(e)? {
+        if !self.has_app_window_focus(e)? {
             return Err(
                 "focus_changed: approved window is no longer foreground; key not dispatched".into(),
             );
         }
-        super::super::computer::key_after_native_focus(key, modifiers)
+        if invoke_menu_shortcut(app.0, key, modifiers, token)? {
+            return Ok(());
+        }
+        let focused = focused.ok_or("visual_fallback_required: native keyboard focus unavailable; activate this window, capture it with computer_screenshot(windowRef), and use foreground visual input")?;
+        if token.is_cancelled() {
+            return Err("cancelled: no key dispatched".into());
+        }
+        super::super::computer::targeted_key(
+            focused
+                .provider
+                .as_ref()
+                .map_err(Clone::clone)?
+                .processIdentifier(),
+            key,
+            modifiers,
+        )
     }
     fn click_control(
         &self,
@@ -1182,72 +1515,17 @@ impl Native for Backend {
         token: &tokio_util::sync::CancellationToken,
     ) -> Result<(), String> {
         self.validate(e, Some(window))?;
-        if !self.activate(window)? {
-            return Err("focus_changed: original window not active; no click dispatched".into());
-        }
         let node = self.inspect(e)?;
         if node.protected || !node.enabled || node.visible == Some(false) {
             return Err("target_unavailable: no click dispatched".into());
         }
-        let bounds = node
-            .bounds
-            .ok_or("unsupported_action: no native control bounds")?;
-        if bounds.iter().any(|v| !v.is_finite()) || bounds[2] <= 0.0 || bounds[3] <= 0.0 {
-            return Err("target_unavailable: invalid control bounds".into());
-        }
-        let x = bounds[0] + bounds[2] / 2.0;
-        let y = bounds[1] + bounds[3] / 2.0;
-        let root = owned(unsafe { AXUIElementCreateSystemWide() })?;
-        let mut hit = ptr::null();
-        check(unsafe { AXUIElementCopyElementAtPosition(root.0, x as f32, y as f32, &mut hit) })?;
-        let hit = owned(hit)?;
-        let hit_element = Element::for_host(hit.clone(), e.app.clone());
-        self.validate(&hit_element, Some(window))?;
-        let hit_node = self.inspect(&hit_element)?;
-        if hit_node.protected {
-            return Err("protected: hit target requires user takeover".into());
-        }
-        let start = Instant::now();
-        let mut current = Some(hit.clone());
-        let mut matched = false;
-        for _ in 0..32 {
-            let Some(node) = current.take() else {
-                break;
-            };
-            if unsafe { CFEqual(node.0, e.raw.0) } {
-                matched = true;
-                break;
+        if count == 1 && node.actions.iter().any(|a| a == "AXPress") {
+            if token.is_cancelled() {
+                return Err("cancelled: no action dispatched".into());
             }
-            if start.elapsed() > Duration::from_secs(2) {
-                break;
-            }
-            current = element_attr(node.0, "AXParent")?;
+            return self.invoke(e, "AXPress");
         }
-        // Composite rows/cells can expose a non-hittable child (label, list or
-        // image) while hit testing returns the actual enclosing row. Accept
-        // only this narrow, verified ancestry, never a broad window/container.
-        if !matched && composite_hit_parent(&node.role, &hit_node.role) {
-            let mut current = element_attr(e.raw.0, "AXParent")?;
-            for _ in 0..8 {
-                let Some(parent) = current.take() else { break };
-                if unsafe { CFEqual(parent.0, hit.0) } {
-                    matched = true;
-                    break;
-                }
-                if start.elapsed() > Duration::from_secs(2) {
-                    break;
-                }
-                current = element_attr(parent.0, "AXParent")?;
-            }
-        }
-        if !matched {
-            return Err("target_obscured: pointer hit is not the observed control or its child; refresh observation".into());
-        }
-        self.validate(e, Some(window))?;
-        if token.is_cancelled() {
-            return Err("cancelled: no click dispatched".into());
-        }
-        super::super::computer::click_after_native_target(x, y, count)
+        Err("background_pointer_unavailable: this control has no supported single native press action; use an advertised action, or explicitly activate the window and use freshly observed foreground coordinates. No mouse event dispatched.".into())
     }
 
     fn set_value(&self, e: &Element, value: &str) -> Result<(), String> {
@@ -1259,11 +1537,11 @@ impl Native for Backend {
             return Err("protected: text focus requires user takeover".into());
         }
         let app = owned(unsafe { AXUIElementCreateApplication(e.app.processIdentifier()) })?;
-        if !self.has_window_focus(window)?
+        if !self.has_app_window_focus(window)?
             || !element_attr(app.0, "AXFocusedUIElement")?
                 .is_some_and(|v| unsafe { CFEqual(v.0, e.raw.0) })
         {
-            return Err("focus_changed: original text control is not the actual foreground focus; input stopped".into());
+            return Err("focus_changed: original text control is not the actual application focus; input stopped".into());
         }
         Ok(())
     }
@@ -1304,21 +1582,6 @@ mod tests {
         assert!(exposed_descendant(1, &4, children, |a, b| a == b).unwrap());
         assert!(!exposed_descendant(1, &8, children, |a, b| a == b).unwrap());
         assert!(!exposed_descendant(1, &8, |_| Ok(vec![1]), |a, b| a == b).unwrap());
-    }
-    #[test]
-    fn composite_click_only_accepts_narrow_row_or_cell_containers() {
-        assert!(composite_hit_parent("AXList", "AXRow"));
-        assert!(composite_hit_parent("AXStaticText", "AXCell"));
-        for role in [
-            "AXWindow",
-            "AXTable",
-            "AXScrollArea",
-            "AXApplication",
-            "AXButton",
-        ] {
-            assert!(!composite_hit_parent("AXStaticText", role));
-        }
-        assert!(!composite_hit_parent("AXButton", "AXRow"));
     }
     #[test]
     fn nested_save_sheets_are_focus_in_their_original_window() {

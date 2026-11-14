@@ -1061,6 +1061,7 @@ pub fn run() {
             desktop_preferences::desktop_preferences_save,
             // context usage pill (echo.agent/session/info + echo.agent/session/usage)
             commands::agent_session_info,
+            commands::agent_suggest_prompt,
             commands::agent_session_usage,
             // BYOK providers (~/.echo-agent/config.toml [model.*])
             providers::providers_list,
@@ -1248,6 +1249,12 @@ pub fn run() {
             // first-party Browser Use / Computer Use runtime and safety UI
             automation::automation_capabilities,
             automation::automation_status,
+            automation::automation_targets,
+            automation::automation_select_target,
+            automation::automation_preview,
+            automation::automation_pair_browser,
+            automation::automation_disconnect_browser,
+            automation::automation_use_isolated_browser,
             automation::automation_pause,
             automation::automation_resume,
             automation::automation_stop,
@@ -1640,4 +1647,9 @@ mod exit_tests {
             super::required_shutdown(async { Err("拒绝停止浏览器".into()) }, "fixture").await;
         assert!(result.unwrap_err().contains("拒绝停止浏览器"));
     }
+}
+
+/// Private stdio native execution entry; called before starting Tauri.
+pub fn run_native_helper() -> Result<(), String> {
+    automation::run_native_helper()
 }

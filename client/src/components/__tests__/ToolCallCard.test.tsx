@@ -19,6 +19,16 @@ const base: ToolCallView = {
 };
 
 describe("ToolCallCard", () => {
+  it("原生调用传输失败时保留实体结果未知，不显示为已确认失败", () => {
+    const tc: ToolCallView = { ...base, title: "computer_invoke", kind: "other", status: "failed",
+      rawInput: {tool_name:"echoagent-automation__computer_invoke"},
+      content: [{type:"text",text:"native_timeout: isolated helper terminated; action result unknown"}],
+    };
+    render(<><ToolCallCard tc={tc} /><ToolCallDetailBody tc={tc} /></>);
+    expect(screen.getByRole("button", {name:/结果待核验/})).toHaveClass("toolcall--pending");
+    expect(screen.getByText("结果待核验", {selector:".tool-detail__status"})).toBeVisible();
+    expect(screen.queryByText("失败", {exact:true})).toBeNull();
+  });
   it("展示真实读取覆盖和阶段记录，不把读取完成当作分析完成", () => {
     const tc: ToolCallView = { ...base, kind: "read_file", title: "Read 比赛.xlsx", documentProgress: {
       source: "比赛.xlsx", revision: "a".repeat(64), readRecords: 12, totalRecords: 100, checkpointCount: 2, complete: false,

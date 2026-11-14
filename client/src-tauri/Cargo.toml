@@ -134,6 +134,7 @@ tauri-plugin-single-instance = "2"
 security-framework = "3.7"
 security-framework-sys = "2.17"
 objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
+block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", features = ["std", "NSError", "NSFileManager", "NSString", "NSURL"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKUserContentController", "WKUserScript"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
@@ -153,6 +154,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Console",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
+  "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_System_StationsAndDesktops",
   "Win32_UI_Input_KeyboardAndMouse",

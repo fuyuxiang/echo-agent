@@ -1,6 +1,6 @@
 // Real configured-model acceptance through production Composer only. This fixture never
 // grants consent, resumes/cancels through IPC, writes the target document, or
-// resolves approvals. The ONLY controls are the user's normal text submissions.
+// resolves approvals. The controls are the user's existing Composer stop button and normal text submissions.
 // Accept complete native provider readbacks across valid observation tools.
 // A pre-existing document must never count before this task actually writes.
 window.__echoTaskFlowObserveBody = (report, entry) => {
@@ -19,7 +19,7 @@ window.__echoDesktopTaskFlow = async ({home,cwd,modelId,crossApp=false}) => {
   const invoke=(command,args={})=>window.__TAURI_INTERNALS__.invoke(command,args);
   const directory=`${cwd}/native-control-fixtures`,file=`${directory}/task-flow-output.txt`;
   const expected=`任务驱动电脑验收 ${home.split('-').at(-1)}\n中文输入、暂停与继续成功\n`;
-  const report={version:2,kind:'desktop-task-flow',home,cwd,modelId,file,expected,
+  const report={version:3,kind:'desktop-task-flow',home,cwd,modelId,file,expected,
     tools:[],approvals:[],runtimePermissions:[],completions:[],controls:[],errors:[],desktopAcceptance:false,
     targetWrittenByFixture:false,approvalResolvedByFixture:false,startedAt:new Date().toISOString()};
   const save=()=>invoke('write_text_file',{path:`${directory}/task-flow-progress.json`,content:JSON.stringify(report,null,2),workspaceRoot:cwd});
@@ -69,9 +69,11 @@ window.__echoDesktopTaskFlow = async ({home,cwd,modelId,crossApp=false}) => {
     report.model=await wait(async()=>{const s=(await invoke('agent_list_all_sessions',{includeArchived:true})).find(s=>s.sessionId===report.sessionId);return s?.currentModelId===modelId||s?.currentModelId===modelId.split('/').at(-1)?s.currentModelId:null;},'actual configured model');
     report.initialStatus=await wait(async()=>{const s=await invoke('automation_status',{sessionId:report.sessionId});return s.mode==='computer_use'&&s.computerAuthorized&&!s.paused&&s.task?.authorized&&s.task?.scope===prompt?s:null;},'user-task automatic admission');await save();
     await wait(()=>report.bodyReadback,'real exact input and readback',25*60*1000);
-    await submit('停一下');
-    report.pausedStatus=await wait(async()=>{const s=await invoke('automation_status',{sessionId:report.sessionId});return s.paused&&!s.computerAuthorized&&s.task?.reason==='user_paused'?s:null;},'natural user pause');
-    await wait(()=>report.completions.some(c=>c.cancelTrigger==='pause'&&c.at>=report.controls[1].at),'model cancellation acknowledged');
+    const stop=await wait(()=>{const e=document.querySelector('.echo-composer__send--stop');return visible(e)&&!e.disabled?e:null;},'existing message stop button');
+    report.controls.push({action:'stop',via:'composer_stop',at:new Date().toISOString()});
+    stop.click();await save();
+    report.pausedStatus=await wait(async()=>{const s=await invoke('automation_status',{sessionId:report.sessionId});return s.paused&&!s.computerAuthorized&&s.task?.reason==='user_stopped'?s:null;},'message stop acknowledgement');
+    await wait(()=>report.completions.some(c=>c.cancelTrigger==='stop'&&c.at>=report.controls[1].at),'model cancellation acknowledged');
     await wait(()=>{const e=document.querySelector('.echo-composer textarea');return visible(e)&&!e.disabled;},'paused Composer accepts natural continuation');
     report.pauseSettledAt=new Date().toISOString();
     const physical=new Set(['computer_file_dialog','computer_open_app','computer_activate_window','computer_set_value','computer_invoke','computer_key_window','computer_key','computer_type','computer_click','computer_click_control','computer_drag','computer_scroll','computer_move']);

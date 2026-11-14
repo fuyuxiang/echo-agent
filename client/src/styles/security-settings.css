@@ -37,6 +37,10 @@
 .security-settings .browser-task-settings .settings-row__label { min-width: 0; }
 .security-settings .browser-task-settings .settings-row__description { overflow-wrap: anywhere; }
 .security-settings .browser-task-settings input[type="checkbox"] { flex-shrink: 0; accent-color: var(--echo-color-text-brand-default); }
+.browser-task-settings__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.browser-task-settings__pairing { min-width: 0; overflow-wrap: anywhere; }
+.browser-task-settings__pairing > code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.browser-task-settings__pairing > input { width: 100%; min-width: 0; box-sizing: border-box; }
 @media (max-width: 760px) {
   .security-settings .permission-rule-builder { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .security-settings .permission-rule-builder__field--pattern { grid-column: 1 / -1; }

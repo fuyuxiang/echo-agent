@@ -14,6 +14,7 @@ use url::Url;
 const START_TIMEOUT: Duration = Duration::from_secs(12);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CDP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const DEEP_QUERY_JS: &str = include_str!("deep-query.js");
 const EDITABLE_TEXT_JS: &str = include_str!("editable-text.js");
 const INTERACTION_TARGET_JS: &str = include_str!("interaction-target.js");
 type CdpConnection = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -23,6 +24,8 @@ pub(super) struct BrowserInteraction {
     context_id: u64,
     input: Value,
     expected: Value,
+    offset: (f64, f64),
+    frame_id: Option<String>,
 }
 
 impl BrowserInteraction {
@@ -40,7 +43,10 @@ impl BrowserInteraction {
     }
 
     pub(super) fn url(&self) -> &str {
-        self.expected["url"].as_str().unwrap_or_default()
+        self.expected["topUrl"]
+            .as_str()
+            .or(self.expected["url"].as_str())
+            .unwrap_or_default()
     }
 }
 
@@ -92,14 +98,19 @@ pub struct BrowserDownload {
 /// the session manager, so a CDP command can never race another action in the
 /// same task.
 pub struct BrowserController {
-    child: Child,
+    child: Option<Child>,
+    extension: Option<std::sync::Arc<super::browser_bridge::Connection>>,
+    page_connection: Option<(String, CdpConnection)>,
+    active_frame: Option<String>,
+    snapshot_pages: std::collections::HashMap<String, (std::time::Instant, String, Value)>,
+    reference_documents: std::collections::HashMap<String, (std::time::Instant, String, String)>,
     _protection: Option<echo_agent_tools::util::process_safety::ProcessLease>,
     port: u16,
     browser_name: String,
     profile_dir: PathBuf,
     target_id: Option<String>,
     allow_private_network: bool,
-    network_proxy: BrowserNetworkProxy,
+    network_proxy: Option<BrowserNetworkProxy>,
     next_cdp_id: u64,
     // Chromium releases download overrides when their DevTools session ends.
     // Keep a browser-level connection alive across page commands and tabs.
@@ -119,12 +130,37 @@ impl std::fmt::Debug for BrowserController {
 
 impl Drop for BrowserController {
     fn drop(&mut self) {
-        let _ = self.child.start_kill();
+        if let Some(child) = &mut self.child {
+            let _ = child.start_kill();
+        }
     }
 }
 
 impl BrowserController {
     pub async fn launch(session_id: &str, allow_private_network: bool) -> Result<Self, String> {
+        if let Some(extension) = super::browser_bridge::connected(session_id) {
+            extension.resume().await?;
+            let mut browser = Self {
+                child: None,
+                extension: Some(extension),
+                page_connection: None,
+                active_frame: None,
+                snapshot_pages: Default::default(),
+                reference_documents: Default::default(),
+                _protection: None,
+                port: 0,
+                browser_name: "已授权的浏览器扩展".into(),
+                profile_dir: profile_dir(session_id)?,
+                target_id: None,
+                allow_private_network,
+                network_proxy: None,
+                next_cdp_id: 1,
+                download_session: None,
+            };
+            let target = browser.ensure_page().await?;
+            browser.target_id = Some(target.id);
+            return Ok(browser);
+        }
         let (browser_name, executable) = discover_browser().ok_or_else(|| {
             "未找到可控制的浏览器。请安装 Google Chrome、Microsoft Edge 或 Chromium 后重试。"
                 .to_string()
@@ -141,6 +177,10 @@ impl BrowserController {
         let network_proxy = BrowserNetworkProxy::start(allow_private_network).await?;
 
         let mut command = Command::new(&executable);
+        #[cfg(test)]
+        if std::env::var_os("ECHO_BROWSER_TEST_HEADLESS").is_some() {
+            command.arg("--headless=new");
+        }
         command
             .arg("--remote-debugging-address=127.0.0.1")
             .arg("--remote-debugging-port=0")
@@ -176,14 +216,19 @@ impl BrowserController {
             child.id().ok_or("浏览器在身份核验前已退出")?,
         )?;
         let mut controller = Self {
-            child,
+            child: Some(child),
+            extension: None,
+            page_connection: None,
+            active_frame: None,
+            snapshot_pages: Default::default(),
+            reference_documents: Default::default(),
             _protection: protection,
             port,
             browser_name,
             profile_dir,
             target_id: None,
             allow_private_network,
-            network_proxy,
+            network_proxy: Some(network_proxy),
             next_cdp_id: 1,
             download_session: None,
         };
@@ -235,7 +280,9 @@ impl BrowserController {
 
     pub fn set_allow_private_network(&mut self, allowed: bool) {
         self.allow_private_network = allowed;
-        self.network_proxy.set_allow_private_network(allowed);
+        if let Some(proxy) = &self.network_proxy {
+            proxy.set_allow_private_network(allowed);
+        }
     }
 
     /// Re-check the live page rather than trusting only the URL originally
@@ -253,10 +300,16 @@ impl BrowserController {
     }
 
     pub async fn status(&mut self) -> Result<BrowserStatus, String> {
+        if self.extension.as_ref().is_some_and(|c| !c.live()) {
+            return Err("browser_extension_disconnected".into());
+        }
         if self
             .child
-            .try_wait()
+            .as_mut()
+            .map(|child| child.try_wait())
+            .transpose()
             .map_err(|error| format!("检查浏览器进程失败：{error}"))?
+            .flatten()
             .is_some()
         {
             return Ok(BrowserStatus {
@@ -280,21 +333,36 @@ impl BrowserController {
     }
 
     pub async fn stop(&mut self) -> Result<(), String> {
-        if self
-            .child
-            .try_wait()
-            .map_err(|error| format!("检查浏览器进程失败：{error}"))?
-            .is_none()
-        {
-            self.child
-                .kill()
-                .await
-                .map_err(|error| format!("停止受控浏览器失败：{error}"))?;
+        if let Some(extension) = &self.extension {
+            // Detach only this task's debugger sessions; never close user tabs.
+            let paused = if extension.live() {
+                extension.pause().await
+            } else {
+                Ok(())
+            };
+            extension.close();
+            paused?;
+        }
+        if let Some(child) = &mut self.child {
+            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                child.kill().await.map_err(|e| e.to_string())?;
+            }
+        }
+        self.page_connection = None;
+        Ok(())
+    }
+
+    pub async fn resume_extension(&self) -> Result<(), String> {
+        if let Some(extension) = &self.extension {
+            extension.resume().await?;
         }
         Ok(())
     }
 
     pub async fn navigate(&mut self, raw_url: &str) -> Result<Value, String> {
+        self.active_frame = None;
+        self.snapshot_pages.clear();
+        self.reference_documents.clear();
         let url = validate_navigation_url(raw_url, self.allow_private_network).await?;
         let result = self
             .call_page("Page.navigate", json!({ "url": url.as_str() }))
@@ -308,7 +376,10 @@ impl BrowserController {
     }
 
     pub async fn current_url(&mut self) -> Result<String, String> {
-        let value = self.evaluate("location.href", true).await?;
+        let frame = self.active_frame.take();
+        let value = self.evaluate("location.href", true).await;
+        self.active_frame = frame;
+        let value = value?;
         value
             .as_str()
             .map(str::to_string)
@@ -319,58 +390,238 @@ impl BrowserController {
         // Refs live on DOM nodes and remain stable until the page replaces the
         // node. Hidden/non-interactive content is omitted to keep the model
         // context bounded and focused on actionable UI.
-        const SCRIPT: &str = r#"(() => {
-          const visible = (el) => {
-            const s = getComputedStyle(el), r = el.getBoundingClientRect();
-            return s.visibility !== 'hidden' && s.display !== 'none' && r.width > 0 && r.height > 0;
-          };
-          const selectors = [
-            'a[href]','button','input','textarea','select','summary','details',
-            '[role="button"]','[role="link"]','[role="checkbox"]','[role="radio"]',
-            '[role="tab"]','[role="menuitem"]','[contenteditable="true"]','[tabindex]'
-          ].join(',');
-          let seq = Number(document.documentElement.dataset.echoRefSeq || 0);
-          const nodes = [];
-          for (const el of document.querySelectorAll(selectors)) {
-            if (!visible(el) || el.closest('[aria-hidden="true"]')) continue;
-            if (!el.dataset.echoRef) el.dataset.echoRef = `e${++seq}`;
-            const r = el.getBoundingClientRect();
-            const inputType = (el.getAttribute('type') || '').toLowerCase();
-            const safeValue = inputType === 'password' ? '' : (el.value || '');
-            const labelledBy = (el.getAttribute('aria-labelledby') || '').split(/\s+/)
-              .filter(Boolean).map(id => document.getElementById(id)?.textContent || '')
-              .filter(text => text.trim()).join(' ').trim();
-            const associatedLabel = Array.from(el.labels || [])
-              .map(label => label.innerText || label.textContent || '').join(' ').trim();
-            const label = (labelledBy || el.getAttribute('aria-label') || associatedLabel || el.getAttribute('title') ||
-              el.getAttribute('placeholder') || el.innerText || safeValue).trim().slice(0, 300);
-            nodes.push({
-              ref: el.dataset.echoRef,
-              tag: el.tagName.toLowerCase(),
-              role: el.getAttribute('role') || '',
-              name: label,
-              type: inputType,
-              disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
-              checked: typeof el.checked === 'boolean' ? el.checked : undefined,
-              href: el.href || undefined,
-              value: inputType === 'password' ? undefined : String(safeValue).slice(0, 300),
-              bounds: { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }
-            });
-            if (nodes.length >= 500) break;
-          }
-          document.documentElement.dataset.echoRefSeq = String(seq);
-          return {
-            url: location.href,
-            title: document.title,
-            viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY },
-            elements: nodes,
-            text: (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 12000)
-          };
-        })()"#;
-        self.evaluate(SCRIPT, true).await
+        let saved = self.active_frame.take();
+        let mut value = self.snapshot_scope().await?;
+        let tree = self.call_page("Page.getFrameTree", json!({})).await?;
+        fn frames(tree: &Value, ids: &mut Vec<String>) {
+            if let Some(children) = tree["childFrames"].as_array() {
+                for child in children {
+                    if let Some(id) = child["frame"]["id"].as_str() {
+                        ids.push(id.into());
+                    }
+                    frames(child, ids);
+                }
+            }
+        }
+        let mut ids = vec![];
+        frames(&tree["frameTree"], &mut ids);
+        let total = ids.len();
+        let mut issues = vec![];
+        for frame in ids.into_iter().take(16) {
+            self.active_frame = Some(frame.clone());
+            match self.snapshot_scope().await {
+                Ok(mut observed) => {
+                    if let Some(nodes) = observed["elements"].as_array_mut() {
+                        for node in nodes {
+                            node["ref"] =
+                                json!(format!("{}::{}", frame, node["ref"].as_str().unwrap_or("")));
+                            node["frameId"] = json!(frame);
+                            value["elements"].as_array_mut().unwrap().push(node.clone());
+                        }
+                    }
+                }
+                Err(_) => issues.push(json!({"frameId":frame,"error":"frame_unavailable"})),
+            }
+        }
+        self.active_frame = saved;
+        value["frameIssues"] = json!(issues);
+        value["framesTruncated"] = json!(total > 16);
+        value["framesObserved"] = json!(total.min(16));
+        self.bound_snapshot(value)
+    }
+    pub async fn snapshot_scope(&mut self) -> Result<Value, String> {
+        let value = self
+            .evaluate(include_str!("browser-snapshot.js"), true)
+            .await?;
+        self.reference_documents
+            .retain(|_, (at, _, _)| at.elapsed() < Duration::from_secs(120));
+        if let (Some(token), Some(nodes)) = (
+            value["documentToken"].as_str(),
+            value["elements"].as_array(),
+        ) {
+            for node in nodes {
+                if let Some(reference) = node["ref"].as_str() {
+                    let reference = self
+                        .active_frame
+                        .as_ref()
+                        .map(|frame| format!("{frame}::{reference}"))
+                        .unwrap_or_else(|| reference.into());
+                    if self.reference_documents.len() >= 10000
+                        && !self.reference_documents.contains_key(&reference)
+                    {
+                        return Err("reference_limit: refresh the browser task".into());
+                    }
+                    self.reference_documents.insert(
+                        reference,
+                        (
+                            std::time::Instant::now(),
+                            self.target_id.clone().unwrap_or_default(),
+                            token.into(),
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(value)
+    }
+    fn bound_snapshot(&mut self, mut value: Value) -> Result<Value, String> {
+        value["resultId"] = json!(uuid::Uuid::now_v7().to_string());
+        value["coverage"]=json!("bounded DOM and open shadow roots; unavailable frames and closed roots are not complete content");
+        value["treeTruncated"] =
+            json!(value["elements"].as_array().is_some_and(|e| e.len() >= 500));
+        value["textTruncated"] = json!(value["text"]
+            .as_str()
+            .is_some_and(|s| s.chars().count() >= 12000));
+        self.page(value, std::time::Instant::now())
+    }
+    fn page(&mut self, mut value: Value, created: std::time::Instant) -> Result<Value, String> {
+        self.snapshot_pages
+            .retain(|_, (at, _, _)| at.elapsed() < Duration::from_secs(120));
+        let token = uuid::Uuid::now_v7().to_string();
+        value["nextCursor"] = json!(token);
+        value["pageTruncated"] = json!(true);
+        let mut remaining = vec![];
+        let text = value["text"].as_str().unwrap_or("").to_owned();
+        let mut remaining_text = text.chars().skip(1000).collect::<String>();
+        value["text"] = json!(text.chars().take(1000).collect::<String>());
+        value["textContinues"] = json!(!remaining_text.is_empty());
+        while serde_json::to_vec(&value).unwrap().len() > 11000 {
+            let node_count = value["elements"].as_array().map_or(0, Vec::len);
+            if node_count <= 1 && value["text"].as_str().is_some_and(|text| !text.is_empty()) {
+                let text = value["text"].as_str().unwrap();
+                let split = text.chars().count() / 2;
+                remaining_text =
+                    text.chars().skip(split).collect::<String>() + remaining_text.as_str();
+                value["text"] = json!(text.chars().take(split).collect::<String>());
+                value["textContinues"] = json!(true);
+                continue;
+            }
+            if let Some(item) = value["elements"]
+                .as_array_mut()
+                .and_then(|items| items.pop())
+            {
+                remaining.push(item);
+            } else {
+                return Err("snapshot_metadata_limit: narrow the observation".into());
+            }
+        }
+        if remaining.is_empty() && remaining_text.is_empty() {
+            value["nextCursor"] = Value::Null;
+            value["pageTruncated"] = json!(false);
+        } else {
+            if self.snapshot_pages.len() >= 32 {
+                return Err("cursor_limit: consume existing browser pages".into());
+            }
+            remaining.reverse();
+            let mut next = value.clone();
+            next["elements"] = json!(remaining);
+            next["text"] = json!(remaining_text);
+            let bytes = self
+                .snapshot_pages
+                .values()
+                .map(|(_, _, v)| serde_json::to_vec(v).unwrap().len())
+                .sum::<usize>();
+            if bytes + serde_json::to_vec(&next).unwrap().len() > 4 * 1024 * 1024 {
+                return Err("cursor_limit: browser cache exhausted".into());
+            }
+            self.snapshot_pages.insert(
+                token,
+                (created, self.target_id.clone().unwrap_or_default(), next),
+            );
+        }
+        Ok(value)
+    }
+    pub async fn continue_snapshot(&mut self, cursor: &str) -> Result<Value, String> {
+        let (at, target, value) = self
+            .snapshot_pages
+            .remove(cursor)
+            .ok_or("stale_cursor: unknown or consumed")?;
+        if at.elapsed() > Duration::from_secs(120) || self.target_id.as_deref() != Some(&target) {
+            return Err("stale_cursor: browser context changed".into());
+        }
+        if self.current_url().await?.as_str() != value["url"].as_str().unwrap_or("") {
+            return Err("stale_cursor: page navigated".into());
+        }
+        let saved = self.active_frame.take();
+        let current = self
+            .evaluate("globalThis.__echoSnapshotDocumentToken || null", true)
+            .await;
+        self.active_frame = saved;
+        if current? != value["documentToken"] {
+            return Err("stale_cursor: document reloaded, even if URL is unchanged".into());
+        }
+        self.page(value, at)
+    }
+    pub async fn select_reference_frame(&mut self, args: &mut Value) -> Result<(), String> {
+        if let Some(reference) = args["elementRef"].as_str().map(str::to_owned) {
+            let (at, target, token) = self
+                .reference_documents
+                .get(&reference)
+                .cloned()
+                .ok_or("stale_reference: use a ref from this task's current snapshot")?;
+            if at.elapsed() > Duration::from_secs(120) || self.target_id.as_deref() != Some(&target)
+            {
+                return Err("stale_reference: browser context changed".into());
+            }
+            if let Some((frame, reference)) = reference.split_once("::") {
+                if frame.is_empty() || frame.len() > 256 || reference.is_empty() {
+                    return Err("invalid_reference".into());
+                }
+                self.active_frame = Some(frame.into());
+                args["elementRef"] = json!(reference);
+            } else {
+                self.active_frame = None;
+            }
+            if self
+                .evaluate("globalThis.__echoSnapshotDocumentToken || null", true)
+                .await?
+                != token
+            {
+                return Err(
+                    "stale_reference: original document reloaded; take a fresh snapshot".into(),
+                );
+            }
+        } else if args.get("x").is_some() || args.get("fromX").is_some() {
+            self.active_frame = None;
+        }
+        Ok(())
+    }
+    pub async fn wait_for(&mut self, args: &Value) -> Result<Value, String> {
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_millis(args["timeoutMs"].as_u64().unwrap_or(5000).clamp(100, 30000));
+        let state = args["state"].as_str().ok_or("state_required")?;
+        loop {
+            let observed = if state == "url_equals" {
+                json!({"matches":self.current_url().await?.as_str()==args["text"].as_str().unwrap_or("")})
+            } else {
+                let reference = serde_json::to_string(
+                    args["elementRef"].as_str().ok_or("elementRef_required")?,
+                )
+                .map_err(|e| e.to_string())?;
+                self.evaluate(&format!("(()=>{{const nodes=globalThis.__echoQueryAll('[data-echo-ref='+CSS.escape({reference})+']');if(nodes.length>1)return {{ambiguous:true}};const e=nodes[0];if(e?.type==='password')return {{protected:true}};return {{exists:!!e,value:e?(e.value??e.innerText??''):null}};}})()"),true).await?
+            };
+            if observed["ambiguous"] == true || observed["protected"] == true {
+                return Err("target_unavailable: ambiguous or protected browser condition".into());
+            }
+            let verified = match state {
+                "appears" => observed["exists"] == true,
+                "disappears" => observed["exists"] == false,
+                "text_equals" => observed["exists"] == true && observed["value"] == args["text"],
+                "url_equals" => observed["matches"] == true,
+                _ => return Err("unsupported_wait_state".into()),
+            };
+            if verified {
+                return Ok(json!({"verified":true,"status":"verified","condition":state}));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(json!({"verified":false,"status":"timeout"}));
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
     }
 
     pub async fn screenshot(&mut self) -> Result<(String, Value), String> {
+        self.active_frame = None;
         let result = self
             .call_page(
                 "Page.captureScreenshot",
@@ -398,9 +649,33 @@ impl BrowserController {
     ) -> Result<BrowserInteraction, String> {
         let frames = self.call_page("Page.getFrameTree", json!({})).await?;
         let target_id = self.target_id.clone().ok_or("无法识别浏览器标签页")?;
-        let frame_id = frames["frameTree"]["frame"]["id"]
-            .as_str()
-            .ok_or("无法识别浏览器主文档")?;
+        let frame_id = self
+            .active_frame
+            .as_deref()
+            .or(frames["frameTree"]["frame"]["id"].as_str())
+            .ok_or("无法识别浏览器文档")?
+            .to_owned();
+        let offset = if self.active_frame.is_some() {
+            let owner = self
+                .call_page("DOM.getFrameOwner", json!({"frameId":frame_id}))
+                .await?;
+            let model = self
+                .call_page(
+                    "DOM.getBoxModel",
+                    json!({"backendNodeId":owner["backendNodeId"]}),
+                )
+                .await?;
+            (
+                model["model"]["content"][0]
+                    .as_f64()
+                    .ok_or("frame_geometry_unavailable")?,
+                model["model"]["content"][1]
+                    .as_f64()
+                    .ok_or("frame_geometry_unavailable")?,
+            )
+        } else {
+            (0.0, 0.0)
+        };
         let world = self
             .call_page_at(
                 Some(&target_id),
@@ -416,6 +691,8 @@ impl BrowserController {
             context_id,
             input,
             expected: Value::Null,
+            offset,
+            frame_id: self.active_frame.clone(),
         };
         let token = uuid::Uuid::now_v7().to_string();
         let expected = self
@@ -431,6 +708,8 @@ impl BrowserController {
                 .ok_or("无法核对表单的 HTTP/HTTPS 提交地址，请在浏览器中手动操作")?;
             validate_navigation_url(action, self.allow_private_network).await?;
         }
+        let mut expected = expected;
+        expected["topUrl"] = json!(self.current_url().await?);
         approval.expected = expected;
         Ok(approval)
     }
@@ -475,6 +754,29 @@ impl BrowserController {
         click_point: Option<(f64, f64)>,
         arm_form_guard: bool,
     ) -> Result<Value, String> {
+        if self.current_url().await?.as_str() != approval.url() {
+            return Err("target_changed: top-level page changed after approval".into());
+        }
+        if let Some(frame) = &approval.frame_id {
+            let owner = self
+                .call_page("DOM.getFrameOwner", json!({"frameId":frame}))
+                .await?;
+            let model = self
+                .call_page(
+                    "DOM.getBoxModel",
+                    json!({"backendNodeId":owner["backendNodeId"]}),
+                )
+                .await?;
+            let x = model["model"]["content"][0]
+                .as_f64()
+                .ok_or("frame_geometry_unavailable")?;
+            let y = model["model"]["content"][1]
+                .as_f64()
+                .ok_or("frame_geometry_unavailable")?;
+            if (x - approval.offset.0).abs() > 0.5 || (y - approval.offset.1).abs() > 0.5 {
+                return Err("target_changed: iframe moved after approval; observe again".into());
+            }
+        }
         let submission = &approval.expected["submission"];
         let form_guard = (arm_form_guard && submission.is_object()).then_some(submission);
         let actual = self
@@ -489,7 +791,88 @@ impl BrowserController {
         {
             return Err("网页、焦点或实际命中目标已变化，操作已取消，请重新观察页面".into());
         }
+        if let (Some(frame), Some(x), Some(y)) = (
+            &approval.frame_id,
+            actual["x"].as_f64(),
+            actual["y"].as_f64(),
+        ) {
+            let point = self.verify_frame_point(frame, x, y).await?;
+            if (point.0 - x - approval.offset.0).abs() > 0.5
+                || (point.1 - y - approval.offset.1).abs() > 0.5
+            {
+                return Err("target_changed: iframe coordinate projection changed".into());
+            }
+        }
         Ok(actual)
+    }
+
+    async fn verify_frame_point(
+        &mut self,
+        frame: &str,
+        mut x: f64,
+        mut y: f64,
+    ) -> Result<(f64, f64), String> {
+        let tree = self.call_page("Page.getFrameTree", json!({})).await?;
+        let mut parents = std::collections::HashMap::new();
+        fn collect(
+            tree: &Value,
+            parent: Option<&str>,
+            parents: &mut std::collections::HashMap<String, Option<String>>,
+        ) {
+            if let Some(id) = tree["frame"]["id"].as_str() {
+                parents.insert(id.into(), parent.map(str::to_owned));
+                if let Some(children) = tree["childFrames"].as_array() {
+                    for child in children {
+                        collect(child, Some(id), parents);
+                    }
+                }
+            }
+        }
+        collect(&tree["frameTree"], None, &mut parents);
+        let mut frame = frame.to_owned();
+        for _ in 0..17 {
+            let parent = parents
+                .get(&frame)
+                .ok_or("frame_unavailable: original frame disappeared")?;
+            let Some(parent) = parent.clone() else {
+                return Ok((x, y));
+            };
+            let owner = self
+                .call_page("DOM.getFrameOwner", json!({"frameId":frame}))
+                .await?;
+            let resolved = self
+                .call_page(
+                    "DOM.resolveNode",
+                    json!({"backendNodeId":owner["backendNodeId"]}),
+                )
+                .await?;
+            let object = resolved["object"]["objectId"]
+                .as_str()
+                .ok_or("frame_owner_unavailable")?;
+            // Verify every parent hit, including overlays outside the iframe.
+            // Transformed frames are rejected rather than approximating input.
+            let hit = self.call_page("Runtime.callFunctionOn", json!({"objectId":object,
+                "functionDeclaration":"function(x,y){if(!this.isConnected||!['iframe','frame'].includes(this.localName))return {ok:false};for(let e=this;e;e=e.parentElement){const s=getComputedStyle(e);if(s.transform!=='none'||s.perspective!=='none'||Number(s.zoom||1)!==1)return {ok:false};}const r=this.getBoundingClientRect();x+=r.left+this.clientLeft;y+=r.top+this.clientTop;let hit=this.ownerDocument.elementFromPoint(x,y);for(let i=0;i<20&&hit?.shadowRoot;i++){const inner=hit.shadowRoot.elementFromPoint?.(x,y);if(!inner||inner===hit)break;hit=inner;}return {ok:hit===this,x,y};}",
+                "arguments":[{"value":x},{"value":y}],"returnByValue":true})).await;
+            let _ = self
+                .call_page("Runtime.releaseObject", json!({"objectId":object}))
+                .await;
+            let hit = hit?;
+            if hit.get("exceptionDetails").is_some() || hit["result"]["value"]["ok"] != true {
+                return Err(
+                    "target_changed: iframe obscured or transformed; no pointer input dispatched"
+                        .into(),
+                );
+            }
+            x = hit["result"]["value"]["x"]
+                .as_f64()
+                .ok_or("frame_geometry_unavailable")?;
+            y = hit["result"]["value"]["y"]
+                .as_f64()
+                .ok_or("frame_geometry_unavailable")?;
+            frame = parent;
+        }
+        Err("frame_limit: iframe ancestry exceeds the observation budget".into())
     }
 
     async fn finish_form_guard(&mut self, approval: &BrowserInteraction) -> Result<(), String> {
@@ -528,7 +911,7 @@ impl BrowserController {
         self.call_page_at(
             target_id,
             "Input.dispatchMouseEvent",
-            json!({ "type": "mouseMoved", "x": x, "y": y, "button": "none" }),
+            json!({ "type": "mouseMoved", "x": x+approval.offset.0, "y": y+approval.offset.1, "button": "none" }),
         )
         .await?;
         let clicked = async {
@@ -538,7 +921,7 @@ impl BrowserController {
             self.call_page_at(
                 target_id,
                 "Input.dispatchMouseEvent",
-                json!({ "type": "mousePressed", "x": x, "y": y, "button": button, "clickCount": click_count.clamp(1, 3) }),
+                json!({ "type": "mousePressed", "x": x+approval.offset.0, "y": y+approval.offset.1, "button": button, "clickCount": click_count.clamp(1, 3) }),
             )
             .await?;
             // A pressed button can move and still cover the release point.
@@ -546,7 +929,7 @@ impl BrowserController {
                 self.release_pointer_outside(approval, button).await;
                 return Err(error);
             }
-            let release = json!({ "type": "mouseReleased", "x": x, "y": y, "button": button, "clickCount": click_count.clamp(1, 3) });
+            let release = json!({ "type": "mouseReleased", "x": x+approval.offset.0, "y": y+approval.offset.1, "button": button, "clickCount": click_count.clamp(1, 3) });
             if let Err(error) = self.call_page_at(target_id, "Input.dispatchMouseEvent", release).await {
                 self.release_pointer_outside(approval, button).await;
                 return Err(error);
@@ -571,20 +954,22 @@ impl BrowserController {
     }
 
     pub async fn hover(&mut self, element_ref: &str) -> Result<Value, String> {
-        let reference = serde_json::to_string(element_ref)
-            .map_err(|error| format!("编码元素引用失败：{error}"))?;
-        let expression = format!(
-            "(() => {{ const e=document.querySelector('[data-echo-ref='+CSS.escape({reference})+']'); if(!e) return null; e.scrollIntoView({{block:'center',inline:'center'}}); const r=e.getBoundingClientRect(); return {{x:r.left+r.width/2,y:r.top+r.height/2}}; }})()"
-        );
-        let location = self.evaluate(&expression, true).await?;
+        let approval = self
+            .prepare_interaction(json!({"kind":"click","reference":element_ref}))
+            .await?;
+        let location = self
+            .verify_interaction(&approval, false, None, false)
+            .await?;
         let x = location
             .get("x")
             .and_then(Value::as_f64)
-            .ok_or_else(|| "页面元素已失效，请重新获取页面快照".to_string())?;
+            .ok_or_else(|| "页面元素已失效，请重新获取页面快照".to_string())?
+            + approval.offset.0;
         let y = location
             .get("y")
             .and_then(Value::as_f64)
-            .ok_or_else(|| "页面元素已失效，请重新获取页面快照".to_string())?;
+            .ok_or_else(|| "页面元素已失效，请重新获取页面快照".to_string())?
+            + approval.offset.1;
         self.call_page(
             "Input.dispatchMouseEvent",
             json!({ "type": "mouseMoved", "x": x, "y": y, "button": "none" }),
@@ -605,7 +990,7 @@ impl BrowserController {
         let reference = serde_json::to_string(element_ref)
             .map_err(|error| format!("编码元素引用失败：{error}"))?;
         let expression = format!(
-            "(() => {{ const editableText={EDITABLE_TEXT_JS}; const e=document.querySelector('[data-echo-ref='+CSS.escape({reference})+']'); if(!e) return null; if(e.matches(':disabled')||e.readOnly||e.getAttribute('aria-disabled')==='true') return {{disabled:true}}; const type=(e.type||'').toLowerCase(); if(type==='password') return {{type}}; if(!(e instanceof HTMLTextAreaElement)&&!(e instanceof HTMLInputElement)&&!e.isContentEditable) return {{unsupported:true}}; if(['checkbox','radio','file','button','submit','reset','hidden','color','range'].includes(type)) return {{unsupported:true,type}}; e.scrollIntoView({{block:'center',inline:'center'}}); e.focus(); {} return {{disabled:false,type,tag:e.tagName.toLowerCase(),editable:e.isContentEditable,before:e.isContentEditable?editableText(e):e.value}}; }})()",
+            "(() => {{ const editableText={EDITABLE_TEXT_JS}; const e=globalThis.__echoQueryAll('[data-echo-ref='+CSS.escape({reference})+']')[0]; if(!e) return null; if(e.matches(':disabled')||e.readOnly||e.getAttribute('aria-disabled')==='true') return {{disabled:true}}; const type=(e.type||'').toLowerCase(); if(type==='password') return {{type}}; if(!(e instanceof HTMLTextAreaElement)&&!(e instanceof HTMLInputElement)&&!e.isContentEditable) return {{unsupported:true}}; if(['checkbox','radio','file','button','submit','reset','hidden','color','range'].includes(type)) return {{unsupported:true,type}}; e.scrollIntoView({{block:'center',inline:'center'}}); e.focus(); {} return {{disabled:false,type,tag:e.tagName.toLowerCase(),editable:e.isContentEditable,before:e.isContentEditable?editableText(e):e.value}}; }})()",
             if replace {
                 "if(typeof e.select==='function') e.select(); else if(e.isContentEditable) { const s=getSelection(),r=document.createRange(); r.selectNodeContents(e); s.removeAllRanges(); s.addRange(r); }"
             } else {
@@ -643,7 +1028,7 @@ impl BrowserController {
             // Use their native value setter, then check the actual DOM value
             // and constraints. This is still behind the same action approval.
             self.evaluate(&format!(
-                "(() => {{ const e=document.querySelector('[data-echo-ref='+CSS.escape({reference})+']'); if(!(e instanceof HTMLInputElement)||e.matches(':disabled')||e.readOnly||e.type!=={}) throw new Error('输入目标已变化'); const probe=e.cloneNode(false); probe.value={value}; if(probe.value!=={value}||!probe.checkValidity()) throw new Error('输入值不符合控件的日期、格式、范围或步长要求，原字段值保持'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,{value}); e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); return true; }})()",
+                "(() => {{ const e=globalThis.__echoQueryAll('[data-echo-ref='+CSS.escape({reference})+']')[0]; if(!(e instanceof HTMLInputElement)||e.matches(':disabled')||e.readOnly||e.type!=={}) throw new Error('输入目标已变化'); const probe=e.cloneNode(false); probe.value={value}; if(probe.value!=={value}||!probe.checkValidity()) throw new Error('输入值不符合控件的日期、格式、范围或步长要求，原字段值保持'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,{value}); e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); return true; }})()",
                 serde_json::to_string(input_type).map_err(|e| e.to_string())?
             ), true).await?;
         } else {
@@ -658,7 +1043,7 @@ impl BrowserController {
             }
         }
         let readback = self.evaluate(&format!(
-            "(() => {{ const editableText={EDITABLE_TEXT_JS}; const e=document.querySelector('[data-echo-ref='+CSS.escape({reference})+']'); if(!e||e.type==='password') return null; return {{value:e.isContentEditable?editableText(e):e.value,valid:typeof e.checkValidity==='function'?e.checkValidity():true}}; }})()"
+            "(() => {{ const editableText={EDITABLE_TEXT_JS}; const e=globalThis.__echoQueryAll('[data-echo-ref='+CSS.escape({reference})+']')[0]; if(!e||e.type==='password') return null; return {{value:e.isContentEditable?editableText(e):e.value,valid:typeof e.checkValidity==='function'?e.checkValidity():true}}; }})()"
         ), true).await?;
         if readback.is_null() {
             return Err("输入后目标控件已变化，请重新获取页面快照检查结果，避免重复填写".into());
@@ -706,7 +1091,7 @@ impl BrowserController {
         let values_json =
             serde_json::to_string(values).map_err(|error| format!("编码选项失败：{error}"))?;
         let expression = format!(
-            "(() => {{ const e=document.querySelector('[data-echo-ref='+CSS.escape({reference})+']'); if(!(e instanceof HTMLSelectElement)) return null; if(e.matches(':disabled')||e.getAttribute('aria-disabled')==='true') return {{error:'目标下拉框已禁用'}}; const values={values_json}; if(!e.multiple&&values.length!==1) return {{error:'单选下拉框只能选择一个值'}}; const options=Array.from(e.options); const matched=values.map(v=>options.filter(o=>!o.disabled&&!o.parentElement?.disabled&&(o.value===v||o.text===v))); if(matched.some(m=>m.length!==1)) return {{error:'选项不存在、不可用或名称不唯一，请重新获取页面快照'}}; const wanted=new Set(matched.map(m=>m[0])); for(const o of options) o.selected=wanted.has(o); e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); const selected=Array.from(e.selectedOptions); return {{selected:selected.map(o=>({{value:o.value,text:o.text}})),verified:e.isConnected&&selected.length===wanted.size&&selected.every(o=>wanted.has(o)),valid:e.checkValidity()}}; }})()"
+            "(() => {{ const e=globalThis.__echoQueryAll('[data-echo-ref='+CSS.escape({reference})+']')[0]; if(!(e instanceof HTMLSelectElement)) return null; if(e.matches(':disabled')||e.getAttribute('aria-disabled')==='true') return {{error:'目标下拉框已禁用'}}; const values={values_json}; if(!e.multiple&&values.length!==1) return {{error:'单选下拉框只能选择一个值'}}; const options=Array.from(e.options); const matched=values.map(v=>options.filter(o=>!o.disabled&&!o.parentElement?.disabled&&(o.value===v||o.text===v))); if(matched.some(m=>m.length!==1)) return {{error:'选项不存在、不可用或名称不唯一，请重新获取页面快照'}}; const wanted=new Set(matched.map(m=>m[0])); for(const o of options) o.selected=wanted.has(o); e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); const selected=Array.from(e.selectedOptions); return {{selected:selected.map(o=>({{value:o.value,text:o.text}})),verified:e.isConnected&&selected.length===wanted.size&&selected.every(o=>wanted.has(o)),valid:e.checkValidity()}}; }})()"
         );
         let selected = self.evaluate(&expression, true).await?;
         if selected.is_null() {
@@ -731,40 +1116,47 @@ impl BrowserController {
         if canonical_paths.is_empty() || canonical_paths.len() > 20 {
             return Err("上传文件数量必须在 1 到 20 之间".into());
         }
-        let document = self
-            .call_page("DOM.getDocument", json!({ "depth": 0, "pierce": true }))
-            .await?;
-        let root_id = document
-            .pointer("/root/nodeId")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "浏览器未返回 DOM 根节点".to_string())?;
-        if !element_ref
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-        {
-            return Err("页面元素引用无效".into());
-        }
-        let selector = format!(r#"[data-echo-ref="{element_ref}"]"#);
-        let queried = self
+        let reference = serde_json::to_string(element_ref).map_err(|e| e.to_string())?;
+        let expression = format!("(()=>{{const nodes=globalThis.__echoQueryAll('[data-echo-ref='+CSS.escape({reference})+']');if(nodes.length!==1)throw Error('ambiguous_or_missing_file_input');const e=nodes[0];if(!(e instanceof HTMLInputElement)||e.type!=='file'||e.disabled)throw Error('file_input_required');return e;}})()");
+        let target = self.evaluate(&expression, false).await?;
+        let object = target["objectId"]
+            .as_str()
+            .ok_or("file_input_unavailable")?;
+        let selected = self
             .call_page(
-                "DOM.querySelector",
-                json!({ "nodeId": root_id, "selector": selector }),
+                "DOM.setFileInputFiles",
+                json!({"objectId":object,"files":canonical_paths}),
             )
-            .await?;
-        let node_id = queried
-            .get("nodeId")
-            .and_then(Value::as_u64)
-            .filter(|id| *id != 0)
-            .ok_or_else(|| "页面元素已失效，请重新获取页面快照".to_string())?;
-        self.call_page(
-            "DOM.setFileInputFiles",
-            json!({ "nodeId": node_id, "files": canonical_paths }),
+            .await;
+        let _ = self
+            .call_page("Runtime.releaseObject", json!({"objectId":object}))
+            .await;
+        selected?;
+        let actual = self.evaluate(&format!("(()=>{{const nodes=globalThis.__echoQueryAll('[data-echo-ref='+CSS.escape({reference})+']');return nodes.length===1?Array.from(nodes[0].files||[]).map(f=>f.name):null;}})()"), true).await?;
+        let expected: Vec<_> = canonical_paths
+            .iter()
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        if actual != json!(expected) {
+            return Err(
+                "result_unknown: selected files could not be verified; observe before retry".into(),
+            );
+        }
+        Ok(
+            json!({ "uploaded": true, "fileCount": canonical_paths.len(), "verified": true, "status":"files_selected_unsubmitted", "uploadConfirmed":false }),
         )
-        .await?;
-        Ok(json!({ "uploaded": true, "fileCount": canonical_paths.len() }))
     }
 
     pub fn downloads(&self) -> Result<Vec<BrowserDownload>, String> {
+        if self.extension.is_some() {
+            return Err("unsupported_action: extension downloads stay in the user's browser; verify the explicit output path instead".into());
+        }
         let directory = self.download_dir();
         std::fs::create_dir_all(&directory)
             .map_err(|error| format!("创建浏览器下载目录失败：{error}"))?;
@@ -846,6 +1238,7 @@ impl BrowserController {
     }
 
     pub async fn scroll(&mut self, delta_x: f64, delta_y: f64) -> Result<Value, String> {
+        self.active_frame = None;
         let viewport = self
             .evaluate("({x:innerWidth/2,y:innerHeight/2})", true)
             .await?;
@@ -923,6 +1316,19 @@ impl BrowserController {
     }
 
     pub async fn new_tab(&mut self, raw_url: Option<&str>) -> Result<BrowserTarget, String> {
+        self.reset_observation_context();
+        if let Some(extension) = &self.extension {
+            let url = raw_url.unwrap_or("about:blank");
+            validate_navigation_url(url, self.allow_private_network).await?;
+            let target: BrowserTarget = serde_json::from_value(
+                extension
+                    .call("Echo.newTab", json!({"url":url}), None)
+                    .await?,
+            )
+            .map_err(|e| e.to_string())?;
+            self.target_id = Some(target.id.clone());
+            return Ok(target);
+        }
         let url = match raw_url {
             Some(value) => validate_navigation_url(value, self.allow_private_network)
                 .await?
@@ -949,6 +1355,17 @@ impl BrowserController {
     }
 
     pub async fn select_tab(&mut self, target_id: &str) -> Result<BrowserTarget, String> {
+        self.reset_observation_context();
+        if let Some(extension) = &self.extension {
+            let target: BrowserTarget = serde_json::from_value(
+                extension
+                    .call("Echo.selectTab", json!({}), Some(target_id))
+                    .await?,
+            )
+            .map_err(|e| e.to_string())?;
+            self.target_id = Some(target.id.clone());
+            return Ok(target);
+        }
         let target = self
             .targets()
             .await?
@@ -968,6 +1385,16 @@ impl BrowserController {
     }
 
     pub async fn close_tab(&mut self, target_id: &str) -> Result<Value, String> {
+        if let Some(extension) = &self.extension {
+            let result = extension
+                .call("Echo.closeTab", json!({}), Some(target_id))
+                .await?;
+            if self.target_id.as_deref() == Some(target_id) {
+                self.target_id = None;
+                self.reset_observation_context();
+            }
+            return Ok(result);
+        }
         let endpoint = format!("http://127.0.0.1:{}/json/close/{target_id}", self.port);
         control_client()?
             .get(endpoint)
@@ -977,6 +1404,7 @@ impl BrowserController {
             .error_for_status()
             .map_err(|error| format!("关闭浏览器标签页失败：{error}"))?;
         if self.target_id.as_deref() == Some(target_id) {
+            self.reset_observation_context();
             self.target_id = None;
             let replacement = self.ensure_page().await?;
             self.target_id = Some(replacement.id);
@@ -990,27 +1418,44 @@ impl BrowserController {
         Ok(json!({ "waitedMs": bounded, "url": self.current_url().await? }))
     }
 
+    fn reset_observation_context(&mut self) {
+        self.active_frame = None;
+        self.snapshot_pages.clear();
+        self.reference_documents.clear();
+    }
+
     fn download_dir(&self) -> PathBuf {
         self.profile_dir.join("Downloads")
     }
 
     async fn evaluate(&mut self, expression: &str, return_by_value: bool) -> Result<Value, String> {
-        let result = self
+        let expression = format!("globalThis.__echoQueryAll=({DEEP_QUERY_JS});{expression}");
+        let mut params = json!({"expression":expression,"returnByValue":return_by_value,"awaitPromise":true,"userGesture":true});
+        let frame = if let Some(frame) = self.active_frame.clone() {
+            frame
+        } else {
+            let tree = self.call_page("Page.getFrameTree", json!({})).await?;
+            tree["frameTree"]["frame"]["id"]
+                .as_str()
+                .ok_or("frame_unavailable")?
+                .to_owned()
+        };
+        let world = self
             .call_page(
-                "Runtime.evaluate",
-                json!({
-                    "expression": expression,
-                    "returnByValue": return_by_value,
-                    "awaitPromise": true,
-                    "userGesture": true,
-                }),
+                "Page.createIsolatedWorld",
+                json!({"frameId":frame,"worldName":"EchoAgentBrowserInteraction"}),
             )
             .await?;
+        params["contextId"] = world["executionContextId"].clone();
+        let result = self.call_page("Runtime.evaluate", params).await?;
         if let Some(exception) = result.get("exceptionDetails") {
             return Err(format!(
                 "页面脚本执行失败：{}",
                 compact_json(exception, 2_000)
             ));
+        }
+        if !return_by_value {
+            return Ok(result["result"].clone());
         }
         Ok(result
             .get("result")
@@ -1043,6 +1488,20 @@ impl BrowserController {
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
+        if let Some(extension) = &self.extension {
+            if let Some(target) = expected_target {
+                if self.target_id.as_deref() != Some(target) {
+                    return Err("browser_target_changed".into());
+                }
+            }
+            return extension
+                .call(
+                    method,
+                    params,
+                    expected_target.or(self.target_id.as_deref()),
+                )
+                .await;
+        }
         let future = async {
             // Target discovery is part of the command deadline. Otherwise a
             // wedged local DevTools HTTP endpoint could hold the browser mutex
@@ -1075,11 +1534,27 @@ impl BrowserController {
                 .map_err(|error| {
                     format!("浏览器下载隔离连接已失效，请重新启动受控浏览器：{error}")
                 })?;
-            let (mut websocket, _) =
-                tokio_tungstenite::connect_async(&target.websocket_debugger_url)
+            if self
+                .page_connection
+                .as_ref()
+                .is_none_or(|(id, _)| id != &target.id)
+            {
+                let (socket, _) = tokio_tungstenite::connect_async(&target.websocket_debugger_url)
                     .await
-                    .map_err(|error| format!("连接受控浏览器失败：{error}"))?;
-            cdp_request(&mut websocket, id, method, params).await
+                    .map_err(|e| format!("连接受控浏览器失败：{e}"))?;
+                self.page_connection = Some((target.id.clone(), socket));
+            }
+            let result = cdp_request(
+                &mut self.page_connection.as_mut().unwrap().1,
+                id,
+                method,
+                params,
+            )
+            .await;
+            if result.is_err() {
+                self.page_connection = None;
+            }
+            result
         };
         tokio::time::timeout(COMMAND_TIMEOUT, future)
             .await
@@ -1108,6 +1583,10 @@ impl BrowserController {
     }
 
     async fn targets(&self) -> Result<Vec<BrowserTarget>, String> {
+        if let Some(extension) = &self.extension {
+            return serde_json::from_value(extension.call("Echo.tabs", json!({}), None).await?)
+                .map_err(|e| e.to_string());
+        }
         let endpoint = format!("http://127.0.0.1:{}/json/list", self.port);
         control_client()?
             .get(endpoint)
@@ -1420,6 +1899,53 @@ fn compact_json(value: &Value, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paginated_snapshot_keeps_controls_on_the_first_page_and_preserves_all_text() {
+        let mut browser = BrowserController {
+            child: None,
+            extension: None,
+            page_connection: None,
+            active_frame: None,
+            snapshot_pages: Default::default(),
+            reference_documents: Default::default(),
+            _protection: None,
+            port: 0,
+            browser_name: "synthetic".into(),
+            profile_dir: PathBuf::from("synthetic-not-opened"),
+            target_id: Some("synthetic".into()),
+            allow_private_network: false,
+            network_proxy: None,
+            next_cdp_id: 1,
+            download_session: None,
+        };
+        let text = "中文正文\n".repeat(1800);
+        let nodes: Vec<_> = (0..500)
+            .map(|i| json!({"ref":format!("e{i}"),"name":"控制内容".repeat(40)}))
+            .collect();
+        let mut page = browser.bound_snapshot(json!({"url":"https://example.invalid/","documentToken":"synthetic","text":text,"elements":nodes})).unwrap();
+        assert!(!page["elements"].as_array().unwrap().is_empty());
+        let mut actual_text = String::new();
+        let mut refs = vec![];
+        for _ in 0..512 {
+            assert!(serde_json::to_vec(&page).unwrap().len() <= 11000);
+            actual_text.push_str(page["text"].as_str().unwrap());
+            refs.extend(
+                page["elements"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|node| node["ref"].as_str().unwrap().to_owned()),
+            );
+            let Some(cursor) = page["nextCursor"].as_str() else {
+                break;
+            };
+            let (created, _, next) = browser.snapshot_pages.remove(cursor).unwrap();
+            page = browser.page(next, created).unwrap();
+        }
+        assert!(page["nextCursor"].is_null());
+        assert_eq!(actual_text, text);
+        assert_eq!(refs, (0..500).map(|i| format!("e{i}")).collect::<Vec<_>>());
+    }
     use crate::automation::network_proxy::is_private_or_local;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -1443,6 +1969,103 @@ mod tests {
     fn cdp_modifier_mapping_is_stable() {
         assert_eq!(cdp_modifiers(&["cmd".into(), "shift".into()]).unwrap(), 12);
         assert!(cdp_modifiers(&["hyper".into()]).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires isolated ECHO_AGENT_HOME and Chromium; supports ECHO_BROWSER_TEST_HEADLESS=1"]
+    async fn controlled_browser_frames_shadow_refs_and_upload() {
+        assert!(crate::paths::redirected_data_home().is_some());
+        let session = format!("browser-frames-{}", uuid::Uuid::now_v7());
+        let mut browser = BrowserController::launch(&session, false).await.unwrap();
+        browser.evaluate(r#"(()=>{
+          document.body.innerHTML='<span id="shadow-label">Wrong outer label</span><div id="shadow"></div><iframe id="child" style="width:500px;height:250px"></iframe>';
+          document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<span id="shadow-label">Shadow text</span><input aria-labelledby="shadow-label">';
+          const child=document.querySelector('#child');child.srcdoc='<button onclick="document.body.dataset.clicked=1">Inside frame</button><input type="file" aria-label="Frame file">';
+          return true;
+        })()"#,true).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let snapshot = browser.snapshot().await.unwrap();
+        let elements = snapshot["elements"].as_array().unwrap();
+        let reference = |name: &str| {
+            elements.iter().find(|e| e["name"] == name).unwrap()["ref"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let shadow = reference("Shadow text");
+        let button = reference("Inside frame");
+        let file = reference("Frame file");
+        assert!(button.contains("::"));
+        let mut args = json!({"elementRef":shadow});
+        browser.select_reference_frame(&mut args).await.unwrap();
+        assert_eq!(
+            browser
+                .type_text(args["elementRef"].as_str().unwrap(), "中文 shadow", true)
+                .await
+                .unwrap()["verified"],
+            true
+        );
+        let mut args = json!({"elementRef":button});
+        browser.select_reference_frame(&mut args).await.unwrap();
+        let approval = browser
+            .prepare_interaction(json!({"kind":"click","reference":args["elementRef"]}))
+            .await
+            .unwrap();
+        let frame = browser.active_frame.take();
+        browser.evaluate("document.body.insertAdjacentHTML('beforeend','<div id=cover style=\"position:fixed;inset:0;z-index:9999\"></div>');true",true).await.unwrap();
+        browser.active_frame = frame;
+        assert!(
+            browser.click(&approval, "left", 1).await.is_err(),
+            "parent overlay must block frame input"
+        );
+        let frame = browser.active_frame.take();
+        browser
+            .evaluate("document.querySelector('#cover').remove();true", true)
+            .await
+            .unwrap();
+        browser.active_frame = frame;
+        let approval = browser
+            .prepare_interaction(json!({"kind":"click","reference":args["elementRef"]}))
+            .await
+            .unwrap();
+        browser.click(&approval, "left", 1).await.unwrap();
+        assert_eq!(
+            browser
+                .evaluate("document.body.dataset.clicked", true)
+                .await
+                .unwrap(),
+            "1"
+        );
+        let mut args = json!({"elementRef":file});
+        browser.select_reference_frame(&mut args).await.unwrap();
+        let output = browser.profile_dir.join("synthetic.txt");
+        std::fs::write(&output, "合成上传文本").unwrap();
+        assert_eq!(
+            browser
+                .upload(
+                    args["elementRef"].as_str().unwrap(),
+                    &[output.to_string_lossy().into_owned()]
+                )
+                .await
+                .unwrap()["uploadConfirmed"],
+            false
+        );
+        browser.active_frame = None;
+        browser.evaluate("for(let i=0;i<150;i++){const e=document.createElement('button');e.textContent='Long button '+i+' '+ 'x'.repeat(100);document.body.append(e)};true",true).await.unwrap();
+        let snapshot = browser.snapshot().await.unwrap();
+        let cursor = snapshot["nextCursor"].as_str().unwrap().to_owned();
+        let old = snapshot["elements"][0]["ref"].as_str().unwrap().to_owned();
+        let _ = browser.evaluate("location.reload()", true).await;
+        browser
+            .wait_for_ready(Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(browser.continue_snapshot(&cursor).await.is_err());
+        assert!(browser
+            .select_reference_frame(&mut json!({"elementRef":old}))
+            .await
+            .is_err());
+        browser.stop().await.unwrap();
     }
 
     #[tokio::test]

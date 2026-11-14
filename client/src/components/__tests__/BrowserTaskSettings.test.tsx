@@ -7,11 +7,12 @@ import * as client from "@/lib/automation-client";
 import type { AutomationStatus } from "@/lib/automation-client";
 vi.mock("@/lib/automation-client",()=>({
   automationStatus:vi.fn(),automationPendingApprovals:vi.fn(async()=>[]),automationResolveApproval:vi.fn(async()=>true),
-  automationClearBrowserData:vi.fn(),automationSetPrivateNetwork:vi.fn(),
+  automationClearBrowserData:vi.fn(),automationSetPrivateNetwork:vi.fn(),automationPairBrowser:vi.fn(),automationDisconnectBrowser:vi.fn(),automationUseIsolatedBrowser:vi.fn(),
   onAutomationStatus:vi.fn(async()=>()=>{}),onAutomationApproval:vi.fn(async()=>()=>{}),onAutomationApprovalClosed:vi.fn(async()=>()=>{}),
 }));
 const status:AutomationStatus={sessionId:"a",mode:"browser_use",paused:false,allowPrivateNetwork:false,browser:{available:true},computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true},browserRunning:true,browserHasData:true};
 const select=()=>screen.getByRole("combobox",{name:"管理浏览器数据的任务"});
+const extensionStatus:AutomationStatus={...status,paused:true,extensionConnected:false,execution:{nativeIsolation:"process",backgroundInput:true,inputMode:"application_targeted_with_foreground_fallback",platform:"macos",fileDialog:true,windowClick:true,browserSource:"extension"}};
 
 describe("设置中的任务浏览器管理",()=>{
   beforeEach(()=>{
@@ -21,6 +22,11 @@ describe("设置中的任务浏览器管理",()=>{
     vi.mocked(client.automationStatus).mockImplementation(async id=>({...status,sessionId:id}));
     vi.mocked(client.automationClearBrowserData).mockImplementation(async id=>({...status,sessionId:id,paused:true,browserHasData:false,browserRunning:false}));
     vi.mocked(client.automationSetPrivateNetwork).mockImplementation(async(id,allowed)=>({...status,sessionId:id,allowPrivateNetwork:allowed}));
+    vi.mocked(client.automationPairBrowser).mockImplementation(async id=>{
+      vi.mocked(client.automationStatus).mockResolvedValue({...extensionStatus,sessionId:id});
+      return {endpoint:"ws://127.0.0.1:12345/owned-ticket",extensionPath:"/Applications/EchoAgent.app/Contents/Resources/browser-extension",expiresInSeconds:300};
+    });
+    vi.mocked(client.automationUseIsolatedBrowser).mockImplementation(async id=>({...status,sessionId:id,paused:true,extensionConnected:false}));
   });
   it("打开设置只读取当前任务，不自动修改权限或清理数据",async()=>{
     render(<BrowserTaskSettings/>);await screen.findByRole("checkbox");
@@ -99,6 +105,81 @@ describe("设置中的任务浏览器管理",()=>{
     await waitFor(()=>expect(screen.queryByRole("region",{name:"操作授权"})).toBeNull());
     if(approved)expect(screen.getByRole("checkbox")).toBeChecked();else {expect(screen.getByRole("checkbox")).not.toBeChecked();expect(screen.getByRole("alert")).toHaveTextContent("未获批准");}
     expect(select()).toBeEnabled();
+  });
+
+  it("配对前说明网络边界，生成地址后可主动取消并使用独立浏览器",async()=>{
+    render(<BrowserTaskSettings/>);
+    expect(await screen.findByText(/网页的请求不经过任务独立浏览器的网络隔离/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button",{name:"连接已登录浏览器"}));
+    expect(await screen.findByRole("textbox",{name:"浏览器连接地址"})).toHaveValue("ws://127.0.0.1:12345/owned-ticket");
+    expect(screen.getByRole("checkbox",{name:/允许导航到本机与内网页面/})).not.toBeChecked();
+    expect(screen.getByText(/网页自身的请求仍按原浏览器的网络权限执行/)).toBeVisible();
+    expect(client.automationUseIsolatedBrowser).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button",{name:"使用独立浏览器"}));
+    await waitFor(()=>expect(client.automationUseIsolatedBrowser).toHaveBeenCalledWith("a"));
+    expect(await screen.findByText("已切换为任务独立浏览器，可返回对话继续。")).toBeVisible();
+    expect(screen.queryByRole("textbox",{name:"浏览器连接地址"})).toBeNull();
+    expect(screen.getByRole("checkbox",{name:/允许访问本机与内网/})).toBeVisible();
+  });
+
+  it("意外断连不自动换登录环境，并保留重连和主动切换入口",async()=>{
+    vi.mocked(client.automationStatus).mockResolvedValue({...extensionStatus,extensionConnected:true});
+    render(<BrowserTaskSettings/>);
+    await screen.findByText("已连接所选浏览器标签页");
+    await act(async()=>vi.mocked(client.onAutomationStatus).mock.calls[0][0](extensionStatus));
+    expect(screen.getByText("浏览器尚未连接，可重新连接或使用独立浏览器")).toBeVisible();
+    expect(screen.getByRole("button",{name:"重新生成连接地址"})).toBeEnabled();
+    expect(screen.getByRole("button",{name:"使用独立浏览器"})).toBeEnabled();
+    expect(client.automationUseIsolatedBrowser).not.toHaveBeenCalled();
+  });
+
+  it("过期地址不再展示为可用连接，并提供重新生成和取消入口",async()=>{
+    vi.mocked(client.automationPairBrowser).mockImplementationOnce(async()=>{
+      vi.mocked(client.automationStatus).mockResolvedValue(extensionStatus);
+      return {endpoint:"expired-ticket",extensionPath:"/synthetic/extension",expiresInSeconds:0};
+    });
+    render(<BrowserTaskSettings/>);
+    fireEvent.click(await screen.findByRole("button",{name:"连接已登录浏览器"}));
+    expect(await screen.findByText("连接地址已过期，请重新生成连接地址，或使用独立浏览器。")).toBeVisible();
+    expect(screen.queryByRole("textbox",{name:"浏览器连接地址"})).toBeNull();
+    expect(screen.getByRole("button",{name:"重新生成连接地址"})).toBeEnabled();
+    expect(screen.getByRole("button",{name:"使用独立浏览器"})).toBeEnabled();
+  });
+
+  it("连接成功后移除配对地址，复制地址有明确反馈",async()=>{
+    const copy=vi.fn().mockResolvedValue(undefined);
+    const original=Object.getOwnPropertyDescriptor(navigator,"clipboard");
+    Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText:copy}});
+    try {
+      render(<BrowserTaskSettings/>);
+      fireEvent.click(await screen.findByRole("button",{name:"连接已登录浏览器"}));
+      fireEvent.click(await screen.findByRole("button",{name:"复制连接地址"}));
+      expect(await screen.findByText("连接地址已复制。")).toBeVisible();
+      expect(copy).toHaveBeenCalledWith("ws://127.0.0.1:12345/owned-ticket");
+      await act(async()=>vi.mocked(client.onAutomationStatus).mock.calls[0][0]({...extensionStatus,extensionConnected:true}));
+      expect(screen.queryByRole("textbox",{name:"浏览器连接地址"})).toBeNull();
+      expect(screen.getByText("已连接所选浏览器标签页")).toBeVisible();
+    } finally {
+      if(original)Object.defineProperty(navigator,"clipboard",original);
+      else Reflect.deleteProperty(navigator,"clipboard");
+    }
+  });
+
+  it("切换失败保留当前浏览器与地址，允许重试",async()=>{
+    vi.mocked(client.automationUseIsolatedBrowser).mockRejectedValueOnce(new Error("停止尚未确认"));
+    render(<BrowserTaskSettings/>);
+    fireEvent.click(await screen.findByRole("button",{name:"连接已登录浏览器"}));
+    fireEvent.click(await screen.findByRole("button",{name:"使用独立浏览器"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("停止尚未确认");
+    expect(screen.getByRole("textbox",{name:"浏览器连接地址"})).toBeVisible();
+    expect(screen.getByRole("button",{name:"使用独立浏览器"})).toBeEnabled();
+  });
+
+  it("模型空档仍有执行权时不允许更改浏览器来源",async()=>{
+    vi.mocked(client.automationStatus).mockResolvedValue({...extensionStatus,task:{phase:"running",authorized:true,reason:null,scope:"桌面任务",generation:1},paused:false});
+    render(<BrowserTaskSettings/>);
+    expect(await screen.findByRole("button",{name:"重新生成连接地址"})).toBeDisabled();
+    expect(screen.getByRole("button",{name:"使用独立浏览器"})).toBeDisabled();
   });
 
 });
