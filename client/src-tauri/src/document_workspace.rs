@@ -123,30 +123,30 @@ fn verbatim_disk_path(path: &Path) -> Option<PathBuf> {
 }
 
 pub(super) fn original_path_absent(error: &std::io::Error) -> bool {
-    if error.kind() == ErrorKind::NotFound {
-        return true;
-    }
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::{
             ERROR_BAD_NETPATH, ERROR_BAD_NET_NAME, ERROR_DEVICE_NOT_CONNECTED, ERROR_DEV_NOT_EXIST,
             ERROR_INVALID_DRIVE, ERROR_NETWORK_UNREACHABLE, ERROR_NOT_READY,
         };
-        matches!(
-            error.raw_os_error().map(|code| code as u32),
-            Some(
-                ERROR_BAD_NET_NAME
-                    | ERROR_BAD_NETPATH
-                    | ERROR_DEVICE_NOT_CONNECTED
-                    | ERROR_DEV_NOT_EXIST
-                    | ERROR_INVALID_DRIVE
-                    | ERROR_NETWORK_UNREACHABLE
-                    | ERROR_NOT_READY
+        error.kind() == ErrorKind::NotFound
+            || matches!(
+                error.raw_os_error().map(|code| code as u32),
+                Some(
+                    ERROR_BAD_NET_NAME
+                        | ERROR_BAD_NETPATH
+                        | ERROR_DEVICE_NOT_CONNECTED
+                        | ERROR_DEV_NOT_EXIST
+                        | ERROR_INVALID_DRIVE
+                        | ERROR_NETWORK_UNREACHABLE
+                        | ERROR_NOT_READY
+                )
             )
-        )
     }
     #[cfg(not(windows))]
-    false
+    {
+        error.kind() == ErrorKind::NotFound
+    }
 }
 
 /// A recoverable original must actually be missing. Permission errors, a

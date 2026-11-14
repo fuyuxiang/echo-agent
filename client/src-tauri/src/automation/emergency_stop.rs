@@ -22,6 +22,7 @@ pub fn start(callback: fn(&'static str)) {
         STARTED.store(false, Ordering::SeqCst);
     });
 }
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn signal(reason: &'static str) {
     if let Some(callback) = SIGNAL.get() {
         callback(reason);

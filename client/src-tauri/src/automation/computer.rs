@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::io::Cursor;
 use std::time::Duration;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) const INPUT_EVENT_TAG: i64 = 0x4543484f435541;
 const MAX_SCREENSHOT_WIDTH: u32 = 1920;
 const MAX_SCREENSHOT_HEIGHT: u32 = 1200;

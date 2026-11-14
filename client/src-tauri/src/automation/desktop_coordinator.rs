@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UserInput {
     Move,
@@ -15,9 +16,13 @@ pub enum UserInput {
 }
 struct InputOperation {
     id: u64,
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     run: String,
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     pid: Option<u32>,
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     foreground: bool,
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     token: CancellationToken,
 }
 #[derive(Default)]
@@ -28,7 +33,7 @@ struct InputState {
     targets: std::collections::HashSet<(String, u32)>,
     grants: std::collections::HashMap<String, Instant>,
     blocked: std::collections::HashSet<(String, Option<u32>)>,
-    recent: std::collections::HashMap<u32, (Instant, UserInput)>,
+    recent: std::collections::HashMap<u32, Instant>,
 }
 static INPUT: std::sync::Mutex<Option<InputState>> = std::sync::Mutex::new(None);
 pub struct InputLease(u64);
@@ -45,13 +50,13 @@ pub fn begin_input(
     run: &str,
     pid: Option<u32>,
     foreground: bool,
-    token: &CancellationToken,
+    _token: &CancellationToken,
 ) -> Result<InputLease, String> {
     let mut state = INPUT.lock().unwrap();
     let state = state.get_or_insert_with(Default::default);
     state
         .recent
-        .retain(|_, (at, _)| at.elapsed() < Duration::from_millis(1200));
+        .retain(|_, at| at.elapsed() < Duration::from_millis(1200));
     let key = (run.to_owned(), pid);
     if let Some(pid) = pid {
         state.targets.insert((run.to_owned(), pid));
@@ -61,7 +66,7 @@ pub fn begin_input(
         state
             .recent
             .get(pid)
-            .is_some_and(|(at, _)| grant.is_none_or(|grant| *at >= grant))
+            .is_some_and(|at| grant.is_none_or(|grant| *at >= grant))
     };
     if state.blocked.contains(&key) || pid.is_some_and(|pid| recent(&pid)) {
         state.blocked.insert(key);
@@ -79,13 +84,18 @@ pub fn begin_input(
     let id = TICKET.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     state.operations.push(InputOperation {
         id,
+        #[cfg(any(target_os = "macos", target_os = "windows", test))]
         run: run.to_owned(),
+        #[cfg(any(target_os = "macos", target_os = "windows", test))]
         pid,
+        #[cfg(any(target_os = "macos", target_os = "windows", test))]
         foreground,
-        token: token.clone(),
+        #[cfg(any(target_os = "macos", target_os = "windows", test))]
+        token: _token.clone(),
     });
     Ok(InputLease(id))
 }
+#[cfg(any(target_os = "macos", test))]
 pub fn monitor_lost() {
     if let Some(state) = INPUT.lock().unwrap().as_ref() {
         for operation in &state.operations {
@@ -109,6 +119,7 @@ pub fn finish_run(run: &str) {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub fn user_input(pid: Option<u32>, kind: UserInput) {
     if kind == UserInput::Move {
         return;
@@ -117,12 +128,10 @@ pub fn user_input(pid: Option<u32>, kind: UserInput) {
     let state = state.get_or_insert_with(Default::default);
     state
         .recent
-        .retain(|_, (at, _)| at.elapsed() < Duration::from_millis(1200));
+        .retain(|_, at| at.elapsed() < Duration::from_millis(1200));
     // Unknown destinations still count as foreground activity, but cannot be
     // used to claim an unrelated background app was edited.
-    state
-        .recent
-        .insert(pid.unwrap_or(0), (Instant::now(), kind));
+    state.recent.insert(pid.unwrap_or(0), Instant::now());
     if let Some(pid) = pid {
         let owners: Vec<_> = state
             .targets
@@ -181,6 +190,7 @@ impl Drop for DesktopLease {
         }
     }
 }
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub fn interrupt_current() -> bool {
     let mut interrupted = false;
     if let Ok(current) = CURRENT.try_lock() {
@@ -252,6 +262,21 @@ mod tests {
         assert!(interrupt_current());
         assert!(token.is_cancelled());
         release("foreground-gap-test");
+    }
+    #[test]
+    fn losing_input_monitor_cancels_only_registered_actions() {
+        let _serial = SERIAL.lock().unwrap();
+        *INPUT.lock().unwrap() = None;
+        let task = CancellationToken::new();
+        let action = task.child_token();
+        watch("monitor-loss-test", task.clone());
+        let lease = begin_input("monitor-loss-test", Some(180), true, &action).unwrap();
+        monitor_lost();
+        assert!(action.is_cancelled());
+        assert!(!task.is_cancelled());
+        drop(lease);
+        release("monitor-loss-test");
+        *INPUT.lock().unwrap() = None;
     }
     #[test]
     fn human_input_only_cancels_a_conflicting_action_and_never_its_task() {
