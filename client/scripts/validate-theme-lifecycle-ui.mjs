@@ -16,7 +16,7 @@ try {
     ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}) });
   page = await browser.newPage({ colorScheme: "light", viewport: { width: 1024, height: 680 } });
   page.setDefaultNavigationTimeout(90000);
-  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  const errors = []; page.on("pageerror", error => errors.push(error.stack || error.message));
   await page.addInitScript(() => {
     const observer = new MutationObserver(() => {
       if (document.querySelector("#root > *")) {
@@ -74,6 +74,25 @@ try {
     await page.screenshot({ path: join(output, file) });
     evidence.push({ name: `monaco-reopened-${theme}`, theme, file });
   }
+  // Exercise both an in-flight diff and a rendered diff. A single reopen can
+  // miss Monaco's delayed gutter-menu callbacks after the widget is disposed.
+  for (let cycle = 0; cycle < 16; cycle++) {
+    await page.evaluate(() => window.enterpriseThemeReview.setEditorOpen(false));
+    await page.locator(".monaco-diff-editor").waitFor({ state: "hidden" });
+    await page.waitForFunction(async () => await window.enterpriseThemeReview.editorModelCount() === 0);
+    await page.evaluate(theme => {
+      window.enterpriseThemeReview.setTheme(theme);
+      window.enterpriseThemeReview.setEditorOpen(true);
+    }, cycle % 2 ? "light" : "dark");
+    await page.locator(".monaco-diff-editor").waitFor();
+    await page.waitForFunction(async () => await window.enterpriseThemeReview.editorModelCount() === 2);
+    if (cycle % 2) await page.locator(".monaco-diff-editor .line-insert").first().waitFor();
+  }
+  await page.evaluate(() => window.enterpriseThemeReview.setEditorOpen(false));
+  await page.waitForFunction(async () => await window.enterpriseThemeReview.editorModelCount() === 0);
+  // Monaco's menu events debounce for 50 ms; observe the closed state as well.
+  await page.waitForTimeout(100);
+  evidence.push({ name: "monaco-close-reopen-lifecycle", cycles: 16, remainingModels: 0 });
   assert.deepEqual(errors, []);
   writeFileSync(join(output, "evidence.json"), JSON.stringify(evidence, null, 2));
   console.log(JSON.stringify({ passed: true, states: evidence.length, output }));

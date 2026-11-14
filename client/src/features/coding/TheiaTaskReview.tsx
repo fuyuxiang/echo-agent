@@ -193,7 +193,13 @@ export function TheiaTaskReview({ root, taskId, path, onClose, onOpenFile, onRev
           theme={theme === "vs-dark" ? "echo-dark" : "echo-light"}
           loading="正在显示文本差异…"
           onMount={() => setEditorMountedScope(editorScope)}
-          options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, automaticLayout: true }}
+          options={{
+            readOnly: true,
+            // This read-only review needs no editing gutter. Its debounced menu
+            // events can outlive the widget (microsoft/monaco-editor#4581).
+            renderGutterMenu: false,
+            renderSideBySide: true, minimap: { enabled: false }, automaticLayout: true,
+          }}
         />
       </DiffEditorBoundary>}
     </section>
