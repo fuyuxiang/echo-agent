@@ -2319,7 +2319,7 @@
   min-width: 0;
   color: var(--echo-text-strong);
   font-size: .875rem;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
@@ -2328,9 +2328,9 @@
   font-size: .75rem;
   line-height: 1.7;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .execution-process__header,
-.execution-process__collapse,
 .execution-process__latest {
   display: inline-flex;
   align-items: center;
@@ -2349,12 +2349,11 @@
   cursor: pointer;
 }
 .execution-process__header:hover,
-.execution-process__collapse:hover,
 .execution-process__latest:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 .execution-process__header:focus-visible,
-.execution-process__collapse:focus-visible,
 .execution-process__latest:focus-visible,
-.execution-process__read-more:focus-visible {
+.execution-process__activity-group:focus-visible,
+.execution-process__attention button:focus-visible {
   outline: 2px solid var(--echo-brand);
   outline-offset: 2px;
 }
@@ -2371,6 +2370,57 @@
 }
 .execution-process__chevron--expand { transform: rotate(90deg); }
 .execution-process__chevron--open { transform: rotate(-90deg); }
+.execution-process__live {
+  min-width: 0;
+  margin: 4px 0 0 3px;
+  padding: 1px 0 2px 13px;
+  border-left: 1px solid var(--echo-border-subtle, var(--echo-border-default));
+}
+.execution-process__live .execution-process__excerpt { margin: 1px 4px 7px; }
+.execution-process__activities { margin: 0; padding: 0; list-style: none; }
+.execution-process__activity { min-width: 0; margin: 2px 0; }
+.execution-process__activity-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--echo-text-medium);
+  font: inherit;
+  font-size: .8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+.execution-process__activity-group:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.execution-process__activity-group > svg { flex: none; }
+.execution-process__activity-group > span { min-width: 0; flex: 1; }
+.execution-process__activity-group > small { max-width: 50%; color: var(--echo-color-text-warning-default); font-size: .75rem; text-align: right; overflow-wrap: anywhere; }
+.execution-process__activity-check { color: var(--echo-text-tertiary); }
+.execution-process__activity-more { color: var(--echo-text-tertiary); }
+.execution-process .execution-process__activity .toolcall--activity {
+  gap: 8px;
+  min-height: 32px;
+  margin: 0;
+  padding: 4px;
+  border: 0;
+  border-radius: 5px;
+  font-size: .8125rem;
+  color: var(--echo-text-medium);
+}
+.execution-process .execution-process__activity .toolcall--activity:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.toolcall__activity-icon { display: inline-flex; align-items: center; flex: none; color: var(--echo-text-medium); }
+.toolcall--activity .toolcall__title { color: inherit; font-size: inherit; }
+.toolcall--activity .toolcall__status-mark { background: transparent; }
+.toolcall--activity .toolcall__status-mark--completed { color: var(--echo-text-tertiary); }
+.toolcall--activity .toolcall__status-mark--in_progress { animation: none; }
+.execution-process__earlier { margin: 6px 4px 0; color: var(--echo-text-medium); font-size: .75rem; line-height: 1.7; }
+.execution-process__attention { margin: 8px 0 0 17px; color: var(--echo-color-text-warning-default); font-size: .8125rem; line-height: 1.7; }
+.execution-process__attention button { margin-left: 6px; padding: 3px 4px; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; }
 .execution-process__excerpt { margin: 4px 0 0 17px; min-width: 0; }
 .execution-process__excerpt p {
   margin: 0;
@@ -2403,9 +2453,9 @@
   min-width: 0;
 }
 .execution-process__body {
-  /* Seven lines at the process text's typical line height. */
+  /* Full records are opt-in; give deliberate reading more room than the live summary. */
   line-height: 1.4rem;
-  max-height: 9.8rem;
+  max-height: min(28rem, 48vh);
   overflow-y: auto;
   overscroll-behavior-y: contain;
   scrollbar-width: thin;
@@ -2456,7 +2506,7 @@
   margin-top: 4px;
   padding: 0 4px;
   color: var(--echo-text-tertiary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 .execution-process__reasoning > summary {
   display: inline-flex;
@@ -2479,26 +2529,13 @@
 .execution-process__reasoning[open] > summary::before {
   transform: rotate(90deg);
 }
-.execution-process__read-more {
-  display: block;
-  margin: 5px 0 8px 16px;
-  padding: 4px;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--echo-color-text-brand-default);
-  font: inherit;
-  font-size: .75rem;
-  cursor: pointer;
-}
-.execution-process__read-more:hover { text-decoration: underline; }
 .execution-process__reasoning-body {
   margin: 2px 0 6px 6px;
   padding: 2px 0 2px 12px;
   border-left: 2px solid var(--echo-border-subtle, var(--echo-border-default));
   color: color-mix(in srgb, var(--echo-text-tertiary) 82%, var(--echo-text-strong));
-  font-size: 0.75rem;
-  line-height: 20px;
+  font-size: 0.8125rem;
+  line-height: 1.7;
 }
 .execution-process__reasoning-body .markdown-body[data-md-theme="reasoning"] {
   color: color-mix(in srgb, var(--echo-text-tertiary) 82%, var(--echo-text-strong));
@@ -2554,7 +2591,6 @@
   padding: 0;
   border: 0;
 }
-.execution-process__collapse { margin-left: auto; }
 .execution-process__latest { color: var(--echo-color-text-brand-default); }
 .knowledge-trace {
   display: flex;

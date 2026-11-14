@@ -50,7 +50,8 @@ describe("assistant execution process", () => {
     const onOpenTool = vi.fn();
     const view = (parts: ChatMessage["parts"]) => <ThemeProvider><ExecutionProcess active parts={parts} onOpenTool={onOpenTool} /></ThemeProvider>;
     const { container, rerender } = render(view([tool("focused", "in_progress"), tool("second")]));
-    expect(container.querySelectorAll("button")).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: "执行过程详情" })).toBeNull();
+    expect(screen.getByRole("list", { name: "最近执行进展" }).children).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: / · (展开|查看|收起)过程$/ }));
     const target = screen.getByRole("button", { name: "read focused 运行中" });
     act(() => target.focus());
@@ -81,16 +82,14 @@ describe("assistant execution process", () => {
     expect(screen.getByText("检查原配置")).toBeVisible();
   });
 
-  it("长分析默认只展示片段，可以完整展开、收起且不丢失原文", () => {
+  it("分析默认折叠，打开后直接展示全文，减少一层展开且不丢失原文", () => {
     const text = "分析内容。".repeat(200) + "原文末尾";
     render(<ThemeProvider><ExecutionProcess active autoExpand parts={[{ kind: "thought", text }]} /></ThemeProvider>);
-    fireEvent.click(screen.getByText("分析详情"));
     expect(screen.queryByText(/原文末尾/)).toBeNull();
-    const more = screen.getByRole("button", { name: "展开全文" });
-    fireEvent.click(more);
+    fireEvent.click(screen.getByText("分析详情"));
     expect(screen.getByText(text)).toBeVisible();
-    expect(more).toHaveAttribute("aria-expanded", "true");
-    fireEvent.click(more);
+    expect(screen.queryByRole("button", { name: "展开全文" })).toBeNull();
+    fireEvent.click(screen.getByText("分析详情"));
     expect(screen.queryByText(/原文末尾/)).toBeNull();
   });
 

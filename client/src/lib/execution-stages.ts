@@ -2,6 +2,7 @@ import type { MessagePart, ToolCallView } from "@/stores/session-store";
 import { activeToolLabel } from "./execution-process";
 import { isToolDiscovery } from "./tool-renderers";
 import { progressStageTitle } from "./execution-process-preview";
+import { executionToolStates, toolExecutionState, type ToolExecutionState } from "./tool-execution-state";
 
 export interface ExecutionStage {
   id: string;
@@ -62,23 +63,28 @@ export function executionStages(parts: MessagePart[]): ExecutionStage[] {
 }
 
 /** Last event group is current; older parallel tools stay in their own stage. */
-export function executionStageState(stage: ExecutionStage, current: boolean, active: boolean, waiting = false, recoveredIds?: ReadonlySet<string>): string {
+export function executionStageState(stage: ExecutionStage, current: boolean, active: boolean, waiting = false, recoveredIds?: ReadonlySet<string>, execution?: ReadonlyMap<string, ToolExecutionState>): string {
+  const state = (tool: ToolCallView) => (execution?.get(tool.toolCallId) ?? toolExecutionState(tool)).state;
+  const unfinished = stage.tools.some(tool => tool.status === "in_progress" && state(tool) !== "completed");
   if (active && current && waiting) return "等待确认";
-  if (active && (current || stage.tools.some(tool => tool.status === "in_progress"))) return "进行中";
-  if (stage.tools.some(tool => tool.status === "in_progress")) return "未记录完成";
-  if (stage.tools.some(tool => tool.status === "failed" && !recoveredIds?.has(tool.toolCallId))) return "含失败记录";
+  if (active && (current || unfinished)) return "进行中";
+  if (unfinished) return "未记录完成";
+  if (stage.tools.some(tool => state(tool) === "failed" && !recoveredIds?.has(tool.toolCallId))) return "含失败记录";
+  if (stage.tools.some(tool => state(tool) === "pending")) return "结果待确认";
   if (stage.tools.some(tool => recoveredIds?.has(tool.toolCallId))) return "失败已恢复";
   return stage.tools.length ? "已执行" : "已记录";
 }
 
-export function stageOperationSummary(tools: ToolCallView[], recoveredIds?: ReadonlySet<string>, executionEnded = false): string {
+export function stageOperationSummary(tools: ToolCallView[], recoveredIds?: ReadonlySet<string>, executionEnded = false, execution = executionToolStates(tools, executionEnded)): string {
   if (!tools.length) return "";
-  const completed = tools.filter(tool => tool.status === "completed").length;
-  const running = tools.filter(tool => tool.status === "in_progress").length;
-  const failed = tools.filter(tool => tool.status === "failed" && !recoveredIds?.has(tool.toolCallId)).length;
-  const recovered = tools.filter(tool => tool.status === "failed" && recoveredIds?.has(tool.toolCallId)).length;
+  const states = tools.map(tool => ({ tool, state: execution.get(tool.toolCallId)!.state }));
+  const completed = states.filter(({ state }) => state === "completed").length;
+  const running = states.filter(({ state }) => state === "in_progress").length;
+  const pending = states.filter(({ state }) => state === "pending").length;
+  const failed = states.filter(({ tool, state }) => state === "failed" && !recoveredIds?.has(tool.toolCallId)).length;
+  const recovered = states.filter(({ tool, state }) => state === "failed" && recoveredIds?.has(tool.toolCallId)).length;
   const noun = tools.every(isToolDiscovery) ? "工具查找" : "操作";
   return [completed ? `已完成 ${completed} 项${noun}` : "",
-    running ? `${running} 项${executionEnded ? "结果待确认" : "进行中"}` : "", failed ? `${failed} 项失败` : "",
+    running ? `${running} 项进行中` : "", pending ? `${pending} 项结果待确认` : "", failed ? `${failed} 项失败` : "",
     recovered ? `${recovered} 次失败已恢复` : ""].filter(Boolean).join(" · ");
 }

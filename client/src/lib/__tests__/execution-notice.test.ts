@@ -11,6 +11,15 @@ const message = (parts: MessagePart[], extra: Partial<ChatMessage> = {}): ChatMe
 });
 
 describe("execution notices are about observable impact", () => {
+  it.each(["result_unknown", "dispatched_unverified"])("%s 的电脑操作在轮次结束后仍提示核验，避免重复操作", status => {
+    const part = tool("other", "completed", { toolName: "computer_click", content: [{ type: "text", text: JSON.stringify({ status }) }] });
+    const notice = getExecutionNotice(message([part]));
+    expect(notice).toMatchObject({ kind: "delivery", tone: "warning", title: "有操作的结果尚未确认" });
+    expect(notice?.description).toContain("电脑操作的结果尚未确认");
+    expect(notice?.description).toContain("避免重复操作");
+    expect(notice?.tools).toHaveLength(1);
+  });
+
   it.each(["failed", "in_progress"] as const)("真实浏览器上传 %s 的结果提醒不会被正常轮次结束或模型正文覆盖", status => {
     const notice = getExecutionNotice(message([tool("other", status, { toolName: "echoagent-browser__browser_upload" })]));
     expect(notice).toMatchObject({kind:"delivery", tone:"warning"});

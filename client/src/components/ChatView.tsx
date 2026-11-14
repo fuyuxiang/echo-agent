@@ -1110,7 +1110,6 @@ export function ChatView({
                       onContinueInNewConversation={forkTargets.has(m.id) && onForked ? () => { void startContinuation(forkTargets.get(m.id)); } : undefined}
                       continuationDisabled={continuationDisabled || replacingTurn}
                       continuationDisabledReason={continuationPending ? "正在创建新对话，请稍候" : continuationDisabled || replacingTurn ? "请等待当前执行和待处理操作结束后再继续" : undefined}
-                      autoExpandProcess
                       onReviewProcess={pauseFollowing}
                       runtimeError={isLastAssistant ? inlineRuntimeError : undefined}
                       suppressStoppedNotice={isLastAssistant && Boolean(taskFeedback)}

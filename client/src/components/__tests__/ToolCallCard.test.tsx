@@ -19,6 +19,21 @@ const base: ToolCallView = {
 };
 
 describe("ToolCallCard", () => {
+  it("活动摘要、无障碍名称与悬浮提示使用相同命令，且保留完整内容", () => {
+    const command = "pnpm test -- --project ui";
+    render(<ToolCallCard tc={{ ...base, kind: "bash", title: "Run test", rawInput: { command } }}
+      appearance="activity" activityLabel={command} />);
+    const button = screen.getByRole("button", { name: `bash ${command} 完成` });
+    expect(button).toHaveTextContent(command);
+    expect(button).toHaveAttribute("title", expect.stringContaining(command));
+  });
+
+  it("已返回的电脑失败回执不能显示完成标记", () => {
+    render(<ToolCallCard tc={{ ...base, toolName: "computer_click", content: [{ type: "text", text: '{"status":"failed"}' }] }} />);
+    expect(screen.getByRole("button", { name: /失败$/ })).toHaveClass("toolcall--err");
+    expect(screen.getByText("!")).toBeVisible();
+  });
+
   it("原生调用传输失败时保留实体结果未知，不显示为已确认失败", () => {
     const tc: ToolCallView = { ...base, title: "computer_invoke", kind: "other", status: "failed",
       rawInput: {tool_name:"echoagent-automation__computer_invoke"},
@@ -33,10 +48,12 @@ describe("ToolCallCard", () => {
     const tc: ToolCallView = { ...base, kind: "read_file", title: "Read 比赛.xlsx", documentProgress: {
       source: "比赛.xlsx", revision: "a".repeat(64), readRecords: 12, totalRecords: 100, checkpointCount: 2, complete: false,
     } };
-    render(<><ToolCallCard tc={tc} /><ToolCallDetailBody tc={tc} /></>);
+    const { rerender } = render(<><ToolCallCard tc={tc} /><ToolCallDetailBody tc={tc} /></>);
     expect(screen.getByRole("status", { name: "资料读取进度" })).toHaveTextContent("已保存 2 份阶段记录");
     expect(screen.getByRole("progressbar")).toHaveAttribute("value", "12");
     expect(screen.queryByText("已分析全部内容")).not.toBeInTheDocument();
+    rerender(<ToolCallCard tc={tc} appearance="activity" activityLabel="比赛.xlsx" />);
+    expect(screen.getByRole("button", { name: "read_file 比赛.xlsx · 已读取 12 / 100 段内容 完成" })).toBeVisible();
   });
   it("PDF 使用页数、显示当前范围并能打开保存的阶段记录", () => {
     const onOpenPath = vi.fn();
@@ -52,7 +69,7 @@ describe("ToolCallCard", () => {
     expect(onOpenPath).toHaveBeenCalledWith("/tmp/session/findings.md");
   });
   it.each(["use_tool", "echoagent-office__office_create"])("间接 Office 调用 %s 展示实际文档标题", (title) => {
-    render(<ToolCallCard tc={{
+    const tc: ToolCallView = {
       ...base,
       title,
       kind: "use_tool",
@@ -62,9 +79,13 @@ describe("ToolCallCard", () => {
         tool_name: "echoagent-office__office_create",
         tool_input: { title: "原生Agent办公验收", format: "docx", markdown: "中文正文" },
       },
-    }} />);
+    };
+    const { rerender } = render(<ToolCallCard tc={tc} />);
     expect(screen.getByText("文档")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "办公文档 生成 原生Agent办公验收 运行中" })).toBeInTheDocument();
+    rerender(<ToolCallCard tc={tc} appearance="activity" activityLabel="use_tool" />);
+    expect(screen.getByText("生成 原生Agent办公验收")).toBeVisible();
+    expect(screen.queryByText("use_tool")).toBeNull();
   });
 
   it("间接非 Office 工具不因嵌套标题而显示文档", () => {

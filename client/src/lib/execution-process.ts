@@ -1,6 +1,7 @@
 import type { ChatMessage, MessagePart, ToolCallView } from "@/stores/session-store";
 import { detectToolCallRenderer, isToolDiscovery } from "@/lib/tool-renderers";
 import { findToolRecoveries, type ToolRecovery } from "@/lib/tool-recovery";
+import { executionToolStates } from "./tool-execution-state";
 
 export type TextMessagePart = Extract<MessagePart, { kind: "text" }>;
 
@@ -133,6 +134,7 @@ export interface ExecutionProcessSummary {
   completedToolCount: number;
   failedToolCount: number;
   unfinishedToolCount: number;
+  pendingToolCount: number;
   unresolvedToolCount: number;
   recoveredTools: ToolRecovery[];
   thoughtCount: number;
@@ -152,14 +154,17 @@ export function summarizeExecutionProcess(
     .filter((part): part is Extract<MessagePart, { kind: "tool_call" }> => part.kind === "tool_call")
     .map((part) => part.toolCall);
   const thoughts = parts.filter((part) => part.kind === "thought");
-  const failedToolCount = tools.filter((tool) => tool.status === "failed").length;
-  const completedToolCount = tools.filter((tool) => tool.status === "completed").length;
-  const unfinishedToolCount = tools.filter((tool) => tool.status === "in_progress").length;
-  const currentTool = [...tools].reverse().find((tool) => tool.status === "in_progress");
+  const execution = executionToolStates(tools);
+  const states = tools.map(tool => ({ tool, state: execution.get(tool.toolCallId)!.state }));
+  const failedToolCount = states.filter(({ state }) => state === "failed").length;
+  const completedToolCount = states.filter(({ state }) => state === "completed").length;
+  const unfinishedToolCount = states.filter(({ state }) => state === "in_progress").length;
+  const pendingToolCount = states.filter(({ state }) => state === "pending").length;
+  const currentTool = [...states].reverse().find(({ state }) => state === "in_progress")?.tool;
   const recoveredTools = findToolRecoveries(parts);
   const unresolvedToolCount = failedToolCount - recoveredTools.length;
   const changedFiles = [...new Set(
-    tools.filter((tool) => tool.status === "completed").flatMap(toolDiffPaths),
+    states.filter(({ state }) => state === "completed").flatMap(({ tool }) => toolDiffPaths(tool)),
   )];
 
   const abnormalStop = [
@@ -181,7 +186,7 @@ export function summarizeExecutionProcess(
   let description: string | undefined;
   if (active) {
     state = "running";
-    title = currentTool ? activeToolLabel(currentTool) : unresolvedToolCount ? "正在继续处理" : "正在分析任务";
+    title = currentTool ? activeToolLabel(currentTool) : unresolvedToolCount || pendingToolCount ? "正在继续处理" : "正在分析任务";
   } else if (abnormalStop || abnormalCancellation) {
     state = "failed";
     title = abnormalCancellation ? cancelledProcessTitle(cancellationCategory) : abnormalProcessTitle(stopReason);
@@ -197,11 +202,12 @@ export function summarizeExecutionProcess(
     state = "attention";
     title = "执行状态待确认";
     description = "尚未收到可确认的完成状态，已有回复不代表执行已经完成。";
-  } else if (unresolvedToolCount || unfinishedToolCount) {
-    state = completedToolCount > 0 ? "partial" : unfinishedToolCount > 0 ? "attention" : "failed";
+  } else if (unresolvedToolCount || unfinishedToolCount || pendingToolCount) {
+    state = completedToolCount > 0 ? "partial" : unfinishedToolCount > 0 || pendingToolCount > 0 ? "attention" : "failed";
     title = state === "partial" ? "部分操作未完成" : state === "attention" ? "执行结果待确认" : "操作执行未完成";
     description = [unresolvedToolCount ? `${unresolvedToolCount} 项失败操作尚未确认恢复` : "",
-      unfinishedToolCount ? `${unfinishedToolCount} 项操作未记录完成结果` : ""].filter(Boolean).join("；") + "。展开可查看具体操作和原因。";
+      unfinishedToolCount ? `${unfinishedToolCount} 项操作未记录完成结果` : "",
+      pendingToolCount ? `${pendingToolCount} 项操作结果待确认` : ""].filter(Boolean).join("；") + "。展开可查看具体操作和原因。";
   } else {
     state = "complete";
     title = recoveredTools.length ? "执行过程" : tools.length > 0 ? "已完成执行过程" : "已完成思考";
@@ -215,6 +221,7 @@ export function summarizeExecutionProcess(
     completedToolCount,
     failedToolCount,
     unfinishedToolCount,
+    pendingToolCount,
     unresolvedToolCount,
     recoveredTools,
     thoughtCount: thoughts.length,

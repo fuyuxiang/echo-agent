@@ -7,6 +7,14 @@ const call = (id: string, status: ToolCallView["status"], input: unknown = {comm
 });
 
 describe("verified tool recovery", () => {
+  it.each(["result_unknown", "dispatched_unverified"])("%s 的重试回执不能证明原操作已恢复", status => {
+    const identity = { toolName: "computer_click", kind: "other", title: "点击按钮" };
+    expect(findToolRecoveries([
+      call("failure", "failed", { x: 1, y: 2 }, { ...identity, finishedAt: 100 }),
+      call("retry", "completed", { x: 1, y: 2 }, { ...identity, startedAt: 200, content: [{ type: "text", text: JSON.stringify({ status }) }] }),
+    ])).toEqual([]);
+  });
+
   it("相同操作的后续重试成功才恢复失败，忽略 JSON 对象的键顺序", () => {
     const parts = [call("failed","failed",undefined,{finishedAt:2_000}),
       call("retry","completed",{cwd:"/work",command:"fetch-weather"},{startedAt:3_000})];

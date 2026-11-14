@@ -7,6 +7,15 @@ const discovery = (id: string, status: ToolCallView["status"] = "completed"): Me
     title: 'Search tools: "南京 天气"', status, content: [] },
 });
 describe("execution stages", () => {
+  it.each(["result_unknown", "dispatched_unverified"])("%s 回执在运行中和终态均不计入完成或失败", status => {
+    const tools: ToolCallView[] = [{ toolCallId: "click", kind: "other", toolName: "computer_click", title: "点击按钮", status: "completed",
+      content: [{ type: "text", text: JSON.stringify({ status }) }] }];
+    expect(stageOperationSummary(tools)).toBe("1 项结果待确认");
+    expect(stageOperationSummary(tools, undefined, true)).toBe("1 项结果待确认");
+    const [stage] = executionStages([{ kind: "tool_call", toolCall: tools[0] }]);
+    expect(executionStageState(stage, false, false)).toBe("结果待确认");
+  });
+
   it("同一生成中部分事件缺失计划元数据时，不把说明和工具拆散", () => {
     const stages = executionStages([
       { kind: "text", text: "核对来源和关键条件", streamId: "1", stageTitle: "确认条件" },

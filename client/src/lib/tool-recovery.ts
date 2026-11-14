@@ -1,4 +1,5 @@
 import type { MessagePart, ToolCallView } from "@/stores/session-store";
+import { executionToolStates } from "./tool-execution-state";
 
 export interface ToolRecovery {
   failedToolCallId: string;
@@ -59,19 +60,20 @@ function beganAfterFailure(failure: Extract<MessagePart,{kind:"tool_call"}>, suc
 
 export function findToolRecoveries(parts: MessagePart[]): ToolRecovery[] {
   const tools = parts.filter((part): part is Extract<MessagePart,{kind:"tool_call"}> => part.kind === "tool_call");
-  if (!tools.some(part => part.toolCall.status === "failed")) return [];
-  const keys = tools.map(part => part.toolCall.status === "in_progress" ? null : operationKey(part.toolCall));
+  const execution = executionToolStates(tools.map(part => part.toolCall));
+  const states = tools.map(part => execution.get(part.toolCall.toolCallId)!.state);
+  if (!states.includes("failed")) return [];
+  const keys = tools.map((part, index) => states[index] === "in_progress" || states[index] === "pending" ? null : operationKey(part.toolCall));
   const successful = new Map<string,number[]>();
-  tools.forEach((part,index) => {
-    const key = keys[index];
-    if (key && part.toolCall.status === "completed") {
+  keys.forEach((key,index) => {
+    if (key && states[index] === "completed") {
       const candidates = successful.get(key) ?? [];
       candidates.push(index);
       successful.set(key,candidates);
     }
   });
   return tools.flatMap((part,index) => {
-    if (part.toolCall.status !== "failed" || !keys[index]) return [];
+    if (states[index] !== "failed" || !keys[index]) return [];
     const replacement = successful.get(keys[index]!)?.find(candidate => candidate > index && beganAfterFailure(part,tools[candidate]));
     return replacement == null ? [] : [{failedToolCallId:part.toolCall.toolCallId,successfulToolCallId:tools[replacement].toolCall.toolCallId}];
   });

@@ -3,6 +3,9 @@ import {computerOutcome} from "../computer-outcome";
 import type {ToolCallView} from "@/stores/session-store";
 const call=(value:unknown,name="computer_invoke"):ToolCallView=>({toolCallId:"a",title:name,kind:"other",status:"completed",rawInput:{tool_name:`echoagent-automation__${name}`},content:[{type:"text",text:JSON.stringify(value)}]});
 describe("desktop physical outcome",()=>{
+  it("ignores malformed wrapped tool names without crashing the conversation",()=>{
+    expect(computerOutcome({...call({status:"observed"},"web_search"),rawInput:{tool_name:["computer_click"]}})).toBeNull();
+  });
   it("keeps a failed helper transport distinct from a proven non-dispatch",()=>{
     const tool={...call(null),status:"failed" as const,content:[{type:"text" as const,text:"native_timeout: isolated helper terminated; action result unknown"}]};
     expect(computerOutcome(tool)).toMatchObject({unknown:true,label:"结果待核验",pendingVerification:true});

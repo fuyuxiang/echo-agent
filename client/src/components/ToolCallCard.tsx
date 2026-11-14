@@ -1,5 +1,5 @@
-import { computerOutcome } from "@/lib/computer-outcome";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { toolExecutionState, type ToolExecutionState } from "@/lib/tool-execution-state";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ToolCallView } from "@/stores/session-store";
 import { documentProgressCount, documentProgressLabel } from "@/lib/document-progress";
 import { isOfficeCreateTool, officeInputFromToolCall, officeReceiptFromToolCall } from "@/lib/document-export";
@@ -23,6 +23,10 @@ type ToolCallCardProps = {
   showStatusLabel?: boolean;
   /** The owning turn has ended; an absent tool receipt is not a live operation. */
   executionEnded?: boolean;
+  appearance?: "record" | "activity";
+  activityLabel?: string;
+  activityIcon?: ReactNode;
+  executionState?: ToolExecutionState;
 };
 
 const MAX_TOOL_IMAGE_BASE64_CHARS = 16 * 1024 * 1024;
@@ -51,7 +55,8 @@ function toolImageSource(image: ImageToolContent): string | null {
  * Always one line in the transcript: kind + short title + status.
  * Details (command/diff/output) open in the side drawer via `onOpen`.
  */
-export function ToolCallCard({ tc, onOpen, showStatusLabel = false, executionEnded = false }: ToolCallCardProps) {
+export function ToolCallCard({ tc, onOpen, showStatusLabel = false, executionEnded = false,
+  appearance = "record", activityLabel, activityIcon, executionState }: ToolCallCardProps) {
   if (isSilentOrganizationSkip(tc)) return (
     <button type="button" className="toolcall toolcall--compact" data-tool-call-id={tc.toolCallId} onClick={() => onOpen?.(tc)}
       title="本轮组织知识检索不可用，回答未包含该来源。点击查看原因；可在组织页面重新连接。">
@@ -60,24 +65,21 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false, executionEnd
     </button>
   );
 
-  const outcome = computerOutcome(tc);
-  const pendingResult = (executionEnded && tc.status === "in_progress") || !!outcome?.unknown || (tc.status === "completed" && !!outcome?.pendingVerification);
+  const { state, label: statusLabel } = executionState ?? toolExecutionState(tc, executionEnded);
+  const pendingResult = state === "pending";
   const statusCls = pendingResult ? "toolcall--pending" :
-    tc.status === "completed"
+    state === "completed"
       ? "toolcall--ok"
-      : tc.status === "failed"
+      : state === "failed"
         ? "toolcall--err"
         : "toolcall--run";
-
-  const statusLabel =
-    pendingResult ? outcome?.label ?? "结果待确认" : tc.status === "completed" ? outcome?.label??"完成" : tc.status === "failed" ? "失败" : "运行中";
 
   // 状态符号：完成态用 SVG 对勾（文本 "✓" U+2713 在 macOS WKWebView 下依赖
   // 字体回退，可能渲染成 tofu/emoji 样式）；"!" / "…" 是 ASCII/通用字符，安全。
   const statusMark = pendingResult ? "?" :
-    tc.status === "completed" ? (
+    state === "completed" ? (
       <CheckIcon size={10} strokeWidth={3} />
-    ) : tc.status === "failed" ? (
+    ) : state === "failed" ? (
       "!"
     ) : (
       "…"
@@ -98,23 +100,27 @@ export function ToolCallCard({ tc, onOpen, showStatusLabel = false, executionEnd
     : "工具";
   const summary = tc.documentProgress ? documentProgressLabel(tc.documentProgress)
     : officeTool ? shortTitle : specialized ? summarizeTool(tc, renderer) : shortTitle;
+  const visibleTitle = tc.documentProgress?.source ?? (officeTool ? summary : activityLabel ?? summary);
+  const accessibleTitle = appearance === "activity" && !tc.documentProgress ? visibleTitle : summary;
 
   return (
     <button
       type="button"
-      className={"toolcall toolcall--compact " + statusCls}
+      className={`toolcall toolcall--compact ${statusCls}${appearance === "activity" ? " toolcall--activity" : ""}`}
       data-tool-call-id={tc.toolCallId}
       onClick={() => onOpen?.(tc)}
-      title={`${officeTool ? "办公文档" : tc.kind}: ${officeTool ? officeTitle : tc.title}（${statusLabel}，点击查看详情）`}
-      aria-label={`${officeTool ? "办公文档" : tc.kind} ${summary} ${statusLabel}`}
+      title={`${officeTool ? "办公文档" : tc.kind}: ${appearance === "activity" ? accessibleTitle : officeTool ? officeTitle : tc.title}（${statusLabel}，点击查看详情）`}
+      aria-label={`${officeTool ? "办公文档" : tc.kind} ${accessibleTitle} ${statusLabel}`}
     >
-      <span className="toolcall__kind">{kindLabel}</span>
-      <span className="toolcall__title">{tc.documentProgress?.source ?? summary}</span>
+      {appearance === "activity"
+        ? <span className="toolcall__activity-icon" aria-hidden="true">{activityIcon}</span>
+        : <span className="toolcall__kind">{kindLabel}</span>}
+      <span className="toolcall__title">{visibleTitle}</span>
       {tc.documentProgress && <span className="toolcall__document-count" aria-hidden="true">
         {documentProgressCount(tc.documentProgress)}
       </span>}
-      {showStatusLabel && <span className="toolcall__status-label" aria-hidden="true">{statusLabel}</span>}
-      <span className={"toolcall__status-mark toolcall__status-mark--" + (pendingResult ? "pending" : tc.status)}>
+      {(showStatusLabel || appearance === "activity" && state !== "completed") && <span className="toolcall__status-label" aria-hidden="true">{statusLabel}</span>}
+      <span className={"toolcall__status-mark toolcall__status-mark--" + state}>
         {statusMark}
       </span>
     </button>
@@ -164,13 +170,14 @@ export function ToolCallDetailBody({
   tc,
   onOpenPath,
   executionEnded = false,
+  executionState,
 }: {
   tc: ToolCallView;
   onOpenPath?: (path: string) => void;
   executionEnded?: boolean;
+  executionState?: ToolExecutionState;
 }) {
-  const outcome = computerOutcome(tc);
-  const pendingResult = (executionEnded && tc.status === "in_progress") || !!outcome?.unknown || (tc.status === "completed" && !!outcome?.pendingVerification);
+  const { state, label: statusLabel } = executionState ?? toolExecutionState(tc, executionEnded);
   const diff = tc.content.find((c) => c.type === "diff") as DiffContent | undefined;
   const cmd = tc.content.find((c) => c.type === "command_output") as
     | CommandOutputContent
@@ -198,12 +205,8 @@ export function ToolCallDetailBody({
     <div className="tool-detail">
       <div className="tool-detail__meta">
         <span className="toolcall__kind">{officeTool ? "文档" : renderer === "knowledge" ? "知识检索" : renderer === "personal-knowledge" ? "个人知识" : prettyKind(tc.kind)}</span>
-        <span className={"tool-detail__status tool-detail__status--" + (pendingResult ? "pending" : tc.status)}>
-          {pendingResult ? outcome?.label ?? "结果待确认" : tc.status === "completed"
-            ? outcome?.label??"已完成"
-            : tc.status === "failed"
-              ? "失败"
-              : "运行中"}
+        <span className={"tool-detail__status tool-detail__status--" + state}>
+          {statusLabel === "完成" ? "已完成" : statusLabel}
         </span>
       </div>
       <h3 className="tool-detail__title">{officeTool ? "生成办公文档" : renderer === "knowledge" ? "组织知识" : renderer === "personal-knowledge" ? "个人知识库" : tc.title}</h3>

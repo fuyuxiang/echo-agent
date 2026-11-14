@@ -2,6 +2,7 @@ import type { ChatMessage, ToolCallView } from "@/stores/session-store";
 import { partitionAssistantParts } from "./execution-process";
 import { findToolRecoveries } from "./tool-recovery";
 import { isModelQuotaExhausted } from "./error-format";
+import { executionToolStates } from "./tool-execution-state";
 
 export interface ExecutionNotice {
   kind: "runtime" | "delivery" | "stopped" | "empty" | "environment";
@@ -39,16 +40,21 @@ export function getExecutionNotice(message: ChatMessage, active = false, runtime
   if (message.role !== "assistant" || active || !message.complete || message.cancelTrigger === "send_now") return null;
   const recovered = new Set(findToolRecoveries(message.parts).map((item) => item.failedToolCallId));
   const tools = message.parts.flatMap((part) => part.kind === "tool_call" ? [part.toolCall] : []);
-  const affected = tools.filter((tool) => deliveryKind(tool) && tool.status !== "completed" && !recovered.has(tool.toolCallId));
+  const states = executionToolStates(tools, true);
+  const affected = tools.filter((tool) => (deliveryKind(tool) || states.get(tool.toolCallId)?.outcome?.pendingVerification)
+    && states.get(tool.toolCallId)?.state !== "completed" && !recovered.has(tool.toolCallId));
   const historyIncomplete = message.cancellationCategory === "session_replay_incomplete";
-  const uncertain = historyIncomplete || affected.some((tool) => tool.status === "in_progress");
-  const effects = [...new Set(affected.map((tool) => labels[deliveryKind(tool)!]))].join("、");
+  const uncertain = historyIncomplete || affected.some((tool) => states.get(tool.toolCallId)?.state === "pending");
+  const effects = [...new Set(affected.map((tool) => {
+    const kind = deliveryKind(tool);
+    return kind ? labels[kind] : "电脑操作";
+  }))].join("、");
   const impact = affected.length ? `${effects}${uncertain ? "的结果尚未确认，请先检查已有结果，避免重复操作。" : "未成功，请检查目标结果后再继续。"}` : "已有内容已保留。";
   const reason = message.stopReason;
   const category = message.cancellationCategory;
   const failed = ["error", "rate_limit", "rate_limited", "refusal", "content_filter", "max_tokens", "max_turns"].includes(reason ?? "")
     || ["HookDenied", "max_turns_reached", "action_stationarity"].includes(category ?? "");
-  const blockedComputerTools = tools.filter(tool => tool.status === "failed" && toolIdentity(tool).startsWith("computer_") && !recovered.has(tool.toolCallId));
+  const blockedComputerTools = tools.filter(tool => states.get(tool.toolCallId)?.state === "failed" && toolIdentity(tool).startsWith("computer_") && !recovered.has(tool.toolCallId));
   // Only actual failed desktop operations or a confirmed runtime error can
   // request setup. Passive capability probes and model prose add no UI.
   const environmentDetail = [failed ? `${runtimeError ?? ""} ${message.agentResult ?? ""}` : "",
@@ -91,7 +97,7 @@ export function getExecutionNotice(message: ChatMessage, active = false, runtime
     description: "已有内容已保留，可发送新消息继续。", tools: [],
   };
   const hasAnswer = partitionAssistantParts(message.parts).responseParts.some((part) => part.text.trim());
-  if (!hasAnswer && reason === "end_turn" && !tools.some((tool) => tool.status === "completed")) return {
+  if (!hasAnswer && reason === "end_turn" && !tools.some((tool) => states.get(tool.toolCallId)?.state === "completed")) return {
     kind: "empty", tone: "warning", title: "本轮没有生成回复", description: "可以重新尝试，或展开过程查看原因。", tools: [],
   };
   return null;

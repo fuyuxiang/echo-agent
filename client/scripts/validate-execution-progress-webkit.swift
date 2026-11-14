@@ -66,7 +66,7 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             const parts = [
               {kind:'text',phase:'commentary',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',text:'资料来源已经确认。正在交叉核对数据来源与演示结构。'},
               {kind:'thought',streamId:'stage-1',stageTitle:'核对资料与准备演示结构',text:'详细分析。'.repeat(200)+'分析原文末尾'},
-              tool('ongoing','in_progress'),tool('old','completed'),tool('recent','completed'),tool('latest','completed')
+              tool('ongoing','in_progress'),...Array.from({length:10},(_,i)=>tool('read-'+i,'completed'))
             ];
             const set = (parts, complete = false, idle = false) => store.setMessages([{id,role:'assistant',complete,
               startedAt:Date.now()-76000,lastActivityAt:Date.now()-(idle?45000:0),stopReason:complete?'end_turn':undefined,parts}]);
@@ -74,16 +74,41 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             set(parts);
             await wait(() => document.querySelector('.execution-process__title')?.textContent === '核对资料与准备演示结构');
             let entry = document.querySelector('.execution-process__header');
-            assert(entry.getAttribute('aria-expanded') === 'true', 'Running records must default to expanded');
+            assert(entry.getAttribute('aria-expanded') === 'false', 'Full records are opt-in');
+            assert(document.querySelectorAll('.execution-process__activity').length === 2, 'Live progress groups adjacent completed reads');
+            assert(!document.querySelector('.execution-process__body'), 'Default progress must not have a nested record viewport');
+            const group = document.querySelector('.execution-process__activity-group');
+            group.focus();
+            const later = ['later-a','later-b','later-c'].map(id => ({kind:'tool_call',toolCall:{toolCallId:id,kind:'bash',title:id,status:'completed',content:[]}}));
+            set([...parts,...later]);
+            await wait(() => document.querySelector('[data-tool-call-id="later-c"]'));
+            assert(document.querySelector('[data-tool-call-id="ongoing"]'), 'Earlier running operations must remain visible');
+            assert(document.activeElement === group && group.isConnected, 'A focused aggregate must survive new records');
+            group.blur();
+            set(parts);
+            await wait(() => !document.querySelector('[data-tool-call-id="later-c"]'));
+            const selected = document.querySelector('.execution-process__activity-group > span');
+            const range = document.createRange(); range.selectNodeContents(selected);
+            const selection = document.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+            document.dispatchEvent(new Event('selectionchange'));
+            const selectedText = selection.toString();
+            set([...parts,...later]);
+            await wait(() => document.querySelector('[data-tool-call-id="later-c"]'));
+            assert(selection.toString() === selectedText, 'Selected aggregate text must survive new records');
+            selection.removeAllRanges(); document.dispatchEvent(new Event('selectionchange'));
+            set(parts);
+            await wait(() => !document.querySelector('[data-tool-call-id="later-c"]'));
+            entry.click();
+            await wait(() => document.querySelector('.execution-process__body'));
             const process = document.querySelector('.execution-process'), box = process.getBoundingClientRect();
             assert(process.scrollWidth <= process.clientWidth + 1 && box.x >= 0 && box.right <= innerWidth + 1, 'Progress overflows native window');
             assert(getComputedStyle(document.querySelector('.execution-process__progress p')).whiteSpace === 'normal', 'Progress must wrap');
-            await wait(() => document.querySelectorAll('.execution-process .toolcall').length === 4);
+            await wait(() => document.querySelectorAll('.execution-process .toolcall').length === 11);
             const body = document.querySelector('.execution-process__body');
             const style = getComputedStyle(body), recordBox = body.getBoundingClientRect();
             const messageBox = body.closest('.msg__body').getBoundingClientRect();
             const atLatest = () => body.scrollHeight - body.scrollTop - body.clientHeight <= 2;
-            assert(style.overflowY === 'auto' && recordBox.height <= parseFloat(style.lineHeight) * 7 + 1, 'Records must use a bounded scroll area');
+            assert(style.overflowY === 'auto' && recordBox.height <= innerHeight * .48 + 1, 'Opt-in records must use a roomy bounded scroll area');
             assert(recordBox.width === messageBox.width && recordBox.left === messageBox.left, 'Records must match the answer width');
             assert(atLatest(), 'Records initially follow the latest progress');
             body.focus();
@@ -105,10 +130,9 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             await wait(() => focused.textContent.includes('完成'));
             assert(document.activeElement === focused, 'Updating tools must retain keyboard focus');
             body.querySelector('summary').click();
-            await wait(() => document.querySelector('.execution-process__read-more'));
-            document.querySelector('.execution-process__read-more').click();
             await wait(() => document.querySelector('.execution-process__reasoning-body')?.textContent.includes('分析原文末尾'));
-            document.querySelector('.execution-process__read-more').click();
+            assert(!document.querySelector('.execution-process__read-more'), 'Analysis opens in full in one action');
+            body.querySelector('summary').click();
             await wait(() => !document.querySelector('.execution-process__reasoning-body')?.textContent.includes('分析原文末尾'));
             document.querySelector('.execution-process__latest')?.click();
             set(parts,false,true);
@@ -116,6 +140,8 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             set(parts);
             await wait(() => !document.querySelector('.execution-process__waiting-note'));
             await new Promise(resolve => { window.resolveProgressSnapshot = resolve; report({action:'snapshot'}); });
+            entry.click();
+            await wait(() => !document.querySelector('.execution-process__body'));
             const answering = [...completed,{kind:'text',phase:'final_answer',streamId:'answer-1',text:'这是已经核对好的最终答复。'}];
             set(answering);
             await wait(() => document.querySelector('.msg__writing'), 'the streaming answer');
@@ -125,7 +151,7 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             set(answering,true);
             await wait(() => document.querySelector('.execution-process__title')?.textContent === '本次处理已结束', 'the completed process summary');
             assert(!document.querySelector('.execution-process--running, .msg__writing'), 'Completion must remove running feedback');
-            report({action:'done',viewport:[innerWidth,innerHeight],checks:['native layout','wrapping progress','default expansion','bounded scrolling','keyboard review','follow and back to latest','all operations','keyboard focus','long analysis','actual wait','answer feedback','completion']});
+            report({action:'done',viewport:[innerWidth,innerHeight],checks:['native layout','wrapping progress','compact live timeline','grouped reads','parallel operations','group focus and selection','opt-in records','bounded scrolling','keyboard review','follow and back to latest','all operations','keyboard focus','full analysis in one action','actual wait','answer feedback','completion']});
           } catch (error) { report({action:'fail',error:String(error)+'\n'+error.stack}); }
         })();
         """#) { _, error in if let error = error { self.fail(String(describing: error)) } }

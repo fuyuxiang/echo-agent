@@ -4,6 +4,9 @@ import { computerTaskLabel } from "@/lib/computer-task";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { ToolCallCard } from "./ToolCallCard";
+import { ExecutionActivity } from "./ExecutionActivity";
+import { executionActivities, type ExecutionActivity as Activity } from "@/lib/execution-activity";
+import { executionToolStates, type ToolExecutionState } from "@/lib/tool-execution-state";
 import { documentProgressSummary } from "@/lib/document-progress";
 import { executionProgressText } from "@/lib/execution-process-preview";
 import { executionStages, executionStageState, stageOperationSummary } from "@/lib/execution-stages";
@@ -84,43 +87,34 @@ function ReasoningDisclosure({ parts, active, markdownConfig, theme, savedChoice
   savedChoice?: ReasoningDisclosureChoice;
   onChange: (choice: ReasoningDisclosureChoice) => void;
 }) {
-  const [choice, setChoice] = useState(savedChoice ?? { open: false, full: false });
-  const { open, full } = choice;
+  const [choice, setChoice] = useState(savedChoice ?? { open: false });
+  const { open } = choice;
   const change = (next: ReasoningDisclosureChoice) => {
     setChoice(next);
     onChange(next);
   };
-  const contentId = useId();
   const text = parts.map(part => part.text).join("\n\n");
-  const preview = Array.from(text.split("\n").slice(0, 10).join("\n")).slice(0, 600).join("");
-  const shortened = preview.length < text.length;
   return <details className="execution-process__reasoning" open={open}>
-    <summary onClick={event => { event.preventDefault(); change({ open: !open, full }); }}>分析详情</summary>
-    {open && <>
-      {shortened && !full && <p className="execution-process__hint">内容较长，当前展示开头片段。</p>}
-      <div id={contentId} className="execution-process__reasoning-body">
-        <Markdown complete={!active} markdownTheme="reasoning" theme={theme}
-          config={markdownConfig}>{shortened && !full ? `${preview}\n\n…` : text}</Markdown>
-      </div>
-      {shortened && <button type="button" className="execution-process__read-more"
-        aria-expanded={full} aria-controls={contentId} onClick={() => change({ open, full: !full })}>
-        {full ? "收起全文" : "展开全文"}
-      </button>}
-    </>}
+    <summary onClick={event => { event.preventDefault(); change({ open: !open }); }}>分析详情</summary>
+    {open && <div className="execution-process__reasoning-body">
+      <Markdown complete={!active} markdownTheme="reasoning" theme={theme}
+        config={markdownConfig}>{text}</Markdown>
+    </div>}
   </details>;
 }
 
-function StageTools({ parts, recoveredById, onOpenTool, active }: {
+function StageTools({ parts, recoveredById, onOpenTool, active, execution }: {
   parts: ToolPart[];
   recoveredById: Map<string, string>;
   onOpenTool?: (tool: ToolCallView) => void;
   active: boolean;
+  execution: ReadonlyMap<string, ToolExecutionState>;
 }) {
   // Records have one disclosure level. Every operation is immediately reachable
   // after opening records, without a second "view operations" toggle.
   return <div className={`execution-process__tool-group${parts.length === 1 ? " execution-process__tool" : ""}`}>
     {parts.map(({ toolCall }) => <div key={toolCall.toolCallId} className="execution-process__tool">
-      <ToolCallCard tc={toolCall} onOpen={onOpenTool} showStatusLabel executionEnded={!active} />
+      <ToolCallCard tc={toolCall} onOpen={onOpenTool} showStatusLabel executionEnded={!active} executionState={execution.get(toolCall.toolCallId)} />
       {recoveredById.has(toolCall.toolCallId) && <span className="execution-process__recovery-detail">该次失败已通过后续重试恢复</span>}
     </div>)}
   </div>;
@@ -144,7 +138,8 @@ export function ExecutionProcess({
   const bodyRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLButtonElement>(null);
-  const returnToOverview = useRef(false);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const [heldActivities, setHeldActivities] = useState<Activity[]>([]);
   const restoreReadingTop = useRef(getExecutionReadingPosition(sessionId, messageId));
   const [reviewing, setReviewing] = useState(restoreReadingTop.current !== undefined);
   const reviewingRef = useRef(reviewing);
@@ -153,10 +148,10 @@ export function ExecutionProcess({
   const summary = useMemo(() => summarizeExecutionProcess(parts, active, stopReason,
     cancellationCategory, cancelTrigger, { settled }),
   [active, cancellationCategory, cancelTrigger, parts, settled, stopReason]);
-  const hasUnfinishedTools = parts.some(part => part.kind === "tool_call" && part.toolCall.status === "in_progress");
+  const hasUnfinishedTools = summary.unfinishedToolCount > 0;
   const finalAnswerStarted = hasFinalAnswer && !waitingReason && !hasUnfinishedTools
     && knowledgeTrace?.personal?.state !== "searching";
-  const shouldOpenAutomatically = active && (Boolean(waitingReason) || autoExpand && !finalAnswerStarted);
+  const shouldOpenAutomatically = active && autoExpand && (Boolean(waitingReason) || !finalAnswerStarted);
   const savedChoice = getExecutionDisclosureChoice(sessionId, messageId);
   const reasoningChoices = getExecutionReasoningChoices(sessionId, messageId);
   const [open, setOpen] = useState(savedChoice ?? (reviewing || shouldOpenAutomatically));
@@ -282,21 +277,19 @@ export function ExecutionProcess({
     return () => observer.disconnect();
   }, [active, alignRecords, expanded, searchMatch]);
 
-  useLayoutEffect(() => {
-    if (expanded || !returnToOverview.current) return;
-    returnToOverview.current = false;
-    // A footer collapse removes the reader's current position. Return to the
-    // surviving control after layout, including when activated by keyboard.
-    headerRef.current?.focus({ preventScroll: true });
-    headerRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [expanded]);
-
   const stages = useMemo(() => executionStages(parts), [parts]);
   const currentStage = stages[stages.length - 1];
   const progress = useMemo(() => executionProgressText(currentStage?.progress ?? []), [currentStage]);
   const tools = useMemo(() => parts.flatMap(part => part.kind === "tool_call" ? [part.toolCall] : []), [parts]);
+  const toolStates = useMemo(() => executionToolStates(tools, !active), [tools, active]);
+  const activities = useMemo(() => executionActivities(parts, heldActivities), [parts, heldActivities]);
+  const recentActivities = activities.filter((activity, index) => index >= activities.length - 3
+    || heldActivities.some(held => held.id === activity.id)
+    || active && activity.tools.some(tool => toolStates.get(tool.toolCallId)?.state === "in_progress"));
   const recoveredById = new Map(summary.recoveredTools.map(item => [item.failedToolCallId, item.successfulToolCallId]));
   const recoveredIds = new Set(recoveredById.keys());
+  const uncertainToolCount = summary.pendingToolCount;
+  const failedToolCount = summary.unresolvedToolCount;
   const recovered = summary.state === "complete" && recoveredIds.size > 0;
   const title = automationStatus ? computerTaskLabel(automationStatus) : !active ? resultNotice?.title ?? (summary.state === "complete" ? "本次处理已结束" : summary.title)
     : waitingReason ?? (knowledgeTrace?.personal?.state === "searching" ? "正在检索个人知识库"
@@ -310,8 +303,39 @@ export function ExecutionProcess({
   const waitingFor = knowledgeTrace?.personal?.state === "searching" ? "知识库" : hasUnfinishedTools ? "操作" : "模型";
   const description = progress.startsWith(title)
     ? progress.slice(title.length).replace(/^[。！？!?\s]+/, "") : progress;
-  const showProgress = !expanded && active && !finalAnswerStarted && Boolean(description);
-  const meta = [stageOperationSummary(tools, recoveredIds, !active)];
+  const showPreview = !expanded && active && !finalAnswerStarted;
+  // A focused action or selected text must not disappear at the answer boundary.
+  const [retainedPreview, setRetainedPreview] = useState(false);
+  const [readingDescription, setReadingDescription] = useState<string>();
+  const updatePreviewInteraction = useCallback((focused?: EventTarget | null) => {
+    const preview = previewRef.current;
+    if (!preview) return;
+    const target = focused === undefined ? preview.ownerDocument.activeElement : focused;
+    const focusId = target instanceof Element
+      ? target.closest<HTMLElement>("[data-execution-activity-id]")?.dataset.executionActivityId : undefined;
+    const selection = preview.ownerDocument.getSelection();
+    const range = selection?.rangeCount && !selection.isCollapsed ? selection.getRangeAt(0) : undefined;
+    const selecting = hasRecordSelection(preview);
+    const selectedIds = new Set(Array.from(preview.querySelectorAll<HTMLElement>("[data-execution-activity-id]"))
+      .filter(row => range?.intersectsNode(row)).map(row => row.dataset.executionActivityId));
+    const held = activities.filter(activity => activity.id === focusId || selectedIds.has(activity.id));
+    setHeldActivities(previous => previous.length === held.length && previous.every((activity, index) => activity.id === held[index].id)
+      ? previous : held);
+    const focusedInside = target instanceof Node && preview.contains(target);
+    setRetainedPreview(selecting || focusedInside);
+    const excerpt = preview.querySelector(".execution-process__excerpt");
+    setReadingDescription(previous => excerpt && range?.intersectsNode(excerpt) ? previous ?? description : undefined);
+    if (selecting || focusedInside) onReview?.();
+  }, [activities, description, onReview]);
+  useEffect(() => {
+    if (expanded || !showPreview && !retainedPreview) return;
+    const update = () => updatePreviewInteraction();
+    document.addEventListener("selectionchange", update);
+    return () => document.removeEventListener("selectionchange", update);
+  }, [expanded, retainedPreview, showPreview, updatePreviewInteraction]);
+  const previewDescription = readingDescription ?? description;
+  const showProgress = (showPreview || retainedPreview) && Boolean(previewDescription);
+  const meta = [stageOperationSummary(tools, recoveredIds, !active, toolStates)];
   if (summary.changedFiles.length) meta.push(`${summary.changedFiles.length} 个文件已更新`);
   const documentSummary = documentProgressSummary(tools.flatMap(tool => tool.documentProgress ? [tool.documentProgress] : []));
   if (documentSummary) meta.unshift(documentSummary);
@@ -319,6 +343,9 @@ export function ExecutionProcess({
   const changeOpen = (next: boolean) => {
     userToggled.current = true;
     if (!next) updateReviewing(false);
+    setReadingDescription(undefined);
+    setRetainedPreview(false);
+    setHeldActivities([]);
     setCollapsedSearch(!next && searchMatch ? findQuery : undefined);
     rememberExecutionDisclosureChoice(sessionId, messageId, next);
     setOpen(next);
@@ -347,10 +374,29 @@ export function ExecutionProcess({
         <span className={`execution-process__chevron${expanded ? " execution-process__chevron--open" : active ? " execution-process__chevron--expand" : ""}`} aria-hidden="true">›</span>
       </button>
     </div>
-    {showProgress && <div className="execution-process__excerpt" data-stage-id={currentStage?.id} aria-label="当前阶段进展">
-      <p>{description}</p>
+    {!expanded && (showPreview || retainedPreview) && (showProgress || recentActivities.length > 0) && <div ref={previewRef} className="execution-process__live" data-chat-reading="true"
+      onFocusCapture={event => updatePreviewInteraction(event.target)}
+      onBlurCapture={event => updatePreviewInteraction(event.relatedTarget)}>
+      {showProgress && <div className="execution-process__excerpt" data-stage-id={currentStage?.id} aria-label="当前阶段进展">
+        <p>{previewDescription}</p>
+      </div>}
+      {recentActivities.length > 0 && <ol className="execution-process__activities" aria-label="最近执行进展">
+        {recentActivities.map(activity => <ExecutionActivity key={activity.id} activity={activity}
+          onOpenTool={onOpenTool} executionEnded={!active} execution={toolStates} onOpenRecords={() => {
+            changeOpen(true);
+            headerRef.current?.focus({ preventScroll: true });
+          }} />)}
+      </ol>}
+      {activities.length > recentActivities.length && <p className="execution-process__earlier">
+        还有 {activities.filter(activity => !recentActivities.includes(activity)).reduce((count, activity) => count + activity.tools.length, 0)} 项较早操作，可展开查看完整记录
+      </p>}
     </div>}
-    {meta.some(Boolean) && <p className="execution-process__metrics">{meta.filter(Boolean).join(" · ")}</p>}
+    {(expanded || !active || documentSummary) && meta.some(Boolean) && <p className="execution-process__metrics">{meta.filter(Boolean).join(" · ")}</p>}
+    {!expanded && knowledgeTrace && <KnowledgeTrace trace={knowledgeTrace} active={active} compact onOpenPath={onOpenKnowledgePath} />}
+    {!expanded && active && (failedToolCount > 0 || uncertainToolCount > 0) && <p className="execution-process__attention" role="note">
+      {[failedToolCount ? `${failedToolCount} 项操作失败` : "", uncertainToolCount ? `${uncertainToolCount} 项操作结果待确认` : ""].filter(Boolean).join(" · ")}，{waitingReason ? "等待你处理后继续" : "执行仍在继续"}。
+      <button type="button" onClick={() => { changeOpen(true); headerRef.current?.focus({ preventScroll: true }); }}>查看记录</button>
+    </p>}
     {longWait && <p className="execution-process__waiting-note" role="note">
       已 {formatProcessDuration(idleMs)} 未收到新进展，正在等待{waitingFor}返回。可继续等待，或停止本次执行。
     </p>}
@@ -394,7 +440,7 @@ export function ExecutionProcess({
           }
         }}
         onClick={event => {
-          if (active && event.target instanceof Element && event.target.closest("summary, .execution-process__read-more")) {
+          if (active && event.target instanceof Element && event.target.closest("summary")) {
             updateReviewing(true);
           }
         }}>
@@ -411,7 +457,7 @@ export function ExecutionProcess({
               const headingPart = !stage.planned ? stage.progress[0] : undefined;
               const headingIsProgress = Boolean(headingPart && stage.parts[0] === headingPart
                 && headingPart.text.trim().replace(/[。！？!?]+$/, "") === stage.title);
-              const state = executionStageState(stage, index === stages.length - 1, active, Boolean(waitingReason), recoveredIds);
+              const state = executionStageState(stage, index === stages.length - 1, active, Boolean(waitingReason), recoveredIds, toolStates);
               return <li key={stage.id} data-stage-id={stage.id} data-stage-state={state}
                 className={`execution-process__stage${stage.planned ? "" : " execution-process__stage--activity"}${active && index === stages.length - 1 ? " execution-process__stage--current" : ""}`}>
                 <div className="execution-process__stage-heading">
@@ -426,7 +472,7 @@ export function ExecutionProcess({
                       markdownConfig={markdownConfig} theme={theme} savedChoice={reasoningChoices?.get(rowId)}
                       onChange={choice => rememberExecutionReasoningChoice(sessionId, messageId, rowId, choice)} />;
                   }
-                  if (row.kind === "tools") return <StageTools key={row.index} parts={row.parts} recoveredById={recoveredById} onOpenTool={onOpenTool} active={active} />;
+                  if (row.kind === "tools") return <StageTools key={row.index} parts={row.parts} recoveredById={recoveredById} onOpenTool={onOpenTool} active={active} execution={toolStates} />;
                   if (headingIsProgress && row.part === headingPart && !findQuery) return null;
                   return <div className="execution-process__progress" key={row.index}>
                     <Markdown complete={!rowActive} theme={theme} config={markdownConfig}
@@ -438,7 +484,7 @@ export function ExecutionProcess({
           </ol>
         </div>
       </div>
-      <div className="execution-process__footer">
+      {(summary.toolCount > 0 && onOpenTool || reviewing) && <div className="execution-process__footer">
         {summary.toolCount > 0 && onOpenTool && <p className="execution-process__hint">选择操作可在右侧查看输入、输出和文件变更</p>}
         {reviewing && <button type="button" className="execution-process__latest" aria-controls={bodyId}
           title="回到最新进展并恢复执行记录跟随"
@@ -451,13 +497,7 @@ export function ExecutionProcess({
             updateReviewing(false);
             scrollToLatest();
           }}>回到最新进展</button>}
-        <button type="button" className="execution-process__collapse"
-          aria-expanded={true} aria-controls={bodyId}
-          onClick={() => { returnToOverview.current = true; changeOpen(false); }}>
-          <span>收起过程</span>
-          <span className="execution-process__chevron execution-process__chevron--open" aria-hidden="true">›</span>
-        </button>
-      </div>
+      </div>}
     </div>}
   </section>;
 }
@@ -466,10 +506,12 @@ function KnowledgeTrace({
   trace,
   active,
   onOpenPath,
+  compact = false,
 }: {
   trace: KnowledgeTurnTrace;
   active: boolean;
   onOpenPath?: (path: string) => void;
+  compact?: boolean;
 }) {
   const personal = trace.personal;
   const personalVisible = personal && personal.state !== "idle";
@@ -498,7 +540,10 @@ function KnowledgeTrace({
       {personal?.state === "error" && (
         <div className="knowledge-trace__status is-warning">个人知识检索失败：{personal.message}</div>
       )}
-      {personal?.state === "used" && (
+      {personal?.state === "used" && compact && <div className="knowledge-trace__status">
+        已向模型提供 {personal.resultCount} 个相关片段 · 来自 {personal.sourceCount} 个知识源
+      </div>}
+      {personal?.state === "used" && !compact && (
         <details className="knowledge-trace__results" open>
           <summary>
             已向模型提供 {personal.resultCount} 个相关片段

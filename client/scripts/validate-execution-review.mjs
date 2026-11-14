@@ -10,11 +10,15 @@ export async function validateExecutionReview(page, output) {
   await page.locator('[data-execution-ready="true"]').waitFor();
   const process = page.locator(".execution-process__header").first();
   await process.waitFor();
-  assert.equal(await process.getAttribute("aria-expanded"), "true", "running records default to expanded");
+  assert.equal(await process.getAttribute("aria-expanded"), "false", "full records are opt-in");
   assert.ok(await page.locator(".execution-process--running").count(), "interim commentary incorrectly completes active work");
-  assert.equal(await page.locator(".toolcall--run").count(), 3, "running records expose unfinished tools");
+  assert.equal(await page.locator(".toolcall--run").count(), 3, "compact progress keeps every unfinished parallel tool visible");
+  assert.equal(await page.locator(".execution-process__body").count(), 0);
   await process.click();
-  assert.equal(await page.locator(".toolcall--run").count(), 0);
+  assert.equal(await page.locator(".toolcall--run").count(), 3);
+  await process.click();
+  assert.equal(await page.locator(".execution-process__body").count(), 0);
+  assert.equal(await page.locator(".toolcall--run").count(), 3);
   await process.click();
   await page.locator(".execution-process__body").waitFor();
   await page.locator(".toolcall").filter({ hasText: "pnpm test" }).first().click();
@@ -25,6 +29,7 @@ export async function validateExecutionReview(page, output) {
 
   await page.goto(`${base}/__ui-review?surface=execution&state=running&theme=dark`);
   await page.locator('[data-execution-ready="true"]').waitFor();
+  await page.locator(".execution-process__header").first().click();
   const scroll = page.locator(".execution-process__body");
   // Add enough real chunks to require scrolling, then use an actual wheel
   // gesture to express reading intent before subsequent content grows.

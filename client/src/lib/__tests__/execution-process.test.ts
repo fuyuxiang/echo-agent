@@ -209,6 +209,16 @@ describe("partitionAssistantParts", () => {
 });
 
 describe("summarizeExecutionProcess", () => {
+  it.each(["completed", "failed"] as const)("电脑结果未知不因传输状态 %s 而误判终态", status => {
+    const part: MessagePart = { kind: "tool_call", toolCall: { toolCallId: "click", kind: "other", toolName: "computer_click", title: "点击按钮", status,
+      content: [{ type: "text", text: '{"status":"result_unknown"}' }] } };
+    expect(summarizeExecutionProcess([part], false, "end_turn")).toMatchObject({
+      state: "attention", failedToolCount: 0, completedToolCount: 0, pendingToolCount: 1, unresolvedToolCount: 0,
+    });
+    expect(summarizeExecutionProcess([part], false, "end_turn").description).toContain("结果待确认");
+    expect(summarizeExecutionProcess([part], false, "error").state).toBe("failed");
+  });
+
   it("用语义状态描述当前操作并统计文件", () => {
     const summary = summarizeExecutionProcess([
       { kind: "thought", text: "分析" },

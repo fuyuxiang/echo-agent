@@ -1,6 +1,6 @@
 // Message ids are stable while the renderer is running, including task switches.
 // Keep the reader's choices and position here so the view can be remounted.
-export type ReasoningDisclosureChoice = { open: boolean; full: boolean };
+export type ReasoningDisclosureChoice = { open: boolean };
 type ExecutionDisclosure = {
   open?: boolean;
   readingTop?: number;
@@ -80,7 +80,7 @@ export function rememberExecutionReasoningChoice(
   const key = keyFor(sessionId, messageId);
   if (!key) return;
   const reasoning = disclosures.get(key)?.reasoning ?? new Map<string, ReasoningDisclosureChoice>();
-  if (choice.open || choice.full) reasoning.set(rowId, choice);
+  if (choice.open) reasoning.set(rowId, choice);
   else reasoning.delete(rowId);
   updateDisclosure(key, { reasoning });
 }

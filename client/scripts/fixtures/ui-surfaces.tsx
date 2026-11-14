@@ -588,7 +588,9 @@ Object.assign(window, {
           sessionId: args.sessionId,
           mode: query.get("automationMode") || (query.get("state") === "browser-paused" ? "browser_use" : query.get("state") === "computer-paused" ? "computer_use" : "default"),
           paused: ["browser-paused", "computer-paused"].includes(query.get("state") || ""),
-          task: { phase: "paused", reason: null, scope: "隔离界面验收", authorized: true, generation: 1 },
+          // A chat execution fixture has no separate native desktop task.
+          task: query.get("surface") === "execution" && !query.has("automationMode") ? undefined
+            : { phase: "paused", reason: null, scope: "隔离界面验收", authorized: true, generation: 1 },
           allowPrivateNetwork: false, browserRunning: false, browserHasData: true,
           browser: { available: true, browserName: "Chrome" },
           computer: { available: true, platform: "macos", screenCapture: true, inputControl: true },
