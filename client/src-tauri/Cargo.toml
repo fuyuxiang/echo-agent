@@ -22,7 +22,8 @@ serde_json = "1"
 sha2 = "0.10"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# Match tauri-build's 2.10 configuration API, including mock test contexts.
+tauri = { version = "2.12.5", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 # The Tauri desktop notification plugin only exposes fire-and-forget delivery.
@@ -142,7 +143,9 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 core-graphics = { version = "0.25", features = ["elcapitan", "highsierra"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-webview2-com = "=0.38.2"
+# Match Wry's WebView2 ABI for renderer process recovery callbacks.
+webview2-com = "=0.39.1"
+windows-core = "0.62"
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Threading", "Win32_Storage_EnhancedStorage", "Win32_Storage_FileSystem", "Win32_UI_Accessibility", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Call Windows DPAPI directly. Spawning PowerShell made credential persistence
 # depend on .NET assembly loading and discarded the actual encryption error.
@@ -167,7 +170,7 @@ x11rb = { version = "0.13.2", features = ["xtest"] }
 
 [dev-dependencies]
 # Exposes Tauri MockRuntime for native command tests without opening a WebView.
-tauri = { version = "2", features = ["test"] }
+tauri = { version = "2.12.5", features = ["test"] }
 async-trait = "0.1"
 echo-agent-memory = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-memory", features = ["test-support"] }
 

@@ -401,10 +401,10 @@ pub fn install(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Result<
             },
             ProcessFailedEventHandler,
         };
-        use windows::core::Interface;
+        use windows_core::Interface;
         let handle = app.clone();
         window.with_webview(move |webview| {
-            let result = (|| -> windows::core::Result<()> {
+            let result = (|| -> windows_core::Result<()> {
                 let core = unsafe { webview.controller().CoreWebView2()? };
                 let mut pid = 0;
                 unsafe { core.BrowserProcessId(&mut pid)? };

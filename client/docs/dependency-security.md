@@ -30,6 +30,10 @@ Theia 源码与生产图中的 Hono 要求 4.13.16+、`@hono/node-server` 要求
 
 桌面构建辅助库要求官方 [tauri-build 2.7.4](https://crates.io/crates/tauri-build/2.7.4) 或更新的兼容 2.x 版本，同时识别 Cargo 的 `build/包名-摘要/out` 和 `build/包名/摘要/out` 布局。边车与应用资源必须复制到实际输出目录；不能继续通过固定向上三级推算目录，否则新版 Cargo 会把资源放到 `build/` 下。
 
+运行库和测试依赖同时要求 `tauri 2.12.5` 或更新的兼容 2.x 版本，与 `tauri-utils 2.10` 的配置结构对齐。旧运行库的 `mock_context` 缺少 `AppConfig.app_directories_override`，仅编译不含测试的库不能发现此问题；版本更新必须额外检查全部测试目标。
+
+Windows 渲染进程恢复回调使用与 Wry 一致的 `webview2-com 0.39.1` 和 `windows-core 0.62` 接口。其他原生自动化接口保留自己的 Windows 绑定版本，不能在 WebView2 回调边界混用不同版本的 COM 类型。
+
 桌面、Agent workspace、原生验收和桌面恢复 harness 的 `rustix 1.x` 锁至 `1.1.6`，修复 [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486.html)。旧版扩展属性函数在零长度缓冲区查询时，可能把未写入的内存标记为已初始化；四份独立锁文件须分别更新。文档编辑 harness 已使用修复版本，`rustix 0.38.44` 不受该公告影响，保留兼容分支，不添加审计例外。
 
 宿主和 Runtime 的 Tokio 锁至 1.53.3、ctutils 锁至 0.4.4，分别处理 [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html) 和 [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)。两个 workspace 分别更新，不以其中一个锁文件代替另一个。
