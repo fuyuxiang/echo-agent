@@ -18,6 +18,8 @@ const ORT_EXTRACT_DIR: &str = "onnxruntime";
 
 #[cfg(feature = "download-binaries")]
 const DIST_TABLE: &str = include_str!("dist.txt");
+#[cfg(feature = "download-binaries")]
+mod distribution;
 
 #[path = "src/internal/mod.rs"]
 #[cfg(feature = "download-binaries")]
@@ -61,12 +63,7 @@ fn fetch_file(source_url: &str) -> Vec<u8> {
 
 #[cfg(feature = "download-binaries")]
 fn find_dist(target: &str, feature_set: &str) -> Option<(&'static str, &'static str)> {
-	DIST_TABLE
-		.split('\n')
-		.filter(|c| !c.is_empty() && !c.starts_with('#'))
-		.map(|c| c.split('\t').collect::<Vec<_>>())
-		.find(|c| c[0] == feature_set && c[1] == target)
-		.map(|c| (c[2], c[3]))
+	distribution::find_dist(DIST_TABLE, target, feature_set)
 }
 
 #[cfg(feature = "download-binaries")]

@@ -34,3 +34,18 @@ test('recognizes actual Tauri library crate kinds and leaves ordinary app artifa
     target: { name: 'echoagent', src_path: '/repo/src-tauri/src/main.rs', kind: ['bin'] } };
   assert.deepEqual(select([library, app]), [library.executable]);
 });
+
+test('accepts the Cargo build/crate/hash/out layout only for the matching main test harness', () => {
+  const executable = '/repo/src-tauri/target/debug/build/echoagent/0123456789abcdef/out/echoagent-0123456789abcdef';
+  const binary = { ...base, executable,
+    target: { name: 'echoagent', src_path: '/repo/src-tauri/src/main.rs', kind: ['bin'] } };
+  assert.deepEqual(select([binary]), [executable]);
+  for (const path of [
+    executable.replace('/0123456789abcdef/out/', '/fedcba9876543210/out/'),
+    executable.replace('/build/echoagent/', '/build/another-crate/'),
+    executable.replace('/out/echoagent-', '/output/echoagent-'),
+    executable.replace('/build/', '/arbitrary/'),
+  ]) assert.throws(() => select([{ ...binary, executable: path }]));
+  assert.throws(() => select([{ ...binary, profile: { test: false } }]));
+  assert.throws(() => select([{ ...binary, target: { ...binary.target, src_path: '/repo/src-tauri/src/other.rs' } }]));
+});

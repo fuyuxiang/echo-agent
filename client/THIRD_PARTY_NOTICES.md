@@ -196,6 +196,9 @@ package manifest. Exact package versions are pinned in `pnpm-lock.yaml`.
 ## Local retrieval inference and model assets
 
 - `ort` 2.0.0-rc.10: https://github.com/pykeio/ort (MIT OR Apache-2.0).
+- `ort-sys` 2.0.0-rc.10: source under `vendor/ort-sys/` (MIT OR Apache-2.0),
+  with Cargo output-layout and Windows checkout compatibility fixes. Upstream
+  license copies and patch provenance are retained in that directory.
 - ONNX Runtime 1.22.0: https://github.com/microsoft/onnxruntime/tree/v1.22.0 (MIT); CPU inference runtime linked into the desktop application.
 - Hugging Face Tokenizers 0.22.2: https://github.com/huggingface/tokenizers/tree/v0.22.2 (Apache-2.0).
 - BAAI BGE base zh v1.5: https://huggingface.co/BAAI/bge-base-zh-v1.5 (MIT).

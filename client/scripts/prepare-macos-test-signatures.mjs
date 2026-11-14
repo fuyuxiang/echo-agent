@@ -19,11 +19,22 @@ export function ownedTestExecutables(messages, workspace, targetDirectory) {
     if (message.profile?.test !== true) continue;
     assert(inside(workspace, message.target?.src_path ?? ''), 'Refuse another workspace');
     assert(inside(targetDirectory, message.executable), 'Refuse output outside Cargo target');
+    const executableName = basename(message.executable);
+    const testHash = /^echoagent-([a-f0-9]{16})$/.exec(executableName)?.[1];
+    const outputDirectory = dirname(message.executable);
+    const hashDirectory = dirname(outputDirectory);
+    const crateDirectory = dirname(hashDirectory);
+    // Cargo's newer layout places harnesses beside their build output rather
+    // than deps/. Require the exact crate and matching hash in both positions.
+    const harnessDirectory = basename(outputDirectory) === 'deps'
+      || (basename(outputDirectory) === 'out'
+        && basename(hashDirectory) === testHash
+        && basename(crateDirectory) === 'echoagent'
+        && basename(dirname(crateDirectory)) === 'build');
     const binaryTest = message.target.kind?.includes('bin')
       && message.target.name === 'echoagent'
       && message.target.src_path === resolve(workspace, 'src/main.rs')
-      && basename(dirname(message.executable)) === 'deps'
-      && /^echoagent-[a-f0-9]{16}$/.test(basename(message.executable));
+      && harnessDirectory && Boolean(testHash);
     assert(message.target.kind?.some(kind => ['lib', 'rlib', 'staticlib', 'cdylib', 'test'].includes(kind)) || binaryTest,
       `Refuse application binary: ${JSON.stringify({ name: message.target.name, kind: message.target.kind, src: message.target.src_path, executable: message.executable })}`);
     paths.add(message.executable);

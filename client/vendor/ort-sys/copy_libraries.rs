@@ -1,5 +1,9 @@
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "distribution.rs"]
+mod distribution;
+
 fn profile_directory(out_dir: &Path) -> &Path {
     // Cargo uses build/<crate>-<hash>/out and build/<crate>/<hash>/out.
     // A fixed ancestor count silently selects build/ with the newer layout.

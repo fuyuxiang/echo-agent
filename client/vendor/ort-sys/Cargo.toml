@@ -22,6 +22,7 @@ include = [
     "dist.txt",
     "build.rs",
     "copy_libraries.rs",
+    "distribution.rs",
     "LICENSE-APACHE",
     "LICENSE-MIT",
 ]
