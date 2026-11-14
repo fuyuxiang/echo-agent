@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
+import { annotateUiReviewFailure, createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
 
+// Include startup and shutdown failures as well as assertion errors, while
+// preserving Node's ordinary uncaught-error output and nonzero exit status.
+process.once("uncaughtExceptionMonitor", annotateUiReviewFailure);
 const output = reviewOutput(join(tmpdir(), "echo-theme-lifecycle"));
 const server = await createUiReviewServer(0, { fixture: "/scripts/fixtures/enterprise-theme-review.tsx" });
 const evidence = [];
