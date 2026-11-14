@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 [workspace]
+
+# cargo test inherits these settings; the native fixture overrides debug below.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
 [lib]
 path = "harness.rs"
 [dependencies]
@@ -31,7 +37,7 @@ inherits = "dev"
 debug = 0
 debug-assertions = false
 opt-level = 0
-incremental = true
+incremental = false
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"
 windows = "0.61.3"

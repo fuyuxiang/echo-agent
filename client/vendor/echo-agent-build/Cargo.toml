@@ -367,7 +367,7 @@ zip = "9"
 zstd = "0.14.3"
 
 [profile.release]
-incremental = true
+incremental = false
 panic = "abort"
 
 # Hardened release profile for shipping to end users (alpha + stable).
@@ -423,7 +423,9 @@ codegen-units = 128
 debug = "line-tables-only"
 opt-level = 0
 lto = false
-incremental = true
+# Standalone Runtime tests use this workspace rather than the desktop profile.
+# Keep their storage policy aligned with src-tauri/Cargo.toml.
+incremental = false
 
 [profile.bench]
 debug = true

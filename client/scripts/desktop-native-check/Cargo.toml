@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 [workspace]
+
+# Also inherited by cargo test; retain backtrace locations without large caches.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
 [lib]
 path = "harness.rs"
 [[bin]]

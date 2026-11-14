@@ -146,6 +146,37 @@ See the [automation platform and security guide](docs/automation-platform-suppor
 
 CI runs Rust formatting independently so formatting errors do not prevent static analysis and functional test results. Before committing, run `cargo fmt --manifest-path src-tauri/Cargo.toml` to format the code, then run the formatting check, Clippy and `pnpm test:rust` listed above.
 
+Rust development and tests default to `debug = "line-tables-only"`, retaining file and line locations in backtraces while disabling incremental compilation to avoid large query caches and duplicate object files. This policy covers the desktop, embedded Runtime, speech worker and three standalone check workspaces; tests inherit the development profile. Cargo still reuses unchanged crates, but edited crates are recompiled, so repeated small edits may build more slowly. Release builds also disable incremental compilation and keep their existing optimization levels, panic strategies and packaging flow.
+
+For Rust debugger sessions that need local variables or type information, temporarily enable full debug information (macOS/Linux):
+
+```bash
+CARGO_PROFILE_DEV_DEBUG=2 pnpm tauri dev
+CARGO_PROFILE_TEST_DEBUG=2 pnpm test:rust
+```
+
+In PowerShell, set `$env:CARGO_PROFILE_DEV_DEBUG = "2"` or `$env:CARGO_PROFILE_TEST_DEBUG = "2"` before the corresponding command, then clear it with `Remove-Item Env:CARGO_PROFILE_DEV_DEBUG` or `Remove-Item Env:CARGO_PROFILE_TEST_DEBUG`. Full debug information increases artifact size; enable it as needed.
+
+These profiles do not impose a size limit on `target/`. Toolchain, feature or debug-setting changes can leave old hashed artifacts. Once related builds and programs have stopped, clean individual profiles, for example:
+
+```bash
+cargo clean --manifest-path src-tauri/Cargo.toml --profile dev
+cargo clean --manifest-path src-tauri/Cargo.toml --profile release
+cargo clean --manifest-path scripts/desktop-native-check/Cargo.toml --profile dev
+```
+
+`pnpm dist:win` explicitly uses the `x86_64-pc-windows-msvc` target, placing release artifacts in `src-tauri/target/x86_64-pc-windows-msvc/release/` by default. Clean that directory separately:
+
+```bash
+cargo clean --manifest-path src-tauri/Cargo.toml --target-dir src-tauri/target/x86_64-pc-windows-msvc --profile release
+```
+
+For other builds using `--target`, point to the corresponding target directory. If `CARGO_TARGET_DIR` is set, replace the path in the command with the actual path.
+
+Tests and development share `target/debug/`. Clean other standalone workspaces using their manifests and actual target directories; the custom stability fixture uses `--profile stability`. The speech script stores host build tools in `src-tauri/target/meeting-speech/release/` and target artifacts in `src-tauri/target/meeting-speech/<target-triple>/release/`. Clean the latter with `cargo clean --manifest-path src-tauri/meeting-speech/Cargo.toml --target-dir src-tauri/target/meeting-speech/<target-triple> --profile release`, replacing the placeholder with the actual target, such as `aarch64-apple-darwin`. Omit the target-triple path component from `--target-dir` to clean host build tools.
+
+Cleaning by profile preserves downloaded models and dependencies. Avoid clearing all of `src-tauri/target/`: its `meeting-speech-assets/` directory caches speech resources needed for offline rebuilds.
+
 See the [desktop release guide](docs/desktop-release.en.md) for packaging.
 
 See [dependency security maintenance](docs/dependency-security.md) for dependency upgrades, compatibility patches, and lockfile updates.

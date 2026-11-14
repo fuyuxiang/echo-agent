@@ -170,14 +170,16 @@ tauri = { version = "2", features = ["test"] }
 async-trait = "0.1"
 echo-agent-memory = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-memory", features = ["test-support"] }
 
-# Dev profile - enable debug info and use safer optimization
+# Keep source locations in backtraces without full type/variable debug info.
+# Tests inherit this profile. Cargo still reuses unchanged crates without the
+# large incremental query/object cache. See README.md for full debugger opt-in.
 [profile.dev]
-debug = true
+debug = "line-tables-only"
 opt-level = 0
-incremental = true
+incremental = false
 
 [profile.release]
-incremental = true
+incremental = false
 codegen-units = 16
 
 # Declare an explicit, self-contained workspace so Cargo does NOT pull this

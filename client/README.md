@@ -188,6 +188,37 @@ CI 的原生 Runtime 验收分别运行在 Windows x64、macOS Intel（`macos-15
 
 CI 的 Rust 格式检查独立运行，格式错误不会阻止静态检查与功能测试提供结果。提交前可运行 `cargo fmt --manifest-path src-tauri/Cargo.toml` 修正格式，再执行上表中的格式检查、Clippy 和 `pnpm test:rust`。
 
+Rust 开发和测试默认使用 `debug = "line-tables-only"`，保留回溯中的文件和行号，关闭增量编译以避免大型查询缓存和重复对象文件持续累积。桌面、内嵌 Runtime、语音组件及三个独立检查工作区均采用这一策略；测试继承开发配置。Cargo 仍复用未变更 crate 的编译结果，但修改过的 crate 需要重新编译，连续小改动可能比开启增量编译时更慢。发行构建也关闭增量编译，沿用现有优化级别、panic 策略和打包流程。
+
+需要在 Rust 调试器中查看局部变量或类型时，可临时恢复完整调试信息（macOS/Linux）：
+
+```bash
+CARGO_PROFILE_DEV_DEBUG=2 pnpm tauri dev
+CARGO_PROFILE_TEST_DEBUG=2 pnpm test:rust
+```
+
+PowerShell 中先设置 `$env:CARGO_PROFILE_DEV_DEBUG = "2"` 或 `$env:CARGO_PROFILE_TEST_DEBUG = "2"`，运行对应命令后用 `Remove-Item Env:CARGO_PROFILE_DEV_DEBUG` 或 `Remove-Item Env:CARGO_PROFILE_TEST_DEBUG` 撤销。完整调试信息会增加产物体积，适合按需开启。
+
+配置不会为 `target/` 设置容量上限。升级工具链、切换 feature 或调试配置后，旧哈希产物仍可能残留；停止相关构建和程序后，可按 profile 清理，例如：
+
+```bash
+cargo clean --manifest-path src-tauri/Cargo.toml --profile dev
+cargo clean --manifest-path src-tauri/Cargo.toml --profile release
+cargo clean --manifest-path scripts/desktop-native-check/Cargo.toml --profile dev
+```
+
+`pnpm dist:win` 显式使用 `x86_64-pc-windows-msvc` 目标，默认发行产物位于 `src-tauri/target/x86_64-pc-windows-msvc/release/`，需要单独清理：
+
+```bash
+cargo clean --manifest-path src-tauri/Cargo.toml --target-dir src-tauri/target/x86_64-pc-windows-msvc --profile release
+```
+
+其他使用 `--target` 构建的产物也应指向对应的目标目录；如果设置了 `CARGO_TARGET_DIR`，请将命令中的路径替换为实际路径。
+
+`test` 与 `dev` 共用 `target/debug/`；其他独立工作区按其 manifest 和实际 target 目录清理，自定义稳定性 fixture 使用 `--profile stability`。语音脚本在 `src-tauri/target/meeting-speech/release/` 保存宿主构建工具，在 `src-tauri/target/meeting-speech/<构建目标>/release/` 保存目标产物。可用 `cargo clean --manifest-path src-tauri/meeting-speech/Cargo.toml --target-dir src-tauri/target/meeting-speech/<构建目标> --profile release` 清理后者，将占位符替换为实际目标（例如 `aarch64-apple-darwin`）；清理前者时从 `--target-dir` 中去掉目标这一层。
+
+上述按 profile 清理保留模型和依赖下载；不要直接清空整个 `src-tauri/target/`，其中的 `meeting-speech-assets/` 保存离线重建需要的语音资源缓存。
+
 发行步骤见 [桌面发行说明](docs/desktop-release.md)。
 
 依赖升级、兼容补丁来源和锁文件更新步骤见 [依赖安全维护](docs/dependency-security.md)。
