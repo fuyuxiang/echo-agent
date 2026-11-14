@@ -85,7 +85,7 @@
     "test:ui:browser-connection": "node scripts/validate-browser-connection-ui.mjs",
     "test:ui:prompt-prediction": "node scripts/validate-prompt-prediction-ui.mjs",
     "test:desktop-native": "cargo test --locked --manifest-path scripts/desktop-native-check/Cargo.toml",
-    "test:stability": "cargo test --locked --manifest-path scripts/stability-check/Cargo.toml",
+    "test:stability": "node scripts/test-stability.mjs",
     "test:stability:native": "node scripts/validate-native-stability.mjs",
     "ide:verify-git": "node scripts/validate-theia-git-runtime.mjs",
     "ide:lock": "node scripts/update-theia-runtime-lock.mjs",

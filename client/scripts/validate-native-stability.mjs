@@ -5,13 +5,18 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpat
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { reportNativeTestFailure, runNativeTestProcess } from "./lib/native-test-process.mjs";
+
+process.once("uncaughtExceptionMonitor", error => reportNativeTestFailure(1,
+  ["", String(error?.stack ?? error).slice(0, 2600)], process.env, "Native recovery verification failed"));
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const project = join(root, "scripts/stability-check");
 assert.ok(["darwin", "win32"].includes(process.platform), "Native fixture requires macOS or Windows");
 await build({ entryPoints: [join(root,"src/lib/renderer-recovery.ts")], bundle: true, format: "iife", globalName: "EchoRendererHealth", platform: "browser", target: "es2021", minify: true, outfile: join(project,"fixture/renderer-health.js") });
-const built = spawnSync("cargo", ["build", "--locked", "--manifest-path", join(project,"Cargo.toml"), "--features", "native-fixture", "--profile", "stability"], { cwd: root, stdio: "inherit" });
-assert.equal(built.status, 0, "Native stability fixture did not build");
+const built = await runNativeTestProcess("cargo", ["build", "--locked", "--manifest-path", join(project,"Cargo.toml"), "--features", "native-fixture", "--profile", "stability"],
+  { cwd: root, env: { ...process.env, NATIVE_TEST_OUTPUT: process.env.STABILITY_EVIDENCE_DIR ?? process.env.NATIVE_TEST_OUTPUT } });
+assert.equal(built, 0, "Native stability fixture did not build");
 const target = process.env.CARGO_TARGET_DIR ? resolve(root, process.env.CARGO_TARGET_DIR) : join(project, "target");
 const executable = join(target, "stability", `echo-stability-fixture${process.platform === "win32" ? ".exe" : ""}`);
 if (process.platform === "darwin") {

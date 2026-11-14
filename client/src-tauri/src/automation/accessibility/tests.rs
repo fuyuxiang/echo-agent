@@ -1959,8 +1959,8 @@ fn with_file_panel(kind: &'static str) -> Context<Fake> {
 }
 #[test]
 fn file_panel_prepares_open_and_save_with_no_final_submit_or_reopen() {
-    let directory = std::env::temp_dir().join("目录");
-    let file = directory.join("文件.txt");
+    let directory = std::env::temp_dir().join("目录 含空格");
+    let file = directory.join("文件 文本.txt");
     for kind in ["save", "open"] {
         let c = with_file_panel(kind);
         let r = file_dialog::prepare(
@@ -1973,30 +1973,50 @@ fn file_panel_prepares_open_and_save_with_no_final_submit_or_reopen() {
         assert_eq!(r["prepared"], true);
         assert_eq!(r["verified"], false);
         assert_eq!(r["finalActionDispatched"], false);
-        let expected = if kind == "save" {
-            directory.join("")
-        } else {
-            file.clone()
-        };
-        assert_eq!(
-            c.backend.nodes.borrow()[&22].value.as_deref(),
-            expected.to_str()
-        );
-        if kind == "save" {
+        #[cfg(target_os = "windows")]
+        {
+            // Standard Windows panels accept the complete literal path in
+            // their filename field, without opening a nested navigation UI.
+            assert_eq!(c.backend.nodes.borrow()[&22].value.as_deref(), Some(""));
             assert_eq!(
                 c.backend.nodes.borrow()[&23].value.as_deref(),
-                Some("文件.txt")
+                file.to_str()
             );
         }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let expected = if kind == "save" {
+                directory.join("")
+            } else {
+                file.clone()
+            };
+            assert_eq!(
+                c.backend.nodes.borrow()[&22].value.as_deref(),
+                expected.to_str()
+            );
+            if kind == "save" {
+                assert_eq!(
+                    c.backend.nodes.borrow()[&23].value.as_deref(),
+                    Some("文件 文本.txt")
+                );
+            }
+        }
         let calls = c.backend.calls.borrow();
-        assert_eq!(calls.iter().filter(|v| v.starts_with("key:g:")).count(), 1);
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|v| v.starts_with("key:return:"))
-                .count(),
-            1
-        );
+        #[cfg(target_os = "windows")]
+        assert!(calls
+            .iter()
+            .all(|call| !call.starts_with("key:g:") && !call.starts_with("key:return:")));
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(calls.iter().filter(|v| v.starts_with("key:g:")).count(), 1);
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|v| v.starts_with("key:return:"))
+                    .count(),
+                1
+            );
+        }
         assert!(calls
             .iter()
             .all(|v| !v.starts_with("control_click") && v != "AXPress"));

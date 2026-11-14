@@ -13,7 +13,7 @@ incremental = false
 [lib]
 path = "harness.rs"
 [dependencies]
-tauri = { version = "=2.11.5", features = ["tray-icon"] }
+tauri = { version = "=2.12.5", features = ["tray-icon"] }
 tauri-plugin-dialog = "=2.7.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -23,7 +23,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 libc = "0.2"
 process-wrap = { version = "9.0.0", features = ["std", "tokio1"] }
 [build-dependencies]
-tauri-build = "=2.6.3"
+tauri-build = "=2.7.4"
 [dev-dependencies]
 tempfile = "3"
 [features]
@@ -39,8 +39,8 @@ debug-assertions = false
 opt-level = 0
 incremental = false
 [target.'cfg(windows)'.dependencies]
-webview2-com = "=0.38.2"
-windows = "0.61.3"
+webview2-com = "=0.39.1"
+windows-core = "0.62"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

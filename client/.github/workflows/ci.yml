@@ -38,6 +38,8 @@ jobs:
         if: runner.os == 'macOS'
         run: pnpm test:native-guards
       - run: pnpm test:stability
+        env:
+          NATIVE_TEST_OUTPUT: ${{ runner.temp }}/desktop-stability
       - run: pnpm test:stability:native
         env:
           STABILITY_EVIDENCE_DIR: ${{ runner.temp }}/desktop-stability

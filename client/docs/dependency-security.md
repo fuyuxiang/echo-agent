@@ -34,6 +34,8 @@ Theia 源码与生产图中的 Hono 要求 4.13.16+、`@hono/node-server` 要求
 
 Windows 渲染进程恢复回调使用与 Wry 一致的 `webview2-com 0.39.1` 和 `windows-core 0.62` 接口。其他原生自动化接口保留自己的 Windows 绑定版本，不能在 WebView2 回调边界混用不同版本的 COM 类型。
 
+复用生产恢复代码的 `scripts/stability-check` 必须同步更新 SDK 和锁文件。`scripts/test-rust-audit-coverage.mjs` 检查主程序与验收工程的 Tauri、构建库和 WebView2 版本一致，并确认恢复回调直接依赖的 Windows core ABI 一致，避免独立验收工程仍按旧接口编译。
+
 桌面、Agent workspace、原生验收和桌面恢复 harness 的 `rustix 1.x` 锁至 `1.1.6`，修复 [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486.html)。旧版扩展属性函数在零长度缓冲区查询时，可能把未写入的内存标记为已初始化；四份独立锁文件须分别更新。文档编辑 harness 已使用修复版本，`rustix 0.38.44` 不受该公告影响，保留兼容分支，不添加审计例外。
 
 宿主和 Runtime 的 Tokio 锁至 1.53.3、ctutils 锁至 0.4.4，分别处理 [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html) 和 [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)。两个 workspace 分别更新，不以其中一个锁文件代替另一个。

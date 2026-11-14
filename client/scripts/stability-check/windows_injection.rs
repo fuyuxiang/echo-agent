@@ -5,7 +5,7 @@ use crate::process_identity;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Environment8, ICoreWebView2_2, COREWEBVIEW2_PROCESS_KIND_RENDERER,
 };
-use windows::core::Interface;
+use windows_core::Interface;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME},
     System::Threading::{
