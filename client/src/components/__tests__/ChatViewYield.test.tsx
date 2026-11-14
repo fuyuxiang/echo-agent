@@ -431,6 +431,15 @@ describe("ChatView pause/yield/resume 闭环", () => {
     expect(screen.getByText("rate limit exceeded")).toBeVisible();
   });
 
+  it("旧记录中与终止结果完全一致的错误也只在对应回复提示", () => {
+    setStore({ messages: [{ id: "legacy-error", role: "assistant", complete: true, stopReason: "error",
+      agentResult: "连接已中断", parts: [] }], streaming: false, error: "连接已中断", runtimeErrorContext: null });
+    const { container } = renderChat();
+    expect(container.querySelector(".chatview__error-banner")).toBeNull();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getAllByText("连接中断，本轮未能继续")).toHaveLength(1);
+  });
+
   it("不将其他会话或旧轮次的运行时错误并入当前回复", () => {
     setStore({messages:[{id:"current",role:"assistant",promptId:"new",complete:true,stopReason:"error",agentResult:"new failure",parts:[]}],
       error:"old failure",runtimeErrorContext:{sessionId:"s1",promptId:"old"}});

@@ -56,7 +56,7 @@ import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { isGlobalShortcutBlocked } from "@/lib/keyboard-scope";
 import { stripAttachmentTransportContext } from "@/lib/user-message";
-import { computerTaskRunning } from "@/lib/computer-task";
+import { automationStatusForMessage, computerTaskRunning } from "@/lib/computer-task";
 import { AutomationApprovalCard } from "./AutomationControls";
 import { useSessionAutomation } from "@/lib/use-session-automation";
 import { type AutomationMode } from "@/lib/automation-client";
@@ -764,10 +764,12 @@ export function ChatView({
   });
   // A terminal runtime error belongs beside its reply. Other errors (workspace,
   // loading, cancellation, etc.) keep their existing dedicated banner.
-  const inlineRuntimeError = error && terminalMessage && terminalMessage === messages[messages.length - 1]
-    && runtimeErrorContext?.sessionId === sessionId
-    && runtimeErrorContext?.promptId === terminalMessage.promptId
-    && ["runtime", "environment"].includes(getExecutionNotice(terminalMessage, streaming, error)?.kind ?? "") ? error : undefined;
+  const errorBelongsToTurn = error && terminalMessage && terminalMessage === messages[messages.length - 1]
+    && (runtimeErrorContext
+      ? runtimeErrorContext.sessionId === sessionId && runtimeErrorContext.promptId === terminalMessage.promptId
+      : terminalMessage.agentResult?.trim() === error.trim());
+  const inlineRuntimeError = errorBelongsToTurn && terminalMessage
+    && ["runtime", "environment"].includes(getExecutionNotice(terminalMessage, streaming, error ?? undefined)?.kind ?? "") ? error ?? undefined : undefined;
 
   const markdownConfig = useMemo(
     () =>
@@ -1099,9 +1101,7 @@ export function ChatView({
                       markdownConfig={markdownConfig}
                       cwd={cwd}
                       sessionId={sessionId ?? undefined}
-                      automationStatus={automation.status?.task?.scope && (automation.status.task.promptId
-                        ? m.promptId === automation.status.task.promptId && m.role === "assistant" && !messages.slice(idx + 1).some(next => next.role === "assistant" && next.promptId === m.promptId)
-                        : isLastAssistant && !streaming) ? automation.status : undefined}
+                      automationStatus={automationStatusForMessage(m, messages, automation.status, streaming)}
                       onToast={onToast}
                       onOpenTool={handleOpenTool}
                       onOpenArtifact={handleSelectArtifact}
@@ -1415,6 +1415,8 @@ export function ChatView({
         workspaceAvailable={workspace.available}
         cwd={cwd}
         messages={messages}
+        automationStatus={automation.status}
+        activeMessageId={streaming ? streamingMessageId : null}
         sessionId={sessionId ?? undefined}
         onToast={onToast}
         onClose={closeWorkspace}

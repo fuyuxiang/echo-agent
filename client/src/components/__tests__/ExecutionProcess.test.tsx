@@ -76,20 +76,21 @@ describe("assistant execution process", () => {
     const order = Array.from(stage.children).filter(element => element.matches(".execution-process__reasoning, .execution-process__progress, .execution-process__tool"))
       .map(element => element.querySelector("[data-tool-call-id]")?.getAttribute("data-tool-call-id") ?? (element.matches("details") ? "thought" : element.textContent));
     expect(order).toEqual(["thought", "first", "改用备用配置。", "thought", "retry"]);
-    expect(stage.querySelector(".execution-process__stage-index")).toHaveTextContent("1");
+    expect(stage.querySelector(".execution-process__stage-heading")).toBeNull();
     expect(screen.queryByText("检查原配置")).toBeNull();
     fireEvent.click(screen.getAllByText("分析详情")[0]);
     expect(screen.getByText("检查原配置")).toBeVisible();
   });
 
-  it("分析默认折叠，打开后直接展示全文，减少一层展开且不丢失原文", () => {
+  it("纯分析默认折叠，展开过程一次即展示全文", () => {
     const text = "分析内容。".repeat(200) + "原文末尾";
-    render(<ThemeProvider><ExecutionProcess active autoExpand parts={[{ kind: "thought", text }]} /></ThemeProvider>);
+    render(<ThemeProvider><ExecutionProcess active parts={[{ kind: "thought", text }]} /></ThemeProvider>);
     expect(screen.queryByText(/原文末尾/)).toBeNull();
-    fireEvent.click(screen.getByText("分析详情"));
+    fireEvent.click(screen.getByRole("button", { name: /展开过程$/ }));
     expect(screen.getByText(text)).toBeVisible();
     expect(screen.queryByRole("button", { name: "展开全文" })).toBeNull();
-    fireEvent.click(screen.getByText("分析详情"));
+    expect(screen.queryByText("分析详情")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /收起过程$/ }));
     expect(screen.queryByText(/原文末尾/)).toBeNull();
   });
 
@@ -98,9 +99,9 @@ describe("assistant execution process", () => {
       { kind: "thought", text: "先分析", streamId: "1" },
       { kind: "tool_call", streamId: "2", toolCall: { toolCallId: "weather", kind: "other", title: "echoagent-live-info__weather_forecast", status: "in_progress", content: [], rawInput: { variant: "UseTool", tool_name: "echoagent-live-info__weather_forecast", tool_input: { location: "南京" } } } },
     ]} /></ThemeProvider>);
-    expect(Array.from(container.querySelectorAll(".execution-process__stage-index"), element => element.textContent)).toEqual(["·", "·"]);
-    expect(screen.getByRole("heading", { name: "查询天气" })).toBeVisible();
-    expect(screen.getByText("🌤️ 天气查询")).toBeVisible();
+    expect(container.querySelector(".execution-process__stage-heading")).toBeNull();
+    expect(container.querySelector(".toolcall__activity-icon svg")).not.toBeNull();
+    expect(screen.queryByText("🌤️ 天气查询")).toBeNull();
     expect(screen.getByRole("button", { name: "other 南京 运行中" })).toBeVisible();
   });
 
@@ -173,7 +174,6 @@ describe("assistant execution process", () => {
     expect(screen.getByLabelText("任务进展")).toBeVisible();
     expect(screen.queryByText("正在核对引用来源。")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: / · (展开|查看|收起)过程$/ }));
-    fireEvent.click(screen.getByText("分析详情"));
     expect(screen.getByText("正在核对引用来源。")).toBeVisible();
     expect(screen.queryByText("正在生成回复")).toBeNull();
   });
@@ -356,7 +356,6 @@ describe("assistant execution process", () => {
     expect(process).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(process);
-    fireEvent.click(screen.getByText("分析详情"));
     expect(screen.getByText("The user asks about a timeout.")).toBeInTheDocument();
     expect(screen.queryByText(/<analysis>/)).toBeNull();
   });
@@ -391,7 +390,7 @@ describe("assistant execution process", () => {
     );
     expect(screen.getByRole("button", { name: /正在分析任务/ }))
       .toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("分析详情").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("正在分析请求。")).toBeVisible();
 
     rerender(
       <ThemeProvider>
@@ -408,7 +407,7 @@ describe("assistant execution process", () => {
       </ThemeProvider>,
     );
     expect(screen.getByText("这是正式答案的第一部分。")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: /正在生成回复/ }))
+    await waitFor(() => expect(screen.getByRole("button", { name: /处理过程/ }))
       .toHaveAttribute("aria-expanded", "false"));
   });
 
@@ -468,7 +467,7 @@ describe("assistant execution process", () => {
       ...preface.parts, { kind: "text", text: "这是工具完成后的最终答复。" },
     ] }} streaming /></ThemeProvider>);
     expect(screen.getByText("这是工具完成后的最终答复。")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: /正在生成回复/ })).toHaveAttribute("aria-expanded", "false"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /处理过程/ })).toHaveAttribute("aria-expanded", "false"));
     expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
   });
 
@@ -489,7 +488,7 @@ describe("assistant execution process", () => {
     rerender(<ThemeProvider><MessageItem autoExpandProcess message={{ ...liveMessage, parts: [
       ...liveMessage.parts, { kind: "text", text: "现在开始最终答复。" },
     ] }} streaming /></ThemeProvider>);
-    expect(screen.getByRole("button", { name: /正在生成回复/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /处理过程/ })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("调用者已有答案标志也不能覆盖未完成工具，终态仍显示需要注意", () => {
@@ -538,7 +537,7 @@ describe("assistant execution process", () => {
       </ThemeProvider>,
     );
 
-    await waitFor(() => expect(screen.getByRole("button", { name: /正在生成回复/ }))
+    await waitFor(() => expect(screen.getByRole("button", { name: /处理过程/ }))
       .toHaveAttribute("aria-expanded", "true"));
   });
 

@@ -2348,12 +2348,29 @@
   white-space: nowrap;
   cursor: pointer;
 }
+.execution-process__overview.execution-process__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 2px 4px 2px 0;
+  text-align: left;
+  white-space: normal;
+}
+.execution-process__disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+}
 .execution-process__header:hover,
 .execution-process__latest:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 .execution-process__header:focus-visible,
 .execution-process__latest:focus-visible,
-.execution-process__activity-group:focus-visible,
-.execution-process__attention button:focus-visible {
+.execution-process__activity-group:focus-visible {
   outline: 2px solid var(--echo-brand);
   outline-offset: 2px;
 }
@@ -2402,7 +2419,7 @@
 .execution-process__activity-group > small { max-width: 50%; color: var(--echo-color-text-warning-default); font-size: .75rem; text-align: right; overflow-wrap: anywhere; }
 .execution-process__activity-check { color: var(--echo-text-tertiary); }
 .execution-process__activity-more { color: var(--echo-text-tertiary); }
-.execution-process .execution-process__activity .toolcall--activity {
+.execution-process .toolcall--activity {
   gap: 8px;
   min-height: 32px;
   margin: 0;
@@ -2412,15 +2429,30 @@
   font-size: .8125rem;
   color: var(--echo-text-medium);
 }
-.execution-process .execution-process__activity .toolcall--activity:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.execution-process .toolcall--activity:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 .toolcall__activity-icon { display: inline-flex; align-items: center; flex: none; color: var(--echo-text-medium); }
 .toolcall--activity .toolcall__title { color: inherit; font-size: inherit; }
 .toolcall--activity .toolcall__status-mark { background: transparent; }
 .toolcall--activity .toolcall__status-mark--completed { color: var(--echo-text-tertiary); }
 .toolcall--activity .toolcall__status-mark--in_progress { animation: none; }
-.execution-process__earlier { margin: 6px 4px 0; color: var(--echo-text-medium); font-size: .75rem; line-height: 1.7; }
+.execution-process__more {
+  display: block;
+  margin: 4px 0 0;
+  padding: 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--echo-text-medium);
+  font: inherit;
+  font-size: .75rem;
+  text-align: left;
+  cursor: pointer;
+}
+.execution-process__more:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.execution-process__more:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 2px; }
 .execution-process__attention { margin: 8px 0 0 17px; color: var(--echo-color-text-warning-default); font-size: .8125rem; line-height: 1.7; }
-.execution-process__attention button { margin-left: 6px; padding: 3px 4px; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; }
+.execution-process__native-status { margin: 8px 0 0 17px; color: var(--echo-text-medium); font-size: .8125rem; line-height: 1.7; overflow-wrap: anywhere; }
+.execution-process__native-status:not([data-phase="completed"]) { color: var(--echo-color-text-warning-default); }
 .execution-process__excerpt { margin: 4px 0 0 17px; min-width: 0; }
 .execution-process__excerpt p {
   margin: 0;
@@ -2452,6 +2484,15 @@
   border-top: 1px solid var(--echo-border-default);
   min-width: 0;
 }
+.execution-process__computer-context {
+  margin: 8px 0 0 17px;
+  color: var(--echo-text-medium);
+  font-size: .8125rem;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.execution-process__computer-context p { margin: 4px 0; }
+.execution-process__single-stage-title { margin: 8px 4px 0; color: var(--echo-text-strong); font-size: .8125rem; font-weight: 500; line-height: 1.7; overflow-wrap: anywhere; }
 .execution-process__body {
   /* Full records are opt-in; give deliberate reading more room than the live summary. */
   line-height: 1.4rem;
@@ -2465,6 +2506,10 @@
 .execution-process__stages { margin: 8px 0 0; padding: 0; list-style: none; }
 .execution-process__stage { padding: 0 4px 20px 20px; margin-left: 5px; border-left: 1px solid var(--echo-border-subtle); min-width: 0; }
 .execution-process__stage:last-child { padding-bottom: 2px; }
+.execution-process__stage--flat { margin-left: 0; padding: 0 4px 8px 0; border-left: 0; }
+.execution-process__reasoning.execution-process__reasoning--direct { margin-top: 0; padding: 0; }
+.execution-process__reasoning.execution-process__reasoning--direct > summary { display: none; }
+.execution-process__reasoning--direct .execution-process__reasoning-body { margin: 0; padding: 0; border-left: 0; }
 .execution-process__stage-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .execution-process__stage h4 { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin: 0 0 6px -30px; color: var(--echo-text-strong); font-size: .8125rem; font-weight: 500; line-height: 1.7; overflow-wrap: anywhere; }
 .execution-process__stage-state { flex: none; color: var(--echo-text-tertiary); font-size: .75rem; line-height: 1.7; }
@@ -2472,7 +2517,6 @@
 .execution-process__stage--current .execution-process__stage-state { color: var(--echo-color-text-brand-default); }
 .execution-process__stage[data-stage-state="含失败记录"] .execution-process__stage-state { color: var(--echo-color-text-warning-default); }
 .execution-process__stage-index { flex: none; min-width: 18px; border-radius: 50%; background: var(--echo-bg-secondary); color: var(--echo-text-tertiary); text-align: center; font-size: .75rem; }
-.execution-process__stage--activity .execution-process__stage-index { background: transparent; font-size: .875rem; }
 .execution-process__stage--current .execution-process__stage-index { color: var(--echo-brand); }
 .execution-process__progress { color: var(--echo-text-medium); font-size: .8125rem; overflow-wrap: anywhere; }
 .execution-process__progress .markdown-body { font-size: inherit; }

@@ -12,15 +12,18 @@ describe("execution record control and result consistency", () => {
     kind: "tool_call", toolCall: { toolCallId: id, kind, title: id, status, content: [] },
   });
 
-  it("keeps every unfinished parallel operation visible before recent completed actions", () => {
+  it("summarizes parallel work without growing the compact list and keeps all operations reachable", () => {
     render(<ThemeProvider><ExecutionProcess active parts={[
       action("slow-a", "in_progress"), action("slow-b", "in_progress"),
       ...["one", "two", "three", "four"].map(id => action(id)),
     ]} /></ThemeProvider>);
-    expect(screen.getByRole("button", { name: "bash slow-a 运行中" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "bash slow-a 运行中" })).toBeNull();
     expect(screen.getByRole("button", { name: "bash slow-b 运行中" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "bash one 完成" })).toBeNull();
-    expect(screen.getByRole("list", { name: "最近执行进展" }).children).toHaveLength(5);
+    expect(screen.getByRole("list", { name: "最近执行进展" }).children).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "另有 1 项操作进行中" }));
+    expect(screen.getByRole("button", { name: "bash slow-a 运行中" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "执行过程详情" }).querySelectorAll(".toolcall")).toHaveLength(6);
   });
 
   it("keeps a focused group unchanged through appended reads, completion, and release", () => {
@@ -73,14 +76,14 @@ describe("execution record control and result consistency", () => {
     expect(focused).toHaveFocus();
   });
 
-  it("defaults to public progress and the latest three actions, with every original record one click away", () => {
+  it("defaults to public progress and current work, with every original record one click away", () => {
     const onOpenTool = vi.fn();
     const parts: MessagePart[] = [{ kind: "text", phase: "commentary", stageTitle: "核对资料", text: "正在核对资料来源。" },
       { kind: "thought", text: "不应出现在默认进展中的分析原文" },
       ...["oldest", "second", "third", "latest"].map(id => action(id))];
     const { rerender } = render(<ThemeProvider><ExecutionProcess active parts={parts} onOpenTool={onOpenTool} /></ThemeProvider>);
     expect(screen.getByLabelText("当前阶段进展")).toHaveTextContent("正在核对资料来源。");
-    expect(screen.getByRole("list", { name: "最近执行进展" }).children).toHaveLength(3);
+    expect(screen.getByRole("list", { name: "最近执行进展" }).children).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "bash oldest 完成" })).toBeNull();
     expect(screen.queryByText("不应出现在默认进展中的分析原文")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "bash latest 完成" }));
@@ -104,7 +107,7 @@ describe("execution record control and result consistency", () => {
     rerender(<ThemeProvider><ExecutionProcess active parts={[action("failed", "failed"), ...["a", "b", "c"].map(id => action(id))]} /></ThemeProvider>);
     expect(screen.queryByRole("button", { name: "bash failed 失败" })).toBeNull();
     expect(screen.getByRole("note")).toHaveTextContent("1 项操作失败，执行仍在继续");
-    fireEvent.click(screen.getByRole("button", { name: "查看记录" }));
+    fireEvent.click(screen.getByRole("button", { name: /展开过程$/ }));
     expect(screen.getByRole("button", { name: "bash failed 失败" })).toBeVisible();
   });
 
@@ -213,7 +216,7 @@ describe("execution record control and result consistency", () => {
     const { rerender } = render(view(false));
     const body = screen.getByRole("region", { name: "执行过程详情" });
     const tool = screen.getByRole("button", { name: "read_file 检查资料 完成" });
-    const heading = body.querySelector("h4")!;
+    const heading = body.querySelector(".execution-process__progress p")!;
     const selection = document.getSelection()!;
     if (interaction === "keyboard focus") {
       tool.focus();
@@ -255,7 +258,7 @@ describe("execution record control and result consistency", () => {
       active={active} autoExpand parts={[{ kind: "thought", text: analysis }]} /></ThemeProvider>;
     const { rerender } = render(view("review-first"));
     const body = screen.getByRole("region", { name: "执行过程详情" });
-    fireEvent.click(screen.getByText("分析详情"));
+    expect(screen.getByText(/完整记录末尾/)).toBeVisible();
     Object.defineProperties(body, { clientHeight: { value: 150 }, scrollHeight: { value: 400 } });
     body.scrollTop = 120;
     fireEvent.scroll(body);
@@ -358,14 +361,15 @@ describe("execution record control and result consistency", () => {
   it.each([
     ["empty", "本轮没有生成回复", "attention"],
     ["quota", "模型额度已用尽", "failed"],
-  ])("%s result uses the same meaning in the overview and recovery notice", (kind, title, state) => {
+  ])("%s result retains its state and has one recovery explanation", (kind, title, state) => {
     const { container } = render(<ThemeProvider><MessageItem streaming={false} message={{
       id: kind, role: "assistant", complete: true, stopReason: kind === "empty" ? "end_turn" : "error",
       parts: [{ kind: "thought", text: "分析片段" }], agentResult: kind === "quota" ? "quota exhausted" : undefined,
     }} /></ThemeProvider>);
-    expect(container.querySelector(".execution-process__title")).toHaveTextContent(title);
+    expect(container.querySelector(".execution-process__title")).toHaveTextContent("处理过程");
     expect(container.querySelector(`.execution-process--${state}`)).not.toBeNull();
     expect(screen.getByRole("alert")).toHaveTextContent(title);
+    expect(screen.getAllByText(title)).toHaveLength(1);
     expect(screen.queryByText("本次处理已结束")).toBeNull();
   });
 });

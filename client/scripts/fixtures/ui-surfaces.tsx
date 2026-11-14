@@ -590,7 +590,10 @@ Object.assign(window, {
           paused: ["browser-paused", "computer-paused"].includes(query.get("state") || ""),
           // A chat execution fixture has no separate native desktop task.
           task: query.get("surface") === "execution" && !query.has("automationMode") ? undefined
-            : { phase: "paused", reason: null, scope: "隔离界面验收", authorized: true, generation: 1 },
+            : { phase: query.get("surface") === "execution"
+              ? query.get("state") === "running" ? "running" : query.get("state") === "error" ? "failed" : "completed" : "paused",
+              reason: null, scope: "隔离界面验收", authorized: true, generation: 1,
+              ...(query.get("surface") === "execution" ? { promptId: "review-isolated-prompt" } : {}) },
           allowPrivateNetwork: false, browserRunning: false, browserHasData: true,
           browser: { available: true, browserName: "Chrome" },
           computer: { available: true, platform: "macos", screenCapture: true, inputControl: true },

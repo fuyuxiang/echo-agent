@@ -12,13 +12,14 @@ export async function validateExecutionReview(page, output) {
   await process.waitFor();
   assert.equal(await process.getAttribute("aria-expanded"), "false", "full records are opt-in");
   assert.ok(await page.locator(".execution-process--running").count(), "interim commentary incorrectly completes active work");
-  assert.equal(await page.locator(".toolcall--run").count(), 3, "compact progress keeps every unfinished parallel tool visible");
+  assert.equal(await page.locator(".toolcall--run").count(), 1, "compact progress highlights current work");
+  assert.equal(await page.getByRole("button", { name: "另有 2 项操作进行中", exact: true }).count(), 1);
   assert.equal(await page.locator(".execution-process__body").count(), 0);
   await process.click();
   assert.equal(await page.locator(".toolcall--run").count(), 3);
   await process.click();
   assert.equal(await page.locator(".execution-process__body").count(), 0);
-  assert.equal(await page.locator(".toolcall--run").count(), 3);
+  assert.equal(await page.locator(".toolcall--run").count(), 1);
   await process.click();
   await page.locator(".execution-process__body").waitFor();
   await page.locator(".toolcall").filter({ hasText: "pnpm test" }).first().click();

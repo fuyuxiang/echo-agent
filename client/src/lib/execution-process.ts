@@ -1,7 +1,7 @@
 import type { ChatMessage, MessagePart, ToolCallView } from "@/stores/session-store";
 import { detectToolCallRenderer, isToolDiscovery } from "@/lib/tool-renderers";
 import { findToolRecoveries, type ToolRecovery } from "@/lib/tool-recovery";
-import { executionToolStates } from "./tool-execution-state";
+import { executionToolStates, type ToolExecutionState } from "./tool-execution-state";
 
 export type TextMessagePart = Extract<MessagePart, { kind: "text" }>;
 
@@ -33,7 +33,7 @@ export interface AssistantPartGroups {
  */
 export function partitionAssistantParts(
   parts: MessagePart[],
-  options: { organizeProgress?: boolean; active?: boolean } = {},
+  options: { organizeProgress?: boolean; active?: boolean; execution?: ReadonlyMap<string, ToolExecutionState> } = {},
 ): AssistantPartGroups {
   const normalizedParts = expandTaggedThinking(parts);
   const lastMeaningfulPart = [...normalizedParts].reverse().find(part =>
@@ -42,7 +42,8 @@ export function partitionAssistantParts(
   const toolStreams = new Set(normalizedParts.flatMap(part =>
     part.kind === "tool_call" && part.streamId ? [part.streamId] : []));
   const lastToolIndex = normalizedParts.reduce((last, part, index) => part.kind === "tool_call" ? index : last, -1);
-  const hasRunningTools = normalizedParts.some(part => part.kind === "tool_call" && part.toolCall.status === "in_progress");
+  const hasRunningTools = normalizedParts.some(part => part.kind === "tool_call"
+    && (options.execution?.get(part.toolCall.toolCallId)?.state ?? part.toolCall.status) === "in_progress");
   // Presentation groups intermediate public text with the work it accompanies.
   // Keep the source untouched: copy/search/export callers can still request all
   // public text, and explicit partial/final answers always remain in the answer.
@@ -148,13 +149,13 @@ export function summarizeExecutionProcess(
   stopReason?: string,
   cancellationCategory?: string,
   cancelTrigger?: string,
-  options: { settled?: boolean } = {},
+  options: { settled?: boolean; execution?: ReadonlyMap<string, ToolExecutionState> } = {},
 ): ExecutionProcessSummary {
   const tools = parts
     .filter((part): part is Extract<MessagePart, { kind: "tool_call" }> => part.kind === "tool_call")
     .map((part) => part.toolCall);
   const thoughts = parts.filter((part) => part.kind === "thought");
-  const execution = executionToolStates(tools);
+  const execution = options.execution ?? executionToolStates(tools);
   const states = tools.map(tool => ({ tool, state: execution.get(tool.toolCallId)!.state }));
   const failedToolCount = states.filter(({ state }) => state === "failed").length;
   const completedToolCount = states.filter(({ state }) => state === "completed").length;

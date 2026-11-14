@@ -53,4 +53,16 @@ describe("live execution activity summaries", () => {
     expect(value(tool("command", { kind: "bash", title: "Run test", rawInput: { command: "pnpm test" } }))).toBe("pnpm test");
     expect(value(tool("wrapped", { kind: "other", rawInput: { variant: "UseTool", tool_name: "web_search", tool_input: { query: "官方文档" } } }))).toBe("官方文档");
   });
+
+  it("full records retain distinct workspace-relative paths and preserve external path context", () => {
+    const label = (path: string, cwd = "/work") => executionActivityLabel({ toolCallId: path, kind: "read_file", title: `Read ${path}`,
+      status: "completed", content: [], rawInput: { path } }, { fullPath: true, cwd });
+    expect(label("/work/frontend/config.ts")).toBe("frontend/config.ts");
+    expect(label("/work/backend/config.ts")).toBe("backend/config.ts");
+    expect(label("/work-other/config.ts")).toBe("/work-other/config.ts");
+    expect(label("/Work/config.ts")).toBe("/Work/config.ts");
+    expect(label("C:\\Work\\src\\config.ts", "c:\\work\\")).toBe("src/config.ts");
+    expect(label("/source.md", "/")).toBe("source.md");
+    expect(label("/outside/source.md", "")).toBe("/outside/source.md");
+  });
 });

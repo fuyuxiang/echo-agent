@@ -1,11 +1,13 @@
 import type { AutomationStatus } from "@/lib/automation-client";
 import { ComputerExecutionDetails } from "./ComputerExecutionDetails";
-import { computerTaskLabel } from "@/lib/computer-task";
+import { computerTaskLabel, computerTaskRunning } from "@/lib/computer-task";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { ToolCallCard } from "./ToolCallCard";
+import { ToolActivityIcon } from "./ToolActivityIcon";
+import { detectToolCallRenderer } from "@/lib/tool-renderers";
 import { ExecutionActivity } from "./ExecutionActivity";
-import { executionActivities, type ExecutionActivity as Activity } from "@/lib/execution-activity";
+import { executionActivities, executionActivityLabel, type ExecutionActivity as Activity } from "@/lib/execution-activity";
 import { executionToolStates, type ToolExecutionState } from "@/lib/tool-execution-state";
 import { documentProgressSummary } from "@/lib/document-progress";
 import { executionProgressText } from "@/lib/execution-process-preview";
@@ -29,6 +31,7 @@ import {
 
 interface ExecutionProcessProps {
   sessionId?: string;
+  cwd?: string;
   automationStatus?: AutomationStatus;
   messageId?: string;
   parts: MessagePart[];
@@ -79,23 +82,29 @@ function groupStageRows(parts: MessagePart[]): ProcessRow[] {
   return rows;
 }
 
-function ReasoningDisclosure({ parts, active, markdownConfig, theme, savedChoice, onChange }: {
+function ReasoningDisclosure({ parts, active, direct = false, markdownConfig, theme, savedChoice, onChange }: {
   parts: ReasoningPart[];
   active: boolean;
+  direct?: boolean;
   markdownConfig?: MarkdownConfig;
   theme: "light" | "dark";
   savedChoice?: ReasoningDisclosureChoice;
   onChange: (choice: ReasoningDisclosureChoice) => void;
 }) {
-  const [choice, setChoice] = useState(savedChoice ?? { open: false });
-  const { open } = choice;
+  const [choice, setChoice] = useState(savedChoice ?? { open: direct });
+  const open = direct || choice.open;
+  const wasDirect = useRef(direct);
+  useLayoutEffect(() => {
+    if (wasDirect.current && !direct) onChange({ open: true });
+    wasDirect.current = direct;
+  }, [direct, onChange]);
   const change = (next: ReasoningDisclosureChoice) => {
     setChoice(next);
     onChange(next);
   };
   const text = parts.map(part => part.text).join("\n\n");
-  return <details className="execution-process__reasoning" open={open}>
-    <summary onClick={event => { event.preventDefault(); change({ open: !open }); }}>分析详情</summary>
+  return <details className={`execution-process__reasoning${direct ? " execution-process__reasoning--direct" : ""}`} open={open}>
+    <summary hidden={direct} onClick={event => { event.preventDefault(); change({ open: !open }); }}>{!direct && "分析详情"}</summary>
     {open && <div className="execution-process__reasoning-body">
       <Markdown complete={!active} markdownTheme="reasoning" theme={theme}
         config={markdownConfig}>{text}</Markdown>
@@ -103,18 +112,21 @@ function ReasoningDisclosure({ parts, active, markdownConfig, theme, savedChoice
   </details>;
 }
 
-function StageTools({ parts, recoveredById, onOpenTool, active, execution }: {
+function StageTools({ parts, recoveredById, onOpenTool, active, execution, cwd }: {
   parts: ToolPart[];
   recoveredById: Map<string, string>;
   onOpenTool?: (tool: ToolCallView) => void;
   active: boolean;
   execution: ReadonlyMap<string, ToolExecutionState>;
+  cwd?: string;
 }) {
   // Records have one disclosure level. Every operation is immediately reachable
   // after opening records, without a second "view operations" toggle.
   return <div className={`execution-process__tool-group${parts.length === 1 ? " execution-process__tool" : ""}`}>
     {parts.map(({ toolCall }) => <div key={toolCall.toolCallId} className="execution-process__tool">
-      <ToolCallCard tc={toolCall} onOpen={onOpenTool} showStatusLabel executionEnded={!active} executionState={execution.get(toolCall.toolCallId)} />
+      <ToolCallCard tc={toolCall} onOpen={onOpenTool} showStatusLabel appearance="activity"
+        activityLabel={executionActivityLabel(toolCall, { fullPath: true, cwd })} activityIcon={<ToolActivityIcon renderer={detectToolCallRenderer(toolCall)} />}
+        executionEnded={!active} executionState={execution.get(toolCall.toolCallId)} />
       {recoveredById.has(toolCall.toolCallId) && <span className="execution-process__recovery-detail">该次失败已通过后续重试恢复</span>}
     </div>)}
   </div>;
@@ -127,11 +139,20 @@ function hasRecordSelection(body: HTMLDivElement): boolean {
 
 /** Task progress first; one disclosure for the complete chronological record. */
 export function ExecutionProcess({
-  sessionId, messageId, automationStatus, parts, active, settled, autoExpand = false, onReview, startedAt, completedAt,
+  sessionId, messageId, cwd, automationStatus, parts, active: messageActive, settled, autoExpand = false, onReview, startedAt, completedAt,
   lastActivityAt, stopReason, cancelTrigger, cancellationCategory, agentResult,
-  resultNotice, hasFinalAnswer = false, waitingReason, markdownConfig, findQuery, onOpenTool,
+  resultNotice, hasFinalAnswer = false, waitingReason: requestedWaitingReason, markdownConfig, findQuery, onOpenTool,
   knowledgeTrace, onOpenKnowledgePath, revealRequest = 0,
 }: ExecutionProcessProps) {
+  // Native work can continue between model turns. The message spinner alone
+  // cannot retire its records or claim that physical operations have ended.
+  const nativeTask = automationStatus?.task;
+  const nativeRunning = computerTaskRunning(automationStatus);
+  const active = messageActive || nativeRunning;
+  const tools = useMemo(() => parts.flatMap(part => part.kind === "tool_call" ? [part.toolCall] : []), [parts]);
+  const toolStates = useMemo(() => executionToolStates(tools, !messageActive, automationStatus), [tools, messageActive, automationStatus]);
+  const waitingReason = requestedWaitingReason ?? (nativeTask?.phase === "waiting_user" && automationStatus
+    ? computerTaskLabel(automationStatus) : undefined);
   const { theme } = useTheme();
   const bodyId = useId();
   const detailsRef = useRef<HTMLDivElement>(null);
@@ -146,8 +167,8 @@ export function ExecutionProcess({
   const lastScrollTop = useRef(0);
   const followWhileBodyFocused = useRef(false);
   const summary = useMemo(() => summarizeExecutionProcess(parts, active, stopReason,
-    cancellationCategory, cancelTrigger, { settled }),
-  [active, cancellationCategory, cancelTrigger, parts, settled, stopReason]);
+    cancellationCategory, cancelTrigger, { settled, execution: toolStates }),
+  [active, cancellationCategory, cancelTrigger, parts, settled, stopReason, toolStates]);
   const hasUnfinishedTools = summary.unfinishedToolCount > 0;
   const finalAnswerStarted = hasFinalAnswer && !waitingReason && !hasUnfinishedTools
     && knowledgeTrace?.personal?.state !== "searching";
@@ -278,25 +299,33 @@ export function ExecutionProcess({
   }, [active, alignRecords, expanded, searchMatch]);
 
   const stages = useMemo(() => executionStages(parts), [parts]);
+  const onlyReasoning = parts.some(part => part.kind === "thought" && part.text.trim())
+    && parts.every(part => part.kind === "thought" || part.kind === "text" && !part.text.trim());
   const currentStage = stages[stages.length - 1];
   const progress = useMemo(() => executionProgressText(currentStage?.progress ?? []), [currentStage]);
-  const tools = useMemo(() => parts.flatMap(part => part.kind === "tool_call" ? [part.toolCall] : []), [parts]);
-  const toolStates = useMemo(() => executionToolStates(tools, !active), [tools, active]);
   const activities = useMemo(() => executionActivities(parts, heldActivities), [parts, heldActivities]);
-  const recentActivities = activities.filter((activity, index) => index >= activities.length - 3
-    || heldActivities.some(held => held.id === activity.id)
-    || active && activity.tools.some(tool => toolStates.get(tool.toolCallId)?.state === "in_progress"));
+  const latestActivity = activities[activities.length - 1];
+  const currentActivity = [...activities].reverse().find(activity => activity.tools.some(tool =>
+    toolStates.get(tool.toolCallId)?.state === "in_progress")) ?? latestActivity;
+  const recentActivities = activities.filter(activity => activity === currentActivity || activity === latestActivity
+    || heldActivities.some(held => held.id === activity.id));
+  const otherRunningCount = activities.filter(activity => !recentActivities.includes(activity))
+    .flatMap(activity => activity.tools).filter(tool => toolStates.get(tool.toolCallId)?.state === "in_progress").length;
   const recoveredById = new Map(summary.recoveredTools.map(item => [item.failedToolCallId, item.successfulToolCallId]));
   const recoveredIds = new Set(recoveredById.keys());
   const uncertainToolCount = summary.pendingToolCount;
   const failedToolCount = summary.unresolvedToolCount;
   const recovered = summary.state === "complete" && recoveredIds.size > 0;
-  const title = automationStatus ? computerTaskLabel(automationStatus) : !active ? resultNotice?.title ?? (summary.state === "complete" ? "本次处理已结束" : summary.title)
-    : waitingReason ?? (knowledgeTrace?.personal?.state === "searching" ? "正在检索个人知识库"
-      : finalAnswerStarted ? "正在生成回复"
+  const title = waitingReason ?? (automationStatus && (nativeRunning || !messageActive) ? computerTaskLabel(automationStatus) : !active
+    ? resultNotice ? "处理过程" : summary.state === "complete" ? "本次处理已结束" : summary.title
+    : knowledgeTrace?.personal?.state === "searching" ? "正在检索个人知识库"
+      : finalAnswerStarted ? "处理过程"
         : currentStage && (currentStage.planned || currentStage.progress.length > 0) ? currentStage.title : summary.title);
+  // A single plan names the whole record. Keep it outside the scroll viewport
+  // so replacing the overview title cannot shift the reader's position.
+  const singleStageTitle = stages.length === 1 && currentStage.planned && currentStage.title !== title ? currentStage.title : undefined;
   const duration = startedAt != null && (active || completedAt != null)
-    ? formatProcessDuration(Math.max(0, (completedAt ?? now) - startedAt)) : null;
+    ? formatProcessDuration(Math.max(0, (active ? now : completedAt!) - startedAt)) : null;
   const activityAt = lastActivityAt ?? startedAt;
   const idleMs = activityAt == null ? 0 : Math.max(0, now - Math.max(activityAt, resumedAt));
   const longWait = active && !finalAnswerStarted && !waitingReason && idleMs >= 30_000;
@@ -353,27 +382,41 @@ export function ExecutionProcess({
   let plannedStageNumber = 0;
   const stageNumbers = stages.map(stage => stage.planned ? ++plannedStageNumber : undefined);
 
-  const state = waitingReason && active ? "waiting"
+  const nativeContinuation = messageActive && !waitingReason && !nativeRunning && nativeTask && ({
+    paused: "应用操作已中断，本轮其他处理仍在继续。",
+    stopped: "应用操作已停止，本轮其他处理仍在继续。",
+    failed: "应用操作尚未完成，本轮其他处理仍在继续。",
+    result_unknown: "应用操作结果尚未确认，本轮其他处理仍在继续。",
+    completed: "应用操作结果已核验，本轮其他处理仍在继续。",
+  } as Partial<Record<typeof nativeTask.phase, string>>)[nativeTask.phase];
+  const toolAttention = [failedToolCount ? `${failedToolCount} 项操作失败` : "",
+    uncertainToolCount ? `${uncertainToolCount} 项操作结果待确认` : ""].filter(Boolean).join(" · ");
+  const state = waitingReason ? "waiting"
+    : messageActive ? summary.state
+      : nativeTask?.phase === "result_unknown" ? "attention"
+      : nativeTask?.phase === "failed" ? "failed"
+        : nativeTask && ["paused", "stopped"].includes(nativeTask.phase) ? "stopped"
     : !active && summary.state === "complete" && resultNotice?.tone === "warning" ? "attention" : summary.state;
   const disclosureLabel = expanded ? "收起过程" : active ? "展开过程" : "查看过程";
   return <section className={`execution-process execution-process--${state}${recovered ? " execution-process--recovered" : ""}`}
     aria-label="任务进展">
-    <div className="execution-process__overview">
+    <button ref={headerRef} type="button" className="execution-process__overview execution-process__header"
+      data-chat-reading="true"
+      aria-label={[title, duration, disclosureLabel].filter(Boolean).join(" · ")}
+      aria-expanded={expanded} aria-controls={expanded ? bodyId : undefined}
+      aria-describedby={expanded && summary.description ? `${bodyId}-summary`
+        : !expanded && active && (failedToolCount > 0 || uncertainToolCount > 0) ? `${bodyId}-attention` : undefined}
+      onClick={() => changeOpen(!expanded)}>
       <span className="execution-process__status" aria-hidden="true" />
-      <div className="execution-process__heading">
+      <span className="execution-process__heading">
         <span className="execution-process__title" role={finalAnswerStarted ? undefined : "status"}>{title}</span>
         {duration && <span className="execution-process__meta">{active ? "已用时 " : "用时 "}{duration}</span>}
-      </div>
-      <button ref={headerRef} type="button" className="execution-process__header"
-        data-chat-reading="true"
-        aria-label={[title, duration, disclosureLabel].filter(Boolean).join(" · ")}
-        aria-expanded={expanded} aria-controls={expanded ? bodyId : undefined}
-        aria-describedby={expanded && summary.description ? `${bodyId}-summary` : undefined}
-        onClick={() => changeOpen(!expanded)}>
+      </span>
+      <span className="execution-process__disclosure">
         <span>{disclosureLabel}</span>
         <span className={`execution-process__chevron${expanded ? " execution-process__chevron--open" : active ? " execution-process__chevron--expand" : ""}`} aria-hidden="true">›</span>
-      </button>
-    </div>
+      </span>
+    </button>
     {!expanded && (showPreview || retainedPreview) && (showProgress || recentActivities.length > 0) && <div ref={previewRef} className="execution-process__live" data-chat-reading="true"
       onFocusCapture={event => updatePreviewInteraction(event.target)}
       onBlurCapture={event => updatePreviewInteraction(event.relatedTarget)}>
@@ -387,23 +430,28 @@ export function ExecutionProcess({
             headerRef.current?.focus({ preventScroll: true });
           }} />)}
       </ol>}
-      {activities.length > recentActivities.length && <p className="execution-process__earlier">
-        还有 {activities.filter(activity => !recentActivities.includes(activity)).reduce((count, activity) => count + activity.tools.length, 0)} 项较早操作，可展开查看完整记录
-      </p>}
+      {otherRunningCount > 0 && <button type="button" className="execution-process__more"
+        onClick={() => { changeOpen(true); headerRef.current?.focus({ preventScroll: true }); }}>
+        另有 {otherRunningCount} 项操作进行中
+      </button>}
     </div>}
     {(expanded || !active || documentSummary) && meta.some(Boolean) && <p className="execution-process__metrics">{meta.filter(Boolean).join(" · ")}</p>}
     {!expanded && knowledgeTrace && <KnowledgeTrace trace={knowledgeTrace} active={active} compact onOpenPath={onOpenKnowledgePath} />}
-    {!expanded && active && (failedToolCount > 0 || uncertainToolCount > 0) && <p className="execution-process__attention" role="note">
-      {[failedToolCount ? `${failedToolCount} 项操作失败` : "", uncertainToolCount ? `${uncertainToolCount} 项操作结果待确认` : ""].filter(Boolean).join(" · ")}，{waitingReason ? "等待你处理后继续" : "执行仍在继续"}。
-      <button type="button" onClick={() => { changeOpen(true); headerRef.current?.focus({ preventScroll: true }); }}>查看记录</button>
+    {nativeContinuation && <p id={`${bodyId}-attention`} className="execution-process__native-status" data-phase={nativeTask?.phase} role="note">
+      {nativeContinuation}{!expanded && toolAttention ? ` ${toolAttention}。` : ""}
+    </p>}
+    {!expanded && active && toolAttention && !nativeContinuation && <p id={`${bodyId}-attention`} className="execution-process__attention" role="note">
+      {toolAttention}，{waitingReason ? "等待你处理后继续" : "执行仍在继续"}。
     </p>}
     {longWait && <p className="execution-process__waiting-note" role="note">
       已 {formatProcessDuration(idleMs)} 未收到新进展，正在等待{waitingFor}返回。可继续等待，或停止本次执行。
     </p>}
     {expanded && <div className="execution-process__details" ref={detailsRef}>
       {automationStatus && <ComputerExecutionDetails status={automationStatus} />}
+      {singleStageTitle && <h4 id={`${bodyId}-plan`} className="execution-process__single-stage-title">{singleStageTitle}</h4>}
       <div className="execution-process__body" id={bodyId} ref={bodyRef}
         data-chat-reading="true" tabIndex={0} role="region" aria-label="执行过程详情"
+        aria-describedby={singleStageTitle ? `${bodyId}-plan` : undefined}
         onFocus={cancelPendingRestore}
         onPointerDown={cancelPendingRestore}
         onBlur={event => {
@@ -454,26 +502,23 @@ export function ExecutionProcess({
           <ol className="execution-process__stages" aria-label="执行记录">
             {stages.map((stage, index) => {
               const rows = groupStageRows(stage.parts);
-              const headingPart = !stage.planned ? stage.progress[0] : undefined;
-              const headingIsProgress = Boolean(headingPart && stage.parts[0] === headingPart
-                && headingPart.text.trim().replace(/[。！？!?]+$/, "") === stage.title);
+              const showHeading = stage.planned && stages.length > 1;
               const state = executionStageState(stage, index === stages.length - 1, active, Boolean(waitingReason), recoveredIds, toolStates);
               return <li key={stage.id} data-stage-id={stage.id} data-stage-state={state}
-                className={`execution-process__stage${stage.planned ? "" : " execution-process__stage--activity"}${active && index === stages.length - 1 ? " execution-process__stage--current" : ""}`}>
-                <div className="execution-process__stage-heading">
-                  <h4><span className="execution-process__stage-index" aria-hidden="true">{stageNumbers[index] ?? "·"}</span>{headingIsProgress && headingPart ? headingPart.text.trim() : stage.title.replace(/^正在/, "")}</h4>
+                className={`execution-process__stage${showHeading ? "" : " execution-process__stage--flat"}${active && index === stages.length - 1 ? " execution-process__stage--current" : ""}`}>
+                {showHeading && <div className="execution-process__stage-heading">
+                  <h4><span className="execution-process__stage-index" aria-hidden="true">{stageNumbers[index]}</span>{stage.title.replace(/^正在/, "")}</h4>
                   <span className="execution-process__stage-state">{state}</span>
-                </div>
+                </div>}
                 {rows.map((row, rowIndex) => {
-                  const rowActive = active && index === stages.length - 1 && rowIndex === rows.length - 1;
+                  const rowActive = messageActive && index === stages.length - 1 && rowIndex === rows.length - 1;
                   if (row.kind === "thought") {
                     const rowId = `${stage.id}:${row.index}`;
-                    return <ReasoningDisclosure key={row.index} parts={row.parts} active={rowActive}
+                    return <ReasoningDisclosure key={row.index} parts={row.parts} active={rowActive} direct={onlyReasoning}
                       markdownConfig={markdownConfig} theme={theme} savedChoice={reasoningChoices?.get(rowId)}
                       onChange={choice => rememberExecutionReasoningChoice(sessionId, messageId, rowId, choice)} />;
                   }
-                  if (row.kind === "tools") return <StageTools key={row.index} parts={row.parts} recoveredById={recoveredById} onOpenTool={onOpenTool} active={active} execution={toolStates} />;
-                  if (headingIsProgress && row.part === headingPart && !findQuery) return null;
+                  if (row.kind === "tools") return <StageTools key={row.index} parts={row.parts} recoveredById={recoveredById} onOpenTool={onOpenTool} active={active} execution={toolStates} cwd={cwd} />;
                   return <div className="execution-process__progress" key={row.index}>
                     <Markdown complete={!rowActive} theme={theme} config={markdownConfig}
                       findQuery={row.part.phase !== "commentary" ? findQuery : undefined}>{row.part.text}</Markdown>

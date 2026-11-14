@@ -15,9 +15,12 @@ export async function validateExecutionProgressInteractions(page, base, output) 
       const { useSessionStore } = await import("/src/stores/session-store.ts");
       const store = useSessionStore.getState();
       const id = store.streamingMessageId ?? [...store.messages].reverse().find(message => message.role === "assistant")?.id;
-      store.setMessages([{ id, role: "assistant", complete,
+      const promptId = store.messages.find(message => message.id === id)?.promptId;
+      // Complete through the actual ACK rail below, after installing an open
+      // message. Pre-closing it would make the ACK look like a replay duplicate.
+      store.setMessages([{ id, role: "assistant", complete: false, promptId,
         startedAt: Date.now() - 5000, lastActivityAt: Date.now(), stopReason: complete ? "end_turn" : undefined, parts }]);
-      if (complete) store.markComplete({ sessionId: store.sessionId, promptId: "", stopReason: "end_turn" });
+      if (complete) store.markComplete({ sessionId: store.sessionId, promptId: promptId ?? "", stopReason: "end_turn" });
     }, { parts, complete });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   };
@@ -25,8 +28,10 @@ export async function validateExecutionProgressInteractions(page, base, output) 
 
   await reset();
   await set([tool("slow-a", "in_progress"), tool("slow-b", "in_progress"), ...later]);
-  assert.equal(await page.locator(".execution-process__live .toolcall--run").count(), 2,
-    "ongoing parallel operations survive the recent-history limit");
+  assert.equal(await page.locator(".execution-process__live .toolcall--run").count(), 1,
+    "parallel work has one featured operation and a visible summary");
+  await page.getByRole("button", { name: "另有 1 项操作进行中", exact: true }).click();
+  assert.equal(await page.locator(".execution-process__body .toolcall--run").count(), 2);
 
   await reset();
   const reads = [tool("read-a", "completed", "read_file"), tool("read-b", "completed", "read_file")];
@@ -127,4 +132,94 @@ export async function validateExecutionProgressInteractions(page, base, output) 
   await page.locator(".execution-process__header").click();
   await page.getByRole("button", { name: /点击按钮 后续任务已核验$/ }).click();
   assert.equal(await page.locator(".tool-detail__status").textContent(), "后续任务已核验");
+
+  for (const [context, query] of [["ordinary", ""], ["project", "&project=1"],
+    ["browser", "&automationMode=browser_use"], ["desktop", "&automationMode=computer_use"]]) {
+    await page.goto(`${base}/__ui-review?surface=execution&state=running&theme=light${query}`);
+    await page.locator('[data-execution-ready="true"]').waitFor();
+    const analysis = { kind: "thought", text: "核对来源并保留依据。", streamId: "unified" };
+    await set([analysis]);
+    const header = page.locator(".execution-process__header");
+    assert.equal(await header.getAttribute("aria-expanded"), "false");
+    await header.click();
+    await page.getByText(analysis.text, { exact: true }).waitFor();
+    assert.equal(await page.locator(".execution-process__stage-heading").count(), 0);
+    assert.equal(await page.getByText("分析详情", { exact: true }).count(), 0);
+    if (context === "project") await page.getByRole("button", { name: "资料核对项目", exact: true }).waitFor();
+    await page.screenshot({ path: join(output, `unified-${context}-analysis.png`) });
+    await header.click();
+    if (context === "browser" || context === "desktop") {
+      const native = { kind: "tool_call", toolCall: { toolCallId: "native-between-turns", kind: "other",
+        toolName: context === "browser" ? "browser_snapshot" : "computer_screenshot", title: "读取应用界面", status: "in_progress", content: [] } };
+      await set([tool("model-ended", "in_progress", "read_file"), native], true);
+      await page.locator(".execution-process--running").waitFor();
+      assert.equal(await page.locator(".execution-notice").count(), 0, "native work continues without a false empty-answer notice");
+      await header.click();
+      await page.getByLabel("应用操作情况", { exact: true }).waitFor();
+      assert.doesNotMatch(await page.locator(".execution-process").innerText(), /原生控件|鼠标键盘后备|general-purpose/);
+      const nativeRow = page.locator('.execution-process [data-tool-call-id="native-between-turns"]');
+      const endedRow = page.locator('.execution-process [data-tool-call-id="model-ended"]');
+      assert.match(await nativeRow.innerText(), /运行中/);
+      assert.match(await endedRow.innerText(), /结果待确认/);
+      await nativeRow.click();
+      assert.equal(await page.locator(".tool-detail__status").innerText(), "运行中", "native record and detail agree between model turns");
+      await page.getByRole("button", { name: "关闭面板", exact: true }).click();
+      await endedRow.click();
+      assert.equal(await page.locator(".tool-detail__status").innerText(), "结果待确认", "native activity cannot revive the model's old file operation");
+
+      await page.goto(`${base}/__ui-review?surface=execution&state=running&theme=light${query}`);
+      await page.locator('[data-execution-ready="true"]').waitFor();
+      const ongoing = tool("model-active", "in_progress", "read_file");
+      await set([native, ongoing]);
+      await page.evaluate(() => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+          const result = await invoke(command, args);
+          return command === "automation_status" ? { ...result, paused: true,
+            task: { ...result.task, phase: "paused", authorized: false } } : result;
+        };
+        window.dispatchEvent(new Event("focus"));
+      });
+      await page.locator(".execution-process__native-status").waitFor();
+      assert.match(await page.locator(".execution-process__native-status").innerText(), /应用操作已中断，本轮其他处理仍在继续/);
+      assert.equal(await page.locator(".execution-process--running").count(), 1);
+      assert.equal(await page.locator(".execution-process__live .toolcall--run").count(), 1);
+      await page.locator(".execution-process__header").click();
+      await nativeRow.click();
+      assert.equal(await page.locator(".tool-detail__status").innerText(), "结果待确认");
+      await page.getByRole("button", { name: "关闭面板", exact: true }).click();
+      await page.locator('.execution-process [data-tool-call-id="model-active"]').click();
+      assert.equal(await page.locator(".tool-detail__status").innerText(), "运行中", "native pause leaves file work live in records and details");
+      await set([native, ongoing], true);
+      await page.locator(".execution-process--stopped").waitFor();
+      assert.equal(await page.locator(".execution-process .toolcall--run").count(), 0);
+      assert.equal(await page.locator(".tool-detail__status").innerText(), "结果待确认");
+      await page.screenshot({ path: join(output, `unified-${context}-ownership.png`) });
+    }
+  }
+
+  await reset();
+  const planned = { ...tool("single-stage"), stageTitle: "核对唯一计划阶段" };
+  await set([planned], true);
+  await page.locator(".execution-process__header").click();
+  await page.getByRole("heading", { name: "核对唯一计划阶段", exact: true }).waitFor();
+  await page.screenshot({ path: join(output, "completed-plan-heading.png") });
+
+  await reset();
+  const sameName = ["frontend", "backend"].map(directory => ({ kind: "tool_call", toolCall: {
+    toolCallId: directory, kind: "read_file", title: `Read /review/isolated-EchoAgent/${directory}/config.ts`, status: "completed", content: [],
+    rawInput: { path: `/review/isolated-EchoAgent/${directory}/config.ts` },
+  } }));
+  await set(sameName, true);
+  await page.locator(".execution-process__header").click();
+  for (const directory of ["frontend", "backend"]) {
+    const row = page.getByRole("button", { name: `read_file ${directory}/config.ts 完成`, exact: true });
+    await row.waitFor();
+    assert.match(await row.getAttribute("title"), new RegExp(`${directory}/config.ts`));
+  }
+  await page.screenshot({ path: join(output, "full-record-file-paths.png") });
+  await page.goto(`${base}/__ui-review?surface=execution&state=error&theme=light`);
+  await page.locator(".execution-notice").waitFor();
+  assert.equal(await page.locator(".chatview__error-banner").count(), 0, "owned runtime errors have one recovery surface");
+  assert.equal(await page.getByText("本轮未能继续", { exact: true }).count(), 1);
 }

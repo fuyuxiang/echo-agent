@@ -65,7 +65,7 @@ export function executionStages(parts: MessagePart[]): ExecutionStage[] {
 /** Last event group is current; older parallel tools stay in their own stage. */
 export function executionStageState(stage: ExecutionStage, current: boolean, active: boolean, waiting = false, recoveredIds?: ReadonlySet<string>, execution?: ReadonlyMap<string, ToolExecutionState>): string {
   const state = (tool: ToolCallView) => (execution?.get(tool.toolCallId) ?? toolExecutionState(tool)).state;
-  const unfinished = stage.tools.some(tool => tool.status === "in_progress" && state(tool) !== "completed");
+  const unfinished = stage.tools.some(tool => state(tool) === "in_progress");
   if (active && current && waiting) return "等待确认";
   if (active && (current || unfinished)) return "进行中";
   if (unfinished) return "未记录完成";

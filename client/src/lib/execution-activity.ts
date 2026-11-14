@@ -23,16 +23,27 @@ function operationKey(tool: ToolCallView): string {
 }
 
 /** Keep useful file/command context without filling the live view with paths. */
-export function executionActivityLabel(tool: ToolCallView): string {
+export function executionActivityLabel(tool: ToolCallView, options: { fullPath?: boolean; cwd?: string } = {}): string {
   const renderer = detectToolCallRenderer(tool);
   if (isToolDiscovery(tool)) return "查找可用工具";
   const input = inputFor(tool);
+  if (renderer === "task" && typeof input?.description === "string" && input.description.trim()) {
+    return input.description.trim();
+  }
   if (renderer === "read" && /^(read_file|read)$/.test(operationKey(tool)) || renderer === "edit") {
     const path = input?.path ?? input?.file_path;
     const title = typeof path === "string" ? path : tool.title.replace(/^(?:Read|Write|Edit)\s+/i, "");
     // A search expression is not a filename. Only shorten explicit paths.
     if (typeof path === "string" || /^(?:Read|Write|Edit)\s+/i.test(tool.title)) {
-      const segments = title.replace(/^[`"']|[`"']$/g, "").split(/[\\/]/).filter(Boolean);
+      const visiblePath = title.replace(/^[`"']|[`"']$/g, "").replace(/\\/g, "/");
+      if (options.fullPath) {
+        const root = options.cwd ? options.cwd.replace(/\\/g, "/").replace(/\/+$/, "") : undefined;
+        const prefix = root == null ? undefined : `${root}/`;
+        const windows = /^[a-z]:\//i.test(visiblePath) || visiblePath.startsWith("//");
+        const inWorkspace = prefix && (windows ? visiblePath.toLowerCase().startsWith(prefix.toLowerCase()) : visiblePath.startsWith(prefix));
+        return inWorkspace ? visiblePath.slice(prefix.length) : visiblePath;
+      }
+      const segments = visiblePath.split("/").filter(Boolean);
       return segments[segments.length - 1] ?? title;
     }
   }

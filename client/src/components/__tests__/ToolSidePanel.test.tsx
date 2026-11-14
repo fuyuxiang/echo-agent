@@ -4,7 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { ToolSidePanel, type ToolSidePanelMode } from "../ToolSidePanel";
 import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout";
 import type { SessionArtifact } from "@/lib/session-artifacts";
-import type { ToolCallView } from "@/stores/session-store";
+import type { ChatMessage, ToolCallView } from "@/stores/session-store";
+import type { AutomationStatus } from "@/lib/automation-client";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -431,3 +432,52 @@ function artifact(path: string): SessionArtifact {
     verifiedOutput: true,
   };
 }
+
+describe("tool details share the transcript's execution ownership", () => {
+  beforeEach(() => { localStorage.clear(); vi.mocked(invoke).mockReset().mockResolvedValue([]); });
+  const native: ToolCallView = { toolCallId: "native", kind: "other", toolName: "computer_screenshot", title: "读取应用界面", status: "in_progress", content: [] };
+  const read: ToolCallView = { toolCallId: "read", kind: "read_file", title: "Read source.md", status: "in_progress", content: [] };
+  const message: ChatMessage = { id: "reply", role: "assistant", promptId: "prompt", complete: true,
+    parts: [native, read].map(toolCall => ({ kind: "tool_call", toolCall })) };
+  const automation: AutomationStatus = { sessionId: "owner", mode: "computer_use", paused: false, allowPrivateNetwork: false,
+    browser: { available: true }, computer: { available: true, platform: "macOS", screenCapture: true, inputControl: true },
+    browserRunning: false, browserHasData: false, task: { phase: "running", reason: null, scope: "核对来源", authorized: true, generation: 1, promptId: "prompt" } };
+  const callbacks = { onClose: vi.fn(), onSelectTool: vi.fn(), onSelectArtifact: vi.fn(), onOpenArtifacts: vi.fn() };
+
+  it("keeps native details live between model turns and retires unrelated tools", () => {
+    const view = (toolCall: ToolCallView, automationStatus = automation) => <ToolSidePanel {...callbacks}
+      open mode="tool" artifacts={[]} sessionId="owner" messages={[message]} toolCall={toolCall} activeMessageId={null} automationStatus={automationStatus} />;
+    const { container, rerender } = render(view(native));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("运行中");
+    rerender(view(read));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("结果待确认");
+    rerender(view(native, { ...automation, task: { ...automation.task!, phase: "stopped", authorized: false } }));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("结果待确认");
+  });
+
+  it("a native pause does not stop the model's file tool, and status changes update open details", () => {
+    const active = { ...message, complete: false };
+    const view = (toolCall: ToolCallView, phase: "running" | "paused") => <ToolSidePanel {...callbacks}
+      open mode="tool" artifacts={[]} sessionId="owner" messages={[active]} toolCall={toolCall} activeMessageId="reply"
+      automationStatus={{ ...automation, task: { ...automation.task!, phase, authorized: phase === "running" } }} />;
+    const { container, rerender } = render(view(native, "running"));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("运行中");
+    rerender(view(native, "paused"));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("结果待确认");
+    rerender(view(read, "paused"));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("运行中");
+    rerender(view(native, "running"));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("运行中");
+  });
+
+  it("does not revive historical operations using a different session, prompt or later assistant", () => {
+    const view = (automationStatus: AutomationStatus, messages = [message]) => <ToolSidePanel {...callbacks}
+      open mode="tool" artifacts={[]} sessionId="owner" messages={messages} toolCall={native} activeMessageId={null} automationStatus={automationStatus} />;
+    const { container, rerender } = render(view({ ...automation, sessionId: "another" }));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("结果待确认");
+    rerender(view({ ...automation, task: { ...automation.task!, promptId: "another" } }));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("结果待确认");
+    rerender(view(automation, [message, { ...message, id: "later", parts: [] }]));
+    expect(container.querySelector(".tool-detail__status")).toHaveTextContent("结果待确认");
+  });
+});

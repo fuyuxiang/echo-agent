@@ -64,7 +64,9 @@ describe("compact process and actionable result notices", () => {
     expect(header).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(header);
     rerender(<ThemeProvider><MessageItem message={{ ...message, parts: [...message.parts, { kind: "text", text: "正式回复" }] }} streaming /></ThemeProvider>);
-    expect(screen.getByRole("button", { name: /正在生成回复/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /处理过程/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("正式回复")).toBeVisible();
+    expect(screen.getByText("正在生成回复")).toBeVisible();
   });
   it("历史缺少结束时间不把现在与旧开始时间的差伪装成执行耗时", () => {
     render(<ThemeProvider><MessageItem message={{ ...failed, completedAt: undefined }} streaming={false} /></ThemeProvider>);

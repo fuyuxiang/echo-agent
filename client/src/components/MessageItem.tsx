@@ -37,6 +37,7 @@ import type { SessionArtifact } from "@/lib/session-artifacts";
 import { registerDocumentArtifact } from "@/lib/artifact-catalog";
 import { isExecutionSettled, partitionAssistantParts } from "@/lib/execution-process";
 import { executionContinuationPrompt, getExecutionNotice } from "@/lib/execution-notice";
+import { executionToolStates } from "@/lib/tool-execution-state";
 import { formatMessageTime } from "@/lib/message-time";
 import {
   messageRetryKind,
@@ -199,7 +200,8 @@ export const MessageItem = memo(function MessageItem({
   const [continueError, setContinueError] = useState<string | null>(null);
   const outcome = useMemo(() => getExecutionNotice(message, streaming, runtimeError), [message, streaming, runtimeError]);
   const desktopWaiting = automationStatus?.task?.phase === "waiting_user" && !automationStatus.task.authorized && automationStatus.task.outcome;
-  const notice = desktopWaiting || (outcome?.kind === "stopped" && suppressStoppedNotice) ? null : outcome;
+  const notice = desktopWaiting || (outcome?.kind === "stopped" && suppressStoppedNotice)
+    || outcome?.kind === "empty" && automationStatus?.task?.scope ? null : outcome;
   const hasToolWork = message.parts.some((part) => part.kind === "tool_call");
   const continueAction = Boolean(notice && notice.kind !== "environment" && !notice.modelSettings && onContinueExecution && hasToolWork);
   const retryAction = Boolean(notice && notice.kind !== "environment" && !notice.modelSettings && !hasToolWork && onRetry);
@@ -265,8 +267,11 @@ export const MessageItem = memo(function MessageItem({
     [markCopied, onToast],
   );
 
+  const messageActive = streaming && !message.complete;
+  const messageExecution = useMemo(() => executionToolStates(message.parts.flatMap(part =>
+    part.kind === "tool_call" ? [part.toolCall] : []), !messageActive, automationStatus), [message.parts, messageActive, automationStatus]);
   const assistantGroups = message.role === "assistant"
-    ? partitionAssistantParts(message.parts, { organizeProgress: true, active: streaming && !message.complete })
+    ? partitionAssistantParts(message.parts, { organizeProgress: true, active: messageActive, execution: messageExecution })
     : null;
   const allTextParts = message.parts.filter(
     (part): part is Extract<typeof part, { kind: "text" }> => part.kind === "text",
@@ -299,7 +304,7 @@ export const MessageItem = memo(function MessageItem({
     assistantGroups.processParts.length > 0 || hasTerminalProcessStatus || hasKnowledgeTrace || notice || automationStatus
   ));
   const generatingAnswer = streaming && waitingForModel && !message.complete && hasFinalAnswer
-    && !assistantGroups?.processParts.some(part => part.kind === "tool_call" && part.toolCall.status === "in_progress")
+    && !Array.from(messageExecution.values()).some(execution => execution.state === "in_progress")
     && knowledgeTrace?.personal?.state !== "searching";
   const retryKind = messageRetryKind(message);
   const retryLabel = messageRetryLabel(retryKind, retrying);
@@ -434,6 +439,7 @@ export const MessageItem = memo(function MessageItem({
             && (
               <ExecutionProcess
                 sessionId={sessionId}
+                cwd={cwd}
                 messageId={message.id}
                 automationStatus={automationStatus}
                 parts={assistantGroups.processParts}

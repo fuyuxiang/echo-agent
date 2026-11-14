@@ -1,4 +1,20 @@
 import type { AutomationStatus } from "./automation-client";
+import type { ChatMessage } from "@/stores/session-store";
+
+/** A live task belongs only to the last assistant message of its own turn. */
+export function automationStatusForMessage(message: ChatMessage, messages: readonly ChatMessage[],
+  status: AutomationStatus | null | undefined, streaming = false): AutomationStatus | undefined {
+  if (!status?.task?.scope || message.role !== "assistant") return undefined;
+  if (!status.task.promptId) return !streaming && messages[messages.length - 1]?.id === message.id ? status : undefined;
+  if (message.promptId !== status.task.promptId) return undefined;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const candidate = messages[index];
+    if (candidate.role === "assistant" && candidate.promptId === message.promptId) {
+      return candidate.id === message.id ? status : undefined;
+    }
+  }
+  return undefined;
+}
 
 export function computerTaskRunning(status: AutomationStatus | null | undefined): boolean {
   return Boolean(status?.task?.authorized && !status.paused &&

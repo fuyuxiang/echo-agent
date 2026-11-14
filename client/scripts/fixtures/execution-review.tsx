@@ -188,7 +188,8 @@ export function finishExecutionReview(state: "complete" | "error" = "complete") 
     agentResult: state === "error" ? "隔离失败：外部预览服务未配置，未发出真实请求。" : undefined,
     usage: { promptTokens: 7_200, completionTokens: 3_600, totalTokens: 10_800 },
   });
-  if (state === "error") useSessionStore.getState().setError("隔离失败：外部预览服务未配置；部分结果已保留，未发出真实请求。");
+  if (state === "error") useSessionStore.getState().setError("隔离失败：外部预览服务未配置；部分结果已保留，未发出真实请求。",
+    { sessionId: executionReviewSessionId, promptId });
   return true;
 }
 
@@ -238,6 +239,9 @@ export default function ExecutionReviewFixture() {
       <SubagentPanel messages={messages} cwd={executionReviewCwd} onOpenSession={() => { setFeedback("隔离子代理导航入口已触发；未加载真实工作记录。"); }} />
       <TeamStatusView sessionId={executionReviewSessionId} messages={messages} />
     </div></div></div></div> : <ChatView
+      projectBreadcrumb={viewQuery.get("project") === "1" ? {
+        name: "资料核对项目", onOpenProjects: () => setFeedback("隔离项目列表入口"), onOpenProject: () => setFeedback("隔离项目入口"),
+      } : undefined}
       onSend={(text) => { seedExecutionReview("running", text); setFeedback("隔离发送已接收；未请求真实模型。"); return true; }}
       onCancel={cancel} onToast={setFeedback}
       onOpenSubagentSession={() => { setFeedback("隔离子代理导航入口已触发；未加载真实工作记录。"); }}

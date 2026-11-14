@@ -17,6 +17,8 @@ import {
 } from "@/lib/use-unified-tabs";
 import { ToolCallDetailBody } from "./ToolCallCard";
 import { executionToolStates } from "@/lib/tool-execution-state";
+import { automationStatusForMessage } from "@/lib/computer-task";
+import type { AutomationStatus } from "@/lib/automation-client";
 import { openLocalPath } from "@/lib/markdown-host";
 import { FilePreview as RichFilePreview } from "./FilePreview";
 import { copyShareText } from "@/lib/share";
@@ -80,6 +82,9 @@ interface ToolSidePanelProps {
   workspaceAvailable?: boolean;
   /** 会话消息（用于聚合文件变更）。 */
   messages?: ChatMessage[];
+  automationStatus?: AutomationStatus | null;
+  /** null means idle; undefined preserves standalone panels' message fallback. */
+  activeMessageId?: string | null;
   /** 会话 id（用于标签页会话隔离）。 */
   sessionId?: string;
   onToast?: (msg: string) => void;
@@ -108,6 +113,8 @@ export function ToolSidePanel({
   navigationRequestId,
   cwd,
   messages,
+  automationStatus,
+  activeMessageId,
   sessionId,
   onToast,
   onClose,
@@ -122,9 +129,13 @@ export function ToolSidePanel({
   const toolMessage = useMemo(() => open && toolCall ? [...(messages ?? [])].reverse().find(message => message.parts.some(
     part => part.kind === "tool_call" && part.toolCall.toolCallId === toolCall?.toolCallId,
   )) : undefined, [open, messages, toolCall?.toolCallId]);
+  const toolMessageActive = toolMessage && !toolMessage.complete
+    && (activeMessageId === undefined || activeMessageId === toolMessage.id);
+  const toolAutomation = toolMessage && automationStatus?.sessionId === sessionId
+    ? automationStatusForMessage(toolMessage, messages ?? [], automationStatus, activeMessageId != null) : undefined;
   const toolState = useMemo(() => toolMessage && toolCall ? executionToolStates(toolMessage.parts.flatMap(
-    part => part.kind === "tool_call" ? [part.toolCall] : []), toolMessage.complete).get(toolCall.toolCallId) : undefined,
-  [toolMessage, toolCall?.toolCallId]);
+    part => part.kind === "tool_call" ? [part.toolCall] : []), !toolMessageActive, toolAutomation).get(toolCall.toolCallId) : undefined,
+  [toolMessage, toolCall?.toolCallId, toolMessageActive, toolAutomation]);
   const [legacyView, setView] = useState<WorkspaceView>(mode === "tool" ? "artifacts" : mode);
   const view: WorkspaceView = onModeChange && mode !== "tool" ? mode : legacyView;
   useEffect(() => { if (mode !== "tool") setView(mode); }, [mode]);
@@ -466,7 +477,7 @@ export function ToolSidePanel({
         }} className="tool-side-panel__body task-details__body">
           <div hidden={!runtimeView || showToolDetail}>{details}</div>
           {browserVisited.current && <div className="task-details__browser" hidden={view !== "browser" || showToolDetail}><BrowserPreview url={browserUrl ?? ""} onUrlChange={setBrowserUrl} /></div>}
-          {(!listView || split || !showList) && ((!runtimeView && view !== "browser") || showToolDetail) && (showToolDetail ? toolCall ? <ToolCallDetailBody tc={toolCall} executionEnded={toolMessage?.complete} executionState={toolState} onOpenPath={path => onSelectArtifact({id:path,path,kind:toolCall.kind,title:toolCall.title,toolCallId:toolCall.toolCallId,status:toolCall.status})} /> : <p className="tool-side-panel__empty">选择操作查看详情</p> : <MainContent key={sessionId} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={setDocumentEditing} onOpenArtifact={onSelectArtifact} view={view} artifacts={artifacts} sessionId={sessionId} cwd={cwd} previewPath={previewPath}
+          {(!listView || split || !showList) && ((!runtimeView && view !== "browser") || showToolDetail) && (showToolDetail ? toolCall ? <ToolCallDetailBody tc={toolCall} executionEnded={toolMessage ? !toolMessageActive : false} executionState={toolState} onOpenPath={path => onSelectArtifact({id:path,path,kind:toolCall.kind,title:toolCall.title,toolCallId:toolCall.toolCallId,status:toolCall.status})} /> : <p className="tool-side-panel__empty">选择操作查看详情</p> : <MainContent key={sessionId} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={setDocumentEditing} onOpenArtifact={onSelectArtifact} view={view} artifacts={artifacts} sessionId={sessionId} cwd={cwd} previewPath={previewPath}
             active={open} selectedArtifactId={selectedArtifactId} selectedFilePath={selectedFilePath} browserUrl={browserUrl}
             onArtifactSelect={a => { const tc = findToolCall?.(a.toolCallId); if (tc) onSelectTool(tc); else onToast?.("关联工具记录已不可用，可继续预览文件内容"); }}
             onBrowserUrlChange={setBrowserUrl} onOpenOs={path => openLocalPath(path,{cwd,type:"file",onToast,revealFile:false})} onToast={onToast} />)}
