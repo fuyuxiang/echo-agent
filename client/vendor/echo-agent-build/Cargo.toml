@@ -457,6 +457,8 @@ uninlined_format_args = "allow"
 useless_format = "allow"
 
 [patch.crates-io]
+# Preserve ONNX 1.22 ABI while supporting both Cargo build-output layouts.
+ort-sys = { path = "../ort-sys" }
 # ABI-compatible safety backports for the pager's ratatui dependencies.
 lru-0-12 = { package = "lru", path = "../lru-0.12" }
 lru-0-16 = { package = "lru", path = "../lru-0.16" }

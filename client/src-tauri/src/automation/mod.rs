@@ -881,17 +881,17 @@ impl AutomationManager {
             if let Some(session) = session {
                 let authorized = session.computer_task_authorized(cancellation);
                 let task = session.task.lock().unwrap();
-                if authorized && !matches!(tool, "browser_upload") {
-                    if policy::effect(&details)
+                if authorized
+                    && !matches!(tool, "browser_upload")
+                    && policy::effect(&details)
                         .map(|effect| {
                             policy::effect_allowed(task.scope.as_deref().unwrap_or(""), effect)
                         })
                         .transpose()?
                         .unwrap_or(true)
-                    {
-                        desktop_coordinator::watch(&task.task_id, cancellation.clone());
-                        return Ok(());
-                    }
+                {
+                    desktop_coordinator::watch(&task.task_id, cancellation.clone());
+                    return Ok(());
                 }
             }
         }
@@ -1021,12 +1021,14 @@ impl AutomationManager {
         }
         if let Some((session, target)) = desktop_session {
             let mut task = session.task.lock().unwrap();
-            if !cancellation.is_cancelled() && !task.paused() {
-                if result.is_ok() && !target.is_empty() {
-                    desktop_coordinator::claim(&task.task_id, &target)?;
-                    if !task.targets.contains(&target) {
-                        task.targets.push(target);
-                    }
+            if !cancellation.is_cancelled()
+                && !task.paused()
+                && result.is_ok()
+                && !target.is_empty()
+            {
+                desktop_coordinator::claim(&task.task_id, &target)?;
+                if !task.targets.contains(&target) {
+                    task.targets.push(target);
                 }
             }
         }
@@ -1050,7 +1052,7 @@ impl AutomationManager {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        for (id, _) in self.sessions.lock().await.iter() {
+        for id in self.sessions.lock().await.keys() {
             browser_bridge::disconnect(id);
         }
         for session in &sessions {
@@ -3407,7 +3409,7 @@ async fn computer_tool(
         };
         session.computer.lock().unwrap().verify_window_frame(
             required_str(args, "frameId")?,
-            required_str(&image, "data")?,
+            required_str(image, "data")?,
             serde_json::from_value(image["windowBounds"].clone())
                 .map_err(|_| "invalid_window_bounds")?,
             point,
@@ -3595,7 +3597,7 @@ async fn computer_tool(
                 }
                 let image = &captured["capture"];
                 let frame = session.computer.lock().unwrap().window_frame(
-                    required_str(&image, "data")?,
+                    required_str(image, "data")?,
                     serde_json::from_value(image["windowBounds"].clone())
                         .map_err(|_| "invalid_window_bounds")?,
                     guard["application"].as_str().unwrap_or("目标应用"),

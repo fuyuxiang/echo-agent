@@ -250,19 +250,19 @@ fn trusted_parent() -> bool {
         }
         let end = bytes.iter().position(|b| *b == 0).unwrap_or(n as usize);
         use std::os::unix::ffi::OsStrExt;
-        return std::path::Path::new(std::ffi::OsStr::from_bytes(&bytes[..end]))
+        std::path::Path::new(std::ffi::OsStr::from_bytes(&bytes[..end]))
             .canonicalize()
             .ok()
             .as_ref()
-            == Some(&executable);
+            == Some(&executable)
     }
     #[cfg(target_os = "linux")]
     {
-        return std::fs::read_link(format!("/proc/{}/exe", unsafe { libc::getppid() }))
+        std::fs::read_link(format!("/proc/{}/exe", unsafe { libc::getppid() }))
             .ok()
             .and_then(|p| p.canonicalize().ok())
             .as_ref()
-            == Some(&executable);
+            == Some(&executable)
     }
     #[cfg(target_os = "windows")]
     unsafe {
@@ -301,11 +301,11 @@ fn trusted_parent() -> bool {
         if ok == 0 {
             return false;
         }
-        return std::path::PathBuf::from(String::from_utf16_lossy(&text[..size as usize]))
+        std::path::PathBuf::from(String::from_utf16_lossy(&text[..size as usize]))
             .canonicalize()
             .ok()
             .as_ref()
-            == Some(&executable);
+            == Some(&executable)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {

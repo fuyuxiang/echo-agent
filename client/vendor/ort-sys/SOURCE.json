@@ -1,0 +1,15 @@
+{
+  "upstream": "https://crates.io/crates/ort-sys/2.0.0-rc.10",
+  "version": "2.0.0-rc.10",
+  "license": "MIT OR Apache-2.0",
+  "change": "Support both Cargo OUT_DIR layouts, create library destinations and retain DLLs beside test harnesses when Windows symlinks are unavailable. ONNX Runtime ABI and download digests remain unchanged.",
+  "references": [
+    "https://github.com/pykeio/ort/blob/main/ort-sys/build/dynamic_link.rs",
+    "https://github.com/tauri-apps/tauri/blob/dev/crates/tauri-build/src/lib.rs"
+  ],
+  "patchedSha256": {
+    "Cargo.toml": "506232a429dff70c5c07bff6810394b325d88ebd2b09141a9ba649b3e9b997b1",
+    "build.rs": "e9bf3861997a18da9ef03a5180cdc9ccab8ea8b7079344349a0a92e3684e7ba7",
+    "copy_libraries.rs": "91c9a0eb7842dad6a4cd1f112f6f10eeb700b746ab1000eee2b6264c363eca59"
+  }
+}

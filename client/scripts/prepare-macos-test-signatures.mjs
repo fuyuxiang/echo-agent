@@ -29,7 +29,7 @@ export function ownedTestExecutables(messages, workspace, targetDirectory) {
     paths.add(message.executable);
   }
   // Library + main harness + 15 integration harnesses, including session_continuation.
-  assert(paths.size > 0 && paths.size <= 17, 'Unexpected test artifact count');
+  assert(paths.size > 0 && paths.size <= 17, `Unexpected test artifact count: ${paths.size}`);
   return [...paths];
 }
 
@@ -45,17 +45,19 @@ export function prepareMacosTestSignatures(env = process.env) {
   // Keep artifact JSON private to this parser while showing compilation and
   // lock-wait progress immediately, including during long cold builds.
   { env, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] });
+  const diagnostics = [];
   if (build.status !== 0) {
     for (const line of (build.stdout ?? '').split('\n').filter(Boolean)) {
       try {
         const message = JSON.parse(line);
         if (message.reason === 'compiler-message' && message.message?.rendered) {
           process.stderr.write(message.message.rendered);
+          diagnostics.push(message.message.rendered);
         }
       } catch { /* Cargo may emit an unstructured diagnostic on failure. */ }
     }
   }
-  assert.equal(build.status, 0, 'Test compilation failed; no signing performed');
+  assert.equal(build.status, 0, `Test compilation failed; no signing performed\n${build.error?.message ?? diagnostics.join('\n').slice(-2400)}`);
   // A fresh checkout has no target directory until Cargo creates it.
   const target = realpathSync(targetPath);
   const messages = build.stdout.split('\n').filter(Boolean).map(line => JSON.parse(line));

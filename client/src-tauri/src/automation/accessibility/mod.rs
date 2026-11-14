@@ -75,7 +75,7 @@ pub(crate) fn macos_foreground_pid() -> Result<Option<i32>, String> {
     macos::foreground_pid()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 pub(crate) fn macos_restore_foreground(pid: i32) -> Result<bool, String> {
     let backend = macos::Backend::new()?;
     let app = backend

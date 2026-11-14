@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prepareMacosTestSignatures } from './prepare-macos-test-signatures.mjs';
-import { runNativeTestProcess } from './lib/native-test-process.mjs';
+import { runNativeTestProcess, reportNativeTestFailure } from './lib/native-test-process.mjs';
 assert.equal(process.argv.length, 2, 'This entry runs all host tests; arbitrary filters are not accepted');
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'echo-host-tests-')));
 const legacy = join(home, 'empty-legacy'); mkdirSync(legacy, { mode: 0o700 });
@@ -20,7 +20,20 @@ const loopbackBypass = [...new Set(['127.0.0.1', 'localhost', '::1',
 const env = { ...clean, NO_PROXY: loopbackBypass, no_proxy: loopbackBypass,
   ECHO_AGENT_HOME: home, GROK_HOME: legacy };
 console.log(`Isolated host test data: ${home}`);
-const preparation = prepareMacosTestSignatures(env);
+// Exercise the ONNX staging code on every supported host, including a clean
+// output tree and both Cargo layouts, before compiling the full application.
+const contract = join(home, `ort-library-copy-tests${process.platform === "win32" ? ".exe" : ""}`);
+let status = await runNativeTestProcess("rustc", ["--edition=2021", "--test",
+  "vendor/ort-sys/copy_libraries.rs", "-o", contract], { env });
+if (status === 0) status = await runNativeTestProcess(contract, [], { env });
+if (status !== 0) process.exit(status);
+let preparation;
+try {
+  preparation = prepareMacosTestSignatures(env);
+} catch (error) {
+  reportNativeTestFailure(1, ["", error.stack ?? String(error)], env, "Native test preparation failed");
+  throw error;
+}
 if (process.platform === 'darwin') {
   // A second Cargo build can relink a harness and discard its signature. Run
   // exactly the complete --lib --tests artifact set Cargo just compiled, with

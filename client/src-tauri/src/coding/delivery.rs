@@ -2072,7 +2072,7 @@ mod tests {
 
     #[tokio::test]
     async fn continuous_partial_commits_preserve_user_index_and_unselected_changes() {
-        let (directory, task) = commit_fixture().await;
+        let (directory, _task) = commit_fixture().await;
         let root = directory.path().to_path_buf();
         std::fs::write(root.join("user.txt"), "user staged\n").unwrap();
         git(&root, &["add", "--", "user.txt"]).await.unwrap();

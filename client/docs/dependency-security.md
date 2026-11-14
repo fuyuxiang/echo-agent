@@ -24,6 +24,10 @@ UI 审计的浏览器启动和 PNG 解码共用 `scripts/ui-review-tools.mjs`，
 
 ## Runtime 与 IDE 依赖
 
+Theia 源码与生产图中的 Hono 要求 4.13.16+、`@hono/node-server` 要求 2.1.6+；开发图的 `basic-ftp` 要求 6.2.4+。分别处理 [Hono 挂载路径绕过](https://github.com/advisories/GHSA-4m76-xfj5-7975)、[Node 适配器路径规范化差异](https://github.com/advisories/GHSA-jpvv-r467-5p4w)、[异步 WebSocket 升级中的连接重置](https://github.com/advisories/GHSA-qv5m-9pm6-hqp3)和 [FTP 目录事实解析异常](https://github.com/advisories/GHSA-5pm8-86m8-9m6r)。安全回归使用实际安装的包，验证正常请求、编码路径的鉴权边界、原始反斜杠请求拒绝及后续请求可用性，并确认恶意 FTP 事实不破坏正常文件元数据。
+
+桌面与 Agent workspace 的 `quinn-udp` 均锁至 0.5.16，修复 [RUSTSEC-2026-0538](https://rustsec.org/advisories/RUSTSEC-2026-0538.html) 所述的截断 UDP 数据报后接收循环持续忙等问题。保留 0.5 API 分支，并分别维护两份锁文件。
+
 桌面、Agent workspace、原生验收和桌面恢复 harness 的 `rustix 1.x` 锁至 `1.1.6`，修复 [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486.html)。旧版扩展属性函数在零长度缓冲区查询时，可能把未写入的内存标记为已初始化；四份独立锁文件须分别更新。文档编辑 harness 已使用修复版本，`rustix 0.38.44` 不受该公告影响，保留兼容分支，不添加审计例外。
 
 宿主和 Runtime 的 Tokio 锁至 1.53.3、ctutils 锁至 0.4.4，分别处理 [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html) 和 [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)。两个 workspace 分别更新，不以其中一个锁文件代替另一个。
@@ -63,6 +67,7 @@ VSIX 开发工具通过 `@azure/identity` 引用 MSAL。源码配置固定 Ident
 
 | 补丁 | 用途与兼容边界 |
 | --- | --- |
+| `vendor/ort-sys/` | 保留 ort-sys 2.0.0-rc.10 / ONNX Runtime 1.22 的 API、ABI 与下载校验值，修复新版 Cargo 输出目录布局及 Windows 无符号链接权限时测试 DLL 的放置。原生测试入口在各平台验证干净构建与新旧布局。 |
 | `vendor/glib/` | 基于 GLib Rust bindings 0.18.5，回移 `VariantStrIter` 的可变输出指针修复，保留 Tauri 在 Linux 上依赖的 GTK3 ABI。由 `src-tauri/Cargo.toml` 的 patch 选用。 |
 | `vendor/lru-0.12/`、`vendor/lru-0.16/` | 分别基于 lru 0.12.5、0.16.4；修复析构可能 panic 时的节点脱链顺序，并为旧版本回移迭代器共享键引用修复。Agent workspace 和 fuzz workspace 各自配置 patch。 |
 | `vendor/theia-platform/security/braces/` | 基于 braces 3.0.3，限制嵌套解析和调用方提供的 AST 遍历深度。通过 npm workspace 链接选用。 |

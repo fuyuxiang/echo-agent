@@ -11,7 +11,40 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::tungstenite::handshake::server::{
+    Callback, ErrorResponse, Request, Response,
+};
 use tokio_util::sync::CancellationToken;
+
+struct PairingHandshake {
+    expected: String,
+    host: String,
+}
+
+impl Callback for PairingHandshake {
+    fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+        let origin = request
+            .headers()
+            .get("origin")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if request.uri().path() != self.expected
+            || !origin.starts_with("chrome-extension://")
+            || request
+                .headers()
+                .get("host")
+                .and_then(|value| value.to_str().ok())
+                != Some(self.host.as_str())
+        {
+            return Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(403)
+                .body(Some("pairing denied".into()))
+                .unwrap());
+        }
+        Ok(response)
+    }
+}
+
 type Command = (Value, oneshot::Sender<Result<Value, String>>);
 static CONNECTIONS: OnceLock<Mutex<HashMap<String, Arc<Connection>>>> = OnceLock::new();
 static PAIRINGS: OnceLock<Mutex<HashMap<String, (String, CancellationToken)>>> = OnceLock::new();
@@ -108,28 +141,8 @@ pub async fn pair(
             let Ok(Ok((socket, _))) = accepted else { break };
             let expected = format!("/{token}");
             let host = address.to_string();
-            let handshake = tokio_tungstenite::accept_hdr_async(
-                socket,
-                move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                      response| {
-                    let origin = request
-                        .headers()
-                        .get("origin")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("");
-                    if request.uri().path() != expected
-                        || !origin.starts_with("chrome-extension://")
-                        || request.headers().get("host").and_then(|v| v.to_str().ok())
-                            != Some(host.as_str())
-                    {
-                        return Err(tokio_tungstenite::tungstenite::http::Response::builder()
-                            .status(403)
-                            .body(Some("pairing denied".into()))
-                            .unwrap());
-                    }
-                    Ok(response)
-                },
-            );
+            let handshake =
+                tokio_tungstenite::accept_hdr_async(socket, PairingHandshake { expected, host });
             let Ok(Ok(socket)) = tokio::time::timeout(Duration::from_secs(3), handshake).await
             else {
                 continue;
@@ -192,6 +205,53 @@ pub async fn pair(
 mod tests {
     use super::*;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    #[test]
+    fn pairing_checks_token_host_and_extension_origin_independently() {
+        for (path, host, origin, accepted) in [
+            (
+                "/token",
+                "127.0.0.1:1234",
+                "chrome-extension://synthetic",
+                true,
+            ),
+            (
+                "/wrong",
+                "127.0.0.1:1234",
+                "chrome-extension://synthetic",
+                false,
+            ),
+            (
+                "/token",
+                "untrusted.example",
+                "chrome-extension://synthetic",
+                false,
+            ),
+            (
+                "/token",
+                "127.0.0.1:1234",
+                "https://untrusted.example",
+                false,
+            ),
+        ] {
+            let request = Request::builder()
+                .uri(path)
+                .header("host", host)
+                .header("origin", origin)
+                .body(())
+                .unwrap();
+            let response = Response::builder().status(101).body(()).unwrap();
+            let result = PairingHandshake {
+                expected: "/token".into(),
+                host: "127.0.0.1:1234".into(),
+            }
+            .on_request(&request, response);
+            if accepted {
+                assert_eq!(result.unwrap().status(), 101);
+            } else {
+                assert_eq!(result.unwrap_err().status(), 403);
+            }
+        }
+    }
     #[tokio::test]
     async fn pairing_requires_extension_origin_and_routes_only_its_session() {
         let session = uuid::Uuid::now_v7().to_string();

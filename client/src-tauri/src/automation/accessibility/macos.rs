@@ -448,6 +448,7 @@ impl Element {
     }
 }
 pub struct Backend;
+#[cfg(test)]
 pub(super) fn element_pid(e: &Element) -> i32 {
     e.app.processIdentifier()
 }

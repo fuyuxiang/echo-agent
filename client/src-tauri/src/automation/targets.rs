@@ -60,29 +60,33 @@ pub fn resolve(id_or_name: &str) -> Result<InstalledApplication, String> {
         _ => Err("ambiguous_application: choose the exact application ID".into()),
     }
 }
+#[cfg(target_os = "macos")]
+fn discovery_roots() -> Vec<(PathBuf, usize)> {
+    let mut roots = vec![
+        (PathBuf::from("/Applications"), 4),
+        (PathBuf::from("/System/Applications"), 4),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push((PathBuf::from(home).join("Applications"), 4));
+    }
+    roots
+}
+#[cfg(target_os = "windows")]
+fn discovery_roots() -> Vec<(PathBuf, usize)> {
+    windows_catalog::roots(|name| std::env::var_os(name))
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn discovery_roots() -> Vec<(PathBuf, usize)> {
+    Vec::new()
+}
 fn discover() -> Vec<InstalledApplication> {
-    let mut roots = vec![];
-    #[cfg(target_os = "macos")]
-    {
-        roots.extend([
-            (PathBuf::from("/Applications"), 4),
-            (PathBuf::from("/System/Applications"), 4),
-        ]);
-        if let Some(home) = std::env::var_os("HOME") {
-            roots.push((PathBuf::from(home).join("Applications"), 4));
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        roots.extend(windows_catalog::roots(|name| std::env::var_os(name)));
-    }
     let mut result = vec![];
     let mut seen = HashSet::new();
     #[cfg(target_os = "windows")]
     for path in windows_catalog::registered_paths() {
         add_application(&path, &mut seen, &mut result);
     }
-    for (root, depth) in roots {
+    for (root, depth) in discovery_roots() {
         let mut visited = 0;
         scan(
             &root,

@@ -353,7 +353,7 @@ fn verify_foreground_region(
                         ),
                         &image,
                     );
-                    if context.data().chunks_exact(4).all(|p| p[3] == 0) {
+                    if context.data().as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
                         continue;
                     }
                 }

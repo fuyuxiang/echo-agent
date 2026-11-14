@@ -8,7 +8,6 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UserInput {
     Move,
-    Edit,
     Key,
     Button,
     Scroll,
@@ -266,9 +265,9 @@ mod tests {
         let _b = begin_input("run", Some(102), false, &b).unwrap();
         user_input(Some(101), UserInput::Move);
         assert!(!a.is_cancelled() && !b.is_cancelled());
-        user_input(Some(103), UserInput::Edit);
+        user_input(Some(103), UserInput::Key);
         assert!(!a.is_cancelled() && !b.is_cancelled());
-        user_input(Some(101), UserInput::Edit);
+        user_input(Some(101), UserInput::Key);
         assert!(a.is_cancelled());
         assert!(!b.is_cancelled() && !task.is_cancelled());
         assert!(begin_input("run", Some(101), false, &task.child_token()).is_err());
@@ -276,7 +275,7 @@ mod tests {
         assert!(begin_input("run", Some(101), false, &task.child_token()).is_err());
         assert!(begin_input("new-user-turn", Some(101), false, &task.child_token()).is_ok());
         assert!(begin_input("run", Some(104), false, &task.child_token()).is_ok());
-        user_input(Some(103), UserInput::Edit);
+        user_input(Some(103), UserInput::Key);
         assert!(begin_input("run", None, true, &task.child_token()).is_err());
         release("background-test");
         *INPUT.lock().unwrap() = None;
@@ -288,7 +287,7 @@ mod tests {
         let task = CancellationToken::new();
         let action = task.child_token();
         let _lease = begin_input("run", Some(105), true, &action).unwrap();
-        user_input(Some(777), UserInput::Edit);
+        user_input(Some(777), UserInput::Key);
         assert!(action.is_cancelled());
         assert!(!task.is_cancelled());
         drop(_lease);
@@ -306,7 +305,7 @@ mod tests {
         *INPUT.lock().unwrap() = None;
         let task = CancellationToken::new();
         drop(begin_input("thinking-run", Some(180), false, &task.child_token()).unwrap());
-        user_input(Some(180), UserInput::Edit);
+        user_input(Some(180), UserInput::Key);
         INPUT.lock().unwrap().as_mut().unwrap().recent.clear();
         assert!(!task.is_cancelled());
         assert!(begin_input("thinking-run", Some(180), false, &task.child_token()).is_err());

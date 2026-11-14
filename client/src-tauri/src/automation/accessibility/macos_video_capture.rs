@@ -55,7 +55,21 @@ unsafe extern "C" {
     fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> *mut AnyObject;
 }
 extern_protocol!(
+    /// Receives video frames on the configured AVFoundation capture queue.
+    ///
+    /// # Safety
+    ///
+    /// Implementations must use AVFoundation's callback ABI and only access a
+    /// sample buffer during its callback unless they explicitly retain it.
+    #[expect(
+        clippy::missing_safety_doc,
+        reason = "objc2 forwards documented trait through an opaque item macro; safety contract is above"
+    )]
     unsafe trait AVCaptureVideoDataOutputSampleBufferDelegate: NSObjectProtocol {
+        /// # Safety
+        ///
+        /// AVFoundation must provide live output/connection objects and a sample
+        /// buffer retained for the duration of this callback.
         #[unsafe(method(captureOutput:didOutputSampleBuffer:fromConnection:))]
         #[optional]
         unsafe fn output(
@@ -139,7 +153,12 @@ unsafe fn sample_png(sample: *const SampleBuffer) -> Option<Vec<u8>> {
         let row = unsafe { std::slice::from_raw_parts(base.add(y * stride), width * 4) };
         let bytes: &mut [u8] = image.as_mut();
         let target = &mut bytes[y * width * 4..(y + 1) * width * 4];
-        for (rgba, bgra) in target.chunks_exact_mut(4).zip(row.chunks_exact(4)) {
+        for (rgba, bgra) in target
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(row.as_chunks::<4>().0.iter())
+        {
             rgba.copy_from_slice(&[bgra[2], bgra[1], bgra[0], bgra[3]]);
         }
     }

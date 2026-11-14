@@ -67,12 +67,12 @@ pub struct ComputerController {
 // Crate-internal dispatch used only by the native worker after its retained
 // window is approved, activated, and its foreground/protected focus rechecked.
 // This is not an IPC/MCP entry point; legacy frame-based key() is unchanged.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 pub(super) fn key_after_native_focus(key: &str, modifiers: &[String]) -> Result<(), String> {
     platform::key(key, modifiers)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 pub(super) fn click_after_native_target(x: f64, y: f64, count: u32) -> Result<(), String> {
     platform::click(x, y, "left", count)
 }
@@ -249,9 +249,6 @@ impl ComputerController {
         platform::displays()
     }
 
-    pub fn screenshot(&mut self, display_id: Option<&str>) -> Result<ScreenshotFrame, String> {
-        self.screenshot_region(display_id, None)
-    }
     pub fn screenshot_region(
         &mut self,
         display_id: Option<&str>,
@@ -412,9 +409,6 @@ impl ComputerController {
         Ok(())
     }
 
-    pub fn scroll(&mut self, frame_id: &str, delta_x: i32, delta_y: i32) -> Result<(), String> {
-        self.scroll_at(frame_id, delta_x, delta_y, None)
-    }
     pub fn scroll_at(
         &mut self,
         frame_id: &str,
@@ -786,24 +780,6 @@ mod platform {
             id: pid.to_string(),
             name,
         })
-    }
-
-    pub fn restore_foreground(target: &ForegroundTarget) -> Result<(), String> {
-        let pid = target
-            .id
-            .parse::<libc::pid_t>()
-            .map_err(|_| "已记录的 macOS 目标进程无效".to_string())?;
-        if super::super::accessibility::macos_foreground_pid()? == Some(pid) {
-            return Ok(());
-        }
-        if super::super::accessibility::macos_restore_foreground(pid)? {
-            Ok(())
-        } else {
-            Err(format!(
-                "无法切回截图时的目标应用“{}”，操作已取消",
-                target.name
-            ))
-        }
     }
 
     pub fn displays() -> Result<Vec<DisplayInfo>, String> {
@@ -1266,31 +1242,6 @@ mod platform {
         })
     }
 
-    pub fn restore_foreground(target: &ForegroundTarget) -> Result<(), String> {
-        let address = target
-            .id
-            .parse::<usize>()
-            .map_err(|_| "已记录的 Windows 目标窗口无效".to_string())?;
-        let window = address as windows_sys::Win32::Foundation::HWND;
-        if unsafe { IsWindow(window) } == 0 {
-            return Err(format!("目标窗口“{}”已关闭，请重新截图", target.name));
-        }
-        if unsafe { GetForegroundWindow() } == window {
-            return Ok(());
-        }
-        unsafe {
-            ShowWindow(window, SW_RESTORE);
-        }
-        if unsafe { SetForegroundWindow(window) } == 0 {
-            Err(format!(
-                "无法切回截图时的目标窗口“{}”，操作已取消",
-                target.name
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
     pub fn displays() -> Result<Vec<DisplayInfo>, String> {
         unsafe extern "system" fn collect_monitor(
             monitor: HMONITOR,
@@ -1635,9 +1586,8 @@ mod platform {
     use super::*;
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{
-        AtomEnum, ConfigureWindowAux, ConnectionExt as _, ImageFormat, ImageOrder, InputFocus,
-        StackMode, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
-        MOTION_NOTIFY_EVENT,
+        AtomEnum, ConnectionExt as _, ImageFormat, ImageOrder, BUTTON_PRESS_EVENT,
+        BUTTON_RELEASE_EVENT, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT,
     };
     use x11rb::protocol::xtest::ConnectionExt as _;
     use x11rb::rust_connection::RustConnection;
@@ -1720,30 +1670,6 @@ mod platform {
             id: window.to_string(),
             name,
         })
-    }
-
-    pub fn restore_foreground(target: &ForegroundTarget) -> Result<(), String> {
-        let (connection, _) = connection_with_xtest()?;
-        let window = target
-            .id
-            .parse::<u32>()
-            .map_err(|_| "已记录的 X11 目标窗口无效".to_string())?;
-        connection
-            .configure_window(
-                window,
-                &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-            )
-            .map_err(|error| format!("置顶 X11 目标窗口失败：{error}"))?
-            .check()
-            .map_err(|error| format!("目标窗口“{}”已不可用：{error}", target.name))?;
-        connection
-            .set_input_focus(InputFocus::PARENT, window, CURRENT_TIME)
-            .map_err(|error| format!("聚焦 X11 目标窗口失败：{error}"))?
-            .check()
-            .map_err(|error| format!("无法切回目标窗口“{}”：{error}", target.name))?;
-        connection
-            .flush()
-            .map_err(|error| format!("刷新 X11 窗口状态失败：{error}"))
     }
 
     pub fn displays() -> Result<Vec<DisplayInfo>, String> {

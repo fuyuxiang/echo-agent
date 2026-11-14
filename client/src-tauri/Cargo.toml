@@ -190,6 +190,8 @@ codegen-units = 16
 members = ["."]
 
 [patch.crates-io]
+# Preserve ONNX 1.22 ABI while supporting both Cargo build-output layouts.
+ort-sys = { path = "../vendor/ort-sys" }
 # Same 0.5.0 API/dependencies, fixing Windows argv and macOS plist encoding.
 auto-launch = { path = "../vendor/auto-launch" }
 

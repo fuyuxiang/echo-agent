@@ -36,16 +36,21 @@ export async function runNativeTestProcess(command, args, options = {}) {
   });
   await Promise.all(logs);
   if (status !== 0 && env.GITHUB_ACTIONS === "true") {
-    // libtest writes failed assertions to stdout; Cargo writes build warnings
-    // to stderr. Combining them loses stdout, and a 12k annotation is itself
-    // truncated by GitHub before its useful tail. Retain each channel within
-    // the annotation limit and preserve the complete streams as artifacts.
-    for (const [index, tail] of tails.entries()) {
-      if (!tail && (index !== 0 || tails[1])) continue;
-      const text = tail.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").slice(-2800);
-      const message = text.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-      console.error(`::error title=Native host tests failed::Exit code ${status}%0A${index === 0 ? "stdout" : "stderr"}%0A${message}`);
-    }
+    reportNativeTestFailure(status, tails, env);
   }
   return status;
+}
+
+export function reportNativeTestFailure(status, tails, env = process.env, title = "Native host tests failed") {
+  if (env.GITHUB_ACTIONS !== "true") return;
+  // libtest writes failed assertions to stdout; Cargo writes build warnings
+  // to stderr. Combining them loses stdout, and a 12k annotation is itself
+  // truncated by GitHub before its useful tail. Retain each channel within
+  // the annotation limit and preserve the complete streams as artifacts.
+  for (const [index, tail] of tails.entries()) {
+    if (!tail && (index !== 0 || tails[1])) continue;
+    const text = tail.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").slice(-2800);
+    const message = text.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+    console.error(`::error title=${title}::Exit code ${status}%0A${index === 0 ? "stdout" : "stderr"}%0A${message}`);
+  }
 }
