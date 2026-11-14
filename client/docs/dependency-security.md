@@ -28,6 +28,8 @@ Theia 源码与生产图中的 Hono 要求 4.13.16+、`@hono/node-server` 要求
 
 桌面与 Agent workspace 的 `quinn-udp` 均锁至 0.5.16，修复 [RUSTSEC-2026-0538](https://rustsec.org/advisories/RUSTSEC-2026-0538.html) 所述的截断 UDP 数据报后接收循环持续忙等问题。保留 0.5 API 分支，并分别维护两份锁文件。
 
+桌面构建辅助库要求官方 [tauri-build 2.7.4](https://crates.io/crates/tauri-build/2.7.4) 或更新的兼容 2.x 版本，同时识别 Cargo 的 `build/包名-摘要/out` 和 `build/包名/摘要/out` 布局。边车与应用资源必须复制到实际输出目录；不能继续通过固定向上三级推算目录，否则新版 Cargo 会把资源放到 `build/` 下。
+
 桌面、Agent workspace、原生验收和桌面恢复 harness 的 `rustix 1.x` 锁至 `1.1.6`，修复 [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486.html)。旧版扩展属性函数在零长度缓冲区查询时，可能把未写入的内存标记为已初始化；四份独立锁文件须分别更新。文档编辑 harness 已使用修复版本，`rustix 0.38.44` 不受该公告影响，保留兼容分支，不添加审计例外。
 
 宿主和 Runtime 的 Tokio 锁至 1.53.3、ctutils 锁至 0.4.4，分别处理 [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html) 和 [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)。两个 workspace 分别更新，不以其中一个锁文件代替另一个。
