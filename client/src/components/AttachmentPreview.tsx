@@ -76,10 +76,10 @@ function PreviewContent({ path, cwd }: { path: string; cwd?: string }) {
       {state.error ? <div className="attachment-preview__empty" role="alert"><span>{state.error}</span><button type="button" onClick={retry}><RotateCw size={15} />重新加载</button></div>
         : state.content === undefined ? <div className="attachment-preview__empty" role="status">正在加载附件…</div>
         : kind === "image" ? <AttachmentImage key={attempt} src={state.content} name={attachmentBasename(path)} onError={() => setState({ error: "图片无法显示，文件可能已损坏。可重新加载或用系统应用打开原件。" })} />
-        : <Suspense fallback={<div className="attachment-preview__empty" role="status">正在准备文件预览…</div>}><FilePreview filename={attachmentBasename(path)} content={state.content} /></Suspense>}
+        : <Suspense fallback={<div className="attachment-preview__empty" role="status">正在准备文件预览…</div>}><FilePreview filename={attachmentBasename(path)} path={path} content={state.content} onReload={retry} /></Suspense>}
     </div>
     <footer className="attachment-preview__footer">
-      <span>{kind === "docx" || kind === "pptx" || kind === "sheet" ? "内容预览，完整排版请查看原件" : "预览不会修改或发送附件"}</span>
+      <span>预览不会修改或发送附件</span>
       <button type="button" onClick={() => void open()} disabled={opening}><ExternalLink size={15} />{opening ? "正在打开…" : "用系统应用打开"}</button>
       {openError && <p role="alert">{openError}</p>}
     </footer>

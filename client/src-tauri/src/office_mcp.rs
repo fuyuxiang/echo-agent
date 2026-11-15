@@ -245,6 +245,10 @@ async fn handle_post(
 
 async fn call_tool(app: &AppHandle, session_id: &str, params: &Value) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    if name == "office_verify" {
+        let args = params.get("arguments").cloned().ok_or("缺少文档参数")?;
+        return verify_for_session(app, session_id, args).await;
+    }
     if matches!(name, "office_document_read" | "office_document_update") {
         let args = params.get("arguments").ok_or("缺少文档参数")?;
         let path = args
@@ -357,6 +361,33 @@ async fn call_tool(app: &AppHandle, session_id: &str, params: &Value) -> Result<
     )
     .await?;
     serde_json::to_value(receipt).map_err(|error| error.to_string())
+}
+
+async fn verify_for_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    mut args: Value,
+) -> Result<Value, String> {
+    let requested = args["path"].as_str().ok_or("缺少文档路径")?;
+    let cwd = app
+        .state::<crate::commands::AppState>()
+        .session_workspace(session_id)?;
+    let access = app.state::<crate::shell_fs::FilesystemAccess>();
+    let workspace = access.require_workspace(&cwd.to_string_lossy())?;
+    if dunce::simplified(&workspace) != dunce::simplified(&cwd) {
+        return Err("原工作目录已被链接到其他位置，请恢复原目录".into());
+    }
+    let path = crate::document_verification::workspace_path(&workspace, requested)?;
+    let path = access.require_authorized_file(&path)?;
+    args["path"] = json!(path);
+    tokio::task::spawn_blocking(move || {
+        crate::document_verification::verify(
+            &args,
+            &echo_agent_tools::implementations::read_file::pdf::extract_pdf_plain_text_cursor,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 pub(crate) fn creation_destination(
@@ -498,6 +529,76 @@ pub fn persist_registration(tx: &echo_agent_acp::AcpAgentTx, session_id: &str) {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn office_verification_uses_live_workspace_without_any_desktop_task() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let workspace = dunce::canonicalize(root.path()).unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let other_workspace = dunce::canonicalize(other.path()).unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::commands::AppState::default())
+            .manage(crate::shell_fs::FilesystemAccess::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let access = app.state::<crate::shell_fs::FilesystemAccess>();
+        access
+            .authorize_workspace(workspace.to_str().unwrap())
+            .unwrap();
+        access
+            .authorize_workspace(other_workspace.to_str().unwrap())
+            .unwrap();
+        let session = format!("office-verify-{}", uuid::Uuid::now_v7());
+        let foreign_session = format!("office-verify-{}", uuid::Uuid::now_v7());
+        let state = app.state::<crate::commands::AppState>();
+        state
+            .record_session_workspace(&session, &workspace)
+            .unwrap();
+        state
+            .record_session_workspace(&foreign_session, &other_workspace)
+            .unwrap();
+        let output = workspace.join("春天.docx");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&output).unwrap());
+        zip.start_file(
+            "word/document.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all("<w:document xmlns:w='word'><w:body><w:p><w:r><w:t>春天，万物生长</w:t></w:r></w:p></w:body></w:document>".as_bytes()).unwrap();
+        zip.finish().unwrap();
+        let original = std::fs::read(&output).unwrap();
+        assert!(crate::meta::agent_mode(&session).is_none());
+        assert!(crate::meta::desktop_task_scope(&session).is_none());
+
+        for path in ["春天.docx", output.to_str().unwrap()] {
+            let result = verify_for_session(
+                app.handle(),
+                &session,
+                json!({"path":path,"containsText":["春天", "万物生长"]}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result["verified"], true);
+        }
+        assert!(verify_for_session(
+            app.handle(),
+            &foreign_session,
+            json!({"path":output,"containsText":["春天"]})
+        )
+        .await
+        .is_err());
+        assert!(verify_for_session(
+            app.handle(),
+            "unknown-session",
+            json!({"path":output,"containsText":["春天"]})
+        )
+        .await
+        .is_err());
+        assert!(crate::meta::agent_mode(&session).is_none());
+        assert!(crate::meta::desktop_task_scope(&session).is_none());
+        assert_eq!(std::fs::read(&output).unwrap(), original);
+    }
+
     #[test]
     fn output_paths_create_missing_parents_without_escaping_workspace() {
         let root = tempfile::tempdir().unwrap();
@@ -565,6 +666,22 @@ mod tests {
         assert!(properties.get("outputPath").is_some());
         assert!(properties.get("workbook").is_some());
         assert!(properties.get("slides").is_some());
+        let verification = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "office_verify")
+            .unwrap();
+        assert_eq!(verification["inputSchema"]["required"], json!(["path"]));
+        assert!(verification["inputSchema"]["properties"]
+            .get("containsText")
+            .is_some());
+        assert!(verification["inputSchema"]["properties"]
+            .get("cells")
+            .is_some());
+        assert!(verification["inputSchema"]["properties"]
+            .get("turnId")
+            .is_none());
     }
 
     #[test]

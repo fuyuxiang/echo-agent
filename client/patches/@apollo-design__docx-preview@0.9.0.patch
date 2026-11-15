@@ -1,0 +1,114 @@
+diff --git a/dist/docx-preview.cjs b/dist/docx-preview.cjs
+index 2774cd0d9a754743bef084d65510c7ada72bb151..0d4cdd68eb93cd4f7a890b336f67148dc91a381b 100644
+--- a/dist/docx-preview.cjs
++++ b/dist/docx-preview.cjs
+@@ -3172,12 +3172,18 @@
+ 			let current = [];
+ 			let prev;
+ 			const result = [current];
+-			for (let s of sections) {
+-				current.push(s);
+-				if (this.options.ignoreLastRenderedPageBreak || s.pageBreak || this.isPageBreakSection(prev, s.sectProps)) result.push(current = []);
+-				prev = s.sectProps;
++			for (const section of sections) {
++				// Section properties belong to the section that starts here. A missing
++				// w:type means nextPage; continuous sections retain the current page.
++				const nextPageSection = prev && prev !== section.sectProps
++					&& !["continuous", "nextColumn"].includes(section.sectProps?.type ?? "nextPage");
++				if (current.length && (nextPageSection || this.isPageBreakSection(prev, section.sectProps)))
++					result.push(current = []);
++				current.push(section);
++				if (section.pageBreak) result.push(current = []);
++				prev = section.sectProps;
+ 			}
+-			return result.filter((x) => x.length > 0);
++			return result.filter((page) => page.length > 0);
+ 		}
+ 		renderWrapper(children) {
+ 			return this.h({
+@@ -6185,7 +6191,8 @@ section.${c}>footer { z-index: 1; }
+ 		bodyContainer.innerHTML = "";
+ 		if ((_ops$fonts = ops.fonts) === null || _ops$fonts === void 0 ? void 0 : _ops$fonts.length) nodes.unshift(renderFontFaces(ops.fonts));
+ 		for (let n of nodes) (n.nodeName === "STYLE" ? styleContainer : bodyContainer).appendChild(n);
+-		const fontSet = typeof document !== "undefined" ? document.fonts : null;
++		// Measure only after fonts in the actual rendering document have loaded.
++	const fontSet = bodyContainer.ownerDocument?.fonts;
+ 		if (((_ops$fonts2 = ops.fonts) === null || _ops$fonts2 === void 0 ? void 0 : _ops$fonts2.length) && (fontSet === null || fontSet === void 0 ? void 0 : fontSet.load)) try {
+ 			await Promise.all(ops.fonts.map((f) => {
+ 				var _f$style, _f$weight;
+diff --git a/dist/docx-preview.js b/dist/docx-preview.js
+index 2774cd0d9a754743bef084d65510c7ada72bb151..0d4cdd68eb93cd4f7a890b336f67148dc91a381b 100644
+--- a/dist/docx-preview.js
++++ b/dist/docx-preview.js
+@@ -3172,12 +3172,18 @@
+ 			let current = [];
+ 			let prev;
+ 			const result = [current];
+-			for (let s of sections) {
+-				current.push(s);
+-				if (this.options.ignoreLastRenderedPageBreak || s.pageBreak || this.isPageBreakSection(prev, s.sectProps)) result.push(current = []);
+-				prev = s.sectProps;
++			for (const section of sections) {
++				// Section properties belong to the section that starts here. A missing
++				// w:type means nextPage; continuous sections retain the current page.
++				const nextPageSection = prev && prev !== section.sectProps
++					&& !["continuous", "nextColumn"].includes(section.sectProps?.type ?? "nextPage");
++				if (current.length && (nextPageSection || this.isPageBreakSection(prev, section.sectProps)))
++					result.push(current = []);
++				current.push(section);
++				if (section.pageBreak) result.push(current = []);
++				prev = section.sectProps;
+ 			}
+-			return result.filter((x) => x.length > 0);
++			return result.filter((page) => page.length > 0);
+ 		}
+ 		renderWrapper(children) {
+ 			return this.h({
+@@ -6185,7 +6191,8 @@ section.${c}>footer { z-index: 1; }
+ 		bodyContainer.innerHTML = "";
+ 		if ((_ops$fonts = ops.fonts) === null || _ops$fonts === void 0 ? void 0 : _ops$fonts.length) nodes.unshift(renderFontFaces(ops.fonts));
+ 		for (let n of nodes) (n.nodeName === "STYLE" ? styleContainer : bodyContainer).appendChild(n);
+-		const fontSet = typeof document !== "undefined" ? document.fonts : null;
++		// Measure only after fonts in the actual rendering document have loaded.
++	const fontSet = bodyContainer.ownerDocument?.fonts;
+ 		if (((_ops$fonts2 = ops.fonts) === null || _ops$fonts2 === void 0 ? void 0 : _ops$fonts2.length) && (fontSet === null || fontSet === void 0 ? void 0 : fontSet.load)) try {
+ 			await Promise.all(ops.fonts.map((f) => {
+ 				var _f$style, _f$weight;
+diff --git a/dist/docx-preview.mjs b/dist/docx-preview.mjs
+index e9c1a6d0d7ad122313cb05d9fe9fddbf36a42aef..3959b64e965446c23937ac2d6be40ebe1b980738 100644
+--- a/dist/docx-preview.mjs
++++ b/dist/docx-preview.mjs
+@@ -3116,12 +3116,18 @@ var HtmlRenderer = class {
+ 		let current = [];
+ 		let prev;
+ 		const result = [current];
+-		for (let s of sections) {
+-			current.push(s);
+-			if (this.options.ignoreLastRenderedPageBreak || s.pageBreak || this.isPageBreakSection(prev, s.sectProps)) result.push(current = []);
+-			prev = s.sectProps;
++		for (const section of sections) {
++			// Section properties belong to the section that starts here. A missing
++			// w:type means nextPage; continuous sections retain the current page.
++			const nextPageSection = prev && prev !== section.sectProps
++				&& !["continuous", "nextColumn"].includes(section.sectProps?.type ?? "nextPage");
++			if (current.length && (nextPageSection || this.isPageBreakSection(prev, section.sectProps)))
++				result.push(current = []);
++			current.push(section);
++			if (section.pageBreak) result.push(current = []);
++			prev = section.sectProps;
+ 		}
+-		return result.filter((x) => x.length > 0);
++		return result.filter((page) => page.length > 0);
+ 	}
+ 	renderWrapper(children) {
+ 		return this.h({
+@@ -6097,7 +6103,8 @@ async function renderAsync(data, bodyContainer, styleContainer, userOptions) {
+ 	bodyContainer.innerHTML = "";
+ 	if (ops.fonts?.length) nodes.unshift(renderFontFaces(ops.fonts));
+ 	for (let n of nodes) (n.nodeName === "STYLE" ? styleContainer : bodyContainer).appendChild(n);
+-	const fontSet = typeof document !== "undefined" ? document.fonts : null;
++	// Measure only after fonts in the actual rendering document have loaded.
++	const fontSet = bodyContainer.ownerDocument?.fonts;
+ 	if (ops.fonts?.length && fontSet?.load) try {
+ 		await Promise.all(ops.fonts.map((f) => fontSet.load(`${f.style ?? "normal"} ${f.weight ?? "normal"} 12px "${f.name.replace(/["\\\r\n]/g, "")}"`)));
+ 	} catch {}

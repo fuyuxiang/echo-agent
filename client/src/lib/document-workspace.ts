@@ -16,6 +16,7 @@ export interface OpenDocument {
 export interface DocumentEditContext { sessionId: string; path: string; title: string; revision: number; selectedText: string }
 export interface DocumentSnapshot {
   opened: OpenDocument | null; record: EditableDocument | null; draft: DocumentNode | null;
+  hasUnsavedChanges: boolean;
   phase: 'loading'|'ready'|'dirty'|'saving'|'conflict'|'error'; message: string; publishing: boolean;
   syncError: string;
   operation: 'restore'|'copy'|'reload'|null;
@@ -27,7 +28,7 @@ function changed(sessionId: string) {
 }
 /** Save queues outlive the panel: switching files must not drop a pending edit. */
 export class DocumentSession {
-  private state: DocumentSnapshot = {opened:null,record:null,draft:null,phase:'loading',message:'',publishing:false,syncError:'',operation:null,failure:null};
+  private state: DocumentSnapshot = {opened:null,record:null,draft:null,hasUnsavedChanges:false,phase:'loading',message:'',publishing:false,syncError:'',operation:null,failure:null};
   private listeners = new Set<() => void>();
   private dirty = false;
   private saveTimer?: ReturnType<typeof setTimeout>;
@@ -45,7 +46,7 @@ export class DocumentSession {
   }
   subscribe = (listener: () => void) => {this.listeners.add(listener);return () => {this.listeners.delete(listener);};};
   snapshot = () => this.state;
-  private update(patch: Partial<DocumentSnapshot>) {if(this.disposed)return;this.state={...this.state,...patch,...(patch.phase && patch.phase!=='error'?{failure:null}:{})};this.listeners.forEach(listener=>listener());}
+  private update(patch: Partial<DocumentSnapshot>) {if(this.disposed)return;this.state={...this.state,...patch,hasUnsavedChanges:this.dirty,...(patch.phase && patch.phase!=='error'?{failure:null}:{})};this.listeners.forEach(listener=>listener());}
   private retainRecovery() {
     if (this.disposed || !this.state.record || !this.state.draft) return;
     try { localStorage.setItem(this.recoveryKey,JSON.stringify({revision:this.state.record.revision,document:this.state.draft})); }

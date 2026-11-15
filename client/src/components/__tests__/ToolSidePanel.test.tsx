@@ -8,6 +8,10 @@ import type { ChatMessage, ToolCallView } from "@/stores/session-store";
 import type { AutomationStatus } from "@/lib/automation-client";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+// Native authorization/byte budgets are this suite's boundary. The actual
+// renderers are covered with full binary files in the browser review.
+vi.mock("../office/OfficeWorkbench", () => ({ default: ({ filename, content }: { filename: string; content: string }) =>
+  <section aria-label={`${filename} 文档工作台`} data-content={content} /> }));
 
 function renderPanel(
   mode: ToolSidePanelMode = "artifacts",
@@ -300,10 +304,10 @@ describe("ToolSidePanel navigation collapse", () => {
       }
       return undefined;
     });
-    const { container } = renderPanel("artifacts", [artifact(path)]);
+    renderPanel("artifacts", [artifact(path)]);
     fireEvent.click(screen.getByRole("button", { name: /^qa_office_f3\.pdf/ }));
-    await waitFor(() => expect(container.querySelector("iframe[title='qa_office_f3.pdf']"))
-      .toHaveAttribute("src", "data:application/pdf;base64,JVBERi0xLjcK"));
+    expect(await screen.findByRole("region", { name: "qa_office_f3.pdf 文档工作台" }))
+      .toHaveAttribute("data-content", "data:application/pdf;base64,JVBERi0xLjcK");
     expect(screen.queryByText(/无法在面板内预览/)).not.toBeInTheDocument();
   });
 

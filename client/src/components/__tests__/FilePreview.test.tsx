@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FilePreview } from "../FilePreview";
+import { makeDocZipReader, readZipFromBase64 } from "@/lib/zip-reader";
+
+// FilePreview owns routing; rendering/layout is exercised by OfficeWorkbench
+// tests and the browser review with real binary documents.
+vi.mock("../office/OfficeWorkbench", () => ({ default: ({ filename, content }: { filename: string; content: string }) =>
+  <section aria-label={`${filename} 文档工作台`} data-content={content} /> }));
 
 describe("FilePreview", () => {
   it("markdown 渲染文件名 + Markdown 标签 + 正文", () => {
@@ -69,12 +75,10 @@ describe("FilePreview", () => {
     expect(screen.queryByText(/暂不支持内嵌预览/)).toBeNull();
   });
 
-  it("pdf 渲染 <iframe>(浏览器原生 PDF 预览)", () => {
+  it("pdf 将原始二进制交给统一工作台", async () => {
     render(<FilePreview filename="doc.pdf" content="data:application/pdf;base64,xxx" />);
-    const iframe = document.querySelector("iframe") as HTMLIFrameElement;
-    expect(iframe).not.toBeNull();
-    expect(iframe.getAttribute("src")).toContain("data:application/pdf");
-    expect(iframe.title).toBe("doc.pdf");
+    expect(await screen.findByRole("region", { name: "doc.pdf 文档工作台" }))
+      .toHaveAttribute("data-content", "data:application/pdf;base64,xxx");
   });
 
   it("pdf 不走 binary 占位", () => {
@@ -96,10 +100,9 @@ describe("FilePreview", () => {
     expect(screen.getByText(/请用系统应用打开原件/)).toBeInTheDocument();
   });
 
-  it("docx 无 docExtractor 时显示降级占位", () => {
-    render(<FilePreview filename="report.docx" content="binary" />);
-    expect(screen.getByText("Word")).toBeInTheDocument();
-    expect(screen.getByText(/请用系统应用打开原件/)).toBeInTheDocument();
+  it.each(["report.docx", "deck.pptx", "data.xlsx"])("%s 默认进入版式预览工作台", async filename => {
+    render(<FilePreview filename={filename} content="binary" />);
+    expect(await screen.findByRole("region", { name: `${filename} 文档工作台` })).toHaveAttribute("data-content", "binary");
   });
 
   it("docx 有 docExtractor 时渲染提取的段落文本", () => {
@@ -170,7 +173,7 @@ describe("FilePreview", () => {
     expect(await screen.findByText("已复制")).toBeInTheDocument();
   });
 
-  it("docx 默认解压器:从 data: URL(base64 zip)提取文本(运行时路径)", async () => {
+  it("docx 兼容文本提取器可读取 data: URL 中的 DEFLATE 内容", async () => {
     // 用 Node zlib 构造一个真实 DEFLATE docx zip,转 base64 data: URL。
     const { Buffer } = await import("node:buffer");
     const { deflateRawSync } = await import("node:zlib");
@@ -188,7 +191,7 @@ describe("FilePreview", () => {
     h.writeUInt32LE(docXml.length, 22); h.writeUInt16LE(name.length, 26); h.writeUInt16LE(0, 28);
     const zip = Buffer.concat([h, name, compressed]);
     const dataUrl = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${zip.toString("base64")}`;
-    render(<FilePreview filename="report.docx" content={dataUrl} />);
+    render(<FilePreview filename="report.docx" content={dataUrl} docExtractor={() => makeDocZipReader(readZipFromBase64(dataUrl))} />);
     expect(screen.getByText("真实文档")).toBeInTheDocument();
   });
 

@@ -1,20 +1,43 @@
-//! Read-only, bounded outcome checks for Office packages and searchable PDF text.
+//! Read-only file verification shared by Office tools and existing UI tasks.
+//! Callers authorize the path; content checks never activate desktop automation.
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     io::{Cursor, Read},
-    path::Path,
+    path::{Component, Path, PathBuf},
 };
+
+/// Resolve an existing document in the authoritative task workspace. A generated
+/// file need not have been named in the user's original request to be checked.
+pub fn workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf, String> {
+    if requested.is_empty() || requested.len() > 4096 || requested.chars().any(char::is_control) {
+        return Err("invalid_argument: document path is invalid".into());
+    }
+    let raw = Path::new(requested);
+    if raw.components().any(|c| c == Component::ParentDir) {
+        return Err("scope_denied: document path cannot contain parent traversal".into());
+    }
+    let root = workspace.canonicalize().map_err(|e| e.to_string())?;
+    let path = root.join(raw);
+    let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("unsupported_target: a regular document is required".into());
+    }
+    let path = path.canonicalize().map_err(|e| e.to_string())?;
+    if !path.starts_with(&root) {
+        return Err("scope_denied: document must belong to the current task workspace".into());
+    }
+    Ok(path)
+}
+
 pub fn verify(
-    scope: Option<&str>,
     args: &Value,
-    locations: &super::artifact::Locations,
     extract_pdf: &dyn Fn(Vec<u8>) -> Result<String, String>,
 ) -> Result<Value, String> {
     let path = args["path"].as_str().ok_or("path_required")?;
     let target = Path::new(path);
-    if !target.is_absolute() || !super::artifact::path_in_scope(scope, target, locations) {
-        return Err("scope_required: document path must be explicit in the user's task".into());
+    if !target.is_absolute() || target.components().any(|c| c == Component::ParentDir) {
+        return Err("invalid_argument: an authorized absolute document path is required".into());
     }
     let metadata = std::fs::symlink_metadata(target).map_err(|e| e.to_string())?;
     if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 32 * 1024 * 1024
@@ -307,22 +330,82 @@ mod tests {
         zip.finish().unwrap();
         Fixture(path)
     }
+
+    struct Workspace(std::path::PathBuf);
+    impl Workspace {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("echo-office-verify-{}", uuid::Uuid::now_v7()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Workspace {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
-    fn verifies_actual_word_content_and_rejects_wrong_scope_or_text() {
+    fn generated_presentation_is_verified_in_its_workspace_without_a_user_named_path() {
+        let fixture = package("pptx", &[
+            ("ppt/presentation.xml", "<p:presentation xmlns:p='ppt' xmlns:r='rel'><p:sldIdLst><p:sldId id='256' r:id='r1'/></p:sldIdLst></p:presentation>"),
+            ("ppt/_rels/presentation.xml.rels", "<Relationships><Relationship Id='r1' Target='slides/slide1.xml'/></Relationships>"),
+            ("ppt/slides/slide1.xml", "<p:sld xmlns:p='ppt' xmlns:a='drawing'><a:p><a:r><a:t>春日迟迟 · 万物生长</a:t></a:r></a:p></p:sld>"),
+        ]);
+        let workspace = Workspace::new();
+        let output = workspace.0.join("春天.pptx");
+        std::fs::copy(&fixture.0, &output).unwrap();
+        let before = std::fs::read(&output).unwrap();
+        for requested in ["春天.pptx", output.to_str().unwrap()] {
+            let path = workspace_path(&workspace.0, requested).unwrap();
+            let args = json!({"path":path,"containsText":["春日迟迟", "万物生长"]});
+            let receipt =
+                verify(&args, &|_| Err("PDF parser must not run for PPTX".into())).unwrap();
+            assert_eq!(receipt["verified"], true);
+            assert_eq!(receipt["status"], "verified_document_content");
+            let mismatch = verify(
+                &json!({"path":path,"containsText":["冬天"]}),
+                &|_| unreachable!(),
+            )
+            .unwrap();
+            assert_eq!(mismatch["verified"], false);
+            assert_eq!(mismatch["status"], "document_mismatch");
+        }
+        assert_eq!(std::fs::read(&output).unwrap(), before);
+    }
+
+    #[test]
+    fn workspace_verification_rejects_foreign_files_traversal_and_symlink_escapes() {
+        let workspace = Workspace::new();
+        let other = Workspace::new();
+        let outside = other.0.join("private.pdf");
+        std::fs::write(&outside, b"%PDF-1.4").unwrap();
+        assert!(workspace_path(&workspace.0, outside.to_str().unwrap()).is_err());
+        assert!(workspace_path(&workspace.0, "../private.pdf").is_err());
+        assert!(workspace_path(&workspace.0, "missing.pdf").is_err());
+        assert!(workspace_path(&workspace.0, "").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, workspace.0.join("linked.pdf")).unwrap();
+            assert!(workspace_path(&workspace.0, "linked.pdf").is_err());
+            std::os::unix::fs::symlink(&other.0, workspace.0.join("escape")).unwrap();
+            assert!(workspace_path(&workspace.0, "escape/private.pdf").is_err());
+        }
+    }
+
+    #[test]
+    fn verifies_actual_word_content_and_rejects_wrong_text() {
         let fixture=package("docx",&[("word/document.xml","<w:document xmlns:w='word'><w:body><w:p><w:r><w:t>中文成果</w:t></w:r></w:p></w:body></w:document>")]);
         let path = fixture.0.to_str().unwrap();
         let args = json!({"path":path,"containsText":["中文成果"]});
-        let locations = super::super::artifact::Locations::default();
         assert_eq!(
-            verify(Some(path), &args, &locations, &|_| Err("unused".into())).unwrap()["verified"],
+            verify(&args, &|_| Err("unused".into())).unwrap()["verified"],
             true
         );
-        assert!(verify(Some("other"), &args, &locations, &|_| Err("unused".into())).is_err());
         assert_eq!(
             verify(
-                Some(path),
                 &json!({"path":path,"containsText":["缺失内容"]}),
-                &locations,
                 &|_| Err("unused".into())
             )
             .unwrap()["verified"],
@@ -337,16 +420,15 @@ mod tests {
             ("xl/sharedStrings.xml","<sst><si>\n<t>甲&amp;乙</t>\n</si></sst>"),
             ("xl/worksheets/sheet1.xml","<worksheet><sheetData><row r='1'><c r='A1' t='s'><v>0</v></c><c r='B1'><v>42</v></c></row></sheetData></worksheet>")]);
         let path = fixture.0.to_str().unwrap();
-        let locations = super::super::artifact::Locations::default();
         let args = json!({"path":path,"cells":[{"sheet":"客户","cell":"A1","value":"甲&乙"},{"sheet":"客户","cell":"B1","value":"42"}]});
         assert_eq!(
-            verify(Some(path), &args, &locations, &|_| Err("unused".into())).unwrap()["verified"],
+            verify(&args, &|_| Err("unused".into())).unwrap()["verified"],
             true
         );
         let mut wrong = args;
         wrong["cells"][0]["sheet"] = json!("其他表");
         assert_eq!(
-            verify(Some(path), &wrong, &locations, &|_| Err("unused".into())).unwrap()["verified"],
+            verify(&wrong, &|_| Err("unused".into())).unwrap()["verified"],
             false
         );
     }

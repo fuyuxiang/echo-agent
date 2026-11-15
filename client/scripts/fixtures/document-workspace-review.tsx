@@ -1,11 +1,12 @@
 import React, {useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import JSZip from 'jszip';
+import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType } from 'docx';
 import '../../src/styles/index.css';
 import {ToolSidePanel} from '../../src/components/ToolSidePanel';
 import {markdownToDocument} from '../../src/lib/document-model';
 import type {EditableDocument,DocumentEditContext} from '../../src/lib/document-workspace';
 import type {SessionArtifact} from '../../src/lib/session-artifacts';
+import type {DocumentNode} from '../../src/lib/document-model';
 document.documentElement.setAttribute("data-theme",new URLSearchParams(location.search).get("theme") ?? "light");
 const scenario=new URLSearchParams(location.search).get('scenario');
 const missing=scenario==='missing-source';
@@ -18,10 +19,17 @@ if(missing)records[path]={...initial,revision:2,document:markdownToDocument('# �
 const calls:{command:string;args:any}[]=[];
 const commit=()=>localStorage.setItem('document-review-records',JSON.stringify(records));
 const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value));
+const fileHash=(revision:number)=>revision.toString(16).padStart(64,'0');
+// The preview consumes actual DOCX bytes, independently of the editor's JSON.
+// Keep enough formatting here to detect stale publication and lossy routing.
+function wordBlocks(nodes:DocumentNode[]=[]):Array<Paragraph|Table> {
+  const runs=(node:DocumentNode):TextRun[]=>node.type==='text'?[new TextRun({text:node.text ?? '',bold:node.marks?.some(m=>m.type==='bold'),italics:node.marks?.some(m=>m.type==='italic')})]:(node.content??[]).flatMap(runs);
+  return nodes.map(node=>node.type==='table'?new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:(node.content??[]).map(row=>new TableRow({children:(row.content??[]).map(cell=>new TableCell({children:wordBlocks(cell.content) as Paragraph[]}))}))}):new Paragraph({children:runs(node)}));
+}
 const review={calls,records,replaceMarkdown:(text:string)=>{markdownContent=text;},delayRestore:false,delayCopy:false,delayDraftSave:false,failPublication:false,failDraftSave:false,
   releaseRestore:null as null|(()=>void),releaseCopy:null as null|(()=>void),releaseDraftSave:null as null|(()=>void),agentUpdate:(path:string,text:string)=>{
   const record=records[path];record.history.push({revision:record.revision,document:clone(record.document),actor:record.actor,savedAt:record.savedAt});
-  record.document=JSON.parse(JSON.stringify(record.document).replaceAll('6:30',text).replaceAll('7:00',text));record.revision++;record.exportedRevision=record.revision;record.actor='Agent 修改';record.savedAt=Date.now();commit();
+  record.document=JSON.parse(JSON.stringify(record.document).replaceAll('6:30',text).replaceAll('7:00',text));record.revision++;record.exportedRevision=record.revision;record.fileSha256=fileHash(record.revision);record.actor='Agent 修改';record.savedAt=Date.now();commit();
 }};
 Object.assign(window,{documentReview:review,__TAURI_INTERNALS__:{transformCallback:()=>1,unregisterCallback:()=>{},invoke:async(command:string,args:any={})=>{
   calls.push({command,args});
@@ -32,7 +40,7 @@ Object.assign(window,{documentReview:review,__TAURI_INTERNALS__:{transformCallba
     return;
   }
   if(command==='read_file_base64'){
-    const zip=new JSZip();zip.file('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>作息表</w:t></w:r></w:p></w:body></w:document>');return zip.generateAsync({type:'base64'});
+    return Packer.toBase64String(new Document({sections:[{children:wordBlocks(record?.document.content ?? initial.document.content)}]}));
   }
   if(command==='read_text_file')return markdownContent;
   if(command==='document_workspace_open') {
@@ -47,7 +55,7 @@ Object.assign(window,{documentReview:review,__TAURI_INTERNALS__:{transformCallba
     record.history.push({revision:record.revision,document:clone(record.document),actor:record.actor,savedAt:record.savedAt});
     record.document=clone(args.document);record.revision++;record.savedAt=Date.now();record.actor='手动编辑';commit();return clone(record);
   }
-  if(command==='document_workspace_publish'){if(review.failPublication)throw new Error('磁盘暂时不可写');if(record.revision!==args.expectedRevision)throw new Error('DOCUMENT_CONFLICT:文档已有新修改');record.exportedRevision=record.revision;commit();return clone(record);}
+  if(command==='document_workspace_publish'){if(review.failPublication)throw new Error('磁盘暂时不可写');if(record.revision!==args.expectedRevision)throw new Error('DOCUMENT_CONFLICT:文档已有新修改');record.exportedRevision=record.revision;record.fileSha256=fileHash(record.revision);commit();return clone(record);}
   if(command==='document_workspace_restore'){
     if(review.delayRestore)await new Promise<void>(resolve=>{review.releaseRestore=resolve;});
     if(record.revision!==args.expectedRevision)throw new Error('DOCUMENT_CONFLICT:文档已有新修改');

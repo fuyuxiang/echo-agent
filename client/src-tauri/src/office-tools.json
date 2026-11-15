@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "office_create",
-      "description": "Create real docx/pdf/xlsx/pptx using the bundled local generator; do not install Python or converters. Use markdown for basic exports, workbook for formulas/charts, or slides for an exact slide count (include the cover in the list). outputPath is relative to the task workspace, or an absolute path inside it; always honor the user's output directory/name. Never overwrites existing files. Reuse requestId for retries. Returns a verified file receipt, not proof of factual correctness. Formulas: arithmetic, comparisons, SUM/AVERAGE/MIN/MAX/COUNT/ROUND/IF/IFERROR, local/cross-sheet references. No external workbooks.",
+      "description": "Create real docx/pdf/xlsx/pptx using the bundled local generator; do not install Python or converters. Use markdown for basic exports, workbook for formulas/charts, or slides for an exact slide count (include the cover in the list). outputPath is relative to the task workspace, or an absolute path inside it; always honor the user's output directory/name. Never overwrites existing files. Reuse requestId for retries. Returns a verified file receipt, not proof of factual correctness. Formulas: arithmetic, comparisons, SUM/AVERAGE/MIN/MAX/COUNT/ROUND/IF/IFERROR, local/cross-sheet references. No external workbooks. Document generation is a file operation and does not require desktop mode. For content checks use office_verify; do not call automation_begin just to generate or verify a document.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -265,6 +265,72 @@
           {
             "required": [
               "slides"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "office_verify",
+      "description": "Read-only content verification of a DOCX/XLSX/PPTX/PDF in the current task workspace, including newly generated files whose path was not specified by the user. Use after office_create when content checks are needed. Checks requested text fragments and exact cached XLSX cell values; does not verify layout or recalculate formulas. This is a file operation: no application UI, computer tools, automation_begin, or desktop mode is needed. Supply at least one text fragment or cell check.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Existing file relative to the current task workspace, or an absolute path inside it."
+          },
+          "containsText": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64000
+            }
+          },
+          "cells": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sheet": {
+                  "type": "string"
+                },
+                "cell": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sheet",
+                "cell",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "containsText"
+            ]
+          },
+          {
+            "required": [
+              "cells"
             ]
           }
         ]

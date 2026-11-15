@@ -106,3 +106,6 @@ resources/models/diarization/
 /src-tauri/binaries/echo-meeting-speech-*
 /src-tauri/meeting-speech/target/
 /src-tauri/.meeting-speech-prepare/
+
+# Reproducible local document preview resources from locked npm packages.
+/public/document-runtime/

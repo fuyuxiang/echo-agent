@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "vite";
 import { createUiReviewBaseline } from "./ui-review-baseline.mjs";
@@ -15,6 +15,7 @@ const reviewDependencies = [
   "@tauri-apps/api/webview", "@tauri-apps/plugin-dialog", "qrcode", "react-markdown", "remark-gfm",
   "remark-breaks", "remark-math", "rehype-highlight", "rehype-katex", "rehype-sanitize", "lowlight",
   "jszip", "exceljs", "docx", "@pdf-lib/fontkit", "pdf-lib", "pptxgenjs", "@xterm/xterm", "@xterm/addon-fit",
+  "@office-kit/pptx", "@office-kit/pptx-preview", "@apollo-design/docx-preview", "pdfjs-dist/legacy/build/pdf.mjs", "ssf",
   "linkify-it", "marked", "unist-util-visit", "katex", "mermaid", "@monaco-editor/react", "monaco-editor",
   "@tiptap/react", "@tiptap/starter-kit", "@tiptap/extension-table", "@tiptap/extension-text-align",
 ];
@@ -39,6 +40,7 @@ export async function createUiReviewServer(port = 1439, {
   currentFixtures = false,
   baselineRevision,
   cacheRoot,
+  fixtureRoutes = {},
 } = {}) {
   const original = baseline ? createUiReviewBaseline(process.cwd(), { currentFixtures, revision: baselineRevision }) : null;
   const cache = original ? null : createUiReviewCache(fixture, cacheRoot);
@@ -57,6 +59,8 @@ export async function createUiReviewServer(port = 1439, {
     },
     plugins: [...(original ? [original.plugin] : []), { name: "isolated-ui-review", configureServer(server) {
       server.middlewares.use((request, response, next) => {
+        const asset = fixtureRoutes[request.url?.split('?')[0]];
+        if (asset) { response.setHeader('Content-Type', 'application/octet-stream'); response.end(readFileSync(asset)); return; }
         if (!request.url?.startsWith("/__ui-review")) return next();
         // Screenshot fixtures can freeze motion; rendering regressions must
         // exercise production transitions and prefers-reduced-motion instead.

@@ -6,6 +6,8 @@ import { Composer } from "../Composer";
 import { AttachmentList } from "../AttachmentList";
 import { saveDraftAttachments } from "@/lib/draft-attachments";
 import { attachmentSizeLabel, loadAttachmentPreview } from "@/lib/attachment-preview";
+const engines = vi.hoisted(() => ({ load: vi.fn() }));
+vi.mock("@/lib/office-preview-loaders", () => ({ loadOfficePreview: engines.load }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
@@ -21,8 +23,13 @@ async function native(command: string, args: Record<string, unknown> = {}): Prom
 }
 
 beforeEach(() => {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
   localStorage.clear();
   vi.mocked(invoke).mockReset().mockImplementation(native as typeof invoke);
+  engines.load.mockReset().mockImplementation(async (filename: string, content: string) => ({
+    kind: filename.endsWith('.pdf') ? 'pdf' : 'docx', pages: [{ label: '第 1 页', text: content, width: 595, height: 842 }], notes: [],
+    pageVisual: async () => ({ width: 595, height: 842 }), pageText: async () => content, dispose: vi.fn(),
+  }));
 });
 
 describe("attachment previews", () => {
@@ -149,7 +156,8 @@ describe("attachment previews", () => {
     render(<AttachmentList paths={["/draft/document.pdf"]} />);
     fireEvent.click(screen.getByRole("button", { name: "预览附件 document.pdf" }));
     const dialog = await screen.findByRole("dialog");
-    await waitFor(() => expect(dialog.querySelector("iframe")).toHaveAttribute("src", "data:application/pdf;base64,full-original"));
+    expect(await within(dialog).findByRole('img', { name: '第 1 页 PDF' })).toBeInTheDocument();
+    expect(engines.load).toHaveBeenCalledWith('document.pdf', 'data:application/pdf;base64,full-original', expect.any(AbortSignal));
   });
 
   it("renders readable Word content with the existing read-only document preview", async () => {
@@ -160,8 +168,28 @@ describe("attachment previews", () => {
     render(<AttachmentList paths={["/draft/check.docx"]} />);
     fireEvent.click(screen.getByRole("button", { name: "预览附件 check.docx" }));
     const dialog = await screen.findByRole("dialog");
-    expect(await within(dialog).findByText("发送前核对文档内容")).toBeInTheDocument();
+    expect(await within(dialog).findByRole('region', { name: 'check.docx 文档工作台' })).toBeInTheDocument();
+    await waitFor(() => expect(engines.load).toHaveBeenCalledWith('check.docx', `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${binary}`, expect.any(AbortSignal)));
     expect(dialog.querySelector('[contenteditable="true"]')).toBeNull();
+  });
+
+  it('re-reads the original attachment and keeps fullscreen above the parent dialog', async () => {
+    let binary = 'first-version';
+    vi.mocked(invoke).mockImplementation(((command: string, args: Record<string, unknown>) => command === 'attachment_preview_data' ? Promise.resolve(binary) : native(command, args)) as typeof invoke);
+    render(<AttachmentList paths={['/draft/report.docx']} />);
+    fireEvent.click(screen.getByRole('button', { name: '预览附件 report.docx' }));
+    await screen.findByRole('button', { name: '重新读取文档' });
+    binary = 'updated-version';
+    fireEvent.click(screen.getByRole('button', { name: '重新读取文档' }));
+    await waitFor(() => expect(engines.load).toHaveBeenLastCalledWith('report.docx', expect.stringContaining('updated-version'), expect.any(AbortSignal)));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'attachment_preview_data')).toHaveLength(2);
+    const expand = screen.getByRole('button', { name: '全屏预览' }); expand.focus(); fireEvent.click(expand);
+    const last = screen.getByRole('button', { name: '适合宽度' }); last.focus(); fireEvent.keyDown(last, { key: 'Tab' });
+    expect(document.activeElement?.closest('.office-workbench--expanded')).not.toBeNull();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'report.docx' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '退出全屏预览' })).toBeNull(); expect(expand).toHaveFocus();
+    fireEvent.keyDown(expand, { key: 'Escape' }); expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it("reports system-open failures in the dialog and retains the preview", async () => {

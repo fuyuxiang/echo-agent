@@ -193,6 +193,27 @@ package manifest. Exact package versions are pinned in `pnpm-lock.yaml`.
 - Published Tiptap, wrapper and third-party license files are copied from the
   installed packages into `office/licenses/` during the application build.
 
+## Local document workbench preview
+
+- `@office-kit/pptx` 0.28.0 and `@office-kit/pptx-preview` 0.21.0:
+  https://github.com/office-kit/pptx (MIT). The browser SVG renderer is loaded
+  when a PowerPoint file is opened.
+- `@apollo-design/docx-preview` 0.9.0:
+  https://github.com/apollocmh/docx-preview (Apache-2.0), based on
+  https://github.com/VolodymyrBaydalka/docxjs. EchoAgent patches section grouping
+  in the distributed builds to preserve next-page, continuous and explicit
+  page breaks, and waits for fonts in the actual rendering document. The patch
+  is tracked under `patches/` and tested against DOCX
+  files generated with distinct section types.
+- `pdfjs-dist` 6.5.438: https://github.com/mozilla/pdf.js (Apache-2.0).
+  Its worker, CMaps, fonts, ICC profiles and WASM decoders are bundled locally.
+- `ssf` 0.11.2: https://github.com/SheetJS/ssf (Apache-2.0), used with the
+  existing ExcelJS reader for cached cell values and Excel number formats.
+
+`scripts/stage-document-runtime.mjs` copies the published LICENSE and NOTICE
+files into the distributed frontend's `document-runtime/licenses/` directory.
+Rendering runs locally and does not upload documents to a preview service.
+
 ## Local retrieval inference and model assets
 
 - `ort` 2.0.0-rc.10: https://github.com/pykeio/ort (MIT OR Apache-2.0).

@@ -24,6 +24,9 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: [
+      // The package's development condition points at unpublished TS sources.
+      // Always bundle its shipped ESM build in dev, tests, and production.
+      { find: /^@apollo-design\/docx-preview$/, replacement: path.resolve(__dirname, "node_modules/@apollo-design/docx-preview/dist/docx-preview.mjs") },
       // Mirror EchoAgent's `@` alias so ported components resolve unchanged.
       { find: "@", replacement: path.resolve(__dirname, "src") },
       // Only needed in vitest: monaco-editor 0.52 ships no `exports`
@@ -48,9 +51,12 @@ export default defineConfig({
   // (no server origin), so always emit relative paths.
   base: "./",
   clearScreen: false,
-  // HTML export loads on demand; prebundle its browser renderer before the
-  // first export so discovering it cannot reload an active development page.
-  optimizeDeps: { include: ["react-dom/server"] },
+  // Prebundle on-demand document engines so opening/exporting a file cannot
+  // trigger dependency discovery and reload an active development editor.
+  optimizeDeps: { include: [
+    "react-dom/server", "@office-kit/pptx", "@office-kit/pptx-preview",
+    "@apollo-design/docx-preview", "pdfjs-dist/legacy/build/pdf.mjs", "ssf", "exceljs", "jszip",
+  ] },
   server: {
     host: HOST,
     port: PORT,

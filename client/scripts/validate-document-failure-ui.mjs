@@ -33,6 +33,9 @@ try {
       assert(await editor.getByText('7:45', { exact: true }).isVisible(), 'Failed writes must retain the local cell');
       assert(!(await page.evaluate(() => JSON.stringify(window.documentReview.records['/review/家庭亲子作息表.docx'].document).includes('7:45'))), 'Fixture unexpectedly committed the failed write');
       await page.screenshot({ path: join(output, `save-failed-${theme}.png`) });
+      await page.getByRole('button', { name: '完成编辑', exact: true }).click();
+      assert(await page.locator('.document-workbench__canvas').getByText('7:45', { exact: true }).isVisible(), 'Finishing after a failed save must keep the newer local draft visible');
+      assert.equal(await page.locator('.office-workbench__stage iframe').count(), 0, 'A failed draft must not switch back to the stale original');
       await page.evaluate(() => { window.documentReview.failDraftSave = false; });
       await page.getByRole('button', { name: '重试保存', exact: true }).click();
       await page.getByText('已保存 · Word 已同步', { exact: true }).waitFor();

@@ -52,7 +52,7 @@ mod artifact;
 
 #[path = "../../src-tauri/src/automation/browser_bridge.rs"]
 mod browser_bridge;
-#[path = "../../src-tauri/src/automation/document_verification.rs"]
+#[path = "../../src-tauri/src/document_verification.rs"]
 mod document_verification;
 #[path = "../../src-tauri/src/knowledge_documents.rs"]
 mod knowledge_documents;

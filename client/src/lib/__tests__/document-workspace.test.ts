@@ -73,10 +73,10 @@ describe('document save and recovery workflow',()=>{
     const session=await open();session.edit(text('磁盘保存重试'));
     native.invoke.mockRejectedValueOnce(new Error('暂时无法写入'));
     await expect(session.flush()).rejects.toThrow('暂时无法写入');
-    expect(session.snapshot()).toMatchObject({phase:'error',failure:'save'});
+    expect(session.snapshot()).toMatchObject({phase:'error',failure:'save',hasUnsavedChanges:true});
     expect(session.snapshot().draft).toEqual(text('磁盘保存重试'));
     await session.flush();expect(server.document).toEqual(text('磁盘保存重试'));
-    expect(session.snapshot()).toMatchObject({phase:'ready',failure:null});
+    expect(session.snapshot()).toMatchObject({phase:'ready',failure:null,hasUnsavedChanges:false});
     expect(localStorage.getItem('echoagent.document-draft:s:/work/report.docx')).toBeNull();
   });
   it('auto-saves even after the panel unsubscribes and restores that draft when reopened',async()=>{
@@ -95,6 +95,7 @@ describe('document save and recovery workflow',()=>{
     server.revision=2;const session=new DocumentSession('s',server.path);
     await vi.waitFor(()=>expect(session.snapshot().phase).toBe('conflict'));
     expect(session.snapshot().draft).toEqual(text('崩溃前内容'));expect(server.document).toEqual(text('原稿'));
+    expect(session.snapshot().hasUnsavedChanges).toBe(true);
   });
   it('deleting the owner cancels pending edits and removes crash recovery',async()=>{
     const session=await open();session.edit(text('待保存的修改'));session.dispose();

@@ -20,8 +20,9 @@ try{
   };
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review`);
   await page.getByRole('button',{name:'编辑',exact:true}).waitFor();
-  await page.locator('.document-paper table tr').nth(2).waitFor();
-  assert.equal(await page.locator('.document-paper table tr').count(),3,'real table structure must be visible');
+  const preview=()=>page.frameLocator('.office-workbench__stage iframe');
+  await preview().locator('table tr').nth(2).waitFor();
+  assert.equal(await preview().locator('table tr').count(),3,'real DOCX table structure must be visible');
   await page.waitForTimeout(1800);
   assert.equal(await page.evaluate(()=>window.documentReview.calls.filter(call=>call.command==='document_workspace_save').length),0,'opening a read-only preview must never save an editor normalization');
   await page.screenshot({path:join(output,'document-preview.png')});
@@ -45,13 +46,13 @@ try{
   const context=await page.evaluate(()=>window.documentEditContext);
   assert.equal(context.path,'/review/家庭亲子作息表.docx');assert(context.revision>=2);
   await page.reload();await page.getByRole('button',{name:'编辑',exact:true}).waitFor();
-  await page.locator('.document-paper').getByText('7:30',{exact:true}).waitFor();
+  await preview().getByText('7:30',{exact:true}).waitFor();
   await page.evaluate(()=>window.documentReview.agentUpdate('/review/家庭亲子作息表.docx','8:00'));
-  await page.locator('.document-paper').getByText('8:00',{exact:true}).waitFor();
+  await preview().getByText('8:00',{exact:true}).waitFor();
   await page.getByRole('button',{name:'文档版本历史',exact:true}).click();
   await page.getByRole('button',{name:'恢复此版本',exact:true}).first().click();
   await page.getByText('已保存 · Word 已同步',{exact:true}).waitFor();
-  await page.locator('.document-paper').getByText('7:30',{exact:true}).waitFor();
+  await preview().getByText('7:30',{exact:true}).waitFor();
   await page.getByRole('button',{name:'文档版本历史',exact:true}).click();
   await page.getByRole('button',{name:'编辑',exact:true}).click();
   const again=page.getByRole('textbox',{name:'文档编辑区'});
@@ -103,7 +104,8 @@ try{
       assert(await page.getByText(/暂不能完整转换为可编辑 Word 副本/).isVisible());
     }else{
       await create.click();await page.getByRole('button',{name:'编辑',exact:true}).waitFor();
-      assert(await page.locator('.document-paper strong').filter({hasText:'保留格式'}).isVisible());
+      const bold=preview().getByText('保留格式',{exact:true});await bold.waitFor();
+      assert.equal(await bold.evaluate(element=>getComputedStyle(element).fontWeight),'700');
     }
   }
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?scenario=markdown-simple`);
@@ -117,7 +119,7 @@ try{
   await page.getByText('这里是重新读取后的内容。',{exact:true}).waitFor();
   await staleCopy.click();
   await page.getByRole('button',{name:'编辑',exact:true}).waitFor();
-  assert(await page.locator('.document-paper').getByText('这里是重新读取后的内容。',{exact:true}).isVisible());
+  await preview().getByText('这里是重新读取后的内容。',{exact:true}).waitFor();
   for(const [label,format] of [['Word','docx'],['PDF','pdf']]) {
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?scenario=missing-source`);
     await page.getByText('原件缺失 · 已恢复编辑稿 · 版本 2',{exact:true}).waitFor();

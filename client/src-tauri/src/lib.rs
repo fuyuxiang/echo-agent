@@ -34,6 +34,7 @@ mod desktop_tray_model;
 mod desktop_validation;
 mod document_export;
 mod document_store;
+mod document_verification;
 mod document_workspace;
 mod expert_avatar;
 mod ext;

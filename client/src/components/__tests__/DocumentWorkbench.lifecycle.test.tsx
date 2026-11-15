@@ -33,7 +33,7 @@ const base = { path: "/work/原文.md", sessionId: "task-a", cwd: "/work", conte
 
 function sessionFor(current: EditableDocument | null = null) {
   let state: DocumentSnapshot = { opened: { document: current, path: base.path, fileSha256: "b".repeat(64), byteSize: 128 },
-    record: current, draft: current?.document ?? null, phase: "ready", message: "", publishing: false, syncError: "", operation: null, failure: null };
+    record: current, draft: current?.document ?? null, hasUnsavedChanges: false, phase: "ready", message: "", publishing: false, syncError: "", operation: null, failure: null };
   const listeners = new Set<() => void>();
   const session = { snapshot: () => state,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },

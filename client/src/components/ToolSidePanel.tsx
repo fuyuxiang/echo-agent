@@ -33,7 +33,7 @@ import { ViewSelector, defaultViews } from "./workspace-panel/ViewSelector";
 import { ArtifactTabsBar } from "./workspace-panel/ArtifactTabsBar";
 import { FileTreeView } from "./workspace-panel/FileTreeView";
 import { ActionMenu } from "./ActionMenu";
-import { ArrowLeft, Settings2 } from "lucide-react";
+import { ArrowLeft, Settings2, FolderOpen, ExternalLink } from "lucide-react";
 import { BrowserPreview } from "./BrowserPreview";
 import type { DocumentEditContext, OpenDocument } from "@/lib/document-workspace";
 const DocumentWorkbench = lazy(() => import("./DocumentWorkbench"));
@@ -737,6 +737,7 @@ function ArtifactFilePreview({
   const [opening, setOpening] = useState(false);
   const kind = detectPreviewKind(path);
   const isDocument = kind === "docx" || kind === "markdown";
+  const office = kind === "docx" || kind === "pptx" || kind === "sheet" || kind === "pdf";
   const canOpenOriginal = !sourceMissing && (state.type === "ready" || (state.type === "error" && state.canOpen));
 
   useEffect(() => {
@@ -805,26 +806,27 @@ function ArtifactFilePreview({
     }
   };
 
-  return (
-    <div className="artifact-file-preview">
-      <div className="file-preview__bar">
-        <span className="file-preview__path" title={path}>
-          {path}
-        </span>
+  const originalActions = <>
         {canOpenOriginal && <button
-          type="button" className="file-preview__open" disabled={opening}
-          onClick={() => void openLocalPath(path, { cwd, type: "file", onToast, revealFile: true, revealOnly: true })}>在文件夹中显示</button>}
+          type="button" className="file-preview__open" aria-label="在文件夹中显示" title="在文件夹中显示" disabled={opening}
+          onClick={() => void openLocalPath(path, { cwd, type: "file", onToast, revealFile: true, revealOnly: true })}>{office ? <FolderOpen size={16}/> : "在文件夹中显示"}</button>}
         {canOpenOriginal && (
           <button
             type="button"
-            className="file-preview__open"
+            className="file-preview__open" aria-label="用系统应用打开" title="用系统应用打开"
             onClick={() => void openWithSystem()}
             disabled={opening}
           >
-            {opening ? "正在打开…" : "用系统应用打开"}
+            {office ? <ExternalLink size={16}/> : opening ? "正在打开…" : "用系统应用打开"}
           </button>
         )}
-      </div>
+  </>;
+  const reloadPreview = () => { setState({ type: "loading" }); setRetry(value => value + 1); };
+  return (
+    <div className={`artifact-file-preview${office ? " artifact-file-preview--office" : ""}`}>
+      {(!office || state.type !== "ready" && state.type !== "recovered") && <div className="file-preview__bar">
+        <span className="file-preview__path" title={path}>{path}</span>{originalActions}
+      </div>}
       {state.type === "loading" && <p className="tool-side-panel__empty">加载中…</p>}
       {state.type === "unauthorized" && (
         <div className="file-preview__err file-preview__err--authorization" role="alert">
@@ -851,15 +853,14 @@ function ArtifactFilePreview({
       {(state.type === "ready" || state.type === "recovered") && sessionId && isDocument ? (
         <Suspense fallback={<p className="tool-side-panel__empty">正在打开文档工作区…</p>}>
           <DocumentWorkbench active={active} key={`${sessionId}:${path}:${retry}`} path={path} sessionId={sessionId} cwd={cwd} content={state.type === "ready" ? state.content : undefined}
-            onToast={onToast} onAskAgent={onEditDocument} agentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} onSourceMissingChange={setSourceMissing} onReload={() => {
-              setState({ type: "loading" });
-              setRetry(value => value + 1);
-            }} />
+            onToast={onToast} onAskAgent={onEditDocument} agentDisabled={documentAgentDisabled} onEditModeChange={onEditModeChange} onOpenArtifact={onOpenArtifact} onSourceMissingChange={setSourceMissing} previewActions={originalActions} onReload={reloadPreview} />
         </Suspense>
       ) : state.type === "ready" && (
         <RichFilePreview
+          active={active}
           filename={basename(path)}
           content={state.content}
+          path={path} fileActions={originalActions} onReload={reloadPreview}
           onCopyText={(content) => {
             return copyShareText(content).then((ok) => {
               onToast?.(ok ? "已复制文件内容" : "复制失败，请检查剪贴板权限");

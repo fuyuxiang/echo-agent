@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { TableKit } from '@tiptap/extension-table';
@@ -16,6 +16,8 @@ import { registerDocumentArtifact } from '@/lib/artifact-catalog';
 import type { DocumentExportReceipt } from '@/lib/document-export';
 import { useSessionsStore } from '@/stores/sessions-store';
 import type { SessionArtifact } from '@/lib/session-artifacts';
+import OfficeWorkbench from './office/OfficeWorkbench';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 export interface DocumentWorkbenchProps {
@@ -28,6 +30,7 @@ export interface DocumentWorkbenchProps {
   onSourceMissingChange?: (missing:boolean)=>void;
   onReload?: ()=>void;
   agentDisabled?: boolean;
+  previewActions?: ReactNode;
 }
 
 function documentStatus(state:DocumentSnapshot):string {
@@ -48,7 +51,7 @@ function documentStatus(state:DocumentSnapshot):string {
   return state.record.revision===state.record.exportedRevision?'已保存 · Word 已同步':'编辑稿已保存 · Word 待同步';
 }
 
-export default function DocumentWorkbench({path,sessionId,cwd,content,active=true,onToast,onAskAgent,onOpenArtifact,onEditModeChange,onSourceMissingChange,onReload,agentDisabled}:DocumentWorkbenchProps) {
+export default function DocumentWorkbench({path,sessionId,cwd,content,active=true,onToast,onAskAgent,onOpenArtifact,onEditModeChange,onSourceMissingChange,onReload,agentDisabled,previewActions}:DocumentWorkbenchProps) {
   const recoverMissingOnly=content===undefined;
   const session=useMemo(()=>documentSession(sessionId,path,recoverMissingOnly),[sessionId,path,recoverMissingOnly]);
   const state=useSyncExternalStore(session.subscribe,session.snapshot,session.snapshot);
@@ -153,8 +156,9 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
     {state.phase==='loading' ? <p role="status">正在读取已恢复的编辑稿…</p> : <p role="alert">{state.message || '原文件已移动或删除，没有可打开的已保存编辑稿。'}</p>}
     {state.phase!=='loading' && onReload && <button type="button" onClick={onReload}>重新检查原件</button>}
   </div>;
-  if(!model)return <div className="document-workbench"><FilePreview filename={path.split(/[\\/]/).pop() ?? path} content={content ?? ''}/><p className="document-workbench__hint">此文档暂不支持编辑，请使用系统应用查看原件。</p></div>;
-  return <section className="document-workbench" aria-label="文档工作区">
+  if(!model)return <section className="document-workbench document-workbench--unified" aria-label="文档工作区"><OfficeWorkbench filename={path.split(/[\\/]/).pop() ?? path} path={path} content={content ?? ''} active={active} fileActions={previewActions} onReload={onReload}
+    notices={<p className="document-workbench__hint">此文档暂不支持内容编辑，可继续查看原件版式。</p>}/></section>;
+  const workbenchActions = (
     <div className="document-workbench__actions">
       <span className="document-workbench__status" role="status">{status}</span>
       {record ? <>
@@ -170,11 +174,13 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
       </> : <button type="button" disabled={locked||state.phase==='loading'||Boolean(initial?.limitations.length)||stalePreview||!state.opened} aria-describedby={initial?.limitations.length?limitationsId:undefined} onClick={()=>void createCopy()}><Pencil size={14}/>{locked?'正在创建副本…':'创建可编辑副本'}</button>}
       <button type="button" aria-label="复制文本" onClick={()=>{if(!active)return;const epoch=viewEpoch.current;void copyShareText(markdown&&!record&&content!==undefined?content:documentText(model)).then(ok=>{if(actions.mounted && viewEpoch.current===epoch)onToast?.(ok?'已复制文件内容':'复制失败');});}}><Copy size={14}/></button>
     </div>
+  );
+  const workbenchNotices = <>
     {sourceMissing && <div className="document-workbench__notice">
       <p>当前显示已保存的编辑稿。可另存为 Word 或 PDF，原路径不会被写入。</p>
       {onReload && <button type="button" disabled={locked} onClick={onReload}>重新检查原件</button>}
     </div>}
-    {!record && <p id={limitationsId} className="document-workbench__hint">{initial?.limitations.length?`此文件包含${initial.limitations.join('、')}，暂不能完整转换为可编辑 Word 副本。${markdown?'可继续阅读原文，或让 Agent 根据原文件另行整理。':'请用系统应用查看完整原件。'}`:'可查看段落和表格；创建可编辑副本后可直接调整，原文件会保留。'}</p>}
+    {!record && <p id={limitationsId} className="document-workbench__hint">{initial?.limitations.length?`此文件包含${initial.limitations.join('、')}，暂不能完整转换为可编辑 Word 副本。${markdown?'可继续阅读原文，或让 Agent 根据原文件另行整理。':'可继续在此查看原件版式；修改复杂内容请用系统应用。'}`:'创建可编辑副本后可调整文字和表格，原文件会保留。'}</p>}
     {!record && stalePreview && <div className="document-workbench__notice" role="alert">
       <p>原文件已变化或预览未包含完整内容，请重新读取后再创建副本。</p>
       {onReload && <button type="button" onClick={onReload}>重新读取文件</button>}
@@ -195,6 +201,8 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
       {[...record.history].reverse().map(version=><div key={version.revision}><span>版本 {version.revision} · {version.actor} · {new Date(version.savedAt).toLocaleTimeString()}</span>{!sourceMissing && <button type="button" disabled={locked||state.phase==='conflict'} onClick={()=>void run(()=>session.restore(version.revision))}>恢复此版本</button>}</div>)}
       {!record.history.length && <p>{sourceMissing?'暂无历史版本。':'首次修改后会在这里保留历史版本。'}</p>}
     </div>}
+  </>;
+  const editingCanvas = <>
     {editingDocument && editor && <fieldset disabled={locked} className="document-workbench__format" role="toolbar" aria-label="文档格式">
       <select aria-label="段落样式" value={editor.isActive('heading',{level:1})?'1':editor.isActive('heading',{level:2})?'2':editor.isActive('heading',{level:3})?'3':'0'} onChange={event=>{const level=Number(event.target.value);if(level)editor.chain().focus().toggleHeading({level:level as 1|2|3}).run();else editor.chain().focus().setParagraph().run();}}><option value="0">正文</option><option value="1">标题 1</option><option value="2">标题 2</option><option value="3">标题 3</option></select>
       {[
@@ -218,5 +226,20 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
       {editingDocument?<EditorContent editor={editor}/>:markdown&&!record&&content!==undefined?<FilePreview filename={path.split(/[\\/]/).pop() ?? path} content={content}/>:<DocumentCanvas document={model}/>}
     </div>
     <small className="document-workbench__footnote">{markdown&&!state.record?'按 Markdown 原文阅读，创建可编辑副本不会修改原文件。':'内容与基础格式实时呈现。Word 的分页和复杂排版以导出文件为准。'}</small>
-  </section>;
+  </>;
+  if (!markdown && content !== undefined && !sourceMissing) {
+    const pendingDraft = state.hasUnsavedChanges || Boolean(record && record.revision !== record.exportedRevision);
+    return <section className="document-workbench document-workbench--unified" aria-label="文档工作区">
+      <OfficeWorkbench filename={path.split(/[\\/]/).pop() ?? path} path={path} content={content} active={active}
+        controls={workbenchActions} notices={workbenchNotices} fileActions={previewActions} onReload={onReload}
+        sourceRevision={`${record?.fileSha256 ?? ''}:${state.opened?.fileSha256 ?? ''}`}
+        loadContent={async () => {
+          const data = await invoke<string>('read_file_base64', { path: state.opened?.path ?? path, maxBytes: 8 * 1024 * 1024 });
+          return typeof data === 'string' && data ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${data}` : content;
+        }}
+        fallback={<DocumentCanvas document={model}/>} onSelectionText={text=>{selection.current=text.slice(0,8000);transaction(value=>value+1);}}
+      >{editingDocument || pendingDraft ? editingCanvas : undefined}</OfficeWorkbench>
+    </section>;
+  }
+  return <section className="document-workbench" aria-label="文档工作区">{workbenchActions}{workbenchNotices}{editingCanvas}</section>;
 }

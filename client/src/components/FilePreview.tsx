@@ -2,12 +2,14 @@
  * 本地文件预览(Context Viewer 可移植部分)—— 对齐 EchoAgent
  * `context-viewer-components/media-preview`。
  *
- * 轻量、无重型依赖:本地渲染 Markdown/文本/媒体，提取 Office 文本，
- * PDF 交给浏览器内嵌预览，未知类型显示可读占位。
+ * 本地渲染 Markdown/文本/媒体；Office 与 PDF 按需加载文档工作台，
+ * 直接显示原始文件的页面和格式，未知类型显示可读占位。
  *
  * 通过 `filename` + `content`(文本或 data: URL)渲染;`onCopyText` 提供复制回调。
  */
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, lazy, Suspense, type ReactNode } from "react";
+const OfficeWorkbench = lazy(() => import("./office/OfficeWorkbench"));
+
 import { FileText, Image as ImageIcon } from "lucide-react";
 import { Markdown } from "./markdown/index";
 import { MarkdownPreviewImage } from "./markdown/MarkdownPreviewImage";
@@ -53,13 +55,23 @@ interface FilePreviewProps {
   /**
    * 文档预览解压器(对齐 EchoAgent docx/pptx/sheet 预览):对 OOXML 文件,
    * 调用方提供 ZipReader(任意 zip 实现/后端解压),FilePreview 用纯函数提取文本。
-   * 未提供时使用内置解压器，读取失败时显示占位。
+   * 提供时使用文本提取降级视图；未提供时使用版式预览工作台。
    */
   docExtractor?: (filename: string) => ZipReader | null;
+  fileActions?: ReactNode;
+  path?: string;
+  onReload?: () => void;
+  active?: boolean;
 }
 
-export function FilePreview({ filename, content, onCopyText, docExtractor }: FilePreviewProps) {
+export function FilePreview({ filename, content, onCopyText, docExtractor, fileActions, path, onReload, active = true }: FilePreviewProps) {
   const kind = detectPreviewKind(filename);
+  if (!docExtractor && (kind === "pptx" || kind === "docx" || kind === "sheet" || kind === "pdf")) {
+    return <Suspense fallback={<div className="office-workbench__empty" role="status">正在打开文档工作台…</div>}>
+      <OfficeWorkbench filename={filename} content={content} path={path} active={active} fileActions={fileActions} onReload={onReload} onCopyText={onCopyText} />
+    </Suspense>;
+  }
+
 
   if (kind === "image") {
     return (
