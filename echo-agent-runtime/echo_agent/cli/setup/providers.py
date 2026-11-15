@@ -97,6 +97,12 @@ CATALOG: list[ProviderCatalogEntry] = [
         fallback_models=["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct"],
         models_endpoint="https://api.siliconflow.cn/v1/models",
     ),
+    ProviderCatalogEntry(
+        id="runcrate", label="Runcrate", group="aggregator", dialect="openai",
+        api_base="https://api.runcrate.ai/v1", api_key_env_vars=("RUNCRATE_API_KEY",),
+        fallback_models=["deepseek-ai/DeepSeek-V4-Flash", "meta-llama/Llama-3.3-70B-Instruct-Turbo"],
+        models_endpoint="https://api.runcrate.ai/v1/models",
+    ),
     # ── local ──
     ProviderCatalogEntry(
         id="ollama", label="Ollama", group="local", dialect="openai",

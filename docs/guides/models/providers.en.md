@@ -138,6 +138,15 @@ Third-party services that implement the OpenAI API protocol can be configured us
   models: ["deepseek-ai/DeepSeek-V2.5", "Qwen/Qwen2.5-72B-Instruct"]
 ```
 
+### Runcrate
+
+```yaml
+- name: "runcrate"
+  api_key: "your-runcrate-api-key"
+  api_base: "https://api.runcrate.ai/v1"
+  models: ["deepseek-ai/DeepSeek-V4-Flash", "meta-llama/Llama-3.3-70B-Instruct-Turbo"]
+```
+
 !!! tip "General Rule for OpenAI-Compatible Services"
     Any service implementing the OpenAI Chat Completions API can be integrated by setting `api_base`. The `name` field is a custom identifier for your reference only.
 

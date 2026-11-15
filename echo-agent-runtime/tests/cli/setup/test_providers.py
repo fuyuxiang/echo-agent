@@ -32,7 +32,17 @@ def test_expected_domestic_providers_present():
 
 def test_expected_local_and_aggregator_present():
     ids = {e.id for e in p.CATALOG}
-    assert {"ollama", "lmstudio", "openrouter", "siliconflow", "custom", "bedrock"} <= ids
+    assert {"ollama", "lmstudio", "openrouter", "siliconflow", "runcrate", "custom", "bedrock"} <= ids
+
+
+def test_runcrate_is_an_openai_compatible_aggregator_entry():
+    e = p.find("runcrate")
+    assert e.group == "aggregator"
+    assert e.dialect == "openai"
+    assert e.api_base == "https://api.runcrate.ai/v1"
+    assert e.api_key_env_vars == ("RUNCRATE_API_KEY",)
+    assert e.models_endpoint == "https://api.runcrate.ai/v1/models"
+    assert e.fallback_models
 
 
 def test_grouped_preserves_all_entries_and_order():
