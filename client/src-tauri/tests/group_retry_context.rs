@@ -15,6 +15,7 @@ fn fixture(discussion: bool) -> (Group, String) {
         role: "delivery".into(),
         profile: serde_json::json!({}),
         model_id: "M3".into(),
+        model_inherited: false,
         session_id: Some("execution-before-stop".into()),
         discussion_session_id: Some("discussion-before-stop".into()),
         seen_seq: 9,
@@ -24,6 +25,7 @@ fn fixture(discussion: bool) -> (Group, String) {
         removed: false,
     };
     let mut group = Group {
+        project_binding: None,
         id: "group".into(),
         name: "QA".into(),
         goal: "bounded delivery".into(),

@@ -43,6 +43,7 @@ pub(super) fn group() -> Group {
             expert: Some(name.into()),
             role: name.into(),
             profile: json!({"name":name,"description":name}),
+            model_inherited: false,
             model_id: "test-model".into(),
             session_id: None,
             discussion_session_id: None,
@@ -54,6 +55,7 @@ pub(super) fn group() -> Group {
         })
         .to_vec();
     Group {
+        project_binding: None,
         id: id(),
         name: "交付组".into(),
         goal: "实现审批".into(),
@@ -1795,6 +1797,18 @@ fn template_library_only_contains_explicit_saves_and_is_independent_of_session_t
     assert_eq!(saved.members[1].role, "分析与验收");
     assert_eq!(saved.members[1].model_id.as_deref(), Some("member-model"));
     assert_eq!(saved.coordinator_name.as_deref(), Some("协调员"));
+    original.members[1].model_inherited = true;
+    store
+        .update(&original.id, |g| {
+            g.members[1].model_inherited = true;
+            Ok(())
+        })
+        .unwrap();
+    let inherited = management::group_team_save(original.id.clone(), "复用模板".into()).unwrap();
+    assert_eq!(
+        inherited.members[1].model_id, None,
+        "saving a template must retain inheritance"
+    );
     let updated = management::group_team_save(original.id.clone(), "复用模板".into()).unwrap();
     assert_eq!(updated.id, saved.id);
     assert_eq!(management::group_team_templates().unwrap().len(), 1);

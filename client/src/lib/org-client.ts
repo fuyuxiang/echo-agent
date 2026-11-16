@@ -30,6 +30,10 @@ export interface OrgBootstrap {
 
 export interface OrgSession {
   loggedIn: boolean;
+  /** Native login generation; binds multi-step project operations to this identity. */
+  accountGeneration?: number;
+  /** Stable opaque identity, available while the account profile is offline. */
+  accountId?: string;
   /** Whether Agent sessions currently receive organization-memory tools. */
   organizationMemoryEnabled?: boolean;
   serverUrl?: string;
@@ -234,17 +238,17 @@ export const orgRemoveOwnSubmission = (submissionId: string) =>
   invoke<{ removed: boolean }>("org_remove_own_submission", { submissionId });
 export const orgPreviewDocument = (resourceId: string, submission: boolean, sourceType: string, fileName: string) =>
   invoke<{ kind: "text" | "binary"; content: string }>("org_preview_document", { resourceId, submission, sourceType, fileName });
-export const orgDownloadDocument = (resourceId: string, submission: boolean, suggestedName: string) =>
-  invoke<string | null>("org_download_document", { resourceId, submission, suggestedName });
+export const orgDownloadDocument = (resourceId: string, submission: boolean, suggestedName: string, expectedGeneration?: number) =>
+  invoke<string | null>("org_download_document", { resourceId, submission, suggestedName, ...(expectedGeneration === undefined ? {} : { expectedGeneration }) });
 export interface OrgFolderFile { path: string; relativePath: string; size: number }
 export const orgScanDocumentFolder = (folderPath: string) =>
   invoke<{ items: OrgFolderFile[]; skipped: number; totalBytes: number; rootName: string; directories: string[] }>("org_scan_document_folder", { folderPath });
 export const orgImportDocumentFolders = (scopeId: string, paths: string[], parentFolderId?: string | null) =>
   invoke<{ folders: Array<OrgDocumentFolder & { path: string }> }>("org_import_document_folders", { scopeId, paths, parentFolderId: parentFolderId ?? null });
-export const orgFetchDocument = (docId: string, page?: number | null, range?: string) =>
+export const orgFetchDocument = (docId: string, page?: number | null, range?: string, expectedGeneration?: number) =>
   invoke<{ docId: string; text: string; chunks: Array<{ seq: number; text: string; heading?: string; locPage?: number }>; hasMore?: boolean; nextSeq?: number | null }>(
     "org_fetch_document",
-    { docId, page: page ?? null, range: range ?? null },
+    { docId, page: page ?? null, range: range ?? null, ...(expectedGeneration === undefined ? {} : { expectedGeneration }) },
   );
 export const orgArchiveDocument = (docId: string) =>
   invoke<{ archived: boolean }>("org_archive_document", { docId });

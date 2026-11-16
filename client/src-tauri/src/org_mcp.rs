@@ -32,6 +32,7 @@ pub const MCP_SERVER_NAME: &str = "echoagent_organization_memory";
 // on that contract so its process-local credential is never mistaken for an
 // interactive OAuth challenge.
 pub const AUTH_HEADER: &str = "Authorization";
+const ACCOUNT_GENERATION_HEADER: &str = "x-echo-organization-account-generation";
 pub const SOURCES_HEADER: &str = "x-echo-knowledge-sources";
 pub const ORGANIZATION_SCOPES_HEADER: &str = "x-echo-organization-scope-ids";
 const MAX_MCP_BODY_BYTES: usize = 256 * 1024;
@@ -79,6 +80,18 @@ pub(crate) struct KnowledgeSourceSelection {
 struct SessionKnowledgeConfiguration {
     selection: KnowledgeSourceSelection,
     organization_scope_ids: Vec<String>,
+    account_generation: u64,
+}
+
+fn selection_for_account(
+    configuration: &SessionKnowledgeConfiguration,
+    generation: u64,
+) -> KnowledgeSourceSelection {
+    KnowledgeSourceSelection {
+        personal: configuration.selection.personal,
+        organization: configuration.selection.organization
+            && configuration.account_generation == generation,
+    }
 }
 
 fn session_configurations(
@@ -121,10 +134,12 @@ fn set_session_configuration(
     personal: bool,
     organization: bool,
     organization_scope_ids: Vec<String>,
+    account_generation: u64,
 ) {
     session_configurations().lock().unwrap().insert(
         session_id.to_string(),
         SessionKnowledgeConfiguration {
+            account_generation,
             selection: KnowledgeSourceSelection {
                 personal,
                 organization,
@@ -344,7 +359,18 @@ async fn handle_post(
             unavailable_tool_result()
         }
         "tools/call" => {
-            match tools_call(&request.params, state.app.as_ref(), &organization_scope_ids).await {
+            match tools_call(
+                &request.params,
+                state.app.as_ref(),
+                &organization_scope_ids,
+                headers
+                    .get(ACCOUNT_GENERATION_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or_else(crate::org::knowledge_account_generation),
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(_) if !local_call && !capability_enabled() => {
                     if let Some(app) = state.app.clone() {
@@ -414,6 +440,16 @@ fn validate_request_headers(
         .and_then(|value| value.to_str().ok())
         .ok_or(StatusCode::FORBIDDEN)?;
     let selection = parse_selection(sources)?;
+    if selection.organization {
+        let generation = headers
+            .get(ACCOUNT_GENERATION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        if generation != Some(crate::org::knowledge_account_generation()) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
     let organization_scope_ids = headers
         .get(ORGANIZATION_SCOPES_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -708,6 +744,7 @@ fn validate_document_scope_metadata(
 async fn enforce_document_scope(
     document_id: &str,
     organization_scope_ids: &[String],
+    expected_generation: u64,
 ) -> Result<(), String> {
     if organization_scope_ids.is_empty() {
         return Ok(());
@@ -716,7 +753,7 @@ async fn enforce_document_scope(
     // scope. Resolve trusted server metadata first and enforce the task-owned
     // scope in this bridge before any document content is returned.
     let path = format!("/api/v1/docs/{}", urlencoding::encode(document_id));
-    let document = crate::org::mcp_json(Method::GET, &path, None).await?;
+    let document = crate::org::mcp_json(Method::GET, &path, None, expected_generation).await?;
     validate_document_scope_metadata(&document, organization_scope_ids)
 }
 
@@ -742,6 +779,7 @@ async fn tools_call(
     params: &Value,
     app: Option<&AppHandle>,
     organization_scope_ids: &[String],
+    expected_generation: u64,
 ) -> Result<Value, String> {
     let name = required_string_bounded(params, "name", 128)?;
     let arguments = match params.get("arguments") {
@@ -803,7 +841,13 @@ async fn tools_call(
             if !organization_scope_ids.is_empty() {
                 input["scopeIds"] = json!(organization_scope_ids);
             }
-            crate::org::mcp_json(Method::POST, "/api/v1/knowledge/context", Some(input)).await?
+            crate::org::mcp_json(
+                Method::POST,
+                "/api/v1/knowledge/context",
+                Some(input),
+                expected_generation,
+            )
+            .await?
         }
         "knowledge_ask" => {
             let question = required_string_with_alias_bounded(
@@ -841,7 +885,7 @@ async fn tools_call(
             if !organization_scope_ids.is_empty() {
                 input["scopeIds"] = json!(organization_scope_ids);
             }
-            crate::org::mcp_ask(input).await?
+            crate::org::mcp_ask(input, expected_generation).await?
         }
         "knowledge_feedback" => {
             let trace_id = required_string_bounded(&arguments, "trace_id", MAX_IDENTIFIER_CHARS)?;
@@ -879,7 +923,13 @@ async fn tools_call(
                     input[target] = values.clone();
                 }
             }
-            crate::org::mcp_json(Method::POST, "/api/v1/knowledge/events", Some(input)).await?
+            crate::org::mcp_json(
+                Method::POST,
+                "/api/v1/knowledge/events",
+                Some(input),
+                expected_generation,
+            )
+            .await?
         }
         "knowledge_search" => {
             let query = required_string_bounded(&arguments, "query", MAX_TOOL_TEXT_CHARS)?;
@@ -919,16 +969,28 @@ async fn tools_call(
                 input["scopes"] = kinds.clone();
                 input["filters"] = json!({ "scope_kinds": kinds });
             }
-            crate::org::mcp_json(Method::POST, "/api/v1/retrieve", Some(input)).await?
+            crate::org::mcp_json(
+                Method::POST,
+                "/api/v1/retrieve",
+                Some(input),
+                expected_generation,
+            )
+            .await?
         }
         "knowledge_fetch_document" | "knowledge_fetch_doc" => {
             let doc_id = required_string_bounded(&arguments, "doc_id", MAX_IDENTIFIER_CHARS)?;
-            enforce_document_scope(doc_id, organization_scope_ids).await?;
+            enforce_document_scope(doc_id, organization_scope_ids, expected_generation).await?;
             let mut input = json!({ "docId": doc_id });
             if let Some(page) = validated_page(&arguments)? {
                 input["page"] = json!(page);
             }
-            crate::org::mcp_json(Method::POST, "/api/v1/docs/fetch", Some(input)).await?
+            crate::org::mcp_json(
+                Method::POST,
+                "/api/v1/docs/fetch",
+                Some(input),
+                expected_generation,
+            )
+            .await?
         }
         "knowledge_list_documents" | "knowledge_list_docs" => {
             let mut url = url::Url::parse("http://local/api/v1/docs").expect("static URL");
@@ -956,7 +1018,7 @@ async fn tools_call(
                 url.path(),
                 url.query().map(|q| format!("?{q}")).unwrap_or_default()
             );
-            crate::org::mcp_json(Method::GET, &path, None).await?
+            crate::org::mcp_json(Method::GET, &path, None, expected_generation).await?
         }
         "knowledge_who_knows" => {
             let topic = required_string_bounded(&arguments, "topic", MAX_TOOL_TEXT_CHARS)?;
@@ -964,8 +1026,13 @@ async fn tools_call(
             if !organization_scope_ids.is_empty() {
                 input["scope_ids"] = json!(organization_scope_ids);
             }
-            let result =
-                crate::org::mcp_json(Method::POST, "/api/v1/retrieve", Some(input)).await?;
+            let result = crate::org::mcp_json(
+                Method::POST,
+                "/api/v1/retrieve",
+                Some(input),
+                expected_generation,
+            )
+            .await?;
             let mut owners: HashMap<String, (String, usize, Vec<String>)> = HashMap::new();
             for chunk in result
                 .get("chunks")
@@ -1060,6 +1127,7 @@ async fn tools_call(
                     "source": "manual",
                     "targetScope": target_scope
                 })),
+                expected_generation,
             )
             .await?
         }
@@ -1449,7 +1517,8 @@ fn upsert_payload(
         "headers": {
             AUTH_HEADER: authorization,
             SOURCES_HEADER: encode_selection(selection),
-            ORGANIZATION_SCOPES_HEADER: organization_scope_ids.join(",")
+            ORGANIZATION_SCOPES_HEADER: organization_scope_ids.join(","),
+            ACCOUNT_GENERATION_HEADER: crate::org::knowledge_account_generation().to_string()
         },
         "enabled": true,
         "tool_timeouts": {
@@ -1464,7 +1533,10 @@ async fn reconcile_session_locked(
     session_id: &str,
 ) -> Result<(), String> {
     let configuration = session_configuration(session_id);
-    let selection = effective_selection(configuration.selection);
+    let selection = effective_selection(selection_for_account(
+        &configuration,
+        crate::org::knowledge_account_generation(),
+    ));
     let organization_scope_ids = if selection.organization {
         configuration.organization_scope_ids
     } else {
@@ -1477,16 +1549,19 @@ async fn reconcile_session_locked(
     };
     let should_attach = config.is_some();
     let (method, payload) = if let Some((url, authorization)) = config {
-        (
-            "echo.agent/mcp/upsert",
-            upsert_payload(
-                session_id,
-                &url,
-                &authorization,
-                selection,
-                &organization_scope_ids,
-            ),
-        )
+        let mut payload = upsert_payload(
+            session_id,
+            &url,
+            &authorization,
+            selection,
+            &organization_scope_ids,
+        );
+        // Use the generation captured by explicit configuration, even if an
+        // account changes during reconciliation. Background refresh must never
+        // lend a different login's identity to an already running session.
+        payload["headers"][ACCOUNT_GENERATION_HEADER] =
+            json!(configuration.account_generation.to_string());
+        ("echo.agent/mcp/upsert", payload)
     } else {
         (
             "echo.agent/mcp/delete",
@@ -1531,6 +1606,7 @@ pub(crate) async fn update_session_configuration(
     personal: bool,
     organization: bool,
     organization_scope_ids: Vec<String>,
+    account_generation: u64,
 ) -> Result<(), String> {
     // Snapshot, update, Runtime reconciliation, and rollback form one ordered
     // transaction. Keeping the guard across awaits is intentional: another
@@ -1540,7 +1616,16 @@ pub(crate) async fn update_session_configuration(
         .lock()
         .await;
     let previous = stored_session_configuration(session_id);
-    set_session_configuration(session_id, personal, organization, organization_scope_ids);
+    if account_generation != crate::org::knowledge_account_generation() {
+        return Err("组织账号已改变，请重新发起本次操作".into());
+    }
+    set_session_configuration(
+        session_id,
+        personal,
+        organization,
+        organization_scope_ids,
+        account_generation,
+    );
     if let Err(error) = reconcile_session_locked(tx, session_id).await {
         restore_session_configuration(session_id, previous);
         if let Err(rollback_error) = reconcile_session_locked(tx, session_id).await {
@@ -1684,6 +1769,10 @@ mod tests {
             .post(&url)
             .header(AUTH_HEADER, "Bearer test-secret")
             .header(SOURCES_HEADER, "organization")
+            .header(
+                ACCOUNT_GENERATION_HEADER,
+                crate::org::knowledge_account_generation().to_string(),
+            )
             .json(&request)
             .send()
             .await
@@ -1823,6 +1912,29 @@ mod tests {
         );
 
         headers.insert(SOURCES_HEADER, "organization".parse().unwrap());
+        assert_eq!(
+            validate_request_headers(&headers, &state),
+            Err(StatusCode::FORBIDDEN)
+        );
+        headers.insert(
+            ACCOUNT_GENERATION_HEADER,
+            crate::org::knowledge_account_generation()
+                .wrapping_add(1)
+                .to_string()
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            validate_request_headers(&headers, &state),
+            Err(StatusCode::FORBIDDEN)
+        );
+        headers.insert(
+            ACCOUNT_GENERATION_HEADER,
+            crate::org::knowledge_account_generation()
+                .to_string()
+                .parse()
+                .unwrap(),
+        );
         headers.insert(ORGANIZATION_SCOPES_HEADER, "team-a,org-b".parse().unwrap());
         assert_eq!(
             validate_request_headers(&headers, &state),
@@ -1935,10 +2047,17 @@ mod tests {
     #[test]
     fn session_configuration_keeps_selection_and_scope_in_one_snapshot() {
         let session_id = "test-atomic-knowledge-configuration";
-        set_session_configuration(session_id, true, true, vec!["team-a".into()]);
+        set_session_configuration(
+            session_id,
+            true,
+            true,
+            vec!["team-a".into()],
+            crate::org::knowledge_account_generation(),
+        );
         assert_eq!(
             session_configuration(session_id),
             SessionKnowledgeConfiguration {
+                account_generation: crate::org::knowledge_account_generation(),
                 selection: KnowledgeSourceSelection {
                     personal: true,
                     organization: true,
@@ -1947,10 +2066,17 @@ mod tests {
             }
         );
 
-        set_session_configuration(session_id, true, false, vec!["must-be-dropped".into()]);
+        set_session_configuration(
+            session_id,
+            true,
+            false,
+            vec!["must-be-dropped".into()],
+            crate::org::knowledge_account_generation(),
+        );
         assert_eq!(
             session_configuration(session_id),
             SessionKnowledgeConfiguration {
+                account_generation: crate::org::knowledge_account_generation(),
                 selection: KnowledgeSourceSelection {
                     personal: true,
                     organization: false,
@@ -1959,6 +2085,49 @@ mod tests {
             }
         );
         remove_session_configuration(session_id);
+    }
+
+    #[test]
+    fn background_reconciliation_does_not_borrow_a_new_accounts_organization_identity() {
+        let configuration = SessionKnowledgeConfiguration {
+            account_generation: 42,
+            selection: KnowledgeSourceSelection {
+                personal: true,
+                organization: true,
+            },
+            organization_scope_ids: vec!["project-scope".into()],
+        };
+        assert_eq!(
+            selection_for_account(&configuration, 42),
+            configuration.selection
+        );
+        assert_eq!(
+            selection_for_account(&configuration, 43),
+            KnowledgeSourceSelection {
+                personal: true,
+                organization: false
+            }
+        );
+        assert_eq!(configuration.account_generation, 42);
+    }
+
+    #[tokio::test]
+    async fn an_account_change_before_attachment_cannot_retag_the_old_project_operation() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let session = "test-stale-project-attachment";
+        let error = update_session_configuration(
+            &tx,
+            session,
+            false,
+            true,
+            vec!["project-scope".into()],
+            crate::org::knowledge_account_generation().wrapping_add(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("组织账号已改变"));
+        assert!(stored_session_configuration(session).is_none());
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

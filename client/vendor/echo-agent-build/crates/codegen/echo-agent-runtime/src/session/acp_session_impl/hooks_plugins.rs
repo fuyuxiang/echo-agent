@@ -959,6 +959,11 @@ impl SessionActor {
             new_registry_snapshot.as_deref(),
             &self.rebuild_spec.compat,
         );
+        let new_mcp_servers = crate::session::managed_mcp::resolve_agent_mcp_servers(
+            new_mcp_servers,
+            self.agent.borrow().definition(),
+            session_cwd,
+        );
         let (mcp_diff, dispatch_event_tx) = {
             let mut mcp_state = self.mcp_state.lock().await;
             let diff = mcp_state.update_configs_diff(new_mcp_servers);

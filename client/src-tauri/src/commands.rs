@@ -123,6 +123,7 @@ pub(crate) struct OrphanedSession {
     pub(crate) cwd: String,
     pub(crate) model_id: Option<String>,
     pub(crate) permission_mode: String,
+    pub(crate) profile_key: Option<String>,
 }
 
 impl AppState {
@@ -168,12 +169,14 @@ impl AppState {
         cwd: &str,
         model_id: Option<&str>,
         permission_mode: &str,
+        profile_key: Option<&str>,
     ) -> Option<String> {
         let mut orphaned = self.orphaned_sessions.lock().unwrap();
         let index = orphaned.iter().position(|candidate| {
             candidate.cwd == cwd
                 && candidate.model_id.as_deref() == model_id
                 && candidate.permission_mode == permission_mode
+                && candidate.profile_key.as_deref() == profile_key
         })?;
         Some(orphaned.remove(index).session_id)
     }
@@ -1384,6 +1387,7 @@ pub async fn agent_new_session(
     model_id: Option<String>,
     permission_mode: Option<String>,
     expected_permission_mode: Option<String>,
+    expert: Option<crate::agents_store::ExpertSelection>,
 ) -> Result<String, String> {
     crate::policy::require_feature("sessions")?;
     crate::org::enforce_skill_lease();
@@ -1391,6 +1395,26 @@ pub async fn agent_new_session(
         let filesystem = app.state::<crate::shell_fs::FilesystemAccess>();
         authorized_session_cwd(&filesystem, &cwd)?
     };
+    let (profile, model_id) = if let Some(expert) = &expert {
+        crate::agents_store::require_expert_snapshot(
+            Path::new(&cwd),
+            &expert.name,
+            &expert.path,
+            &expert.raw,
+        )?;
+        let (profile, model) = crate::agents_store::resolve_profile(
+            &expert.raw,
+            model_id.as_deref().unwrap_or("inherit"),
+            expert.model_override.as_deref(),
+        )?;
+        (Some(profile), Some(model))
+    } else {
+        (None, model_id)
+    };
+    let profile_key = expert.as_ref().map(|e| {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(e.raw.as_bytes()))
+    });
     if let Some(model_id) = model_id.as_deref() {
         crate::policy::require_model(model_id)?;
     }
@@ -1412,9 +1436,12 @@ pub async fn agent_new_session(
     // A previous attempt may have timed out while the Runtime went on to create
     // and persist the session. Adopting it keeps a retry from stacking up ghost
     // sessions the UI never learned about.
-    if let Some(session_id) =
-        state.take_orphaned_session(&cwd, model_id.as_deref(), &permission_mode)
-    {
+    if let Some(session_id) = state.take_orphaned_session(
+        &cwd,
+        model_id.as_deref(),
+        &permission_mode,
+        profile_key.as_deref(),
+    ) {
         tracing::info!(%session_id, "adopting session created by a timed-out request");
         if crate::policy::locked_permission_mode().is_none() {
             if let Err(error) = crate::meta::set_permission_mode(&session_id, &permission_mode) {
@@ -1425,6 +1452,7 @@ pub async fn agent_new_session(
                     cwd: cwd.clone(),
                     model_id: model_id.clone(),
                     permission_mode: permission_mode.clone(),
+                    profile_key: profile_key.clone(),
                 });
                 return Err(format!(
                     "无法保存当前任务的权限模式：{error}；重试不会重复创建任务"
@@ -1441,6 +1469,7 @@ pub async fn agent_new_session(
                 cwd: cwd.clone(),
                 model_id: model_id.clone(),
                 permission_mode: permission_mode.clone(),
+                profile_key: profile_key.clone(),
             });
             return Err(format!(
                 "无法保存当前任务的代理模式：{error}；重试不会重复创建任务"
@@ -1452,6 +1481,7 @@ pub async fn agent_new_session(
                 cwd: cwd.clone(),
                 model_id: model_id.clone(),
                 permission_mode: permission_mode.clone(),
+                profile_key: profile_key.clone(),
             });
             return Err(format!(
                 "无法保存任务工作目录：{error}；重试不会重复创建任务"
@@ -1462,6 +1492,9 @@ pub async fn agent_new_session(
         crate::office_mcp::persist_registration(&tx, &session_id);
         crate::live_info_mcp::persist_registration(&tx, &session_id);
         crate::org_mcp::reconcile_registration(&tx, &session_id);
+        if let Some(expert) = &expert {
+            crate::agents_store::save_session_definition(&session_id, &expert.raw)?;
+        }
         return Ok(session_id);
     }
 
@@ -1472,6 +1505,7 @@ pub async fn agent_new_session(
 
     let creation_key = crate::session_creation::SessionCreationKey {
         cwd: cwd.clone(),
+        profile_key: profile_key.clone(),
         model_id: model_id.clone(),
         permission_mode: permission_mode.clone(),
     };
@@ -1484,13 +1518,16 @@ pub async fn agent_new_session(
         let task_permission_mode = permission_mode.clone();
         let task_creation_key = creation_key.clone();
         let creation_id = creation.id;
+        let task_profile = profile.clone();
+        let task_profile_key = profile_key.clone();
         tokio::spawn(async move {
-            let result = agent_runtime::new_session_with_options(
+            let result = agent_runtime::new_session_with_profile(
                 &task_tx,
                 &PathBuf::from(task_cwd.clone()),
                 task_model.as_deref(),
                 None,
                 Some(&task_permission_mode),
+                task_profile.as_ref(),
             )
             .await
             .map_err(|error| error.to_string());
@@ -1548,6 +1585,7 @@ pub async fn agent_new_session(
                         cwd: task_cwd,
                         model_id: task_model,
                         permission_mode: task_permission_mode,
+                        profile_key: task_profile_key,
                     });
                     let _ = task_app.emit(
                         "agent://session-reclaimed",
@@ -1599,6 +1637,7 @@ pub async fn agent_new_session(
                 cwd: cwd.clone(),
                 model_id: model_id.clone(),
                 permission_mode: permission_mode.clone(),
+                profile_key: profile_key.clone(),
             });
             return Err(format!(
                 "无法保存当前任务的权限模式：{error}；重试不会重复创建任务"
@@ -1612,6 +1651,7 @@ pub async fn agent_new_session(
             cwd: cwd.clone(),
             model_id: model_id.clone(),
             permission_mode: permission_mode.clone(),
+            profile_key: profile_key.clone(),
         });
         return Err(format!(
             "无法保存当前任务的代理模式：{error}；重试不会重复创建任务"
@@ -1623,6 +1663,7 @@ pub async fn agent_new_session(
             cwd: cwd.clone(),
             model_id: model_id.clone(),
             permission_mode: permission_mode.clone(),
+            profile_key: profile_key.clone(),
         });
         return Err(format!(
             "无法保存任务工作目录：{error}；重试不会重复创建任务"
@@ -1635,6 +1676,9 @@ pub async fn agent_new_session(
     crate::office_mcp::persist_registration(&tx, &session_id);
     crate::live_info_mcp::persist_registration(&tx, &session_id);
     crate::org_mcp::reconcile_registration(&tx, &session_id);
+    if let Some(expert) = &expert {
+        crate::agents_store::save_session_definition(&session_id, &expert.raw)?;
+    }
     Ok(session_id)
 }
 
@@ -1648,6 +1692,7 @@ pub async fn agent_load_session(
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
     }
+    crate::org::project_session_context(&app, &session_id, "项目恢复与工作接手").await?;
     crate::automations::require_session_cleanup_complete(&session_id)?;
     crate::org::enforce_skill_lease();
     let cwd = {
@@ -1727,6 +1772,7 @@ pub fn agent_list_all_sessions(
 
 #[tauri::command]
 pub async fn agent_set_knowledge_sources(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     personal: bool,
@@ -1743,7 +1789,19 @@ pub async fn agent_set_knowledge_sources(
         .unwrap()
         .clone()
         .ok_or("agent not initialized")?;
-    let organization_scope_ids = organization_scope_ids.unwrap_or_default();
+    let (personal, organization, organization_scope_ids, account_generation) =
+        if let Some((scope, generation)) =
+            crate::org::project_session_scope(&app, &session_id).await?
+        {
+            (false, true, vec![scope], generation)
+        } else {
+            (
+                personal,
+                organization,
+                organization_scope_ids.unwrap_or_default(),
+                crate::org::knowledge_account_generation(),
+            )
+        };
     if organization_scope_ids.len() > 64
         || organization_scope_ids.iter().any(|scope_id| {
             scope_id.trim().is_empty()
@@ -1761,6 +1819,7 @@ pub async fn agent_set_knowledge_sources(
         personal,
         organization,
         organization_scope_ids,
+        account_generation,
     )
     .await?;
     let active = crate::org_mcp::effective_selection(crate::org_mcp::KnowledgeSourceSelection {
@@ -1935,7 +1994,7 @@ async fn agent_send_impl(
             crate::providers::require_model_images_if_declared(model)?;
         }
     }
-    let prompt_id = prompt_id.or_else(|| {
+    let mut prompt_id = prompt_id.or_else(|| {
         (review.is_some() || document_tool_bridge).then(|| uuid::Uuid::now_v7().to_string())
     });
     let send_now = send_now.unwrap_or(false);
@@ -1949,6 +2008,29 @@ async fn agent_send_impl(
     }
     // All local payload/attachment/team validation completes before acquiring
     // native execution authority. A rejected local payload leaves no live run.
+    let text = if let Some((context, scope, generation)) = crate::org::project_session_context(
+        &app,
+        &session_id,
+        display_text.as_deref().unwrap_or(&text),
+    )
+    .await?
+    {
+        if prompt_id.is_none() {
+            prompt_id = Some(uuid::Uuid::now_v7().to_string());
+        }
+        crate::org_mcp::update_session_configuration(
+            &tx,
+            &session_id,
+            false,
+            true,
+            vec![scope],
+            generation,
+        )
+        .await?;
+        format!("{context}\n\n{text}")
+    } else {
+        text
+    };
     let mut prepared_prompt = agent_runtime::prepare_mode_prompt(
         &session_id,
         &text,
@@ -2013,14 +2095,27 @@ async fn agent_send_impl(
             return Err(error);
         }
     }
+    let registration = if let Some(run_id) = prepared_prompt
+        .meta
+        .as_ref()
+        .and_then(|m| m.get("promptId"))
+        .and_then(serde_json::Value::as_str)
+    {
+        crate::org::record_project_run(&app, &session_id, run_id, "running", None).await
+    } else {
+        Ok(())
+    };
     tracing::info!(%session_id, attachment_count = attachments.len(), send_now, "agent prompt send");
     let enqueue = || {
         agent_runtime::enqueue_prepared_prompt(&tx, prepared_prompt)
             .map_err(|error| error.to_string())
     };
-    let response = match weixin {
-        Some(authorization) => authorization.enqueue(&app, &session_id, &workspace, enqueue),
-        None => enqueue(),
+    let response = match registration {
+        Err(error) => Err(error),
+        Ok(()) => match weixin {
+            Some(authorization) => authorization.enqueue(&app, &session_id, &workspace, enqueue),
+            None => enqueue(),
+        },
     };
     let submitted = response.is_ok();
     let result = match response {
@@ -2031,6 +2126,16 @@ async fn agent_send_impl(
         tracing::error!(%session_id, %error, "agent prompt failed");
     }
     if result.is_err() {
+        if let Some(run) = prompt_id.as_deref() {
+            let _ = crate::org::record_project_run(
+                &app,
+                &session_id,
+                run,
+                "failed",
+                Some("本轮执行未成功，请执行者检查结果并更新工作项。"),
+            )
+            .await;
+        }
         if let Some(prompt_id) = prompt_id.as_deref() {
             crate::coding_review_runtime::discard(&session_id, prompt_id);
             // Settle this exact failed admission. A transport error may still
@@ -3422,6 +3527,7 @@ mod tests {
             cwd: "/work".into(),
             model_id: Some("model-a".into()),
             permission_mode: "auto".into(),
+            profile_key: None,
         });
         // Recording the same session twice must not duplicate it.
         state.record_orphaned_session(OrphanedSession {
@@ -3429,28 +3535,32 @@ mod tests {
             cwd: "/work".into(),
             model_id: Some("model-a".into()),
             permission_mode: "auto".into(),
+            profile_key: None,
         });
 
         assert_eq!(
-            state.take_orphaned_session("/other", Some("model-a"), "auto"),
+            state.take_orphaned_session("/other", Some("model-a"), "auto", None),
             None
         );
         assert_eq!(
-            state.take_orphaned_session("/work", Some("model-b"), "auto"),
-            None
-        );
-        assert_eq!(state.take_orphaned_session("/work", None, "auto"), None);
-        assert_eq!(
-            state.take_orphaned_session("/work", Some("model-a"), "ask"),
+            state.take_orphaned_session("/work", Some("model-b"), "auto", None),
             None
         );
         assert_eq!(
-            state.take_orphaned_session("/work", Some("model-a"), "auto"),
+            state.take_orphaned_session("/work", None, "auto", None),
+            None
+        );
+        assert_eq!(
+            state.take_orphaned_session("/work", Some("model-a"), "ask", None),
+            None
+        );
+        assert_eq!(
+            state.take_orphaned_session("/work", Some("model-a"), "auto", None),
             Some("session-1".to_string())
         );
         // Adopted once only.
         assert_eq!(
-            state.take_orphaned_session("/work", Some("model-a"), "auto"),
+            state.take_orphaned_session("/work", Some("model-a"), "auto", None),
             None
         );
     }

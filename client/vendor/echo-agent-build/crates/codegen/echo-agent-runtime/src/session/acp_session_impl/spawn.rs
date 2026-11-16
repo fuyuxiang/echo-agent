@@ -924,6 +924,21 @@ pub(crate) async fn spawn_session_actor(
             },
         ))
     });
+    let mcp_servers = if startup_hints.is_subagent {
+        mcp_servers
+    } else {
+        crate::session::managed_mcp::resolve_agent_mcp_servers(
+            mcp_servers,
+            &agent_definition,
+            std::path::Path::new(&session_info.cwd),
+        )
+    };
+    let acp_mcp_servers = acp_mcp_servers
+        .into_iter()
+        .filter(|server| {
+            crate::session::managed_mcp::agent_allows_mcp_server(&agent_definition, &server.name)
+        })
+        .collect::<Vec<_>>();
     let mcp_state = {
         let mut state = McpState::new_with_meta(mcp_servers.clone(), mcp_meta_config_map);
         if let Some(ref pool) = parent_mcp_pool {

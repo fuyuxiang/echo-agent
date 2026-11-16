@@ -1,3 +1,4 @@
+import { PublishTeamProjectButton } from "./PublishTeamProjectButton";
 import { findModelChoiceLabel, findModelDisplayName } from "@/lib/model-presentation";
 import { PageToolbar } from "./PageToolbar";
 import { useSessionsStore } from "@/stores/sessions-store";
@@ -60,6 +61,7 @@ const CONFIG_CARDS: { key: DrawerKey; title: string; desc: string }[] = [
 ];
 
 export function ProjectDetailView({
+  onTeamPublished,
   project,
   initialTab = "activity",
   draftFocusRequest,
@@ -84,6 +86,7 @@ export function ProjectDetailView({
   onOpenOrganization,
 }: {
   project: ProjectMeta;
+  onTeamPublished?: (id: string) => void;
   initialTab?: ProjectTab;
   draftFocusRequest?: number;
   workspaces?: WorkspaceInfo[];
@@ -282,6 +285,7 @@ export function ProjectDetailView({
           <span className="pd-crumb__sep">/</span>
           <span className="pd-crumb__name">{live.name}</span>
         </div>
+        <PublishTeamProjectButton project={live} onPublished={onTeamPublished} />
       </PageToolbar>
 
       <div className="pd-body">

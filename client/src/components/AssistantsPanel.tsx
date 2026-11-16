@@ -32,7 +32,9 @@ import type { AgentEntry } from "@/lib/types";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { useUnsavedClose } from "@/lib/use-unsaved-close";
 import { useAppDialog } from "./AppDialog";
-import { mergeExpertDefinition } from "@/lib/expert-definition";
+import { ExpertCapabilitiesEditor } from "./experts-panel/experts/ExpertCapabilitiesEditor";
+import type { ExpertSettings } from "@/lib/expert-definition";
+import { configureExpertDefinition, mergeExpertDefinition } from "@/lib/expert-definition";
 import { CapabilityEmptyState, CapabilityError, CapabilityPage } from "./experts-panel/shared/CapabilityPage";
 
 const AVATAR_PRESETS: { bg: string; emoji: string }[] = [
@@ -183,6 +185,7 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
       avatar: expert.avatar ?? Math.floor((hashStr(expert.name) % 20) + 1),
       modelTags: expert.modelTags ? [...expert.modelTags] : ["default"],
       isNew: true,
+      originalRaw: expert.raw,
     });
   }, []);
 
@@ -204,7 +207,8 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
         throw new Error("已有同名专家，请使用其他名称；原配置不会被覆盖");
       }
       const generated = await agentsTemplate(draft.name, draft.description, draft.systemPrompt, draft.avatar, draft.modelTags.length > 0 ? draft.modelTags : undefined);
-      const raw = draft.isNew ? generated : await mergeExpertDefinition(draft.originalRaw ?? "", generated);
+      let raw = draft.originalRaw ? await mergeExpertDefinition(draft.originalRaw, generated) : generated;
+      if (draft.capabilities) raw = await configureExpertDefinition(raw, draft.capabilities);
       if (draft.isNew) await agentsSave(draft.name, raw);
       else await agentsUpdate(draft.path, draft.originalRaw ?? "", raw);
       setEditing(null);
@@ -449,6 +453,7 @@ interface EditorDraft {
   modelTags: string[];
   isNew: boolean;
   originalRaw?: string;
+  capabilities?: ExpertSettings;
 }
 
 function CreateColleagueDialog({
@@ -638,6 +643,10 @@ function CreateColleagueDialog({
                 ))}
               </div>
             </div>
+
+            <details className="create-colleague-field"><summary>模型、技能与连接器</summary>
+              <ExpertCapabilitiesEditor raw={d.originalRaw} disabled={saving} onChange={value => set("capabilities", value)} />
+            </details>
 
             {/* System Prompt */}
             <div className="create-colleague-field">

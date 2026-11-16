@@ -1,3 +1,4 @@
+import { bindTeamProjectSession, captureTeamProjectOperation, teamProjectRequest, type OpenTeamExecution, type TeamProjectSnapshot, type StartTeamWork } from "@/lib/team-project-client";
 import { documentEditPrompt, forgetDocumentSessions } from "@/lib/document-workspace";
 import type { CodingTurnOptions } from "./lib/agent-client";
 import { codingApi } from "./features/coding/lib/tauri-api";
@@ -55,6 +56,7 @@ import { usePendingExpertStore } from "./stores/pending-expert-store";
 import {
   agentInit,
   agentNewSession,
+  agentSessionInfo,
   type PermissionMode,
   agentPrepareTaskWorkspace,
   agentPrepareSend,
@@ -106,7 +108,7 @@ import {
   queueTerminalPolicy,
 } from "./stores/message-queue-store";
 import { useSubagentStore } from "./stores/subagent-store";
-import { resolveGroupForSession } from "./features/groups/group-client";
+import { groupCreate, groupDelete, groupList, groupSend, resolveGroupForSession } from "./features/groups/group-client";
 import { useGroupEvents, useGroupStore } from "./features/groups/group-store";
 import {
   checkQuota,
@@ -1631,7 +1633,7 @@ function Shell() {
     // app-level guard survives a view remount and protects every programmatic
     // caller from creating duplicate sessions for one submission.
     if ((!text.trim() && attachments.length === 0) || newSessionPendingRef.current) return false;
-    const modelId = requireConfiguredModel();
+    let modelId = requireConfiguredModel();
     if (!modelId) return false;
     if (!ensureQuotaAllowsSend()) return false;
     newSessionPendingRef.current = true;
@@ -1648,7 +1650,11 @@ function Shell() {
         ? permissionState.capabilityStatus.permissionMode
         : permissionState.homeMode;
       if (automaticWorkspace) cwd = await agentPrepareTaskWorkspace(taskWorkspaceRequestRef.current);
-      const sessionId = await agentNewSession(cwd, modelId, draftPermissionMode);
+      const sessionId = pendingExpert?.definitionPath && pendingExpert.definitionRaw
+        ? await agentNewSession(cwd, modelId, draftPermissionMode, undefined, { name: pendingExpert.name, path: pendingExpert.definitionPath, raw: pendingExpert.definitionRaw, ...(newSessionModelOverrideRef.current ? { modelOverride: newSessionModelOverrideRef.current } : {}) })
+        : await agentNewSession(cwd, modelId, draftPermissionMode);
+      createdSessionId = sessionId;
+      if (pendingExpert) modelId = (await agentSessionInfo(sessionId))?.model || modelId;
       taskWorkspaceRequestRef.current = crypto.randomUUID();
       createdSessionId = sessionId;
       if (requestedMode !== "default") {
@@ -1681,13 +1687,15 @@ function Shell() {
       // Check for pending expert — inject persona invisibly.
       const pending = pendingExpert;
       let textForAgent = text;
-      if (pending && pending.prompt) {
+      if (pending && pending.prompt && !pending.definitionRaw) {
         // Wrap persona in hidden markers. EchoAgent sees it as instructions;
         // MessageItem strips it from display on history replay.
         textForAgent = `${EXPERT_PERSONA_BEGIN}\n${pending.prompt}\n${EXPERT_PERSONA_END}\n\n${text}`;
         // Bind expert to session for persistence + UI badge.
         sessionsStore.getState().upsert({ sessionId, expertId: pending.expertId, expertName: pending.name, expertAvatar: pending.avatarLocal });
       }
+
+      if (pending) sessionsStore.getState().upsert({ sessionId, expertId: pending.expertId, expertName: pending.name, expertAvatar: pending.avatarLocal });
 
       const accepted = beginAgentTurn({
         sessionId,
@@ -3312,6 +3320,102 @@ function Shell() {
     }
   };
 
+  const handleStartTeamWork: StartTeamWork = async (project, task, requestedModel, capability) => {
+    const identity = captureTeamProjectOperation();
+    const model = requireExplicitProjectModel(requestedModel);
+    if (!model) throw new Error("执行模型暂不可用，工作项尚未接手，请配置模型后重试");
+    if (!ensureQuotaAllowsSend()) throw new Error("当前配额不足，工作项尚未接手");
+    const selection = selectionGenerationRef.current;
+    const cwd = await agentPrepareTaskWorkspace(crypto.randomUUID());
+    identity.assertCurrent();
+    let claimed = false;
+    let claimAttempted = false;
+    let sessionId: string | undefined;
+    let groupId: string | undefined;
+    const claim = async () => {
+      identity.assertCurrent();
+      claimAttempted = true;
+      const updated = await teamProjectRequest<TeamProjectSnapshot>("claimTask", project.id, { expectedRevision: task.revision }, task.id, identity);
+      identity.assertCurrent();
+      claimed = true;
+      const current = updated.tasks.find(item => item.id === task.id);
+      if (!current) throw new Error("工作项已不存在，请刷新项目");
+      return `项目：${updated.name}\n工作项：${current.title}\n${current.description}\n验收要求：${current.acceptance || "请与项目负责人确认"}\n请先核对项目最新依据，再执行此工作。执行完成后请说明成果文件和待验收事项。本轮公开输出会作为执行报告共享给项目成员；本机文件需要在项目资料中明确发布。`;
+    };
+    try {
+      if (capability?.team) {
+        const template = capability.team;
+        const group = await groupCreate({ requestId: crypto.randomUUID(), name: `${project.name} · ${task.title}`.slice(0, 80), goal: task.description.slice(0, 8000), cwd, modelId: capability.modelOverride ?? template.defaultModelId ?? model,
+          expectedOrganizationGeneration: identity.expectedGeneration, projectId: project.id, projectTaskId: task.id,
+          members: template.members.map(m => m.name), roles: Object.fromEntries(template.members.map(m => [m.name, m.role])),
+          models: Object.fromEntries(template.members.filter(m => m.modelId).map(m => [m.name, m.modelId!])), coordinatorName: template.coordinatorName ?? undefined, coordinatorRole: template.coordinatorRole ?? undefined });
+        groupId = group.id;
+        const prompt = await claim();
+        identity.assertCurrent();
+        await groupSend(group.id, { id: crypto.randomUUID(), text: prompt, memberIds: [], discussion: false, attachments: [], replyTo: null });
+        identity.assertCurrent();
+        if (selectionGenerationRef.current === selection) {
+          await useGroupStore.getState().select(group.id); identity.assertCurrent(); handleNavigate("专家团");
+        }
+        return group.id;
+      }
+      const expert = capability?.expert;
+      sessionId = await agentNewSession(cwd, model, "ask", undefined, expert?.path && expert.raw ? { name: expert.name, path: expert.path, raw: expert.raw, ...(capability?.modelOverride ? { modelOverride: capability.modelOverride } : {}) } : undefined);
+      identity.assertCurrent();
+      await bindTeamProjectSession(sessionId, project.id, task.id, identity);
+      if (expert) await agentSetSessionExpert(sessionId, expert.name, expert.name, "local", undefined, expert.path, expert.raw);
+      const actualModel = (await agentSessionInfo(sessionId))?.model || model;
+      const prompt = await claim();
+      identity.assertCurrent();
+      useKnowledgeStore.getState().setSessionSources(sessionId, ["organization"]);
+      useKnowledgeStore.getState().setSessionOrganizationScopeIds(sessionId, [project.scopeId]);
+      sessionsStore.getState().upsert({ sessionId, title: `${project.name} · ${task.title}`, cwd, currentModelId: actualModel, permissionMode: "ask", status: "working" });
+      if (selectionGenerationRef.current === selection) {
+        sessionsStore.getState().setCurrent(sessionId); sessionStore.getState().setSession(sessionId); setCurrentModelId(actualModel); setPlaceholderView(null);
+      }
+      if (!beginAgentTurn({ sessionId, promptText: prompt, displayText: task.title, allowBackgroundSession: true })) throw new Error("执行未能发送，请重新打开执行后重试");
+      return sessionId;
+    } catch (error) {
+      if (!claimed) {
+        if (sessionId) await discardUnstartedTask(sessionId, cwd);
+        if (groupId) { try { await groupDelete(groupId, false); } catch { /* Keep the local group available for manual cleanup. */ } }
+      } else if (sessionId) {
+        sessionsStore.getState().upsert({ sessionId, title: `${project.name} · ${task.title}`, cwd, currentModelId: model, permissionMode: "ask", status: "failed" });
+      }
+      if (claimed && (sessionId || groupId)) showActionToast("工作项已接手，请检查已有执行后继续", [{ label: "打开已有执行", onClick: () => {
+        void (async () => {
+          identity.assertCurrent();
+          if (groupId) { await useGroupStore.getState().select(groupId); identity.assertCurrent(); handleNavigate("专家团"); }
+          else if (sessionId) await handleSelectSession(sessionId, cwd, false, true);
+        })().catch(error => showToast(friendlyError(error)));
+      } }]);
+      throw new Error(`${claimed ? "工作项已接手，执行启动未确认；可打开已有执行检查后继续。" : claimAttempted ? "接手结果未确认，请刷新项目核对负责人后重试。" : "工作项尚未接手。"}${friendlyError(error)}`);
+    }
+  };
+
+  const handleOpenTeamExecution: OpenTeamExecution = async (project, run) => {
+    const identity = captureTeamProjectOperation();
+    const selection = selectionGenerationRef.current;
+    const assertCurrent = () => {
+      identity.assertCurrent();
+      if (selectionGenerationRef.current !== selection) throw new SessionNavigationSupersededError();
+    };
+    const latest = await teamProjectRequest<TeamProjectSnapshot>("snapshot", project.id, undefined, undefined, identity);
+    assertCurrent();
+    const current = latest.runs?.find(item => item.id === run.id);
+    if (!current || current.actorId !== useOrgSessionStore.getState().session?.user?.id) throw new Error("请查看该执行的共享报告；继续工作需要接手后新建执行");
+    const groups = await groupList();
+    assertCurrent();
+    if (groups.some(group => group.id === current.sessionId)) {
+      await useGroupStore.getState().select(current.sessionId); assertCurrent(); handleNavigate("专家团"); return;
+    }
+    const localSessions = await agentListAllSessions(true);
+    assertCurrent();
+    const local = localSessions.find(session => session.sessionId === current.sessionId);
+    if (!local) throw new Error("该执行不在本机或已删除。共享报告仍可查看；需要继续时，请从工作项发起新执行。");
+    await handleSelectSession(current.sessionId, local.cwd, false, true);
+  };
+
   const activeNav = placeholderView ?? (currentSessionId ? "" : "新建任务");
   const activeSubagentParent = activeSubagentReturnPoint(subagentTrail, currentSessionId);
   const parentSessionTitle = activeSubagentParent
@@ -3370,6 +3474,8 @@ function Shell() {
     onCancelCodingRun: () => handleCancel("stop"),
     onStartProject: handleStartProject,
     onStartProjectConversation: handleStartProjectConversation,
+    onStartTeamWork: handleStartTeamWork,
+    onOpenTeamExecution: handleOpenTeamExecution,
     onRenameSession: handleRenameSession,
     onArchiveSession: handleArchiveSession,
     onDeleteSession: handleDeleteSession,

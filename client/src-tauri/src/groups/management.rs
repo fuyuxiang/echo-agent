@@ -69,34 +69,20 @@ pub async fn group_member_change(
             .into_iter()
             .find(|m| m.name == expert)
             .ok_or("本地专家已不存在，请先恢复专家配置")?;
-        let mut parsed =
-            echo_agent_core::AgentDefinition::parse(&entry.raw).map_err(|e| e.to_string())?;
-        let model = if action == "refresh" {
-            snapshot
-                .members
-                .iter()
-                .find(|m| Some(&m.id) == member_id.as_ref())
-                .ok_or("成员不存在")?
-                .model_id
-                .clone()
-        } else {
-            match &parsed.model {
-                echo_agent_core::config::ModelOverride::Override(m) => m.clone(),
-                _ => snapshot
-                    .members
-                    .iter()
-                    .find(|m| Some(&m.id) == member_id.as_ref())
-                    .map(|m| m.model_id.clone())
-                    .unwrap_or_else(|| snapshot.members[0].model_id.clone()),
-            }
-        };
+        let member = snapshot
+            .members
+            .iter()
+            .find(|m| Some(&m.id) == member_id.as_ref());
+        let override_model = member
+            .filter(|member| !member.model_inherited)
+            .map(|member| member.model_id.as_str());
+        let (profile, model) = crate::agents_store::resolve_profile(
+            &entry.raw,
+            &snapshot.members[0].model_id,
+            override_model,
+        )?;
         crate::commands::ensure_runtime_ready(&app, &state, Some(&model)).await?;
         crate::policy::require_model(&model)?;
-        parsed.permission_mode = Default::default();
-        parsed.memory = None;
-        parsed.model = Default::default();
-        let mut profile = serde_json::to_value(&parsed).map_err(|e| e.to_string())?;
-        profile["promptBody"] = json!(parsed.prompt_body.unwrap_or_default());
         Some((entry, profile, model))
     } else {
         None
@@ -129,6 +115,7 @@ pub async fn group_member_change(
                     role: entry.description.unwrap_or_default(),
                     profile,
                     model_id: model,
+                    model_inherited: true,
                     session_id: None,
                     discussion_session_id: None,
                     seen_seq: 0,
@@ -279,7 +266,11 @@ pub fn group_team_save(group_id: String, name: String) -> Result<TeamTemplate, S
             .map(|m| TemplateMember {
                 name: m.expert.unwrap(),
                 role: m.role,
-                model_id: Some(m.model_id),
+                model_id: if m.model_inherited {
+                    None
+                } else {
+                    Some(m.model_id)
+                },
             })
             .collect(),
         source: "常用团队".into(),

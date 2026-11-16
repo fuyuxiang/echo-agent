@@ -19,6 +19,8 @@ pub struct Member {
     pub role: String,
     pub profile: serde_json::Value,
     pub model_id: String,
+    #[serde(default)]
+    pub model_inherited: bool,
     pub session_id: Option<String>,
     pub discussion_session_id: Option<String>,
     pub seen_seq: u64,
@@ -169,9 +171,20 @@ pub struct DecisionVersion {
     pub changed_at: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectBinding {
+    pub account_id: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
+    #[serde(default)]
+    pub project_binding: Option<ProjectBinding>,
     pub id: String,
     pub name: String,
     pub goal: String,

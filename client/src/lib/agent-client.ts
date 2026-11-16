@@ -150,12 +150,14 @@ export async function agentNewSession(
   modelId?: string,
   permissionMode?: PermissionMode,
   expectedPermissionMode?: PermissionMode,
+  expert?: { name: string; path: string; raw: string; modelOverride?: string },
 ): Promise<string> {
   const invocation = invoke<string>("agent_new_session", {
     cwd,
     modelId: modelId ?? null,
     permissionMode: permissionMode ?? (expectedPermissionMode === undefined ? "ask" : null),
     ...(expectedPermissionMode === undefined ? {} : { expectedPermissionMode }),
+    ...(expert ? { expert } : {}),
   });
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {

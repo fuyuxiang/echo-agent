@@ -1,3 +1,5 @@
+import { TeamProjectsPanel } from "./TeamProjectsPanel";
+import type { OpenTeamExecution, StartTeamWork } from "@/lib/team-project-client";
 import { ResourceIcon, ResourceList, ResourceRow } from "./ResourceList";
 import { modelChoiceLabel } from "@/lib/model-presentation";
 /**
@@ -46,6 +48,8 @@ import { PermissionPicker } from "./PermissionPicker";
 import { selectProjectPermissionMode, usePermissionModeStore } from "@/stores/permission-mode-store";
 
 interface ProjectsPanelProps {
+  onStartTeamWork?: StartTeamWork;
+  onOpenTeamExecution?: OpenTeamExecution;
   cwd?: string;
   onSelectWorkspace?: (cwd: string) => void;
   onToast?: (msg: string) => void;
@@ -87,6 +91,8 @@ interface ProjectMenuPosition {
 }
 
 export function ProjectsPanel({
+  onStartTeamWork,
+  onOpenTeamExecution,
   cwd,
   onToast,
   onStartProject,
@@ -118,6 +124,7 @@ export function ProjectsPanel({
   const focusProjectDraft = useProjectsStore((s) => s.focusProjectDraft);
   const activeProjectTab = useProjectsStore((s) => s.activeProjectTab);
   const setActiveProjectId = useProjectsStore((s) => s.setActiveProjectId);
+  const [teamId, setTeamId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [create, setCreate] = useState<CreatePreset | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -147,6 +154,8 @@ export function ProjectsPanel({
     p.name.toLowerCase().includes(query.toLowerCase()),
   );
 
+  if (teamId) return <TeamProjectsPanel selectedId={teamId} onSelect={setTeamId} onStartWork={onStartTeamWork} onOpenExecution={onOpenTeamExecution} models={models} defaultModelId={defaultModelId} onOpenOrganization={onOpenOrganization} />;
+
   const openProject = projects.find((p) => p.id === openId) ?? null;
   if (openProject) {
     return (
@@ -154,6 +163,7 @@ export function ProjectsPanel({
         <ProjectDetailView
           key={openProject.id}
           project={openProject}
+          onTeamPublished={id => { setOpenId(null); setTeamId(id); }}
           initialTab={initialTab}
           draftFocusRequest={draftFocusRequest}
           workspaces={workspaces}
@@ -232,6 +242,7 @@ export function ProjectsPanel({
           </button>
         </div>
       )}
+      <TeamProjectsPanel selectedId={null} onSelect={setTeamId} onStartWork={onStartTeamWork} onOpenExecution={onOpenTeamExecution} models={models} defaultModelId={defaultModelId} onOpenOrganization={onOpenOrganization} />
       <section className="project-section">
           <ResourceList collectionKey={projects.length ? "projects" : undefined} className="project-grid" aria-label="我的项目"
             toolbarStart={<div className="project-list-tools">

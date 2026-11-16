@@ -457,17 +457,41 @@ pub async fn new_session_with_options(
     reasoning_effort: Option<&str>,
     permission_mode_override: Option<&str>,
 ) -> Result<String> {
+    new_session_with_profile(
+        tx,
+        cwd,
+        model_id,
+        reasoning_effort,
+        permission_mode_override,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn new_session_with_profile(
+    tx: &AcpAgentTx,
+    cwd: &Path,
+    model_id: Option<&str>,
+    reasoning_effort: Option<&str>,
+    permission_mode_override: Option<&str>,
+    profile: Option<&serde_json::Value>,
+) -> Result<String> {
     tracing::info!(cwd = %cwd.display(), model_id, "echoagent: new_session send");
     let permission_mode = permission_mode_override
         .map(str::to_string)
         .unwrap_or_else(crate::permission_config::permission_mode_for_session);
-    let req = new_session_request(
+    let mut req = new_session_request(
         cwd,
         model_id,
         reasoning_effort,
         &permission_mode,
         current_desktop_mcp_servers(),
     );
+    if let Some(profile) = profile {
+        req.meta
+            .get_or_insert_with(Default::default)
+            .insert("agentProfile".into(), profile.clone());
+    }
     let resp: acp::NewSessionResponse = acp_send(req, tx).await.map_err(|e| {
         tracing::error!(error = ?e, "echoagent: new_session FAILED");
         anyhow!("new_session: {e:?}")
@@ -583,12 +607,19 @@ async fn load_session_with_servers(
     servers: Vec<acp::McpServer>,
 ) -> Result<Option<String>> {
     crate::sessions::require_migrated_model(session_id, cwd).map_err(|error| anyhow!(error))?;
-    let req = acp::LoadSessionRequest::new(
+    let mut req = acp::LoadSessionRequest::new(
         acp::SessionId::new(session_id.to_string()),
         cwd.to_path_buf(),
     )
     .mcp_servers(servers)
     .meta(Some(permission_mode_meta(permission_mode)));
+    if let Some(profile) =
+        crate::agents_store::session_profile(session_id).map_err(|e| anyhow!(e))?
+    {
+        req.meta
+            .get_or_insert_with(Default::default)
+            .insert("agentProfile".into(), profile);
+    }
     let response: acp::LoadSessionResponse = acp_send(req, tx)
         .await
         .map_err(|e| anyhow!("load_session: {e:?}"))?;

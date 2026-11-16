@@ -3937,12 +3937,38 @@ impl MvpAgent {
             .is_some_and(echo_agent_core::config::is_strict_harness_agent_type);
         if !echo_agent_agent_env_set && !config_agent_explicitly_set
             && model_requires_strict_harness && let Some(required) = model_agent_type
-            && let Some(def) = echo_agent_core::discovery::by_name_in_cwd(required, cwd)
+            && let Some(mut def) = echo_agent_core::discovery::by_name_in_cwd(required, cwd)
         {
             tracing::info!(
                 agent_name = %def.name,
                 "Using agent definition from model agent_type"
             );
+            if let Some(profile) = acp_agent_profile {
+                // Keep the model's wire format and native tool schemas, while
+                // applying the explicitly selected expert to primary and group
+                // sessions alike. Replacing the harness breaks these models;
+                // ignoring the profile silently loses the user's restrictions.
+                if let Some(role) = profile.prompt_body.filter(|body| !body.trim().is_empty()) {
+                    let base = def.prompt_body.take().unwrap_or_default();
+                    def.prompt_body = Some(format!("{base}\n\nExpert: {}\n{role}", profile.name));
+                }
+                // `name` also identifies the wire harness for persistence and
+                // model switching. The expert identity stays in ACP metadata.
+                def.description = profile.description;
+                if !def.tools.is_empty() {
+                    def.session_tools_allowlist = Some(def.tools.clone());
+                }
+                def.tools = profile.tools;
+                def.disallowed_tools.extend(profile.disallowed_tools);
+                def.skills = profile.skills;
+                def.discover_skills = profile.discover_skills;
+                def.inherit_skills = profile.inherit_skills;
+                def.agents_md = profile.agents_md;
+                def.mcp_servers = profile.mcp_servers;
+                def.mcp_inheritance = profile.mcp_inheritance;
+                def.max_turns = profile.max_turns.or(def.max_turns);
+                def.effort = profile.effort.or(def.effort);
+            }
             return def;
         }
         if let Some(def) = acp_agent_profile {
@@ -4461,14 +4487,6 @@ impl MvpAgent {
         // discussion sessions get a final allowlist, not a prompt-only promise.
         let collaboration = session_meta.and_then(|m| m.get("echoagent.group"));
         if let Some(group) = collaboration {
-            if let Some(profile) = parse_agent_profile_from_meta(session_meta) {
-                if profile.prompt_body != agent_definition.prompt_body {
-                    if let Some(role) = profile.prompt_body {
-                        let base = agent_definition.prompt_body.take().unwrap_or_default();
-                        agent_definition.prompt_body = Some(format!("{base}\n\n{role}"));
-                    }
-                }
-            }
             agent_definition.memory = None;
             // All collaboration goes through persisted group work items. Native
             // private subagents would bypass group visibility and the

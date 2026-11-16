@@ -70,6 +70,7 @@ mod personal_knowledge;
 mod policy;
 mod process_identity;
 mod process_supervisor;
+mod project_output;
 mod projects;
 mod provider_response;
 mod providers;
@@ -1113,6 +1114,9 @@ pub fn run() {
             org::org_session,
             org::org_sync_model_config,
             org::org_bootstrap,
+            org::org_project_request,
+            org::org_project_upload,
+            org::org_bind_project_session,
             org::org_list_scopes,
             org::org_submit_document,
             org::org_document_submissions_mine,
@@ -1169,6 +1173,8 @@ pub fn run() {
             agents_store::agents_save,
             agents_store::agents_update,
             agents_store::agents_merge_definition,
+            agents_store::agents_definition_settings,
+            agents_store::agents_configure_definition,
             agents_store::agents_validate_references,
             agents_store::agents_delete,
             agents_store::agents_template,

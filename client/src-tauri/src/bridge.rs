@@ -1148,6 +1148,15 @@ async fn handle_client_message(
         AcpClientMessage::SessionNotification(b) => {
             let update = serialize_session_update(&b.request.update);
             let sid = b.request.session_id.0.as_ref().to_string();
+            crate::project_output::observe(
+                &sid,
+                &update,
+                b.request
+                    .meta
+                    .as_ref()
+                    .and_then(|m| serde_json::to_value(m).ok())
+                    .as_ref(),
+            );
             crate::coding_review_runtime::observe(
                 &sid,
                 &update,
@@ -2033,6 +2042,39 @@ pub(crate) async fn handle_prompt_complete(app: &AppHandle, complete: CompleteEv
 
     let failed = disposition == CompletionDisposition::Failed;
     let stopped = disposition == CompletionDisposition::Stopped;
+    {
+        let project_app = app.clone();
+        let project_completion = complete.clone();
+        let project_output =
+            crate::project_output::finish(&complete.session_id, &complete.prompt_id);
+        tokio::spawn(async move {
+            let status = if failed {
+                "failed"
+            } else if stopped || disposition == CompletionDisposition::Superseded {
+                "cancelled"
+            } else {
+                "completed"
+            };
+            if let Err(error) = crate::org::record_project_run(
+                &project_app,
+                &project_completion.session_id,
+                &project_completion.prompt_id,
+                status,
+                project_output
+                    .as_deref()
+                    .or(project_completion.agent_result.as_deref()),
+            )
+            .await
+            {
+                tracing::warn!(%error, "project execution result is pending synchronization");
+                let _ = project_app.emit(
+                    "project://sync-error",
+                    serde_json::json!({"sessionId":project_completion.session_id,"error":error}),
+                );
+            }
+        });
+    }
+
     // EchoAgent reports mid-turn failures (429 hit while a tool was
     // running, connection reset, etc.) via prompt_complete with
     // stopReason "rate_limit" or "error" — NOT as a thrown error.
@@ -2239,6 +2281,7 @@ async fn handle_session_notification(app: &AppHandle, params: &Value) {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     tracing::info!(session_id, kind, "received echo.agent/session_notification");
+    crate::project_output::observe(session_id, update, params.get("_meta"));
     crate::groups::observe(session_id, update, params.get("_meta"));
     match kind {
         "turn_completed" => {

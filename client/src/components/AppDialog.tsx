@@ -32,6 +32,7 @@ export interface ConfirmationOptions extends DialogBaseOptions {
 export type ConfirmAction = (options: Omit<ConfirmationOptions, "action">) => Promise<boolean>;
 
 export interface PromptField {
+  options?: Array<{ value: string; label: string }>;
   name: string;
   label: string;
   defaultValue?: string;
@@ -291,7 +292,7 @@ function AppActionDialog({
                 disabled: busy,
                 required: field.required,
                 "data-modal-initial-focus": index === 0 ? true : undefined,
-                onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+                onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
                   setValues((current) => ({ ...current, [field.name]: event.target.value }));
                   if (error) setError(null);
                 },
@@ -299,7 +300,9 @@ function AppActionDialog({
               return (
                 <label key={field.name} className="app-dialog__field" htmlFor={inputId}>
                   <span>{field.label}{field.required ? <span aria-hidden="true"> *</span> : null}</span>
-                  {field.multiline ? (
+                  {field.options ? (
+                    <select {...common}>{field.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+                  ) : field.multiline ? (
                     <textarea {...common} rows={field.rows ?? 5} />
                   ) : (
                     <input {...common} type="text" />

@@ -1,3 +1,4 @@
+import type { OpenTeamExecution, StartTeamWork } from "@/lib/team-project-client";
 import type { ConfirmAction } from "./AppDialog";
 import type { CodingTurnOptions } from "@/lib/agent-client";
 import { lazy, Suspense, type ComponentProps, type ReactNode } from "react";
@@ -60,6 +61,8 @@ function DeferredPanel({ children }: { children: ReactNode }) {
 }
 
 interface PlaceholderPageProps {
+  onStartTeamWork?: StartTeamWork;
+  onOpenTeamExecution?: OpenTeamExecution;
   onOpenAutomationSettings?: (section: "general" | "notifications") => void;
   onOpenRetrievalSettings?: () => void;
   label: string;
@@ -171,6 +174,8 @@ export function PlaceholderPage({
   onProjectNavigate,
   onOpenProjectWorkItemSession,
   onStartProjectConversation,
+  onStartTeamWork,
+  onOpenTeamExecution,
   projectModels,
   projectDefaultModelId,
   onOpenMeetingMinutes,
@@ -194,6 +199,8 @@ export function PlaceholderPage({
           onStartProject={onStartProject}
           onNavigate={onProjectNavigate}
           onStartProjectConversation={onStartProjectConversation}
+          onStartTeamWork={onStartTeamWork}
+          onOpenTeamExecution={onOpenTeamExecution}
           workspaces={workspaces}
           models={projectModels}
           defaultModelId={projectDefaultModelId}

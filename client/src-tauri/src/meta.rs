@@ -318,6 +318,8 @@ pub fn save_continuation(
     cwd: &Path,
 ) -> Result<(), String> {
     validate_continuation(id, &origin)?;
+    crate::org::copy_project_binding(source, id)?;
+    crate::agents_store::copy_session_definition(source, id)?;
     update_state_at(&state_path(), |state| {
         if state.session_continuations.contains_key(id) {
             return Ok(((), false));

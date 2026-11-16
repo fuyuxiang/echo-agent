@@ -1604,6 +1604,9 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(Ok(()));
                                 continue;
                             }
+                            let mcp_servers = crate::session::managed_mcp::resolve_agent_mcp_servers(
+                                mcp_servers, session.agent.borrow().definition(),
+                                std::path::Path::new(&session.session_info.cwd));
                             tracing::info!(
                                 "Updating MCP servers for session '{}' ({} servers)",
                                 session.session_info.id.0,
@@ -1684,6 +1687,17 @@ pub(super) async fn run_session(
                             });
                         }
                         SessionCommand::ToggleMcpServer { server_name, enabled, persist_enabled_state, server_config, respond_to } => {
+                            if enabled && !crate::session::managed_mcp::agent_allows_mcp_server(
+                                session.agent.borrow().definition(), &server_name) {
+                                // Global settings broadcast session-scoped
+                                // updates. Excluded experts stay restricted
+                                // without making a valid global toggle fail.
+                                let result = if persist_enabled_state {
+                                    Err(acp::Error::invalid_params().data("This connector is outside the selected expert's scope"))
+                                } else { Ok(()) };
+                                let _ = respond_to.send(result);
+                                continue;
+                            }
                             session.events.emit(echo_agent_session_events::Event::McpServerToggled {
                                 server_name: server_name.clone(),
                                 enabled,

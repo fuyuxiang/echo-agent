@@ -7,6 +7,7 @@ type CreationResult = Option<Result<String, String>>;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SessionCreationKey {
     pub cwd: String,
+    pub profile_key: Option<String>,
     pub model_id: Option<String>,
     pub permission_mode: String,
 }
@@ -81,6 +82,7 @@ mod tests {
     fn key() -> SessionCreationKey {
         SessionCreationKey {
             cwd: "/task".into(),
+            profile_key: None,
             model_id: Some("model".into()),
             permission_mode: "ask".into(),
         }
@@ -127,6 +129,10 @@ mod tests {
         let requests = SessionCreations::default();
         let (first, _) = requests.join(&key()).unwrap();
         for changed in [
+            SessionCreationKey {
+                profile_key: Some("different-expert-version".into()),
+                ..key()
+            },
             SessionCreationKey {
                 cwd: "/other".into(),
                 ..key()

@@ -35,6 +35,7 @@ export function organizationSessionBoundary(session: OrgSession | null): string 
   const user = session.user ?? session.bootstrap?.user;
   return JSON.stringify([
     session.serverUrl,
+    session.accountGeneration,
     user?.id,
     user?.role,
     user?.clearance,

@@ -12,9 +12,8 @@
 //! write these files directly — there's no in-memory state to race with
 //! (EchoAgent's file watcher picks up changes on its own).
 //!
-//! EchoAgent cannot switch the active session's agent (ACP has no such call),
-//! but the user can launch a new session guided by an agent's prompt, or
-//! spawn the agent via EchoAgent's `spawn_subagent` tool from within a chat.
+//! New primary sessions and group members use the same resolved ACP profile.
+//! Primary-session snapshots are retained for restoration and continuation.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -519,6 +518,197 @@ fn merge_expert_definition(original: &str, generated: &str) -> Result<String, St
     echo_agent_core::AgentDefinition::parse(&result)
         .map_err(|error| format!("合并后的专家配置无效，原配置未修改：{error}"))?;
     Ok(result)
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpertSettings {
+    pub model: String,
+    pub skills: Vec<String>,
+    pub tools: Vec<String>,
+    pub disallowed_tools: Vec<String>,
+    pub discover_skills: bool,
+    pub inherit_skills: bool,
+    pub mcp_servers: Option<Vec<String>>,
+    pub mcp_inheritance: echo_agent_core::config::McpInheritance,
+}
+
+#[tauri::command]
+pub fn agents_definition_settings(raw: String) -> Result<ExpertSettings, String> {
+    definition_yaml(&raw)?;
+    let def = echo_agent_core::AgentDefinition::parse(&raw).map_err(|e| e.to_string())?;
+    Ok(ExpertSettings {
+        model: def.model.to_string(),
+        skills: def.skills,
+        tools: def.tools,
+        disallowed_tools: def.disallowed_tools,
+        discover_skills: def.discover_skills,
+        inherit_skills: def.inherit_skills,
+        mcp_servers: def
+            .mcp_servers
+            .into_iter()
+            .map(|server| match server {
+                echo_agent_core::config::McpServerRef::Named(name) => Some(name),
+                _ => None, // Preserve inline configurations; this editor only owns references.
+            })
+            .collect(),
+        mcp_inheritance: def.mcp_inheritance,
+    })
+}
+
+#[tauri::command]
+pub fn agents_configure_definition(
+    raw: String,
+    settings: ExpertSettings,
+) -> Result<String, String> {
+    let mut mapping = definition_yaml(&raw)?;
+    let values = serde_yaml::to_value(&settings).map_err(|e| e.to_string())?;
+    for (key, value) in values.as_mapping().ok_or("专家能力配置无效")? {
+        if key.as_str() == Some("mcpServers") && value.is_null() {
+            continue;
+        }
+        mapping.insert(key.clone(), value.clone());
+    }
+    let yaml = serde_yaml::to_string(&mapping).map_err(|e| e.to_string())?;
+    let result = format!("---\n{yaml}---\n\n{}", markdown_body(&raw));
+    echo_agent_core::AgentDefinition::parse(&result).map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpertSelection {
+    pub model_override: Option<String>,
+    pub name: String,
+    pub path: String,
+    pub raw: String,
+}
+
+/// One resolver for primary experts and expert-group members. Session policy
+/// and memory namespaces are supplied by the host, never by a portable expert.
+pub(crate) fn resolve_profile(
+    raw: &str,
+    fallback: &str,
+    override_model: Option<&str>,
+) -> Result<(serde_json::Value, String), String> {
+    let mut def = echo_agent_core::AgentDefinition::parse(raw).map_err(|e| e.to_string())?;
+    let model = override_model
+        .map(str::to_owned)
+        .unwrap_or_else(|| match &def.model {
+            echo_agent_core::config::ModelOverride::Override(model) => model.clone(),
+            _ => fallback.to_string(),
+        });
+    def.model = Default::default();
+    def.memory = None;
+    def.permission_mode = Default::default();
+    // Host services are session infrastructure, rather than portable expert
+    // connectors. Keep their explicit references when connector inheritance is
+    // restricted; availability and authorization remain controlled by the host.
+    for name in [
+        crate::team_mcp::MCP_SERVER_NAME,
+        crate::automation::MCP_SERVER_NAME,
+        crate::office_mcp::MCP_SERVER_NAME,
+        crate::live_info_mcp::MCP_SERVER_NAME,
+        crate::org_mcp::MCP_SERVER_NAME,
+    ] {
+        if !def.mcp_servers.iter().any(|entry| {
+            matches!(entry,
+            echo_agent_core::config::McpServerRef::Named(existing) if existing == name)
+        }) {
+            def.mcp_servers
+                .push(echo_agent_core::config::McpServerRef::Named(name.into()));
+        }
+    }
+    let prompt = def.prompt_body.clone().unwrap_or_default();
+    let mut profile = serde_json::to_value(def).map_err(|e| e.to_string())?;
+    profile["promptBody"] = serde_json::json!(prompt);
+    Ok((profile, model))
+}
+
+fn snapshot_path(session_id: &str) -> Result<PathBuf, String> {
+    uuid::Uuid::parse_str(session_id).map_err(|_| "专家快照会话 ID 无效")?;
+    Ok(crate::paths::echo_agent_home_dir()
+        .join("expert-snapshots")
+        .join(format!("{session_id}.md")))
+}
+pub(crate) fn save_session_definition(session_id: &str, raw: &str) -> Result<(), String> {
+    definition_yaml(raw)?;
+    crate::paths::write_private_file(&snapshot_path(session_id)?, raw.as_bytes())
+        .map_err(|e| e.to_string())
+}
+pub(crate) fn copy_session_definition(source: &str, target: &str) -> Result<(), String> {
+    if uuid::Uuid::parse_str(source).is_err() {
+        return Ok(());
+    }
+    let path = snapshot_path(source)?;
+    if path.exists() {
+        save_session_definition(
+            target,
+            &std::fs::read_to_string(path).map_err(|e| e.to_string())?,
+        )?;
+    }
+    Ok(())
+}
+pub(crate) fn session_profile(session_id: &str) -> Result<Option<serde_json::Value>, String> {
+    if uuid::Uuid::parse_str(session_id).is_err() {
+        return Ok(None);
+    }
+    let path = snapshot_path(session_id)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    definition_yaml(&raw)?;
+    Ok(Some(resolve_profile(&raw, "inherit", None)?.0))
+}
+
+#[cfg(test)]
+mod expert_capability_tests {
+    use super::*;
+    const RAW: &str = "---\nname: Reviewer\ndescription: Interface review\nmodel: expert-model\nskills: [traceability]\ntools: [read_file]\ndisallowedTools: [shell]\ndiscoverSkills: false\nmcpServers: [repository]\nmcpInheritance: none\nfuture:\n  retained: true\n---\nReview with evidence.";
+
+    #[test]
+    fn primary_and_group_profiles_use_the_same_capabilities_and_explicit_model_precedence() {
+        let (primary, model) = resolve_profile(RAW, "project-model", None).unwrap();
+        let (group, override_model) =
+            resolve_profile(RAW, "project-model", Some("group-model")).unwrap();
+        assert_eq!(model, "expert-model");
+        assert_eq!(override_model, "group-model");
+        assert_eq!(primary, group);
+        assert_eq!(primary["skills"], serde_json::json!(["traceability"]));
+        assert_eq!(primary["tools"], serde_json::json!(["read_file"]));
+        assert!(primary["mcpServers"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("repository")));
+        assert!(primary["mcpServers"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(crate::team_mcp::MCP_SERVER_NAME)));
+        assert_eq!(primary["mcpInheritance"], "none");
+        assert_eq!(primary["discoverSkills"], false);
+        assert_eq!(primary["promptBody"], "Review with evidence.");
+        assert!(primary["memory"].is_null());
+    }
+
+    #[test]
+    fn capability_editor_preserves_unknown_fields_and_the_instruction_body() {
+        let mut settings = agents_definition_settings(RAW.into()).unwrap();
+        settings.model = "inherit".into();
+        settings.skills.push("acceptance".into());
+        let updated = agents_configure_definition(RAW.into(), settings).unwrap();
+        assert_eq!(
+            definition_yaml(&updated).unwrap()["future"]["retained"],
+            true
+        );
+        assert_eq!(markdown_body(&updated), "Review with evidence.");
+        let (profile, model) = resolve_profile(&updated, "project-model", None).unwrap();
+        assert_eq!(model, "project-model");
+        assert_eq!(
+            profile["skills"],
+            serde_json::json!(["traceability", "acceptance"])
+        );
+    }
 }
 
 /// Fetch a single agent file's full contents.

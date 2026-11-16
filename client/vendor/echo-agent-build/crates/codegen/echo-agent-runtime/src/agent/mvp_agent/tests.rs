@@ -7223,3 +7223,65 @@ fn init_advertising_status_line(enabled: bool) -> acp::InitializeRequest {
             .meta(meta),
     )
 }
+
+#[test]
+#[serial_test::serial]
+fn strict_model_harness_keeps_primary_expert_instructions_and_capability_restrictions() {
+    let previous = std::env::var("ECHO_AGENT_AGENT").ok();
+    unsafe {
+        std::env::remove_var("ECHO_AGENT_AGENT");
+    }
+    let cwd = tempfile::tempdir().unwrap();
+    let harness = MvpAgent::resolve_agent_definition(
+        cwd.path(),
+        None,
+        &config::AgentSelectionConfig::default(),
+        None,
+        Some("codex"),
+    );
+    let profile = echo_agent_core::AgentDefinition::parse("---\nname: Reviewer\ndescription: Review contracts\nskills: [contracts]\ndiscoverSkills: false\ntools: [Read]\ndisallowedTools: [Bash]\nmcpServers: [repository]\nmcpInheritance: none\n---\nUse acceptance criteria and cite evidence.").unwrap();
+    let resolved = MvpAgent::resolve_agent_definition(
+        cwd.path(),
+        None,
+        &config::AgentSelectionConfig::default(),
+        Some(profile),
+        Some("codex"),
+    );
+    assert_eq!(resolved.name, harness.name);
+    assert!(
+        resolved
+            .prompt_body
+            .as_deref()
+            .unwrap()
+            .contains("Expert: Reviewer")
+    );
+    assert!(
+        resolved
+            .prompt_body
+            .as_deref()
+            .unwrap()
+            .contains("Use acceptance criteria and cite evidence.")
+    );
+    assert_eq!(resolved.skills, ["contracts"]);
+    assert!(!resolved.discover_skills);
+    assert_eq!(resolved.tools, ["Read"]);
+    assert!(resolved.disallowed_tools.iter().any(|tool| tool == "Bash"));
+    assert_eq!(
+        resolved.mcp_inheritance,
+        echo_agent_core::config::McpInheritance::None
+    );
+    assert_eq!(
+        resolved.user_message_template,
+        harness.user_message_template
+    );
+    assert_eq!(
+        serde_json::to_value(&resolved.tool_config).unwrap(),
+        serde_json::to_value(&harness.tool_config).unwrap()
+    );
+    assert_eq!(resolved.inject_default_tools, harness.inject_default_tools);
+    if let Some(previous) = previous {
+        unsafe {
+            std::env::set_var("ECHO_AGENT_AGENT", previous);
+        }
+    }
+}

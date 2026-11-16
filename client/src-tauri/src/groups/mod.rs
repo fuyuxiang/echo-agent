@@ -112,6 +112,9 @@ fn text(value: &str, limit: usize, label: &str) -> Result<String, String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateInput {
+    pub expected_organization_generation: Option<u64>,
+    pub project_id: Option<String>,
+    pub project_task_id: Option<String>,
     pub request_id: Option<String>,
     pub name: String,
     pub goal: Option<String>,
@@ -133,6 +136,21 @@ pub async fn group_create(
     state: State<'_, crate::commands::AppState>,
     input: CreateInput,
 ) -> Result<Group, String> {
+    let project_binding = if let Some(project_id) = &input.project_id {
+        let generation = input
+            .expected_organization_generation
+            .ok_or("项目账号信息缺失，请重新打开项目")?;
+        crate::org::require_project_account_generation(&app, generation).await?;
+        let mut binding = crate::org::authorize_project(&app, project_id).await?;
+        crate::org::require_project_account_generation(&app, generation).await?;
+        if let Some(task_id) = &input.project_task_id {
+            uuid::Uuid::parse_str(task_id).map_err(|_| "项目工作项 ID 无效")?;
+        }
+        binding.task_id = input.project_task_id.clone();
+        Some(binding)
+    } else {
+        None
+    };
     let request_id = input
         .request_id
         .as_deref()
@@ -190,6 +208,7 @@ pub async fn group_create(
         role: "理解目标、组织协作、检查交付".into(),
         profile,
         model_id: input.model_id.clone(),
+        model_inherited: true,
         session_id: None,
         discussion_session_id: None,
         seen_seq: 0,
@@ -217,25 +236,17 @@ pub async fn group_create(
             .iter()
             .find(|d| d.name == expert)
             .ok_or_else(|| format!("本地专家“{expert}”不存在"))?;
-        let mut parsed = echo_agent_core::AgentDefinition::parse(&def.raw)
-            .map_err(|e| format!("专家“{expert}”配置无效：{e}"))?;
-        let effective_model = input
-            .models
-            .as_ref()
-            .and_then(|models| models.get(&expert))
-            .cloned()
-            .unwrap_or_else(|| match &parsed.model {
-                echo_agent_core::config::ModelOverride::Override(model) => model.clone(),
-                _ => input.model_id.clone(),
-            });
+        let (profile, effective_model) = crate::agents_store::resolve_profile(
+            &def.raw,
+            &input.model_id,
+            input
+                .models
+                .as_ref()
+                .and_then(|models| models.get(&expert))
+                .map(String::as_str),
+        )?;
         crate::commands::ensure_runtime_ready(&app, &state, Some(&effective_model)).await?;
         crate::policy::require_model(&effective_model)?;
-        parsed.permission_mode = Default::default();
-        parsed.memory = None;
-        parsed.model = Default::default();
-        let prompt = parsed.prompt_body.clone().unwrap_or_default();
-        let mut profile = serde_json::to_value(&parsed).map_err(|e| e.to_string())?;
-        profile["promptBody"] = json!(prompt);
         let role = input
             .roles
             .as_ref()
@@ -255,10 +266,14 @@ pub async fn group_create(
         members.push(Member {
             id: id(),
             name: expert.clone(),
-            expert: Some(expert),
+            expert: Some(expert.clone()),
             role,
             profile,
             model_id: effective_model,
+            model_inherited: !input
+                .models
+                .as_ref()
+                .is_some_and(|models| models.contains_key(&expert)),
             session_id: None,
             discussion_session_id: None,
             seen_seq: 0,
@@ -288,6 +303,7 @@ pub async fn group_create(
             .role = role;
     }
     let mut g = Group {
+        project_binding,
         id: request_id.unwrap_or_else(id),
         name,
         goal,
@@ -346,6 +362,26 @@ pub fn group_snapshot(group_id: String) -> Result<GroupSnapshot, String> {
 #[tauri::command]
 pub fn group_owner(session_id: String) -> Result<Option<String>, String> {
     Ok(db()?.owner(&session_id)?.map(|(group, _)| group))
+}
+
+pub(crate) fn project_execution_identity(group_id: &str) -> Option<(String, String, String)> {
+    use sha2::{Digest, Sha256};
+    let group = db().ok()?.get(group_id).ok()?;
+    group.project_binding.as_ref()?;
+    let coordinator = group
+        .members
+        .iter()
+        .find(|member| member.id == group.coordinator_id)?;
+    let profiles = group
+        .members
+        .iter()
+        .map(|member| (&member.name, &member.profile, &member.model_id))
+        .collect::<Vec<_>>();
+    Some((
+        coordinator.model_id.clone(),
+        format!("专家团 · {}", group.name),
+        hex::encode(Sha256::digest(serde_json::to_vec(&profiles).ok()?)),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -772,6 +808,9 @@ pub async fn group_send(
     .map_err(|_| "成员仍在准备执行，请稍后重试发送".to_string())?;
     let g = db()?.get(&group_id)?;
     if !is_stop_request(&input) {
+        if let Some(binding) = &g.project_binding {
+            crate::org::authorize_project_binding(&app, binding).await?;
+        }
         let root = app
             .state::<crate::shell_fs::FilesystemAccess>()
             .require_workspace(&g.cwd)?;
@@ -799,6 +838,7 @@ pub async fn group_send(
     if is_stop_request(&input) {
         let sessions = stopping_sessions(&latest, &input.id)?;
         let result = cancel_group_sessions(tx.as_ref(), sessions).await;
+        runtime::sync_project_results_later(app.clone(), group_id.clone());
         runtime::kick(app, group_id);
         return result;
     } else if let Some(root) = latest
@@ -924,6 +964,7 @@ pub async fn group_control(
     changed(&group_id);
     let tx = state.tx.lock().unwrap().clone();
     let result = cancel_group_sessions(tx.as_ref(), sessions).await;
+    runtime::sync_project_results_later(app.clone(), group_id.clone());
     runtime::kick(app, group_id);
     result
 }
@@ -1305,6 +1346,7 @@ pub async fn group_settings(
             m.role = patch.role;
             if m.model_id != patch.model_id {
                 m.model_id = patch.model_id;
+                m.model_inherited = false;
                 m.reset_context(false);
                 // The model changes, but this is still the same expert and
                 // collaboration scope. Keep its existing memory namespace.

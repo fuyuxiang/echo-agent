@@ -108,6 +108,44 @@ pub(super) fn kick(app: tauri::AppHandle, group_id: String) {
         schedule(app, group_id);
     });
 }
+pub(super) fn sync_project_results_later(app: tauri::AppHandle, gid: String) {
+    tauri::async_runtime::spawn(async move {
+        sync_project_results(&app, &gid).await;
+    });
+}
+async fn sync_project_results(app: &tauri::AppHandle, gid: &str) {
+    if let Ok(g) = db().and_then(|store| store.get(gid)) {
+        if let Some(binding) = &g.project_binding {
+            let snapshot = g.clone().snapshot();
+            for request in &snapshot.requests {
+                let status = match request.state.as_str() {
+                    "delivered" => "completed",
+                    "failed" | "partial" | "missing_result" | "needs_check" => "failed",
+                    "stopped" => "cancelled",
+                    _ => continue,
+                };
+                let summary = request
+                    .final_message_id
+                    .as_ref()
+                    .and_then(|id| g.messages.iter().find(|m| &m.id == id))
+                    .map(|m| m.text.as_str());
+                if let Err(error) = crate::org::record_project_run_binding(
+                    app,
+                    binding,
+                    gid,
+                    &request.id,
+                    status,
+                    summary,
+                )
+                .await
+                {
+                    tracing::warn!(%error, "group result remains pending project synchronization");
+                }
+            }
+        }
+    }
+}
+
 fn schedule(app: tauri::AppHandle, group_id: String) {
     let mut scheduling = SCHEDULING.get_or_init(Default::default).lock().unwrap();
     if !scheduling.insert(group_id.clone()) {
@@ -214,6 +252,7 @@ fn schedule(app: tauri::AppHandle, group_id: String) {
                             tracing::error!(%e,"group completion could not be saved");
                         }
                     }
+                    sync_project_results(&app, &gid).await;
                     changed(&gid);
                     if let Ok(groups) = db().and_then(|s| s.list()) {
                         for g in groups {
@@ -285,6 +324,13 @@ async fn execute(
         .lock()
         .await;
     let permission_mode = super::permissions::effective_mode(&g);
+    if let Some(binding) = &g.project_binding {
+        crate::org::authorize_project_binding(&app, binding).await?;
+    }
+    if let Some(binding) = &g.project_binding {
+        crate::org::record_project_run_binding(app, binding, gid, &work.root_id, "running", None)
+            .await?;
+    }
     let sid = crate::agent_runtime::group_session(
         &tx,
         crate::agent_runtime::GroupSessionRequest {
@@ -315,18 +361,37 @@ async fn execute(
     }
     drop(_permission);
     let latest = db()?.get(gid)?;
-    let knowledge = latest
+    let mut knowledge = latest
         .messages
         .iter()
         .find(|m| m.id == work.root_id)
         .map(|m| m.knowledge.clone())
         .unwrap_or_default();
+    let project_context = if let Some(binding) = &latest.project_binding {
+        let mut session_binding = binding.clone();
+        session_binding.task_id = None; // The group request, rather than each member turn, owns delivery.
+        crate::org::save_project_binding(&sid, &session_binding)?;
+        let context = crate::org::project_session_context(&app, &sid, &work.prompt).await?;
+        if let Some((_, scope, _)) = &context {
+            knowledge.personal = false;
+            knowledge.organization = true;
+            knowledge.organization_scope_ids = vec![scope.clone()];
+        }
+        context
+    } else {
+        None
+    };
+    let account_generation = project_context
+        .as_ref()
+        .map(|(_, _, generation)| *generation)
+        .unwrap_or_else(crate::org::knowledge_account_generation);
     crate::org_mcp::update_session_configuration(
         &tx,
         &sid,
         knowledge.personal,
         knowledge.organization,
         knowledge.organization_scope_ids.clone(),
+        account_generation,
     )
     .await?;
     let attached = crate::org_mcp::effective_selection(crate::org_mcp::KnowledgeSourceSelection {
@@ -337,7 +402,10 @@ async fn execute(
         return Err("选择的知识来源目前不可用，请检查知识库或组织连接后重试".into());
     }
     let latest = db()?.get(gid)?;
-    let prompt = work_prompt(&latest, &work, &member, &knowledge)?;
+    let mut prompt = work_prompt(&latest, &work, &member, &knowledge)?;
+    if let Some((context, _, _)) = project_context {
+        prompt = format!("{context}\n\n{prompt}");
+    }
     let attachments = work_attachments(&latest, &work, &member)?;
     let attachments = app
         .state::<crate::shell_fs::FilesystemAccess>()

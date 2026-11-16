@@ -21,18 +21,20 @@ vi.mock("../HomePage", () => ({ HomePage: (props: ComponentProps<typeof import("
   <button onClick={() => void props.onSend("my unsent task")}>发送专家任务</button>
   {props.sendError && <div role="alert">{props.sendError}</div>}
 </div> }));
-vi.mock("../PlaceholderPage", () => ({ PlaceholderPage: () => null }));
+const teamProject = { id: "project", name: "Team", goal: "Deliver", scopeId: "scope", ownerId: "c", revision: 1, updatedAt: 0, role: "admin" as const, members: [], tasks: [{ id: "task", title: "Review", description: "Check interface", acceptance: "Pass", assigneeId: "other", assigneeName: "Other", status: "pending" as const, revision: 1, updatedAt: 0 }], decisions: [], assets: [], events: [] };
+const teamEntry = vi.hoisted(() => ({ start: null as null | ((...args: any[]) => Promise<string>) }));
+vi.mock("../PlaceholderPage", () => ({ PlaceholderPage: (props: { onStartTeamWork?: (...args: any[]) => Promise<string> }) => { teamEntry.start = props.onStartTeamWork ?? null; return null; } }));
 vi.mock("../TasksPanel", () => ({ TasksPanel: () => null }));
 vi.mock("../SecondarySidebar", () => ({ SecondarySidebar: () => null }));
 vi.mock("../TopbarActions", () => ({ TopbarActions: () => null }));
 vi.mock("../FolderTrustDialog", () => ({ FolderTrustDialog: () => null }));
-vi.mock("../Sidebar", () => ({ Sidebar: (props: ComponentProps<typeof import("../Sidebar").Sidebar>) => <aside><button onClick={() => void props.onSelect("history-A", "/workspace/A")}>打开历史 A</button><button onClick={() => props.onNewSession()}>返回首页新建</button></aside> }));
+vi.mock("../Sidebar", () => ({ Sidebar: (props: ComponentProps<typeof import("../Sidebar").Sidebar>) => <aside><button onClick={() => props.onNavigate?.("项目")}>打开团队项目入口</button><button onClick={() => void props.onSelect("history-A", "/workspace/A")}>打开历史 A</button><button onClick={() => props.onNewSession()}>返回首页新建</button></aside> }));
 vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("../ChatView").ChatView>) => <div>已进入会话<span data-testid="session-cwd">{props.cwd}</span><button onClick={props.onNewTask}>从任务新建</button></div> }));
 vi.mock("@/lib/agent-client", async (original) => ({
   ...await original<object>(), agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
   agentPrepareTaskWorkspace: vi.fn(async () => "/workspace/Tasks/default-task"),
-  agentNewSession: vi.fn(async () => "new-session"), agentDeleteSession: vi.fn(async () => ({memorySummariesDeleted:0})), agentSetSessionExpert: vi.fn(async () => true),
+  agentNewSession: vi.fn(async () => "new-session"), agentSessionInfo: vi.fn(async () => ({ model: "model-a" })), agentDeleteSession: vi.fn(async () => ({memorySummariesDeleted:0})), agentSetSessionExpert: vi.fn(async () => true),
   agentLoadSession: vi.fn(async () => "model-a"), agentSend: vi.fn(async () => {}), projectsSave: vi.fn(async () => {}),
   internalReload: vi.fn(async () => {}), subscribeAgentEvents: vi.fn(async () => () => {}),
 }));
@@ -128,7 +130,8 @@ describe("expert task persistent binding admission", () => {
     expect(usePendingExpertStore.getState().expert?.name).toBe("Review");
     await act(async()=>{resolve(true);});
     await waitFor(()=>expect(client.agentSend).toHaveBeenCalled());
-    expect(vi.mocked(client.agentSend).mock.calls[0][1]).toContain("Verify the task");
+    expect(client.agentNewSession).toHaveBeenCalledWith(expect.any(String), "model-a", "ask", undefined, expect.objectContaining({ raw: "---\nname: Review\n---\nVerify the task", path: "/fixture/agents/review.md" }));
+    expect(vi.mocked(client.agentSend).mock.calls[0][1]).not.toContain("Verify the task");
     expect(usePendingExpertStore.getState().expert).toBeNull();
     expect(useSessionsStore.getState().independent.find(session=>session.sessionId==="new-session")?.expertName).toBe("Review");
   });
@@ -194,4 +197,49 @@ it("历史 A 与下一任务 B/C 分离，最终新任务真正绑定 C", async 
   fireEvent.click(screen.getByRole("button", {name:"发送专家任务"}));
   await waitFor(() => expect(client.agentNewSession).toHaveBeenLastCalledWith("/workspace/C", "model-a", "ask"));
   expect(useSessionsStore.getState().independent.find(item => item.sessionId === "new-session")?.cwd).toBe("/workspace/C");
+});
+
+describe("team project start admission", () => {
+  async function openTeam() {
+    await start();
+    act(() => useOrgSessionStore.setState({ session: { loggedIn: true, accountGeneration: 7, user: { id: "c", username: "c", displayName: "C", role: "member", clearance: 0 } }, boundaryRevision: 1 }));
+    fireEvent.click(screen.getByRole("button", { name: "打开团队项目入口" }));
+    await waitFor(() => expect(teamEntry.start).not.toBeNull());
+  }
+  it("checks quota before creating a session or transferring responsibility", async () => {
+    await openTeam();
+    const now = new Date();
+    const date = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+    localStorage.setItem("echoagent.quota", JSON.stringify({ period: "daily", tokenLimit: 1, enforcement: "block" }));
+    localStorage.setItem("echoagent.usage", JSON.stringify([{ date, modelId: "model-a", promptTokens: 10, completionTokens: 0, ts: Date.now() }]));
+    await act(async () => { await expect(teamEntry.start!(teamProject, teamProject.tasks[0], "model-a")).rejects.toThrow("配额不足"); });
+    expect(client.agentNewSession).not.toHaveBeenCalled();
+    expect(vi.mocked(invoke).mock.calls.some(([command, args]) => command === "org_project_request" && (args as any)?.action === "claimTask")).toBe(false);
+  });
+  it("prepares a real session before a versioned claim and sends only after the claim succeeds", async () => {
+    await openTeam();
+    vi.mocked(client.agentSessionInfo).mockResolvedValue({ model: "model-a" } as never);
+    vi.mocked(invoke).mockImplementation(async (command, args: any) => {
+      if (command === "org_project_request" && args?.action === "claimTask") return teamProject;
+      return command === "notification_take_pending_opens" ? [] : null;
+    });
+    let execution: string | undefined;
+    await act(async () => { execution = await teamEntry.start!(teamProject, teamProject.tasks[0], "model-a"); });
+    expect(execution).toBe("new-session");
+    const claimIndex = vi.mocked(invoke).mock.calls.findIndex(([command, args]) => command === "org_project_request" && (args as any)?.action === "claimTask");
+    expect(claimIndex).toBeGreaterThanOrEqual(0);
+    expect(vi.mocked(invoke).mock.invocationCallOrder[claimIndex]).toBeGreaterThan(vi.mocked(client.agentNewSession).mock.invocationCallOrder[0]);
+    await waitFor(() => expect(client.agentSend).toHaveBeenCalled());
+  });
+  it("reports an uncertain claim without pretending responsibility was unchanged or sending a duplicate", async () => {
+    await openTeam();
+    vi.mocked(invoke).mockImplementation(async (command, args: any) => {
+      if (command === "org_project_request" && args?.action === "claimTask") throw new Error("连接中断");
+      return command === "notification_take_pending_opens" ? [] : null;
+    });
+    await act(async () => { await expect(teamEntry.start!(teamProject, teamProject.tasks[0], "model-a")).rejects.toThrow("接手结果未确认"); });
+    expect(client.agentSend).not.toHaveBeenCalled();
+    expect(client.agentDeleteSession).toHaveBeenCalledWith("new-session", expect.any(String));
+  });
+
 });

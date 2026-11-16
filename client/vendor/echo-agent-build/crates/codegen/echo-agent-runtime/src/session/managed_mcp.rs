@@ -53,6 +53,79 @@ fn mcp_merge_key(s: &acp::McpServer) -> String {
     mcp_server_name(s).to_string()
 }
 
+/// Apply an expert's connector boundary at every session ingress, including
+/// reconnects and hot reloads. Declared references are additive to inheritance.
+pub(crate) fn agent_allows_mcp_server(
+    definition: &echo_agent_core::AgentDefinition,
+    name: &str,
+) -> bool {
+    use echo_agent_core::config::{McpInheritance, McpServerRef};
+    definition.mcp_servers.iter().any(|entry| match entry {
+        McpServerRef::Named(declared) | McpServerRef::Inline { name: declared, .. } => {
+            declared == name
+        }
+    }) || match &definition.mcp_inheritance {
+        McpInheritance::All => true,
+        McpInheritance::None => false,
+        McpInheritance::Named(names) => names.iter().any(|entry| entry == name),
+        McpInheritance::Except(names) => !names.iter().any(|entry| entry == name),
+    }
+}
+
+pub(crate) fn resolve_agent_mcp_servers(
+    servers: Vec<acp::McpServer>,
+    definition: &echo_agent_core::AgentDefinition,
+    cwd: &std::path::Path,
+) -> Vec<acp::McpServer> {
+    use echo_agent_core::config::McpServerRef;
+    let mut selected: HashMap<String, acp::McpServer> = servers
+        .into_iter()
+        .filter(|server| agent_allows_mcp_server(definition, mcp_server_name(server)))
+        .map(|server| (mcp_merge_key(&server), server))
+        .collect();
+    if definition.plugin_name.is_none() {
+        for entry in &definition.mcp_servers {
+            let McpServerRef::Inline { name, config } = entry else {
+                continue;
+            };
+            let Some(mut object) = config.as_object().cloned() else {
+                continue;
+            };
+            object.insert("name".into(), serde_json::json!(name));
+            let transport =
+                serde_json::from_value::<acp::McpServer>(serde_json::Value::Object(object))
+                    .ok()
+                    .or_else(|| {
+                        let config = serde_json::from_value(config.clone()).ok()?;
+                        crate::util::config::materialize_mcp_config(
+                            name,
+                            config,
+                            &crate::util::config::load_mcp_preferences().file(),
+                            &crate::config::expand_env_vars_in_string,
+                            crate::util::config::McpEnabledFilter::Respect,
+                        )
+                    });
+            if let Some(server) = transport {
+                selected.insert(name.clone(), server);
+            } else {
+                tracing::warn!(agent = %definition.name, server = name, "Expert connector configuration could not be resolved");
+            }
+        }
+    }
+    let mut selected: Vec<_> = selected.into_values().collect();
+    selected.sort_by(|a, b| mcp_server_name(a).cmp(mcp_server_name(b)));
+    let selected = crate::agent::folder_trust::filter_untrusted_project_mcp(cwd, selected);
+    apply_mcp_server_policy(
+        selected,
+        &crate::util::config::disabled_mcp_server_names(cwd),
+        &echo_agent_workspace::permission::resolution::managed_settings().mcp_allowlist,
+    )
+    .into_iter()
+    .filter(|entry| entry.disabled_reason.is_none())
+    .map(|entry| entry.server)
+    .collect()
+}
+
 pub(crate) fn merge_managed_mcp_servers(
     client_mcp_servers: Vec<acp::McpServer>,
     cwd: &std::path::Path,
@@ -1426,6 +1499,61 @@ Authorization = "Bearer org2-token"
         assert_eq!(
             base.get("plugin-only").unwrap().client_id.as_deref(),
             Some("plugin-only-client")
+        );
+    }
+}
+
+#[cfg(test)]
+mod expert_connector_tests {
+    use super::*;
+    use echo_agent_core::config::{AgentDefinition, McpInheritance, McpServerRef};
+    fn server(name: &str) -> acp::McpServer {
+        acp::McpServer::Http(acp::McpServerHttp::new(
+            name,
+            format!("https://{name}.example/mcp"),
+        ))
+    }
+    #[test]
+    fn expert_connector_scope_survives_reconnects_and_newly_added_servers() {
+        let cwd = tempfile::tempdir().unwrap();
+        let mut definition = AgentDefinition::default_echo_agent_build();
+        definition.mcp_inheritance = McpInheritance::None;
+        definition.mcp_servers = vec![McpServerRef::Named("repository".into())];
+        let selected = resolve_agent_mcp_servers(
+            vec![server("repository"), server("mail")],
+            &definition,
+            cwd.path(),
+        );
+        assert_eq!(
+            selected.iter().map(mcp_server_name).collect::<Vec<_>>(),
+            ["repository"]
+        );
+        let reloaded = resolve_agent_mcp_servers(
+            vec![server("mail"), server("calendar"), server("repository")],
+            &definition,
+            cwd.path(),
+        );
+        assert_eq!(
+            reloaded.iter().map(mcp_server_name).collect::<Vec<_>>(),
+            ["repository"]
+        );
+        assert!(!agent_allows_mcp_server(&definition, "calendar"));
+        definition.mcp_inheritance = McpInheritance::Named(vec!["mail".into()]);
+        assert!(agent_allows_mcp_server(&definition, "mail"));
+        assert!(agent_allows_mcp_server(&definition, "repository"));
+        assert!(!agent_allows_mcp_server(&definition, "calendar"));
+        definition.mcp_inheritance = McpInheritance::Except(vec!["calendar".into()]);
+        assert!(agent_allows_mcp_server(&definition, "mail"));
+        assert!(!agent_allows_mcp_server(&definition, "calendar"));
+    }
+    #[test]
+    fn explicitly_declared_inline_connector_is_resolved_without_inheriting_others() {
+        let cwd = tempfile::tempdir().unwrap();
+        let definition = AgentDefinition::parse("---\nname: Scoped\ndescription: Scoped connectors\nmcpInheritance: none\nmcpServers:\n  - docs:\n      type: http\n      url: https://docs.example/mcp\n      headers: []\n---\nRead docs.").unwrap();
+        let servers = resolve_agent_mcp_servers(vec![server("mail")], &definition, cwd.path());
+        assert_eq!(
+            servers.iter().map(mcp_server_name).collect::<Vec<_>>(),
+            ["docs"]
         );
     }
 }
