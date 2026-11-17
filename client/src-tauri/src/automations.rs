@@ -4016,6 +4016,25 @@ fn resolve_selected_expert_prompt(
         .map(Some)
         .ok_or_else(|| format!("所选专家没有有效角色定义：{name}，请重新选择"))
 }
+/// References come from either the automation name picker or the project's
+/// catalogued skill path. Always read the catalog's path, never a caller path.
+fn automation_skill_matches(reference: &str, name: &str, path: Option<&str>) -> bool {
+    if reference == name || path == Some(reference) {
+        return true;
+    }
+    let Some(path) = path else { return false };
+    if !Path::new(reference).is_absolute() {
+        return false;
+    }
+    match (
+        Path::new(reference).canonicalize(),
+        Path::new(path).canonicalize(),
+    ) {
+        (Ok(selected), Ok(catalogued)) => selected == catalogued,
+        _ => false,
+    }
+}
+
 async fn resolve_execution_context(
     tx: &echo_agent_acp::AcpAgentTx,
     automation: &Automation,
@@ -4038,7 +4057,9 @@ async fn resolve_execution_context(
         for selected in &automation.skills {
             let skill = catalog
                 .iter()
-                .find(|skill| skill.name == *selected)
+                .find(|skill| {
+                    automation_skill_matches(selected, &skill.name, skill.path.as_deref())
+                })
                 .ok_or_else(|| format!("所选技能不存在：{selected}"))?;
             if !skill.enabled {
                 return Err(format!("所选技能未启用：{selected}"));
@@ -5919,6 +5940,34 @@ mod tests {
         assert_eq!(json["status"], "failed");
         assert_eq!(json["error"], "Auto 模型当前不可用");
         assert!(json.get("sessionId").is_none());
+    }
+
+    #[test]
+    fn automation_skill_references_preserve_catalog_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("analysis");
+        std::fs::create_dir(&skill).unwrap();
+        let path = skill.to_str().unwrap();
+        assert!(automation_skill_matches("analysis", "analysis", Some(path)));
+        assert!(automation_skill_matches(path, "analysis", Some(path)));
+        let alias = skill.join(".");
+        assert!(automation_skill_matches(
+            alias.to_str().unwrap(),
+            "analysis",
+            Some(path)
+        ));
+        assert!(!automation_skill_matches("foreign", "analysis", Some(path)));
+        assert!(!automation_skill_matches(
+            "/foreign/analysis",
+            "analysis",
+            Some(path)
+        ));
+        assert!(!automation_skill_matches(
+            "analysis/SKILL.md",
+            "analysis",
+            Some(path)
+        ));
+        assert!(!automation_skill_matches(path, "analysis", None));
     }
 
     #[test]

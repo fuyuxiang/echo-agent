@@ -10,6 +10,7 @@ import { projectAssetRows } from "@/lib/project-tasks";
 import { projectPublicationLinks } from "@/lib/project-sharing";
 import type { ProjectWorkspace } from "@/lib/use-project-workspace";
 import { useAppDialog } from "./AppDialog";
+import { withProjectAssetSharing } from "@/lib/project-asset-sharing";
 
 export function ProjectMaterials({ project, account, sharedId, workspace, selectedAssetIds, onUseAsset, outputs = [], onPreview, onUseOutput, initialFilter = "all", addRequested, onAddHandled }: {
   project: ProjectMeta; account: string; sharedId?: string; workspace: ProjectWorkspace; selectedAssetIds: string[]; onUseAsset: (asset: AssetItem) => void;
@@ -51,12 +52,18 @@ export function ProjectMaterials({ project, account, sharedId, workspace, select
           identity!.assertCurrent();
           const local = assets.find(a => a.path === file.path);
           if (!local?.path) throw new Error("文件副本未就绪");
-          const [path] = await projectAssetsUse(project.id, [local.path], "share");
-          identity!.assertCurrent();
-          if (!path) throw new Error("文件副本授权尚未完成");
-          const result = await teamProjectUpload(sharedId, path, previous, identity);
-          identity!.assertCurrent();
-          await useProjectsStore.getState().linkSharedAsset(project.id, local.id, account, { projectId: sharedId, documentId: result.docId, familyId: result.familyId ?? previous?.familyId });
+          const source = local.path;
+          await withProjectAssetSharing(project.id, account, sharedId, local.id, async () => {
+            identity!.assertCurrent();
+            const currentLink = useProjectsStore.getState().projects.find(p => p.id === project.id)?.assets.find(a => a.id === local.id)?.sharedAssets?.[account];
+            if (currentLink?.projectId === sharedId && currentLink.documentId) return;
+            const [path] = await projectAssetsUse(project.id, [source], "share");
+            identity!.assertCurrent();
+            if (!path) throw new Error("文件副本授权尚未完成");
+            const result = await teamProjectUpload(sharedId, path, previous, identity);
+            identity!.assertCurrent();
+            await useProjectsStore.getState().linkSharedAsset(project.id, local.id, account, { projectId: sharedId, documentId: result.docId, familyId: result.familyId ?? previous?.familyId });
+          });
           published++;
         }
       } catch (e) { throw new Error(`已共享 ${published} 份，其余副本保留在本机。请刷新核对后再共享。${String(e)}`); }
@@ -66,14 +73,20 @@ export function ProjectMaterials({ project, account, sharedId, workspace, select
   const shareLocal = (asset: AssetItem) => requestConfirmation({ title: `共享「${asset.name}」到项目？`, description: "项目成员将可以访问此文件，原任务的私人对话不会上传。", confirmLabel: "共享文件", action: () => run(async () => {
     if (!sharedId || !asset.path || !writable) throw new Error("项目连接或共享权限不可用，请刷新后重试");
     const identity = captureTeamProjectOperation();
-    await flushProjectPersistence();
-    identity.assertCurrent();
-    await projectAssetsUse(project.id, [asset.path], "share");
-    identity.assertCurrent();
+    const source = asset.path;
     try {
-      const result = await teamProjectUpload(sharedId, asset.path, undefined, identity);
-      identity.assertCurrent();
-      await useProjectsStore.getState().linkSharedAsset(project.id, asset.id, account, { projectId: sharedId, documentId: result.docId, familyId: result.familyId });
+      await withProjectAssetSharing(project.id, account, sharedId, asset.id, async () => {
+        identity.assertCurrent();
+        const currentLink = useProjectsStore.getState().projects.find(p => p.id === project.id)?.assets.find(a => a.id === asset.id)?.sharedAssets?.[account];
+        if (currentLink?.projectId === sharedId && currentLink.documentId) return;
+        await flushProjectPersistence();
+        identity.assertCurrent();
+        await projectAssetsUse(project.id, [source], "share");
+        identity.assertCurrent();
+        const result = await teamProjectUpload(sharedId, source, undefined, identity);
+        identity.assertCurrent();
+        await useProjectsStore.getState().linkSharedAsset(project.id, asset.id, account, { projectId: sharedId, documentId: result.docId, familyId: result.familyId });
+      });
     } finally { await workspace.refresh(); }
   }) });
   useEffect(() => { if (addRequested) { onAddHandled?.(); void upload(); } }, [addRequested]);

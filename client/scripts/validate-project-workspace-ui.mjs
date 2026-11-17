@@ -59,6 +59,8 @@ try {
       const saved = await page.evaluate(() => window.reviewCalls.find(c => c.command === 'automations_save'));
       assert.equal(saved.args.automation.projectId, 'review-local-project');
       assert.equal(saved.args.automation.schedule.freq, 'WEEKLY');
+      assert.deepEqual(saved.args.automation.skills, ['/review/skills/analysis']);
+      assert(await page.evaluate(() => window.reviewCalls.some(c => c.command === 'skills_list' && c.args.cwd === '/review/workspace')));
       await schedules.getByRole('button', { name: '立即运行' }).click();
       await schedules.getByRole('button', { name: '打开任务' }).waitFor();
       await schedules.getByRole('button', { name: '关闭任务详情' }).click();

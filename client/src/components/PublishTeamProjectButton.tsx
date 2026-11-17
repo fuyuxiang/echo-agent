@@ -6,6 +6,7 @@ import { projectAssetsUse } from "@/lib/agent-client";
 import { captureTeamProjectOperation, teamProjectRequest, teamProjectUpload, type TeamProject, type TeamProjectSnapshot } from "@/lib/team-project-client";
 import { projectCollaborationCapabilities } from "@/lib/team-project-client";
 import { projectSharingAccount, publicationKey, notifyProjectSharing } from "@/lib/project-sharing";
+import { withProjectAssetSharing } from "@/lib/project-asset-sharing";
 
 interface Publication {
   projectId?: string;
@@ -15,6 +16,7 @@ interface Publication {
   tasks: string[];
   createdTasks: Record<string, string>;
   createdAssets?: Record<string, string>;
+  createdAssetFamilies?: Record<string, string>;
   taskRequestIds?: Record<string, string>;
   selectedFiles: string[];
   selectedTasks: string[];
@@ -43,6 +45,7 @@ function readPublication(key: string): Publication {
 /** Persist publication IDs and selection progress by account and local project.
  * Private transcripts and participant notes never enter the publication. */
 export function PublishTeamProjectButton({ project, onPublished, onLinked, collaborationMode = false }: { project: ProjectMeta; onPublished?: (id: string) => void; onLinked?: (id: string) => void | Promise<void>; collaborationMode?: boolean }) {
+  const live = useProjectsStore(s => s.projects.find(p => p.id === project.id)) ?? project;
   const account = useOrgSessionStore(s => projectSharingAccount(s.session));
   const loggedIn = useOrgSessionStore(s => s.session?.loggedIn);
   const key = publicationKey(project.id, account);
@@ -89,11 +92,15 @@ export function PublishTeamProjectButton({ project, onPublished, onLinked, colla
   const publish = () => {
     const identity = captureTeamProjectOperation();
     const selectedFiles = new Set(pending.current.selectedFiles), selectedTasks = new Set(pending.current.selectedTasks);
+    const taskShared = (task: ProjectMeta["tasks"][number]) => state.tasks.includes(task.id)
+      || !!state.projectId && task.sharedTasks?.[account]?.projectId === state.projectId && !!task.sharedTasks[account].taskId;
+    const assetShared = (asset: ProjectMeta["assets"][number]) => state.files.includes(asset.id)
+      || !!state.projectId && asset.sharedAssets?.[account]?.projectId === state.projectId && !!asset.sharedAssets[account].documentId;
     requestConfirmation({ title: collaborationMode ? state.projectId ? "共享项目内容" : "开启项目协作" : state.projectId ? "继续发布项目内容" : "发布为团队项目", confirmLabel: collaborationMode ? "确认共享" : "发布并管理成员", description: <>
       <p>项目目标和所选内容将共享给项目成员。历史个人会话与本机参与者备注保留在本机。</p>
       <p>{state.projectId ? "继续发布到已有团队项目，不会重复创建。" : "发布后可邀请组织成员。"}</p>
-      {project.assets.filter(a => a.kind === "file" && a.path).map(a => <label key={a.id} style={{ display: "block" }}><input type="checkbox" defaultChecked={selectedFiles.has(a.id)} disabled={state.files.includes(a.id)} onChange={e => { if (e.target.checked) selectedFiles.add(a.id); else selectedFiles.delete(a.id); }} /> {a.name}{state.files.includes(a.id) && "（已发布）"}</label>)}
-      {project.tasks.map(t => <label key={t.id} style={{ display: "block" }}><input type="checkbox" defaultChecked={selectedTasks.has(t.id)} disabled={state.tasks.includes(t.id)} onChange={e => { if (e.target.checked) selectedTasks.add(t.id); else selectedTasks.delete(t.id); }} /> 任务：{t.title}{state.tasks.includes(t.id) && "（已发布）"}</label>)}
+      {live.assets.filter(a => a.kind === "file" && a.path).map(a => <label key={a.id} style={{ display: "block" }}><input type="checkbox" defaultChecked={assetShared(a) || selectedFiles.has(a.id)} disabled={assetShared(a)} onChange={e => { if (e.target.checked) selectedFiles.add(a.id); else selectedFiles.delete(a.id); }} /> {a.name}{assetShared(a) && "（已发布）"}</label>)}
+      {live.tasks.map(t => <label key={t.id} style={{ display: "block" }}><input type="checkbox" defaultChecked={taskShared(t) || selectedTasks.has(t.id)} disabled={taskShared(t)} onChange={e => { if (e.target.checked) selectedTasks.add(t.id); else selectedTasks.delete(t.id); }} /> 任务：{t.title}{taskShared(t) && "（已发布）"}</label>)}
     </>, action: () => publishOnce(key, async () => {
       identity.assertCurrent();
       const value = pending.current;
@@ -114,13 +121,30 @@ export function PublishTeamProjectButton({ project, onPublished, onLinked, colla
         }
       }
       identity.assertCurrent();
-      if (mounted.current && currentKey.current === key) await callbacks.current.onLinked?.(value.projectId);
+      const targetId = value.projectId;
+      if (mounted.current && currentKey.current === key) await callbacks.current.onLinked?.(targetId);
       try {
-        for (const task of project.tasks.filter(t => selectedTasks.has(t.id) && !value.tasks.includes(t.id))) {
+        // Re-read durable links after every await. Sharing from another surface
+        // must not create a second remote identity or overwrite current state.
+        const latest = () => useProjectsStore.getState().projects.find(p => p.id === project.id) ?? live;
+        for (const selected of latest().tasks.filter(t => selectedTasks.has(t.id) && !value.tasks.includes(t.id))) {
           identity.assertCurrent();
-          let taskId = value.createdTasks[task.id];
+          const task = latest().tasks.find(t => t.id === selected.id);
+          if (!task) continue;
+          const link = task.sharedTasks?.[account];
+          const existing = link?.projectId === value.projectId ? link : undefined;
+          if (existing?.taskId && value.createdTasks[task.id] !== existing.taskId) {
+            value.createdTasks[task.id] = existing.taskId;
+            value.tasks.push(task.id); save(value);
+            continue;
+          }
+          let taskId = existing?.taskId ?? value.createdTasks[task.id];
           if (!taskId) {
-            if (capabilities?.taskIdentity) { value.taskRequestIds ??= {}; value.taskRequestIds[task.id] ??= crypto.randomUUID(); save(value); }
+            if (existing?.requestId || capabilities?.taskIdentity) {
+              value.taskRequestIds ??= {}; value.taskRequestIds[task.id] ??= existing?.requestId ?? crypto.randomUUID(); save(value);
+              await useProjectsStore.getState().linkSharedTask(project.id, task.id, account, { projectId: value.projectId, requestId: value.taskRequestIds[task.id] });
+              identity.assertCurrent();
+            }
             taskId = (await teamProjectRequest<{ id: string }>("createTask", value.projectId, { title: task.title, ...(task.description ? { description: task.description } : {}), ...(task.acceptance ? { acceptance: task.acceptance } : {}), ...(value.taskRequestIds?.[task.id] ? { clientRequestId: value.taskRequestIds[task.id] } : {}) }, undefined, identity)).id;
             if (!taskId) throw new Error("创建任务结果未确认，请刷新核对");
             value.createdTasks[task.id] = taskId; save(value);
@@ -139,16 +163,35 @@ export function PublishTeamProjectButton({ project, onPublished, onLinked, colla
           }
           value.tasks.push(task.id); save(value);
         }
-        for (const asset of project.assets.filter(a => selectedFiles.has(a.id) && a.path && !value.files.includes(a.id))) {
-          identity.assertCurrent();
-          const [path] = await projectAssetsUse(project.id, [asset.path!], "share");
-          identity.assertCurrent();
-          if (!path) throw new Error("所选文件不可用，请重新添加文件");
-          const uploaded = await teamProjectUpload(value.projectId, path, undefined, identity);
-          identity.assertCurrent();
-          value.createdAssets ??= {}; value.createdAssets[asset.id] = uploaded.docId; save(value);
-          await useProjectsStore.getState().linkSharedAsset(project.id, asset.id, account, { projectId: value.projectId, documentId: uploaded.docId, familyId: uploaded.familyId });
-          value.files.push(asset.id); save(value);
+        for (const selected of latest().assets.filter(a => selectedFiles.has(a.id) && a.path && !value.files.includes(a.id))) {
+          await withProjectAssetSharing(project.id, account, targetId, selected.id, async () => {
+            identity.assertCurrent();
+            const asset = latest().assets.find(a => a.id === selected.id);
+            if (!asset?.path) return;
+            const link = asset.sharedAssets?.[account];
+            if (link?.projectId === targetId && link.documentId) {
+              value.createdAssets ??= {}; value.createdAssets[asset.id] = link.documentId;
+              value.files.push(asset.id); save(value);
+              return;
+            }
+            let uploaded: { docId: string; familyId?: string } | undefined = value.createdAssets?.[asset.id]
+              ? { docId: value.createdAssets[asset.id], familyId: value.createdAssetFamilies?.[asset.id] } : undefined;
+            if (!uploaded) {
+              const [path] = await projectAssetsUse(project.id, [asset.path], "share");
+              identity.assertCurrent();
+              if (!path) throw new Error("所选文件不可用，请重新添加文件");
+              const currentLink = latest().assets.find(a => a.id === asset.id)?.sharedAssets?.[account];
+              uploaded = currentLink?.projectId === targetId && currentLink.documentId
+                ? { docId: currentLink.documentId, familyId: currentLink.familyId }
+                : await teamProjectUpload(targetId, path, undefined, identity);
+            }
+            identity.assertCurrent();
+            value.createdAssets ??= {}; value.createdAssets[asset.id] = uploaded.docId;
+            if (uploaded.familyId) { value.createdAssetFamilies ??= {}; value.createdAssetFamilies[asset.id] = uploaded.familyId; }
+            save(value);
+            await useProjectsStore.getState().linkSharedAsset(project.id, asset.id, account, { projectId: targetId, documentId: uploaded.docId, familyId: uploaded.familyId });
+            value.files.push(asset.id); save(value);
+          });
         }
       } catch (error) { throw new Error(`${collaborationMode ? "协作已开启，部分内容尚未共享；可以继续共享剩余内容。" : "团队项目已创建，部分内容尚未发布；离开页面后也可继续发布到同一项目。"}${String(error)}`); }
       identity.assertCurrent(); value.complete = true; save(value);

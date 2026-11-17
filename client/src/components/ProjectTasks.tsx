@@ -16,10 +16,12 @@ import { useModalFocus } from "@/lib/use-modal-focus";
 import { useAppDialog } from "./AppDialog";
 import { ModelSelector, type ModelOption } from "./ModelSelector";
 import { Markdown } from "./markdown/Markdown";
+import { displayPath } from "@/lib/display-path";
 
 interface Props {
   project: ProjectMeta; account: string; sharedId?: string; workspace: ProjectWorkspace;
   models: ModelOption[]; defaultModelId?: string; runDisabled?: boolean;
+  executionCwd?: string; onSelectExecutionWorkspace?: () => Promise<void>;
   onRun?: (message: string, modelId: string) => Promise<string | undefined>;
   onStartTeamWork?: StartTeamWork; onOpenTeamExecution?: OpenTeamExecution;
   onOpenSession?: (sessionId: string) => void; onRenameSession?: (sessionId: string, title: string) => Promise<void>; onArchiveSession?: (sessionId: string, archived: boolean) => Promise<void>;
@@ -46,6 +48,12 @@ export function ProjectTasks(props: Props) {
   const archived = (row: UnifiedTask) => row.private && (summary(row)?.archived ?? row.local?.sessionArchived ?? false);
   const writable = !sharedId || workspace.snapshot?.role === "admin" || workspace.snapshot?.role === "collaborator";
   const current = rows.find(row => row.id === selected);
+  // Publishing a task does not publish its former private conversation. Keep
+  // that source reachable separately from native-bound collaborative runs.
+  const originalSessionId = current?.local?.sessionId && !current.private && workspace.snapshot
+    && !workspace.snapshot.runs?.some(run => run.sessionId === current.local?.sessionId)
+    ? current.local.sessionId : undefined;
+  const originalArchived = !!originalSessionId && (summaries.find(s => s.sessionId === originalSessionId)?.archived ?? current?.local?.sessionArchived ?? false);
   const state = (row: UnifiedTask) => projectTaskState(row, summary(row));
   const canPause = (row: UnifiedTask) => !!row.sessionId && ["working", "planning", "awaiting_permission", "awaiting_answer", "awaiting_approval"].includes(summary(row)?.status ?? "") && (row.private || row.remote?.status === "in_progress" && row.remote.assigneeId === session?.user?.id && !!workspace.snapshot?.runs?.some(r => r.taskId === row.remote?.id && r.sessionId === row.sessionId && r.status === "running"));
   const visible = rows.filter(row => row.title.toLowerCase().includes(query.toLowerCase()) && (stateFilter === "all" || state(row) === stateFilter) && (filter === "all" || (filter === "archived" ? archived(row) : !archived(row))));
@@ -108,7 +116,7 @@ export function ProjectTasks(props: Props) {
       try {
         const sessionId = await onRun(`请执行项目任务「${row.title}」。\n${row.local.description ?? ""}\n验收要求：${row.local.acceptance || "产出可验收结果，如有阻塞请说明。"}`, modelId);
         if (sessionId) useProjectsStore.getState().linkTaskSession(project.id, row.local.id, sessionId, modelId);
-        else useProjectsStore.getState().moveTask(project.id, row.local.id, previous);
+        else { useProjectsStore.getState().moveTask(project.id, row.local.id, previous); throw new Error("任务尚未启动，请检查提示后重试。"); }
       } catch (error) { useProjectsStore.getState().moveTask(project.id, row.local.id, previous); throw error; }
     } else throw new Error("请先恢复项目连接后执行");
   });
@@ -122,7 +130,7 @@ export function ProjectTasks(props: Props) {
   const inline = props.inlineDetails && !!current;
   return <div className="project-unified-tasks">
     {!inline && <><div className="pd-toolbar"><div className="project-state-filters">{[['all','全部'],['running','进行中'],['attention','需处理'],['review','待验收'],['completed','已验收']].map(([value,label]) => <button type="button" className="pd-btn pd-btn--ghost" key={value} aria-pressed={stateFilter === value} onClick={() => setStateFilter(value)}>{label}</button>)}</div><button type="button" className="pd-btn" onClick={create} disabled={busy || !writable}><Plus size={14} />添加待办</button></div><div className="project-material-search"><span>{rows.length} 项任务</span><div className="pd-toolbar__right"><select aria-label="任务范围" value={filter} onChange={e => setFilter(e.target.value)}><option value="active">当前任务</option><option value="all">全部任务</option><option value="archived">已归档</option></select><input className="pd-search-inline" aria-label="搜索任务" placeholder="搜索任务…" value={query} onChange={e => setQuery(e.target.value)} /></div></div></>}
-    {error && <p className="project-inline-error" role="alert">{error}</p>}
+    {error && !current && <p className="project-inline-error" role="alert">{error}</p>}
     {!inline && !visible.length && <div className="project-workspace-empty"><Circle size={24} /><strong>{query || filter === "archived" || stateFilter !== "all" ? "没有符合条件的任务" : "从一个任务开始"}</strong><p>在下方发起新任务，或添加待办后再执行。</p></div>}
     {!inline && <div className="project-task-list">{visible.map(row => <button type="button" className="project-task-row" key={row.id} onClick={() => { select(row.id); setModelOverride(undefined); }}><span className="project-task-dot" data-status={state(row)} /><span className="project-task-row__name">{row.title}<small>{row.remote?.assigneeName ?? (sharedId && row.private ? "仅自己" : !row.private && !row.remote ? "等待同步到项目" : "我")} · {PROJECT_TASK_STATES[state(row)].hint}</small></span><span className="project-status" data-state={state(row)}>{archived(row) ? "已归档" : taskStatus(row)}</span><ArrowUpRight size={14} /></button>)}</div>}
     {current && <TaskSurface inline={!!props.inlineDetails} title={current.title} onClose={() => { if (!busy) select(undefined); }}>
@@ -130,6 +138,13 @@ export function ProjectTasks(props: Props) {
       <p className="project-task-description">{current.remote?.description || current.local?.description || "尚未填写任务说明"}</p>
       {!!props.outputs?.some(o => o.sessionId === current.sessionId) && <section><h4>交付成果</h4><div className="project-output-grid">{props.outputs.filter(o => o.sessionId === current.sessionId).map(o => <button className="project-output-card" key={o.id} onClick={() => props.onPreviewOutput?.(o)}><FileText size={21} /><span><strong>{o.path.replace(/\\/g, "/").split("/").pop()}</strong><small>打开文件预览</small></span></button>)}</div></section>}
       {(current.remote?.acceptance || current.local?.acceptance) && <section><h4>验收要求</h4><p>{current.remote?.acceptance ?? current.local?.acceptance}</p></section>}
+      {originalSessionId && onOpenSession && <section aria-label="本机原会话"><h4>本机原会话</h4><p className="project-workspace-hint">原讨论上下文保留在本机。共享任务与公开执行报告可在本页查看。</p><button className="pd-btn" disabled={busy} onClick={() => void run(async () => {
+        if (originalArchived) {
+          if (!onArchiveSession) throw new Error("原会话已归档，请先恢复后打开。");
+          await onArchiveSession(originalSessionId, false);
+        }
+        onOpenSession(originalSessionId);
+      })}>{originalArchived ? "恢复并打开本机原会话" : "打开本机原会话"}</button></section>}
       <div className="project-task-actions">
         {(current.private || current.remote && writable) && <button className="pd-btn" disabled={busy} onClick={() => edit(current)}>编辑任务</button>}
         {current.sessionId && current.private && onOpenSession && <button className="pd-btn" disabled={busy} onClick={() => void run(async () => { if (archived(current)) { if (!onArchiveSession) throw new Error("请先在任务列表恢复归档"); await onArchiveSession(current.sessionId!, false); } onOpenSession(current.sessionId!); })}>{archived(current) ? "恢复并继续任务" : "继续任务"}</button>}
@@ -146,7 +161,7 @@ export function ProjectTasks(props: Props) {
           if (status === "accepted" || status === "completed") requestConfirmation({ title: "确认验收任务？", description: "请先查看成果并核对验收要求。", confirmLabel: "确认验收", action: () => run(save) }); else void run(save);
         }}>{current.remote ? Object.entries(TEAM_TASK_LABELS).map(([value,label]) => <option value={value} key={value} disabled={value === "in_progress" || value === "accepted" && workspace.snapshot?.role !== "admin"}>{label}</option>) : <><option value="pending">待开始</option><option value="completed">已验收</option></>}</select></label>}
       </div>
-      {(current.private || current.remote && writable) && !archived(current) && <section><h4>交给 Agent</h4><div className="project-task-actions"><ModelSelector models={models} modelId={modelOverride ?? current.local?.modelId ?? defaultModelId} onModelChange={setModelOverride} ariaLabel="任务执行模型" menuZIndex="var(--echo-layer-dialog-popover)" /><button className="pd-btn pd-btn--primary" disabled={busy || runDisabled || (current.remote ? !onStartTeamWork || current.remote.status === "accepted" : !onRun || !!current.sessionId)} onClick={() => requestStart(current)}>开始执行</button></div></section>}
+      {(current.private || current.remote && writable) && !archived(current) && <section><h4>交给 Agent</h4>{props.onSelectExecutionWorkspace && (!current.private || !current.sessionId) && <div className="project-task-actions"><span className="project-workspace-hint">执行目录：{props.executionCwd ? displayPath(props.executionCwd) : "自动分配独立任务目录"}</span><button type="button" className="pd-btn" disabled={busy} onClick={() => void run(props.onSelectExecutionWorkspace!)}>选择执行目录</button></div>}<div className="project-task-actions"><ModelSelector models={models} modelId={modelOverride ?? current.local?.modelId ?? defaultModelId} onModelChange={setModelOverride} ariaLabel="任务执行模型" menuZIndex="var(--echo-layer-dialog-popover)" /><button className="pd-btn pd-btn--primary" disabled={busy || runDisabled || (current.remote ? !onStartTeamWork || current.remote.status === "accepted" : !onRun || !!current.sessionId)} onClick={() => requestStart(current)}>开始执行</button></div></section>}
       {current.remote && <section><h4>执行记录与成果</h4>{!workspace.snapshot?.runs?.some(r => r.taskId === current.remote?.id) && <p className="project-collaboration-hint">执行后，进展和报告会显示在这里。</p>}{workspace.snapshot?.runs?.filter(r => r.taskId === current.remote?.id).map((execution, i) => <article className="project-task-run" key={execution.id}><strong>{({ running:"执行中",completed:"本轮已结束",failed:"执行失败",cancelled:"已取消" })[execution.status]}</strong><small>{workspace.snapshot?.members.find(m => m.userId === execution.actorId)?.displayName ?? "原项目成员"} · {new Date(execution.updatedAt).toLocaleString()}</small>{execution.summary && <details open={i === 0}><summary>执行报告</summary><Markdown complete>{execution.summary}</Markdown></details>}{onOpenTeamExecution && writable && execution.actorId === session?.user?.id && <button className="pd-btn" disabled={busy} onClick={() => void run(() => onOpenTeamExecution(workspace.snapshot!, execution))}>打开并继续任务</button>}</article>)}</section>}
       {current.private && current.sessionId && onArchiveSession && <button className="pd-btn" disabled={busy} onClick={() => void run(() => onArchiveSession(current.sessionId!, !archived(current)))}>{archived(current) ? "恢复任务" : "归档任务"}</button>}
       {current.private && current.local && <button className="pd-btn" disabled={busy} onClick={() => requestConfirmation({ title: "从项目移除任务？", description: "仅移除项目中的任务关联，历史会话和原文件会保留。", confirmLabel: "移除任务", danger: true, action: () => { useProjectsStore.getState().removeTask(project.id, current.local!.id); select(undefined); } })}>移除任务</button>}

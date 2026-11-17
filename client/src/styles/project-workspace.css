@@ -140,6 +140,19 @@
 .project-automation-row small,.project-automation-record small { display:block; font-size:.75rem; color:var(--echo-text-medium); margin-top:.3rem; }
 .project-automation-record { display:flex; align-items:center; justify-content:space-between; gap:.8rem; border-bottom:1px solid var(--echo-border-default); padding:.7rem 0; }
 .project-settings-field input,.project-settings-field select { border:1px solid var(--echo-border-control); background:var(--echo-bg-primary); color:var(--echo-text-strong); border-radius:.45rem; padding:.65rem; width:100%; min-width:0; font:inherit; }
+.project-questions-dialog { width:min(48rem,calc(100vw - 2rem)); }
+.project-questions-body { display:grid; gap:1rem; overflow-wrap:anywhere; }
+.project-questions-body > .pd-btn { justify-self:start; }
+.project-questions-body form { display:grid; gap:.7rem; }
+.project-questions-body textarea { width:100%; min-width:0; box-sizing:border-box; border:1px solid var(--echo-border-control); border-radius:.45rem; padding:.75rem; font:inherit; line-height:1.7; color:var(--echo-text-strong); background:var(--echo-bg-primary); resize:vertical; }
+.project-questions-body textarea:focus-visible { outline:2px solid var(--echo-text-link); outline-offset:2px; }
+.project-questions-body form > button { justify-self:end; }
+.project-question-answer { border-top:1px solid var(--echo-border-default); padding-top:1rem; min-width:0; }
+.project-question-sources { display:flex; flex-wrap:wrap; gap:.5rem; margin-top:1rem; }
+.project-question-sources .pd-btn { white-space:normal; text-align:left; overflow-wrap:anywhere; max-width:100%; }
+.project-question-source { margin-top:1rem; padding:1rem; background:var(--echo-bg-secondary); border-radius:.5rem; max-height:24rem; overflow:auto; }
+.project-question-source h4 { margin-top:0; }
+.project-question-gaps { padding:.75rem; margin-top:.75rem; background:var(--echo-status-warning-soft); border-radius:.5rem; }
 .create-project-dialog details { border-top:1px solid var(--echo-border-default); padding-top:1rem; margin-top:.3rem; }
 .create-project-dialog summary { cursor:pointer; color:var(--echo-text-medium); font-size:.8125rem; }
 .create-project-dialog details[open] > :not(summary) { margin-top:1rem; }

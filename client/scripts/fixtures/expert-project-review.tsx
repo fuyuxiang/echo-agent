@@ -24,6 +24,7 @@ shared.comments=[]; remote.comments=[];
 const workspaceReview=params.get("surface")==="workspace";
 if(workspaceReview){
  project.name="客户洞察与产品规划";project.description="汇总客户反馈，形成有依据、可落地的产品规划与交付文档。";
+ project.skills=[{id:"/review/skills/analysis",name:"数据分析"}];
  project.tasks=[{id:"analysis",title:"竞品分析与产品机会点",description:"对比三款同类产品，梳理客户需求与可落地的改进方向。",acceptance:"结论可追溯，提供三项可执行建议。",sessionId:"analysis-session",status:"in_progress",scope:"personal",source:"manual"},{id:"roadmap",title:"形成下一季度产品路线图",sessionId:"roadmap-session",status:"in_progress",scope:"personal",source:"manual"},{id:"todo",title:"准备产品评审会汇报材料",status:"pending",scope:"personal",source:"manual"}];
  project.decisions=[{id:"decision",content:"需求排序统一采用用户影响、业务价值和实现成本三个维度。",rationale:"评审标准保持一致",status:"active",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}];
  useSessionsStore.setState({independent:[{sessionId:"analysis-session",title:"竞品分析与产品机会点",cwd:"/review/workspace",status:"completed",updatedAt:new Date().toISOString()},{sessionId:"roadmap-session",title:"形成下一季度产品路线图",cwd:"/review/workspace",status:"working",updatedAt:new Date().toISOString()}],drafts:{}});
@@ -41,7 +42,7 @@ Object.assign(window,{reviewCalls:calls,__TAURI_INTERNALS__:{metadata:{currentWi
   case "agents_merge_definition":return args.originalRaw;
   case "agents_template":return expert.raw;
   case "agents_update":return expert;
-  case "skills_list":return [{name:"writing",displayName:"文档撰写",description:"形成结构化报告与交付文档",enabled:true,scope:"user"},{name:"analysis",displayName:"数据分析",description:"整理数据、识别趋势并形成建议",enabled:true,scope:"server"},{name:"retired",displayName:"已停用技能",enabled:false,scope:"user"}];
+  case "skills_list":return [{name:"writing",displayName:"文档撰写",description:"形成结构化报告与交付文档",enabled:true,scope:"user"},{name:"analysis",path:"/review/skills/analysis",displayName:"数据分析",description:"整理数据、识别趋势并形成建议",enabled:true,scope:"server",capability:{declared:false,state:"instruction_only",ready:true,capabilities:[],checks:[]}},{name:"retired",displayName:"已停用技能",enabled:false,scope:"user"}];
   case "mcp_list":return [{name:"docs",displayName:"组织文档",enabled:true,live:true,status:"ready",tools:[],source:"user"},{name:"repo",displayName:"代码仓库",enabled:true,live:true,status:"ready",tools:[],source:"user"},{name:"mail",displayName:"企业邮箱",enabled:true,authRequired:true,tools:[],source:"user"}];
   case "org_project_request":{
    if(params.get("service")==="unsupported")throw new Error("接口不存在");
@@ -50,11 +51,13 @@ Object.assign(window,{reviewCalls:calls,__TAURI_INTERNALS__:{metadata:{currentWi
    if(args.action==="create"){created=true;return structuredClone(shared);}
    if(args.action==="memberCandidates")return [{userId:"b",username:"liming",displayName:"李明"}];
    if(args.action==="addMember"){shared.members.push({userId:"b",username:args.body.username,displayName:"李明",role:args.body.role,status:"active"});shared.revision++;return structuredClone(shared);}
-   if(args.action==="createTask"){shared.tasks.push({id:"remote-task",title:args.body.title,description:"",acceptance:"",assigneeId:null,assigneeName:null,status:"pending",revision:1,updatedAt:Date.now()});return {id:"remote-task"};}
+   if(args.action==="createTask"){const id=`remote-task-${shared.tasks.length}`;shared.tasks.push({id,title:args.body.title,description:args.body.description??"",acceptance:args.body.acceptance??"",assigneeId:null,assigneeName:null,status:"pending",revision:1,updatedAt:Date.now()});return {id};}
+   if(args.action==="ask"){const p=args.projectId===remote.id?remote:shared;return {answer:"当前任务待验收，建议先核对交付成果。[来源1]",verification:"extractive_fallback",insufficient:true,gaps:["部分资料仍在处理中"],projectRevision:p.revision,updatedAt:p.updatedAt,citations:[{id:"来源1",title:"项目规范",resourceId:"shared-document",kind:"md",quote:"旧摘录",openUrl:"/docs/shared-document"}]};}
    if(args.action==="createComment"){shared.comments!.unshift({id:args.body.clientRequestId,content:args.body.content,createdAt:Date.now(),actorName:"项目负责人"});return {id:args.body.clientRequestId};}
    return structuredClone(args.projectId===remote.id?remote:shared);
   }
   case "org_project_upload":shared.assets=[{id:"shared-document",familyId:"shared-family",title:"需求说明.md",version:1,status:"ready",ftsStatus:"ready",byteSize:100,currentDocumentId:"shared-document",updatedAt:Date.now()}];return {docId:"shared-document",familyId:"shared-family",status:"ready"};
+  case "org_fetch_document":return {text:"项目规范原文：结论需保留来源，任务完成后由负责人验收。"};
   case "projects_save":return;
   case "projects_load":return [project];
   case "project_assets_use":return args.paths??["/review/reference.md"];

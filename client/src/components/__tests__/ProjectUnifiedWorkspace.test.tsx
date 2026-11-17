@@ -38,6 +38,28 @@ it("does not turn a linked task into an editable private copy when the server is
  render(<ProjectTasks project={p} account="account" sharedId="shared" workspace={{...workspace(),snapshot:null,error:"网络中断"}} models={models}/>);
  fireEvent.click(screen.getByRole("button",{name:/共享任务/}));expect(screen.queryByRole("button",{name:"编辑任务"})).toBeNull();expect(screen.queryByRole("combobox",{name:"任务状态"})).toBeNull();
 });
+it("keeps an archived private source reachable after its task is shared, even for a project viewer",async()=>{
+ const p:ProjectMeta={...project,tasks:[{id:"t",title:"已发布的任务",source:"manual",scope:"personal",status:"pending",sessionId:"private-source",sessionArchived:true,sharedTasks:{account:{projectId:"shared",taskId:"r"}}}],conversations:[{sessionId:"private-source",title:"原私人讨论",createdAt:project.createdAt,archived:true}]};
+ useProjectsStore.setState({projects:[p]});const ws=workspace();ws.snapshot={...snapshot,role:"viewer",tasks:[{id:"r",title:"已发布的任务",description:"",acceptance:"",status:"pending",revision:1,assigneeId:null,assigneeName:null,updatedAt:100}]};
+ const restore=vi.fn().mockResolvedValue(undefined),open=vi.fn(),start=vi.fn();
+ render(<ProjectTasks project={p} account="account" sharedId="shared" workspace={ws} models={models} onOpenSession={open} onArchiveSession={restore} onStartTeamWork={start}/>);
+ fireEvent.click(screen.getByRole("button",{name:/已发布的任务/}));fireEvent.click(screen.getByRole("button",{name:"恢复并打开本机原会话"}));
+ await waitFor(()=>expect(open).toHaveBeenCalledWith("private-source"));expect(restore).toHaveBeenCalledWith("private-source",false);expect(start).not.toHaveBeenCalled();
+});
+it("does not describe a native-bound shared execution as a former private conversation",()=>{
+ const p:ProjectMeta={...project,tasks:[{id:"t",title:"共享执行",source:"manual",scope:"personal",status:"pending",sessionId:"shared-session",sharedTasks:{account:{projectId:"shared",taskId:"r"}}}]};
+ const ws=workspace();ws.snapshot={...snapshot,tasks:[{id:"r",title:"共享执行",description:"",acceptance:"",status:"pending",revision:1,assigneeId:null,assigneeName:null,updatedAt:100}],runs:[{id:"run",taskId:"r",actorId:"a",sessionId:"shared-session",status:"completed",summary:"报告",modelId:"m",expertName:null,expertVersion:null,updatedAt:100}]};
+ render(<ProjectTasks project={p} account="account" sharedId="shared" workspace={ws} models={models} onOpenSession={vi.fn()} onOpenTeamExecution={vi.fn()}/>);
+ fireEvent.click(screen.getByRole("button",{name:/共享执行/}));expect(screen.queryByRole("button",{name:"打开本机原会话"})).toBeNull();expect(screen.getByRole("button",{name:"打开并继续任务"})).toBeInTheDocument();
+});
+it("offers read-only project Q&A from the actual unified workspace without starting a task",async()=>{
+ api.request.mockImplementation(async(action:string)=>action==="ask"?{answer:"任务待验收",projectRevision:1,updatedAt:100,verification:"supported",insufficient:false,gaps:[],citations:[]}:{...snapshot,role:"viewer"});
+ const start=vi.fn();render(<ProjectDetailView project={project} onBack={vi.fn()} models={[]} picker={picker} onStartTeamWork={start}/>);
+ fireEvent.click(screen.getByRole("button",{name:"问项目"}));
+ const dialog=screen.getByRole("dialog",{name:"问项目"});fireEvent.change(within(dialog).getByRole("textbox",{name:"项目问题"}),{target:{value:"进展如何？"}});
+ await waitFor(()=>expect(within(dialog).getByRole("button",{name:"查询项目"})).toBeEnabled());fireEvent.click(within(dialog).getByRole("button",{name:"查询项目"}));
+ expect(await screen.findByLabelText("项目问答结果")).toHaveTextContent("任务待验收");expect(start).not.toHaveBeenCalled();expect(api.request.mock.calls.some(([action])=>action==="createTask")).toBe(false);
+});
 it("creates one shared task from the composer and forwards file grants, directory and permission options",async()=>{
  let state=structuredClone(snapshot);api.request.mockImplementation(async(action:string,_id:string,body:any)=>{
   if(action==="createTask") {state.tasks=[{id:"remote",title:body.title,description:body.description,acceptance:"",status:"pending",revision:1,assigneeId:null,assigneeName:null,updatedAt:100}];return {id:"remote"};}

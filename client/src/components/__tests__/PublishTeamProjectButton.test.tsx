@@ -2,7 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublishTeamProjectButton } from "../PublishTeamProjectButton";
 import { useOrgSessionStore } from "@/stores/org-session-store";
-import type { ProjectMeta } from "@/stores/projects-store";
+import { useProjectsStore, type ProjectMeta } from "@/stores/projects-store";
+import { projectSharingAccount, publicationKey } from "@/lib/project-sharing";
 const api = vi.hoisted(() => ({ teamProjectRequest: vi.fn(), projectCollaborationCapabilities: vi.fn(), teamProjectUpload: vi.fn(), projectAssetsUse: vi.fn() }));
 vi.mock("@/lib/team-project-client", async original => ({ ...await original<object>(), ...api }));
 vi.mock("@/lib/agent-client", () => ({ projectAssetsUse: api.projectAssetsUse, projectsSave: vi.fn().mockResolvedValue(undefined) }));
@@ -10,9 +11,54 @@ vi.mock("@/lib/org-client", () => ({ orgSession: vi.fn() }));
 const project: ProjectMeta = { id: "local", name: "接口项目", instructions: "完成联调", createdAt: "2026-11-16", members: ["私人备注"], conversations: [{ sessionId: "private", title: "私人探索", createdAt: "2026-11-16" }], plans: [], tasks: [{ id: "t", title: "设计工作", status: "pending", scope: "personal", source: "manual" }], assets: [{ id: "file", name: "规范.md", path: "/local/规范.md", kind: "file" }], experts: [], skills: [], connectors: [] };
 beforeEach(() => {
  vi.resetAllMocks(); localStorage.clear();
+ useProjectsStore.setState({projects:[]});
  api.projectCollaborationCapabilities.mockResolvedValue({ version: 2, idempotentCreate: true, memberSearch: true, memberRoles: true });
  useOrgSessionStore.setState({ session: { loggedIn: true, serverUrl: "https://org.example", user: { id: "a", username: "a", displayName: "A", role: "member", clearance: 0 } }, boundaryRevision: 1 });
  api.teamProjectRequest.mockResolvedValue({ id: "shared" }); api.projectAssetsUse.mockResolvedValue(["/authorized/规范.md"]);
+});
+
+it("marks workspace-shared content as published and does not replace its remote identity", async () => {
+ const account=projectSharingAccount(useOrgSessionStore.getState().session);
+ const p:ProjectMeta={...project,sharedProjects:{[account]:"shared"},tasks:[{...project.tasks[0],sharedTasks:{[account]:{projectId:"shared",taskId:"original-task"}}}],assets:[{...project.assets[0],sharedAssets:{[account]:{projectId:"shared",documentId:"original-doc",familyId:"original-family"}}}]};
+ useProjectsStore.setState({projects:[p]}); const published=vi.fn();
+ render(<PublishTeamProjectButton project={p} collaborationMode onPublished={published}/>);
+ fireEvent.click(screen.getByRole("button",{name:"共享更多内容"}));
+ expect(screen.getByRole("checkbox",{name:/任务：设计工作/})).toBeDisabled();
+ expect(screen.getByRole("checkbox",{name:/规范.md/})).toBeChecked();
+ expect(screen.getByRole("checkbox",{name:/规范.md/})).toBeDisabled();
+ fireEvent.click(screen.getByRole("button",{name:"确认共享"})); await waitFor(()=>expect(published).toHaveBeenCalledWith("shared"));
+ expect(api.teamProjectRequest).not.toHaveBeenCalled(); expect(api.teamProjectUpload).not.toHaveBeenCalled();
+ expect(useProjectsStore.getState().projects[0].tasks[0].sharedTasks?.[account].taskId).toBe("original-task");
+});
+
+it("rechecks durable links when content is shared elsewhere while the selection dialog is open",async()=>{
+ const account=projectSharingAccount(useOrgSessionStore.getState().session),p={...project,sharedProjects:{[account]:"shared"}};
+ useProjectsStore.setState({projects:[p]}); const published=vi.fn(); render(<PublishTeamProjectButton project={p} collaborationMode onPublished={published}/>);
+ fireEvent.click(screen.getByRole("button",{name:"共享更多内容"}));
+ fireEvent.click(screen.getByRole("checkbox",{name:"任务：设计工作"})); fireEvent.click(screen.getByRole("checkbox",{name:"规范.md"}));
+ await act(async()=>{
+  await useProjectsStore.getState().linkSharedTask(p.id, "t", account, {projectId:"shared",taskId:"existing"});
+  await useProjectsStore.getState().linkSharedAsset(p.id, "file", account, {projectId:"shared",documentId:"existing-doc"});
+ });
+ fireEvent.click(screen.getByRole("button",{name:"确认共享"})); await waitFor(()=>expect(published).toHaveBeenCalled());
+ expect(api.teamProjectRequest).not.toHaveBeenCalled(); expect(api.projectAssetsUse).not.toHaveBeenCalled(); expect(api.teamProjectUpload).not.toHaveBeenCalled();
+});
+
+it("reuses a workspace task's pending creation request rather than allocating another identity",async()=>{
+ const account=projectSharingAccount(useOrgSessionStore.getState().session);
+ const p={...project,sharedProjects:{[account]:"shared"},tasks:[{...project.tasks[0],sharedTasks:{[account]:{projectId:"shared",requestId:"existing-request"}}}]};
+ useProjectsStore.setState({projects:[p]});const published=vi.fn();render(<PublishTeamProjectButton project={p} collaborationMode onPublished={published}/>);
+ fireEvent.click(screen.getByRole("button",{name:"共享更多内容"}));fireEvent.click(screen.getByRole("checkbox",{name:"任务：设计工作"}));fireEvent.click(screen.getByRole("button",{name:"确认共享"}));
+ await waitFor(()=>expect(published).toHaveBeenCalled());expect(api.teamProjectRequest).toHaveBeenCalledWith("createTask","shared",expect.objectContaining({clientRequestId:"existing-request"}),undefined,expect.any(Object));
+});
+
+it("restores a successful upload from recovery data without uploading a second document",async()=>{
+ const account=projectSharingAccount(useOrgSessionStore.getState().session),p={...project,sharedProjects:{[account]:"shared"}};
+ useProjectsStore.setState({projects:[p]});
+ localStorage.setItem(publicationKey(p.id,account),JSON.stringify({projectId:"shared",files:[],tasks:[],createdTasks:{},createdAssets:{file:"uploaded-doc"},createdAssetFamilies:{file:"uploaded-family"},selectedFiles:["file"],selectedTasks:[]}));
+ const published=vi.fn();render(<PublishTeamProjectButton project={p} collaborationMode onPublished={published}/>);
+ fireEvent.click(screen.getByRole("button",{name:"共享更多内容"}));fireEvent.click(screen.getByRole("button",{name:"确认共享"}));await waitFor(()=>expect(published).toHaveBeenCalled());
+ expect(api.teamProjectUpload).not.toHaveBeenCalled(); expect(useProjectsStore.getState().projects[0].assets[0].sharedAssets?.[account]).toMatchObject({documentId:"uploaded-doc",familyId:"uploaded-family"});
 });
 describe("personal project publication", () => {
  it("only publishes explicitly selected content and never uploads private chats or participant notes", async () => {

@@ -50,6 +50,21 @@ try {
   await page.getByRole('region',{name:'任务：梳理需求'}).waitFor();
   await page.screenshot({path:join(output,`${width}-${theme}-task-detail.png`),fullPage:true});
   await page.getByRole('button',{name:'返回任务列表'}).click();
+  await page.getByRole('button',{name:'添加待办',exact:true}).click();
+  const newTask=page.getByRole('dialog',{name:'新建任务',exact:true});
+  await newTask.getByRole('textbox',{name:'任务名称',exact:true}).fill('后续协作任务');
+  await newTask.getByRole('button',{name:'创建任务',exact:true}).click();
+  await page.getByRole('region',{name:'任务：后续协作任务'}).waitFor();
+  await page.getByRole('button',{name:'返回任务列表'}).click();
+  await page.getByRole('button',{name:/参与者/}).click();
+  await page.getByRole('button',{name:'共享更多内容',exact:true}).click();
+  const selection=page.getByRole('dialog',{name:'共享项目内容',exact:true});
+  assert(await selection.getByRole('checkbox',{name:/任务：后续协作任务/}).isDisabled());
+  const taskCreatesBefore=await page.evaluate(()=>window.reviewCalls.filter(c=>c.command==='org_project_request'&&c.args.action==='createTask').length);
+  await selection.getByRole('button',{name:'确认共享',exact:true}).click();
+  await selection.waitFor({state:'hidden'});
+  assert.equal(await page.evaluate(()=>window.reviewCalls.filter(c=>c.command==='org_project_request'&&c.args.action==='createTask').length),taskCreatesBefore);
+  await page.getByRole('button',{name:'关闭参与者'}).click();
   await page.getByRole('tab',{name:'资料与成果',exact:true}).click();
   assert.equal(await page.locator('.project-material-row').filter({hasText:'需求说明.md'}).count(),1);
   await page.screenshot({path:join(output,`${width}-${theme}-materials.png`),fullPage:true});
@@ -64,6 +79,15 @@ try {
   assert.equal(await page.locator('nav[aria-label="项目内容"] button').count(),4);
   await page.getByRole('tab',{name:'任务',exact:true}).click();
   assert(await page.getByRole('button',{name:'添加待办',exact:true}).isDisabled());
+  await page.getByRole('button',{name:'问项目',exact:true}).click();
+  const questions=page.getByRole('dialog',{name:'问项目',exact:true});
+  await questions.getByRole('button',{name:'新成员快速了解项目',exact:true}).click();
+  await questions.getByLabel('项目问答结果').waitFor();
+  await questions.getByRole('button',{name:'来源1 · 项目规范',exact:true}).click();
+  await questions.getByLabel('项目来源原文').getByText(/项目规范原文/).waitFor();
+  await page.screenshot({path:join(output,`${width}-${theme}-viewer-project-questions.png`),fullPage:true});
+  assert(await page.evaluate(()=>window.reviewCalls.some(c=>c.command==='org_fetch_document'&&c.args.docId==='shared-document'&&c.args.expectedGeneration===1)));
+  await questions.getByRole('button',{name:'关闭项目问答',exact:true}).click();
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,`${width} ${theme}: overflow`);
   assert.deepEqual(errors,[]);await page.close();
  }

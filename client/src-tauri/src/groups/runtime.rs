@@ -325,7 +325,7 @@ async fn execute(
         .await;
     let permission_mode = super::permissions::effective_mode(&g);
     if let Some(binding) = &g.project_binding {
-        crate::org::authorize_project_binding(&app, binding).await?;
+        crate::org::authorize_project_binding(app, binding).await?;
     }
     if let Some(binding) = &g.project_binding {
         crate::org::record_project_run_binding(app, binding, gid, &work.root_id, "running", None)
@@ -371,7 +371,7 @@ async fn execute(
         let mut session_binding = binding.clone();
         session_binding.task_id = None; // The group request, rather than each member turn, owns delivery.
         crate::org::save_project_binding(&sid, &session_binding)?;
-        let context = crate::org::project_session_context(&app, &sid, &work.prompt).await?;
+        let context = crate::org::project_session_context(app, &sid, &work.prompt).await?;
         if let Some((_, scope, _)) = &context {
             knowledge.personal = false;
             knowledge.organization = true;

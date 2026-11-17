@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { CalendarClock, Pause, Play, Plus, Trash2 } from "lucide-react";
-import { automationsDelete, automationsRun, automationsSave, automationsSetStatus, automationsSnapshot, filesystemPickDirectory } from "@/lib/agent-client";
+import { automationsDelete, automationsRun, automationsSave, automationsSetStatus, automationsSnapshot, filesystemPickDirectory, skillsList } from "@/lib/agent-client";
+import { resolveAutomationSkills } from "@/lib/automation-skills";
 import { buildDraft, describeSchedule } from "./automation/schedule-utils";
 import type { Automation, AutomationSnapshot } from "@/lib/types";
 import { flushProjectPersistence, projectOwnsSession, useProjectsStore, type ProjectMeta } from "@/stores/projects-store";
@@ -69,15 +70,18 @@ export function ProjectAutomationsDialog({ project, data, models, defaultModelId
     setDay(automation?.schedule.byday[0] ?? "FR"); setTime(`${String(automation?.schedule.byhour ?? 9).padStart(2, "0")}:${String(automation?.schedule.byminute ?? 0).padStart(2, "0")}`);
   };
   const save = () => run(async () => {
-    if (!name.trim() || !prompt.trim() || !cwd || !modelId) throw new Error("请填写名称、执行内容，并选择工作目录与可用模型");
+    const original = editing && editing !== "new" ? editing : undefined;
+    if (!name.trim() || !prompt.trim() || !cwd || !modelId || (original?.status ?? "ACTIVE") === "ACTIVE" && !models.some(model => model.id === modelId)) throw new Error("请填写名称、执行内容，并选择工作目录与可用模型");
     await flushProjectPersistence();
     const [hour, minute] = time.split(":").map(Number);
     if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) throw new Error("请选择有效的执行时间");
-    const original = editing !== "new" ? editing : undefined;
     const draft = original ?? { ...buildDraft(undefined, cwd), createdAt: "" };
+    const selectedSkills = original?.skills ?? project.skills.map(s => s.id);
+    const skills = selectedSkills.length && (original?.status ?? "ACTIVE") === "ACTIVE"
+      ? resolveAutomationSkills(selectedSkills, await skillsList(cwd)) : selectedSkills;
     const scheduleChanged = !original || day !== (original.schedule.byday[0] ?? "FR") || hour !== original.schedule.byhour || minute !== original.schedule.byminute;
     const saved = await automationsSave({ ...draft, projectId: project.id, name: name.trim(), prompt: prompt.trim(), cwds: cwd, modelId, status: original?.status ?? "ACTIVE", newSessionEachRun: original?.newSessionEachRun ?? true,
-      skills: original?.skills ?? project.skills.map(s => s.id), connectorIds: original?.connectorIds ?? project.connectors.map(c => c.id),
+      skills, connectorIds: original?.connectorIds ?? project.connectors.map(c => c.id),
       scheduleType: scheduleChanged ? "recurring" : draft.scheduleType, schedule: scheduleChanged ? { ...draft.schedule, freq: "WEEKLY", interval: 1, byday: [day], byhour: hour, byminute: minute } : draft.schedule });
     setEditing(saved);
     const latest = useProjectsStore.getState().projects.find(p => p.id === project.id);

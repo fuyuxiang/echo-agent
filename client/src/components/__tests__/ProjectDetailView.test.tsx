@@ -60,6 +60,27 @@ async function send() {
   fireEvent.click(button);
 }
 
+it("shows a task-start failure in the inline detail and lets the user choose a working directory before retrying",async()=>{
+ const project:ProjectMeta={...baseProject,tasks:[{id:"task",title:"待执行的工作",status:"pending",scope:"personal",source:"manual"}]};resetStores(project);
+ useSessionsStore.getState().setDraft("project:p1","保留独立草稿");
+ const start=vi.fn().mockRejectedValueOnce(new Error("无法解析会话工作区：/workspace")).mockResolvedValueOnce("started");
+ vi.mocked(filesystemPickDirectory).mockResolvedValueOnce("/available");
+ render(<ProjectDetailView project={project} initialTab="task" onBack={vi.fn()} onStartConversation={start} models={models} defaultModelId="model-a" picker={picker}/>);
+ fireEvent.click(screen.getByRole("button",{name:/待执行的工作/}));await waitFor(()=>expect(screen.getByRole("button",{name:"开始执行"})).toBeEnabled());
+ fireEvent.click(screen.getByRole("button",{name:"开始执行"}));expect(await screen.findByRole("alert")).toHaveTextContent("工作目录不可用，请重新选择");
+ expect(useProjectsStore.getState().projects[0].tasks[0].status).toBe("pending");
+ fireEvent.click(screen.getByRole("button",{name:"选择执行目录"}));await screen.findByText(/执行目录：.*available/);
+ fireEvent.click(screen.getByRole("button",{name:"开始执行"}));await waitFor(()=>expect(useProjectsStore.getState().projects[0].tasks.find(t=>t.id==="task")?.sessionId).toBe("started"));
+ expect(start.mock.calls[1][3].cwd).toBe("/available");expect(useProjectsStore.getState().projects[0].cwd).toBe("/workspace");expect(useSessionsStore.getState().drafts["project:p1"]).toBe("保留独立草稿");
+});
+
+it("explains an unconfirmed local start instead of silently resetting the task",async()=>{
+ const project:ProjectMeta={...baseProject,tasks:[{id:"task",title:"启动未确认",status:"pending",scope:"personal",source:"manual"}]};resetStores(project);
+ render(<ProjectDetailView project={project} initialTab="task" onBack={vi.fn()} onStartConversation={vi.fn().mockResolvedValue(undefined)} models={models} defaultModelId="model-a" picker={picker}/>);
+ fireEvent.click(screen.getByRole("button",{name:/启动未确认/}));await waitFor(()=>expect(screen.getByRole("button",{name:"开始执行"})).toBeEnabled());fireEvent.click(screen.getByRole("button",{name:"开始执行"}));
+ expect(await screen.findByRole("alert")).toHaveTextContent("任务尚未启动");expect(useProjectsStore.getState().projects[0].tasks[0].status).toBe("pending");
+});
+
 describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
   it("only explicitly selected project assets are granted and forwarded, then consumed", async () => {
     const project = { ...baseProject, assets: [

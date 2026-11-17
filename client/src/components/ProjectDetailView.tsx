@@ -5,6 +5,7 @@ import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 import { ProjectOverview, ProjectContextSidebar, ProjectActivity, ProjectDecisionsDialog } from "./ProjectWorkspaceSections";
 import { ProjectResourcePreview, type ProjectResource } from "./ProjectResourcePreview";
 import { ProjectAutomationsDialog, useProjectAutomations } from "./ProjectAutomationsDialog";
+import { ProjectQuestionsDialog } from "./ProjectQuestionsDialog";
 import { useProjectArtifacts } from "@/lib/use-project-artifacts";
 import { projectTaskRows } from "@/lib/project-tasks";
 import { projectPublicationLinks } from "@/lib/project-sharing";
@@ -39,7 +40,7 @@ import { useAppDialog } from "./AppDialog";
 import type { AgentEntry } from "@/lib/types";
 import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
-import { projectAssetsUse, projectAssetsImport, filesystemAttachmentStats, type WorkspaceInfo } from "@/lib/agent-client";
+import { projectAssetsUse, projectAssetsImport, filesystemAttachmentStats, filesystemPickDirectory, type WorkspaceInfo } from "@/lib/agent-client";
 import { friendlyError, isTaskWorkspaceError } from "@/lib/error-format";
 import { draftAttachments } from "@/lib/draft-attachments";
 import { draftRevision, touchDraft } from "@/lib/draft-lifecycle";
@@ -147,12 +148,13 @@ export function ProjectDetailView({
   const [resource, setResource] = useState<ProjectResource>();
   const [decisionsOpen, setDecisionsOpen] = useState(false);
   const [automationsOpen, setAutomationsOpen] = useState(false);
+  const [questionsOpen, setQuestionsOpen] = useState(false);
   const [localFocus, setLocalFocus] = useState(0);
   const sharedId = useSharedProjectId(live);
   const sharingAccount = useOrgSessionStore(state => projectSharingAccount(state.session));
   const scopeKey = `${live.id}:${sharingAccount}:${sharedId ?? ""}`;
   const currentScope = useRef(scopeKey); currentScope.current = scopeKey;
-  useEffect(() => { setResource(undefined); setSettingsOpen(false); setDecisionsOpen(false); setAutomationsOpen(false); setSelectedTaskId(undefined); }, [scopeKey]);
+  useEffect(() => { setResource(undefined); setSettingsOpen(false); setDecisionsOpen(false); setAutomationsOpen(false); setQuestionsOpen(false); setSelectedTaskId(undefined); }, [scopeKey]);
   const linkShared = async (id: string) => {
     await useProjectsStore.getState().linkSharedProject(live.id, sharingAccount, id);
     onTeamPublished?.(id);
@@ -274,11 +276,15 @@ export function ProjectDetailView({
     fromDraft: boolean,
   ): Promise<string | undefined> => {
     if (!onStartConversation && !(fromDraft && sharedId && onStartTeamWork)) {
+      if (!fromDraft) throw new Error("当前项目无法启动会话");
       onToast?.("当前项目无法启动会话");
       return;
     }
     const expectedPermissionMode = fromDraft ? projectPermissionMode : workItemPermissionMode;
-    if (expectedPermissionMode === undefined) return;
+    if (expectedPermissionMode === undefined) {
+      if (!fromDraft) throw new Error("任务权限正在更新，请稍后重试。");
+      return;
+    }
     setSendError(null);
     setWorkspaceError(undefined);
     const submittedRevision = draftRevision(draftKey);
@@ -333,6 +339,7 @@ export function ProjectDetailView({
         } finally { await workspace.refresh(); }
       } else sessionId = await onStartConversation!(live.id, text, modelId, options);
       if (!sessionId) {
+        if (!fromDraft) throw new Error("任务尚未启动，请检查模型、配额与权限后重试。");
         setSendError(fromDraft ? "消息尚未发送，请查看提示后重试。" : "任务尚未启动，请查看提示后重试。");
       } else {
         if (fromDraft && permissionDraft) {
@@ -351,12 +358,17 @@ export function ProjectDetailView({
       const failureLabel = fromDraft ? "发送失败" : "启动任务失败";
       const workspaceFailure = isTaskWorkspaceError(error);
       const detail = workspaceFailure || error instanceof Error ? String(error).replace(/^Error:\s*/, "") : friendlyError(error);
+      const recovery = taskCwd ? "工作目录不可用，请重新选择。" : "默认任务目录无法分配，请选择一个现有文件夹后重试。";
+      if (!fromDraft) {
+        const message = `${failureLabel}：${workspaceFailure ? `${recovery} ` : ""}${detail}`;
+        if (!mounted.current) onToast?.(`项目「${live.name}」${message}`);
+        throw new Error(message);
+      }
       if (!mounted.current) {
         onToast?.(`项目「${live.name}」${failureLabel}：${detail}`);
         return undefined;
       }
       if (workspaceFailure) {
-        const recovery = taskCwd ? "工作目录不可用，请重新选择。" : "默认任务目录无法分配，请选择一个现有文件夹后重试。";
         setWorkspaceError({ cwd: taskCwd, message: `${recovery} ${detail}` });
       } else {
         setSendError(`${failureLabel}：${detail}`);
@@ -384,7 +396,7 @@ export function ProjectDetailView({
             <nav className="pd-tabs" aria-label="项目内容" role="tablist">
               {([['overview','概览'],['task','任务'],['asset','资料与成果'],['activity','动态']] as const).map(([id,label]) => <button key={id} type="button" role="tab" id={`project-tab-${id}`} aria-label={label} aria-selected={tab === id} aria-controls="project-content-panel" className={`pd-tab-btn${tab === id ? " pd-tab-btn--on" : ""}`} onClick={() => { setTab(id); setSelectedTaskId(undefined); }}>{label}{id === "task" && <span>{rows.length}</span>}{id === "asset" && <span>{live.assets.length + outputs.length}</span>}</button>)}
             </nav>
-            {sharedId && <div className="project-sync-state"><span>{workspace.loading ? "同步中…" : workspace.error ? "同步失败" : workspace.snapshot ? "已同步" : "待连接"}</span><button className="pd-btn pd-btn--small" disabled={workspace.loading} onClick={() => void workspace.refresh()}>刷新</button></div>}
+            {sharedId && <div className="project-sync-state"><button type="button" className="pd-btn pd-btn--small" onClick={() => setQuestionsOpen(true)}>问项目</button><span>{workspace.loading ? "同步中…" : workspace.error ? "同步失败" : workspace.snapshot ? "已同步" : "待连接"}</span><button className="pd-btn pd-btn--small" disabled={workspace.loading} onClick={() => void workspace.refresh()}>刷新</button></div>}
           </div>
           {workspace.error && <p className="project-inline-error" role="alert">{workspace.error}</p>}
           {workspace.snapshot?.syncWarning && <p className="project-inline-error" role="alert">{workspace.snapshot.syncWarning}</p>}
@@ -393,6 +405,7 @@ export function ProjectDetailView({
             {tab === "overview" && <ProjectOverview project={live} rows={rows} outputs={outputs} onOpenTask={openTask} onOpenOutput={output => setResource({ output })} onTasks={() => setTab("task")} onFiles={() => showFiles("output")} onAddFiles={addFiles} />}
             {tab === "activity" && <ProjectActivity key={scopeKey} draftScope={scopeKey} project={live} sharedId={sharedId} workspace={workspace} onOpenTask={openTask} />}
             {tab === "task" && <ProjectTasks key={`${live.id}:${sharingAccount}`} inlineDetails project={live} account={sharingAccount} sharedId={sharedId} workspace={workspace} models={models} defaultModelId={projectModelId} runDisabled={workItemPermissionMode === undefined} selectedTaskId={selectedTaskId} onSelectedTaskChange={setSelectedTaskId} outputs={outputs} onPreviewOutput={output => setResource({ output })}
+              executionCwd={taskCwd} onSelectExecutionWorkspace={async () => { const path = await filesystemPickDirectory(); if (path) selectWorkspace(path); }}
               onRun={onStartConversation ? (message, modelId) => runProjectConversation(message, modelId, [], false) : undefined}
               onStartTeamWork={onStartTeamWork ? (snapshot, task, modelId) => onStartTeamWork(snapshot, task, modelId, { localProjectId: live.id, options: { cwd: taskCwd ?? null, expectedPermissionMode: workItemPermissionMode!, prepareAttachments: () => prepareProjectAttachments([]) } }) : undefined} onOpenTeamExecution={onOpenTeamExecution}
               onOpenSession={onOpenProjectWorkItemSession || onOpenSession ? openProjectSession : undefined}
@@ -501,6 +514,7 @@ export function ProjectDetailView({
       {settingsOpen && createPortal(<ProjectSettingsDialog key={`${live.id}:${sharingAccount}`} project={live} sharedId={sharedId} workspace={workspace} picker={picker} models={models} defaultModelId={inheritedModelId} onClose={() => setSettingsOpen(false)} onOpenAutomation={onOpenAutomation} onOpenModelSettings={onOpenModelSettings} />, document.body)}
       {decisionsOpen && <ProjectDecisionsDialog project={live} sharedId={sharedId} workspace={workspace} onClose={() => setDecisionsOpen(false)} />}
       {automationsOpen && <ProjectAutomationsDialog project={live} data={automation} models={models} defaultModelId={projectModelId} onClose={() => setAutomationsOpen(false)} onOpenSession={openProjectSession} />}
+      {sharedId && <ProjectQuestionsDialog open={questionsOpen} projectId={sharedId} draftKey={`project-question:${sharingAccount}:${sharedId}`} workspace={workspace} onClose={() => setQuestionsOpen(false)} />}
       {resource && <ProjectResourcePreview key={`${sharingAccount}:${resource.output?.id ?? resource.asset?.id}`} project={live} resource={resource} onClose={() => setResource(undefined)} onUse={useResource} onOpenSession={openProjectSession} />}
       {dialog}
     </div>
