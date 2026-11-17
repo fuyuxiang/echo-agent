@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -204,7 +205,7 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
   </>;
   const editingCanvas = <>
     {editingDocument && editor && <fieldset disabled={locked} className="document-workbench__format" role="toolbar" aria-label="文档格式">
-      <select aria-label="段落样式" value={editor.isActive('heading',{level:1})?'1':editor.isActive('heading',{level:2})?'2':editor.isActive('heading',{level:3})?'3':'0'} onChange={event=>{const level=Number(event.target.value);if(level)editor.chain().focus().toggleHeading({level:level as 1|2|3}).run();else editor.chain().focus().setParagraph().run();}}><option value="0">正文</option><option value="1">标题 1</option><option value="2">标题 2</option><option value="3">标题 3</option></select>
+      <Select density="compact" aria-label="段落样式" value={editor.isActive('heading',{level:1})?'1':editor.isActive('heading',{level:2})?'2':editor.isActive('heading',{level:3})?'3':'0'} onChange={event=>{const level=Number(event.target.value);if(level)editor.chain().focus().toggleHeading({level:level as 1|2|3}).run();else editor.chain().focus().setParagraph().run();}}><option value="0">正文</option><option value="1">标题 1</option><option value="2">标题 2</option><option value="3">标题 3</option></Select>
       {[
         ['加粗',Bold,()=>editor.chain().focus().toggleBold().run(),editor.isActive('bold')],
         ['斜体',Italic,()=>editor.chain().focus().toggleItalic().run(),editor.isActive('italic')],

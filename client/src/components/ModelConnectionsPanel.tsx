@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { withoutRemovedModels } from "@/lib/retired-models";
 import { PageHeading } from "./PageHeading";
 import { modelDisplayName } from "@/lib/model-presentation";
@@ -513,7 +514,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId, onOpenO
           <section className="model-settings__default" aria-label="默认模型">
             <label htmlFor="settings-default-model">默认模型</label>
             <div className="model-settings__select-shell">
-              <select id="settings-default-model" className="form-control model-settings__default-select" value={savedDefaultModelId ?? ""} disabled={busy} onChange={event => {
+              <Select id="settings-default-model" className="form-control model-settings__default-select" value={savedDefaultModelId ?? ""} disabled={busy} onChange={event => {
                 const model = catalog.models.find(value => value.modelId === event.target.value);
                 const provider = model && modelProvider(model);
                 if (model && !(provider?.source === "organization" && organizationExpired)) void handleSetDefault(model);
@@ -526,7 +527,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId, onOpenO
                     return <option key={model.modelId} value={model.modelId} disabled={source === "organization" && organizationExpired}>{modelChoiceName(model)}{source === "organization" && organizationExpired ? "（需重新登录）" : ""}</option>;
                   })}</optgroup>;
                 })}
-              </select><ChevronDown size={17} aria-hidden="true" />
+              </Select>
             </div>
             <p>{displayedProvider ? `${displayedProvider.source === "organization" ? "组织提供" : "来自个人连接"} · ${connectionName(displayedProvider)}` : "请选择默认使用的模型。"}</p>
             {effectiveModel && savedDefaultModelId && savedDefaultModelId !== effectiveDefaultModelId && <p>当前自动使用「{modelName(effectiveModel)}」</p>}
@@ -912,7 +913,7 @@ function ConnectionEditor({
       <header className="models-settings-panel__editor-header"><div className="models-settings-panel__editor-title">{original ? "编辑连接" : "添加模型连接"}</div><Button variant="ghost" size="compact" onClick={cancel} disabled={disabled} aria-label="关闭"><X size={16} /></Button></header>
       <div className="model-connection-editor__body">
         <fieldset className="model-connection-editor__fields" disabled={disabled}>
-          <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-provider-kind">模型服务商</label><select id="model-provider-kind" {...fieldA11y("model-provider-kind")} className="form-control models-settings-panel__select" value={serviceChosen ? draft.service : ""} onChange={event => { setEditingAddress(false); handleKindChange(event.target.value as ServiceKind); }} data-modal-initial-focus><option value="" disabled>请选择模型服务商</option>{SERVICE_GROUPS.map(group => <optgroup key={group.label} label={group.label}>{group.kinds.map(kind => <option key={kind} value={kind}>{PROVIDER_PRESETS[kind].label}</option>)}</optgroup>)}</select>{fieldError("model-provider-kind")}</div>
+          <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-provider-kind">模型服务商</label><Select id="model-provider-kind" {...fieldA11y("model-provider-kind")} className="form-control models-settings-panel__select" value={serviceChosen ? draft.service : ""} onChange={event => { setEditingAddress(false); handleKindChange(event.target.value as ServiceKind); }} data-modal-initial-focus><option value="" disabled>请选择模型服务商</option>{SERVICE_GROUPS.map(group => <optgroup key={group.label} label={group.label}>{group.kinds.map(kind => <option key={kind} value={kind}>{PROVIDER_PRESETS[kind].label}</option>)}</optgroup>)}</Select>{fieldError("model-provider-kind")}</div>
           {showAddress ? <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-base-url">服务地址（Base URL）</label><input id="model-base-url" {...fieldA11y("model-base-url")} className="form-control models-settings-panel__input" value={draft.baseUrl} onChange={event => updateAddress(event.target.value)} placeholder="填写服务提供方给出的 API 地址" inputMode="url" />{fieldError("model-base-url")}
             {draft.baseUrl.trim().toLowerCase().startsWith("http://") && <label className="model-connection-editor__help model-connection-editor__http-consent"><input type="checkbox" checked={draft.allowInsecureHttp} onChange={event => setDraft(current => ({ ...current, allowInsecureHttp: event.target.checked }))} />允许此个人连接使用 HTTP。我了解 API Key、提问和模型回复会以明文传输。</label>}
           </div> : serviceChosen && <div className="model-connection-editor__address"><span>服务地址：{draft.baseUrl}</span><Button variant="ghost" size="compact" onClick={() => setEditingAddress(true)}>修改地址</Button></div>}
@@ -928,8 +929,8 @@ function ConnectionEditor({
             <div className="models-settings-panel__advanced">
               <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-connection-label">连接名称</label><input id="model-connection-label" className="form-control models-settings-panel__input" value={draft.label} onChange={event => setDraft(current => ({ ...current, label: event.target.value }))} placeholder={preset.shortLabel} /></div>
               <div className="models-settings-panel__field-row">
-                <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-api-backend">请求协议</label><select id="model-api-backend" className="form-control models-settings-panel__select" value={draft.apiBackend} onChange={(event) => setDraft((current) => ({ ...current, apiBackend: event.target.value as ApiBackend }))}><option value="chat_completions">Chat Completions</option><option value="responses">Responses</option><option value="messages">Messages</option></select></div>
-                <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-auth-scheme">认证方式</label><select id="model-auth-scheme" className="form-control models-settings-panel__select" value={draft.authScheme} onChange={(event) => setDraft((current) => ({ ...current, authScheme: event.target.value as AuthScheme }))}><option value="bearer">Bearer Token</option><option value="x_api_key">X-API-Key</option></select></div>
+                <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-api-backend">请求协议</label><Select id="model-api-backend" className="form-control models-settings-panel__select" value={draft.apiBackend} onChange={(event) => setDraft((current) => ({ ...current, apiBackend: event.target.value as ApiBackend }))}><option value="chat_completions">Chat Completions</option><option value="responses">Responses</option><option value="messages">Messages</option></Select></div>
+                <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-auth-scheme">认证方式</label><Select id="model-auth-scheme" className="form-control models-settings-panel__select" value={draft.authScheme} onChange={(event) => setDraft((current) => ({ ...current, authScheme: event.target.value as AuthScheme }))}><option value="bearer">Bearer Token</option><option value="x_api_key">X-API-Key</option></Select></div>
               </div>
               <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="model-context-window">默认上下文窗口（可选）</label><input id="model-context-window" {...fieldA11y("model-context-window")} className="form-control models-settings-panel__input" type="number" min={1} value={draft.contextWindow} onChange={(event) => setDraft((current) => ({ ...current, contextWindow: event.target.value }))} placeholder="例如 128000" />{fieldError("model-context-window")}</div>
             </div>

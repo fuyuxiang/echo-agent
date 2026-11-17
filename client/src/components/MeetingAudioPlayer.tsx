@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useEffect, useImperativeHandle, useRef, useState, type MutableRefObject } from "react";
 import { ExternalLink, Pause, Play, RotateCcw, RotateCw, Volume2 } from "lucide-react";
 import { formatMeetingDuration, meetingAudioUrl, meetingOpenAudio, type MeetingRecord } from "@/lib/meeting-minutes";
@@ -89,9 +90,9 @@ export function MeetingAudioPlayer({ record, request, control, onPosition, onToa
       <button type="button" disabled={!ready} aria-label="后退 10 秒" onClick={() => seek(position - 10, playing)}><RotateCcw size={15} /></button>
       <span className="meeting-player__time">{formatMeetingDuration(position)} / {formatMeetingDuration(duration)}</span>
       <button type="button" disabled={!ready} aria-label="前进 10 秒" onClick={() => seek(position + 10, playing)}><RotateCw size={15} /></button>
-      <select aria-label="播放速度" value={speed} onChange={event => { const rate = Number(event.target.value); setSpeed(rate); if (audioRef.current) audioRef.current.playbackRate = rate; }}>
+      <Select density="compact" aria-label="播放速度" value={speed} onChange={event => { const rate = Number(event.target.value); setSpeed(rate); if (audioRef.current) audioRef.current.playbackRate = rate; }}>
         {[.75, 1, 1.25, 1.5, 2].map(rate => <option key={rate} value={rate}>{rate}×</option>)}
-      </select>
+      </Select>
       <details className="meeting-player__volume"><summary aria-label="音量"><Volume2 size={15} /></summary><input aria-label="音量" type="range" min="0" max="1" step="0.05" defaultValue="1" onChange={event => { if (audioRef.current) audioRef.current.volume = Number(event.target.value); }} /></details>
     </div>
     <input className="meeting-player__progress" aria-label="播放进度" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration || 1)} disabled={!url || !ready} onChange={event => seek(Number(event.target.value), playing)} />

@@ -91,7 +91,18 @@ final class NativeColorReview: NSObject, WKNavigationDelegate, WKScriptMessageHa
             }
             if(active)assert(document.activeElement===input && input.matches(':focus-visible'),'Native input must actually have visible keyboard focus');
             const focused=capture();
-            report({theme,active,viewport:[innerWidth,innerHeight],scheme,accent,checked:check.checked,original,toggled,focused});
+            const select=document.querySelector('select.echo-select');
+            assert(getComputedStyle(select).appearance==='none','Select must not use the macOS native bevel');
+            select.click();await wait(()=>document.querySelector('.echo-select-menu'));
+            const choices=[...document.querySelectorAll('.echo-select-menu [role="option"]')];
+            choices.find(choice=>choice.textContent.includes('个人工作区')).click();
+            await wait(()=>select.value==='personal' && !document.querySelector('.echo-select-menu'));
+            select.click();await wait(()=>document.querySelector('.echo-select-menu'));
+            const menu=document.querySelector('.echo-select-menu');
+            const rect=menu.getBoundingClientRect();
+            assert(rect.left>=0 && rect.right<=innerWidth && rect.top>=0 && rect.bottom<=innerHeight,'Select popup must fit the native WebView');
+            const selection={value:select.value,appearance:getComputedStyle(select).appearance,popupVisible:true};
+            report({theme,active,viewport:[innerWidth,innerHeight],scheme,accent,checked:check.checked,original,toggled,focused,selection});
           } catch(error){report({error:String(error)+'\n'+error.stack});}
         })();
         """#) { _,error in if let error=error {self.fail(String(describing:error))} }

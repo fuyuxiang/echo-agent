@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useEffect, useState } from "react";
 import { flattenModels, providersList } from "@/lib/agent-client";
 import { usePromptPredictionStore } from "@/stores/prompt-prediction-store";
@@ -40,13 +41,13 @@ export function PromptPredictionSettings() {
         <span className="settings-row__name">预测模型</span>
         <span className="settings-row__description">自动选择可用轻量模型，也可自行指定。已有固定预测配置时，以该配置为准。</span>
       </label>
-      <select id="prompt-prediction-model" aria-label="预测模型" className="settings-input" disabled={!enabled} value={model}
+      <Select id="prompt-prediction-model" aria-label="预测模型" className="settings-input" disabled={!enabled} value={model}
         onFocus={() => setRequested(true)}
         onChange={event => update({ enabled, model: event.target.value })}>
         <option value="">自动选择轻量模型</option>
         {model && !models.some(item => item.id === model) && <option value={model}>{model}{loaded ? "（当前不可用）" : ""}</option>}
         {models.map(item => <option key={item.id} value={item.id}>{item.label ?? item.id}</option>)}
-      </select>
+      </Select>
     </div>
     {error && <p className="settings-msg settings-msg--warn" role="alert">{error}</p>}
     {modelError && <p className="settings-msg settings-msg--warn" role="alert">{modelError} <button type="button" className="settings-btn" onClick={() => setReload(value => value + 1)}>重试读取</button></p>}

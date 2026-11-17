@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useEffect, useMemo, useState } from "react";
 import { Upload } from "lucide-react";
 import { XCloseIcon } from "@/foundation/components/Icon/icons";
@@ -104,9 +105,9 @@ export function UploadSkillModal({
           ) : scopes.length > 0 ? (
             <label className="sk-upload-field">
               <span>共享范围</span>
-              <select value={scopeId} onChange={(event) => setScopeId(event.target.value)} disabled={busy}>
+              <Select value={scopeId} onChange={(event) => setScopeId(event.target.value)} disabled={busy}>
                 {scopes.map((scope) => <option key={scope.id} value={scope.id}>{scopeLabel(scope)}</option>)}
-              </select>
+              </Select>
             </label>
           ) : null}
 

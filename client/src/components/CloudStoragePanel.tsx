@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 /**
  * 云存储浏览面板 —— 腾讯 Drive/文档 替代的 UI。
@@ -455,12 +456,12 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
       <div className="storage-panel__head">
         <span className="storage-panel__title">存储源</span>
         {providerOptions.length > 0 ? (
-          <select className="form-control" aria-label="选择云存储源" value={selectedProvider ?? ""} onChange={(e) => selectProvider(e.target.value)}>
+          <Select className="form-control" aria-label="选择云存储源" value={selectedProvider ?? ""} onChange={(e) => selectProvider(e.target.value)}>
             <option value="">选择存储源…</option>
             {providerOptions.map((p) => (
               <option key={p.id} value={p.id}>{p.label}{configs.some((config) => config.id === p.id && !config.enabled) ? "（已禁用）" : ""}</option>
             ))}
-          </select>
+          </Select>
         ) : (
           <span className="storage-panel__muted">
             {configLoading ? "正在读取存储配置…" : configError ? "存储配置暂不可用" : "未配置存储源"}

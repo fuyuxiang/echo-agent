@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import "@/styles/expert-capabilities.css";
 import { useContext, useEffect, useId, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -83,19 +84,19 @@ export function ExpertCapabilitiesEditor({ raw, disabled, onChange, cwd }: { raw
   return <fieldset className="expert-capabilities" disabled={disabled}>
     <legend>模型、技能与连接器</legend>
     <div className="expert-capability-section"><div className="expert-capability-heading"><div><label htmlFor={modelField}>默认模型</label><p>为此专家指定默认模型，本次任务也可明确选择覆盖。</p></div>{manageModels && <button type="button" className="expert-capability-link" onClick={() => manageModels()}>管理模型</button>}</div>
-      <select id={modelField} aria-label="专家默认模型" value={settings.model} onChange={event => change("model", event.target.value)}>
+      <Select id={modelField} aria-label="专家默认模型" value={settings.model} onChange={event => change("model", event.target.value)}>
         <option value="inherit">跟随当前任务模型（推荐）</option>
         {unavailableModel && <option value={settings.model}>{settings.model} · 原配置已保留，当前不可用</option>}
         {groupModelsBySource(models).map(group => <optgroup label={group.label} key={group.label}>{group.models.map(model => <option key={model.id} value={model.id}>{modelChoiceLabel(model, models)}</option>)}</optgroup>)}
-      </select>
+      </Select>
       {unavailableModel && <p className="expert-capability-warning" role="status">原模型当前不在可用列表中，请更换模型或检查连接；保存其他设置不会移除它。</p>}
       {!models.length && <p className="expert-capability-hint">暂无已配置模型，可先跟随任务模型，或前往模型设置添加。</p>}
     </div>
     <CapabilityChoices title="指定技能" choices={[...new Map(skillChoices.map(choice => [choice.id, choice])).values()]} selected={settings.skills} loading={loading} error={skillError} onReload={() => setRevision(value => value + 1)} onChange={value => change("skills", value)} />
     <div className="expert-capability-section">
-      <CapabilityChoices title="外部连接器" choices={connectorChoices} selected={settings.mcpServers ?? []} locked={settings.mcpServers === null} loading={loading} error={connectorError} onReload={() => setRevision(value => value + 1)} onChange={value => change("mcpServers", value)} extra={<label className="expert-capability-field">使用范围<select aria-label="连接器继承" value={inheritance} onChange={event => { if (event.target.value === "all" || event.target.value === "none") change("mcpInheritance", event.target.value); }}>
+      <CapabilityChoices title="外部连接器" choices={connectorChoices} selected={settings.mcpServers ?? []} locked={settings.mcpServers === null} loading={loading} error={connectorError} onReload={() => setRevision(value => value + 1)} onChange={value => change("mcpServers", value)} extra={<label className="expert-capability-field">使用范围<Select aria-label="连接器继承" value={inheritance} onChange={event => { if (event.target.value === "all" || event.target.value === "none") change("mcpInheritance", event.target.value); }}>
         <option value="all">跟随任务授权，并包含指定项</option><option value="none">仅使用指定连接器</option>{inheritance === "custom" && <option value="custom">保留原有自定义范围</option>}
-      </select></label>} />
+      </Select></label>} />
       {settings.mcpServers === null && <p className="expert-capability-hint">此专家包含内联连接配置，原配置完整保留；当前选择器只管理命名连接器。</p>}
       {inheritance === "none" && settings.mcpServers?.length === 0 && <p className="expert-capability-hint">不使用外部连接器。项目知识、文档等应用内置服务仍按任务权限提供。</p>}
     </div>

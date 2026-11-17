@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useEffect, useMemo, useState } from "react";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -91,11 +92,11 @@ export function BrowserTaskSettings() {
   return <div className="browser-task-settings">
     <label className="settings-row settings-row--comfortable">
       <span className="settings-row__label"><span className="settings-row__name">管理哪个任务</span></span>
-      <select className="form-control settings-select" aria-label="管理浏览器数据的任务" value={selectedId} disabled={busy}
+      <Select className="form-control settings-select" aria-label="管理浏览器数据的任务" value={selectedId} disabled={busy}
         onChange={event => { setSelected(event.target.value); setFeedback(null); }}>
         <option value="">请选择任务</option>
         {options.map(item => <option key={item.sessionId} value={item.sessionId}>{item.title || "未命名任务"}{item.sessionId === currentId && item.title !== "当前任务" ? "（当前任务）" : ""}</option>)}
-      </select>
+      </Select>
     </label>
     {!selectedId ? <p className="settings-hint">选择需要管理的任务，其他任务的浏览器数据不受影响。</p>
       : automation.error ? <p className="settings-msg settings-msg--warn" role="alert">{automation.error}

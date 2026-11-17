@@ -36,8 +36,7 @@
 .model-settings__default { padding: 24px; }
 .model-settings__default > label { display: block; margin-bottom: 12px; color: var(--echo-text-strong); font-size: var(--echo-body-size); font-weight: 600; }
 .model-settings__select-shell { position: relative; }
-.model-settings__select-shell > svg { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--echo-text-medium); }
-.model-settings__default-select.form-control { width: 100%; min-height: 48px; padding: 10px 42px 10px 14px; appearance: none; background-image: none; font-size: var(--echo-body-size); font-weight: 500; text-overflow: ellipsis; cursor: pointer; }
+.model-settings__default-select.form-control { --echo-select-padding-end: 42px; --echo-select-indicator-offset: 14px; width: 100%; min-height: 48px; padding: 10px 42px 10px 14px; font-size: var(--echo-body-size); font-weight: 500; text-overflow: ellipsis; cursor: pointer; }
 .model-settings__default p { margin: 10px 0 0; color: var(--echo-text-medium); font-size: var(--echo-caption-size); line-height: 1.6; overflow-wrap: anywhere; }
 .model-settings__readiness { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--echo-border-default); font-size: var(--echo-caption-size); line-height: 1.6; }
 .model-settings__manage-entry { display: flex; align-items: center; gap: 16px; width: 100%; padding: 22px 24px; color: var(--echo-text-strong); font: inherit; text-align: left; cursor: pointer; }

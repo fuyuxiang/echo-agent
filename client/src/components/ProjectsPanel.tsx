@@ -1,3 +1,5 @@
+import { Select } from "@/components/Select";
+import { ProjectConnectionNotice } from "./ProjectConnectionNotice";
 import { captureTeamProjectOperation, teamProjectRequest, type TeamProjectSnapshot, type OpenTeamExecution, type StartTeamWork } from "@/lib/team-project-client";
 import { sharedProjectId, useSharedProjectCatalog } from "@/lib/project-sharing";
 import { ResourceIcon, ResourceList, ResourceRow } from "./ResourceList";
@@ -271,7 +273,9 @@ export function ProjectsPanel({
           </button>
         </div>
       )}
-      {(sharedCatalog.loading || sharedCatalog.error) && <div className="project-collaboration-status" role="status"><span>{sharedCatalog.loading ? "正在读取共享项目…" : sharedCatalog.error}</span>{sharedCatalog.error && <button type="button" className="expert-capability-link" onClick={() => void sharedCatalog.reload()}>重试</button>}</div>}
+      {scope !== "private" && (sharedCatalog.error
+        ? <ProjectConnectionNotice error={sharedCatalog.error} loading={sharedCatalog.loading} partialResults={scope === "all"} onRetry={() => void sharedCatalog.reload()} onOpenOrganization={onOpenOrganization} />
+        : sharedCatalog.loading && filteredCount > 0 && <div className="project-collaboration-status" role="status">正在读取共享项目…</div>)}
       <section className="project-section">
           <ResourceList collectionKey={totalCount ? "projects" : undefined} className="project-grid" aria-label="所有项目"
             toolbarStart={<div className="project-list-tools">
@@ -279,10 +283,12 @@ export function ProjectsPanel({
                 <h2 className="project-section__title">所有项目</h2>
                 <span className="resource-collection__count">{filteredCount} 项</span>
               </div>
-              <select aria-label="项目范围" className="project-scope-select" value={scope} onChange={event => setScope(event.target.value)}><option value="all">全部项目</option><option value="private">仅自己</option><option value="shared">已共享</option></select>
+              <Select aria-label="项目范围" className="project-scope-select" value={scope} onChange={event => setScope(event.target.value)}><option value="all">全部项目</option><option value="private">仅自己</option><option value="shared">已共享</option></Select>
               <CapabilitySearch value={query} onChange={setQuery} label="搜索项目" />
             </div>}
-            emptyState={filteredCount === 0 ? <CapabilityEmptyState icon={<ProjectGlyph />}
+            emptyState={filteredCount === 0 && scope !== "private" && (sharedCatalog.loading || sharedCatalog.error)
+              ? <CapabilityEmptyState icon={<ProjectGlyph />} title={sharedCatalog.loading ? "正在读取共享项目" : "共享项目暂时不可用"} description={scope === "all" ? "本机项目可正常使用；共享项目恢复连接后会在这里显示。" : "本机项目仍可在“全部项目”或“仅自己”中查看。"} onClear={query ? () => setQuery("") : undefined} />
+              : filteredCount === 0 ? <CapabilityEmptyState icon={<ProjectGlyph />}
               title={totalCount === 0 ? "还没有项目" : "没有匹配的项目"}
               description={totalCount === 0 ? "可以新建项目，也可以从下方模板开始。" : "试试其他项目名称。"}
               onClear={query ? () => setQuery("") : undefined} /> : undefined}>
@@ -725,7 +731,7 @@ function CreateProjectDialog({
           <div className="create-colleague-field">
             <div className="proj-field-head">
               <label className="create-colleague-label" htmlFor="create-project-instructions">指令</label>
-              <select className="create-colleague-input" aria-label="选择项目指令模板" value={templateId ?? "custom"} onChange={e => applyTemplate(e.target.value)}>{TEMPLATE_OPTIONS.map(t => <option value={t.id} key={t.id}>{t.title}</option>)}</select>
+              <Select className="create-colleague-input" aria-label="选择项目指令模板" value={templateId ?? "custom"} onChange={e => applyTemplate(e.target.value)}>{TEMPLATE_OPTIONS.map(t => <option value={t.id} key={t.id}>{t.title}</option>)}</Select>
             </div>
             <textarea id="create-project-instructions" className="create-colleague-textarea" value={instructions} onChange={e => setInstructions(e.target.value)} rows={4} placeholder="长期适用的背景、工作规范和输出要求" />
           </div></details>
@@ -733,7 +739,7 @@ function CreateProjectDialog({
           <div className="create-colleague-field">
             <label className="create-colleague-label" htmlFor="create-project-model">默认执行模型</label>
             {models.length > 0 ? (
-              <select
+              <Select
                 id="create-project-model"
                 className="create-colleague-input proj-model-native-select"
                 value={modelId ?? ""}
@@ -742,7 +748,7 @@ function CreateProjectDialog({
                 <option value="">跟随应用默认{defaultModelId ? `（${models.find(m => m.id === defaultModelId)?.label ?? "默认模型"}）` : ""}</option>{models.map((model) => (
                   <option key={model.id} value={model.id}>{modelChoiceLabel(model, models)}</option>
                 ))}
-              </select>
+              </Select>
             ) : (
               <div className="proj-model-empty">
                 <span>尚未配置可用模型，项目可以先创建，但执行前需要完成配置。</span>

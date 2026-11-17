@@ -3399,8 +3399,7 @@
 .coding-context-controls>span{display:inline-flex;align-items:center;border:1px solid var(--echo-border-subtle);background:var(--echo-bg-secondary);color:var(--echo-text-secondary);border-radius:5px;max-width:100%}
 .coding-context-controls button{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 5px;border:0;background:transparent;color:inherit;cursor:pointer}
 .coding-intent-control{position:relative;display:flex;align-items:center;flex:none}
-.coding-intent-control>svg{position:absolute;right:5px;pointer-events:none;color:var(--echo-text-muted)}
-.coding-intent-select{appearance:none;width:68px;height:28px;max-width:80px;min-width:0;padding:0 19px 0 7px;background:transparent;color:var(--echo-text-strong);border:0;border-radius:5px;font:inherit;font-size:.75rem;cursor:pointer}
+.coding-intent-select{--echo-select-padding-end:24px;appearance:none;width:80px;height:28px;max-width:96px;min-width:0;padding:0 24px 0 7px;background:transparent;color:var(--echo-text-strong);border:0;border-radius:5px;font:inherit;font-size:.75rem;cursor:pointer}
 .coding-intent-select:hover{background:var(--echo-bg-hover)}
 .coding-external-recovery {
   flex: 0 1 auto;

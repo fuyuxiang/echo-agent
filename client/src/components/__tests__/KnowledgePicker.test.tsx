@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { KnowledgePicker } from "../KnowledgePicker";
 import { registerKbProvider, resetKbRegistry } from "@/lib/knowledge-base";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
@@ -355,6 +356,7 @@ describe("KnowledgePicker", () => {
   });
 
   it("可把当前任务的组织检索限定到单一授权范围", async () => {
+    const user = userEvent.setup();
     useOrgSessionStore.setState({
       hydrated: true,
       session: {
@@ -378,8 +380,11 @@ describe("KnowledgePicker", () => {
     });
     render(<KnowledgePicker sessionId="session-scope" />);
 
-    fireEvent.click(screen.getByRole("button", { name: "组织知识" }));
-    fireEvent.change(screen.getByLabelText("组织知识范围"), { target: { value: "team-1" } });
+    await user.click(screen.getByRole("button", { name: "组织知识" }));
+    await waitFor(() => expect(screen.getByRole("menuitemcheckbox", { name: /个人知识库/ })).toHaveFocus());
+    const scope = screen.getByRole("combobox", { name: "组织知识范围" });
+    await user.click(scope);
+    await user.click(within(screen.getByRole("listbox", { name: "组织知识范围" })).getByRole("option", { name: "团队 · 产品团队" }));
 
     await waitFor(() => expect(useKnowledgeStore.getState()
       .sessionOrganizationScopeIds["session-scope"]).toEqual(["team-1"]));
@@ -389,6 +394,15 @@ describe("KnowledgePicker", () => {
       ["team-1"],
     );
     expect(screen.getByText("本任务只检索“产品团队”")).toBeInTheDocument();
+    expect(screen.getByRole("menu", { name: "选择知识来源" })).toBeVisible();
+    expect(scope).toHaveFocus();
+    await user.click(scope);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("menu", { name: "选择知识来源" })).toBeVisible();
+    await user.click(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(useKnowledgeStore.getState().sessionOrganizationScopeIds["session-scope"]).toEqual(["team-1"]);
   });
 
   it("已依赖组织知识的任务在登录失效后不会静默降级", () => {

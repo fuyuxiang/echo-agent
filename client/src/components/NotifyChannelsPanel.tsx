@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 /** Everyday notification preferences, with optional external delivery setup. */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, Plus } from "lucide-react";
@@ -368,11 +369,11 @@ export function NotifyChannelsPanel({ onToast, sessionId, onOpenWeixin }: { onTo
             <h4>{editingId ? "编辑渠道" : "添加渠道"}</h4>
             {editingId && <p className="notify-panel__edit-hint">正在编辑“{channels.find((item) => item.id === editingId)?.label}”。Webhook 地址已隐藏；留空表示保持原地址。</p>}
             <div className="notify-panel__add">
-              <label className="notify-panel__field">渠道类型<select className="form-control" autoFocus={!editingId} aria-label="通知渠道类型" value={newKind} disabled={Boolean(editingId) || mutating !== null || loading || Boolean(loadError)} onChange={(e) => setNewKind(e.target.value as ChannelKind)}>
+              <label className="notify-panel__field">渠道类型<Select className="form-control" autoFocus={!editingId} aria-label="通知渠道类型" value={newKind} disabled={Boolean(editingId) || mutating !== null || loading || Boolean(loadError)} onChange={(e) => setNewKind(e.target.value as ChannelKind)}>
                 {ADDABLE_KINDS.map((kind) => (
                   <option key={kind} value={kind}>{KIND_LABELS[kind]}</option>
                 ))}
-              </select></label>
+              </Select></label>
               <label className="notify-panel__field">显示名（可选）<input
                 className="form-control"
                 type="text"

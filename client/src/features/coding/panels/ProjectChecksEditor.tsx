@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useEffect, useRef, useState } from "react";
 import { codingApi } from "../lib/tauri-api";
 import type { VerificationConfig, VerificationKind } from "../lib/types";
@@ -85,7 +86,7 @@ export function ProjectChecksEditor({
           </label>
           <label>
             类型
-            <select
+            <Select
               value={check.kind}
               onChange={(event) =>
                 setConfig((current) => ({
@@ -106,7 +107,7 @@ export function ProjectChecksEditor({
                   {kind}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label>
             命令

@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { Button, IconButton } from "./Button";
 import {
   useCallback,
@@ -301,7 +302,7 @@ function AppActionDialog({
                 <label key={field.name} className="app-dialog__field" htmlFor={inputId}>
                   <span>{field.label}{field.required ? <span aria-hidden="true"> *</span> : null}</span>
                   {field.options ? (
-                    <select {...common}>{field.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+                    <Select {...common}>{field.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</Select>
                   ) : field.multiline ? (
                     <textarea {...common} rows={field.rows ?? 5} />
                   ) : (

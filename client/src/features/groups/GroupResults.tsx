@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useEffect, useMemo, useState } from "react";
 import { FileText } from "lucide-react";
 import { collectSessionArtifacts } from "@/lib/session-artifacts";
@@ -42,7 +43,7 @@ export function GroupResults({ group, requests, requestId, onSelect, onConclusio
     return collectSessionArtifacts(views, group.cwd).filter(file => tools.has(file.toolCallId));
   }, [group.messages, group.works, group.cwd, result?.id]);
   return <div className="group-results">
-    {requests.length > 1 && <label className="group-detail-selector">成果所属任务<select value={result?.id ?? ""} onChange={event => onSelect(event.target.value)}>{[...requests].reverse().map(request => <option key={request.id} value={request.id}>{requestTitle(group, request.id)}</option>)}</select></label>}
+    {requests.length > 1 && <label className="group-detail-selector">成果所属任务<Select value={result?.id ?? ""} onChange={event => onSelect(event.target.value)}>{[...requests].reverse().map(request => <option key={request.id} value={request.id}>{requestTitle(group, request.id)}</option>)}</Select></label>}
     {!result ? <p className="groups-muted">提出任务后，结论和生成的文件会归集在这里。</p> : <>
       <p className="groups-muted">{requestLabels[result.state]}</p>
       <button type="button" className="groups-text-button" onClick={() => open(group.cwd, true)}>打开工作区</button>

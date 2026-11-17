@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ProjectsPanel } from "../ProjectsPanel";
 import { useProjectsStore, type ProjectMeta } from "@/stores/projects-store";
 import { projectAssetsRemoveAll, projectsSave } from "@/lib/agent-client";
+import { useOrgSessionStore } from "@/stores/org-session-store";
+import { teamProjectRequest } from "@/lib/team-project-client";
+
+vi.mock("@/lib/team-project-client", async original => ({
+  ...await original<object>(), teamProjectRequest: vi.fn().mockResolvedValue([]),
+}));
 
 vi.mock("../project-picker", async () => {
   const actual = await vi.importActual<typeof import("../project-picker")>("../project-picker");
@@ -64,6 +71,8 @@ function rect(top: number, bottom: number): DOMRect {
 describe("ProjectsPanel 项目操作菜单", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(teamProjectRequest).mockResolvedValue([]);
+    useOrgSessionStore.setState({ session: null, hydrated: true, boundaryRevision: 0 });
     setViewport(1000, 600);
     useProjectsStore.setState({
       projects: [structuredClone(project)],
@@ -88,6 +97,52 @@ describe("ProjectsPanel 项目操作菜单", () => {
     expect(menu).toHaveStyle({ position: "fixed", zIndex: "var(--echo-layer-popover)" });
     expect(menu).toHaveAttribute("data-placement", "bottom");
     expect(screen.getByRole("menuitem", { name: "删除" })).toBeVisible();
+  });
+
+  it("组织连接失败说明全部列表不完整，仅自己不受打扰，已共享允许重试", async () => {
+    const user = userEvent.setup();
+    const reason = "refresh organization session: error sending request for url (https://org.example/api/v1/auth/refresh)";
+    vi.mocked(teamProjectRequest).mockRejectedValue(new Error(reason));
+    useOrgSessionStore.setState({ session: { loggedIn: true, accountGeneration: 1 }, boundaryRevision: 1 });
+    render(<ProjectsPanel />);
+    await waitFor(() => expect(teamProjectRequest).toHaveBeenCalled());
+    await screen.findByText("暂时无法连接组织服务");
+    expect(screen.getByText(/当前仅显示本机项目/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "打开项目 测试项目" })).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索项目" }), { target: { value: "没有匹配结果" } });
+    await user.click(screen.getByRole("button", { name: "清空搜索" }));
+    expect(screen.getByRole("button", { name: "打开项目 测试项目" })).toBeVisible();
+    const scope = screen.getByRole("combobox", { name: "项目范围" });
+    await user.click(scope);
+    await user.click(within(screen.getByRole("listbox")).getByRole("option", { name: "仅自己" }));
+    expect(screen.queryByText("暂时无法连接组织服务")).toBeNull();
+    await user.click(scope);
+    await user.click(within(screen.getByRole("listbox")).getByRole("option", { name: "已共享" }));
+    await screen.findByText("暂时无法连接组织服务");
+    expect(screen.getByText(reason).closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("共享项目暂时不可用")).toBeInTheDocument();
+    vi.mocked(teamProjectRequest).mockResolvedValue([]);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(screen.queryByText("暂时无法连接组织服务")).toBeNull());
+    fireEvent.change(scope, { target: { value: "private" } });
+    expect(screen.getByRole("button", { name: "打开项目 测试项目" })).toBeVisible();
+  });
+
+  it("共享项目仍在加载或读取失败时，全部视图不会误报还没有项目", async () => {
+    let rejectRequest!: (reason: Error) => void;
+    vi.mocked(teamProjectRequest).mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRequest = reject; }));
+    useProjectsStore.setState({ projects: [] });
+    useOrgSessionStore.setState({ session: { loggedIn: true, accountGeneration: 1 }, boundaryRevision: 1 });
+    render(<ProjectsPanel />);
+    await screen.findByText("正在读取共享项目");
+    expect(screen.queryByText("还没有项目")).toBeNull();
+    rejectRequest(new Error("network disconnected"));
+    await screen.findByText("共享项目暂时不可用");
+    expect(screen.queryByText("还没有项目")).toBeNull();
+    vi.mocked(teamProjectRequest).mockResolvedValue([]);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByText("还没有项目");
+    expect(screen.queryByText("暂时无法连接组织服务")).toBeNull();
   });
 
   it("快速启动确认显示工作目录和锁定的实际权限，再执行开场消息", async () => {

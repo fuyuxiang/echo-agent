@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { PageHeading } from "./PageHeading";
 /**
  * Settings 面板的各个真实分区。
@@ -632,17 +633,17 @@ export function SecuritySettingsPanel() {
           <div className="permission-rule-builder">
             <label className="permission-rule-builder__field">
               <span>处理方式</span>
-              <select className="form-control" value={draft.action} onChange={(e) => { setFeedback(""); setDraft({ ...draft, action: e.target.value }); }} aria-label="规则动作" disabled={loading || saving || Boolean(rulesError)}>
+              <Select className="form-control" value={draft.action} onChange={(e) => { setFeedback(""); setDraft({ ...draft, action: e.target.value }); }} aria-label="规则动作" disabled={loading || saving || Boolean(rulesError)}>
                 <option value="deny">拒绝</option>
                 <option value="ask">询问</option>
                 <option value="allow">允许</option>
-              </select>
+              </Select>
             </label>
             <label className="permission-rule-builder__field">
               <span>工具类型</span>
-              <select className="form-control" value={draft.tool} onChange={(e) => { setFeedback(""); setDraft({ ...draft, tool: e.target.value }); }} aria-label="工具类型" disabled={loading || saving || Boolean(rulesError)}>
+              <Select className="form-control" value={draft.tool} onChange={(e) => { setFeedback(""); setDraft({ ...draft, tool: e.target.value }); }} aria-label="工具类型" disabled={loading || saving || Boolean(rulesError)}>
                 {['bash', 'read', 'edit', 'grep', 'mcp', 'webfetch', 'any'].map((tool) => <option key={tool} value={tool}>{PERMISSION_TOOL_LABELS[tool]}（{tool}）</option>)}
-              </select>
+              </Select>
             </label>
             <label className="permission-rule-builder__field permission-rule-builder__field--pattern">
               <span>匹配范围（可选）</span>

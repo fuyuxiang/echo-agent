@@ -26,6 +26,7 @@ try {
   assert.equal(results.length,4);
   for(const result of results){
     assert.equal(result.checked,true);
+    assert.deepEqual(result.selection,{value:"personal",appearance:"none",popupVisible:true});
     if(active)assert(result.focused.controls.some(c=>c.role==="focus"),"Active native field must expose a measured focus indicator");
     for(const state of ["original","toggled","focused"]){
     assert.deepEqual(result[state].failures,[]);assert.deepEqual(result[state].controlFailures,[]);

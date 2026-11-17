@@ -1,0 +1,76 @@
+/* Single-choice fields share product chrome in macOS, Windows and Linux. */
+:where(select.echo-select) { min-width: 0; max-width: 100%; }
+.echo-select--compact {
+  --echo-select-control-height: 28px;
+  --echo-select-padding: 3px 28px 3px 9px;
+  --echo-select-padding-end: 28px;
+  --echo-select-font-size: .75rem;
+}
+/* Defaults stay below feature layout rules, such as the 48px model field.
+ * Native chrome and arrow clearance are owned separately below. */
+.echo-select:where(:not([multiple]):not([size])) {
+  box-sizing: border-box;
+  min-height: var(--echo-select-control-height, var(--echo-size-control-md));
+  padding: var(--echo-select-padding, 6px 34px 6px 11px);
+  border: 1px solid var(--echo-border-control);
+  border-radius: var(--echo-radius-control);
+  background-color: var(--echo-bg-input);
+  color: var(--echo-text-strong);
+  font: inherit;
+  font-size: var(--echo-select-font-size, var(--echo-control-font-size));
+  line-height: var(--echo-control-line-height);
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: border-color var(--echo-motion-duration-fast), background-color var(--echo-motion-duration-fast);
+}
+/* Feature background shorthands must not erase the one shared indicator. */
+select.echo-select:not([multiple]):not([size]) {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-inline-end: var(--echo-select-padding-end, 34px);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23748095' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--echo-select-indicator-offset, 10px) center;
+}
+select.echo-select:hover:not(:disabled) { border-color: var(--echo-text-weak); }
+select.echo-select[aria-expanded="true"] { border-color: var(--echo-focus-ring); }
+select.echo-select:focus-visible { outline: 2px solid var(--echo-focus-ring); outline-offset: 2px; }
+select.echo-select:disabled { background-color: var(--echo-control-disabled-bg); color: var(--echo-control-disabled-fg); border-color: var(--echo-border-default); cursor: not-allowed; opacity: 1; }
+select.echo-select[aria-invalid="true"] { border-color: var(--echo-status-error); }
+.echo-select-menu {
+  box-sizing: border-box;
+  width: max-content;
+  padding: 5px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: 10px;
+  background: var(--echo-surface-raised);
+  box-shadow: var(--echo-shadow-popover);
+  color: var(--echo-text-strong);
+  font-family: var(--echo-font-family, inherit);
+  font-size: var(--echo-control-font-size);
+  line-height: 1.5;
+  scrollbar-width: thin;
+}
+.echo-select-menu__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.echo-select-menu__option > span { min-width: 0; overflow-wrap: anywhere; }
+.echo-select-menu__option > svg { flex-shrink: 0; color: var(--echo-brand); }
+.echo-select-menu__option[aria-selected="true"] { color: var(--echo-brand); font-weight: 550; }
+.echo-select-menu__option[data-active="true"] { background: var(--echo-bg-hover); }
+.echo-select-menu__option[aria-disabled="true"] { color: var(--echo-control-disabled-fg); cursor: not-allowed; }
+.echo-select-menu__group { padding: 8px 10px 4px; color: var(--echo-text-medium); font-size: .6875rem; }
+.echo-select-menu__empty { padding: 10px; color: var(--echo-text-medium); }
+@media (pointer: coarse) { select.echo-select { --echo-select-control-height: 44px; } }
+@media (prefers-reduced-motion: reduce) { select.echo-select { transition: none; } }
+@media (forced-colors: active) {
+  select.echo-select:not([multiple]):not([size]) { appearance: auto; background-image: none; }
+  .echo-select-menu__option[data-active="true"] { outline: 1px solid Highlight; }
+}

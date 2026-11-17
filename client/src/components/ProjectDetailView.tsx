@@ -23,6 +23,7 @@ import { useSessionsStore } from "@/stores/sessions-store";
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ProjectConnectionNotice } from "./ProjectConnectionNotice";
 import {
   useProjectsStore,
   type ProjectMeta,
@@ -398,7 +399,7 @@ export function ProjectDetailView({
             </nav>
             {sharedId && <div className="project-sync-state"><button type="button" className="pd-btn pd-btn--small" onClick={() => setQuestionsOpen(true)}>问项目</button><span>{workspace.loading ? "同步中…" : workspace.error ? "同步失败" : workspace.snapshot ? "已同步" : "待连接"}</span><button className="pd-btn pd-btn--small" disabled={workspace.loading} onClick={() => void workspace.refresh()}>刷新</button></div>}
           </div>
-          {workspace.error && <p className="project-inline-error" role="alert">{workspace.error}</p>}
+          {sharedId && workspace.error && <ProjectConnectionNotice error={workspace.error} loading={workspace.loading} onRetry={() => void workspace.refresh()} onOpenOrganization={onOpenOrganization} />}
           {workspace.snapshot?.syncWarning && <p className="project-inline-error" role="alert">{workspace.snapshot.syncWarning}</p>}
           {persistError && <p className="project-inline-error" role="alert">保存失败：{persistError}<button className="pd-btn" onClick={() => useProjectsStore.getState().retryPersist()}>重试保存</button></p>}
           <div className="pd-tab-content" id="project-content-panel" role="tabpanel" aria-labelledby={`project-tab-${tab}`}>

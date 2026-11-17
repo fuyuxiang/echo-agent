@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Brain, Check, ChevronDown, ChevronRight, Download, LockKeyhole, Pencil, Search, Trash2 } from "lucide-react";
 import { ActionMenu } from "./ActionMenu";
@@ -157,7 +158,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
   const editor = draft && <form ref={editorRef} className="personal-memory__editor" aria-label="编辑记忆" onSubmit={e => { e.preventDefault(); void save(); }}>
     <label>记忆内容<textarea disabled={locked} className="form-control" required maxLength={4000} rows={4} placeholder="例如：汇报先给结论，再说明依据。" value={draft.input.content} onChange={e => setDraft({ ...draft, input: { ...draft.input, content: e.target.value } })} /></label>
     {draft.cwd !== cwd && <p role="note">此草稿仍保存到原工作区：{draft.cwd ?? "个人记忆"}</p>}
-    {!draft.input.id && draft.cwd && <label>适用范围<select disabled={locked} className="form-control" value={draft.input.scope} onChange={e => setDraft({ ...draft, input: { ...draft.input, scope: e.target.value as PersonalMemoryInput["scope"], kind: e.target.value === "global" ? "user" : "project" } })}><option value="global">个人</option><option value="workspace">当前项目</option></select></label>}
+    {!draft.input.id && draft.cwd && <label>适用范围<Select disabled={locked} className="form-control" value={draft.input.scope} onChange={e => setDraft({ ...draft, input: { ...draft.input, scope: e.target.value as PersonalMemoryInput["scope"], kind: e.target.value === "global" ? "user" : "project" } })}><option value="global">个人</option><option value="workspace">当前项目</option></Select></label>}
     <div className="personal-memory__editor-actions"><Button size="compact" disabled={locked} onClick={() => navigate(view)}>取消</Button><Button type="submit" size="compact" variant="primary" loading={busy} disabled={locked || !draft.input.content.trim()}>保存记忆</Button></div>
   </form>;
   const title = { overview: "记忆", manage: "管理记忆", history: "历史记录", support: "记忆状态与排查", documents: "原有记忆文档" }[view];

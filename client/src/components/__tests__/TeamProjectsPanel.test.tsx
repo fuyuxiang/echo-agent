@@ -25,7 +25,7 @@ describe("team project collaboration", () => {
  it("invites organization members with an explicit role and preserves shared history", async () => {
   render(<TeamProjectsPanel selectedId="p" onSelect={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", { name: /^参与者/ }));
-  const dialog = screen.getByRole("dialog", { name: "项目参与者" });
+  const dialog = await screen.findByRole("dialog", { name: "项目参与者" });
   fireEvent.change(await within(dialog).findByRole("searchbox", { name: "搜索组织成员" }), { target: { value: "new-member" } });
   fireEvent.change(within(dialog).getByRole("combobox", { name: "邀请成员权限" }), { target: { value: "viewer" } });
   fireEvent.click(within(dialog).getByRole("button", { name: "邀请加入项目" }));

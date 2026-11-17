@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useMemo, useState } from "react";
 import type { ToolCallView } from "@/stores/session-store";
 import type { Group, GroupWork } from "./group-client";
@@ -33,7 +34,7 @@ export function GroupWorkList({ group, requestId, onSelect, busy, onControl, onO
     return { byRoot, toolsByWork };
   }, [group.works, group.messages]);
   return <div className="group-work-list">
-    {onSelect && requests.length > 1 && <label className="group-detail-selector">查看任务<select aria-label="查看任务" value={requestId ?? requests[requests.length - 1]?.id} onChange={event => onSelect(event.target.value)}>{[...requests].reverse().map(request => <option key={request.id} value={request.id}>{group.messages.find(message => message.id === request.id)?.text.slice(0, 80) || "协作任务"}</option>)}</select></label>}
+    {onSelect && requests.length > 1 && <label className="group-detail-selector">查看任务<Select aria-label="查看任务" value={requestId ?? requests[requests.length - 1]?.id} onChange={event => onSelect(event.target.value)}>{[...requests].reverse().map(request => <option key={request.id} value={request.id}>{group.messages.find(message => message.id === request.id)?.text.slice(0, 80) || "协作任务"}</option>)}</Select></label>}
     <details className="group-work-records"><summary>用量统计</summary><p className="groups-muted">{group.works.filter(work => !requestId || work.rootId === requestId).reduce((sum, work) => sum + work.tokens, 0).toLocaleString()} Token</p></details>
     {!requests.length && <p className="groups-muted">提出目标后，这里会显示成员的工作与进度。</p>}
     {[...requests].reverse().filter(request => !requestId || request.id === requestId).filter((request,index) => index < visibleRequests || ["working","waiting","summarizing","queued","needs_check"].includes(request.state)).map(request => <div className="group-work-request" key={request.id}>

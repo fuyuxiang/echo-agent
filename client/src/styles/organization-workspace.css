@@ -186,7 +186,6 @@
 .org-resource-select { position:relative; flex:0 1 160px; min-width:125px; }
 .org-resource-select--status { flex-basis:140px; }
 .org-resource-select>select { appearance:none; box-sizing:border-box; width:100%; height:36px; min-width:0; padding:6px 28px 6px 10px; border:1px solid var(--echo-border-control); border-radius:8px; background:var(--echo-bg-primary); color:var(--echo-text-strong); font:inherit; font-size:.8125rem; text-overflow:ellipsis; }
-.org-resource-select>svg { position:absolute; right:9px; top:50%; transform:translateY(-50%); pointer-events:none; color:var(--echo-text-medium); }
 .org-document-breadcrumbs { display:flex; flex:none; flex-wrap:wrap; align-items:center; gap:4px; padding:0 0 12px; min-width:0; }
 .org-document-breadcrumbs>span { display:flex; align-items:center; gap:4px; min-width:0; }
 .org-memory .org-document-breadcrumbs button { min-height:28px; max-width:100%; border:0; padding:3px 6px; background:transparent; color:var(--echo-text-medium); font-size:.8125rem; overflow-wrap:anywhere; text-align:left; }

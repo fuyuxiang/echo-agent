@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 /** Local memory browser/editor backed by the embedded Runtime's canonical storage. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -515,7 +516,7 @@ function MemoryEditor({
         <div className="memory-editor__meta">
           <label>
             范围
-            <select className="form-control"
+            <Select className="form-control"
               value={draft.scope}
               disabled={!draft.isNew || busy}
               onChange={(event) => onChange({ ...draft, scope: event.target.value as EditorState["scope"] })}
@@ -523,7 +524,7 @@ function MemoryEditor({
               <option value="global">全局记忆</option>
               {cwd && <option value="workspace">当前工作区</option>}
               {draft.scope === "session" && <option value="session">会话摘要（只读）</option>}
-            </select>
+            </Select>
           </label>
           <label>
             文件

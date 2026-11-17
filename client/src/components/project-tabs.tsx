@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { findModelChoiceLabel, modelChoiceLabel, modelDisplayName } from "@/lib/model-presentation";
 /**
  * 项目详情页四个 tab 面板 — 对齐目标截图，数据来自本地 store。
@@ -51,7 +52,7 @@ function ProjectModelSelect({
 }) {
   const unavailable = !!configuredModelId && !models.some((model) => model.id === configuredModelId);
   return (
-    <select
+    <Select
       className={`pd-model-select${!modelId ? " pd-model-select--required" : ""}`}
       aria-label={label}
       value={modelId ?? ""}
@@ -67,7 +68,7 @@ function ProjectModelSelect({
       {models.map((model) => (
         <option key={model.id} value={model.id}>{modelChoiceLabel(model, models)}</option>
       ))}
-    </select>
+    </Select>
   );
 }
 
@@ -463,7 +464,7 @@ export function ActivityTab({
           </div>
           <label className="pd-activity-sort">
             <span>排序</span>
-            <select
+            <Select
               aria-label="项目对话排序"
               value={sortMode}
               onChange={(event) => {
@@ -473,7 +474,7 @@ export function ActivityTab({
             >
               <option value="priority">需处理优先</option>
               <option value="recent">最近更新</option>
-            </select>
+            </Select>
           </label>
           <p className="pd-activity-status-hint">
             显示对话最近一轮的 Agent 执行状态，不等同于项目任务进度。
@@ -756,7 +757,7 @@ export function TaskTab({
                 : "打开会话"}
             </button>
           )}
-          <select
+          <Select
             aria-label={`调整任务状态 ${t.title}`}
             value={t.status}
             onChange={(event) => {
@@ -768,7 +769,7 @@ export function TaskTab({
             disabled={running}
           >
             {PLAN_COLUMNS.map((column) => <option key={column.status} value={column.status}>{column.label}</option>)}
-          </select>
+          </Select>
         </div>
         <button
           className="pd-task-item__del"

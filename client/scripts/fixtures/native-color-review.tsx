@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "../../src/components/Button";
+import { Select } from "../../src/components/Select";
 import { ThemeProvider, useTheme, THEME_STORAGE_KEY } from "../../src/components/ThemeProvider";
 import "../../src/styles/index.css";
 
@@ -24,7 +25,7 @@ function NativeColorReview() {
       </div>
       <div style={{display:"grid",gap:16,marginBottom:20}}>
         <input className="form-control" placeholder="输入名称" aria-label="名称" />
-        <select className="form-control" aria-label="工作区"><option>团队共享文档与项目交付工作区</option></select>
+        <Select className="form-control" aria-label="工作区" defaultValue="team"><option value="team">团队共享文档与项目交付工作区</option><option value="personal">个人工作区</option><option value="unavailable" disabled>暂不可用的工作区</option></Select>
         <input className="form-control" aria-label="只读名称" value="已保存的工作区" readOnly />
         <input className="form-control" aria-label="错误名称" defaultValue="需要修正的名称" aria-invalid="true" />
       </div>

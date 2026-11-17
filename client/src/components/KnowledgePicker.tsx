@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAnchoredFloating } from "@/lib/use-anchored-floating";
@@ -314,7 +315,7 @@ export function KnowledgePicker({
           {organizationSelected && organizationAvailable && (
             <label className="knowledge-picker__scope-field">
               <span>组织知识范围</span>
-              <select
+              <Select
                 aria-label="组织知识范围"
                 value={organizationScopeInvalid ? "__invalid__" : organizationScopeIds[0] ?? ""}
                 disabled={syncing}
@@ -330,7 +331,7 @@ export function KnowledgePicker({
                     {scope.kind === "personal" ? "仅自己" : scope.kind === "team" ? "团队" : "全组织"} · {scope.name}
                   </option>
                 ))}
-              </select>
+              </Select>
               <small>
                 {selectedOrganizationScope
                   ? `本任务只检索“${selectedOrganizationScope.name}”`

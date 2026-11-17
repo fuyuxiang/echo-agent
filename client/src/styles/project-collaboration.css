@@ -84,3 +84,11 @@
 .project-material-row { flex-wrap:wrap; }
 .project-material-history { flex-basis:100%; margin-left:36px; font-size:12px; color:var(--echo-text-secondary); }
 .project-material-history > div { display:flex; gap:12px; align-items:center; margin-top:8px; }
+
+.project-connection-notice { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; margin: 0 0 16px; border: 1px solid var(--echo-border-default); border-radius: 10px; background: var(--echo-bg-primary); color: var(--echo-text-medium); font-size: .75rem; line-height: 1.6; }
+.project-connection-notice > svg { flex-shrink: 0; margin-top: 3px; }
+.project-connection-notice__copy { flex: 1; min-width: 0; }
+.project-connection-notice__copy p { margin: 0; color: var(--echo-text-strong); font-weight: 550; }
+.project-connection-notice details { margin-top: 4px; }
+.project-connection-notice summary { width: fit-content; cursor: pointer; }
+.project-connection-notice pre { margin: 6px 0 0; max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .6875rem; }

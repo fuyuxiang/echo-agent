@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import {
   saveAttachmentBlob,
   attachmentThumbnail,
@@ -13,7 +14,6 @@ import {
   ListTodo,
   Terminal,
   Plus,
-  ChevronDown,
   LoaderCircle,
   X,
 } from "lucide-react";
@@ -493,7 +493,8 @@ export function TheiaAgentComposer({
           aria-label="开发任务输入选项"
         >
           <div className="coding-intent-control">
-            <select
+            <Select
+              density="compact"
               className="coding-intent-select"
               aria-label="开发意图"
               value={intent}
@@ -507,8 +508,7 @@ export function TheiaAgentComposer({
               <option value="ask">Ask</option>
               <option value="plan">Plan</option>
               <option value="agent">Agent</option>
-            </select>
-          <ChevronDown size={11} aria-hidden />
+            </Select>
           </div>
           <ModelSelector
             modelId={modelId}

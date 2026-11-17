@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import { agentsList, filesystemPickFiles } from "@/lib/agent-client";
@@ -207,7 +208,7 @@ function TeamProjectsWorkspace({ embedded = false, selectedId, onSelect, onStart
       </section>
       {runs.length > 0 && <section><header><h2>最近执行</h2><button type="button" onClick={() => showRuns()}>查看全部执行记录</button></header><p>{runs.filter(run => run.status === "running").length} 项执行中 · {runs.filter(run => run.status === "completed").length} 项已完成</p></section>}
       <section><header><h2>项目决策</h2>{writable && <button type="button" onClick={proposeDecision} disabled={busy}>记录决策</button>}</header>
-        {admin && <label>确认新决策时替代<select value={replacement} onChange={e => setReplacement(e.target.value)}><option value="">保留现有决策</option>{project.decisions.filter(d => d.status === "active").map(d => <option value={d.id} key={d.id}>{d.content.slice(0, 60)}</option>)}</select></label>}
+        {admin && <label>确认新决策时替代<Select value={replacement} onChange={e => setReplacement(e.target.value)}><option value="">保留现有决策</option>{project.decisions.filter(d => d.status === "active").map(d => <option value={d.id} key={d.id}>{d.content.slice(0, 60)}</option>)}</Select></label>}
         {project.decisions.map(d => <article className="team-project-record" key={d.id}><strong>{({ proposed: "待确认", active: "有效", superseded: "已替代", retired: "已撤销" })[d.status]}</strong><p>{d.content}</p><p>{d.rationale}</p>{admin && d.status === "proposed" && <button disabled={busy} onClick={() => void run(async () => { const old = project.decisions.find(item => item.id === replacement); await mutate("updateDecision", { expectedRevision: d.revision, status: "active", ...(old ? { supersedesId: old.id, supersedesRevision: old.revision } : {}) }, d.id); setReplacement(""); })}>确认决策</button>}{admin && d.status === "active" && <button disabled={busy} onClick={() => void run(() => mutate("updateDecision", { expectedRevision: d.revision, status: "retired" }, d.id))}>撤销决策</button>}</article>)}
       </section>
 
@@ -216,8 +217,8 @@ function TeamProjectsWorkspace({ embedded = false, selectedId, onSelect, onStart
       <header><h2>团队工作项</h2>{writable && <button onClick={addTask} disabled={busy}>新增工作项</button>}</header>
       <p>执行报告会共享给项目成员；本机生成的文件需在“资料与成果”中发布。已有执行可从执行记录打开，继续原任务。</p>
       {writable && <div className="team-project-execution">
-        <label>本次模型<select disabled={busy} value={modelId} onChange={e => { setModelId(e.target.value); setOverrideModel(true); }}><option value="">请选择模型</option>{models.map(m => <option key={m.id} value={m.id}>{m.label ?? m.id}</option>)}</select></label>
-        <label>执行能力<select disabled={busy} value={capability} onChange={e => setCapability(e.target.value)}><option value="">通用助手</option>{experts.map(e => <option key={e.path} value={`expert:${e.path}`}>{e.name}</option>)}{teams.map(t => <option key={t.id} value={`team:${t.id}`}>专家团 · {t.name}</option>)}</select></label>
+        <label>本次模型<Select disabled={busy} value={modelId} onChange={e => { setModelId(e.target.value); setOverrideModel(true); }}><option value="">请选择模型</option>{models.map(m => <option key={m.id} value={m.id}>{m.label ?? m.id}</option>)}</Select></label>
+        <label>执行能力<Select disabled={busy} value={capability} onChange={e => setCapability(e.target.value)}><option value="">通用助手</option>{experts.map(e => <option key={e.path} value={`expert:${e.path}`}>{e.name}</option>)}{teams.map(t => <option key={t.id} value={`team:${t.id}`}>专家团 · {t.name}</option>)}</Select></label>
         {capability && <label className="team-project-checkbox"><input type="checkbox" disabled={busy} checked={overrideModel} onChange={e => setOverrideModel(e.target.checked)} />覆盖所选能力的默认模型</label>}
       </div>}
       {capability && <p className="team-project-muted">未覆盖时优先使用专家的默认模型。专家团成员单独配置的模型会保留。</p>}
@@ -233,18 +234,18 @@ function TeamProjectsWorkspace({ embedded = false, selectedId, onSelect, onStart
           </div>}
           {writable && <div className="team-project-task-actions">
             <button type="button" disabled={busy} onClick={() => editTask(task)}>编辑工作项</button>
-            <label>工作状态<select disabled={busy} value={task.status} onChange={e => {
+            <label>工作状态<Select disabled={busy} value={task.status} onChange={e => {
               const status = e.target.value as TeamTaskStatus;
               if (status === "accepted") requestConfirmation({ title: `验收 ${task.title}？`, description: "请先查看执行记录与成果，确认符合验收要求。执行结束不自动代表验收通过。", confirmLabel: "确认验收", action: () => mutate("updateTask", { expectedRevision: task.revision, status }, task.id) });
               else void run(() => mutate("updateTask", { expectedRevision: task.revision, status }, task.id));
-            }}>{Object.entries(TEAM_TASK_LABELS).map(([key, label]) => <option key={key} value={key} disabled={key === "accepted" && !admin}>{label}</option>)}</select></label>
+            }}>{Object.entries(TEAM_TASK_LABELS).map(([key, label]) => <option key={key} value={key} disabled={key === "accepted" && !admin}>{label}</option>)}</Select></label>
             {task.status !== "accepted" && <button disabled={busy || !modelId || !onStartWork} onClick={() => requestStart(task)}>{task.assigneeId === session.user?.id ? "新建执行" : "接手并执行"}</button>}
           </div>}
         </article>;
       })}
     </section>}
     {tab === "runs" && <section aria-label="项目执行记录">
-      <header><h2>执行记录与成果</h2><label>工作项筛选<select value={runTaskId} onChange={e => setRunTaskId(e.target.value)}><option value="">全部工作项</option>{project.tasks.map(task => <option value={task.id} key={task.id}>{task.title}</option>)}</select></label></header>
+      <header><h2>执行记录与成果</h2><label>工作项筛选<Select value={runTaskId} onChange={e => setRunTaskId(e.target.value)}><option value="">全部工作项</option>{project.tasks.map(task => <option value={task.id} key={task.id}>{task.title}</option>)}</Select></label></header>
       <p>这里展示已共享的公开报告。执行完成后，请结合“资料与成果”的文件进行验收；本机执行可以打开后继续。</p>
       {!runs.some(run => !runTaskId || run.taskId === runTaskId) && <p>暂无执行记录。发起执行后，可在这里查看进展和报告。</p>}
       {runs.filter(run => !runTaskId || run.taskId === runTaskId).map((execution, index) => <article className="team-project-record team-project-run" key={execution.id}>

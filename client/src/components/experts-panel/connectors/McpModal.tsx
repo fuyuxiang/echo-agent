@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { ResourceIcon, ResourceList, ResourceMenu, ResourceRow } from "../../ResourceList";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
@@ -331,7 +332,7 @@ export function McpModal({
                         {server.setup.fields.map((field) => (
                           <label key={field.id}>
                             <span>{field.label}{field.required ? " *" : ""}</span>
-                            <select
+                            <Select
                               value={setupDrafts[server.name]?.[field.id]
                                 ?? server.setupValues[field.id]
                                 ?? field.default
@@ -348,7 +349,7 @@ export function McpModal({
                               {field.options.map((option) => (
                                 <option key={option.value} value={option.value}>{option.label}</option>
                               ))}
-                            </select>
+                            </Select>
                           </label>
                         ))}
                         <button type="button" className="um-btn um-btn--primary"

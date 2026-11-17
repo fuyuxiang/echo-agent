@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { modelDisplayName, modelSourceLabel } from "@/lib/model-presentation";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -294,9 +295,9 @@ export function UsageQuotaPanel() {
       <SettingsDisclosure title="用量提醒与限额" description={config.tokenLimit > 0 ? `${config.period === "daily" ? "每日" : "每月"} ${formatTokens(config.tokenLimit)} Token · ${config.enforcement === "block" ? "达到上限暂停手动发送" : "达到上限提醒"}` : "未设置上限 · 可选的本机手动发送限制"}>
       <div className="quota-panel__section quota-panel__config">
         <div className="quota-panel__config-grid">
-          <label className="quota-panel__config-row"><span>配额周期</span><select className="form-control" value={config.period} onChange={(event) => persistConfig({ ...config, period: event.target.value as Period }, true)}><option value="daily">每日</option><option value="monthly">每月</option></select></label>
+          <label className="quota-panel__config-row"><span>配额周期</span><Select className="form-control" value={config.period} onChange={(event) => persistConfig({ ...config, period: event.target.value as Period }, true)}><option value="daily">每日</option><option value="monthly">每月</option></Select></label>
           <label className="quota-panel__config-row"><span>Token 上限</span><input className="form-control" type="number" min="0" value={config.tokenLimit > 0 ? config.tokenLimit : ""} placeholder="不限" onChange={(event) => persistConfig({ ...config, tokenLimit: Math.max(0, Number.parseInt(event.target.value, 10) || 0) })} /></label>
-          <label className="quota-panel__config-row"><span>达到上限</span><select className="form-control" value={config.enforcement ?? "warn"} onChange={(event) => persistConfig({ ...config, enforcement: event.target.value as "warn" | "block" })}><option value="warn">仅提醒</option><option value="block">暂停手动发送</option></select></label>
+          <label className="quota-panel__config-row"><span>达到上限</span><Select className="form-control" value={config.enforcement ?? "warn"} onChange={(event) => persistConfig({ ...config, enforcement: event.target.value as "warn" | "block" })}><option value="warn">仅提醒</option><option value="block">暂停手动发送</option></Select></label>
         </div>
         <p className="quota-panel__config-note">配额只限制本桌面端的手动发送；自动化和其他客户端仍可继续消耗服务商配额。</p>
       </div>

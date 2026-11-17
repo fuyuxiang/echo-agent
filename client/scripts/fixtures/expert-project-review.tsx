@@ -5,10 +5,12 @@ import "../../src/styles/index.css";
 import { ThemeProvider } from "../../src/components/ThemeProvider";
 import { AssistantsPanel } from "../../src/components/AssistantsPanel";
 import { ProjectsPanel } from "../../src/components/ProjectsPanel";
+import { KnowledgePicker } from "../../src/components/KnowledgePicker";
 import { ModelCatalogContext } from "../../src/lib/model-management";
 import { useProjectsStore, type ProjectMeta } from "../../src/stores/projects-store";
 import { useOrgSessionStore } from "../../src/stores/org-session-store";
 import { useSessionsStore } from "../../src/stores/sessions-store";
+import { useKnowledgeStore } from "../../src/stores/knowledge-store";
 import type { TeamProjectSnapshot } from "../../src/lib/team-project-client";
 
 const params = new URLSearchParams(location.search);
@@ -31,9 +33,9 @@ if(workspaceReview){
  localStorage.setItem("echoagent.task-artifacts.v1",JSON.stringify([{id:"output",path:"/review/workspace/竞品分析报告.md",kind:"edit",title:"Write report",toolCallId:"write-report",status:"completed",verifiedOutput:true,sessionId:"analysis-session",sessionTitle:"竞品分析与产品机会点",cwd:"/review/workspace",updatedAt:Date.now()}]));
 }
 const scheduled:any[]=[];const records:any[]=[];
-let created=false; const calls:unknown[]=[];
+let created=false; let organizationOffline=params.get("organization")==="offline"; const calls:unknown[]=[];
 const callbacks = new Map<number, unknown>();
-Object.assign(window,{reviewCalls:calls,__TAURI_INTERNALS__:{metadata:{currentWindow:{label:"main"},currentWebview:{label:"main"}},transformCallback:(callback:unknown)=>{const id=callbacks.size+1;callbacks.set(id,callback);return id;},unregisterCallback:(id:number)=>callbacks.delete(id),invoke:async(command:string,args:any={})=>{
+Object.assign(window,{reviewCalls:calls,reviewSetOrganizationOffline:(offline:boolean)=>{organizationOffline=offline;},__TAURI_INTERNALS__:{metadata:{currentWindow:{label:"main"},currentWebview:{label:"main"}},transformCallback:(callback:unknown)=>{const id=callbacks.size+1;callbacks.set(id,callback);return id;},unregisterCallback:(id:number)=>callbacks.delete(id),invoke:async(command:string,args:any={})=>{
  calls.push({command,args});
  switch(command){
   case "agents_list":return [expert];
@@ -45,6 +47,7 @@ Object.assign(window,{reviewCalls:calls,__TAURI_INTERNALS__:{metadata:{currentWi
   case "skills_list":return [{name:"writing",displayName:"文档撰写",description:"形成结构化报告与交付文档",enabled:true,scope:"user"},{name:"analysis",path:"/review/skills/analysis",displayName:"数据分析",description:"整理数据、识别趋势并形成建议",enabled:true,scope:"server",capability:{declared:false,state:"instruction_only",ready:true,capabilities:[],checks:[]}},{name:"retired",displayName:"已停用技能",enabled:false,scope:"user"}];
   case "mcp_list":return [{name:"docs",displayName:"组织文档",enabled:true,live:true,status:"ready",tools:[],source:"user"},{name:"repo",displayName:"代码仓库",enabled:true,live:true,status:"ready",tools:[],source:"user"},{name:"mail",displayName:"企业邮箱",enabled:true,authRequired:true,tools:[],source:"user"}];
   case "org_project_request":{
+   if(organizationOffline)throw new Error("refresh organization session: error sending request for url (https://isolated.example/api/v1/auth/refresh)");
    if(params.get("service")==="unsupported")throw new Error("接口不存在");
    if(args.action==="list")return structuredClone(created?[shared,remote]:[remote]);
    if(args.action==="capabilities")return {version:4,memberSearch:true,memberRoles:true,idempotentCreate:true,taskIdentity:true,projectComments:true,decisionRevisions:true};
@@ -73,6 +76,7 @@ Object.assign(window,{reviewCalls:calls,__TAURI_INTERNALS__:{metadata:{currentWi
   case "automations_set_status":{const a=scheduled.find(a=>a.id===args.id);if(a)a.status=args.status;return;}
   case "automations_run":{records.unshift({id:"scheduled-run",automationId:args.id,automationName:"项目周报",status:"running",startedAt:new Date().toISOString(),sessionId:"scheduled-session",cwd:"/review/workspace",archived:false});return "scheduled-run";}
   case "agent_cancel":return;
+  case "agent_set_knowledge_sources":return {personalSelected:args.personal,organizationSelected:args.organization,personalAttached:args.personal,organizationAttached:args.organization};
   case "permission_mode_get":return {permissionMode:"ask",configuredPermissionMode:"ask",locked:false};
   case "plugin:event|listen":return 1;
   case "plugin:event|unlisten":return;
@@ -80,6 +84,11 @@ Object.assign(window,{reviewCalls:calls,__TAURI_INTERNALS__:{metadata:{currentWi
   default:return [];
  }
 }},__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener:()=>{}}});
-useProjectsStore.setState({projects:[project],persistError:null,persisting:false});
+if(params.get("linked")==="1")project.sharedProjects={"review-account":shared.id};
+useProjectsStore.setState({projects:params.has("empty")?[]:[project],persistError:null,persisting:false});
 useOrgSessionStore.setState({hydrated:true,boundaryRevision:1,session:{loggedIn:true,accountId:"review-account",accountGeneration:1,serverUrl:"https://isolated.example",user:{id:"a",username:"owner",displayName:"项目负责人",role:"member",clearance:0}}});
-createRoot(document.getElementById("root")!).render(<ThemeProvider><ModelCatalogContext.Provider value={models}>{params.get("surface")==="expert"?<AssistantsPanel/>:<ProjectsPanel models={models} defaultModelId={models[0].id} onOpenProjectWorkItemSession={(projectId,sessionId,cwd)=>{calls.push({command:"review_open_project_session",args:{projectId,sessionId,cwd}});}} onStartProjectConversation={async(projectId,text,modelId,options)=>{const attachments=await options.prepareAttachments?.();calls.push({command:"review_start_project_task",args:{projectId,text,modelId,attachments,cwd:options.cwd}});const sessionId=`new-session-${Date.now()}`;useProjectsStore.getState().addConversation(projectId,{sessionId,title:text,createdAt:new Date().toISOString(),modelId});useSessionsStore.getState().upsert({sessionId,title:text,cwd:options.cwd??"/review/task",status:"working"});return sessionId;}}/>}</ModelCatalogContext.Provider></ThemeProvider>);
+if(params.get("surface")==="knowledge"){
+ useOrgSessionStore.setState({session:{...useOrgSessionStore.getState().session!,organizationMemoryEnabled:true,bootstrap:{apiVersion:1,user:{id:"a",username:"owner",displayName:"项目负责人",role:"member",clearance:0},scopes:[{id:"team",kind:"team",name:"产品团队"},{id:"org",kind:"org",name:"全公司"}],policy:{},serverTime:Date.now()}}});
+ useKnowledgeStore.setState({sessionSources:{"select-review":["organization"]},sessionOrganizationScopeIds:{"select-review":["team"]}});
+}
+createRoot(document.getElementById("root")!).render(<ThemeProvider><ModelCatalogContext.Provider value={models}>{params.get("surface")==="expert"?<AssistantsPanel/>:params.get("surface")==="knowledge"?<div style={{padding:24}}><KnowledgePicker sessionId="select-review" /></div>:<ProjectsPanel models={models} defaultModelId={models[0].id} onOpenProjectWorkItemSession={(projectId,sessionId,cwd)=>{calls.push({command:"review_open_project_session",args:{projectId,sessionId,cwd}});}} onStartProjectConversation={async(projectId,text,modelId,options)=>{const attachments=await options.prepareAttachments?.();calls.push({command:"review_start_project_task",args:{projectId,text,modelId,attachments,cwd:options.cwd}});const sessionId=`new-session-${Date.now()}`;useProjectsStore.getState().addConversation(projectId,{sessionId,title:text,createdAt:new Date().toISOString(),modelId});useSessionsStore.getState().upsert({sessionId,title:text,cwd:options.cwd??"/review/task",status:"working"});return sessionId;}}/>}</ModelCatalogContext.Provider></ThemeProvider>);

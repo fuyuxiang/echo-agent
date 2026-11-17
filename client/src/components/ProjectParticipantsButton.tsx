@@ -1,3 +1,4 @@
+import { Select } from "@/components/Select";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Users } from "lucide-react";
@@ -91,7 +92,7 @@ function ProjectParticipantsControl({ sharedId, project, onLinked, onOpenOrganiz
               <p className="project-collaboration-hint">仅项目成员可访问已共享的资料、任务与成果。成员使用各自的模型和连接器授权。</p>
               <div aria-label="现有项目参与者">{snapshot.members.map(member => <div className="project-participant-row" key={member.userId}>
                 <div><strong>{member.displayName}</strong><small>@{member.username}{member.userId === snapshot.ownerId ? " · 项目负责人" : ""}{member.status !== "active" ? " · 已停用" : ""}</small></div>
-                {canManage && capabilities?.memberRoles && member.userId !== snapshot.ownerId && member.status === "active" ? <select aria-label={`${member.displayName}的项目权限`} disabled={busy} value={member.role} onChange={event => { void mutate("updateMember", { role: event.target.value, expectedRevision: snapshot.revision }, member.userId); }}>{Object.entries(roles).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select> : <span>{roles[member.role]}</span>}
+                {canManage && capabilities?.memberRoles && member.userId !== snapshot.ownerId && member.status === "active" ? <Select aria-label={`${member.displayName}的项目权限`} disabled={busy} value={member.role} onChange={event => { void mutate("updateMember", { role: event.target.value, expectedRevision: snapshot.revision }, member.userId); }}>{Object.entries(roles).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</Select> : <span>{roles[member.role]}</span>}
                 {canManage && member.userId !== snapshot.ownerId && <button type="button" className="project-participant-remove" disabled={busy} onClick={() => requestConfirmation({ title: `移除 ${member.displayName}？`, description: "移除后，该成员将失去项目访问权限。", confirmLabel: "移除成员", danger: true, action: () => mutate("removeMember", undefined, member.userId) })}>移除</button>}
               </div>)}</div>
               {canManage && <fieldset className="project-participant-invite" disabled={busy}><legend>邀请组织成员</legend>
@@ -100,7 +101,7 @@ function ProjectParticipantsControl({ sharedId, project, onLinked, onOpenOrganiz
                 {!!candidates.length && <div className="project-member-candidates" aria-label="可邀请成员">{candidates.map(person => <button type="button" key={person.userId} onClick={() => { setCandidate(person); setQuery(person.displayName); setCandidates([]); }}><strong>{person.displayName}</strong><small>@{person.username}</small></button>)}</div>}
                 {capabilities?.memberSearch && query.trim().length >= 2 && !candidate && !searching && !searchError && !candidates.length && <p>没有匹配的可邀请成员；仅显示尚未加入项目的有效组织成员。</p>}
                 {candidate && <p className="project-collaboration-hint">已选择：{candidate.displayName}（@{candidate.username}）</p>}
-                <label>项目权限<select aria-label="邀请成员权限" value={role} onChange={event => setRole(event.target.value as ProjectRole)}>{Object.entries(roles).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label>项目权限<Select aria-label="邀请成员权限" value={role} onChange={event => setRole(event.target.value as ProjectRole)}>{Object.entries(roles).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></label>
                 <p className="project-collaboration-hint">邀请后将直接加入项目，可访问已共享的历史内容。</p>
                 <button type="button" className="capability-button capability-button--primary" disabled={!username || loading} onClick={() => void mutate("addMember", { username, role })}>{busy ? "正在更新…" : "邀请加入项目"}</button>
               </fieldset>}
