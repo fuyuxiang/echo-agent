@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TeamProjectsPanel } from "../TeamProjectsPanel";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import type { ProjectAnswer, TeamProjectSnapshot } from "@/lib/team-project-client";
-const api = vi.hoisted(() => ({ teamProjectRequest: vi.fn(), teamProjectUpload: vi.fn(), agentsList: vi.fn(), filesystemPickFiles: vi.fn(), orgFetchDocument: vi.fn(), orgDownloadDocument: vi.fn(), groupTemplates: vi.fn() }));
-vi.mock("@/lib/team-project-client", async original => ({ ...await original<object>(), teamProjectRequest: api.teamProjectRequest, teamProjectUpload: api.teamProjectUpload }));
+const api = vi.hoisted(() => ({ teamProjectRequest: vi.fn(), projectCollaborationCapabilities: vi.fn(), teamProjectUpload: vi.fn(), agentsList: vi.fn(), filesystemPickFiles: vi.fn(), orgFetchDocument: vi.fn(), orgDownloadDocument: vi.fn(), groupTemplates: vi.fn() }));
+vi.mock("@/lib/team-project-client", async original => ({ ...await original<object>(), teamProjectRequest: api.teamProjectRequest, teamProjectUpload: api.teamProjectUpload, projectCollaborationCapabilities: api.projectCollaborationCapabilities }));
 vi.mock("@/lib/agent-client", () => ({ agentsList: api.agentsList, filesystemPickFiles: api.filesystemPickFiles }));
 vi.mock("@/lib/org-client", () => ({ orgSession: vi.fn(), orgFetchDocument: api.orgFetchDocument, orgDownloadDocument: api.orgDownloadDocument }));
 vi.mock("@/features/groups/group-client", () => ({ groupTemplates: api.groupTemplates }));
@@ -16,6 +16,7 @@ const snapshot: TeamProjectSnapshot = { id: "p", name: "接口项目", goal: "�
 const answer: ProjectAnswer = { answer: "接口联调待验收 [cit-1]", verification: "extractive_fallback", insufficient: true, projectRevision: 3, updatedAt: 1700000000000, gaps: ["资料还在处理"], citations: [{ id: "cit-1", title: "接口规范", quote: "联调待验收", resourceId: "file", kind: "md", openUrl: "/api/v1/docs/file" }] };
 beforeEach(() => {
  vi.resetAllMocks();
+ api.projectCollaborationCapabilities.mockResolvedValue({ version: 1, memberSearch: false, memberRoles: false, idempotentCreate: false });
  useOrgSessionStore.setState({ session: { loggedIn: true, accountGeneration: 7, user: { id: "c", username: "c", displayName: "C", role: "member", clearance: 0 } }, hydrated: true, boundaryRevision: 1 });
  api.agentsList.mockResolvedValue([]); api.groupTemplates.mockResolvedValue([]); api.filesystemPickFiles.mockResolvedValue(["/input/report.md"]);
  api.teamProjectRequest.mockImplementation(async action => action === "ask" ? answer : action === "list" ? [snapshot] : snapshot);
@@ -23,11 +24,11 @@ beforeEach(() => {
 describe("team project collaboration", () => {
  it("invites organization members with an explicit role and preserves shared history", async () => {
   render(<TeamProjectsPanel selectedId="p" onSelect={vi.fn()} />);
-  fireEvent.click(await screen.findByRole("button", { name: "邀请成员" }));
-  const dialog = screen.getByRole("dialog");
-  fireEvent.change(within(dialog).getByLabelText(/组织用户名/), { target: { value: "new-member" } });
-  fireEvent.change(within(dialog).getByLabelText(/项目权限/), { target: { value: "viewer" } });
-  fireEvent.click(within(dialog).getByRole("button", { name: "邀请成员" }));
+  fireEvent.click(await screen.findByRole("button", { name: /^参与者/ }));
+  const dialog = screen.getByRole("dialog", { name: "项目参与者" });
+  fireEvent.change(await within(dialog).findByRole("searchbox", { name: "搜索组织成员" }), { target: { value: "new-member" } });
+  fireEvent.change(within(dialog).getByRole("combobox", { name: "邀请成员权限" }), { target: { value: "viewer" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "邀请加入项目" }));
   await waitFor(() => expect(api.teamProjectRequest).toHaveBeenCalledWith("addMember", "p", { username: "new-member", role: "viewer" }, undefined, expect.objectContaining({ assertCurrent: expect.any(Function) })));
  });
  it("offers a sourced newcomer briefing and reauthorizes opening original evidence", async () => {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ProjectsPanel } from "../ProjectsPanel";
 import { useProjectsStore, type ProjectMeta } from "@/stores/projects-store";
-import { projectAssetsRemoveAll } from "@/lib/agent-client";
+import { projectAssetsRemoveAll, projectsSave } from "@/lib/agent-client";
 
 vi.mock("../project-picker", async () => {
   const actual = await vi.importActual<typeof import("../project-picker")>("../project-picker");
@@ -182,26 +182,40 @@ describe("ProjectsPanel 项目操作菜单", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
-  it("项目模板通过 portal 展开，Escape 只关闭菜单，草稿关闭可继续编辑", async () => {
+  it("模板按需展开，替换自定义指令前确认，关闭草稿可以继续编辑", async () => {
     render(<ProjectsPanel />);
     fireEvent.click(screen.getByRole("button", { name: "新建项目" }));
     const dialog = screen.getByRole("dialog", { name: "新建项目" });
     const input = within(dialog).getByPlaceholderText("请输入项目名称");
     fireEvent.change(input, { target: { value: "项目草稿" } });
-    const trigger = within(dialog).getByRole("button", { name: "选择模板" });
-    fireEvent.click(trigger);
-    const menu = screen.getByRole("menu", { name: "项目模板" });
-    expect(dialog.contains(menu)).toBe(false);
-    expect(within(menu).getByRole("menuitemradio", { name: "自定义" })).toHaveFocus();
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "项目模板" })).toBeNull();
-    expect(trigger).toHaveFocus();
-    expect(dialog).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByText("项目指令与模板"));
+    const instructions = within(dialog).getByPlaceholderText("长期适用的背景、工作规范和输出要求");
+    fireEvent.change(instructions, { target: { value: "保留自定义规范" } });
+    const templates = within(dialog).getByRole("combobox", { name: "选择项目指令模板" }) as HTMLSelectElement;
+    fireEvent.change(templates, { target: { value: templates.options[1].value } });
+    const replace = screen.getByRole("dialog", { name: "替换现有项目配置？" });
+    fireEvent.click(within(replace).getByRole("button", { name: "取消" }));
+    expect(instructions).toHaveValue("保留自定义规范");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.getByRole("alertdialog", { name: "舍弃未保存的修改？" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
     expect(input).toHaveValue("项目草稿");
     expect(dialog).toBeInTheDocument();
+  });
+
+  it("保存失败后保留同一项目身份，重试成功后才进入项目", async () => {
+    vi.mocked(projectsSave).mockRejectedValueOnce(new Error("磁盘暂不可用"));
+    render(<ProjectsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "新建项目" }));
+    const dialog = screen.getByRole("dialog", { name: "新建项目" });
+    fireEvent.change(within(dialog).getByPlaceholderText("请输入项目名称"), { target: { value: "重试项目" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建项目" }));
+    await screen.findByText(/保存项目失败/);
+    const id = useProjectsStore.getState().projects.find(p => p.name === "重试项目")!.id;
+    expect(dialog).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "重试保存" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "新建项目" })).toBeNull());
+    expect(useProjectsStore.getState().projects.filter(p => p.name === "重试项目")).toMatchObject([{ id }]);
   });
 
   it("新建项目与内层资源拾取器按层级圈定焦点并逐层 Escape 恢复", async () => {

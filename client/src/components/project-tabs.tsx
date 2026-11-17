@@ -196,7 +196,7 @@ const UNKNOWN_ACTIVITY_STATUS: ActivityStatusMeta = {
   description: "该历史记录创建时尚未保存执行状态，可打开对话查看内容",
 };
 
-function activityStatusMeta(status?: SessionStatus): ActivityStatusMeta {
+export function activityStatusMeta(status?: SessionStatus): ActivityStatusMeta {
   return status ? ACTIVITY_STATUS_META[status] : UNKNOWN_ACTIVITY_STATUS;
 }
 
@@ -635,7 +635,7 @@ export function TaskTab({
       title: "新建任务",
       fields: [{ name: "title", label: "任务标题", required: true, maxLength: 200 }],
       confirmLabel: "创建",
-      action: ({ title }) => addTask(projectId, title.trim()),
+      action: ({ title }) => { addTask(projectId, title.trim()); },
     });
   };
 

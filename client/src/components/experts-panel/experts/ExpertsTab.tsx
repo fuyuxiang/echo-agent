@@ -4,6 +4,7 @@ import { usePendingExpertStore } from "@/stores/pending-expert-store";
 import { AssistantsPanel } from "../../AssistantsPanel";
 
 interface Props {
+  cwd?: string;
   pills: React.ReactNode;
   onGoHome?: () => void;
   onToast?: (message: string) => void;
@@ -12,7 +13,7 @@ interface Props {
 }
 
 /** Local experts are available immediately, including when no external catalog exists. */
-export function ExpertsTab({ pills, onGoHome, onToast, createExpertRequested, onCreateExpertRequestHandled }: Props) {
+export function ExpertsTab({ cwd, pills, onGoHome, onToast, createExpertRequested, onCreateExpertRequestHandled }: Props) {
   const setPendingExpert = usePendingExpertStore((state) => state.set);
   const handleUseLocal = useCallback((a: AgentEntry) => {
     // Extract body from raw.
@@ -43,7 +44,7 @@ export function ExpertsTab({ pills, onGoHome, onToast, createExpertRequested, on
   return (
     <div className="capability-tab">
       {pills && <header className="um-topbar"><div className="um-topbar-left">{pills}</div></header>}
-      <AssistantsPanel embedded onUseAssistant={handleUseLocal} onToast={onToast}
+      <AssistantsPanel cwd={cwd} embedded onUseAssistant={handleUseLocal} onToast={onToast}
         createExpertRequested={createExpertRequested} onCreateExpertRequestHandled={onCreateExpertRequestHandled} />
     </div>
   );

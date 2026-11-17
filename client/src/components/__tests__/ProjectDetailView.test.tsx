@@ -48,6 +48,7 @@ const picker = {
 };
 
 function resetStores(project: ProjectMeta = baseProject) {
+  localStorage.removeItem("echoagent.project-context-hidden");
   useProjectsStore.setState({ projects: [structuredClone(project)], draftPermissions: {} });
   useSessionsStore.setState({ independent: [], drafts: {} });
   usePermissionModeStore.setState(usePermissionModeStore.getInitialState());
@@ -72,10 +73,10 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
       return "s-asset";
     });
     render(<ProjectDetailView project={project} onBack={vi.fn()} onStartConversation={start} models={models} defaultModelId="model-a" picker={picker} />);
-    fireEvent.click(screen.getByRole("button", { name: "项目资料" }));
-    const row = screen.getByRole("row", { name: /A.md/ });
-    fireEvent.click(within(row).getByRole("button", { name: "用于本次任务" }));
-    fireEvent.click(screen.getByRole("button", { name: "动态" }));
+    fireEvent.click(screen.getByRole("tab", { name: "资料与成果" }));
+    const row = within(screen.getByRole("tabpanel")).getByText("A.md", { exact: true }).closest("article")!;
+    fireEvent.click(within(row).getByRole("button", { name: "用于任务" }));
+    fireEvent.click(screen.getByRole("tab", { name: "任务" }));
     const composer = screen.getByPlaceholderText(/Shift\+Enter/).closest(".echo-composer") as HTMLElement;
     expect(within(composer).getByRole("button", { name: "移除本次资料 A.md" })).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText(/Shift\+Enter/), { target: { value: "use chosen evidence" } });
@@ -132,7 +133,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
       fireEvent.click(screen.getByRole("button", { name: new RegExp(`工作目录：${current}`) }));
       fireEvent.click(screen.getByRole("menuitem", { name: "选择文件夹…" }));
     };
-    const input = screen.getByRole("textbox");
+    const input = screen.getByRole("textbox", { name: "输入问题或任务" });
     fireEvent.change(input, { target: { value: "保留这条任务草稿" } });
     chooseFolder("/workspace");
     await screen.findByRole("button", { name: /工作目录：\/missing/ });
@@ -168,7 +169,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     choose();
     fireEvent.click(await screen.findByRole("button", { name: "切换目录" }));
     await screen.findByRole("button", { name: /工作目录：\/other/ });
-    expect(screen.getByRole("textbox")).toHaveValue("请检查 @src/index.ts#start");
+    expect(screen.getByRole("textbox", { name: "输入问题或任务" })).toHaveValue("请检查 @src/index.ts#start");
   });
 
   it.each([true, false])("工作项使用当前所选目录和资料，独立草稿存在时保留设置 %s", async hasSeparateDraft => {
@@ -193,16 +194,16 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "请求批准" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /^本任务免审批/ }));
     fireEvent.click(screen.getByRole("button", { name: "确认开启" }));
-    fireEvent.click(screen.getByRole("button", { name: "工作项" }));
-    const run = screen.getByRole("button", { name: "交给 Agent" });
+    fireEvent.click(screen.getByRole("button", { name: /核对发布/ }));
+    const run = screen.getByRole("button", { name: "开始执行" });
     await waitFor(() => expect(run).toBeEnabled());
-    expect(screen.getByText(/交给 Agent 时使用任务默认权限/)).toHaveTextContent("请求批准");
     fireEvent.click(run);
     await waitFor(() => expect(useProjectsStore.getState().projects[0].tasks[0].sessionId).toBe("work-session"));
     expect(start).toHaveBeenCalledWith("p1", expect.stringContaining("核对发布"), "model-b", expect.objectContaining({
       cwd: "/task", rememberModel: false, requestedPermissionMode: undefined, expectedPermissionMode: "ask",
     }));
-    expect(screen.getByRole("button", { name: "本任务免审批" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回任务列表" }));
+    expect(await screen.findByRole("button", { name: "本任务免审批" })).toBeInTheDocument();
     expect(useProjectsStore.getState().projects[0].defaultModelId).toBe("model-a");
     expect(useSessionsStore.getState().drafts["project-assets:p1"]).toBe(hasSeparateDraft ? '["a"]' : undefined);
     expect(useSessionsStore.getState().drafts["project-workspace:p1"]).toBe(hasSeparateDraft ? "/task" : undefined);
@@ -223,7 +224,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
   it.each([
     baseProject,
     { ...baseProject, instructions: "只在完成时保存", experts: [{ id: "a1", name: "需求分析师" }] },
-  ])("omits the composer summaries and keeps project preferences in the sidebar", project => {
+  ])("shows collapsible project context and keeps explicit preferences in settings", project => {
     resetStores(project);
     render(
       <ProjectDetailView
@@ -238,8 +239,12 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     expect(screen.queryByText("本次任务上下文")).toBeNull();
     expect(screen.queryByText("项目默认偏好：")).toBeNull();
     expect(screen.queryByRole("group", { name: "本次项目资料" })).toBeNull();
-    const preferences = within(screen.getByRole("complementary")).getByText("项目默认偏好");
-    expect(preferences.closest("details")).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "项目上下文" })).toBeVisible();
+    fireEvent.click(screen.getAllByRole("button", { name: "收起项目上下文" })[0]);
+    expect(screen.queryByRole("complementary", { name: "项目上下文" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "项目设置" }));
+    expect(screen.getByText("新任务执行偏好")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /^项目指令/ })).toHaveValue(project.instructions ?? "");
   });
 
   it("在项目输入框下方显示任务执行设置", async () => {
@@ -259,7 +264,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     const permissions = await within(settings).findByRole("button", { name: "请求批准" });
     expect(within(settings).getByRole("button", { name: /工作目录：\/workspace/ })).toBeInTheDocument();
     expect(permissions).toHaveAttribute("aria-haspopup", "menu");
-    const card = screen.getByRole("textbox").closest(".echo-composer");
+    const card = screen.getByRole("textbox", { name: "输入问题或任务" }).closest(".echo-composer");
     expect(card).not.toHaveClass("echo-composer--home");
     expect(card?.nextElementSibling).toBe(settings);
   });
@@ -304,7 +309,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     expect(screen.getByText("请先在「设置 → 模型」配置模型")).toBeInTheDocument();
   });
 
-  it("切换 tab 时 Composer 实例不卸载,草稿保留", async () => {
+  it("切换任务和资料后恢复草稿", async () => {
     resetStores();
     render(
       <ProjectDetailView
@@ -320,11 +325,10 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     fireEvent.change(composer, { target: { value: "草稿 A" } });
     expect(composer).toHaveValue("草稿 A");
 
-    // 切到计划 tab 再切回活动 tab。
-    fireEvent.click(screen.getByRole("button", { name: "工作项" }));
-    expect(composer).toHaveValue("草稿 A");
-    fireEvent.click(screen.getByRole("button", { name: "动态" }));
-    expect(composer).toHaveValue("草稿 A");
+    fireEvent.click(screen.getByRole("tab", { name: "资料与成果" }));
+    expect(screen.queryByPlaceholderText(/Shift\+Enter/)).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "任务" }));
+    expect(screen.getByPlaceholderText(/Shift\+Enter/)).toHaveValue("草稿 A");
   });
 
   it("onStartConversation 接收发送时的目录、权限与附件准备", async () => {

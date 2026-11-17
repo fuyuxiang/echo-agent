@@ -546,6 +546,9 @@ pub async fn desktop_validation_ready(
         if std::env::var("ECHO_DESKTOP_REVIEW_IDE").as_deref() == Ok("1") {
             return crate::native_ide_validation::launch(window).await;
         }
+        if std::env::var("ECHO_DESKTOP_REVIEW_PROJECT").as_deref() == Ok("1") {
+            return crate::native_project_validation::launch(&window);
+        }
         if std::env::var("ECHO_DESKTOP_REVIEW_CORE").as_deref() == Ok("1") {
             return crate::native_core_validation::launch(&window)
                 .inspect_err(|error| tracing::warn!(%error, "Core review launch rejected"));

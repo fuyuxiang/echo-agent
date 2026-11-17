@@ -940,6 +940,8 @@ export interface NotificationEntry {
 }
 
 export interface Automation {
+  /** Local project context resolved again by the native scheduler on each run. */
+  projectId?: string;
   id: string;
   name: string;
   prompt: string;
@@ -1005,6 +1007,7 @@ export interface AutomationSnapshot {
 
 /** Live lifecycle notification emitted by the native automation scheduler. */
 export interface AutomationUpdateEvent {
+  projectId?: string;
   phase: "queued" | "running" | "sessionCreated" | "cleanup" | "finished" | string;
   automationId: string;
   automationName: string;

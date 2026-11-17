@@ -7,7 +7,7 @@ const coding = vi.hoisted(() => ({ bind: vi.fn(async () => {}) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock("@/lib/kb-source-storage", () => ({ hydrateKnowledgeSources: vi.fn(async () => {}) }));
-vi.mock("@/lib/artifact-catalog", () => ({ indexTaskArtifacts: vi.fn() }));
+vi.mock("@/lib/artifact-catalog", async original => ({ ...await original<object>(), indexTaskArtifacts: vi.fn() }));
 vi.mock("@/stores/projects-store", async (original) => ({
   ...await original<object>(), hydrateProjectsFromBackend: vi.fn(async () => {}),
 }));

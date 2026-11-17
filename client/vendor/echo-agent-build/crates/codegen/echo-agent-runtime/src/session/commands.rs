@@ -329,6 +329,8 @@ pub enum SessionCommand {
         responds_to: oneshot::Sender<Result<(), acp::Error>>,
     },
     SetSessionModel {
+        /// Configured catalog identity, distinct from the upstream wire name.
+        model_id: acp::ModelId,
         sampling_config: echo_agent_sampler::SamplerConfig,
         use_concise: bool,
         /// Models declare differing `model_family`s → compact (lossy) at switch end.

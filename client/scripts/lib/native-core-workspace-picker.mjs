@@ -11,7 +11,7 @@ export function confirmNativeCoreWorkspace({ pid, home, cwd }, run = execFileSyn
 
 export function confirmNativeReviewWorkspace({ pid, home, cwd, kind }, run = execFileSync) {
   assert(Number.isSafeInteger(pid) && pid > 1, 'Invalid owned application PID');
-  assert(['core', 'browser', 'controls', 'collaboration', 'extensions', 'knowledge'].includes(kind), 'Unknown fixed native journey');
+  assert(['core', 'browser', 'controls', 'collaboration', 'extensions', 'knowledge', 'project'].includes(kind), 'Unknown fixed native journey');
   assert(new RegExp(`^/private/(?:tmp|var/folders/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/T)/echo-native-review-${kind}-[A-Za-z0-9_-]+$`).test(home), 'Invalid private journey home');
   assert.equal(cwd, `${home}/workspaces/default`, 'Only the fixed private workspace may be selected');
   for (const path of [home, cwd]) {
@@ -33,8 +33,9 @@ export function confirmNativeReviewWorkspace({ pid, home, cwd, kind }, run = exe
     const current = panel();
     if (!current) return {waiting:true};
     p.frontmost = true; delay(.3);
-    if (!p.frontmost() || !current.popUpButtons().some(b => b.value() === 'default'))
-      throw new Error('Owned picker is not at the proposed workspace');
+    const locationControls = current.popUpButtons().map(b => ({role:b.role(),value:String(b.value())}));
+    if (!p.frontmost() || !locationControls.some(b => b.value === 'default'))
+      throw new Error('Owned picker is not at the proposed workspace: '+JSON.stringify({frontmost:p.frontmost(),locationControls}));
     const open = current.buttons().find(b => ['Open','打开','选择'].includes(b.name()) && b.enabled());
     if (!open) throw new Error('Owned picker confirmation unavailable');
     try { open.click(); } catch (error) {

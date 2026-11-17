@@ -1,3 +1,4 @@
+import { unifyProjectTasks, type SharedTaskLink, type SharedAssetLink } from "@/lib/project-tasks";
 import { isRemovedModelId } from "@/lib/retired-models";
 import { create } from "zustand";
 import { projectsLoad, projectsSave, type PermissionMode } from "@/lib/agent-client";
@@ -28,7 +29,25 @@ export interface ProjectConversation {
   pendingProjectContext?: boolean;
 }
 
-export type ProjectTab = "activity" | "task" | "asset";
+export type ProjectTab = "overview" | "activity" | "task" | "asset";
+export const canonicalProjectTab = (tab?: ProjectTab): ProjectTab => tab ?? "overview";
+
+export interface LocalProjectDecision {
+  id: string;
+  content: string;
+  rationale: string;
+  status: "active" | "retired";
+  createdAt: string;
+  updatedAt: string;
+  history?: { content: string; rationale: string; updatedAt: string }[];
+}
+export interface LocalProjectActivity {
+  id: string;
+  content: string;
+  createdAt: string;
+  kind: "comment" | "decision" | "task" | "file" | "settings";
+  resourceId?: string;
+}
 
 interface ProjectDraftPermissionSelection {
   mode: PermissionMode;
@@ -49,6 +68,11 @@ export interface PlanCard {
 }
 
 export interface TaskItem {
+  acceptedAt?: string;
+  createdAt?: string;
+  description?: string;
+  acceptance?: string;
+  sharedTasks?: Record<string, SharedTaskLink>;
   id: string;
   title: string;
   scope: "personal" | "shared";
@@ -62,6 +86,12 @@ export interface TaskItem {
 }
 
 export interface AssetItem {
+  purpose?: "reference" | "output";
+  sourceSessionId?: string;
+  sourcePath?: string;
+  sourceUpdatedAt?: number;
+  sourceToolCallId?: string;
+  sharedAssets?: Record<string, SharedAssetLink>;
   id: string;
   name: string;
   kind: "folder" | "file";
@@ -77,6 +107,10 @@ export interface AssetItem {
 export interface ProjectMeta {
   id: string;
   name: string;
+  description?: string;
+  decisions?: LocalProjectDecision[];
+  activity?: LocalProjectActivity[];
+  automationIds?: string[];
   cwd?: string;
   templateId?: string;
   instructions?: string;
@@ -90,13 +124,15 @@ export interface ProjectMeta {
   /** Read-only migration source; new writes use tasks. */
   plans: PlanCard[];
   legacyPlans?: PlanCard[];
-  schemaVersion?: 2;
+  schemaVersion?: 2 | 3;
   tasks: TaskItem[];
   assets: AssetItem[];
   /** Legacy local participant notes, preserved when saving existing projects. */
   members: string[];
   /** 项目下的真实对话（EchoAgent 会话列表），按创建时间倒序。 */
   conversations: ProjectConversation[];
+  /** Shared workspace IDs partitioned by organization account; local data stays intact. */
+  sharedProjects?: Record<string, string>;
 }
 
 export function projectOwnsSession(project: ProjectMeta, sessionId: string): boolean {
@@ -144,6 +180,10 @@ function normalize(x: unknown): ProjectMeta | null {
   return {
     id: o.id,
     name: o.name,
+    description: typeof o.description === "string" ? o.description : undefined,
+    decisions: Array.isArray(o.decisions) ? o.decisions : [],
+    activity: Array.isArray(o.activity) ? o.activity : [],
+    automationIds: Array.isArray(o.automationIds) ? o.automationIds.filter(id => typeof id === "string") : [],
     cwd: o.cwd,
     templateId: o.templateId,
     instructions: o.instructions,
@@ -154,11 +194,13 @@ function normalize(x: unknown): ProjectMeta | null {
     skills: Array.isArray(o.skills) ? o.skills : [],
     plans: [],
     legacyPlans: o.legacyPlans ?? (Array.isArray(o.plans) && o.plans.length ? o.plans : undefined),
-    schemaVersion: 2,
-    tasks: migrateProjectWorkItems({ tasks: o.tasks ?? [], plans: o.plans ?? [] }).map(clearRemovedModelBinding),
+    schemaVersion: 3,
+    tasks: unifyProjectTasks(migrateProjectWorkItems({ tasks: o.tasks ?? [], plans: o.plans ?? [] }), Array.isArray(o.conversations) ? o.conversations : []).map(clearRemovedModelBinding),
     assets: Array.isArray(o.assets) ? o.assets : [],
     members: Array.isArray(o.members) ? o.members : [],
     conversations: Array.isArray(o.conversations) ? o.conversations.map(clearRemovedModelBinding) : [],
+    sharedProjects: o.sharedProjects && typeof o.sharedProjects === "object" && !Array.isArray(o.sharedProjects)
+      ? Object.fromEntries(Object.entries(o.sharedProjects).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : undefined,
   };
 }
 
@@ -212,7 +254,7 @@ interface ProjectsState {
   projects: ProjectMeta[];
   persisting: boolean;
   persistError: string | null;
-  retryPersist: () => void;
+  retryPersist: () => Promise<void>;
   /** Sidebar → ProjectsPanel communication: when set, the panel auto-opens this project. */
   activeProjectId: string | null;
   focusProjectDraft: boolean;
@@ -224,6 +266,7 @@ interface ProjectsState {
   consumeDraftPermission: (id: string, selection: ProjectDraftPermissionSelection) => void;
   add: (p: {
     name: string;
+    description?: string;
     cwd?: string;
     templateId?: string;
     instructions?: string;
@@ -233,12 +276,19 @@ interface ProjectsState {
     skills?: RefItem[];
   }) => ProjectMeta;
   rename: (id: string, name: string) => void;
+  linkSharedProject: (id: string, account: string, sharedId: string) => Promise<void>;
   remove: (id: string) => void;
   updateConfig: (
     id: string,
-    patch: Partial<Pick<ProjectMeta, "instructions" | "defaultModelId" | "connectors" | "experts" | "skills">>,
+    patch: Partial<Pick<ProjectMeta, "name" | "description" | "cwd" | "templateId" | "instructions" | "defaultModelId" | "connectors" | "experts" | "skills" | "automationIds">>,
   ) => void;
-  addTask: (id: string, title: string, modelId?: string) => void;
+  recordActivity: (id: string, entry: Omit<LocalProjectActivity, "id" | "createdAt"> & { id?: string }) => void;
+  saveDecision: (id: string, decision: Pick<LocalProjectDecision, "content" | "rationale">, decisionId?: string) => void;
+  setDecisionRetired: (id: string, decisionId: string, retired: boolean) => void;
+  addTask: (id: string, title: string, modelId?: string) => string;
+  updateTask: (id: string, taskId: string, patch: Partial<TaskItem>) => void;
+  linkSharedTask: (id: string, taskId: string, account: string, link: SharedTaskLink) => Promise<void>;
+  linkSharedAsset: (id: string, assetId: string, account: string, link: SharedAssetLink) => Promise<void>;
   moveTask: (id: string, taskId: string, status: PlanStatus) => void;
   setTaskModel: (id: string, taskId: string, modelId: string) => void;
   linkTaskSession: (id: string, taskId: string, sessionId: string, modelId: string) => void;
@@ -268,11 +318,12 @@ interface ProjectsState {
 
 export const useProjectsStore = create<ProjectsState>((set, get) => {
   const patch = (id: string, fn: (p: ProjectMeta) => ProjectMeta) => {
-    const next = get().projects.map((p) => (p.id === id ? fn(p) : p));
+    const next = get().projects.map((p) => { if (p.id !== id) return p; const changed = fn(p); return { ...changed, schemaVersion: 3 as const, tasks: unifyProjectTasks(changed.tasks, changed.conversations) }; });
     set({ projects: next });
     persist(next);
   };
   const commitMembership = async (next: ProjectMeta[]): Promise<void> => {
+    next = next.map(project => ({ ...project, schemaVersion: 3, tasks: unifyProjectTasks(project.tasks, project.conversations) }));
     const previous = get().projects;
     set({ projects: next });
     try {
@@ -294,8 +345,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     retryPersist: () => persist(get().projects),
     activeProjectId: null,
     focusProjectDraft: false,
-    activeProjectTab: "activity",
-    setActiveProjectId: (id, focusDraft = false, tab = "activity") =>
+    activeProjectTab: "overview",
+    setActiveProjectId: (id, focusDraft = false, tab = "overview") =>
       set({ activeProjectId: id, focusProjectDraft: focusDraft, activeProjectTab: tab }),
     draftPermissions: {},
     setDraftPermission: (id, mode) =>
@@ -310,6 +361,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       const item: ProjectMeta = {
         id: uid("proj"),
         name: p.name,
+        description: p.description,
         cwd: p.cwd || undefined,
         templateId: p.templateId || undefined,
         instructions: p.instructions || undefined,
@@ -330,6 +382,13 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       return item;
     },
     rename: (id, name) => patch(id, (p) => ({ ...p, name })),
+    linkSharedProject: async (id, account, sharedId) => {
+      const previous = get().projects.find(project => project.id === id);
+      if (!previous) throw new Error("本机项目已删除，无法保存协作关联");
+      if (previous.sharedProjects?.[account] === sharedId) return;
+      patch(id, project => ({ ...project, sharedProjects: { ...project.sharedProjects, [account]: sharedId } }));
+      await flushProjectPersistence();
+    },
     remove: (id) => {
       const next = get().projects.filter((p) => p.id !== id);
       const draftPermissions = { ...get().draftPermissions };
@@ -338,14 +397,30 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       persist(next);
     },
     updateConfig: (id, cfg) => patch(id, (p) => ({ ...p, ...cfg })),
-    addTask: (id, title, modelId) =>
-      patch(id, (p) => ({
-        ...p,
-        tasks: [
-          ...p.tasks,
-          { id: uid("task"), title, scope: "personal", source: "manual", status: "pending", modelId },
-        ],
-      })),
+    recordActivity: (id, entry) => patch(id, p => entry.id && p.activity?.some(e => e.id === entry.id) ? p : ({ ...p, activity: [{ ...entry, id: entry.id ?? uid("event"), createdAt: new Date().toISOString() }, ...(p.activity ?? [])].slice(0, 500) })),
+    saveDecision: (id, input, decisionId) => patch(id, p => {
+      const now = new Date().toISOString();
+      const old = p.decisions?.find(d => d.id === decisionId);
+      const decision: LocalProjectDecision = old
+        ? { ...old, ...input, updatedAt: now, history: [...(old.history ?? []), { content: old.content, rationale: old.rationale, updatedAt: old.updatedAt }] }
+        : { ...input, id: uid("decision"), status: "active", createdAt: now, updatedAt: now };
+      return { ...p, decisions: [decision, ...(p.decisions ?? []).filter(d => d.id !== decision.id)] };
+    }),
+    setDecisionRetired: (id, decisionId, retired) => patch(id, p => ({ ...p, decisions: p.decisions?.map(d => d.id === decisionId ? { ...d, status: retired ? "retired" : "active", updatedAt: new Date().toISOString() } : d) })),
+    addTask: (id, title, modelId) => {
+      const taskId = uid("task");
+      patch(id, p => ({ ...p, tasks: [...p.tasks, { id: taskId, title, scope: "personal", source: "manual", status: "pending", modelId, createdAt: new Date().toISOString() }] }));
+      return taskId;
+    },
+    updateTask: (id, taskId, value) => patch(id, p => ({ ...p, tasks: p.tasks.map(task => task.id === taskId ? { ...task, ...value, id: task.id } : task) })),
+    linkSharedTask: async (id, taskId, account, link) => {
+      patch(id, p => ({ ...p, tasks: p.tasks.map(task => task.id === taskId ? { ...task, sharedTasks: { ...task.sharedTasks, [account]: link } } : task) }));
+      await flushProjectPersistence();
+    },
+    linkSharedAsset: async (id, assetId, account, link) => {
+      patch(id, p => ({ ...p, assets: p.assets.map(asset => asset.id === assetId ? { ...asset, sharedAssets: { ...asset.sharedAssets, [account]: link } } : asset) }));
+      await flushProjectPersistence();
+    },
     moveTask: (id, taskId, status) =>
       patch(id, (p) => ({
         ...p,
@@ -359,10 +434,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     linkTaskSession: (id, taskId, sessionId, modelId) =>
       patch(id, (p) => ({
         ...p,
-        tasks: p.tasks.map((task) => task.id === taskId ? { ...task, sessionId, modelId } : task),
+        tasks: p.tasks.filter(task => task.id === taskId || task.sessionId !== sessionId || task.source !== "conversation").map((task) => task.id === taskId ? { ...task, sessionId, modelId } : task),
       })),
     removeTask: (id, taskId) =>
-      patch(id, (p) => ({ ...p, tasks: p.tasks.filter((t) => t.id !== taskId) })),
+      patch(id, (p) => {
+        const task = p.tasks.find(item => item.id === taskId);
+        const tasks = p.tasks.filter(item => item.id !== taskId);
+        return { ...p, tasks, conversations: task?.sessionId && !tasks.some(item => item.sessionId === task.sessionId) ? p.conversations.filter(item => item.sessionId !== task.sessionId) : p.conversations };
+      }),
     addAsset: (id, a) =>
       patch(id, (p) => ({
         ...p,
@@ -378,6 +457,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             updatedAt: a.updatedAt ?? new Date().toISOString(),
             path: a.path,
             sizeBytes: a.sizeBytes,
+            purpose: a.purpose, sourceSessionId: a.sourceSessionId, sourcePath: a.sourcePath,
+            sourceUpdatedAt: a.sourceUpdatedAt, sourceToolCallId: a.sourceToolCallId,
           },
         ],
       })),
@@ -398,6 +479,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             updatedAt: asset.updatedAt ?? now,
             path: asset.path,
             sizeBytes: asset.sizeBytes,
+            purpose: asset.purpose, sourceSessionId: asset.sourceSessionId, sourcePath: asset.sourcePath,
+            sourceUpdatedAt: asset.sourceUpdatedAt, sourceToolCallId: asset.sourceToolCallId,
           })),
         ],
       }));
@@ -407,12 +490,13 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     addConversation: (id, conv) =>
       patch(id, (p) => ({
         ...p,
-        conversations: [conv, ...p.conversations],
+        conversations: [conv, ...p.conversations.filter(item => item.sessionId !== conv.sessionId)],
       })),
     removeConversation: (id, sessionId) =>
       patch(id, (p) => ({
         ...p,
         conversations: p.conversations.filter((c) => c.sessionId !== sessionId),
+        tasks: p.tasks.filter(task => !(task.source === "conversation" && task.sessionId === sessionId)),
       })),
     moveSessionToProject: async (id, session) => {
       if (!session.sessionId || session.hidden || session.sessionKind === "subagent") {
@@ -480,7 +564,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           delete nextPlan.sessionArchived;
           return nextPlan;
         });
-        const tasks = project.tasks.map((task) => {
+        const tasks = project.tasks.filter(task => !(task.source === "conversation" && task.sessionId === sessionId)).map((task) => {
           if (task.sessionId !== sessionId) return task;
           const nextTask: TaskItem = { ...task };
           delete nextTask.sessionId;
@@ -511,9 +595,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     updateConversationTitle: (id, sessionId, title) =>
       patch(id, (p) => ({
         ...p,
-        conversations: p.conversations.map((c) =>
-          c.sessionId === sessionId ? { ...c, title } : c,
-        ),
+        conversations: p.conversations.map((c) => c.sessionId === sessionId ? { ...c, title } : c),
+        tasks: p.tasks.map(task => task.sessionId === sessionId && task.source === "conversation" ? { ...task, title } : task),
       })),
     setSessionArchived: (sessionId, archived) => {
       let changed = false;
@@ -605,7 +688,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           delete nextPlan.sessionArchived;
           return nextPlan;
         });
-        const tasks = project.tasks.map((task) => {
+        const tasks = project.tasks.filter(task => !(task.source === "conversation" && task.sessionId === sessionId)).map((task) => {
           if (task.sessionId !== sessionId) return task;
           const nextTask: TaskItem = { ...task };
           delete nextTask.sessionId;

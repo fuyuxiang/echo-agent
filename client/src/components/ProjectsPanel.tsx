@@ -1,5 +1,5 @@
-import { TeamProjectsPanel } from "./TeamProjectsPanel";
-import type { OpenTeamExecution, StartTeamWork } from "@/lib/team-project-client";
+import { captureTeamProjectOperation, teamProjectRequest, type TeamProjectSnapshot, type OpenTeamExecution, type StartTeamWork } from "@/lib/team-project-client";
+import { sharedProjectId, useSharedProjectCatalog } from "@/lib/project-sharing";
 import { ResourceIcon, ResourceList, ResourceRow } from "./ResourceList";
 import { modelChoiceLabel } from "@/lib/model-presentation";
 /**
@@ -20,12 +20,13 @@ import {
   type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
-import { AddIcon, MoreDotsIcon, ChevronDownIcon } from "@/foundation/components/Icon/icons";
+import { AddIcon, MoreDotsIcon } from "@/foundation/components/Icon/icons";
 import { Button } from "./Button";
 import { TemplateCard } from "./TemplateCard";
 import { CapabilitySearch, CapabilityEmptyState } from "./experts-panel/shared/CapabilityPage";
 import { ManagementToolbar } from "./PageToolbar";
-import { useProjectsStore, type ProjectMeta, type ProjectTab, type RefItem } from "@/stores/projects-store";
+import { flushProjectPersistence, useProjectsStore, type ProjectMeta, type ProjectTab, type RefItem } from "@/stores/projects-store";
+import { FolderOpen } from "lucide-react";
 import {
   TEMPLATE_OPTIONS,
   getTemplate,
@@ -35,10 +36,9 @@ import {
   type ProjectPickerOptions,
 } from "./project-picker";
 import { ProjectDetailView } from "./ProjectDetailView";
-import { projectAssetsRemoveAll, type PermissionMode, type WorkspaceInfo } from "@/lib/agent-client";
+import { filesystemPickDirectory, projectAssetsRemoveAll, type PermissionMode, type WorkspaceInfo } from "@/lib/agent-client";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { useUnsavedClose } from "@/lib/use-unsaved-close";
-import { useAnchoredFloating } from "@/lib/use-anchored-floating";
 import { useAppDialog } from "./AppDialog";
 import type { ModelOption } from "./ModelSelector";
 import type { SlashCommandInvocation } from "@/lib/slash-commands";
@@ -124,18 +124,19 @@ export function ProjectsPanel({
   const focusProjectDraft = useProjectsStore((s) => s.focusProjectDraft);
   const activeProjectTab = useProjectsStore((s) => s.activeProjectTab);
   const setActiveProjectId = useProjectsStore((s) => s.setActiveProjectId);
-  const [teamId, setTeamId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState("all");
+  const sharedCatalog = useSharedProjectCatalog();
   const [create, setCreate] = useState<CreatePreset | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [initialTab, setInitialTab] = useState<ProjectTab>("activity");
+  const [initialTab, setInitialTab] = useState<ProjectTab>("overview");
   const [draftFocusRequest, setDraftFocusRequest] = useState(0);
   const [deleteTarget, setDeleteTarget] = useState<ProjectMeta | null>(null);
   const [deleting, setDeleting] = useState(false);
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const picker = useProjectPickerOptions(cwd);
   const { requestInput, requestConfirmation, dialog } = useAppDialog(openId);
-  const navigateProject = useCallback((id: string | null, focusDraft = false, tab: ProjectTab = "activity") => {
+  const navigateProject = useCallback((id: string | null, focusDraft = false, tab: ProjectTab = "overview") => {
     onNavigate?.();
     setOpenId(id);
     setInitialTab(tab);
@@ -150,11 +151,27 @@ export function ProjectsPanel({
     }
   }, [activeProjectId, activeProjectTab, focusProjectDraft, setActiveProjectId, navigateProject]);
 
-  const filtered = projects.filter((p) =>
-    p.name.toLowerCase().includes(query.toLowerCase()),
-  );
+  const linkedIds = new Set(projects.map(project => sharedProjectId(project, sharedCatalog.account)).filter(Boolean));
+  const remoteProjects = sharedCatalog.projects.filter(project => !linkedIds.has(project.id));
+  const filteredRemote = remoteProjects.filter(project => scope !== "private" && project.name.toLowerCase().includes(query.toLowerCase()));
+  const filtered = projects.filter(project => project.name.toLowerCase().includes(query.toLowerCase()) && (scope === "all" || (scope === "shared") === !!sharedProjectId(project, sharedCatalog.account)));
+  const totalCount = projects.length + remoteProjects.length;
+  const filteredCount = filtered.length + filteredRemote.length;
 
-  if (teamId) return <TeamProjectsPanel selectedId={teamId} onSelect={setTeamId} onStartWork={onStartTeamWork} onOpenExecution={onOpenTeamExecution} models={models} defaultModelId={defaultModelId} onOpenOrganization={onOpenOrganization} />;
+  const openSharedProject = async (remoteId: string) => {
+    try {
+      const identity = captureTeamProjectOperation();
+      const remote = sharedCatalog.projects.find(project => project.id === remoteId);
+      if (!remote) return;
+      identity.assertCurrent();
+      const store = useProjectsStore.getState();
+      let local = store.projects.find(project => sharedProjectId(project, sharedCatalog.account) === remoteId);
+      if (!local) local = store.add({ name: remote.name });
+      await store.linkSharedProject(local.id, sharedCatalog.account, remoteId);
+      identity.assertCurrent();
+      navigateProject(local.id, false, "overview");
+    } catch (error) { onToast?.(`打开项目失败：${String(error)}`); }
+  };
 
   const openProject = projects.find((p) => p.id === openId) ?? null;
   if (openProject) {
@@ -163,7 +180,9 @@ export function ProjectsPanel({
         <ProjectDetailView
           key={openProject.id}
           project={openProject}
-          onTeamPublished={id => { setOpenId(null); setTeamId(id); }}
+          onTeamPublished={() => { void sharedCatalog.reload(); }}
+          onStartTeamWork={onStartTeamWork}
+          onOpenTeamExecution={onOpenTeamExecution}
           initialTab={initialTab}
           draftFocusRequest={draftFocusRequest}
           workspaces={workspaces}
@@ -203,7 +222,17 @@ export function ProjectsPanel({
           ? "已有同名项目，请使用其他名称。"
           : null;
       },
-      action: ({ name }) => rename(p.id, name.trim()),
+      action: async ({ name }) => {
+        const remoteId = sharedProjectId(p, sharedCatalog.account);
+        if (remoteId) {
+          const identity = captureTeamProjectOperation();
+          const snapshot = await teamProjectRequest<TeamProjectSnapshot>("snapshot", remoteId, undefined, undefined, identity);
+          await teamProjectRequest("update", remoteId, { name: name.trim(), goal: snapshot.goal, expectedRevision: snapshot.revision }, undefined, identity);
+          identity.assertCurrent();
+        }
+        rename(p.id, name.trim());
+        void sharedCatalog.reload();
+      },
     });
   };
   const handleDelete = async () => {
@@ -242,24 +271,26 @@ export function ProjectsPanel({
           </button>
         </div>
       )}
-      <TeamProjectsPanel selectedId={null} onSelect={setTeamId} onStartWork={onStartTeamWork} onOpenExecution={onOpenTeamExecution} models={models} defaultModelId={defaultModelId} onOpenOrganization={onOpenOrganization} />
+      {(sharedCatalog.loading || sharedCatalog.error) && <div className="project-collaboration-status" role="status"><span>{sharedCatalog.loading ? "正在读取共享项目…" : sharedCatalog.error}</span>{sharedCatalog.error && <button type="button" className="expert-capability-link" onClick={() => void sharedCatalog.reload()}>重试</button>}</div>}
       <section className="project-section">
-          <ResourceList collectionKey={projects.length ? "projects" : undefined} className="project-grid" aria-label="我的项目"
+          <ResourceList collectionKey={totalCount ? "projects" : undefined} className="project-grid" aria-label="所有项目"
             toolbarStart={<div className="project-list-tools">
               <div className="project-list-tools__label">
-                <h2 className="project-section__title">我的项目</h2>
-                <span className="resource-collection__count">{filtered.length} 项</span>
+                <h2 className="project-section__title">所有项目</h2>
+                <span className="resource-collection__count">{filteredCount} 项</span>
               </div>
+              <select aria-label="项目范围" className="project-scope-select" value={scope} onChange={event => setScope(event.target.value)}><option value="all">全部项目</option><option value="private">仅自己</option><option value="shared">已共享</option></select>
               <CapabilitySearch value={query} onChange={setQuery} label="搜索项目" />
             </div>}
-            emptyState={filtered.length === 0 ? <CapabilityEmptyState icon={<ProjectGlyph />}
-              title={projects.length === 0 ? "还没有项目" : "没有匹配的项目"}
-              description={projects.length === 0 ? "可以新建项目，也可以从下方模板开始。" : "试试其他项目名称。"}
+            emptyState={filteredCount === 0 ? <CapabilityEmptyState icon={<ProjectGlyph />}
+              title={totalCount === 0 ? "还没有项目" : "没有匹配的项目"}
+              description={totalCount === 0 ? "可以新建项目，也可以从下方模板开始。" : "试试其他项目名称。"}
               onClear={query ? () => setQuery("") : undefined} /> : undefined}>
             {filtered.map((p) => (
               <ProjectCard
                 key={p.id}
                 project={p}
+                shared={!!sharedProjectId(p, sharedCatalog.account)}
                 onEnter={() => navigateProject(p.id)}
                 onStart={onStartProject ? (returnFocus) => requestConfirmation({
                   title: `开始「${p.name}」的项目对话？`,
@@ -279,6 +310,7 @@ export function ProjectsPanel({
                 onDelete={() => setDeleteTarget(p)}
               />
             ))}
+            {filteredRemote.map(project => <ResourceRow className="project-remote-row" key={`shared:${project.id}`}><button type="button" className="project-card2__main resource-row__main" onClick={() => void openSharedProject(project.id)}><ResourceIcon><ProjectGlyph /></ResourceIcon><span className="project-card2__body"><span className="project-card2__name resource-row__title">{project.name}</span><span className="resource-row__description resource-clamp">{project.goal || "集中管理共享工作与成果"}</span><span className="resource-row__meta">已共享 · {project.role === "admin" ? "管理员" : project.role === "viewer" ? "仅查看" : "可编辑"}</span></span></button><div className="resource-row__actions"><button type="button" className="capability-button" onClick={() => void openSharedProject(project.id)} aria-label={`打开项目 ${project.name}`}>进入项目</button></div></ResourceRow>)}
           </ResourceList>
       </section>
 
@@ -369,7 +401,7 @@ function ProjectDeleteDialog({
       >
         <h3 id={titleId} className="atm-confirm-title">确定删除项目「{project.name}」？</h3>
         <p id={descriptionId} className="atm-confirm-content">
-          {assetDetail}{assetDetail ? " " : ""}原始文件和历史会话不会被删除。
+          {assetDetail}{assetDetail ? " " : ""}原始文件和历史会话不会被删除。{project.sharedProjects && Object.keys(project.sharedProjects).length > 0 && " 已共享的项目和成员权限会保留，可从项目列表继续访问。"}
         </p>
         <div className="atm-confirm-actions">
           <button
@@ -400,9 +432,11 @@ function ProjectDeleteDialog({
 // ============================================================
 
 function ProjectCard({
-  project, onEnter, onStart, onRename, onDelete,
+  project,
+  shared = false, onEnter, onStart, onRename, onDelete,
 }: {
   project: ProjectMeta;
+  shared?: boolean;
   onEnter: () => void;
   onStart?: (returnFocus: HTMLButtonElement | null) => void;
   onRename: () => void;
@@ -510,8 +544,8 @@ function ProjectCard({
         <ResourceIcon><ProjectGlyph /></ResourceIcon>
         <span className="project-card2__body">
           <span className="project-card2__name resource-row__title">{project.name}</span>
-          <span className="resource-row__description resource-clamp">{project.instructions || "集中管理任务、资料与交付成果"}</span>
-          <span className="resource-row__meta"><span>{project.tasks.length} 个任务</span><span>{project.assets.length} 份资料</span><span>{project.conversations.length} 个对话</span></span>
+          <span className="resource-row__description resource-clamp">{project.description || project.instructions || "集中管理任务、资料与交付成果"}</span>
+          <span className="resource-row__meta"><span>{shared ? "已共享" : "仅自己"}</span><span>{project.tasks.length} 个任务</span><span>{project.assets.length} 份资料</span></span>
           <span className="project-card2__sub resource-row__meta">{addedLabel(project.createdAt)}</span>
         </span>
       </button>
@@ -601,78 +635,37 @@ function CreateProjectDialog({
   const add = useProjectsStore((s) => s.add);
   const initial = preset.templateId ? getTemplate(preset.templateId) : undefined;
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [directory, setDirectory] = useState(cwd);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const pendingProject = useRef<string>();
+  const { requestConfirmation, dialog: templateDialog } = useAppDialog("create-project-template");
   const [templateId, setTemplateId] = useState<string | undefined>(initial?.id);
   const [instructions, setInstructions] = useState(initial?.instructions ?? "");
   const [connectors, setConnectors] = useState<RefItem[]>(initial?.connectors ?? []);
   const [experts, setExperts] = useState<RefItem[]>(initial?.experts ?? []);
   const [skills, setSkills] = useState<RefItem[]>(initial?.skills ?? []);
-  const [modelId, setModelId] = useState<string | undefined>(() => {
-    if (defaultModelId && models.some((model) => model.id === defaultModelId)) {
-      return defaultModelId;
-    }
-    return models[0]?.id;
-  });
+  const [modelId, setModelId] = useState<string>();
   const [pickerFor, setPickerFor] = useState<null | "connectors" | "experts" | "skills">(null);
-  const [tplOpen, setTplOpen] = useState(false);
-  const tplRef = useRef<HTMLDivElement>(null);
-  const tplTriggerRef = useRef<HTMLButtonElement>(null);
-  const tplMenuRef = useRef<HTMLDivElement>(null);
-  const tplMenuId = `project-template-${useId().replace(/:/g, "")}`;
-  const tplFloating = useAnchoredFloating(tplTriggerRef, tplMenuRef, tplOpen, {
-    preferredPlacement: "bottom", align: "end", width: 208,
-    estimatedHeight: 244, maxHeight: 320, offset: 4,
-    zIndex: "var(--echo-layer-dialog-local)",
-  });
-  const closeTemplate = () => { setTplOpen(false); tplTriggerRef.current?.focus(); };
-  useEffect(() => {
-    if (!tplOpen) return;
-    (tplMenuRef.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]') ?? tplMenuRef.current?.querySelector<HTMLButtonElement>("button"))?.focus();
-    const outside = (event: MouseEvent) => {
-      if (!tplRef.current?.contains(event.target as Node) && !tplMenuRef.current?.contains(event.target as Node)) setTplOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
-        event.preventDefault();
-        closeTemplate();
-      }
-    };
-    document.addEventListener("mousedown", outside);
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("mousedown", outside);
-      document.removeEventListener("keydown", escape);
-    };
-  }, [tplOpen]);
   const initialDraft = useRef(JSON.stringify({ instructions, templateId, connectors, experts, skills }));
   const initialModelId = useRef(modelId);
   const { requestClose, closeDialog } = useUnsavedClose({
-    dirty: Boolean(name) || modelId !== initialModelId.current
+    dirty: Boolean(name || description) || directory !== cwd || modelId !== initialModelId.current
       || JSON.stringify({ instructions, templateId, connectors, experts, skills }) !== initialDraft.current,
+    busy,
     onClose: onCancel,
   });
   const cancel = requestClose;
   const dialogRef = useModalFocus<HTMLDivElement>(true, cancel);
 
-  useEffect(() => {
-    if (modelId && models.some((model) => model.id === modelId)) return;
-    const next = defaultModelId && models.some((model) => model.id === defaultModelId)
-      ? defaultModelId
-      : models[0]?.id;
-    initialModelId.current = next;
-    setModelId(next);
-  }, [defaultModelId, modelId, models]);
-
   const applyTemplate = (id: string) => {
     const t = getTemplate(id);
-    setTemplateId(id);
-    setInstructions(t?.instructions ?? "");
-    setConnectors(t?.connectors ?? []);
-    setExperts(t?.experts ?? []);
-    setSkills(t?.skills ?? []);
-    closeTemplate();
+    const apply = () => { setTemplateId(id); setInstructions(t?.instructions ?? ""); setConnectors(t?.connectors ?? []); setExperts(t?.experts ?? []); setSkills(t?.skills ?? []); };
+    const previous = getTemplate(templateId);
+    if (instructions !== (previous?.instructions ?? "") || connectors.length || experts.length || skills.length) requestConfirmation({ title: "替换现有项目配置？", description: "模板将替换当前指令及能力选择，项目名称、说明和目录保留。", confirmLabel: "使用模板替换", action: apply });
+    else apply();
   };
-
-  const currentTpl = getTemplate(templateId);
 
   const setPicked = (k: typeof pickerFor, items: RefItem[]) => {
     if (k === "connectors") setConnectors(items);
@@ -681,17 +674,19 @@ function CreateProjectDialog({
     setPickerFor(null);
   };
 
-  const submit = () => {
-    if (!name.trim()) return;
-    const saved = add({
-      name: name.trim(),
-      cwd,
-      templateId,
-      instructions: instructions.trim() || undefined,
-      defaultModelId: modelId,
-      connectors, experts, skills,
-    });
-    onConfirm(saved);
+  const submit = async () => {
+    if (!name.trim() || busy) return;
+    setBusy(true); setError("");
+    try {
+      const config = { name: name.trim(), description: description.trim(), cwd: directory, templateId, instructions: instructions.trim() || undefined, defaultModelId: modelId, connectors, experts, skills };
+      if (pendingProject.current) useProjectsStore.getState().updateConfig(pendingProject.current, config);
+      else pendingProject.current = add(config).id;
+      await flushProjectPersistence();
+      const saved = useProjectsStore.getState().projects.find(p => p.id === pendingProject.current);
+      if (!saved) throw new Error("项目已被移除，请重新创建");
+      onConfirm(saved);
+    } catch (e) { setError(`保存项目失败：${String(e).replace(/^Error:\s*/, "")}。输入已保留，可重试保存。`); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -718,13 +713,23 @@ function CreateProjectDialog({
               type="text"
               className="create-colleague-input"
               value={name}
-              maxLength={15}
+              maxLength={120}
               onChange={(e) => setName(e.target.value)}
               placeholder="请输入项目名称"
               data-modal-initial-focus
             />
           </div>
-
+          <div className="create-colleague-field"><label className="create-colleague-label" htmlFor="create-project-description">项目说明 <span className="proj-optional">（可选）</span></label><textarea id="create-project-description" className="create-colleague-textarea" rows={2} style={{ minHeight: 72 }} value={description} maxLength={12000} onChange={e => setDescription(e.target.value)} placeholder="这个项目要解决什么问题、交付什么结果？" /></div>
+          <div className="create-colleague-field"><span className="create-colleague-label">工作目录 <span className="proj-optional">（可选）</span></span><div className="project-settings-choice"><span>{directory ? displayPath(directory) : "为任务分配独立目录"}</span><button type="button" className="pd-btn" disabled={busy} onClick={async () => { setBusy(true); try { const selected = await filesystemPickDirectory(); if (selected) setDirectory(selected); } catch (e) { setError(String(e)); } finally { setBusy(false); } }}><FolderOpen size={14} />选择文件夹</button>{directory && <button type="button" className="pd-btn pd-btn--ghost" disabled={busy} onClick={() => setDirectory(undefined)}>清除</button>}</div></div>
+          <details open={!!initial?.id}><summary>项目指令与模板 <span className="proj-optional">· 可稍后设置</span></summary>
+          <div className="create-colleague-field">
+            <div className="proj-field-head">
+              <label className="create-colleague-label" htmlFor="create-project-instructions">指令</label>
+              <select className="create-colleague-input" aria-label="选择项目指令模板" value={templateId ?? "custom"} onChange={e => applyTemplate(e.target.value)}>{TEMPLATE_OPTIONS.map(t => <option value={t.id} key={t.id}>{t.title}</option>)}</select>
+            </div>
+            <textarea id="create-project-instructions" className="create-colleague-textarea" value={instructions} onChange={e => setInstructions(e.target.value)} rows={4} placeholder="长期适用的背景、工作规范和输出要求" />
+          </div></details>
+          <details><summary>执行偏好 <span className="proj-optional">· 模型、专家、技能、连接器</span></summary>
           <div className="create-colleague-field">
             <label className="create-colleague-label" htmlFor="create-project-model">默认执行模型</label>
             {models.length > 0 ? (
@@ -734,7 +739,7 @@ function CreateProjectDialog({
                 value={modelId ?? ""}
                 onChange={(event) => setModelId(event.target.value || undefined)}
               >
-                {models.map((model) => (
+                <option value="">跟随应用默认{defaultModelId ? `（${models.find(m => m.id === defaultModelId)?.label ?? "默认模型"}）` : ""}</option>{models.map((model) => (
                   <option key={model.id} value={model.id}>{modelChoiceLabel(model, models)}</option>
                 ))}
               </select>
@@ -747,66 +752,26 @@ function CreateProjectDialog({
               </div>
             )}
             <span className="proj-model-field-hint">
-              项目中新建的对话、计划和任务将默认使用此模型，之后可随时调整。
+              新任务使用此偏好，之后可随时调整。
             </span>
-          </div>
-
-          <div className="create-colleague-field">
-            <div className="proj-field-head">
-              <label className="create-colleague-label" htmlFor="create-project-instructions">指令</label>
-              <div className="proj-tpl-select" ref={tplRef}>
-                <button type="button" ref={tplTriggerRef} className="proj-tpl-select__btn" aria-expanded={tplOpen} aria-haspopup="menu" aria-controls={tplMenuId} onKeyDown={(event) => { if (["ArrowDown", "ArrowUp"].includes(event.key) && !event.nativeEvent.isComposing) { event.preventDefault(); setTplOpen(true); } }} onClick={() => setTplOpen((v) => !v)}>
-                  {currentTpl && currentTpl.id !== "custom" ? currentTpl.title : "选择模板"}
-                  <ChevronDownIcon size="sm" />
-                </button>
-                {tplOpen && createPortal(
-                  <div id={tplMenuId} ref={tplMenuRef} className="proj-tpl-select__menu" style={tplFloating.style} role="menu" aria-label="项目模板" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
-                    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-                    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeTemplate(); return; }
-                    const buttons = Array.from(tplMenuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? []);
-                    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-                    const next = event.key === "ArrowDown" ? (index + 1) % buttons.length : event.key === "ArrowUp" ? (index - 1 + buttons.length) % buttons.length : event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : -1;
-                    if (next >= 0) { event.preventDefault(); buttons[next]?.focus(); }
-                  }}>
-                    {TEMPLATE_OPTIONS.map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={t.id === (templateId ?? "custom")}
-                        className={`proj-tpl-select__item${t.id === templateId ? " proj-tpl-select__item--on" : ""}`}
-                        onClick={() => applyTemplate(t.id)}
-                      >
-                        {t.title}
-                      </button>
-                    ))}
-                  </div>, document.body,
-                )}
-              </div>
-            </div>
-            <textarea
-              id="create-project-instructions"
-              className="create-colleague-textarea"
-              value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
-              rows={5}
-              placeholder="填写项目目标、背景、工作规范和交付要求，供项目任务参考"
-            />
           </div>
 
           <ConfigRow label="连接器" items={connectors} onAdd={() => setPickerFor("connectors")} onRemove={(id) => setConnectors((p) => p.filter((x) => x.id !== id))} />
           <ConfigRow label="专家" items={experts} onAdd={() => setPickerFor("experts")} onRemove={(id) => setExperts((p) => p.filter((x) => x.id !== id))} />
           <ConfigRow label="技能" items={skills} onAdd={() => setPickerFor("skills")} onRemove={(id) => setSkills((p) => p.filter((x) => x.id !== id))} />
+          </details>
+          {error && <p role="alert" className="project-inline-error">{error}</p>}
         </div>
 
         <div className="create-colleague-footer create-project-footer">
-          <span className="proj-version-note">切换模板将替换指令及连接器、专家和技能配置。</span>
-          <button className="btn btn--ghost" onClick={cancel}>取消</button>
-          <button className="btn btn--primary" onClick={submit} disabled={!name.trim()}>创建项目</button>
+          <span className="proj-version-note">创建后可添加资料、邀请成员</span>
+          <button className="btn btn--ghost" onClick={cancel} disabled={busy}>取消</button>
+          <button className="btn btn--primary" onClick={() => void submit()} disabled={!name.trim() || busy}>{busy ? "保存中…" : pendingProject.current ? "重试保存" : "创建项目"}</button>
         </div>
       </div>
 
       {closeDialog}
+      {templateDialog}
       {pickerFor && (
         <RefPickerDialog
           title={pickerFor === "connectors" ? "连接器" : pickerFor === "experts" ? "专家" : "技能"}

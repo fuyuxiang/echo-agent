@@ -7,7 +7,7 @@
 .team-projects button, .team-projects select, .team-projects input, .team-projects textarea { font: inherit; color: inherit; border: 1px solid var(--echo-border-default); border-radius: 7px; background: var(--echo-bg-primary); padding: 8px 12px; }
 .team-projects button { cursor: pointer; }.team-projects button:disabled { opacity: .5; cursor: default; }
 .team-projects button[aria-current="page"] { color: var(--echo-text-link); border-color: var(--echo-text-link); }
-.team-projects label, .expert-capabilities label { display: flex; gap: 8px; flex-direction: column; margin: 12px 0; }
+.team-projects label { display: flex; gap: 8px; flex-direction: column; margin: 12px 0; }
 .team-projects textarea { resize: vertical; min-height: 72px; width: 100%; box-sizing: border-box; }
 .team-project-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 12px; }
 .team-project-card { text-align: left; display: flex; flex-direction: column; gap: 12px; }
@@ -17,9 +17,6 @@
 .team-project-citations { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .team-project-member { justify-content: space-between; padding: 8px 0; }
 .team-projects [role="alert"] { color: var(--echo-status-error); }.team-project-answer { line-height: 1.75; }
-.expert-capabilities { min-width: 0; border: 1px solid var(--echo-border-default); border-radius: 8px; padding: 12px; }
-.expert-capabilities input:not([type="checkbox"]), .expert-capabilities textarea, .expert-capabilities select { font: inherit; width: 100%; box-sizing: border-box; color: var(--echo-text-strong); background: var(--echo-bg-primary); border: 1px solid var(--echo-border-default); border-radius: 6px; padding: 8px; }
-.expert-capabilities label:has(input[type="checkbox"]) { flex-direction: row; align-items: center; }
 .team-projects { background: var(--echo-bg-primary); }
 .team-projects header h3 { flex: 1; margin: 0; min-width: 0; }
 .team-projects nav { padding: 8px 0; border-bottom: 1px solid var(--echo-border-default); }

@@ -37,9 +37,12 @@ export function buildProjectPrompt(project: ProjectMeta, userMessage: string): s
     `<system-reminder>`,
     `你正在 EchoAgent 项目「${project.name}」中工作。以下是本会话的项目级契约：`,
   ];
+  if (project.description?.trim()) context.push(`\n[项目目标与背景]\n${project.description.trim()}`);
   if (project.instructions?.trim()) {
     context.push(`\n[项目指令]\n${project.instructions.trim()}`);
   }
+  const decisions = project.decisions?.filter(d => d.status === "active") ?? [];
+  if (decisions.length) context.push(`\n[用户已确认的项目决定]\n${decisions.map(d => `- ${d.content}${d.rationale ? `（依据：${d.rationale}）` : ""}`).join("\n")}`);
   if (project.experts.length > 0) {
     context.push(`\n[项目偏好 Agent]\n${names(project.experts)}\n在适合的任务上优先委派给这些 Agent；执行前仍必须以当前运行时实际可用性为准。`);
   }

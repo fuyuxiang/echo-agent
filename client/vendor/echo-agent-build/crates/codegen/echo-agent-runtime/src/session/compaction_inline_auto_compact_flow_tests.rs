@@ -327,9 +327,12 @@ async fn incident_budget_overflow_is_distinct_from_output_storage_failure() {
             // A file in place of the output directory causes a real storage
             // failure. Compaction must not disguise it as a context overflow.
             let invalid_folder = tempfile::NamedTempFile::new().unwrap();
-            actor.tool_bridge_handle().update_resource(
-                echo_agent_tools::types::resources::SessionFolder(invalid_folder.path().to_path_buf())
-            ).await;
+            actor
+                .tool_bridge_handle()
+                .update_resource(echo_agent_tools::types::resources::SessionFolder(
+                    invalid_folder.path().to_path_buf(),
+                ))
+                .await;
             request.items = vec![ConversationItem::tool_result("call", &"x".repeat(40_000))];
             let error = actor.bound_request(&mut request).await.unwrap_err();
             assert!(matches!(error, RequestBudgetError::Other(_)));
@@ -780,6 +783,53 @@ fn switch_target_config(model: &str, base_url: String) -> echo_agent_sampler::Sa
         ..Default::default()
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn model_switch_preserves_catalog_identity_separately_from_wire_model() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel();
+            let actor =
+                Arc::new(create_test_actor(10_000, 200_000, 85, gateway_tx, persistence_tx).await);
+            let catalog_id = acp::ModelId::new("organization/shared-upstream-model");
+            let actual = actor
+                .handle_set_session_model(
+                    catalog_id.clone(),
+                    switch_target_config("shared-upstream-model", "https://org.example/v1".into()),
+                    false,
+                    false,
+                    false,
+                    true,
+                    85,
+                )
+                .await
+                .unwrap();
+            assert_eq!(actual, catalog_id);
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_sampling_config()
+                    .await
+                    .unwrap()
+                    .model,
+                "shared-upstream-model"
+            );
+            let persisted =
+                std::iter::from_fn(|| persistence_rx.try_recv().ok()).find_map(|message| {
+                    match message {
+                        PersistenceMsg::CurrentModel { model_id, .. } => Some(model_id),
+                        _ => None,
+                    }
+                });
+            assert_eq!(
+                persisted,
+                Some(catalog_id),
+                "restart must resolve the same configured provider"
+            );
+        })
+        .await;
+}
 /// Family switch → compact with the new model over the lossy view: the
 /// request must contain nothing but plain `{role, content}` text messages.
 #[tokio::test(flavor = "current_thread")]
@@ -818,6 +868,7 @@ async fn family_switch_compacts_lossy_with_new_model() {
                 .expect("mock inference server");
             actor
                 .handle_set_session_model(
+                    acp::ModelId::new("new-model"),
                     switch_target_config("new-model", server.url()),
                     false,
                     true,

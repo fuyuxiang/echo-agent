@@ -7,7 +7,7 @@ import { useKnowledgeStore } from "@/stores/knowledge-store";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock("@/lib/kb-source-storage", () => ({ hydrateKnowledgeSources: vi.fn(async () => {}) }));
-vi.mock("@/lib/artifact-catalog", () => ({ indexTaskArtifacts: vi.fn() }));
+vi.mock("@/lib/artifact-catalog", async original => ({ ...await original<object>(), indexTaskArtifacts: vi.fn() }));
 vi.mock("@/stores/projects-store", async (original) => ({
   ...await original<object>(), hydrateProjectsFromBackend: vi.fn(async () => {}),
 }));
@@ -339,7 +339,7 @@ describe("project fork continuation", () => {
     if (pending) expect(client.agentsValidateReferences).toHaveBeenCalledWith("/workspace", []);
     expect(useSessionsStore.getState().independent.find(s => s.sessionId === "fork")?.cwd).toBe("/workspace");
     const saved = useProjectsStore.getState().projects[0];
-    expect(saved.plans).toEqual(before.plans); expect(saved.tasks).toEqual(before.tasks);
+    expect(saved.plans).toEqual(before.plans); expect(saved.tasks).toMatchObject([...before.tasks, {sessionId:"fork",source:"conversation"}]);
     expect(saved.conversations.find((item) => item.sessionId === "source")).toEqual(before.conversations[0]);
   });
 

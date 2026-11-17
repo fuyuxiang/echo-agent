@@ -34,6 +34,7 @@ describe("agentSend attachment contract", () => {
       hydrated: true,
       session: {
         loggedIn: true,
+        accountGeneration: 0,
         organizationMemoryEnabled: true,
         serverUrl: "https://memory.example.com",
         user: {
@@ -290,7 +291,7 @@ describe("agentSend attachment contract", () => {
     ))).toHaveLength(1);
   });
 
-  it("组织范围失效时在调用原生层前阻止发送", async () => {
+  it("组织范围失效且没有原生项目授权时阻止发送", async () => {
     useKnowledgeStore.getState().setSessionSources("session-stale-scope", ["organization"]);
     useKnowledgeStore.getState().setSessionOrganizationScopeIds(
       "session-stale-scope",
@@ -305,7 +306,7 @@ describe("agentSend attachment contract", () => {
       "prompt-stale-scope",
     )).rejects.toThrow("原组织知识范围已失效");
 
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual(["org_project_session_scope"]);
     expect(useKnowledgeStore.getState().turnTraces["session-stale-scope"]["prompt-stale-scope"])
       .toMatchObject({
         organization: {
@@ -313,6 +314,40 @@ describe("agentSend attachment contract", () => {
           message: expect.stringContaining("重新选择知识范围"),
         },
       });
+  });
+
+  it("新项目范围未进入 bootstrap 时使用原生会话绑定核验后发送", async () => {
+    useKnowledgeStore.getState().setSessionSources("new-project-session", ["organization"]);
+    useKnowledgeStore.getState().setSessionOrganizationScopeIds("new-project-session", ["new-project-scope"]);
+    invokeMock.mockImplementation((command) => Promise.resolve(
+      command === "org_project_session_scope" ? "new-project-scope" : command === "agent_set_knowledge_sources"
+        ? {personalSelected:false,organizationSelected:true,personalAttached:false,organizationAttached:true} : undefined,
+    ));
+    await agentSend("new-project-session", "执行新项目任务");
+    expect(invokeMock).toHaveBeenCalledWith("org_project_session_scope", {sessionId:"new-project-session",expectedGeneration:0});
+    expect(invokeMock).toHaveBeenCalledWith("agent_send", expect.objectContaining({sessionId:"new-project-session"}));
+    expect(useOrgSessionStore.getState().session?.bootstrap?.scopes.map(s=>s.id)).toEqual(["team-1"]);
+  });
+
+  it.each(["other-project-scope", null])("原生绑定不能授权其他项目或缺失的范围：%s", async scope => {
+    useKnowledgeStore.getState().setSessionSources("unbound-project", ["organization"]);
+    useKnowledgeStore.getState().setSessionOrganizationScopeIds("unbound-project", ["new-project-scope"]);
+    invokeMock.mockResolvedValue(scope);
+    await expect(agentSend("unbound-project", "执行任务")).rejects.toThrow("原组织知识范围已失效");
+    expect(invokeMock.mock.calls.every(([command]) => command === "org_project_session_scope")).toBe(true);
+  });
+
+  it("原生项目权限核验期间切换账号不会发送消息", async () => {
+    useKnowledgeStore.getState().setSessionSources("switching-project", ["organization"]);
+    useKnowledgeStore.getState().setSessionOrganizationScopeIds("switching-project", ["new-project-scope"]);
+    invokeMock.mockImplementation(async command => {
+      if(command === "org_project_session_scope") {
+        useOrgSessionStore.getState().clearSession();
+        return "new-project-scope";
+      }
+    });
+    await expect(agentSend("switching-project", "执行任务")).rejects.toThrow("组织账号或权限已改变");
+    expect(invokeMock.mock.calls.map(([command])=>command)).toEqual(["org_project_session_scope"]);
   });
 
   it("切换组织账号后不复用旧账号的 Runtime 确认", async () => {

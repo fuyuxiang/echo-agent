@@ -9,11 +9,16 @@ import { useAppDialog } from "./AppDialog";
 import { Markdown } from "./markdown/Markdown";
 import { captureTeamProjectOperation, TEAM_TASK_LABELS, teamProjectRequest, teamProjectUpload, type OpenTeamExecution, type ProjectAnswer, type ProjectCitation, type SharedAsset, type StartTeamWork, type TeamProject, type TeamProjectSnapshot, type TeamTask, type TeamTaskStatus } from "@/lib/team-project-client";
 import "@/styles/team-projects.css";
+import { ProjectParticipantsButton } from "./ProjectParticipantsButton";
 
-interface Props { selectedId: string | null; onSelect: (id: string | null) => void; onStartWork?: StartTeamWork; onOpenExecution?: OpenTeamExecution; models?: ModelOption[]; defaultModelId?: string; onOpenOrganization?: () => void }
+interface Props { embedded?: boolean; selectedId: string | null; onSelect: (id: string | null) => void; onStartWork?: StartTeamWork; onOpenExecution?: OpenTeamExecution; models?: ModelOption[]; defaultModelId?: string; onOpenOrganization?: () => void }
 
 /** Server snapshots stay in memory and are discarded on every account boundary. */
-export function TeamProjectsPanel({ selectedId, onSelect, onStartWork, onOpenExecution, models = [], defaultModelId, onOpenOrganization }: Props) {
+export function TeamProjectsPanel(props: Props) {
+  const boundary = useOrgSessionStore(state => state.boundaryRevision);
+  return <TeamProjectsWorkspace key={`${boundary}:${props.selectedId ?? "list"}`} {...props} />;
+}
+function TeamProjectsWorkspace({ embedded = false, selectedId, onSelect, onStartWork, onOpenExecution, models = [], defaultModelId, onOpenOrganization }: Props) {
   const session = useOrgSessionStore(s => s.session);
   const boundary = useOrgSessionStore(s => s.boundaryRevision);
   const [projects, setProjects] = useState<TeamProject[]>([]);
@@ -147,7 +152,7 @@ export function TeamProjectsPanel({ selectedId, onSelect, onStartWork, onOpenExe
     const value = await teamProjectRequest<TeamProjectSnapshot>("create", undefined, values, undefined, identity);
     identity.assertCurrent(); if (current === generation.current) onSelect(value.id);
   } });
-  const invite = () => requestInput({ title: "邀请组织成员", description: "加入后可访问项目已发布的历史资料、工作项和有效决策。不会共享个人会话或个人账号授权。", fields: [{ name: "username", label: "组织用户名", required: true, maxLength: 120 }, { name: "role", label: "项目权限", defaultValue: "collaborator", required: true, options: [{ value: "collaborator", label: "协作者" }, { value: "viewer", label: "查看者" }, { value: "admin", label: "管理员" }] }], confirmLabel: "邀请成员", validate: values => ["admin", "collaborator", "viewer"].includes(values.role) ? null : "请选择有效项目权限", action: async values => { await mutate("addMember", values); } });
+
   const addTask = () => requestInput({ title: "新增工作项", fields: [{ name: "title", label: "工作项标题", required: true, maxLength: 300 }, { name: "description", label: "工作说明", multiline: true, maxLength: 12000 }, { name: "acceptance", label: "验收要求", multiline: true, maxLength: 4000 }], confirmLabel: "创建", action: async values => { await mutate("createTask", values); } });
   const editTask = (task: TeamTask) => requestInput({ title: "编辑工作项", description: task.status === "accepted" ? "修改工作说明或验收要求后，将重新进入待验收。" : undefined, fields: [
     { name: "title", label: "工作项标题", required: true, defaultValue: task.title, maxLength: 300 },
@@ -188,8 +193,8 @@ export function TeamProjectsPanel({ selectedId, onSelect, onStartWork, onOpenExe
   };
   const showRuns = (taskId = "") => { setRunTaskId(taskId); setTab("runs"); };
   return <section className="team-projects team-projects--detail" aria-label={`团队项目 ${project.name}`}>
-    <header><button type="button" onClick={() => onSelect(null)}>返回项目</button><h1>{project.name}</h1><span>共享版本 {project.revision}</span><button type="button" onClick={() => void run(reload)} disabled={busy}>刷新</button>{admin && <button type="button" onClick={invite} disabled={busy}>邀请成员</button>}</header>
-    <p>最近更新：{new Date(project.updatedAt).toLocaleString()} · 资料保存于组织服务，成员离线后仍可读取。</p>
+    {!embedded && <header><button type="button" onClick={() => onSelect(null)}>返回项目</button><h1>{project.name}</h1><ProjectParticipantsButton sharedId={selectedId} onOpenOrganization={onOpenOrganization} /></header>}
+    <div className="project-collaboration-status"><span>已共享 · 版本 {project.revision} · {new Date(project.updatedAt).toLocaleString()}</span><button type="button" onClick={() => void run(reload)} disabled={busy}>刷新共享内容</button></div>
     {error && <p role="alert">{error}</p>}{project.syncWarning && <p role="alert">{project.syncWarning}</p>}
     <nav aria-label="团队项目页面">{([["overview", "概览"], ["tasks", "工作项"], ["assets", "资料与成果"], ["runs", "执行记录"]] as const).map(([key, label]) => <button type="button" key={key} aria-current={tab === key ? "page" : undefined} onClick={() => setTab(key)}>{label}</button>)}</nav>
     {tab === "overview" && <>
@@ -205,7 +210,7 @@ export function TeamProjectsPanel({ selectedId, onSelect, onStartWork, onOpenExe
         {admin && <label>确认新决策时替代<select value={replacement} onChange={e => setReplacement(e.target.value)}><option value="">保留现有决策</option>{project.decisions.filter(d => d.status === "active").map(d => <option value={d.id} key={d.id}>{d.content.slice(0, 60)}</option>)}</select></label>}
         {project.decisions.map(d => <article className="team-project-record" key={d.id}><strong>{({ proposed: "待确认", active: "有效", superseded: "已替代", retired: "已撤销" })[d.status]}</strong><p>{d.content}</p><p>{d.rationale}</p>{admin && d.status === "proposed" && <button disabled={busy} onClick={() => void run(async () => { const old = project.decisions.find(item => item.id === replacement); await mutate("updateDecision", { expectedRevision: d.revision, status: "active", ...(old ? { supersedesId: old.id, supersedesRevision: old.revision } : {}) }, d.id); setReplacement(""); })}>确认决策</button>}{admin && d.status === "active" && <button disabled={busy} onClick={() => void run(() => mutate("updateDecision", { expectedRevision: d.revision, status: "retired" }, d.id))}>撤销决策</button>}</article>)}
       </section>
-      <section><h2>项目成员</h2>{project.members.map(m => <div className="team-project-member" key={m.userId}><span>{m.displayName} · {m.role === "admin" ? "管理员" : m.role === "collaborator" ? "协作者" : "查看者"}{m.userId === project.ownerId && " · 负责人"}{m.status !== "active" && " · 账号已停用"}</span>{admin && m.userId !== project.ownerId && <button disabled={busy} onClick={() => requestConfirmation({ title: `移除 ${m.displayName}？`, description: "移除后该成员不能继续读取或检索项目资料，也不能继续发起项目工作。", confirmLabel: "移除成员", danger: true, action: () => mutate("removeMember", undefined, m.userId) })}>移除</button>}</div>)}</section>
+
     </>}
     {tab === "tasks" && <section>
       <header><h2>团队工作项</h2>{writable && <button onClick={addTask} disabled={busy}>新增工作项</button>}</header>

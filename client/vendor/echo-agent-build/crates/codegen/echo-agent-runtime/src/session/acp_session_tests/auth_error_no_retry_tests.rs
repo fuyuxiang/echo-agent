@@ -1170,7 +1170,15 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 header_injector: None,
             };
             let _ = actor
-                .handle_set_session_model(cfg, false, false, false, true, 85)
+                .handle_set_session_model(
+                    acp::ModelId::new(cfg.model.clone()),
+                    cfg,
+                    false,
+                    false,
+                    false,
+                    true,
+                    85,
+                )
                 .await;
 
             assert!(
@@ -1267,7 +1275,15 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
                 header_injector: None,
             };
             let _ = actor
-                .handle_set_session_model(cfg, false, false, false, true, 85)
+                .handle_set_session_model(
+                    acp::ModelId::new(cfg.model.clone()),
+                    cfg,
+                    false,
+                    false,
+                    false,
+                    true,
+                    85,
+                )
                 .await;
 
             let creds = actor.chat_state_handle.get_credentials().await;

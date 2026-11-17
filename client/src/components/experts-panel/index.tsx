@@ -28,7 +28,7 @@ export function ExpertsPanel({ cwd, onGoHome, onToast, initialTab = "experts", h
   return (
     <div className={`capabilities-panel${hideNavigation ? " capabilities-panel--embedded" : ""}`}>
       {tab === "experts" && (
-        <ExpertsTab pills={pills} onGoHome={onGoHome} onToast={onToast} createExpertRequested={createExpertRequested} onCreateExpertRequestHandled={onCreateExpertRequestHandled} />
+        <ExpertsTab cwd={cwd} pills={pills} onGoHome={onGoHome} onToast={onToast} createExpertRequested={createExpertRequested} onCreateExpertRequestHandled={onCreateExpertRequestHandled} />
       )}
       {tab === "skills" && <SkillsTab cwd={cwd} pills={pills} onToast={onToast} />}
       {tab === "connectors" && <ConnectorsTab pills={pills} onToast={onToast} />}

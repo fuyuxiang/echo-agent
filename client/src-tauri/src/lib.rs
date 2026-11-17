@@ -58,6 +58,7 @@ mod native_ide_validation;
 mod native_knowledge_validation;
 mod native_lifecycle_validation;
 mod native_memoryauto_validation;
+mod native_project_validation;
 mod native_review_model;
 mod native_review_scope;
 mod notifications;
@@ -1117,6 +1118,7 @@ pub fn run() {
             org::org_project_request,
             org::org_project_upload,
             org::org_bind_project_session,
+            org::org_project_session_scope,
             org::org_list_scopes,
             org::org_submit_document,
             org::org_document_submissions_mine,

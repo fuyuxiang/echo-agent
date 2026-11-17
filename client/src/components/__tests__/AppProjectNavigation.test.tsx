@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock("@/lib/kb-source-storage", () => ({ hydrateKnowledgeSources: vi.fn(async () => {}) }));
-vi.mock("@/lib/artifact-catalog", () => ({ indexTaskArtifacts: vi.fn() }));
+vi.mock("@/lib/artifact-catalog", async original => ({ ...await original<object>(), indexTaskArtifacts: vi.fn() }));
 vi.mock("@/stores/projects-store", async (original) => ({
   ...await original<object>(), hydrateProjectsFromBackend: vi.fn(async () => {}),
 }));
@@ -248,7 +248,7 @@ it("创建对话期间通过项目面包屑返回列表，迟到结果只注册�
   expect(useProjectsStore.getState().projects[0].conversations.some(item => item.sessionId === "breadcrumb-late-task")).toBe(true);
 });
 
-it("项目会话显示可返回的路径，并按打开入口回到工作项或动态", async () => {
+it("项目会话保留返回路径，所有入口返回统一任务", async () => {
   await start();
   const project = useProjectsStore.getState().projects[0];
   act(() => {
@@ -262,8 +262,8 @@ it("项目会话显示可返回的路径，并按打开入口回到工作项或�
     useSessionsStore.getState().setDraft("work-session", "未发送的会话草稿");
   });
   fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
-  fireEvent.click(await screen.findByRole("button", { name: "工作项" }));
-  fireEvent.click(screen.getByRole("button", { name: "打开会话" }));
+  fireEvent.click(await screen.findByRole("button", { name: /验收工作项/ }));
+  fireEvent.click(screen.getByRole("button", { name: "继续任务" }));
   const path = await screen.findByRole("navigation", { name: "项目会话路径" });
   expect(within(path).getByText("已保存的会话标题")).toBeVisible();
   expect(within(path).getByRole("button", { name: "编辑标题" })).toBeInTheDocument();
@@ -275,14 +275,14 @@ it("项目会话显示可返回的路径，并按打开入口回到工作项或�
   fireEvent.click(screen.getByRole("button", { name: "从侧栏打开项目会话" }));
   const reopenedPath = await screen.findByRole("navigation", { name: "项目会话路径" });
   fireEvent.click(within(reopenedPath).getByRole("button", { name: "Project" }));
-  const activity = await screen.findByRole("list", { name: "最近项目对话" });
-  fireEvent.click(within(activity).getByText("已保存的会话标题", { exact: true }));
+  fireEvent.click(await screen.findByRole("button", { name: /验收工作项/ }));
+  fireEvent.click(screen.getByRole("button", { name: "继续任务" }));
   const activityPath = await screen.findByRole("navigation", { name: "项目会话路径" });
   fireEvent.click(within(activityPath).getByRole("button", { name: "项目" }));
   expect(await screen.findByRole("button", { name: "打开项目 Project" })).toBeVisible();
 });
 
-it("从工作项启动的新会话也可以回到工作项", async () => {
+it("从任务详情启动后可以回到统一任务", async () => {
   await start();
   const project = useProjectsStore.getState().projects[0];
   act(() => useProjectsStore.setState({ projects: [{
@@ -290,14 +290,15 @@ it("从工作项启动的新会话也可以回到工作项", async () => {
     tasks: [{ id: "work", title: "生成报告", scope: "personal", source: "manual", status: "pending" }],
   }] }));
   fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
-  fireEvent.click(await screen.findByRole("button", { name: "工作项" }));
-  const run = screen.getByRole("button", { name: "交给 Agent" });
+  fireEvent.click(await screen.findByRole("button", { name: /生成报告/ }));
+  const run = screen.getByRole("button", { name: "开始执行" });
   await waitFor(() => expect(run).toBeEnabled());
   fireEvent.click(run);
   const path = await screen.findByRole("navigation", { name: "项目会话路径" });
   fireEvent.click(within(path).getByRole("button", { name: "Project" }));
   expect(await screen.findByText("生成报告")).toBeVisible();
-  expect(await screen.findByRole("button", { name: "打开会话" })).toBeVisible();
+  fireEvent.click(await screen.findByRole("button", { name: /生成报告/ }));
+  expect(await screen.findByRole("button", { name: "继续任务" })).toBeVisible();
 });
 
 it("等待原项目创建时进入另一项目，仍保留当前项目页面", async () => {

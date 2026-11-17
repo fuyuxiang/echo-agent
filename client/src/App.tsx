@@ -31,7 +31,7 @@ import type { SettingsDirectTarget, SettingsSectionId } from "./components/Setti
 
 import { ChevronLeftIcon } from "./foundation/components/Icon/icons";
 import type { ModelOption } from "./components/ModelSelector";
-import { ModelManagementContext } from "./lib/model-management";
+import { ModelCatalogContext, ModelManagementContext } from "./lib/model-management";
 import {
   isConfiguredModelId,
   resolveConfiguredModelId,
@@ -1159,6 +1159,10 @@ function Shell() {
                 ...(admitNewPrompt || !isControlledSessionStatus(existing?.status) ? { status } : {}),
                 updatedAt: new Date().toISOString(),
               });
+              if (event.projectId && event.phase === "sessionCreated") {
+                const project = useProjectsStore.getState().projects.find(p => p.id === event.projectId);
+                if (project && !projectOwnsSession(project, event.sessionId)) useProjectsStore.getState().addConversation(project.id, { sessionId: event.sessionId, title: `定时：${event.automationName}`, createdAt: new Date().toISOString(), modelId: event.currentModelId });
+              }
               // Launch/transport failures may have no public prompt-complete
               // event. Close only the identified occurrence, keeping a visible
               // terminal bubble instead of leaving an empty live placeholder.
@@ -1592,7 +1596,7 @@ function Shell() {
     showToast(`${label} 即将上线`);
   };
 
-  const handleOpenProject = (projectId: string | null, focusDraft = false, tab: ProjectTab = "activity") => {
+  const handleOpenProject = (projectId: string | null, focusDraft = false, tab: ProjectTab = "overview") => {
     navigateWithGuard("项目", () => useProjectsStore.getState().setActiveProjectId(projectId, focusDraft, tab));
   };
 
@@ -3323,10 +3327,16 @@ function Shell() {
   const handleStartTeamWork: StartTeamWork = async (project, task, requestedModel, capability) => {
     const identity = captureTeamProjectOperation();
     const model = requireExplicitProjectModel(requestedModel);
-    if (!model) throw new Error("执行模型暂不可用，工作项尚未接手，请配置模型后重试");
-    if (!ensureQuotaAllowsSend()) throw new Error("当前配额不足，工作项尚未接手");
+    if (!model) throw new Error("执行模型暂不可用，任务尚未接手，请配置模型后重试");
+    if (!ensureQuotaAllowsSend()) throw new Error("当前配额不足，任务尚未接手");
     const selection = selectionGenerationRef.current;
-    const cwd = await agentPrepareTaskWorkspace(crypto.randomUUID());
+    const localProject = capability?.localProjectId ? useProjectsStore.getState().projects.find(p => p.id === capability.localProjectId) : undefined;
+    if (capability?.localProjectId && !localProject) throw new Error("原项目已删除");
+    const attachments = await capability?.options?.prepareAttachments?.() ?? [];
+    identity.assertCurrent();
+    const permissionMode = capability?.options?.expectedPermissionMode ?? "ask";
+    const cwd = capability?.options?.cwd || await agentPrepareTaskWorkspace(crypto.randomUUID());
+    if (localProject) await agentsValidateReferences(cwd, localProject.experts);
     identity.assertCurrent();
     let claimed = false;
     let claimAttempted = false;
@@ -3339,8 +3349,8 @@ function Shell() {
       identity.assertCurrent();
       claimed = true;
       const current = updated.tasks.find(item => item.id === task.id);
-      if (!current) throw new Error("工作项已不存在，请刷新项目");
-      return `项目：${updated.name}\n工作项：${current.title}\n${current.description}\n验收要求：${current.acceptance || "请与项目负责人确认"}\n请先核对项目最新依据，再执行此工作。执行完成后请说明成果文件和待验收事项。本轮公开输出会作为执行报告共享给项目成员；本机文件需要在项目资料中明确发布。`;
+      if (!current) throw new Error("任务已不存在，请刷新项目");
+      return `项目：${updated.name}\n任务：${current.title}\n${current.description}\n验收要求：${current.acceptance || "请与项目负责人确认"}\n请先核对项目最新依据，再执行此工作。执行完成后请说明成果文件和待验收事项。本轮公开输出会作为执行报告共享给项目成员；本机文件需要在项目资料中明确发布。`;
     };
     try {
       if (capability?.team) {
@@ -3352,7 +3362,7 @@ function Shell() {
         groupId = group.id;
         const prompt = await claim();
         identity.assertCurrent();
-        await groupSend(group.id, { id: crypto.randomUUID(), text: prompt, memberIds: [], discussion: false, attachments: [], replyTo: null });
+        await groupSend(group.id, { id: crypto.randomUUID(), text: prompt, memberIds: [], discussion: false, attachments, replyTo: null });
         identity.assertCurrent();
         if (selectionGenerationRef.current === selection) {
           await useGroupStore.getState().select(group.id); identity.assertCurrent(); handleNavigate("专家团");
@@ -3360,36 +3370,39 @@ function Shell() {
         return group.id;
       }
       const expert = capability?.expert;
-      sessionId = await agentNewSession(cwd, model, "ask", undefined, expert?.path && expert.raw ? { name: expert.name, path: expert.path, raw: expert.raw, ...(capability?.modelOverride ? { modelOverride: capability.modelOverride } : {}) } : undefined);
+      sessionId = await agentNewSession(cwd, model, capability?.options ? capability.options.requestedPermissionMode : "ask", capability?.options?.expectedPermissionMode, expert?.path && expert.raw ? { name: expert.name, path: expert.path, raw: expert.raw, ...(capability?.modelOverride ? { modelOverride: capability.modelOverride } : {}) } : undefined);
       identity.assertCurrent();
       await bindTeamProjectSession(sessionId, project.id, task.id, identity);
       if (expert) await agentSetSessionExpert(sessionId, expert.name, expert.name, "local", undefined, expert.path, expert.raw);
       const actualModel = (await agentSessionInfo(sessionId))?.model || model;
-      const prompt = await claim();
+      const sharedPrompt = await claim();
+      const prompt = localProject ? buildProjectPrompt(localProject, sharedPrompt) : sharedPrompt;
       identity.assertCurrent();
       useKnowledgeStore.getState().setSessionSources(sessionId, ["organization"]);
       useKnowledgeStore.getState().setSessionOrganizationScopeIds(sessionId, [project.scopeId]);
-      sessionsStore.getState().upsert({ sessionId, title: `${project.name} · ${task.title}`, cwd, currentModelId: actualModel, permissionMode: "ask", status: "working" });
+      if (localProject) useProjectsStore.getState().addConversation(localProject.id, { sessionId, title: task.title, createdAt: new Date().toISOString(), modelId: actualModel });
+      sessionsStore.getState().upsert({ sessionId, title: `${project.name} · ${task.title}`, cwd, currentModelId: actualModel, permissionMode, status: "working" });
       if (selectionGenerationRef.current === selection) {
+        if (localProject) setProjectWorkItemSource({ projectId: localProject.id, sessionId });
         sessionsStore.getState().setCurrent(sessionId); sessionStore.getState().setSession(sessionId); setCurrentModelId(actualModel); setPlaceholderView(null);
       }
-      if (!beginAgentTurn({ sessionId, promptText: prompt, displayText: task.title, allowBackgroundSession: true })) throw new Error("执行未能发送，请重新打开执行后重试");
+      if (!beginAgentTurn({ sessionId, promptText: prompt, displayText: task.title, attachments, allowBackgroundSession: true })) throw new Error("执行未能发送，请重新打开执行后重试");
       return sessionId;
     } catch (error) {
       if (!claimed) {
         if (sessionId) await discardUnstartedTask(sessionId, cwd);
         if (groupId) { try { await groupDelete(groupId, false); } catch { /* Keep the local group available for manual cleanup. */ } }
       } else if (sessionId) {
-        sessionsStore.getState().upsert({ sessionId, title: `${project.name} · ${task.title}`, cwd, currentModelId: model, permissionMode: "ask", status: "failed" });
+        sessionsStore.getState().upsert({ sessionId, title: `${project.name} · ${task.title}`, cwd, currentModelId: model, permissionMode, status: "failed" });
       }
-      if (claimed && (sessionId || groupId)) showActionToast("工作项已接手，请检查已有执行后继续", [{ label: "打开已有执行", onClick: () => {
+      if (claimed && (sessionId || groupId)) showActionToast("任务已接手，请检查已有执行后继续", [{ label: "打开已有执行", onClick: () => {
         void (async () => {
           identity.assertCurrent();
           if (groupId) { await useGroupStore.getState().select(groupId); identity.assertCurrent(); handleNavigate("专家团"); }
           else if (sessionId) await handleSelectSession(sessionId, cwd, false, true);
         })().catch(error => showToast(friendlyError(error)));
       } }]);
-      throw new Error(`${claimed ? "工作项已接手，执行启动未确认；可打开已有执行检查后继续。" : claimAttempted ? "接手结果未确认，请刷新项目核对负责人后重试。" : "工作项尚未接手。"}${friendlyError(error)}`);
+      throw new Error(`${claimed ? "任务已接手，执行启动未确认；可打开已有执行检查后继续。" : claimAttempted ? "接手结果未确认，请刷新项目核对负责人后重试。" : "任务尚未接手。"}${friendlyError(error)}`);
     }
   };
 
@@ -3412,8 +3425,9 @@ function Shell() {
     const localSessions = await agentListAllSessions(true);
     assertCurrent();
     const local = localSessions.find(session => session.sessionId === current.sessionId);
-    if (!local) throw new Error("该执行不在本机或已删除。共享报告仍可查看；需要继续时，请从工作项发起新执行。");
-    await handleSelectSession(current.sessionId, local.cwd, false, true);
+    if (!local) throw new Error("该执行不在本机或已删除。共享报告仍可查看；需要继续时，请从任务发起新执行。");
+    const localProject = useProjectsStore.getState().projects.find(p => projectOwnsSession(p, current.sessionId));
+    await handleSelectSession(current.sessionId, local.cwd, false, true, localProject ? { kind: "project-work-item", projectId: localProject.id } : undefined);
   };
 
   const activeNav = placeholderView ?? (currentSessionId ? "" : "新建任务");
@@ -3491,6 +3505,7 @@ function Shell() {
 
   return (
     <ModelManagementContext.Provider value={openModelManagement}>
+    <ModelCatalogContext.Provider value={models}>
     <div className={`app${IS_MACOS ? " app--macos" : ""}${codingWorkspaceActive ? " app--coding" : ""}`}>
       {exitPreparing && !automationExitDialog && <div className="app__exit-overlay" role="status" aria-live="polite">正在保存录音与任务数据并准备退出…</div>}
       {init?.ok && <CodingTaskRuntimeManager apiReady={init.auth.ready} availableModelIds={models.map(model => model.id)} roots={[...new Set([
@@ -3606,7 +3621,7 @@ function Shell() {
                     onOpenProjects: () => handleOpenProject(null),
                     onOpenProject: () => handleOpenProject(currentProject.id, false,
                       projectWorkItemSource?.projectId === currentProject.id && projectWorkItemSource.sessionId === currentSessionId
-                        ? "task" : "activity"),
+                        ? "task" : "overview"),
                   } : undefined}
                   attentionRequest={trayAttention?.sessionId === currentSessionId ? trayAttention.sequence : undefined}
                   notice={modelCatalogNotice}
@@ -3770,6 +3785,7 @@ function Shell() {
       <GroupActionsHost onFeedback={showActionToast} />
       {automationExitDialog}
     </div>
+    </ModelCatalogContext.Provider>
     </ModelManagementContext.Provider>
   );
 }

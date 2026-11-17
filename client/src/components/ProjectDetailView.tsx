@@ -1,38 +1,45 @@
-import { PublishTeamProjectButton } from "./PublishTeamProjectButton";
-import { findModelChoiceLabel, findModelDisplayName } from "@/lib/model-presentation";
+import { ProjectParticipantsButton } from "./ProjectParticipantsButton";
+import { ProjectTasks } from "./ProjectTasks";
+import { ProjectMaterials } from "./ProjectMaterials";
+import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
+import { ProjectOverview, ProjectContextSidebar, ProjectActivity, ProjectDecisionsDialog } from "./ProjectWorkspaceSections";
+import { ProjectResourcePreview, type ProjectResource } from "./ProjectResourcePreview";
+import { ProjectAutomationsDialog, useProjectAutomations } from "./ProjectAutomationsDialog";
+import { useProjectArtifacts } from "@/lib/use-project-artifacts";
+import { projectTaskRows } from "@/lib/project-tasks";
+import { projectPublicationLinks } from "@/lib/project-sharing";
+import { importProjectOutput } from "@/lib/project-files";
+import type { TaskArtifact } from "@/lib/artifact-catalog";
+import { orgDownloadDocument } from "@/lib/org-client";
+import { PanelRight, Settings2, Users, LockKeyhole, Check } from "lucide-react";
+import { useProjectWorkspace } from "@/lib/use-project-workspace";
+import { useSharedProjectId, projectSharingAccount } from "@/lib/project-sharing";
+import { useOrgSessionStore } from "@/stores/org-session-store";
+import { captureTeamProjectOperation, projectCollaborationCapabilities, teamProjectRequest, type TeamProjectSnapshot, type StartTeamWork, type OpenTeamExecution } from "@/lib/team-project-client";
+import { findModelDisplayName } from "@/lib/model-presentation";
 import { PageToolbar } from "./PageToolbar";
 import { useSessionsStore } from "@/stores/sessions-store";
-import { useKnowledgeStore } from "@/stores/knowledge-store";
-/**
- * 项目详情页 — 对齐目标截图（图3-6）。
- *
- *  布局: 顶部面包屑(📁 项目 / 名) + tab 栏(动态/工作项/项目资料)
- *        + 右侧「项目配置」栏(指令/连接器/专家/技能/自动化) + 底部项目级 Composer。
- *  项目元数据由 Rust 数据文件持久；计划/任务可编辑，资产是已复制
- *  到项目私有目录的真实文件，专家/技能/MCP 选项来自当前运行时。
- */
-import { useCallback, useEffect, useRef, useState } from "react";
+
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   useProjectsStore,
   type ProjectMeta,
   type ProjectTab,
+  canonicalProjectTab,
   type RefItem,
 } from "@/stores/projects-store";
 import {
-  ConfigRow,
-  RefPickerDialog,
   type ProjectPickerOptions,
 } from "./project-picker";
-import { ActivityTab, TaskTab, AssetsTab } from "./project-tabs";
 import { Composer } from "./Composer";
-import { ModelSelector, type ModelOption } from "./ModelSelector";
+import { type ModelOption } from "./ModelSelector";
 import { FolderIcon } from "@/foundation/components/Icon/icons";
-import { useModalFocus } from "@/lib/use-modal-focus";
 import { useAppDialog } from "./AppDialog";
 import type { AgentEntry } from "@/lib/types";
 import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
-import { projectAssetsUse, filesystemAttachmentStats, type WorkspaceInfo } from "@/lib/agent-client";
+import { projectAssetsUse, projectAssetsImport, filesystemAttachmentStats, type WorkspaceInfo } from "@/lib/agent-client";
 import { friendlyError, isTaskWorkspaceError } from "@/lib/error-format";
 import { draftAttachments } from "@/lib/draft-attachments";
 import { draftRevision, touchDraft } from "@/lib/draft-lifecycle";
@@ -42,38 +49,23 @@ import type { StartProjectConversation } from "@/lib/project-context";
 import { selectProjectPermissionMode, usePermissionModeStore } from "@/stores/permission-mode-store";
 import { flushProjectPersistence } from "@/stores/projects-store";
 import "@/styles/project-context.css";
-
-type DrawerKey = "instruction" | "model" | "connectors" | "experts" | "skills" | "automation";
-
-const TABS: { key: ProjectTab; label: string }[] = [
-  { key: "activity", label: "动态" },
-  { key: "task", label: "工作项" },
-  { key: "asset", label: "项目资料" },
-];
-
-const CONFIG_CARDS: { key: DrawerKey; title: string; desc: string }[] = [
-  { key: "instruction", title: "指令", desc: "设定项目背景与规范，让 AI 与你高效协作" },
-  { key: "model", title: "模型", desc: "选择项目对话和任务默认使用的模型" },
-  { key: "connectors", title: "连接器", desc: "连接外部服务，扩展 AI 能力" },
-  { key: "experts", title: "专家", desc: "配置项目专家，为成员提供更专业的服务" },
-  { key: "skills", title: "技能", desc: "配置项目技能，让 AI 精准执行任务" },
-  { key: "automation", title: "定时任务", desc: "让 AI 按计划自动执行任务" },
-];
+import "@/styles/project-workspace.css";
 
 export function ProjectDetailView({
   onTeamPublished,
+  onStartTeamWork,
+  onOpenTeamExecution,
   project,
-  initialTab = "activity",
+  initialTab = "overview",
   draftFocusRequest,
   workspaces = [],
   onBack,
   onToast,
   onStartConversation,
   onOpenSession,
-  onOpenProjectWorkItemSession,
   onRenameSession,
+  onOpenProjectWorkItemSession,
   onArchiveSession,
-  onDeleteSession,
   picker,
   onOpenAutomation,
   models = [],
@@ -87,6 +79,8 @@ export function ProjectDetailView({
 }: {
   project: ProjectMeta;
   onTeamPublished?: (id: string) => void;
+  onStartTeamWork?: StartTeamWork;
+  onOpenTeamExecution?: OpenTeamExecution;
   initialTab?: ProjectTab;
   draftFocusRequest?: number;
   workspaces?: WorkspaceInfo[];
@@ -113,10 +107,8 @@ export function ProjectDetailView({
 }) {
   // 读最新（交互后 store 更新，父传入的快照可能过期）。
   const live = useProjectsStore((s) => s.projects.find((p) => p.id === project.id)) ?? project;
-  const participantNotes = live.members.filter(note => typeof note === "string" && note.trim());
   const updateConfig = useProjectsStore((s) => s.updateConfig);
 
-  const selectedKnowledge = useKnowledgeStore(state => state.defaultSources);
   const draftKey = `project:${project.id}`;
   const workspaceDraftKey = `project-workspace:${project.id}`;
   const assetDraftKey = `project-assets:${project.id}`;
@@ -146,15 +138,81 @@ export function ProjectDetailView({
     }
     return all;
   };
-  const [tab, setTab] = useState<ProjectTab>(initialTab);
-  const [drawer, setDrawer] = useState<DrawerKey | null>(null);
-  const [pickerFor, setPickerFor] = useState<null | "connectors" | "experts" | "skills">(null);
+  const [tab, setTab] = useState<ProjectTab>(canonicalProjectTab(initialTab));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(() => { try { const saved = localStorage.getItem("echoagent.project-context-hidden"); return saved === null ? window.innerWidth >= 900 : saved !== "1"; } catch { return true; } });
+  const [selectedTaskId, setSelectedTaskId] = useState<string>();
+  const [assetFilter, setAssetFilter] = useState<"all" | "reference" | "output">("all");
+  const [addFilesRequested, setAddFilesRequested] = useState(false);
+  const [resource, setResource] = useState<ProjectResource>();
+  const [decisionsOpen, setDecisionsOpen] = useState(false);
+  const [automationsOpen, setAutomationsOpen] = useState(false);
+  const [localFocus, setLocalFocus] = useState(0);
+  const sharedId = useSharedProjectId(live);
+  const sharingAccount = useOrgSessionStore(state => projectSharingAccount(state.session));
+  const scopeKey = `${live.id}:${sharingAccount}:${sharedId ?? ""}`;
+  const currentScope = useRef(scopeKey); currentScope.current = scopeKey;
+  useEffect(() => { setResource(undefined); setSettingsOpen(false); setDecisionsOpen(false); setAutomationsOpen(false); setSelectedTaskId(undefined); }, [scopeKey]);
+  const linkShared = async (id: string) => {
+    await useProjectsStore.getState().linkSharedProject(live.id, sharingAccount, id);
+    onTeamPublished?.(id);
+  };
+  useEffect(() => {
+    // Upgrade the old localStorage association without modifying any source data.
+    if (sharedId && live.sharedProjects?.[sharingAccount] !== sharedId) {
+      void useProjectsStore.getState().linkSharedProject(live.id, sharingAccount, sharedId).catch(error => onToast?.(`协作关联待保存：${String(error)}`));
+    }
+  }, [sharedId, live.id, sharingAccount, live.sharedProjects, onToast]);
+  const workspace = useProjectWorkspace(sharedId);
+  const { artifacts: outputs, error: outputError, refresh: refreshOutputs } = useProjectArtifacts(live);
+  const automation = useProjectAutomations(live);
+  const openProjectSession = (id: string, cwd?: string) => {
+    const actualCwd = useSessionsStore.getState().independent.find(s => s.sessionId === id)?.cwd ?? cwd ?? live.cwd;
+    if (onOpenProjectWorkItemSession) onOpenProjectWorkItemSession(live.id, id, actualCwd);
+    else onOpenSession?.(id, actualCwd);
+  };
+  const actorId = useOrgSessionStore(state => state.session?.user?.id);
+  const rows = projectTaskRows(live, workspace.snapshot, sharingAccount, projectPublicationLinks(live.id, sharingAccount, sharedId).tasks, actorId, sharedId);
+  const persisting = useProjectsStore(state => state.persisting);
+  const persistError = useProjectsStore(state => state.persistError);
+  const toggleContext = () => setContextOpen(value => { try { localStorage.setItem("echoagent.project-context-hidden", value ? "1" : "0"); } catch {} return !value; });
+  const openTask = (id: string) => { setSelectedTaskId(rows.find(r => r.id === id || r.remoteId === id.replace(/^shared:/, ""))?.id ?? id); setTab("task"); };
+  const showFiles = (filter: "all" | "reference" | "output" = "all") => { setAssetFilter(filter); setTab("asset"); };
+  const addFiles = () => { showFiles(); setAddFilesRequested(true); };
+  const useOutput = async (output: TaskArtifact) => {
+    const scope = scopeKey;
+    const asset = await importProjectOutput(live.id, output);
+    if (currentScope.current !== scope) return;
+    if (asset) { selectAsset(asset.id); setResource(undefined); setTab("overview"); setLocalFocus(n => n + 1); }
+  };
+  const useResource = async (chosen: ProjectResource) => {
+    const scope = scopeKey;
+    if (chosen.output) return useOutput(chosen.output);
+    const row = chosen.asset;
+    let asset = row.local;
+    const currentRemote = row.remote && asset?.sharedAssets?.[sharingAccount]?.documentId === row.remote.id;
+    if (row.remote && !currentRemote) {
+      const identity = captureTeamProjectOperation();
+      const path = await orgDownloadDocument(row.remote.id, false, row.name, identity.expectedGeneration);
+      identity.assertCurrent(); if (!path) return;
+      const imported = await projectAssetsImport(live.id, [path]);
+      identity.assertCurrent();
+      useProjectsStore.getState().addAssets(live.id, imported);
+      asset = useProjectsStore.getState().projects.find(p => p.id === live.id)?.assets.find(a => a.path === imported[0]?.path);
+      if (asset && sharedId) await useProjectsStore.getState().linkSharedAsset(live.id, asset.id, sharingAccount, { projectId: sharedId, documentId: row.remote.id, familyId: row.remote.familyId });
+      identity.assertCurrent();
+    }
+    if (currentScope.current !== scope) return;
+    if (!asset?.path || asset.kind !== "file") throw new Error("当前资料不是可引用的文件");
+    selectAsset(asset.id); setResource(undefined); setTab("overview"); setLocalFocus(n => n + 1);
+  };
   // Composer 失败原因。Composer 内部不持有"失败 alert",必须由调用方展示,
   // 否则用户看到"按了发送但什么都没发生"。
   const [sendError, setSendError] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<{ cwd?: string; message: string }>();
   const [composerExpert, setComposerExpert] = useState<AgentEntry | null>(null);
   const { requestConfirmation, dialog } = useAppDialog(live.id);
+  const sharedDraft = useRef<{ text: string; taskId: string; sharedId: string; account: string }>();
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -188,14 +246,6 @@ export function ProjectDetailView({
     setComposerExpert(agent);
   };
 
-  const setPicked = (k: typeof pickerFor, items: RefItem[]) => {
-    if (!k) return;
-    if (k === "connectors") updateConfig(live.id, { connectors: items });
-    else if (k === "experts") updateConfig(live.id, { experts: items });
-    else updateConfig(live.id, { skills: items });
-    setPickerFor(null);
-  };
-
   const selectWorkspace = (cwd: string, trigger?: HTMLButtonElement | null) => {
     if (!mounted.current) return;
     const next = cwd || live.cwd;
@@ -223,7 +273,7 @@ export function ProjectDetailView({
     attachments: string[],
     fromDraft: boolean,
   ): Promise<string | undefined> => {
-    if (!onStartConversation) {
+    if (!onStartConversation && !(fromDraft && sharedId && onStartTeamWork)) {
       onToast?.("当前项目无法启动会话");
       return;
     }
@@ -235,16 +285,55 @@ export function ProjectDetailView({
     const workspaceRevision = draftRevision(workspaceDraftKey);
     const assetRevision = draftRevision(assetDraftKey);
     try {
-      const sessionId = await onStartConversation(live.id, text, modelId, {
+      const options = {
         cwd: taskCwd ?? null,
         requestedPermissionMode: fromDraft ? permissionDraft?.mode : undefined,
         expectedPermissionMode,
         prepareAttachments: () => prepareProjectAttachments(attachments),
         rememberModel: fromDraft,
-        sourceTab: fromDraft ? "activity" : "task",
-      });
+        sourceTab: "task" as const,
+      };
+      let sessionId: string | undefined;
+      if (fromDraft && sharedId) {
+        const identity = captureTeamProjectOperation();
+        if (!onStartTeamWork || !workspace.snapshot || workspace.snapshot.role === "viewer") throw new Error("项目连接或编辑权限不可用，请刷新后重试");
+        const caps = await projectCollaborationCapabilities(identity);
+        identity.assertCurrent();
+        if (!caps.taskIdentity) throw new Error("组织服务需升级后才能新建协作任务");
+        const store = useProjectsStore.getState();
+        let pending = sharedDraft.current;
+        if (!pending || pending.text !== text || pending.sharedId !== sharedId || pending.account !== sharingAccount) {
+          const existing = store.projects.find(p => p.id === live.id)?.tasks.find(task => task.source === "project-draft" && task.description === text && task.modelId === modelId && !task.sessionId && task.sharedTasks?.[sharingAccount]?.projectId === sharedId && task.sharedTasks[sharingAccount].requestId);
+          const taskId = existing?.id ?? store.addTask(live.id, text.split("\n")[0].slice(0, 120) || "新任务", modelId);
+          if (!existing) {
+            store.updateTask(live.id, taskId, { description: text, source: "project-draft" });
+            await store.linkSharedTask(live.id, taskId, sharingAccount, { projectId: sharedId, requestId: crypto.randomUUID() });
+          }
+          pending = { text, taskId, sharedId, account: sharingAccount }; sharedDraft.current = pending;
+        }
+        const local = useProjectsStore.getState().projects.find(p => p.id === live.id)?.tasks.find(t => t.id === pending.taskId);
+        const link = local?.sharedTasks?.[sharingAccount];
+        if (!local || !link) throw new Error("本机任务关联不可用，请从任务列表继续");
+        let remoteId = link.taskId;
+        if (!remoteId) {
+          const created = await workspace.mutate<{id: string}>("createTask", { title: local.title, description: text, clientRequestId: link.requestId });
+          if (!created.id) throw new Error("创建任务结果未确认，请重试同一任务");
+          remoteId = created.id;
+          await store.linkSharedTask(live.id, local.id, sharingAccount, { ...link, taskId: remoteId });
+        }
+        const snapshot = await teamProjectRequest<TeamProjectSnapshot>("snapshot", sharedId, undefined, undefined, identity);
+        identity.assertCurrent();
+        const task = snapshot.tasks.find(task => task.id === remoteId);
+        if (!task) throw new Error("任务不可用，请刷新后核对");
+        if (snapshot.runs?.some(run => run.taskId === task.id && run.actorId === useOrgSessionStore.getState().session?.user?.id)) throw new Error("任务已有执行记录，请从任务详情打开后继续，草稿已保留");
+        try {
+          sessionId = await onStartTeamWork(snapshot, task, modelId, { localProjectId: live.id, options });
+          identity.assertCurrent();
+          if (sessionId) { store.linkTaskSession(live.id, local.id, sessionId, modelId); sharedDraft.current = undefined; }
+        } finally { await workspace.refresh(); }
+      } else sessionId = await onStartConversation!(live.id, text, modelId, options);
       if (!sessionId) {
-        setSendError(fromDraft ? "消息尚未发送，请查看提示后重试。" : "工作项尚未启动，请查看提示后重试。");
+        setSendError(fromDraft ? "消息尚未发送，请查看提示后重试。" : "任务尚未启动，请查看提示后重试。");
       } else {
         if (fromDraft && permissionDraft) {
           useProjectsStore.getState().consumeDraftPermission(live.id, permissionDraft);
@@ -259,7 +348,7 @@ export function ProjectDetailView({
       }
       return sessionId;
     } catch (error) {
-      const failureLabel = fromDraft ? "发送失败" : "启动工作项失败";
+      const failureLabel = fromDraft ? "发送失败" : "启动任务失败";
       const workspaceFailure = isTaskWorkspaceError(error);
       const detail = workspaceFailure || error instanceof Error ? String(error).replace(/^Error:\s*/, "") : friendlyError(error);
       if (!mounted.current) {
@@ -277,7 +366,7 @@ export function ProjectDetailView({
   };
 
   return (
-    <div className="pd-page">
+    <div className="pd-page project-workspace">
       <PageToolbar className="pd-topbar">
         <div className="pd-crumb">
           <FolderIcon size="sm" />
@@ -285,62 +374,38 @@ export function ProjectDetailView({
           <span className="pd-crumb__sep">/</span>
           <span className="pd-crumb__name">{live.name}</span>
         </div>
-        <PublishTeamProjectButton project={live} onPublished={onTeamPublished} />
+        <div className="project-detail-members"><span className="project-members-avatars" aria-label={`${workspace.snapshot?.members.length ?? 1} 位参与者`}>{(workspace.snapshot?.members.slice(0, 3) ?? [{ userId: "self", displayName: "我" }]).map(m => <span key={m.userId}>{m.displayName.slice(-1)}</span>)}</span><ProjectParticipantsButton project={live} sharedId={sharedId} onLinked={linkShared} onOpenOrganization={onOpenOrganization} label="邀请" /><button type="button" className="pd-btn pd-btn--ghost" onClick={toggleContext} aria-label={contextOpen ? "收起项目上下文" : "展开项目上下文"} aria-pressed={contextOpen}><PanelRight size={17} /></button><button type="button" className="pd-btn pd-btn--ghost" aria-label="项目设置" disabled={!!sharedId && !workspace.snapshot} onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button></div>
       </PageToolbar>
 
-      <div className="pd-body">
+      <div className={`pd-body project-unified-body project-workspace-body${contextOpen ? "" : " project-workspace-body--wide"}`}>
         <div className="pd-main">
+          <div className="project-workspace-title"><h1>{workspace.snapshot?.name ?? live.name}</h1><p>{workspace.snapshot?.goal || live.description || "集中管理相关任务、背景资料与交付成果。"}</p><div><span>{sharedId ? <Users size={14} /> : <LockKeyhole size={14} />}{sharedId ? "共享项目" : "仅自己可见"}</span><span>{workspace.snapshot?.members.length ?? 1} 位参与者</span><span><Check size={13} />{persistError ? "本机保存失败" : persisting ? "正在保存…" : "本机更改已保存"}</span></div></div>
           <div className="pd-tabs-row">
-            <nav className="pd-tabs">
-              {TABS.map((t) => (
-                <button
-                  key={t.key}
-                  className={`pd-tab-btn${tab === t.key ? " pd-tab-btn--on" : ""}`}
-                  onClick={() => setTab(t.key)}
-                >
-                  {t.label}
-                </button>
-              ))}
+            <nav className="pd-tabs" aria-label="项目内容" role="tablist">
+              {([['overview','概览'],['task','任务'],['asset','资料与成果'],['activity','动态']] as const).map(([id,label]) => <button key={id} type="button" role="tab" id={`project-tab-${id}`} aria-label={label} aria-selected={tab === id} aria-controls="project-content-panel" className={`pd-tab-btn${tab === id ? " pd-tab-btn--on" : ""}`} onClick={() => { setTab(id); setSelectedTaskId(undefined); }}>{label}{id === "task" && <span>{rows.length}</span>}{id === "asset" && <span>{live.assets.length + outputs.length}</span>}</button>)}
             </nav>
+            {sharedId && <div className="project-sync-state"><span>{workspace.loading ? "同步中…" : workspace.error ? "同步失败" : workspace.snapshot ? "已同步" : "待连接"}</span><button className="pd-btn pd-btn--small" disabled={workspace.loading} onClick={() => void workspace.refresh()}>刷新</button></div>}
+          </div>
+          {workspace.error && <p className="project-inline-error" role="alert">{workspace.error}</p>}
+          {workspace.snapshot?.syncWarning && <p className="project-inline-error" role="alert">{workspace.snapshot.syncWarning}</p>}
+          {persistError && <p className="project-inline-error" role="alert">保存失败：{persistError}<button className="pd-btn" onClick={() => useProjectsStore.getState().retryPersist()}>重试保存</button></p>}
+          <div className="pd-tab-content" id="project-content-panel" role="tabpanel" aria-labelledby={`project-tab-${tab}`}>
+            {tab === "overview" && <ProjectOverview project={live} rows={rows} outputs={outputs} onOpenTask={openTask} onOpenOutput={output => setResource({ output })} onTasks={() => setTab("task")} onFiles={() => showFiles("output")} onAddFiles={addFiles} />}
+            {tab === "activity" && <ProjectActivity key={scopeKey} draftScope={scopeKey} project={live} sharedId={sharedId} workspace={workspace} onOpenTask={openTask} />}
+            {tab === "task" && <ProjectTasks key={`${live.id}:${sharingAccount}`} inlineDetails project={live} account={sharingAccount} sharedId={sharedId} workspace={workspace} models={models} defaultModelId={projectModelId} runDisabled={workItemPermissionMode === undefined} selectedTaskId={selectedTaskId} onSelectedTaskChange={setSelectedTaskId} outputs={outputs} onPreviewOutput={output => setResource({ output })}
+              onRun={onStartConversation ? (message, modelId) => runProjectConversation(message, modelId, [], false) : undefined}
+              onStartTeamWork={onStartTeamWork ? (snapshot, task, modelId) => onStartTeamWork(snapshot, task, modelId, { localProjectId: live.id, options: { cwd: taskCwd ?? null, expectedPermissionMode: workItemPermissionMode!, prepareAttachments: () => prepareProjectAttachments([]) } }) : undefined} onOpenTeamExecution={onOpenTeamExecution}
+              onOpenSession={onOpenProjectWorkItemSession || onOpenSession ? openProjectSession : undefined}
+              onRenameSession={onRenameSession && ((sessionId, title) => onRenameSession(sessionId, title, useSessionsStore.getState().independent.find(s => s.sessionId === sessionId)?.cwd ?? live.cwd))}
+              onArchiveSession={onArchiveSession && ((sessionId, archived) => onArchiveSession(sessionId, archived, useSessionsStore.getState().independent.find(s => s.sessionId === sessionId)?.cwd ?? live.cwd))} />}
+            {tab === "asset" && <><ProjectMaterials key={`${live.id}:${sharingAccount}`} project={live} account={sharingAccount} sharedId={sharedId} workspace={workspace} selectedAssetIds={selectedAssetIds} onUseAsset={asset => { selectAsset(asset.id); setTab("overview"); setLocalFocus(n => n + 1); }} outputs={outputs} onPreview={setResource} onUseOutput={useOutput} initialFilter={assetFilter} addRequested={addFilesRequested} onAddHandled={() => setAddFilesRequested(false)} />{outputError && <p className="project-inline-error" role="alert">部分成果读取失败：{outputError}<button className="pd-btn" onClick={refreshOutputs}>重试读取成果</button></p>}</>}
           </div>
 
-          <div className="pd-tab-content">
-            {tab === "activity" && (
-              <ActivityTab
-                projectId={live.id}
-                onOpenSession={onOpenSession}
-                onRenameSession={onRenameSession}
-                onArchiveSession={onArchiveSession}
-                onDeleteSession={onDeleteSession}
-                onToast={onToast}
-                models={models}
-              />
-            )}
-            {tab === "task" && (
-              <TaskTab
-                projectId={live.id}
-                models={models}
-                defaultModelId={projectModelId}
-                onRun={onStartConversation ? (message, modelId) => runProjectConversation(message, modelId, [], false) : undefined}
-                runDisabled={workItemPermissionMode === undefined}
-                runPermissionMode={workItemPermissionMode}
-                onOpenSession={onOpenProjectWorkItemSession
-                  ? sessionId => onOpenProjectWorkItemSession(live.id, sessionId, live.cwd)
-                  : onOpenSession && (sessionId => onOpenSession(sessionId, live.cwd))}
-                onRestoreSession={onArchiveSession
-                  ? (sessionId) => onArchiveSession(sessionId, false, live.cwd)
-                  : undefined}
-                onToast={onToast}
-              />
-            )}
-            {tab === "asset" && <AssetsTab projectId={live.id} onToast={onToast} onUseAsset={asset => { selectAsset(asset.id); }} selectedAssetIds={selectedAssetIds} />}
-          </div>
-
-          <div className="pd-composer-shell">
+          {(tab === "overview" || tab === "task" && !selectedTaskId) && <div className="pd-composer-shell">
             <Composer
               draftKey={draftKey}
               draft={projectDraft}
-              focusRequest={draftFocusRequest}
+              focusRequest={(draftFocusRequest ?? 0) + localFocus}
               onDraftChange={(value) => useSessionsStore.getState().setDraft(draftKey, value)}
               draftAttachmentControls={selectedAssetIds.length > 0 ? (
                 <div
@@ -379,9 +444,9 @@ export function ProjectDetailView({
               ) : null}
               streaming={false}
               onSend={async (text, attachments) => Boolean(await runProjectConversation(text, projectModelId!, attachments ?? [], true))}
-              sendDisabled={projectPermissionMode === undefined}
+              sendDisabled={projectPermissionMode === undefined || !!sharedId && (!workspace.snapshot || workspace.snapshot.role === "viewer")}
               onCancel={() => { /* 项目页 composer 不流式,onCancel 为 Composer prop 必传的占位。 */ }}
-              placeholder="描述项目任务，可添加文件作为参考（Shift+Enter 换行）"
+              placeholder={sharedId ? "接下来，要推进什么工作？执行报告对项目成员可见（Shift+Enter 换行）" : "接下来，要推进什么工作？（Shift+Enter 换行）"}
               apiReady={!!projectModelId && models.length > 0}
               setupHint={
                 models.length === 0
@@ -429,196 +494,15 @@ export function ProjectDetailView({
                 )}
               </div>
             )}
-          </div>
+          </div>}
         </div>
-
-        <aside className="pd-side project-context-sidebar">
-          <section aria-label="本次能力与知识范围" className="project-context-summary">
-            <h3 className="pd-side__title">本次能力与知识范围</h3>
-            <p>知识来源：{selectedKnowledge.length ? selectedKnowledge.map(source => source === "personal" ? "个人知识" : "组织授权知识").join("、") : "未选用"}</p>
-            <p className="project-context-summary__hint">在输入框左下角调整知识来源；发送前会检查可用性和授权。</p>
-            {live.experts.length > 0 && <div><strong>偏好专家</strong>{live.experts.map(expert => <p key={expert.id}>{expert.name}<span className="project-context-scope">{expert.scope === "project" ? "当前项目" : expert.scope === "user" ? "用户专家" : "发送前校验来源"}</span></p>)}</div>}
-          </section>
-          <details className="project-default-preferences">
-            <summary>项目默认偏好<span>指令、模型与能力</span></summary>
-            <p>这些偏好会提供给新任务。资料仍需为每次任务单独选择。</p>
-            {CONFIG_CARDS.map(c => <button type="button" key={c.key} className="project-default-preference" aria-label={`配置项目默认${c.title}`} onClick={() => setDrawer(c.key)} title={c.desc}><span>{c.title}</span><span>{c.key === "model" ? findModelChoiceLabel(models, projectModelId, "待选择") : c.key === "instruction" ? live.instructions?.trim() ? "已配置" : "未配置" : c.key === "experts" ? `${live.experts.length} 个` : c.key === "skills" ? `${live.skills.length} 个` : c.key === "connectors" ? `${live.connectors.length} 个` : "管理"}</span><span aria-hidden="true">›</span></button>)}
-          </details>
-          {participantNotes.length > 0 && (
-            <details className="project-participant-notes">
-              <summary>参与者备注（本机）</summary>
-              <ul>{participantNotes.map((note, index) => <li key={index}>{note}</li>)}</ul>
-            </details>
-          )}
-        </aside>
+        {contextOpen && <ProjectContextSidebar project={live} workspace={workspace} modelName={live.defaultModelId ? findModelDisplayName(models, live.defaultModelId) : "跟随应用默认"} onClose={toggleContext} onSettings={() => setSettingsOpen(true)} onFiles={() => showFiles("reference")} onAddFiles={addFiles} onDecisions={() => setDecisionsOpen(true)} onAutomations={() => setAutomationsOpen(true)} automationCount={automation.automations.length} />}
       </div>
-
-      {drawer && (
-        <ConfigDrawer
-          drawer={drawer}
-          project={live}
-          onClose={() => setDrawer(null)}
-          onOpenPicker={(k) => setPickerFor(k)}
-          onOpenAutomation={onOpenAutomation}
-          models={models}
-          modelId={projectModelId}
-          unavailableModelId={configuredProjectModelAvailable ? undefined : live.defaultModelId}
-          onModelChange={setProjectModel}
-          onOpenModelSettings={onOpenModelSettings}
-        />
-      )}
-
-      {pickerFor && (
-        <RefPickerDialog
-          title={pickerFor === "connectors" ? "连接器" : pickerFor === "experts" ? "专家" : "技能"}
-          options={picker.options[pickerFor]}
-          emptyHint={picker.loading ? "正在读取运行时能力…" : picker.error ? `读取失败：${picker.error}` : "当前没有已启用的可选项"}
-          selected={pickerFor === "connectors" ? live.connectors : pickerFor === "experts" ? live.experts : live.skills}
-          onCancel={() => setPickerFor(null)}
-          onConfirm={(items) => setPicked(pickerFor, items)}
-        />
-      )}
+      {settingsOpen && createPortal(<ProjectSettingsDialog key={`${live.id}:${sharingAccount}`} project={live} sharedId={sharedId} workspace={workspace} picker={picker} models={models} defaultModelId={inheritedModelId} onClose={() => setSettingsOpen(false)} onOpenAutomation={onOpenAutomation} onOpenModelSettings={onOpenModelSettings} />, document.body)}
+      {decisionsOpen && <ProjectDecisionsDialog project={live} sharedId={sharedId} workspace={workspace} onClose={() => setDecisionsOpen(false)} />}
+      {automationsOpen && <ProjectAutomationsDialog project={live} data={automation} models={models} defaultModelId={projectModelId} onClose={() => setAutomationsOpen(false)} onOpenSession={openProjectSession} />}
+      {resource && <ProjectResourcePreview key={`${sharingAccount}:${resource.output?.id ?? resource.asset?.id}`} project={live} resource={resource} onClose={() => setResource(undefined)} onUse={useResource} onOpenSession={openProjectSession} />}
       {dialog}
     </div>
   );
 }
-
-// ============================================================
-// 配置抽屉
-// ============================================================
-
-function ConfigDrawer({
-  drawer,
-  project,
-  onClose,
-  onOpenPicker,
-  onOpenAutomation,
-  models,
-  modelId,
-  unavailableModelId,
-  onModelChange,
-  onOpenModelSettings,
-}: {
-  drawer: DrawerKey;
-  project: ProjectMeta;
-  onClose: () => void;
-  onOpenPicker: (k: "connectors" | "experts" | "skills") => void;
-  onOpenAutomation?: () => void;
-  models: ModelOption[];
-  modelId?: string;
-  unavailableModelId?: string;
-  onModelChange: (modelId: string) => void;
-  onOpenModelSettings?: () => void;
-}) {
-  const updateConfig = useProjectsStore((s) => s.updateConfig);
-  const card = CONFIG_CARDS.find((c) => c.key === drawer)!;
-  const [instructionDraft, setInstructionDraft] = useState(project.instructions ?? "");
-  useEffect(() => {
-    setInstructionDraft(project.instructions ?? "");
-  }, [project.id, project.instructions]);
-  const closeDrawer = useCallback(() => {
-    if (drawer === "instruction" && instructionDraft !== (project.instructions ?? "")) {
-      updateConfig(project.id, { instructions: instructionDraft });
-    }
-    onClose();
-  }, [drawer, instructionDraft, onClose, project.id, project.instructions, updateConfig]);
-  const dialogRef = useModalFocus<HTMLDivElement>(true, closeDrawer);
-
-  return (
-    <div className="modal-overlay" onClick={closeDrawer}>
-      <div
-        ref={dialogRef}
-        className="create-colleague-dialog proj-drawer"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`项目配置：${card.title}`}
-        tabIndex={-1}
-      >
-        <div className="create-colleague-header">
-          <h3>{card.title}</h3>
-          <button
-            className="create-colleague-close"
-            onClick={closeDrawer}
-            aria-label="关闭"
-            data-modal-initial-focus={drawer === "instruction" ? undefined : ""}
-          >×</button>
-        </div>
-        <div className="create-colleague-body">
-          {drawer === "instruction" && (
-            <textarea
-              className="create-colleague-textarea"
-              rows={8}
-              value={instructionDraft}
-              maxLength={128_000}
-              onChange={(e) => setInstructionDraft(e.target.value)}
-              placeholder="填写项目目标、背景、工作规范和交付要求…"
-              data-modal-initial-focus
-            />
-          )}
-          {drawer === "model" && (
-            <div className="proj-model-setting">
-              <label className="create-colleague-label">项目默认模型</label>
-              <p className="proj-model-setting__hint">
-                新对话、新计划和新任务默认使用此模型；执行前仍可为单条计划或任务单独选择。
-              </p>
-              <ModelSelector
-                ariaLabel="选择项目默认模型"
-                onBeforeManageModels={closeDrawer}
-                modelId={modelId}
-                models={models}
-                onModelChange={onModelChange}
-                menuPlacement="bottom"
-                menuAlign="start"
-                menuWidth="anchor"
-                menuZIndex="var(--echo-layer-dialog-popover)"
-              />
-              {unavailableModelId && (
-                <p className="proj-model-setting__warning" role="alert">
-                  原模型“{findModelDisplayName(models, unavailableModelId)}”已被删除或停用，请重新选择。
-                </p>
-              )}
-              {models.length === 0 && (
-                <button
-                  type="button"
-                  className="btn btn--ghost"
-                  onClick={() => {
-                    closeDrawer();
-                    onOpenModelSettings?.();
-                  }}
-                >
-                  前往设置模型
-                </button>
-              )}
-            </div>
-          )}
-          {drawer === "connectors" && (
-            <ConfigRow label="连接器" items={project.connectors} onAdd={() => onOpenPicker("connectors")} onRemove={(id) => updateConfig(project.id, { connectors: project.connectors.filter((x) => x.id !== id) })} />
-          )}
-          {drawer === "experts" && (
-            <ConfigRow label="专家" items={project.experts} onAdd={() => onOpenPicker("experts")} onRemove={(id) => updateConfig(project.id, { experts: project.experts.filter((x) => x.id !== id) })} />
-          )}
-          {drawer === "skills" && (
-            <ConfigRow label="技能" items={project.skills} onAdd={() => onOpenPicker("skills")} onRemove={(id) => updateConfig(project.id, { skills: project.skills.filter((x) => x.id !== id) })} />
-          )}
-          {drawer === "automation" && (
-            <div className="proj-drawer-empty">
-              <p>自动化在统一调度中心配置，可选择本项目目录作为运行工作区。</p>
-              <button className="btn btn--ghost" onClick={() => { closeDrawer(); onOpenAutomation?.(); }}>打开自动化中心</button>
-            </div>
-          )}
-        </div>
-        <div className="create-colleague-footer">
-          <button className="btn btn--primary" onClick={closeDrawer}>完成</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ============================================================
-// 项目 composer 改用首页 `<Composer>`（src/components/Composer.tsx），
-// 原薄壳函数 ProjectComposer 已删除：附件 / 拖拽 / `/` / `@` / 语音 /
-// 输入历史 / 知识来源 等能力统一由 Composer 接管；项目级契约（cwd +
-// 上下文注入摘要）通过 header chip 与 Composer 的 props 表达。
-// ============================================================

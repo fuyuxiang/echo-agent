@@ -124,6 +124,9 @@ const ALL_DAYS: [&str; 7] = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Automation {
+    /// Resolve the current local project instructions at each run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub id: String,
     pub name: String,
     /// The prompt to send when this automation fires.
@@ -305,6 +308,8 @@ pub struct AutomationSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutomationUpdateEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub phase: String,
     pub automation_id: String,
     pub automation_name: String,
@@ -376,6 +381,7 @@ fn run_update_event(
         RunUpdate::Failed { session_id, error } => ("finished", "failed", session_id, Some(error)),
     };
     AutomationUpdateEvent {
+        project_id: automation.project_id.clone(),
         current_model_id,
         prompt_id,
         phase: phase.into(),
@@ -1319,6 +1325,10 @@ fn completion_for_record(record: &AutomationRunRecord) -> AutomationCompletion {
         push,
         automation_name: record.automation_name.clone(),
         event: AutomationUpdateEvent {
+            project_id: record
+                .automation_snapshot
+                .as_ref()
+                .and_then(|a| a.project_id.clone()),
             current_model_id: None,
             prompt_id: record.prompt_id.clone(),
             phase: "finished".into(),
@@ -2600,6 +2610,7 @@ fn save_automation_in_store(
         // A stale/suspended editor must not rewind a reset or inject another
         // task's session. Workspace and authority changes start a fresh chain.
         let reset = automation.new_session_each_run != existing.new_session_each_run
+            || automation.project_id != existing.project_id
             || automation.cwds != existing.cwds
             || automation.permission_mode != existing.permission_mode
             || automation.expert_path != existing.expert_path
@@ -3177,6 +3188,10 @@ pub fn automations_save(
     blank_to_none(&mut final_automation.valid_until_date);
     final_automation.name = final_automation.name.trim().to_string();
     final_automation.prompt = final_automation.prompt.trim().to_string();
+    blank_to_none(&mut final_automation.project_id);
+    if let Some(project_id) = final_automation.project_id.as_deref() {
+        crate::projects::automation_context(project_id)?;
+    }
     final_automation.cwds = normalize_authorized_cwds(
         &app.state::<crate::shell_fs::FilesystemAccess>(),
         &final_automation.cwds,
@@ -3913,6 +3928,7 @@ async fn run_automation_once(
 
 #[derive(Debug, Default)]
 struct AutomationExecutionContext {
+    project_prompt: Option<String>,
     expert_prompt: Option<String>,
     skills: Vec<(String, String, String)>,
     connectors: Vec<String>,
@@ -4006,6 +4022,11 @@ async fn resolve_execution_context(
     cwd: &Path,
 ) -> Result<AutomationExecutionContext, String> {
     let mut context = AutomationExecutionContext {
+        project_prompt: automation
+            .project_id
+            .as_deref()
+            .map(crate::projects::automation_context)
+            .transpose()?,
         expert_prompt: resolve_selected_expert_prompt(automation, cwd)?,
         ..Default::default()
     };
@@ -4070,6 +4091,9 @@ async fn resolve_execution_context(
 
 fn automation_prompt(automation: &Automation, resolved: &AutomationExecutionContext) -> String {
     let mut context = Vec::new();
+    if let Some(project) = &resolved.project_prompt {
+        context.push(project.clone());
+    }
     if let Some(expert_prompt) = &resolved.expert_prompt {
         let expert_name = automation.expert_name.as_deref().unwrap_or("所选专家");
         context.push(format!(
@@ -6293,6 +6317,7 @@ mod tests {
 
     fn test_automation() -> Automation {
         Automation {
+            project_id: None,
             id: String::new(),
             name: String::new(),
             prompt: String::new(),

@@ -123,6 +123,9 @@ async fn handle_session_info(
         },
     });
 
+    // Session identity follows the configured catalog entry. The sampler's
+    // upstream model name can be shared by different providers or accounts.
+    data.model = Some(session.model_id.0.to_string());
     // Calculate the model's display name.
     data.model_display_name = agent
         .models_manager

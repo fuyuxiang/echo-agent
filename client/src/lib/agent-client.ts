@@ -380,7 +380,7 @@ function knowledgeConfigurationKey(sources: KnowledgeSource[], organizationScope
   return `${knowledgeSourcesKey(sources)}:${organizationIdentity}:${[...organizationScopeIds].sort().join(",")}`;
 }
 
-function organizationSelectionError(organizationScopeIds: string[]): string | undefined {
+async function organizationSelectionError(sessionId: string, organizationScopeIds: string[]): Promise<string | undefined> {
   const availability = organizationKnowledgeAvailability();
   if (!availability.available) return availability.reason;
 
@@ -388,6 +388,22 @@ function organizationSelectionError(organizationScopeIds: string[]): string | un
     useOrgSessionStore.getState().session?.bootstrap?.scopes.map((scope) => scope.id) ?? [],
   );
   if (organizationScopeIds.some((scopeId) => !allowedScopeIds.has(scopeId))) {
+    // A project created since bootstrap has a new scope. Only a native-owned
+    // session binding with freshly checked membership may authorize that exact
+    // scope; the renderer cannot add arbitrary scopes to its cached bootstrap.
+    const initial = useOrgSessionStore.getState();
+    try {
+      const scope = await invoke<string | null>("org_project_session_scope", {
+        sessionId,
+        expectedGeneration: initial.session?.accountGeneration,
+      });
+      if (useOrgSessionStore.getState().boundaryRevision !== initial.boundaryRevision) {
+        return "组织账号或权限已改变，请重新打开项目后操作";
+      }
+      if (scope && organizationScopeIds.length === 1 && organizationScopeIds[0] === scope) return undefined;
+    } catch {
+      // Missing bindings, revoked memberships and failed checks remain blocked.
+    }
     return "原组织知识范围已失效，请重新选择知识范围";
   }
   return undefined;
@@ -410,7 +426,7 @@ export async function agentSetKnowledgeSources(
   const personal = sources.includes("personal");
   const organization = sources.includes("organization");
   const organizationError = organization
-    ? organizationSelectionError(organizationScopeIds)
+    ? await organizationSelectionError(sessionId, organizationScopeIds)
     : undefined;
   if (organizationError) {
     invalidateAgentKnowledgeSourceSync(sessionId);
@@ -454,7 +470,7 @@ async function synchronizeKnowledgeSources(
   const organizationScopeIds = organizationScopeIdsForSession(sessionId);
   const key = knowledgeConfigurationKey(sources, organizationScopeIds);
   const organizationPrerequisiteError = sources.includes("organization")
-    ? organizationSelectionError(organizationScopeIds)
+    ? await organizationSelectionError(sessionId, organizationScopeIds)
     : undefined;
   let result = !organizationPrerequisiteError && appliedKnowledgeSources.get(sessionId)?.key === key
     ? appliedKnowledgeSources.get(sessionId)?.result
@@ -1193,8 +1209,8 @@ export async function agentsSave(name: string, raw: string): Promise<AgentEntry>
   return invoke<AgentEntry>("agents_save", { name, raw });
 }
 
-export async function projectAssetsUse(projectId: string, paths: string[]): Promise<string[]> {
-  return invoke<string[]>("project_assets_use", { projectId, paths });
+export async function projectAssetsUse(projectId: string, paths: string[], purpose?: "share"): Promise<string[]> {
+  return invoke<string[]>("project_assets_use", { projectId, paths, ...(purpose ? { purpose } : {}) });
 }
 
 /** Update one existing file; rejects stale contents and name collisions. */

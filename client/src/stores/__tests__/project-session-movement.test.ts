@@ -51,7 +51,7 @@ describe("project session movement", () => {
     const owned = { ...project, tasks: [{ id: "t1", title: "原任务", scope: "personal" as const, source: "user", status: "completed" as const, sessionId: "s1" }] };
     useProjectsStore.setState({ projects: [owned] });
     await expect(useProjectsStore.getState().associateForkWithSourceProject("s1", { ...session, sessionId: "fork" })).resolves.toBe("p1");
-    expect(useProjectsStore.getState().projects[0].tasks).toEqual(owned.tasks);
+    expect(useProjectsStore.getState().projects[0].tasks).toMatchObject([...owned.tasks, { sessionId: "fork", source: "conversation" }]);
     expect(useProjectsStore.getState().projects[0].conversations).toMatchObject([{ sessionId: "fork", pendingProjectContext: true }]);
     expect(projectsSave).toHaveBeenCalledWith(useProjectsStore.getState().projects);
   });

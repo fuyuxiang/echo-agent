@@ -77,12 +77,19 @@ macOS 固定验收驱动接收该可执行文件路径；其平台、窗口、�
 | Browser Use | `validate-native-browser-review.mjs` | 合成站点请求、下载字节、拒绝、暂停、清理及重启 |
 | Computer Use | `validate-native-desktop-controls.mjs` | [桌面控制验收](desktop-control/validation.md) |
 | 专家团与定时任务 | `validate-native-collaboration-review.mjs` | 多成员实际输出、协调汇总、真正到点触发与防重复 |
+| 项目工作台与组织账号 | `validate-native-project-review.mjs` | 真实项目创建、组织模型执行、成果副本与共享、实际到点调度、服务端记录及重启恢复 |
 | MCP、技能、插件与连接器 | `validate-native-extensions-review.mjs` | 取消/允许、当前回合技能读取、真实服务调用及卸载 |
 | 知识、手动记忆与引用 | `validate-native-knowledge-review.mjs` | 索引代次、来源撤销、引用路径、记忆更新及重启 |
 | 后台记忆与整理 | `validate-native-memoryauto-review.mjs` | 普通对话触发、实时开关、待处理恢复及全新会话召回 |
 | 强制退出和持续运行 | `validate-native-lifecycle-review.mjs` | 守护实际恢复、不重发未知请求、数据及资源观察 |
 
 模型流程要求显式设置 `NATIVE_REVIEW_MODEL_CONFIG`，指向独立私有目录中的普通 JSON 文件，目录权限 0700、文件权限 0600。当前固定契约见 [模型资源校验](../scripts/lib/native-review-model.mjs)：字段为 `baseUrl`、`model`、`protocol`、`apiKey`；模型固定为 `claude-opus-5-5`，协议为 `chat_completions`，端点必须是无内嵌凭据的 HTTPS URL。凭据不写入文档或命令行参数。
+
+项目工作台验收通过 `pnpm test:project:native <当前构建的程序> <明确选定的 organization-profile.json>` 运行。它在独立私有目录中，使用该账号的正常钥匙串与令牌刷新流程，并固定验证组织模型 `organization/MiniMax-M3.1-Flash`。现有私有模型资源仅用于初始化隔离 Runtime；项目任务与调度记录必须证明实际使用组织模型。账号、HTTPS 服务来源、工作目录、构建内嵌脚本和重启身份均有绑定，不能用任意脚本替换。
+
+macOS 在程序重新编译后可能要求再次授权钥匙串访问；此时需在本机完成系统弹窗中的授权，桌面窗口可能尚未出现。驱动不会读取或填写系统密码，也不会绕过钥匙串授权。
+
+该入口会在获授权的真实服务上创建名称包含“端到端验收”的项目和合成成果，仅项目创建者加入。使用前应明确授权该账号及服务；不会邀请其他成员。驱动等待真实调度到点，不调用“立即运行”，完成后暂停验收周期任务，保留成果和执行记录供核对。`pnpm test:project:native:guards` 验证伪造 IPC、手动运行、提前触发、外部副本和身份漂移不能冒充成功。
 
 驱动创建隔离的 `ECHO_AGENT_HOME` 和合成工作区，不复用日常会话或用户模型配置。需要系统选择器的流程应核对自有 PID、完整路径和实际目录授权；后台自动记忆会排除系统临时工作区，应遵守其固定驱动的工作区安排。
 

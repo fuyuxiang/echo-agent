@@ -114,6 +114,7 @@ const ASSISTANT_TEMPLATES = [
 ];
 
 interface AssistantsPanelProps {
+  cwd?: string;
   onUseAssistant?: (agent: AgentEntry) => void;
   onToast?: (message: string) => void;
   onPlaceholder?: (label: string) => void;
@@ -127,7 +128,7 @@ const blankExpertDraft = (): EditorDraft => ({
   systemPrompt: "", avatar: 1, modelTags: ["default"], isNew: true,
 });
 
-export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, createExpertRequested, onCreateExpertRequestHandled }: AssistantsPanelProps) {
+export function AssistantsPanel({ cwd, onUseAssistant, onToast, embedded = false, createExpertRequested, onCreateExpertRequestHandled }: AssistantsPanelProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [userAssistants, setUserAssistants] = useState<AgentEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -142,7 +143,7 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
     setLoading(true);
     setLoadError(null);
     try {
-      const next = await agentsList();
+      const next = await agentsList(cwd);
       if (reloadGeneration.current === generation) setUserAssistants(next);
     } catch (e) {
       if (reloadGeneration.current !== generation) return;
@@ -152,7 +153,7 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
     } finally {
       if (reloadGeneration.current === generation) setLoading(false);
     }
-  }, [onToast]);
+  }, [cwd, onToast]);
 
   useEffect(() => {
     void reload();
@@ -186,6 +187,7 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
       modelTags: expert.modelTags ? [...expert.modelTags] : ["default"],
       isNew: true,
       originalRaw: expert.raw,
+      scope: expert.scope,
     });
   }, []);
 
@@ -197,6 +199,7 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
       avatar: a.avatar, modelTags: a.modelTags ? [...a.modelTags] : [],
       isNew: false,
       originalRaw: a.raw,
+      scope: a.scope,
     });
   }, []);
 
@@ -370,6 +373,7 @@ export function AssistantsPanel({ onUseAssistant, onToast, embedded = false, cre
       {editing && (
         <CreateColleagueDialog
           draft={editing}
+          cwd={cwd}
           existingAgents={userAssistants}
           onCancel={() => setEditing(null)}
           onSave={handleSave}
@@ -453,13 +457,15 @@ interface EditorDraft {
   modelTags: string[];
   isNew: boolean;
   originalRaw?: string;
+  scope?: string;
   capabilities?: ExpertSettings;
 }
 
 function CreateColleagueDialog({
-  draft, existingAgents, onCancel, onSave, onHireExpert,
+  draft, cwd, existingAgents, onCancel, onSave, onHireExpert,
 }: {
   draft: EditorDraft;
+  cwd?: string;
   existingAgents: AgentEntry[];
   onCancel: () => void;
   onSave: (draft: EditorDraft) => void | Promise<void>;
@@ -625,8 +631,8 @@ function CreateColleagueDialog({
             </div>
 
             {/* Model tags */}
-            <div className="create-colleague-field">
-              <label className="create-colleague-label">模型能力标签</label>
+            <details className="create-colleague-field">
+              <summary>卡片展示标签（不影响实际模型）</summary>
               <div className="create-colleague-tags">
                 {MODEL_TAGS.map((tag) => (
                   <button
@@ -642,11 +648,11 @@ function CreateColleagueDialog({
                   </button>
                 ))}
               </div>
-            </div>
-
-            <details className="create-colleague-field"><summary>模型、技能与连接器</summary>
-              <ExpertCapabilitiesEditor raw={d.originalRaw} disabled={saving} onChange={value => set("capabilities", value)} />
             </details>
+
+            <div className="create-colleague-field">
+              <ExpertCapabilitiesEditor key={d.originalRaw ?? "new"} cwd={d.scope === "project" && d.path.replaceAll("\\", "/").includes("/.echo-agent/agents/") ? d.path.slice(0, d.path.replaceAll("\\", "/").indexOf("/.echo-agent/agents/")) : cwd} raw={d.originalRaw} disabled={saving} onChange={value => set("capabilities", value)} />
+            </div>
 
             {/* System Prompt */}
             <div className="create-colleague-field">

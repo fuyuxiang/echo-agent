@@ -130,6 +130,7 @@ export function buildDraft(template?: AutomationTemplate, initialCwd = ""): Auto
 
 export function draftFromAutomation(a: Automation): AutomationDraft {
   return {
+    projectId: a.projectId,
     id: a.id,
     name: a.name,
     prompt: a.prompt,

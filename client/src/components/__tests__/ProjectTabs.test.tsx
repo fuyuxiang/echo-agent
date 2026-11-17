@@ -70,7 +70,7 @@ describe("项目计划/任务与 Agent 会话闭环", () => {
     }));
     expect(screen.queryByRole("button", { name: "交给 Agent" })).toBeNull();
     expect(screen.getByText(/模型 B/)).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: /调整任务状态/ }), { target: { value: "completed" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "调整任务状态 修复阻断问题" }), { target: { value: "completed" } });
     expect(useProjectsStore.getState().projects[0].tasks[0].status).toBe("in_progress");
     fireEvent.click(screen.getByRole("button", { name: "确认验收" }));
     await waitFor(() => expect(useProjectsStore.getState().projects[0].tasks[0].status).toBe("completed"));
@@ -564,7 +564,7 @@ describe("项目计划/任务与 Agent 会话闭环", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
   });
 
-  it("项目指令在关闭配置时再持久化，避免每次按键写盘", () => {
+  it("项目说明明确保存后持久化，输入时不写盘", () => {
     render(
       <ProjectDetailView
         project={project}
@@ -572,12 +572,12 @@ describe("项目计划/任务与 Agent 会话闭环", () => {
         picker={{ options: { connectors: [], experts: [], skills: [] }, loading: false, error: null }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /指令/ }));
-    const input = screen.getByPlaceholderText("填写项目目标、背景、工作规范和交付要求…");
+    fireEvent.click(screen.getByRole("button", { name: "项目设置" }));
+    const input = screen.getByLabelText("项目说明");
     fireEvent.change(input, { target: { value: "只在完成时保存" } });
     expect(useProjectsStore.getState().projects[0].instructions).toBeUndefined();
 
-    fireEvent.click(screen.getByRole("button", { name: "完成" }));
-    expect(useProjectsStore.getState().projects[0].instructions).toBe("只在完成时保存");
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(useProjectsStore.getState().projects[0].description).toBe("只在完成时保存");
   });
 });

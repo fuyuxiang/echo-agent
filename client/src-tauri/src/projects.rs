@@ -445,6 +445,95 @@ pub fn projects_load() -> Result<Vec<Value>, String> {
     read_from(&store_path())
 }
 
+/// Scheduled work reads the durable project again, rather than freezing a
+/// renderer snapshot. Shared account data is deliberately not read here.
+pub(crate) fn automation_context(project_id: &str) -> Result<String, String> {
+    validate_project_id(project_id)?;
+    let projects = projects_load()?;
+    let project = projects
+        .iter()
+        .find(|p| p.get("id").and_then(Value::as_str) == Some(project_id))
+        .ok_or("定时工作关联的项目已删除，请重新选择项目后运行")?;
+    let metadata = crate::meta::read_state();
+    build_automation_context(project, metadata.session_status_map())
+}
+
+fn build_automation_context(
+    project: &Value,
+    lifecycles: &std::collections::HashMap<String, crate::meta::SessionLifecycle>,
+) -> Result<String, String> {
+    let mut context = vec![format!(
+        "你正在 EchoAgent 项目「{}」中执行定时工作。",
+        project
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("项目")
+    )];
+    for (field, label) in [
+        ("description", "项目目标与背景"),
+        ("instructions", "项目指令"),
+    ] {
+        if let Some(text) = project
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+        {
+            context.push(format!("[{label}]\n{text}"));
+        }
+    }
+    if let Some(decisions) = project.get("decisions").and_then(Value::as_array) {
+        for decision in decisions
+            .iter()
+            .filter(|d| d.get("status").and_then(Value::as_str) == Some("active"))
+        {
+            if let Some(text) = decision.get("content").and_then(Value::as_str) {
+                context.push(format!("[用户已确认的项目决定]\n{text}"));
+            }
+        }
+    }
+    if let Some(tasks) = project.get("tasks").and_then(Value::as_array) {
+        let mut work = Vec::new();
+        for task in tasks.iter().take(300) {
+            let session = task.get("sessionId").and_then(Value::as_str);
+            let lifecycle = session.and_then(|id| lifecycles.get(id));
+            let title = task.get("title").and_then(Value::as_str).unwrap_or("任务");
+            let status = lifecycle.map(|s| s.status.as_str()).unwrap_or("unknown");
+            let accepted = task.get("status").and_then(Value::as_str) == Some("completed");
+            work.push(format!(
+                "- {title}：会话状态 {status}；用户验收：{}；最近活动：{}；会话：{}",
+                if accepted {
+                    "已验收（继续执行后需重新核对）"
+                } else {
+                    "尚未验收"
+                },
+                lifecycle.map(|s| s.updated_at.as_str()).unwrap_or("未记录"),
+                session.unwrap_or("尚未执行")
+            ));
+        }
+        if !work.is_empty() {
+            context.push(format!(
+                "[项目工作状态（本机记录，completed 仅代表本轮结束）]\n{}",
+                work.join("\n")
+            ));
+        }
+    }
+    if let Some(assets) = project.get("assets").and_then(Value::as_array) {
+        let names = assets
+            .iter()
+            .take(100)
+            .filter_map(|a| a.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            context.push(format!("[项目资料与成果目录]\n{}\n目录仅证明文件登记，不代表已经读取正文；无法读取时应明确说明。", names.join("\n")));
+        }
+    }
+    let context = context.join("\n\n");
+    if context.chars().count() > 128_000 {
+        return Err("项目上下文过长，请合并过时指令与决定后再运行定时工作".into());
+    }
+    Ok(context)
+}
+
 #[tauri::command]
 pub fn projects_save(projects: Vec<Value>) -> Result<(), String> {
     let _guard = access()
@@ -453,14 +542,19 @@ pub fn projects_save(projects: Vec<Value>) -> Result<(), String> {
     write_to(&store_path(), &projects)
 }
 
-/// Grant only the selected, catalogued project files as task attachments.
+/// Grant only selected, catalogued project files. Sharing uses import-size
+/// limits; task attachments retain their smaller per-turn limits.
 /// This deliberately never authorizes the private project directory as a workspace.
 #[tauri::command]
 pub fn project_assets_use(
     access: State<'_, crate::shell_fs::FilesystemAccess>,
     project_id: String,
     paths: Vec<String>,
+    purpose: Option<String>,
 ) -> Result<Vec<String>, String> {
+    if purpose.as_deref().is_some_and(|p| p != "share") {
+        return Err("项目资料用途无效".into());
+    }
     if paths.len() > 20 {
         return Err("每次任务最多选择20个项目资料文件".into());
     }
@@ -475,7 +569,17 @@ pub fn project_assets_use(
         .and_then(Value::as_array)
         .ok_or("项目资料目录不可读")?;
     let root = asset_root(&project_id)?;
-    let validated = validate_selected_assets(&root, assets, &paths)?;
+    let validated = if purpose.as_deref() == Some("share") {
+        validate_selected_assets_with_limits(
+            &root,
+            assets,
+            &paths,
+            MAX_ASSET_FILE_BYTES,
+            MAX_ASSET_BATCH_BYTES,
+        )?
+    } else {
+        validate_selected_assets(&root, assets, &paths)?
+    };
     validated
         .into_iter()
         .map(|path| {
@@ -490,6 +594,16 @@ fn validate_selected_assets(
     root: &Path,
     assets: &[Value],
     paths: &[String],
+) -> Result<Vec<PathBuf>, String> {
+    validate_selected_assets_with_limits(root, assets, paths, 20 * 1024 * 1024, 64 * 1024 * 1024)
+}
+
+fn validate_selected_assets_with_limits(
+    root: &Path,
+    assets: &[Value],
+    paths: &[String],
+    file_limit: u64,
+    batch_limit: u64,
 ) -> Result<Vec<PathBuf>, String> {
     if paths.len() > 20 {
         return Err("每次任务最多选择20个项目资料文件".into());
@@ -511,15 +625,21 @@ fn validate_selected_assets(
         {
             return Err("项目资料必须是私有资产目录内的普通文件，不能是符号链接".into());
         }
-        if metadata.len() > 20 * 1024 * 1024 {
-            return Err(format!("项目资料超过任务附件20MB上限：{path}"));
+        if metadata.len() > file_limit {
+            return Err(format!(
+                "项目资料超过{}MB上限：{path}",
+                file_limit / 1024 / 1024
+            ));
         }
         if validated.contains(&canonical) {
             continue;
         }
         total += metadata.len();
-        if total > 64 * 1024 * 1024 {
-            return Err("本次项目资料总大小不能超过64MB".into());
+        if total > batch_limit {
+            return Err(format!(
+                "本次项目资料总大小不能超过{}MB",
+                batch_limit / 1024 / 1024
+            ));
         }
         if !validated.contains(&canonical) {
             validated.push(canonical);
@@ -666,6 +786,69 @@ mod tests {
         validate_selected_assets, write_to, MAX_BYTES,
     };
     use serde_json::json;
+
+    #[test]
+    fn automation_context_uses_only_active_decisions_and_distinguishes_execution_from_acceptance() {
+        let project = json!({"name":"项目", "description":"交付目标", "instructions":"当前规范", "decisions":[
+            {"content":"保留来源", "status":"active"}, {"content":"过时规范", "status":"retired"}
+        ], "tasks":[{"title":"报告", "status":"in_progress", "sessionId":"s"}], "assets":[{"name":"参考.csv"}]});
+        let statuses = std::collections::HashMap::from([(
+            "s".into(),
+            crate::meta::SessionLifecycle {
+                status: "completed".into(),
+                updated_at: "2026-11-17".into(),
+            },
+        )]);
+        let prompt = super::build_automation_context(&project, &statuses).unwrap();
+        for text in [
+            "交付目标",
+            "当前规范",
+            "保留来源",
+            "会话状态 completed",
+            "尚未验收",
+            "参考.csv",
+        ] {
+            assert!(prompt.contains(text), "missing {text}");
+        }
+        assert!(!prompt.contains("过时规范"));
+        let mut changed = project;
+        changed["instructions"] = json!("最新规范");
+        assert!(super::build_automation_context(&changed, &statuses)
+            .unwrap()
+            .contains("最新规范"));
+        changed["instructions"] = json!("x".repeat(128_001));
+        assert!(super::build_automation_context(&changed, &statuses).is_err());
+    }
+
+    #[test]
+    fn sharing_assets_keeps_catalog_boundary_without_task_attachment_size_limit() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().canonicalize().unwrap();
+        let file = root.join("large.pdf");
+        std::fs::File::create(&file)
+            .unwrap()
+            .set_len(21 * 1024 * 1024)
+            .unwrap();
+        let chosen = vec![file.to_string_lossy().into_owned()];
+        let catalog = vec![json!({"kind":"file", "path": chosen[0]})];
+        assert!(validate_selected_assets(&root, &catalog, &chosen).is_err());
+        assert!(super::validate_selected_assets_with_limits(
+            &root,
+            &catalog,
+            &chosen,
+            super::MAX_ASSET_FILE_BYTES,
+            super::MAX_ASSET_BATCH_BYTES
+        )
+        .is_ok());
+        assert!(super::validate_selected_assets_with_limits(
+            &root,
+            &[],
+            &chosen,
+            super::MAX_ASSET_FILE_BYTES,
+            super::MAX_ASSET_BATCH_BYTES
+        )
+        .is_err());
+    }
 
     #[test]
     fn task_assets_require_exact_catalog_membership_containment_and_file_limits() {

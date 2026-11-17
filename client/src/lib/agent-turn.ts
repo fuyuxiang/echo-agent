@@ -4,6 +4,7 @@ import { sessionControlStatus } from "@/lib/session-control";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
+import { useProjectsStore } from "@/stores/projects-store";
 
 export type AgentTurnSender = (
   sessionId: string,
@@ -86,6 +87,12 @@ export function beginAgentTurn(
   if (input.coding?.mode) transcript.setAgentMode(input.coding.mode === "agent" ? "default" : input.coding.mode, sessionId);
   transcript.pushUser(displayText, attachments, sessionId, promptText);
   transcript.startStreaming(sessionId, promptId);
+  // A new request reopens an accepted local task; merely viewing it does not.
+  for (const project of useProjectsStore.getState().projects) {
+    for (const task of project.tasks) {
+      if (task.sessionId === sessionId && task.status === "completed") useProjectsStore.getState().updateTask(project.id, task.id, { status: "in_progress", acceptedAt: undefined });
+    }
+  }
 
   const sending = input.coding
     ? send(sessionId, promptText, attachments, displayText, promptId, input.coding)

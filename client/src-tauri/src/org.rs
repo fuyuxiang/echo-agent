@@ -2403,8 +2403,14 @@ pub async fn org_project_request(
     {
         return Err("项目请求过大".into());
     }
-    let (method, path) =
+    let (method, mut path) =
         project_request_route(&action, project_id.as_deref(), resource_id.as_deref())?;
+    let body = if action == "memberCandidates" {
+        path = project_member_search_path(&path, body.as_ref())?;
+        None
+    } else {
+        body
+    };
     let pending = if action == "snapshot" {
         match tokio::time::timeout(
             std::time::Duration::from_secs(3),
@@ -2436,6 +2442,9 @@ fn project_request_route(
     project: Option<&str>,
     resource: Option<&str>,
 ) -> Result<(Method, String), String> {
+    if action == "capabilities" {
+        return Ok((Method::GET, "/api/v1/projects/capabilities".into()));
+    }
     if action == "list" {
         return Ok((Method::GET, "/api/v1/projects".into()));
     }
@@ -2449,14 +2458,17 @@ fn project_request_route(
         "snapshot" => (Method::GET, base),
         "update" => (Method::PATCH, base),
         "addMember" => (Method::POST, format!("{base}/members")),
+        "memberCandidates" => (Method::GET, format!("{base}/member-candidates")),
         "createTask" => (Method::POST, format!("{base}/tasks")),
         "createDecision" => (Method::POST, format!("{base}/decisions")),
+        "createComment" => (Method::POST, format!("{base}/comments")),
         "ask" => (Method::POST, format!("{base}/ask")),
-        "removeMember" | "updateTask" | "claimTask" | "updateDecision" => {
+        "removeMember" | "updateMember" | "updateTask" | "claimTask" | "updateDecision" => {
             let resource = resource.ok_or("缺少项目资源 ID")?;
             uuid::Uuid::parse_str(resource).map_err(|_| "项目资源 ID 无效")?;
             match action {
                 "removeMember" => (Method::DELETE, format!("{base}/members/{resource}")),
+                "updateMember" => (Method::PATCH, format!("{base}/members/{resource}")),
                 "updateTask" => (Method::PATCH, format!("{base}/tasks/{resource}")),
                 "claimTask" => (Method::POST, format!("{base}/tasks/{resource}/claim")),
                 _ => (Method::PATCH, format!("{base}/decisions/{resource}")),
@@ -2465,6 +2477,17 @@ fn project_request_route(
         _ => return Err("不支持的项目操作".into()),
     };
     Ok(route)
+}
+
+fn project_member_search_path(base: &str, body: Option<&Value>) -> Result<String, String> {
+    let query = body
+        .and_then(|value| value.get("query"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if query.chars().count() > 120 {
+        return Err("成员搜索内容过长".into());
+    }
+    Ok(format!("{base}?q={}", urlencoding::encode(query)))
 }
 
 #[tauri::command]
@@ -2971,6 +2994,22 @@ pub(crate) async fn project_session_scope(
     Ok(authorized_project_session(app, session)
         .await?
         .map(|(_, context, scope)| (scope, context.generation)))
+}
+
+/// A newly created project's scope may not be present in the renderer's last
+/// bootstrap. Resolve only the native-bound session and its current membership.
+#[tauri::command]
+pub async fn org_project_session_scope(
+    app: AppHandle,
+    state: State<'_, crate::commands::AppState>,
+    session_id: String,
+    expected_generation: u64,
+) -> Result<Option<String>, String> {
+    require_project_account_generation(&app, expected_generation).await?;
+    state.session_workspace(&session_id)?;
+    let scope = project_session_scope(&app, &session_id).await?;
+    require_project_account_generation(&app, expected_generation).await?;
+    Ok(scope.map(|(scope, _)| scope))
 }
 
 /// Every new turn resolves fresh project facts and checks live membership under
@@ -6287,6 +6326,29 @@ fn drain_sse_events(pending: &mut Vec<u8>) -> Result<Vec<(String, Value)>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_member_search_is_bounded_and_cannot_inject_query_fields() {
+        let path = project_member_search_path(
+            "/api/v1/projects/example/member-candidates",
+            Some(&json!({"query":"李明 &role=admin"})),
+        )
+        .unwrap();
+        let url = Url::parse(&format!("http://local{path}")).unwrap();
+        let pairs: Vec<_> = url.query_pairs().into_owned().collect();
+        assert_eq!(
+            pairs,
+            vec![("q".to_string(), "李明 &role=admin".to_string())]
+        );
+        assert!(
+            project_member_search_path("/projects", Some(&json!({"query":"人".repeat(121)})))
+                .is_err()
+        );
+        let id = "00000000-0000-4000-8000-000000000001";
+        assert!(project_request_route("memberCandidates", Some("../admin/users"), None).is_err());
+        assert!(project_request_route("updateMember", Some(id), Some("../other")).is_err());
+        assert!(project_request_route("arbitraryEndpoint", Some(id), Some(id)).is_err());
+    }
 
     #[test]
     fn library_queries_are_bounded_and_cannot_change_the_endpoint() {

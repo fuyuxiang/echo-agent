@@ -214,6 +214,7 @@ export function RefPickerDialog({
           {options.length === 0 && (
             <div className="proj-picker-empty">{emptyHint ?? `当前没有可用的${title}`}</div>
           )}
+          {picked.filter(item => !options.some(option => option.id === item.id)).map(item => <div className="proj-picker-item" key={`retained:${item.id}`}><span>{item.name}<small> · 暂不可用，原配置已保留</small></span><button type="button" className="pd-btn pd-btn--small" onClick={() => toggle(item)} aria-label={`移除${item.name}`}>移除</button></div>)}
           {options.map((o) => {
             const on = picked.some((p) => p.id === o.id);
             return (

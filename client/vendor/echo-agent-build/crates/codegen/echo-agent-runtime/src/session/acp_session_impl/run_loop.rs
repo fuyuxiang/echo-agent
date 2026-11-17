@@ -941,8 +941,8 @@ pub(super) async fn run_session(
                             let result = session.apply_session_mode(session_mode).await;
                             let _ = responds_to.send(result);
                         }
-                        SessionCommand::SetSessionModel { sampling_config, use_concise, is_family_switch, apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent, responds_to } => {
-                            let updated_model_id = session.handle_set_session_model(sampling_config, use_concise, is_family_switch, apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent).await;
+                        SessionCommand::SetSessionModel { model_id, sampling_config, use_concise, is_family_switch, apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent, responds_to } => {
+                            let updated_model_id = session.handle_set_session_model(model_id, sampling_config, use_concise, is_family_switch, apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent).await;
                             let _ = responds_to.send(updated_model_id);
                         }
                         SessionCommand::RebuildAgentForDefinition { definition, responds_to } => {

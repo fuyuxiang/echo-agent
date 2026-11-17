@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublishTeamProjectButton } from "../PublishTeamProjectButton";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import type { ProjectMeta } from "@/stores/projects-store";
-const api = vi.hoisted(() => ({ teamProjectRequest: vi.fn(), teamProjectUpload: vi.fn(), projectAssetsUse: vi.fn() }));
+const api = vi.hoisted(() => ({ teamProjectRequest: vi.fn(), projectCollaborationCapabilities: vi.fn(), teamProjectUpload: vi.fn(), projectAssetsUse: vi.fn() }));
 vi.mock("@/lib/team-project-client", async original => ({ ...await original<object>(), ...api }));
-vi.mock("@/lib/agent-client", () => ({ projectAssetsUse: api.projectAssetsUse }));
+vi.mock("@/lib/agent-client", () => ({ projectAssetsUse: api.projectAssetsUse, projectsSave: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/org-client", () => ({ orgSession: vi.fn() }));
 const project: ProjectMeta = { id: "local", name: "接口项目", instructions: "完成联调", createdAt: "2026-11-16", members: ["私人备注"], conversations: [{ sessionId: "private", title: "私人探索", createdAt: "2026-11-16" }], plans: [], tasks: [{ id: "t", title: "设计工作", status: "pending", scope: "personal", source: "manual" }], assets: [{ id: "file", name: "规范.md", path: "/local/规范.md", kind: "file" }], experts: [], skills: [], connectors: [] };
 beforeEach(() => {
  vi.resetAllMocks(); localStorage.clear();
+ api.projectCollaborationCapabilities.mockResolvedValue({ version: 2, idempotentCreate: true, memberSearch: true, memberRoles: true });
  useOrgSessionStore.setState({ session: { loggedIn: true, serverUrl: "https://org.example", user: { id: "a", username: "a", displayName: "A", role: "member", clearance: 0 } }, boundaryRevision: 1 });
  api.teamProjectRequest.mockResolvedValue({ id: "shared" }); api.projectAssetsUse.mockResolvedValue(["/authorized/规范.md"]);
 });
@@ -24,6 +25,13 @@ describe("personal project publication", () => {
   expect(api.teamProjectUpload).not.toHaveBeenCalled();
   expect(api.projectAssetsUse).not.toHaveBeenCalled();
   expect(api.teamProjectRequest).toHaveBeenCalledTimes(1);
+ });
+ it.each(["对外共享的项目目标", ""])("publishes the explicit project description without copying local instructions: %s", async description => {
+  const published = vi.fn(); render(<PublishTeamProjectButton project={{...project, description, instructions:"仅本机的执行规范"}} onPublished={published} />);
+  fireEvent.click(screen.getByRole("button", { name: "发布为团队项目" }));
+  fireEvent.click(screen.getByRole("button", { name: "发布并管理成员" }));
+  await waitFor(() => expect(published).toHaveBeenCalledWith("shared"));
+  expect(api.teamProjectRequest).toHaveBeenCalledWith("create", undefined, {name: project.name, goal: description}, undefined, expect.any(Object));
  });
  it("keeps the shared project after a partial upload failure and retries the remaining selected file", async () => {
   api.teamProjectUpload.mockRejectedValueOnce(new Error("连接中断")).mockResolvedValue({ docId: "doc" });
@@ -47,7 +55,7 @@ describe("personal project publication", () => {
   const published = vi.fn();
   render(<PublishTeamProjectButton project={{ ...project, tasks: [{ ...project.tasks[0], status: "completed" }] }} onPublished={published} />);
   fireEvent.click(screen.getByRole("button", { name: "发布为团队项目" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: "工作项：设计工作" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "任务：设计工作" }));
   fireEvent.click(screen.getByRole("button", { name: "发布并管理成员" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("部分内容尚未发布");
   fireEvent.click(screen.getByRole("button", { name: "发布并管理成员" }));
@@ -111,4 +119,22 @@ it("finishes an authorized publication in the background without taking over lat
  expect(api.teamProjectUpload).toHaveBeenCalledTimes(1);
  expect(screen.getByRole("button", { name: "打开团队项目" })).toBeInTheDocument();
  expect(screen.getByRole("button", { name: "补充发布内容" })).toBeInTheDocument();
+});
+
+it("retries a lost first-sharing response with the same server idempotency key and records the association before uploads", async () => {
+ const linked = vi.fn().mockResolvedValue(undefined), published = vi.fn();
+ api.teamProjectRequest.mockImplementation(async (action: string) => {
+  if (action === "capabilities") return { version: 2, idempotentCreate: true };
+  if (action === "create" && api.teamProjectRequest.mock.calls.filter(([name]) => name === "create").length === 1) throw new Error("连接中断");
+  return { id: "same-shared-project" };
+ });
+ render(<PublishTeamProjectButton project={project} collaborationMode onLinked={linked} onPublished={published} />);
+ fireEvent.click(screen.getByRole("button", { name: "开启协作并选择共享内容" }));
+ fireEvent.click(screen.getByRole("button", { name: "确认共享" }));
+ await screen.findByRole("alert");
+ fireEvent.click(screen.getByRole("button", { name: "确认共享" }));
+ await waitFor(() => expect(published).toHaveBeenCalledWith("same-shared-project"));
+ const creates = api.teamProjectRequest.mock.calls.filter(([name]) => name === "create");
+ expect(creates).toHaveLength(2); expect(creates[0][2].clientRequestId).toBeTruthy(); expect(creates[1][2].clientRequestId).toBe(creates[0][2].clientRequestId);
+ expect(linked).toHaveBeenCalledWith("same-shared-project");
 });
