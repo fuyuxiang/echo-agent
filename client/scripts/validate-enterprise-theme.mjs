@@ -147,24 +147,36 @@ try {
     }
 
     await go(targeted, { surface: "project" });
-    for (const tab of ["动态", "工作项", "项目资料"]) {
-      await page.getByRole("button", { name: tab, exact: true }).click();
+    for (const tab of ["概览", "动态", "任务", "资料与成果"]) {
+      await page.getByRole("tab", { name: tab, exact: true }).click();
+      await page.getByRole("tabpanel", { name: tab, exact: true }).waitFor();
       await capture(`project-${tab}`);
     }
-    await page.locator(".project-default-preferences > summary").click();
-    for (const name of ["模型", "专家", "指令", "连接器", "技能", "定时任务"]) {
-      await page.getByRole("button", { name: `配置项目默认${name}`, exact: true }).click();
-      const dialog = page.getByRole("dialog", { name: `项目配置：${name}`, exact: true });
-      await dialog.waitFor();
-      await capture(`project-config-${name}`);
-      if (name === "模型") {
-        await dialog.getByRole("button", { name: /选择项目默认模型/ }).click();
-        await page.getByRole("listbox").waitFor();
-        await capture("project-model-menu");
-        await page.keyboard.press("Escape");
-      }
-      await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+    await page.getByRole("button", { name: "项目设置", exact: true }).click();
+    const projectSettings = page.getByRole("dialog", { name: "项目设置", exact: true });
+    await projectSettings.getByRole("textbox", { name: /^项目指令/ }).waitFor();
+    await capture("project-config-指令");
+    await projectSettings.getByRole("button", { name: /选择项目默认模型/ }).scrollIntoViewIfNeeded();
+    await capture("project-config-模型");
+    await projectSettings.getByRole("button", { name: /选择项目默认模型/ }).click();
+    await page.getByRole("listbox").waitFor();
+    await capture("project-model-menu");
+    await page.keyboard.press("Escape");
+    for (const name of ["专家", "连接器", "技能"]) {
+      await projectSettings.getByRole("button", { name: `选择${name}`, exact: true }).click();
+      const picker = page.getByRole("dialog", { name: `添加${name}`, exact: true });
+      await picker.waitFor();
+      await capture(`project-config-${name}`, { requiredMarks: true });
+      await page.keyboard.press("Escape");
+      await picker.waitFor({ state: "hidden" });
     }
+    await projectSettings.getByRole("button", { name: "关闭项目设置", exact: true }).click();
+    if (await page.getByRole("button", { name: "展开项目上下文", exact: true }).count()) await page.getByRole("button", { name: "展开项目上下文", exact: true }).click();
+    await page.getByRole("button", { name: "管理项目定时工作", exact: true }).click();
+    const projectSchedules = page.getByRole("dialog", { name: "任务：项目定时工作", exact: true });
+    await projectSchedules.waitFor();
+    await capture("project-config-定时任务");
+    await projectSchedules.getByRole("button", { name: "关闭任务详情", exact: true }).click();
 
     await go(shared, { surface: "organization-shell", orgState: "many" });
     for (const tab of ["概览", "经验", "文档", "Skills"]) {
@@ -177,10 +189,9 @@ try {
       }
     }
     await go(targeted, { surface: "project", state: "unavailable" });
-    await page.locator(".project-default-preferences > summary").click();
-    await page.getByRole("button", { name: "配置项目默认模型", exact: true }).click();
-    await page.locator(".proj-model-setting__warning").waitFor();
-    await capture("project-model-unavailable", { requiredText: ["已被删除或停用"] });
+    await page.getByRole("button", { name: "项目设置", exact: true }).click();
+    await page.getByRole("dialog", { name: "项目设置", exact: true }).getByRole("alert").filter({ hasText: "暂不可用，配置已保留" }).scrollIntoViewIfNeeded();
+    await capture("project-model-unavailable", { requiredText: ["暂不可用，配置已保留"] });
     await go(shared, { surface: "workbench", state: "plan" });
     await capture("conversation-completed-plan");
     await page.getByRole("button", { name: "筛选任务", exact: true }).click();

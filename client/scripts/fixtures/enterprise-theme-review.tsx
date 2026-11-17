@@ -82,6 +82,7 @@ Object.assign(window, {
         case "coding_document_editor_attach": return args.root;
         case "coding_document_editor_detach": case "coding_inline_cancel": return;
         case "projects_save": return;
+        case "automations_snapshot": return { automations: [], records: [] };
         case "agent_models": return [{ id: "review/available", name: "团队工作模型" }];
         case "agent_status": return { ready: true, connected: true };
         case "agents_list": case "skills_list": case "mcp_list": case "tasks_list": return [];

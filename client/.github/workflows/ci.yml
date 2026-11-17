@@ -200,6 +200,8 @@ jobs:
         include:
           - suite: design
             command: node scripts/validate-design-system.mjs
+          - suite: select
+            command: pnpm test:ui:select
           - suite: themes
             command: pnpm test:ui:theme-states
           - suite: theme-lifecycle
