@@ -21,7 +21,7 @@ let settings = { model:"personal-model",skills:["writing"],tools:["read_file"],d
 const expert = {name:"业务分析师",description:"整理需求、分析数据并形成可评审的交付文档",scope:"user",path:"/review/agents/analyst.md",raw:"---\nname: 业务分析师\n---\n根据项目背景分析问题，给出有依据的建议。",modelTags:["reasoning"]};
 const project:ProjectMeta = {id:"review-local-project",name:"产品需求梳理",instructions:"梳理用户需求，完成可评审的方案。",createdAt:new Date().toISOString(),cwd:"/review/workspace",defaultModelId:models[0].id,connectors:[],experts:[],skills:[],plans:[],tasks:[{id:"local-task",title:"梳理需求",status:"pending",scope:"personal",source:"manual"}],assets:[{id:"local-file",name:"需求说明.md",kind:"file",path:"/review/reference.md"}],members:["保留原有本机备注"],conversations:[]};
 const shared:TeamProjectSnapshot = {id:"00000000-0000-4000-8000-000000000001",name:project.name,goal:project.instructions!,scopeId:"scope",ownerId:"a",revision:1,updatedAt:Date.now(),role:"admin",members:[{userId:"a",username:"owner",displayName:"项目负责人",role:"admin",status:"active"}],tasks:[],decisions:[],assets:[],runs:[],events:[]};
-const remote:TeamProjectSnapshot = {...structuredClone(shared),id:"00000000-0000-4000-8000-000000000002",name:"客户交付",role:"viewer"};
+const remote:TeamProjectSnapshot = {...structuredClone(shared),id:"00000000-0000-4000-8000-000000000002",name:"客户交付",role:params.has("remoteAdmin") ? "admin" : "viewer"};
 shared.comments=[]; remote.comments=[];
 const workspaceReview=params.get("surface")==="workspace";
 if(workspaceReview){
@@ -33,7 +33,8 @@ if(workspaceReview){
  localStorage.setItem("echoagent.task-artifacts.v1",JSON.stringify([{id:"output",path:"/review/workspace/竞品分析报告.md",kind:"edit",title:"Write report",toolCallId:"write-report",status:"completed",verifiedOutput:true,sessionId:"analysis-session",sessionTitle:"竞品分析与产品机会点",cwd:"/review/workspace",updatedAt:Date.now()}]));
 }
 const scheduled:any[]=[];const records:any[]=[];
-let created=false; let organizationOffline=params.get("organization")==="offline"; const calls:unknown[]=[];
+let created=params.get("linked")==="1"; let organizationOffline=params.get("organization")==="offline"; const calls:unknown[]=[];
+const deletedProjects = new Set(params.has("linkedDeleted") ? [shared.id] : []);
 const callbacks = new Map<number, unknown>();
 Object.assign(window,{reviewCalls:calls,reviewSetOrganizationOffline:(offline:boolean)=>{organizationOffline=offline;},__TAURI_INTERNALS__:{metadata:{currentWindow:{label:"main"},currentWebview:{label:"main"}},transformCallback:(callback:unknown)=>{const id=callbacks.size+1;callbacks.set(id,callback);return id;},unregisterCallback:(id:number)=>callbacks.delete(id),invoke:async(command:string,args:any={})=>{
  calls.push({command,args});
@@ -49,8 +50,15 @@ Object.assign(window,{reviewCalls:calls,reviewSetOrganizationOffline:(offline:bo
   case "org_project_request":{
    if(organizationOffline)throw new Error("refresh organization session: error sending request for url (https://isolated.example/api/v1/auth/refresh)");
    if(params.get("service")==="unsupported")throw new Error("接口不存在");
-   if(args.action==="list")return structuredClone(created?[shared,remote]:[remote]);
-   if(args.action==="capabilities")return {version:4,memberSearch:true,memberRoles:true,idempotentCreate:true,taskIdentity:true,projectComments:true,decisionRevisions:true};
+   if(args.action==="list")return structuredClone([...(created?[shared]:[]),remote].filter(project=>!deletedProjects.has(project.id)));
+   if(args.action==="capabilities")return {version:5,memberSearch:true,memberRoles:true,idempotentCreate:true,taskIdentity:true,projectComments:true,decisionRevisions:true,projectDeletion:true};
+   if(args.action==="delete"){
+    const target=args.projectId===remote.id?remote:args.projectId===shared.id?shared:undefined;
+    if(!target||target.role!=="admin")throw new Error("当前项目角色无权执行此操作");
+    if(!deletedProjects.has(target.id)&&args.body.expectedRevision!==target.revision)throw new Error("项目已更新，请刷新后重试");
+    deletedProjects.add(target.id);return {id:target.id};
+   }
+   if(deletedProjects.has(args.projectId))throw new Error("共享项目已删除");
    if(args.action==="create"){created=true;return structuredClone(shared);}
    if(args.action==="memberCandidates")return [{userId:"b",username:"liming",displayName:"李明"}];
    if(args.action==="addMember"){shared.members.push({userId:"b",username:args.body.username,displayName:"李明",role:args.body.role,status:"active"});shared.revision++;return structuredClone(shared);}

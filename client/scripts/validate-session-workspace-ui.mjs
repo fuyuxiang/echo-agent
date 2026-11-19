@@ -63,6 +63,14 @@ try {
     assert.ok(await retry.isEnabled(), "restoring the directory must restore reply actions");
     await page.getByRole("button", {name:"关闭面板",exact:true}).click();
   }
+  await page.goto(`${base}?surface=workbench&workspace=automatic`);
+  await page.getByRole("button", { name: "收起侧边栏", exact: true }).click();
+  const taskFolder = page.getByRole("button", { name: "打开任务文件夹", exact: true });
+  assert.equal(await taskFolder.innerText(), "任务文件夹");
+  assert.match(await taskFolder.getAttribute("title"), /打开任务文件夹 · .*\/Tasks\/c2856c21-0e33-43a3-8541-bc06cebcdc89$/);
+  await taskFolder.click();
+  await page.waitForFunction(() => window.workbenchCalls.some(call => call.command === "open_path" && call.args.path.endsWith("/Tasks/c2856c21-0e33-43a3-8541-bc06cebcdc89")));
+  await page.screenshot({ path: join(output, "automatic-task-folder.png") });
   await page.setViewportSize({width:1280,height:900});
   await page.goto(`${base}?surface=workbench&state=files`);
   await openWorkspaceView(page, "成果");

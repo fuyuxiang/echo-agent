@@ -147,6 +147,7 @@ export function Composer({
   projectWorkspaceDefault,
   workspaceError,
   onOpenWorkspace,
+  managedTaskWorkspace = false,
   openWorkspaceDisabled,
   // Seed text (from HomePage chips). Consumed once, then cleared via callback.
   initialText,
@@ -259,6 +260,7 @@ export function Composer({
   projectWorkspaceDefault?: { cwd?: string };
   workspaceError?: string;
   onOpenWorkspace?: () => void;
+  managedTaskWorkspace?: boolean;
   openWorkspaceDisabled?: boolean;
   /** Optional initial text to seed the input (one-shot, then cleared). */
   initialText?: string;
@@ -1195,7 +1197,8 @@ export function Composer({
   const showWorkspacePicker = !!onSelectWorkspace && !!workspaces;
   const homeLayout = showMeta && !compact;
   const workspacePath = cwd ? displayPath(cwd) : undefined;
-  const workspaceLabel = workspacePath ? attachmentBasename(workspacePath) : automaticWorkspace ? "默认任务目录" : "工作目录未记录";
+  const workspaceLabel = managedTaskWorkspace ? "任务文件夹"
+    : workspacePath ? attachmentBasename(workspacePath) : automaticWorkspace ? "默认任务目录" : "工作目录未记录";
   const showBoundaryInCard = permissionInline || Boolean(showMeta && commandSessionId);
   const knowledgePicker = <KnowledgePicker
     sessionId={knowledgeSessionId}
@@ -1682,8 +1685,8 @@ export function Composer({
             />
           ) : workspacePath && onOpenWorkspace ? (
             <button type="button" className="echo-composer-meta__btn echo-composer-meta__workspace echo-composer-meta__open-workspace"
-              disabled={openWorkspaceDisabled} aria-label={`打开工作目录：${workspacePath}`}
-              title={`打开文件夹 · ${workspacePath}`} onClick={onOpenWorkspace}>
+              disabled={openWorkspaceDisabled} aria-label={managedTaskWorkspace ? "打开任务文件夹" : `打开工作目录：${workspacePath}`}
+              title={`${managedTaskWorkspace ? "打开任务文件夹" : "打开文件夹"} · ${workspacePath}`} onClick={onOpenWorkspace}>
               <FolderOpen size={14} strokeWidth={1.75} aria-hidden="true" />
               <span className="workspace-picker__label">{workspaceLabel}</span>
             </button>

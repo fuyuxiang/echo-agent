@@ -13,10 +13,10 @@ import { importProjectOutput } from "@/lib/project-files";
 import type { TaskArtifact } from "@/lib/artifact-catalog";
 import { orgDownloadDocument } from "@/lib/org-client";
 import { PanelRight, Settings2, Users, LockKeyhole, Check } from "lucide-react";
-import { useProjectWorkspace } from "@/lib/use-project-workspace";
+import { useProjectWorkspace, type CheckedProjectSnapshot } from "@/lib/use-project-workspace";
 import { useSharedProjectId, projectSharingAccount } from "@/lib/project-sharing";
 import { useOrgSessionStore } from "@/stores/org-session-store";
-import { captureTeamProjectOperation, projectCollaborationCapabilities, teamProjectRequest, type TeamProjectSnapshot, type StartTeamWork, type OpenTeamExecution } from "@/lib/team-project-client";
+import { captureTeamProjectOperation, projectCollaborationCapabilities, PROJECT_DELETED_MESSAGE, teamProjectRequest, type TeamProjectSnapshot, type StartTeamWork, type OpenTeamExecution } from "@/lib/team-project-client";
 import { findModelDisplayName } from "@/lib/model-presentation";
 import { PageToolbar } from "./PageToolbar";
 import { useSessionsStore } from "@/stores/sessions-store";
@@ -58,6 +58,7 @@ export function ProjectDetailView({
   onStartTeamWork,
   onOpenTeamExecution,
   project,
+  checkedSnapshot,
   initialTab = "overview",
   draftFocusRequest,
   workspaces = [],
@@ -80,6 +81,7 @@ export function ProjectDetailView({
   onOpenOrganization,
 }: {
   project: ProjectMeta;
+  checkedSnapshot?: CheckedProjectSnapshot;
   onTeamPublished?: (id: string) => void;
   onStartTeamWork?: StartTeamWork;
   onOpenTeamExecution?: OpenTeamExecution;
@@ -153,6 +155,8 @@ export function ProjectDetailView({
   const [localFocus, setLocalFocus] = useState(0);
   const sharedId = useSharedProjectId(live);
   const sharingAccount = useOrgSessionStore(state => projectSharingAccount(state.session));
+  const deletedSharedId = live.deletedSharedProjects?.[sharingAccount];
+  const sharingDeleted = !sharedId && Boolean(deletedSharedId);
   const scopeKey = `${live.id}:${sharingAccount}:${sharedId ?? ""}`;
   const currentScope = useRef(scopeKey); currentScope.current = scopeKey;
   useEffect(() => { setResource(undefined); setSettingsOpen(false); setDecisionsOpen(false); setAutomationsOpen(false); setQuestionsOpen(false); setSelectedTaskId(undefined); }, [scopeKey]);
@@ -166,7 +170,8 @@ export function ProjectDetailView({
       void useProjectsStore.getState().linkSharedProject(live.id, sharingAccount, sharedId).catch(error => onToast?.(`协作关联待保存：${String(error)}`));
     }
   }, [sharedId, live.id, sharingAccount, live.sharedProjects, onToast]);
-  const workspace = useProjectWorkspace(sharedId);
+  const workspace = useProjectWorkspace(sharedId, checkedSnapshot);
+  const members = workspace.snapshot?.members ?? (sharedId ? undefined : [{ userId: "self", displayName: "我" }]);
   const { artifacts: outputs, error: outputError, refresh: refreshOutputs } = useProjectArtifacts(live);
   const automation = useProjectAutomations(live);
   const openProjectSession = (id: string, cwd?: string) => {
@@ -387,32 +392,33 @@ export function ProjectDetailView({
           <span className="pd-crumb__sep">/</span>
           <span className="pd-crumb__name">{live.name}</span>
         </div>
-        <div className="project-detail-members"><span className="project-members-avatars" aria-label={`${workspace.snapshot?.members.length ?? 1} 位参与者`}>{(workspace.snapshot?.members.slice(0, 3) ?? [{ userId: "self", displayName: "我" }]).map(m => <span key={m.userId}>{m.displayName.slice(-1)}</span>)}</span><ProjectParticipantsButton project={live} sharedId={sharedId} onLinked={linkShared} onOpenOrganization={onOpenOrganization} label="邀请" /><button type="button" className="pd-btn pd-btn--ghost" onClick={toggleContext} aria-label={contextOpen ? "收起项目上下文" : "展开项目上下文"} aria-pressed={contextOpen}><PanelRight size={17} /></button><button type="button" className="pd-btn pd-btn--ghost" aria-label="项目设置" disabled={!!sharedId && !workspace.snapshot} onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button></div>
+        <div className="project-detail-members">{members && <span className="project-members-avatars" aria-label={`${members.length} 位参与者`}>{members.slice(0, 3).map(m => <span key={m.userId}>{m.displayName.slice(-1)}</span>)}</span>}<ProjectParticipantsButton key={deletedSharedId} project={live} sharedId={sharedId} onLinked={linkShared} onOpenOrganization={onOpenOrganization} label="邀请" /><button type="button" className="pd-btn pd-btn--ghost" onClick={toggleContext} aria-label={contextOpen ? "收起项目上下文" : "展开项目上下文"} aria-pressed={contextOpen}><PanelRight size={17} /></button><button type="button" className="pd-btn pd-btn--ghost" aria-label="项目设置" disabled={!!sharedId && !workspace.snapshot} onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button></div>
       </PageToolbar>
 
       <div className={`pd-body project-unified-body project-workspace-body${contextOpen ? "" : " project-workspace-body--wide"}`}>
         <div className="pd-main">
-          <div className="project-workspace-title"><h1>{workspace.snapshot?.name ?? live.name}</h1><p>{workspace.snapshot?.goal || live.description || "集中管理相关任务、背景资料与交付成果。"}</p><div><span>{sharedId ? <Users size={14} /> : <LockKeyhole size={14} />}{sharedId ? "共享项目" : "仅自己可见"}</span><span>{workspace.snapshot?.members.length ?? 1} 位参与者</span><span><Check size={13} />{persistError ? "本机保存失败" : persisting ? "正在保存…" : "本机更改已保存"}</span></div></div>
+          <div className="project-workspace-title"><h1>{workspace.snapshot?.name ?? live.name}</h1><p>{workspace.snapshot?.goal || live.description || "集中管理相关任务、背景资料与交付成果。"}</p><div><span>{sharedId ? <Users size={14} /> : <LockKeyhole size={14} />}{sharedId ? "共享项目" : "仅自己可见"}</span>{members && <span>{members.length} 位参与者</span>}<span><Check size={13} />{persistError ? "本机保存失败" : persisting ? "正在保存…" : "本机更改已保存"}</span></div></div>
           <div className="pd-tabs-row">
             <nav className="pd-tabs" aria-label="项目内容" role="tablist">
               {([['overview','概览'],['task','任务'],['asset','资料与成果'],['activity','动态']] as const).map(([id,label]) => <button key={id} type="button" role="tab" id={`project-tab-${id}`} aria-label={label} aria-selected={tab === id} aria-controls="project-content-panel" className={`pd-tab-btn${tab === id ? " pd-tab-btn--on" : ""}`} onClick={() => { setTab(id); setSelectedTaskId(undefined); }}>{label}{id === "task" && <span>{rows.length}</span>}{id === "asset" && <span>{live.assets.length + outputs.length}</span>}</button>)}
             </nav>
-            {sharedId && <div className="project-sync-state"><button type="button" className="pd-btn pd-btn--small" onClick={() => setQuestionsOpen(true)}>问项目</button><span>{workspace.loading ? "同步中…" : workspace.error ? "同步失败" : workspace.snapshot ? "已同步" : "待连接"}</span><button className="pd-btn pd-btn--small" disabled={workspace.loading} onClick={() => void workspace.refresh()}>刷新</button></div>}
+            {sharedId && <div className="project-sync-state"><button type="button" className="pd-btn pd-btn--small" disabled={!workspace.snapshot} onClick={() => setQuestionsOpen(true)}>问项目</button><span>{workspace.loading ? "同步中…" : workspace.error ? "共享暂不可用" : workspace.snapshot ? "已同步" : "待连接"}</span>{!workspace.error && <button className="pd-btn pd-btn--small" disabled={workspace.loading} onClick={() => void workspace.refresh()}>刷新</button>}</div>}
           </div>
-          {sharedId && workspace.error && <ProjectConnectionNotice error={workspace.error} loading={workspace.loading} onRetry={() => void workspace.refresh()} onOpenOrganization={onOpenOrganization} />}
+          {sharingDeleted && <ProjectConnectionNotice error={PROJECT_DELETED_MESSAGE} localRecord />}
+          {sharedId && workspace.error && <ProjectConnectionNotice error={workspace.error} loading={workspace.loading} localRecord openingProject onRetry={() => void workspace.refresh()} onOpenOrganization={onOpenOrganization} />}
           {workspace.snapshot?.syncWarning && <p className="project-inline-error" role="alert">{workspace.snapshot.syncWarning}</p>}
-          {persistError && <p className="project-inline-error" role="alert">保存失败：{persistError}<button className="pd-btn" onClick={() => useProjectsStore.getState().retryPersist()}>重试保存</button></p>}
+          {persistError && <p className="project-inline-error" role="alert">保存失败：{persistError}<button className="pd-btn" disabled={persisting} onClick={() => void useProjectsStore.getState().retryPersist().catch(() => {})}>重试保存</button></p>}
           <div className="pd-tab-content" id="project-content-panel" role="tabpanel" aria-labelledby={`project-tab-${tab}`}>
             {tab === "overview" && <ProjectOverview project={live} rows={rows} outputs={outputs} onOpenTask={openTask} onOpenOutput={output => setResource({ output })} onTasks={() => setTab("task")} onFiles={() => showFiles("output")} onAddFiles={addFiles} />}
             {tab === "activity" && <ProjectActivity key={scopeKey} draftScope={scopeKey} project={live} sharedId={sharedId} workspace={workspace} onOpenTask={openTask} />}
-            {tab === "task" && <ProjectTasks key={`${live.id}:${sharingAccount}`} inlineDetails project={live} account={sharingAccount} sharedId={sharedId} workspace={workspace} models={models} defaultModelId={projectModelId} runDisabled={workItemPermissionMode === undefined} selectedTaskId={selectedTaskId} onSelectedTaskChange={setSelectedTaskId} outputs={outputs} onPreviewOutput={output => setResource({ output })}
+            {tab === "task" && <ProjectTasks key={scopeKey} inlineDetails project={live} account={sharingAccount} sharedId={sharedId} workspace={workspace} models={models} defaultModelId={projectModelId} runDisabled={workItemPermissionMode === undefined} selectedTaskId={selectedTaskId} onSelectedTaskChange={setSelectedTaskId} outputs={outputs} onPreviewOutput={output => setResource({ output })}
               executionCwd={taskCwd} onSelectExecutionWorkspace={async () => { const path = await filesystemPickDirectory(); if (path) selectWorkspace(path); }}
               onRun={onStartConversation ? (message, modelId) => runProjectConversation(message, modelId, [], false) : undefined}
               onStartTeamWork={onStartTeamWork ? (snapshot, task, modelId) => onStartTeamWork(snapshot, task, modelId, { localProjectId: live.id, options: { cwd: taskCwd ?? null, expectedPermissionMode: workItemPermissionMode!, prepareAttachments: () => prepareProjectAttachments([]) } }) : undefined} onOpenTeamExecution={onOpenTeamExecution}
               onOpenSession={onOpenProjectWorkItemSession || onOpenSession ? openProjectSession : undefined}
               onRenameSession={onRenameSession && ((sessionId, title) => onRenameSession(sessionId, title, useSessionsStore.getState().independent.find(s => s.sessionId === sessionId)?.cwd ?? live.cwd))}
               onArchiveSession={onArchiveSession && ((sessionId, archived) => onArchiveSession(sessionId, archived, useSessionsStore.getState().independent.find(s => s.sessionId === sessionId)?.cwd ?? live.cwd))} />}
-            {tab === "asset" && <><ProjectMaterials key={`${live.id}:${sharingAccount}`} project={live} account={sharingAccount} sharedId={sharedId} workspace={workspace} selectedAssetIds={selectedAssetIds} onUseAsset={asset => { selectAsset(asset.id); setTab("overview"); setLocalFocus(n => n + 1); }} outputs={outputs} onPreview={setResource} onUseOutput={useOutput} initialFilter={assetFilter} addRequested={addFilesRequested} onAddHandled={() => setAddFilesRequested(false)} />{outputError && <p className="project-inline-error" role="alert">部分成果读取失败：{outputError}<button className="pd-btn" onClick={refreshOutputs}>重试读取成果</button></p>}</>}
+            {tab === "asset" && <><ProjectMaterials key={scopeKey} project={live} account={sharingAccount} sharedId={sharedId} workspace={workspace} selectedAssetIds={selectedAssetIds} onUseAsset={asset => { selectAsset(asset.id); setTab("overview"); setLocalFocus(n => n + 1); }} outputs={outputs} onPreview={setResource} onUseOutput={useOutput} initialFilter={assetFilter} addRequested={addFilesRequested} onAddHandled={() => setAddFilesRequested(false)} />{outputError && <p className="project-inline-error" role="alert">部分成果读取失败：{outputError}<button className="pd-btn" onClick={refreshOutputs}>重试读取成果</button></p>}</>}
           </div>
 
           {(tab === "overview" || tab === "task" && !selectedTaskId) && <div className="pd-composer-shell">

@@ -55,7 +55,9 @@ it("does not describe a native-bound shared execution as a former private conver
 it("offers read-only project Q&A from the actual unified workspace without starting a task",async()=>{
  api.request.mockImplementation(async(action:string)=>action==="ask"?{answer:"任务待验收",projectRevision:1,updatedAt:100,verification:"supported",insufficient:false,gaps:[],citations:[]}:{...snapshot,role:"viewer"});
  const start=vi.fn();render(<ProjectDetailView project={project} onBack={vi.fn()} models={[]} picker={picker} onStartTeamWork={start}/>);
- fireEvent.click(screen.getByRole("button",{name:"问项目"}));
+ const ask=screen.getByRole("button",{name:"问项目"});
+ await waitFor(()=>expect(ask).toBeEnabled());
+ fireEvent.click(ask);
  const dialog=screen.getByRole("dialog",{name:"问项目"});fireEvent.change(within(dialog).getByRole("textbox",{name:"项目问题"}),{target:{value:"进展如何？"}});
  await waitFor(()=>expect(within(dialog).getByRole("button",{name:"查询项目"})).toBeEnabled());fireEvent.click(within(dialog).getByRole("button",{name:"查询项目"}));
  expect(await screen.findByLabelText("项目问答结果")).toHaveTextContent("任务待验收");expect(start).not.toHaveBeenCalled();expect(api.request.mock.calls.some(([action])=>action==="createTask")).toBe(false);

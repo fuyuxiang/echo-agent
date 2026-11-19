@@ -766,6 +766,10 @@ function ConversationLayoutFixture() {
   const sessionId = useSessionStore((state) => state.sessionId);
   const entry = useSessionsStore(state => state.independent.find(item => item.sessionId === sessionId));
   const layout = useAppSidebarLayout();
+  const defaultWorkspace = "/Users/review/Documents/EchoAgent";
+  const workspace = query.get("workspace") === "automatic"
+    ? `${defaultWorkspace}/Tasks/c2856c21-0e33-43a3-8541-bc06cebcdc89`
+    : "/Users/review/项目/EchoAgent/一个很长的任务工作目录/desktop-client";
   return <div className={"app" + (query.get("platform") === "mac" ? " app--macos" : "")}>
     <ReviewWindowChrome />
     <SidebarLayoutContext.Provider value={layout.context}>
@@ -799,7 +803,8 @@ function ConversationLayoutFixture() {
           modelId={query.has("composerModel") ? "review/MiniMax-M3.1-Flash" : undefined}
           models={query.has("composerModel") ? [{id:"review/MiniMax-M3.1-Flash",label:"MiniMax-M3.1-Flash"}] : undefined}
           onModelChange={query.has("composerModel") ? () => {} : undefined}
-          cwd={query.get("surface") === "workbench" ? "/Users/review/项目/EchoAgent/一个很长的任务工作目录/desktop-client" : undefined}
+          cwd={query.get("surface") === "workbench" ? workspace : undefined}
+          defaultWorkspaceCwd={defaultWorkspace}
           title={entry?.title ?? "聊天布局回归"}
           onRename={async title => { if (sessionId) useSessionsStore.getState().upsert({ sessionId, title }); }}
           onForked={(id, sourceId, _cwd, summary) => {

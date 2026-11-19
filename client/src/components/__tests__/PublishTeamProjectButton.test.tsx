@@ -44,6 +44,24 @@ it("rechecks durable links when content is shared elsewhere while the selection 
  expect(api.teamProjectRequest).not.toHaveBeenCalled(); expect(api.projectAssetsUse).not.toHaveBeenCalled(); expect(api.teamProjectUpload).not.toHaveBeenCalled();
 });
 
+it("closes a stale sharing confirmation when the shared project is deleted", async () => {
+  const account = projectSharingAccount(useOrgSessionStore.getState().session);
+  const linked = { ...project, sharedProjects: { [account]: "shared" } };
+  useProjectsStore.setState({ projects: [linked] });
+  localStorage.setItem(publicationKey(linked.id, account), JSON.stringify({
+    projectId: "shared", files: [], tasks: [], createdTasks: {}, selectedFiles: [], selectedTasks: [],
+  }));
+  render(<PublishTeamProjectButton project={linked} collaborationMode />);
+  fireEvent.click(screen.getByRole("button", { name: "共享更多内容" }));
+  expect(screen.getByRole("dialog")).toBeVisible();
+
+  act(() => useProjectsStore.getState().detachDeletedSharedProject(new Set([linked.id]), account, "shared"));
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "开启协作并选择共享内容" })).toBeVisible();
+  expect(api.teamProjectRequest).not.toHaveBeenCalled();
+});
+
 it("reuses a workspace task's pending creation request rather than allocating another identity",async()=>{
  const account=projectSharingAccount(useOrgSessionStore.getState().session);
  const p={...project,sharedProjects:{[account]:"shared"},tasks:[{...project.tasks[0],sharedTasks:{[account]:{projectId:"shared",requestId:"existing-request"}}}]};

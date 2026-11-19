@@ -1,5 +1,6 @@
 import { documentEditPrompt, documentSession, type DocumentEditContext } from "@/lib/document-workspace";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
+import { isManagedTaskWorkspace } from "@/lib/display-path";
 import { SessionWorkspaceDirectory, SessionWorkspaceWarning } from "./SessionWorkspace";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, type ReactNode } from "react";
 import { Play } from "lucide-react";
@@ -103,6 +104,7 @@ export function ChatView({
   models,
   onModelChange,
   cwd,
+  defaultWorkspaceCwd,
   onNewTask,
   onReloadWorkspace,
   onPrepareRetry,
@@ -159,6 +161,7 @@ export function ChatView({
   models?: ModelOption[];
   onModelChange?: (id: string) => void;
   cwd?: string;
+  defaultWorkspaceCwd?: string;
   /** Open the new-task page; an existing session's workspace is immutable. */
   onNewTask?: () => void;
   onReloadWorkspace?: (cwd: string) => Promise<void>;
@@ -225,6 +228,7 @@ export function ChatView({
   const runtimeErrorContext = useSessionStore(s => s.runtimeErrorContext);
   const workspaceRefreshSignal = useMemo(() => ({error, revision:taskRefreshSignal}), [error, taskRefreshSignal]);
   const workspace = useSessionWorkspace(sessionId, cwd, workspaceRefreshSignal, onReloadWorkspace, onToast);
+  const managedTaskWorkspace = isManagedTaskWorkspace(workspace.cwd, defaultWorkspaceCwd);
   const openWorkspaceDirectory = () => {
     if (workspace.cwd && workspace.available && !workspace.busy) {
       void openLocalPath(workspace.cwd, { cwd: workspace.cwd, type: "directory", onToast });
@@ -1316,6 +1320,7 @@ export function ChatView({
             models={models}
             onModelChange={onModelChange}
             cwd={workspace.cwd}
+            managedTaskWorkspace={managedTaskWorkspace}
             onOpenWorkspace={openWorkspaceDirectory}
             openWorkspaceDisabled={draftOnly || !workspace.available || workspace.busy}
             showDisclaimer
@@ -1411,7 +1416,7 @@ export function ChatView({
         previewPath={previewPath}
         previewRequestId={previewRequest?.sequence}
         navigationRequestId={workspaceNavigationId}
-        workspaceInfo={<SessionWorkspaceDirectory workspace={workspace} onOpen={openWorkspaceDirectory} />}
+        workspaceInfo={<SessionWorkspaceDirectory workspace={workspace} managedTaskWorkspace={managedTaskWorkspace} onOpen={openWorkspaceDirectory} />}
         workspaceAvailable={workspace.available}
         cwd={cwd}
         messages={messages}

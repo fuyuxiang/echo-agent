@@ -19,19 +19,21 @@ export function SessionWorkspaceWarning({ workspace, onNewTask }: { workspace: W
   </div>;
 }
 
-export function SessionWorkspaceDirectory({ workspace, onOpen }: {
+export function SessionWorkspaceDirectory({ workspace, managedTaskWorkspace = false, onOpen }: {
   workspace: Workspace;
+  managedTaskWorkspace?: boolean;
   onOpen: () => void;
 }) {
   return <section className="session-workspace-directory" aria-label="本任务工作目录">
     <div className="session-workspace-directory__heading">
-      <strong>工作目录</strong>
+      <strong>{managedTaskWorkspace ? "任务文件夹" : "工作目录"}</strong>
       <button type="button" disabled={!workspace.cwd || !workspace.available || workspace.busy} onClick={onOpen}>
         <FolderOpen size={14} aria-hidden="true" />打开文件夹
       </button>
     </div>
     <span className="session-workspace-directory__path" title={workspace.cwd}>{displayPath(workspace.cwd ?? "尚未创建")}</span>
-    <small>{workspace.checking ? "正在检查目录…" : workspace.available ? "本会话固定使用此目录；切换目录请新建任务" : "目录暂不可用，可恢复原目录或重新授权"}</small>
+    <small>{workspace.checking ? "正在检查目录…" : !workspace.available ? "目录暂不可用，可恢复原目录或重新授权"
+      : managedTaskWorkspace ? "本会话固定使用此任务文件夹。要使用其他目录，请新建任务。" : "本会话固定使用此目录；切换目录请新建任务"}</small>
     {!workspace.checking && !workspace.available && <div className="session-workspace-warning__actions">
       <button type="button" disabled={workspace.busy} onClick={() => void workspace.retry()}>{workspace.busy ? "正在检查…" : "恢复连接"}</button>
       <button type="button" disabled={workspace.busy} onClick={() => void workspace.authorize()}>重新授权</button>

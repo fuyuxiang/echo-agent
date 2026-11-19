@@ -3,9 +3,9 @@ import { useAppDialog } from "./AppDialog";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import { useProjectsStore, type ProjectMeta } from "@/stores/projects-store";
 import { projectAssetsUse } from "@/lib/agent-client";
-import { captureTeamProjectOperation, teamProjectRequest, teamProjectUpload, type TeamProject, type TeamProjectSnapshot } from "@/lib/team-project-client";
+import { captureTeamProjectOperation, PROJECT_DELETED_MESSAGE, teamProjectRequest, teamProjectUpload, type TeamProject, type TeamProjectSnapshot } from "@/lib/team-project-client";
 import { projectCollaborationCapabilities } from "@/lib/team-project-client";
-import { projectSharingAccount, publicationKey, notifyProjectSharing } from "@/lib/project-sharing";
+import { projectSharingAccount, publicationKey, notifyProjectSharing, sharedProjectId } from "@/lib/project-sharing";
 import { withProjectAssetSharing } from "@/lib/project-asset-sharing";
 
 interface Publication {
@@ -49,6 +49,8 @@ export function PublishTeamProjectButton({ project, onPublished, onLinked, colla
   const account = useOrgSessionStore(s => projectSharingAccount(s.session));
   const loggedIn = useOrgSessionStore(s => s.session?.loggedIn);
   const key = publicationKey(project.id, account);
+  const deletedProjectId = live.deletedSharedProjects?.[account];
+  const linkedProjectId = sharedProjectId(live, account);
   const publishing = useSyncExternalStore(subscribePublication, () => activePublications.has(key));
   const currentKey = useRef(key);
   const mounted = useRef(true);
@@ -58,16 +60,27 @@ export function PublishTeamProjectButton({ project, onPublished, onLinked, colla
   const pending = useRef<Publication>(empty());
   const [state, setState] = useState<Publication>(empty());
   const [error, setError] = useState("");
-  const { requestConfirmation, requestInput, dialog } = useAppDialog(`${project.id}:${account}`);
+  const { requestConfirmation, requestInput, dialog } = useAppDialog(`${project.id}:${account}:${deletedProjectId ?? ""}`);
   useEffect(() => {
     mounted.current = true;
     pending.current = empty(); setState(empty()); setError("");
-    try { pending.current = readPublication(key); pending.current.projectId ??= project.sharedProjects?.[account]; setState(pending.current); setError(""); }
+    try {
+      const publication = readPublication(key);
+      const previousId = publication.projectId;
+      const targetId = linkedProjectId ?? (previousId === deletedProjectId ? undefined : previousId);
+      pending.current = previousId && previousId !== targetId ? empty() : publication;
+      pending.current.projectId = targetId;
+      setState(pending.current);
+    }
     catch (error) { setError(String(error)); }
     return () => { mounted.current = false; };
-  }, [key, publishing]);
+  }, [key, publishing, deletedProjectId, linkedProjectId]);
   if (!loggedIn) return null;
   const save = (value: Publication) => {
+    const currentProject = useProjectsStore.getState().projects.find(item => item.id === project.id) ?? live;
+    if (value.projectId && currentProject.deletedSharedProjects?.[account] === value.projectId) {
+      throw new Error(PROJECT_DELETED_MESSAGE);
+    }
     localStorage.setItem(key, JSON.stringify(value));
     notifyProjectSharing();
     if (mounted.current && currentKey.current === key) {

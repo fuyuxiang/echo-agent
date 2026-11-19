@@ -1,7 +1,8 @@
 import { Select } from "@/components/Select";
 import { ProjectConnectionNotice } from "./ProjectConnectionNotice";
-import { captureTeamProjectOperation, teamProjectRequest, type TeamProjectSnapshot, type OpenTeamExecution, type StartTeamWork } from "@/lib/team-project-client";
-import { sharedProjectId, useSharedProjectCatalog } from "@/lib/project-sharing";
+import { captureTeamProjectOperation, projectCollaborationCapabilities, projectCollaborationError, projectConnectionIssue, teamProjectRequest, type OpenTeamExecution, type StartTeamWork, type TeamProject } from "@/lib/team-project-client";
+import { loadTeamProjectSnapshot, type CheckedProjectSnapshot } from "@/lib/use-project-workspace";
+import { recordSharedProjectDeletion, sharedProjectId, useSharedProjectCatalog } from "@/lib/project-sharing";
 import { ResourceIcon, ResourceList, ResourceRow } from "./ResourceList";
 import { modelChoiceLabel } from "@/lib/model-presentation";
 /**
@@ -15,19 +16,18 @@ import { modelChoiceLabel } from "@/lib/model-presentation";
 import {
   useCallback,
   useEffect,
-  useId,
-  useLayoutEffect,
   useRef,
   useState,
-  type CSSProperties,
+  type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 import { AddIcon, MoreDotsIcon } from "@/foundation/components/Icon/icons";
+import { ActionMenu } from "./ActionMenu";
 import { Button } from "./Button";
 import { TemplateCard } from "./TemplateCard";
 import { CapabilitySearch, CapabilityEmptyState } from "./experts-panel/shared/CapabilityPage";
 import { ManagementToolbar } from "./PageToolbar";
 import { flushProjectPersistence, useProjectsStore, type ProjectMeta, type ProjectTab, type RefItem } from "@/stores/projects-store";
+import { useOrgSessionStore } from "@/stores/org-session-store";
 import { FolderOpen } from "lucide-react";
 import {
   TEMPLATE_OPTIONS,
@@ -78,19 +78,7 @@ interface ProjectsPanelProps {
 }
 
 const FROM_TEMPLATES = TEMPLATE_OPTIONS.filter((t) => t.id !== "custom");
-const PROJECT_MENU_MARGIN = 8;
-const PROJECT_MENU_OFFSET = 4;
-const PROJECT_MENU_ESTIMATED_WIDTH = 140;
-const PROJECT_MENU_ESTIMATED_HEIGHT = 150;
-const PROJECT_MENU_Z_INDEX = "var(--echo-layer-popover)";
-
-interface ProjectMenuPosition {
-  left: number;
-  top: number;
-  width: number;
-  maxHeight: number;
-  placement: "top" | "bottom";
-}
+const PROJECT_ROLE_LABELS = { admin: "管理员", collaborator: "可编辑", viewer: "仅查看" };
 
 export function ProjectsPanel({
   onStartTeamWork,
@@ -131,19 +119,33 @@ export function ProjectsPanel({
   const sharedCatalog = useSharedProjectCatalog();
   const [create, setCreate] = useState<CreatePreset | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [checkedSnapshot, setCheckedSnapshot] = useState<CheckedProjectSnapshot>();
+  const [sharedAttempt, setSharedAttempt] = useState<{ id: string; boundary: number; focusDraft: boolean; opening: boolean; error?: string }>();
   const [initialTab, setInitialTab] = useState<ProjectTab>("overview");
   const [draftFocusRequest, setDraftFocusRequest] = useState(0);
-  const [deleteTarget, setDeleteTarget] = useState<ProjectMeta | null>(null);
-  const [deleting, setDeleting] = useState(false);
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const picker = useProjectPickerOptions(cwd);
-  const { requestInput, requestConfirmation, dialog } = useAppDialog(openId);
-  const navigateProject = useCallback((id: string | null, focusDraft = false, tab: ProjectTab = "overview") => {
+  const { requestInput, requestConfirmation, dialog } = useAppDialog(`${sharedCatalog.boundary}:${openId ?? ""}`);
+  const navigationRevision = useRef(0);
+  const cancelSharedOpen = useCallback(() => {
+    ++navigationRevision.current;
+    setSharedAttempt(undefined);
+  }, []);
+  const navigateProject = useCallback((id: string | null, focusDraft = false, tab: ProjectTab = "overview", checked?: CheckedProjectSnapshot) => {
+    cancelSharedOpen();
     onNavigate?.();
     setOpenId(id);
+    setCheckedSnapshot(checked);
     setInitialTab(tab);
     setDraftFocusRequest(current => focusDraft ? current + 1 : 0);
-  }, [onNavigate]);
+  }, [cancelSharedOpen, onNavigate]);
+
+  useEffect(() => () => { ++navigationRevision.current; }, []);
+
+  const showCreateProject = (preset: CreatePreset) => {
+    cancelSharedOpen();
+    setCreate(preset);
+  };
 
   // Auto-open a project when navigated from the sidebar.
   useEffect(() => {
@@ -153,26 +155,57 @@ export function ProjectsPanel({
     }
   }, [activeProjectId, activeProjectTab, focusProjectDraft, setActiveProjectId, navigateProject]);
 
-  const linkedIds = new Set(projects.map(project => sharedProjectId(project, sharedCatalog.account)).filter(Boolean));
-  const remoteProjects = sharedCatalog.projects.filter(project => !linkedIds.has(project.id));
-  const filteredRemote = remoteProjects.filter(project => scope !== "private" && project.name.toLowerCase().includes(query.toLowerCase()));
-  const filtered = projects.filter(project => project.name.toLowerCase().includes(query.toLowerCase()) && (scope === "all" || (scope === "shared") === !!sharedProjectId(project, sharedCatalog.account)));
-  const totalCount = projects.length + remoteProjects.length;
-  const filteredCount = filtered.length + filteredRemote.length;
+  const sharedById = new Map(sharedCatalog.projects.map(project => [project.id, project]));
+  const localItems = projects.map(local => {
+    const sharedId = sharedCatalog.enabled ? sharedProjectId(local, sharedCatalog.account) : undefined;
+    const shared = sharedId ? sharedById.get(sharedId) : undefined;
+    return { key: local.id, name: shared?.name ?? local.name, local, sharedId, shared };
+  });
+  const linkedIds = new Set(localItems.flatMap(item => item.sharedId ? [item.sharedId] : []));
+  const items = [...localItems, ...sharedCatalog.projects.filter(project => !linkedIds.has(project.id)).map(shared => ({
+    key: `shared:${shared.id}`, name: shared.name, local: undefined, sharedId: shared.id, shared,
+  }))];
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = items.filter(item => item.name.toLowerCase().includes(normalizedQuery)
+    && (scope === "all" || (scope === "shared") === Boolean(item.sharedId)));
+  const hasSharedItems = items.some(item => item.sharedId);
+  const loadingSharedEmpty = scope === "shared" && !hasSharedItems && sharedCatalog.loading && !sharedCatalog.error;
+  const catalogNotice = scope === "shared" && sharedCatalog.error ? <ProjectConnectionNotice
+    error={sharedCatalog.error} loading={sharedCatalog.loading} partialResults={hasSharedItems}
+    onRetry={() => void sharedCatalog.reload()} onOpenOrganization={onOpenOrganization} /> : undefined;
 
-  const openSharedProject = async (remoteId: string) => {
+  const assertCatalogCurrent = () => {
+    if (useOrgSessionStore.getState().boundaryRevision !== sharedCatalog.boundary) {
+      throw new Error("组织身份或权限已变化，请重新打开项目后操作");
+    }
+  };
+
+  const openSharedProject = async (id: string, focusDraft = false) => {
+    const revision = ++navigationRevision.current;
+    const attempt = { id, boundary: sharedCatalog.boundary, focusDraft, opening: true };
+    setSharedAttempt(previous => previous?.id === id && previous.boundary === attempt.boundary
+      ? { ...attempt, error: previous.error } : attempt);
     try {
+      assertCatalogCurrent();
       const identity = captureTeamProjectOperation();
-      const remote = sharedCatalog.projects.find(project => project.id === remoteId);
-      if (!remote) return;
+      const snapshot = await loadTeamProjectSnapshot(id, identity);
+      if (revision !== navigationRevision.current) return;
       identity.assertCurrent();
       const store = useProjectsStore.getState();
-      let local = store.projects.find(project => sharedProjectId(project, sharedCatalog.account) === remoteId);
-      if (!local) local = store.add({ name: remote.name });
-      await store.linkSharedProject(local.id, sharedCatalog.account, remoteId);
-      identity.assertCurrent();
-      navigateProject(local.id, false, "overview");
-    } catch (error) { onToast?.(`打开项目失败：${String(error)}`); }
+      const existing = store.projects.find(project => sharedProjectId(project, sharedCatalog.account) === id);
+      const local = existing ?? store.add({ name: snapshot.name, sharedProjects: { [sharedCatalog.account]: id } });
+      const canEdit = snapshot.role === "admin" || snapshot.role === "collaborator";
+      navigateProject(local.id, focusDraft && canEdit, "overview", { boundary: attempt.boundary, snapshot });
+      if (focusDraft && !canEdit) onToast?.("当前账号只能查看此共享项目。");
+    } catch (error) {
+      if (revision !== navigationRevision.current || useOrgSessionStore.getState().boundaryRevision !== attempt.boundary) return;
+      const message = projectCollaborationError(error) || "打开共享项目失败";
+      if (projectConnectionIssue(message) === "deleted") {
+        recordSharedProjectDeletion(attempt.boundary, sharedCatalog.account, id);
+        cancelSharedOpen();
+        onToast?.(message);
+      } else setSharedAttempt({ ...attempt, opening: false, error: message });
+    }
   };
 
   const openProject = projects.find((p) => p.id === openId) ?? null;
@@ -182,6 +215,7 @@ export function ProjectsPanel({
         <ProjectDetailView
           key={openProject.id}
           project={openProject}
+          checkedSnapshot={checkedSnapshot}
           onTeamPublished={() => { void sharedCatalog.reload(); }}
           onStartTeamWork={onStartTeamWork}
           onOpenTeamExecution={onOpenTeamExecution}
@@ -212,54 +246,160 @@ export function ProjectsPanel({
     );
   }
 
-  const handleRename = (p: ProjectMeta) => {
+  const handleRename = (name: string, local?: ProjectMeta, sharedId?: string) => {
+    const identity = sharedId ? captureTeamProjectOperation() : undefined;
+    let confirmedName = name;
     requestInput({
-      title: `重命名项目“${p.name}”`,
-      fields: [{ name: "name", label: "项目名称", defaultValue: p.name, required: true, maxLength: 120 }],
+      title: `重命名项目“${name}”`,
+      fields: [{ name: "name", label: "项目名称", defaultValue: name, required: true, maxLength: 120 }],
       confirmLabel: "保存",
-      validate: ({ name }) => {
-        const trimmed = name.trim();
-        if (trimmed === p.name) return "请输入与当前不同的项目名称。";
-        return projects.some((project) => project.id !== p.id && project.name.trim() === trimmed)
+      validate: ({ name: next }) => {
+        const trimmed = next.trim();
+        if (trimmed === confirmedName) return "请输入与当前不同的项目名称。";
+        return local && projects.some(project => project.id !== local.id && project.name.trim() === trimmed)
           ? "已有同名项目，请使用其他名称。"
           : null;
       },
-      action: async ({ name }) => {
-        const remoteId = sharedProjectId(p, sharedCatalog.account);
-        if (remoteId) {
-          const identity = captureTeamProjectOperation();
-          const snapshot = await teamProjectRequest<TeamProjectSnapshot>("snapshot", remoteId, undefined, undefined, identity);
-          await teamProjectRequest("update", remoteId, { name: name.trim(), goal: snapshot.goal, expectedRevision: snapshot.revision }, undefined, identity);
-          identity.assertCurrent();
+      action: async ({ name: next }) => {
+        const nextName = next.trim();
+        if (sharedId && identity) {
+          assertCatalogCurrent();
+          try {
+            const snapshot = await loadTeamProjectSnapshot(sharedId, identity);
+            if (snapshot.role !== "admin") throw new Error("只有项目管理员可以重命名共享项目。");
+            if (snapshot.name !== nextName) {
+              if (snapshot.name !== confirmedName) {
+                confirmedName = snapshot.name;
+                void sharedCatalog.reload();
+                throw new Error(`项目名称已更新为「${snapshot.name}」。如需改为你输入的名称，请再次点击「保存」。`);
+              }
+              await teamProjectRequest("update", sharedId, { name: nextName, goal: snapshot.goal, expectedRevision: snapshot.revision }, undefined, identity);
+            }
+            identity.assertCurrent();
+          } catch (error) {
+            if (projectConnectionIssue(projectCollaborationError(error)) === "deleted") {
+              identity.assertCurrent();
+              recordSharedProjectDeletion(sharedCatalog.boundary, sharedCatalog.account, sharedId);
+            }
+            throw error;
+          }
+          void sharedCatalog.reload();
         }
-        rename(p.id, name.trim());
-        void sharedCatalog.reload();
+        if (local) rename(local.id, nextName);
       },
     });
   };
-  const handleDelete = async () => {
-    const target = deleteTarget;
-    if (!target || deleting) return;
-    setDeleting(true);
-    try {
-      await projectAssetsRemoveAll(target.id);
-      remove(target.id);
-      setDeleteTarget(null);
 
-      // The original menu trigger disappears with the deleted card. Move
-      // focus to the primary project action instead of leaving it on <body>.
-      window.requestAnimationFrame(() => createButtonRef.current?.focus());
-    } catch (error) {
-      onToast?.(`删除失败：${String(error).replace(/^Error:\s*/, "")}`);
-    } finally {
-      setDeleting(false);
-    }
+  const startLocalProject = (project: ProjectMeta, returnFocus: HTMLButtonElement | null) => {
+    if (!onStartProject) return;
+    requestConfirmation({
+      title: `开始「${project.name}」的项目对话？`,
+      description: <>
+        <p>工作目录为{project.cwd ? `「${displayPath(project.cwd)}」` : "自动分配的独立任务目录"}。确认后立即发送项目开场消息。</p>
+        <div>任务默认权限 <PermissionPicker inheritTaskDefault showLockedAsText /></div>
+      </>,
+      confirmLabel: "开始项目对话",
+      returnFocus,
+      action: () => {
+        const permissionMode = selectProjectPermissionMode(usePermissionModeStore.getState());
+        if (!permissionMode) throw new Error("请确认任务默认权限后重试。");
+        return onStartProject(project, permissionMode);
+      },
+    });
   };
+  const confirmLocalRemoval = (project: ProjectMeta, name: string, sharedRecord: boolean, returnFocus: HTMLButtonElement | null) => {
+    requestConfirmation({
+      title: sharedRecord ? `移除「${name}」的本机记录？` : `确定删除项目「${name}」？`,
+      description: <>
+        {sharedRecord && <p>移除会清理此设备上的项目记录，组织端的共享项目仍可访问。</p>}
+        <p>此设备上的任务和项目设置会移除。{project.assets.length > 0 && `${project.assets.length} 项本机资料副本会一并移除。`}原始文件和历史会话会保留。</p>
+      </>,
+      confirmLabel: sharedRecord ? "移除本机记录" : "删除项目",
+      danger: true,
+      returnFocus,
+      action: async () => {
+        await projectAssetsRemoveAll(project.id);
+        remove(project.id);
+        await flushProjectPersistence();
+        if (sharedRecord) onToast?.("已移除本机记录。组织端的共享项目仍可访问。");
+        window.requestAnimationFrame(() => createButtonRef.current?.focus());
+      },
+    });
+  };
+
+  const confirmSharedDeletion = (shared: TeamProject, returnFocus: HTMLButtonElement | null) => {
+    const { account, boundary } = sharedCatalog;
+    const identity = captureTeamProjectOperation();
+    let expectedRevision = shared.revision;
+    requestConfirmation({
+      title: `删除共享项目「${shared.name}」？`,
+      description: <>
+        <p>删除后，所有成员都会失去对此项目及其共享任务和资料的访问。此操作会记入组织审计。</p>
+        <p>此设备上已有的项目记录和资料副本会保留，可在「全部项目」中继续查看。</p>
+      </>,
+      confirmLabel: "删除共享项目",
+      danger: true,
+      returnFocus,
+      action: async () => {
+        assertCatalogCurrent();
+        const capabilities = await projectCollaborationCapabilities(identity);
+        if (!capabilities.projectDeletion) throw new Error("当前组织服务版本尚不支持删除共享项目，请联系管理员升级后重试。");
+        try {
+          const result = await teamProjectRequest<{ id: string }>("delete", shared.id, { expectedRevision }, undefined, identity);
+          if (result?.id !== shared.id) throw new Error("组织服务未确认项目删除，请重试。");
+        } catch (error) {
+          const message = projectCollaborationError(error);
+          if (projectConnectionIssue(message) !== "deleted") {
+            if (message !== "项目已更新，请刷新后重试") throw error;
+            const updated = await loadTeamProjectSnapshot(shared.id, identity).catch(snapshotError => {
+              if (projectConnectionIssue(projectCollaborationError(snapshotError)) !== "deleted") throw snapshotError;
+              return undefined;
+            });
+            if (updated) {
+              if (updated.name !== shared.name) {
+                void sharedCatalog.reload();
+                throw new Error("项目名称已变化，请关闭此窗口后重新确认。");
+              }
+              expectedRevision = updated.revision;
+              throw new Error("项目刚刚有更新。再次确认可删除最新版本。");
+            }
+          }
+          identity.assertCurrent();
+        }
+
+        const keptLocal = recordSharedProjectDeletion(boundary, account, shared.id);
+        void sharedCatalog.reload();
+        try {
+          if (keptLocal) await flushProjectPersistence();
+          onToast?.(keptLocal ? "共享项目已删除。本机记录可在「全部项目」中查看。" : "共享项目已删除。");
+        } catch (error) {
+          onToast?.(`共享项目已删除。本机关联保存失败，请在项目列表重试保存：${projectCollaborationError(error)}`);
+        }
+        window.requestAnimationFrame(() => { if (!returnFocus?.isConnected) createButtonRef.current?.focus(); });
+      },
+    });
+  };
+
+  let emptyTitle = normalizedQuery ? "没有匹配的项目" : "还没有项目";
+  let emptyDescription = normalizedQuery ? "试试其他项目名称。" : "可以新建项目，也可以从下方模板开始。";
+  if (scope === "shared") {
+    emptyTitle = normalizedQuery ? "没有匹配的共享项目" : "还没有共享项目";
+    emptyDescription = normalizedQuery ? "试试其他项目名称。" : "可以在项目中邀请成员，也可以等待成员邀请你加入。";
+    if (!sharedCatalog.enabled) {
+      emptyTitle = "登录组织后查看共享项目";
+      emptyDescription = "本机项目可在「仅自己」中查看。";
+    } else if (loadingSharedEmpty) {
+      emptyTitle = "正在读取共享项目";
+      emptyDescription = "";
+    }
+  } else if (!normalizedQuery && (scope === "private" || sharedCatalog.loading || sharedCatalog.error)) {
+    emptyTitle = "还没有本机项目";
+  }
 
   return (
     <section className="management-workspace project-management" aria-label="项目">
       <ManagementToolbar title="项目">
-        <Button ref={createButtonRef} size="compact" className="management-toolbar__action" onClick={() => setCreate({})}>
+        <Button ref={createButtonRef} size="compact" className="management-toolbar__action" onClick={() => showCreateProject({})}>
           <AddIcon size="sm" />新建项目
         </Button>
       </ManagementToolbar>
@@ -268,55 +408,51 @@ export function ProjectsPanel({
       {persistError && (
         <div className="project-persist-alert" role="alert">
           <span>项目已保存在本机缓存，但项目文件保存失败，请重试：{persistError}</span>
-          <button type="button" onClick={retryPersist} disabled={persisting}>
-            {persisting ? "重试中…" : "重试"}
+          <button type="button" onClick={() => void retryPersist().catch(() => {})} disabled={persisting}>
+            {persisting ? "正在保存…" : "重试保存"}
           </button>
         </div>
       )}
-      {scope !== "private" && (sharedCatalog.error
-        ? <ProjectConnectionNotice error={sharedCatalog.error} loading={sharedCatalog.loading} partialResults={scope === "all"} onRetry={() => void sharedCatalog.reload()} onOpenOrganization={onOpenOrganization} />
-        : sharedCatalog.loading && filteredCount > 0 && <div className="project-collaboration-status" role="status">正在读取共享项目…</div>)}
       <section className="project-section">
-          <ResourceList collectionKey={totalCount ? "projects" : undefined} className="project-grid" aria-label="所有项目"
+          {filtered.length > 0 && catalogNotice}
+          {scope === "shared" && hasSharedItems && !catalogNotice && sharedCatalog.loading
+            && <div className="project-collaboration-status" role="status">正在更新共享项目…</div>}
+          <ResourceList collectionKey={items.length ? "projects" : undefined} className="project-grid" aria-label="所有项目"
             toolbarStart={<div className="project-list-tools">
               <div className="project-list-tools__label">
                 <h2 className="project-section__title">所有项目</h2>
-                <span className="resource-collection__count">{filteredCount} 项</span>
+                <span className="resource-collection__count">{filtered.length} 项</span>
               </div>
               <Select aria-label="项目范围" className="project-scope-select" value={scope} onChange={event => setScope(event.target.value)}><option value="all">全部项目</option><option value="private">仅自己</option><option value="shared">已共享</option></Select>
               <CapabilitySearch value={query} onChange={setQuery} label="搜索项目" />
             </div>}
-            emptyState={filteredCount === 0 && scope !== "private" && (sharedCatalog.loading || sharedCatalog.error)
-              ? <CapabilityEmptyState icon={<ProjectGlyph />} title={sharedCatalog.loading ? "正在读取共享项目" : "共享项目暂时不可用"} description={scope === "all" ? "本机项目可正常使用；共享项目恢复连接后会在这里显示。" : "本机项目仍可在“全部项目”或“仅自己”中查看。"} onClear={query ? () => setQuery("") : undefined} />
-              : filteredCount === 0 ? <CapabilityEmptyState icon={<ProjectGlyph />}
-              title={totalCount === 0 ? "还没有项目" : "没有匹配的项目"}
-              description={totalCount === 0 ? "可以新建项目，也可以从下方模板开始。" : "试试其他项目名称。"}
-              onClear={query ? () => setQuery("") : undefined} /> : undefined}>
-            {filtered.map((p) => (
-              <ProjectCard
-                key={p.id}
-                project={p}
-                shared={!!sharedProjectId(p, sharedCatalog.account)}
-                onEnter={() => navigateProject(p.id)}
-                onStart={onStartProject ? (returnFocus) => requestConfirmation({
-                  title: `开始「${p.name}」的项目对话？`,
-                  description: <>
-                    <p>工作目录为{p.cwd ? `「${displayPath(p.cwd)}」` : "自动分配的独立任务目录"}。确认后立即发送项目开场消息。</p>
-                    <div>任务默认权限 <PermissionPicker inheritTaskDefault showLockedAsText /></div>
-                  </>,
-                  confirmLabel: "开始项目对话",
-                  returnFocus,
-                  action: () => {
-                    const permissionMode = selectProjectPermissionMode(usePermissionModeStore.getState());
-                    if (!permissionMode) throw new Error("请确认任务默认权限后重试。");
-                    return onStartProject(p, permissionMode);
-                  },
-                }) : undefined}
-                onRename={() => handleRename(p)}
-                onDelete={() => setDeleteTarget(p)}
-              />
-            ))}
-            {filteredRemote.map(project => <ResourceRow className="project-remote-row" key={`shared:${project.id}`}><button type="button" className="project-card2__main resource-row__main" onClick={() => void openSharedProject(project.id)}><ResourceIcon><ProjectGlyph /></ResourceIcon><span className="project-card2__body"><span className="project-card2__name resource-row__title">{project.name}</span><span className="resource-row__description resource-clamp">{project.goal || "集中管理共享工作与成果"}</span><span className="resource-row__meta">已共享 · {project.role === "admin" ? "管理员" : project.role === "viewer" ? "仅查看" : "可编辑"}</span></span></button><div className="resource-row__actions"><button type="button" className="capability-button" onClick={() => void openSharedProject(project.id)} aria-label={`打开项目 ${project.name}`}>进入项目</button></div></ResourceRow>)}
+            emptyState={!filtered.length ? catalogNotice ?? <CapabilityEmptyState
+              icon={<ProjectGlyph />} title={emptyTitle} description={emptyDescription} onClear={query ? () => setQuery("") : undefined} /> : undefined}>
+            {filtered.map(({ key, name, local, sharedId, shared }) => {
+              const attempt = sharedId && sharedAttempt?.id === sharedId && sharedAttempt.boundary === sharedCatalog.boundary ? sharedAttempt : undefined;
+              const enter = (focusDraft = false) => {
+                if (local) navigateProject(local.id, focusDraft);
+                else if (sharedId) void openSharedProject(sharedId, focusDraft);
+              };
+              let start: ((returnFocus: HTMLButtonElement | null) => void) | undefined;
+              if (sharedId && onStartTeamWork && (shared?.role === "admin" || shared?.role === "collaborator")) {
+                start = () => enter(true);
+              } else if (!sharedId && local && onStartProject) {
+                start = returnFocus => startLocalProject(local, returnFocus);
+              }
+              const sharedRecord = Boolean(sharedId || local?.sharedProjects && Object.keys(local.sharedProjects).length);
+              const visibility = shared ? `已共享 · ${PROJECT_ROLE_LABELS[shared.role] ?? "成员"}`
+                : sharedId ? "已共享 · 本机记录" : "仅自己";
+              return <ProjectCard key={key} name={name} local={local} visibility={visibility}
+                description={shared?.goal || local?.description || local?.instructions || "集中管理任务、资料与交付成果"}
+                onEnter={() => enter()} onStart={start} opening={attempt?.opening}
+                connectionNotice={attempt?.error ? <ProjectConnectionNotice error={attempt.error} openingProject
+                  loading={attempt.opening} onRetry={() => enter(attempt.focusDraft)} onOpenOrganization={onOpenOrganization} /> : undefined}
+                onRename={!sharedId || shared?.role === "admin" ? () => handleRename(name, local, sharedId) : undefined}
+                onDelete={local ? returnFocus => confirmLocalRemoval(local, name, sharedRecord, returnFocus) : undefined}
+                onDeleteShared={shared?.role === "admin" ? returnFocus => confirmSharedDeletion(shared, returnFocus) : undefined}
+                deleteLabel={sharedRecord ? "移除本机记录" : "删除"} />;
+            })}
           </ResourceList>
       </section>
 
@@ -331,7 +467,7 @@ export function ProjectsPanel({
               icon={<ProjectGlyph />}
               title={t.title}
               description={t.desc}
-              onSelect={() => setCreate({ templateId: t.id })}
+              onSelect={() => showCreateProject({ templateId: t.id })}
             />
           ))}
         </div>
@@ -354,82 +490,8 @@ export function ProjectsPanel({
           onOpenModelSettings={onOpenModelSettings}
         />
       )}
-      {deleteTarget && (
-        <ProjectDeleteDialog
-          project={deleteTarget}
-          busy={deleting}
-          onCancel={() => {
-            if (!deleting) setDeleteTarget(null);
-          }}
-          onConfirm={() => void handleDelete()}
-        />
-      )}
       {dialog}
     </section>
-  );
-}
-
-function ProjectDeleteDialog({
-  project,
-  busy,
-  onCancel,
-  onConfirm,
-}: {
-  project: ProjectMeta;
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const titleId = useId();
-  const descriptionId = useId();
-  const dialogRef = useModalFocus<HTMLDivElement>(true, () => {
-    if (!busy) onCancel();
-  });
-  const assetDetail = project.assets.length > 0
-    ? `项目中的 ${project.assets.length} 项资产副本也会删除。`
-    : "";
-
-  return (
-    <div
-      className="modal-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !busy) onCancel();
-      }}
-    >
-      <div
-        ref={dialogRef}
-        className="atm-confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={descriptionId}
-        tabIndex={-1}
-      >
-        <h3 id={titleId} className="atm-confirm-title">确定删除项目「{project.name}」？</h3>
-        <p id={descriptionId} className="atm-confirm-content">
-          {assetDetail}{assetDetail ? " " : ""}原始文件和历史会话不会被删除。{project.sharedProjects && Object.keys(project.sharedProjects).length > 0 && " 已共享的项目和成员权限会保留，可从项目列表继续访问。"}
-        </p>
-        <div className="atm-confirm-actions">
-          <button
-            type="button"
-            className="atm-btn atm-btn--secondary"
-            onClick={onCancel}
-            disabled={busy}
-            data-modal-initial-focus
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            className="atm-btn atm-btn--danger"
-            onClick={onConfirm}
-            disabled={busy}
-          >
-            {busy ? "删除中…" : "删除项目"}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -438,177 +500,68 @@ function ProjectDeleteDialog({
 // ============================================================
 
 function ProjectCard({
-  project,
-  shared = false, onEnter, onStart, onRename, onDelete,
+  name,
+  description,
+  visibility,
+  local,
+  onEnter,
+  onStart,
+  onRename,
+  onDelete,
+  onDeleteShared,
+  deleteLabel,
+  opening = false,
+  connectionNotice,
 }: {
-  project: ProjectMeta;
-  shared?: boolean;
+  name: string;
+  description: string;
+  visibility: string;
+  local?: ProjectMeta;
   onEnter: () => void;
   onStart?: (returnFocus: HTMLButtonElement | null) => void;
-  onRename: () => void;
-  onDelete: () => void;
+  onRename?: () => void;
+  onDelete?: (returnFocus: HTMLButtonElement | null) => void;
+  onDeleteShared?: (returnFocus: HTMLButtonElement | null) => void;
+  deleteLabel: string;
+  opening?: boolean;
+  connectionNotice?: ReactNode;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [menuPosition, setMenuPosition] = useState<ProjectMenuPosition | null>(null);
-
-  const closeMenu = useCallback((restoreFocus = false) => {
-    setMenuOpen(false);
-    setMenuPosition(null);
-    if (restoreFocus) {
-      window.requestAnimationFrame(() => triggerRef.current?.focus());
-    }
-  }, []);
-
-  const updateMenuPosition = useCallback(() => {
-    const trigger = triggerRef.current;
-    if (!trigger) return;
-
-    const rect = trigger.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    if (
-      rect.bottom < 0 || rect.top > viewportHeight ||
-      rect.right < 0 || rect.left > viewportWidth
-    ) {
-      closeMenu();
-      return;
-    }
-
-    const measuredWidth = menuRef.current?.offsetWidth || PROJECT_MENU_ESTIMATED_WIDTH;
-    // scrollHeight retains the full content height after maxHeight constrains
-    // the visible box, so repositioning can expand the menu again later.
-    const measuredHeight = menuRef.current?.scrollHeight
-      || menuRef.current?.offsetHeight
-      || PROJECT_MENU_ESTIMATED_HEIGHT;
-    const menuWidth = Math.min(measuredWidth, Math.max(0, viewportWidth - PROJECT_MENU_MARGIN * 2));
-    const spaceBelow = viewportHeight - rect.bottom - PROJECT_MENU_OFFSET - PROJECT_MENU_MARGIN;
-    const spaceAbove = rect.top - PROJECT_MENU_OFFSET - PROJECT_MENU_MARGIN;
-    const placement = spaceBelow >= measuredHeight || spaceBelow >= spaceAbove ? "bottom" : "top";
-    const availableHeight = Math.max(0, placement === "bottom" ? spaceBelow : spaceAbove);
-    const renderedHeight = Math.min(measuredHeight, availableHeight);
-    const maxLeft = Math.max(PROJECT_MENU_MARGIN, viewportWidth - menuWidth - PROJECT_MENU_MARGIN);
-    const left = Math.min(Math.max(PROJECT_MENU_MARGIN, rect.right - menuWidth), maxLeft);
-    const desiredTop = placement === "bottom"
-      ? rect.bottom + PROJECT_MENU_OFFSET
-      : rect.top - PROJECT_MENU_OFFSET - renderedHeight;
-    const maxTop = Math.max(PROJECT_MENU_MARGIN, viewportHeight - renderedHeight - PROJECT_MENU_MARGIN);
-    const top = Math.min(Math.max(PROJECT_MENU_MARGIN, desiredTop), maxTop);
-
-    setMenuPosition({ left, top, width: menuWidth, maxHeight: availableHeight, placement });
-  }, [closeMenu]);
-
-  useLayoutEffect(() => {
-    if (!menuOpen) return;
-    updateMenuPosition();
-    const frame = window.requestAnimationFrame(updateMenuPosition);
-    window.addEventListener("resize", updateMenuPosition);
-    window.addEventListener("scroll", updateMenuPosition, true);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", updateMenuPosition);
-      window.removeEventListener("scroll", updateMenuPosition, true);
-    };
-  }, [menuOpen, updateMenuPosition]);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const h = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
-      closeMenu();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeMenu(true);
-    };
-    document.addEventListener("mousedown", h);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", h);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [menuOpen, closeMenu]);
-
-  const menuStyle: CSSProperties = menuPosition
-    ? {
-        position: "fixed",
-        left: menuPosition.left,
-        top: menuPosition.top,
-        width: menuPosition.width,
-        minWidth: menuPosition.width,
-        zIndex: PROJECT_MENU_Z_INDEX,
-        maxHeight: menuPosition.maxHeight,
-        overflowY: "auto",
-      }
-    : { position: "fixed", visibility: "hidden" };
-
   return (
-    <ResourceRow className="project-card2" ref={ref}>
-      <button type="button" className="project-card2__main resource-row__main" onClick={onEnter}>
+    <ResourceRow className={connectionNotice ? "project-card2 project-card2--connection-notice" : "project-card2"}>
+      <button type="button" className="project-card2__main resource-row__main" disabled={opening} onClick={onEnter}>
         <ResourceIcon><ProjectGlyph /></ResourceIcon>
         <span className="project-card2__body">
-          <span className="project-card2__name resource-row__title">{project.name}</span>
-          <span className="resource-row__description resource-clamp">{project.description || project.instructions || "集中管理任务、资料与交付成果"}</span>
-          <span className="resource-row__meta"><span>{shared ? "已共享" : "仅自己"}</span><span>{project.tasks.length} 个任务</span><span>{project.assets.length} 份资料</span></span>
-          <span className="project-card2__sub resource-row__meta">{addedLabel(project.createdAt)}</span>
+          <span className="project-card2__name resource-row__title">{name}</span>
+          <span className="resource-row__description resource-clamp">{description}</span>
+          <span className="resource-row__meta">
+            <span>{visibility}</span>
+            {local && <><span>{local.tasks.length} 个任务</span><span>{local.assets.length} 份资料</span></>}
+          </span>
+          {local && <span className="project-card2__sub resource-row__meta">{addedLabel(local.createdAt)}</span>}
         </span>
       </button>
       <div className="resource-row__actions">
-        <button type="button" className="capability-button" onClick={onEnter} aria-label={`打开项目 ${project.name}`}>进入项目</button>
-        <div className="project-card2__more-wrap">
-          <button
-            ref={triggerRef}
-            type="button"
-            className="project-card2__more"
-            aria-label="更多操作"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (menuOpen) closeMenu();
-              else setMenuOpen(true);
-            }}
-          >
-            <MoreDotsIcon size="sm" />
-          </button>
-        </div>
+        <button type="button" className="capability-button" onClick={onEnter} disabled={opening} aria-busy={opening}
+          aria-label={`${opening ? "正在连接" : "打开项目"} ${name}`}>{opening ? "正在连接…" : "进入项目"}</button>
+        {(onStart || onRename || onDelete || onDeleteShared) && <ActionMenu label={`${name} 更多操作`} menuLabel={`${name} 操作菜单`}
+          trigger={<MoreDotsIcon size="sm" />} triggerClassName="resource-more" busy={opening}
+          menuClassName="topbar-actions__menu resource-menu">
+          {({ close, triggerRef }) => <>
+            <button type="button" role="menuitem" className="topbar-actions__item" onClick={() => { close(true); onEnter(); }}>进入项目</button>
+            {onStart && <button type="button" role="menuitem" className="topbar-actions__item" onClick={() => {
+              close(true);
+              onStart(triggerRef.current);
+            }}>开始项目对话</button>}
+            {onRename && <button type="button" role="menuitem" className="topbar-actions__item" onClick={() => { close(true); onRename(); }}>重命名</button>}
+            {(onDelete || onDeleteShared) && <div className="project-card2__menu-sep" role="separator" />}
+            {onDelete && <button type="button" role="menuitem" className="topbar-actions__item resource-action--danger"
+              onClick={() => { close(true); onDelete(triggerRef.current); }}>{deleteLabel}</button>}
+            {onDeleteShared && <button type="button" role="menuitem" className="topbar-actions__item resource-action--danger"
+              onClick={() => { close(true); onDeleteShared(triggerRef.current); }}>删除共享项目</button>}
+          </>}
+        </ActionMenu>}
       </div>
-      {menuOpen && typeof document !== "undefined" && createPortal(
-        <div
-          ref={menuRef}
-          className="project-card2__menu"
-          style={menuStyle}
-          role="menu"
-          aria-label={`${project.name} 操作菜单`}
-          data-placement={menuPosition?.placement}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button type="button" role="menuitem" className="project-card2__menu-item" onClick={() => { closeMenu(); onEnter(); }}>进入项目</button>
-          {onStart && <button type="button" role="menuitem" className="project-card2__menu-item" onClick={() => {
-            closeMenu();
-            onStart(triggerRef.current);
-          }}>开始项目对话</button>}
-          <button type="button" role="menuitem" className="project-card2__menu-item" onClick={() => { closeMenu(); onRename(); }}>重命名</button>
-          <div className="project-card2__menu-sep" role="separator" />
-          <button
-            type="button"
-            role="menuitem"
-            className="project-card2__menu-item project-card2__menu-item--danger"
-            onClick={() => {
-              // Preserve a connected invoker for the modal focus hook before
-              // the portal menu item is removed.
-              triggerRef.current?.focus();
-              closeMenu();
-              onDelete();
-            }}
-          >
-            删除
-          </button>
-        </div>,
-        document.body,
-      )}
+      {connectionNotice && <div className="project-card2__feedback">{connectionNotice}</div>}
     </ResourceRow>
   );
 }

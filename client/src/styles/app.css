@@ -6229,52 +6229,6 @@ button.diff__path {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.project-card2__more-wrap {
-  position: relative;
-  flex-shrink: 0;
-}
-.project-card2__more {
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: none;
-  border-radius: 8px;
-  color: var(--echo-text-tertiary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.project-card2__more:hover {
-  background: var(--echo-bg-hover);
-}
-.project-card2__menu {
-  width: 140px;
-  padding: 4px;
-  background: var(--echo-surface-raised);
-  border: 1px solid var(--echo-border-default, #ececec);
-  border-radius: 10px;
-  box-shadow: var(--echo-shadow-popover);
-  box-sizing: border-box;
-}
-.project-card2__menu-item {
-  display: block;
-  width: 100%;
-  padding: 8px 10px;
-  border: none;
-  background: none;
-  border-radius: 6px;
-  text-align: left;
-  font-size: 0.8125rem;
-  color: var(--echo-text-medium);
-  cursor: pointer;
-}
-.project-card2__menu-item:hover {
-  background: var(--echo-bg-hover);
-}
-.project-card2__menu-item--danger {
-  color: var(--echo-status-error, #e5484d);
-}
 .project-card2__menu-sep {
   height: 1px;
   margin: 4px 6px;

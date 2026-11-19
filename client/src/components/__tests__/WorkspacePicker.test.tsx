@@ -6,7 +6,7 @@ vi.mock("@/lib/agent-client", () => ({
   filesystemPickDirectory: vi.fn().mockResolvedValue(null),
 }));
 
-import { isAutomaticTaskWorkspace, WorkspacePicker } from "../WorkspacePicker";
+import { WorkspacePicker } from "../WorkspacePicker";
 import { filesystemPickDirectory } from "@/lib/agent-client";
 import { GlobalTooltip } from "../GlobalTooltip";
 
@@ -41,8 +41,6 @@ describe("WorkspacePicker", () => {
     fireEvent.click(screen.getByRole("button", {name:/默认任务目录/}));
     fireEvent.click(screen.getByRole("menuitemradio", {name:"默认任务目录"}));
     expect(select).toHaveBeenLastCalledWith("");
-    expect(isAutomaticTaskWorkspace("C:\\Default", `C:\\Default\\Tasks\\${id}`)).toBe(true);
-    expect(isAutomaticTaskWorkspace("/default", "/default/Tasks/my-project")).toBe(false);
   });
 
   it("项目目录菜单显示并聚焦没有历史会话的临时目录", async () => {

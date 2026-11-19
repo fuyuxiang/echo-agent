@@ -2414,27 +2414,78 @@ pub async fn org_project_request(
     let pending = if action == "snapshot" {
         match tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            flush_project_runs(
+            reconcile_project_runs(
                 &state.inner,
                 project_id.as_deref().ok_or("缺少项目 ID")?,
                 &context,
+                false,
             ),
         )
         .await
         {
-            Ok(result) => result?,
+            Ok(Ok(remaining)) => remaining,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "project execution synchronization could not finish");
+                1
+            }
             Err(_) => 1,
         }
     } else {
         0
     };
-    let mut value =
-        authenticated_json_for_context(&state.inner, method, &path, body, &context).await?;
+    let response = project_response(&state.inner, method, &path, body, &context).await;
+    let confirmed_deletion = action == "delete"
+        && project_id.as_deref().is_some_and(|id| {
+            response
+                .as_ref()
+                .is_ok_and(|value| value.as_ref().is_some_and(|data| data["id"] == id))
+        });
+    if action == "delete" {
+        if confirmed_deletion {
+            tracing::info!(project_id = ?project_id, "organization project deletion confirmed");
+        } else {
+            tracing::warn!(project_id = ?project_id, "organization project deletion not confirmed");
+        }
+    }
+    let value = response?;
+    if let Some(id) = project_id.as_deref() {
+        if confirmed_deletion || value.is_none() {
+            if let Err(error) = reconcile_project_runs(&state.inner, id, &context, true).await {
+                tracing::warn!(project_id = id, %error, "deleted project execution queue could not be cleared");
+            }
+        }
+    }
+    let mut value = value.ok_or(PROJECT_DELETED_MESSAGE)?;
     if pending > 0 {
-        value["syncWarning"] =
-            json!("本机有执行记录尚未同步，刷新项目可重试；当前共享进展可能不完整。");
+        if let Some(snapshot) = value.as_object_mut() {
+            snapshot.insert(
+                "syncWarning".into(),
+                json!("本机有执行记录尚未同步，刷新项目可重试；当前共享进展可能不完整。"),
+            );
+        }
     }
     Ok(value)
+}
+
+const PROJECT_DELETED_MESSAGE: &str = "共享项目已删除";
+
+/// A verified Gone response is terminal for this project and account.
+async fn project_response(
+    inner: &Arc<OrgInner>,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+    context: &AccountContext,
+) -> Result<Option<Value>, String> {
+    let authenticated =
+        authenticated_response_for_context(inner, method, path, body, Some(context)).await?;
+    let gone = authenticated.response.status() == StatusCode::GONE;
+    let data = response_data(authenticated.response).await;
+    require_account_context(inner, &authenticated.context).await?;
+    match data {
+        Err(message) if gone && message == PROJECT_DELETED_MESSAGE => Ok(None),
+        result => result.map(Some),
+    }
 }
 
 fn project_request_route(
@@ -2457,6 +2508,7 @@ fn project_request_route(
     let route = match action {
         "snapshot" => (Method::GET, base),
         "update" => (Method::PATCH, base),
+        "delete" => (Method::DELETE, base),
         "addMember" => (Method::POST, format!("{base}/members")),
         "memberCandidates" => (Method::GET, format!("{base}/member-candidates")),
         "createTask" => (Method::POST, format!("{base}/tasks")),
@@ -2737,8 +2789,9 @@ async fn send_project_run(
     // An interrupted admission, or an outbox from an older client, may
     // never have reached the server. Do not send an impossible terminal state
     // forever, nor create a new execution while trying to cancel an old one.
-    if pending.body["status"] != "running" && !pending.admitted {
-        let snapshot = authenticated_json_for_context(
+    let running = pending.body["status"] == "running";
+    if !running && !pending.admitted {
+        let snapshot = project_response(
             inner,
             Method::GET,
             &format!("/api/v1/projects/{}", pending.binding.project_id),
@@ -2746,6 +2799,9 @@ async fn send_project_run(
             &context,
         )
         .await?;
+        let Some(snapshot) = snapshot else {
+            return Ok(());
+        };
         let registered = snapshot["runs"].as_array().is_some_and(|runs| {
             runs.iter().any(|run| {
                 run["id"] == pending.body["runId"] && run["sessionId"] == pending.body["sessionId"]
@@ -2755,7 +2811,7 @@ async fn send_project_run(
             return Ok(());
         }
     }
-    authenticated_json_for_context(
+    let result = project_response(
         inner,
         Method::POST,
         &format!("/api/v1/projects/{}/runs", pending.binding.project_id),
@@ -2763,6 +2819,9 @@ async fn send_project_run(
         &context,
     )
     .await?;
+    if running && result.is_none() {
+        return Err(PROJECT_DELETED_MESSAGE.into());
+    }
     Ok(())
 }
 
@@ -2914,32 +2973,42 @@ pub(crate) async fn record_project_run_binding(
     Ok(())
 }
 
-async fn flush_project_runs(
+async fn reconcile_project_runs(
     inner: &Arc<OrgInner>,
     project_id: &str,
     context: &AccountContext,
+    deleted: bool,
 ) -> Result<usize, String> {
     let dir = crate::paths::echo_agent_home_dir().join("project-run-outbox");
-    if !dir.exists() {
-        return Ok(0);
-    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.to_string()),
+    };
     require_account_context(inner, context).await?;
     let mut remaining = 0;
     let mut attempted = 0;
-    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+    for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
             continue;
         }
-        let bytes = std::fs::read(entry.path()).map_err(|e| e.to_string())?;
-        if bytes.len() > 128 * 1024 {
-            continue;
-        }
-        let pending: PendingProjectRun =
-            serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let pending = match read_project_run(&path) {
+            Ok(Some(pending)) => pending,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!(%error, "could not read a pending project execution");
+                continue;
+            }
+        };
         if pending.binding.account_id != context.account_id
             || pending.binding.project_id != project_id
         {
+            continue;
+        }
+        if deleted {
+            remove_project_outbox(&path)?;
             continue;
         }
         if attempted >= 128 {
@@ -2948,7 +3017,7 @@ async fn flush_project_runs(
         }
         attempted += 1;
         if send_project_run(inner, &pending).await.is_ok() {
-            remove_project_outbox(&entry.path())?;
+            remove_project_outbox(&path)?;
         } else {
             remaining += 1;
         }
@@ -6345,6 +6414,11 @@ mod tests {
                 .is_err()
         );
         let id = "00000000-0000-4000-8000-000000000001";
+        assert_eq!(
+            project_request_route("delete", Some(id), None).unwrap(),
+            (Method::DELETE, format!("/api/v1/projects/{id}"))
+        );
+        assert!(project_request_route("delete", Some("../admin/users"), None).is_err());
         assert!(project_request_route("memberCandidates", Some("../admin/users"), None).is_err());
         assert!(project_request_route("updateMember", Some(id), Some("../other")).is_err());
         assert!(project_request_route("arbitraryEndpoint", Some(id), Some(id)).is_err());
@@ -6997,6 +7071,50 @@ mod tests {
             assert_eq!(delivered.lock().unwrap().len(), usize::from(registered));
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn project_deletion_finishes_terminal_sync_and_rejects_new_admission() {
+        use axum::{
+            routing::{get, post},
+            Json, Router,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inner = test_org_inner(&format!("http://{}", listener.local_addr().unwrap()));
+        let binding = project_run_fixture(active_account_context(&inner).await.unwrap().account_id);
+        let gone = || async {
+            (
+                axum::http::StatusCode::GONE,
+                Json(json!({"code":410,"msg":PROJECT_DELETED_MESSAGE})),
+            )
+        };
+        let router = Router::new()
+            .route(
+                &format!("/api/v1/projects/{}", binding.project_id),
+                get(gone),
+            )
+            .route(
+                &format!("/api/v1/projects/{}/runs", binding.project_id),
+                post(gone),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let mut pending = PendingProjectRun {
+            admitted: false,
+            binding,
+            body: json!({"runId":Uuid::now_v7(),"sessionId":Uuid::now_v7(),"status":"completed"}),
+        };
+        send_project_run(&inner, &pending).await.unwrap();
+        pending.admitted = true;
+        send_project_run(&inner, &pending).await.unwrap();
+        pending.admitted = false;
+        pending.body["status"] = json!("running");
+        assert_eq!(
+            send_project_run(&inner, &pending).await.unwrap_err(),
+            PROJECT_DELETED_MESSAGE
+        );
+        server.abort();
     }
 
     #[tokio::test]

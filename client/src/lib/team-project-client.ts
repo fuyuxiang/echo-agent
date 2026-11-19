@@ -28,11 +28,19 @@ export const TEAM_TASK_LABELS: Record<TeamTaskStatus, string> = { pending: "待�
 export interface TeamProject { syncWarning?: string; id: string; name: string; goal: string; scopeId: string; ownerId: string; revision: number; updatedAt: number; role: ProjectRole }
 export interface ProjectMember { userId: string; username: string; displayName: string; role: ProjectRole; status: string }
 export interface ProjectMemberCandidate { userId: string; username: string; displayName: string }
-export interface ProjectCollaborationCapabilities { taskIdentity?: boolean; projectComments?: boolean; decisionRevisions?: boolean; version: number; memberSearch: boolean; memberRoles: boolean; idempotentCreate: boolean }
+export interface ProjectCollaborationCapabilities { taskIdentity?: boolean; projectComments?: boolean; decisionRevisions?: boolean; projectDeletion?: boolean; version: number; memberSearch: boolean; memberRoles: boolean; idempotentCreate: boolean }
+export const PROJECT_DELETED_MESSAGE = "共享项目已删除";
 export function projectCollaborationError(error: unknown): string {
   const text = String(error).replace(/^Error:\s*/, "");
   return /接口不存在|Route .*not found|Cannot (GET|POST).*projects/i.test(text)
     ? "当前组织服务尚未提供项目协作，请联系管理员升级服务。个人项目仍可正常使用。" : text;
+}
+export function projectConnectionIssue(error: string) {
+  if (error === PROJECT_DELETED_MESSAGE) return "deleted";
+  if (/\b401\b|unauthorized|token.*expired|session expired|not signed in|登录.*(失效|过期)|请.*登录/i.test(error)) return "sign-in";
+  if (/\b(403|404)\b|forbidden|permission denied|project not found|项目不存在|失去成员权限|无权访问|无访问权限/i.test(error)) return "access";
+  if (/error sending request|fetch|network|connect|unreachable|offline|timed?\s*out|timeout|dns|certificate|tls|ssl|服务不可用|\bHTTP 5\d\d\b/i.test(error)) return "connection";
+  return undefined;
 }
 export interface TeamTask { id: string; title: string; description: string; acceptance: string; assigneeId: string | null; assigneeName: string | null; status: TeamTaskStatus; revision: number; updatedAt: number }
 export interface ProjectDecision { id: string; content: string; rationale: string; status: "proposed" | "active" | "superseded" | "retired"; sourceTaskId: string | null; sourceDocumentId: string | null; supersedesId: string | null; revision: number; history?: {content: string; rationale: string; updatedAt: number; revision: number; status: string}[] }
@@ -43,7 +51,7 @@ export interface ProjectCitation { id: string; title: string; quote: string; res
 export interface ProjectAnswer { answer: string; verification: string; insufficient: boolean; projectRevision: number; updatedAt: number; gaps: string[]; citations: ProjectCitation[] }
 export type StartTeamWork = (project: TeamProjectSnapshot, task: TeamTask, modelId: string, capability?: { expert?: AgentEntry; team?: TeamTemplate; modelOverride?: string; localProjectId?: string; options?: ProjectConversationOptions }) => Promise<string>;
 export type OpenTeamExecution = (project: TeamProjectSnapshot, run: ProjectRun) => Promise<void>;
-export type ProjectAction = "createComment" | "capabilities" | "memberCandidates" | "updateMember" | "list" | "create" | "snapshot" | "update" | "addMember" | "removeMember" | "createTask" | "updateTask" | "claimTask" | "createDecision" | "updateDecision" | "ask";
+export type ProjectAction = "createComment" | "capabilities" | "memberCandidates" | "updateMember" | "list" | "create" | "snapshot" | "update" | "delete" | "addMember" | "removeMember" | "createTask" | "updateTask" | "claimTask" | "createDecision" | "updateDecision" | "ask";
 export function teamProjectRequest<T>(action: ProjectAction, projectId?: string, body?: unknown, resourceId?: string, operation = captureTeamProjectOperation()): Promise<T> {
   operation.assertCurrent();
   return invoke<T>("org_project_request", { action, projectId: projectId ?? null, resourceId: resourceId ?? null, body: body ?? null, expectedGeneration: operation.expectedGeneration }).catch(error => { throw new Error(projectCollaborationError(error)); });
@@ -53,7 +61,7 @@ export async function projectCollaborationCapabilities(operation = captureTeamPr
   try {
     const value = await teamProjectRequest<ProjectCollaborationCapabilities>("capabilities", undefined, undefined, undefined, operation);
     if (!value || !Number.isInteger(value.version) || value.version < 1) throw new Error("协作服务返回的功能版本不兼容，请联系管理员更新服务。");
-    return { ...(value.taskIdentity === true ? { taskIdentity: true } : {}), ...(value.projectComments === true ? { projectComments: true } : {}), ...(value.decisionRevisions === true ? { decisionRevisions: true } : {}), version: value.version, memberSearch: value.memberSearch === true, memberRoles: value.memberRoles === true, idempotentCreate: value.idempotentCreate === true };
+    return { ...(value.taskIdentity === true ? { taskIdentity: true } : {}), ...(value.projectComments === true ? { projectComments: true } : {}), ...(value.decisionRevisions === true ? { decisionRevisions: true } : {}), ...(value.projectDeletion === true ? { projectDeletion: true } : {}), version: value.version, memberSearch: value.memberSearch === true, memberRoles: value.memberRoles === true, idempotentCreate: value.idempotentCreate === true };
   }
   catch (error) {
     if (!/尚未提供项目协作|404|项目不存在|失去成员权限/.test(String(error))) throw error;

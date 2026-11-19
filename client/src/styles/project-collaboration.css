@@ -22,7 +22,6 @@
 .project-collaboration-status { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 14px; font-size:12px; color:var(--echo-text-secondary); }
 .project-collaboration-workspace { min-height:0; flex:1; overflow:auto; }
 .project-collaboration-workspace .team-projects--detail { max-width:none; height:auto; border:0; padding:18px 0; margin:0; background:transparent; }
-.project-remote-row { text-align:left; }
 .project-shared-detail { height:100%; display:flex; flex-direction:column; min-height:0; }
 .project-shared-detail > .team-projects--detail { flex:1; width:100%; min-height:0; border:0; border-radius:0; margin:0; }
 @media(max-width:480px) { .project-participant-row { gap:8px; } .project-participants-dialog { width:calc(100vw - 20px); } }
@@ -92,3 +91,7 @@
 .project-connection-notice details { margin-top: 4px; }
 .project-connection-notice summary { width: fit-content; cursor: pointer; }
 .project-connection-notice pre { margin: 6px 0 0; max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .6875rem; }
+.project-grid[data-view="list"] > .project-card2--connection-notice { flex-wrap: wrap; }
+.project-card2__feedback { min-width: 0; }
+.project-grid[data-view="list"] .project-card2__feedback { flex-basis: 100%; }
+.project-card2__feedback .project-connection-notice { margin-bottom: 0; }

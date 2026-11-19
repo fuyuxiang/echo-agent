@@ -49,6 +49,24 @@ describe("project hydration concurrency", () => {
     expect(useProjectsStore.getState().projects.map((item) => item.id)).toEqual(["backend-only"]);
   });
 
+  it("启动读取期间解除共享会保留后端独有的组织关联与资料", async () => {
+    const cached = { ...project("p1"), sharedProjects: { current: "deleted-project" } };
+    useProjectsStore.setState({ projects: [cached] });
+    let resolve!: (projects: ProjectMeta[]) => void;
+    vi.mocked(projectsLoad).mockReturnValue(new Promise((accept) => { resolve = accept; }));
+    const hydration = hydrateProjectsFromBackend();
+    useProjectsStore.getState().detachDeletedSharedProject(new Set([cached.id]), "current", "deleted-project");
+    const file = { id: "asset", name: "后端资料", kind: "file" as const };
+    resolve([{ ...cached, sharedProjects: { ...cached.sharedProjects, other: "other-project" }, assets: [file] }]);
+    await hydration;
+    expect(useProjectsStore.getState().projects).toMatchObject([{
+      sharedProjects: { other: "other-project" },
+      deletedSharedProjects: { current: "deleted-project" },
+      assets: [file],
+    }]);
+    expect(useProjectsStore.getState().projects[0].sharedProjects).not.toHaveProperty("current");
+  });
+
   it("待同步缓存不会绕过正常写入队列导致旧快照覆盖新项目", async () => {
     localStorage.setItem("echoagent.projects.pending-backend-sync", "1");
     let finish!: () => void;

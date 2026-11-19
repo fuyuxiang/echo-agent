@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Check, Folder, FolderOpen } from "lucide-react";
 import { filesystemPickDirectory, type WorkspaceInfo } from "@/lib/agent-client";
-import { displayPath, shortWorkspacePath } from "@/lib/display-path";
+import { displayPath, isManagedTaskWorkspace, shortWorkspacePath } from "@/lib/display-path";
 import { attachmentBasename } from "@/lib/user-message";
 import {
   useAnchoredFloating,
@@ -141,7 +141,7 @@ export function WorkspacePicker({
   const recentWorkspaces = projectDefault
     ? workspaces.filter(workspace => workspace.cwd !== projectDefault.cwd && workspace.cwd !== currentProjectDirectory)
     : defaultWorkspaceCwd
-    ? workspaces.filter(w => !isAutomaticTaskWorkspace(defaultWorkspaceCwd, w.cwd))
+    ? workspaces.filter(w => !isManagedTaskWorkspace(w.cwd, defaultWorkspaceCwd))
     : workspaces;
   const triggerLabel = automaticWorkspace ? "默认任务目录"
     : cwd ? (projectDefault ? attachmentBasename(displayPath(cwd)) : shortName(cwd)) : "选择工作目录";
@@ -289,12 +289,4 @@ export function WorkspacePicker({
       )}
     </div>
   );
-}
-
-/** Hide implementation directories from the recent-folder chooser. */
-export function isAutomaticTaskWorkspace(base: string, cwd: string): boolean {
-  const normalize = (path: string) => path.replace(/\\/g, "/").replace(/\/$/, "");
-  const prefix = `${normalize(base)}/Tasks/`;
-  const value = normalize(cwd);
-  return value.startsWith(prefix) && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.slice(prefix.length));
 }

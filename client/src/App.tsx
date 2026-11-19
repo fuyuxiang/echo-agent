@@ -3648,6 +3648,7 @@ function Shell() {
                   models={models}
                   onModelChange={handleModelChange}
                   cwd={activeSessionCwd}
+                  defaultWorkspaceCwd={init.cwd}
                   onNewTask={handleNewSession}
                   onReloadWorkspace={async (originalCwd) => {
                     const previousError = sessionStore.getState().error;

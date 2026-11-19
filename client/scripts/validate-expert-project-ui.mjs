@@ -94,6 +94,9 @@ try {
  const offline=await browser.newPage({viewport:{width:1280,height:1000}});
  const offlineErrors=[];offline.on('pageerror',error=>offlineErrors.push(error.message));
  await offline.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=projects&service=unsupported`);
+ await offline.getByRole('button',{name:'打开项目 产品需求梳理'}).waitFor();
+ assert.equal(await offline.locator('.project-connection-notice').count(),0);
+ await offline.getByRole('combobox',{name:'项目范围'}).selectOption('shared');
  await offline.getByText(/个人项目仍可正常使用/).waitFor();
  await offline.getByRole('button',{name:'新建项目',exact:true}).click();
  await offline.getByRole('textbox',{name:'项目名称',exact:true}).fill('离线个人项目');

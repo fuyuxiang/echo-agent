@@ -79,7 +79,6 @@ button.resource-row__main { padding: 0; border: 0; background: transparent; colo
 .resource-row .resource-row__description { font-size: var(--echo-resource-description-size); line-height: 1.5; margin-top: 4px; }
 .resource-row .resource-row__meta { font-size: var(--echo-resource-meta-size); line-height: 1.5; margin-top: 6px; }
 .resource-row .resource-tag, .resource-row .colleague-card-status-pill { font-size: var(--echo-resource-meta-size); line-height: 1.5; }
-.resource-row .project-card2__more { width: var(--echo-size-control-md); height: var(--echo-size-control-md); }
 .resource-list > .resource-row.project-card2 { cursor: default; }
 .resource-row--expandable.mcp-item-wrap { display: block; min-height: 0; padding: 0; overflow: visible; }
 .resource-row--expandable.mcp-item-wrap:focus-within { box-shadow: none; }
@@ -126,7 +125,6 @@ button.resource-row__main { padding: 0; border: 0; background: transparent; colo
 .resource-list[data-view="cards"][data-layout="grid"] .plugins-panel__item { display: grid; grid-template-columns: var(--echo-resource-icon-size) minmax(0, 1fr); grid-template-rows: 1fr auto; align-items: start; gap: 12px; }
 .resource-list[data-view="cards"] .plugins-panel__item-content { grid-column: 2; }
 .resource-list[data-view="cards"] .plugins-panel__item-actions { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; }
-.resource-list[data-view="cards"] .project-card2__more-wrap { flex: none; }
 .resource-list[data-view="cards"] .project-card2__main { text-align: left; }
 .resource-list[data-view="cards"] .project-card2__body { min-width: 0; }
 .resource-list[data-view="cards"] .project-card2__sub { color: var(--echo-text-weak); }

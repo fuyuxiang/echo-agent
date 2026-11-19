@@ -1,5 +1,6 @@
 import { unifyProjectTasks, type SharedTaskLink, type SharedAssetLink } from "@/lib/project-tasks";
 import { isRemovedModelId } from "@/lib/retired-models";
+import { PROJECT_DELETED_MESSAGE } from "@/lib/team-project-client";
 import { create } from "zustand";
 import { projectsLoad, projectsSave, type PermissionMode } from "@/lib/agent-client";
 import type { SessionSummary } from "@/lib/types";
@@ -133,6 +134,8 @@ export interface ProjectMeta {
   conversations: ProjectConversation[];
   /** Shared workspace IDs partitioned by organization account; local data stays intact. */
   sharedProjects?: Record<string, string>;
+  /** Confirmed deletions override legacy publication recovery for the same account. */
+  deletedSharedProjects?: Record<string, string>;
 }
 
 export function projectOwnsSession(project: ProjectMeta, sessionId: string): boolean {
@@ -172,6 +175,24 @@ function clearRemovedModelBinding<T extends { modelId?: string }>(item: T): T {
   return typeof item.modelId === "string" && isRemovedModelId(item.modelId) ? { ...item, modelId: undefined } : item;
 }
 
+function projectIdsByAccount(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+function rebaseProjectIdsByAccount(base?: Record<string, string>, local?: Record<string, string>, saved?: Record<string, string>) {
+  if (!base && !local && !saved) return undefined;
+  const merged = { ...saved };
+  for (const account of new Set([...Object.keys(base ?? {}), ...Object.keys(local ?? {})])) {
+    const previous = base?.[account];
+    const updated = local?.[account];
+    if (previous === updated) continue;
+    if (updated !== undefined) merged[account] = updated;
+    else if (merged[account] === previous) delete merged[account];
+  }
+  return merged;
+}
+
 /** 旧数据/外部数据补齐缺省详情字段，保证组件可直接读数组。 */
 function normalize(x: unknown): ProjectMeta | null {
   if (!x || typeof x !== "object") return null;
@@ -199,8 +220,8 @@ function normalize(x: unknown): ProjectMeta | null {
     assets: Array.isArray(o.assets) ? o.assets : [],
     members: Array.isArray(o.members) ? o.members : [],
     conversations: Array.isArray(o.conversations) ? o.conversations.map(clearRemovedModelBinding) : [],
-    sharedProjects: o.sharedProjects && typeof o.sharedProjects === "object" && !Array.isArray(o.sharedProjects)
-      ? Object.fromEntries(Object.entries(o.sharedProjects).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : undefined,
+    sharedProjects: projectIdsByAccount(o.sharedProjects),
+    deletedSharedProjects: projectIdsByAccount(o.deletedSharedProjects),
   };
 }
 
@@ -274,9 +295,11 @@ interface ProjectsState {
     connectors?: RefItem[];
     experts?: RefItem[];
     skills?: RefItem[];
+    sharedProjects?: ProjectMeta["sharedProjects"];
   }) => ProjectMeta;
   rename: (id: string, name: string) => void;
   linkSharedProject: (id: string, account: string, sharedId: string) => Promise<void>;
+  detachDeletedSharedProject: (localIds: ReadonlySet<string>, account: string, sharedId: string) => void;
   remove: (id: string) => void;
   updateConfig: (
     id: string,
@@ -375,6 +398,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         assets: [],
         members: [],
         conversations: [],
+        ...(p.sharedProjects && { sharedProjects: p.sharedProjects }),
       };
       const next = [item, ...get().projects];
       set({ projects: next });
@@ -385,9 +409,25 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     linkSharedProject: async (id, account, sharedId) => {
       const previous = get().projects.find(project => project.id === id);
       if (!previous) throw new Error("本机项目已删除，无法保存协作关联");
+      if (previous.deletedSharedProjects?.[account] === sharedId) throw new Error(PROJECT_DELETED_MESSAGE);
       if (previous.sharedProjects?.[account] === sharedId) return;
       patch(id, project => ({ ...project, sharedProjects: { ...project.sharedProjects, [account]: sharedId } }));
       await flushProjectPersistence();
+    },
+    detachDeletedSharedProject: (localIds, account, sharedId) => {
+      if (!localIds.size) return;
+      const next = get().projects.map(project => {
+        if (!localIds.has(project.id)) return project;
+        const sharedProjects = { ...project.sharedProjects };
+        delete sharedProjects[account];
+        return {
+          ...project,
+          sharedProjects,
+          deletedSharedProjects: { ...project.deletedSharedProjects, [account]: sharedId },
+        };
+      });
+      set({ projects: next });
+      void persist(next);
     },
     remove: (id) => {
       const next = get().projects.filter((p) => p.id !== id);
@@ -414,11 +454,17 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     },
     updateTask: (id, taskId, value) => patch(id, p => ({ ...p, tasks: p.tasks.map(task => task.id === taskId ? { ...task, ...value, id: task.id } : task) })),
     linkSharedTask: async (id, taskId, account, link) => {
-      patch(id, p => ({ ...p, tasks: p.tasks.map(task => task.id === taskId ? { ...task, sharedTasks: { ...task.sharedTasks, [account]: link } } : task) }));
+      patch(id, project => {
+        if (project.deletedSharedProjects?.[account] === link.projectId) throw new Error(PROJECT_DELETED_MESSAGE);
+        return { ...project, tasks: project.tasks.map(task => task.id === taskId ? { ...task, sharedTasks: { ...task.sharedTasks, [account]: link } } : task) };
+      });
       await flushProjectPersistence();
     },
     linkSharedAsset: async (id, assetId, account, link) => {
-      patch(id, p => ({ ...p, assets: p.assets.map(asset => asset.id === assetId ? { ...asset, sharedAssets: { ...asset.sharedAssets, [account]: link } } : asset) }));
+      patch(id, project => {
+        if (project.deletedSharedProjects?.[account] === link.projectId) throw new Error(PROJECT_DELETED_MESSAGE);
+        return { ...project, assets: project.assets.map(asset => asset.id === assetId ? { ...asset, sharedAssets: { ...asset.sharedAssets, [account]: link } } : asset) };
+      });
       await flushProjectPersistence();
     },
     moveTask: (id, taskId, status) =>
@@ -742,11 +788,17 @@ export async function hydrateProjectsFromBackend(): Promise<void> {
       const initial = base as unknown as Record<string, unknown>;
       const updated = local as unknown as Record<string, unknown>;
       for (const key of new Set([...Object.keys(initial), ...Object.keys(updated)])) {
+        if (key === "sharedProjects" || key === "deletedSharedProjects") continue;
         if (JSON.stringify(initial[key]) === JSON.stringify(updated[key])) continue;
         if (key in updated) result[key] = updated[key];
         else delete result[key];
       }
-      merged.push(result as unknown as ProjectMeta);
+      const sharedProjects = rebaseProjectIdsByAccount(base.sharedProjects, local.sharedProjects, stored.sharedProjects);
+      const deletedSharedProjects = rebaseProjectIdsByAccount(base.deletedSharedProjects, local.deletedSharedProjects, stored.deletedSharedProjects);
+      for (const [account, deleted] of Object.entries(deletedSharedProjects ?? {})) {
+        if (sharedProjects?.[account] === deleted) delete sharedProjects[account];
+      }
+      merged.push({ ...result as unknown as ProjectMeta, sharedProjects, deletedSharedProjects });
     }
     for (const stored of normalized) {
       if (!localById.has(stored.id) && !baseById.has(stored.id)) merged.push(stored);
