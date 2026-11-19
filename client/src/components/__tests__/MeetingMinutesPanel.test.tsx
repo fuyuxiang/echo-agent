@@ -78,7 +78,7 @@ describe("MeetingMinutesPanel recording first workflow", () => {
   it("only binds the displayed recipient when the user opts into automatic minutes", async () => {
     mocks.recorderStart.mockResolvedValue({ id: "automatic", title: "自动纪要", transcript: [], chunks: [], status: "recording", recordedSamples: 0 });
     render(<MeetingMinutesPanel />);
-    const option = await screen.findByRole("checkbox", { name: "录音结束后自动生成会议纪要" });
+    const option = await screen.findByRole("checkbox", { name: "结束后生成纪要" });
     expect(option).not.toBeChecked();
     expect(screen.getByText(/review\.example/)).toBeInTheDocument();
     fireEvent.click(option);
@@ -183,7 +183,7 @@ describe("meeting content preservation", () => {
       captureIssues: [{ source: "microphone", startSample: 64_000, endSample: 70_400, occurrences: 1 }] };
     mocks.meetingList.mockResolvedValue([record]);
     render(<MeetingMinutesPanel />);
-    fireEvent.click(await screen.findByText(/查看受影响片段/));
+    fireEvent.click(await screen.findByText(/查看片段/));
     fireEvent.click(screen.getByRole("button", { name: /回听 麦克风/ }));
     expect(screen.getByRole("tab", { name: "转写原文" })).toHaveAttribute("aria-selected", "true");
     expect(mocks.player).toHaveBeenLastCalledWith(expect.objectContaining({

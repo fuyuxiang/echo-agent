@@ -248,7 +248,6 @@ export function ShortcutsSettingsPanel() {
   return (
     <SettingsSection
       title="快捷键"
-      desc="以下是当前版本已实际生效的快捷键。"
     >
       <div className="shortcuts-groups">
         {SHORTCUT_GROUPS.map((group) => (
@@ -684,9 +683,9 @@ export function DataSettingsPanel() {
   }, []);
 
   return (
-    <SettingsSection title="备份与恢复" desc="导出本机数据备份，或恢复已有备份。已归档任务可在上方单独管理。">
+    <SettingsSection title="备份与恢复">
       <SettingsGroup title="数据备份" settingId="backups" desc="保存会话、项目资料、已保存的文档编辑稿和历史版本。不包含密钥、组织登录凭据及外部工作目录的文件。">
-        <p className="settings-hint">备份包含聊天和资料正文，请保存在可信位置。建议等待任务结束后操作；恢复前会显示校验结果并再次确认。</p>
+        <p className="settings-hint">备份含聊天和资料正文，请妥善保存。建议在任务结束后操作。</p>
         <div className="settings-group__footer">
           <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
             setBusy(true);
@@ -825,7 +824,7 @@ export function GeneralSettingsPanel() {
         )}
         {!closeToTray && !loadingDesktopPreferences && (
           <div className="settings-info-callout settings-info-callout--warn" role="status">
-            关闭主窗口将停止任务执行和自动化调度。如需继续运行，请最小化窗口。
+            关闭窗口会停止任务和调度。继续运行请最小化。
           </div>
         )}
       </SettingsGroup>
@@ -984,7 +983,7 @@ export function AgentSettingsPanel() {
 
   return (
     <div className="advanced-settings">
-    <SettingsSection title="高级设置" desc="按需排查配置问题，或调整开发者选项。日常使用通常无需修改。">
+    <SettingsSection title="高级设置">
       <RuntimeReloadSettingsGroup />
       <DeveloperSettingsGroup hasPendingChanges={depthDirty} hasError={Boolean(loadError) || runtimeMsg?.kind === "error" || runtimeMsg?.kind === "invalid"}>
       {loadError && (

@@ -130,7 +130,7 @@ try {
       await page.getByRole("button",{name:"拒绝本次",exact:true}).click({trial:true});
     }
     if (state === "running") {
-      await page.getByRole("button",{name:"停止生成",exact:true}).waitFor();
+      await page.getByRole("button",{name:"停止任务",exact:true}).waitFor();
       assert.equal(await page.locator(".session-header [role=status]").count(),0,"routine activity stays with the message and composer");
       await page.locator(".msg__loading-main").waitFor();
       assert.equal(await page.getByRole("group",{name:"当前轮次执行控制",exact:true}).count(),0);
@@ -148,14 +148,14 @@ try {
     await page.locator(".session-header").waitFor();
     await page.evaluate(font => { document.documentElement.style.fontSize=`${font}px`; },font);
     if (width < 720) await page.getByRole("button",{name:"收起侧边栏",exact:true}).click();
-    const stop = page.getByRole("button",{name:"停止生成",exact:true});
+    const stop = page.getByRole("button",{name:"停止任务",exact:true});
     assert.equal(await stop.count(),1,"only the composer should expose a stop button");
     assert.equal(await page.getByRole("button",{name:"发送选项",exact:true}).count(),0);
     const input = page.locator(".echo-composer__input");
     await input.fill("请保留这条补充要求");
     assert.equal(await stop.count(),0,"a draft changes the primary action to queue");
     assert.equal(await page.locator(".echo-composer__send").count(),1);
-    await page.getByRole("button",{name:"加入待发送队列",exact:true}).click({trial:true});
+    await page.getByRole("button",{name:"加入队列",exact:true}).click({trial:true});
     await page.getByRole("button",{name:"任务操作",exact:true}).click();
     await page.getByRole("menuitem",{name:"停止当前执行",exact:true}).click({trial:true});
     await page.keyboard.press("Escape");
@@ -183,8 +183,9 @@ try {
       useMessageQueueStore.getState().clear("review-conversation");
     });
     await input.fill("补充一份摘要");
-    await page.getByRole("button",{name:"加入待发送队列",exact:true}).dblclick();
+    await page.getByRole("button",{name:"加入队列",exact:true}).dblclick();
     await stop.waitFor();
+    await page.getByRole("button", { name: /^待发送 \d+ 条/ }).click();
     const queue = page.getByRole("list",{name:"待发送队列"});
     assert.equal(await queue.locator(".queue-row").count(),1,"double-click admits one row without stopping");
     assert.equal(await page.evaluate(()=>window.workbenchCalls.filter(c=>c.command==="review_cancel" || c.command==="review_send_now").length),0);

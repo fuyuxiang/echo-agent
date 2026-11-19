@@ -537,8 +537,8 @@
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--echo-border-default);
-  border-radius: 10px;
-  background: var(--echo-bg-primary);
+  border-radius: var(--echo-radius-dialog);
+  background: var(--echo-surface-raised);
 }
 
 .echo-theia-agent__composer-box textarea {
@@ -546,7 +546,7 @@
   flex: 1 1 auto;
   width: 100%;
   box-sizing: border-box;
-  min-height: 88px;
+  min-height: 62px;
   max-height: min(190px, 28vh);
   padding: 12px 13px 10px;
   overflow-y: auto;
@@ -556,8 +556,8 @@
   background: transparent;
   color: var(--echo-text-strong);
   font: inherit;
-  font-size: 0.75rem;
-  line-height: 1.5;
+  font-size: .8125rem;
+  line-height: 1.6;
 }
 
 .echo-theia-agent__composer-box:focus-within {
@@ -570,10 +570,10 @@
   flex: none;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
   min-height: 38px;
-  padding: 3px 6px 6px;
+  padding: 3px 4px 5px;
 }
 
 .echo-theia-agent__composer-tools .permission-picker {
@@ -628,14 +628,14 @@
 
 .echo-theia-agent__send {
   display: grid;
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
   margin-left: auto;
   padding: 0;
   place-items: center;
   border: 0;
-  border-radius: 50%;
+  border-radius: var(--echo-radius-control);
   background: var(--echo-button-primary-bg);
   color: var(--echo-button-primary-fg);
   cursor: pointer;
@@ -830,9 +830,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
   min-height: 42px;
-  padding: 0 12px;
+  padding: 5px 12px;
   border-bottom: 1px solid var(--echo-border-subtle);
 }
 
@@ -842,6 +843,11 @@
   gap: 10px;
   min-width: 0;
 }
+
+.echo-theia-review__header > div:first-child { flex: 1 1 150px; }
+.echo-theia-review__header strong { flex-shrink: 0; }
+.echo-theia-review__header .echo-theia-review__actions { flex-wrap: wrap; gap: 4px; }
+.echo-theia-review__header button[aria-pressed="true"] { background: var(--echo-control-selected-bg); color: var(--echo-control-selected-fg); }
 
 .echo-theia-review__header span {
   overflow: hidden;

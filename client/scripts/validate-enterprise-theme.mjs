@@ -200,7 +200,7 @@ try {
     await page.keyboard.press("Escape");
     await go(shared, { surface: "conversation", planReview: "clean", pausedQueueReview: "1" });
     await capture("conversation-approval");
-    await page.getByRole("button", { name: "查看并确认计划", exact: true }).click();
+    await page.getByRole("button", { name: "查看计划", exact: true }).click();
     await page.getByRole("group", { name: "计划审批", exact: true }).waitFor();
     await capture("conversation-plan");
 

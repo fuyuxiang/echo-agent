@@ -9,7 +9,7 @@ export async function validateWorkbenchTransitions(page, base, output) {
     await page.getByRole("button", { name: "任务操作", exact: true }).click();
     await page.getByRole("menuitem", { name, exact: true }).click();
   };
-  const jump = page.getByRole("button", { name: "回到最新消息并恢复自动跟随" });
+  const jump = page.getByRole("button", { name: "回到最新消息" });
   const atBottom = () => page.waitForFunction(() => {
     const e = document.querySelector(".chatview__scroll");
     return e && Math.abs(e.scrollHeight - e.clientHeight - e.scrollTop) < 2;
@@ -36,7 +36,7 @@ export async function validateWorkbenchTransitions(page, base, output) {
       const { useSessionStore } = await import("/src/stores/session-store.ts");
       useSessionStore.getState().markComplete({ sessionId: "review-conversation", promptId: "history-race", stopReason: "end_turn" });
     });
-    await page.getByRole("button", { name: "停止生成", exact: true }).waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "停止任务", exact: true }).waitFor({ state: "hidden" });
     assert.equal(await page.getByRole("button", { name: "确认回溯", exact: true }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "创建分叉", exact: true }).count(), 0);
     await sessionAction(action === "rewind" ? "回溯…" : "分叉…");
@@ -112,12 +112,13 @@ export async function validateWorkbenchTransitions(page, base, output) {
     await page.setViewportSize({ width, height: 720 });
     await page.goto(`${base}&state=${mode}-paused&theme=${theme}`);
     const feedback = page.locator(".chatview__scroll .session-turn-feedback");
-    await feedback.getByRole("button", { name: "继续任务", exact: true }).waitFor();
+    await feedback.getByText("操作已中断，可直接发送消息继续或调整要求", { exact: true }).waitFor();
+    assert.equal(await feedback.getByRole("button", { name: "继续任务", exact: true }).count(), 0);
     assert.equal(await page.locator(".task-execution-status").count(), 0, "no mode-specific toolbar");
     assert.equal(await page.locator(".chatview__footer .yield-banner").count(), 0, "task feedback belongs to the turn");
     assert.equal(await page.locator(".tasks-panel").count(), 0, "no floating background controls");
     assert.equal(await page.getByText("浏览器数据与访问范围", {exact:true}).count(), 0);
-    await feedback.getByRole("button", { name: "继续任务", exact: true }).click({ trial: true });
+    assert.equal(await page.getByRole("textbox", { name: "输入问题或任务", exact: true }).isEnabled(), true);
     await page.screenshot({ path: join(output, `unified-pause-${mode}-${width}-${theme}.png`) });
   }
   console.log("All 8 browser/computer layouts use ordinary turn feedback with no dedicated dock.");

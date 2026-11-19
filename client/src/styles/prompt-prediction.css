@@ -7,11 +7,7 @@
   grid-area: 1 / 1;
 }
 .echo-composer__prediction {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   min-width: 0;
-  padding-bottom: 4px;
   color: var(--echo-text-weak);
   font-size: 0.875rem;
   line-height: 25px;
@@ -20,8 +16,25 @@
   pointer-events: none;
   user-select: none;
 }
-.echo-composer__prediction-hint {
-  color: var(--echo-text-tertiary);
-  font-size: 0.75rem;
-  line-height: 18px;
+.echo-composer__prediction-accept {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 5px;
+  min-height: 32px;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: var(--echo-radius-control);
+  background: transparent;
+  color: var(--echo-text-medium);
+  font: inherit;
+  font-size: .75rem;
+  cursor: pointer;
+}
+.echo-composer__prediction-accept:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.echo-composer__prediction-accept kbd {
+  padding: 1px 4px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: 4px;
+  font: inherit;
 }

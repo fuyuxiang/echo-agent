@@ -5,7 +5,7 @@
  * 这里通过 `echo.agent/task/list` + `echo.agent/subagent/list_running` 观测它们，
  * 通过 `echo.agent/task/kill` / `echo.agent/subagent/cancel` 取消。
  *
- * 详情嵌入任务详情容器；输入区只显示数量摘要。通过 refreshSignal 刷新。
+ * 详情嵌入任务详情容器；会话页头只显示数量摘要。通过 refreshSignal 刷新。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -126,7 +126,13 @@ export function TasksPanel({ sessionId, refreshSignal, onToast, presentation = "
   );
 
   if (!sessionId || tasksSessionId !== sessionId && !error) return null;
-  if (presentation === "summary") return tasks.length || error ? <button type="button" className="session-background-tasks" onClick={onOpen}><TaskListIcon size="sm" />{error ? "检查后台任务" : `后台任务 ${tasks.length}`}</button> : null;
+  if (presentation === "summary") {
+    if (!tasks.length && !error) return null;
+    const label = error ? "检查后台任务" : `后台任务 ${tasks.length}`;
+    return <button type="button" className="session-background-tasks" aria-label={label} data-tip={label} onClick={onOpen}>
+      <TaskListIcon size="sm" /><span>{error ? "检查" : tasks.length}</span>
+    </button>;
+  }
 
   return (
     <aside

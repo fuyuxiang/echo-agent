@@ -37,7 +37,7 @@ try {
     window.backgroundReview = { emit, sessionId };
   });
   const original = page.locator(".msg-wrap").filter({ hasText: "已取得字体排查结论" });
-  const branch = page.getByRole("menuitem", { name: "在新对话中继续", exact: true });
+  const branch = original.getByRole("button", { name: "在新对话中继续", exact: true });
   await page.getByRole("button", { name: "后台任务 1", exact: true }).click();
   await page.getByText("本地预览服务", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "终止任务：本地预览服务" }).isEnabled(), true);
@@ -47,9 +47,7 @@ try {
     return useSessionsStore.getState().independent.find(row => row.sessionId === window.backgroundReview.sessionId).status;
   }), "completed", "querying a persistent background service must not overwrite session lifecycle");
   await page.getByRole("button", { name: "关闭面板", exact: true }).click();
-  await original.getByRole("button", { name: "更多回复操作" }).click();
   assert.equal(await branch.isDisabled(), false, "a persistent service must not prevent history branching");
-  await page.keyboard.press("Escape");
   await page.screenshot({ path: join(output, "completed-with-service.png") });
   // Preserve the reader's position while an automatic continuation is admitted.
   const readingTop = await page.evaluate(async () => {
@@ -73,10 +71,8 @@ try {
   assert.ok(Math.abs(readingAfter - readingTop) < 2, "automatic continuation must preserve the reader's position");
   assert.match(await page.getByLabel("本次处理说明").textContent(), /后台结果核对.*检查微信数据目录/s);
   assert.equal(await page.getByText("PRIVATE INTERNAL REMINDER").count(), 0);
-  await original.getByRole("button", { name: "更多回复操作" }).click();
   assert.equal(await branch.isDisabled(), true, "actual model work keeps the existing history guard");
   assert.match(await branch.getAttribute("title"), /当前执行/);
-  await page.keyboard.press("Escape");
   await page.getByLabel("本次处理说明").scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(output, "followup-running.png") });
   await page.evaluate(async () => {
@@ -89,9 +85,7 @@ try {
   const supplement = page.locator(".msg-wrap").filter({ hasText: "后台目录检查已完成" });
   await supplement.getByRole("button", { name: "更多回复操作" }).waitFor();
   assert.equal(await supplement.getByRole("button", { name: /重新执行|重新生成|重试回复/ }).count(), 0);
-  await original.getByRole("button", { name: "更多回复操作" }).click();
   assert.equal(await branch.isDisabled(), false);
-  await page.keyboard.press("Escape");
   const targets = await page.evaluate(async () => {
     const { useSessionStore } = await import("/src/stores/session-store.ts");
     const { continuationTargets, continuationAnchor } = await import("/src/lib/session-continuation.ts");
@@ -136,7 +130,7 @@ try {
     emit("turn_completed", { prompt_id: "failed-latest", stop_reason: "error" });
   });
   await page.getByRole("button", { name: "任务操作", exact: true }).click();
-  await branch.click();
+  await page.getByRole("menuitem", { name: "在新对话中继续", exact: true }).click();
   await page.waitForFunction(async () => {
     const { useSessionStore } = await import("/src/stores/session-store.ts");
     return useSessionStore.getState().sessionId !== window.backgroundReview.sessionId;

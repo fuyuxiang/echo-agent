@@ -346,7 +346,7 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
         await wait(async () => { await service(null); return reply().trim().length >= 32; }, 'actual streamed text before stop', 30000);
         const streamedBeforeStopChars = reply().trim().length;
         assert(!completions.slice(before).some(item => item.sessionId === e.sessionId), 'Long reply completed before Stop');
-        (await wait(() => { const b = document.querySelector('.echo-composer button[aria-label="停止生成"]'); return visible(b) && !b.disabled ? b : null; }, 'actual stop button')).click();
+        (await wait(() => { const b = document.querySelector('.echo-composer button[aria-label="停止任务"]'); return visible(b) && !b.disabled ? b : null; }, 'actual stop button')).click();
         const stop = await wait(async () => { await service(null); const event = completions.slice(before).find((item) => item.sessionId === e.sessionId && item.cancelTrigger === 'stop');
           return event && (await ownSession(e.sessionId)).status === 'stopped' ? event : null; }, 'actual stop ACK and terminal', 30000);
         await delay(1000); assert((await ownSession(e.sessionId)).status === 'stopped', 'Late event reversed stopped state');
@@ -386,13 +386,18 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
       const control = await stage('core-queue-and-send-now', async () => {
         const slow = `隔离排队验收 ${nonce}：请直接连续撰写五千字中文说明，不调用工具。`;
         const before = completions.length; await send(slow);
-        await wait(() => visible(document.querySelector('.echo-composer button[aria-label="停止生成"]')), 'real streaming turn');
+        await wait(() => visible(document.querySelector('.echo-composer button[aria-label="停止任务"]')), 'real streaming turn');
         await wait(async () => { await service(null); return reply().trim().length >= 32; }, 'actual streamed text before send_now', 30000);
         const streamedBeforeSendNowChars = reply().trim().length;
         const queued = simple(m.queued), immediate = `取消上一条长文要求，不再继续该任务。${simple(m.immediate)}`;
-        await send(queued, '加入待发送队列');
-        await wait(() => document.querySelector('.queue-row__text')?.textContent === queued, 'durable queue visible');
-        await send(immediate, '加入待发送队列');
+        await send(queued, '加入队列');
+        const disclosure = await wait(() => document.querySelector('.queue-disclosure__trigger'), 'queue disclosure');
+        if (disclosure.getAttribute('aria-expanded') === 'false') disclosure.click();
+        await wait(() => {
+          const row = document.querySelector('.queue-row__text');
+          return visible(row) && row.textContent === queued;
+        }, 'durable queue visible');
+        await send(immediate, '加入队列');
         (await wait(() => {
           const row = [...document.querySelectorAll('.queue-row')]
             .find(item => item.querySelector('.queue-row__text')?.textContent === immediate);

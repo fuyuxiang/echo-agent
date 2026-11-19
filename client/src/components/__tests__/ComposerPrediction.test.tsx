@@ -10,20 +10,33 @@ const base = () => ({ streaming: false, apiReady: true, draftKey: "s1", predicti
 beforeEach(() => { localStorage.clear(); useSessionsStore.setState({ drafts: {} }); });
 afterEach(cleanup);
 
-it("keeps ghost text out of the draft and accepts Tab without sending", () => {
+it("显示快捷键，点击建议按钮填入草稿并将焦点交回输入框", () => {
+  const props = base();
+  render(<Composer {...props} />);
+  const accept = screen.getByRole("button", { name: "Tab 填入建议" });
+  accept.focus();
+  fireEvent.click(accept);
+  expect(screen.getByRole("textbox")).toHaveValue(prediction.text);
+  expect(screen.getByRole("textbox")).toHaveFocus();
+  expect(props.onSend).not.toHaveBeenCalled();
+});
+
+it.each(["Tab", "ArrowRight", "Enter"])("accepts a visible suggestion with %s as an editable draft", key => {
   const props = base();
   render(<Composer {...props} />);
   const input = screen.getByRole("textbox");
-  expect(screen.getByTestId("composer-prediction")).toHaveTextContent(prediction.text);
+  expect(screen.getByTestId("composer-prediction").textContent).toBe(prediction.text);
   expect(input).toHaveValue("");
   expect(props.onDraftChange).not.toHaveBeenCalled();
-  fireEvent.keyDown(input, { key: "Enter" });
-  expect(props.onSend).not.toHaveBeenCalled();
-  fireEvent.keyDown(input, { key: "Tab" });
+  expect(fireEvent.keyDown(input, { key })).toBe(false);
   expect(input).toHaveValue(prediction.text);
   expect(props.onDraftChange).toHaveBeenLastCalledWith(prediction.text);
   expect(props.onSend).not.toHaveBeenCalled();
   expect(screen.queryByTestId("composer-prediction")).toBeNull();
+  if (key === "Enter") {
+    expect(fireEvent.keyDown(input, { key, repeat: true })).toBe(false);
+    expect(props.onSend).not.toHaveBeenCalled();
+  }
   fireEvent.change(input, { target: { value: "修改后的指令" } });
   fireEvent.keyDown(input, { key: "Enter" });
   expect(props.onSend).toHaveBeenCalledWith("修改后的指令", []);
@@ -35,7 +48,8 @@ it.each(["existing-draft", "attachment", "running", "wrong-session"])("preserves
   render(<Composer {...props} draft={reason === "existing-draft" ? "现有草稿" : ""}
     streaming={reason === "running"} prediction={reason === "wrong-session" ? { ...prediction, sessionId: "s2" } : prediction} />);
   const input = screen.getByRole("textbox");
-  fireEvent.keyDown(input, { key: "Tab" });
+  expect(fireEvent.keyDown(input, { key: "Tab" })).toBe(true);
+  expect(fireEvent.keyDown(input, { key: "ArrowRight" })).toBe(true);
   expect(input).toHaveValue(reason === "existing-draft" ? "现有草稿" : "");
   expect(props.onSend).not.toHaveBeenCalled();
   expect(screen.queryByTestId("composer-prediction")).toBeNull();
@@ -54,19 +68,19 @@ it("typing then deleting, or dismissing with Esc, cannot resurrect the old predi
   expect(input).toHaveValue("");
 });
 
-it("does not intercept modifier Tab or Chinese IME composition", () => {
+it.each(["Tab", "ArrowRight", "Enter"])("does not accept a suggestion with modified or composing %s", key => {
   const props = base();
   render(<Composer {...props} />);
   const input = screen.getByRole("textbox");
   for (const modifier of ["shiftKey", "ctrlKey", "altKey", "metaKey"]) {
-    fireEvent.keyDown(input, { key: "Tab", [modifier]: true });
+    fireEvent.keyDown(input, { key, [modifier]: true });
     expect(input).toHaveValue("");
   }
-  fireEvent.keyDown(input, { key: "Tab", keyCode: 229 });
+  expect(fireEvent.keyDown(input, { key, keyCode: 229 })).toBe(true);
   expect(input).toHaveValue("");
   fireEvent.compositionStart(input);
   expect(screen.queryByTestId("composer-prediction")).toBeNull();
-  fireEvent.keyDown(input, { key: "Tab", isComposing: true });
+  expect(fireEvent.keyDown(input, { key, isComposing: true })).toBe(true);
   fireEvent.compositionEnd(input);
   expect(input).toHaveValue("");
   expect(props.onSend).not.toHaveBeenCalled();

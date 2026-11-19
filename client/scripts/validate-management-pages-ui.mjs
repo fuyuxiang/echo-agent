@@ -211,16 +211,21 @@ try {
       await navigationPage.getByRole("button", { name: "卡片视图", exact: true }).click();
       await navigationPage.getByRole("button", { name: "打开项目 产品需求全流程", exact: true }).click();
       await navigationPage.locator(".pd-crumb").waitFor();
-      const participants = navigationPage.locator("summary").filter({ hasText: "参与者备注（本机）" });
-      await participants.click();
-      await navigationPage.getByText("发布负责人 · 林", { exact: true }).waitFor();
+      const verifyLegacyParticipants = async () => {
+        await navigationPage.getByRole("button", { name: "项目设置", exact: true }).click();
+        const settings = navigationPage.getByRole("dialog", { name: "项目设置", exact: true });
+        await settings.locator("summary").filter({ hasText: "历史记录" }).click();
+        await settings.getByText("发布负责人 · 林", { exact: true }).waitFor();
+        await settings.getByRole("button", { name: "关闭项目设置", exact: true }).click();
+      };
+      await verifyLegacyParticipants();
       await toggle.click();
       await navigationPage.locator(".pd-topbar.page-toolbar--window-navigation").waitFor();
       const crumb = await navigationPage.locator(".pd-crumb").boundingBox();
       const tabs = await navigationPage.locator(".pd-tabs-row").boundingBox();
       assert.equal(crumb.x, tabs.x, "Project breadcrumb and detail tabs must align after collapsing");
       assert(crumb.y >= before.y + before.height, "Project breadcrumb must clear the window controls");
-      await navigationPage.getByText("发布负责人 · 林", { exact: true }).waitFor();
+      await verifyLegacyParticipants();
     }
   }
   for (const platform of ["mac", "other"]) for (const width of [1280, 768]) for (const surface of ["collapsed-project", "collapsed-capabilities"]) {
@@ -265,7 +270,7 @@ try {
   await editor.getByRole("button", { name: "后台运行设置", exact: true }).click();
   const settings = navigationPage.getByRole("dialog", { name: "设置", exact: true });
   const toggleBackground = settings.getByRole("switch", { name: "关闭窗口后继续运行", exact: true });
-  await settings.getByText(/关闭主窗口将停止任务执行和自动化调度/).waitFor();
+  await settings.getByText(/关闭窗口会停止任务和调度/).waitFor();
   assert.equal(await toggleBackground.isChecked(), false);
   await toggleBackground.press("Space");
   await settings.getByText("已开启后台运行。", { exact: true }).waitFor();

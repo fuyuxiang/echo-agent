@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ThemeProvider } from "../../src/components/ThemeProvider";
-import { EchoMark } from "../../src/components/EchoMark";
+import { WaitingIndicator } from "../../src/components/WaitingIndicator";
 import { MessageItem } from "../../src/components/MessageItem";
 import { ModelSelector } from "../../src/components/ModelSelector";
 import macTray from "../../src-tauri/icons/tray/macos@2x.png";
@@ -32,10 +32,10 @@ function Review() {
       .tray-preview img {display:block;object-fit:contain}
       .mac-template {display:block;background:currentColor;mask:url('${macTray}') center/contain no-repeat}
     `}</style>
-    <header><img src="/app-icon.png" width={64} height={64} alt="EchoAgent" /><div><h1>EchoAgent</h1><p>应用图标 · 对话头像 · 模型 · 系统托盘</p></div></header>
-    <section data-testid="conversation"><h2>聊天头像与等待状态</h2>
+    <header><img src="/app-icon.png" width={64} height={64} alt="EchoAgent" /><div><h1>EchoAgent</h1><p>应用图标 · 等待状态 · 模型 · 系统托盘</p></div></header>
+    <section data-testid="conversation"><h2>等待状态</h2>
       <MessageItem message={{ id: "icon-review", role: "assistant", complete, startedAt: Date.now(),
-        parts: complete ? [{ kind: "text", text: "已完成，头像保持原图并停止呼吸提示。" }] : [] }}
+        parts: complete ? [{ kind: "text", text: "已完成，回复正文在这里。" }] : [] }}
         streaming={!complete} waitingForModel={state === "waiting"}
         runtimeError={state === "error" ? "模型连接失败，请重试。" : undefined} sessionId="icon-review" />
       <button className="review-button" onClick={() => setState(state === "waiting" ? "complete" : "waiting")}>{state === "waiting" ? "完成回复" : "继续等待"}</button>
@@ -50,7 +50,7 @@ function Review() {
       <div key={background} className={`tray-preview tray-preview--${background}`}>{[16, 18, 22, 32, 44].map(size =>
         <figure key={size}><span className="mac-template" style={{ width: size, height: size }} /><figcaption>{size}px</figcaption></figure>)}</div>)}</section>
     <div style={{ height: 900 }} />
-    <section data-testid="offscreen"><h2>离屏状态验证</h2><EchoMark active /></section>
+    <section data-testid="offscreen"><h2>离屏状态验证</h2><WaitingIndicator /></section>
   </main></ThemeProvider>;
 }
 

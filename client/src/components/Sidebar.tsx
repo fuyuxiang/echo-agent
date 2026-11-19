@@ -1175,7 +1175,7 @@ export function Sidebar({
             )}
             {filteredIndependent.length === 0 && scopedIndependentCount === 0 && !sessionsLoading && (
               <div className={showEmptyTaskState ? "sidebar__empty-state" : "sidebar__empty"}>
-                {showEmptyTaskState ? <><strong>暂无任务</strong><span>点击上方按钮开始新任务</span></> : "这里还没有任务，去完成第一件事吧"}
+                {showEmptyTaskState ? <><strong>暂无任务</strong></> : "暂无任务"}
               </div>
             )}
             {sortPinnedFirst(filteredIndependent).map((session) => renderConv(session))}
@@ -1274,7 +1274,7 @@ export function Sidebar({
                     <div id={`sidebar-project-conversations-${proj.id}`} className="sidebar__children">
                       {projectConversations.length === 0 && (
                         <div className="sidebar__empty">
-                          还没有对话，从项目页开启第一轮吧
+                          暂无项目对话
                         </div>
                       )}
                       {projectConversations.map((conversation) => {

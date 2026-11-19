@@ -3,8 +3,8 @@ import { join } from "node:path";
 
 /** Exercise receipt updates and reading intent in the production ChatView. */
 export async function validateExecutionProgressInteractions(page, base, output) {
-  const reset = async () => {
-    await page.goto(`${base}/__ui-review?surface=execution&state=running&theme=light`);
+  const reset = async (theme = "light") => {
+    await page.goto(`${base}/__ui-review?surface=execution&state=running&theme=${theme}`);
     await page.locator('[data-execution-ready="true"]').waitFor();
   };
   const tool = (id, status = "completed", kind = "bash") => ({
@@ -25,6 +25,55 @@ export async function validateExecutionProgressInteractions(page, base, output) 
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   };
   const later = ["one", "two", "three"].map(id => tool(id));
+
+  const statusGeometry = selector => page.locator(selector).evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const body = element.closest(".msg__body").getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return { x: box.x - body.x, y: box.y - body.y, height: box.height,
+      font: [style.fontFamily, style.fontSize, style.fontWeight, style.lineHeight, style.color] };
+  });
+  for (const [width, theme] of [[1280, "light"], [390, "dark"]]) {
+    await page.setViewportSize({ width, height: 800 });
+    await reset(theme);
+    await set([]);
+    const waiting = await statusGeometry(".msg__loading-main");
+    const thought = { kind: "thought", text: "仅在展开后显示的思考内容。" };
+    const progress = { kind: "text", streamId: "public-progress", text: "我先检查工作区，再整理可用资料。" };
+    const running = { ...tool("check-workspace", "in_progress", "read_file"), streamId: "workspace" };
+    const completed = { ...running, toolCall: { ...running.toolCall, status: "completed" } };
+    const header = page.locator(".execution-process__header");
+    const excerpt = page.locator(".execution-process__excerpt p");
+    await set([thought]);
+    await header.getByText("正在思考", { exact: true }).waitFor();
+    assert.deepEqual(await statusGeometry(".execution-process__title"), waiting, "waiting and thinking share the same text baseline and style");
+
+    await set([thought, running, progress]);
+    assert.equal(await excerpt.textContent(), progress.text);
+    assert.deepEqual(await statusGeometry(".execution-process__title"), waiting, "visible progress does not move the status row");
+    const progressGeometry = await statusGeometry(".execution-process__excerpt p");
+    assert(progressGeometry.y > waiting.y, "public progress stays below the status row");
+    assert.deepEqual(progressGeometry.font, waiting.font, "public progress uses the same typography and color");
+    assert.deepEqual((await statusGeometry(".toolcall--activity .toolcall__title")).font, waiting.font, "tool labels also share the baseline typography");
+    await page.screenshot({ path: join(output, `steady-progress-${theme}.png`) });
+
+    await set([thought, completed, progress]);
+    await header.getByText("正在生成回复", { exact: true }).waitFor();
+    assert.deepEqual(await statusGeometry(".execution-process__title"), waiting);
+    assert.equal(await page.locator(".msg__writing").count(), 0);
+    await set([thought, completed, progress, { ...tool("check-sources", "in_progress"), streamId: "sources" }]);
+    assert.equal(await excerpt.textContent(), progress.text, "changing tool streams keeps the latest public progress in place");
+    assert.deepEqual(await statusGeometry(".execution-process__title"), waiting);
+
+    const answer = { kind: "text", phase: "final_answer", text: "资料已核对。以下是整理后的结果。" };
+    await set([thought, completed, progress, answer]);
+    await header.getByText("正在生成回复", { exact: true }).waitFor();
+    await set([thought, completed, progress, answer], true);
+    await page.locator(".execution-process--compact").waitFor();
+    assert.deepEqual(await statusGeometry(".execution-process__meta"), waiting, "elapsed time stays on the same baseline after completion");
+    assert.equal(await header.locator(".execution-process__chevron").count(), 1);
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
 
   await reset();
   await set([tool("slow-a", "in_progress"), tool("slow-b", "in_progress"), ...later]);
@@ -124,7 +173,7 @@ export async function validateExecutionProgressInteractions(page, base, output) 
   assert.equal(await page.locator(".toolcall--err").count(), 0);
   await page.locator(".execution-process__header").click();
   await set([unknown, ...later, { kind: "text", phase: "final_answer", text: "请核验点击结果。" }], true);
-  assert.match(await page.locator(".execution-notice").textContent(), /电脑操作的结果尚未确认/);
+  assert.match(await page.locator(".execution-notice").textContent(), /电脑操作结果待确认/);
   await page.screenshot({ path: join(output, "pending-desktop-outcome.png") });
   await set([unknown, ...later, { kind: "tool_call", toolCall: { toolCallId: "verified", kind: "other", toolName: "automation_complete", title: "核验成果", status: "completed",
     content: [{ type: "text", text: '{"task":{"phase":"completed","receipts":[{"id":"action-1"}]}}' }] } }], true);

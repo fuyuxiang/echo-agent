@@ -11,7 +11,9 @@ let browser;
 try {
   browser = await (await reviewChromium()).launch({ headless: true,
     executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
-  for (const [width, height, theme] of [[1280, 800, "light"], [1024, 680, "dark"], [640, 720, "light"]]) {
+  for (const [width, height, theme, acceptKey] of [
+    [1280, 800, "light", "Tab"], [1024, 680, "dark", "ArrowRight"], [640, 720, "light", "Enter"], [390, 720, "dark", "click"],
+  ]) {
     const page = await browser.newPage({ viewport: { width, height } });
     page.setDefaultTimeout(45000);
     page.setDefaultNavigationTimeout(60000);
@@ -32,10 +34,9 @@ try {
     const first = await turn();
     await page.evaluate(({ index, text }) => window.predictionReview.answer(index, text), { index: first, text });
     await ghost.waitFor();
+    assert.equal((await ghost.innerText()).trim(), text);
     assert.equal(await input.inputValue(), "");
     assert.equal(await page.evaluate(() => window.predictionReview.draft()), "");
-    await input.press("Enter");
-    assert.equal(await input.inputValue(), "");
     const geometry = await ghost.evaluate(element => {
       const r = element.getBoundingClientRect();
       const footer = element.closest(".echo-composer").querySelector(".echo-composer__footer").getBoundingClientRect();
@@ -44,10 +45,19 @@ try {
     assert(!geometry.overflow && geometry.x >= 0 && geometry.right <= geometry.viewport + 1 && geometry.bottom <= geometry.footer + 1,
       `prediction overlaps controls: ${JSON.stringify(geometry)}`);
     await page.screenshot({ path: join(output, `prediction-${width}-${theme}.png`) });
-    await input.press("Tab");
+    const accept = page.getByRole("button", { name: "Tab 填入建议" });
+    assert(await accept.isVisible());
+    if (acceptKey === "click") await accept.click();
+    else await input.press(acceptKey);
+    assert(await input.evaluate(el => el === document.activeElement));
     assert.equal(await input.inputValue(), text);
     assert.equal(await page.evaluate(() => window.predictionReview.draft()), text);
     assert.equal(await ghost.count(), 0);
+    await page.waitForFunction(text => document.querySelector(".echo-composer__input").selectionStart === text.length, text);
+    await input.press("ArrowLeft");
+    assert.equal(await input.evaluate(el => el.selectionStart), text.length - 1);
+    await input.press("ArrowRight");
+    assert.equal(await input.evaluate(el => el.selectionStart), text.length);
     await page.evaluate(() => window.predictionReview.switchSession("review-other"));
     assert.equal(await input.inputValue(), "");
     await page.evaluate(() => window.predictionReview.switchSession("review-conversation"));
@@ -74,7 +84,7 @@ try {
     assert.deepEqual(errors, []);
     await page.close();
   }
-  console.log(`Prediction UI verified in 3 viewport/theme combinations. Screenshots: ${output}`);
+  console.log(`Prediction UI verified in 4 viewport/theme combinations. Screenshots: ${output}`);
 } finally {
   await browser?.close();
   await server.close();

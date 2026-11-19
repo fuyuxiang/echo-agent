@@ -95,7 +95,8 @@ try {
   });
   assert.equal(await page.evaluate(()=>window.workbenchCalls.filter(c=>c.command==="review_send_now").length),0);
   await input.fill("中断后改为生成报告");
-  await page.getByRole("button",{name:"加入待发送队列",exact:true}).click();
+  await page.getByRole("button",{name:"加入队列",exact:true}).click();
+  await page.getByRole("button", { name: /^待发送 \d+ 条/ }).click();
   const queuedReplacement=page.getByRole("list",{name:"待发送队列"}).locator(".queue-row").filter({hasText:"中断后改为生成报告"});
   await queuedReplacement.getByRole("button",{name:"中断当前回复并立即发送这条",exact:true}).click();
   await page.waitForFunction(()=>window.workbenchCalls.filter(c=>c.command==="review_send_now").length===1);

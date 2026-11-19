@@ -2,6 +2,7 @@ import type { AutomationStatus } from "@/lib/automation-client";
 import { ComputerExecutionDetails } from "./ComputerExecutionDetails";
 import { computerTaskLabel, computerTaskRunning } from "@/lib/computer-task";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { ToolCallCard } from "./ToolCallCard";
 import { ToolActivityIcon } from "./ToolActivityIcon";
@@ -13,6 +14,7 @@ import { documentProgressSummary } from "@/lib/document-progress";
 import { executionProgressText } from "@/lib/execution-process-preview";
 import { executionStages, executionStageState, stageOperationSummary } from "@/lib/execution-stages";
 import { useTheme } from "./ThemeProvider";
+import { useVisibleMotion } from "./WaitingIndicator";
 import type { MessagePart, ToolCallView } from "@/stores/session-store";
 import { formatProcessDuration, summarizeExecutionProcess } from "@/lib/execution-process";
 import type { KnowledgeTurnTrace } from "@/stores/knowledge-store";
@@ -48,6 +50,7 @@ interface ExecutionProcessProps {
   agentResult?: string;
   resultNotice?: Pick<ExecutionNotice, "title" | "tone">;
   hasFinalAnswer?: boolean;
+  generatingAnswer?: boolean;
   waitingReason?: string;
   markdownConfig?: MarkdownConfig;
   findQuery?: string;
@@ -141,7 +144,7 @@ function hasRecordSelection(body: HTMLDivElement): boolean {
 export function ExecutionProcess({
   sessionId, messageId, cwd, automationStatus, parts, active: messageActive, settled, autoExpand = false, onReview, startedAt, completedAt,
   lastActivityAt, stopReason, cancelTrigger, cancellationCategory, agentResult,
-  resultNotice, hasFinalAnswer = false, waitingReason: requestedWaitingReason, markdownConfig, findQuery, onOpenTool,
+  resultNotice, hasFinalAnswer = false, generatingAnswer = false, waitingReason: requestedWaitingReason, markdownConfig, findQuery, onOpenTool,
   knowledgeTrace, onOpenKnowledgePath, revealRequest = 0,
 }: ExecutionProcessProps) {
   // Native work can continue between model turns. The message spinner alone
@@ -316,22 +319,41 @@ export function ExecutionProcess({
   const uncertainToolCount = summary.pendingToolCount;
   const failedToolCount = summary.unresolvedToolCount;
   const recovered = summary.state === "complete" && recoveredIds.size > 0;
-  const title = waitingReason ?? (automationStatus && (nativeRunning || !messageActive) ? computerTaskLabel(automationStatus) : !active
+  const inlineLive = active && !waitingReason && !nativeTask && !currentStage?.planned;
+  // A tool can start a new stream between two progress updates. Keep showing
+  // the latest public update in the same place until there is new text.
+  const previewProgress = useMemo(() => progress || (active && !currentStage?.planned ? executionProgressText(parts) : ""),
+    [active, currentStage?.planned, parts, progress]);
+  const thinking = inlineLive && !finalAnswerStarted && knowledgeTrace?.personal?.state !== "searching"
+    && !hasUnfinishedTools && !failedToolCount && !uncertainToolCount;
+  const thinkingDotRef = useVisibleMotion(thinking);
+  const latestTool = tools[tools.length - 1];
+  const finishedSearch = inlineLive && finalAnswerStarted && !failedToolCount && !uncertainToolCount
+    && latestTool && toolStates.get(latestTool.toolCallId)?.state === "completed"
+    && detectToolCallRenderer(latestTool) === "search";
+  // A finished answer and an individual tool result have different lifecycles.
+  // Keep intermediate failures in the record once a normal turn has answered.
+  const compactOverview = !active && !nativeTask && finalAnswerStarted && !uncertainToolCount
+    && stopReason === "end_turn" && settled !== false && !cancellationCategory;
+  const title = compactOverview ? undefined : waitingReason ?? (automationStatus && (nativeRunning || !messageActive) ? computerTaskLabel(automationStatus) : !active
     ? resultNotice ? "处理过程" : summary.state === "complete" ? "本次处理已结束" : summary.title
     : knowledgeTrace?.personal?.state === "searching" ? "正在检索个人知识库"
-      : finalAnswerStarted ? "处理过程"
-        : currentStage && (currentStage.planned || currentStage.progress.length > 0) ? currentStage.title : summary.title);
+      : finalAnswerStarted ? generatingAnswer ? "正在生成回复" : finishedSearch ? "已检索资料" : "处理过程"
+        : thinking ? "正在思考"
+          : currentStage && !inlineLive && (currentStage.planned || currentStage.progress.length > 0)
+            ? currentStage.title : summary.title);
   // A single plan names the whole record. Keep it outside the scroll viewport
   // so replacing the overview title cannot shift the reader's position.
   const singleStageTitle = stages.length === 1 && currentStage.planned && currentStage.title !== title ? currentStage.title : undefined;
   const duration = startedAt != null && (active || completedAt != null)
-    ? formatProcessDuration(Math.max(0, (active ? now : completedAt!) - startedAt)) : null;
+    ? formatProcessDuration((active ? now : completedAt!) - startedAt, { spaced: compactOverview }) : null;
   const activityAt = lastActivityAt ?? startedAt;
   const idleMs = activityAt == null ? 0 : Math.max(0, now - Math.max(activityAt, resumedAt));
   const longWait = active && !finalAnswerStarted && !waitingReason && idleMs >= 30_000;
+  const timeLabel = duration && (!inlineLive || expanded || longWait) ? `${active ? "已用时" : "用时"} ${duration}` : null;
   const waitingFor = knowledgeTrace?.personal?.state === "searching" ? "知识库" : hasUnfinishedTools ? "操作" : "模型";
-  const description = progress.startsWith(title)
-    ? progress.slice(title.length).replace(/^[。！？!?\s]+/, "") : progress;
+  const description = !inlineLive && title && previewProgress.startsWith(title)
+    ? previewProgress.slice(title.length).replace(/^[。！？!?\s]+/, "") : previewProgress;
   const showPreview = !expanded && active && !finalAnswerStarted;
   // A focused action or selected text must not disappear at the answer boundary.
   const [retainedPreview, setRetainedPreview] = useState(false);
@@ -364,11 +386,23 @@ export function ExecutionProcess({
   }, [expanded, retainedPreview, showPreview, updatePreviewInteraction]);
   const previewDescription = readingDescription ?? description;
   const showProgress = (showPreview || retainedPreview) && Boolean(previewDescription);
+  const progressAnnouncement = showProgress && messageActive && !waitingReason ? description : "";
+  const [announcedProgress, setAnnouncedProgress] = useState("");
+  useEffect(() => {
+    if (!progressAnnouncement) {
+      setAnnouncedProgress("");
+      return;
+    }
+    // Announce a settled public update once, rather than each streamed fragment.
+    const timer = window.setTimeout(() => setAnnouncedProgress(progressAnnouncement), 500);
+    return () => window.clearTimeout(timer);
+  }, [progressAnnouncement]);
   const meta = [stageOperationSummary(tools, recoveredIds, !active, toolStates)];
   if (summary.changedFiles.length) meta.push(`${summary.changedFiles.length} 个文件已更新`);
   const documentSummary = documentProgressSummary(tools.flatMap(tool => tool.documentProgress ? [tool.documentProgress] : []));
   if (documentSummary) meta.unshift(documentSummary);
   if (knowledgeTrace?.personal?.state === "used") meta.push(`${knowledgeTrace.personal.resultCount} 个知识片段`);
+  const metrics = meta.filter(Boolean).join(" · ");
   const changeOpen = (next: boolean) => {
     userToggled.current = true;
     if (!next) updateReviewing(false);
@@ -398,25 +432,28 @@ export function ExecutionProcess({
         : nativeTask && ["paused", "stopped"].includes(nativeTask.phase) ? "stopped"
     : !active && summary.state === "complete" && resultNotice?.tone === "warning" ? "attention" : summary.state;
   const disclosureLabel = expanded ? "收起过程" : active ? "展开过程" : "查看过程";
-  return <section className={`execution-process execution-process--${state}${recovered ? " execution-process--recovered" : ""}`}
+  return <section className={`execution-process execution-process--${state}${recovered ? " execution-process--recovered" : ""}${compactOverview ? " execution-process--compact" : ""}`}
     aria-label="任务进展">
-    <button ref={headerRef} type="button" className="execution-process__overview execution-process__header"
+    <button ref={headerRef} type="button" className="msg-progress-row execution-process__header"
       data-chat-reading="true"
-      aria-label={[title, duration, disclosureLabel].filter(Boolean).join(" · ")}
+      aria-label={[title, timeLabel, disclosureLabel].filter(Boolean).join(" · ")}
       aria-expanded={expanded} aria-controls={expanded ? bodyId : undefined}
       aria-describedby={expanded && summary.description ? `${bodyId}-summary`
         : !expanded && active && (failedToolCount > 0 || uncertainToolCount > 0) ? `${bodyId}-attention` : undefined}
       onClick={() => changeOpen(!expanded)}>
-      <span className="execution-process__status" aria-hidden="true" />
-      <span className="execution-process__heading">
-        <span className="execution-process__title" role={finalAnswerStarted ? undefined : "status"}>{title}</span>
-        {duration && <span className="execution-process__meta">{active ? "已用时 " : "用时 "}{duration}</span>}
-      </span>
-      <span className="execution-process__disclosure">
-        <span>{disclosureLabel}</span>
-        <span className={`execution-process__chevron${expanded ? " execution-process__chevron--open" : active ? " execution-process__chevron--expand" : ""}`} aria-hidden="true">›</span>
-      </span>
+      {title && <>
+        <span ref={thinkingDotRef} className={`execution-process__status${thinking ? " waiting-indicator" : ""}`} aria-hidden="true" />
+        <span className="execution-process__heading">
+          <span className="execution-process__title" role={!finalAnswerStarted || generatingAnswer ? "status" : undefined}>{title}</span>
+          {timeLabel && <span className="execution-process__meta">{timeLabel}</span>}
+        </span>
+      </>}
+      {compactOverview && <span className="execution-process__meta">{timeLabel ?? "过程"}</span>}
+      <ChevronDown className="execution-process__chevron" size={12} strokeWidth={1.8} aria-hidden="true" />
     </button>
+    {active && <div className="sr-only" aria-live="polite" aria-atomic="true" aria-label="当前阶段进展播报">
+      {progressAnnouncement ? announcedProgress : ""}
+    </div>}
     {!expanded && (showPreview || retainedPreview) && (showProgress || recentActivities.length > 0) && <div ref={previewRef} className="execution-process__live" data-chat-reading="true"
       onFocusCapture={event => updatePreviewInteraction(event.target)}
       onBlurCapture={event => updatePreviewInteraction(event.relatedTarget)}>
@@ -435,7 +472,7 @@ export function ExecutionProcess({
         另有 {otherRunningCount} 项操作进行中
       </button>}
     </div>}
-    {(expanded || !active || documentSummary) && meta.some(Boolean) && <p className="execution-process__metrics">{meta.filter(Boolean).join(" · ")}</p>}
+    {!expanded && active && documentSummary && <p className="execution-process__metrics">{metrics}</p>}
     {!expanded && knowledgeTrace && <KnowledgeTrace trace={knowledgeTrace} active={active} compact onOpenPath={onOpenKnowledgePath} />}
     {nativeContinuation && <p id={`${bodyId}-attention`} className="execution-process__native-status" data-phase={nativeTask?.phase} role="note">
       {nativeContinuation}{!expanded && toolAttention ? ` ${toolAttention}。` : ""}
@@ -493,6 +530,7 @@ export function ExecutionProcess({
           }
         }}>
         <div ref={contentRef}>
+          {metrics && <p className="execution-process__metrics">{metrics}</p>}
           {summary.description && <p id={`${bodyId}-summary`} className="execution-process__outcome-detail">{summary.description}</p>}
           {summary.recoveredTools.length > 0 && <p className="execution-process__recovery-detail">
             {summary.recoveredTools.length} 次中间失败已由后续同一操作的重试恢复，原始记录保留如下。

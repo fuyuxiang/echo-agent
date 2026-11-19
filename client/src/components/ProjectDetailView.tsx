@@ -422,6 +422,7 @@ export function ProjectDetailView({
           </div>
 
           {(tab === "overview" || tab === "task" && !selectedTaskId) && <div className="pd-composer-shell">
+            {sharedId && <p className="project-composer-visibility"><Users size={14} aria-hidden="true" />执行报告对项目成员可见</p>}
             <Composer
               draftKey={draftKey}
               draft={projectDraft}
@@ -466,7 +467,7 @@ export function ProjectDetailView({
               onSend={async (text, attachments) => Boolean(await runProjectConversation(text, projectModelId!, attachments ?? [], true))}
               sendDisabled={projectPermissionMode === undefined || !!sharedId && (!workspace.snapshot || workspace.snapshot.role === "viewer")}
               onCancel={() => { /* 项目页 composer 不流式,onCancel 为 Composer prop 必传的占位。 */ }}
-              placeholder={sharedId ? "接下来，要推进什么工作？执行报告对项目成员可见（Shift+Enter 换行）" : "接下来，要推进什么工作？（Shift+Enter 换行）"}
+              placeholder="描述下一项工作"
               apiReady={!!projectModelId && models.length > 0}
               setupHint={
                 models.length === 0

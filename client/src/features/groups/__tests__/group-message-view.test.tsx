@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { MessageItem } from "@/components/MessageItem";
 import { ThemeProvider } from "@/components/ThemeProvider";
@@ -8,13 +8,18 @@ import type { GroupMessage, GroupWork } from "../group-client";
 const message: GroupMessage = { id: "live-group-answer", seq: 2, memberId: "expert", kind: "assistant", text: "已找到接口约束。", createdAt: 1, workId: "work", replyTo: null, attachments: [], toolCalls: [{ toolCallId: "read", title: "读取接口", kind: "read_file", status: "in_progress", content: [] }] };
 const work: GroupWork = { id: "work", rootId: "question", memberId: "expert", parentId: null, continuationOf: null, prompt: "检查接口", status: "running", discussion: false, sessionId: "native", output: message.text, error: null, createdAt: 0, tokens: 0 };
 
-it("真实消息组件保留专家结论、正确显示运行状态且默认折叠工具详情", () => {
+it("真实消息组件保留专家结论、正确显示运行状态且默认折叠工具详情", async () => {
   const onOpenTool = vi.fn();
   const view = groupMessageView(message, work);
   expect(view.complete).toBe(false);
   render(<ThemeProvider><MessageItem message={view} streaming authorName="接口专家" autoExpandProcess={false} onOpenTool={onOpenTool} /></ThemeProvider>);
   expect(screen.getByText("接口专家")).toBeInTheDocument();
-  expect(screen.getByRole("status")).toHaveTextContent("已找到接口约束");
+  expect(screen.getByRole("status")).toHaveTextContent("正在读取项目文件");
+  expect(screen.getByLabelText("当前阶段进展")).toHaveTextContent("已找到接口约束");
+  const announcement = screen.getByLabelText("当前阶段进展播报");
+  expect(announcement).toHaveAttribute("aria-live", "polite");
+  expect(announcement).toBeEmptyDOMElement();
+  await waitFor(() => expect(announcement).toHaveTextContent("已找到接口约束"));
   expect(screen.queryByText(/有操作未收尾/)).toBeNull();
   expect(screen.queryByText(/深度思考/)).toBeNull();
   const disclosure = document.querySelector(".execution-process__header")!;

@@ -9,10 +9,10 @@ import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import type { AutomationMode } from "@/lib/automation-client";
 
 function homePlaceholder(attachmentCount: number): string {
-  if (attachmentCount === 0) return "从一个问题、一个想法，或一份文件开始";
+  if (attachmentCount === 0) return "描述你的任务";
   return attachmentCount === 1
-    ? "想如何处理这份文件？"
-    : "想基于这些文件完成什么？";
+    ? "如何处理此文件？"
+    : "这些文件用来做什么？";
 }
 
 /** EchoAgent 首页：单一任务入口。 */
@@ -133,8 +133,8 @@ export function HomePage({
               modelLoading
                 ? "正在同步可用模型…"
                 : setupHint ?? (models?.length
-                  ? "当前模型暂不可用，请在「设置 → 模型」检查连接。"
-                  : "暂无可用模型，请在「设置 → 模型」检查连接。")
+                  ? "当前模型不可用 · 检查连接"
+                  : "暂无可用模型 · 打开模型设置")
             }
             onOpenSettings={modelLoading ? undefined : onOpenSettings}
             onPlaceholder={onPlaceholder}
@@ -174,7 +174,8 @@ export function HomePage({
           )}
           {!creatingSession && sendError && (
             <div className="home__send-error" role="alert">
-              任务创建失败，请重试：{sendError}
+              创建任务失败。请重试。
+              <details><summary>查看原因</summary>{sendError}</details>
             </div>
           )}
         </section>

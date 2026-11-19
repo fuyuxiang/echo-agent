@@ -13,7 +13,7 @@ export function useElementSize(
 
   useEffect(() => {
     const node = ref.current;
-    if (!node) return;
+    if (!node || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const next = dimension === "height" ? entry.contentRect.height : entry.contentRect.width;

@@ -173,7 +173,7 @@ describe("Theia workbench", () => {
     expect(screen.queryByRole("button", { name: "展开侧边栏" })).not.toBeInTheDocument();
     expect(collapse).toHaveFocus();
     if (cwd) expect(await screen.findByTitle("Echo Code IDE")).toBeInTheDocument();
-    else expect(screen.getByText("打开代码库开始开发")).toBeInTheDocument();
+    else expect(screen.getByText("打开代码库")).toBeInTheDocument();
   });
 
   it("keeps the Agent pane beside Theia and allows resizing independently", async () => {
@@ -320,6 +320,7 @@ describe("Theia workbench", () => {
     useSessionStore.getState().setSession("queue-session");
     useMessageQueueStore.getState().enqueue(codingQueueId("/repo",task.id,task.sessionId)!,"验证后处理边界",[]);
     render(<CodingWorkbench cwd="/repo" sessionId="queue-session" apiReady models={[{id:"model-1"}]} defaultModelId="model-1" />);
+    await userEvent.click(await screen.findByRole("button", { name: "待发送 1 条" }));
     const send=await screen.findByRole("button",{name:"正在验证，完成后可发送"});
     expect(send).toBeDisabled();
     expect(invoke.mock.calls.some(([command])=>command==="coding_task_begin_followup")).toBe(false);

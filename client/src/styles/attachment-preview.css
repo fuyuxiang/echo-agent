@@ -1,36 +1,48 @@
-.composer-attachments__hint {
-  margin-bottom: 8px;
+.composer-attachments__toggle {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: var(--echo-radius-control);
+  background: transparent;
   color: var(--echo-text-medium);
-  font-size: 0.75rem;
+  font: inherit;
+  font-size: var(--echo-caption-size);
+  cursor: pointer;
 }
+.composer-attachments__toggle:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.composer-attachments__toggle[aria-expanded="true"] > svg:last-child { transform: rotate(180deg); }
 .composer-attachments {
   display: flex;
-  gap: 10px;
-  flex-wrap: nowrap;
+  gap: 6px;
   overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
   overscroll-behavior: contain;
+  scrollbar-width: thin;
   padding: 3px;
-  margin: -3px -3px 8px;
+  margin: -3px -3px 4px;
   align-items: flex-start;
 }
+.composer-attachments--expanded { flex-wrap: wrap; max-height: min(24vh, 170px); overflow-y: auto; }
 .composer-attachments__item {
-  position: relative;
+  display: flex;
+  align-items: center;
   flex: 0 0 auto;
   max-width: 100%;
   border: 1px solid var(--echo-border-default);
-  border-radius: 10px;
-  background: var(--echo-bg-primary);
+  border-radius: var(--echo-radius-control);
+  background: var(--echo-surface-content);
 }
 .composer-attachments__preview {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 230px;
-  max-width: 100%;
-  min-height: 66px;
-  padding: 10px 30px 10px 10px;
+  gap: 7px;
+  max-width: min(11rem, 58cqw);
+  min-width: 0;
+  min-height: 36px;
+  padding: 3px 4px 3px 6px;
   border: 0;
   border-radius: inherit;
   background: transparent;
@@ -40,41 +52,36 @@
   cursor: pointer;
 }
 .composer-attachments__preview:hover { background: var(--echo-bg-hover); }
-.composer-attachments__copy { display: flex; flex: 1; flex-direction: column; gap: 5px; min-width: 0; }
-.composer-attachments__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8125rem; }
-.composer-attachments__type { color: var(--echo-text-medium); font-size: 0.6875rem; }
-.composer-attachments__preview--image { flex-direction: column; width: 112px; gap: 7px; padding: 6px; }
-.composer-attachments__preview--image .msg__attachment-icon {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 98px;
-  height: 76px;
-  border-radius: 6px;
-  background: var(--echo-bg-secondary);
-}
-.composer-attachments__preview--image .msg__attachment-thumbnail { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; }
-.composer-attachments__preview--image .composer-attachments__copy { width: 100%; padding: 0 2px 2px; gap: 3px; }
-.composer-attachments__thumbnail-status { font-size: 0.6875rem; color: var(--echo-text-medium); }
-.composer-attachments__remove {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  display: grid;
-  place-items: center;
+.composer-attachments__copy { display: flex; flex-direction: column; min-width: 0; }
+.composer-attachments__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem; }
+.composer-attachments__type { color: var(--echo-text-medium); font-size: .6875rem; }
+.composer-attachments__preview .msg__attachment-icon {
+  flex: 0 0 24px;
   width: 24px;
   height: 24px;
+  border-radius: 5px;
+}
+.composer-attachments__preview .msg__attachment-thumbnail { width: 100%; height: 100%; object-fit: contain; }
+.composer-attachments__thumbnail-status { color: var(--echo-text-medium); font-size: .6875rem; }
+.composer-attachments__remove {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin-inline-end: 3px;
   padding: 0;
-  border: 1px solid var(--echo-border-default);
-  border-radius: 50%;
-  background: var(--echo-bg-primary);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--echo-text-medium);
   cursor: pointer;
 }
 .composer-attachments__remove:hover { background: var(--echo-bg-active); color: var(--echo-text-strong); }
 .composer-attachments__preview:focus-visible, .composer-attachments__remove:focus-visible,
 .attachment-preview button:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 2px; }
+.msg__attachment-item { position: relative; }
+.msg__attachment-item > .composer-attachments__remove { position: absolute; inset: 4px 4px auto auto; background: var(--echo-surface-raised); }
 .attachment-preview-overlay {
   position: fixed;
   inset: 0;
@@ -137,9 +144,10 @@
 .attachment-preview__zoom button[aria-pressed="true"] { background: var(--echo-bg-active); }
 .attachment-preview__stage { flex: 1; min-height: 80px; }
 .attachment-preview__hint { padding: 7px 16px; text-align: center; }
+.attachment-preview__notice { flex-shrink: 0; margin: 0; padding: 8px 16px; border-top: 1px solid var(--echo-border-default); color: var(--echo-text-medium); font-size: 0.75rem; overflow-wrap: anywhere; }
+.attachment-preview__notice[role="alert"] { color: var(--echo-status-error); }
 .attachment-preview__footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--echo-border-default); flex-shrink: 0; }
 .attachment-preview__footer > span { color: var(--echo-text-medium); font-size: 0.75rem; }
-.attachment-preview__footer > p { flex-basis: 100%; margin: 0; color: var(--echo-status-error); font-size: 0.75rem; overflow-wrap: anywhere; }
 .composer-expand-draft { align-self: flex-end; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--echo-text-medium); font: inherit; font-size: 0.75rem; cursor: pointer; }
 .composer-expand-draft:hover { color: var(--echo-text-strong); background: var(--echo-bg-hover); }
 .expanded-draft-editor { height: min(760px, 100%); }
@@ -148,7 +156,7 @@
 @media (max-width: 520px) {
   .attachment-preview-overlay, .attachment-preview-overlay--file { padding: 8px; }
   .attachment-preview__header { padding: 10px; gap: 6px; flex-wrap: wrap; }
-  .attachment-preview__identity { flex-basis: calc(100% - 48px); }
+  .attachment-preview__identity { flex-basis: 0; }
   .attachment-preview__close { order: 1; }
   .attachment-preview__navigation { order: 2; width: 100%; justify-content: center; }
   .attachment-preview__footer { padding: 10px; }

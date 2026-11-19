@@ -66,7 +66,7 @@ try {
     assert(await quality.getByRole("button", { name: "暂停录音", exact: true }).isEnabled());
     await quality.screenshot({ path: join(output, `capture-quality-${theme}-live.png`) });
     await quality.getByRole("button", { name: "结束录音", exact: true }).click();
-    await quality.getByText("部分声音可能缺失 · 查看受影响片段").click();
+    await quality.getByText("可能缺少部分声音 · 查看片段").click();
     await quality.waitForFunction(() => document.querySelector("audio")?.readyState >= 1);
     await quality.getByRole("button", { name: /回听 系统声音/ }).click();
     await quality.getByRole("button", { name: "暂停播放", exact: true }).waitFor();
@@ -80,7 +80,7 @@ try {
     await page.goto(`${base}?scenario=${scenario}`);
     if(scenario==="empty" || scenario==="local-only") {
       const both=page.getByRole("button",{name:/两者都录/});await both.waitFor();await both.click();
-      const automatic=page.getByRole("checkbox",{name:"录音结束后自动生成会议纪要"});
+      const automatic=page.getByRole("checkbox",{name:"结束后生成纪要"});
       assert.equal(await automatic.isChecked(),false);
       if(scenario==="empty") await automatic.check();
       await page.getByRole("button",{name:"开始录音",exact:true}).click();
@@ -119,7 +119,7 @@ try {
   await save.goto(`${base}?scenario=save-error`);
   await save.getByRole("button",{name:"新建录音",exact:true}).click();
   await save.getByRole("button",{name:/两者都录/}).click();
-  await save.getByRole("checkbox",{name:"录音结束后自动生成会议纪要"}).check();
+  await save.getByRole("checkbox",{name:"结束后生成纪要"}).check();
   await save.getByRole("button",{name:"开始录音",exact:true}).click();
   await save.getByText(/增量转写 \d+/).first().waitFor();
   await save.getByRole("button",{name:"结束录音",exact:true}).click();

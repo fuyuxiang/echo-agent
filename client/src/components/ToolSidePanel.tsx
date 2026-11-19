@@ -21,6 +21,7 @@ import { automationStatusForMessage } from "@/lib/computer-task";
 import type { AutomationStatus } from "@/lib/automation-client";
 import { openLocalPath } from "@/lib/markdown-host";
 import { FilePreview as RichFilePreview } from "./FilePreview";
+import { FilePreviewMenu, type FilePreviewAction } from "./FilePreviewMenu";
 import { copyShareText } from "@/lib/share";
 import { detectPreviewKind, type PreviewKind } from "@/lib/file-kind";
 import {
@@ -33,7 +34,7 @@ import { ViewSelector, defaultViews } from "./workspace-panel/ViewSelector";
 import { ArtifactTabsBar } from "./workspace-panel/ArtifactTabsBar";
 import { FileTreeView } from "./workspace-panel/FileTreeView";
 import { ActionMenu } from "./ActionMenu";
-import { ArrowLeft, Settings2, FolderOpen, ExternalLink } from "lucide-react";
+import { ArrowLeft, Settings2, FolderOpen, ExternalLink, Copy, RotateCw } from "lucide-react";
 import { BrowserPreview } from "./BrowserPreview";
 import type { DocumentEditContext, OpenDocument } from "@/lib/document-workspace";
 const DocumentWorkbench = lazy(() => import("./DocumentWorkbench"));
@@ -800,32 +801,29 @@ function ArtifactFilePreview({
   const openWithSystem = async () => {
     setOpening(true);
     try {
-      if (await onOpenOs()) {}
+      await onOpenOs();
     } finally {
       setOpening(false);
     }
   };
 
-  const originalActions = <>
-        {canOpenOriginal && <button
-          type="button" className="file-preview__open" aria-label="在文件夹中显示" title="在文件夹中显示" disabled={opening}
-          onClick={() => void openLocalPath(path, { cwd, type: "file", onToast, revealFile: true, revealOnly: true })}>{office ? <FolderOpen size={16}/> : "在文件夹中显示"}</button>}
-        {canOpenOriginal && (
-          <button
-            type="button"
-            className="file-preview__open" aria-label="用系统应用打开" title="用系统应用打开"
-            onClick={() => void openWithSystem()}
-            disabled={opening}
-          >
-            {office ? <ExternalLink size={16}/> : opening ? "正在打开…" : "用系统应用打开"}
-          </button>
-        )}
-  </>;
+  const originalActions: FilePreviewAction[] = [
+    { label: "复制文件路径", icon: Copy, onSelect: () => {
+      void copyShareText(path).then(ok => onToast?.(ok ? "已复制文件路径" : "复制失败，请检查剪贴板权限"));
+    } },
+  ];
+  if (canOpenOriginal) originalActions.push(
+    { label: "在文件夹中显示", icon: FolderOpen, disabled: opening,
+      onSelect: () => void openLocalPath(path, { cwd, type: "file", onToast, revealFile: true, revealOnly: true }) },
+    { label: "用系统应用打开", icon: ExternalLink, disabled: opening, onSelect: () => void openWithSystem() },
+  );
   const reloadPreview = () => { setState({ type: "loading" }); setRetry(value => value + 1); };
   return (
     <div className={`artifact-file-preview${office ? " artifact-file-preview--office" : ""}`}>
       {(!office || state.type !== "ready" && state.type !== "recovered") && <div className="file-preview__bar">
-        <span className="file-preview__path" title={path}>{path}</span>{originalActions}
+        <span className="file-preview__path" title={path}>{basename(path)}</span>
+        <FilePreviewMenu fileKey={path} actions={state.type === "loading" || state.type === "unauthorized" || state.type === "ready" && isDocument && sessionId ? originalActions
+          : [...originalActions, { label: "重新读取文件", icon: RotateCw, onSelect: reloadPreview }]} />
       </div>}
       {state.type === "loading" && <p className="tool-side-panel__empty">加载中…</p>}
       {state.type === "unauthorized" && (
@@ -846,7 +844,9 @@ function ArtifactFilePreview({
         <div className="file-preview__err" role="alert">
           <p>无法在面板内预览：{state.message}</p>
           {state.canOpen && (
-            <p className="file-preview__detail">文件仍可使用系统应用打开。</p>
+            <button type="button" className="file-preview__open" disabled={opening} onClick={() => void openWithSystem()}>
+              {opening ? "正在打开…" : "用系统应用打开"}
+            </button>
           )}
         </div>
       )}

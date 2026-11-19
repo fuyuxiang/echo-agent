@@ -14,17 +14,26 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   const state = () => page.evaluate(() => window.queueReview.state());
   const panel = page.getByRole("list", { name: "待发送队列", exact: true });
-  const open = async (theme, count = 1) => {
+  const disclosure = count => page.getByRole("button", { name: new RegExp(`^待发送 ${count} 条`) });
+  const open = async (theme, font, count = 1) => {
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=queue-admission&theme=${theme}&count=${count}`);
+    await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
+    const trigger = disclosure(count);
+    await trigger.waitFor();
+    assert.equal(await trigger.getAttribute("aria-expanded"), "false");
+    assert.equal(await panel.count(), 0, "queue rows start out of the accessibility tree");
+    await trigger.press("Enter");
     await panel.waitFor();
-    await panel.getByRole("button", { name: "中断当前回复并立即发送这条", exact: true }).first().click();
+    const immediate = panel.getByRole("button", { name: "中断当前回复并立即发送这条", exact: true }).first();
+    assert.equal(await immediate.getAttribute("aria-describedby"), await panel.locator(".queue-panel__hint--interrupt").getAttribute("id"));
+    assert(await panel.evaluate(list => list.scrollWidth <= list.clientWidth + 1), "queue warning and controls fit without horizontal scrolling");
+    await immediate.click();
     await page.waitForFunction(() => window.queueReview.state().sent.length === 1);
     assert.equal((await state()).queue[0].status, "sending", "a local click is not native admission");
   };
   for (const [width, font] of [[1280, 16], [390, 22]]) for (const theme of ["light", "dark"]) {
     await page.setViewportSize({ width, height: 900 });
-    await open(theme);
-    await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
+    await open(theme, font);
     await page.screenshot({ path: join(output, `before-${width}-${theme}.png`) });
     await page.evaluate(() => window.queueReview.replay());
     assert.equal((await state()).queue[0].status, "sending", "historical echoes do not acknowledge sends");
@@ -38,9 +47,10 @@ try {
     await page.evaluate(() => window.queueReview.complete());
     assert.equal((await state()).queue.length, 0);
 
-    await open(theme, 2);
+    await open(theme, font, 2);
     await page.evaluate(() => window.queueReview.acknowledge(true));
-    await panel.getByText("待发送队列(1)", { exact: true }).waitFor();
+    await disclosure(1).waitFor();
+    assert.equal(await disclosure(1).getAttribute("aria-expanded"), "true");
     assert.equal((await state()).sent.length, 1, "admission never starts the next message");
     assert.equal(await panel.getByRole("button", { name: "编辑消息：1123", exact: true }).count(), 0);
     await page.evaluate(() => window.queueReview.complete());
@@ -48,6 +58,10 @@ try {
     await page.evaluate(() => window.queueReview.acknowledge());
     await panel.waitFor({ state: "hidden" });
     await page.evaluate(() => window.queueReview.complete("error"));
+    const recovery = page.getByRole("button", { name: /^待发送 1 条.*待检查/ });
+    await recovery.waitFor();
+    assert.equal(await recovery.getAttribute("aria-expanded"), "false");
+    await recovery.press("Enter");
     await panel.getByText("执行失败，等待确认", { exact: true }).waitFor();
     assert.equal((await state()).sent.length, 2, "failed execution does not replay itself");
     await panel.getByRole("button", { name: "恢复", exact: true }).click();
@@ -57,7 +71,7 @@ try {
     await dialog.getByRole("button", { name: "取消", exact: true }).click();
     assert.equal((await state()).queue[0].status, "paused");
 
-    await open(theme);
+    await open(theme, font);
     await page.evaluate(() => window.queueReview.reject());
     await panel.getByRole("button", { name: "恢复", exact: true }).waitFor();
     current = await state();

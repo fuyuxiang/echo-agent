@@ -78,7 +78,7 @@ describe("Sidebar", () => {
   it("空任务区显示引导，有任务后恢复列表标题", () => {
     render(<Sidebar {...base} />);
     expect(screen.getByText("暂无任务")).toBeInTheDocument();
-    expect(screen.getByText("点击上方按钮开始新任务")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新建任务" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^任务 \(/ })).not.toBeInTheDocument();
     act(() => useSessionsStore.getState().setIndependent([{ sessionId: "first-task", title: "第一件任务", cwd: "/home" }]));
     expect(screen.queryByText("暂无任务")).not.toBeInTheDocument();
@@ -955,7 +955,7 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "展开客户项目对话" }));
 
     expect(screen.queryByText("已收起项目对话")).toBeNull();
-    expect(screen.getByText("还没有对话，从项目页开启第一轮吧")).toBeInTheDocument();
+    expect(screen.getByText("暂无项目对话")).toBeInTheDocument();
   });
 
   it("项目归档镜像陈旧时以主会话的恢复状态为准", () => {

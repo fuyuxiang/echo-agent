@@ -5,7 +5,7 @@ import { draftRevision, useDraftRevision } from "@/lib/draft-lifecycle";
 import type { PromptPrediction } from "@/lib/use-prompt-prediction";
 import "@/styles/prompt-prediction.css";
 import { useStorageHealth } from "@/lib/durable-ui-state";
-import { ArrowUp, Square, Folder, FolderOpen, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, ListPlus, Pause, Square, Folder, FolderOpen, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
 import { ChevronDownIcon } from "@/foundation/components/Icon/icons";
 import { ModelSelector, type ModelOption } from "./ModelSelector";
 import { ThumbImg } from "./experts-panel/shared/ThumbImg";
@@ -100,8 +100,7 @@ function discardUnsentAttachments(paths: string[]) {
 }
 
 /**
- * EchoAgent 风格输入卡片(圆角16):左下 +,右下 Auto 下拉/麦克风/发送;
- * showMeta 时在卡片下方显示工作目录和权限。
+ * Home, session and project tasks share a toolbar with optional execution settings.
  * showDisclaimer 时卡片下方渲染免责声明行。
  * 会话恢复期间可编辑本地文本草稿，提交与运行时操作等到就绪。
  */
@@ -1179,6 +1178,19 @@ export function Composer({
     && apiReady && !streaming && !sending && !cancelling && !sendNowPending
     && !awaitingQuestion && !disabled && !sendDisabled && !slashVisible ? prediction : null;
 
+  const acceptPrediction = (suggestedText: string) => {
+    const epoch = scopeEpochRef.current;
+    ref.current?.focus({ preventScroll: true });
+    // Filling a suggestion stays separate from sending it.
+    updateText(suggestedText);
+    setCursorPos(suggestedText.length);
+    requestAnimationFrame(() => {
+      if (isCurrentDraftEpoch(epoch) && textRef.current === suggestedText) {
+        ref.current?.setSelectionRange(suggestedText.length, suggestedText.length);
+      }
+    });
+  };
+
   const handleSlashPick = (command: string) => {
     const replacement = replaceSlashToken(text, cursorPos, command);
     if (!replacement) return;
@@ -1199,7 +1211,6 @@ export function Composer({
   const workspacePath = cwd ? displayPath(cwd) : undefined;
   const workspaceLabel = managedTaskWorkspace ? "任务文件夹"
     : workspacePath ? attachmentBasename(workspacePath) : automaticWorkspace ? "默认任务目录" : "工作目录未记录";
-  const showBoundaryInCard = permissionInline || Boolean(showMeta && commandSessionId);
   const knowledgePicker = <KnowledgePicker
     sessionId={knowledgeSessionId}
     deferRuntimeSync={knowledgeDeferred}
@@ -1220,7 +1231,8 @@ export function Composer({
   const stopAction = streaming && !hasDraft;
   const stopBusy = cancelling || stopping;
   const controlIntent = attachments.length === 0 && onControl && parseSessionControlIntent(text);
-  const primaryLabel = stopAction ? stopBusy ? "正在停止生成" : "停止生成" : streaming ? "加入待发送队列" : "发送";
+  const primaryLabel = stopAction ? stopBusy ? "正在停止" : "停止任务"
+    : controlIntent ? `${controlIntent === "pause" ? "暂停" : "停止"}任务` : streaming ? "加入队列" : "发送";
   const primaryDisabled = stopAction
     ? Boolean(disabled || workspacePicking || sendNowPending || sending || stopBusy)
     : Boolean(disabled || sendDisabled || workspacePicking || !apiReady || sending || stopBusy || awaitingQuestion || sendNowPending || !hasDraft || streaming && !onEnqueue && !controlIntent);
@@ -1229,6 +1241,33 @@ export function Composer({
     : controlIntent ? `${controlIntent === "pause" ? "暂停" : "停止"}当前执行`
     : streaming ? "加入队列，当前任务完成后发送（Enter）"
     : sending ? "正在发送" : "发送消息";
+
+  const workspaceControl = showWorkspacePicker ? (
+    <WorkspacePicker
+      cwd={cwd}
+      workspaces={workspaces!}
+      onSelectWorkspace={onSelectWorkspace!}
+      automaticWorkspace={automaticWorkspace}
+      defaultWorkspaceCwd={defaultWorkspaceCwd}
+      projectDefault={projectWorkspaceDefault}
+      workspaceErrorId={workspaceError ? workspaceErrorId : undefined}
+      disabled={disabled || sending}
+      onBusyChange={busy => { workspacePickingRef.current = busy; setWorkspacePicking(busy); }}
+    />
+  ) : workspacePath && onOpenWorkspace ? (
+    <button type="button" className="echo-composer-meta__btn echo-composer-meta__workspace echo-composer-meta__open-workspace"
+      disabled={openWorkspaceDisabled} aria-label={managedTaskWorkspace ? "打开任务文件夹" : `打开工作目录：${workspacePath}`}
+      title={`${managedTaskWorkspace ? "打开任务文件夹" : "打开文件夹"} · ${workspacePath}`} onClick={onOpenWorkspace}>
+      <FolderOpen size={14} strokeWidth={1.75} aria-hidden="true" />
+      <span className="workspace-picker__label">{workspaceLabel}</span>
+    </button>
+  ) : (
+    <span className="echo-composer-meta__value echo-composer-meta__workspace"
+      title={workspacePath ?? (automaticWorkspace ? "创建时自动分配独立文件夹" : workspaceLabel)}>
+      <Folder size={14} strokeWidth={1.75} aria-hidden="true" />
+      <span className="workspace-picker__label"><span className="sr-only">工作目录：</span>{workspaceLabel}</span>
+    </span>
+  );
 
   return (
     <div
@@ -1240,9 +1279,9 @@ export function Composer({
       <section
         className={composerCls}
         onClick={(event) => {
-          if (!apiReady && !draftOnly) { openSetup?.(); return; }
           const target = event.target as Element;
-          if (target.closest('button, input, textarea, select, a, [role="button"], [role="menu"], [role="listbox"], [contenteditable], .composer-attachments, .composer-blocks')) return;
+          if (target.closest('button, input, textarea, select, summary, a, [role="button"], [role="menu"], [role="listbox"], [contenteditable], .composer-attachments, .composer-blocks')) return;
+          if (!apiReady && !draftOnly) { openSetup?.(); return; }
           const input = ref.current;
           if (!input || input.disabled || input.selectionStart !== input.selectionEnd) return;
           if (window.getSelection()?.isCollapsed === false) return;
@@ -1279,6 +1318,7 @@ export function Composer({
             className="echo-composer__setup-hint"
             role={openSetup ? "button" : "status"}
             tabIndex={openSetup ? 0 : undefined}
+            onClick={openSetup}
             onKeyDown={(event) => {
               if (openSetup && (event.key === "Enter" || event.key === " ")) {
                 event.preventDefault();
@@ -1351,7 +1391,7 @@ export function Composer({
         {/* 拖拽悬停时显示的提示层。仅在 Tauri 投递的 enter/over 事件期间出现,
             DOM 级别的 dragenter 不会触发它,所以非桌面环境自动降级为「无提示」。
 
-            文案同步支持类型范围:之前只说「松开以添加为附件」暗示仅图片,
+            文案同步支持类型范围:之前只说「松开添加附件」暗示仅图片,
             现在明确列出支持的类型(图片 / PDF / 现代 Office / 代码 / 文本 / 数据),
             并在 hover/over 时如能拿到 paths 则即时给出「已添加 N / 跳过 M」的
             预览反馈(只是 hover 提示,真正的反馈在 drop 后的 toast)。 */}
@@ -1362,7 +1402,7 @@ export function Composer({
             aria-live="polite"
             data-testid="composer-dropzone"
           >
-            <div className="echo-composer__dropzone-title">松开以添加为附件</div>
+            <div className="echo-composer__dropzone-title">松开添加附件</div>
             <div className="echo-composer__dropzone-hint">
               支持图片、PDF、DOCX、XLSX、PPTX、代码、文本与数据文件
             </div>
@@ -1386,7 +1426,7 @@ export function Composer({
                 ? "" // 有操作类型标签时不显示占位文案(匹配 EchoAgent)
                 : typeof placeholder === "function"
                   ? placeholder(attachments.length)
-                  : placeholder ?? "描述想完成的任务，可添加文件"
+                  : placeholder ?? "描述你的任务"
               : ""
           }
           onChange={(e) => {
@@ -1429,21 +1469,16 @@ export function Composer({
             ) {
               return;
             }
-            if (visiblePrediction && e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            const acceptsPrediction = e.key === "Tab" || e.key === "ArrowRight" || e.key === "Enter";
+            if (visiblePrediction && acceptsPrediction && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
               e.preventDefault();
-              const epoch = scopeEpochRef.current;
-              // Only populate the draft. Enter/send remains a separate action.
-              updateText(visiblePrediction.text);
-              setCursorPos(visiblePrediction.text.length);
-              requestAnimationFrame(() => {
-                if (isCurrentDraftEpoch(epoch) && textRef.current === visiblePrediction.text) {
-                  ref.current?.setSelectionRange(visiblePrediction.text.length, visiblePrediction.text.length);
-                }
-              });
+              if (e.repeat) return;
+              acceptPrediction(visiblePrediction.text);
               return;
             }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
+              if (e.repeat) return;
               if (streaming) void enqueue();
               else void send();
               return;
@@ -1490,11 +1525,12 @@ export function Composer({
           }}
         />
         {visiblePrediction && <div className="echo-composer__prediction" aria-hidden="true" data-testid="composer-prediction">
-          <span>{visiblePrediction.text}</span>
-          <span className="echo-composer__prediction-hint">Tab 接受 · 可编辑后发送</span>
+          {visiblePrediction.text}
         </div>}
-        {visiblePrediction && <span className="sr-only" id={predictionDescriptionId} role="status">输入建议：{visiblePrediction.text}。按 Tab 填入草稿，再发送。</span>}
+        {visiblePrediction && <span className="sr-only" id={predictionDescriptionId} role="status">输入建议「{visiblePrediction.text}」。按 Tab、右方向键或 Enter 填入草稿。</span>}
         </div>
+        {visiblePrediction && <button type="button" className="echo-composer__prediction-accept"
+          onClick={() => acceptPrediction(visiblePrediction.text)}><kbd>Tab</kbd> 填入建议</button>}
         {(text.length > 400 || text.split("\n").length > 8) && <button type="button" className="composer-expand-draft"
           disabled={!apiReady || awaitingQuestion || disabled} onClick={event => {
             event.stopPropagation();
@@ -1529,135 +1565,144 @@ export function Composer({
             }
           }}
         />}
-        {showBoundaryInCard && (
-          <AutomationBoundaryNotice role={boundaryRole} automationMode={automationMode} />
-        )}
+        {(showMeta || permissionInline) && <AutomationBoundaryNotice role={boundaryRole} automationMode={automationMode} />}
         <div className="echo-composer__footer">
-          <InputAddMenu
-            disabled={!apiReady || awaitingQuestion || disabled}
-            allowMeetingHistoryWhileDisabled={!apiReady && !awaitingQuestion && !disabled}
-            onPickFiles={pickFiles}
-            onSelectExpert={onSelectExpert}
-            onSelectSkill={(name) => {
-              onSelectSkill?.(name);
-              if (!onSelectSkill) {
-                updateText((prev) => {
-                  const prefix = prev.endsWith(" ") || prev === "" ? "" : " ";
-                  return prev + prefix + `/${name} `;
-                });
-                requestAnimationFrame(() => ref.current?.focus());
-              }
-            }}
-            onNavigateConnectors={onNavigateConnectors}
-            meetingMinutesAvailable={Boolean(onOpenMeetingMinutes)}
-            onOpenMeetingMinutes={onOpenMeetingMinutes}
-            automationMode={automationMode}
-            automationCapabilities={automationSupport}
-            automationModeDisabled={automationModeDisabled}
-            onAutomationModeChange={onAutomationModeChange}
-          />
-          {showMeta && knowledgePicker}
-          {showAutomationModeBadge && automationMode !== "default" && (
-            <span
-              className={`echo-composer__automation-badge echo-composer__automation-badge--${automationMode}`}
-              title={automationMode === "browser_use"
-                ? "本任务可以在独立浏览器中操作网页"
-                : "本任务可以查看屏幕并操作本机应用"}
-            >
-              {automationMode === "browser_use"
-                ? <Globe2 size={14} strokeWidth={1.8} aria-hidden="true" />
-                : <Monitor size={14} strokeWidth={1.8} aria-hidden="true" />}
-              <span>{automationMode === "browser_use" ? "操作网页" : "操作电脑"}</span>
-              <button
-                type="button"
-                className="echo-composer__automation-badge-remove"
-                disabled={automationModeDisabled}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void onAutomationModeChange?.("default");
-                }}
-                aria-label={`关闭${automationMode === "browser_use" ? "操作网页" : "操作电脑"}`}
+          <div className="echo-composer__context">
+            <InputAddMenu
+              disabled={!apiReady || awaitingQuestion || disabled}
+              allowMeetingHistoryWhileDisabled={!apiReady && !awaitingQuestion && !disabled}
+              onPickFiles={pickFiles}
+              onSelectExpert={onSelectExpert}
+              onSelectSkill={(name) => {
+                onSelectSkill?.(name);
+                if (!onSelectSkill) {
+                  updateText((prev) => {
+                    const prefix = prev.endsWith(" ") || prev === "" ? "" : " ";
+                    return prev + prefix + `/${name} `;
+                  });
+                  requestAnimationFrame(() => ref.current?.focus());
+                }
+              }}
+              onNavigateConnectors={onNavigateConnectors}
+              meetingMinutesAvailable={Boolean(onOpenMeetingMinutes)}
+              onOpenMeetingMinutes={onOpenMeetingMinutes}
+              automationMode={automationMode}
+              automationCapabilities={automationSupport}
+              automationModeDisabled={automationModeDisabled}
+              onAutomationModeChange={onAutomationModeChange}
+            />
+            {knowledgePicker}
+            {showAutomationModeBadge && automationMode !== "default" && (
+              <span
+                className={`echo-composer__automation-badge echo-composer__automation-badge--${automationMode}`}
+                title={automationMode === "browser_use"
+                  ? "本任务可以在独立浏览器中操作网页"
+                  : "本任务可以查看屏幕并操作本机应用"}
               >
-                <X size={11} strokeWidth={2} />
-              </button>
-            </span>
-          )}
-          {activeExpertName && (
-            <span className="echo-composer__expert-badge" title={`当前专家：${activeExpertName}`}>
-              <ThumbImg name={activeExpertName} local={activeExpertAvatar} size={18} shape="circle" />
-              {activeExpertName}
-              {onDismissExpert && (
+                {automationMode === "browser_use"
+                  ? <Globe2 size={14} strokeWidth={1.8} aria-hidden="true" />
+                  : <Monitor size={14} strokeWidth={1.8} aria-hidden="true" />}
+                <span>{automationMode === "browser_use" ? "操作网页" : "操作电脑"}</span>
                 <button
                   type="button"
-                  className="echo-composer__expert-badge__remove"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDismissExpert?.();
+                  className="echo-composer__automation-badge-remove"
+                  disabled={automationModeDisabled}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void onAutomationModeChange?.("default");
                   }}
-                  aria-label="移除已选专家"
-                  title="移除已选专家"
+                  aria-label={`关闭${automationMode === "browser_use" ? "操作网页" : "操作电脑"}`}
                 >
                   <X size={11} strokeWidth={2} />
                 </button>
-              )}
-            </span>
-          )}
-          {permissionInline && (permissionControl ?? <PermissionPicker onToast={onToast} sessionId={commandSessionId} />)}
-          {!showMeta && knowledgePicker}
-          <div className="echo-composer__spacer" />
+              </span>
+            )}
+            {activeExpertName && (
+              <span className="echo-composer__expert-badge" title={`当前专家：${activeExpertName}`}>
+                <ThumbImg name={activeExpertName} local={activeExpertAvatar} size={18} shape="circle" />
+                {activeExpertName}
+                {onDismissExpert && (
+                  <button
+                    type="button"
+                    className="echo-composer__expert-badge__remove"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDismissExpert?.();
+                    }}
+                    aria-label="移除已选专家"
+                    title="移除已选专家"
+                  >
+                    <X size={11} strokeWidth={2} />
+                  </button>
+                )}
+              </span>
+            )}
+            {showMeta && !permissionInline && (
+              <div className="echo-composer-meta" role="group" aria-label="任务执行设置">
+                {workspaceControl}
+                <PermissionPicker onToast={onToast} sessionId={commandSessionId}
+                  projectDraftPermission={projectDraftPermission} disabled={draftOnly} showLockedAsText />
+                {workspaceError && <p id={workspaceErrorId} role="alert" className="echo-composer-meta__workspace-error">{workspaceError}</p>}
+              </div>
+            )}
+            {permissionInline && (permissionControl ?? <PermissionPicker onToast={onToast} sessionId={commandSessionId} />)}
+          </div>
           <div className="composer-primary-tools">
-          <ContextUsagePill key={usageSessionId ?? "new-task"} sessionId={usageSessionId} active={streaming} onRefreshSignal={contextRefreshSignal}
-            estimate={text.trim() ? cost : undefined} />
-          {showModelPicker ? (
-            <ModelSelector
-              modelId={modelId}
-              modelLoading={modelLoading}
-              showCurrentWhileLoading={draftOnly}
-              disabled={draftOnly}
-              models={models!}
-              onModelChange={onModelChange!}
-            />
-          ) : (
+            <ContextUsagePill key={usageSessionId ?? "new-task"} sessionId={usageSessionId} active={streaming} onRefreshSignal={contextRefreshSignal}
+              estimate={text.trim() ? cost : undefined} />
+            {showModelPicker ? (
+              <ModelSelector
+                modelId={modelId}
+                modelLoading={modelLoading}
+                showCurrentWhileLoading={draftOnly}
+                disabled={draftOnly}
+                models={models!}
+                onModelChange={onModelChange!}
+              />
+            ) : onOpenSettings ? (
+              <button
+                type="button"
+                className="echo-composer__model"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenSettings?.();
+                }}
+              >
+                {modelSummary ?? "模型设置"} <ChevronDownIcon size="sm" />
+              </button>
+            ) : <span className="echo-composer__model-summary">{modelSummary ?? "自动选择"}</span>}
             <button
-              className="echo-composer__model"
+              className={
+                "echo-composer__tool" + (listening ? " echo-composer__tool--active" : "")
+              }
               onClick={(e) => {
                 e.stopPropagation();
-                onOpenSettings?.();
+                void toggleVoice();
               }}
+              disabled={!apiReady || awaitingQuestion || disabled}
+              aria-label="语音输入"
+              aria-pressed={listening}
+              title={listening ? "正在聆听…点击停止" : "语音输入"}
             >
-              {modelSummary ?? "Auto"} <ChevronDownIcon size="sm" />
+              {listening ? <Square size={16} /> : <Mic size={16} />}
             </button>
-          )}
-          <button
-            className={
-              "echo-composer__tool" + (listening ? " echo-composer__tool--active" : "")
-            }
-            onClick={(e) => {
-              e.stopPropagation();
-              void toggleVoice();
-            }}
-            disabled={!apiReady || awaitingQuestion || disabled}
-            aria-label="语音输入"
-            aria-pressed={listening}
-            title={listening ? "正在聆听…点击停止" : "语音输入"}
-          >
-            {listening ? <Square size={16} /> : <Mic size={16} />}
-          </button>
-          <button type="button"
-            className={"echo-composer__send" + (stopAction ? " echo-composer__send--stop" : streaming ? " echo-composer__send--queue" : !hasDraft ? " echo-composer__send--empty" : "")}
-            onClick={event => {
-              event.stopPropagation();
-              // A double-click must not enqueue and then stop the active turn
-              // when this same button switches back to its empty-draft action.
-              if (event.detail > 1) return;
-              if (stopAction) void stop();
-              else if (streaming) void enqueue();
-              else void send();
-            }}
-            disabled={primaryDisabled} aria-label={primaryLabel} aria-busy={sending || stopBusy || sendNowPending}
-            title={primaryTitle}>
-            {stopAction ? <Square size={14} fill="currentColor" /> : <ArrowUp size={18} />}
-          </button>
+            <button type="button"
+              className={"echo-composer__send" + (stopAction ? " echo-composer__send--stop" : streaming ? " echo-composer__send--queue" : !hasDraft ? " echo-composer__send--empty" : "")}
+              onClick={event => {
+                event.stopPropagation();
+                // A double-click must not enqueue and then stop the active turn
+                // when this same button switches back to its empty-draft action.
+                if (event.detail > 1) return;
+                if (stopAction) void stop();
+                else if (streaming) void enqueue();
+                else void send();
+              }}
+              disabled={primaryDisabled} aria-label={primaryLabel} aria-busy={sending || stopBusy || sendNowPending}
+              title={primaryTitle}>
+              {stopAction || controlIntent === "stop" ? <Square size={13} fill="currentColor" />
+                : controlIntent === "pause" ? <Pause size={16} />
+                : streaming ? <ListPlus size={18} /> : <ArrowUp size={18} />}
+            </button>
           </div>
         </div>
       </section>
@@ -1669,40 +1714,6 @@ export function Composer({
           ref.current?.setSelectionRange(...selection);
           setCursorPos(selection[0]);
         }} />}
-      {showMeta && !permissionInline && (
-        <div className="echo-composer-meta" role="group" aria-label="任务执行设置">
-          {showWorkspacePicker ? (
-            <WorkspacePicker
-              cwd={cwd}
-              workspaces={workspaces!}
-              onSelectWorkspace={onSelectWorkspace!}
-              automaticWorkspace={automaticWorkspace}
-              defaultWorkspaceCwd={defaultWorkspaceCwd}
-              projectDefault={projectWorkspaceDefault}
-              workspaceErrorId={workspaceError ? workspaceErrorId : undefined}
-              disabled={disabled || sending}
-              onBusyChange={busy => { workspacePickingRef.current = busy; setWorkspacePicking(busy); }}
-            />
-          ) : workspacePath && onOpenWorkspace ? (
-            <button type="button" className="echo-composer-meta__btn echo-composer-meta__workspace echo-composer-meta__open-workspace"
-              disabled={openWorkspaceDisabled} aria-label={managedTaskWorkspace ? "打开任务文件夹" : `打开工作目录：${workspacePath}`}
-              title={`${managedTaskWorkspace ? "打开任务文件夹" : "打开文件夹"} · ${workspacePath}`} onClick={onOpenWorkspace}>
-              <FolderOpen size={14} strokeWidth={1.75} aria-hidden="true" />
-              <span className="workspace-picker__label">{workspaceLabel}</span>
-            </button>
-          ) : (
-            <span className="echo-composer-meta__value echo-composer-meta__workspace"
-              title={workspacePath ?? (automaticWorkspace ? "创建时自动分配独立文件夹" : workspaceLabel)}>
-              <Folder size={14} strokeWidth={1.75} aria-hidden="true" />
-              <span className="workspace-picker__label"><span className="sr-only">工作目录：</span>{workspaceLabel}</span>
-            </span>
-          )}
-          <PermissionPicker onToast={onToast} sessionId={commandSessionId}
-            projectDraftPermission={projectDraftPermission} disabled={draftOnly} showLockedAsText />
-          {workspaceError && <p id={workspaceErrorId} role="alert" className="echo-composer-meta__workspace-error">{workspaceError}</p>}
-          {!showBoundaryInCard && <AutomationBoundaryNotice role={boundaryRole} automationMode={automationMode} />}
-        </div>
-      )}
       {showDisclaimer && (
         <div className="echo-composer__disclaimer">
           AI 可能出错，请核实重要信息

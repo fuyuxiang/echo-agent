@@ -257,15 +257,16 @@ function abnormalProcessTitle(stopReason?: string): string {
   return "执行未正常完成";
 }
 
-export function formatProcessDuration(milliseconds: number): string {
+export function formatProcessDuration(milliseconds: number, { spaced = false } = {}): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
-  if (seconds < 60) return `${seconds}秒`;
+  const space = spaced ? " " : "";
+  if (seconds < 60) return `${seconds}${space}秒`;
   const minutes = Math.floor(seconds / 60);
   const remaining = seconds % 60;
-  if (minutes < 60) return remaining > 0 ? `${minutes}分${remaining}秒` : `${minutes}分钟`;
+  if (minutes < 60) return remaining > 0 ? `${minutes}${space}分${space}${remaining}${space}秒` : `${minutes}${space}分钟`;
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}小时${remainingMinutes}分` : `${hours}小时`;
+  return remainingMinutes > 0 ? `${hours}${space}小时${space}${remainingMinutes}${space}分` : `${hours}${space}小时`;
 }
 
 function isTextPart(part: MessagePart): part is TextMessagePart {

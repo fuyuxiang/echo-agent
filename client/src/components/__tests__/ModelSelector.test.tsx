@@ -4,6 +4,28 @@ import { ModelSelector } from "../ModelSelector";
 import { ModelManagementContext } from "@/lib/model-management";
 
 describe("ModelSelector", () => {
+  it("打开的模型目录缩至八项时保留搜索和键盘选择，重新打开后恢复短列表", () => {
+    const models = Array.from({ length: 9 }, (_, i) => ({ id: `model/${i}`, label: `模型 ${i}` }));
+    const change = vi.fn();
+    const view = render(<ModelSelector models={models} modelId={models[0].id} onModelChange={change} />);
+    const trigger = screen.getByRole("button", { name: "模型 0" });
+    fireEvent.click(trigger);
+    const search = screen.getByRole("textbox", { name: "搜索模型" });
+    fireEvent.change(search, { target: { value: "model/8" } });
+    screen.getByRole("option", { name: "模型 8" }).focus();
+    view.rerender(<ModelSelector models={models.slice(0, 8)} modelId={models[0].id} onModelChange={change} />);
+    expect(search).toHaveFocus();
+    expect(screen.queryByRole("option")).toBeNull();
+    fireEvent.change(search, { target: { value: "" } });
+    expect(screen.getAllByRole("option")).toHaveLength(8);
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: "模型 0" })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    expect(screen.queryByRole("textbox", { name: "搜索模型" })).toBeNull();
+    expect(screen.getAllByRole("option")).toHaveLength(8);
+  });
   it("同一连接的同名别名可从菜单、提示和无障碍名称区分，并选择正确路由", () => {
     const change = vi.fn();
     render(<ModelSelector modelId="gateway/fast" models={[
@@ -83,6 +105,27 @@ describe("ModelSelector", () => {
     view.rerender(<ModelSelector models={models} modelId={models[1].id} onModelChange={onModelChange}/>);
     expect(screen.getByRole("button",{name:"MiniMax-M3.1-Flash"})).toHaveAttribute("title","MiniMax-M3.1-Flash");
     expect(view.container.textContent).toBe("MiniMax-M3.1-Flash");
+  });
+
+  it("模型较多时可搜索真实 ID，键盘选择后回到触发器", () => {
+    const models = Array.from({ length: 9 }, (_, index) => ({ id: `provider/model-${index}`, label: `模型 ${index}` }));
+    const onModelChange = vi.fn();
+    render(<ModelSelector modelId={models[0].id} models={models} onModelChange={onModelChange} />);
+    const trigger = screen.getByRole("button", { name: "模型 0" });
+    fireEvent.click(trigger);
+    const search = screen.getByRole("textbox", { name: "搜索模型" });
+    fireEvent.change(search, { target: { value: "不存在" } });
+    expect(screen.getByRole("status")).toHaveTextContent("没有匹配的模型");
+    fireEvent.change(search, { target: { value: "provider/model-8" } });
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    const match = screen.getByRole("option", { name: "模型 8" });
+    expect(match).toHaveFocus();
+    fireEvent.click(match);
+    expect(onModelChange).toHaveBeenCalledExactlyOnceWith(models[8].id);
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    expect(screen.getByRole("textbox", { name: "搜索模型" })).toHaveValue("");
   });
 
   it("菜单通过 body portal 渲染并在上方空间不足时向下翻转", () => {

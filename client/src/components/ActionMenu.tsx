@@ -9,7 +9,7 @@ const MENU_OFFSET = 6;
 const MENU_ESTIMATED_WIDTH = 224;
 const MENU_ESTIMATED_HEIGHT = 240;
 const MENU_Z_INDEX = "var(--echo-layer-popover)";
-const MENU_ITEM_SELECTOR = '[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)';
+const MENU_ITEM_SELECTOR = ':is([role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]):not(:disabled)';
 
 export interface ActionMenuHandle {
   close: (restoreFocus?: boolean) => void;

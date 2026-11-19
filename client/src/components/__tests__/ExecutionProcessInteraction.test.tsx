@@ -170,10 +170,34 @@ describe("execution record control and result consistency", () => {
     ];
     render(<ThemeProvider><ExecutionProcess parts={parts} active={false} stopReason="end_turn" /></ThemeProvider>);
     expect(screen.getByText("本次处理已结束")).toBeVisible();
-    expect(screen.getByText("已完成 2 项操作")).toBeVisible();
+    expect(screen.queryByText("已完成 2 项操作")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /查看过程$/ }));
+    expect(screen.getByText("已完成 2 项操作")).toBeVisible();
     expect(screen.getByRole("button", { name: /点击按钮 后续任务已核验$/ })).toHaveClass("toolcall--ok");
     expect(screen.queryByText("结果待确认")).toBeNull();
+  });
+
+  it("正常回复只显示用时与过程入口，展开可查看成功数和失败原因", async () => {
+    const user = userEvent.setup();
+    const tool = action("首个天气来源", "failed", "web_fetch");
+    const onOpenTool = vi.fn();
+    render(<ThemeProvider><MessageItem streaming={false} onOpenTool={onOpenTool} message={{
+      id: "weather-with-reply", role: "assistant", complete: true, stopReason: "end_turn", startedAt: 1_000, completedAt: 15_000,
+      parts: [tool, action("备用天气来源", "completed", "web_fetch"),
+        { kind: "text", phase: "final_answer", text: "北京天气晴。" }],
+    }} /></ThemeProvider>);
+    const entry = screen.getByRole("button", { name: "用时 14 秒 · 查看过程" });
+    expect(entry).toHaveAttribute("aria-expanded", "false");
+    expect(entry).toHaveTextContent(/^用时 14 秒$/);
+    expect(screen.getByText("北京天气晴。")).toBeVisible();
+    expect(screen.queryByText("部分操作未完成")).toBeNull();
+    expect(screen.queryByText("已完成 1 项操作 · 1 项失败")).toBeNull();
+    entry.focus();
+    await user.keyboard("{Enter}");
+    expect(entry).toHaveAccessibleName("用时 14 秒 · 收起过程");
+    expect(screen.getByText("已完成 1 项操作 · 1 项失败")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /首个天气来源.*失败/ }));
+    expect(onOpenTool).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "首个天气来源" }));
   });
 
   it("follows streamed records until the reader scrolls up, then preserves the view when the answer starts", () => {
@@ -296,11 +320,12 @@ describe("execution record control and result consistency", () => {
     render(<ThemeProvider><ExecutionProcess active={active} stopReason={stopReason}
       parts={[{ kind: "thought", text: "保留完整分析过程。" }]} /></ThemeProvider>);
     const entry = screen.getByRole("button", { name: new RegExp(` · ${label}$`) });
-    expect(entry).toHaveTextContent(label);
+    expect(entry).not.toHaveTextContent(label);
     expect(screen.queryByRole("button", { name: "收起过程" })).toBeNull();
     await user.click(entry);
     const body = screen.getByRole("region", { name: "执行过程详情" });
-    expect(entry).toHaveTextContent("收起过程");
+    expect(entry).toHaveAccessibleName(/ · 收起过程$/);
+    expect(entry).not.toHaveTextContent("收起过程");
     expect(screen.getAllByRole("button", { name: /收起过程$/ })).toHaveLength(1);
     expect(entry).toHaveAttribute("aria-controls", body.id);
     expect(entry).toHaveAttribute("aria-expanded", "true");
@@ -308,7 +333,7 @@ describe("execution record control and result consistency", () => {
     await user.keyboard("{Enter}");
     expect(screen.queryByRole("region", { name: "执行过程详情" })).toBeNull();
     expect(entry).toHaveFocus();
-    expect(entry).toHaveTextContent(label);
+    expect(entry).toHaveAccessibleName(new RegExp(` · ${label}$`));
   });
 
   it("手动展开后完成不打断阅读，收起选择在重新挂载后保留", () => {

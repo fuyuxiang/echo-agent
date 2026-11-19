@@ -14,8 +14,7 @@ describe("execution notices are about observable impact", () => {
   it.each(["result_unknown", "dispatched_unverified"])("%s 的电脑操作在轮次结束后仍提示核验，避免重复操作", status => {
     const part = tool("other", "completed", { toolName: "computer_click", content: [{ type: "text", text: JSON.stringify({ status }) }] });
     const notice = getExecutionNotice(message([part]));
-    expect(notice).toMatchObject({ kind: "delivery", tone: "warning", title: "有操作的结果尚未确认" });
-    expect(notice?.description).toContain("电脑操作的结果尚未确认");
+    expect(notice).toMatchObject({ kind: "delivery", tone: "warning", title: "电脑操作结果待确认" });
     expect(notice?.description).toContain("避免重复操作");
     expect(notice?.tools).toHaveLength(1);
   });
@@ -23,21 +22,27 @@ describe("execution notices are about observable impact", () => {
   it.each(["failed", "in_progress"] as const)("真实浏览器上传 %s 的结果提醒不会被正常轮次结束或模型正文覆盖", status => {
     const notice = getExecutionNotice(message([tool("other", status, { toolName: "echoagent-browser__browser_upload" })]));
     expect(notice).toMatchObject({kind:"delivery", tone:"warning"});
-    expect(notice?.description).toContain("文件上传");
-    expect(notice?.title).toBe(status === "failed" ? "有操作未成功" : "有操作的结果尚未确认");
+    expect(notice?.title).toBe(status === "failed" ? "文件上传失败" : "文件上传结果待确认");
   });
   it.each(["web_fetch", "web_search", "read_file", "bash", "other"])("%s 的失败和缺失记录保留在详情，不按计数影响最终答复", (kind) => {
     expect(getExecutionNotice(message([tool(kind, "failed"), tool(kind, "in_progress")]))).toBeNull();
   });
-  it.each(["write_file", "edit", "send_message", "send_email", "upload_file", "publish_site"])("明确的 %s 失败会说明动作影响并指向原记录", (kind) => {
+  it.each([["write_file", "文件保存失败"], ["edit", "文件保存失败"], ["send_message", "消息发送失败"],
+    ["send_email", "消息发送失败"], ["upload_file", "文件上传失败"], ["publish_site", "发布失败"]])("明确的 %s 失败直接命名动作并指向原记录", (kind, title) => {
     const notice = getExecutionNotice(message([tool(kind, "failed")]));
-    expect(notice).toMatchObject({ kind: "delivery", tone: "warning", title: "有操作未成功" });
+    expect(notice).toMatchObject({ kind: "delivery", tone: "warning", title });
     expect(notice?.tools[0].toolCallId).toBe("operation");
-    expect(notice?.description).not.toMatch(/项失败|餐厅|营业/);
+    expect(notice?.description).toBeUndefined();
+  });
+  it.each(["报告目录无写入权限", "EACCES: permission denied, open '/private/report.md'"])("从已失败的文件工具结果提取简短原因并保留原文", text => {
+    const content = [{ type: "text" as const, text }];
+    const notice = getExecutionNotice(message([tool("write_file", "failed", { content })]));
+    expect(notice).toMatchObject({ title: "文件保存失败", description: "没有写入权限。" });
+    expect(notice?.tools[0].content).toEqual(content);
   });
   it("发送结果缺失时提示尚未确认，不能断言失败或成功", () => {
     const notice = getExecutionNotice(message([tool("send_message", "in_progress")]));
-    expect(notice?.description).toContain("消息发送的结果尚未确认");
+    expect(notice?.title).toBe("消息发送结果待确认");
     expect(notice?.description).toContain("避免重复操作");
   });
   it("同一动作顺序重试成功后不重复提示过去的失败", () => {
@@ -53,7 +58,7 @@ describe("execution notices are about observable impact", () => {
   it("历史记录缺失不会制造失败；涉及交付时明确保留不确定性", () => {
     const legacy = { stopReason: "cancelled", cancellationCategory: "session_replay_incomplete", replayed: true };
     expect(getExecutionNotice(message([tool("read", "failed")], legacy))).toBeNull();
-    expect(getExecutionNotice(message([tool("upload_file", "failed")], legacy))?.description).toContain("结果尚未确认");
+    expect(getExecutionNotice(message([tool("upload_file", "failed")], legacy))?.title).toBe("文件上传结果待确认");
   });
   it.each(["error", "rate_limit", "max_tokens", "max_turns", "content_filter"])("整轮 %s 即使有正文也清楚提示", (reason) => {
     expect(getExecutionNotice(message([tool("read", "completed")], { stopReason: reason }))?.kind).toBe("runtime");

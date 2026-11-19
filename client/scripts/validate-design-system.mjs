@@ -54,7 +54,7 @@ async function checkSearch(page) {
 async function checkPlans(page, base, scenario) {
   for (const [state,action,outcome] of [["clean","批准执行","approved"],["dirty","同步修改并重新审批","cancelled"],["clean","修改计划","cancelled"],["clean","放弃计划","abandoned"]]) {
     await page.goto(`${base}/__ui-review?surface=conversation&planReview=${state}&theme=${scenario[2]}`,{waitUntil:"networkidle"});
-    await page.getByRole("button", {name:"查看并确认计划",exact:true}).click();
+    await page.getByRole("button", {name:"查看计划",exact:true}).click();
     const approval=page.getByRole("group",{name:"计划审批",exact:true}); await approval.waitFor();
     const buttons=await approval.locator("button").evaluateAll(elements=>elements.map(e=>{
       const r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom,scroll:e.scrollWidth,client:e.clientWidth};

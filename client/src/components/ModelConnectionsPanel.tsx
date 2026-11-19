@@ -503,7 +503,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId, onOpenO
   return <div ref={panelRef} className={`model-connections model-connections--${view}`}>
     {view !== "overview" && <Button variant="ghost" size="compact" className="model-settings__back" disabled={busy} onClick={() => setView(view === "detail" ? "connections" : "overview")}><ArrowLeft size={14} />{view === "detail" ? "返回连接管理" : "返回模型设置"}</Button>}
     <header className="model-connections__header" data-setting-id="model-settings">
-      <PageHeading title={view === "overview" ? "模型" : view === "connections" ? "连接管理" : "连接详情"} level={2} description={view === "overview" ? "选择默认使用的模型，管理模型连接。" : undefined} />
+      <PageHeading title={view === "overview" ? "模型" : view === "connections" ? "连接管理" : "连接详情"} level={2} />
       {!loading && !loadError && view === "connections" && <Button variant="primary" disabled={busy} onClick={() => setConnectionEditor("new")}><Plus size={15} />添加模型连接</Button>}
     </header>
     {message && <div className={`model-connections__message model-connections__message--${message.kind}`} role={message.kind === "err" ? "alert" : "status"}>{message.text}{message.retry === "load" && <Button size="compact" disabled={busy} onClick={retryRefresh}>重试加载</Button>}{message.retry === "organization" && <Button size="compact" disabled={busy} onClick={() => void handleOrganizationSync()}>重试获取</Button>}</div>}
@@ -538,7 +538,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId, onOpenO
         {(catalog.providers.length > 0 || showOrganization) && <button type="button" className="model-settings__manage-entry" aria-label="管理模型连接" disabled={busy} onClick={() => setView("connections")}><span className="model-settings__connection-icon"><Server size={20} /></span><span><strong>管理模型连接</strong><span>添加服务、管理密钥和可用模型</span></span><ChevronRight size={18} aria-hidden="true" /></button>}
       </>}
       {view === "connections" && <div className="model-settings__connection-groups" role="group" aria-label="模型连接">
-        <section className="model-settings__connection-group" aria-label="个人连接"><h3>个人连接</h3>{personalProviders.length > 0 ? renderConnections(personalProviders) : <p className="model-settings__hint model-settings__group-empty">尚未添加个人连接，点击右上方“添加模型连接”即可接入。</p>}</section>
+        <section className="model-settings__connection-group" aria-label="个人连接"><h3>个人连接</h3>{personalProviders.length > 0 ? renderConnections(personalProviders) : <p className="model-settings__hint model-settings__group-empty">暂无个人连接</p>}</section>
         {showOrganization && <section className="model-settings__connection-group">{organizationStatus}{renderConnections(organizationProviders)}</section>}
       </div>}
       {view === "detail" && selectedProvider && <>
@@ -594,7 +594,7 @@ export function ModelConnectionsPanel({ onModelsChanged, initialModelId, onOpenO
                 )}
               </div>
 
-              {selectedModels.length > 0 && <p className="model-connections__test-hint">测试会验证一次简短文本回复，可能消耗少量额度。图片和工具调用能力需另行验证。</p>}
+              {selectedModels.length > 0 && <p className="model-connections__test-hint">测试文本回复，可能消耗少量额度。图片和工具调用需另测。</p>}
 
               {selectedModels.length === 0 ? (
                 <div className="model-connections__models-empty">该连接还没有模型，请同步模型列表或手动添加远端模型 ID。</div>

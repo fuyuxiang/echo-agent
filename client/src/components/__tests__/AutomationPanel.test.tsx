@@ -511,9 +511,9 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
       .mockResolvedValueOnce(emptySnapshot);
     const { rerender } = render(<AutomationPanel refreshSignal={0} />);
     rerender(<AutomationPanel refreshSignal={1} />);
-    expect(await screen.findByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
+    expect(await screen.findByText("创建一个定时任务")).toBeInTheDocument();
     await act(async () => resolveInitial({ automations: [], records: [] }));
-    expect(screen.getByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
+    expect(screen.getByText("创建一个定时任务")).toBeInTheDocument();
   });
 
   it("首次加载被失败的后台刷新取代时显示可重试错误，不能一直加载", async () => {
@@ -525,7 +525,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     rerender(<AutomationPanel refreshSignal={1} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("后台刷新断线");
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    expect(await screen.findByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
+    expect(await screen.findByText("创建一个定时任务")).toBeInTheDocument();
     await act(async () => resolveInitial(emptySnapshot));
   });
 
@@ -533,12 +533,12 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     render(<AutomationPanel />);
     expect(screen.getByText("定时任务")).toBeInTheDocument();
     expect(screen.getByText("运行记录")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("创建一个定时任务")).toBeInTheDocument());
   });
 
   it("定时任务空态：hero 文案 + 添加按钮 + 12 个模板", async () => {
     render(<AutomationPanel />);
-    await waitFor(() => expect(screen.getByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("创建一个定时任务")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "新建定时任务" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "自动化任务模板" })).toBeInTheDocument();
     expect(screen.getByText("每日 AI 新闻推送")).toBeInTheDocument();
@@ -562,7 +562,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     expect(screen.getByDisplayValue("不能丢失的定时任务")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "舍弃修改" }));
-    expect(await screen.findByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
+    expect(await screen.findByText("创建一个定时任务")).toBeInTheDocument();
   });
 
   it("自动化工具条下拉支持 Escape 关闭并把焦点还给触发按钮", async () => {
@@ -583,10 +583,10 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("自动化数据加载失败：快照损坏");
-    expect(screen.queryByText("安排任务，让 EchoAgent 按时为你处理")).not.toBeInTheDocument();
+    expect(screen.queryByText("创建一个定时任务")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    expect(await screen.findByText("安排任务，让 EchoAgent 按时为你处理")).toBeInTheDocument();
+    expect(await screen.findByText("创建一个定时任务")).toBeInTheDocument();
   });
 
   it("点击「新建定时任务」进入表单（截图 2 字段）", async () => {
@@ -832,7 +832,7 @@ describe("AutomationPermissionConfirmDialog 可访问性", () => {
     invoker.focus();
 
     rerender(view(true));
-    const dialog = screen.getByRole("alertdialog", { name: /完全访问权限运行/ });
+    const dialog = screen.getByRole("alertdialog", { name: "确认完全访问？" });
     const cancel = within(dialog).getByRole("button", { name: "取消" });
     expect(cancel).toHaveFocus();
 

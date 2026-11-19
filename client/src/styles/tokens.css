@@ -79,8 +79,8 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-color-border-focus: var(--echo-focus-ring);
   --echo-color-mask-color: var(--echo-palette-black-60);
   --echo-color-text-primary: #20242E;
-  --echo-color-text-secondary: #5F6877;
-  --echo-color-text-tertiary: #626D7E;
+  --echo-color-text-secondary: #505A68;
+  --echo-color-text-tertiary: #606978;
   --echo-color-text-disabled: #798392;
   --echo-color-text-solid: var(--echo-palette-black-100);
   --echo-color-text-brand-default: #4F5BD5;
@@ -124,7 +124,7 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-bg-active: rgba(32, 36, 46, .08);
   --echo-bg-overlay: var(--echo-palette-black-40);
   --echo-bg-inverse: #242936;
-  --echo-border-default: #DFE1E6;
+  --echo-border-default: #DEE2E8;
   --echo-border-weak: #EAEBEF;
   --echo-border-subtle: var(--echo-border-weak);
   --echo-border-strong: #C9CDD4;
@@ -188,7 +188,7 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-toast-secondary: #B2BBCB;
   --echo-toast-action: #BAC1FF;
   --echo-toast-hover: #343C50;
-  --echo-surface-canvas: #FAFAFA;
+  --echo-surface-canvas: #F8F9FB;
   --echo-code-comment: #4E6A58;
   --echo-code-type: #206980;
   --echo-code-number: #237A57;
@@ -200,10 +200,10 @@ body[data-vscode-theme-name="IDE Light"] {
   --echo-code-diff-added-text-bg: #2EA0430C;
   --echo-code-diff-removed-text-bg: #F851490C;
   --echo-code-match-bg: #EEF0FD;
-  --echo-surface-sidebar: #F3F4F6;
+  --echo-surface-sidebar: #F1F3F6;
   --echo-surface-content: #FFFFFF;
   --echo-surface-raised: #FFFFFF;
-  --echo-surface-conversation: #F0F1F3;
+  --echo-surface-conversation: #F0F2F5;
   --echo-control-selected-bg-active: #E5E8FC;
   --echo-button-primary-bg: #4F5BD5;
   --echo-button-primary-bg-hover: #424CBD;
@@ -330,9 +330,9 @@ body.vscode-dark {
   --echo-color-border-tertiary: var(--echo-border-weak);
   --echo-color-border-focus: var(--echo-focus-ring);
   --echo-color-mask-color: rgba(0, 0, 0, 0.8);
-  --echo-color-text-primary: #E8ECF3;
-  --echo-color-text-secondary: #B2BBCB;
-  --echo-color-text-tertiary: #9AA6B9;
+  --echo-color-text-primary: #EEF0F4;
+  --echo-color-text-secondary: #B9C0CA;
+  --echo-color-text-tertiary: #A4ADBA;
   --echo-color-text-disabled: #738199;
   --echo-color-text-solid: var(--echo-palette-white-100);
   --echo-color-text-brand-default: #A5AEFF;
@@ -374,7 +374,7 @@ body.vscode-dark {
   --echo-bg-hover: rgba(232, 236, 243, .06);
   --echo-bg-active: rgba(232, 236, 243, .10);
   --echo-bg-overlay: var(--echo-palette-black-60);
-  --echo-border-default: #3C3F48;
+  --echo-border-default: #3A3E46;
   --echo-border-weak: #30333B;
   --echo-border-subtle: var(--echo-border-weak);
   --echo-border-strong: #535965;
@@ -439,7 +439,7 @@ body.vscode-dark {
   --echo-toast-secondary: #B2BBCB;
   --echo-toast-action: #BAC1FF;
   --echo-toast-hover: #343C50;
-  --echo-surface-canvas: #151619;
+  --echo-surface-canvas: #16171A;
   --echo-code-comment: #9CB893;
   --echo-code-type: #4EC9B0;
   --echo-code-number: #B5CEA8;
@@ -449,10 +449,10 @@ body.vscode-dark {
   --echo-code-diff-added-text-bg: #2EA04311;
   --echo-code-diff-removed-text-bg: #F8514911;
   --echo-code-match-bg: #222840;
-  --echo-surface-sidebar: #1A1B1F;
-  --echo-surface-content: #1D1F23;
-  --echo-surface-raised: #292B31;
-  --echo-surface-conversation: #292B31;
+  --echo-surface-sidebar: #1A1C20;
+  --echo-surface-content: #1E2024;
+  --echo-surface-raised: #292C32;
+  --echo-surface-conversation: #26292F;
   --echo-control-selected-bg-active: #384168;
   --echo-button-primary-bg: #A5AEFF;
   --echo-button-primary-bg-hover: #BAC1FF;
@@ -541,7 +541,7 @@ body.vscode-dark {
 :root {
   --echo-font-code-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --echo-font-mono: var(--echo-font-code-family);
-  --echo-font-display-size: 2.25rem;
+  --echo-font-display-size: 2rem;
   --echo-font-display-line-height: 1.3;
   --echo-font-display-weight: 700;
   --echo-font-h1-size: 24px;
@@ -577,7 +577,7 @@ body.vscode-dark {
   --echo-shadow-xl: 0 8px 32px color-mix(in srgb, var(--echo-palette-black-100) 20%, transparent);
   --echo-shadow-popover: 0 8px 24px -6px rgb(20 24 35 / 12%), 0 2px 6px rgb(20 24 35 / 5%);
   --echo-shadow-input: 0 2px 8px -2px rgb(20 24 35 / 5%);
-  --echo-shadow-modal: 0 16px 48px -8px rgb(20 24 35 / 20%), 0 2px 8px rgb(20 24 35 / 6%);
+  --echo-shadow-modal: 0 16px 40px -8px rgb(20 24 35 / 20%), 0 2px 8px rgb(20 24 35 / 6%);
   --echo-shadow-floating: var(--echo-shadow-popover);
 }
 
@@ -650,7 +650,7 @@ body.vscode-dark {
 :root {
   --echo-code-addition-bg: var(--echo-status-success-surface);
   --echo-code-deletion-bg: var(--echo-status-error-soft);
-  --echo-radius-control: 6px;
+  --echo-radius-control: 8px;
   --echo-radius-card: 10px;
   /* Resource management: one density scale for lists and template choices. */
   --echo-resource-padding: 16px;
@@ -661,19 +661,19 @@ body.vscode-dark {
   --echo-resource-title-size: .875rem;
   --echo-resource-description-size: .8125rem;
   --echo-resource-meta-size: .75rem;
-  --echo-radius-dialog: 12px;
+  --echo-radius-dialog: 16px;
   --echo-control-font-size: .8125rem;
   --echo-control-line-height: 1.5;
   --echo-control-gap: 6px;
   --echo-page-gutter: 32px;
-  --echo-page-width: 1200px;
+  --echo-page-width: 1120px;
   --echo-page-title-size: 1.5rem;
   --echo-page-title-weight: 600;
   --echo-page-title-line-height: 1.4;
   --echo-section-gap: 24px;
   --echo-page-top: 32px;
   --echo-header-height: 56px;
-  --echo-reading-width: 820px;
+  --echo-reading-width: 808px;
   --echo-home-width: 760px;
   --echo-content-title-size: .9375rem;
   --echo-body-size: .875rem;
@@ -690,7 +690,7 @@ body.vscode-dark {
   --echo-shadow-md: 0 2px 8px rgb(0 0 0 / 22%);
   --echo-shadow-popover: 0 8px 24px -6px rgb(0 0 0 / 36%), 0 2px 6px rgb(0 0 0 / 24%);
   --echo-shadow-input: 0 2px 8px -2px rgb(0 0 0 / 16%);
-  --echo-shadow-modal: 0 16px 48px -8px rgb(0 0 0 / 48%), 0 2px 8px rgb(0 0 0 / 24%);
+  --echo-shadow-modal: 0 16px 40px -8px rgb(0 0 0 / 48%), 0 2px 8px rgb(0 0 0 / 24%);
 }
 
 @media (max-width: 1180px) {

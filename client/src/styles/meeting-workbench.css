@@ -37,7 +37,7 @@
 .meeting-workbench .meeting-tabs { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 0 var(--echo-page-gutter); }
 .meeting-tabs > div { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .meeting-workbench .meeting-tabs [role=tab] { border: 0; border-radius: 0; padding: 10px 0; color: var(--echo-text-secondary); background: transparent; }
-.meeting-workbench .meeting-tabs [role=tab].is-active { color: var(--echo-brand); font-weight: 600; }
+.meeting-workbench .meeting-tabs [role=tab].is-active { color: var(--echo-brand); font-weight: 600; box-shadow: inset 0 -2px var(--echo-brand); }
 .meeting-workbench .meeting-tabs__actions { gap: 8px; padding: 5px 0; }
 .meeting-tabs__actions .meeting-search { max-width: 170px; }
 .meeting-workbench .meeting-tab-content { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
@@ -109,7 +109,7 @@
   .meeting-recording-controls, .meeting-player { padding-inline: 14px; }
   .meeting-recording-controls .meeting-muted { display: none; }
   .meeting-player__controls { gap: 5px; }
-  .meeting-player__volume { display: none; }
+  .meeting-player__volume { margin-inline-start: auto; }
   .meeting-workbench .meeting-tabs__actions { flex-wrap: wrap; }
   .meeting-tabs__actions .meeting-search { max-width: 140px; }
 }

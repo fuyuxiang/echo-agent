@@ -296,6 +296,8 @@ describe("formatProcessDuration", () => {
   it("生成人类可读时长", () => {
     expect(formatProcessDuration(8_900)).toBe("8秒");
     expect(formatProcessDuration(65_000)).toBe("1分5秒");
+    expect(formatProcessDuration(65_000, { spaced: true })).toBe("1 分 5 秒");
+    expect(formatProcessDuration(3_660_000, { spaced: true })).toBe("1 小时 1 分");
   });
 });
 

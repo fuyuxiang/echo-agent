@@ -80,7 +80,7 @@ describe("ModelConnectionsPanel", () => {
       .mockResolvedValueOnce(undefined);
     render(<ModelConnectionsPanel />);
     await openFirstConnection();
-    expect(screen.getByText(/测试会验证一次简短文本回复.*图片和工具调用能力需另行验证/)).toBeVisible();
+    expect(screen.getByText(/测试文本回复.*图片和工具调用需另测/)).toBeVisible();
     const button = await screen.findByRole("button", { name: "测试模型 模型 B" });
     fireEvent.click(button);
     fireEvent.click(button);

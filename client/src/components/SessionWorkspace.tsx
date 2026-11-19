@@ -8,7 +8,7 @@ export function SessionWorkspaceWarning({ workspace, onNewTask }: { workspace: W
   if (!workspace.value || workspace.value.status === "ready") return null;
   return <div className="session-workspace-warning" role="alert">
     <strong>{workspace.value.status === "missing" ? "本任务的工作目录已找不到" : "本任务的工作目录暂不可用"}</strong>
-    <span>请恢复原目录或重新授权后继续。使用其他目录请新建任务，历史记录会保留。</span>
+    <span>恢复目录或重新授权后继续。换目录可新建任务，原记录会保留。</span>
     <span className="session-workspace-warning__path" title={workspace.cwd}>{displayPath(workspace.cwd ?? "")}</span>
     {workspace.value.message && <details><summary>查看原因</summary><p>{workspace.value.message}</p></details>}
     <div className="session-workspace-warning__actions">

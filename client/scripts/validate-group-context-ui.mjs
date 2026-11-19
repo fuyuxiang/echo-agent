@@ -16,7 +16,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height } });
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?theme=${theme}`);
-    await page.getByRole("button", { name: "创建第一个专家团", exact: true }).waitFor();
+    await page.getByRole("button", { name: "创建专家团", exact: true }).waitFor();
     await page.evaluate(async () => {
       const { useGroupStore } = await import("/src/features/groups/group-store.ts");
       useGroupStore.getState().fromTeam("source-session", { teamId: "来源团队", members: ["代码专家", "文档助手"], roles: {}, description: "保留来源与引用", createdAt: 1, sessionId: "source-session", promptIds: [] }, "来源规范：必须支持离线登录");
@@ -34,8 +34,14 @@ try {
     await page.getByText("隔离验收：创建已成功，响应丢失", { exact: true }).waitFor();
     await page.reload();
     await page.getByRole("checkbox", { name: /代码专家/ }).waitFor();
+    const shareSource = page.getByRole("checkbox", { name: "把下列内容共享给成员" });
+    await shareSource.waitFor();
+    assert(await shareSource.isChecked());
     await page.getByText("引用来源对话", { exact: true }).click();
-    assert(await page.getByRole("checkbox", { name: "把下列内容共享给成员" }).isChecked());
+    assert.equal(await shareSource.count(), 0);
+    assert(await page.getByText("已选择共享").isVisible());
+    await page.getByText("引用来源对话", { exact: true }).click();
+    assert(await shareSource.isChecked());
     await page.getByText("来源规范：必须支持离线登录", { exact: true }).waitFor();
     await page.getByRole("button", { name: "创建并进入专家团", exact: true }).click();
     await page.locator(".group-chat__heading").getByRole("heading", { name: "来源团队", exact: true }).waitFor();
@@ -57,13 +63,13 @@ try {
       const { saveDraftAttachments } = await import("/src/lib/draft-attachments.ts");
       saveDraftAttachments(`group:${useGroupStore.getState().currentId}`, ["/review/新增资料.txt"]);
     });
-    await page.getByText("沿用此前任务附件（已选 20/20）", { exact: true }).waitFor();
+    await page.getByText("沿用附件 · 20/20", { exact: true }).waitFor();
     await composer.fill("结合新资料继续完善");
     await page.getByRole("button", { name: "发送", exact: true }).click();
     await page.getByRole("alert").filter({ hasText: "新附件与沿用的历史附件合计最多 20 个" }).waitFor();
     assert.equal(await composer.inputValue(), "结合新资料继续完善");
     assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem("group-review"))[0].works.length), 1);
-    await page.getByText("沿用此前任务附件（已选 20/20）", { exact: true }).click();
+    await page.getByText("沿用附件 · 20/20", { exact: true }).click();
     await page.getByRole("checkbox", { name: "资料-0.txt", exact: true }).uncheck();
     await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "attachment choices fit the viewport");

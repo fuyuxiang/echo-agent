@@ -13,10 +13,10 @@ try {
     const page=await browser.newPage({viewport:{width,height}}), errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=workbench&state=empty&theme=${theme}&platform=mac`);
-    await page.getByRole('button',{name:'停止生成',exact:true}).waitFor();
+    await page.getByRole('button',{name:'停止任务',exact:true}).waitFor();
     assert.equal(await page.locator('.computer-task,.computer-task-window').count(),0);
     for (const name of ['暂停并接管','继续任务','悬浮']) assert.equal(await page.getByRole('button',{name,exact:true}).count(),0);
-    await page.getByRole('button',{name:'停止生成',exact:true}).click();
+    await page.getByRole('button',{name:'停止任务',exact:true}).click();
     await page.getByRole('button',{name:'发送',exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>window.workbenchCalls.some(c=>c.command==='review_cancel'&&c.args.action==='stop')),true);
     const input=page.getByRole('textbox',{name:'输入问题或任务'});
@@ -37,7 +37,7 @@ try {
     for (const blocker of ['message_text_required','input_conflict']) {
       await page.evaluate(blocker=>window.computerTaskReview.setPhase('waiting_user',blocker),blocker);
       await page.getByText(blocker==='message_text_required'?'请告诉我需要发送的消息内容。':'目标应用正在被使用，可以直接发送消息继续或调整要求。',{exact:true}).first().waitFor();
-      assert.equal(await page.getByRole('button',{name:'停止生成',exact:true}).count(),0);
+      assert.equal(await page.getByRole('button',{name:'停止任务',exact:true}).count(),0);
       assert.equal(await page.getByRole('button',{name:'继续任务',exact:true}).count(),0);
       await page.screenshot({path:join(output,`${width}-${theme}-${blocker}.png`)});
       evidence.push({width,height,theme,phase:'waiting_user',blocker});

@@ -13,7 +13,7 @@
 .home__inner {
   max-width: var(--echo-home-width);
   flex: 0 0 auto;
-  gap: 32px;
+  gap: 28px;
   /* Auto margins center the whole task entry. When content outgrows the
      window they resolve to zero, keeping the title reachable by scrolling. */
   margin: auto;
@@ -47,7 +47,7 @@
   position: relative;
   border: 1px solid var(--echo-border-default);
   border-radius: var(--echo-radius-dialog);
-  background: var(--ui-surface-raised);
+  background: var(--echo-surface-raised);
   box-shadow: var(--echo-shadow-input);
   backdrop-filter: none;
   transition: border-color var(--echo-motion-duration-fast), box-shadow var(--echo-motion-duration-fast);
@@ -65,22 +65,68 @@
   background: var(--echo-surface-canvas);
 }
 
-.home .echo-composer {
-  padding: 20px 20px 0;
+/* Every composer has the same tool groups. Wrap the context as a group
+ * and allow its controls to wrap again in narrow project or agent columns. */
+.echo-composer-wrap { container: composer / inline-size; }
+.echo-composer { gap: 4px; padding: 10px 12px 8px; }
+.echo-composer--home { padding: 14px 14px 10px; }
+
+.echo-composer__input {
+  display: block;
+  line-height: 1.65;
+  min-height: 42px;
+  max-height: min(32vh, 240px);
+  overflow-y: auto;
+}
+.echo-composer--home .echo-composer__input { min-height: clamp(68px, 10vh, 88px); }
+.echo-composer--disabled .echo-composer__input:placeholder-shown { display: none; }
+.echo-composer__setup-hint[role="button"]:hover { color: var(--echo-text-strong); }
+.echo-composer__footer,
+.echo-composer__context,
+.composer-primary-tools,
+.echo-composer-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.echo-composer__footer { justify-content: space-between; min-height: 36px; gap: 2px 8px; }
+.echo-composer__context { flex: 1 1 auto; }
+.echo-composer-meta { flex: 0 1 auto; }
+.echo-composer-meta:has(.echo-composer-meta__workspace-error) { flex-basis: 100%; }
+.composer-primary-tools { margin-inline-start: auto; justify-content: flex-end; }
+.composer-primary-tools .model-selector { min-width: 0; }
+.composer-primary-tools .model-selector__trigger { max-width: 100%; min-width: 0; }
+.composer-primary-tools .model-selector__label { max-width: 10rem; }
+.echo-composer__model-summary { color: var(--echo-text-medium); padding-inline: 4px; font-size: .75rem; }
+.echo-composer__send {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  border-radius: var(--echo-radius-control);
+}
+.echo-composer__context > :is(.echo-composer__automation-badge, .echo-composer__expert-badge) {
+  max-width: 100%;
+  border-radius: 6px;
+}
+.echo-composer__context .echo-composer-meta__workspace,
+.echo-composer__context .workspace-picker__label { max-width: 8rem; }
+.echo-composer__disclaimer { height: auto; min-height: 18px; margin-top: 3px; }
+
+@container composer (max-width: 640px) {
+  .composer-primary-tools .model-selector__label { max-width: 7rem; }
+  .echo-composer__context .echo-composer-meta__workspace,
+  .echo-composer__context .workspace-picker__label { max-width: 6rem; }
+}
+@container composer (max-width: 490px) {
+  .echo-composer__context { flex-basis: 100%; }
+  .composer-primary-tools .model-selector__label { max-width: 7rem; }
 }
 
-.home .echo-composer-meta {
-  margin-top: 8px;
-}
-
-.echo-composer__input { max-height: min(32vh, 280px); overflow-y: auto; }
-.echo-composer--home .echo-composer__input {
-  min-height: clamp(88px, 11vh, 120px);
-  max-height: clamp(160px, 36vh, 420px);
-}
 @media (max-height: 640px) {
   .home { padding-block: 24px; }
-  .echo-composer--home .echo-composer__input { min-height: 80px; }
 }
 
 .workspace-picker__error { max-width: 360px; padding: 8px 12px; color: var(--echo-status-error); white-space: normal; overflow-wrap: anywhere; font-size: 0.75rem; }

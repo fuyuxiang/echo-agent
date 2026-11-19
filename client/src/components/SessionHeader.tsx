@@ -44,7 +44,7 @@ export function SessionNavigation({ sidebarCollapsed, onToggleSidebar, onNewTask
 
 /** One non-scrolling session header. Domain state and workspace navigation stay in ChatView. */
 export function SessionHeader({ sessionId, title, onRename, actions, summary, activeView,
-  onView, onCloseView, onToggleWorkspace, onFind, findOpen, navigation, leading, historyDisabled, projectBreadcrumb,
+  onView, onCloseView, onToggleWorkspace, onFind, findOpen, navigation, leading, backgroundActions, historyDisabled, projectBreadcrumb,
 }: {
   sessionId: string;
   title: string;
@@ -59,6 +59,7 @@ export function SessionHeader({ sessionId, title, onRename, actions, summary, ac
   findOpen: boolean;
   navigation?: SessionNavigationProps;
   leading?: ReactNode;
+  backgroundActions?: ReactNode;
   historyDisabled?: boolean;
   projectBreadcrumb?: ProjectSessionBreadcrumb;
 }) {
@@ -107,6 +108,7 @@ export function SessionHeader({ sessionId, title, onRename, actions, summary, ac
       </nav>
     ) : <div className="session-header__identity" data-tauri-drag-region>{sessionTitle}</div>}
     <div ref={actionsRef} className="session-header__actions">
+      {backgroundActions}
       {summary.hasPlan && <button type="button" className="session-header__context"
         aria-label={summary.planTotal ? `查看执行计划，已完成 ${summary.planCompleted}/${summary.planTotal} 步` : "查看执行计划"}
         aria-expanded={activeView === "plan"} aria-controls="session-workspace" onClick={() => onView("plan")}>

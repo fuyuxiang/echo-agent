@@ -322,7 +322,7 @@ export function SearchOverlay({
         </div>
 
         <div className="conversation-search-modal__body">
-          {openingId && <div className="conversation-search-modal__count" role="status">正在打开，请稍候…</div>}
+          {openingId && <div className="conversation-search-modal__count" role="status">正在打开…</div>}
           {matchingGroups.length > 0 && <>
             <div className="conversation-search-modal__count">专家团 ({matchingGroups.length})</div>
             <ul className="conversation-search-modal__list">

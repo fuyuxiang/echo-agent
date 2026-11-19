@@ -42,7 +42,7 @@ select.echo-select[aria-invalid="true"] { border-color: var(--echo-status-error)
   width: max-content;
   padding: 5px;
   border: 1px solid var(--echo-border-default);
-  border-radius: 10px;
+  border-radius: var(--echo-radius-card);
   background: var(--echo-surface-raised);
   box-shadow: var(--echo-shadow-popover);
   color: var(--echo-text-strong);
@@ -56,8 +56,8 @@ select.echo-select[aria-invalid="true"] { border-color: var(--echo-status-error)
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  min-height: 34px;
-  padding: 7px 10px;
+  min-height: var(--echo-size-control-sm);
+  padding: 5px 10px;
   border-radius: 6px;
   cursor: pointer;
 }

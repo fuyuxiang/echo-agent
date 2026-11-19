@@ -79,11 +79,15 @@ try {
     await search.press("Escape");
     assert.equal(await search.getAttribute("aria-expanded"), "false");
     assert(await page.getByRole("dialog", { name: "设置", exact: true }).isVisible());
+    await search.fill("");
     await search.fill("模型");
-    await search.press("ArrowDown");
+    const choices = await page.getByRole("option").locator(":scope > span").allTextContents();
+    const desired = choices.indexOf("模型用量");
+    assert(desired >= 0, "Model usage must be discoverable");
+    for (let index = 0; index < desired; index++) await search.press("ArrowDown");
     const active = await search.getAttribute("aria-activedescendant");
     assert(active && await page.locator(`[id="${active}"]`).isVisible(), "Keyboard selection is not visible");
-    assert.equal(await page.locator(`[id="${active}"] > span`).textContent(), "模型用量", "ArrowDown selected an unexpected result");
+    assert.equal(await page.locator(`[id="${active}"] > span`).textContent(), "模型用量");
     await search.press("Enter");
     await page.getByRole("heading", { name: "模型用量", exact: true }).waitFor();
 

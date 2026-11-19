@@ -431,7 +431,7 @@ function WorkspaceInput({
         </div>
       )}
       <div className="atm-workspace-input__hint">
-        新目录请点击「选择文件夹」确认授权；留空则使用默认工作目录。
+        选择文件夹以授权。留空使用默认目录。
       </div>
       {pickError && (
         <div className="atm-workspace-input__error" role="alert">

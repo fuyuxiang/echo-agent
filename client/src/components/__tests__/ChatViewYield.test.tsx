@@ -6,6 +6,8 @@ import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
 import { useContinuationStore } from "@/stores/continuation-store";
+import { useQuestionStore } from "@/stores/question-store";
+import { usePermissionStore } from "@/stores/permission-store";
 import type { Plan } from "@/lib/types";
 
 const automationState = vi.hoisted(() => ({ status: null as import("@/lib/automation-client").AutomationStatus | null,
@@ -139,6 +141,11 @@ vi.mock("@/lib/agent-client", async () => {
   mod.tasksList = asyncArr;
   mod.commandsList = vi.fn(asyncArr);
   mod.promptHistory = asyncArr;
+  mod.onQuestionClosedEvent = async () => () => {};
+  mod.agentListPendingInteractions = async (sessionId: string) => ({
+    questions: useQuestionStore.getState().queues[sessionId] ?? [],
+    permissions: [],
+  });
   return mod;
 });
 
@@ -249,8 +256,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
     expect(screen.queryByRole("button", { name: /^(重试|重新生成|重新执行)$/ })).toBeNull();
     const original = container.querySelector('[data-msg-id="main"]') as HTMLElement;
     expect(within(original).getByRole("group", { name: "回复操作" })).toHaveClass("msg__actions--latest");
-    fireEvent.click(within(original).getByRole("button", { name: "更多回复操作" }));
-    expect(screen.getByRole("menuitem", { name: "在新对话中继续" })).toBeEnabled();
+    expect(within(original).getByRole("button", { name: "在新对话中继续" })).toBeEnabled();
     expect(baseProps.onRetrySend).not.toHaveBeenCalled();
   });
 
@@ -273,6 +279,67 @@ describe("ChatView pause/yield/resume 闭环", () => {
     rerender(<ThemeProvider><ChatView {...baseProps} attentionRequest={2} /></ThemeProvider>);
     await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
     expect(screen.getByRole("tab", { name: "计划" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("待回复与计划同时出现时只展开一项，切换后保留未提交的回答", () => {
+    setStore({ planApproval: { requestId: "pending-plan", sessionId: "s1", toolCallId: "plan" } });
+    useQuestionStore.getState().request({
+      requestId: "pending-question", sessionId: "s1", toolCallId: "question", mode: "default",
+      title: "交付格式", questions: [{ id: "format", question: "要用哪种格式？", options: [], multiSelect: false }],
+    });
+    try {
+      renderChat();
+      const selector = screen.getByRole("group", { name: "待处理事项" });
+      const question = within(selector).getByRole("button", { name: "待回复" });
+      const plan = within(selector).getByRole("button", { name: "待确认计划" });
+      expect(question).toHaveAttribute("aria-pressed", "true");
+      expect(screen.queryByRole("button", { name: "查看计划" })).toBeNull();
+      fireEvent.change(screen.getByRole("textbox", { name: "自定义回答" }), { target: { value: "保留这段草稿" } });
+      fireEvent.click(plan);
+      expect(plan).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "查看计划" })).toBeVisible();
+      expect(screen.queryByRole("textbox", { name: "自定义回答" })).toBeNull();
+      fireEvent.click(question);
+      expect(screen.getByRole("textbox", { name: "自定义回答" })).toHaveValue("保留这段草稿");
+    } finally {
+      act(() => useQuestionStore.getState().clearAll());
+    }
+  });
+
+  it.each([false, true])("审批通知定位准确并保留答复草稿（通知先到 %s）", async notifyFirst => {
+    useQuestionStore.getState().request({
+      requestId: "pending-question", sessionId: "s1", toolCallId: "question", mode: "default",
+      title: "交付格式", questions: [{ id: "format", question: "要用哪种格式？", options: [], multiSelect: false }],
+    });
+    const request = (requestId: string) => usePermissionStore.getState().request({
+      requestId, sessionId: "s1", toolCallId: requestId, toolKind: "edit", title: "写入报告",
+      rawInput: { path: "/project/report.md" }, options: [{ optionId: "allow", kind: "allow", title: "允许一次" }],
+    });
+    try {
+      request("first-permission");
+      if (!notifyFirst) request("promoted-permission");
+      renderChat();
+      const question = screen.getByRole("button", { name: "待回复" });
+      fireEvent.click(question);
+      fireEvent.change(screen.getByRole("textbox", { name: "自定义回答" }), { target: { value: "未提交的答复" } });
+      act(() => { usePermissionStore.getState().promote("promoted-permission", "s1"); });
+      if (notifyFirst) {
+        expect(question).toHaveAttribute("aria-pressed", "true");
+        act(() => request("promoted-permission"));
+      }
+      const approval = screen.getByRole("region", { name: "操作授权" });
+      expect(approval.id).toBe("permission-promoted-permission");
+      await waitFor(() => expect(approval).toHaveFocus());
+      expect(usePermissionStore.getState().priorityRequestBySession.s1).toBeUndefined();
+      expect(screen.getByRole("button", { name: "待审批" })).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(question);
+      expect(screen.getByRole("textbox", { name: "自定义回答" })).toHaveValue("未提交的答复");
+    } finally {
+      act(() => {
+        useQuestionStore.getState().clearAll();
+        usePermissionStore.getState().clearAll();
+      });
+    }
   });
 
   it("目录不可用时保留原回复，并禁用全部消息级重试", () => {
@@ -344,16 +411,16 @@ describe("ChatView pause/yield/resume 闭环", () => {
     renderChat();
     fireEvent.change(screen.getByRole("textbox"), {target:{value:"保留补充要求"}});
     expect(screen.queryByRole("button", {name:"发送选项"})).toBeNull();
-    expect(screen.queryByRole("button", {name:"停止生成"})).toBeNull();
+    expect(screen.queryByRole("button", {name:"停止任务"})).toBeNull();
     sessionItem("停止当前执行");
     expect(baseProps.onCancel).toHaveBeenCalledExactlyOnceWith("stop");
-    expect(screen.getByRole("button", {name:"加入待发送队列"})).toBeDisabled();
+    expect(screen.getByRole("button", {name:"加入队列"})).toBeDisabled();
     fireEvent.click(screen.getByRole("button", {name:"任务操作"}));
     expect(screen.getByRole("menuitem", {name:"正在停止…"})).toBeDisabled();
     fireEvent.click(screen.getByRole("menuitem", {name:"正在停止…"}));
     expect(baseProps.onCancel).toHaveBeenCalledOnce();
     await act(async () => finish(false));
-    expect(screen.getByRole("button", {name:"加入待发送队列"})).toBeEnabled();
+    expect(screen.getByRole("button", {name:"加入队列"})).toBeEnabled();
     expect(screen.getByRole("textbox")).toHaveValue("保留补充要求");
     expect(baseProps.onSend).not.toHaveBeenCalled();
   });
@@ -370,11 +437,11 @@ describe("ChatView pause/yield/resume 闭环", () => {
     expect(screen.queryByRole("group", { name: "当前轮次执行控制" })).toBeNull();
     expect(screen.queryByRole("button", { name: "暂停" })).toBeNull();
     expect(screen.queryByRole("button", { name: "停止" })).toBeNull();
-    expect(screen.getAllByRole("button", { name: "停止生成" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "停止任务" })).toHaveLength(1);
     const input = container.querySelector(".echo-composer__input")!;
     fireEvent.change(input, { target: { value: "请补充出处" } });
-    expect(screen.queryByRole("button", { name: "停止生成" })).toBeNull();
-    expect(screen.getByRole("button", { name: "加入待发送队列" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "停止任务" })).toBeNull();
+    expect(screen.getByRole("button", { name: "加入队列" })).toBeEnabled();
     sessionItem("停止当前执行");
     await waitFor(() => expect(baseProps.onCancel).toHaveBeenCalledExactlyOnceWith("stop"));
     expect(baseProps.onSend).not.toHaveBeenCalled();
@@ -388,19 +455,19 @@ describe("ChatView pause/yield/resume 闭环", () => {
     const header = () => within(container.querySelector<HTMLElement>(".session-header")!);
     expect(header().queryByRole("status")).toBeNull();
     expect(screen.getByText("正在整理资料")).toBeVisible();
-    expect(screen.getByRole("button", { name: "停止生成" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "停止任务" })).toBeEnabled();
 
     setStore({ planApproval: { requestId: "plan-confirm", sessionId: "s1", toolCallId: "plan" } });
     await act(async () => { rerender(<ThemeProvider><ChatView {...baseProps} /></ThemeProvider>); });
     expect(header().queryByRole("status")).toBeNull();
-    expect(screen.getByText("执行计划等待确认")).toBeVisible();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "查看并确认计划" })); });
+    expect(screen.getByText("待确认计划")).toBeVisible();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "查看计划" })); });
     expect(screen.getByRole("tab", { name: "计划" })).toHaveAttribute("aria-selected", "true");
 
     setStore({ planApproval: undefined });
     await act(async () => { rerender(<ThemeProvider><ChatView {...baseProps} /></ThemeProvider>); });
     expect(header().queryByRole("status")).toBeNull();
-    expect(screen.getByRole("button", { name: "停止生成" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "停止任务" })).toBeEnabled();
 
     setStore({ streaming: false, streamingMessageId: null, error: "模型连接中断" });
     await act(async () => { rerender(<ThemeProvider><ChatView {...baseProps} /></ThemeProvider>); });
@@ -417,7 +484,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("连接中断");
     expect(container.querySelector(".chatview__error-banner")).toBeNull();
     expect(container.querySelector(".session-header [role=status]")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "查看原因" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
     expect(screen.getByText("upstream connection lost")).toBeVisible();
     expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
@@ -427,7 +494,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
       streaming:false, error:detail,runtimeErrorContext:null});
     const {container} = renderChat();
     expect(container.querySelector(".chatview__error-banner")).toHaveTextContent(detail);
-    fireEvent.click(screen.getByRole("button",{name:"查看原因"}));
+    fireEvent.click(screen.getByRole("button",{name:"查看详情"}));
     expect(screen.getByText("rate limit exceeded")).toBeVisible();
   });
 
@@ -470,7 +537,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
       ...(state === "stopped" ? {control:{action:"stop",phase:"stopped",requestedAt:1}} : {}),
       ...(state === "switched" ? {sessionId:"s2"} : {}),
     });
-    fireEvent.click(screen.getByRole("button",{name:"加入待发送队列"}));
+    fireEvent.click(screen.getByRole("button",{name:"加入队列"}));
     await act(async () => {});
     expect(useMessageQueueStore.getState().getQueue("s1")).toHaveLength(0);
     if (state === "completed") {
@@ -570,7 +637,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
     fireEvent.click(screen.getByRole("button", { name: "关闭面板" }));
     fireEvent.scroll(viewport);
     expect(viewport.scrollTop).toBe(1600);
-    expect(screen.queryByRole("button", { name: "回到最新消息并恢复自动跟随" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "回到最新消息" })).toBeNull();
     Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 2200 });
     setStore({ messages: [...storeState.messages], streaming: true });
     rerender(<ThemeProvider><ChatView {...baseProps} /></ThemeProvider>);
@@ -589,7 +656,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
     expect(viewport.scrollTop).toBe(600);
     fireEvent.click(screen.getByRole("button", {name: "关闭面板"}));
     expect(viewport.scrollTop).toBe(600);
-    expect(screen.getByRole("button", { name: "回到最新消息并恢复自动跟随" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "回到最新消息" })).toBeInTheDocument();
   });
 
   it("从子代理返回后恢复展开条目和原阅读位置", async () => {
@@ -698,9 +765,9 @@ describe("ChatView pause/yield/resume 闭环", () => {
     expect(screen.queryByRole("dialog", { name: "历史提问" })).toBeNull();
     expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
     expect(screen.getByText("最初的问题").closest("[data-msg-id]")).toHaveClass("msg-wrap--jump-target");
-    const jumpButton = screen.getByRole("button", { name: "回到最新消息并恢复自动跟随" });
+    const jumpButton = screen.getByRole("button", { name: "回到最新消息" });
     fireEvent.click(jumpButton);
-    await waitFor(() => expect(screen.queryByRole("button", { name: "回到最新消息并恢复自动跟随" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "回到最新消息" })).toBeNull());
   });
 
   it("切换会话后清空历史提问浮层和旧查询", async () => {
@@ -739,12 +806,12 @@ describe("ChatView pause/yield/resume 闭环", () => {
     fireEvent.pointerDown(screen.getByRole("button", { name: "复制" }));
 
     const jumpButton = await screen.findByRole("button", {
-      name: "回到最新消息并恢复自动跟随",
+      name: "回到最新消息",
     });
     fireEvent.click(jumpButton);
     await waitFor(() => {
       expect(screen.queryByRole("button", {
-        name: "回到最新消息并恢复自动跟随",
+        name: "回到最新消息",
       })).toBeNull();
     });
   });
@@ -891,6 +958,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
       await waitFor(() => expect(rewindPoints).toHaveBeenCalledOnce());
       expect(input).toBeEnabled();
       expect(input).toHaveValue("未发送的新草稿");
+      fireEvent.click(screen.getByRole("button", { name: /^待发送 \d+ 条/ }));
       expect(within(screen.getByRole("list",{name:"待发送队列"})).getByRole("button",{name:"立即发送"})).toBeDisabled();
       fireEvent.keyDown(input,{key:"Enter",code:"Enter"});
       expect(baseProps.onSend).not.toHaveBeenCalled();
@@ -1003,8 +1071,9 @@ describe("ChatView pause/yield/resume 闭环", () => {
       renderChat();
       expect(screen.getByRole("button",{name:"继续任务"})).toBeDisabled();
       expect(screen.getByRole("textbox")).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: /^待发送 \d+ 条/ }));
       expect(within(screen.getByRole("list",{name:"待发送队列"})).getByRole("button",{name:"立即发送"})).toBeDisabled();
-      expect(screen.getByRole("button",{name:"查看并确认计划"})).toBeInTheDocument();
+      expect(screen.getByRole("button",{name:"查看计划"})).toBeInTheDocument();
       expect(baseProps.onSend).not.toHaveBeenCalled();
     } finally { useMessageQueueStore.getState().clear("s1"); setStore({planApproval:undefined}); }
   });
@@ -1273,7 +1342,7 @@ it("原生任务在模型文字结束后仍使用现有停止按钮，过程只�
   renderChat();
   expect(screen.queryByRole("button",{name:"暂停并接管"})).toBeNull();
   expect(screen.queryByRole("button",{name:"继续任务"})).toBeNull();
-  fireEvent.click(screen.getByRole("button",{name:/停止生成|停止任务|停止执行/}));
+  fireEvent.click(screen.getByRole("button",{name:/停止任务|停止任务|停止执行/}));
   await waitFor(()=>expect(baseProps.onCancel).toHaveBeenCalledWith("stop"));
 });
 it("两轮模型调用之间仍能通过停一下撤销电脑执行", async () => {
@@ -1359,7 +1428,7 @@ describe("session workbench entry paths", () => {
   it("只有文本计划的审批也直接提示，并可进入原计划审批组件", () => {
     setStore({plan:null,planApproval:{requestId:"plan-text",sessionId:"workbench",toolCallId:"plan-tool",planContent:"先核对当前任务，再生成交付文档"}});
     renderChat();
-    fireEvent.click(screen.getByRole("button",{name:"查看并确认计划"}));
+    fireEvent.click(screen.getByRole("button",{name:"查看计划"}));
     expect(screen.getByText("先核对当前任务，再生成交付文档")).toBeVisible();
     expect(screen.getByRole("group",{name:"计划审批"})).toBeVisible();
   });
@@ -1586,7 +1655,7 @@ describe("session workbench entry paths", () => {
     workspaceItem("文件变更");
     fireEvent.click(screen.getByRole("button", { name: "关闭面板" }));
     expect(viewport.scrollTop).toBe(900);
-    expect(screen.getByRole("button", { name: "回到最新消息并恢复自动跟随" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "回到最新消息" })).toBeInTheDocument();
   });
 });
 
@@ -1603,7 +1672,7 @@ describe("所有工具模式统一使用会话交互", () => {
       browser:{available:true},browserRunning:true,browserHasData:true,computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
     baseProps.onCancel.mockResolvedValue(true);
     renderChat();fireEvent.change(screen.getByRole("textbox"),{target:{value:"停一下"}});
-    fireEvent.click(screen.getByRole("button",{name:"发送"}));
+    fireEvent.click(screen.getByRole("button",{name:"暂停任务"}));
     await waitFor(()=>expect(baseProps.onCancel).toHaveBeenCalledWith("pause"));
     expect(baseProps.onSend).not.toHaveBeenCalled();
   });
@@ -1612,7 +1681,7 @@ describe("所有工具模式统一使用会话交互", () => {
     automationState.status={sessionId:"unified",mode:"default",paused:false,allowPrivateNetwork:false,
       browser:{available:true},browserRunning:false,browserHasData:false,computer:{available:true,platform:"macOS",screenCapture:true,inputControl:true}};
     renderChat();fireEvent.change(screen.getByRole("textbox"),{target:{value:"停一下"}});
-    fireEvent.click(screen.getByRole("button",{name:"发送"}));
+    fireEvent.click(screen.getByRole("button",{name:"暂停任务"}));
     await waitFor(()=>expect(baseProps.onToast).toHaveBeenCalledWith("当前任务没有正在运行的内容"));
     expect(baseProps.onCancel).not.toHaveBeenCalled();
   });
@@ -1634,7 +1703,7 @@ describe("所有工具模式统一使用会话交互", () => {
   });
   it.each(["default","browser_use","computer_use"] as const)("%s 运行时只显示普通停止按钮，没有专属状态栏", mode => {
     setStore({agentMode:mode});const {container}=renderChat();
-    expect(screen.getByRole("button",{name:"停止生成"})).toBeEnabled();
+    expect(screen.getByRole("button",{name:"停止任务"})).toBeEnabled();
     expect(container.querySelector(".task-execution-status")).toBeNull();
     expect(container.querySelector(".chatview__footer .session-turn-feedback")).toBeNull();
     expect(screen.queryByText(/正在处理任务，可随时说|可继续补充任务要求|浏览器数据与访问范围/)).toBeNull();
@@ -1675,7 +1744,7 @@ describe("所有工具模式统一使用会话交互", () => {
     setStore({agentMode:"browser_use"});automationState.approvals=[{requestId:"r",sessionId:"unified",tool:"browser_click",title:"是否允许发送？",description:"核对收件人",details:{}}];
     renderChat();expect(screen.getAllByRole("region",{name:"操作授权"})).toHaveLength(1);expect(screen.queryByText("正在等待模型响应")).toBeNull();
     fireEvent.change(screen.getByRole("textbox"),{target:{value:"待发送的消息"}});
-    expect(screen.getByRole("button",{name:"加入待发送队列"})).toBeDisabled();
+    expect(screen.getByRole("button",{name:"加入队列"})).toBeDisabled();
   });
   it("没有可恢复的电脑任务上下文时引导补充要求，不提供无效的继续按钮", () => {
     setStore({agentMode:"computer_use",streaming:false,streamingMessageId:null,control:{action:"pause",phase:"paused",requestedAt:1}});

@@ -1,6 +1,6 @@
 import { Select } from "@/components/Select";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Users, Settings, Search, Pause, Square, Reply, X, AtSign, ChevronDown } from "lucide-react";
+import { ArrowLeft, Users, Settings, Search, Pause, Square, Reply, X, AtSign } from "lucide-react";
 import { agentResolvePlanApproval } from "@/lib/agent-client";
 import type { ToolCallView } from "@/stores/session-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -250,9 +250,9 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
       {searchOpen && <div className="group-chat__tools"><label className="groups-search"><Search size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} aria-label="搜索讨论消息" placeholder="搜索讨论消息" /></label><span className="groups-muted">{query ? `${filtered.length} 条匹配消息` : `${members.length} 位成员`}</span><button type="button" className="groups-icon" aria-label="关闭搜索" onClick={() => { setSearchOpen(false); setQuery(""); }}><X size={14} /></button></div>}
       <div className="group-chat__messages" ref={scroll} onScroll={() => { const el = scroll.current!; following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 90; if (following.current && !query) { setNewMessages(false); useGroupStore.getState().markRead(group.id, groupPublicSeq(group)); } }}>
         <div ref={content}>
-          {!messages.length && <div className="groups-empty"><Users size={30} /><h2>成员已就位</h2><p>直接说明目标，协调员会按需要安排专家。也可以 @指定成员。</p><div className="group-suggestions"><button type="button" onClick={() => { setDiscussion(true); useGroupStore.getState().setDraft(group.id, "请先梳理目标，提出建议和需要确认的问题。"); }}>先讨论方案</button></div></div>}
+          {!messages.length && <div className="groups-empty"><Users size={30} /><h2>成员已就位</h2><p>告诉协调员目标，或 @成员。</p><div className="group-suggestions"><button type="button" onClick={() => { setDiscussion(true); useGroupStore.getState().setDraft(group.id, "请先梳理目标，提出建议和需要确认的问题。"); }}>先讨论方案</button></div></div>}
           {filtered.length > visibleCount && <button type="button" className="groups-back" onClick={() => { const viewport = scroll.current; const height = viewport?.scrollHeight ?? 0; following.current = false; setVisibleCount(count => count + 150); requestAnimationFrame(() => { if (viewport) viewport.scrollTop += viewport.scrollHeight - height; }); }}>加载更早消息（{filtered.length - visibleCount} 条）</button>}
-          {query && !filtered.length && <p className="groups-empty">没有找到匹配消息，试试其他关键词。</p>}
+          {query && !filtered.length && <p className="groups-empty">未找到匹配消息。</p>}
           {filtered.slice(-visibleCount).map(message => {
             const receipt = followupReceipt(group, message);
             const request = conclusions.get(message.id);
@@ -284,12 +284,28 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
         {unchecked && <div className="group-pending-notice" role="status"><span>有未确认的执行需要核对。{!unchecked.discussion && !unchecked.summary && !unchecked.resultRepair ? "相关工作区的写入正在等待。" : "已有记录保留。"}</span><button type="button" className="groups-text-button" onClick={() => selectTask(unchecked.rootId)}>查看待检查任务</button></div>}
         {(group.paused || group.archived) && <div className="group-pause-notice"><span>{group.archived ? "专家团已归档，恢复后可继续交流。" : "后续派发已暂停，已有消息与结果保留。"}</span><button type="button" className="btn btn--primary" disabled={busy} onClick={() => void control("resume")}>恢复派发</button></div>}
         <div className="group-compose-context">
-          <span title={compositionRoot ? requestTitle(group, compositionRoot) : undefined}>{compositionRoot ? `${requestTarget ? "补充" : "继续"}：${requestTitle(group, compositionRoot)}` : "开始新任务"}</span>
-          {focused && <button type="button" className="groups-text-button" onClick={() => { setNewTopic(!newTopic); setNewRound(false); setReply(null); setTargets([]); }}>{newTopic ? "返回当前任务" : "另起任务"}</button>}
-          {requests.length > 1 && <details className="group-task-picker"><summary>切换任务<ChevronDown size={12} /></summary><label>消息归属<Select aria-label="消息归属" value={focused?.id ?? ""} onChange={event => selectTask(event.target.value)}>{[...requests].reverse().map(request => <option value={request.id} key={request.id}>{requestTitle(group, request.id)}</option>)}</Select></label></details>}
+          {focused ? <label>
+            <span>发送到</span>
+            <Select aria-label="消息归属" density="compact" value={newTopic ? "new" : focused.id}
+              onChange={event => {
+                if (event.target.value !== "new") {
+                  selectTask(event.target.value);
+                  return;
+                }
+                setNewTopic(true);
+                setNewRound(false);
+                setReply(null);
+                setTargets([]);
+              }}>
+              {[...requests].reverse().map(request => <option value={request.id} key={request.id}>
+                {request.id === compositionRoot ? requestTarget ? "补充：" : "继续：" : ""}{requestTitle(group, request.id)}
+              </option>)}
+              <option value="new">另起任务</option>
+            </Select>
+          </label> : <span>开始新任务</span>}
         </div>
         {sourceRequestId && availableAttachments.length > 0 && <details className="group-source-attachments">
-          <summary>沿用此前任务附件（已选 {sourceAttachments.length}/{availableAttachments.length}）</summary>
+          <summary>沿用附件 · {sourceAttachments.length}/{availableAttachments.length}</summary>
           <p>勾选本轮需要的资料，与新附件合计最多 20 个、64 MB。未勾选的文件仍保留在原任务记录中。</p>
           <div className="group-source-attachments__actions"><button type="button" className="groups-text-button" onClick={() => selectAttachments(availableAttachments.slice(0, 20))}>{availableAttachments.length <= 20 ? "全部沿用" : "选择前 20 个"}</button><button type="button" className="groups-text-button" onClick={() => selectAttachments([])}>不沿用附件</button></div>
           <div className="group-source-attachments__list">{availableAttachments.map(path => <label key={path} title={path}><input type="checkbox" checked={sourceAttachments.includes(path)} onChange={event => selectAttachments(event.target.checked ? [...sourceAttachments, path] : sourceAttachments.filter(item => item !== path))} /><span>{attachmentBasename(path)}</span></label>)}</div>

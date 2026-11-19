@@ -59,6 +59,8 @@ try {
     await page.emulateMedia({reducedMotion:"reduce"});
     await load(width,height,theme,"running",font);
     await page.locator(".msg__loading-main").waitFor();
+    assert.equal(await page.locator(".msg__loading .waiting-indicator").count(),1);
+    assert.equal(await page.locator('.msg--assistant img[src="/app-icon.png"]').count(),0);
     assert.equal(await tip.count(),0,"fast requests should not flash companion copy");
     await page.clock.runFor(2_999);
     assert.equal(await tip.count(),0);
@@ -116,6 +118,8 @@ try {
     }
     await chunk(kind);
     await page.locator(".msg__loading").waitFor({state:"hidden"});
+    assert.equal(await page.locator('.msg--assistant img[src="/app-icon.png"]').count(),0);
+    assert.equal(await page.locator(".execution-process__status.waiting-indicator").count(), kind === "thought" ? 1 : 0);
     if (kind === "text") await page.getByText("开始输出正式回答",{exact:true}).waitFor();
     else await page.locator(".execution-process--running").waitFor();
     await page.clock.runFor(30_000);

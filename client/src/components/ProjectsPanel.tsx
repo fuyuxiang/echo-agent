@@ -116,6 +116,7 @@ export function ProjectsPanel({
   const setActiveProjectId = useProjectsStore((s) => s.setActiveProjectId);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("all");
+  const [templateDisclosure, setTemplateDisclosure] = useState<boolean>();
   const sharedCatalog = useSharedProjectCatalog();
   const [create, setCreate] = useState<CreatePreset | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -456,10 +457,14 @@ export function ProjectsPanel({
           </ResourceList>
       </section>
 
-      <section className="project-section">
-        <div className="project-section__head">
-          <h2 className="project-section__title">从模板创建</h2>
-        </div>
+      <details className="project-section project-templates" open={templateDisclosure ?? items.length === 0}>
+        <summary onClick={event => {
+          event.preventDefault();
+          setTemplateDisclosure(!event.currentTarget.parentElement?.hasAttribute("open"));
+        }}>
+          <span className="project-section__title">从模板创建</span>
+          <span className="resource-collection__count">{FROM_TEMPLATES.length} 个</span>
+        </summary>
         <div className="template-grid">
           {FROM_TEMPLATES.map((t) => (
             <TemplateCard
@@ -471,7 +476,7 @@ export function ProjectsPanel({
             />
           ))}
         </div>
-      </section>
+      </details>
         </div>
       </div>
 

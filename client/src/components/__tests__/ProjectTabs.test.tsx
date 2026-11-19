@@ -500,7 +500,7 @@ describe("项目计划/任务与 Agent 会话闭环", () => {
         picker={{ options: { connectors: [], experts: [], skills: [] }, loading: false, error: null }}
       />,
     );
-    const composer = screen.getByPlaceholderText(/Shift\+Enter/);
+    const composer = screen.getByRole("textbox", { name: "输入问题或任务" });
     fireEvent.change(composer, { target: { value: "请生成发布清单" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -528,7 +528,7 @@ describe("项目计划/任务与 Agent 会话闭环", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /模型 A/ }));
     fireEvent.click(screen.getByRole("option", { name: /模型 B/ }));
-    fireEvent.change(screen.getByPlaceholderText(/Shift\+Enter/), { target: { value: "执行发布" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "输入问题或任务" }), { target: { value: "执行发布" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 

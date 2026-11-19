@@ -159,7 +159,8 @@ describe("ToolSidePanel navigation collapse", () => {
     const props = {open:true,mode:"fileTree" as const,artifacts:[],cwd:"/workspace",sessionId:"single-content-close",
       previewPath:"/workspace/note.md",onClose:vi.fn(),onSelectTool:vi.fn(),onSelectArtifact:vi.fn(),onOpenArtifacts:vi.fn()};
     const view = render(<ToolSidePanel {...props} previewRequestId={1} />);
-    await screen.findByText("Standalone content");
+    // The first preview mounts the lazy workspace and reads the file.
+    await screen.findByText("Standalone content", undefined, { timeout: 4_000 });
     expect(screen.queryByRole("tablist",{name:"工作区文件和预览标签"})).toBeNull();
     fireEvent.click(screen.getByRole("button",{name:"关闭标签 note.md"}));
     expect(screen.queryByText("Standalone content")).toBeNull();
@@ -391,7 +392,8 @@ describe("ToolSidePanel navigation collapse", () => {
     expect(await screen.findByText("preview ready")).toBeInTheDocument();
     expect(textReads).toBe(2);
     expect(onToast).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "用系统应用打开" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "更多文件操作" }));
+    expect(screen.getByRole("menuitem", { name: "用系统应用打开" })).toBeInTheDocument();
   });
 
   it("关联工具入口只打开工具，不再次触发文件选择覆盖工具模式", async () => {

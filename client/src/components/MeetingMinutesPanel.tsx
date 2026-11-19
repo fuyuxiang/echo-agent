@@ -549,7 +549,7 @@ export function MeetingMinutesPanel({
       </aside>}
       <section className="meeting-workbench__detail" aria-label="当前录音">
         {(showCreate || !selected) && !recorder.active ? <div className="meeting-start">
-          <h2>{records.length ? "新建录音" : "记录讨论，专注交流"}</h2><p className="meeting-muted">录音和转写在本机处理，支持中文和英文。</p>
+          <h2>新建录音</h2><p className="meeting-muted">录音和转写在本机处理，支持中文和英文。</p>
           <fieldset className="meeting-start__sources"><legend>录制哪些声音</legend>
             {([
               { id: "microphone" as const, label: "麦克风", detail: "面对面会议、个人口述", Icon: Mic },
@@ -559,7 +559,7 @@ export function MeetingMinutesPanel({
           </fieldset>
           <p className="meeting-muted">{recordingSource === "both" ? "建议佩戴耳机，避免声音重复收录。" : recordingSource === "system" ? "录制当前默认播放设备的声音。" : "使用当前默认麦克风。"}{captureSupport?.detail && ` ${captureSupport.detail}。`}</p>
           {minutesTarget ? <div className="meeting-start__minutes">
-            <label><input type="checkbox" checked={autoMinutes} disabled={busy === "start"} onChange={event => setAutoMinutes(event.target.checked)} /> 录音结束后自动生成会议纪要</label>
+            <label><input type="checkbox" checked={autoMinutes} disabled={busy === "start"} onChange={event => setAutoMinutes(event.target.checked)} /> 结束后生成纪要</label>
             <p className="meeting-muted">开启后会将标题和转写原文发送给 {minutesTarget.modelId}（{minutesTarget.recipient}）。</p>
           </div> : minutesTarget === undefined ? <p className="meeting-muted" role="status">正在检查可用的纪要模型。可以先开始本地录音。</p>
             : <div className="meeting-start__minutes">
@@ -602,7 +602,7 @@ export function MeetingMinutesPanel({
           </div>}
           {!recordingThis && captureIssues.length > 0 && <div className="meeting-workbench__notice meeting-workbench__notice--quality">
             <details>
-              <summary>部分声音可能缺失 · 查看受影响片段</summary>
+              <summary>可能缺少部分声音 · 查看片段</summary>
               <ul className="meeting-capture-issues">
                 {captureIssues.map(issue => {
                   const start = issue.startSample / MEETING_SAMPLE_RATE;

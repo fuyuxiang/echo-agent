@@ -21,7 +21,6 @@ import {
   RefreshCw,
   History,
   LayoutDashboard,
-  MessageSquareText,
   PackageOpen,
   Plus,
   Upload,
@@ -1098,10 +1097,17 @@ export function OrganizationMemoryPanel({
             {workspaceLoaded && (tab === "overview" || tab === "documents" && view === "published") && (librarySummary?.documentKeywordOnly ?? 0) > 0 && <p className="org-workspace-status" role="note">{librarySummary!.documentSemanticPartial === undefined ? `${librarySummary!.documentKeywordOnly} 份文档语义索引尚未完整，仍可搜索、查看和下载。` : `${librarySummary!.documentKeywordOnly} 份文档目前使用关键词检索，语义检索暂不可用。仍可搜索、查看和下载这些文档。`}</p>}
             {workspaceLoaded && (tab === "overview" || tab === "documents" && view === "published") && (librarySummary?.documentSemanticPartial ?? 0) > 0 && <p className="org-workspace-status" role="note">{librarySummary!.documentSemanticPartial} 份文档的部分内容支持语义检索，全文仍可通过关键词搜索，也可查看和下载。</p>}
             {tab === "overview" && <section className="org-overview">
-              <div className="org-workspace__welcome"><div><h3>组织知识管理中心</h3><p>集中管理组织经验、文档和技能，让团队知识助力每个任务。</p><span>{capability}</span></div><img src={organizationHeroImg} width={2172} height={724} alt="组织协作与知识共享插画" draggable={false} /></div>
-              <div className="org-overview__hero"><div className="org-overview__hero-icon"><MessageSquareText size={22} /></div><div><h3>在对话中使用组织知识</h3><p>发起任务时自动选择组织知识，可连续追问，也可以让 Agent 结合组织规则直接执行。</p></div><button className="org-memory__primary" onClick={onStartConversation} disabled={!session.organizationMemoryEnabled || !onStartConversation}>发起对话</button></div>
+              <div className="org-workspace__welcome">
+                <div>
+                  <h3>在对话中使用组织知识</h3>
+                  <p>{capability}</p>
+                </div>
+                <img src={organizationHeroImg} width={2172} height={724} alt="" draggable={false} />
+                <button className="org-memory__primary" onClick={onStartConversation}
+                  disabled={!session.organizationMemoryEnabled || !onStartConversation}>发起对话</button>
+              </div>
               {workspaceLoaded && librarySummary && <><div className="org-overview__metrics" aria-label="组织知识概况"><button type="button" onClick={() => setTab("memories")}><span>已发布经验</span><strong>{librarySummary.memories}</strong><small>{pendingMemoryCount} 条待处理</small></button><button type="button" onClick={() => setTab("documents")}><span>可检索文档</span><strong>{librarySummary.documentReady}</strong><small>{librarySummary.documentProcessing} 条处理中 · 共 {librarySummary.documents} 份文档</small></button><button type="button" onClick={() => setTab("skills")}><span>已启用同步的 Skills</span><strong>{librarySummary.skillInstalled}/{librarySummary.skills}</strong><small>{librarySummary.skillMandatory} 个组织必装</small></button></div>
-                <div className="org-overview__attention"><div><h3>需要关注</h3><p>查看安全检查、发布和文档处理进度。</p></div>{pendingCount === 0 && <div className="org-library__empty">当前没有待处理事项</div>}{pendingMemoryCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingMemoryCount} 条经验待处理</span><button onClick={() => navigatePending("memories")}>查看经验</button></div>}{pendingDocumentCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingDocumentCount} 项文档正在扫描或建立索引</span><button onClick={() => { if (librarySummary.documentPending > 0) navigatePending("documents"); else { setTab("documents"); setResourceViews(previous => ({ ...previous, documents: "published" })); library.update("documents", { filter: "processing" }); } }}>查看文档</button></div>}{pendingSkillCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingSkillCount} 个 Skill 待处理</span><button onClick={() => navigatePending("skills")}>查看 Skills</button></div>}</div></>}
+                <div className="org-overview__attention"><h3>待处理</h3>{pendingCount === 0 && <div className="org-library__empty">暂无待处理事项</div>}{pendingMemoryCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingMemoryCount} 条经验待处理</span><button onClick={() => navigatePending("memories")}>查看经验</button></div>}{pendingDocumentCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingDocumentCount} 项文档正在扫描或建立索引</span><button onClick={() => { if (librarySummary.documentPending > 0) navigatePending("documents"); else { setTab("documents"); setResourceViews(previous => ({ ...previous, documents: "published" })); library.update("documents", { filter: "processing" }); } }}>查看文档</button></div>}{pendingSkillCount > 0 && <div className="org-overview__attention-row"><AlertTriangle size={17} /><span>{pendingSkillCount} 个 Skill 待处理</span><button onClick={() => navigatePending("skills")}>查看 Skills</button></div>}</div></>}
             </section>}
             {workspaceLoaded && tab !== "overview" && <div className={`org-resource-results${activePage.loading ? " is-loading" : ""}`} aria-busy={activePage.loading}>
               {view === "mine" && activePage.items.some(item => "state" in item && item.state === "pending") && <p className="org-submission-guidance" role="note">安全检查通过后，服务器会按组织策略发布；需要人工审核时，请联系组织管理员。</p>}

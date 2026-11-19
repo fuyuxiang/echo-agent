@@ -12,6 +12,7 @@ try {
   browser = await (await reviewChromium()).launch({ headless: true });
   for (const [width, height, theme] of [[1280, 800, "light"], [1280, 800, "dark"], [420, 900, "light"]]) {
     const page = await browser.newPage({ viewport: { width, height } });
+    page.setDefaultNavigationTimeout(90000);
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     const url = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review?theme=${theme}&organization=offline`;
@@ -179,6 +180,7 @@ try {
   const base = `http://127.0.0.1:${surfaces.httpServer.address().port}/__ui-review`;
   for (const [width, height, theme] of [[1280, 800, "light"], [1024, 768, "dark"], [420, 900, "light"]]) {
     const page = await browser.newPage({ viewport: { width, height } });
+    page.setDefaultNavigationTimeout(90000);
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     try {

@@ -166,7 +166,7 @@ try {
     await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
     const samples = await checkModeIcons(page, `${width}-${theme}-${font}`);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
-    assert(await page.locator(".echo-composer-meta .permission-picker__label").isVisible(), "the current mode stays readable below the card");
+    assert(await page.locator(".echo-composer-meta .permission-picker__label").isVisible(), "the current mode stays readable in the composer toolbar");
     assert.deepEqual(errors, []);
     iconEvidence.push({ viewportWidth: width, theme, font, modes: samples });
     await page.close();
@@ -195,6 +195,32 @@ try {
   const rejectBox = await failure.getByRole("button", { name: "拒绝本次", exact: true }).boundingBox();
   assert.ok(rejectBox.y >= 0 && rejectBox.y + rejectBox.height <= 640, "expanded details must not hide the decision controls");
   await failure.close();
+  const promoted = await browser.newPage({ viewport: { width: 1024, height: 740 } });
+  await promoted.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=workbench&state=question`);
+  const answer = promoted.getByRole("textbox", { name: "自定义回答" });
+  await answer.waitFor();
+  const requestApproval = (requestId) => promoted.evaluate(async requestId => {
+    const { usePermissionStore } = await import("/src/stores/permission-store.ts");
+    usePermissionStore.getState().request({
+      requestId, sessionId: "review-conversation", toolCallId: requestId, toolKind: "edit",
+      title: "写入验收报告", rawInput: { path: "/review/验收报告.md" },
+      options: [{ optionId: "allow", kind: "allow", title: "允许一次" }],
+    });
+  }, requestId);
+  await requestApproval("first-review-approval");
+  await promoted.getByRole("button", { name: "待回复", exact: true }).click();
+  await answer.fill("保留这条未提交的答复");
+  await promoted.evaluate(async () => {
+    const { usePermissionStore } = await import("/src/stores/permission-store.ts");
+    usePermissionStore.getState().promote("notification-review-approval", "review-conversation");
+  });
+  assert.equal(await promoted.getByRole("button", { name: "待回复", exact: true }).getAttribute("aria-pressed"), "true");
+  await requestApproval("notification-review-approval");
+  await promoted.waitForFunction(() => document.activeElement?.id === "permission-notification-review-approval");
+  assert.equal(await promoted.getByRole("button", { name: "待审批", exact: true }).getAttribute("aria-pressed"), "true");
+  await promoted.getByRole("button", { name: "待回复", exact: true }).click();
+  assert.equal(await answer.inputValue(), "保留这条未提交的答复");
+  await promoted.close();
   writeFileSync(join(output, "geometry.json"), JSON.stringify(evidence, null, 2));
   writeFileSync(join(output, "mode-icons.json"), JSON.stringify(iconEvidence, null, 2));
   console.log(`Permissions UI passed: ${evidence.length} approval layouts and ${iconEvidence.length} three-mode icon layouts; compact cards, task/status isolation, confirmed mode icons, narrow controls, single approval and failure retry. Screenshots: ${output}`);

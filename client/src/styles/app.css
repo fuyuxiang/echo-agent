@@ -776,6 +776,10 @@
   background: var(--echo-bg-hover);
   color: var(--echo-text-strong);
 }
+.msg__actions--footer .msg__action-btn:is([aria-pressed="true"], [data-active="true"]) {
+  background: var(--echo-control-selected-bg);
+  color: var(--echo-control-selected-fg);
+}
 
 
 .msg__export-note {
@@ -801,9 +805,7 @@
 }
 @media (max-width: 560px) {
   .msg__actions--footer {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 5px;
+    gap: 3px;
   }
 
 }
@@ -1936,8 +1938,9 @@
   color: var(--echo-text-medium);
   font-weight: 600;
 }
-.queue-panel__head > span:first-child { flex: none; white-space: nowrap; }
-.queue-panel__head > .queue-panel__hint { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.queue-panel__title { flex: none; }
+.queue-panel__head > .queue-panel__hint { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; text-wrap: pretty; }
+.queue-panel__head > .queue-panel__hint--interrupt { flex-basis: 100%; }
 .queue-panel__hint {
   font-weight: 400;
   color: var(--echo-text-light);
@@ -2173,21 +2176,39 @@
   border-radius: 3px;
   padding: 0 4px;
 }
-.msg__writing {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  color: var(--echo-text-medium);
-  font-size: 0.75rem;
-  line-height: 24px;
+:is(.msg__loading, .msg__writing, .execution-process) {
+  --echo-process-text: var(--echo-text-medium);
+  --echo-process-font-size: .8125rem;
+  --echo-process-line-height: 1.375rem;
+  --echo-process-gap: 7px;
+  --echo-process-detail-gap: 6px;
 }
+.msg-progress-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0 var(--echo-process-gap);
+  min-height: 30px;
+  padding-block: 4px;
+  color: var(--echo-process-text);
+  font: inherit;
+  font-size: var(--echo-process-font-size);
+  font-weight: 400;
+  line-height: var(--echo-process-line-height);
+}
+.msg__writing { margin-top: 8px; }
+.execution-process__status,
 .msg__writing > span {
+  flex: none;
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--echo-brand);
-  animation: processStatusPulse 1.4s ease-in-out infinite;
+  background: var(--echo-text-tertiary);
+}
+.msg-progress-row .waiting-indicator,
+.execution-process__status,
+.msg__writing > span {
+  align-self: flex-start;
+  margin-block-start: calc((var(--echo-process-line-height) - 6px) / 2);
 }
 /* 真实状态保持主层级，低频陪伴文案在下方独立展示。 */
 .msg__loading {
@@ -2195,20 +2216,14 @@
   flex-direction: column;
   align-items: flex-start;
   min-width: 0;
-  line-height: 25px;
 }
 .msg__loading-status {
-  display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 8px;
   min-width: 0;
   max-width: 100%;
 }
 .msg__loading-main {
-  flex: 0 0 auto;
-  font-size: 0.875rem;
-  font-weight: 500;
+  min-width: 0;
 }
 .msg__loading-context {
   display: inline-flex;
@@ -2217,55 +2232,23 @@
   gap: 0 7px;
   min-width: 0;
   max-width: 100%;
-  color: var(--echo-text-weak);
-  font-size: 0.75rem;
 }
 .msg__loading-background-hint {
   overflow-wrap: anywhere;
 }
 .msg__loading-tip {
-  margin: 4px 0 0;
+  margin: var(--echo-process-detail-gap) 0 0;
   max-width: 100%;
-  color: var(--echo-text-medium);
-  font-size: 0.8125rem;
-  line-height: 1.6;
+  color: var(--echo-process-text);
+  font-size: var(--echo-process-font-size);
+  line-height: var(--echo-process-line-height);
   overflow-wrap: anywhere;
-}
-/* 文字扫光：横向渐变裁剪到文字，亮带随 background-position 左右扫过，
-   形成「文字在 loading」的观感。移植自 echo-chat-ui 的 shining-text mixin
-   （base 26% / highlight 55% 两档透明度）。基色取主题主文字色——浅色主题
-   近黑、深色主题近白——经 color-mix 降透明度后呈灰字 + 一道更亮的扫光带。 */
-.echo-shining-text {
-  position: relative;
-  width: fit-content;
-  background: linear-gradient(
-    110deg,
-    color-mix(in srgb, var(--echo-text-strong, #1a1a1a) 26%, transparent) 0%,
-    color-mix(in srgb, var(--echo-text-strong, #1a1a1a) 26%, transparent) 35%,
-    color-mix(in srgb, var(--echo-text-strong, #1a1a1a) 55%, transparent) 50%,
-    color-mix(in srgb, var(--echo-text-strong, #1a1a1a) 26%, transparent) 65%,
-    color-mix(in srgb, var(--echo-text-strong, #1a1a1a) 26%, transparent) 100%
-  );
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  animation: echo-shining-sweep 2.2s linear infinite;
-}
-@keyframes echo-shining-sweep {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
 }
 /* Task meaning and progress remain readable before opening execution records. */
 .execution-process {
   width: 100%;
   max-width: 100%;
-  margin: 2px 0 14px;
+  margin: 0 0 var(--echo-process-detail-gap);
   min-width: 0;
   box-sizing: border-box;
 }
@@ -2281,27 +2264,6 @@
 }
 .execution-turn__label { font-weight: 500; }
 .execution-turn p { margin: 0; min-width: 0; }
-.execution-process__overview {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-}
-.execution-process__status {
-  align-self: flex-start;
-  width: 7px;
-  height: 7px;
-  margin-top: 9px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--echo-text-tertiary);
-}
-.execution-process--running .execution-process__status {
-  background: var(--echo-color-text-brand-default);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--echo-brand) 10%, transparent);
-  animation: processStatusPulse 1.4s ease-in-out infinite;
-}
-.execution-process--complete .execution-process__status { background: var(--echo-color-text-success-default); }
 .execution-process--failed .execution-process__status { background: var(--echo-color-text-error-default); }
 .execution-process--partial .execution-process__status,
 .execution-process--attention .execution-process__status,
@@ -2311,26 +2273,17 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 2px 10px;
-  flex: 1;
+  gap: 0 var(--echo-process-gap);
   min-width: 0;
 }
 .execution-process__title {
   min-width: 0;
-  color: var(--echo-text-strong);
-  font-size: .875rem;
-  font-weight: 400;
-  line-height: 1.7;
   overflow-wrap: anywhere;
 }
 .execution-process__meta {
-  color: var(--echo-text-tertiary);
-  font-size: .75rem;
-  line-height: 1.7;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.execution-process__header,
 .execution-process__latest {
   display: inline-flex;
   align-items: center;
@@ -2348,52 +2301,38 @@
   white-space: nowrap;
   cursor: pointer;
 }
-.execution-process__overview.execution-process__header {
-  display: flex;
-  align-items: baseline;
-  justify-content: flex-start;
-  gap: 10px;
+.execution-process__header {
   width: 100%;
-  padding: 2px 4px 2px 0;
+  padding-inline: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
   text-align: left;
-  white-space: normal;
+  cursor: pointer;
 }
-.execution-process__disclosure {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex: none;
-  margin-left: auto;
-  white-space: nowrap;
-}
-.execution-process__header:hover,
+.execution-process--compact .execution-process__header { padding-inline-start: calc(6px + var(--echo-process-gap)); }
+.execution-process__header:hover { background: var(--echo-bg-hover); }
 .execution-process__latest:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
-.execution-process__header:focus-visible,
+.execution-process__header:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: -2px; }
 .execution-process__latest:focus-visible,
 .execution-process__activity-group:focus-visible {
   outline: 2px solid var(--echo-brand);
   outline-offset: 2px;
 }
 .execution-process__chevron {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   flex: none;
-  width: 1em;
-  height: 1em;
-  font-size: 1.125rem;
-  line-height: 1;
+  margin-block-start: calc((var(--echo-process-line-height) - 12px) / 2);
   transition: transform .15s ease;
 }
-.execution-process__chevron--expand { transform: rotate(90deg); }
-.execution-process__chevron--open { transform: rotate(-90deg); }
+.execution-process__header[aria-expanded="true"] .execution-process__chevron { transform: rotate(180deg); }
 .execution-process__live {
   min-width: 0;
-  margin: 4px 0 0 3px;
-  padding: 1px 0 2px 13px;
-  border-left: 1px solid var(--echo-border-subtle, var(--echo-border-default));
+  margin-top: var(--echo-process-detail-gap);
+  color: var(--echo-process-text);
+  font-size: var(--echo-process-font-size);
+  line-height: var(--echo-process-line-height);
 }
-.execution-process__live .execution-process__excerpt { margin: 1px 4px 7px; }
+.execution-process__live .execution-process__excerpt { margin: 0 0 4px; }
 .execution-process__activities { margin: 0; padding: 0; list-style: none; }
 .execution-process__activity { min-width: 0; margin: 2px 0; }
 .execution-process__activity-group {
@@ -2407,9 +2346,8 @@
   border: 0;
   border-radius: 5px;
   background: transparent;
-  color: var(--echo-text-medium);
+  color: inherit;
   font: inherit;
-  font-size: .8125rem;
   text-align: left;
   cursor: pointer;
 }
@@ -2426,8 +2364,10 @@
   padding: 4px;
   border: 0;
   border-radius: 5px;
-  font-size: .8125rem;
-  color: var(--echo-text-medium);
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
 }
 .execution-process .toolcall--activity:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 .toolcall__activity-icon { display: inline-flex; align-items: center; flex: none; color: var(--echo-text-medium); }
@@ -2456,9 +2396,6 @@
 .execution-process__excerpt { margin: 4px 0 0 17px; min-width: 0; }
 .execution-process__excerpt p {
   margin: 0;
-  color: var(--echo-text-medium);
-  font-size: .8125rem;
-  line-height: 1.7;
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -2469,6 +2406,7 @@
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
+.execution-process__body .execution-process__metrics { margin: 0 4px 6px; }
 .execution-process__waiting-note {
   margin: 8px 0 0 17px;
   padding: 8px 10px;
@@ -2522,16 +2460,30 @@
 .execution-process__progress .markdown-body { font-size: inherit; }
 .execution-process__tool-group { margin: 6px 0; }
 .toolcall__status-label { flex: none; color: var(--echo-text-medium); font-size: .75rem; }
-.execution-notice { margin: 12px 0 4px; padding: 10px 12px; border-radius: 8px; background: var(--echo-bg-secondary); color: var(--echo-text-strong); font-size: .8125rem; line-height: 1.6; overflow-wrap: anywhere; }
-.execution-notice--error { border-left: 2px solid var(--echo-status-error); }
-.execution-notice--warning { border-left: 2px solid var(--echo-color-text-warning-default); }
-.execution-notice__copy strong { font-weight: 500; }
-.execution-notice__copy p, .execution-notice__action-error { margin: 3px 0 0; color: var(--echo-text-medium); }
-.execution-notice__actions { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 6px; }
-.execution-notice__actions button { border: 0; background: transparent; padding: 3px 0; color: var(--echo-color-text-brand-default); font: inherit; cursor: pointer; }
-.execution-notice__actions button:hover { text-decoration: underline; }
-.execution-notice__actions button:disabled { opacity: .5; cursor: not-allowed; }
-.execution-notice__actions button:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 2px; border-radius: 3px; }
+.execution-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 100%;
+  margin: 8px 0 4px;
+  color: var(--echo-text-strong);
+  font-size: .8125rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.execution-notice__icon { flex: none; margin-top: 8px; color: var(--echo-text-medium); }
+.execution-notice--error .execution-notice__icon { color: var(--echo-color-text-error-default); }
+.execution-notice--warning .execution-notice__icon { color: var(--echo-color-text-warning-default); }
+.execution-notice__content { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; min-width: 0; }
+.execution-notice__copy { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 8px; min-width: 0; padding-block: 3px; }
+.execution-notice__copy strong { font-weight: 550; }
+.execution-notice__copy p, .execution-notice__action-error { margin: 0; color: var(--echo-text-medium); }
+.execution-notice__actions { display: flex; flex-wrap: wrap; gap: 2px; }
+.execution-notice__actions .echo-button { --button-fg: var(--echo-text-medium); padding-inline: 6px; font-weight: 400; }
+.execution-notice__actions .execution-notice__recovery { --button-fg: var(--echo-text-strong); font-weight: 550; }
+.execution-notice__recovery .echo-button__content { gap: 4px; }
+.execution-notice__recovery .echo-button__content > svg { width: 13px; height: 13px; }
+.execution-notice__action-error { flex-basis: 100%; }
 .execution-process__reasoning-body .markdown-body > :last-child {
   margin-bottom: 0;
 }
@@ -3532,12 +3484,28 @@ button.knowledge-trace__item:hover {
   gap: 8px;
   margin-bottom: 10px;
 }
+.file-preview__bar .topbar-actions { flex: none; }
+.file-preview__more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--echo-radius-control);
+  background: transparent;
+  color: var(--echo-text-medium);
+  cursor: pointer;
+}
+.file-preview__more:hover,
+.file-preview__more[aria-expanded="true"] { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 .file-preview__path {
   flex: 1;
   min-width: 0;
-  font-size: 0.6875rem;
-  font-family: var(--echo-font-code-family);
-  color: var(--echo-text-weak);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--echo-text-strong);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3961,7 +3929,7 @@ button.diff__path {
   overflow: hidden;
   border: 1px solid var(--echo-border-default);
   border-radius: var(--echo-radius-dialog);
-  background: var(--echo-bg-primary);
+  background: var(--echo-surface-raised);
   color: var(--echo-text-strong);
   box-shadow: var(--echo-shadow-modal);
   box-sizing: border-box;
@@ -5042,10 +5010,6 @@ button.diff__path {
   display: flex;
   flex-direction: column;
 }
-/* EchoAgent: 首页卡片底行高56、底部padding 0 → 卡片高138;meta行在卡片外下方(透明背景,间距4) */
-.echo-composer--home {
-  padding-bottom: 0;
-}
 .echo-composer--disabled {
   cursor: pointer;
 }
@@ -5054,11 +5018,10 @@ button.diff__path {
   cursor: default;
 }
 .echo-composer__setup-hint {
-  position: absolute;
-  inset: 0;
+  min-height: 44px;
   display: flex;
   align-items: center;
-  padding: 0 16px;
+  padding: 6px 2px;
   font-size: 0.875rem;
   color: var(--echo-text-tertiary);
   cursor: pointer;
@@ -5082,19 +5045,6 @@ button.diff__path {
 }
 .echo-composer__input:disabled {
   cursor: pointer;
-}
-.echo-composer__footer {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 32px;
-  padding: 0;
-}
-.echo-composer--home .echo-composer__footer {
-  height: 56px;
-}
-.echo-composer__spacer {
-  flex: 1;
 }
 /* Expert badge in composer footer (mirrors EchoAgent's input-area expert tag) */
 .echo-composer__expert-badge {
@@ -6038,16 +5988,6 @@ button.diff__path {
 .echo-composer__send--now {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--echo-brand) 14%, transparent);
 }
-.echo-composer-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0 4px;
-  min-height: 32px;
-  margin-top: 4px;
-  padding: 0 12px;
-  background: transparent;
-}
 .echo-composer-meta__value {
   display: inline-flex;
   align-items: center;
@@ -6069,7 +6009,6 @@ button.diff__path {
   font-size: 0.75rem;
   overflow-wrap: anywhere;
 }
-.echo-composer-meta > .automation-boundary-notice { flex: 0 0 100%; }
 .echo-composer-meta .permission-picker__trigger { min-height: 32px; }
 .echo-composer-meta__btn {
   display: flex;
@@ -8079,13 +8018,10 @@ button.diff__path {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .echo-shining-text,
   .toolcall__status-mark--in_progress,
-  .execution-process--running .execution-process__status,
   .sidebar__conv-status--working .sidebar__conv-status-dot,
   .pd-session-status--running .pd-session-status__dot,
-  .msg__loading-tip > span:last-child,
-  .msg__writing > span {
+  .msg__loading-tip > span:last-child {
     animation: none;
   }
   .execution-process__chevron,

@@ -59,7 +59,8 @@ describe("MessageItem user attachments", () => {
     renderMessage();
     fireEvent.click(screen.getByRole("button", { name: /打开附件 AI数据集平台/ }));
     await screen.findByRole("dialog", { name: "AI数据集平台-数据回流方案.docx" });
-    fireEvent.click(screen.getByRole("button", { name: "用系统应用打开" }));
+    fireEvent.click(screen.getByRole("button", { name: "更多文件操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "用系统应用打开" }));
     await waitFor(() => {
       expect(openLocalPath).toHaveBeenCalledWith(
         "/tmp/AI数据集平台-数据回流方案.docx",

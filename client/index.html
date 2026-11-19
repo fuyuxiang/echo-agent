@@ -47,7 +47,7 @@
       }
 
       body {
-        background-color: var(--echo-surface-canvas, #FAFAFA);
+        background-color: var(--echo-surface-canvas, #F8F9FB);
         color: var(--echo-text-strong, #20242E);
         font-family: var(
           --vscode-font-family,
@@ -60,29 +60,32 @@
       }
 
       html[data-theme="dark"] body {
-        background-color: var(--echo-surface-canvas, #151619);
-        color: var(--echo-text-strong, #E8ECF3);
+        background-color: var(--echo-surface-canvas, #16171A);
+        color: var(--echo-text-strong, #EEF0F4);
       }
 
       .echo-startup-fallback {
         height: 100%;
         display: grid;
         place-items: center;
-        background: var(--echo-surface-canvas, #FAFAFA);
-        color: var(--echo-text-medium, #5F6877);
+        background: var(--echo-surface-canvas, #F8F9FB);
+        color: var(--echo-text-medium, #505A68);
         font-size: 14px;
       }
 
       html[data-theme="dark"] .echo-startup-fallback {
-        background: var(--echo-surface-canvas, #151619);
-        color: var(--echo-text-medium, #B2BBCB);
+        background: var(--echo-surface-canvas, #16171A);
+        color: var(--echo-text-medium, #B9C0CA);
       }
 
       ::-webkit-scrollbar {
-        width: 10px;
-        height: 10px;
+        width: 8px;
+        height: 8px;
       }
       ::-webkit-scrollbar-thumb {
+        border: 2px solid transparent;
+        border-radius: 8px;
+        background-clip: padding-box;
         background-color: var(
           --vscode-scrollbarSlider-background,
           var(--echo-scrollbar-thumb, rgba(100, 100, 100, 0.4))

@@ -27,7 +27,7 @@ describe("HomePage", () => {
     render(<HomePage {...base} />);
     expect(screen.getByRole("heading", { name: "今天想完成什么？" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "输入问题或任务" }))
-      .toHaveAttribute("placeholder", "从一个问题、一个想法，或一份文件开始");
+      .toHaveAttribute("placeholder", "描述你的任务");
     expect(screen.getByRole("textbox")).toHaveValue("");
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(document.querySelector(".home__description")).toBeNull();
@@ -53,17 +53,17 @@ describe("HomePage", () => {
       fireEvent.click(await screen.findByRole("menuitem", { name: "添加文件" }));
     };
     await addFile();
-    await waitFor(() => expect(input).toHaveAttribute("placeholder", "想如何处理这份文件？"));
+    await waitFor(() => expect(input).toHaveAttribute("placeholder", "如何处理此文件？"));
     await addFile();
-    await waitFor(() => expect(input).toHaveAttribute("placeholder", "想基于这些文件完成什么？"));
+    await waitFor(() => expect(input).toHaveAttribute("placeholder", "这些文件用来做什么？"));
     expect(screen.getAllByRole("button", { name: "移除附件" })).toHaveLength(2);
     expect(input).toHaveValue("保留我自己的需求");
     expect(useSessionsStore.getState().drafts[HOME_DRAFT_KEY]).toBe("保留我自己的需求");
 
     fireEvent.click(screen.getAllByRole("button", { name: "移除附件" })[1]);
-    expect(input).toHaveAttribute("placeholder", "想如何处理这份文件？");
+    expect(input).toHaveAttribute("placeholder", "如何处理此文件？");
     fireEvent.click(screen.getByRole("button", { name: "移除附件" }));
-    expect(input).toHaveAttribute("placeholder", "从一个问题、一个想法，或一份文件开始");
+    expect(input).toHaveAttribute("placeholder", "描述你的任务");
     expect(input).toHaveFocus();
     expect(input).toHaveValue("保留我自己的需求");
     expect(base.onSend).not.toHaveBeenCalled();
@@ -73,25 +73,25 @@ describe("HomePage", () => {
     saveDraftAttachments(HOME_DRAFT_KEY, ["/work/brief.txt", "/work/notes.md"]);
     const onSend = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     const first = render(<HomePage {...base} onSend={onSend} />);
-    expect(screen.getByRole("textbox")).toHaveAttribute("placeholder", "想基于这些文件完成什么？");
+    expect(screen.getByRole("textbox")).toHaveAttribute("placeholder", "这些文件用来做什么？");
     first.unmount();
     render(<HomePage {...base} onSend={onSend} />);
     const input = screen.getByRole("textbox");
-    expect(input).toHaveAttribute("placeholder", "想基于这些文件完成什么？");
+    expect(input).toHaveAttribute("placeholder", "这些文件用来做什么？");
     expect(screen.getAllByRole("button", { name: "移除附件" })).toHaveLength(2);
 
     // 文件也可以作为任务起点，占位提示不能混入发送正文。
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
     expect(onSend).toHaveBeenCalledExactlyOnceWith("请分析附件。", ["/work/brief.txt", "/work/notes.md"]);
-    expect(input).toHaveAttribute("placeholder", "想基于这些文件完成什么？");
+    expect(input).toHaveAttribute("placeholder", "这些文件用来做什么？");
     expect(draftAttachments(HOME_DRAFT_KEY)).toHaveLength(2);
 
     fireEvent.change(input, { target: { value: "整理成项目要点" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(input).toHaveValue(""));
     expect(onSend).toHaveBeenLastCalledWith("整理成项目要点", ["/work/brief.txt", "/work/notes.md"]);
-    expect(input).toHaveAttribute("placeholder", "从一个问题、一个想法，或一份文件开始");
+    expect(input).toHaveAttribute("placeholder", "描述你的任务");
     expect(draftAttachments(HOME_DRAFT_KEY)).toEqual([]);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
   });
@@ -113,7 +113,7 @@ describe("HomePage", () => {
     rerender(<HomePage {...base} apiReady onOpenSettings={onOpenSettings} />);
     expect(screen.getByRole("heading", { name: "今天想完成什么？" })).toBeInTheDocument();
     expect(screen.getByRole("textbox")).toBeEnabled();
-    expect(screen.getByRole("textbox")).toHaveAttribute("placeholder", "从一个问题、一个想法，或一份文件开始");
+    expect(screen.getByRole("textbox")).toHaveAttribute("placeholder", "描述你的任务");
     expect(screen.queryByText("正在同步可用模型…")).toBeNull();
   });
 

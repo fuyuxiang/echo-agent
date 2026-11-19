@@ -29,10 +29,10 @@ function renderMessage(
   );
 }
 
-function openReplyItem(name: string, click = true) {
+function openReplyItem(name: string) {
   fireEvent.click(screen.getByRole("button", { name: "更多回复操作" }));
   const item = screen.getByRole("menuitem", { name });
-  if (click) fireEvent.click(item);
+  fireEvent.click(item);
   return item;
 }
 
@@ -99,14 +99,14 @@ it.each([
   });
 
 describe("assistant message actions", () => {
-  it("回复菜单可以从当前轮次在新对话中继续，并说明禁用原因", () => {
+  it("回复操作栏可以从当前轮次在新对话中继续，并说明禁用原因", () => {
     const onContinue = vi.fn();
     const view = renderMessage(completedMessage, {onContinueInNewConversation:onContinue});
-    openReplyItem("在新对话中继续");
+    fireEvent.click(screen.getByRole("button", { name: "在新对话中继续" }));
     expect(onContinue).toHaveBeenCalledOnce();
     view.unmount();
     renderMessage(completedMessage, {onContinueInNewConversation:onContinue,continuationDisabled:true,continuationDisabledReason:"等待执行结束"});
-    const item = openReplyItem("在新对话中继续", false);
+    const item = screen.getByRole("button", { name: "在新对话中继续" });
     expect(item).toBeDisabled();
     expect(item).toHaveAttribute("title","等待执行结束");
   });
@@ -126,12 +126,17 @@ describe("assistant message actions", () => {
   it("真实消息反馈关闭重开保留草稿，并使用重新选择的方向提交", () => {
     useFeedbackStore.getState().__replace({});
     renderMessage(completedMessage, { latest: true, sessionId: "feedback-session" });
-    fireEvent.click(screen.getByRole("button", {name:"赞"}));
+    const up = screen.getByRole("button", { name: "赞", pressed: false });
+    fireEvent.click(up);
+    expect(up).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByLabelText("4 星"));
     fireEvent.change(screen.getByPlaceholderText("补充说明(可选)"), { target: { value: "这段备注仍可继续编辑" } });
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    fireEvent.click(screen.getByRole("button", {name:"踩"}));
+    const down = screen.getByRole("button", { name: "踩", pressed: false });
+    fireEvent.click(down);
+    expect(down).toHaveAttribute("aria-pressed", "true");
+    expect(up).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByText(/这条回复有待改进/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText("补充说明(可选)")).toHaveValue("这段备注仍可继续编辑");
     expect(screen.getByText("较好")).toBeInTheDocument();
@@ -139,6 +144,9 @@ describe("assistant message actions", () => {
     expect(useFeedbackStore.getState().getRating("feedback-session", completedMessage.id)).toMatchObject({
       rating: "down", stars: 4, note: "这段备注仍可继续编辑",
     });
+    fireEvent.click(down);
+    expect(down).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("dialog", { name: "消息反馈" })).toBeNull();
   });
 
   it("把完成后的操作栏放在回复正文之后", () => {
@@ -147,7 +155,8 @@ describe("assistant message actions", () => {
     const body = container.querySelector(".msg__body");
     const actions = screen.getByRole("group", { name: "回复操作" });
 
-    expect(header?.querySelector(".msg__actions")).toBeNull();
+    expect(header).toBeNull();
+    expect(screen.getByText("EchoAgent", { exact: true })).toHaveClass("sr-only");
     expect(body).not.toBeNull();
     expect(body!.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(actions).toHaveClass("msg__actions--footer", "msg__actions--latest");
@@ -159,13 +168,15 @@ describe("assistant message actions", () => {
       configurable: true,
       value: { writeText },
     });
-    renderMessage();
+    renderMessage(completedMessage, { sessionId: "reply-menu-test", onContinueInNewConversation: vi.fn() });
 
     const trigger = screen.getByRole("button", { name: "更多回复操作" });
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     const plainItem = screen.getByRole("menuitem", { name: "复制纯文本" });
     const markdownItem = screen.getByRole("menuitem", { name: "复制 Markdown" });
+    expect(within(screen.getByRole("menu", { name: "当前回复操作" })).getAllByRole("menuitem")
+      .map(item => item.textContent)).toEqual(["复制纯文本", "复制 Markdown", "导出本条回复为办公文件"]);
     expect(plainItem).toHaveFocus();
 
     fireEvent.keyDown(plainItem, { key: "ArrowDown" });
@@ -272,7 +283,7 @@ describe("assistant message actions", () => {
     const { rerender } = renderMessage(completedMessage, { onRetry, sessionId: "retry-actions" });
     const actions = screen.getByRole("group", { name: "回复操作" });
     expect(within(actions).getAllByRole("button").map(button => button.getAttribute("aria-label"))).toEqual([
-      "复制纯文本", "朗读回复", "重新生成", "赞", "踩", "更多回复操作",
+      "复制纯文本", "朗读回复", "赞", "踩", "重新生成", "更多回复操作",
     ]);
     expect(screen.getByRole("button", { name: "重新生成" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "更多回复操作" }));
@@ -335,15 +346,18 @@ describe("assistant message actions", () => {
 });
 
 describe("progressive reply actions preserve business scope", () => {
-  it("更多菜单朗读后，停止控制直接可用", async () => {
+  it("同一个回复操作栏按钮可以开始和停止朗读", async () => {
     const { registerTtsProvider, resetVoiceRegistry } = await import("@/lib/voice-contract");
     const stop = vi.fn(), speak = vi.fn(() => stop);
     registerTtsProvider({id:"test-reply-tts",isAvailable:()=>true,speak});
     renderMessage();
-    fireEvent.click(screen.getByRole("button",{name:"朗读回复"}));
+    const speakButton = screen.getByRole("button", { name: "朗读回复" });
+    fireEvent.click(speakButton);
     expect(speak).toHaveBeenCalledWith("第一段 第二段", "zh-CN", expect.anything());
-    fireEvent.click(screen.getByRole("button",{name:"停止朗读"}));
+    expect(screen.getByRole("button", { name: "停止朗读" })).toBe(speakButton);
+    fireEvent.click(speakButton);
     expect(stop).toHaveBeenCalledOnce();
+    expect(speakButton).toHaveAccessibleName("朗读回复");
     resetVoiceRegistry();
   });
   it("办公导出只导出当前回复并登记到当前会话，忙碌状态直接可见", async () => {

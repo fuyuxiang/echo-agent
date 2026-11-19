@@ -150,7 +150,7 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 8px;
-  padding: 24px 12px;
+  padding: 14px 10px;
   color: var(--echo-text-tertiary);
   font-size: .8125rem;
   line-height: 1.6;
@@ -158,9 +158,9 @@
   overflow-wrap: anywhere;
 }
 .sidebar__empty-state strong {
-  color: var(--echo-text-strong);
-  font-size: .875rem;
-  font-weight: 600;
+  color: var(--echo-text-medium);
+  font-size: .8125rem;
+  font-weight: 500;
 }
 
 .sidebar__section-label {

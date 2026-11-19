@@ -95,11 +95,12 @@ describe("waiting companion lifecycle", () => {
     expect(view.container.querySelector(".execution-process--running")).not.toBeNull();
   });
 
-  it("等待模型时显示应用图标与呼吸状态，等待用户、出错和完成时保持静止", () => {
+  it("初次等待只显示状态圆点，等待用户、出错和完成时退出", () => {
     const renderMessage = (props = {}) => <ThemeProvider><MessageItem message={waiting} streaming {...props} /></ThemeProvider>;
     const view = render(renderMessage());
-    expect(view.container.querySelector(".msg__avatar img")).toHaveAttribute("src", "/app-icon.png");
-    expect(view.container.querySelector(".echo-mark--active")).not.toBeNull();
+    expect(view.container.querySelector(".msg__loading-status .waiting-indicator")).toHaveAttribute("aria-hidden", "true");
+    expect(view.container.querySelector('img[src="/app-icon.png"]')).toBeNull();
+    expect(view.container.querySelector(".msg__header")).toBeNull();
     for (const props of [
       { waitingForModel: false },
       { runtimeError: "模型连接中断" },
@@ -107,14 +108,14 @@ describe("waiting companion lifecycle", () => {
       { message: { ...waiting, complete: true } },
     ]) {
       view.rerender(renderMessage(props));
-      expect(view.container.querySelector(".echo-mark")).not.toBeNull();
-      expect(view.container.querySelector(".echo-mark--active")).toBeNull();
+      expect(view.container.querySelector(".waiting-indicator, .msg__loading")).toBeNull();
+      expect(view.container.querySelector('img[src="/app-icon.png"]')).toBeNull();
     }
   });
 
   it("自定义作者保留首字头像", () => {
     const view = render(<ThemeProvider><MessageItem message={waiting} streaming authorName="产品专家" /></ThemeProvider>);
     expect(view.container.querySelector(".msg__avatar")).toHaveTextContent("产");
-    expect(view.container.querySelector(".echo-mark")).toBeNull();
+    expect(view.container.querySelector('img[src="/app-icon.png"]')).toBeNull();
   });
 });

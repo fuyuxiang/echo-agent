@@ -28,7 +28,7 @@ export function PromptPredictionSettings() {
     <div className="settings-row settings-row--comfortable">
       <div className="settings-row__label settings-row__label--stacked">
         <span className="settings-row__name">显示输入建议</span>
-        <span className="settings-row__description">回复结束后预测下一条消息。按 Tab 填入草稿，编辑后再发送；生成建议可能产生额外模型用量。</span>
+        <span className="settings-row__description">回复结束后预测下一条消息。按 Tab、右方向键或 Enter 填入草稿，编辑后再发送。生成建议可能产生额外模型用量。</span>
       </div>
       <label className="sk-toggle">
         <input type="checkbox" role="switch" aria-label="显示输入建议" checked={enabled}

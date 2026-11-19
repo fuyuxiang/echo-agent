@@ -904,3 +904,27 @@
     flex-direction: column;
   }
 }
+
+
+.model-selector__search {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin: 2px 4px 4px;
+  padding: 0 8px;
+  border: 1px solid var(--echo-border-control);
+  border-radius: var(--echo-radius-control);
+  color: var(--echo-text-medium);
+}
+.model-selector__search:focus-within { border-color: var(--echo-focus-ring); }
+.model-selector__search input {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--echo-size-control-sm);
+  border: 0;
+  background: transparent;
+  color: var(--echo-text-strong);
+  font: inherit;
+  font-size: var(--echo-control-font-size);
+}

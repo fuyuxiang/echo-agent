@@ -1,5 +1,5 @@
 import { Select } from "@/components/Select";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { TableKit } from '@tiptap/extension-table';
@@ -18,6 +18,7 @@ import type { DocumentExportReceipt } from '@/lib/document-export';
 import { useSessionsStore } from '@/stores/sessions-store';
 import type { SessionArtifact } from '@/lib/session-artifacts';
 import OfficeWorkbench from './office/OfficeWorkbench';
+import type { FilePreviewAction } from './FilePreviewMenu';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
@@ -31,7 +32,7 @@ export interface DocumentWorkbenchProps {
   onSourceMissingChange?: (missing:boolean)=>void;
   onReload?: ()=>void;
   agentDisabled?: boolean;
-  previewActions?: ReactNode;
+  previewActions?: readonly FilePreviewAction[];
 }
 
 function documentStatus(state:DocumentSnapshot):string {
@@ -168,7 +169,7 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
           {onAskAgent && <button type="button" disabled={locked||agentDisabled||state.phase==='conflict'} onMouseDown={event=>event.preventDefault()} onClick={()=>void askAgent()}><Sparkles size={14}/>让 Agent 修改{selection.current?'选中内容':''}</button>}
           <button type="button" disabled={locked||state.publishing||state.phase==='conflict'||record.externalChange} onClick={()=>void run(()=>session.publish())}>{state.syncError?'重试更新 Word':'保存到 Word'}</button>
         </>}
-        <ActionMenu busy={locked||state.phase==='conflict'} label="导出文档" menuLabel="文档导出格式" trigger={<Download size={15}/>}>
+        <ActionMenu busy={locked||state.phase==='conflict'} label="导出文档" menuLabel="文档导出格式" menuZIndex="var(--echo-layer-dialog-popover)" trigger={<Download size={15}/>}>
           {({close})=><>{(['docx','pdf'] as const).map(format=><button type="button" role="menuitem" disabled={locked||state.phase==='conflict'} className="topbar-actions__item" key={format} onClick={()=>{close(true);void exportDocument(format);}}>另存为 {format==='docx'?'Word':'PDF'}</button>)}</>}
         </ActionMenu>
         <button type="button" aria-label="文档版本历史" aria-expanded={showHistory} onClick={()=>setShowHistory(value=>!value)}><History size={15}/></button>
@@ -219,7 +220,7 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
       <button type="button" aria-label="撤销编辑" data-tip="撤销" disabled={!editor.can().undo()} onClick={()=>editor.chain().focus().undo().run()}><Undo2 size={15}/></button>
       <button type="button" aria-label="重做编辑" data-tip="重做" disabled={!editor.can().redo()} onClick={()=>editor.chain().focus().redo().run()}><Redo2 size={15}/></button>
       <button type="button" aria-label="插入表格" data-tip="插入表格" onClick={()=>editor.chain().focus().insertTable({rows:3,cols:3,withHeaderRow:true}).run()}><Table2 size={15}/></button>
-      {editor.isActive('table') && <ActionMenu busy={locked} label="表格操作" menuLabel="表格编辑操作" trigger={<Plus size={15}/>}>
+      {editor.isActive('table') && <ActionMenu busy={locked} label="表格操作" menuLabel="表格编辑操作" menuZIndex="var(--echo-layer-dialog-popover)" trigger={<Plus size={15}/>}>
         {({close})=><>{[['在下方添加行',()=>editor.chain().focus().addRowAfter().run()],['在右侧添加列',()=>editor.chain().focus().addColumnAfter().run()],['删除当前行',()=>editor.chain().focus().deleteRow().run()],['删除当前列',()=>editor.chain().focus().deleteColumn().run()],['删除整个表格',()=>editor.chain().focus().deleteTable().run()]].map(([label,action])=><button type="button" role="menuitem" className="topbar-actions__item" key={String(label)} onClick={()=>{close();(action as ()=>void)();}}>{String(label).startsWith('删除')?<Trash2 size={14}/>:<Plus size={14}/>}{String(label)}</button>)}</>}
       </ActionMenu>}
     </fieldset>}
@@ -233,6 +234,7 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
     return <section className="document-workbench document-workbench--unified" aria-label="文档工作区">
       <OfficeWorkbench filename={path.split(/[\\/]/).pop() ?? path} path={path} content={content} active={active}
         controls={workbenchActions} notices={workbenchNotices} fileActions={previewActions} onReload={onReload}
+        reloadDisabled={locked || editingDocument || state.hasUnsavedChanges}
         sourceRevision={`${record?.fileSha256 ?? ''}:${state.opened?.fileSha256 ?? ''}`}
         loadContent={async () => {
           const data = await invoke<string>('read_file_base64', { path: state.opened?.path ?? path, maxBytes: 8 * 1024 * 1024 });

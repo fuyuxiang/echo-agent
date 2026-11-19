@@ -144,12 +144,13 @@ final class ProgressReview: NSObject, WKNavigationDelegate, WKScriptMessageHandl
             await wait(() => !document.querySelector('.execution-process__body'));
             const answering = [...completed,{kind:'text',phase:'final_answer',streamId:'answer-1',text:'这是已经核对好的最终答复。'}];
             set(answering);
-            await wait(() => document.querySelector('.msg__writing'), 'the streaming answer');
+            await wait(() => document.querySelector('.execution-process__title[role=status]')?.textContent === '正在生成回复', 'the streaming answer');
             assert(entry.getAttribute('aria-expanded') === 'false', 'The answer should collapse records when following');
             assert(!document.querySelector('.execution-process__excerpt'), 'Answer must retire progress excerpt');
             assert(document.querySelectorAll('.msg--assistant [role=status]').length === 1, 'Announce generation once');
             set(answering,true);
-            await wait(() => document.querySelector('.execution-process__title')?.textContent === '本次处理已结束', 'the completed process summary');
+            await wait(() => document.querySelector('.execution-process--compact'), 'the completed process disclosure');
+            assert(!document.querySelector('.execution-process__title, .execution-process__metrics'), 'Completion keeps diagnostics in the process record');
             assert(!document.querySelector('.execution-process--running, .msg__writing'), 'Completion must remove running feedback');
             report({action:'done',viewport:[innerWidth,innerHeight],checks:['native layout','wrapping progress','compact live timeline','grouped reads','parallel operations','group focus and selection','opt-in records','bounded scrolling','keyboard review','follow and back to latest','all operations','keyboard focus','full analysis in one action','actual wait','answer feedback','completion']});
           } catch (error) { report({action:'fail',error:String(error)+'\n'+error.stack}); }

@@ -144,7 +144,7 @@ page.setDefaultNavigationTimeout(60000);
         await dialog.locator(".question-history__item").click();
         await page.locator(".msg-wrap--jump-target", { hasText: "检查蓝牙遥控器" }).waitFor();
         assert.equal(await dialog.count(), 0);
-        await page.getByRole("button", { name: "回到最新消息并恢复自动跟随" }).click();
+        await page.getByRole("button", { name: "回到最新消息" }).click();
         layouts += await validateOfficeExportMenu(page, output, { width, height, theme });
         continue;
       }
@@ -168,11 +168,13 @@ page.setDefaultNavigationTimeout(60000);
         await page.getByRole("heading", { name: "文档", exact: true }).waitFor();
         const geometry = await page.evaluate(() => {
           const rect = (selector) => {
-            const box = document.querySelector(selector).getBoundingClientRect();
+            const element = document.querySelector(selector);
+            if (!element) throw new Error(`Missing organization toolbar element: ${selector}`);
+            const box = element.getBoundingClientRect();
             return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
           };
           return {
-            title: rect(".org-workspace__page-header > div:first-child"),
+            title: rect(".org-workspace__page-header > h2"),
             actions: rect(".org-workspace__page-actions"),
             sectionTitle: rect(".org-resource-views"),
             filter: rect('[aria-label="查看范围"]'),
@@ -194,7 +196,7 @@ page.setDefaultNavigationTimeout(60000);
         await page.locator(".org-memory__nav button", { hasText: "Skills" }).click();
         await page.getByText("当前范围暂无已发布内容").waitFor();
         const skillsGeometry = await page.evaluate(() => {
-          const summary = document.querySelector(".org-workspace__page-header > div:first-child").getBoundingClientRect();
+          const summary = document.querySelector(".org-workspace__page-header > h2").getBoundingClientRect();
           const actions = document.querySelector(".org-workspace__page-actions").getBoundingClientRect();
           return { summary: { right: summary.right, bottom: summary.bottom }, actions: { left: actions.left, top: actions.top } };
         });

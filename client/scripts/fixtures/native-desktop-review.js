@@ -211,7 +211,7 @@ void (async () => {
             return current && ["completed", "failed", "stopped", "paused"].includes(current.status) ? current : null;
           }, 90000);
         } catch (error) {
-          const stop = document.querySelector('button[aria-label="停止生成"]');
+          const stop = document.querySelector('button[aria-label="停止任务"]');
           if (stop) { stop.click(); await delay(1500); record("timeout-stop-entry", "passed", { clicked: true }); }
           record("model-completion-timeout", "blocked", { error: String(error), stopClicked: !!stop });
         }
@@ -225,7 +225,7 @@ void (async () => {
         await send(cancelText);
         await waitFor(() => [...document.querySelectorAll('.msg--user')].some((item) => item.textContent?.includes(cancelText)));
         const stopButton = await waitFor(() => {
-          const button = document.querySelector('button[aria-label="停止生成"]');
+          const button = document.querySelector('button[aria-label="停止任务"]');
           return button && !button.disabled ? button : null;
         });
         stopButton.click();

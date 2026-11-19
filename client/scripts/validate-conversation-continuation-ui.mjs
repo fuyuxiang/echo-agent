@@ -14,11 +14,47 @@ try {
   const errors = []; page.on("pageerror",error => errors.push(error.message));
   const composer = page.locator(".echo-composer__input");
   const continueAtSecondTurn = async () => {
-    await page.locator('[data-msg-id="continuation-answer-1"]').getByRole("button",{name:"更多回复操作"}).click();
-    await page.getByRole("menuitem",{name:"在新对话中继续",exact:true}).click();
+    await page.locator('[data-msg-id="continuation-answer-1"]').getByRole("button",{name:"在新对话中继续",exact:true}).click();
     await page.locator(".conversation-origin__source").waitFor();
   };
   await page.goto(`${base}&state=complete`);
+  const footer = page.locator('[data-msg-id="continuation-answer-2"]').getByRole("group", { name: "回复操作" });
+  const directActions = ["复制纯文本", "朗读回复", "赞", "踩", "在新对话中继续", "更多回复操作"];
+  for (const [width, theme] of [[1280, "light"], [320, "dark"]]) {
+    await page.setViewportSize({ width, height: 860 });
+    await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+    if (width === 320) await page.getByRole("button", { name: "收起侧边栏", exact: true }).click();
+    await footer.scrollIntoViewIfNeeded();
+    assert.equal(await footer.evaluate(group => getComputedStyle(group).opacity), "1");
+    const bounds = await footer.boundingBox();
+    const rows = new Set();
+    for (const name of directActions) {
+      const button = footer.getByRole("button", { name, exact: true });
+      await button.waitFor();
+      const box = await button.boundingBox();
+      rows.add(Math.round(box.y));
+      assert(box.x >= bounds.x - 1 && box.x + box.width <= bounds.x + bounds.width + 1,
+        `${name} must fit within the reply toolbar at ${width}px`);
+    }
+    assert.equal(rows.size, 1, `The primary reply actions fit on one line at ${width}px with the conversation visible`);
+    await footer.screenshot({ path: join(output, `reply-actions-${width}-${theme}.png`) });
+  }
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await page.evaluate(() => { document.documentElement.dataset.theme = "light"; });
+  const like = footer.getByRole("button", { name: "赞", exact: true });
+  await like.press("Enter");
+  const feedback = page.getByRole("dialog", { name: "消息反馈" });
+  await feedback.waitFor();
+  await page.keyboard.press("Escape");
+  await feedback.waitFor({ state: "detached" });
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "赞");
+  assert.equal(await like.getAttribute("aria-pressed"), "true");
+  const more = footer.getByRole("button", { name: "更多回复操作" });
+  await more.press("Enter");
+  const replyMenu = page.getByRole("menu", { name: "当前回复操作" });
+  assert.deepEqual(await replyMenu.getByRole("menuitem").allTextContents(), ["复制纯文本", "复制 Markdown", "导出本条回复为办公文件"]);
+  await page.keyboard.press("Escape");
+  await replyMenu.waitFor({ state: "detached" });
   await composer.fill("原对话未发送内容");
   await continueAtSecondTurn();
   assert.equal(await composer.inputValue(),"");

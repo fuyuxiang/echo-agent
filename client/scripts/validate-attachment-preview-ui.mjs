@@ -3,6 +3,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
+import { stageDocumentRuntime } from "./stage-document-runtime.mjs";
+
+stageDocumentRuntime();
 
 const output = reviewOutput(mkdtempSync(join(tmpdir(), "echo-attachment-preview-")));
 const server = await createUiReviewServer(0, { fixture: "/scripts/fixtures/attachment-preview-review.tsx" });
@@ -13,6 +16,7 @@ try {
   browser = await (await reviewChromium()).launch({ headless: true, executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
   for (const [width, height] of [[1440, 900], [1024, 680], [720, 640], [360, 640]]) for (const theme of ["light", "dark"]) for (const font of [13, 18]) {
     const page = await browser.newPage({ viewport: { width, height } });
+    page.setDefaultNavigationTimeout(90000);
     const errors = []; page.on("pageerror", error => errors.push(error.message));
     await page.goto(`${base}?theme=${theme}&font=${font}&many`, { waitUntil: "networkidle" });
     const input = page.locator(".echo-composer__input");
@@ -42,13 +46,13 @@ try {
     await page.getByRole("button", { name: "预览附件 需求说明.md" }).click();
     await page.getByRole("dialog").getByRole("heading", { name: "需求说明", exact: true }).waitFor();
     await page.getByRole("button", { name: "下一个附件" }).click();
-    await page.getByRole("dialog").getByText("用户在发送前确认文件内容，关闭预览后继续编辑草稿。", { exact: true }).waitFor();
+    await page.getByRole("dialog").frameLocator(".office-workbench__stage iframe").getByText("用户在发送前确认文件内容，关闭预览后继续编辑草稿。", { exact: true }).waitFor();
     assert.equal(await page.getByRole("dialog").locator('[contenteditable="true"]').count(), 0);
     if (width === 360) await page.screenshot({ path: join(output, `word-${width}-${theme}-${font}.png`) });
     await page.getByRole("button", { name: "下一个附件" }).click();
-    await page.getByRole("dialog").getByRole("cell", { name: "12000", exact: true }).waitFor();
+    await page.getByRole("dialog").getByRole("gridcell", { name: /^B2：12,?000$/ }).waitFor();
     await page.getByRole("button", { name: "下一个附件" }).click();
-    await page.getByRole("dialog").locator("iframe[src^='data:application/pdf']").waitFor();
+    await page.getByRole("dialog").locator(".office-workbench__stage .office-page--pdf[data-page-rendered=true]").waitFor();
     await page.screenshot({ path: join(output, `file-${width}-${theme}-${font}.png`) });
     await page.keyboard.press("Escape");
     await page.screenshot({ path: join(output, `composer-${width}-${theme}-${font}.png`) });
@@ -86,7 +90,8 @@ try {
   await page.getByRole("dialog").getByRole("alert").filter({ hasText: "已不存在" }).waitFor();
   await page.getByRole("button", { name: "重新加载", exact: true }).click();
   await page.getByRole("dialog").getByRole("alert").filter({ hasText: "已不存在" }).waitFor();
-  await page.getByRole("button", { name: "用系统应用打开", exact: true }).click();
+  await page.getByRole("button", { name: "更多文件操作", exact: true }).click();
+  await page.getByRole("menuitem", { name: "用系统应用打开", exact: true }).click();
   await page.waitForFunction(() => window.__attachmentCalls.some(call => call.command === "open_path"));
   await page.screenshot({ path: join(output, "read-error.png") });
   await page.keyboard.press("Escape");

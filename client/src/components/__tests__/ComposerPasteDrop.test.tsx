@@ -528,7 +528,7 @@ describe("Composer drag-drop via Tauri native event", () => {
         payload: { type: "enter", paths: [], position: { x: 0, y: 0 } },
       });
     });
-    expect(screen.getByText("松开以添加为附件")).toBeInTheDocument();
+    expect(screen.getByText("松开添加附件")).toBeInTheDocument();
   });
 
   it("拖拽覆盖层提示支持的文件类型", () => {
@@ -551,12 +551,12 @@ describe("Composer drag-drop via Tauri native event", () => {
         payload: { type: "enter", paths: [], position: { x: 0, y: 0 } },
       });
     });
-    expect(screen.getByText("松开以添加为附件")).toBeInTheDocument();
+    expect(screen.getByText("松开添加附件")).toBeInTheDocument();
     act(() => {
       dragDropCallback!({ payload: { type: "leave" } });
     });
     await waitFor(() => {
-      expect(screen.queryByText("松开以添加为附件")).toBeNull();
+      expect(screen.queryByText("松开添加附件")).toBeNull();
     });
   });
 });

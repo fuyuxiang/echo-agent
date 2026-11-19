@@ -13,9 +13,9 @@ export async function validateConversationLayout(page, output) {
   });
   const summaryAligned = () => page.waitForFunction(() => {
     const summary = document.querySelector(".session-background-tasks")?.getBoundingClientRect();
-    const footer = document.querySelector(".chatview__footer")?.getBoundingClientRect();
-    return summary && footer && summary.top >= footer.top && summary.bottom <= footer.bottom
-      && summary.left >= footer.left && summary.right <= footer.right;
+    const header = document.querySelector(".session-header")?.getBoundingClientRect();
+    return summary && header && summary.top >= header.top && summary.bottom <= header.bottom
+      && summary.left >= header.left && summary.right <= header.right;
   });
   const rows = () => page.locator(".sidebar__conv").evaluateAll(elements => elements.map(element => {
     const rect = node => {
@@ -56,7 +56,7 @@ export async function validateConversationLayout(page, output) {
       // Returning to A restores its details view as well as its reading position.
       const closeDetails = page.getByRole("button", { name: "关闭面板", exact: true });
       if (await closeDetails.isVisible()) await closeDetails.click();
-      const jump = page.getByRole("button", { name: "回到最新消息并恢复自动跟随" });
+      const jump = page.getByRole("button", { name: "回到最新消息" });
       if (await jump.isVisible()) await jump.click();
       await atBottom();
       await viewport.evaluate(element => {
@@ -64,7 +64,7 @@ export async function validateConversationLayout(page, output) {
         element.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
         element.dispatchEvent(new Event("scroll"));
       });
-      await page.getByRole("button", { name: "回到最新消息并恢复自动跟随" }).waitFor();
+      await page.getByRole("button", { name: "回到最新消息" }).waitFor();
       await openView(label === "团队" ? "管理任务团队" : "文件变更");
       await page.getByRole("button",{name:"关闭面板",exact:true}).click();
       await page.waitForFunction(() => Math.abs(document.querySelector(".chatview__scroll").scrollTop - 650) < 2);

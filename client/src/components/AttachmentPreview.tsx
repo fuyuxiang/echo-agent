@@ -1,10 +1,12 @@
-import { lazy, Suspense, useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { ChevronLeft, ChevronRight, ExternalLink, RotateCw, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, ExternalLink, RotateCw, X } from "lucide-react";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { loadAttachmentPreview } from "@/lib/attachment-preview";
 import { friendlyAttachmentError } from "@/lib/attachment-errors";
 import { openLocalPath } from "@/lib/agent-client";
+import { copyShareText } from "@/lib/share";
+import { FilePreviewMenu, type FilePreviewAction } from "./FilePreviewMenu";
 import { attachmentBasename } from "@/lib/user-message";
 import { detectPreviewKind, previewKindLabel } from "@/lib/file-kind";
 import { useImagePreviewViewport, type ImageSize } from "./markdown/use-image-preview-viewport";
@@ -18,7 +20,50 @@ export function AttachmentPreview({ paths, path, cwd, onSelect, onClose, returnF
   const dialogRef = useModalFocus<HTMLDivElement>(true, onClose, returnFocus);
   const titleId = useId();
   const index = paths.indexOf(path);
-  const image = detectPreviewKind(path) === "image";
+  const kind = detectPreviewKind(path);
+  const image = kind === "image";
+  const file = useMemo(() => ({ path, cwd }), [path, cwd]);
+  const currentFile = useRef(file);
+  currentFile.current = file;
+  const [attempt, setAttempt] = useState(0);
+  const request = useMemo(() => ({ file, attempt }), [file, attempt]);
+  const [loaded, setLoaded] = useState<{ request: typeof request; content?: string; error?: string }>();
+  const [notice, setNotice] = useState<{ file: typeof file; text: string; error?: boolean }>();
+  const [opening, setOpening] = useState(false);
+  const openGuard = useRef(false);
+  const state = loaded?.request === request ? loaded : undefined;
+
+  useEffect(() => {
+    let active = true;
+    void loadAttachmentPreview(file.path, file.cwd).then(content => {
+      if (active) setLoaded({ request, content });
+    }).catch(error => {
+      if (active) setLoaded({ request, error: friendlyAttachmentError(error, file.path) });
+    });
+    return () => { active = false; };
+  }, [file, request]);
+
+  const retry = () => setAttempt(value => value + 1);
+  const open = async () => {
+    if (openGuard.current) return;
+    openGuard.current = true;
+    setOpening(true);
+    setNotice(undefined);
+    try { await openLocalPath(path, cwd); }
+    catch (error) {
+      if (currentFile.current === file) setNotice({ file, text: friendlyAttachmentError(error, path), error: true });
+    }
+    finally { openGuard.current = false; setOpening(false); }
+  };
+  const originalActions: FilePreviewAction[] = [
+    { label: "复制文件路径", icon: Copy, onSelect: () => {
+      void copyShareText(path).then(ok => {
+        if (currentFile.current === file) setNotice({ file, text: ok ? "已复制文件路径" : "无法复制文件路径", error: !ok });
+      });
+    } },
+    { label: "用系统应用打开", icon: ExternalLink, disabled: opening, onSelect: () => void open() },
+  ];
+  const fileActions = [...originalActions, { label: "重新加载", icon: RotateCw, onSelect: retry }];
   return createPortal(
     <div className={`attachment-preview-overlay${image ? "" : " attachment-preview-overlay--file"}`}
       onClick={event => { event.stopPropagation(); if (event.target === event.currentTarget) onClose(); }}
@@ -40,50 +85,24 @@ export function AttachmentPreview({ paths, path, cwd, onSelect, onClose, returnF
             <span aria-live="polite">{index + 1} / {paths.length}</span>
             <button type="button" aria-label="下一个附件" title="下一个附件（Alt+→）" disabled={index >= paths.length - 1} onClick={() => onSelect(paths[index + 1])}><ChevronRight size={18} /></button>
           </nav>}
+          <FilePreviewMenu fileKey={`${cwd ?? ""}\0${path}`} actions={fileActions} layer="calc(var(--echo-layer-dialog-local) + 1)" />
           <button type="button" className="attachment-preview__close" aria-label="关闭附件预览" data-modal-initial-focus onClick={onClose}><X size={20} /></button>
         </header>
-        <PreviewContent key={`${cwd ?? ""}\0${path}`} path={path} cwd={cwd} />
+        <div className="attachment-preview__body" aria-busy={!state}>
+          {state?.error ? <div className="attachment-preview__empty" role="alert">
+            <span>{state.error}</span><button type="button" onClick={retry}><RotateCw size={15} />重新加载</button>
+          </div> : state?.content === undefined ? <div className="attachment-preview__empty" role="status">正在加载附件…</div>
+            : image ? <AttachmentImage key={`${path}:${attempt}`} src={state.content} name={attachmentBasename(path)}
+              onError={() => setLoaded({ request, error: "图片无法显示，文件可能已损坏。可重新加载或用系统应用打开原件。" })} />
+              : <Suspense fallback={<div className="attachment-preview__empty" role="status">正在准备文件预览…</div>}>
+                <FilePreview key={path} filename={attachmentBasename(path)} path={path} content={state.content}
+                  fileActions={originalActions} onReload={retry} embedded />
+              </Suspense>}
+        </div>
+        {notice?.file === file && <p className="attachment-preview__notice" role={notice.error ? "alert" : "status"}>{notice.text}</p>}
       </div>
     </div>, document.body,
   );
-}
-
-function PreviewContent({ path, cwd }: { path: string; cwd?: string }) {
-  const [state, setState] = useState<{ content?: string; error?: string }>({});
-  const [attempt, setAttempt] = useState(0);
-  const [opening, setOpening] = useState(false);
-  const [openError, setOpenError] = useState("");
-  const openGuard = useRef(false);
-  const kind = detectPreviewKind(path);
-  useEffect(() => {
-    let active = true;
-    setState({});
-    void loadAttachmentPreview(path, cwd).then(content => {
-      if (active) setState({ content });
-    }).catch(error => { if (active) setState({ error: friendlyAttachmentError(error, path) }); });
-    return () => { active = false; };
-  }, [path, cwd, attempt]);
-  const retry = () => { setState({}); setAttempt(current => current + 1); };
-  const open = async () => {
-    if (openGuard.current) return;
-    openGuard.current = true; setOpening(true); setOpenError("");
-    try { await openLocalPath(path, cwd); }
-    catch (error) { setOpenError(friendlyAttachmentError(error, path)); }
-    finally { openGuard.current = false; setOpening(false); }
-  };
-  return <>
-    <div className="attachment-preview__body" aria-busy={state.content === undefined && !state.error}>
-      {state.error ? <div className="attachment-preview__empty" role="alert"><span>{state.error}</span><button type="button" onClick={retry}><RotateCw size={15} />重新加载</button></div>
-        : state.content === undefined ? <div className="attachment-preview__empty" role="status">正在加载附件…</div>
-        : kind === "image" ? <AttachmentImage key={attempt} src={state.content} name={attachmentBasename(path)} onError={() => setState({ error: "图片无法显示，文件可能已损坏。可重新加载或用系统应用打开原件。" })} />
-        : <Suspense fallback={<div className="attachment-preview__empty" role="status">正在准备文件预览…</div>}><FilePreview filename={attachmentBasename(path)} path={path} content={state.content} onReload={retry} /></Suspense>}
-    </div>
-    <footer className="attachment-preview__footer">
-      <span>预览不会修改或发送附件</span>
-      <button type="button" onClick={() => void open()} disabled={opening}><ExternalLink size={15} />{opening ? "正在打开…" : "用系统应用打开"}</button>
-      {openError && <p role="alert">{openError}</p>}
-    </footer>
-  </>;
 }
 
 function AttachmentImage({ src, name, onError }: { src: string; name: string; onError: () => void }) {

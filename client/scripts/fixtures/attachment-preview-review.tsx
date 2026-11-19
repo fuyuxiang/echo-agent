@@ -1,7 +1,8 @@
 import "../../src/styles/index.css";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
-import JSZip from "jszip";
+import { Document, Packer, Paragraph } from "docx";
+import ExcelJS from "exceljs";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { ThemeProvider } from "../../src/components/ThemeProvider";
 import { Composer } from "../../src/components/Composer";
@@ -39,13 +40,18 @@ function screenshot() {
   return { original, thumbnail: small.toDataURL("image/jpeg").split(",")[1] };
 }
 const image = screenshot();
-const word = new JSZip();
-word.file("word/document.xml", '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>附件预览产品方案</w:t></w:r></w:p><w:p><w:r><w:t>用户在发送前确认文件内容，关闭预览后继续编辑草稿。</w:t></w:r></w:p></w:body></w:document>');
-const wordBase64 = await word.generateAsync({ type: "base64" });
-const sheet = new JSZip();
-sheet.file("xl/workbook.xml", '<workbook><sheets><sheet name="预算" sheetId="1" r:id="rId1" /></sheets></workbook>');
-sheet.file("xl/worksheets/sheet1.xml", '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>项目</t></is></c><c r="B1" t="inlineStr"><is><t>预算</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>界面优化</t></is></c><c r="B2"><v>12000</v></c></row></sheetData></worksheet>');
-const sheetBase64 = await sheet.generateAsync({ type: "base64" });
+const word = new Document({
+  sections: [{ children: [
+    new Paragraph("附件预览产品方案"),
+    new Paragraph("用户在发送前确认文件内容，关闭预览后继续编辑草稿。"),
+  ] }],
+});
+const wordBase64 = await Packer.toBase64String(word);
+const workbook = new ExcelJS.Workbook();
+const sheet = workbook.addWorksheet("预算");
+sheet.addRow(["项目", "预算"]);
+sheet.addRow(["界面优化", 12000]);
+const sheetBase64 = btoa(String.fromCharCode(...new Uint8Array(await workbook.xlsx.writeBuffer())));
 const pdf = await PDFDocument.create(); const pdfPage = pdf.addPage([595, 842]);
 pdfPage.drawText("Attachment preview", { x: 60, y: 750, size: 26, font: await pdf.embedFont(StandardFonts.Helvetica) });
 const pdfBase64 = await pdf.saveAsBase64();

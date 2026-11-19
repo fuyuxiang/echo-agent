@@ -7,7 +7,7 @@ import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-
 const output = reviewOutput(mkdtempSync(join(tmpdir(), "echo-execution-outcome-")));
 console.log(`Execution outcome evidence: ${output}`);
 const server = await createUiReviewServer(0);
-const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=workbench&state=empty&platform=mac`;
+const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=workbench&state=empty&platform=mac&noNativeTask=1`;
 let browser, page;
 const evidence = [];
 try {
@@ -54,8 +54,9 @@ try {
       assert.equal(await page.locator(".session-header [role=status]").count(), 0);
       await settle(scenario);
       await page.waitForFunction(() => !document.querySelector(".execution-process--running"));
+      assert.equal(await page.locator('.msg--assistant :is(.msg__header, .waiting-indicator, img[src="/app-icon.png"])').count(), 0);
       assert.equal(await header.getAttribute("aria-expanded"), "false");
-      assert.equal(await process.locator(".toolcall, .execution-process__outcome-detail").count(), 0);
+      assert.equal(await process.locator(".toolcall, .execution-process__outcome-detail, .execution-process__metrics").count(), 0);
       assert.doesNotMatch(await header.textContent(), /部分|失败|项操作|待确认/);
       assert.equal(await page.locator(".session-header [role=status]").count(), 0);
       const hasIssue = ["partial", "failed"].includes(scenario);
@@ -63,7 +64,21 @@ try {
       assert.equal(await page.locator(".chatview__error-banner").count(), 0, "a terminal failure must have only one presentation");
       if (hasIssue) {
         const notice = page.locator(".execution-notice");
-        assert((await notice.textContent()).includes(scenario === "partial" ? "文件操作未成功" : "连接中断"));
+        assert((await notice.textContent()).includes(scenario === "partial" ? "文件保存失败" : "连接中断"));
+        const surface = await notice.evaluate(element => {
+          const style = getComputedStyle(element);
+          return [style.backgroundColor, style.borderTopWidth, style.boxShadow];
+        });
+        assert.deepEqual(surface, ["rgba(0, 0, 0, 0)", "0px", "none"], "The notice sits on the transcript surface");
+        if (scenario === "partial") {
+          assert.match(await notice.locator(".execution-notice__copy p").textContent(), /^没有写入权限。$/);
+          const details = notice.getByRole("button", { name: "查看详情", exact: true });
+          const continuation = notice.getByRole("button", { name: "检查并继续", exact: true });
+          assert.match(await details.getAttribute("class"), /echo-button--ghost/);
+          assert.match(await continuation.getAttribute("class"), /execution-notice__recovery/);
+          assert.equal(await continuation.locator('svg[aria-hidden="true"]').count(), 1);
+          assert(await notice.evaluate(element => element.scrollWidth <= element.clientWidth + 1));
+        }
         const order = await page.locator(".msg--assistant").last().evaluate(element => {
           const answer = element.querySelector(".markdown-body"), notice = element.querySelector(".execution-notice");
           return Boolean(answer && notice && (answer.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING));
@@ -71,15 +86,27 @@ try {
         assert(order, "the retained answer precedes its result notice");
       }
       const geometry = await process.evaluate(element => {
-        const box = element.getBoundingClientRect(), marker = getComputedStyle(element.querySelector(".execution-process__status"));
+        const box = element.getBoundingClientRect(), marker = element.querySelector(".execution-process__status");
+        const button = element.querySelector(".execution-process__header").getBoundingClientRect();
         const probe = document.createElement("span"); probe.style.color = "var(--echo-text-tertiary)"; document.body.append(probe);
         const neutral = getComputedStyle(probe).color; probe.remove();
-        return { x: box.x, right: box.right, overflow: document.documentElement.scrollWidth > innerWidth + 1, clipped: element.scrollWidth > element.clientWidth + 1, color: marker.backgroundColor, neutral };
+        return { x: box.x, right: box.right, width: box.width, buttonWidth: button.width,
+          overflow: document.documentElement.scrollWidth > innerWidth + 1, clipped: element.scrollWidth > element.clientWidth + 1,
+          color: marker && getComputedStyle(marker).backgroundColor, neutral };
       });
       assert(!geometry.overflow && !geometry.clipped && geometry.x >= 0 && geometry.right <= width + 1);
-      assert.notEqual(geometry.color, geometry.neutral, "confirmed completion and unresolved results have distinct markers");
+      if (scenario === "failed") {
+        assert.ok(geometry.color && geometry.color !== geometry.neutral, "a terminal failure retains its status marker");
+      } else {
+        assert.equal(geometry.color, null, "a normal answer has a quiet process disclosure");
+        assert(Math.abs(geometry.buttonWidth - geometry.width) < 1, "the entire elapsed-time row can be clicked");
+        assert.doesNotMatch(await header.textContent(), /查看过程|收起过程/);
+      }
       await page.screenshot({ path: join(output, `${scenario}-${width}-${theme}.png`) });
-      await header.click();
+      if (scenario === "failed") await header.click();
+      else await header.click({ position: { x: geometry.buttonWidth - 6, y: 15 } });
+      assert.equal(await process.locator(".execution-process__metrics").count(), 1);
+      if (scenario === "alternate") assert.match(await process.locator(".execution-process__metrics").textContent(), /1 项失败/);
       assert.equal(await process.locator(".toolcall").count(), 2);
       if (scenario === "recovered") await process.getByText("该次失败已通过后续重试恢复", { exact: true }).waitFor();
       await process.locator(".toolcall--err").first().click();
@@ -104,10 +131,10 @@ try {
   for (const scenario of ["all-failed", "unfinished", "history", "uncertain-send", "browser-upload", "uncertain-browser-upload"]) {
     await page.setViewportSize({ width: 1280, height: 800 }); await page.goto(`${base}&theme=light`);
     await page.locator(".session-header").waitFor(); await setup(scenario); await settle(scenario);
-    await page.getByRole("button", { name: / · 查看过程$/ }).waitFor();
+    await page.getByRole("button", { name: /查看过程$/ }).waitFor();
     assert.equal(await page.locator(".session-header [role=status]").count(), 0);
     assert.equal(await page.locator(".execution-notice").count(), scenario === "history" ? 0 : 1);
-    if (["unfinished", "uncertain-send", "uncertain-browser-upload"].includes(scenario)) assert((await page.locator(".execution-notice").textContent()).includes("结果尚未确认"));
+    if (["unfinished", "uncertain-send", "uncertain-browser-upload"].includes(scenario)) assert((await page.locator(".execution-notice").textContent()).includes("结果待确认"));
   }
   assert.deepEqual(errors, []);
   writeFileSync(join(output, "evidence.json"), JSON.stringify({ layouts: evidence, errors }, null, 2));

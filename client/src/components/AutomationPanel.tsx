@@ -1664,7 +1664,7 @@ export function AutomationPanel({
                 <AutomationEmptyAlarmIcon width={48} height={48} />
               </div>
               <div className="atm-empty-state-text">
-                安排任务，让 EchoAgent 按时为你处理
+                创建一个定时任务
               </div>
             </div>
             <div className="atm-empty-state-templates">
@@ -1700,7 +1700,7 @@ export function AutomationPanel({
                 </button>
               ))}
             </div>
-            {filteredTasks.length > 0 && <ResourceList collectionKey="automations" layout="grid" className="atm-task-cards" aria-label="定时任务列表">
+            {filteredTasks.length > 0 && <ResourceList collectionKey="automations" layout="grid" className="atm-task-cards" defaultView="list" aria-label="定时任务列表">
               {filteredTasks.map((task) => (
                 <AutomationTaskCard
                   key={task.id}

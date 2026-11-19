@@ -5,7 +5,8 @@
  * 支持编辑/删除/上移下移/暂停/恢复/立即发送。流式结束后由 App 自动续发
  * 下一条 active 项(本面板的「立即发送」是手动触发)。
  */
-import { useState } from "react";
+import { useId, useState } from "react";
+import { ChevronDown, ListOrdered } from "lucide-react";
 import { useAppDialog } from "./AppDialog";
 import { useMessageQueueStore, type QueueItem } from "@/stores/message-queue-store";
 import { attachmentBasename } from "@/lib/user-message";
@@ -21,6 +22,7 @@ interface QueuePanelProps {
   sessionId: string;
   hint?: string;
   blockedReason?: string;
+  collapsible?: boolean;
   /** agent 正在回复时，「立即发送」使用 Runtime 的原子 sendNow。 */
   streaming?: boolean;
   sendNowPending?: boolean;
@@ -38,6 +40,7 @@ export function QueuePanel({
   sessionId,
   hint,
   blockedReason,
+  collapsible = false,
   streaming = false,
   sendNowPending = false,
   awaitingQuestion = false,
@@ -51,6 +54,9 @@ export function QueuePanel({
   const { requestConfirmation, dialog } = useAppDialog(sessionId);
   const [sendingBySession, setSendingBySession] = useState<Record<string, string>>({});
   const sendingId = sendingBySession[sessionId] ?? null;
+  const bodyId = useId();
+  const [openScope, setOpenScope] = useState<string | null>(null);
+  const expanded = !collapsible || openScope === sessionId;
   // Accepted prompts are tracked for completion/recovery, not counted as
   // waiting messages. Keep original indices when moving visible neighbours.
   const waiting = queue.map((item, index) => ({ item, index })).filter(({ item }) => item.status !== "accepted");
@@ -61,76 +67,96 @@ export function QueuePanel({
     return saved;
   };
 
-  if (waiting.length === 0) return null;
+  if (waiting.length === 0) {
+    if (openScope === sessionId) setOpenScope(null);
+    return null;
+  }
 
+  const paused = waiting.every(({ item }) => item.status === "paused");
+  const needsReview = waiting.some(({ item }) => item.recovery);
+  const immediateSendHintId = streaming && !paused ? `${bodyId}-send-now` : undefined;
   return (
-    <div className="queue-panel" role="list" aria-label="待发送队列">
-      <div className="queue-panel__head">
-        <span>待发送队列({waiting.length})</span>
-        <span className="queue-panel__hint">{hint ?? (waiting.every(({ item }) => item.status === "paused")
-          ? "队列已暂停，恢复条目后可发送"
-          : streaming ? "当前任务完成后按顺序发送；立即发送会中断当前执行，已有结果保留"
-          : "选择一条消息发送，其他未暂停的消息将按顺序接续")}</span>
-      </div>
+    <section className={collapsible ? "queue-disclosure" : undefined}>
+      {collapsible && <button type="button" className="queue-disclosure__trigger"
+        aria-expanded={expanded} aria-controls={bodyId}
+        onClick={() => setOpenScope(expanded ? null : sessionId)}>
+        <ListOrdered size={15} aria-hidden="true" />
+        <span>待发送 {waiting.length} 条</span>
+        {needsReview ? <span className="queue-disclosure__attention">待检查</span> : paused && <span>已暂停</span>}
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>}
       {dialog}
       {saveError?.sessionId === sessionId && <p role="alert" className="queue-panel__error">{saveError.message}</p>}
-      {waiting.some(({ item }) => item.recovery && item.recovery !== "failed") && <p role="status" className="queue-panel__hint">部分消息已暂停。请检查任务记录后逐条恢复。</p>}
-      {waiting.map(({ item, index }, idx) => (
-        <QueueRow
-          key={`${sessionId}:${item.id}`}
-          sessionId={sessionId}
-          item={item}
-          index={idx}
-          total={waiting.length}
-          onRemove={() => mutate(() => remove(sessionId, item.id))}
-          onUp={() => mutate(() => reorder(sessionId, index, waiting[idx - 1]?.index ?? index))}
-          onDown={() => mutate(() => reorder(sessionId, index, waiting[idx + 1]?.index ?? index))}
-          onTogglePause={() => {
-            if (item.recovery === "uncertain" || item.recovery === "failed") {
-              requestConfirmation({ title: "确认再次发送这条消息？", description: item.recovery === "failed"
-                ? "这条消息的执行失败，可能已经完成部分操作。请先查看任务记录。继续会再次发送，可能重复修改文件或其他操作。"
-                : "上次执行未能确认成功，可能已经部分执行。请先查看任务记录。继续会再次发送，可能重复修改文件或其他操作。", confirmLabel: "已检查，允许再次发送", action: async () => { mutate(() => setStatus(sessionId, item.id, "queued")); } });
-            } else { mutate(() => setStatus(sessionId, item.id, item.status === "paused" ? "queued" : "paused")); }
-          }}
-          onCommitEdit={(text) => mutate(() => update(sessionId, item.id, text))}
-          sendLabel={
-            sendingId === item.id
-              ? "发送中"
-              : streaming
-                ? "立即发送"
-                : "发送"
-          }
-          sendTitle={
-            awaitingQuestion && blockedReason ? blockedReason : streaming
-              ? "中断当前回复并立即发送这条"
-              : "立即发送"
-          }
-          sendDisabled={
-            item.status === "paused"
-            || sendingId !== null
-            || sendNowPending
-            || awaitingQuestion
-            || !onSendNow
-          }
-          onSendNow={async () => {
-            if (!onSendNow || sendingId !== null) return;
-            setSendingBySession((current) => ({ ...current, [sessionId]: item.id }));
-            try {
-              await onSendNow(item.text, item.attachments ?? [], item.id);
-            } catch {
-              // Sending failed: retain the item so the user can retry or edit it.
-            } finally {
-              setSendingBySession((current) => {
-                if (current[sessionId] !== item.id) return current;
-                const next = { ...current };
-                delete next[sessionId];
-                return next;
-              });
+      <div id={bodyId} className="queue-panel" role="list" aria-label="待发送队列" hidden={!expanded}>
+        <div className="queue-panel__head">
+          {!collapsible && <span className="queue-panel__title">待发送队列({waiting.length})</span>}
+          <span className="queue-panel__hint">{hint ?? (paused
+            ? "队列已暂停，恢复条目后可发送"
+            : streaming ? "当前任务完成后按顺序发送"
+            : "选择一条消息发送，其他未暂停的消息将按顺序接续")}</span>
+          {immediateSendHintId && <span id={immediateSendHintId} className="queue-panel__hint queue-panel__hint--interrupt">
+            立即发送会中断当前执行，已有结果保留
+          </span>}
+        </div>
+        {waiting.some(({ item }) => item.recovery && item.recovery !== "failed") && <p role="status" className="queue-panel__hint">部分消息已暂停。请检查任务记录后逐条恢复。</p>}
+        {waiting.map(({ item, index }, idx) => (
+          <QueueRow
+            key={`${sessionId}:${item.id}`}
+            sessionId={sessionId}
+            item={item}
+            index={idx}
+            total={waiting.length}
+            onRemove={() => mutate(() => remove(sessionId, item.id))}
+            onUp={() => mutate(() => reorder(sessionId, index, waiting[idx - 1]?.index ?? index))}
+            onDown={() => mutate(() => reorder(sessionId, index, waiting[idx + 1]?.index ?? index))}
+            onTogglePause={() => {
+              if (item.recovery === "uncertain" || item.recovery === "failed") {
+                requestConfirmation({ title: "确认再次发送这条消息？", description: item.recovery === "failed"
+                  ? "这条消息的执行失败，可能已经完成部分操作。请先查看任务记录。继续会再次发送，可能重复修改文件或其他操作。"
+                  : "上次执行未能确认成功，可能已经部分执行。请先查看任务记录。继续会再次发送，可能重复修改文件或其他操作。", confirmLabel: "已检查，允许再次发送", action: async () => { mutate(() => setStatus(sessionId, item.id, "queued")); } });
+              } else { mutate(() => setStatus(sessionId, item.id, item.status === "paused" ? "queued" : "paused")); }
+            }}
+            onCommitEdit={(text) => mutate(() => update(sessionId, item.id, text))}
+            sendDescriptionId={immediateSendHintId}
+            sendLabel={
+              sendingId === item.id
+                ? "发送中"
+                : streaming
+                  ? "立即发送"
+                  : "发送"
             }
-          }}
-        />
-      ))}
-    </div>
+            sendTitle={
+              awaitingQuestion && blockedReason ? blockedReason : streaming
+                ? "中断当前回复并立即发送这条"
+                : "立即发送"
+            }
+            sendDisabled={
+              item.status === "paused"
+              || sendingId !== null
+              || sendNowPending
+              || awaitingQuestion
+              || !onSendNow
+            }
+            onSendNow={async () => {
+              if (!onSendNow || sendingId !== null) return;
+              setSendingBySession((current) => ({ ...current, [sessionId]: item.id }));
+              try {
+                await onSendNow(item.text, item.attachments ?? [], item.id);
+              } catch {
+                // Sending failed: retain the item so the user can retry or edit it.
+              } finally {
+                setSendingBySession((current) => {
+                  if (current[sessionId] !== item.id) return current;
+                  const next = { ...current };
+                  delete next[sessionId];
+                  return next;
+                });
+              }
+            }}
+          />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -147,6 +173,7 @@ interface QueueRowProps {
   onSendNow: () => void | Promise<void>;
   sendLabel: string;
   sendTitle: string;
+  sendDescriptionId?: string;
   sendDisabled: boolean;
 }
 
@@ -162,6 +189,7 @@ function QueueRow({
   onSendNow,
   sendLabel,
   sendTitle,
+  sendDescriptionId,
   sendDisabled,
 }: QueueRowProps) {
   const [editing, setEditing] = useState(false);
@@ -273,6 +301,7 @@ function QueueRow({
           disabled={sending || sendDisabled || editing}
           title={sendTitle}
           aria-label={sendTitle}
+          aria-describedby={sendDescriptionId}
         >
           {sending ? "发送中" : sendLabel}
         </button>

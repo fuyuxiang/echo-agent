@@ -143,7 +143,7 @@ describe("unified compact process presentation", () => {
     expect(screen.getByText("应用操作已暂停，以下是已整理的资料。")).toBeVisible();
     expect(screen.getByText("正在生成回复")).toBeVisible();
     expect(container.querySelector(".execution-process--running")).not.toBeNull();
-    expect(container.querySelector(".execution-process__title")).toHaveTextContent("处理过程");
+    expect(container.querySelector(".execution-process__title")).toHaveTextContent("正在生成回复");
     expect(container.querySelector(".execution-process__live")).toBeNull();
   });
 

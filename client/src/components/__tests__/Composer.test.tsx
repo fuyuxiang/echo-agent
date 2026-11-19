@@ -48,16 +48,16 @@ describe("Composer", () => {
     const onCancel = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve; }));
     const onEnqueue = vi.fn();
     render(<Composer {...base} streaming onCancel={onCancel} onEnqueue={onEnqueue} />);
-    fireEvent.click(screen.getByRole("button", {name:"停止生成"}));
+    fireEvent.click(screen.getByRole("button", {name:"停止任务"}));
     expect(onCancel).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", {name:"正在停止生成"}));
+    fireEvent.click(screen.getByRole("button", {name:"正在停止"}));
     const input = screen.getByRole("textbox");
     fireEvent.change(input, {target:{value:"保留补充要求"}});
-    expect(screen.getByRole("button", {name:"加入待发送队列"})).toBeDisabled();
+    expect(screen.getByRole("button", {name:"加入队列"})).toBeDisabled();
     fireEvent.keyDown(input, {key:"Enter"});
     expect(onEnqueue).not.toHaveBeenCalled();
     await act(async () => finish(false));
-    expect(screen.getByRole("button", {name:"加入待发送队列"})).toBeEnabled();
+    expect(screen.getByRole("button", {name:"加入队列"})).toBeEnabled();
     expect(input).toHaveValue("保留补充要求");
     expect(onCancel).toHaveBeenCalledOnce();
   });
@@ -65,7 +65,7 @@ describe("Composer", () => {
   it("目录不可用时仍可以停止当前执行", async () => {
     const onCancel = vi.fn(async () => true);
     render(<Composer {...base} streaming sendDisabled onCancel={onCancel} />);
-    fireEvent.click(screen.getByRole("button", {name:"停止生成"}));
+    fireEvent.click(screen.getByRole("button", {name:"停止任务"}));
     await waitFor(() => expect(onCancel).toHaveBeenCalledOnce());
   });
 
@@ -74,7 +74,7 @@ describe("Composer", () => {
     const onCancel = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
     const onSend = vi.fn(async () => true);
     const view = render(<Composer {...base} streaming draftKey="old" onCancel={onCancel} />);
-    fireEvent.click(screen.getByRole("button", { name: "停止生成" }));
+    fireEvent.click(screen.getByRole("button", { name: "停止任务" }));
     view.rerender(<Composer {...base} draftKey="new" draft="新任务" onCancel={onCancel} onSend={onSend} />);
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
     await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("新任务", []));
@@ -85,14 +85,14 @@ describe("Composer", () => {
     const completions: (() => void)[] = [];
     const onCancel = vi.fn(() => new Promise<void>(resolve => { completions.push(resolve); }));
     const view = render(<Composer {...base} streaming draftKey="old" onCancel={onCancel} />);
-    fireEvent.click(screen.getByRole("button", { name: "停止生成" }));
+    fireEvent.click(screen.getByRole("button", { name: "停止任务" }));
     view.rerender(<Composer {...base} streaming draftKey="new" onCancel={onCancel} />);
-    fireEvent.click(screen.getByRole("button", { name: "停止生成" }));
+    fireEvent.click(screen.getByRole("button", { name: "停止任务" }));
     expect(onCancel).toHaveBeenCalledTimes(2);
     await act(async () => completions[0]());
-    expect(screen.getByRole("button", { name: "正在停止生成" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "正在停止" })).toBeDisabled();
     await act(async () => completions[1]());
-    expect(screen.getByRole("button", { name: "停止生成" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "停止任务" })).toBeEnabled();
   });
 
   it("选择文件夹期间不能发送；取消后保留草稿并恢复提交", async () => {
@@ -139,7 +139,7 @@ describe("Composer", () => {
     fireEvent.keyDown(input, {key:"Enter"});
     expect(onEnqueue).toHaveBeenCalledExactlyOnceWith("下一步核验", []);
     fireEvent.change(input, {target: {value: "再生成报告"}});
-    fireEvent.click(screen.getByRole("button", {name:"加入待发送队列"}));
+    fireEvent.click(screen.getByRole("button", {name:"加入队列"}));
     expect(onEnqueue).toHaveBeenLastCalledWith("再生成报告", []);
     expect(input).toHaveValue("");
     expect(onCancel).not.toHaveBeenCalled();
@@ -152,7 +152,7 @@ describe("Composer", () => {
       .mockReturnValueOnce(true);
     render(<Composer {...base} streaming onEnqueue={onEnqueue}
       externalText="待保存" externalAttachments={["/tmp/方案.docx"]} externalTextNonce={1} />);
-    const button = screen.getByRole("button", {name:"加入待发送队列"});
+    const button = screen.getByRole("button", {name:"加入队列"});
     fireEvent.click(button);
     fireEvent.keyDown(screen.getByRole("textbox"), {key:"Enter"});
     expect(onEnqueue).toHaveBeenCalledOnce();
@@ -163,7 +163,7 @@ describe("Composer", () => {
     fireEvent.click(button);
     expect(onEnqueue).toHaveBeenLastCalledWith("待保存", ["/tmp/方案.docx"]);
     expect(screen.getByRole("textbox")).toHaveValue("");
-    expect(screen.getByRole("button", {name:"停止生成"})).toBeEnabled();
+    expect(screen.getByRole("button", {name:"停止任务"})).toBeEnabled();
   });
 
   it("空文本且无附件时不可发送", () => {
@@ -252,7 +252,7 @@ describe("Composer", () => {
   it("streaming 时显示停止按钮", () => {
     const onCancel = vi.fn();
     render(<Composer {...base} streaming onCancel={onCancel} />);
-    fireEvent.click(screen.getByRole("button", { name: "停止生成" }));
+    fireEvent.click(screen.getByRole("button", { name: "停止任务" }));
     expect(onCancel).toHaveBeenCalled();
   });
 
@@ -266,10 +266,10 @@ describe("Composer", () => {
     const { container } = render(<Composer {...base} streaming onCancel={onCancel} onEnqueue={onEnqueue}
       externalText={draft} externalAttachments={attachments} externalTextNonce={1} />);
     expect(container.querySelectorAll(".echo-composer__send")).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "停止生成" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "加入待发送队列" }), { detail: 1 });
+    expect(screen.queryByRole("button", { name: "停止任务" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "加入队列" }), { detail: 1 });
     expect(onEnqueue).toHaveBeenCalledExactlyOnceWith(draft || "请分析附件。", attachments);
-    fireEvent.click(screen.getByRole("button", { name: "停止生成" }), { detail: 2 });
+    fireEvent.click(screen.getByRole("button", { name: "停止任务" }), { detail: 2 });
     expect(onCancel).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox")).toHaveValue("");
   });
@@ -299,7 +299,7 @@ describe("Composer", () => {
     const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "选择 2" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(screen.getByRole("button", {name:"加入待发送队列"})).toBeDisabled();
+    expect(screen.getByRole("button", {name:"加入队列"})).toBeDisabled();
     expect(onSend).not.toHaveBeenCalled();
     expect(input).toHaveValue("选择 2");
   });
@@ -325,7 +325,7 @@ describe("Composer", () => {
   it("取消请求进行中禁用停止按钮，避免重复提交", () => {
     const onCancel = vi.fn();
     render(<Composer {...base} streaming cancelling onCancel={onCancel} />);
-    const stop = screen.getByRole("button", { name: "正在停止生成" });
+    const stop = screen.getByRole("button", { name: "正在停止" });
     expect(stop).toBeDisabled();
     fireEvent.click(stop);
     expect(onCancel).not.toHaveBeenCalled();
@@ -405,8 +405,8 @@ describe("Composer", () => {
         onDraftChange={onDraftChange}
       />,
     );
-    // 入队按钮可访问名 = "加入待发送队列"。
-    const btn = screen.getByRole("button", { name: "加入待发送队列" });
+    // 入队按钮可访问名 = "加入队列"。
+    const btn = screen.getByRole("button", { name: "加入队列" });
     fireEvent.click(btn);
     expect(onEnqueue).toHaveBeenCalledWith("排队中", []);
     expect(onDraftChange).toHaveBeenLastCalledWith("");
@@ -416,14 +416,14 @@ describe("Composer", () => {
     render(
       <Composer {...base} streaming onEnqueue={vi.fn()} draft="" draftKey="s1" />,
     );
-    expect(screen.queryByRole("button", { name: "加入待发送队列" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "加入队列" })).toBeNull();
     // 停止按钮仍在。
-    expect(screen.getByRole("button", { name: "停止生成" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停止任务" })).toBeInTheDocument();
   });
 
   it("未传 onEnqueue 时 streaming 主按钮显示不可用的入队状态", () => {
     render(<Composer {...base} streaming draft="x" draftKey="s1" />);
-    expect(screen.getByRole("button", { name: "加入待发送队列" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "加入队列" })).toBeDisabled();
   });
 
   // ---------- 输入历史(arrow-key recall)----------

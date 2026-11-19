@@ -7,7 +7,7 @@
  *
  * 通过 `filename` + `content`(文本或 data: URL)渲染;`onCopyText` 提供复制回调。
  */
-import { useEffect, useRef, useState, useSyncExternalStore, lazy, Suspense, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, lazy, Suspense } from "react";
 const OfficeWorkbench = lazy(() => import("./office/OfficeWorkbench"));
 
 import { FileText, Image as ImageIcon } from "lucide-react";
@@ -20,6 +20,7 @@ import {
   codeLanguage,
 } from "@/lib/file-kind";
 import { DocumentCanvas } from "./DocumentCanvas";
+import type { FilePreviewAction } from "./FilePreviewMenu";
 import { importDocxDocument, type ImportedDocument } from "@/lib/docx-document";
 import type { ZipReader } from "@/lib/doc-preview";
 import {
@@ -58,17 +59,18 @@ interface FilePreviewProps {
    * 提供时使用文本提取降级视图；未提供时使用版式预览工作台。
    */
   docExtractor?: (filename: string) => ZipReader | null;
-  fileActions?: ReactNode;
+  fileActions?: readonly FilePreviewAction[];
+  embedded?: boolean;
   path?: string;
   onReload?: () => void;
   active?: boolean;
 }
 
-export function FilePreview({ filename, content, onCopyText, docExtractor, fileActions, path, onReload, active = true }: FilePreviewProps) {
+export function FilePreview({ filename, content, onCopyText, docExtractor, fileActions, path, onReload, active = true, embedded = false }: FilePreviewProps) {
   const kind = detectPreviewKind(filename);
   if (!docExtractor && (kind === "pptx" || kind === "docx" || kind === "sheet" || kind === "pdf")) {
     return <Suspense fallback={<div className="office-workbench__empty" role="status">正在打开文档工作台…</div>}>
-      <OfficeWorkbench filename={filename} content={content} path={path} active={active} fileActions={fileActions} onReload={onReload} onCopyText={onCopyText} />
+      <OfficeWorkbench filename={filename} content={content} path={path} active={active} fileActions={fileActions} onReload={onReload} onCopyText={onCopyText} embedded={embedded} />
     </Suspense>;
   }
 

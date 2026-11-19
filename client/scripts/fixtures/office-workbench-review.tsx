@@ -39,7 +39,10 @@ function App() {
   return <div className="app" data-theme={theme} style={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column', padding: 14, gap: 0, background: 'var(--echo-bg-secondary)' }}>
     <div role="tablist" aria-label="打开的文档" style={{ display: 'flex', flexShrink: 0, alignItems: 'center', gap: 4, padding: '0 8px 10px', overflow: 'auto' }}>{files.map(file => <button key={file} role="tab" aria-selected={filename === file} onClick={() => setFilename(file)} style={{ padding: '8px 13px', border: '1px solid var(--echo-border-default)', borderRadius: 7, background: filename === file ? 'var(--echo-bg-primary)' : 'transparent', color: 'var(--echo-text-strong)', whiteSpace: 'nowrap', fontSize: 12 }}>{file}</button>)}</div>
     <div style={{ flex: 1, minHeight: 0, minWidth: 0 }}>{content ? <OfficeWorkbench key={`${filename}:${reload}`} filename={filename} content={content} onReload={() => setReload(v => v + 1)}
-      fileActions={<><button type="button" title="在文件夹中显示" aria-label="在文件夹中显示"><FolderOpen size={16}/></button><button type="button" title="用系统应用打开" aria-label="用系统应用打开"><ExternalLink size={16}/></button></>}/>
+      fileActions={[
+        { label: '在文件夹中显示', icon: FolderOpen, onSelect: () => {} },
+        { label: '用系统应用打开', icon: ExternalLink, onSelect: () => {} },
+      ]}/>
       : <p role="status">正在读取本地文档…</p>}</div>
   </div>;
 }

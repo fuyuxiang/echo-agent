@@ -1,7 +1,9 @@
 import type { AutomationStatus } from "@/lib/automation-client";
 import { memo, useCallback, useEffect, useId, useRef, useState, useMemo, type ReactNode } from "react";
 import {
+  ArrowRight,
   Check,
+  CircleAlert,
   Pencil,
   FileText,
   MoreHorizontal,
@@ -14,12 +16,13 @@ import {
   ThumbsUp,
   Volume2,
   GitFork,
+  Info,
 } from "lucide-react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { LoadingRow } from "./LoadingRow";
-import { EchoMark } from "./EchoMark";
 import { ExecutionProcess } from "./ExecutionProcess";
 import { ActionMenu } from "./ActionMenu";
+import { Button } from "./Button";
 import { FeedbackDialog } from "./FeedbackDialog";
 import { AttachmentList } from "./AttachmentList";
 import { useTheme } from "./ThemeProvider";
@@ -38,6 +41,7 @@ import { registerDocumentArtifact } from "@/lib/artifact-catalog";
 import { isExecutionSettled, partitionAssistantParts } from "@/lib/execution-process";
 import { executionContinuationPrompt, getExecutionNotice } from "@/lib/execution-notice";
 import { executionToolStates } from "@/lib/tool-execution-state";
+import { computerTaskRunning } from "@/lib/computer-task";
 import { formatMessageTime } from "@/lib/message-time";
 import {
   messageRetryKind,
@@ -202,6 +206,7 @@ export const MessageItem = memo(function MessageItem({
   const desktopWaiting = automationStatus?.task?.phase === "waiting_user" && !automationStatus.task.authorized && automationStatus.task.outcome;
   const notice = desktopWaiting || (outcome?.kind === "stopped" && suppressStoppedNotice)
     || outcome?.kind === "empty" && automationStatus?.task?.scope ? null : outcome;
+  const NoticeIcon = notice?.tone === "neutral" ? Info : CircleAlert;
   const hasToolWork = message.parts.some((part) => part.kind === "tool_call");
   const continueAction = Boolean(notice && notice.kind !== "environment" && !notice.modelSettings && onContinueExecution && hasToolWork);
   const retryAction = Boolean(notice && notice.kind !== "environment" && !notice.modelSettings && !hasToolWork && onRetry);
@@ -306,6 +311,8 @@ export const MessageItem = memo(function MessageItem({
   const generatingAnswer = streaming && waitingForModel && !message.complete && hasFinalAnswer
     && !Array.from(messageExecution.values()).some(execution => execution.state === "in_progress")
     && knowledgeTrace?.personal?.state !== "searching";
+  const generatingInProcess = generatingAnswer && hasExecutionProcess && !waitingReason
+    && automationStatus?.task?.phase !== "waiting_user" && !computerTaskRunning(automationStatus);
   const retryKind = messageRetryKind(message);
   const retryLabel = messageRetryLabel(retryKind, retrying);
   const copyMainLabel = copiedKind === "plain"
@@ -313,6 +320,7 @@ export const MessageItem = memo(function MessageItem({
     : copiedKind === "markdown"
       ? "已复制 Markdown"
       : "复制纯文本";
+  const speechLabel = speaking ? "停止朗读" : "朗读回复";
 
   const toggleSpeak = useCallback(() => {
     if (speaking) {
@@ -423,16 +431,12 @@ export const MessageItem = memo(function MessageItem({
           <span className="execution-turn__label">{executionLabel}</span>
           {executionDescription && <p>{executionDescription}</p>}
         </div>}
-        {!hideIdentity && <div className="msg__header">
-          <span className={`msg__avatar${authorName ? "" : " msg__avatar--echo"}`}>
-            {authorName ? <span aria-hidden="true">{authorName.slice(0, 1)}</span> : (
-              <EchoMark active={streaming && waitingForModel && !message.complete && !runtimeError} />
-            )}
-          </span>
-          {authorName ? <span className="msg__name">{authorName}</span> : <span className="sr-only">EchoAgent</span>}
-        </div>}
+        {!hideIdentity && (authorName ? <div className="msg__header">
+          <span className="msg__avatar" aria-hidden="true">{authorName.slice(0, 1)}</span>
+          <span className="msg__name">{authorName}</span>
+        </div> : <span className="sr-only">EchoAgent</span>)}
         <div className="msg__body">
-          {streaming && waitingForModel && !message.complete && message.parts.length === 0 && !hasKnowledgeTrace && !automationStatus && (
+          {streaming && waitingForModel && !runtimeError && !message.complete && message.parts.length === 0 && !hasKnowledgeTrace && !automationStatus && (
             <LoadingRow key={`${sessionId}:${message.id}`} startedAt={message.startedAt} />
           )}
           {assistantGroups && hasExecutionProcess
@@ -456,6 +460,7 @@ export const MessageItem = memo(function MessageItem({
                 agentResult={[...new Set([message.agentResult, runtimeError].filter(Boolean))].join("\n") || undefined}
                 resultNotice={notice ?? undefined}
                 hasFinalAnswer={hasFinalAnswer}
+                generatingAnswer={generatingInProcess}
                 waitingReason={waitingReason}
                 markdownConfig={markdownConfig}
                 findQuery={findQuery}
@@ -481,23 +486,33 @@ export const MessageItem = memo(function MessageItem({
               {part.text}
             </Markdown>
           ))}
-          {generatingAnswer && (
-            <div className="msg__writing" role="status"><span aria-hidden="true" />正在生成回复</div>
+          {generatingAnswer && !generatingInProcess && (
+            <div className="msg-progress-row msg__writing" role="status"><span aria-hidden="true" />正在生成回复</div>
           )}
           {notice && <div className={`execution-notice execution-notice--${notice.tone}`} role={notice.tone === "neutral" ? "status" : "alert"}>
-            <div className="execution-notice__copy"><strong>{notice.title}</strong><p>{notice.description}</p></div>
-            <div className="execution-notice__actions">
-              <button type="button" data-chat-reading="true" onClick={() => {
-                if (notice.tools[0] && onOpenTool) onOpenTool(notice.tools[0]);
-                else setProcessReveal((value) => value + 1);
-              }}>{notice.tools.length ? "查看相关操作" : "查看原因"}</button>
-              {notice.modelSettings && onOpenModelSettings && <button type="button" onClick={onOpenModelSettings}>模型设置</button>}
-              {notice.securitySettings && onOpenSecuritySettings && <button type="button" onClick={onOpenSecuritySettings}>打开权限设置</button>}
-              {continueAction && <button type="button" onClick={() => void continueExecution()} disabled={continuingExecution || retrying || retryDisabled} aria-busy={continuingExecution}
-                title={retryDisabledReason ?? "先核对已有结果，再继续未完成的工作"}>{continuingExecution ? "正在继续…" : "检查并继续"}</button>}
-              {retryAction && <button type="button" onClick={() => onRetry?.(retryKind)} disabled={retrying || retryDisabled} aria-busy={retrying} title={retryDisabledReason}>{retryLabel}</button>}
+            <NoticeIcon className="execution-notice__icon" size={14} strokeWidth={1.75} aria-hidden="true" />
+            <div className="execution-notice__content">
+              <div className="execution-notice__copy">
+                <strong>{notice.title}</strong>
+                {notice.description && <p>{notice.description}</p>}
+              </div>
+              <div className="execution-notice__actions">
+                <Button size="compact" variant="ghost" aria-label="查看详情" data-chat-reading="true" onClick={() => {
+                  if (notice.tools[0] && onOpenTool) onOpenTool(notice.tools[0]);
+                  else setProcessReveal((value) => value + 1);
+                }}>详情</Button>
+                {notice.modelSettings && onOpenModelSettings && <Button size="compact" variant="ghost" className="execution-notice__recovery" onClick={onOpenModelSettings}>模型设置</Button>}
+                {notice.securitySettings && onOpenSecuritySettings && <Button size="compact" variant="ghost" className="execution-notice__recovery" onClick={onOpenSecuritySettings}>打开权限设置</Button>}
+                {continueAction && <Button size="compact" variant="ghost" className="execution-notice__recovery" onClick={() => void continueExecution()}
+                  disabled={continuingExecution || retrying || retryDisabled} aria-busy={continuingExecution}
+                  title={retryDisabledReason ?? "先核对已有结果，再继续未完成的工作"}>
+                  {continuingExecution ? "正在继续…" : <>检查并继续<ArrowRight aria-hidden="true" /></>}
+                </Button>}
+                {retryAction && <Button size="compact" variant="ghost" className="execution-notice__recovery" onClick={() => onRetry?.(retryKind)}
+                  disabled={retrying || retryDisabled} aria-busy={retrying} title={retryDisabledReason}>{retryLabel}</Button>}
+              </div>
+              {continueError && <p className="execution-notice__action-error">{continueError}</p>}
             </div>
-            {continueError && <p className="execution-notice__action-error">{continueError}</p>}
           </div>}
           {turnFeedback}
         </div>
@@ -508,17 +523,30 @@ export const MessageItem = memo(function MessageItem({
               onClick={() => void copyText(plainText, "plain")} title={copyMainLabel} data-tip={copyMainLabel} aria-label={copyMainLabel} aria-live="polite">
               {copiedKind ? <Check size={14} /> : <Copy size={14} />}
             </button>}
-            {hasAnswerText && <button type="button" className="msg__action-btn" onClick={toggleSpeak} aria-label={speaking ? "停止朗读" : "朗读回复"}
-              data-tip={speaking ? "停止朗读" : "朗读回复"} aria-pressed={speaking}>{speaking ? <Square size={14} /> : <Volume2 size={14} />}</button>}
+            {hasAnswerText && <button type="button" className="msg__action-btn" onClick={toggleSpeak}
+              aria-label={speechLabel} data-tip={speechLabel} data-active={speaking || undefined}>
+              {speaking ? <Square size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
+            </button>}
+            {hasAnswerText && sessionId && <>
+              <button type="button" className="msg__action-btn" aria-label="赞" aria-pressed={feedback === "up"}
+                data-tip={feedback === "up" ? "取消赞" : "赞"} onClick={() => rateReply("up")}>
+                <ThumbsUp size={14} aria-hidden="true" />
+              </button>
+              <button type="button" className="msg__action-btn" aria-label="踩" aria-pressed={feedback === "down"}
+                data-tip={feedback === "down" ? "取消踩" : "踩"} onClick={() => rateReply("down")}>
+                <ThumbsDown size={14} aria-hidden="true" />
+              </button>
+            </>}
+            {hasAnswerText && onContinueInNewConversation && <button type="button" className="msg__action-btn"
+              aria-label="在新对话中继续" data-tip={continuationDisabledReason ?? "在新对话中继续"}
+              disabled={continuationDisabled} title={continuationDisabledReason} onClick={onContinueInNewConversation}>
+              <GitFork size={14} aria-hidden="true" />
+            </button>}
             {showReplyRetry && <button type="button" className="msg__action-btn" onClick={() => onRetry(retryKind)}
               aria-label={retryLabel} data-tip={retryDisabledReason ?? messageRetryTitle(retryKind)} title={retryDisabledReason ?? messageRetryTitle(retryKind)} disabled={retrying || retryDisabled} aria-busy={retrying}>
               <RefreshCw size={14} className={retrying ? "msg__action-spin" : undefined} />
               {(retryKind === "retry" || !hasAnswerText || message.stopReason && message.stopReason !== "end_turn" || retrying) && retryLabel}
             </button>}
-            {sessionId && hasAnswerText && <>
-              <button type="button" className="msg__action-btn" aria-label={feedback === "up" ? "取消赞" : "赞"} data-tip="有帮助" aria-pressed={feedback === "up"} onClick={() => rateReply("up")}><ThumbsUp size={14} /></button>
-              <button type="button" className="msg__action-btn" aria-label={feedback === "down" ? "取消踩" : "踩"} data-tip="需要改进" aria-pressed={feedback === "down"} onClick={() => rateReply("down")}><ThumbsDown size={14} /></button>
-            </>}
             {exporting && <span className="msg__action-status" role="status">正在导出 {exporting.toUpperCase()}…</span>}
             {hasAnswerText && <ActionMenu label="更多回复操作" menuLabel={actionView === "export" ? "选择导出格式" : "当前回复操作"}
               resetKey={`${sessionId}:${message.id}`} contentKey={actionView} onBack={actionView === "export" ? () => setActionView("main") : undefined}
@@ -537,14 +565,9 @@ export const MessageItem = memo(function MessageItem({
                   </button>)}
                 </> : <>
                   <div className="action-menu__heading">当前回复</div>
-                  {onContinueInNewConversation && <button type="button" role="menuitem" className="topbar-actions__item"
-                    disabled={continuationDisabled} title={continuationDisabledReason ?? "保留截至这轮回复的上下文，在新对话中探索其他方向"}
-                    onClick={() => { close(true); onContinueInNewConversation(); }}><GitFork size={15} />在新对话中继续</button>}
-                  {hasAnswerText && <>
-                    <button type="button" role="menuitem" className="topbar-actions__item" data-chat-copy="true" onClick={() => { close(true); void copyText(plainText, "plain"); }}><Copy size={14} />复制纯文本</button>
-                    <button type="button" role="menuitem" className="topbar-actions__item" data-chat-copy="true" onClick={() => { close(true); void copyText(markdownText, "markdown"); }}><FileCode2 size={14} />复制 Markdown</button>
-                    <button type="button" role="menuitem" className="topbar-actions__item" disabled={Boolean(exporting)} onClick={() => setActionView("export")}><Download size={14} />导出本条回复为办公文件</button>
-                  </>}
+                  <button type="button" role="menuitem" className="topbar-actions__item" data-chat-copy="true" onClick={() => { close(true); void copyText(plainText, "plain"); }}><Copy size={14} />复制纯文本</button>
+                  <button type="button" role="menuitem" className="topbar-actions__item" data-chat-copy="true" onClick={() => { close(true); void copyText(markdownText, "markdown"); }}><FileCode2 size={14} />复制 Markdown</button>
+                  <button type="button" role="menuitem" className="topbar-actions__item" disabled={Boolean(exporting)} onClick={() => setActionView("export")}><Download size={14} />导出本条回复为办公文件</button>
                 </>}
               </>}
             </ActionMenu>}

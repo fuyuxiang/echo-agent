@@ -129,8 +129,7 @@ export function FolderTrustDialog({ request, onResolve, onToast }: FolderTrustDi
         </header>
         <div className="trust-dialog__body">
           <p className="trust-dialog__desc">
-            该目录包含项目级配置。仅当你信任仓库内容时，才允许 EchoAgent
-            加载并运行这些配置。
+            信任后将加载并运行此目录的项目配置。请核对路径。
           </p>
           <div className="trust-dialog__path" title={displayPath}>
             <code>{displayPath}</code>

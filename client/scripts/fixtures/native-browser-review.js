@@ -57,7 +57,7 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
     return entry;
   };
   const reply = () => {
-    const jump = document.querySelector('button[aria-label="回到最新消息并恢复自动跟随"]');
+    const jump = document.querySelector('button[aria-label="回到最新消息"]');
     if (visible(jump) && !jump.disabled) jump.click();
     const lastUser = [...document.querySelectorAll('.msg--user')].filter(visible).at(-1);
     return [...document.querySelectorAll('.msg--assistant .msg__body > .markdown-body[data-md-theme="loose"]')]

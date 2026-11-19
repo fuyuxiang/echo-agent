@@ -13,11 +13,11 @@ describe("compact process and actionable result notices", () => {
   it("默认入口中性且只显示耗时，失败计数和原始原因仅展开可见", () => {
     const { container } = render(<ThemeProvider><MessageItem message={failed} streaming={false} /></ThemeProvider>);
     const header = screen.getByRole("button", { name: / · (展开|查看|收起)过程$/ });
-    expect(header).toHaveAccessibleName(/6分15秒/);
+    expect(header).toHaveAccessibleName(/6 分 15 秒/);
     expect(header).not.toHaveTextContent(/项操作|部分|失败/);
     expect(header).toHaveAttribute("aria-expanded", "false");
     expect(container.querySelector(".execution-process__outcome-detail")).toBeNull();
-    expect(screen.getByRole("alert")).toHaveTextContent("文件上传未成功");
+    expect(screen.getByRole("alert")).toHaveTextContent("文件上传失败");
     fireEvent.click(header);
     expect(screen.getByText(/1 项失败操作尚未确认恢复/)).toBeVisible();
   });
@@ -34,7 +34,7 @@ describe("compact process and actionable result notices", () => {
     const onContinue = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve; }));
     const onRetry = vi.fn(), onOpen = vi.fn();
     render(<ThemeProvider><MessageItem message={failed} streaming={false} onContinueExecution={onContinue} onRetry={onRetry} onOpenTool={onOpen} /></ThemeProvider>);
-    fireEvent.click(screen.getByRole("button", { name: "查看相关操作" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "upload-one" }));
     const button = screen.getByRole("button", { name: "检查并继续" });
     fireEvent.click(button); fireEvent.click(button);
@@ -53,24 +53,24 @@ describe("compact process and actionable result notices", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("模型额度已用尽");
     expect(screen.queryByText("quota exhausted")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "模型设置" })); expect(settings).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", { name: "查看原因" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
     await waitFor(() => expect(screen.getByText("quota exhausted")).toBeVisible());
     expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
   it("运行时也默认收起，用户手动展开后不被正式回复抢走控制", () => {
     const message: ChatMessage = { id: "live-default", role: "assistant", complete: false, parts: [{ kind: "thought", text: "分析中" }] };
     const { rerender } = render(<ThemeProvider><MessageItem message={message} streaming /></ThemeProvider>);
-    const header = screen.getByRole("button", { name: /正在分析/ });
+    const header = screen.getByRole("button", { name: /正在思考/ });
     expect(header).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(header);
     rerender(<ThemeProvider><MessageItem message={{ ...message, parts: [...message.parts, { kind: "text", text: "正式回复" }] }} streaming /></ThemeProvider>);
-    expect(screen.getByRole("button", { name: /处理过程/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /正在生成回复/ })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("正式回复")).toBeVisible();
     expect(screen.getByText("正在生成回复")).toBeVisible();
   });
   it("历史缺少结束时间不把现在与旧开始时间的差伪装成执行耗时", () => {
     render(<ThemeProvider><MessageItem message={{ ...failed, completedAt: undefined }} streaming={false} /></ThemeProvider>);
-    expect(screen.getByRole("button", { name: / · (展开|查看|收起)过程$/ }).querySelector(".execution-process__meta")).toBeNull();
+    expect(screen.getByRole("button", { name: "查看过程" })).toHaveTextContent(/^过程$/);
   });
   it("缺权限在对应回复说明影响并打开设置，不提供重复执行入口", () => {
     const settings = vi.fn();

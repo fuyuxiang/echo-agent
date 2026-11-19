@@ -83,7 +83,7 @@ describe("document actions after navigation", () => {
     expect(await screen.findByText("原件缺失 · 已恢复编辑稿 · 版本 2")).toBeVisible();
     expect(screen.getByRole("heading", { name: "已恢复的内容" })).toBeVisible();
     expect(screen.queryByText("未保存的内容")).toBeNull();
-    expect(screen.queryByRole("button", { name: "用系统应用打开" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "用系统应用打开" })).toBeNull();
     expect(screen.queryByRole("button", { name: "让 Agent 修改" })).toBeNull();
     expect(screen.queryByRole("button", { name: "保存到 Word" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^编辑$/ })).toBeNull();
@@ -118,13 +118,14 @@ describe("document actions after navigation", () => {
     const props = { ...missingFilePanelProps(), previewPath: base.path, artifacts: [] };
     render(<ToolSidePanel {...props} />);
     expect(await screen.findByRole("region", { name: "文档工作区" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "用系统应用打开" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "在文件夹中显示" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "更多文件操作" }));
+    expect(screen.getByRole("menuitem", { name: "用系统应用打开" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "在文件夹中显示" })).toBeVisible();
 
     act(() => session.update({ opened: { ...session.snapshot().opened!, sourceMissing: true } }));
 
-    expect(screen.queryByRole("button", { name: "用系统应用打开" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "在文件夹中显示" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "用系统应用打开" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "在文件夹中显示" })).toBeNull();
     expect(screen.getByRole("button", { name: "重新检查原件" })).toBeVisible();
   });
 

@@ -100,13 +100,26 @@ try {
   await page.setViewportSize({width:1120,height:850});await page.goto(`${base}?attachment=1&file=${encodeURIComponent('春日计划.docx')}`);
   await page.locator('.office-workbench__stage .office-page[data-page-rendered=true]').waitFor();
   await page.getByRole('button',{name:'全屏预览',exact:true}).click();
+  const fullscreen = page.getByRole('dialog', { name: '春日计划.docx 文档工作台' });
+  const fullscreenActions = fullscreen.getByRole('button', { name: '更多文件操作' });
+  await fullscreenActions.press('Enter');
+  const fileMenu = page.getByRole('menu', { name: '文件操作', exact: true });
+  await fileMenu.waitFor();
+  assert(await fileMenu.evaluate(menu => {
+    const box = menu.getBoundingClientRect();
+    return menu.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+  }), 'the fullscreen file menu must render above the attachment dialog');
+  await page.keyboard.press('Escape');
+  await fileMenu.waitFor({ state: 'hidden' });
+  assert(await fullscreenActions.evaluate(button => button === document.activeElement), 'closing the menu restores focus inside fullscreen');
   for(let tab=0;tab<24;tab++){await page.keyboard.press('Tab');assert(await page.evaluate(()=>!!document.activeElement?.closest('.office-workbench--expanded')),'fullscreen Tab must stay above the attachment dialog');}
   await page.getByRole('button',{name:'退出全屏预览',exact:true}).focus();await page.keyboard.press('Escape');
   assert.equal(await page.getByRole('dialog',{name:'春日计划.docx',exact:true}).count(),1,'Escape must close only fullscreen');
   assert(await page.getByRole('button',{name:'全屏预览',exact:true}).evaluate(element=>element===document.activeElement),'fullscreen must restore focus');
   const previousReads=await page.evaluate(()=>window.officeReview.fileReads);
   writeFileSync(join(directory,'春日计划.docx'),await Packer.toBuffer(new Document({sections:[{children:[new Paragraph('附件原件已更新，刷新必须读取新版本')]}]})));
-  await page.getByRole('button',{name:'重新读取文档',exact:true}).click();
+  await page.getByRole('button', { name: '更多文件操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '重新加载', exact: true }).click();
   await page.frameLocator('.office-workbench__stage iframe').getByText('附件原件已更新，刷新必须读取新版本',{exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>window.officeReview.fileReads),previousReads+1,'attachment refresh must re-read its binary');
   await page.getByRole('button',{name:'全屏预览',exact:true}).focus();await page.keyboard.press('Escape');assert.equal(await page.getByRole('dialog').count(),0,'second Escape closes the attachment');

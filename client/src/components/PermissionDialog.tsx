@@ -31,7 +31,11 @@ function optionPresentation(option: PermissionOption, groupScope = false): { lab
 }
 
 /** A task-owned decision at the composer edge; persistent grants stay secondary. */
-export function PermissionInlineCard({ sessionId, groupScope = false }: { sessionId: string | null; groupScope?: boolean }) {
+export function PermissionInlineCard({ sessionId, groupScope = false, visible = true }: {
+  sessionId: string | null;
+  groupScope?: boolean;
+  visible?: boolean;
+}) {
   const scope = groupScope ? "本专家团" : "本任务";
   const head = usePermissionStore(selectPermissionForSession(sessionId));
   const count = usePermissionStore(s => sessionId ? s.queues[sessionId]?.length ?? 0 : 0);
@@ -45,6 +49,7 @@ export function PermissionInlineCard({ sessionId, groupScope = false }: { sessio
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const [previewLong, setPreviewLong] = useState(false);
   const previewRef = useRef<HTMLPreElement>(null);
+  const cardRef = useRef<HTMLElement>(null);
   const previewId = useId();
   const content = useMemo(() => head ? permissionPresentation(head) : null, [head]);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
@@ -53,7 +58,7 @@ export function PermissionInlineCard({ sessionId, groupScope = false }: { sessio
   const activeRequestRef = useRef(head?.requestId);
   activeRequestRef.current = head?.requestId;
   const pendingRef = useRef(new Set<string>());
-  const { style: menuStyle } = useAnchoredFloating(menuTriggerRef, menuRef, menuOpen, {
+  const { style: menuStyle } = useAnchoredFloating(menuTriggerRef, menuRef, menuOpen && visible, {
     preferredPlacement: "top", align: "end", width: "content", maxWidth: 360, estimatedHeight: 180, maxHeight: 260,
   });
 
@@ -85,6 +90,7 @@ export function PermissionInlineCard({ sessionId, groupScope = false }: { sessio
   }, [confirmingAlways]);
 
   useEffect(() => {
+    if (!visible) { setMenuOpen(false); return; }
     if (!menuOpen) return;
     const frame = requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus());
     const close = (event: MouseEvent) => {
@@ -92,16 +98,19 @@ export function PermissionInlineCard({ sessionId, groupScope = false }: { sessio
     };
     document.addEventListener("mousedown", close);
     return () => { cancelAnimationFrame(frame); document.removeEventListener("mousedown", close); };
-  }, [menuOpen]);
+  }, [menuOpen, visible]);
 
   useEffect(() => {
-    if (!sessionId || !head || priorityRequestId !== head.requestId) return;
+    if (!visible || !sessionId || !head || priorityRequestId !== head.requestId) return;
     const frame = requestAnimationFrame(() => {
-      document.getElementById(`permission-${head.requestId}`)?.focus();
+      const card = cardRef.current;
+      if (!card || card.closest("[hidden]")) return;
+      card.focus();
+      if (card.ownerDocument.activeElement !== card) return;
       consumePriority(head.requestId, sessionId);
     });
     return () => cancelAnimationFrame(frame);
-  }, [sessionId, head?.requestId, priorityRequestId, consumePriority]);
+  }, [sessionId, head?.requestId, priorityRequestId, consumePriority, visible]);
 
   if (!head || !content) return null;
   const { category, title, purpose, preview, previewKind, details } = content;
@@ -149,7 +158,7 @@ export function PermissionInlineCard({ sessionId, groupScope = false }: { sessio
   };
 
   return (
-    <section id={`permission-${head.requestId}`} className="perm-inline perm-inline--tool" aria-label="操作授权" aria-busy={resolvingId != null} tabIndex={-1}>
+    <section ref={cardRef} id={`permission-${head.requestId}`} className="perm-inline perm-inline--tool" aria-label="操作授权" aria-busy={resolvingId != null} tabIndex={-1}>
       <div className="perm-inline__head">
         <Icon size={15} aria-hidden="true" />
         <p className="perm-inline__title">{title}</p>
@@ -198,7 +207,7 @@ export function PermissionInlineCard({ sessionId, groupScope = false }: { sessio
           </button>}
         </div>
       </footer>}
-      {menuOpen && createPortal(<div ref={menuRef} id={`permission-options-${head.requestId}`}
+      {menuOpen && visible && createPortal(<div ref={menuRef} id={`permission-options-${head.requestId}`}
         className="permission-options" role="menu" aria-label="更多授权选项" style={menuStyle}
         onKeyDown={event => {
           if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setMenuOpen(false); menuTriggerRef.current?.focus(); }

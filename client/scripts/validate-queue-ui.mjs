@@ -13,11 +13,18 @@ export async function validateQueueUi(page, output, origin = 'http://127.0.0.1:1
       await page.setViewportSize({ width, height });
       await page.goto(`${origin}/__ui-review?surface=queue&theme=${theme}`);
       const queue = page.getByRole('list', { name: '待发送队列' });
-      await queue.getByText('待发送队列(20)').waitFor();
+      const toggle = page.getByRole('button', { name: /^待发送 20 条/ });
+      await toggle.waitFor();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+      assert.equal(await queue.count(), 0);
+      await toggle.press('Enter');
+      await queue.waitFor();
+      assert.equal(await queue.getByRole('listitem').count(), 20);
       const geometry = await page.evaluate(() => {
         const rect = selector => {
           const { top, bottom, height } = document.querySelector(selector).getBoundingClientRect();
-          return { top, bottom, height };
+          const element = document.querySelector(selector);
+          return { top, bottom, height, overflow: element.scrollWidth > element.clientWidth + 1 };
         };
         return { queue: rect('.queue-panel'), composer: rect('.echo-composer'),
           history: rect('.chatview__scroll'), overflow: document.documentElement.scrollWidth > innerWidth + 1 };
@@ -27,6 +34,7 @@ export async function validateQueueUi(page, output, origin = 'http://127.0.0.1:1
       assert.ok(geometry.composer.top >= 0 && geometry.composer.bottom <= height, 'queue must leave composer in view');
       assert.ok(geometry.history.height >= 80, 'queue must leave room to read the conversation');
       assert.ok(!geometry.overflow, 'queue must not overflow horizontally');
+      assert.ok(!geometry.queue.overflow, 'queue contents must not scroll horizontally');
       const edit = page.getByRole('button', { name: '编辑消息：待发送消息 20：核对中文文件与任务交付结果。' });
       await edit.focus();
       await page.keyboard.press('Enter');

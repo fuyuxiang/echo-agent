@@ -205,7 +205,7 @@
 }
 
 .chatview__footer {
-  padding: 10px 24px 16px;
+  padding: 6px 24px 10px;
 }
 
 .chatview__footer .echo-composer {
@@ -226,66 +226,21 @@
   box-shadow: none;
 }
 
-.msg--assistant .msg__avatar img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.msg--assistant .msg__avatar--echo {
-  background: transparent;
-  overflow: visible;
-  border-radius: 0;
-}
-
-.echo-mark {
-  position: relative;
-  display: block;
+.waiting-indicator {
+  display: inline-block;
   flex: none;
-  width: 24px;
-  height: 24px;
-  line-height: 0;
-  border-radius: 24%;
-  overflow: visible;
-}
-
-.echo-mark > img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  border-radius: inherit;
-  user-select: none;
-  -webkit-user-drag: none;
-}
-
-.echo-mark::after {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  border: 1px solid rgb(41 143 244 / 55%);
-  border-radius: 28%;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.echo-mark--active::after {
-  animation: echo-mark-breathe 2.4s ease-in-out infinite;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--echo-text-tertiary);
+  animation: processStatusPulse 1.4s ease-in-out infinite;
   animation-play-state: paused;
 }
 
-.echo-mark--active[data-motion="on"]::after { animation-play-state: running; }
-
-@keyframes echo-mark-breathe {
-  0%, 100% { opacity: 0.2; transform: scale(0.98); }
-  50% { opacity: 0.7; transform: scale(1.06); }
-}
+.waiting-indicator[data-motion="on"] { animation-play-state: running; }
 
 @media (prefers-reduced-motion: reduce) {
-  .echo-mark::after {
-    animation: none !important;
-    opacity: 0;
-  }
+  .waiting-indicator { animation: none; }
 }
 
 .msg--assistant .msg__name {
@@ -303,3 +258,32 @@
   border-color: var(--ui-line);
   background: var(--ui-surface);
 }
+
+
+.chatview__attention-tabs,
+.queue-disclosure__trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chatview__attention-tabs { flex-wrap: wrap; margin-bottom: 6px; }
+.chatview__attention-tabs > button[aria-pressed="true"] {
+  background: var(--echo-control-selected-bg);
+  color: var(--echo-control-selected-fg);
+}
+.queue-disclosure__trigger {
+  min-height: 32px;
+  margin-bottom: 4px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--echo-radius-control);
+  background: transparent;
+  color: var(--echo-text-medium);
+  font: inherit;
+  font-size: var(--echo-caption-size);
+  cursor: pointer;
+}
+.queue-disclosure__trigger:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
+.queue-disclosure__trigger[aria-expanded="true"] > svg:last-child { transform: rotate(180deg); }
+.queue-disclosure__attention { color: var(--echo-status-warning); }
+.queue-disclosure > .queue-panel { background: var(--echo-surface-content); }

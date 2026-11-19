@@ -2201,7 +2201,7 @@ export function CodingWorkbench({
         </header>
         <div className="coding-workbench__welcome">
           <FolderGit2 size={32} />
-          <h1>打开代码库开始开发</h1>
+          <h1>打开代码库</h1>
           <p>在同一个工作台里理解代码、交给 Agent 实现、审阅变更并交付。</p>
           <button
             type="button"
@@ -2902,7 +2902,7 @@ export function CodingWorkbench({
       )}
       <aside
         className="echo-theia-agent"
-        aria-label="Coding Agent"
+        aria-label="开发助手"
         aria-hidden={!theiaAgentOpen}
       >
         <div className="echo-theia-agent__heading">
@@ -3073,6 +3073,7 @@ export function CodingWorkbench({
           <div className="echo-theia-agent__queue">
             <QueuePanel
               sessionId={followupQueue.queueId}
+              collapsible
               awaitingQuestion={!followupQueue.manualReady}
               blockedReason={
                 task?.phase === "verifying"

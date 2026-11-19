@@ -75,9 +75,11 @@ try {
   await page.goto(`${base}?surface=workbench&state=files`);
   await openWorkspaceView(page, "成果");
   await page.getByRole("button", {name:/^report.md/}).click();
-  await page.getByRole("button", {name:"在文件夹中显示",exact:true}).click();
+  await page.getByRole("button", { name: "更多文件操作", exact: true }).click();
+  await page.getByRole("menuitem", { name: "在文件夹中显示", exact: true }).click();
   await page.waitForFunction(() => window.workbenchCalls.some(c => c.command === "reveal_in_folder" && c.args.path.endsWith("report.md")));
-  await page.getByRole("button", {name:"用系统应用打开",exact:true}).click();
+  await page.getByRole("button", { name: "更多文件操作", exact: true }).click();
+  await page.getByRole("menuitem", { name: "用系统应用打开", exact: true }).click();
   await page.waitForFunction(() => window.workbenchCalls.some(c => c.command === "open_path" && c.args.path.endsWith("report.md")));
   await page.goto(`${base}?surface=home&automaticWorkspace=1`);
   const picker = page.getByRole("button", {name:/工作目录：默认任务目录/});

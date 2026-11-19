@@ -222,7 +222,8 @@ describe("ProjectsPanel 项目操作菜单", () => {
     expect(within(menu).queryByRole("menuitem", { name: "移除本机记录" })).not.toBeInTheDocument();
     expect(vi.mocked(teamProjectRequest).mock.calls.map(([action]) => action)).toEqual(["list"]);
     fireEvent.click(within(menu).getByRole("menuitem", { name: "开始项目对话" }));
-    const input = await screen.findByPlaceholderText(/执行报告对项目成员可见/);
+    const input = await screen.findByRole("textbox", { name: "输入问题或任务" });
+    expect(screen.getByText("执行报告对项目成员可见")).toBeVisible();
     await waitFor(() => expect(input).toHaveFocus());
     expect(startTeamWork).not.toHaveBeenCalled();
   });

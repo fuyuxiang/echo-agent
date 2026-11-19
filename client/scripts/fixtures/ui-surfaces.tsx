@@ -588,8 +588,8 @@ Object.assign(window, {
           sessionId: args.sessionId,
           mode: query.get("automationMode") || (query.get("state") === "browser-paused" ? "browser_use" : query.get("state") === "computer-paused" ? "computer_use" : "default"),
           paused: ["browser-paused", "computer-paused"].includes(query.get("state") || ""),
-          // A chat execution fixture has no separate native desktop task.
-          task: query.get("surface") === "execution" && !query.has("automationMode") ? undefined
+          // Plain chat scenarios have no separate native desktop task.
+          task: query.get("noNativeTask") === "1" || (query.get("surface") === "execution" && !query.has("automationMode")) ? undefined
             : { phase: query.get("surface") === "execution"
               ? query.get("state") === "running" ? "running" : query.get("state") === "error" ? "failed" : "completed" : "paused",
               reason: null, scope: "隔离界面验收", authorized: true, generation: 1,

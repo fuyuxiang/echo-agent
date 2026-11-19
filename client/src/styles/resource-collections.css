@@ -152,3 +152,26 @@ button.resource-row__main { padding: 0; border: 0; background: transparent; colo
 }
 
 .resource-list[data-view="cards"] .sk-inst-row .resource-switch-status { margin-right: auto; }
+
+
+.project-templates > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  padding: 8px 0;
+  color: var(--echo-text-strong);
+  cursor: pointer;
+}
+.project-templates > summary::-webkit-details-marker { display: none; }
+.project-templates > summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border: solid var(--echo-text-medium);
+  border-width: 0 1.5px 1.5px 0;
+  margin-inline-start: 2px;
+  transform: rotate(-45deg);
+}
+.project-templates[open] > summary::after { transform: rotate(45deg); }
+.project-templates[open] > summary { margin-bottom: 8px; }

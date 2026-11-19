@@ -53,9 +53,16 @@ describe("attachment previews", () => {
     trigger.focus(); fireEvent.click(trigger);
     await screen.findByRole("dialog");
     await waitFor(() => expect(screen.getByRole("button", { name: "关闭附件预览" })).toHaveFocus());
-    const last = screen.getByRole("button", { name: "用系统应用打开" });
+    const last = await screen.findByRole("region", { name: "图片预览画布" });
     last.focus(); fireEvent.keyDown(last, { key: "Tab" });
-    expect(screen.getByRole("button", { name: "关闭附件预览" })).toHaveFocus();
+    const more = screen.getByRole("button", { name: "更多文件操作" });
+    expect(more).toHaveFocus();
+    fireEvent.click(more);
+    const menu = await screen.findByRole("menu", { name: "文件操作" });
+    fireEvent.keyDown(within(menu).getByRole("menuitem", { name: "复制文件路径" }), { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "文件操作" })).toBeNull();
+    expect(screen.getByRole("dialog")).toBeVisible();
+    expect(more).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
@@ -148,7 +155,8 @@ describe("attachment previews", () => {
     const image = await screen.findByRole("img", { name: "retry.png" });
     fireEvent.error(image);
     expect(await screen.findByRole("alert")).toHaveTextContent("图片无法显示");
-    fireEvent.click(screen.getByRole("button", { name: "用系统应用打开" }));
+    fireEvent.click(screen.getByRole("button", { name: "更多文件操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "用系统应用打开" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_path", { path: "/draft/retry.png", cwd: null }));
   });
 
@@ -178,9 +186,10 @@ describe("attachment previews", () => {
     vi.mocked(invoke).mockImplementation(((command: string, args: Record<string, unknown>) => command === 'attachment_preview_data' ? Promise.resolve(binary) : native(command, args)) as typeof invoke);
     render(<AttachmentList paths={['/draft/report.docx']} />);
     fireEvent.click(screen.getByRole('button', { name: '预览附件 report.docx' }));
-    await screen.findByRole('button', { name: '重新读取文档' });
+    await screen.findByRole('button', { name: '全屏预览' });
     binary = 'updated-version';
-    fireEvent.click(screen.getByRole('button', { name: '重新读取文档' }));
+    fireEvent.click(screen.getByRole('button', { name: '更多文件操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '重新加载' }));
     await waitFor(() => expect(engines.load).toHaveBeenLastCalledWith('report.docx', expect.stringContaining('updated-version'), expect.any(AbortSignal)));
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'attachment_preview_data')).toHaveLength(2);
     const expand = screen.getByRole('button', { name: '全屏预览' }); expand.focus(); fireEvent.click(expand);
@@ -188,8 +197,10 @@ describe("attachment previews", () => {
     expect(document.activeElement?.closest('.office-workbench--expanded')).not.toBeNull();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     expect(screen.getByRole('dialog', { name: 'report.docx' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '退出全屏预览' })).toBeNull(); expect(expand).toHaveFocus();
-    fireEvent.keyDown(expand, { key: 'Escape' }); expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('button', { name: '退出全屏预览' })).toBeNull();
+    const restoredExpand = screen.getByRole('button', { name: '全屏预览' });
+    expect(restoredExpand).toHaveFocus();
+    fireEvent.keyDown(restoredExpand, { key: 'Escape' }); expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it("reports system-open failures in the dialog and retains the preview", async () => {
@@ -197,7 +208,8 @@ describe("attachment previews", () => {
     render(<AttachmentList paths={["/draft/open.txt"]} />);
     fireEvent.click(screen.getByRole("button", { name: "预览附件 open.txt" }));
     await screen.findByRole("dialog");
-    fireEvent.click(screen.getByRole("button", { name: "用系统应用打开" }));
+    fireEvent.click(screen.getByRole("button", { name: "更多文件操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "用系统应用打开" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("预览受限");
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });

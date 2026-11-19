@@ -199,7 +199,7 @@ it("已结束任务的追问保留关联，另起任务明确脱离旧任务", a
   fireEvent.change(screen.getByPlaceholderText(/说明目标/),{target:{value:"增加教师角色"}});
   fireEvent.click(screen.getByRole("button",{name:"发送"}));
   await waitFor(()=>expect(groupSend).toHaveBeenCalledWith(group.id,expect.objectContaining({sourceRequestId:"original",requestId:null,newRequest:true,text:"增加教师角色"})));
-  fireEvent.click(screen.getByRole("button",{name:"另起任务"}));
+  fireEvent.change(screen.getByRole("combobox", { name: "消息归属" }), { target: { value: "new" } });
   fireEvent.change(screen.getByPlaceholderText(/说明目标/),{target:{value:"另做一个报表"}});
   fireEvent.click(screen.getByRole("button",{name:"发送"}));
   await waitFor(()=>expect(groupSend).toHaveBeenLastCalledWith(group.id,expect.objectContaining({sourceRequestId:null,requestId:null,newRequest:true,text:"另做一个报表"})));
@@ -303,11 +303,11 @@ it("新旧附件超限时保留输入，调整历史附件后可发送，选择�
   await screen.findByText(/新附件与沿用的历史附件合计最多 20 个/);
   expect(groupSend).not.toHaveBeenCalled();
   expect(screen.getByPlaceholderText(/说明目标/)).toHaveValue("结合新资料继续");
-  fireEvent.click(screen.getByText("沿用此前任务附件（已选 20/20）"));
+  fireEvent.click(screen.getByText("沿用附件 · 20/20"));
   fireEvent.click(screen.getByRole("checkbox", { name: "资料-0.txt" }));
   view.unmount();
   view = render(<GroupWorkspace cwd="/work" models={[{ id: "test", label: "测试" }]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} />);
-  expect(screen.getByText("沿用此前任务附件（已选 19/20）")).toBeInTheDocument();
+  expect(screen.getByText("沿用附件 · 19/20")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   await waitFor(() => expect(groupSend).toHaveBeenCalledWith(current.id, expect.objectContaining({ sourceRequestId: "original", sourceAttachmentPaths: paths.slice(1), attachments: ["/work/新增资料.txt"] })));
 });
@@ -323,11 +323,11 @@ it("执行中补充附件超限可转为关联新一轮，保留原任务和输�
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   fireEvent.click(await screen.findByRole("button", { name: "改为关联新一轮，选择需要沿用的附件" }));
   expect(screen.getByPlaceholderText(/说明目标/)).toHaveValue("结合追加资料检查结果");
-  fireEvent.click(screen.getByText("沿用此前任务附件（已选 20/20）"));
+  fireEvent.click(screen.getByText("沿用附件 · 20/20"));
   fireEvent.click(screen.getByRole("button", { name: "不沿用附件" }));
   view.unmount();
   view = render(<GroupWorkspace cwd="/work" models={[{ id: "test", label: "测试" }]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} />);
-  expect(screen.getByText("沿用此前任务附件（已选 0/20）")).toBeInTheDocument();
+  expect(screen.getByText("沿用附件 · 0/20")).toBeInTheDocument();
   expect(useGroupStore.getState().current?.works[0].status).toBe("running");
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   await waitFor(() => expect(groupSend).toHaveBeenCalledWith(current.id, expect.objectContaining({ newRequest: true, requestId: null, sourceRequestId: "running-request", sourceAttachmentPaths: [], attachments: ["/work/追加资料.txt"] })));

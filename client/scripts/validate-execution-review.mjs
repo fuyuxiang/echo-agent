@@ -79,7 +79,7 @@ export async function validateExecutionReview(page, output) {
   await page.screenshot({ path: join(output, "execution-team-error-1280-dark.png") });
   await page.goto(`${base}/__ui-review?surface=execution&state=running&theme=light`);
   await page.locator('[data-execution-ready="true"]').waitFor();
-  await page.getByRole("button", { name: "停止生成", exact: true }).click();
+  await page.getByRole("button", { name: "停止任务", exact: true }).click();
   await page.getByText("已停止（发送新消息可继续此任务）", { exact: true }).waitFor();
   assert.ok(await page.getByRole("button", { name: "追加流式内容", exact: true }).isDisabled(), "stop ACK leaves the task streaming");
   assert.equal(await page.locator(".execution-process--running").count(), 0, "stop ACK leaves a running process header");

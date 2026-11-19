@@ -1,6 +1,7 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode, type ComponentProps } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import { Check, ExternalLink, LoaderCircle, X } from "lucide-react";
+import { useElementSize } from "@/lib/use-element-size";
 import { codingApi } from "./lib/tauri-api";
 import { useCodingActionScope } from "./hooks/useCodingActionScope";
 import { prepareLocalMonaco, syncLocalMonacoTheme } from "./lib/local-monaco";
@@ -70,6 +71,10 @@ export function reviewLanguage(path: string): string {
 
 export function TheiaTaskReview({ root, taskId, path, onClose, onOpenFile, onReviewed, onToast }: Props) {
   type ReviewDiff = { original: string; modified: string; binary: boolean; modifiedHash: string };
+  const reviewRef = useRef<HTMLElement>(null);
+  const reviewWidth = useElementSize(reviewRef, "width");
+  const [layout, setLayout] = useState<"inline" | "side-by-side">();
+  const sideBySide = layout ? layout === "side-by-side" : reviewWidth === null || reviewWidth >= 760;
   const viewSequence = useRef(0);
   const diffSequence = useRef(0);
   const [storedDiff, setStoredDiff] = useState<{ view: number; instance: number; value: ReviewDiff } | null>(null);
@@ -152,10 +157,14 @@ export function TheiaTaskReview({ root, taskId, path, onClose, onOpenFile, onRev
   };
 
   return (
-    <section className="echo-theia-review" aria-label={`任务差异 ${path}`}>
+    <section ref={reviewRef} className="echo-theia-review" aria-label={`任务差异 ${path}`}>
       <header className="echo-theia-review__header">
-        <div><strong>任务差异</strong><span>{path}</span></div>
-        <div>
+        <div><strong>任务差异</strong><span title={path}>{path}</span></div>
+        <div className="echo-theia-review__actions">
+          {diff && !diff.binary && <button type="button" aria-pressed={sideBySide}
+            aria-label="分栏查看差异" onClick={() => setLayout(sideBySide ? "inline" : "side-by-side")}>
+            {sideBySide ? "分栏" : "行内"}
+          </button>}
           <button type="button" onClick={onOpenFile}><ExternalLink size={14} />打开文件</button>
           <button type="button" disabled={!diff?.modifiedHash || reviewing || (diff.binary ? !binaryAcknowledged : !editorMounted || !!editorError)} onClick={() => void markReviewed()}>
             {reviewing ? <LoaderCircle size={14} className="is-spinning" /> : <Check size={14} />}
@@ -198,7 +207,8 @@ export function TheiaTaskReview({ root, taskId, path, onClose, onOpenFile, onRev
             // This read-only review needs no editing gutter. Its debounced menu
             // events can outlive the widget (microsoft/monaco-editor#4581).
             renderGutterMenu: false,
-            renderSideBySide: true, minimap: { enabled: false }, automaticLayout: true,
+            renderSideBySide: sideBySide, useInlineViewWhenSpaceIsLimited: false,
+            minimap: { enabled: false }, automaticLayout: true,
           }}
         />
       </DiffEditorBoundary>}

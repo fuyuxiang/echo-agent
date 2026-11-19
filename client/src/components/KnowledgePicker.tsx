@@ -261,7 +261,7 @@ export function KnowledgePicker({
           }}>
           <div className="knowledge-picker__heading">知识来源</div>
           <div className="knowledge-picker__hint">
-            可多选。未选择时不会读取任何知识库；选择只作用于当前任务。
+            可多选，仅本任务生效。留空时不检索。
           </div>
 
           <button
@@ -345,7 +345,7 @@ export function KnowledgePicker({
           {organizationScopeInvalid && (
             <div className="knowledge-picker__source-warning" role="alert">
               <strong>原组织范围已不可用</strong>
-              <span>当前任务不会自动扩大检索范围，请在上方重新选择。</span>
+              <span>请重新选择。系统不会自动扩大检索范围。</span>
             </div>
           )}
 

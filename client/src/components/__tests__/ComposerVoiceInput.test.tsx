@@ -115,7 +115,7 @@ describe("Composer continuous voice input", () => {
     const lateResult = rounds[0].onresult!;
     const lateEnd = rounds[0].onend!;
     act(() => rounds[0].onresult?.(result("待发送语音", false)));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: streaming ? "加入待发送队列" : "发送" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: streaming ? "加入队列" : "发送" })));
     expect(streaming ? onEnqueue : props.onSend).toHaveBeenCalledExactlyOnceWith("待发送语音", []);
     expect(rounds[0].abort).toHaveBeenCalledOnce();
     act(() => { lateResult(result("发送后的迟到文字")); lateEnd(); vi.advanceTimersByTime(1000); });

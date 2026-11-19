@@ -146,9 +146,11 @@ try {
       }
       if (surface === "conversation" && process.argv.includes("--plan-review")) {
         assert.equal(await page.locator(".queue-row--paused").count(),1,"The review must seed its paused message before approval");
-        await page.getByRole("button",{name:"查看并确认计划",exact:true}).click();
+        await page.getByRole("button",{name:"查看计划",exact:true}).click();
         await page.getByRole("group",{name:"计划审批",exact:true}).getByRole("button",{name:"批准执行",exact:true}).click();
         await page.getByRole("group",{name:"计划审批",exact:true}).waitFor({state:"hidden"});
+        const queueDisclosure = page.getByRole("button", { name: /^待发送 \d+ 条/, expanded: false });
+        if (await queueDisclosure.isVisible()) await queueDisclosure.click();
         await page.locator(".queue-row--paused").first().waitFor();
         evidence.push({spec,theme,width,height,font,state:"approved-paused-queue",...await page.evaluate(inspectRenderedColors)});
       }

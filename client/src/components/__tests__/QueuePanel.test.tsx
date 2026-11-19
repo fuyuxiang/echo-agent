@@ -23,6 +23,18 @@ describe("QueuePanel", () => {
     expect(screen.getByText("第二条")).toBeInTheDocument();
   });
 
+  it("收起队列时操作不可聚焦，展开后仍能修改或删除原条目", () => {
+    useMessageQueueStore.getState().enqueue("s1", "第一条");
+    render(<QueuePanel sessionId="s1" collapsible />);
+    const toggle = screen.getByRole("button", { name: "待发送 1 条" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "删除" })).toBeNull();
+    fireEvent.click(toggle);
+    expect(screen.getByRole("list", { name: "待发送队列" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    expect(screen.queryByRole("button", { name: "待发送 1 条" })).toBeNull();
+  });
+
   it("删除按钮从队列移除条目", () => {
     const s = useMessageQueueStore.getState();
     s.enqueue("s1", "第一条");

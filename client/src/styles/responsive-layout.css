@@ -370,14 +370,6 @@
     gap: 24px;
   }
 
-  .echo-composer--home .echo-composer__input {
-    min-height: 56px;
-  }
-
-  .echo-composer--home .echo-composer__footer {
-    height: 44px;
-  }
-
   .chatview__inner,
   .chatview__footer {
     padding-left: 24px;

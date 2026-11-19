@@ -7,7 +7,7 @@ import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-
 const output = reviewOutput(mkdtempSync(join(tmpdir(), "echo-home-review-")));
 const server = await createUiReviewServer(0);
 const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review`;
-const initialHint = "从一个问题、一个想法，或一份文件开始";
+const initialHint = "描述你的任务";
 const evidence = [];
 let browser;
 try {
@@ -95,10 +95,10 @@ try {
       await page.getByRole("menuitem", { name: "添加文件", exact: true }).click();
       await page.waitForFunction(hint => document.querySelector(".echo-composer__input").placeholder === hint, hint);
     };
-    await addFile("想如何处理这份文件？");
+    await addFile("如何处理此文件？");
     await inspect("one-file");
     await input.fill("整理成项目要点，保留我的原始要求。");
-    await addFile("想基于这些文件完成什么？");
+    await addFile("这些文件用来做什么？");
     assert.equal(await page.getByRole("button", { name: "移除附件", exact: true }).count(), 2);
     assert.equal(await input.inputValue(), "整理成项目要点，保留我的原始要求。");
     await inspect("multiple-files");
@@ -108,9 +108,9 @@ try {
     await page.reload({ waitUntil: "networkidle" });
     await applyFont();
     assert.equal(await input.inputValue(), "整理成项目要点，保留我的原始要求。");
-    assert.equal(await input.getAttribute("placeholder"), "想基于这些文件完成什么？");
+    assert.equal(await input.getAttribute("placeholder"), "这些文件用来做什么？");
     await page.getByRole("button", { name: "移除附件", exact: true }).last().click();
-    assert.equal(await input.getAttribute("placeholder"), "想如何处理这份文件？");
+    assert.equal(await input.getAttribute("placeholder"), "如何处理此文件？");
     await page.getByRole("button", { name: "移除附件", exact: true }).click();
     assert.equal(await input.getAttribute("placeholder"), initialHint);
     assert.ok(await input.evaluate(element => element === document.activeElement));

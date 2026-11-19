@@ -8,7 +8,7 @@ export interface ExecutionNotice {
   kind: "runtime" | "delivery" | "stopped" | "empty" | "environment";
   tone: "error" | "warning" | "neutral";
   title: string;
-  description: string;
+  description?: string;
   tools: ToolCallView[];
   modelSettings?: boolean;
   securitySettings?: boolean;
@@ -35,6 +35,18 @@ function deliveryKind(tool: ToolCallView): Delivery | undefined {
 }
 
 const labels: Record<Delivery, string> = { file: "文件操作", send: "消息发送", upload: "文件上传", publish: "发布操作" };
+const deliveryTitles = {
+  file: { failed: "文件保存失败", pending: "文件保存结果待确认" },
+  send: { failed: "消息发送失败", pending: "消息发送结果待确认" },
+  upload: { failed: "文件上传失败", pending: "文件上传结果待确认" },
+  publish: { failed: "发布失败", pending: "发布结果待确认" },
+  computer: { failed: "电脑操作失败", pending: "电脑操作结果待确认" },
+};
+
+function hasWritePermissionError(tool: ToolCallView): boolean {
+  return tool.content.some(part => part.type === "text" &&
+    /\b(?:EACCES|EPERM|permission denied|access denied)\b|(?:没有|无|缺少)写入权限/i.test(part.text));
+}
 
 export function getExecutionNotice(message: ChatMessage, active = false, runtimeError?: string): ExecutionNotice | null {
   if (message.role !== "assistant" || active || !message.complete || message.cancelTrigger === "send_now") return null;
@@ -45,10 +57,8 @@ export function getExecutionNotice(message: ChatMessage, active = false, runtime
     && states.get(tool.toolCallId)?.state !== "completed" && !recovered.has(tool.toolCallId));
   const historyIncomplete = message.cancellationCategory === "session_replay_incomplete";
   const uncertain = historyIncomplete || affected.some((tool) => states.get(tool.toolCallId)?.state === "pending");
-  const effects = [...new Set(affected.map((tool) => {
-    const kind = deliveryKind(tool);
-    return kind ? labels[kind] : "电脑操作";
-  }))].join("、");
+  const affectedKinds = [...new Set(affected.map(tool => deliveryKind(tool) ?? "computer"))];
+  const effects = affectedKinds.map(kind => kind === "computer" ? "电脑操作" : labels[kind]).join("、");
   const impact = affected.length ? `${effects}${uncertain ? "的结果尚未确认，请先检查已有结果，避免重复操作。" : "未成功，请检查目标结果后再继续。"}` : "已有内容已保留。";
   const reason = message.stopReason;
   const category = message.cancellationCategory;
@@ -83,10 +93,14 @@ export function getExecutionNotice(message: ChatMessage, active = false, runtime
     return { kind: "runtime", tone: "error", title, description: impact, tools: affected,
       ...(quota ? { modelSettings: true } : {}) };
   }
-  if (affected.length) return {
-    kind: "delivery", tone: "warning", title: uncertain ? "有操作的结果尚未确认" : "有操作未成功",
-    description: impact, tools: affected,
-  };
+  if (affectedKinds.length) {
+    const kind = affectedKinds.length === 1 ? affectedKinds[0] : undefined;
+    const titles = kind ? deliveryTitles[kind] : { failed: "部分操作失败", pending: "操作结果待确认" };
+    const description = uncertain ? `先核对${kind ? "已有" : effects}结果，避免重复操作。`
+      : kind === "file" && affected.every(hasWritePermissionError) ? "没有写入权限。"
+        : kind ? undefined : `${effects}未成功。`;
+    return { kind: "delivery", tone: "warning", title: uncertain ? titles.pending : titles.failed, description, tools: affected };
+  }
   // Missing replay receipts alone do not establish a failure or a success.
   // Keep diagnostic uncertainty inside the disclosure unless a delivery action
   // requires the user's attention above.

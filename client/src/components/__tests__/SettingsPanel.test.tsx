@@ -754,7 +754,7 @@ describe("SettingsPanel", () => {
       expect(desktopPreferencesSave).toHaveBeenCalledWith(false);
       expect(toggle).not.toBeChecked();
     });
-    expect(screen.getByRole("status")).toHaveTextContent("关闭主窗口将停止任务执行和自动化调度");
+    expect(screen.getByRole("status")).toHaveTextContent("关闭窗口会停止任务和调度");
     expect(screen.getByText("已关闭后台运行，下次关闭窗口将退出 EchoAgent。")).toBeInTheDocument();
   });
 

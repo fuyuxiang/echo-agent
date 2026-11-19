@@ -46,14 +46,14 @@ try {
       await page.screenshot({path:join(output,`${width}-round-preview.png`)});
       await action.click();
       await page.locator(".msg-wrap--jump-target").waitFor();
-      await page.getByRole("button",{name:"回到最新消息并恢复自动跟随"}).click();
+      await page.getByRole("button",{name:"回到最新消息"}).click();
     }
     await page.locator(".conversation-nav__directory:visible, .conversation-directory-mobile:visible").click();
     const history=page.getByRole("dialog",{name:"历史提问"});
     assert(await history.getByRole("button").count()>1);
     await history.locator(".question-history__item").last().click();
     await page.locator(".msg-wrap--jump-target").waitFor();
-    await page.getByRole("button",{name:"回到最新消息并恢复自动跟随"}).click();
+    await page.getByRole("button",{name:"回到最新消息"}).click();
     await menu("查找当前会话"); await page.getByRole("textbox",{name:"查找",exact:true}).fill("蓝牙"); await page.locator(".find-hit-active").first().waitFor(); await page.keyboard.press("Escape");
     await category("成果");
     const panel=page.getByRole("complementary",{name:"工作区面板"});

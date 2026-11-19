@@ -20,10 +20,10 @@ try {
     assert.equal(await page.locator(".chatview__footer .session-turn-feedback").count(),0);
     assert.equal(await page.getByText(/正在处理任务，可随时说|可继续补充任务要求|浏览器数据与访问范围/).count(),0);
     if(state==="running") {
-      await page.getByRole("button",{name:"停止生成",exact:true}).waitFor();
+      await page.getByRole("button",{name:"停止任务",exact:true}).waitFor();
       assert.equal(await page.locator(".session-turn-feedback").count(),0);
       await page.locator(".echo-composer__input").fill("运行期间继续补充的要求");
-      await page.getByRole("button",{name:"加入待发送队列",exact:true}).waitFor();
+      await page.getByRole("button",{name:"加入队列",exact:true}).waitFor();
     }
     if(state==="paused") {
       const feedback=page.locator(".chatview__scroll .session-turn-feedback");await feedback.getByRole("button",{name:"继续任务",exact:true}).waitFor();

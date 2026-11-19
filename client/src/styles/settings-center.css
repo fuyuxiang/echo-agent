@@ -91,10 +91,10 @@
 .settings-view-tabs {
   display: flex;
   flex: 0 0 auto;
-  gap: 6px;
-  padding: 4px;
+  gap: 3px;
+  padding: 2px;
   border: 1px solid var(--ui-line);
-  border-radius: 12px;
+  border-radius: var(--echo-radius-control);
   background: var(--ui-surface-muted);
   width: fit-content;
   max-width: 100%;
@@ -103,10 +103,10 @@
 
 .settings-view-tabs__item {
   flex: 0 0 auto;
-  min-height: 34px;
-  padding: 0 14px;
+  min-height: var(--echo-size-control-sm);
+  padding: 0 12px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   color: var(--echo-text-medium);
   font: inherit;
@@ -151,12 +151,12 @@
 
 .settings-modal__nav {
   width: 208px;
-  background: var(--ui-surface-muted);
+  background: var(--echo-surface-sidebar);
 }
 
 .settings-navigation {
   padding: 24px 12px 16px;
-  gap: 20px;
+  gap: 16px;
   scrollbar-gutter: stable;
 }
 
@@ -186,10 +186,11 @@
 }
 
 .settings-navigation__item {
-  height: 40px;
+  height: auto;
+  min-height: var(--echo-size-control-md);
   padding: 0 11px;
   gap: 10px;
-  border-radius: 10px;
+  border-radius: var(--echo-radius-control);
   font-size: 0.8125rem;
   font-weight: 520;
 }

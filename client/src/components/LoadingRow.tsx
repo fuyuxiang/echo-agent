@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { formatProcessDuration } from "@/lib/execution-process";
 import { pickLoadingTip } from "@/lib/loading-tips";
+import { WaitingIndicator } from "./WaitingIndicator";
 
 const REQUEST_DURATION_MS = 1_500;
 const BACKGROUND_HINT_DELAY_MS = 8_000;
@@ -45,7 +46,8 @@ export function LoadingRow({ startedAt }: { startedAt?: number }) {
 
   return (
     <div className="msg__loading">
-      <div className="msg__loading-status">
+      <div className="msg-progress-row msg__loading-status">
+        <WaitingIndicator />
         <span className="msg__loading-main" role="status" aria-live="polite">
           {phase}
         </span>

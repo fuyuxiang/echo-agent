@@ -166,7 +166,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
   return <section ref={panelRef} className={`personal-memory personal-memory--${view}`} aria-label="个人记忆管理">
     {view !== "overview" && <Button size="compact" variant="ghost" className="personal-memory__back" disabled={locked} onClick={() => navigate(view === "manage" ? "overview" : "manage")}><ArrowLeft size={14} />{view === "manage" ? "返回记忆设置" : "返回管理记忆"}</Button>}
     <header className="personal-memory__header" data-setting-id={view === "support" ? "local-retrieval" : view === "manage" ? "memory-management" : undefined}>
-      <PageHeading title={title} level={2} description={view === "manage" ? "你可以随时更正，或让 Echo 忘记。" : view === "history" ? "已完成、已过期和已忘记的内容不会再自动参考。" : undefined} />
+      <PageHeading title={title} level={2} description={view === "manage" ? "可编辑或忘记记忆。" : view === "history" ? "已完成、已过期和已忘记的内容不会再自动参考。" : undefined} />
       {view === "manage" && <ActionMenu label="更多" menuLabel="记忆操作" resetKey={cwd} busy={locked || !!draft || importing} menuZIndex="var(--echo-layer-dialog-popover)" triggerClassName="settings-btn personal-memory__more" trigger={<>更多<ChevronDown size={14} /></>}>
         {({ close }) => <>
           <button type="button" role="menuitem" className="topbar-actions__item" onClick={() => { close(); setExportText(""); setImporting(true); setImportCwd(cwd); setPreviews([]); }}>导入记忆</button>
@@ -190,7 +190,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
       {error && <div className="panel-inline-error" role="alert"><span>{error}</span><Button size="compact" disabled={locked} onClick={() => void reload()}>重新加载</Button></div>}
       {(view === "manage" || view === "history") && <>
         {importing && <section className="personal-memory__import personal-memory__editor" aria-label="导入记忆">
-          <h3>导入记忆</h3><p>粘贴导出的 JSON，或每行一条偏好与事实。检查预览后再保存。</p>
+          <h3>导入记忆</h3><p>粘贴 JSON 备份，或逐行输入。先预览，再保存。</p>
           {importCwd !== cwd && <p role="note">项目记忆仍会导入原工作区：{importCwd ?? "个人记忆"}</p>}
           <textarea ref={importRef} disabled={locked} className="form-control" aria-label="待导入的记忆" rows={5} value={importText} onChange={e => { setImportText(e.target.value); setPreviews([]); }} />
           <Button size="compact" disabled={locked || !importText.trim()} onClick={() => { try { const items = parseMemoryImport(importText); if (!items.length) throw new Error("未识别到有效记忆，请检查内容"); if (!importCwd && items.some(value => value.scope === "workspace")) throw new Error("这些记忆需要工作区，请先打开对应项目"); setPreviews(items.map(input => ({ input, deriveKeyFromContent: isContentDerivedMemoryTitle(input.key, input.content) }))); setError(""); } catch (e) { setError(message(e)); } }}>预览导入</Button>
@@ -204,7 +204,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
         {exportText && <section className="personal-memory__editor" aria-label="导出记忆"><label>导出内容（可复制保存）<textarea className="form-control" rows={6} readOnly value={exportText} onFocus={e => e.target.select()} /></label><Button size="compact" onClick={() => setExportText("")}>关闭导出</Button></section>}
         {(records.length > 8 || query.trim()) && <label className="personal-memory__search"><Search size={16} /><input className="form-control" aria-label="查找个人记忆" placeholder="查找记忆" value={query} disabled={!!draft || importing || locked} onChange={e => setQuery(e.target.value)} /></label>}
         {loading && <p role="status" className="personal-memory__status">正在加载记忆…</p>}
-        {!loading && !error && filtered.length === 0 && !draft && <div className="personal-memory__empty"><Brain size={24} aria-hidden="true" /><p>{query ? "没有找到匹配的记忆" : view === "history" ? "暂无历史记录" : "还没有保存的记忆"}</p><span>{query.trim() ? "试试其他关键词，或清空搜索。" : view === "history" ? "已完成、过期或忘记的内容会显示在这里。" : snapshot?.enabled === false ? "开启记忆后，Echo 会自动记住有用的偏好和工作背景。" : "正常使用时，Echo 会自动记住有用的偏好和工作背景。你也可以在对话中说“记住我的这个习惯”。"}</span></div>}
+        {!loading && !error && filtered.length === 0 && !draft && <div className="personal-memory__empty"><Brain size={24} aria-hidden="true" /><p>{query ? "没有找到匹配的记忆" : view === "history" ? "暂无历史记录" : "还没有保存的记忆"}</p><span>{query.trim() ? "试试其他关键词，或清空搜索。" : view === "history" ? "已完成、过期或忘记的内容会显示在这里。" : snapshot?.enabled === false ? "开启记忆后，Echo 会自动记住有用的偏好和工作背景。" : "在对话中让 Echo 记住你的偏好。"}</span></div>}
         <div className="personal-memory__list">
           {draft && !filtered.slice(0, visibleLimit).some(isDraftRecord) && editor}
           {filtered.slice(0, visibleLimit).map(record => isDraftRecord(record) ? <div className="personal-memory__card" key={`${record.scope}:${record.id}`}>{editor}</div> : <article className="personal-memory__card" key={`${record.scope}:${record.id}`} aria-label={record.key}>

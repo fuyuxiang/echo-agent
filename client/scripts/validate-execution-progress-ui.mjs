@@ -84,7 +84,7 @@ try {
     await page.screenshot({ path: join(output, `live-${width}-${theme}-${font}.png`) });
     await process.screenshot({ path: join(output, `live-detail-${width}-${theme}-${font}.png`) });
     await header.click();
-    assert.match(await header.textContent(), /收起过程/);
+    assert.match(await header.getAttribute("aria-label"), /收起过程$/);
     assert.equal(await process.locator(".toolcall").count(), 11, "every original operation remains available");
     assert.match(await process.locator(".execution-process__progress").textContent(), /资料来源已经确认。正在核对数据/);
     assert.match(await process.locator(".execution-process__metrics").textContent(), /已完成 10 项操作 · 1 项进行中/);
@@ -105,7 +105,7 @@ try {
 
     const body = process.locator(".execution-process__body");
     const latestProcess = process.getByRole("button", { name: "回到最新进展", exact: true });
-    const latestMessage = page.getByRole("button", { name: "回到最新消息并恢复自动跟随", exact: true });
+    const latestMessage = page.getByRole("button", { name: "回到最新消息", exact: true });
     const atLatest = () => body.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight <= 2);
     assert(await atLatest(), "running records follow the latest progress");
     assert(await body.evaluate(el => {
@@ -156,7 +156,7 @@ try {
     await process.locator('[data-tool-call-id="newest"]').waitFor({ state: "attached" });
     assert.equal(await body.evaluate(el => el.scrollTop), readingTop, "new records preserve the reader's position");
     await stage("review-answer");
-    await page.locator(".msg__writing").waitFor();
+    await process.getByRole("status").filter({ hasText: "正在生成回复" }).waitFor();
     assert.equal(await header.getAttribute("aria-expanded"), "true", "an answer leaves records open while reviewing");
     assert.equal(await body.evaluate(el => el.scrollTop), readingTop);
     await latestProcess.click();
@@ -211,10 +211,11 @@ try {
       return !document.querySelector(".execution-process__body") && entry === document.activeElement
         && box.top >= viewport.top - 1 && box.bottom <= viewport.bottom + 1;
     });
-    assert.match(await header.textContent(), /展开过程/);
+    assert.match(await header.getAttribute("aria-label"), /展开过程$/);
 
     await stage("answer");
-    await page.locator(".msg__writing").waitFor();
+    await process.getByRole("status").filter({ hasText: "正在生成回复" }).waitFor();
+    assert.equal(await page.locator(".msg__writing").count(), 0, "the progress header is the only generation indicator");
     assert.equal(await process.locator(".execution-process__excerpt").count(), 0);
     assert.equal(await page.locator(".msg--assistant [role=status]").count(), 1);
     await stage("long-answer");
@@ -222,15 +223,18 @@ try {
     // Resume following explicitly before asserting that new output stays visible.
     if (await latestMessage.isVisible()) await latestMessage.click();
     await page.waitForFunction(() => {
-      const status = document.querySelector(".msg__writing")?.getBoundingClientRect();
+      const lastParagraph = [...document.querySelectorAll(".msg--assistant .markdown-body p")].at(-1);
+      const end = lastParagraph?.getBoundingClientRect();
       const viewport = document.querySelector(".chatview__scroll")?.getBoundingClientRect();
-      return status && viewport && status.top >= viewport.top && status.bottom <= viewport.bottom + 1;
+      return lastParagraph?.textContent.startsWith("第 30 段") && viewport && end.top >= viewport.top && end.bottom <= viewport.bottom + 1;
     });
     await stage("complete");
-    await process.getByText("本次处理已结束", { exact: true }).waitFor();
+    await page.locator(".execution-process--compact").waitFor();
     assert.equal(await page.locator(".execution-process--running, .msg__writing").count(), 0);
+    assert.equal(await process.locator(".execution-process__title, .execution-process__metrics").count(), 0);
     assert.equal(await header.getAttribute("aria-expanded"), "false");
-    assert.match(await header.textContent(), /查看过程/);
+    assert.match(await header.textContent(), /^用时 \d+ 分 \d+ 秒$/);
+    assert.match(await header.getAttribute("aria-label"), /查看过程$/);
     evidence.push({ width, height, theme, font, geometry });
   }
   await page.setViewportSize({ width: 1280, height: 800 });

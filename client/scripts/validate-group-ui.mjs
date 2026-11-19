@@ -27,9 +27,13 @@ try {
     await page.getByText("把合适的协作组合留下来", { exact: true }).waitFor();
     await page.screenshot({ path: join(output, `templates-empty-${width}-${theme}.png`) });
     await page.getByRole("button", { name: "创建专家团", exact: true }).click();
+    assert.equal(await page.getByRole("textbox", { name: "协作目标", exact: true }).count(), 0);
+    assert(await page.getByRole("button", { name: "创建并进入专家团" }).evaluate(button => button.getBoundingClientRect().bottom <= innerHeight));
+    await page.getByText("从模板创建", { exact: true }).click();
     await page.getByText("还没有保存的专家团模板，可直接选择下方专家创建。", { exact: true }).waitFor();
     assert.equal(await page.getByRole("combobox", { name: "使用专家团模板", exact: true }).count(), 0);
     await page.getByRole("textbox", { name: "专家团名称", exact: true }).fill("需求交付协作组");
+    await page.getByText("设置协作目标", { exact: true }).click();
     await page.getByRole("textbox", { name: "协作目标", exact: true }).fill("分析订单审批，检查代码与文档交付");
     await page.getByRole("checkbox", { name: /代码专家/ }).check();
     await page.getByRole("checkbox", { name: /文档助手/ }).check();
@@ -168,12 +172,14 @@ try {
     await page.getByRole("button", { name: "用此模板创建专家团", exact: true }).click();
     assert.equal(await page.getByRole("textbox", { name: "专家团名称", exact: true }).inputValue(), "审批专家编组");
     assert.equal(await page.locator(".group-expert input:checked").count(), 3);
+    await page.getByText("从模板创建", { exact: true }).click();
     const templateSelect = page.getByRole("combobox", { name: "使用专家团模板", exact: true });
     await templateSelect.waitFor();
     const selectedTemplate = await templateSelect.inputValue();
     assert.ok(selectedTemplate, "template selected from library stays visibly selected");
     await templateSelect.selectOption("");
     assert.equal(await page.getByRole("textbox", { name: "专家团名称", exact: true }).inputValue(), "");
+    await page.getByText("设置协作目标", { exact: true }).click();
     assert.equal(await page.getByRole("textbox", { name: "协作目标", exact: true }).inputValue(), "");
     assert.equal(await page.locator(".group-expert input:checked").count(), 0);
     await templateSelect.selectOption(selectedTemplate);

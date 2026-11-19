@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Copy, FileSpreadsheet, FileText, Maximize2, Minimize2, Minus, PanelLeft, Plus, Presentation, RotateCw, Search, Scan, X } from 'lucide-react';
 import { copyShareText } from '@/lib/share';
@@ -7,13 +7,15 @@ import type { OfficePreview } from '@/lib/office-preview';
 import { loadOfficePreview } from '@/lib/office-preview-loaders';
 import { useModalFocus } from '@/lib/use-modal-focus';
 import type { FilePreviewCopyHandler } from '../FilePreview';
+import { FilePreviewMenu, type FilePreviewAction } from '../FilePreviewMenu';
 import OfficePage from './OfficePage';
 import SpreadsheetCanvas from './SpreadsheetCanvas';
 
 export interface OfficeWorkbenchProps {
   filename: string; content: string; path?: string; active?: boolean;
-  fileActions?: ReactNode; controls?: ReactNode; notices?: ReactNode; children?: ReactNode;
+  fileActions?: readonly FilePreviewAction[]; controls?: ReactNode; notices?: ReactNode; children?: ReactNode; embedded?: boolean;
   onCopyText?: FilePreviewCopyHandler; onReload?: () => void; sourceRevision?: string | number;
+  reloadDisabled?: boolean;
   loadContent?: () => Promise<string>; fallback?: ReactNode; onSelectionText?: (text: string) => void;
 }
 interface Match { page: number; excerpt: string; cell?: string; }
@@ -50,7 +52,7 @@ function PageThumbnail({ model, index, selected, onSelect }: { model: OfficePrev
   </button>;
 }
 
-export default function OfficeWorkbench({ filename, content, path, active = true, fileActions, controls, notices, children, onCopyText, onReload, sourceRevision, loadContent, fallback, onSelectionText }: OfficeWorkbenchProps) {
+export default function OfficeWorkbench({ filename, content, path, active = true, fileActions = [], controls, notices, children, onCopyText, onReload, sourceRevision, loadContent, fallback, onSelectionText, embedded = false, reloadDisabled = false }: OfficeWorkbenchProps) {
   const kind = officeKind(filename) ?? 'docx';
   const [refresh, setRefresh] = useState(0);
   const customView = children != null;
@@ -67,6 +69,8 @@ export default function OfficeWorkbench({ filename, content, path, active = true
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
   const [dimensions, setDimensions] = useState({ width: 900, height: 620, shell: 900 });
   const expandButton = useRef<HTMLButtonElement>(null);
+  const navigationToggle = useRef<HTMLButtonElement>(null);
+  const navigationId = useId();
   const root = useModalFocus<HTMLDivElement>(expanded && active, () => setExpanded(false), undefined, () => expandButton.current);
   const viewport = useRef<HTMLDivElement>(null), searchInput = useRef<HTMLInputElement>(null);
   const ownerActive = useRef(active); ownerActive.current = active;
@@ -132,11 +136,16 @@ export default function OfficeWorkbench({ filename, content, path, active = true
   const total = model?.pages.length ?? 0;
   const changePage = (value: number) => { if (total) setPage(Math.max(0, Math.min(total - 1, value))); };
   const changeZoom = (value: number) => setManualZoom(Math.min(2.5, Math.max(0.1, value)));
+  const closeNarrowNavigation = () => {
+    if (dimensions.shell >= 600) return;
+    navigationToggle.current?.focus({ preventScroll: true });
+    setNavigation(false);
+  };
   const selectMatch = (match: Match) => {
     changePage(match.page);
     if (match.cell) setSheetTarget(previous => ({ page: match.page, address: match.cell!, request: (previous?.request ?? 0) + 1 }));
     else viewport.current?.scrollTo(0, 0);
-    if (dimensions.shell < 600) setNavigation(false);
+    closeNarrowNavigation();
   };
   const copy = async () => {
     if (!model || !active || copyStatus === 'copying') return;
@@ -151,20 +160,31 @@ export default function OfficeWorkbench({ filename, content, path, active = true
   const Icon = kind === 'pptx' ? Presentation : kind === 'sheet' ? FileSpreadsheet : FileText;
   const title = filename.split(/[\\/]/).pop() || filename;
   const showNavigation = navigation && !customView && (model || searchOpen);
-  const workbench = <div ref={root} tabIndex={-1} className={`office-workbench office-workbench--${kind}${expanded ? ' office-workbench--expanded' : ''}`} aria-label={`${title} 文档工作台`} role={expanded ? 'dialog' : 'region'} aria-modal={expanded ? true : undefined}
+  const showFileHeader = !embedded || expanded;
+  const reload = () => onReload ? onReload() : setRefresh(value => value + 1);
+  const selectNavigationPage = (index: number) => {
+    changePage(index);
+    closeNarrowNavigation();
+  };
+  const fullscreenButton = <button ref={expandButton} type="button" aria-label={expanded ? '退出全屏预览' : '全屏预览'} data-modal-initial-focus={expanded || undefined} onClick={() => setExpanded(value => !value)}>
+    {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+  </button>;
+  const workbench = <div ref={root} tabIndex={-1} className={`office-workbench office-workbench--${kind}${expanded ? ' office-workbench--expanded' : ''}${embedded ? ' office-workbench--embedded' : ''}`} aria-label={`${title} 文档工作台`} role={expanded ? 'dialog' : 'region'} aria-modal={expanded ? true : undefined}
     onKeyDown={event => {
       if (event.target instanceof HTMLElement && event.target.closest('input,textarea,select,[contenteditable="true"]')) return;
       if (event.key === 'PageDown' || event.key === 'PageUp') { event.preventDefault(); changePage(page + (event.key === 'PageDown' ? 1 : -1)); }
     }}>
-    <header className="office-workbench__header">
+    {showFileHeader && <header className="office-workbench__header">
       <span className="office-workbench__file-icon"><Icon size={19} aria-hidden /></span>
-      <div className="office-workbench__file"><strong title={path || filename}>{title}</strong><span>{OFFICE_LABELS[kind]} · 本地文件</span></div>
-      <div className="office-workbench__file-actions">{fileActions}
-        <button ref={expandButton} type="button" aria-label={expanded ? '退出全屏预览' : '全屏预览'} title={expanded ? '退出全屏预览' : '全屏预览'} onClick={() => setExpanded(value => !value)}>{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
+      <div className="office-workbench__file"><strong title={path || filename}>{title}</strong><span>{OFFICE_LABELS[kind]}{controls ? '' : ' · 只读预览'}</span></div>
+      <div className="office-workbench__file-actions">
+        <FilePreviewMenu fileKey={path ?? filename} actions={[...fileActions, ...(!customView || onReload ? [{ label: '重新读取文档', icon: RotateCw, onSelect: reload, disabled: reloadDisabled }] : [])]}
+          layer={embedded ? 'calc(var(--echo-layer-dialog-local) + 3)' : expanded ? 'var(--echo-layer-dialog-popover)' : undefined} />
+        {fullscreenButton}
       </div>
-    </header>
+    </header>}
     <div className={`office-workbench__toolbar${controls && !customView ? ' office-workbench__toolbar--document' : ''}`} role="toolbar" aria-label="文档查看工具">
-      {!customView && <><button type="button" aria-label={kind === 'sheet' ? '切换工作表导航' : '切换页面缩略图'} title={kind === 'sheet' ? '工作表导航' : '页面缩略图'} aria-pressed={navigation} onClick={() => setNavigation(v => !v)}><PanelLeft size={17} /></button><span className="office-workbench__separator" />
+      {!customView && <><button ref={navigationToggle} type="button" aria-label={kind === 'sheet' ? '切换工作表导航' : '切换页面缩略图'} title={kind === 'sheet' ? '工作表导航' : '页面缩略图'} aria-pressed={Boolean(showNavigation)} aria-controls={showNavigation ? navigationId : undefined} onClick={() => setNavigation(v => !v)}><PanelLeft size={17} /></button><span className="office-workbench__separator" />
         <button type="button" aria-label={kind === 'sheet' ? '上一个工作表' : '上一页'} disabled={!total || page === 0} onClick={() => changePage(page - 1)}><ChevronLeft size={17} /></button>
         <span className="office-workbench__page-count" aria-live="polite">{total ? `${page + 1} / ${total}` : '—'}</span>
         <button type="button" aria-label={kind === 'sheet' ? '下一个工作表' : '下一页'} disabled={!total || page + 1 >= total} onClick={() => changePage(page + 1)}><ChevronRight size={17} /></button>
@@ -173,21 +193,21 @@ export default function OfficeWorkbench({ filename, content, path, active = true
       {controls && <div className="office-workbench__controls">{controls}</div>}
       <span className="office-workbench__toolbar-spacer" />
       <span className="office-workbench__copy-status" role="status">{copyStatus === 'copying' ? '正在复制…' : copyStatus === 'copied' ? '已复制文本' : copyStatus === 'failed' ? '复制失败，请重试' : ''}</span>
-      <button type="button" aria-label="重新读取文档" title="重新读取文档" onClick={() => onReload ? onReload() : setRefresh(value => value + 1)}><RotateCw size={15} /></button>
+      {!showFileHeader && fullscreenButton}
     </div>
     {notices && <div className="office-workbench__notices">{notices}</div>}
     <div className="office-workbench__body">
-      {showNavigation && <aside className="office-workbench__navigation" aria-label={kind === 'sheet' ? '工作表导航' : '文档页面导航'}>
+      {showNavigation && <aside id={navigationId} className="office-workbench__navigation" aria-label={kind === 'sheet' ? '工作表导航' : '文档页面导航'}>
         <div className="office-workbench__navigation-head"><strong>{query.trim() ? '搜索结果' : kind === 'sheet' ? '工作表' : kind === 'pptx' ? '幻灯片' : '页面'}</strong><span>{query.trim() ? `${matches.length}${searchTruncated ? '+' : ''}` : total}</span></div>
         {searchOpen && <div className="office-workbench__search"><Search size={14} /><input ref={searchInput} aria-label="搜索文档内容" placeholder="搜索文档内容" value={query} onChange={event => setQuery(event.target.value)} /><button type="button" aria-label="关闭文档搜索" onClick={() => { setSearchOpen(false); setQuery(''); }}><X size={13} /></button></div>}
         <div className="office-workbench__navigation-scroll">
           {query.trim() ? <>{searching ? <p role="status">正在搜索…</p> : searchError ? <p role="status">{searchError}</p> : matches.length ? <>{matches.map(match => <button className="office-search-result" type="button" key={`${match.page}:${match.cell ?? ''}`} aria-current={page === match.page && (!match.cell || sheetTarget?.address === match.cell && sheetTarget.page === match.page) ? 'page' : undefined} onClick={() => selectMatch(match)}><strong>{kind === 'sheet' ? `${model?.pages[match.page].label} · ${match.cell}` : `第 ${match.page + 1} 页`}</strong><span>{match.excerpt}</span></button>)}{searchTruncated && <p role="status">仅显示前 {SEARCH_RESULT_LIMIT} 条结果，请输入更具体的关键词。</p>}</> : <p role="status">没有找到匹配内容</p>}</>
-            : model?.pages.map((item, index) => kind === 'sheet' ? <button type="button" key={index} className="office-sheet-tab-nav" aria-current={page === index ? 'page' : undefined} onClick={() => changePage(index)}><FileSpreadsheet size={15} /><span>{item.label}</span></button>
-              : <PageThumbnail key={index} model={model} index={index} selected={page === index} onSelect={() => { changePage(index); if (dimensions.shell < 600) setNavigation(false); }} />)}
+            : model?.pages.map((item, index) => kind === 'sheet' ? <button type="button" key={index} className="office-sheet-tab-nav" aria-current={page === index ? 'page' : undefined} onClick={() => selectNavigationPage(index)}><FileSpreadsheet size={15} /><span>{item.label}</span></button>
+              : <PageThumbnail key={index} model={model} index={index} selected={page === index} onSelect={() => selectNavigationPage(index)} />)}
         </div>
       </aside>}
       <main className="office-workbench__viewport" ref={viewport} aria-label="文档画布">
-        {customView ? <div className="office-workbench__custom">{children}</div> : error ? <div className="office-workbench__empty" role="alert"><FileText size={30} /><strong>暂时无法显示版式预览</strong><p>{error}</p><button type="button" onClick={() => onReload ? onReload() : setRefresh(v => v + 1)}>重试预览</button>{fallback && <details><summary>查看可读取的内容</summary>{fallback}</details>}</div>
+        {customView ? <div className="office-workbench__custom">{children}</div> : error ? <div className="office-workbench__empty" role="alert"><FileText size={30} /><strong>暂时无法显示版式预览</strong><p>{error}</p><button type="button" onClick={reload}>重试预览</button>{fallback && <details><summary>查看可读取的内容</summary>{fallback}</details>}</div>
           : !model ? <div className="office-workbench__empty" role="status"><span className="office-workbench__spinner" /><strong>正在打开{OFFICE_LABELS[kind]}…</strong><p>正在读取页面与原始格式</p></div>
           : model.kind === 'sheet' && model.sheets ? <SpreadsheetCanvas key={page} sheet={model.sheets[page]} zoom={zoom} target={sheetTarget?.page === page ? sheetTarget : undefined} />
           : metadata ? <div className="office-workbench__stage" style={{ width: Math.max(dimensions.width, metadata.width * zoom + 48), minHeight: Math.max(dimensions.height, metadata.height * zoom + 48) }}><OfficePage model={model} index={page} width={metadata.width * zoom} onEscape={() => setExpanded(false)} onSelectionText={onSelectionText} /></div> : null}

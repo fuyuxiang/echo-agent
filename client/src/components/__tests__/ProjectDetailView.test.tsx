@@ -98,9 +98,9 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     const row = within(screen.getByRole("tabpanel")).getByText("A.md", { exact: true }).closest("article")!;
     fireEvent.click(within(row).getByRole("button", { name: "用于任务" }));
     fireEvent.click(screen.getByRole("tab", { name: "任务" }));
-    const composer = screen.getByPlaceholderText(/Shift\+Enter/).closest(".echo-composer") as HTMLElement;
+    const composer = screen.getByRole("textbox", { name: "输入问题或任务" }).closest(".echo-composer") as HTMLElement;
     expect(within(composer).getByRole("button", { name: "移除本次资料 A.md" })).toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText(/Shift\+Enter/), { target: { value: "use chosen evidence" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "输入问题或任务" }), { target: { value: "use chosen evidence" } });
     await send();
     await waitFor(() => expect(start).toHaveBeenCalledWith("p1", "use chosen evidence", "model-a", expect.objectContaining({ cwd: "/workspace" })));
     await waitFor(() => expect(screen.queryByRole("button", { name: "移除本次资料 A.md" })).toBeNull());
@@ -133,7 +133,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
       return createSession();
     };
     render(<ProjectDetailView project={project} onBack={vi.fn()} onStartConversation={start} models={models} defaultModelId="model-a" picker={picker} />);
-    const input = screen.getByPlaceholderText(/Shift\+Enter/);
+    const input = screen.getByRole("textbox", { name: "输入问题或任务" });
     fireEvent.change(input, { target: { value: "retry me" } });
     await send();
     expect(await screen.findByRole("alert")).toHaveTextContent("所选项目资料已更改");
@@ -268,7 +268,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     expect(screen.getByRole("textbox", { name: /^项目指令/ })).toHaveValue(project.instructions ?? "");
   });
 
-  it("在项目输入框下方显示任务执行设置", async () => {
+  it("在项目输入框内显示任务执行设置", async () => {
     resetStores({ ...baseProject, instructions: "只在完成时保存" });
     render(
       <ProjectDetailView
@@ -287,7 +287,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
     expect(permissions).toHaveAttribute("aria-haspopup", "menu");
     const card = screen.getByRole("textbox", { name: "输入问题或任务" }).closest(".echo-composer");
     expect(card).not.toHaveClass("echo-composer--home");
-    expect(card?.nextElementSibling).toBe(settings);
+    expect(card).toContainElement(settings);
   });
 
   it("模型列表为空 + defaultModelId 不可用时显示外置 alert + 前往设置模型按钮", () => {
@@ -342,14 +342,14 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
         picker={picker}
       />,
     );
-    const composer = screen.getByPlaceholderText(/Shift\+Enter/);
+    const composer = screen.getByRole("textbox", { name: "输入问题或任务" });
     fireEvent.change(composer, { target: { value: "草稿 A" } });
     expect(composer).toHaveValue("草稿 A");
 
     fireEvent.click(screen.getByRole("tab", { name: "资料与成果" }));
     expect(screen.queryByPlaceholderText(/Shift\+Enter/)).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "任务" }));
-    expect(screen.getByPlaceholderText(/Shift\+Enter/)).toHaveValue("草稿 A");
+    expect(screen.getByRole("textbox", { name: "输入问题或任务" })).toHaveValue("草稿 A");
   });
 
   it("onStartConversation 接收发送时的目录、权限与附件准备", async () => {
@@ -365,7 +365,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
         picker={picker}
       />,
     );
-    const composer = screen.getByPlaceholderText(/Shift\+Enter/);
+    const composer = screen.getByRole("textbox", { name: "输入问题或任务" });
     fireEvent.change(composer, { target: { value: "请分析附件" } });
     await send();
 
@@ -389,7 +389,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
         picker={picker}
       />,
     );
-    const composer = screen.getByPlaceholderText(/Shift\+Enter/);
+    const composer = screen.getByRole("textbox", { name: "输入问题或任务" });
     fireEvent.change(composer, { target: { value: "测试抛错" } });
     await send();
 

@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Check, Settings2 } from "lucide-react";
+import { ChevronDown, Check, Search, Settings2 } from "lucide-react";
 import { groupModelsBySource, modelChoiceLabel, modelDisplayName } from "@/lib/model-presentation";
 import { ModelManagementContext } from "@/lib/model-management";
 import { ModelIdentity } from "./ModelIdentity";
@@ -66,6 +66,9 @@ export function ModelSelector({
   onBeforeManageModels?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [keepSearch, setKeepSearch] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const [focusedId, setFocusedId] = useState<string>();
   const manageFromApp = useContext(ModelManagementContext);
   const manageModels = onManageModels ?? manageFromApp;
@@ -76,7 +79,15 @@ export function ModelSelector({
   const menuRef = useRef<HTMLDivElement>(null);
   const optionRefs = useRef(new Map<string, HTMLButtonElement>());
   const groups = useMemo(() => groupModelsBySource(models), [models]);
-  const orderedModels = useMemo(() => groups.flatMap(group => group.models), [groups]);
+  const searchable = models.length > 8 || keepSearch;
+  const filter = query.trim().toLocaleLowerCase();
+  const visibleGroups = useMemo(() => !filter ? groups : groups.map(group => ({
+    ...group,
+    models: group.models.filter(model => [
+      modelDisplayName(model), model.id, model.remoteModelId, model.providerLabel, group.label,
+    ].some(value => value?.toLocaleLowerCase().includes(filter))),
+  })).filter(group => group.models.length > 0), [filter, groups]);
+  const orderedModels = useMemo(() => visibleGroups.flatMap(group => group.models), [visibleGroups]);
   const duplicateNames = useMemo(() => {
     const seen = new Set<string>();
     const duplicates = new Set<string>();
@@ -112,6 +123,9 @@ export function ModelSelector({
 
   const close = useCallback((restoreFocus = true) => {
     setOpen(false);
+    setKeepSearch(false);
+    setQuery("");
+    setFocusedId(undefined);
     if (restoreFocus) triggerRef.current?.focus();
   }, []);
 
@@ -120,15 +134,20 @@ export function ModelSelector({
   }, [disabled, modelLoading, models.length, close]);
 
   useLayoutEffect(() => {
+    if (open && models.length > 8) setKeepSearch(true);
+  }, [open, models.length]);
+
+  const tabStopId = orderedModels.find(model => model.id === focusedId)?.id
+    ?? orderedModels.find(model => model.id === modelId)?.id ?? orderedModels[0]?.id;
+  useLayoutEffect(() => {
     // Anchored popovers mount hidden until positioned. Focusing while hidden
     // fails in real browsers, leaving Tab to escape from the trigger.
     if (!open || menuStyle.visibility === "hidden") return;
-    const selected = modelId ? optionRefs.current.get(modelId) : undefined;
-    if (selected) selected.focus();
-    else if (!ref.current?.contains(document.activeElement) || document.activeElement === triggerRef.current) {
-      optionRefs.current.get(orderedModels[0]?.id)?.focus();
+    if (!menuRef.current?.contains(document.activeElement)) {
+      if (searchable) searchRef.current?.focus();
+      else if (tabStopId) optionRefs.current.get(tabStopId)?.focus();
     }
-  }, [modelId, orderedModels, open, menuStyle.visibility]);
+  }, [tabStopId, open, menuStyle.visibility, searchable]);
 
   // Close on outside click.
   useEffect(() => {
@@ -150,10 +169,9 @@ export function ModelSelector({
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      close();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -202,7 +220,8 @@ export function ModelSelector({
         onClick={(event) => {
           event.stopPropagation();
           if (!hasModels && manageModels) { openManagement(); return; }
-          setOpen((o) => !o);
+          if (open) close();
+          else setOpen(true);
         }}
         type="button"
         disabled={disabled || modelLoading || (!hasModels && !manageModels)}
@@ -238,9 +257,22 @@ export function ModelSelector({
           data-placement={placement ?? undefined}
           onClick={(event) => event.stopPropagation()}
         >
-          <div className="model-selector__heading">选择模型</div>
+          {searchable ? <label className="model-selector__search">
+            <Search size={15} aria-hidden="true" />
+            <input ref={searchRef} value={query} onChange={event => { setQuery(event.target.value); setFocusedId(undefined); }}
+              aria-label="搜索模型" placeholder="搜索模型" aria-controls={listboxId}
+              onKeyDown={event => {
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  const target = event.key === "ArrowDown" ? orderedModels[0] : orderedModels[orderedModels.length - 1];
+                  if (target) optionRefs.current.get(target.id)?.focus();
+                }
+              }} />
+          </label> : <div className="model-selector__heading">选择模型</div>}
+          {!orderedModels.length && <p className="model-selector__empty" role="status">没有匹配的模型</p>}
           <ul className="model-selector__options" id={listboxId} role="listbox" aria-label={ariaLabel ?? "选择模型"} onKeyDown={handleMenuKeyDown}>
-          {groups.map((group, index) => <li key={group.label} role="none">
+          {visibleGroups.map((group, index) => <li key={group.label} role="none">
             {groups.length > 1 && <div className="model-selector__group-label" id={`${listboxId}-group-${index}`}>{group.label}</div>}
             <ul role="group" aria-labelledby={groups.length > 1 ? `${listboxId}-group-${index}` : undefined} aria-label={groups.length === 1 ? group.label : undefined}>
           {group.models.map((m) => (
@@ -261,7 +293,7 @@ export function ModelSelector({
                 aria-label={choiceLabel(m)}
                 title={choiceLabel(m)}
                 aria-selected={m.id === modelId}
-                tabIndex={m.id === (focusedId ?? modelId ?? orderedModels[0]?.id) ? 0 : -1}
+                tabIndex={m.id === tabStopId ? 0 : -1}
                 onFocus={() => setFocusedId(m.id)}
                 ref={(element) => {
                   if (element) optionRefs.current.set(m.id, element);

@@ -316,7 +316,7 @@ export function SettingsPanel({
       }}
     >
       <div className="settings-modal">
-        <nav className="settings-modal__nav">
+        <nav className="settings-modal__nav" aria-label="设置分类">
           <div className="settings-navigation">
             {NAV_GROUPS.map((group) => (
               <section className="settings-navigation__group" key={group.label}>
@@ -356,8 +356,7 @@ export function SettingsPanel({
         <div className="settings-modal__content">
           <div className="settings-modal__toolbar">
             <div className="settings-modal__location" aria-label="当前设置页">
-              <span>设置</span><span aria-hidden="true">/</span>
-              <strong>{settingsSectionTitle(active)}</strong>
+              <strong title={settingsSectionTitle(active)}>{settingsSectionTitle(active)}</strong>
             </div>
             <SettingsSearch onSelect={(entry, onSelected) => {
               const navigate = () => {
@@ -417,13 +416,13 @@ export function SettingsPanel({
                 />
               </div>
             ) : active === "usage" ? (
-              <SettingsSection title="模型用量" desc="查看本机记录的模型请求和用量。费用仅供估算，以服务商账单为准。"><UsageQuotaPanel /></SettingsSection>
+              <SettingsSection title="模型用量" desc="本机用量记录。费用以服务商账单为准。"><UsageQuotaPanel /></SettingsSection>
             ) : active === "notify-channels" ? (
               <SettingsSection title="通知设置" navigation={<SettingsViewTabs label="通知视图" items={NOTIFICATION_VIEWS} active={active} onSelect={selectSection} />}><NotifyChannelsPanel onToast={onToast} sessionId={sessionId} onOpenWeixin={() => selectSection("weixin-channel")} /></SettingsSection>
             ) : active === "weixin-channel" ? (
-              <SettingsSection title="微信连接" desc="在微信继续已授权的桌面任务。使用期间请保持电脑开机、联网并运行 EchoAgent。"><WeixinChannelPanel onToast={onToast} /></SettingsSection>
+              <SettingsSection title="微信连接" desc="在微信继续任务。请保持电脑联网并运行 EchoAgent。"><WeixinChannelPanel onToast={onToast} /></SettingsSection>
             ) : active === "cloud-storage" ? (
-              <SettingsSection title="云存储" desc="连接 WebDAV 存储，按需浏览和传输文件。此功能不会自动同步本地资料。"><CloudStoragePanel onToast={onToast} onUnsavedChange={setCloudDirty} /></SettingsSection>
+              <SettingsSection title="云存储" desc="按需浏览与传输 WebDAV 文件。本地资料仅在手动操作时上传。"><CloudStoragePanel onToast={onToast} onUnsavedChange={setCloudDirty} /></SettingsSection>
             ) : active === "general" ? (
               <div className="settings-subview">
                 <SettingsViewTabs label="通用视图" items={GENERAL_VIEWS} active={active} onSelect={selectSection} />

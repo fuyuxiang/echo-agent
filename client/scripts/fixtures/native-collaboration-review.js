@@ -69,6 +69,18 @@ window.__echoNativeCollaborationReview = async scope => {
     const details = await wait(() => document.querySelector('.group-recipient-picker'), 'Member picker');
     details.open = true; await click(() => details, text); details.open = false;
   };
+  const startNewTopic = async () => {
+    const select = await wait(() => document.querySelector('.group-compose-context select[aria-label="消息归属"]'), 'Group send destination');
+    select.click();
+    const option = await wait(() => {
+      const list = document.getElementById(select.getAttribute('aria-controls') ?? '');
+      return [...(list?.querySelectorAll('[role="option"]') ?? [])]
+        .find(item => visible(item) && item.textContent.trim() === '另起任务');
+    }, 'New topic option');
+    option.click();
+    await wait(() => select.value === 'new', 'New topic selected');
+    return new Set((await snapshot()).works.map(work => work.rootId));
+  };
   const openGroup = async name => {
     await nav('专家团');
     const back = document.querySelector('[aria-label="返回专家团列表"]'); if (visible(back)) back.click();
@@ -126,7 +138,9 @@ window.__echoNativeCollaborationReview = async scope => {
         }
         await nav('专家团'); await click(root, '创建专家团');
         const form = await wait(() => document.querySelector('.group-form:not(.group-form--settings)'), 'Real group create form');
-        set(field(form, '专家团名称'), e.groupName); set(field(form, '协作目标'), '只用文字协作，验证目标与验收标准；不调用工具。');
+        set(field(form, '专家团名称'), e.groupName);
+        (await wait(() => [...form.querySelectorAll('summary')].find(el => el.textContent.trim() === '设置协作目标'), 'Group goal disclosure')).click();
+        set(field(form, '协作目标'), '只用文字协作，验证目标与验收标准；不调用工具。');
         for (const name of ['甲方专家', '乙方专家']) {
           const box = await wait(() => [...form.querySelectorAll('.group-expert')].find(el => el.textContent.includes(name))?.querySelector('input'), `Actual expert ${name}`); box.click();
         }
@@ -154,9 +168,9 @@ window.__echoNativeCollaborationReview = async scope => {
         return concise(g);
       });
       await stage('group-stream-stop', async () => {
-        await click(root, '另起任务'); await chooseRecipients('甲方专家');
+        const previousRoots = await startNewTopic(); await chooseRecipients('甲方专家');
         await send(`请连续撰写五千字中文测试设计，开头写 STOP-${scope.nonce}，逐段详细展开，不调用任何工具。`);
-        const running = await wait(async () => { const g = await snapshot(); return g.works.find(w => !terminal(w) && w.output.length >= 80); }, 'Actual expert streamed output before stop', 120000);
+        const running = await wait(async () => { const g = await snapshot(); return g.works.find(w => !terminal(w) && w.output.length >= 80 && !previousRoots.has(w.rootId)); }, 'Actual expert streamed in a new task before stop', 120000);
         await click(root, '停止本次任务');
         const stopped = await wait(async () => { const g = await snapshot(); const w = g.works.find(w => w.id === running.id); return w?.status === 'cancelled' && g.works.every(terminal) && g; }, 'Actual group cancellation acknowledgement', 45000);
         const before = stopped.works.find(w => w.id === running.id); await delay(3500);
@@ -172,12 +186,12 @@ window.__echoNativeCollaborationReview = async scope => {
         await wait(async () => (await snapshot()).paused, 'Native dispatch paused');
         await click(root, '恢复派发'); await wait(async () => !(await snapshot()).paused, 'Native dispatch resumed');
         const close = document.querySelector('[aria-label="收起专家团详情"]'); if (visible(close)) close.click();
-        await click(root, '另起任务'); await chooseRecipients('交给协调员');
+        const previousRoots = await startNewTopic(); await chooseRecipients('交给协调员');
         e.finalMarker = `RESUMED-${scope.nonce}`;
         const prior = (await snapshot()).works.length;
         await send(`根据群内已有两位专家的简短建议，用一段话汇总，最后写 ${e.finalMarker}。不要继续五千字任务，不调用工具。`);
         const g = await wait(async () => { const g = await snapshot(); return g.works.length > prior && g.works.every(terminal) && g; }, 'Actual coordinator response after resume', 150000);
-        assert(g.works.slice(prior).some(w => w.status === 'completed' && w.tokens > 0 && w.output.includes(e.finalMarker)), 'Resumed actual model response missing');
+        assert(g.works.slice(prior).some(w => !previousRoots.has(w.rootId) && w.status === 'completed' && w.tokens > 0 && w.output.includes(e.finalMarker)), 'Resumed actual model response missing from a new task');
         e.workCount = g.works.length; return concise(g);
       });
       await stage('scheduler-create-ui', async () => {

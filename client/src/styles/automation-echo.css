@@ -86,7 +86,6 @@
   flex-direction: column;
   gap: 0;
   position: relative;
-  scrollbar-color: transparent transparent;
   scrollbar-width: thin;
 }
 .atm-floating-layer {
@@ -96,11 +95,7 @@
   height: auto;
   position: static;
 }
-.automation-panel::-webkit-scrollbar { width: 6px; }
-.automation-panel::-webkit-scrollbar-track { background: transparent; }
-.automation-panel::-webkit-scrollbar-thumb { background-color: transparent; }
-.automation-panel:hover::-webkit-scrollbar-thumb { background-color: rgba(0, 0, 0, 0.16); }
-[data-theme="dark"] .automation-panel:hover::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.16); }
+
 
 /* ---------- 顶部 CTA / 工具栏按钮 ---------- */
 .atm-create-btn svg { flex-shrink: 0; }

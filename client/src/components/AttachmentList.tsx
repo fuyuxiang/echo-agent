@@ -1,5 +1,5 @@
-import { lazy, Suspense, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { lazy, Suspense, useId, useRef, useState } from "react";
+import { ChevronDown, Paperclip, X } from "lucide-react";
 import { attachmentBasename, isImageAttachment } from "@/lib/user-message";
 import { attachmentSizeLabel } from "@/lib/attachment-preview";
 import { AttachmentVisual } from "./AttachmentVisual";
@@ -13,14 +13,23 @@ export function AttachmentList({ paths, cwd, variant = "composer", sizes, onRemo
   sizes?: ReadonlyMap<string, number>; onRemove?: (path: string) => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const listId = useId();
   const trigger = useRef<HTMLElement | null>(null);
   const draft = variant === "composer";
   // A removed/replaced file must not revive its preview if it is added later.
   if (selected && !paths.includes(selected)) setSelected(null);
-  if (!paths.length) return null;
+  if (!paths.length) {
+    if (expanded) setExpanded(false);
+    return null;
+  }
   return <>
-    {draft && <div className="composer-attachments__hint">{paths.length} 个附件 · 点击预览{paths.length > 4 ? " · 横向滚动查看全部" : ""}</div>}
-    <div className={draft ? "composer-attachments" : "msg__attachments"} role="list" aria-label={draft ? "待发送附件" : "附件"}>
+    {draft && paths.length > 2 && <button type="button" className="composer-attachments__toggle"
+      aria-controls={listId} aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
+      <Paperclip size={14} aria-hidden="true" />附件 {paths.length}<ChevronDown size={14} aria-hidden="true" />
+    </button>}
+    <div id={listId} className={draft ? `composer-attachments${expanded ? " composer-attachments--expanded" : ""}` : "msg__attachments"}
+      role="list" aria-label={draft ? "待发送附件" : "附件"}>
       {paths.map(path => {
         const name = attachmentBasename(path);
         const image = isImageAttachment(path);

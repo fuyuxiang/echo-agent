@@ -222,6 +222,7 @@ export function ChatView({
   const sessionId = useSessionStore((s) => s.sessionId);
   const usageRefreshSignal = useMemo(() => ({ messageCount: messages.length, usage, taskRefreshSignal, commandRefreshKey }), [messages.length, usage, taskRefreshSignal, commandRefreshKey]);
   const trayAttentionRef = useRef<HTMLDivElement>(null);
+  const [attentionChoice, setAttentionChoice] = useState<{ sessionId: string | null; kind: "permission" | "question" | "plan" }>();
   const handledAttentionRef = useRef<number | undefined>(undefined);
   const automation = useSessionAutomation(sessionId);
   const taskRunning = streaming || computerTaskRunning(automation.status);
@@ -240,6 +241,11 @@ export function ChatView({
   const control = useSessionStore((s) => s.control);
   const awaitingQuestion = Boolean(useQuestionStore(selectQuestionForSession(sessionId)));
   const pendingPermission = usePermissionStore(selectPermissionForSession(sessionId));
+  const priorityPermissionId = usePermissionStore(s => sessionId ? s.priorityRequestBySession[sessionId] : undefined);
+  const promotedPermission = Boolean(pendingPermission && pendingPermission.requestId === priorityPermissionId);
+  useLayoutEffect(() => {
+    if (promotedPermission) setAttentionChoice({ sessionId, kind: "permission" });
+  }, [priorityPermissionId, promotedPermission, sessionId]);
   const awaitingDecision = Boolean(pendingPermission || automation.approvals.length);
   // 会话内查找(对齐 EchoAgent chat-search)。
   const timeline = useMemo(() => buildTimeline(messages), [messages]);
@@ -760,6 +766,14 @@ export function ChatView({
   const searchable = messages.some(m => m.parts.some(p => p.kind === "text" && p.text.trim()));
   const hasContent = messages.some(m => m.parts.length > 0 || m.attachments?.length);
   const awaitingPlan = planApproval?.sessionId === sessionId;
+  const attentionItems = [
+    ...(awaitingDecision ? [{ kind: "permission" as const, label: "待审批" }] : []),
+    ...(awaitingQuestion ? [{ kind: "question" as const, label: "待回复" }] : []),
+    ...(awaitingPlan ? [{ kind: "plan" as const, label: "待确认计划" }] : []),
+  ];
+  const selectedAttention = promotedPermission ? "permission" : attentionChoice?.sessionId === sessionId
+    && attentionItems.some(item => item.kind === attentionChoice.kind)
+    ? attentionChoice.kind : attentionItems[0]?.kind;
   const { prediction, dismiss: dismissPrediction } = usePromptPrediction({
     sessionId, messages, draft, models,
     busy: taskRunning || Boolean(sendNowPending || replacingTurn || cancellationPending || continuationPending
@@ -1042,14 +1056,15 @@ export function ChatView({
     if (attentionRequest === undefined || handledAttentionRef.current === attentionRequest || modelLoading) return;
     const frame = requestAnimationFrame(() => {
       handledAttentionRef.current = attentionRequest;
-      if (awaitingPlan && !planOpen) openWorkspace("plan");
-      const card = trayAttentionRef.current?.querySelector<HTMLElement>(".perm-inline, .question-inline, .yield-banner");
+      if (promotedPermission) return;
+      if (selectedAttention === "plan" && !planOpen) openWorkspace("plan");
+      const card = trayAttentionRef.current?.querySelector<HTMLElement>(".chatview__attention-item:not([hidden]) :is(.perm-inline, .question-inline, .yield-banner)");
       card?.scrollIntoView?.({ block: "nearest" });
       const input = (card ?? trayAttentionRef.current)?.querySelector<HTMLElement>("input:not(:disabled), textarea:not(:disabled), button:not(:disabled)");
       input?.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(frame);
-  }, [attentionRequest, modelLoading, awaitingPlan, planOpen, sessionId]);
+  }, [attentionRequest, modelLoading, selectedAttention, planOpen, promotedPermission, sessionId]);
 
   const renderTimelineNode = (node: (typeof timeline)[number]) => {
                 // 时间线分隔符(对齐 EchoAgent message-timeline):日期/模型切换分隔。
@@ -1100,7 +1115,9 @@ export function ChatView({
                       streaming={streaming && m.id === streamingMessageId}
                       waitingForModel={!awaitingDecision && !awaitingPlan && !awaitingQuestion && !controlPhase && !error}
                       waitingReason={streaming && m.id === streamingMessageId
-                        ? awaitingQuestion ? "等待你补充信息" : awaitingPlan ? "等待你确认计划" : awaitingDecision ? "等待你批准操作" : undefined
+                        ? selectedAttention === "question" ? "等待你补充信息"
+                          : selectedAttention === "plan" ? "等待你确认计划"
+                            : selectedAttention === "permission" ? "等待你批准操作" : undefined
                         : undefined}
                       markdownConfig={markdownConfig}
                       cwd={cwd}
@@ -1151,6 +1168,8 @@ export function ChatView({
     {sessionId && <SessionHeader key={sessionId} sessionId={sessionId} title={title || "新任务"}
       onRename={onRename} navigation={navigation ?? { onNewTask }} leading={headerLeading}
       projectBreadcrumb={projectBreadcrumb}
+      backgroundActions={<TasksPanel sessionId={sessionId} refreshSignal={taskRefreshSignal} onToast={onToast}
+        presentation="summary" onOpen={() => transitionWorkspace("subagents")} />}
       actions={{ onToast,
         onStop: taskRunning ? () => { void cancelTask("stop"); } : undefined,
         stopping: cancellationPending,
@@ -1246,7 +1265,7 @@ export function ChatView({
               type="button"
               className="chatview__jump-latest"
               onClick={scrollToBottom}
-              aria-label="回到最新消息并恢复自动跟随"
+              aria-label="回到最新消息"
               title="回到最新消息并恢复自动跟随"
             >
               <span aria-hidden="true">↓</span>
@@ -1255,17 +1274,29 @@ export function ChatView({
           )}
         </div>
         <div className="chatview__footer" ref={trayAttentionRef}>
-          <div className="session-task-controls"><TasksPanel sessionId={sessionId ?? undefined} refreshSignal={taskRefreshSignal} onToast={onToast} presentation="summary" onOpen={() => transitionWorkspace("subagents")} /></div>
           {/* Inline permission / question cards: session-scoped, never block sidebar. */}
-          {!pendingPermission && <AutomationApprovalCard automation={automation} onToast={onToast} />}
-          <PermissionInlineCard sessionId={sessionId} />
-          {awaitingPlan && <div className="yield-banner" role="status"><span>执行计划等待确认</span><button type="button" className="btn btn--ghost" onClick={() => { if (!planOpen) openWorkspace("plan"); }}>查看并确认计划</button></div>}
-          <QuestionInlineCard sessionId={sessionId} />
+          {attentionItems.length > 1 && <div className="chatview__attention-tabs" role="group" aria-label="待处理事项">
+            {attentionItems.map(item => <button type="button" key={item.kind}
+              className="btn btn--ghost" aria-pressed={selectedAttention === item.kind}
+              onClick={() => setAttentionChoice({ sessionId, kind: item.kind })}>{item.label}</button>)}
+          </div>}
+          <div className="chatview__attention-item" hidden={selectedAttention !== "permission"}>
+            {!pendingPermission && <AutomationApprovalCard automation={automation} onToast={onToast} />}
+            <PermissionInlineCard sessionId={sessionId} visible={selectedAttention === "permission"} />
+          </div>
+          <div className="chatview__attention-item" hidden={selectedAttention !== "question"}>
+            <QuestionInlineCard sessionId={sessionId} />
+          </div>
+          {awaitingPlan && <div className="chatview__attention-item" hidden={selectedAttention !== "plan"}>
+            <div className="yield-banner" role="status"><span>待确认计划</span><button type="button" className="btn btn--ghost"
+              onClick={() => { if (!planOpen) openWorkspace("plan"); }}>查看计划</button></div>
+          </div>}
           {/* 消息队列(对齐 EchoAgent message-queue):流式时可继续排队 prompt。
               非流式时面板为空(QueuePanel 内部 queue.length===0 直接 return null)。 */}
           {sessionId && (
             <QueuePanel
               sessionId={sessionId}
+              collapsible
               streaming={streaming}
               sendNowPending={sendNowPending}
               awaitingQuestion={draftOnly || !workspace.available || workspace.busy || awaitingQuestion || awaitingDecision || awaitingPlan || replacingTurn || cancellationPending || continuationPending}
