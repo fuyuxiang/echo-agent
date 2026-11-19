@@ -316,6 +316,14 @@
   display: none;
 }
 
+.app__composer-source {
+  display: contents;
+}
+
+.app__composer-source[hidden] {
+  display: none;
+}
+
 .app__notice {
   margin: auto;
   padding: 24px;
@@ -5552,7 +5560,14 @@ button.diff__path {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-.iam-sub-item {
+.iam-submenu__actions {
+  flex: none;
+  border-top: 1px solid var(--echo-border-default);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.iam-sub-item,
+.iam-sub-action {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -5569,10 +5584,15 @@ button.diff__path {
   transition: background .1s;
   box-sizing: border-box;
 }
-.iam-sub-item:hover {
+.iam-sub-action {
+  min-height: 32px;
+}
+.iam-sub-item:hover,
+.iam-sub-action:hover {
   background: var(--echo-bg-hover);
 }
-.iam-sub-item:focus-visible {
+.iam-sub-item:focus-visible,
+.iam-sub-action:focus-visible {
   outline: none;
   background: var(--echo-bg-hover);
   box-shadow: inset 3px 0 0 color-mix(in srgb, var(--echo-brand) 65%, transparent);

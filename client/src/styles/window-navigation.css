@@ -186,7 +186,7 @@
 .titlebar--caption-only ~ .app__body:has(> .window-sidebar-navigation) :is(
   .page-toolbar.management-toolbar.page-toolbar--window-navigation,
   .main-page-controls,
-  .app__main > .session-header,
+  :is(.app__main, .app__composer-source) > .session-header,
   .coding-workbench__topbar
 ) {
   padding-inline-end: calc(var(--window-caption-width) + var(--echo-page-gutter, 24px));
@@ -194,10 +194,10 @@
 
 /* Multi-row headers keep their own layout beneath the window controls. */
 .app__body--collapsed:has(> .window-sidebar-navigation):has(
-  > .app__main :is(.page-toolbar--window-navigation:not(.management-toolbar), .group-chat__header, .atm-editor-host)
+  > .app__main :is(.page-toolbar--window-navigation:not(.management-toolbar), .group-chat__header, .atm-editor-host):not(.app__composer-source[hidden] *)
 ),
 .titlebar--caption-only ~ .app__body:has(> .window-sidebar-navigation):has(
-  > .app__main :is(.page-toolbar--window-navigation:not(.management-toolbar), .group-chat__header, .atm-editor-host)
+  > .app__main :is(.page-toolbar--window-navigation:not(.management-toolbar), .group-chat__header, .atm-editor-host):not(.app__composer-source[hidden] *)
 ) {
   --window-page-inset: var(--window-chrome-height);
   --window-drag-width: 100%;

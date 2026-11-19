@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/agent-client", () => ({
@@ -11,7 +11,7 @@ vi.mock("@/lib/agent-client", () => ({
 }));
 
 import { InputAddMenu } from "../InputAddMenu";
-import { agentsList } from "@/lib/agent-client";
+import { agentsList, skillsList } from "@/lib/agent-client";
 
 describe("InputAddMenu", () => {
   it("按历史页面入口可用状态显示会议录音与纪要", async () => {
@@ -112,11 +112,11 @@ describe("InputAddMenu", () => {
   });
 
   it("连接器子菜单只展示后端实际启用的 MCP 服务", async () => {
-    const onNavigateConnectors = vi.fn();
+    const onOpenCapability = vi.fn();
     render(
       <InputAddMenu
         onPickFiles={vi.fn()}
-        onNavigateConnectors={onNavigateConnectors}
+        onOpenCapability={onOpenCapability}
       />,
     );
 
@@ -128,7 +128,51 @@ describe("InputAddMenu", () => {
     const realServer = await screen.findByText("真实服务");
     expect(screen.queryByText("已停用服务")).toBeNull();
     fireEvent.click(realServer);
-    await waitFor(() => expect(onNavigateConnectors).toHaveBeenCalledTimes(1));
+    expect(onOpenCapability).toHaveBeenCalledWith({ route: "连接器", serverName: "真实服务" }, undefined);
+  });
+
+  it.each([
+    ["专家", "创建专家", { route: "专家·技能·连接器", create: true }],
+    ["专家", "管理专家", { route: "专家·技能·连接器" }],
+    ["技能", "从本地添加技能", null],
+    ["技能", "管理技能", { route: "技能" }],
+    ["连接器", "配置连接器", { route: "连接器", configure: true }],
+    ["连接器", "管理连接器", { route: "连接器" }],
+  ])("%s 的底部操作可打开「%s」", async (catalog, label, destination) => {
+    const onOpenCapability = vi.fn();
+    const onInstallSkill = vi.fn();
+    render(<InputAddMenu onPickFiles={vi.fn()} cwd="/project" onOpenCapability={onOpenCapability} onInstallSkill={onInstallSkill} />);
+    const trigger = screen.getByRole("button", { name: "添加" });
+    await act(async () => fireEvent.click(trigger));
+    fireEvent.keyDown(screen.getByRole("menuitem", { name: catalog }), { key: "ArrowRight" });
+    const submenu = screen.getByRole("menu", { name: `${catalog}子菜单` });
+    const actions = within(submenu).getByRole("group", { name: "目录操作" });
+    const buttons = within(actions).getAllByRole("menuitem");
+    expect(buttons).toHaveLength(2);
+    expect(actions.closest(".iam-submenu__scroll")).toBeNull();
+    fireEvent.keyDown(submenu, { key: "End" });
+    expect(buttons[1]).toHaveFocus();
+    fireEvent.click(within(actions).getByRole("menuitem", { name: label }));
+    expect(trigger).toHaveFocus();
+    if (destination) expect(onOpenCapability).toHaveBeenCalledWith(destination, "/project");
+    else expect(onInstallSkill).toHaveBeenCalledOnce();
+  });
+
+  it("切换工作区时重新查询专家与技能并丢弃晚到的旧目录", async () => {
+    let finishPrevious!: (agents: Awaited<ReturnType<typeof agentsList>>) => void;
+    vi.mocked(agentsList).mockImplementationOnce(() => new Promise(resolve => { finishPrevious = resolve; }));
+    vi.mocked(agentsList).mockResolvedValueOnce([{ name: "当前项目专家", path: "/next/expert.md", raw: "", scope: "project" }]);
+    const onPickFiles = vi.fn();
+    const { rerender } = render(<InputAddMenu onPickFiles={onPickFiles} cwd="/previous" />);
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "专家" }));
+    rerender(<InputAddMenu onPickFiles={onPickFiles} cwd="/next" />);
+    expect(await screen.findByRole("menuitem", { name: "当前项目专家" })).toBeVisible();
+    await act(async () => finishPrevious([{ name: "旧项目专家", path: "/previous/expert.md", raw: "", scope: "project" }]));
+    expect(screen.queryByRole("menuitem", { name: "旧项目专家" })).toBeNull();
+    expect(skillsList).toHaveBeenCalledWith("/previous");
+    expect(skillsList).toHaveBeenLastCalledWith("/next");
+    expect(agentsList).toHaveBeenLastCalledWith("/next");
   });
 
   it("显示会议录音与纪要时，三个目录子菜单仍跟随各自的实际行位置", async () => {

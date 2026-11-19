@@ -71,7 +71,6 @@ interface ProjectsPanelProps {
   defaultModelId?: string;
   onOpenModelSettings?: () => void;
   onClientSlashCommand?: (invocation: SlashCommandInvocation) => boolean | void | Promise<boolean | void>;
-  onNavigateConnectors?: () => void;
   onOpenKnowledgeBase?: () => void;
   onOpenMeetingMinutes?: (modelId?: string) => void;
   onOpenOrganization?: () => void;
@@ -99,7 +98,6 @@ export function ProjectsPanel({
   defaultModelId,
   onOpenModelSettings,
   onClientSlashCommand,
-  onNavigateConnectors,
   onOpenKnowledgeBase,
   onOpenMeetingMinutes,
   onOpenOrganization,
@@ -237,7 +235,6 @@ export function ProjectsPanel({
           defaultModelId={defaultModelId}
           onOpenModelSettings={onOpenModelSettings}
           onClientSlashCommand={onClientSlashCommand}
-          onNavigateConnectors={onNavigateConnectors}
           onOpenKnowledgeBase={onOpenKnowledgeBase}
           onOpenMeetingMinutes={onOpenMeetingMinutes}
           onOpenOrganization={onOpenOrganization}

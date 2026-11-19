@@ -66,7 +66,7 @@ interface PlaceholderPageProps {
   onOpenAutomationSettings?: (section: "general" | "notifications") => void;
   onOpenRetrievalSettings?: () => void;
   label: string;
-  /** Navigate to another sidebar view (e.g. 自动化 → 管理连接器 → 专家·技能·连接器). */
+  /** Navigate to another sidebar view (e.g. 自动化 → 管理连接器). */
   onNavigate?: (label: string) => void;
   /** Open a session produced by an automation run record. */
   onOpenSession?: (sessionId: string, cwd?: string) => void;
@@ -75,6 +75,9 @@ interface PlaceholderPageProps {
   /** Open the custom expert editor after navigating from the conversation rail. */
   createExpertRequested?: boolean;
   onCreateExpertRequestHandled?: () => void;
+  onCapabilityBack?: () => void;
+  configureConnector?: boolean;
+  initialConnectorName?: string;
   /** Start a new task with organization knowledge selected once. */
   onStartOrganizationConversation?: () => void;
   /** Surface transient feedback (errors, success toasts). */
@@ -148,6 +151,9 @@ export function PlaceholderPage({
   onGoHome,
   createExpertRequested,
   onCreateExpertRequestHandled,
+  onCapabilityBack,
+  configureConnector,
+  initialConnectorName,
   onStartOrganizationConversation,
   onToast,
   cwd,
@@ -206,7 +212,6 @@ export function PlaceholderPage({
           defaultModelId={projectDefaultModelId}
           onOpenModelSettings={onOpenModelSettings}
           onClientSlashCommand={onClientSlashCommand}
-          onNavigateConnectors={() => onNavigate?.("专家·技能·连接器")}
           onOpenKnowledgeBase={() => onNavigate?.("知识库")}
           onOpenMeetingMinutes={onOpenMeetingMinutes ?? (() => onNavigate?.("录音转写"))}
           onOpenOrganization={() => onNavigate?.("组织")}
@@ -229,7 +234,11 @@ export function PlaceholderPage({
     const initialTab = label === "技能" ? "skills" : label === "连接器" ? "connectors" : "experts";
     return (
       <DeferredPanel>
-        <CapabilitySection active={label} onNavigate={onNavigate}><ExpertsPanel cwd={cwd} onGoHome={onGoHome} onToast={onToast} initialTab={initialTab} hideNavigation createExpertRequested={createExpertRequested} onCreateExpertRequestHandled={onCreateExpertRequestHandled} /></CapabilitySection>
+        <CapabilitySection active={label} onNavigate={onNavigate} onBack={onCapabilityBack}>
+          <ExpertsPanel cwd={cwd} onGoHome={onGoHome} onToast={onToast} initialTab={initialTab} hideNavigation
+            createExpertRequested={createExpertRequested} onCreateExpertRequestHandled={onCreateExpertRequestHandled}
+            configureConnector={configureConnector} initialConnectorName={initialConnectorName} />
+        </CapabilitySection>
       </DeferredPanel>
     );
   }

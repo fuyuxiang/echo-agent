@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { ArrowLeft, AudioLines, Check, ChevronRight, Globe2, Monitor, Paperclip } from "lucide-react";
+import { ArrowLeft, AudioLines, Check, ChevronRight, Globe2, Monitor, Paperclip, Plus, Settings, Upload } from "lucide-react";
 import {
   AddIcon,
   ExpertTabIcon,
@@ -9,6 +9,7 @@ import {
 } from "@/foundation/components/Icon/icons";
 import { skillsList, agentsList, mcpList } from "@/lib/agent-client";
 import type { AutomationCapabilities, AutomationMode } from "@/lib/automation-client";
+import { CAPABILITY_SECTION_LABEL, type ComposerCapabilityDestination, type OpenComposerCapability } from "@/lib/capability-navigation";
 import type { AgentEntry, McpServerEntry, SkillInfo } from "@/lib/types";
 
 interface InputAddMenuProps {
@@ -18,7 +19,9 @@ interface InputAddMenuProps {
   allowMeetingHistoryWhileDisabled?: boolean;
   onSelectExpert?: (agent: AgentEntry) => void;
   onSelectSkill?: (skillName: string) => void;
-  onNavigateConnectors?: () => void;
+  cwd?: string;
+  onInstallSkill?: () => void;
+  onOpenCapability?: OpenComposerCapability;
   meetingMinutesAvailable?: boolean;
   onOpenMeetingMinutes?: () => void;
   automationMode?: AutomationMode;
@@ -99,7 +102,9 @@ export function InputAddMenu({
   allowMeetingHistoryWhileDisabled = false,
   onSelectExpert,
   onSelectSkill,
-  onNavigateConnectors,
+  cwd,
+  onInstallSkill,
+  onOpenCapability,
   meetingMinutesAvailable = false,
   onOpenMeetingMinutes,
   automationMode = "default",
@@ -156,8 +161,8 @@ export function InputAddMenu({
     setCatalogLoading(true);
     setCatalogErrors({});
     const [expertResult, skillResult, connectorResult] = await Promise.allSettled([
-      agentsList(),
-      skillsList(),
+      agentsList(cwd),
+      skillsList(cwd),
       mcpList(),
     ]);
     if (generation !== loadGenerationRef.current) return;
@@ -177,7 +182,14 @@ export function InputAddMenu({
     }
     setCatalogErrors(nextErrors);
     setCatalogLoading(false);
-  }, []);
+  }, [cwd]);
+
+  useLayoutEffect(() => {
+    loadGenerationRef.current += 1;
+    setExperts([]);
+    setSkills([]);
+    setCatalogErrors({});
+  }, [cwd]);
 
   useEffect(() => {
     if (open && !meetingHistoryOnly) void loadData();
@@ -302,7 +314,7 @@ export function InputAddMenu({
         focusCatalogItem(firstItem);
         pendingSubmenuFocusRef.current = false;
       } else {
-        focusCatalogItem(submenuRef.current?.querySelector<HTMLButtonElement>('.iam-sub-back') ?? submenuRef.current);
+        focusCatalogItem(submenuRef.current?.querySelector<HTMLButtonElement>('.iam-sub-back, .iam-submenu__actions button') ?? submenuRef.current);
       }
     });
   };
@@ -311,7 +323,7 @@ export function InputAddMenu({
     if (!hoveredItem || catalogLoading || !pendingSubmenuFocusRef.current) return;
     const frame = window.requestAnimationFrame(() => {
       const firstItem = submenuRef.current?.querySelector<HTMLButtonElement>('.iam-submenu__scroll button[role="menuitem"]');
-      focusCatalogItem(firstItem ?? submenuRef.current?.querySelector<HTMLButtonElement>('.iam-sub-back') ?? submenuRef.current);
+      focusCatalogItem(firstItem ?? submenuRef.current?.querySelector<HTMLButtonElement>('.iam-sub-back, .iam-submenu__actions button') ?? submenuRef.current);
       pendingSubmenuFocusRef.current = false;
     });
     return () => window.cancelAnimationFrame(frame);
@@ -516,10 +528,14 @@ export function InputAddMenu({
     onSelectSkill?.(name);
   };
 
-  const handleSelectConnector = () => {
+  const runCatalogAction = (action: () => void) => {
     if (disabled) return;
     close();
-    onNavigateConnectors?.();
+    action();
+  };
+
+  const openCapability = (destination: ComposerCapabilityDestination) => {
+    if (onOpenCapability) runCatalogAction(() => onOpenCapability(destination, cwd));
   };
 
   const renderCatalogState = (id: CatalogId, hasItems: boolean, emptyLabel: string) => {
@@ -548,6 +564,7 @@ export function InputAddMenu({
     if (disabled || !hoveredItem) return null;
 
     let items: React.ReactNode = null;
+    let actions: React.ReactNode = null;
 
     if (hoveredItem === "experts") {
       items = (
@@ -570,6 +587,14 @@ export function InputAddMenu({
           ))}
         </>
       );
+      if (onOpenCapability) actions = <>
+        <button type="button" className="iam-sub-action" role="menuitem" onClick={() => openCapability({ route: CAPABILITY_SECTION_LABEL, create: true })}>
+          <Plus size={16} aria-hidden="true" />创建专家
+        </button>
+        <button type="button" className="iam-sub-action" role="menuitem" onClick={() => openCapability({ route: CAPABILITY_SECTION_LABEL })}>
+          <Settings size={16} aria-hidden="true" />管理专家
+        </button>
+      </>;
     }
 
     if (hoveredItem === "skills") {
@@ -593,6 +618,14 @@ export function InputAddMenu({
           ))}
         </>
       );
+      if (onInstallSkill || onOpenCapability) actions = <>
+        {onInstallSkill && <button type="button" className="iam-sub-action" role="menuitem" onClick={() => runCatalogAction(onInstallSkill)}>
+          <Upload size={16} aria-hidden="true" />从本地添加技能
+        </button>}
+        {onOpenCapability && <button type="button" className="iam-sub-action" role="menuitem" onClick={() => openCapability({ route: "技能" })}>
+          <Settings size={16} aria-hidden="true" />管理技能
+        </button>}
+      </>;
     }
 
     if (hoveredItem === "connectors") {
@@ -605,7 +638,7 @@ export function InputAddMenu({
                 type="button"
                 className="iam-sub-item"
                 role="menuitem"
-                onClick={handleSelectConnector}
+                onClick={() => openCapability({ route: "连接器", serverName: server.name })}
               >
                 <ConnectorTabIcon size="sm" />
                 <span className="iam-sub-text">
@@ -616,6 +649,14 @@ export function InputAddMenu({
             ))}
         </>
       );
+      if (onOpenCapability) actions = <>
+        <button type="button" className="iam-sub-action" role="menuitem" onClick={() => openCapability({ route: "连接器", configure: true })}>
+          <Settings size={16} aria-hidden="true" />配置连接器
+        </button>
+        <button type="button" className="iam-sub-action" role="menuitem" onClick={() => openCapability({ route: "连接器" })}>
+          <ConnectorTabIcon size="sm" />管理连接器
+        </button>
+      </>;
     }
 
     if (!items) return null;
@@ -643,6 +684,7 @@ export function InputAddMenu({
           <span className="iam-submenu__title">{flatItems.find((item) => item.id === hoveredItem)?.label}</span>
         </div>}
         <div className="iam-submenu__scroll">{items}</div>
+        {actions && <div className="iam-submenu__actions" role="group" aria-label="目录操作">{actions}</div>}
       </div>
     );
   };

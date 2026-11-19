@@ -1,5 +1,6 @@
 import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { draftAttachments, saveDraftAttachments } from "@/lib/draft-attachments";
 import { draftRevision, useDraftRevision } from "@/lib/draft-lifecycle";
 import type { PromptPrediction } from "@/lib/use-prompt-prediction";
@@ -38,6 +39,7 @@ import {
 } from "@/lib/slash-commands";
 import { atTokenAtCursor, replaceAtToken } from "@/lib/at-commands";
 import { InputAddMenu } from "./InputAddMenu";
+import { ComposerCapabilityNavigation } from "@/lib/capability-navigation";
 import { AttachmentList } from "./AttachmentList";
 import { ExpandedDraftEditor } from "./ExpandedDraftEditor";
 import { KnowledgePicker } from "./KnowledgePicker";
@@ -71,6 +73,9 @@ import {
   type SessionControlAction,
 } from "@/lib/session-control";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+
+const ImportSkillModal = lazy(() => import("./experts-panel/skills/ImportSkillModal")
+  .then(({ ImportSkillModal }) => ({ default: ImportSkillModal })));
 
 const MAX_ATTACHMENT_COUNT = 20;
 const MAX_ATTACHMENT_FILE_BYTES = 20 * 1024 * 1024;
@@ -166,7 +171,6 @@ export function Composer({
   draftAttachmentControls,
   onSelectExpert,
   onSelectSkill,
-  onNavigateConnectors,
   automationMode = "default",
   automationModeDisabled = false,
   showAutomationModeBadge = false,
@@ -292,8 +296,6 @@ export function Composer({
   onSelectExpert?: (agent: AgentEntry) => void;
   /** 加号菜单:选择技能(插入 /skillName)。 */
   onSelectSkill?: (skillName: string) => void;
-  /** 加号菜单:跳转到连接器管理面板。 */
-  onNavigateConnectors?: () => void;
   /** Optional task-scoped webpage/computer capability exposed from the + menu. */
   automationMode?: AutomationMode;
   /** Prevent capability changes while a task is being created or is running. */
@@ -338,6 +340,8 @@ export function Composer({
   const openSetup = draftOnly ? undefined : onOpenSettings;
   const storageErrors = useStorageHealth((state) => state.errors);
   const draftScopeRef = useRef(draftKey === undefined ? undefined : String(draftKey));
+  const openCapability = useContext(ComposerCapabilityNavigation);
+  const [installSkillOpen, setInstallSkillOpen] = useState(false);
   const persistedRevision = useDraftRevision(draftKey === undefined ? undefined : String(draftKey));
   const localRevisionRef = useRef(0);
   const scopeEpochRef = useRef(0);
@@ -1583,7 +1587,9 @@ export function Composer({
                   requestAnimationFrame(() => ref.current?.focus());
                 }
               }}
-              onNavigateConnectors={onNavigateConnectors}
+              cwd={cwd || projectWorkspaceDefault?.cwd || defaultWorkspaceCwd}
+              onInstallSkill={() => setInstallSkillOpen(true)}
+              onOpenCapability={openCapability ?? undefined}
               meetingMinutesAvailable={Boolean(onOpenMeetingMinutes)}
               onOpenMeetingMinutes={onOpenMeetingMinutes}
               automationMode={automationMode}
@@ -1706,6 +1712,11 @@ export function Composer({
           </div>
         </div>
       </section>
+      {installSkillOpen && createPortal(
+        <Suspense fallback={null}>
+          <ImportSkillModal onClose={() => setInstallSkillOpen(false)} onToast={onToast} />
+        </Suspense>, document.body,
+      )}
       {expandedDraft && expandedDraft.scope === (draftKey === undefined ? undefined : String(draftKey)) && <ExpandedDraftEditor
         value={text} onChange={value => { updateText(value); histCursorRef.current = histRef.current.items.length; }}
         onPaste={handlePaste} disabled={!apiReady || awaitingQuestion || disabled} selection={expandedDraft.selection} returnFocus={ref.current}

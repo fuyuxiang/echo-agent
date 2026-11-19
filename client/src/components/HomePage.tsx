@@ -35,7 +35,7 @@ export function HomePage({
   automaticWorkspace,
   defaultWorkspaceCwd,
   onSelectExpert,
-  onNavigateConnectors,
+  onToast,
   onOpenKnowledgeBase,
   onOpenMeetingMinutes,
   onOpenOrganization,
@@ -62,7 +62,7 @@ export function HomePage({
   automaticWorkspace?: boolean;
   defaultWorkspaceCwd?: string;
   onSelectExpert?: (agent: AgentEntry) => void;
-  onNavigateConnectors?: () => void;
+  onToast?: (message: string) => void;
   onOpenKnowledgeBase?: () => void;
   onOpenMeetingMinutes?: () => void;
   onOpenOrganization?: () => void;
@@ -153,7 +153,7 @@ export function HomePage({
             draftKey={HOME_DRAFT_KEY}
             onDraftChange={(t) => setDraft(HOME_DRAFT_KEY, t)}
             onSelectExpert={onSelectExpert}
-            onNavigateConnectors={onNavigateConnectors}
+            onToast={onToast}
             automationMode={taskMode}
             automationModeDisabled={Boolean(creatingSession) || streaming}
             showAutomationModeBadge

@@ -70,6 +70,11 @@ try {
     const last = catalog.getByRole("menuitem", { name: /评审专家 30 / });
     await last.waitFor();
     await last.click({ trial: true });
+    for (const label of ["创建专家", "管理专家"]) {
+      const action = catalog.getByRole("menuitem", { name: label, exact: true });
+      assert(await action.evaluate(el => !el.closest(".iam-submenu__scroll")));
+      await action.click({ trial: true });
+    }
     await page.screenshot({ path: join(output, `catalog-${width}-${font}-${theme}.png`) });
     await page.keyboard.press("Escape");
     assert(await page.getByRole("button", { name: "添加", exact: true }).evaluate(el => el === document.activeElement));
@@ -80,6 +85,8 @@ try {
     const first = page.getByRole("menuitem", { name: /评审专家 1 / });
     await first.waitFor();
     await page.waitForFunction(() => document.activeElement?.textContent?.includes("评审专家 1"));
+    await page.keyboard.press("End");
+    assert(await catalog.getByRole("menuitem", { name: "管理专家" }).evaluate(el => el === document.activeElement));
     await page.keyboard.press("ArrowLeft");
     assert(await parent.evaluate(el => el === document.activeElement));
     await page.keyboard.press("ArrowRight");
@@ -131,7 +138,7 @@ try {
   await resize.waitForFunction(() => document.activeElement?.textContent?.includes("connector-1"));
   await fits(resize, connectors);
   await firstConnector.click();
-  assert.deepEqual(await resize.evaluate(() => window.inputMenuReview.calls), ["connectors"]);
+  assert.deepEqual(await resize.evaluate(() => window.inputMenuReview.calls), ["connector:connector-1"]);
   await resize.close();
 
   // Focus must scroll the catalog locally, never the chat/composer ancestors.
@@ -175,7 +182,18 @@ try {
       await page.keyboard.press("ArrowRight");
       await page.waitForFunction(() => document.activeElement?.textContent?.includes("需求评审 01"));
       await pointerClick(page, page.getByRole("menu", { name: "技能子菜单" }).getByRole("menuitem").filter({ hasText: "需求评审 01" }));
-      assert((await page.locator(".echo-composer__input").inputValue()).includes("/review-skill-0"));
+      const input = page.locator(".echo-composer__input");
+      const draft = await input.inputValue();
+      assert(draft.includes("/review-skill-0"));
+      await pointerClick(page, page.locator(".echo-composer__add"));
+      await page.getByRole("menuitem", { name: "技能", exact: true }).focus();
+      await page.keyboard.press("ArrowRight");
+      await pointerClick(page, page.getByRole("menuitem", { name: "从本地添加技能" }));
+      const importer = page.getByRole("dialog", { name: "安装本地技能" });
+      await importer.waitFor();
+      await fits(page, importer);
+      await pointerClick(page, importer.getByRole("button", { name: "关闭" }));
+      assert.equal(await input.inputValue(), draft);
       await assertStable();
       await page.close();
     }

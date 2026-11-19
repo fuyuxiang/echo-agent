@@ -117,7 +117,6 @@ export function ChatView({
   onSelectExpert,
   onOpenSubagentSession,
   subagentScrollRestore,
-  onNavigateConnectors,
   onOpenKnowledgeBase,
   onOpenMeetingMinutes,
   onOpenOrganization,
@@ -182,7 +181,6 @@ export function ChatView({
   onOpenSubagentSession?: (sessionId: string, cwd: string | undefined, source: SubagentOpenContext) => void | Promise<void>;
   /** Restore the exact parent row after returning from a child session. */
   subagentScrollRestore?: SubagentScrollRestore | null;
-  onNavigateConnectors?: () => void;
   onOpenKnowledgeBase?: () => void;
   onOpenMeetingMinutes?: () => void;
   onOpenOrganization?: () => void;
@@ -1369,7 +1367,6 @@ export function ChatView({
             externalAttachments={resendAttachments}
             externalTextNonce={resendNonce}
             onSelectExpert={onSelectExpert}
-            onNavigateConnectors={onNavigateConnectors}
             automationMode={automationMode}
             automationModeDisabled={draftOnly || automationModeChanging}
             onAutomationModeChange={handleAutomationModeChange}

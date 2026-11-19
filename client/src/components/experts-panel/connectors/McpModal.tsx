@@ -17,11 +17,12 @@ import { CapabilityEmptyState, CapabilityError, CapabilityPage } from "../shared
 
 /** MCP management with persisted state, live health and per-server tool details. */
 export function McpModal({
-  onClose, onToast, initialEditing = false, embedded = false,
+  onClose, onToast, initialEditing = false, initialServerName, embedded = false,
 }: {
   onClose: () => void;
   onToast?: (m: string) => void;
   initialEditing?: boolean;
+  initialServerName?: string;
   /** Render directly inside the connectors page instead of as a modal. */
   embedded?: boolean;
 }) {
@@ -31,7 +32,8 @@ export function McpModal({
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(initialServerName ?? null);
+  const pendingServerFocus = useRef(initialServerName);
   const detailsPrefix = useId();
   const [mutating, setMutating] = useState<string | null>(null);
   const [setupDrafts, setSetupDrafts] = useState<Record<string, Record<string, string>>>({});
@@ -270,6 +272,11 @@ export function McpModal({
               <ResourceRow key={server.name} className={`mcp-item-wrap resource-row--expandable${isExpanded ? " mcp-item-wrap--expanded" : ""}`}>
                 <div className="mcp-item">
                   <button type="button" className="mcp-item-main" aria-expanded={isExpanded} aria-controls={detailsId}
+                    ref={pendingServerFocus.current === server.name ? (element) => {
+                      if (!element) return;
+                      pendingServerFocus.current = undefined;
+                      element.focus();
+                    } : undefined}
                     onClick={() => setExpanded(isExpanded ? null : server.name)}>
                     <ResourceIcon><McpIcon size="md" /></ResourceIcon>
                     <div className="mcp-item-info">

@@ -42,7 +42,8 @@ function Review() {
       <InputAddMenu onPickFiles={() => record("files")}
         onSelectExpert={expert => record(`expert:${expert.name}`)}
         onSelectSkill={name => record(`skill:${name}`)}
-        onNavigateConnectors={() => record("connectors")}
+        onInstallSkill={() => record("install-skill")}
+        onOpenCapability={destination => record(destination.route === "连接器" && destination.serverName ? `connector:${destination.serverName}` : destination.route)}
         meetingMinutesAvailable onOpenMeetingMinutes={() => record("meeting")}
         automationMode={mode} onAutomationModeChange={next => { setMode(next); record(`mode:${next}`); }}
         automationCapabilities={{ browser: { available: true }, computer: { available: false, platform: "macos", screenCapture: false, inputControl: false, reason: "需要系统权限" } }} />

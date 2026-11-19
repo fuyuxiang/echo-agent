@@ -16,7 +16,10 @@ import { SidebarLayoutContext, useAppSidebarLayout } from "./lib/sidebar-layout"
 import { HomePage } from "./components/HomePage";
 import { PlaceholderPage } from "./components/PlaceholderPage";
 import { CapabilitySection } from "./components/CapabilitySection";
-import { isCapabilityView } from "./lib/capability-navigation";
+import {
+  CAPABILITY_SECTION_LABEL, ComposerCapabilityNavigation, isCapabilityView,
+  type ComposerCapabilityDestination, type OpenComposerCapability,
+} from "./lib/capability-navigation";
 import { Toast, type ToastAction } from "./components/Toast";
 import { useToastQueue } from "./lib/use-toast-queue";
 import { useRendererRecoveryStatus, type RendererRecoveryStatus } from "./lib/renderer-recovery";
@@ -342,7 +345,11 @@ function Shell() {
   const [commandRefreshKey, setCommandRefreshKey] = useState(0);
   const [placeholderView, setPlaceholderView] = useState<string | null>(null);
   const [hasOpenedCodingWorkspace, setHasOpenedCodingWorkspace] = useState(false);
-  const [createExpertRequested, setCreateExpertRequested] = useState(false);
+  const [capabilityVisit, setCapabilityVisit] = useState<{
+    destination: ComposerCapabilityDestination;
+    cwd?: string;
+  } | null>(null);
+  const capabilityReturnFocus = useRef<HTMLElement | null>(null);
   const sidebarLayout = useAppSidebarLayout();
   const { collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed } = sidebarLayout;
   const { toasts, enqueueToast, dismissToast, pauseToast } = useToastQueue();
@@ -1523,7 +1530,7 @@ function Shell() {
   };
   const navigateNow = (label: string) => {
     setNotificationAutomationOpen(null);
-    if (label !== "专家·技能·连接器") setCreateExpertRequested(false);
+    setCapabilityVisit(null);
     if (label === "个人记忆" || label === "资料库" || label === "更多") {
       openSettings("memory");
       return;
@@ -1581,6 +1588,30 @@ function Shell() {
     if (label === "已归档") { openSettings("archived"); return; }
     navigateWithGuard(label);
   };
+  const openComposerCapability = useCallback<OpenComposerCapability>((destination, cwd) => {
+    capabilityReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setCapabilityVisit({ destination, cwd });
+  }, []);
+  const returnToComposer = () => {
+    setCapabilityVisit(null);
+    const trigger = capabilityReturnFocus.current;
+    capabilityReturnFocus.current = null;
+    requestAnimationFrame(() => trigger?.focus({ preventScroll: true }));
+  };
+  const navigateFromComposerCapability = (label: string) => {
+    if (label === CAPABILITY_SECTION_LABEL || label === "技能" || label === "连接器") {
+      setCapabilityVisit(visit => visit && visit.destination.route !== label
+        ? { ...visit, destination: { route: label } }
+        : visit);
+    } else {
+      handleNavigate(label);
+    }
+  };
+  const consumeCreateExpertRequest = useCallback(() => {
+    setCapabilityVisit(visit => visit?.destination.route === CAPABILITY_SECTION_LABEL && visit.destination.create
+      ? { ...visit, destination: { route: CAPABILITY_SECTION_LABEL } }
+      : visit);
+  }, []);
   const handlePlaceholder = (label: string) => {
     // Route a few sidebar shortcut buttons to real panels instead of toasts.
     if (label === "用户中心") {
@@ -2313,6 +2344,7 @@ function Shell() {
 
   const createNewSessionView = () => {
     selectionGenerationRef.current += 1;
+    setCapabilityVisit(null);
     setPlaceholderView(null);
     sessionsStore.getState().setCurrent(null);
     sessionStore.getState().reset();
@@ -2339,6 +2371,7 @@ function Shell() {
 
   /** Navigate to home page without resetting session state (used after expert summon). */
   const handleGoHome = () => {
+    setCapabilityVisit(null);
     if (placeholderView === "代码开发" && codingLeaveGuardRef.current) {
       void codingLeaveGuardRef.current().then((allowed) => {
         if (allowed) {
@@ -3430,7 +3463,11 @@ function Shell() {
     await handleSelectSession(current.sessionId, local.cwd, false, true, localProject ? { kind: "project-work-item", projectId: localProject.id } : undefined);
   };
 
-  const activeNav = placeholderView ?? (currentSessionId ? "" : "新建任务");
+  useEffect(() => {
+    setCapabilityVisit(null);
+    capabilityReturnFocus.current = null;
+  }, [placeholderView, currentSessionId]);
+  const activeNav = capabilityVisit?.destination.route ?? placeholderView ?? (currentSessionId ? "" : "新建任务");
   const activeSubagentParent = activeSubagentReturnPoint(subagentTrail, currentSessionId);
   const parentSessionTitle = activeSubagentParent
     ? findSessionSummary(activeSubagentParent.parentSessionId)?.title ?? "上级任务"
@@ -3449,8 +3486,6 @@ function Shell() {
     onNavigate: handleNavigate,
     onOpenSession: handleSelectSession,
     onGoHome: handleGoHome,
-    createExpertRequested,
-    onCreateExpertRequestHandled: () => setCreateExpertRequested(false),
     onStartOrganizationConversation: handleStartOrganizationConversation,
     onToast: showToast,
     codingWorkspaces,
@@ -3544,6 +3579,9 @@ function Shell() {
         <SidebarResizeHandle layout={sidebarLayout} />
         <main className="app__main">
           <PageChromeProvider macOS={IS_MACOS} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} onNewTask={handleNewSession}>
+          <ComposerCapabilityNavigation.Provider value={openComposerCapability}>
+          {/* Keep the source composer and its draft controls mounted during management. */}
+          <div className="app__composer-source" hidden={Boolean(capabilityVisit)}>
           {(!currentSessionId || placeholderView) && !codingWorkspaceActive && !(init?.ok && !initError && ["项目", "组织", "专家·技能·连接器", "专家团", "技能", "连接器", "插件", "自动化", "知识库", "录音转写"].includes(placeholderView ?? "")) && (
             <header className="main-page-controls" data-tauri-drag-region>
               <SessionNavigation sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} onNewTask={handleNewSession} />
@@ -3668,7 +3706,6 @@ function Shell() {
                   onSelectExpert={handleStartWithExpert}
                   onOpenSubagentSession={handleOpenSubagentSession}
                   subagentScrollRestore={subagentScrollRestore}
-                  onNavigateConnectors={() => setPlaceholderView("专家·技能·连接器")}
                   onOpenKnowledgeBase={() => handleNavigate("知识库")}
                   onOpenMeetingMinutes={() => handleNavigate("录音转写")}
                   onOpenOrganization={() => handleNavigate("组织")}
@@ -3695,7 +3732,7 @@ function Shell() {
                   workspaces={workspaces}
                   onSelectWorkspace={handleSelectWorkspace}
                   onSelectExpert={handleStartWithExpert}
-                  onNavigateConnectors={() => setPlaceholderView("专家·技能·连接器")}
+                  onToast={showToast}
                   onOpenKnowledgeBase={() => handleNavigate("知识库")}
                   onOpenMeetingMinutes={() => handleNavigate("录音转写")}
                   onOpenOrganization={() => handleNavigate("组织")}
@@ -3705,6 +3742,24 @@ function Shell() {
                   onTaskModeChange={setNewTaskMode}
                 />
               )}
+            </Suspense>
+          )}
+          </div>
+          </ComposerCapabilityNavigation.Provider>
+          {capabilityVisit && (
+            <Suspense fallback={<div className="app__notice" role="status">正在加载界面…</div>}>
+              <PlaceholderPage
+                key={capabilityVisit.destination.route}
+                {...placeholderProps}
+                label={capabilityVisit.destination.route}
+                cwd={capabilityVisit.cwd}
+                onNavigate={navigateFromComposerCapability}
+                onCapabilityBack={returnToComposer}
+                createExpertRequested={capabilityVisit.destination.route === CAPABILITY_SECTION_LABEL && capabilityVisit.destination.create}
+                onCreateExpertRequestHandled={consumeCreateExpertRequest}
+                configureConnector={capabilityVisit.destination.route === "连接器" && capabilityVisit.destination.configure}
+                initialConnectorName={capabilityVisit.destination.route === "连接器" ? capabilityVisit.destination.serverName : undefined}
+              />
             </Suspense>
           )}
           </PageChromeProvider>

@@ -75,7 +75,6 @@ export function ProjectDetailView({
   defaultModelId,
   onOpenModelSettings,
   onClientSlashCommand,
-  onNavigateConnectors,
   onOpenKnowledgeBase,
   onOpenMeetingMinutes,
   onOpenOrganization,
@@ -104,7 +103,6 @@ export function ProjectDetailView({
   defaultModelId?: string;
   onOpenModelSettings?: () => void;
   onClientSlashCommand?: (invocation: SlashCommandInvocation) => boolean | void | Promise<boolean | void>;
-  onNavigateConnectors?: () => void;
   onOpenKnowledgeBase?: () => void;
   onOpenMeetingMinutes?: (modelId?: string) => void;
   onOpenOrganization?: () => void;
@@ -494,7 +492,6 @@ export function ProjectDetailView({
               onSelectExpert={addComposerExpert}
               activeExpertName={composerExpert?.name}
               onDismissExpert={() => setComposerExpert(null)}
-              onNavigateConnectors={onNavigateConnectors}
               onOpenKnowledgeBase={onOpenKnowledgeBase}
               onOpenMeetingMinutes={() => onOpenMeetingMinutes?.(projectModelId)}
               onOpenOrganization={onOpenOrganization}

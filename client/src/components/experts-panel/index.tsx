@@ -15,10 +15,12 @@ interface Props {
   hideNavigation?: boolean;
   createExpertRequested?: boolean;
   onCreateExpertRequestHandled?: () => void;
+  configureConnector?: boolean;
+  initialConnectorName?: string;
 }
 
 /** 专家、技能与连接器的本地管理页面。 */
-export function ExpertsPanel({ cwd, onGoHome, onToast, initialTab = "experts", hideNavigation = false, createExpertRequested, onCreateExpertRequestHandled }: Props) {
+export function ExpertsPanel({ cwd, onGoHome, onToast, initialTab = "experts", hideNavigation = false, createExpertRequested, onCreateExpertRequestHandled, configureConnector, initialConnectorName }: Props) {
   const [tab, setTab] = useState<CapabilityTab>(initialTab);
 
   useEffect(() => setTab(initialTab), [initialTab]);
@@ -31,7 +33,7 @@ export function ExpertsPanel({ cwd, onGoHome, onToast, initialTab = "experts", h
         <ExpertsTab cwd={cwd} pills={pills} onGoHome={onGoHome} onToast={onToast} createExpertRequested={createExpertRequested} onCreateExpertRequestHandled={onCreateExpertRequestHandled} />
       )}
       {tab === "skills" && <SkillsTab cwd={cwd} pills={pills} onToast={onToast} />}
-      {tab === "connectors" && <ConnectorsTab pills={pills} onToast={onToast} />}
+      {tab === "connectors" && <ConnectorsTab pills={pills} onToast={onToast} initialEditing={configureConnector} initialServerName={initialConnectorName} />}
     </div>
   );
 }

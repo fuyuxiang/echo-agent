@@ -1253,7 +1253,7 @@ export function AutomationPanel({
               onDelete={isCreating ? undefined : handleDelete}
               onOpenConnectorSettings={() => {
                 useAutomationEditorStore.getState().suspend();
-                onNavigate?.("专家·技能·连接器");
+                onNavigate?.("连接器");
               }}
               onWorkspaceCommit={(value) =>
                 setReferenceCwd(value.split(",")[0]?.trim() || cwd)

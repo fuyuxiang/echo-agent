@@ -15,6 +15,7 @@ vi.mock("@/lib/agent-client", async (importOriginal) => ({
 }));
 
 import { Composer } from "../Composer";
+import { ComposerCapabilityNavigation } from "@/lib/capability-navigation";
 
 const base = {
   streaming: false, apiReady: true, onSend: vi.fn(), onCancel: vi.fn(), onOpenMeetingMinutes: vi.fn(),
@@ -51,11 +52,11 @@ describe("Composer meeting history entry", () => {
   it("with no ready chat service allows only history navigation through the real menu", async () => {
     const onSelectExpert = vi.fn();
     const onSelectSkill = vi.fn();
-    const onNavigateConnectors = vi.fn();
+    const openCapability = vi.fn();
     const onAutomationModeChange = vi.fn();
-    render(<Composer {...base} apiReady={false} modelLoading models={[]}
+    render(<ComposerCapabilityNavigation.Provider value={openCapability}><Composer {...base} apiReady={false} modelLoading models={[]}
       onSelectExpert={onSelectExpert} onSelectSkill={onSelectSkill}
-      onNavigateConnectors={onNavigateConnectors} onAutomationModeChange={onAutomationModeChange} />);
+      onAutomationModeChange={onAutomationModeChange} /></ComposerCapabilityNavigation.Provider>);
     expect(screen.getByRole("textbox")).toBeDisabled();
     const trigger = screen.getByRole("button", { name: "添加" });
     expect(trigger).toBeEnabled();
@@ -78,7 +79,7 @@ describe("Composer meeting history entry", () => {
     expect(mocks.filesystemPickFiles).not.toHaveBeenCalled();
     expect(onSelectExpert).not.toHaveBeenCalled();
     expect(onSelectSkill).not.toHaveBeenCalled();
-    expect(onNavigateConnectors).not.toHaveBeenCalled();
+    expect(openCapability).not.toHaveBeenCalled();
     expect(onAutomationModeChange).not.toHaveBeenCalled();
     const meeting = screen.getByRole("menuitem", { name: meetingLabel });
     expect(meeting).toBeEnabled();

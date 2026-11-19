@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
@@ -24,14 +24,22 @@ vi.mock("../Sidebar", () => ({ Sidebar: ({ onSelect, onNavigate }: {
   {['插件', '专家·技能·连接器', '专家团', '项目'].map(label =>
     <button key={label} onClick={() => onNavigate(label)}>导航{label}</button>)}
 </> }));
-vi.mock("../ChatView", () => ({ ChatView: () => <div>真实会话已加载</div> }));
+vi.mock("../ChatView", async () => {
+  const { Composer } = await import("../Composer");
+  return { ChatView: ({ cwd }: { cwd?: string }) => <>
+    <div>真实会话已加载</div>
+    <Composer apiReady streaming={false} cwd={cwd} activeExpertName="已选专家" onSend={vi.fn()} onCancel={vi.fn()} />
+  </> };
+});
 vi.mock("@/features/groups/GroupWorkspace", () => ({ GroupWorkspace: () => <div>专家团工作区</div> }));
-vi.mock("../PlaceholderPage", async () => {
+vi.mock("../PlaceholderPage", async (original) => {
+  const { PlaceholderPage } = await original<typeof import("../PlaceholderPage")>();
   const { PluginsPanel } = await import("../PluginsPanel");
-  return { PlaceholderPage: ({ label, sessionId, onNavigate }: {
-    label: string; sessionId?: string; onNavigate?: (label: string) => void;
-  }) => label === '插件' ? <PluginsPanel sessionId={sessionId} />
-      : <><span>{label}页面</span><button onClick={() => onNavigate?.('插件')}>管理本地插件</button></> };
+  return { PlaceholderPage: (props: ComponentProps<typeof PlaceholderPage>) => {
+    if (props.onCapabilityBack) return <PlaceholderPage {...props} />;
+    return props.label === '插件' ? <PluginsPanel sessionId={props.sessionId} />
+      : <><span>{props.label}页面</span><button onClick={() => props.onNavigate?.('插件')}>管理本地插件</button></>;
+  } };
 });
 vi.mock("@/lib/agent-client", async original => ({
   ...await original<object>(), agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
@@ -39,6 +47,11 @@ vi.mock("@/lib/agent-client", async original => ({
   agentLoadSession: vi.fn(async () => 'model-a'), subscribeAgentEvents: vi.fn(async () => () => {}),
   internalReload: vi.fn(async () => {}), pluginsList: vi.fn(async () => ({ plugins: [{ id: "user/demo", name: "本地插件", enabled: true, trusted: true }], warnings: [] })),
   pluginsAction: vi.fn(async () => ({ status: "success" })),
+  agentsList: vi.fn(async () => []), skillsList: vi.fn(async () => []),
+  mcpList: vi.fn(async () => ["服务一", "服务二"].map(name => ({
+    name, enabled: true, live: true, authRequired: false, setupRequired: false, status: "ready",
+    setupValues: {}, tools: [], args: [], env: {}, editable: true,
+  }))),
 }));
 
 import App from "@/App";
@@ -56,7 +69,12 @@ beforeEach(() => {
   vi.mocked(client.agentAuthStatus).mockResolvedValue(auth);
   vi.mocked(client.providersList).mockResolvedValue({ providers: [], models: [{ modelId: 'model-a', name: '模型 A', providerId: 'p' }] } as never);
   vi.mocked(client.agentListAllSessions).mockResolvedValue([{ sessionId: 'source', title: '源会话', cwd: '/workspace', currentModelId: 'model-a' }] as never);
-  vi.mocked(invoke).mockImplementation(async command => command === 'notification_take_pending_opens' ? [] : null);
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === 'notification_take_pending_opens') return [];
+    if (command === 'mcp_config_path') return '/config/mcp.json';
+    if (command === 'mcp_config_read') return { filePath: '/config/mcp.json', content: '{"mcpServers":{}}' };
+    return null;
+  });
 });
 async function start() {
   render(<App />); await screen.findByText('首页'); await waitFor(() => expect(client.agentListAllSessions).toHaveBeenCalled());
@@ -83,5 +101,51 @@ describe('extension navigation preserves the live management context', () => {
     await start(); fireEvent.click(screen.getByRole('button', { name: '导航项目' }));
     await screen.findByText('项目页面'); expect(useSessionsStore.getState().currentSessionId).toBeNull();
     expect(useSessionStore.getState().messages).toEqual([]);
+  });
+
+  it('opens the selected connector and existing management surfaces while preserving the composer', async () => {
+    await start();
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '还没发送的草稿' } });
+
+    async function choose(catalog: string, action: string) {
+      fireEvent.click(screen.getByRole('button', { name: '添加' }));
+      fireEvent.keyDown(screen.getByRole('menuitem', { name: catalog }), { key: 'ArrowRight' });
+      fireEvent.click(await screen.findByRole('menuitem', { name: action }));
+    }
+    async function returnToDraft() {
+      fireEvent.click(await screen.findByRole('button', { name: '返回输入' }));
+      expect(screen.getByRole('textbox')).toBe(input);
+      expect(input).toHaveValue('还没发送的草稿');
+      expect(useSessionsStore.getState().currentSessionId).toBe('source');
+    }
+
+    await choose('连接器', '服务二');
+    expect(await screen.findByRole('heading', { name: '已配置连接器' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '服务二' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: '服务一' })).toHaveAttribute('aria-expanded', 'false');
+    expect(input).not.toBeVisible();
+    await returnToDraft();
+
+    await choose('连接器', '配置连接器');
+    expect(await screen.findByRole('heading', { name: '配置连接器' })).toBeVisible();
+    expect(await screen.findByText('/config/mcp.json')).toBeVisible();
+    await returnToDraft();
+
+    await choose('专家', '创建专家');
+    expect(await screen.findByRole('dialog', { name: '创建专家' })).toBeVisible();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await returnToDraft();
+
+    await choose('技能', '管理技能');
+    expect(await screen.findByRole('heading', { name: '已安装技能' })).toBeVisible();
+    expect(client.skillsList).toHaveBeenLastCalledWith('/workspace');
+    await returnToDraft();
+
+    await choose('技能', '从本地添加技能');
+    expect(await screen.findByRole('dialog', { name: '安装本地技能' })).toBeVisible();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '安装本地技能' })).toBeNull();
+    expect(input).toHaveValue('还没发送的草稿');
   });
 });
