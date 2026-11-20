@@ -483,9 +483,12 @@ async fn apply_upsert(
     validate_upsert_request(server)?;
     let _ = read_mirror_servers()?;
     persist_mcp_document(std::slice::from_ref(server), &[])?;
-    let mut result = finish_live_mutation(tx, &server.name, server.enabled != Some(false), false).await;
+    let mut result =
+        finish_live_mutation(tx, &server.name, server.enabled != Some(false), false).await;
     if let Err(error) = mirror_single_server(server, false) {
-        result.warnings.push(format!("配置已保存，兼容镜像更新失败：{error}"));
+        result
+            .warnings
+            .push(format!("配置已保存，兼容镜像更新失败：{error}"));
     }
     Ok(result)
 }
@@ -1320,12 +1323,16 @@ struct McpDocumentChanges {
 }
 
 fn clean_removed_credentials(changes: &McpDocumentChanges) -> Vec<String> {
-    changes.removed.iter().filter_map(|(name, definition)| {
-        let config = definition.clone().try_into::<McpServerConfig>().ok()?;
-        echo_agent_runtime::util::config::remove_mcp_server_credentials(name, &config)
-            .err()
-            .map(|_| format!("服务「{name}」的本机 OAuth 凭据清理失败"))
-    }).collect()
+    changes
+        .removed
+        .iter()
+        .filter_map(|(name, definition)| {
+            let config = definition.clone().try_into::<McpServerConfig>().ok()?;
+            echo_agent_runtime::util::config::remove_mcp_server_credentials(name, &config)
+                .err()
+                .map(|_| format!("服务「{name}」的本机 OAuth 凭据清理失败"))
+        })
+        .collect()
 }
 
 async fn apply_document_live(
@@ -1340,11 +1347,20 @@ async fn apply_document_live(
         warnings.push("配置已保存，将在本地 Runtime 启动后生效".into());
         return false;
     };
-    let operations = changes.removed.iter().map(|(name, _)| (name, false, true))
-        .chain(changes.updated.iter().map(|(name, enabled)| (name, *enabled, false)));
-    let pending = futures::future::join_all(operations.map(|(name, enabled, removed)| {
-        finish_live_mutation(Some(tx), name, enabled, removed)
-    }));
+    let operations = changes
+        .removed
+        .iter()
+        .map(|(name, _)| (name, false, true))
+        .chain(
+            changes
+                .updated
+                .iter()
+                .map(|(name, enabled)| (name, *enabled, false)),
+        );
+    let pending =
+        futures::future::join_all(operations.map(|(name, enabled, removed)| {
+            finish_live_mutation(Some(tx), name, enabled, removed)
+        }));
     match tokio::time::timeout(DOCUMENT_LIVE_UPDATE_TIMEOUT, pending).await {
         Ok(results) => {
             let live = results.iter().all(|result| result.applied_live);
@@ -1352,13 +1368,17 @@ async fn apply_document_live(
             live
         }
         Err(_) => {
-            warnings.push("配置已保存，部分已打开会话尚未确认同步。新会话将读取已保存的配置。".into());
+            warnings
+                .push("配置已保存，部分已打开会话尚未确认同步。新会话将读取已保存的配置。".into());
             false
         }
     }
 }
 
-fn persist_mcp_document(requests: &[McpUpsertRequest], removed: &[String]) -> Result<McpDocumentChanges, String> {
+fn persist_mcp_document(
+    requests: &[McpUpsertRequest],
+    removed: &[String],
+) -> Result<McpDocumentChanges, String> {
     crate::providers::update_config_checked(|root| apply_mcp_document(root, requests, removed))
 }
 
@@ -1368,7 +1388,8 @@ fn apply_mcp_document(
     removed: &[String],
 ) -> Result<McpDocumentChanges, String> {
     let mut changes = McpDocumentChanges::default();
-    let disabled_before = requests.iter()
+    let disabled_before = requests
+        .iter()
         .filter(|request| globally_disabled_mcp(root, &request.name))
         .map(|request| request.name.as_str())
         .collect::<HashSet<_>>();
@@ -1386,19 +1407,29 @@ fn apply_mcp_document(
             let mut serialized = toml::Value::try_from(request_to_runtime_config(request))
                 .map_err(|error| format!("MCP 服务「{}」序列化失败：{error}", request.name))?;
             let enabled = request.enabled != Some(false);
-            let previous = servers.get(&request.name).cloned().and_then(|value| value.try_into::<McpServerConfig>().ok());
-            let same_definition = previous.map(|mut previous| {
-                previous.desktop_instance_id = None;
-                toml::Value::try_from(previous).is_ok_and(|value| value == serialized)
-            }).unwrap_or(false);
+            let previous = servers
+                .get(&request.name)
+                .cloned()
+                .and_then(|value| value.try_into::<McpServerConfig>().ok());
+            let same_definition = previous
+                .map(|mut previous| {
+                    previous.desktop_instance_id = None;
+                    toml::Value::try_from(previous).is_ok_and(|value| value == serialized)
+                })
+                .unwrap_or(false);
             if !same_definition || disabled_before.contains(request.name.as_str()) == enabled {
                 changes.updated.push((request.name.clone(), enabled));
             }
             if same_definition {
                 continue;
             }
-            serialized.as_table_mut().ok_or("MCP 服务配置必须为 TOML 表")?
-                .insert("desktop_instance_id".into(), uuid::Uuid::now_v7().to_string().into());
+            serialized
+                .as_table_mut()
+                .ok_or("MCP 服务配置必须为 TOML 表")?
+                .insert(
+                    "desktop_instance_id".into(),
+                    uuid::Uuid::now_v7().to_string().into(),
+                );
             servers.insert(request.name.clone(), serialized);
         }
         for name in removed {
@@ -1467,7 +1498,10 @@ fn apply_mcp_document(
 /// cleans registrations written by older desktop releases at startup.
 pub(crate) fn remove_internal_server_registration(name: &str) -> Result<(), String> {
     validate_server_name(name)?;
-    crate::providers::update_config_checked(|root| apply_mcp_document(root, &[], &[name.to_string()])).map(|_| ())
+    crate::providers::update_config_checked(|root| {
+        apply_mcp_document(root, &[], &[name.to_string()])
+    })
+    .map(|_| ())
 }
 
 fn apply_mcp_toggle(root: &mut toml::Value, name: &str, enabled: bool) -> Result<(), String> {
@@ -2305,8 +2339,11 @@ url = "https://fixture.example/mcp"
         assert_eq!(calls.load(Ordering::SeqCst), 8);
         // A delete issued without a focused session must still unload both
         // original sessions, additional residents, and the agent pool.
-        let request = read_user_config_requests().unwrap().into_iter()
-            .find(|request| request.name == "fixture").unwrap();
+        let request = read_user_config_requests()
+            .unwrap()
+            .into_iter()
+            .find(|request| request.name == "fixture")
+            .unwrap();
         let credentials_path = crate::paths::echo_agent_home_dir().join("mcp_credentials.json");
         let user_key = format!("fixture:{target}");
         let project_key = "fixture:https://project.example.test/mcp";
@@ -2314,14 +2351,19 @@ url = "https://fixture.example/mcp"
             (user_key.as_str()): { "client_id": "test-user", "token_response": null },
             (project_key): { "client_id": "test-project", "token_response": null },
         });
-        crate::paths::write_private_file(&credentials_path, &serde_json::to_vec(&fixture_credentials).unwrap()).unwrap();
+        crate::paths::write_private_file(
+            &credentials_path,
+            &serde_json::to_vec(&fixture_credentials).unwrap(),
+        )
+        .unwrap();
         let deleted = apply_delete(Some(&runtime.tx), "fixture").await.unwrap();
         assert!(
             deleted.persisted && deleted.applied_live && deleted.warnings.is_empty(),
             "{deleted:?}"
         );
         assert!(!user_config_has_server("fixture").unwrap());
-        let credentials: Value = serde_json::from_slice(&std::fs::read(credentials_path).unwrap()).unwrap();
+        let credentials: Value =
+            serde_json::from_slice(&std::fs::read(credentials_path).unwrap()).unwrap();
         assert!(credentials.get(&user_key).is_none());
         assert_eq!(credentials[project_key]["client_id"], "test-project");
         for session in [
@@ -2335,7 +2377,10 @@ url = "https://fixture.example/mcp"
         }
         assert_eq!(calls.load(Ordering::SeqCst), 8);
         let rebuilt = apply_upsert(Some(&runtime.tx), &request).await.unwrap();
-        assert!(rebuilt.applied_live && rebuilt.warnings.is_empty(), "{rebuilt:?}");
+        assert!(
+            rebuilt.applied_live && rebuilt.warnings.is_empty(),
+            "{rebuilt:?}"
+        );
         // A late teardown for the deleted definition must leave the replacement alone.
         let ack = finish_live_mutation(Some(&runtime.tx), "fixture", false, true).await;
         assert!(ack.applied_live, "{ack:?}");
@@ -2591,7 +2636,12 @@ old = ["legacy"]
             expose_image_base64: None,
         };
 
-        let changes = apply_mcp_document(&mut root, std::slice::from_ref(&replacement), &["old".into()]).unwrap();
+        let changes = apply_mcp_document(
+            &mut root,
+            std::slice::from_ref(&replacement),
+            &["old".into()],
+        )
+        .unwrap();
         assert_eq!(changes.updated, [("replacement".to_owned(), false)]);
         assert_eq!(changes.removed[0].0, "old");
         let unchanged = apply_mcp_document(&mut root, &[replacement], &[]).unwrap();

@@ -6,3 +6,4 @@ vendor/echo-agent-build/** -whitespace
 src-tauri/icons/tray/mark.svg text eol=lf
 # Keep the vendored ONNX manifest, build inputs and provenance hashes portable.
 vendor/ort-sys/** text eol=lf
+vendor/faster-hex/** text eol=lf

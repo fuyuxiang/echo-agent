@@ -1,0 +1,26 @@
+{
+  "upstream": "https://crates.io/crates/faster-hex/0.10.1",
+  "upstream_commit": "c817979830ea5be2eafe0b0c99cb83b017ae2b8f",
+  "upstream_archive_sha256": "04839bdf9d8c10f66806fad16b852fc72aab80873aebc3cb69d85b4fa41543ed",
+  "license": "MIT",
+  "patches": [
+    "RUSTSEC-2026-0574",
+    "RUSTSEC-2026-0575",
+    "RUSTSEC-2026-0576",
+    "RUSTSEC-2026-0577",
+    "RUSTSEC-2026-0578",
+    "RUSTSEC-2026-0579",
+    "RUSTSEC-2026-0580",
+    "RUSTSEC-2026-0581",
+    "RUSTSEC-2026-0582"
+  ],
+  "fixes": [
+    "Remove the unused heapless 0.8 dependency and its no-alloc string helpers. Gitoxide enables std, which still exposes the original allocated string helpers."
+  ],
+  "patchedSha256": {
+    "Cargo.toml": "e8c67285b0b79459ea9f8eb9377c8ca8249bc30336e6a55d755059e5d399801b",
+    "src/decode.rs": "00b0b888498feb5e317d49945e08d8f4593d8335ac4c262de56c48858e8763e8",
+    "src/encode.rs": "eb74b5e5b7fe82a354dd9ef9ca80cf38ffc28852d04886480bd17990a4d76da9",
+    "src/lib.rs": "7e96b200b6c1f5122a3b167559f7a30267037a3d3fc04783f41754e47d48da95"
+  }
+}

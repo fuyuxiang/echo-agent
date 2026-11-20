@@ -132,6 +132,8 @@ jobs:
           exit "$build_exit"
         env:
           PUPPETEER_SKIP_DOWNLOAD: '1'
+          # Vite can exceed the default V8 heap on hosted macOS runners.
+          NODE_OPTIONS: --max-old-space-size=4096
       - name: Package Windows validation build
         if: runner.os == 'Windows'
         shell: powershell

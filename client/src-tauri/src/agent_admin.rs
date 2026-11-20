@@ -2848,21 +2848,34 @@ mod tests {
         let workspace = root.join(
             echo_agent_runtime::util::echo_agent_home::encode_cwd_dirname(&cwd.to_string_lossy()),
         );
-        for (id, hidden) in [("visible", false), ("archive-off-page", false), ("hidden-off-page", true)] {
+        for (id, hidden) in [
+            ("visible", false),
+            ("archive-off-page", false),
+            ("hidden-off-page", true),
+        ] {
             let path = workspace.join(id);
             std::fs::create_dir_all(&path).unwrap();
-            let summary = serde_json::json!({ "cwd": cwd, "hidden": hidden, "session_summary": "fixture" });
-            std::fs::write(path.join("summary.json"), serde_json::to_vec(&summary).unwrap()).unwrap();
+            let summary =
+                serde_json::json!({ "cwd": cwd, "hidden": hidden, "session_summary": "fixture" });
+            std::fs::write(
+                path.join("summary.json"),
+                serde_json::to_vec(&summary).unwrap(),
+            )
+            .unwrap();
         }
-        let hits = ["visible", "archive-off-page", "hidden-off-page", "removed"].into_iter().map(|id| super::RawSearchHit {
-            session_id: id.into(),
-            cwd: Some(cwd.to_string_lossy().into_owned()),
-            title: Some(id.into()),
-            snippet: Some(format!("{id} content")),
-            rank: None,
-            updated_at: None,
-        }).collect();
-        let visible = super::visible_search_hits(hits, &root, &["archive-off-page".into()].into(), 10);
+        let hits = ["visible", "archive-off-page", "hidden-off-page", "removed"]
+            .into_iter()
+            .map(|id| super::RawSearchHit {
+                session_id: id.into(),
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+                title: Some(id.into()),
+                snippet: Some(format!("{id} content")),
+                rank: None,
+                updated_at: None,
+            })
+            .collect();
+        let visible =
+            super::visible_search_hits(hits, &root, &["archive-off-page".into()].into(), 10);
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].session_id, "visible");
         assert_eq!(visible[0].snippet.as_deref(), Some("visible content"));

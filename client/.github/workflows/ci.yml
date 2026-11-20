@@ -122,7 +122,8 @@ jobs:
           retention-days: 7
 
   build:
-    runs-on: ubuntu-latest
+    # Playwright 1.55 installs browser dependencies for Ubuntu 24.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -157,7 +158,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.1.1
@@ -259,7 +260,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.1.1

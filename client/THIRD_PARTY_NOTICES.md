@@ -129,6 +129,9 @@ directory records upstream versions, advisories and the local changes.
   `VariantStrIter` out-pointer fix while retaining GTK3 compatibility.
 - `vendor/lru-0.12/` and `vendor/lru-0.16/`: lru 0.12.5 and 0.16.4, MIT,
   including upstream node-detachment and shared-key-reference safety fixes.
+- `vendor/faster-hex/`: faster-hex 0.10.1, MIT, with the unused heapless 0.8
+  dependency removed from the Gitoxide build. Upstream third-party license
+  notices are included in that directory.
 - `vendor/theia-platform/security/braces/`: braces 3.0.3, MIT, with bounded
   parsing and AST traversal for deeply nested patterns.
 - `vendor/theia-platform/security/sprintf-js/`: sprintf-js 1.0.3, BSD-3-Clause,

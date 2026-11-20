@@ -233,6 +233,7 @@ try {
     await page.evaluate(()=>document.querySelector(".app").style.setProperty("--app-sidebar-width","264px"));
     await page.getByRole("button",{name:"创建专家团",exact:true}).click();
     await page.getByRole("textbox",{name:"专家团名称",exact:true}).fill("长中文项目名称与复杂工作目录的协作交付验证专家团");
+    await page.getByText("设置协作目标",{exact:true}).click();
     await page.getByRole("textbox",{name:"协作目标",exact:true}).fill("核对长中文标题、长错误说明和深层目录，持续保留工作记录并形成可验收的交付结果。");
     await page.getByRole("checkbox",{name:/代码专家/}).check();
     await inspect(page,"groups-create",scenario,true);

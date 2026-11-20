@@ -8,9 +8,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use echo_agent_runtime::session::helpers::host_prompt_admission::{self, HostPromptAdmission};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
-use echo_agent_runtime::session::helpers::host_prompt_admission::{self, HostPromptAdmission};
 
 use crate::agent_runtime::{self, AgentHandle, InitOutcome};
 use crate::bridge::{
@@ -1544,6 +1544,7 @@ pub fn agent_session_workspace_status(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Preserve the named Tauri IPC arguments.
 pub async fn agent_new_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -2137,7 +2138,10 @@ pub async fn agent_send(
     .await;
     // Cancel owns the UI settlement. A deliberately withdrawn send does not
     // enter the renderer's error/automatic retry path.
-    if admission.as_ref().is_some_and(HostPromptAdmission::withdrawn) {
+    if admission
+        .as_ref()
+        .is_some_and(HostPromptAdmission::withdrawn)
+    {
         Ok(())
     } else {
         result
@@ -2170,7 +2174,11 @@ pub(crate) async fn agent_send_from_weixin(
         Some(&admission),
     )
     .await;
-    if admission.withdrawn() { Ok(()) } else { result }
+    if admission.withdrawn() {
+        Ok(())
+    } else {
+        result
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2466,6 +2474,7 @@ async fn agent_send_impl(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Preserve the named Tauri IPC arguments.
 pub async fn agent_cancel(
     state: State<'_, AppState>,
     session_id: String,
@@ -2479,7 +2488,10 @@ pub async fn agent_cancel(
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
     }
-    if [&prompt_id, &previous_prompt_id].into_iter().flatten().any(|id| !valid_session_id(id))
+    if [&prompt_id, &previous_prompt_id]
+        .into_iter()
+        .flatten()
+        .any(|id| !valid_session_id(id))
     {
         return Err("消息 ID 无效或过长".into());
     }
@@ -2519,11 +2531,8 @@ pub async fn agent_cancel(
     // Fence editor transactions immediately; the UI still waits for the
     // Runtime's real cancellation acknowledgement if the prompt was dispatched.
     crate::coding_document_bridge::fence_session_run(&session_id, target_prompt).await;
-    let stop_automation = crate::automation::cancel_prompt(
-        &session_id,
-        target_prompt,
-        cancel_trigger == "pause",
-    );
+    let stop_automation =
+        crate::automation::cancel_prompt(&session_id, target_prompt, cancel_trigger == "pause");
     let (document_result, automation_result, runtime_result) = tokio::join!(
         crate::coding_document_bridge::cancel_session_run(&session_id, target_prompt),
         stop_automation,
@@ -2539,7 +2548,8 @@ pub async fn agent_cancel(
     }
     if let Err(error) = runtime_result {
         if !error.to_string().contains("session not found")
-            && !((withdrawn || accept_ended_prompt.unwrap_or(false)) && error.is::<agent_runtime::StalePromptCancel>())
+            && !((withdrawn || accept_ended_prompt.unwrap_or(false))
+                && error.is::<agent_runtime::StalePromptCancel>())
         {
             return Err(error.to_string());
         }

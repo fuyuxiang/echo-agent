@@ -201,3 +201,5 @@ auto-launch = { path = "../vendor/auto-launch" }
 
 # GTK3 requires glib 0.18; backport the VariantStrIter memory-safety fix.
 glib = { path = "../vendor/glib" }
+# Gitoxide uses std; avoid resolving faster-hex's unused heapless 0.8 backend.
+faster-hex = { path = "../vendor/faster-hex" }

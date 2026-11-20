@@ -462,3 +462,5 @@ ort-sys = { path = "../ort-sys" }
 # ABI-compatible safety backports for the pager's ratatui dependencies.
 lru-0-12 = { package = "lru", path = "../lru-0.12" }
 lru-0-16 = { package = "lru", path = "../lru-0.16" }
+# Gitoxide uses std; avoid resolving faster-hex's unused heapless 0.8 backend.
+faster-hex = { path = "../faster-hex" }

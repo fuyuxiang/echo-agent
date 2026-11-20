@@ -598,10 +598,7 @@ fn valid_history_id(session_id: &str) -> bool {
 
 type CatalogSummary = (PathBuf, SummaryFile, String);
 
-fn find_persisted_summary(
-    root: &Path,
-    session_id: &str,
-) -> Result<Option<CatalogSummary>, String> {
+fn find_persisted_summary(root: &Path, session_id: &str) -> Result<Option<CatalogSummary>, String> {
     if !valid_history_id(session_id) {
         return Ok(None);
     }
@@ -668,7 +665,10 @@ fn session_path_hint(root: &Path, id: &str, cwd: &str) -> Option<PathBuf> {
     if !Path::new(cwd).is_absolute() || cwd.chars().count() > MAX_CWD_CHARS {
         return None;
     }
-    Some(root.join(echo_agent_runtime::util::echo_agent_home::encode_cwd_dirname(cwd)).join(id))
+    Some(
+        root.join(echo_agent_runtime::util::echo_agent_home::encode_cwd_dirname(cwd))
+            .join(id),
+    )
 }
 
 fn read_catalog_summary_result(path: &Path) -> std::io::Result<Option<CatalogSummary>> {
@@ -755,13 +755,18 @@ pub fn find_session_summaries(session_ids: &[String]) -> Result<Vec<SessionSumma
         if !valid_history_id(id) || !seen.insert(id) {
             continue;
         }
-        let cached = state.session_workspaces.get(id)
+        let cached = state
+            .session_workspaces
+            .get(id)
             .and_then(|cwd| session_path_hint(&root, id, cwd))
             .as_deref()
             .and_then(read_catalog_candidate)
-            .or_else(|| index.as_ref()
-                .and_then(|index| index.paths.get(id))
-                .and_then(|path| read_catalog_candidate(path)));
+            .or_else(|| {
+                index
+                    .as_ref()
+                    .and_then(|index| index.paths.get(id))
+                    .and_then(|path| read_catalog_candidate(path))
+            });
         if let Some(row) = cached {
             candidates.push(row);
         } else {
@@ -779,20 +784,28 @@ pub fn find_session_summaries(session_ids: &[String]) -> Result<Vec<SessionSumma
             candidates.extend(find_persisted_summary_batch(&root, &unresolved)?);
         }
     }
-    let mut result = candidates.into_iter().filter_map(|(path, summary, cwd)| {
-        to_session_summary(&path, summary, cwd, &state.session_continuations)
-    }).collect();
+    let mut result = candidates
+        .into_iter()
+        .filter_map(|(path, summary, cwd)| {
+            to_session_summary(&path, summary, cwd, &state.session_continuations)
+        })
+        .collect();
     apply_catalog_metadata(&mut result, true, &state);
     for entry in &mut result {
         entry.parent_missing = entry.continuation.as_ref().is_some_and(|origin| {
-            !index.as_ref().is_some_and(|index| index.paths.contains_key(&origin.parent_session_id))
+            !index
+                .as_ref()
+                .is_some_and(|index| index.paths.contains_key(&origin.parent_session_id))
                 && !persisted_session_exists(&origin.parent_session_id).unwrap_or(true)
         });
     }
     Ok(result)
 }
 
-fn find_persisted_summary_batch(root: &Path, ids: &HashSet<&str>) -> Result<Vec<CatalogSummary>, String> {
+fn find_persisted_summary_batch(
+    root: &Path,
+    ids: &HashSet<&str>,
+) -> Result<Vec<CatalogSummary>, String> {
     let directories = match std::fs::read_dir(root) {
         Ok(directories) => directories,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -827,7 +840,8 @@ fn find_persisted_summary_batch(root: &Path, ids: &HashSet<&str>) -> Result<Vec<
                 if !row.file_type()?.is_dir() {
                     return Ok(None);
                 }
-                Ok(read_catalog_summary_result(&row.path())?.map(|summary| (id.to_owned(), summary)))
+                Ok(read_catalog_summary_result(&row.path())?
+                    .map(|summary| (id.to_owned(), summary)))
             })();
             match candidate {
                 Ok(Some((id, summary))) => {
@@ -836,7 +850,9 @@ fn find_persisted_summary_batch(root: &Path, ids: &HashSet<&str>) -> Result<Vec<
                     }
                 }
                 Ok(None) => {}
-                Err(error) => { first_error.get_or_insert(error); }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
         }
     }
@@ -858,13 +874,16 @@ pub(crate) fn session_is_searchable(root: &Path, id: &str, cwd: Option<&str>) ->
     if !valid_history_id(id) || crate::groups::is_member_session(id) {
         return false;
     }
-    if let Some((_, summary, _)) = cwd.and_then(|cwd| session_path_hint(root, id, cwd))
+    if let Some((_, summary, _)) = cwd
+        .and_then(|cwd| session_path_hint(root, id, cwd))
         .as_deref()
         .and_then(read_catalog_candidate)
     {
         return !summary_is_hidden(&summary);
     }
-    find_persisted_summary(root, id).ok().flatten()
+    find_persisted_summary(root, id)
+        .ok()
+        .flatten()
         .is_some_and(|(_, summary, _)| !summary_is_hidden(&summary))
 }
 
@@ -950,14 +969,23 @@ static HISTORY_INDEXES: LazyLock<Mutex<VecDeque<Arc<HistoryIndex>>>> =
 static HISTORY_INDEX_BUILD: Mutex<()> = Mutex::new(());
 
 fn latest_history_index(root: &Path) -> Option<Arc<HistoryIndex>> {
-    HISTORY_INDEXES.lock().unwrap().iter().rev().find(|index| index.root == root).cloned()
+    HISTORY_INDEXES
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|index| index.root == root)
+        .cloned()
 }
 
 fn history_index(root: &Path, refresh: bool) -> Result<Arc<HistoryIndex>, String> {
     let requested_at = Instant::now();
-    let reusable = || latest_history_index(root).filter(|index| {
-        index.built_at >= requested_at || (!refresh && index.built_at.elapsed() < HISTORY_INDEX_MAX_AGE)
-    });
+    let reusable = || {
+        latest_history_index(root).filter(|index| {
+            index.built_at >= requested_at
+                || (!refresh && index.built_at.elapsed() < HISTORY_INDEX_MAX_AGE)
+        })
+    };
     if let Some(index) = reusable() {
         return Ok(index);
     }
@@ -1094,7 +1122,11 @@ fn build_history_index(
             .get(&entry.id)
             .is_none_or(|path| path.as_ref() == Some(&entry.path))
     });
-    index.paths = index.entries.iter().map(|entry| (entry.id.clone(), entry.path.clone())).collect();
+    index.paths = index
+        .entries
+        .iter()
+        .map(|entry| (entry.id.clone(), entry.path.clone()))
+        .collect();
     (index.entries, index.archived) = index
         .entries
         .into_iter()
@@ -1124,7 +1156,9 @@ impl HistoryIndex {
         let mut incomplete = self.incomplete;
         for entry in &entries[offset..end] {
             let hydrated = (|| {
-                let Some(parent) = entry.path.parent() else { return Ok(None) };
+                let Some(parent) = entry.path.parent() else {
+                    return Ok(None);
+                };
                 // The directory may have been removed or replaced since the index was built.
                 if !is_history_directory(parent)? || !is_history_directory(&entry.path)? {
                     return Ok(None);
@@ -1139,7 +1173,12 @@ impl HistoryIndex {
                     continue;
                 }
             };
-            sessions.extend(to_session_summary(&path, summary, cwd, &state.session_continuations));
+            sessions.extend(to_session_summary(
+                &path,
+                summary,
+                cwd,
+                &state.session_continuations,
+            ));
         }
         apply_catalog_metadata(&mut sessions, true, &state);
         for entry in &mut sessions {
@@ -1169,7 +1208,10 @@ impl HistoryIndex {
     }
 }
 
-pub fn list_session_history_page(cursor: Option<&str>, refresh: bool) -> Result<SessionHistoryPage, String> {
+pub fn list_session_history_page(
+    cursor: Option<&str>,
+    refresh: bool,
+) -> Result<SessionHistoryPage, String> {
     if let Some(cursor) = cursor {
         let (id, archived, offset) = (|| {
             let (id, page) = cursor.split_once(':')?;

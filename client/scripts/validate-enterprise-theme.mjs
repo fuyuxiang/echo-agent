@@ -214,6 +214,7 @@ try {
     await page.locator(".groups-page").waitFor();
     await page.getByRole("button", { name: "创建专家团", exact: true }).click();
     await page.getByRole("textbox", { name: "专家团名称", exact: true }).fill("需求交付协作组");
+    await page.getByText("设置协作目标", { exact: true }).click();
     await page.getByRole("textbox", { name: "协作目标", exact: true }).fill("核对审批边界并整理可复核的交付资料");
     await page.getByRole("checkbox", { name: /代码专家/ }).check();
     await page.getByRole("checkbox", { name: /文档助手/ }).check();

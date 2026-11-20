@@ -149,6 +149,9 @@ try {
         await page.getByRole("button",{name:"查看计划",exact:true}).click();
         await page.getByRole("group",{name:"计划审批",exact:true}).getByRole("button",{name:"批准执行",exact:true}).click();
         await page.getByRole("group",{name:"计划审批",exact:true}).waitFor({state:"hidden"});
+        const workspace = page.getByRole("complementary", { name: "工作区面板", exact: true });
+        await workspace.getByRole("button", { name: "关闭面板", exact: true }).click();
+        await workspace.waitFor({state:"hidden"});
         const queueDisclosure = page.getByRole("button", { name: /^待发送 \d+ 条/, expanded: false });
         if (await queueDisclosure.isVisible()) await queueDisclosure.click();
         await page.locator(".queue-row--paused").first().waitFor();

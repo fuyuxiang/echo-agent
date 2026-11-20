@@ -828,7 +828,10 @@ fn legacy_workspace_paths(raw: &str) -> Vec<&str> {
     // The old scheduler always ran in the first nonempty element. Directory
     // existence must never change where an unattended task runs on upgrade.
     // Literal paths in the older singular `cwd` field are handled separately.
-    raw.split(',').map(str::trim).filter(|path| !path.is_empty()).collect()
+    raw.split(',')
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .collect()
 }
 
 fn write_store(store: &AutomationStore) -> Result<(), String> {
@@ -2776,7 +2779,11 @@ fn normalize_authorized_cwds(
     let mut seen = HashSet::new();
     for (index, claimed) in paths.iter().enumerate() {
         let canonical = filesystem.require_workspace(claimed).map_err(|error| {
-            let role = if index == 0 { "主工作目录" } else { "附加目录" };
+            let role = if index == 0 {
+                "主工作目录"
+            } else {
+                "附加目录"
+            };
             format!("{role}「{claimed}」不可用：{error}")
         })?;
         if seen.insert(canonical.clone()) {
@@ -6119,8 +6126,7 @@ mod tests {
         let serialized = serde_json::to_vec(&store).unwrap();
         let reopened: AutomationStore = serde_json::from_slice(&serialized).unwrap();
         assert_eq!(
-            require_automation_cwd(&filesystem, &reopened.automations[0], parent.path())
-                .unwrap(),
+            require_automation_cwd(&filesystem, &reopened.automations[0], parent.path()).unwrap(),
             comma_directory.canonicalize().unwrap()
         );
         let legacy = format!("{}, {}", other_directory.display(), parent.path().display());
@@ -6137,13 +6143,19 @@ mod tests {
     fn legacy_workspace_list_preserves_its_primary_even_if_the_literal_exists() {
         let parent = tempfile::tempdir().unwrap();
         let first = parent.path().join("first");
-        let second = parent.path().join("second");
-        let legacy = format!("{},{}", first.display(), second.display());
-        for path in [first.as_path(), second.as_path(), Path::new(&legacy)] {
-            std::fs::create_dir_all(path).unwrap();
-        }
-        assert_eq!(legacy_workspace_paths(&legacy), [first.to_str().unwrap(), second.to_str().unwrap()]);
-        assert_eq!(legacy_workspace_paths(" , /work/first, , "), ["/work/first"]);
+        // Keep the second entry relative so the literal name is also valid on
+        // Windows, where a second absolute path would put a colon in the name.
+        let legacy = format!("{},second", first.display());
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&legacy).unwrap();
+        assert_eq!(
+            legacy_workspace_paths(&legacy),
+            [first.to_str().unwrap(), "second"]
+        );
+        assert_eq!(
+            legacy_workspace_paths(" , /work/first, , "),
+            ["/work/first"]
+        );
     }
 
     #[test]
