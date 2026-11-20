@@ -178,6 +178,8 @@ pub enum SamplingError {
     },
     #[error("reqwest error stream: {0}")]
     EventStreamError(String),
+    #[error("{detail}")]
+    ChatStreamInterrupted { detail: String, retryable: bool },
     /// Server-side stream error (sent as JSON within the SSE stream)
     #[error("stream error ({error_type}): {message}")]
     StreamError {
@@ -385,6 +387,7 @@ impl SamplingError {
             | SamplingError::Http(_)
             | SamplingError::Serialization(_)
             | SamplingError::EventStreamError(_)
+            | SamplingError::ChatStreamInterrupted { .. }
             | SamplingError::IdleTimeout { .. }
             | SamplingError::EmptyResponse { .. }
             | SamplingError::MaxTokensTruncation
@@ -400,6 +403,7 @@ impl SamplingError {
             SamplingError::Serialization(_) => false,
             SamplingError::Api { status, .. } => is_retryable_api_status(*status),
             SamplingError::EventStreamError(_) => true,
+            SamplingError::ChatStreamInterrupted { retryable, .. } => *retryable,
             SamplingError::StreamError { .. } => true,
             SamplingError::IdleTimeout { .. } => false,
             SamplingError::EmptyResponse { .. } => true,

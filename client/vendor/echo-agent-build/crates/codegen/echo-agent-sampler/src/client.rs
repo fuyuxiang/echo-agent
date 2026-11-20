@@ -12,7 +12,7 @@
 //! headers (proxy auth, OTel context, etc.)
 //! into [`SamplerConfig::extra_headers`] before constructing the client.
 
-use eventsource_stream::Eventsource;
+use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use indexmap::IndexMap;
@@ -32,7 +32,8 @@ use echo_agent_sampling_types::{
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
-use crate::events::SamplingErrorInfo;
+use crate::events::{SamplingErrorInfo, SamplingErrorKind};
+use crate::stream::chat_completions::ChatChoiceState;
 use echo_agent_auth::bearer_suffix;
 
 // Re-export ApiBackend from the shared types crate for downstream callers.
@@ -1237,53 +1238,72 @@ impl SamplingClient {
         // Turn raw bytes into SSE events
         let event_stream = byte_stream.eventsource();
 
-        // Map SSE events into ChatCompletionChunk.
-        // Uses `scan` so that `[DONE]` and transport errors both terminate the
-        // stream (`None`). The first transport error is emitted to the consumer,
-        // then subsequent polls return `None` -- preventing an infinite busy-loop
-        // when the HTTP/2 connection drops and h2 keeps producing errors.
-        let chunks = event_stream
-            .scan(false, |had_transport_error, event_res| {
-                if *had_transport_error {
-                    return std::future::ready(None);
-                }
-                let item = match event_res {
-                    Ok(event) => {
-                        let data = &event.data;
-                        if data == "[DONE]" {
-                            return std::future::ready(None);
-                        }
-
-                        tracing::info!(
-                            target: crate::sampling_log::TARGET,
-                            event = "sse_chunk",
-                            backend = "chat_completions",
-                            payload_bytes = data.len(),
-                        );
-
-                        if let Some(stream_error) = try_parse_stream_error(data) {
-                            Some(Err(stream_error))
-                        } else {
-                            Some(
-                                serde_json::from_str::<ChatCompletionChunk>(data).map_err(|e| {
-                                    tracing::error!(
-                                        error = %e,
-                                        payload_bytes = data.len(),
-                                        "Failed to deserialize ChatCompletionChunk from stream"
-                                    );
-                                    SamplingError::Serialization(e)
-                                }),
-                            )
-                        }
-                    }
-                    Err(e) => {
-                        *had_transport_error = true;
-                        Some(Err(SamplingError::EventStreamError(e.to_string())))
-                    }
+        let chunks = async_stream::try_stream! {
+            futures_util::pin_mut!(event_stream);
+            let mut choices = ChatChoiceState::default();
+            while let Some(event_res) = event_stream.next().await {
+                let event = match event_res {
+                    Ok(event) => event,
+                    // The choice already finished. A transport failure while
+                    // reading the optional usage trailer cannot undo that.
+                    Err(EventStreamError::Transport(_)) if choices.finish_reason.is_some() => return,
+                    Err(EventStreamError::Transport(error)) => Err(SamplingError::ChatStreamInterrupted {
+                        detail: error.to_string(),
+                        retryable: true,
+                    })?,
+                    Err(_) => Err(SamplingError::ChatStreamInterrupted {
+                        detail: "Malformed Chat Completions SSE frame".into(),
+                        retryable: false,
+                    })?,
                 };
-                std::future::ready(item)
-            })
-            .boxed();
+                let data = &event.data;
+                if data == "[DONE]" {
+                    // Accept [DONE] alone from providers that omit all
+                    // per-choice finish reasons.
+                    if choices.saw_finish_reason && choices.finish_reason.is_none() {
+                        Err(SamplingError::ChatStreamInterrupted {
+                            detail: "Chat Completions ended only an alternate choice".into(),
+                            retryable: false,
+                        })?;
+                    }
+                    return;
+                }
+
+                tracing::info!(
+                    target: crate::sampling_log::TARGET,
+                    event = "sse_chunk",
+                    backend = "chat_completions",
+                    payload_bytes = data.len(),
+                );
+
+                if let Some(stream_error) = try_parse_stream_error(data) {
+                    Err(stream_error)?;
+                }
+                let chunk = serde_json::from_str::<ChatCompletionChunk>(data).map_err(|e| {
+                    tracing::error!(
+                        error = %e,
+                        payload_bytes = data.len(),
+                        "Failed to deserialize ChatCompletionChunk from stream"
+                    );
+                    SamplingError::Serialization(e)
+                })?;
+
+                for choice in &chunk.choices {
+                    choices.observe(choice)?;
+                }
+                yield chunk;
+            }
+
+            // End-of-body is not a terminal marker. Retain compatibility with
+            // providers that omit [DONE] after an explicit finish_reason.
+            if choices.finish_reason.is_none() {
+                Err(SamplingError::ChatStreamInterrupted {
+                    detail: "Chat Completions stream closed before the selected choice finished".into(),
+                    retryable: true,
+                })?;
+            }
+        }
+        .boxed();
 
         Ok((chunks, model_metadata))
     }
@@ -2245,9 +2265,19 @@ impl SamplingClient {
     }
 }
 
-/// Rebuild `Api` from stream-collected info, preserving status,
-/// `Retry-After`, and `x-should-retry` (kind is lost on this path).
+/// Preserve stream interruption and truncation semantics for one-shot callers.
+/// Other failures retain their status, `Retry-After` and `x-should-retry`.
 fn stream_collect_error(info: SamplingErrorInfo) -> SamplingError {
+    match info.kind {
+        SamplingErrorKind::MaxTokensTruncation => return SamplingError::MaxTokensTruncation,
+        SamplingErrorKind::ChatStreamInterrupted => {
+            return SamplingError::ChatStreamInterrupted {
+                detail: info.message,
+                retryable: info.is_retryable,
+            };
+        }
+        _ => {}
+    }
     SamplingError::Api {
         status: info
             .status_code

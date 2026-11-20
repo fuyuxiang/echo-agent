@@ -1,5 +1,4 @@
-// Host tests do not run dependency library tests. Include Runtime and the
-// task-completion reminder contract owned by echo-agent-tools.
+// Include tests owned by the embedded Runtime, Tools and Sampler crates.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
@@ -31,9 +30,10 @@ if (process.platform === 'win32') {
   env.LOCALAPPDATA = join(home, 'AppData/Local');
 }
 console.log(`Isolated Runtime library test data: ${home}`);
-function buildLibraryHarness(packageName, directory) {
+function buildHarness(packageName, directory, integrationTest) {
+  const targetArgs = integrationTest ? ['--test', integrationTest] : ['--lib'];
   const build = spawnSync('cargo', ['test', '--locked', '--manifest-path', join(root, 'vendor/echo-agent-build/Cargo.toml'),
-    '-p', packageName, '--lib', '-j', '2', '--no-run', '--message-format=json'],
+    '-p', packageName, ...targetArgs, '-j', '2', '--no-run', '--message-format=json'],
   { cwd: root, env, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] });
   const messages = (build.stdout ?? '').split('\n').filter(Boolean).map(line => {
     try { return JSON.parse(line); } catch { return {}; }
@@ -41,11 +41,12 @@ function buildLibraryHarness(packageName, directory) {
   for (const message of messages) {
     if (message.reason === 'compiler-message' && message.message?.rendered) process.stderr.write(message.message.rendered);
   }
-  assert.equal(build.status, 0, build.error?.message || `${packageName} library test compilation failed`);
+  assert.equal(build.status, 0, build.error?.message || `${packageName} test compilation failed`);
   const programs = ownedTestExecutables(messages, directory, realpathSync(target));
-  assert.equal(programs.length, 1, `Expected exactly the ${packageName} library harness`);
+  assert.equal(programs.length, 1, `Expected exactly one ${packageName} test harness`);
   const program = programs[0];
-  assert.match(basename(program), new RegExp(`^${packageName.replaceAll('-', '_')}-[a-f0-9]{16}(?:\\.exe)?$`));
+  const binaryName = integrationTest ?? packageName.replaceAll('-', '_');
+  assert.match(basename(program), new RegExp(`^${binaryName}-[a-f0-9]{16}(?:\\.exe)?$`));
   const stat = lstatSync(program);
   assert(stat.isFile() && !stat.isSymbolicLink());
   if (process.getuid) assert.equal(stat.uid, process.getuid());
@@ -58,7 +59,7 @@ function buildLibraryHarness(packageName, directory) {
   }
   return program;
 }
-const program = buildLibraryHarness('echo-agent-runtime', workspace);
+const program = buildHarness('echo-agent-runtime', workspace);
 const options = { cwd: workspace, env };
 const discoveryOptions = { ...options, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 };
 const listed = spawnSync(program, ['--list'], discoveryOptions);
@@ -109,7 +110,7 @@ for (const group of groups) {
   if (result !== 0) status = result;
 }
 const toolsWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-tools'));
-const toolsProgram = buildLibraryHarness('echo-agent-tools', toolsWorkspace);
+const toolsProgram = buildHarness('echo-agent-tools', toolsWorkspace);
 const reminderFilter = 'reminders::task_completion::tests::';
 const toolsEnv = groupEnvironment('tool-reminders');
 const toolsOptions = { cwd: toolsWorkspace, env: toolsEnv };
@@ -126,4 +127,11 @@ for (const name of ['format_bash_completion_pointer_form_is_small', 'format_betw
 console.log(`Running tool reminder contracts: ${testNames(reminderTests.stdout).length} discovered`);
 const toolsStatus = await runNativeTestProcess(toolsProgram, [reminderFilter, '--test-threads=2'], toolsOptions);
 if (toolsStatus !== 0) status = toolsStatus;
+const samplerWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-sampler'));
+const samplerProgram = buildHarness('echo-agent-sampler', samplerWorkspace, 'chat_stream_termination');
+console.log('Running Chat Completions stream termination contracts');
+const samplerStatus = await runNativeTestProcess(samplerProgram, ['--test-threads=1'], {
+  cwd: samplerWorkspace, env: groupEnvironment('sampler-stream'),
+});
+if (samplerStatus !== 0) status = samplerStatus;
 process.exitCode = status;

@@ -70,6 +70,15 @@ describe("formatAgentError", () => {
     expect(result).toContain("网络连接失败");
   });
 
+  it.each([
+    JSON.stringify({ data: { error_kind: "chat_stream_interrupted", message: "error decoding response body" } }),
+    JSON.stringify({ error_kind: "chat_stream_interrupted", message: "error decoding response body" }),
+    'Error { code: -32603: Internal error, message: "Internal error", data: Some(Object {"error_kind": String("chat_stream_interrupted"), "message": String("error decoding response body")}) }',
+    "reqwest error stream: Chat Completions stream closed before the selected choice finished",
+  ])("将实时和历史断流错误转为可继续的提示", raw => {
+    expect(formatAgentError(raw)).toBe("模型回复中断。已有内容已保留，可在当前任务继续。");
+  });
+
   it("将旧版 finish_reason 反序列化错误转为可操作提示", () => {
     const raw = "serialization error: unknown variant ``, expected one of `stop`, `length`, `tool_calls`, `content_filter`, `function_call` at line 1 column 71";
     const result = formatAgentError(raw);

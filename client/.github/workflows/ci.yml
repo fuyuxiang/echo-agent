@@ -355,7 +355,7 @@ jobs:
       - name: Run isolated memory library unit tests
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: node scripts/test-rust-memory.mjs
-      - name: Verify Runtime recovery and tool reminder contracts
+      - name: Verify Runtime recovery, tool reminders and sampler stream termination
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: node scripts/test-rust-runtime.mjs
       - name: Validate compatible memory-safety backports
@@ -413,8 +413,8 @@ jobs:
         run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
-      - name: Run all isolated native unit and integration tests
-        run: node scripts/test-rust-desktop.mjs
+      - name: Run native tests and verify automation recovery after a model stream interruption
+        run: node scripts/test-rust-desktop.mjs --with-automation-restart
       - name: Verify isolated Runtime, MCP and resident skill reload without a model call
         run: node scripts/test-runtime-smoke.mjs
       - name: Verify memory checkpoint and cancellation with a stalled local model
@@ -467,7 +467,7 @@ jobs:
           cache-on-failure: 'true'
       # The dependency's own tests include macOS FSEvents path aliases and
       # remain required on both architectures alongside the host tests.
-      - name: Verify Runtime configuration watching and tool reminder contracts
+      - name: Verify Runtime configuration watching, tool reminders and sampler stream termination
         run: node scripts/test-rust-runtime.mjs
       - name: Preserve complete native test output
         if: always()

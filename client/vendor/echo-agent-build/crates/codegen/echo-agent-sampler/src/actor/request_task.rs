@@ -218,10 +218,17 @@ pub(crate) async fn run_request_task(
                     reason = context.reason,
                 );
                 let err = SamplingError::EmptyResponse { context };
+                // Preserve the budgeted caller's handling of a completed
+                // generation, even when it produced no visible content.
+                let empty_retry_budget = if retry_policy.retry_only_before_output {
+                    0
+                } else {
+                    effective_max_retries
+                };
                 if !apply_retry_decision(
                     &err,
                     &mut retry_count,
-                    effective_max_retries,
+                    empty_retry_budget,
                     &retry_policy,
                     &event_tx,
                     &request_id,
@@ -300,10 +307,19 @@ pub(crate) async fn run_request_task(
                     handle_cancellation(&event_tx, &request_id, &mut completion_tx);
                     return request_id;
                 }
+                // Chat Completions sends text and reasoning immediately.
+                // ACP cannot retract either if a failed stream is retried.
+                let failure_retry_budget = if client.api_backend() == ApiBackend::ChatCompletions
+                    && output_observed.load(Ordering::Relaxed)
+                {
+                    0
+                } else {
+                    effective_max_retries
+                };
                 if !apply_retry_decision(
                     &error,
                     &mut retry_count,
-                    effective_max_retries,
+                    failure_retry_budget,
                     &retry_policy,
                     &event_tx,
                     &request_id,
@@ -449,6 +465,7 @@ async fn apply_retry_decision(
                 | SamplingError::Http(_)
                 | SamplingError::Serialization(_)
                 | SamplingError::EventStreamError(_)
+                | SamplingError::ChatStreamInterrupted { .. }
                 | SamplingError::IdleTimeout { .. }
                 | SamplingError::EmptyResponse { .. }
                 | SamplingError::MaxTokensTruncation
@@ -711,12 +728,12 @@ async fn drive_l2(
             }
             next = l2.next() => match next {
                 Some(SamplingEvent::Completed { response, metrics, .. }) => {
-                    output_observed.store(true, Ordering::Relaxed);
                     // Doom outranks the truncation/empty classes: a confident
                     // loop poisons the attempt whatever else it looks like.
                     if let Some(policy) = doom_check {
                         let triggers = policy.confident_triggers(&response.doom_loop_signals);
                         if !triggers.is_empty() {
+                            output_observed.store(true, Ordering::Relaxed);
                             return AttemptOutcome::Failed {
                                 error: SamplingError::DoomLoopDetected {
                                     triggers,
@@ -821,6 +838,10 @@ fn synthesize_from_info(info: &SamplingErrorInfo) -> SamplingError {
             SamplingError::serialization_from_rendered(&info.message)
         }
         SamplingErrorKind::Http => SamplingError::EventStreamError(info.message.clone()),
+        SamplingErrorKind::ChatStreamInterrupted => SamplingError::ChatStreamInterrupted {
+            detail: info.message.clone(),
+            retryable: info.is_retryable,
+        },
         SamplingErrorKind::Api | SamplingErrorKind::RateLimited => {
             let status = info
                 .status_code

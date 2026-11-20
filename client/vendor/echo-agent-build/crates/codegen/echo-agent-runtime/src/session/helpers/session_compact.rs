@@ -92,6 +92,7 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
                     && *status != StatusCode::TOO_MANY_REQUESTS)
         }
         SamplingError::MaxTokensTruncation => true,
+        SamplingError::ChatStreamInterrupted { retryable, .. } => !retryable,
         // Loops are stochastic at sampling temperature; a retry may differ.
         SamplingError::Http(_)
         | SamplingError::EventStreamError(_)

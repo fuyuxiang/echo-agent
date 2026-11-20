@@ -364,6 +364,7 @@ pub fn format_sampling_error(err: &SamplingError, retry_count: Option<u32>) -> S
                 retry_prefix, msg
             )
         }
+        SamplingError::ChatStreamInterrupted { .. } => format!("{retry_prefix}{err}"),
         SamplingError::StreamError {
             error_type,
             message,
@@ -452,6 +453,12 @@ pub(crate) fn clone_error(err: &SamplingError) -> SamplingError {
             error_code: error_code.clone(),
         },
         SamplingError::EventStreamError(msg) => SamplingError::EventStreamError(msg.clone()),
+        SamplingError::ChatStreamInterrupted { detail, retryable } => {
+            SamplingError::ChatStreamInterrupted {
+                detail: detail.clone(),
+                retryable: *retryable,
+            }
+        }
         SamplingError::StreamError {
             error_type,
             message,

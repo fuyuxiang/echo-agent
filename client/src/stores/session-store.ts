@@ -27,6 +27,7 @@ import { readTurnIdentity, type ExecutionTurn } from "@/lib/execution-turn";
 import { officeReceiptFromRawOutput, type DocumentExportReceipt } from "@/lib/document-export";
 import { knowledgeToolContent } from "@/lib/knowledge-tool-output";
 import { readMessageTimestamp } from "@/lib/message-time";
+import { formatModelStreamInterruption } from "@/lib/error-format";
 import { settleQueuedPrompt, useMessageQueueStore } from "./message-queue-store";
 
 /**
@@ -603,6 +604,10 @@ function completeStreamingAssistant(
       && completion.cancelTrigger !== "send_now"
       && (completion.stopReason !== "end_turn" || completion.cancellationCategory),
   );
+  const detail = completion.agentResult;
+  const agentResult = detail && completion.stopReason === "error"
+    ? formatModelStreamInterruption(detail) ?? detail
+    : detail;
   const terminalMetadata = {
     ...(completion.promptId ? { promptId: completion.promptId } : {}),
     ...(completion.stopReason ? { stopReason: completion.stopReason } : {}),
@@ -610,7 +615,7 @@ function completeStreamingAssistant(
     ...(completion.cancellationCategory
       ? { cancellationCategory: completion.cancellationCategory }
       : {}),
-    ...(completion.agentResult ? { agentResult: completion.agentResult } : {}),
+    ...(agentResult ? { agentResult } : {}),
     ...(completion.completedAt != null ? { endedAt: completion.completedAt } : {}),
   };
   const activeIndex = transcript.streamingMessageId
@@ -1333,7 +1338,10 @@ export const useSessionStore = create<SessionState>((set, get) => {
     // markComplete/failAllStreaming/stopStreaming for an actual turn boundary;
     // otherwise a failed cancel request or an early turn-error notification
     // would incorrectly kill a stream that is still owned by the agent.
-    setError: (error, runtimeContext) => set({ error, runtimeErrorContext: error ? runtimeContext ?? null : null }),
+    setError: (error, runtimeContext) => set({
+      error: error ? formatModelStreamInterruption(error) ?? error : error,
+      runtimeErrorContext: error ? runtimeContext ?? null : null,
+    }),
 
     stopStreaming: (sessionId) => {
       // Cancel button: keep whatever already streamed, just close the turn.

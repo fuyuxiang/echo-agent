@@ -179,6 +179,13 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
                 .data(error_data_with_status(message, Some(status.as_u16()))),
         },
         SamplingError::EventStreamError(message) => acp::Error::internal_error().data(message),
+        SamplingError::ChatStreamInterrupted { .. } => {
+            acp::Error::internal_error().data(terminal_error_data(
+                err.to_string(),
+                None,
+                echo_agent_sampler::SamplingErrorKind::ChatStreamInterrupted,
+            ))
+        }
         SamplingError::StreamError {
             error_type,
             message,
@@ -219,13 +226,17 @@ pub(crate) fn error_data_with_status(
     }
 }
 
-/// Terminal-failure `acp::Error.data`: max-tokens truncation carries an `error_kind` marker (the kind's stable `as_str` name); other kinds keep the legacy shape.
+/// Include a stable error kind for terminal failures with dedicated client handling.
 pub(crate) fn terminal_error_data(
     message: String,
     http_status: Option<u16>,
     kind: echo_agent_sampler::SamplingErrorKind,
 ) -> serde_json::Value {
-    if kind != echo_agent_sampler::SamplingErrorKind::MaxTokensTruncation {
+    if !matches!(
+        kind,
+        echo_agent_sampler::SamplingErrorKind::MaxTokensTruncation
+            | echo_agent_sampler::SamplingErrorKind::ChatStreamInterrupted
+    ) {
         return error_data_with_status(message, http_status);
     }
     let mut data = serde_json::json!({ "message": message, "error_kind": kind.as_str() });
@@ -247,6 +258,14 @@ pub fn stop_reason_for_turn_error(err: &acp::Error) -> &'static str {
 }
 
 fn error_message_from_data(data: &serde_json::Value) -> serde_json::Value {
+    let interrupted = echo_agent_sampler::SamplingErrorKind::ChatStreamInterrupted.as_str();
+    if data.get("error_kind").and_then(|value| value.as_str()) == Some(interrupted) {
+        // Both the live notification and durable replay carry string details.
+        return serde_json::Value::String(
+            serde_json::json!({ "message": data["message"], "error_kind": interrupted })
+                .to_string(),
+        );
+    }
     data.get("message").cloned().unwrap_or_else(|| data.clone())
 }
 
@@ -347,6 +366,23 @@ pub(crate) fn prompt_complete_fields(
 mod tests {
     use super::*;
     use reqwest::StatusCode;
+
+    #[test]
+    fn chat_stream_interruption_keeps_its_kind_in_the_durable_result() {
+        let error = map_sampling_err_to_acp(SamplingError::ChatStreamInterrupted {
+            detail: "HTTP body closed".into(),
+            retryable: true,
+        });
+        let (stop, detail) = prompt_complete_fields(&Err(error));
+        assert_eq!(stop, "error");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(detail.as_str().unwrap()).unwrap(),
+            serde_json::json!({
+                "error_kind": "chat_stream_interrupted",
+                "message": "HTTP body closed",
+            })
+        );
+    }
 
     #[test]
     fn attach_prompt_usage_preserves_error_kind_and_round_trips() {

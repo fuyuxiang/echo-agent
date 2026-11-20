@@ -1172,6 +1172,27 @@ describe("session-store transcripts", () => {
     ]);
   });
 
+  it.each([false, true])("实时或重放的断流终态保留正文及中文错误提示（重放 %s）", isReplay => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.startStreaming("A", "interrupted-prompt");
+    store.applyUpdate(chunk("已经收到的正文", "A"));
+    store.applyUpdate({
+      __sessionId: "A",
+      sessionUpdate: "turn_completed",
+      prompt_id: "interrupted-prompt",
+      stop_reason: "error",
+      agent_result: JSON.stringify({ error_kind: "chat_stream_interrupted", message: "error decoding response body" }),
+      _meta: { isReplay },
+    });
+    expect(useSessionStore.getState().messages[0]).toMatchObject({
+      complete: true,
+      stopReason: "error",
+      agentResult: "模型回复中断。已有内容已保留，可在当前任务继续。",
+      parts: [{ kind: "text", text: "已经收到的正文" }],
+    });
+  });
+
   it("持久终态与 prompt_complete 双轨到达时只保留一条记录", () => {
     const s = useSessionStore.getState();
     s.setSession("A");
