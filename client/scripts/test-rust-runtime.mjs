@@ -83,12 +83,14 @@ function groupEnvironment(label) {
     ...(process.platform === 'win32' ? { APPDATA: join(groupHome, 'AppData/Roaming'), LOCALAPPDATA: join(groupHome, 'AppData/Local') } : {}) };
 }
 const groups = [
-  { name: 'Runtime library/default test stack', args: ['--skip', actorFilter], env: groupEnvironment('library') },
+  // Some Runtime tests temporarily mutate process-wide config inputs. A
+  // separate libtest worker could read those values before they are restored.
+  { name: 'Runtime library/default test stack', args: ['--skip', actorFilter], threads: 1, env: groupEnvironment('library') },
   // spawn_session_on_thread in acp_session_impl/spawn.rs uses 8 MiB for
   // SessionActor and its sampler. Keep all other tests on their default stack.
   // This child-process setting also affects unspecified worker-thread stacks;
   // native host tests separately retain the ordinary worker environment.
-  { name: 'SessionActor/production session stack', args: [actorFilter], env: { ...groupEnvironment('actor'), RUST_MIN_STACK: String(8 * 1024 * 1024) } },
+  { name: 'SessionActor/production session stack', args: [actorFilter], threads: 2, env: { ...groupEnvironment('actor'), RUST_MIN_STACK: String(8 * 1024 * 1024) } },
 ];
 const covered = new Set();
 for (const group of groups) {
@@ -106,7 +108,7 @@ assert.equal(covered.size, allTests.size, 'Every discovered Runtime test must be
 let status = 0;
 for (const group of groups) {
   console.log(`Running ${group.name}`);
-  const result = await runNativeTestProcess(program, [...group.args, '--test-threads=2'], { ...options, env: group.env });
+  const result = await runNativeTestProcess(program, [...group.args, `--test-threads=${group.threads}`], { ...options, env: group.env });
   if (result !== 0) status = result;
 }
 const toolsWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-tools'));

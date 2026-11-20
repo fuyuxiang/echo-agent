@@ -5568,50 +5568,10 @@ fn tier_recheck_identity_guard_accepts_enrichment_canonical_user_id() {
 #[test]
 fn gated_reconnect_recheck_lifts_gate_clearing_paywall_flash() {
     run_local_for_bridge_test(|| async {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        listener
-            .set_nonblocking(true)
-            .expect("nonblocking accept loop");
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let accept_stop = stop.clone();
-        let accept_thread = std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            while !accept_stop.load(std::sync::atomic::Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-                        let mut head = Vec::new();
-                        let mut byte = [0u8; 1];
-                        while !head.ends_with(b"\r\n\r\n") {
-                            match stream.read(&mut byte) {
-                                Ok(1) => head.push(byte[0]),
-                                _ => break,
-                            }
-                        }
-                        let head = String::from_utf8_lossy(&head);
-                        let response = if head.contains("/user?include=subscription") {
-                            let body =
-                                r#"{"userId":"user-flash","subscriptionTier":"EchoAgentPro"}"#;
-                            format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                                body.len()
-                            )
-                        } else {
-                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\
-                             Connection: close\r\n\r\n"
-                                .to_owned()
-                        };
-                        let _ = stream.write_all(response.as_bytes());
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(20));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
+        use echo_agent_test_support::MockInferenceServer;
+
+        let server = MockInferenceServer::start().await.expect("start mock proxy");
+        server.set_user_subscription_tier(Some("EchoAgentPro"));
         let temp_dir = tempfile::tempdir().unwrap();
         let auth_manager = std::sync::Arc::new(crate::auth::AuthManager::new(
             temp_dir.path(),
@@ -5619,19 +5579,22 @@ fn gated_reconnect_recheck_lifts_gate_clearing_paywall_flash() {
         ));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let gateway = GatewaySender::new(tx);
-        let cfg = crate::agent::config::Config::default();
+        let mut cfg = crate::agent::config::Config::default();
+        cfg.endpoints.cli_chat_proxy_base_url = Some(server.url());
         let agent = MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config");
-        agent.cfg.borrow_mut().endpoints.cli_chat_proxy_base_url =
-            Some(format!("http://{addr}/v1"));
         let auth = crate::auth::EchoAgentAuth {
             key: jwt_with_tier(5),
-            user_id: "user-flash".into(),
+            user_id: "mock-user".into(),
             auth_mode: crate::auth::AuthMode::Oidc,
             oidc_issuer: Some(crate::auth::ECHO_AGENT_OAUTH2_ISSUER.to_owned()),
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
             ..crate::auth::EchoAgentAuth::test_default()
         };
         agent.auth_manager.hot_swap(auth);
+        assert!(
+            agent.auth_manager.current().is_some(),
+            "test auth must be usable"
+        );
         agent.tier_allowed.set(false);
         tokio::time::timeout(
             std::time::Duration::from_secs(30),
@@ -5639,6 +5602,15 @@ fn gated_reconnect_recheck_lifts_gate_clearing_paywall_flash() {
         )
         .await
         .expect("re-check must finish well inside its bounded awaits");
+        let subscription_requests = server
+            .requests()
+            .into_iter()
+            .filter(|request| request.method == "GET" && request.path == "/v1/user?include=subscription")
+            .count();
+        assert_eq!(
+            subscription_requests, 1,
+            "the re-check must reach the mock subscription endpoint exactly once"
+        );
         assert!(
             agent.tier_allowed.get(),
             "a confirmed qualifying tier must lift the gate — the reconnect paywall flash clears"
@@ -5648,8 +5620,6 @@ fn gated_reconnect_recheck_lifts_gate_clearing_paywall_flash() {
             1,
             "the lift came from exactly one claimed re-check"
         );
-        stop.store(true, std::sync::atomic::Ordering::Release);
-        accept_thread.join().expect("accept loop joins");
     });
 }
 /// Agent with pre-loaded auth, a gateway receiver (to assert emitted
