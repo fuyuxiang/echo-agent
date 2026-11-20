@@ -722,15 +722,32 @@ test('host bridge authenticates source/origin/token/instance and cancels pending
     controller.abort(); await assert.rejects(next, /取消/); assert.equal(bridge.pending.size, 0);
 });
 
-function conditionalFileService({enabled=false,beforeMutation=async()=>undefined,changeDuringEncode,delayWrite=false} = {}) {
-    let disk = 'old'; let mtime = 100; let writes = 0; let fallbacks = 0;
+function conditionalFileService({enabled=false,beforeMutation=async()=>undefined,changeDuringEncode,delayWrite=false,beforeWrite=async()=>undefined,beforeUserOperation=async()=>undefined} = {}) {
+    let disk = 'old'; let mtime = 100; let reads = 0; let writes = 0; let fallbacks = 0;
+    const userOperations = [];
     const etag = stat => `${stat.mtime}:${stat.size}`;
     class BaseFileService {
         modifiedSince() { fallbacks++; return false; }
-        async read() { return {value:disk,mtime,etag:etag({mtime,size:disk.length}),encoding:'utf8'}; }
+        async read() { reads++; return {value:disk,mtime,etag:etag({mtime,size:disk.length}),encoding:'utf8'}; }
+        async runUserFileOperation(operation, target, source, run) {
+            await beforeUserOperation();
+            userOperations.push(['will', operation, target.path.fsPath(), source?.path.fsPath()]);
+            try {
+                const result = await run();
+                userOperations.push(['did', operation, target.path.fsPath(), source?.path.fsPath()]);
+                return result;
+            } catch (error) {
+                userOperations.push(['failed', operation, target.path.fsPath(), source?.path.fsPath()]);
+                throw error;
+            }
+        }
+        async doDelete() { disk = ''; mtime++; }
+        async doMove() { mtime++; }
+        async exists() { return false; }
         async getWriteEncoding() { return {encoding:'utf8',hasBOM:false}; }
         async writeFile(_resource,encoded,options) {
             if (this.modifiedSince({mtime,size:disk.length},options)) { throw new FileError('modified since',fileResults.FILE_MODIFIED_SINCE); }
+            await beforeWrite();
             if (delayWrite) { await new Promise(resolve=>setTimeout(resolve,5)); }
             writes++;disk=encoded;mtime++;
         }
@@ -738,7 +755,7 @@ function conditionalFileService({enabled=false,beforeMutation=async()=>undefined
     const {EchoFileService:ConditionalService} = load('echo-file-service.ts',{
         ...sharedImports,
         '@theia/filesystem/lib/browser/file-service':{FileService:BaseFileService},
-        '@theia/filesystem/lib/common/files':{...sharedImports['@theia/filesystem/lib/common/files'],ETAG_DISABLED:'',etag},
+        '@theia/filesystem/lib/common/files':{...sharedImports['@theia/filesystem/lib/common/files'],ETAG_DISABLED:'',etag,FileOperation:{MOVE:'move',DELETE:'delete'}},
         './echo-host-bridge':{echoHostBridge:{enabled,request:type=>type==='echo/before-mutation'?beforeMutation():Promise.resolve(undefined)}}
     });
     const service = new ConditionalService();
@@ -746,7 +763,7 @@ function conditionalFileService({enabled=false,beforeMutation=async()=>undefined
         if (changeDuringEncode) {disk=changeDuringEncode;mtime++;}
         return text;
     }};
-    return {service,etag,writes:()=>writes,fallbacks:()=>fallbacks,disk:()=>disk,
+    return {service,etag,userOperations,reads:()=>reads,writes:()=>writes,fallbacks:()=>fallbacks,disk:()=>disk,
         externalWrite(value,nextMtime=mtime+1) {disk=value;mtime=nextMtime;} };
 }
 
@@ -780,7 +797,56 @@ test('same-path conditional writes serialize the full hash/stat/write transactio
     ]);
     assert.equal(results.filter(result=>result.status==='fulfilled').length,1);
     assert.equal(results.filter(result=>result.status==='rejected'&&result.reason.fileOperationResult===fileResults.FILE_MODIFIED_SINCE).length,1);
-    assert.equal(fixture.writes(),1);assert.equal(fixture.disk(),'one');assert.equal(fixture.service.activeWrites.size,0);
+    assert.equal(fixture.writes(),1);assert.equal(fixture.disk(),'one');assert.equal(fixture.service.activeMutations.size,0);
+});
+
+test('versioned delete observes a pending same-path save before checking the hash', async () => {
+    let enteredWrite, releaseWrite;
+    const writeEntered = new Promise(resolve => { enteredWrite = resolve; });
+    const continueWrite = new Promise(resolve => { releaseWrite = resolve; });
+    const fixture = conditionalFileService({ beforeWrite: () => { enteredWrite(); return continueWrite; } });
+    const resource = uri('/project/a.ts');
+    const hash = await protocol.textHash('old');
+    const pendingWrite = fixture.service.writeTextFileConditional(resource, hash, 'editor save');
+    await writeEntered;
+    const pendingDelete = fixture.service.deleteTextFileConditional(resource, hash, () => undefined);
+    const readsWhileSaving = fixture.reads();
+    const result = Promise.allSettled([pendingWrite, pendingDelete]);
+    releaseWrite();
+    const [saved, deleted] = await result;
+    assert.equal(readsWhileSaving, 1, 'delete read a snapshot before the earlier save settled');
+    assert.equal(saved.status, 'fulfilled');
+    assert.equal(deleted.reason?.fileOperationResult, fileResults.FILE_MODIFIED_SINCE);
+    assert.equal(fixture.disk(), 'editor save');
+});
+
+test('versioned move emits the editor lifecycle with both paths after a same-path participant save', {timeout:1000}, async () => {
+    const source = uri('/project/a.ts'), target = uri('/project/b.ts');
+    const hash = await protocol.textHash('old');
+    const fixture = conditionalFileService({
+        beforeUserOperation: () => fixture.service.writeTextFileConditional(source, hash, 'old'),
+    });
+    await fixture.service.moveTextFileConditional(source, target, hash, () => undefined);
+    assert.deepEqual(fixture.userOperations, [
+        ['will','move','/project/b.ts','/project/a.ts'],
+        ['did','move','/project/b.ts','/project/a.ts'],
+    ]);
+    assert.equal(fixture.writes(),1);
+});
+
+test('versioned move rolls back the editor lifecycle when a participant changes the source', {timeout:1000}, async () => {
+    const source = uri('/project/a.ts'), target = uri('/project/b.ts');
+    const hash = await protocol.textHash('old');
+    const fixture = conditionalFileService({
+        beforeUserOperation: () => fixture.service.writeTextFileConditional(source, hash, 'changed'),
+    });
+    await assert.rejects(fixture.service.moveTextFileConditional(source, target, hash, () => undefined),
+        error => error.fileOperationResult === fileResults.FILE_MODIFIED_SINCE);
+    assert.deepEqual(fixture.userOperations, [
+        ['will','move','/project/b.ts','/project/a.ts'],
+        ['failed','move','/project/b.ts','/project/a.ts'],
+    ]);
+    assert.equal(fixture.disk(),'changed');
 });
 
 test('same-size external edits during encoding are rejected by the final native save version check', async () => {

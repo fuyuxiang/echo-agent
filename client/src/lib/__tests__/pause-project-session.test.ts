@@ -44,3 +44,34 @@ it("keeps a running task honest after cancellation fails", async () => {
   expect(useSessionsStore.getState().independent.find(s => s.sessionId === "target")?.status).toBe("working");
   expect(useSessionStore.getState().transcripts.target.streamingMessageId).toBeTruthy();
 });
+
+it("keeps a pause confirmed by the terminal event before IPC returns", async () => {
+  let acknowledge!: () => void;
+  vi.mocked(agentCancel).mockReturnValue(new Promise(resolve => { acknowledge = resolve; }));
+  useMessageQueueStore.getState().enqueue("target", "later");
+  const pending = pauseProjectSession("target");
+  useSessionStore.getState().markComplete({
+    sessionId: "target", promptId: "prompt-target", stopReason: "cancelled", cancelTrigger: "pause",
+  });
+  acknowledge();
+  await pending;
+  expect(useSessionStore.getState().transcripts.target.control).toMatchObject({ phase: "paused", promptId: "prompt-target" });
+  expect(useSessionsStore.getState().independent.find(session => session.sessionId === "target")?.status).toBe("paused");
+  expect(useMessageQueueStore.getState().getQueue("target")).toMatchObject([{ status: "paused" }]);
+});
+
+it("preserves a replacement prompt and its queue when an old pause is acknowledged", async () => {
+  let acknowledge!: () => void;
+  vi.mocked(agentCancel).mockReturnValue(new Promise(resolve => { acknowledge = resolve; }));
+  const pending = pauseProjectSession("target");
+  useSessionStore.getState().startStreaming("target", "replacement");
+  useSessionsStore.getState().upsert({ sessionId: "target", status: "working" });
+  useMessageQueueStore.getState().enqueue("target", "replacement follow-up");
+  acknowledge();
+  await pending;
+  const transcript = useSessionStore.getState().transcripts.target;
+  expect(transcript.messages.find(message => message.id === transcript.streamingMessageId))
+    .toMatchObject({ promptId: "replacement", complete: false });
+  expect(useSessionsStore.getState().independent.find(session => session.sessionId === "target")?.status).toBe("working");
+  expect(useMessageQueueStore.getState().getQueue("target")).toMatchObject([{ status: "queued" }]);
+});

@@ -713,7 +713,7 @@ export function ChatView({
     let active = true;
     let generation = 0;
     const load = (event?: Event) => {
-      // History focus changes before agent_load_session binds the native cwd.
+      // History focus changes before agent_recover_session binds the native cwd.
       // The existing model/loading guard turns false only after load settles.
       if (!sessionId || modelLoading) return;
       if (event && ((event as CustomEvent).detail?.source !== "document-export"

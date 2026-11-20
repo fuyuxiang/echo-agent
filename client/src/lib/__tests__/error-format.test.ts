@@ -2,6 +2,13 @@ import { describe, it, expect } from "vitest";
 import { formatAgentError, friendlyError } from "../error-format";
 
 describe("formatAgentError", () => {
+  it.each([
+    ["response truncated by max_tokens", "输出长度上限"],
+    ["Responses API reached the maximum number of messages", "消息数量上限"],
+    ["Responses API returned an incomplete response", "提前结束"],
+  ])("保留 Responses 终止原因 %s", (detail, expected) => {
+    expect(friendlyError(JSON.stringify({ data: { message: detail } }))).toContain(expected);
+  });
   it("识别服务商窗口超限并保留当前任务的继续处理入口", () => {
     const error = "API error (status 400 Bad Request): bad_request_error: invalid params, context window exceeds limit (2013)";
     expect(formatAgentError(error)).toContain("当前任务");

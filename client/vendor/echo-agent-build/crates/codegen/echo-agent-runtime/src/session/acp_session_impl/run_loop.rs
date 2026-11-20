@@ -1233,6 +1233,21 @@ pub(super) async fn run_session(
                         }
                         SessionCommand::Cancel(options) => {
                             let cancellation_ack = options.acknowledged.clone();
+                            // Completion and slot release are handled by this same loop.
+                            // Reject a stale desktop stop before touching the next turn.
+                            if let Some(expected) = options.expected_prompt_id.as_deref() {
+                                let state = session.state.lock().await;
+                                let active_prompt = state.running_prompt_id().or_else(|| {
+                                    state.pending_inputs.front().map(|input| input.prompt_id.as_str())
+                                });
+                                if active_prompt != Some(expected) {
+                                    tracing::debug!(prompt_id = expected, "ignored stale named cancel");
+                                    if let Some(acknowledged) = cancellation_ack {
+                                        acknowledged.notify_processed(true);
+                                    }
+                                    continue;
+                                }
+                            }
                             // Flush the actor-owned replay buffer before tearing
                             // down the running turn so any streamed chunks
                             // (notably AgentThoughtChunk reasoning text) still
@@ -1282,9 +1297,9 @@ pub(super) async fn run_session(
                             }
                             // This is deliberately last: an ACP caller receiving
                             // the acknowledgement may now close local interaction
-                            // UI and fence late events without hiding live work.
+                            // UI and fence late events for this request.
                             if let Some(acknowledged) = cancellation_ack {
-                                acknowledged.notify_one();
+                                acknowledged.notify_processed(false);
                             }
                         }
                         SessionCommand::CompactSession { user_context, respond_to } => {
@@ -2487,6 +2502,7 @@ pub(super) async fn run_session(
                                         cancel_subagents: true,
                                         kill_background_tasks: true,
                                         history: crate::session::CancelHistoryDisposition::Keep,
+                                        expected_prompt_id: None,
                                         trigger: Some(crate::session::CancelTrigger::Shutdown),
                                         user_initiated: false,
                                         acknowledged: None,

@@ -1,7 +1,7 @@
 import { injectable } from '@theia/core/shared/inversify';
 import { FileService } from '@theia/filesystem/lib/browser/file-service';
 import URI from '@theia/core/lib/common/uri';
-import { ETAG_DISABLED, FileOperationError, FileOperationResult, Stat, WriteFileOptions, etag, hasReadWriteCapability } from '@theia/filesystem/lib/common/files';
+import { ETAG_DISABLED, FileOperation, FileOperationError, FileOperationResult, Stat, WriteFileOptions, etag, hasReadWriteCapability } from '@theia/filesystem/lib/common/files';
 import { echoHostBridge } from './echo-host-bridge';
 import { textHash } from './echo-editor-protocol';
 
@@ -11,20 +11,27 @@ import { textHash } from './echo-editor-protocol';
  */
 @injectable()
 export class EchoFileService extends FileService {
-    private readonly activeWrites = new Map<string, Promise<void>>();
+    private readonly activeMutations = new Map<string, Promise<void>>();
 
-    /** Include version validation in the per-file transaction; FileService's own queue starts after validation. */
-    private async serializeWrite<T>(path: string, run: () => Promise<T>): Promise<T> {
-        const slashed = path.replaceAll('\\', '/');
-        const key = /^[a-z]:\//i.test(slashed) || slashed.startsWith('//') ? slashed.toLowerCase() : slashed;
-        const previous = this.activeWrites.get(key) ?? Promise.resolve();
+    /** Reserve all paths together so overlapping version checks and writes run in order. */
+    private async serializeVersionedMutation<T>(paths: string[], run: () => Promise<T>): Promise<T> {
+        const keys = new Set(paths.filter(Boolean).map(path => {
+            const slashed = path.replaceAll('\\', '/');
+            return /^[a-z]:\//i.test(slashed) || slashed.startsWith('//') ? slashed.toLowerCase() : slashed;
+        }));
+        const previous = [...keys].map(key => this.activeMutations.get(key));
         let release!: () => void;
         const settled = new Promise<void>(resolve => { release = resolve; });
-        this.activeWrites.set(key, settled);
-        await previous;
-        try { return await run(); }
-        finally {
-            if (this.activeWrites.get(key) === settled) { this.activeWrites.delete(key); }
+        for (const key of keys) {
+            this.activeMutations.set(key, settled);
+        }
+        await Promise.all(previous);
+        try {
+            return await run();
+        } finally {
+            for (const key of keys) {
+                if (this.activeMutations.get(key) === settled) { this.activeMutations.delete(key); }
+            }
             release();
         }
     }
@@ -50,26 +57,34 @@ export class EchoFileService extends FileService {
         });
     }
 
-    /** Recheck the hash after the host's async mutation authorization, immediately before the conditional disk write. */
+    /** Participants may save on the same path. Reserve paths only for the final check and disk mutation. */
     async deleteTextFileConditional(resource: URI, expectedHash: string, assertCurrent: () => void): Promise<void> {
-        return this.mutate('delete', [resource.path.fsPath()], async () => {
-            const latest = await super.read(resource, { acceptTextOnly: true });
-            if (await textHash(latest.value) !== expectedHash) {
-                throw new FileOperationError('磁盘内容已变化，未删除文件', FileOperationResult.FILE_MODIFIED_SINCE);
-            }
+        const paths = [resource.path.fsPath()];
+        return this.mutate('delete', paths, async () => {
             assertCurrent();
-            await super.delete(resource, { recursive: false });
+            await this.runUserFileOperation(FileOperation.DELETE, resource, undefined, () => this.serializeVersionedMutation(paths, async () => {
+                const latest = await super.read(resource, { acceptTextOnly: true });
+                if (await textHash(latest.value) !== expectedHash) {
+                    throw new FileOperationError('磁盘内容已变化，未删除文件', FileOperationResult.FILE_MODIFIED_SINCE);
+                }
+                assertCurrent();
+                await super.doDelete(resource, { recursive: false });
+            }));
         });
     }
 
     async moveTextFileConditional(resource: URI, destination: URI, expectedHash: string, assertCurrent: () => void): Promise<void> {
-        return this.mutate('move', [resource.path.fsPath(), destination.path.fsPath()], async () => {
-            const latest = await super.read(resource, { acceptTextOnly: true });
-            if (await textHash(latest.value) !== expectedHash || await super.exists(destination)) {
-                throw new FileOperationError('源文件已变化或目标已存在，未移动文件', FileOperationResult.FILE_MODIFIED_SINCE);
-            }
+        const paths = [resource.path.fsPath(), destination.path.fsPath()];
+        return this.mutate('move', paths, async () => {
             assertCurrent();
-            await super.move(resource, destination, { overwrite: false });
+            await this.runUserFileOperation(FileOperation.MOVE, destination, resource, () => this.serializeVersionedMutation(paths, async () => {
+                const latest = await super.read(resource, { acceptTextOnly: true });
+                if (await textHash(latest.value) !== expectedHash || await super.exists(destination)) {
+                    throw new FileOperationError('源文件已变化或目标已存在，未移动文件', FileOperationResult.FILE_MODIFIED_SINCE);
+                }
+                assertCurrent();
+                await super.doMove(resource, destination, false);
+            }));
         });
     }
 
@@ -87,7 +102,9 @@ export class EchoFileService extends FileService {
     }
 
     private async mutate<T>(operation: string, paths: string[], run: () => Promise<T>): Promise<T> {
-        const execute = () => operation === 'write' && paths[0] ? this.serializeWrite(paths[0], run) : run();
+        // Ordinary moves/copies can re-enter delete through FileService. Reserve
+        // paths for writes and explicit compare-before-edit operations only.
+        const execute = () => operation === 'write' && paths.some(Boolean) ? this.serializeVersionedMutation(paths, run) : run();
         if (!echoHostBridge.enabled || !paths.some(Boolean)) {
             return execute();
         }

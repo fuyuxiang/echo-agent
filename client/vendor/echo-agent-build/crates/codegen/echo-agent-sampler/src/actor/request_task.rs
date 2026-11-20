@@ -307,10 +307,12 @@ pub(crate) async fn run_request_task(
                     handle_cancellation(&event_tx, &request_id, &mut completion_tx);
                     return request_id;
                 }
-                // Chat Completions sends text and reasoning immediately.
-                // ACP cannot retract either if a failed stream is retried.
-                let failure_retry_budget = if client.api_backend() == ApiBackend::ChatCompletions
-                    && output_observed.load(Ordering::Relaxed)
+                // These backends send deltas before the message is committed.
+                // ACP cannot retract visible output if a failed stream is retried.
+                let failure_retry_budget = if matches!(
+                    client.api_backend(),
+                    ApiBackend::ChatCompletions | ApiBackend::Messages
+                ) && output_observed.load(Ordering::Relaxed)
                 {
                     0
                 } else {

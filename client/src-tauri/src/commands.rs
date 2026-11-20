@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
+use echo_agent_runtime::session::helpers::host_prompt_admission::{self, HostPromptAdmission};
 
 use crate::agent_runtime::{self, AgentHandle, InitOutcome};
 use crate::bridge::{
@@ -2079,7 +2080,16 @@ pub async fn agent_send(
     document_tool_bridge: Option<bool>,
     review: Option<crate::coding_review_runtime::ReviewRequest>,
 ) -> Result<(), String> {
-    agent_send_impl(
+    if prompt_id.as_deref().is_some_and(|id| !valid_session_id(id))
+        || !valid_session_id(&session_id)
+    {
+        return Err("会话或消息 ID 无效或过长".into());
+    }
+    let admission = prompt_id
+        .as_deref()
+        .map(|id| HostPromptAdmission::begin(&session_id, id))
+        .transpose()?;
+    let result = agent_send_impl(
         app,
         state,
         session_id,
@@ -2092,8 +2102,16 @@ pub async fn agent_send(
         document_tool_bridge,
         review,
         None,
+        admission.as_ref(),
     )
-    .await
+    .await;
+    // Cancel owns the UI settlement. A deliberately withdrawn send does not
+    // enter the renderer's error/automatic retry path.
+    if admission.as_ref().is_some_and(HostPromptAdmission::withdrawn) {
+        Ok(())
+    } else {
+        result
+    }
 }
 
 pub(crate) async fn agent_send_from_weixin(
@@ -2105,7 +2123,8 @@ pub(crate) async fn agent_send_from_weixin(
     prompt_id: String,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    agent_send_impl(
+    let admission = HostPromptAdmission::begin(&session_id, &prompt_id)?;
+    let result = agent_send_impl(
         app.clone(),
         state,
         session_id,
@@ -2118,8 +2137,10 @@ pub(crate) async fn agent_send_from_weixin(
         None,
         None,
         Some(authorization),
+        Some(&admission),
     )
-    .await
+    .await;
+    if admission.withdrawn() { Ok(()) } else { result }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2136,7 +2157,12 @@ async fn agent_send_impl(
     document_tool_bridge: Option<bool>,
     review: Option<crate::coding_review_runtime::ReviewRequest>,
     weixin: Option<&crate::weixin::PromptAuthorization>,
+    admission: Option<&HostPromptAdmission>,
 ) -> Result<(), String> {
+    let withdrawn = || admission.is_some_and(HostPromptAdmission::withdrawn);
+    if withdrawn() {
+        return Ok(());
+    }
     let _history_guard = crate::session_continuation::history_mutation_guard(&session_id)?;
     if mode
         .as_deref()
@@ -2213,11 +2239,16 @@ async fn agent_send_impl(
         (review.is_some() || document_tool_bridge).then(|| uuid::Uuid::now_v7().to_string())
     });
     let send_now = send_now.unwrap_or(false);
+    if withdrawn() {
+        return Ok(());
+    }
     if send_now {
         if let Err(error) = crate::coding_document_bridge::cancel_session(&session_id).await {
             // A failed editor fence never permits a replacement run. Still
             // deliver the real Runtime cancellation so old shell work stops.
-            let _ = agent_runtime::cancel(&tx, &session_id, "stop", None).await;
+            if !withdrawn() {
+                let _ = agent_runtime::cancel(&tx, &session_id, "stop", None).await;
+            }
             return Err(error);
         }
     }
@@ -2267,6 +2298,9 @@ async fn agent_send_impl(
         );
     }
     crate::coding_document_bridge::ensure_workspace_admission(&workspace.to_string_lossy()).await?;
+    if withdrawn() {
+        return Ok(());
+    }
     let task_admitted = crate::automation::prepare_user_prompt(
         &session_id,
         display_text.as_deref().unwrap_or(&text),
@@ -2319,22 +2353,27 @@ async fn agent_send_impl(
             return Err(error);
         }
     }
-    let registration = if let Some(run_id) = prepared_prompt
+    let registration = match prepared_prompt
         .meta
         .as_ref()
         .and_then(|m| m.get("promptId"))
         .and_then(serde_json::Value::as_str)
     {
-        crate::org::record_project_run(&app, &session_id, run_id, "running", None).await
-    } else {
-        Ok(())
+        Some(run_id) if !withdrawn() => {
+            crate::org::record_project_run(&app, &session_id, run_id, "running", None).await
+        }
+        _ => Ok(()),
     };
+    if let Some(admission) = admission {
+        admission.attach(&mut prepared_prompt);
+    }
     tracing::info!(%session_id, attachment_count = attachments.len(), send_now, "agent prompt send");
     let enqueue = || {
         agent_runtime::enqueue_prepared_prompt(&tx, prepared_prompt)
             .map_err(|error| error.to_string())
     };
     let response = match registration {
+        _ if withdrawn() => Err("消息已取消".into()),
         Err(error) => Err(error),
         Ok(()) => match weixin {
             Some(authorization) => authorization.enqueue(&app, &session_id, &workspace, enqueue),
@@ -2347,7 +2386,9 @@ async fn agent_send_impl(
         Err(error) => Err(error),
     };
     if let Err(error) = &result {
-        tracing::error!(%session_id, %error, "agent prompt failed");
+        if !withdrawn() {
+            tracing::error!(%session_id, %error, "agent prompt failed");
+        }
     }
     if result.is_err() {
         if let Some(run) = prompt_id.as_deref() {
@@ -2355,8 +2396,8 @@ async fn agent_send_impl(
                 &app,
                 &session_id,
                 run,
-                "failed",
-                Some("本轮执行未成功，请执行者检查结果并更新工作项。"),
+                if withdrawn() { "cancelled" } else { "failed" },
+                (!withdrawn()).then_some("本轮执行未成功，请执行者检查结果并更新工作项。"),
             )
             .await;
         }
@@ -2400,9 +2441,17 @@ pub async fn agent_cancel(
     session_id: String,
     cancel_action: Option<String>,
     prompt_id: Option<String>,
+    preparing_prompt: Option<bool>,
+    previous_prompt_id: Option<String>,
+    previous_prompt_posted: Option<bool>,
+    accept_ended_prompt: Option<bool>,
 ) -> Result<(), String> {
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
+    }
+    if [&prompt_id, &previous_prompt_id].into_iter().flatten().any(|id| !valid_session_id(id))
+    {
+        return Err("消息 ID 无效或过长".into());
     }
     state.session_workspace(&session_id)?;
     let tx = state
@@ -2416,26 +2465,52 @@ pub async fn agent_cancel(
         "stop" => "stop",
         _ => return Err("无效的取消动作".into()),
     };
-    // Fence editor transactions immediately; the UI still waits for the
-    // Runtime's real cancellation acknowledgement before showing stopped.
-    crate::coding_document_bridge::fence_session_run(&session_id, prompt_id.as_deref()).await;
-    let stop_automation = async {
-        if cancel_trigger == "pause" {
-            crate::automation::pause_session(&session_id).await
-        } else {
-            crate::automation::stop_session(&session_id).await
-        }
+    if prompt_id.is_none() {
+        host_prompt_admission::withdraw_session(&session_id);
+    }
+    let withdrawn = prompt_id.as_deref().is_some_and(|id| {
+        host_prompt_admission::withdraw(&session_id, id, preparing_prompt.unwrap_or(false))
+    });
+    let previous_live = previous_prompt_id
+        .as_deref()
+        .filter(|id| Some(*id) != prompt_id.as_deref())
+        .filter(|id| {
+            !host_prompt_admission::withdraw(
+                &session_id,
+                id,
+                previous_prompt_posted.unwrap_or(false),
+            )
+        });
+    let target_prompt = if withdrawn {
+        previous_live.or(prompt_id.as_deref())
+    } else {
+        prompt_id.as_deref()
     };
+    // Fence editor transactions immediately; the UI still waits for the
+    // Runtime's real cancellation acknowledgement if the prompt was dispatched.
+    crate::coding_document_bridge::fence_session_run(&session_id, target_prompt).await;
+    let stop_automation = crate::automation::cancel_prompt(
+        &session_id,
+        target_prompt,
+        cancel_trigger == "pause",
+    );
     let (document_result, automation_result, runtime_result) = tokio::join!(
-        crate::coding_document_bridge::cancel_session_run(&session_id, prompt_id.as_deref()),
+        crate::coding_document_bridge::cancel_session_run(&session_id, target_prompt),
         stop_automation,
-        agent_runtime::cancel(&tx, &session_id, cancel_trigger, prompt_id.as_deref()),
+        async {
+            if withdrawn && previous_live.is_none() {
+                return Ok(());
+            }
+            agent_runtime::cancel_from_user(&tx, &session_id, cancel_trigger, target_prompt).await
+        },
     );
     if let Err(ref error) = automation_result {
         tracing::warn!(%error, %session_id, cancel_trigger, "failed to stop automation while cancelling turn");
     }
     if let Err(error) = runtime_result {
-        if !error.to_string().contains("session not found") {
+        if !error.to_string().contains("session not found")
+            && !((withdrawn || accept_ended_prompt.unwrap_or(false)) && error.is::<agent_runtime::StalePromptCancel>())
+        {
             return Err(error.to_string());
         }
     }

@@ -80,6 +80,31 @@ class PublishingTests(unittest.TestCase):
             current = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(current["signature"], original["signature"])
 
+    def test_signature_change_after_read_refuses_to_switch_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stable = self.initialize_root(root)
+            target = "windows-x86_64"
+            artifact = root / MODULE.artifact_name("1.2.3", target)
+            signature = root / f"{artifact.name}.sig"
+            artifact.write_bytes(b"signed fixture")
+            signature.write_text("A" * 100, encoding="utf-8")
+            read_signature = MODULE.read_signature
+
+            def change_signature_after_read(path: Path):
+                original = read_signature(path)
+                path.write_text("B" * 100, encoding="utf-8")
+                return original
+
+            with mock.patch.object(MODULE, "read_signature", side_effect=change_signature_after_read):
+                self.assertEqual(self.invoke([
+                    "--version", "1.2.3", "--target", target,
+                    "--artifact", str(artifact), "--signature", str(signature),
+                    "--root", str(root / "updates"),
+                ]), 2)
+            self.assertEqual((stable / "current").readlink(), Path("generations/initial"))
+            self.assertFalse((stable / "current" / f"{target}.json").exists())
+
     def test_batch_switches_all_targets_at_once_and_failure_keeps_old_generation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

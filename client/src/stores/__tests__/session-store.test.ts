@@ -79,6 +79,23 @@ const userMessageTextForTest = (m: ReturnType<typeof useSessionStore.getState>["
 describe("session-store transcripts", () => {
   beforeEach(resetStore);
 
+  it.each(["agent_message_chunk", "agent_thought_chunk", "tool_call"] as const)(
+    "%s publishes a new snapshot without mutating the previous messages",
+    (sessionUpdate) => {
+      const store = useSessionStore.getState();
+      store.setSession("A");
+      store.startStreaming("A", "active-turn");
+      const previous = useSessionStore.getState().messages;
+      Object.freeze(previous);
+      const update = sessionUpdate === "tool_call"
+        ? { __sessionId: "A", sessionUpdate, toolCallId: "call", title: "读取测试文件" }
+        : { ...chunk("next", "A"), sessionUpdate };
+      expect(store.applyUpdate({ ...update, _meta: { promptId: "active-turn" } })).toBe(true);
+      expect(previous[0].parts).toEqual([]);
+      expect(useSessionStore.getState().messages[0].parts).toHaveLength(1);
+    },
+  );
+
   it("消息时间在切换会话和冷回放后保持一致", () => {
     const sentAt = Date.UTC(2026, 10, 9, 15, 59);
     const endedAt = Date.UTC(2026, 10, 9, 16, 1);

@@ -1,16 +1,65 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
-import { groupList, groupSnapshot, groupStatus, groupRecipients, resolveGroupForSession, mentionedMembers, type Group, type GroupMember } from "../group-client";
-import { useGroupStore } from "../group-store";
+import { groupList, groupSnapshot, groupStatus, groupRecipients, onGroupChanged, resolveGroupForSession, mentionedMembers, type Group, type GroupMember } from "../group-client";
+import { useGroupEvents, useGroupStore } from "../group-store";
+import { draftRevision } from "@/lib/draft-lifecycle";
+import { draftAttachments, saveDraftAttachments } from "@/lib/draft-attachments";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("../group-client", async original => ({ ...await original<typeof import("../group-client")>(), groupList: vi.fn(), groupSnapshot: vi.fn() }));
+vi.mock("../group-client", async original => ({ ...await original<typeof import("../group-client")>(), groupList: vi.fn(), groupSnapshot: vi.fn(), onGroupChanged: vi.fn() }));
 const group = (id: string): Group => ({ id, name: id, goal: "交付", cwd: "/work", sourceSessionId: null, sourceTeamId: null, coordinatorId: "c", members: [], messages: [], works: [], decisions: [], archived: false, pinned: false, paused: false, revision: 1, updatedAt: 1 });
 describe("专家团状态与路由", () => {
   it("未确认保存的消息重试沿用请求 ID，确认后可以重新提问", () => {
     const first = useGroupStore.getState().requestId("a", "same message");
     expect(useGroupStore.getState().requestId("a", "same message")).toBe(first);
-    useGroupStore.getState().acknowledgeSend("a");
+    useGroupStore.getState().acknowledgeSend("a", first);
     expect(useGroupStore.getState().requestId("a", "same message")).not.toBe(first);
+  });
+  it("上一次发送的迟到回执不会清理当前待确认的请求", () => {
+    const store = useGroupStore.getState();
+    const previous = store.requestId("a", "first submission");
+    const current = store.requestId("a", "second submission");
+    store.acknowledgeSend("a", previous);
+    const stored = JSON.parse(localStorage.getItem("echoagent.group-outbox.v1")!);
+    expect(JSON.parse(stored.data.a)).toMatchObject({ id: current });
+    expect(store.requestId("a", "second submission")).toBe(current);
+  });
+  it("发送期间改写的草稿不会被该次回执清理", () => {
+    const id = "edited-during-send";
+    const store = useGroupStore.getState();
+    store.setDraft(id, "已提交的内容");
+    const version = draftRevision(`group:${id}`);
+    const request = store.requestId(id, "original");
+    store.setDraft(id, "更新的草稿");
+    expect(store.acknowledgeSend(id, request, version)).toBe(true);
+    expect(useGroupStore.getState().drafts[id]).toBe("更新的草稿");
+  });
+  it("发送已确认但清理失败时，重启根据持久化回执清掉旧草稿和附件", async () => {
+    const id = "restart-after-ack";
+    const scope = `group:${id}`;
+    const store = useGroupStore.getState();
+    store.setDraft(id, "已受理的消息");
+    saveDraftAttachments(scope, ["/project/fixture.txt"]);
+    const version = draftRevision(scope);
+    const request = store.requestId(id, "original");
+    const setItem = Storage.prototype.setItem;
+    const failure = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === "echoagent.group-drafts.v1") throw new Error("storage unavailable");
+      setItem.call(this, key, value);
+    });
+    try {
+      expect(store.acknowledgeSend(id, request, version)).toBe(false);
+      expect(useGroupStore.getState().drafts[id]).toBe("已受理的消息");
+      expect(JSON.parse(useGroupStore.getState().outbox[id])).toMatchObject({ id: request, acceptedDraft: { text: "已受理的消息" } });
+    } finally {
+      failure.mockRestore();
+    }
+    vi.resetModules();
+    const reloaded = (await import("../group-store")).useGroupStore.getState();
+    expect(reloaded.drafts[id]).toBeUndefined();
+    expect(draftAttachments(scope)).toEqual([]);
+    expect(reloaded.outbox[id]).toBeUndefined();
+    expect(reloaded.requestId(id, "original")).not.toBe(request);
   });
   it("无效的目录响应不会破坏原来的专家团和普通任务导航", async () => {
     useGroupStore.setState({ groups: [group("previous")] });
@@ -41,6 +90,28 @@ describe("专家团状态与路由", () => {
     const a = useGroupStore.getState().select("a"), b = useGroupStore.getState().select("b");
     pending[1](group("b")); await b; pending[0](group("a")); await a;
     expect(useGroupStore.getState().current?.id).toBe("b");
+  });
+  it("已删除专家团的迟到导航不取消另一个正在加载的专家团", async () => {
+    const store = useGroupStore.getState();
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    store.forget("deleted-navigation");
+    vi.mocked(groupSnapshot).mockResolvedValueOnce(group("new-selection"));
+    const selecting = store.select("new-selection");
+    await store.select("deleted-navigation");
+    await selecting;
+    expect(useGroupStore.getState().current?.id).toBe("new-selection");
+    expect(useGroupStore.getState().loading).toBe(false);
+  });
+  it("先注册事件再读目录，保留注册期间发生的更改", async () => {
+    let subscribed!: (stop: () => void) => void;
+    vi.mocked(onGroupChanged).mockImplementationOnce(() => new Promise(resolve => { subscribed = resolve; }));
+    vi.mocked(groupList).mockResolvedValue([group("before-listen")]);
+    vi.mocked(invoke).mockResolvedValue([]);
+    renderHook(() => useGroupEvents(true));
+    expect(groupList).not.toHaveBeenCalled();
+    vi.mocked(groupList).mockResolvedValue([group("during-listen")]);
+    await act(async () => subscribed(() => {}));
+    await waitFor(() => expect(useGroupStore.getState().groups.map(entry => entry.id)).toEqual(["during-listen"]));
   });
   it("刷新失败保留上次成功的专家团记录", async () => {
     vi.mocked(groupSnapshot).mockResolvedValueOnce(group("a")).mockRejectedValueOnce(new Error("暂时离线"));

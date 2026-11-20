@@ -606,6 +606,60 @@ async fn the_loop_reports_and_settles_a_cancelled_turn() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn stale_named_cancel_acknowledges_without_stopping_the_next_prompt() {
+    run(async {
+        let mut h = Harness::new().await;
+        let response = h.queue_turn("next-prompt").await;
+        let (cmd, fired) = h.spawn_loop().await;
+
+        let send_cancel = |prompt_id: &str| {
+            let acknowledged = Arc::new(crate::session::CancelAcknowledgement::default());
+            cmd.send(SessionCommand::Cancel(crate::session::CancelOptions {
+                cancel_subagents: true,
+                expected_prompt_id: Some(prompt_id.into()),
+                trigger: Some(CancelTrigger::Client("stop".into())),
+                user_initiated: true,
+                acknowledged: Some(acknowledged.clone()),
+                ..Default::default()
+            }))
+            .expect("the loop is running");
+            acknowledged
+        };
+        let ignored_stale = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            send_cancel("previous-prompt").ignored_stale(),
+        )
+        .await
+        .expect("acknowledge a stale request");
+        assert!(ignored_stale);
+        {
+            let state = h.actor.state.lock().await;
+            assert_eq!(state.running_prompt_id(), Some("next-prompt"));
+            assert!(!state.notifications_suppressed);
+        }
+        assert!(fired.borrow().is_empty());
+        assert_eq!(h.lifecycle.aborts.get(), 0);
+
+        let ignored_stale = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            send_cancel("next-prompt").ignored_stale(),
+        )
+        .await
+        .expect("acknowledge matching cancellation");
+        assert!(!ignored_stale);
+        assert!(h.actor.state.lock().await.running_prompt_id().is_none());
+        assert_eq!(h.lifecycle.aborts.get(), 1);
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), response)
+            .await
+            .expect("the named prompt must settle")
+            .expect("the prompt response channel stays open")
+            .expect("the prompt returns its cancellation outcome");
+        assert_eq!(response.stop_reason, acp::StopReason::Cancelled);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_closed_queue_leaves_the_turn_reportable() {
     run(async {
         let mut h = Harness::new().await;

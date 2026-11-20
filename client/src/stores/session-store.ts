@@ -232,7 +232,7 @@ interface SessionState {
     sessionId: string,
     action: SessionControlAction,
     promptId?: string,
-  ) => void;
+  ) => SessionControl;
   /** Finalize an accepted control request locally; prompt_complete may follow. */
   confirmControl: (sessionId: string, action: SessionControlAction) => void;
   /** Roll back the barrier when the native request could not be sent. */
@@ -488,16 +488,29 @@ export function normalizeToolCallContent(raw: unknown): ToolCallContent[] {
   });
 }
 
+function messageIndexById(messages: ChatMessage[], id?: string | null): number {
+  if (!id) return -1;
+  const last = messages.length - 1;
+  return messages[last]?.id === id ? last : messages.findIndex(message => message.id === id);
+}
+
+function latestAssistantPromptId(messages: ChatMessage[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].role === "assistant") return messages[index].promptId;
+  }
+  return undefined;
+}
+
 function ensureStreamingAssistant(
   messages: ChatMessage[],
   streamingMessageId: string | null,
   promptId?: string,
   replayed = false,
-): { messages: ChatMessage[]; id: string } {
+): { messages: ChatMessage[]; id: string; index: number } {
   // Native turns can supply their prompt identity after the first chunk.
   // Bind it to the existing bubble instead of splitting one reply in two.
   if (streamingMessageId) {
-    const idx = messages.findIndex((m) => m.id === streamingMessageId);
+    const idx = messageIndexById(messages, streamingMessageId);
     if (
       idx !== -1
       && !messages[idx].complete
@@ -506,9 +519,9 @@ function ensureStreamingAssistant(
       if (promptId && !messages[idx].promptId) {
         const identified = [...messages];
         identified[idx] = { ...messages[idx], promptId };
-        return { messages: identified, id: streamingMessageId };
+        return { messages: identified, id: streamingMessageId, index: idx };
       }
-      return { messages, id: streamingMessageId };
+      return { messages, id: streamingMessageId, index: idx };
     }
   }
   const id = nextId();
@@ -520,7 +533,7 @@ function ensureStreamingAssistant(
     complete: false,
     ...(replayed ? { replayed: true } : { startedAt: Date.now() }),
   };
-  return { messages: [...messages, asst], id };
+  return { messages: [...messages, asst], id, index: messages.length };
 }
 
 function activeStageMetadata(title?: string): { stageTitle?: string } {
@@ -1207,16 +1220,18 @@ export const useSessionStore = create<SessionState>((set, get) => {
     },
 
     requestControl: (sessionId, action, promptId) => {
+      const control: SessionControl = {
+        action,
+        phase: action === "pause" ? "pausing" : "stopping",
+        ...(promptId ? { promptId } : {}),
+        requestedAt: Date.now(),
+      };
       applyToTranscript(sessionId, (transcript) => ({
         ...transcript,
-        control: {
-          action,
-          phase: action === "pause" ? "pausing" : "stopping",
-          ...(promptId ? { promptId } : {}),
-          requestedAt: Date.now(),
-        },
+        control,
       }));
       set({ error: null, runtimeErrorContext: null });
+      return control;
     },
 
     confirmControl: (sessionId, action) => {
@@ -1636,9 +1651,9 @@ export const useSessionStore = create<SessionState>((set, get) => {
         if (isReplay && tr.pendingSendNowPromptId && CONTROL_SUPPRESSED.has(t)) return tr;
         if (isCatchup && updatePromptId && tr.completedPromptIds?.includes(updatePromptId)
           && CONTROL_SUPPRESSED.has(t) && t !== "tool_call_update") return tr;
-        const activePromptId = tr.pendingSendNowPromptId
-          ?? tr.messages.find(message => message.id === tr.streamingMessageId)?.promptId;
-        const activeIndex = tr.messages.find(message => message.id === tr.streamingMessageId)?.promptIndex;
+        const activeMessage = tr.messages[messageIndexById(tr.messages, tr.streamingMessageId)];
+        const activePromptId = tr.pendingSendNowPromptId ?? activeMessage?.promptId;
+        const activeIndex = activeMessage?.promptIndex;
         const nativeAdmission = t === "user_message_chunk"
           && !tr.pendingSendNowPromptId
           && turnIdentity.promptIndex !== undefined && (activeIndex === undefined || turnIdentity.promptIndex > activeIndex);
@@ -1659,7 +1674,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         // allowed so reopening a controlled session can still show its history.
         if (tr.control && !isReplay && CONTROL_SUPPRESSED.has(t)) return tr;
         if (updatePromptId && ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk", "tool_call", "plan"].includes(t)
-          && [...tr.messages].reverse().find(message => message.role === "assistant")?.promptId !== updatePromptId) {
+          && latestAssistantPromptId(tr.messages) !== updatePromptId) {
           tr = { ...tr, executionStageTitle: undefined };
         }
 
@@ -1749,20 +1764,20 @@ export const useSessionStore = create<SessionState>((set, get) => {
             const rawPhase = content?._meta?.phase ?? updateMeta?.phase;
             const phase: AssistantMessagePhase | undefined = rawPhase === "commentary"
               || rawPhase === "partial_answer" || rawPhase === "final_answer" ? rawPhase : undefined;
-            const { messages, id } = ensureStreamingAssistant(
+            const { messages, id, index } = ensureStreamingAssistant(
               tr.messages,
               tr.streamingMessageId,
               tr.pendingSendNowPromptId ?? updatePromptId,
               isReplay,
             );
-            const idx = messages.findIndex((m) => m.id === id);
-            messages[idx] = appendText(messages[idx], "text", delta, streamId, {
+            const nextMessages = messages === tr.messages ? messages.slice() : messages;
+            nextMessages[index] = appendText(messages[index], "text", delta, streamId, {
               ...(phase ? { phase } : {}),
               ...activeStageMetadata(tr.executionStageTitle),
             });
             return {
               ...tr,
-              messages: [...messages],
+              messages: nextMessages,
               streamingMessageId: id,
               pendingSendNowPromptId: null,
             };
@@ -1770,30 +1785,29 @@ export const useSessionStore = create<SessionState>((set, get) => {
           case "agent_thought_chunk": {
             const delta = extractDelta((u as { content?: unknown }).content);
             if (!delta) return tr;
-            const { messages, id } = ensureStreamingAssistant(
+            const { messages, id, index } = ensureStreamingAssistant(
               tr.messages,
               tr.streamingMessageId,
               tr.pendingSendNowPromptId ?? updatePromptId,
               isReplay,
             );
-            const idx = messages.findIndex((m) => m.id === id);
-            messages[idx] = appendText(messages[idx], "thought", delta, streamId, activeStageMetadata(tr.executionStageTitle));
+            const nextMessages = messages === tr.messages ? messages.slice() : messages;
+            nextMessages[index] = appendText(messages[index], "thought", delta, streamId, activeStageMetadata(tr.executionStageTitle));
             return {
               ...tr,
-              messages: [...messages],
+              messages: nextMessages,
               streamingMessageId: id,
               pendingSendNowPromptId: null,
             };
           }
           case "tool_call": {
             const raw = u as unknown as Record<string, unknown>;
-            const { messages, id } = ensureStreamingAssistant(
+            const { messages, id, index } = ensureStreamingAssistant(
               tr.messages,
               tr.streamingMessageId,
               tr.pendingSendNowPromptId ?? updatePromptId,
               isReplay,
             );
-            const idx = messages.findIndex((m) => m.id === id);
             // ACP omits `kind` when it's "other" and `status` when it's
             // "pending" (the defaults). Provide sensible fallbacks.
             const status = (raw.status as string) || "in_progress";
@@ -1822,10 +1836,11 @@ export const useSessionStore = create<SessionState>((set, get) => {
               officeReceipt: officeReceipt ?? undefined,
               documentProgress: documentProgressFromRawOutput(raw.rawOutput ?? raw.raw_output),
             };
-            messages[idx] = upsertToolCall(messages[idx], view, streamId, tr.executionStageTitle);
+            const nextMessages = messages === tr.messages ? messages.slice() : messages;
+            nextMessages[index] = upsertToolCall(messages[index], view, streamId, tr.executionStageTitle);
             return {
               ...tr,
-              messages: [...messages],
+              messages: nextMessages,
               streamingMessageId: id,
               pendingSendNowPromptId: null,
               ...(pendingSource ? { pendingBackgroundTasks: tr.pendingBackgroundTasks!.filter(source => source !== pendingSource) } : {}),
@@ -1998,7 +2013,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         }
       };
       applyToTranscript(target, tr => {
-        const previousMessage = tr.messages.find(message => message.id === tr.streamingMessageId);
+        const previousMessage = tr.messages[messageIndexById(tr.messages, tr.streamingMessageId)];
         let next = applySessionUpdate(tr);
         if (next !== tr && eventId) rememberEvent(tr, eventId);
         if (next !== tr && eventId && t === "turn_completed") next = { ...next, completionCursor: eventId };
@@ -2017,7 +2032,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         }
         if (next === tr || isReplay || !next.streamingMessageId
           || !["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"].includes(t)) return next;
-        const index = next.messages.findIndex(message => message.id === next.streamingMessageId);
+        const index = messageIndexById(next.messages, next.streamingMessageId);
         // A late update to an older tool must not imply current-turn progress.
         if (index < 0 || next.messages[index].complete
           || t !== "plan" && next.messages[index] === previousMessage) return next;
@@ -2031,7 +2046,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
       // native admission. Only live, applied progress for this exact active
       // prompt can retire its pending-send UI. Older runtimes can correlate a
       // user echo through the placeholder activated by applyUserChunk above.
-      const active = updated?.messages.find(message => message.id === updated.streamingMessageId);
+      const active = updated?.messages[messageIndexById(updated.messages, updated.streamingMessageId)];
       const admittedPromptId = updatePromptId || (t === "user_message_chunk" ? active?.promptId : undefined);
       if (applied && !isReplay && admittedPromptId && !updated?.control
         && !updated?.pendingSendNowPromptId && active?.promptId === admittedPromptId && !active.complete
@@ -2122,5 +2137,21 @@ export const useSessionStore = create<SessionState>((set, get) => {
     },
   };
 });
+
+/** A successful cancel IPC may have ignored a named request for an older turn. */
+export function sessionControlReceiptState(sessionId: string, request: SessionControl): "pending" | "confirmed" | undefined {
+  const transcript = useSessionStore.getState().transcripts[sessionId];
+  const current = transcript?.control;
+  if (!transcript || !current) return;
+  const activePromptId = transcript.pendingSendNowPromptId
+    ?? transcript.messages[messageIndexById(transcript.messages, transcript.streamingMessageId)]?.promptId;
+  if (request.promptId && activePromptId && request.promptId !== activePromptId) return;
+  if (current === request) return "pending";
+  // The terminal event can arrive before IPC returns and replace the pending
+  // object with its stable form. Legacy terminal events may omit the prompt id.
+  if (current.action === request.action && current.requestedAt === request.requestedAt
+    && (!current.promptId || !request.promptId || current.promptId === request.promptId)
+    && (current.phase === "paused" || current.phase === "stopped")) return "confirmed";
+}
 
 export type { ToolCallUpdate };

@@ -40,7 +40,7 @@ import {
   resolveConfiguredModelId,
   resolveSessionModelId,
 } from "./lib/model-selection";
-import { useSessionStore } from "./stores/session-store";
+import { sessionControlReceiptState, useSessionStore } from "./stores/session-store";
 import { useSessionsStore } from "./stores/sessions-store";
 import { useContinuationStore } from "./stores/continuation-store";
 import { latestContinuationTarget } from "./lib/session-continuation";
@@ -1307,9 +1307,11 @@ function Shell() {
             if (e.sessionId !== currentSessionId) {
               return;
             }
-            const msg = e.detail
-              ? friendlyError(e.detail)
-              : e.kind === "rate_limit"
+            const msg = e.kind === "refusal" || e.kind === "content_filter"
+              ? "模型服务因内容过滤结束了本轮回复。可调整请求后重试。"
+              : e.detail
+                ? friendlyError(e.detail)
+              : e.kind === "rate_limit" || e.kind === "rate_limited"
                 ? "模型请求受限，请检查服务的调用频率或可用额度后再试。"
                 : "本轮执行出错，已有内容已保留。";
             sessionStore.getState().setError(msg, e.promptId ? { sessionId: e.sessionId, promptId: e.promptId } : undefined);
@@ -2177,7 +2179,7 @@ function Shell() {
     // ChatView uses native tool status to reject ordinary idle chat controls.
     // Once requested, always apply the native execution fence: Runtime's
     // coding mode can be default while a browser/computer session is live.
-    sessionStore.getState().requestControl(sessionId, action, activePromptId);
+    const request = sessionStore.getState().requestControl(sessionId, action, activePromptId);
     sessionsStore.getState().upsert({
       sessionId,
       status: action === "pause" ? "pausing" : "stopping",
@@ -2185,12 +2187,12 @@ function Shell() {
     });
     setCancellingSessionId(sessionId);
     try {
-      await agentCancel(sessionId, action, activePromptId);
-      // Native resolves only after the session actor has applied cancellation.
-      // prompt_complete may reach the renderer just before or just after this
-      // acknowledgement; both paths are idempotent and represent real stopped
-      // work, so the UI can settle immediately without a speculative timer.
-      sessionStore.getState().confirmControl(sessionId, action);
+      await agentCancel(sessionId, action, activePromptId, beforeCancel?.pendingSendNowPromptId ? activeMessage?.promptId : undefined);
+      // Runtime can acknowledge a named request without cancelling a newer
+      // turn. Only the owner of the current fence may settle the session.
+      const receipt = sessionControlReceiptState(sessionId, request);
+      if (!receipt) return false;
+      if (receipt === "pending") sessionStore.getState().confirmControl(sessionId, action);
       useMessageQueueStore.getState().pauseQueued(sessionId);
       sessionsStore.getState().upsert({
         sessionId,
@@ -2212,14 +2214,18 @@ function Shell() {
       );
       return true;
     } catch (e) {
-      sessionStore.getState().rejectControl(sessionId, action);
-      const transcript = sessionStore.getState().transcripts[sessionId];
-      sessionsStore.getState().upsert({
-        sessionId,
-        status: transcript?.streamingMessageId || transcript?.pendingSendNowPromptId
-          ? "working"
-          : "failed",
-      });
+      const receipt = sessionControlReceiptState(sessionId, request);
+      if (!receipt) return false;
+      if (receipt === "pending") {
+        sessionStore.getState().rejectControl(sessionId, action);
+        const transcript = sessionStore.getState().transcripts[sessionId];
+        sessionsStore.getState().upsert({
+          sessionId,
+          status: transcript?.streamingMessageId || transcript?.pendingSendNowPromptId
+            ? "working"
+            : "failed",
+        });
+      }
       if (sessionStore.getState().sessionId === sessionId) {
         sessionStore.getState().setError(friendlyError(e));
       }
@@ -2681,10 +2687,16 @@ function Shell() {
     try {
       // Load with the session's own cwd. Opening history must not re-aim the
       // working directory selected for the next new task.
-      const attachment = isAgentOwnedActiveStatus(entry.status)
-        ? await agentRecoverSession(sessionId, entry.cwd)
-        : { modelId: await agentLoadSession(sessionId, entry.cwd), activePromptId: undefined };
-      if (attachment.activePromptId) sessionStore.getState().adoptRecoveredTurn(sessionId, attachment.activePromptId);
+      // The catalog can lag behind work admitted by the native scheduler or
+      // another client. Use the resident turn identity even for an entry
+      // whose last persisted status is idle.
+      const attachment = await agentRecoverSession(sessionId, entry.cwd);
+      if (attachment.activePromptId
+          && !sessionsStore.getState().deletedSessionIds.includes(sessionId)
+          && sessionStore.getState().adoptRecoveredTurn(sessionId, attachment.activePromptId)
+          && !isAgentOwnedActiveStatus(findSessionSummary(sessionId)?.status)) {
+        sessionsStore.getState().upsert({ sessionId, status: "working" });
+      }
       historyLoaded = true;
       if (selectionGenerationRef.current !== generation) {
         if (strict) throw new SessionNavigationSupersededError();

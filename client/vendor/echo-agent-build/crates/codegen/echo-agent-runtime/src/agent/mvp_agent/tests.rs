@@ -4406,7 +4406,7 @@ fn cancel_does_not_forward_to_bridge_in_local_mode() {
             let Some(acknowledged) = options.acknowledged else {
                 return false;
             };
-            acknowledged.notify_one();
+            acknowledged.notify_processed(false);
             true
         });
         agent
@@ -4419,6 +4419,60 @@ fn cancel_does_not_forward_to_bridge_in_local_mode() {
         );
     });
 }
+
+#[test]
+fn named_cancel_reports_stale_only_for_opted_in_desktop_callers() {
+    use crate::session::{
+        CancelHistoryDisposition, STALE_PROMPT_CANCEL_ERROR_CODE, SessionCommand,
+    };
+    use acp::Agent as _;
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("sess-cancel-target");
+        let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+        agent.insert_resident(&sid, handle);
+        for (action, report_stale_prompt, ignored_stale) in [
+            ("stop", true, false),
+            ("pause", false, true),
+            ("stop", true, true),
+        ] {
+            let mut meta = serde_json::Map::new();
+            meta.insert("cancelTrigger".into(), action.into());
+            meta.insert("promptId".into(), "named-prompt".into());
+            if report_stale_prompt {
+                meta.insert("reportStalePrompt".into(), true.into());
+            }
+            let cancel = agent.cancel(acp::CancelNotification::new(sid.clone()).meta(Some(meta)));
+            let observe = async {
+                let Some(SessionCommand::Cancel(options)) = cmd_rx.recv().await else {
+                    panic!("normal cancel must reach the session actor");
+                };
+                assert_eq!(options.history, CancelHistoryDisposition::Keep);
+                assert_eq!(options.expected_prompt_id.as_deref(), Some("named-prompt"));
+                assert_eq!(options.trigger.as_ref().map(|t| t.as_str()), Some(action));
+                options
+                    .acknowledged
+                    .expect("cancel acknowledgement")
+                    .notify_processed(ignored_stale);
+            };
+            let (result, ()) = tokio::join!(cancel, observe);
+            if report_stale_prompt && ignored_stale {
+                let error = result.expect_err("opted-in callers must see a stale cancellation");
+                assert_eq!(
+                    error.code,
+                    acp::Error::new(STALE_PROMPT_CANCEL_ERROR_CODE, "").code
+                );
+                assert_eq!(
+                    error.data,
+                    Some(serde_json::json!({ "kind": "stale_prompt_cancel" }))
+                );
+            } else {
+                result.expect("legacy and matching cancel replies must succeed");
+            }
+        }
+    });
+}
+
 /// Regression (post-cancel slot hang, first bad release 0.2.101; see
 /// `dispatch_lock`). SDK e2e shape:
 /// `test_cancel_ends_in_flight_turn_and_frees_slot` (echo-agent-agent-sdk).
@@ -4449,7 +4503,7 @@ fn cancel_never_overtakes_in_flight_prompt_intake() {
                     SessionCommand::Cancel(options) => {
                         driver_order.borrow_mut().push("cancel");
                         if let Some(acknowledged) = options.acknowledged {
-                            acknowledged.notify_one();
+                            acknowledged.notify_processed(false);
                         }
                     }
                     _ => {}

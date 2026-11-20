@@ -22,6 +22,7 @@ import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
 import { useElementSize } from "@/lib/use-element-size";
 import { attachmentBasename } from "@/lib/user-message";
 import { preparePromptWithPersonalKnowledge } from "@/lib/knowledge-context";
+import { draftRevision, touchDraft } from "@/lib/draft-lifecycle";
 import { knowledgeSourcesForSession, organizationScopeIdsForSession } from "@/stores/knowledge-store";
 import { SaveTeamButton, MemberManager, DecisionList } from "./GroupManagement";
 import { GroupReply } from "./GroupReply";
@@ -56,6 +57,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refreshingSend, setRefreshingSend] = useState(false);
   const [tool, setTool] = useState<ToolCallView | null>(null);
   const [newMessages, setNewMessages] = useState(false);
   const [visibleCount, setVisibleCount] = useState(150);
@@ -195,6 +197,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
       if (!stopIntent && new Set([...attachments, ...previousAttachments]).size > 20) throw new Error("新附件与沿用的历史附件合计最多 20 个，请调整附件选择后发送。输入内容已保留。");
       if (!targets.length && !hasAllMemberMention(text) && mentionedMembers(text, members).some(id => members.filter(member => member.name === members.find(item => item.id === id)?.name).length > 1)) throw new Error("成员名称重复，请通过 @菜单选择具体成员后发送");
       const scope = `group:${group.id}`;
+      const submittedRevision = draftRevision(scope);
       const sources = knowledgeSourcesForSession(scope), scopes = organizationScopeIdsForSession(scope);
       const id = useGroupStore.getState().requestId(group.id, JSON.stringify({ text, attachments, recipients, discussion: effectiveDiscussion, reply, sources, scopes, newTopic, selectedRequest, sourceRequestId, ...(sourceRequestId ? { sourceAttachmentPaths: sourceAttachments } : {}) }));
       const stop = isGroupStopRequest({ id, text, attachments, memberIds: recipients, discussion: effectiveDiscussion, replyTo: reply });
@@ -205,15 +208,22 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
         ...(!stop && sourceRequestId ? { sourceAttachmentPaths: sourceAttachments } : {}),
         knowledge: { personal: sources.includes("personal"), organization: sources.includes("organization"), organizationScopeIds: scopes,
           context: prepared.promptText === text ? "" : prepared.promptText.slice(0, -text.length).trim() } });
-      await refresh();
-      useGroupStore.getState().acknowledgeSend(group.id);
+      const settled = useGroupStore.getState().acknowledgeSend(group.id, id, submittedRevision);
+      // Native already owns the sent attachments. If persisting the receipt
+      // failed, leave the recoverable draft in place instead of clearing it
+      // through Composer's separate text and attachment writes.
+      if (!settled) touchDraft(scope);
       if (isCurrent()) {
-        if (selectionIntent.current === submissionIntent) {
+        setRefreshingSend(true);
+        setError(null);
+        if (!settled) onToast("消息已发送，草稿清理待本机存储恢复");
+        else if (group.paused) onToast("补充已保存，未处理的内容会在恢复派发后继续");
+      }
+      void refresh().then(() => {
+        if (settled && isCurrent() && selectionIntent.current === submissionIntent) {
           setReply(null); setTargets([]); mentionSelections.current.clear(); setSelectedRequest(requestTarget ?? id); setNewTopic(false); setNewRound(false); setAttachmentSelection(undefined);
         }
-        setError(null);
-        if (group.paused) onToast("补充已保存，未处理的内容会在恢复派发后继续");
-      }
+      }).finally(() => { if (mounted.current) setRefreshingSend(false); });
       return true;
     } catch (cause) { if (isCurrent()) { if (submitted) setTargets(recipients); setError(errorText(cause)); } return false; }
   };
@@ -281,6 +291,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
         <div className="group-chat__compose-options" ref={composeOptions}>
         {!!pending.length && <div className="group-pending-notice" role="status"><span>{pending.length} 位成员需要你处理</span><button type="button" className="groups-text-button" onClick={() => { following.current = true; document.getElementById(`group-interaction-${pending[0]}`)?.scrollIntoView?.({ block: "nearest", behavior: "smooth" }); }}>查看并处理</button></div>}
         {(error || loadError) && <div><p className="groups-error" role="alert">{error || loadError}</p>{error?.includes("附件") && requestTarget && <button type="button" className="groups-text-button" onClick={() => { setNewRound(true); setError(null); }}>改为关联新一轮，选择需要沿用的附件</button>}</div>}
+        {refreshingSend && <p className="group-mode-notice" role="status">已发送，正在刷新消息…</p>}
         {unchecked && <div className="group-pending-notice" role="status"><span>有未确认的执行需要核对。{!unchecked.discussion && !unchecked.summary && !unchecked.resultRepair ? "相关工作区的写入正在等待。" : "已有记录保留。"}</span><button type="button" className="groups-text-button" onClick={() => selectTask(unchecked.rootId)}>查看待检查任务</button></div>}
         {(group.paused || group.archived) && <div className="group-pause-notice"><span>{group.archived ? "专家团已归档，恢复后可继续交流。" : "后续派发已暂停，已有消息与结果保留。"}</span><button type="button" className="btn btn--primary" disabled={busy} onClick={() => void control("resume")}>恢复派发</button></div>}
         <div className="group-compose-context">
@@ -319,7 +330,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
         {active.length > 0 && effectiveDiscussion && <p className="group-mode-notice">下一条消息只讨论，正在执行的工作保持原状态。</p>}
         {reply && <div className="group-reply">回复：{quoted?.text.slice(0, 120)}<button type="button" aria-label="取消回复" onClick={() => { setReply(null); setTargets([]); }}><X size={13} /></button></div>}
         </div>
-        <Composer slashCommandsEnabled={false} permissionInline permissionControl={<PermissionPicker groupId={group.id} groupPermissionMode={group.permissionMode} compact={chatWidth !== null && chatWidth < 520} disabled={group.archived} onToast={onToast} />} modelSummary="成员模型" onOpenKnowledgeBase={onOpenKnowledgeBase} onOpenOrganization={onOpenOrganization} streaming={false} disabled={group.archived} apiReady models={models} cwd={group.cwd} filePaths={mentions.filePaths} workspaceSymbols={mentions.workspaceSymbols} mentionMembers={members.map(member => ({ id: member.id, name: member.name, role: member.role }))}
+        <Composer slashCommandsEnabled={false} permissionInline permissionControl={<PermissionPicker groupId={group.id} groupPermissionMode={group.permissionMode} compact={chatWidth !== null && chatWidth < 520} disabled={group.archived} onToast={onToast} />} modelSummary="成员模型" onOpenKnowledgeBase={onOpenKnowledgeBase} onOpenOrganization={onOpenOrganization} streaming={false} disabled={group.archived} sendDisabled={refreshingSend} apiReady models={models} cwd={group.cwd} filePaths={mentions.filePaths} workspaceSymbols={mentions.workspaceSymbols} mentionMembers={members.map(member => ({ id: member.id, name: member.name, role: member.role }))}
           onMentionMember={id => { mentionSelections.current.add(id); setTargets(previous => [...new Set([...previous.filter(target => target !== group.coordinatorId), id])]); }}
           draft={draft} draftKey={`group:${group.id}`} knowledgeSessionId={`group:${group.id}`} knowledgeDeferred onToast={onToast}
           onDraftChange={value => { setTargets(previous => previous.filter(id => !mentionSelections.current.has(id) || value.includes(`@${members.find(member => member.id === id)?.name}`))); useGroupStore.getState().setDraft(group.id, value); }}

@@ -1280,31 +1280,34 @@ impl acp::Agent for MvpAgent {
                 }
             }
         };
-        handle
-            .cmd_tx
-            .send(SessionCommand::Prompt {
-                prompt_id: prompt_id.clone(),
-                prompt_blocks: arguments.prompt.clone(),
-                prompt_mode,
-                artifact_upload_ctx: trace_context
-                    .as_ref()
-                    .map(|ctx| ctx.artifact_upload_context()),
-                client_identifier: prompt_client_identifier,
-                screen_mode: prompt_screen_mode,
-                verbatim,
-                traceparent: echo_agent_file_utils::trace_context::current_traceparent(),
-                json_schema,
-                send_now,
-                admission: None,
-                tool_overrides_update,
-                respond_to: tx,
-                persist_ack: None,
-                parsed_prompt_tx,
-            })
-            .map_err(|e| {
-                acp::Error::internal_error()
-                    .data(format!("failed to dispatch prompt to session: {e}"))
-            })?;
+        let command = SessionCommand::Prompt {
+            prompt_id: prompt_id.clone(),
+            prompt_blocks: arguments.prompt.clone(),
+            prompt_mode,
+            artifact_upload_ctx: trace_context
+                .as_ref()
+                .map(|ctx| ctx.artifact_upload_context()),
+            client_identifier: prompt_client_identifier,
+            screen_mode: prompt_screen_mode,
+            verbatim,
+            traceparent: echo_agent_file_utils::trace_context::current_traceparent(),
+            json_schema,
+            send_now,
+            admission: None,
+            tool_overrides_update,
+            respond_to: tx,
+            persist_ack: None,
+            parsed_prompt_tx,
+        };
+        crate::session::helpers::host_prompt_admission::dispatch(
+            &arguments.session_id.0,
+            &prompt_id,
+            arguments.meta.as_ref(),
+            || handle.cmd_tx.send(command),
+        )?
+        .map_err(|e| {
+            acp::Error::internal_error().data(format!("failed to dispatch prompt to session: {e}"))
+        })?;
         drop(dispatch_guard);
         self.push_roster_activity_delta(
             &arguments.session_id,
@@ -2089,20 +2092,28 @@ impl acp::Agent for MvpAgent {
             .and_then(|m| m.get("rewindIfNoOutput").or_else(|| m.get("rewindIfPristine")))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let rewind_prompt_id = args
+        let prompt_id = args
             .meta
             .as_ref()
             .and_then(|m| m.get("promptId"))
             .and_then(|v| v.as_str())
             .map(str::to_owned);
-        let history = if rewind_if_no_output {
-            crate::session::CancelHistoryDisposition::RewindIfNoOutput {
-                prompt_id: rewind_prompt_id,
-            }
+        let (history, expected_prompt_id) = if rewind_if_no_output {
+            (
+                crate::session::CancelHistoryDisposition::RewindIfNoOutput { prompt_id },
+                None,
+            )
         } else {
-            crate::session::CancelHistoryDisposition::Keep
+            (crate::session::CancelHistoryDisposition::Keep, prompt_id)
         };
-        let acknowledged = std::sync::Arc::new(tokio::sync::Notify::new());
+        let report_stale_prompt = expected_prompt_id.is_some()
+            && args
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("reportStalePrompt"))
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+        let acknowledged = std::sync::Arc::new(crate::session::CancelAcknowledgement::default());
         let dispatch_lock = self.dispatch_lock(&args.session_id);
         let _dispatch_guard = dispatch_lock.lock().await;
         handle
@@ -2111,6 +2122,7 @@ impl acp::Agent for MvpAgent {
                 SessionCommand::Cancel(crate::session::CancelOptions {
                     cancel_subagents,
                     history,
+                    expected_prompt_id,
                     trigger: cancel_trigger,
                     user_initiated: true,
                     acknowledged: Some(acknowledged.clone()),
@@ -2118,12 +2130,19 @@ impl acp::Agent for MvpAgent {
                 }),
             )
             .map_err(|_| acp::Error::internal_error().data("session closed"))?;
-        tokio::time::timeout(
+        let ignored_stale = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            acknowledged.notified(),
+            acknowledged.ignored_stale(),
         )
         .await
         .map_err(|_| acp::Error::internal_error().data("cancel acknowledgement timed out"))?;
+        if ignored_stale && report_stale_prompt {
+            return Err(acp::Error::new(
+                crate::session::STALE_PROMPT_CANCEL_ERROR_CODE,
+                "stale prompt cancellation ignored",
+            )
+            .data(serde_json::json!({ "kind": "stale_prompt_cancel" })));
+        }
         Ok(())
     }
     async fn set_session_mode(

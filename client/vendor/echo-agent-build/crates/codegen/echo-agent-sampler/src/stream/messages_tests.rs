@@ -102,12 +102,66 @@ async fn collect(s: impl Stream<Item = SamplingEvent>) -> Vec<SamplingEvent> {
 }
 
 #[tokio::test]
-async fn empty_stream_yields_started_then_completed() {
+async fn empty_stream_fails_without_message_stop() {
     let raw = stream::iter(Vec::<Result<MessageStreamEvent, SamplingError>>::new()).boxed();
     let events = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
     assert_eq!(events.len(), 2);
     assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
-    assert!(matches!(events[1], SamplingEvent::Completed { .. }));
+    assert!(matches!(
+        &events[1],
+        SamplingEvent::Failed { error, .. } if error.message.contains("message_stop")
+    ));
+}
+
+#[tokio::test]
+async fn closed_tool_block_does_not_complete_a_truncated_message() {
+    let raw = stream::iter(vec![
+        Ok(message_start()),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::ToolUse {
+                id: "call_read".into(),
+                name: "read_document".into(),
+                input: serde_json::json!({ "name": "fixture.txt" }),
+                cache_control: None,
+            },
+        }),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::ToolUse)),
+    ])
+    .boxed();
+    let events = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    assert!(matches!(
+        events.last(),
+        Some(SamplingEvent::Failed { error, .. }) if error.message.contains("message_stop")
+    ));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SamplingEvent::Completed { .. }))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn message_stop_finishes_even_when_transport_remains_open() {
+    let raw = stream::iter(vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "Complete answer.")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ])
+    .chain(stream::pending())
+    .boxed();
+    let start = tokio::time::Instant::now();
+    let events = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    assert_eq!(start.elapsed(), Duration::ZERO);
+    assert!(matches!(
+        events.last(),
+        Some(SamplingEvent::Completed { response, .. })
+            if response.assistant().is_some_and(|item| item.content.as_ref() == "Complete answer.")
+    ));
 }
 
 #[tokio::test]

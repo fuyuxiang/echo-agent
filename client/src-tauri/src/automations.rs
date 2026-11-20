@@ -43,7 +43,7 @@ use tauri_plugin_autostart::ManagerExt;
 use crate::commands::AppState;
 
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
@@ -653,14 +653,24 @@ fn read_bounded_string(path: &Path, max_bytes: u64) -> Result<Option<String>, St
 /// Accepts the legacy v1 shape ({schedule:{type:"daily"|...}}, lowercase
 /// status, single `cwd` string) and migrates it in memory.
 fn read_store() -> Result<AutomationStore, String> {
+    read_store_with_repairs().map(|(store, _)| store)
+}
+
+fn read_store_with_repairs() -> Result<(AutomationStore, bool), String> {
     let path = store_path();
     let content = match read_bounded_string(&path, MAX_AUTOMATION_STORE_BYTES)? {
         Some(content) => content,
-        None => return Ok(AutomationStore::default()),
+        None => return Ok((AutomationStore::default(), false)),
     };
     if let Ok(mut store) = serde_json::from_str::<AutomationStore>(&content) {
-        pause_automations_with_removed_models(&mut store);
-        return Ok(store);
+        let repaired = pause_automations_with_removed_models(&mut store);
+        // Keep the previous snapshot/tick's private-file repair on Unix for
+        // manually copied configs, without rewriting a correctly secured file.
+        #[cfg(unix)]
+        let repaired = repaired
+            || std::fs::symlink_metadata(&path)
+                .is_ok_and(|metadata| metadata.permissions().mode() & 0o777 != 0o600);
+        return Ok((store, repaired));
     }
     // Legacy fallback: reshape each automation object, then parse.
     let mut value = serde_json::from_str::<serde_json::Value>(&content)
@@ -669,22 +679,26 @@ fn read_store() -> Result<AutomationStore, String> {
     let mut store = serde_json::from_value(value)
         .map_err(|error| format!("migrate {}: {error}", path.display()))?;
     pause_automations_with_removed_models(&mut store);
-    Ok(store)
+    Ok((store, true))
 }
 
-fn pause_automations_with_removed_models(store: &mut AutomationStore) {
+fn pause_automations_with_removed_models(store: &mut AutomationStore) -> bool {
+    let mut changed = false;
     for automation in &mut store.automations {
         if automation
             .model_id
             .as_deref()
             .is_some_and(crate::providers::is_removed_model_id)
+            && (automation.status != "PAUSED" || automation.next_run_at.is_some())
         {
             // Keep the explicit selection until the user replaces it. None is
             // Auto and would silently send an unattended task to another service.
             automation.status = "PAUSED".into();
             automation.next_run_at = None;
+            changed = true;
         }
     }
+    changed
 }
 
 /// Convert legacy v1 automation objects to the current model, in place.
@@ -2618,7 +2632,8 @@ fn compute_next_run(a: &Automation, from: DateTime<Local>) -> Option<String> {
 /// Initialize only schedules that do not have a persisted next run. It is
 /// essential not to recompute an already-due timestamp before the scheduler
 /// gets a chance to claim it.
-fn ensure_next_runs(store: &mut AutomationStore, now: DateTime<Local>) {
+fn ensure_next_runs(store: &mut AutomationStore, now: DateTime<Local>) -> bool {
+    let mut changed = false;
     for a in &mut store.automations {
         let next_run_missing_or_damaged = a
             .next_run_at
@@ -2626,6 +2641,7 @@ fn ensure_next_runs(store: &mut AutomationStore, now: DateTime<Local>) {
             .map(|value| DateTime::parse_from_rfc3339(value).is_err())
             .unwrap_or(true);
         if next_run_missing_or_damaged && a.status == "ACTIVE" {
+            changed = true;
             a.next_run_at = compute_next_run(a, now);
             // An ACTIVE schedule without any computable occurrence is a ghost:
             // it keeps the resident process/autostart alive but can never fire.
@@ -2635,6 +2651,7 @@ fn ensure_next_runs(store: &mut AutomationStore, now: DateTime<Local>) {
             }
         }
     }
+    changed
 }
 
 #[derive(Debug, Clone)]
@@ -2663,9 +2680,9 @@ fn claim_due_unblocked(
     store: &mut AutomationStore,
     now: DateTime<Local>,
     blocked: &HashSet<String>,
-) -> Vec<ClaimedAutomation> {
-    pause_automations_with_removed_models(store);
-    ensure_next_runs(store, now);
+) -> (Vec<ClaimedAutomation>, bool) {
+    let mut changed = pause_automations_with_removed_models(store);
+    changed |= ensure_next_runs(store, now);
     let mut due = Vec::new();
     for a in &mut store.automations {
         if a.status != "ACTIVE" || blocked.contains(&a.id) {
@@ -2690,6 +2707,7 @@ fn claim_due_unblocked(
             .as_deref()
             .and_then(parse_date)
             .is_some_and(|until| now.date_naive() > until);
+        changed = true;
         if missed_once || expired {
             a.status = "PAUSED".into();
             a.next_run_at = None;
@@ -2715,12 +2733,13 @@ fn claim_due_unblocked(
             }
         }
     }
-    due
+    (due, changed)
 }
 
 #[cfg(test)]
 fn claim_due(store: &mut AutomationStore, now: DateTime<Local>) -> Vec<Automation> {
     claim_due_unblocked(store, now, &HashSet::new())
+        .0
         .into_iter()
         .map(|claim| claim.automation)
         .collect()
@@ -2928,9 +2947,11 @@ pub async fn automations_snapshot(app: AppHandle) -> Result<AutomationSnapshot, 
     // before looking up its automation, so nested locking here could deadlock.
     let automations = {
         let _guard = store_access().lock().unwrap();
-        let mut store = read_store()?;
-        ensure_next_runs(&mut store, now_local());
-        write_store(&store)?;
+        let (mut store, repaired) = read_store_with_repairs()?;
+        let changed = ensure_next_runs(&mut store, now_local());
+        if repaired || changed {
+            write_store(&store)?;
+        }
         store.automations
     };
     let mut records = {
@@ -4830,7 +4851,7 @@ pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, de
         };
         let blocked = scheduled_runs_in_flight(&records);
         let _store_guard = store_access().lock().unwrap();
-        let mut store = match read_store() {
+        let (mut store, repaired) = match read_store_with_repairs() {
             Ok(store) => store,
             Err(error) => {
                 tracing::error!(%error, "automation scheduler could not read schedules");
@@ -4841,7 +4862,7 @@ pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, de
             .automations
             .iter()
             .any(|automation| automation.status == "ACTIVE");
-        let claimed = claim_due_unblocked(&mut store, now, &blocked);
+        let (claimed, changed) = claim_due_unblocked(&mut store, now, &blocked);
         let had_claims = !claimed.is_empty();
         let started = now.to_rfc3339();
         let mut dispatches = Vec::with_capacity(claimed.len());
@@ -4887,7 +4908,13 @@ pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, de
                 return;
             }
         }
-        if let Err(error) = write_store(&store) {
+        // Idle polls and reads do not need to replace and fsync the store.
+        let persisted = if repaired || changed {
+            write_store(&store)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = persisted {
             tracing::error!(%error, "failed to persist automation schedule claim");
             rejected_dispatches.extend(dispatches.into_iter().map(|dispatch| {
                 RejectedAutomationDispatch {
@@ -5689,14 +5716,17 @@ mod tests {
         };
         let blocked = HashSet::from(["busy".to_string()]);
 
-        assert!(claim_due_unblocked(&mut store, now, &blocked).is_empty());
+        let (claimed, changed) = claim_due_unblocked(&mut store, now, &blocked);
+        assert!(claimed.is_empty());
+        assert!(!changed);
         assert_eq!(
             store.automations[0].next_run_at.as_deref(),
             Some(scheduled_for.as_str())
         );
         assert!(store.automations[0].last_run_at.is_none());
 
-        let claimed = claim_due_unblocked(&mut store, now, &HashSet::new());
+        let (claimed, changed) = claim_due_unblocked(&mut store, now, &HashSet::new());
+        assert!(changed);
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].scheduled_for, scheduled_for);
     }
@@ -5989,7 +6019,8 @@ mod tests {
             automations: vec![expired_recurring, missed_once],
         };
 
-        ensure_next_runs(&mut store, now);
+        assert!(ensure_next_runs(&mut store, now));
+        assert!(!ensure_next_runs(&mut store, now));
 
         assert!(store
             .automations
@@ -6017,7 +6048,8 @@ mod tests {
             automations: vec![automation],
         };
 
-        ensure_next_runs(&mut store, now);
+        assert!(ensure_next_runs(&mut store, now));
+        assert!(!ensure_next_runs(&mut store, now));
 
         assert_eq!(
             store.automations[0].next_run_at,
@@ -6603,7 +6635,7 @@ mod tests {
                 .collect(),
         };
         let original = serde_json::to_value(&store).unwrap();
-        pause_automations_with_removed_models(&mut store);
+        assert!(pause_automations_with_removed_models(&mut store));
         for (index, task) in store.automations.iter().enumerate() {
             assert_eq!(task.model_id.as_deref(), selections[index]);
             if task
@@ -6621,7 +6653,7 @@ mod tests {
             }
         }
         let migrated = serde_json::to_value(&store).unwrap();
-        pause_automations_with_removed_models(&mut store);
+        assert!(!pause_automations_with_removed_models(&mut store));
         assert_eq!(serde_json::to_value(&store).unwrap(), migrated);
         store.automations.retain(|task| {
             task.model_id

@@ -1000,6 +1000,10 @@ export function Composer({
 
   const finishAcceptedSubmission = (submittedText: string, submission: DraftSubmission) => {
     const { scope } = submission;
+    if (scope === draftScopeRef.current && isCurrentDraftEpoch(submission.scopeEpoch) && submittedText.trim()) {
+      histRef.current = pushHistory(histRef.current, submittedText);
+      histCursorRef.current = histRef.current.items.length;
+    }
     if (scope !== undefined && draftRevision(scope) !== submission.revision) return;
     if (scope !== draftScopeRef.current || !isCurrentDraftEpoch(submission.scopeEpoch)) {
       // Consume only the submitted version. A new draft may reuse this scope
@@ -1009,11 +1013,7 @@ export function Composer({
       return;
     }
     if (localRevisionRef.current !== submission.localRevision) return;
-    if (submittedText.trim()) {
-      histRef.current = pushHistory(histRef.current, submittedText);
-      histCursorRef.current = histRef.current.items.length;
-      draftRef.current = "";
-    }
+    if (submittedText.trim()) draftRef.current = "";
     discardOwnedAttachments([...ownedAttachmentPathsRef.current]);
     updateText("");
     updateAttachments([]);

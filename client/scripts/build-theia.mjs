@@ -55,6 +55,8 @@ if (plugins.status !== 0) throw new Error("Failed to stage vendored Theia VSIX p
 // The source snapshot omits generated @theia/core/shared re-export shims.
 // Filesystem and other packages import these during TypeScript compilation.
 run(["exec", "--", "theia-re-exports", "generate", "@theia/core"]);
+// An incremental build can reuse node_modules without running postinstall.
+run(["run", "compute-references"]);
 run(["run", "compile"]);
 if (!isTheiaWindowlessRuntime(sourceRoot)) {
   throw new Error("Theia background workers were compiled without windowless Windows spawn options.");

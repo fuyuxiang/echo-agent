@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { agentSend, agentSendNow, invalidateAgentKnowledgeSourceSync } from "../agent-client";
+import { agentCancel, agentSend, agentSendNow, invalidateAgentKnowledgeSourceSync } from "../agent-client";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { resetOrgSessionMirror, useOrgSessionStore } from "@/stores/org-session-store";
 import type { OrgSession } from "../org-client";
@@ -36,6 +36,60 @@ beforeEach(() => {
   resetOrgSessionMirror();
   useOrgSessionStore.getState().setSession(account());
   useKnowledgeStore.setState({ defaultSources: [], sessionSources: { task: ["organization"] }, sessionOrganizationScopeIds: {}, turnTraces: {} });
+});
+
+it.each(["pause", "stop"] as const)("收回准备中的消息后，知识检索结束也不会提交", async action => {
+  const retrieval = deferred<Awaited<ReturnType<typeof preparation.prompt>>>();
+  preparation.prompt.mockReturnValueOnce(retrieval.promise);
+  const sending = agentSend("task", "待发送", [], "待发送", "preparing");
+  await vi.waitFor(() => expect(preparation.prompt).toHaveBeenCalled());
+  await agentCancel("task", action, "preparing");
+  retrieval.resolve({ promptText: "待发送", resultCount: 0, sourceCount: 0 });
+  await sending;
+  expect(invoke).not.toHaveBeenCalledWith("agent_send", expect.anything());
+});
+
+it("取消尚未提交的立即发送时，只向原生停止被替换的回合", async () => {
+  const trace = deferred<void>();
+  preparation.trace.mockReturnValueOnce(trace.promise);
+  const sending = agentSendNow("task", "替换", [], "替换", "replacement");
+  await vi.waitFor(() => expect(preparation.trace).toHaveBeenCalled());
+  await agentCancel("task", "stop", "replacement", "previous");
+  trace.resolve(undefined);
+  await sending;
+  expect(invoke).toHaveBeenCalledWith("agent_cancel", {
+    sessionId: "task", cancelAction: "stop", promptId: "previous", acceptEndedPrompt: true,
+  });
+  expect(invoke).not.toHaveBeenCalledWith("agent_send", expect.anything());
+});
+
+it("IPC 已发出时，把同一回合和替换来源交给原生仲裁", async () => {
+  const native = deferred<void>();
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "agent_set_knowledge_sources") return attached;
+    if (command === "agent_send") return native.promise;
+  });
+  const sending = agentSendNow("task", "替换", [], "替换", "replacement");
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("agent_send", expect.anything()));
+  await agentCancel("task", "pause", "replacement", "previous");
+  expect(invoke).toHaveBeenCalledWith("agent_cancel", {
+    sessionId: "task", cancelAction: "pause", promptId: "replacement",
+    preparingPrompt: true, previousPromptId: "previous",
+  });
+  native.resolve(undefined);
+  await sending;
+});
+
+it("暂停立即发送也撤回仍在前端预处理的上一条消息", async () => {
+  const trace = deferred<void>();
+  preparation.trace.mockReturnValue(trace.promise);
+  const first = agentSend("task", "上一条", [], "上一条", "previous");
+  const replacement = agentSendNow("task", "替换", [], "替换", "replacement");
+  await vi.waitFor(() => expect(preparation.trace).toHaveBeenCalledTimes(2));
+  await agentCancel("task", "pause", "replacement", "previous");
+  trace.resolve(undefined);
+  await Promise.all([first, replacement]);
+  expect(invoke).not.toHaveBeenCalledWith("agent_send", expect.anything());
 });
 
 describe.each([["普通发送", agentSend], ["立即发送", agentSendNow]] as const)("%s 的组织身份边界", (_label, send) => {

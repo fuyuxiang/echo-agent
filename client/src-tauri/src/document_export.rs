@@ -1,8 +1,8 @@
 //! First-party office export. The worker is bundled with the desktop app; user
 //! documents never need a host Python, Node, LibreOffice, or an online converter.
 
+use crate::document_store::{hash_document, MAX_DOCUMENT_FILE_BYTES};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io::{ErrorKind, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -10,7 +10,6 @@ use tauri::{AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 
 const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
-const MAX_OUTPUT_BYTES: u64 = 50 * 1024 * 1024;
 const EXPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[derive(Clone, Copy)]
@@ -125,16 +124,12 @@ fn office_resource(app: &AppHandle, relative: &str) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn validate_output(path: &Path, format: &str) -> Result<(u64, String), String> {
-    let metadata =
-        std::fs::symlink_metadata(path).map_err(|error| format!("文档未生成：{error}"))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err("生成结果不是普通文件".into());
-    }
-    if metadata.len() == 0 || metadata.len() > MAX_OUTPUT_BYTES {
+    let mut file = crate::shell_fs::open_regular_file_no_follow(path)
+        .map_err(|error| format!("无法检查生成文件：{error}"))?;
+    let size = file.metadata().map_err(|error| error.to_string())?.len();
+    if size == 0 || size > MAX_DOCUMENT_FILE_BYTES {
         return Err("生成文件为空或超过 50 MiB 上限".into());
     }
-    let mut file =
-        std::fs::File::open(path).map_err(|error| format!("无法检查生成文件：{error}"))?;
     if format == "pdf" {
         let mut head = [0u8; 5];
         file.read_exact(&mut head)
@@ -142,8 +137,6 @@ pub(crate) fn validate_output(path: &Path, format: &str) -> Result<(u64, String)
         if &head != b"%PDF-" {
             return Err("生成的 PDF 文件头无效".into());
         }
-        file.rewind()
-            .map_err(|error| format!("无法计算完整文件摘要：{error}"))?;
     } else {
         let expected = match format {
             "docx" => "word/document.xml",
@@ -156,20 +149,15 @@ pub(crate) fn validate_output(path: &Path, format: &str) -> Result<(u64, String)
         if archive.by_name(expected).is_err() {
             return Err(format!("生成的 Office 文件缺少 {expected}"));
         }
-        file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        file = archive.into_inner();
     }
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|error| format!("计算文件摘要失败：{error}"))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
+    file.rewind()
+        .map_err(|error| format!("无法计算完整文件摘要：{error}"))?;
+    let (digest, byte_size) = hash_document(file)?;
+    if byte_size != size {
+        return Err("生成文件在核验期间发生变化，请重试".into());
     }
-    Ok((metadata.len(), format!("{:x}", hasher.finalize())))
+    Ok((byte_size, digest))
 }
 
 pub(crate) fn install_output(
@@ -544,6 +532,7 @@ pub async fn document_export(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn recovered_export_requires_a_different_path_and_preserves_existing_files() {

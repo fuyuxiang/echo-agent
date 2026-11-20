@@ -2,7 +2,7 @@ import { QueuePanel } from "../QueuePanel";
 import { useAutomationEditorStore } from "@/stores/automation-editor-store";
 import { buildDraft } from "../automation/schedule-utils";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -124,9 +124,10 @@ beforeEach(() => {
   vi.mocked(client.agentInit).mockResolvedValue({ ok: true, cwd: "/workspace", auth } as never);
   vi.mocked(client.agentAuthStatus).mockResolvedValue(auth);
   vi.mocked(client.providersList).mockResolvedValue({ providers: [], models: [{ modelId: "model-a", name: "模型 A", providerId: "p" }, { modelId: "model-b", name: "模型 B", providerId: "p" }] } as never);
+  vi.mocked(client.agentSend).mockReset().mockResolvedValue(undefined);
   vi.mocked(client.agentSendNow).mockImplementation(() => new Promise<void>(() => {}));
-  vi.mocked(client.agentLoadSession).mockResolvedValue("model-a");
-  vi.mocked(client.agentRecoverSession).mockImplementation(async (id, cwd) => ({ modelId: await client.agentLoadSession(id, cwd) }));
+  vi.mocked(client.agentLoadSession).mockReset().mockResolvedValue("model-a");
+  vi.mocked(client.agentRecoverSession).mockReset().mockImplementation(async (id, cwd) => ({ modelId: await client.agentLoadSession(id, cwd) }));
   vi.mocked(client.agentListAllSessions).mockResolvedValue([]);
   vi.mocked(client.subscribeAgentEvents).mockImplementation(async (value) => { handlers = value; return () => {}; });
   vi.mocked(listen).mockImplementation(async () => () => {});
@@ -138,6 +139,12 @@ afterEach(() => {
 });
 
 describe("自动化会话模型同步", () => {
+  let actualChatView: typeof import("../ChatView")["ChatView"];
+  beforeAll(async () => {
+    // Load the production component before timing scenarios with deferred IPC.
+    ({ ChatView: actualChatView } = await vi.importActual<typeof import("../ChatView")>("../ChatView"));
+  }, 60_000);
+
   it("未登录组织时启动不额外重载个人模型和技能", async () => {
     await start();
     expect(client.internalReload).not.toHaveBeenCalled();
@@ -377,11 +384,11 @@ describe("自动化会话模型同步", () => {
     let finish!: (model: string) => void;
     vi.mocked(client.agentLoadSession).mockImplementation(actual.agentLoadSession);
     vi.mocked(invoke).mockImplementation(async command => {
-      if (command === "agent_load_session") {
+      if (command === "agent_recover_session") {
         handlers.onSubagent?.({ sessionId: "auto-1", phase: "spawned", subagentId: "historical-child", description: "核查资料", isReplay: true });
         handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "user_message_chunk", content: { type: "text", text: "历史任务", _meta: { promptIndex: 0 } }, _meta: { eventId: "history-user", isReplay: true } });
         handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "前半段" }, _meta: { eventId: "history-prefix", promptId: "history-prompt", isReplay: true } });
-        return await new Promise(resolve => { finish = resolve as typeof finish; });
+        return { modelId: await new Promise(resolve => { finish = resolve as typeof finish; }) };
       }
       return command === "notification_take_pending_opens" ? [] : null;
     });
@@ -405,7 +412,7 @@ describe("自动化会话模型同步", () => {
     expect(useSessionStore.getState().transcripts["auto-1"].messages).toMatchObject([
       { role: "user" }, { role: "assistant", complete: true, parts: [{ kind: "text", text: "前半段后半段" }] },
     ]);
-    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "agent_load_session")).toHaveLength(1);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "agent_recover_session")).toHaveLength(1);
     expect(useSessionStore.getState().transcripts["auto-1"].suppressReplay).toBe(false);
   });
 
@@ -532,6 +539,42 @@ describe("自动化会话模型同步", () => {
     fireEvent.click(screen.getByRole("button",{name:"停止执行"}));
     await waitFor(() => expect(useSessionStore.getState().transcripts["auto-1"].control?.phase).toBe("stopped"));
     expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{text:"保留的下一条",status:"paused"}]);
+  });
+
+  it.each(["acknowledged", "rejected"] as const)("旧轮次停止请求%s时保留原生接续的新轮次和待处理交互", async outcome => {
+    const native = vi.mocked(invoke).getMockImplementation()!;
+    let finish!: () => void;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command !== "agent_cancel") return native(command, args);
+      return new Promise<void>((resolve, reject) => {
+        finish = outcome === "acknowledged" ? resolve : () => reject(new Error("old control rejected"));
+      });
+    });
+    await start();
+    created("model-a");
+    fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "追问" })).toBeEnabled());
+    act(() => useSessionStore.getState().startStreaming("auto-1", "old-turn"));
+    fireEvent.click(screen.getByRole("button", { name: "停止执行" }));
+    expect(invoke).toHaveBeenCalledWith("agent_cancel", { sessionId: "auto-1", cancelAction: "stop", promptId: "old-turn" });
+    act(() => {
+      handlers.onAutomationUpdate?.({
+        phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "new-run",
+        promptId: "new-turn", status: "running", sessionId: "auto-1", cwd: "/workspace",
+      });
+      useMessageQueueStore.getState().enqueue("auto-1", "本轮后续");
+      handlers.onPermission?.({ sessionId: "auto-1", requestId: "new-permission", toolCallId: "new-tool", toolKind: "read", title: "需要授权", options: [] });
+      handlers.onQuestion?.({ sessionId: "auto-1", requestId: "new-question", toolCallId: "new-tool", title: "需要回答", mode: "default", questions: [] });
+    });
+    await act(async () => finish());
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    expect(transcript.messages.find(message => message.id === transcript.streamingMessageId))
+      .toMatchObject({ promptId: "new-turn", complete: false });
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{ text: "本轮后续", status: "queued" }]);
+    expect(usePermissionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: "new-permission" }]);
+    expect(useQuestionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: "new-question" }]);
+    expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status).toBe("awaiting_answer");
+    expect(useSessionStore.getState().error).toBeNull();
   });
 
   it.each(["durable-first", "public-first"])("双完成事件只推进一次队列且不干扰下一轮：%s", async order => {
@@ -899,6 +942,20 @@ describe("自动化会话模型同步", () => {
     expect(client.agentSend).not.toHaveBeenCalled();
   });
 
+  it("打开目录显示已完成的任务时接回实际仍在运行的回合", async () => {
+    await start();
+    act(() => useSessionsStore.getState().upsert({
+      sessionId: "other", cwd: "/workspace", currentModelId: "model-a", status: "completed",
+    }));
+    vi.mocked(client.agentRecoverSession).mockResolvedValueOnce({ modelId: "model-a", activePromptId: "resident-turn" });
+    fireEvent.click(screen.getByText("打开其他任务"));
+    await waitFor(() => expect(useSessionStore.getState().messages).toMatchObject([
+      { role: "assistant", promptId: "resident-turn", complete: false },
+    ]));
+    expect(useSessionsStore.getState().independent.find(session => session.sessionId === "other")?.status).toBe("working");
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
   it("恢复首次回放中途失败后，重试重新加载完整历史而不保留半份缓存", async () => {
     saveRecoverySessionId("auto-1");
     vi.mocked(invoke).mockImplementation(async command => command === "desktop_recovery_status"
@@ -1068,7 +1125,7 @@ describe("自动化会话模型同步", () => {
   });
 
   it.each(["慢读取", "读取失败"])("历史引用%s时可先写草稿，并在恢复后用会话模型发送", async traceOutcome => {
-    chatViewHarness.actual = (await vi.importActual<typeof import("../ChatView")>("../ChatView")).ChatView;
+    chatViewHarness.actual = actualChatView;
     const actual = await vi.importActual<typeof client>("@/lib/agent-client");
     vi.mocked(client.agentLoadSession).mockImplementationOnce(actual.agentLoadSession);
     vi.mocked(client.agentSend).mockImplementationOnce(actual.agentSend);
@@ -1080,8 +1137,8 @@ describe("自动化会话模型同步", () => {
     vi.mocked(invoke).mockImplementation(async command => {
       switch (command) {
         case "notification_take_pending_opens": return [];
-        case "agent_load_session": return new Promise(resolve => {
-          finishLoad = model => { loaded = true; resolve(model); };
+        case "agent_recover_session": return new Promise(resolve => {
+          finishLoad = model => { loaded = true; resolve({ modelId: model }); };
         });
         case "agent_session_workspace_status": return { cwd: "/workspace", status: "ready", loaded };
         case "knowledge_traces_load": return new Promise((resolve, reject) => { finishTraces = resolve; rejectTraces = reject; });
@@ -1111,8 +1168,9 @@ describe("自动化会话模型同步", () => {
     expect(client.agentSend).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalledWith("agent_cancel", expect.anything());
 
+    await waitFor(() => expect(finishLoad).toBeTypeOf("function"));
     await act(async () => finishLoad("model-a"));
-    expect(invoke).toHaveBeenCalledWith("agent_load_session", { sessionId: id, cwd: "/workspace" });
+    expect(invoke).toHaveBeenCalledWith("agent_recover_session", { sessionId: id, cwd: "/workspace" });
     expect(invoke).toHaveBeenCalledWith("knowledge_traces_load", { sessionId: id, cursor: null });
     if (scheduled) {
       await act(async () => rejectTraces(new Error("引用磁盘读取失败")));
@@ -1136,7 +1194,7 @@ describe("自动化会话模型同步", () => {
     let finishTraces: ((page: unknown) => void) | undefined;
     vi.mocked(client.agentSetModel).mockImplementationOnce(async (_sessionId, model) => { runtimeModel = model; });
     vi.mocked(invoke).mockImplementation(async command => {
-      if (command === "agent_load_session") return runtimeModel;
+      if (command === "agent_recover_session") return { modelId: runtimeModel };
       if (command === "knowledge_traces_load") return new Promise(resolve => { finishTraces = resolve; });
       return command === "notification_take_pending_opens" ? [] : null;
     });
@@ -1160,7 +1218,7 @@ describe("自动化会话模型同步", () => {
   });
 
   it("已有摘要模型的会话恢复失败后保留草稿，重试成功前不能发送", async () => {
-    chatViewHarness.actual = (await vi.importActual<typeof import("../ChatView")>("../ChatView")).ChatView;
+    chatViewHarness.actual = actualChatView;
     let failLoad!: (error: Error) => void;
     vi.mocked(client.agentLoadSession).mockImplementationOnce(() => new Promise((_, reject) => { failLoad = reject; }));
     await start();
@@ -1168,6 +1226,7 @@ describe("自动化会话模型同步", () => {
     fireEvent.click(screen.getByText("打开其他任务"));
     const input = await screen.findByRole("textbox", { name: "输入问题或任务" });
     fireEvent.change(input, { target: { value: "保留此草稿" } });
+    await waitFor(() => expect(failLoad).toBeTypeOf("function"));
     await act(async () => failLoad(new Error("运行时恢复失败")));
     expect(screen.getByText("运行时恢复失败")).toBeVisible();
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
@@ -1326,7 +1385,7 @@ describe("队列发送与原生接收确认", () => {
     expect(prompt).toBe("继续解释");
     expect(promptId).toBeTruthy();
     expect(client.agentsValidateReferences).toHaveBeenCalledWith("/workspace", []);
-    expect(useProjectsStore.getState().projects[0].conversations[0].pendingProjectContext).toBe(false);
+    await waitFor(() => expect(useProjectsStore.getState().projects[0].conversations[0].pendingProjectContext).toBe(false));
   });
 
   it("引用验证期间的会话标题更新不会暂停项目队列", async () => {

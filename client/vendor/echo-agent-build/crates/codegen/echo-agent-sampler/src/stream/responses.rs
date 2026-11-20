@@ -320,10 +320,6 @@ pub(crate) fn stream_responses_tracked<'a>(
 
             let event_has_content = responses_event_has_meaningful_content(&event);
 
-            // Track whether ResponseIncomplete should break the loop
-            // after the content-aware idle check below.
-            let mut should_break = false;
-
             match event {
                 ResponseStreamEvent::ResponseOutputTextDelta(text_delta_event) => {
                     let delta = text_delta_event.delta;
@@ -423,11 +419,14 @@ pub(crate) fn stream_responses_tracked<'a>(
 
                 ResponseStreamEvent::ResponseCompleted(completed_event) => {
                     final_response = Some(completed_event.response);
+                    break;
                 }
 
                 ResponseStreamEvent::ResponseIncomplete(incomplete_event) => {
-                    final_response = Some(incomplete_event.response);
-                    should_break = true;
+                    let mut response = incomplete_event.response;
+                    response.status = Status::Incomplete;
+                    final_response = Some(response);
+                    break;
                 }
 
                 ResponseStreamEvent::ResponseFailed(failed_event) => {
@@ -589,10 +588,6 @@ pub(crate) fn stream_responses_tracked<'a>(
                 };
                 return;
             }
-
-            if should_break {
-                break;
-            }
         }
 
         // ── Build the final response ─────────────────────────────────
@@ -616,6 +611,40 @@ pub(crate) fn stream_responses_tracked<'a>(
                 };
                 return;
             }
+        };
+
+        let content_filtered = if response.status == Status::Incomplete {
+            let reason = response.incomplete_details.as_ref().map(|detail| detail.reason.as_str());
+            if reason == Some("content_filter") {
+                // Use the usual refusal path. Keep usable message text, but an
+                // incomplete turn must never dispatch or persist tool calls.
+                response.output.retain(|item| matches!(item, rs::OutputItem::Message(_)));
+                reasoning_acc.clear();
+                true
+            } else {
+                let error = match reason {
+                    Some("max_output_tokens") => SamplingError::MaxTokensTruncation,
+                    reason => SamplingError::Api {
+                        status: reqwest::StatusCode::BAD_REQUEST,
+                        message: match reason {
+                            Some("max_messages") => "Responses API reached the maximum number of messages",
+                            Some("steered") => "Responses API ended this turn after steering",
+                            _ => "Responses API returned an incomplete response",
+                        }.to_string(),
+                        model_metadata: None,
+                        retry_after_secs: None,
+                        should_retry: Some(false),
+                        error_code: None,
+                    },
+                };
+                yield SamplingEvent::Failed {
+                    request_id: request_id.clone(),
+                    error: SamplingErrorInfo::from(&error),
+                };
+                return;
+            }
+        } else {
+            false
         };
 
         // Billing fields (`prompt_tokens`, `completion_tokens`,
@@ -659,12 +688,13 @@ pub(crate) fn stream_responses_tracked<'a>(
             _ => false,
         });
 
-        let stop_reason = if has_tool_calls {
+        let stop_reason = if content_filtered {
+            Some(StopReason::ContentFilter)
+        } else if has_tool_calls {
             Some(StopReason::ToolCalls)
         } else {
             match status {
                 Status::Completed => Some(StopReason::Stop),
-                Status::Incomplete => Some(StopReason::Length),
                 _ => None,
             }
         };
@@ -675,10 +705,11 @@ pub(crate) fn stream_responses_tracked<'a>(
 
         // Warn-only for now: surface the server-reported triggers once per
         // request (raw labels only — ZDR-safe) and attach them for callers.
-        let doom_loop_signals = doom_loop
-            .as_ref()
-            .map(|collector| collector.take())
-            .unwrap_or_default();
+        let doom_loop_signals = if content_filtered {
+            Vec::new()
+        } else {
+            doom_loop.as_ref().map(|collector| collector.take()).unwrap_or_default()
+        };
         if !doom_loop_signals.is_empty() {
             tracing::warn!(
                 request_id = %request_id,
@@ -785,6 +816,65 @@ mod tests {
             response: empty_completed_response(),
             sequence_number: 0,
         })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn completed_event_finishes_even_when_transport_remains_open() {
+        let raw = stream::iter(vec![Ok(completed_event())])
+            .chain(stream::pending())
+            .boxed();
+        let start = tokio::time::Instant::now();
+        let events = collect(stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+        ))
+        .await;
+        assert_eq!(start.elapsed(), Duration::ZERO);
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Completed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn incomplete_response_never_returns_a_dispatchable_tool() {
+        use crate::events::SamplingErrorKind;
+
+        for reason in ["max_output_tokens", "max_messages", "content_filter", "steered", "future"] {
+            let mut response = build_response(rs_types::Status::Incomplete);
+            response.incomplete_details = Some(rs_types::IncompleteDetails {
+                reason: reason.to_string(),
+            });
+            response.output.push(rs::OutputItem::FunctionCall(rs_types::FunctionToolCall {
+                id: Some("fc_read".to_string()),
+                call_id: "call_read".to_string(),
+                name: "read_document".to_string(),
+                arguments: r#"{"name":"fixture.txt"}"#.to_string(),
+                status: Some(rs_types::OutputStatus::Completed),
+            }));
+            let raw = stream::iter(vec![Ok(rs::ResponseStreamEvent::ResponseIncomplete(
+                rs_types::ResponseIncompleteEvent { response, sequence_number: 0 },
+            ))]).boxed();
+            let events = collect(stream_responses(raw, None, rid(), Duration::from_secs(60), None)).await;
+            match (reason, events.last().unwrap()) {
+                ("content_filter", SamplingEvent::Completed { response, .. }) => {
+                    assert_eq!(response.stop_reason, Some(StopReason::ContentFilter));
+                    assert!(response.tool_calls().is_empty());
+                }
+                ("max_output_tokens", SamplingEvent::Failed { error, .. }) => {
+                    assert_eq!(error.kind, SamplingErrorKind::MaxTokensTruncation);
+                }
+                (_, SamplingEvent::Failed { error, .. }) => {
+                    assert_eq!(error.kind, SamplingErrorKind::Api);
+                    assert_eq!(error.should_retry, Some(false));
+                    assert!(!error.is_retryable);
+                }
+                (_, event) => panic!("unexpected incomplete response for {reason}: {event:?}"),
+            }
+        }
     }
 
     async fn collect(s: impl Stream<Item = SamplingEvent>) -> Vec<SamplingEvent> {

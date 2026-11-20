@@ -258,7 +258,7 @@ mod win32 {
     use windows_sys::Win32::{
         Foundation::{HWND, RECT},
         UI::WindowsAndMessaging::{
-            GetClientRect, GetWindowRect, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos,
+            GetClientRect, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
         },
     };
 
@@ -372,7 +372,10 @@ mod tests {
 
     #[test]
     fn corrupt_legacy_dimensions_are_ignored_but_large_and_old_windows_are_valid() {
-        assert!(WindowState::from_json(br#"{"width":2863311516.0,"height":2863311522.0,"maximized":false,"position":[0,0]}"#).is_none());
+        assert!(WindowState::from_json(
+            br#"{"width":2863311516.0,"height":2863311522.0,"maximized":false,"position":[0,0]}"#
+        )
+        .is_none());
         let old =
             WindowState::from_json(br#"{"width":7680,"height":4320,"maximized":false}"#).unwrap();
         assert_eq!(old.width, 7680.0);

@@ -862,8 +862,7 @@ export interface TurnErrorEvent {
   sessionId: string;
   /** Exact failing turn, shared with the terminal completion event. */
   promptId?: string;
-  /** "rate_limit" | "error" (mirrors EchoAgent's `stop_reason_for_turn_error`). */
-  kind: "rate_limit" | "error";
+  kind: "rate_limit" | "rate_limited" | "error" | "refusal" | "content_filter" | "max_tokens" | "max_turns" | "cancelled";
   /** Server-provided detail (absent for rate_limit — EchoAgent omits it so the
    *  client shows its own message). */
   detail?: string;

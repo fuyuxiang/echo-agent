@@ -35,7 +35,7 @@ vi.mock("@/lib/agent-client", async (original) => ({
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
   agentPrepareTaskWorkspace: vi.fn(async () => "/workspace/Tasks/default-task"),
   agentNewSession: vi.fn(async () => "new-session"), agentSessionInfo: vi.fn(async () => ({ model: "model-a" })), agentDeleteSession: vi.fn(async () => ({memorySummariesDeleted:0})), agentSetSessionExpert: vi.fn(async () => true),
-  agentLoadSession: vi.fn(async () => "model-a"), agentSend: vi.fn(async () => {}), projectsSave: vi.fn(async () => {}),
+  agentRecoverSession: vi.fn(async () => ({ modelId: "model-a" })), agentSend: vi.fn(async () => {}), projectsSave: vi.fn(async () => {}),
   internalReload: vi.fn(async () => {}), subscribeAgentEvents: vi.fn(async () => () => {}),
 }));
 
@@ -186,7 +186,7 @@ it("历史 A 与下一任务 B/C 分离，最终新任务真正绑定 C", async 
   expect(screen.getByTestId("new-task-cwd")).toHaveTextContent("/workspace/B");
   fireEvent.click(screen.getByRole("button", {name:"打开历史 A"}));
   expect(await screen.findByTestId("session-cwd")).toHaveTextContent("/workspace/A");
-  await waitFor(() => expect(client.agentLoadSession).toHaveBeenLastCalledWith("history-A", "/workspace/A"));
+  await waitFor(() => expect(client.agentRecoverSession).toHaveBeenLastCalledWith("history-A", "/workspace/A"));
   fireEvent.click(screen.getByRole("button", {name:"从任务新建"}));
   expect(await screen.findByTestId("new-task-cwd")).toHaveTextContent("/workspace/B");
   fireEvent.click(screen.getByRole("button", {name:"新任务选择 C"}));

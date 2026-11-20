@@ -237,18 +237,45 @@ pub enum CancelHistoryDisposition {
     /// Pop the named front if the no-output window is still open. `None` is a legacy client.
     RewindIfNoOutput { prompt_id: Option<String> },
 }
+
+pub const STALE_PROMPT_CANCEL_ERROR_CODE: i32 = -32023;
+
+#[derive(Debug, Default)]
+pub struct CancelAcknowledgement {
+    processed: tokio::sync::Notify,
+    ignored_stale: std::sync::atomic::AtomicBool,
+}
+
+impl CancelAcknowledgement {
+    pub(crate) fn notify_processed(&self, ignored_stale: bool) {
+        self.ignored_stale
+            .store(ignored_stale, std::sync::atomic::Ordering::Release);
+        self.processed.notify_one();
+    }
+
+    pub(crate) async fn ignored_stale(&self) -> bool {
+        self.processed.notified().await;
+        self.ignored_stale
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CancelOptions {
     pub cancel_subagents: bool,
     pub kill_background_tasks: bool,
     pub history: CancelHistoryDisposition,
+    /// Scope a normal cancel to the active prompt at the queue front. Unnamed
+    /// cancels retain the session-wide semantics of the ACP notification.
+    pub expected_prompt_id: Option<String>,
     pub trigger: Option<CancelTrigger>,
     /// Drives the cancel-rate metric, and marks an untriggered cancel as the user's.
     pub user_initiated: bool,
     /// Optional acknowledgement for clients that must know the session actor has
-    /// actually applied the cancellation before presenting a stable stopped state.
+    /// processed the cancellation before presenting a stable stopped state.
+    /// A stale named request is acknowledged after the actor confirms no action.
     /// Internal fire-and-forget cancellation paths leave this unset.
-    pub acknowledged: Option<std::sync::Arc<tokio::sync::Notify>>,
+    pub acknowledged: Option<std::sync::Arc<CancelAcknowledgement>>,
 }
 pub enum SessionCommand {
     Initialize {

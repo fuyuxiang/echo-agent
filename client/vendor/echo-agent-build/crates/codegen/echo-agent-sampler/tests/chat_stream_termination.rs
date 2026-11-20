@@ -95,9 +95,16 @@ fn request() -> ConversationRequest {
 }
 
 async fn collect_events(base_url: String, retry_only_before_output: bool) -> Vec<SamplingEvent> {
+    collect_backend_events(config(base_url), retry_only_before_output).await
+}
+
+async fn collect_backend_events(
+    config: SamplerConfig,
+    retry_only_before_output: bool,
+) -> Vec<SamplingEvent> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let actor = SamplerActor::spawn(
-        config(base_url),
+        config,
         RetryPolicy {
             max_retries: 2,
             retry_only_before_output,
@@ -276,6 +283,129 @@ async fn guard_partial_text_never_retries_or_completes() {
         assert_eq!(run.requests, 1);
         assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
             if error.kind == SamplingErrorKind::ChatStreamInterrupted));
+    }
+}
+
+fn messages_text_frames(text: &str) -> Vec<SseEvent> {
+    [
+        json!({"type":"message_start","message":{
+            "id":"msg_draft","type":"message","role":"assistant","content":[],"model":MODEL,
+            "stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}
+        }}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}),
+        json!({"type":"message_stop"}),
+    ]
+    .into_iter()
+    .map(|frame| SseEvent::data(frame.to_string()))
+    .collect()
+}
+
+#[tokio::test]
+async fn messages_truncation_after_visible_output_fails_without_retry() {
+    let server = MockInferenceServer::start().await.unwrap();
+    let mut frames = messages_text_frames("Draft.");
+    frames.pop();
+    server.enqueue_response("/v1/messages", ScriptedResponse::sse(frames));
+    let config = SamplerConfig {
+        api_backend: ApiBackend::Messages,
+        ..config(server.url())
+    };
+    let events = collect_backend_events(config, false).await;
+    let run = Run {
+        requests: server.messages_request_count(),
+        events,
+    };
+    assert_eq!(run.requests, 1);
+    assert!(run.events.iter().any(|event| matches!(
+        event,
+        SamplingEvent::ChannelToken { text, .. } if text == "Draft."
+    )));
+    assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+        if error.kind == SamplingErrorKind::Http && error.message.contains("message_stop")));
+}
+
+#[tokio::test]
+async fn responses_truncation_after_a_tool_call_fails_without_dispatchable_output() {
+    let mut frames = sse::responses_api_reasoning_then_tool_call_events(
+        "",
+        "call_read",
+        "read_document",
+        r#"{"name":"fixture.txt"}"#,
+        MODEL,
+    );
+    let terminal = frames
+        .iter_mut()
+        .find(|frame| frame.data.contains("\"type\":\"response.completed\""))
+        .expect("fixture must have a completed response");
+    let mut body: Value = serde_json::from_str(&terminal.data).unwrap();
+    assert_eq!(body["response"]["output"][1]["call_id"], "call_read");
+    body["type"] = json!("response.incomplete");
+    body["response"]["status"] = json!("incomplete");
+    body["response"]["incomplete_details"] = json!({"reason":"max_output_tokens"});
+    terminal.data = body.to_string();
+
+    let server = MockInferenceServer::start().await.unwrap();
+    server.enqueue_response("/v1/responses", ScriptedResponse::sse(frames));
+    let config = SamplerConfig {
+        api_backend: ApiBackend::Responses,
+        ..config(server.url())
+    };
+    let events = collect_backend_events(config, false).await;
+    let run = Run {
+        requests: server.requests().len(),
+        events,
+    };
+    assert_eq!(run.requests, 1);
+    assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+        if error.kind == SamplingErrorKind::MaxTokensTruncation));
+}
+
+#[tokio::test]
+async fn typed_terminal_events_complete_while_http_body_is_still_open() {
+    let text = "Verified answer.";
+    let mut responses = sse::responses_api_script_exact(text, MODEL);
+    assert_eq!(responses.pop().unwrap().data, "[DONE]");
+    for (path, backend, frames) in [
+        (
+            "/v1/messages",
+            ApiBackend::Messages,
+            messages_text_frames(text),
+        ),
+        ("/v1/responses", ApiBackend::Responses, responses),
+    ] {
+        let first = encode_sse(&frames);
+        let app = Router::new().route(
+            path,
+            post(move || {
+                let first = first.clone();
+                async move {
+                    let body = Body::from_stream(async_stream::stream! {
+                        yield Ok::<_, std::io::Error>(first);
+                        std::future::pending::<()>().await;
+                    });
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(body)
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = SamplerConfig {
+            api_backend: backend,
+            ..config(url)
+        };
+        let events = collect_backend_events(config, false).await;
+        server.abort();
+        assert!(
+            matches!(events.last(), Some(SamplingEvent::Completed { response, .. })
+            if response.assistant().is_some_and(|assistant| assistant.content.as_ref() == text))
+        );
     }
 }
 

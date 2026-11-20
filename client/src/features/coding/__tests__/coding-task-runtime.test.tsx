@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
 }));
 const beginAgentTurn = vi.hoisted(() => vi.fn(() => true));
 const agentLoadSession = vi.hoisted(() => vi.fn(async (_id: string, _root: string): Promise<string | null> => null));
+const agentRecoverSession = vi.hoisted(() => vi.fn(async (_id: string, _root: string): Promise<{ modelId: string | null; activePromptId: string | null }> => ({ modelId: null, activePromptId: null })));
 const phaseChanged = vi.hoisted(() => vi.fn(async (_listener: (event: { root: string; taskId: string }) => void) => () => undefined));
 const events=vi.hoisted(()=>({handlers:new Map<string,(event:unknown)=>void>(),invoke:vi.fn(async (command:string,_args?:unknown):Promise<unknown> => command === "coding_document_cancellation_state" ? [] : undefined)}));
 
@@ -34,7 +35,7 @@ vi.mock("../lib/task-lifecycle", () => ({
   useTaskLifecycle: () => ({ settling: false }),
 }));
 vi.mock("@/lib/agent-turn", () => ({ beginAgentTurn }));
-vi.mock("@/lib/agent-client", () => ({ agentLoadSession }));
+vi.mock("@/lib/agent-client", () => ({ agentLoadSession, agentRecoverSession }));
 
 import { registerWorkspaceEditor } from "../lib/workspace-editor";
 import { useSessionStore } from "@/stores/session-store";
@@ -85,6 +86,7 @@ describe("CodingTaskRuntimeManager", () => {
     phaseChanged.mockClear();
     agentLoadSession.mockReset();
     agentLoadSession.mockResolvedValue(null);
+    agentRecoverSession.mockReset().mockImplementation(async (id, root) => ({ modelId: await agentLoadSession(id, root), activePromptId: null }));
     useCodingRuntimeStore.setState({ tasks: {}, settling: {}, activeRunIds: {}, verificationBatches: {}, stopping: {}, actionEpochs: {}, editorBlocks: {}, documentCancellations:{},documentCancellationReady:true });
     useSessionStore.setState({
       sessionId: "/other-session",
@@ -286,6 +288,21 @@ describe("CodingTaskRuntimeManager", () => {
     render(<CodingTaskRuntimeManager roots={["/a"]} />);
     await waitFor(() => expect(api.reportInterrupted).toHaveBeenCalledWith("/a", "/a-task", "paused"));
     expect(api.syncChanges).toHaveBeenCalledWith("/a", "/a-task");
+    expect(beginAgentTurn).not.toHaveBeenCalled();
+  });
+
+  it("reattaches an active native coding turn before its first output", async () => {
+    useSessionStore.setState({ transcripts: {} });
+    api.orchestratorState.mockImplementation(async (root: string) => ({
+      task: { ...task(root), nextAction: null, phase: "implementing" }, problems: [],
+    }));
+    agentRecoverSession.mockResolvedValueOnce({ modelId: "test-model", activePromptId: "editor-turn" });
+    render(<CodingTaskRuntimeManager roots={["/a"]} />);
+    await waitFor(() => expect(useSessionStore.getState().transcripts["/a-session"]?.messages).toMatchObject([
+      { role: "assistant", promptId: "editor-turn", complete: false },
+    ]));
+    expect(api.reportInterrupted).not.toHaveBeenCalled();
+    expect(api.reportStartFailed).not.toHaveBeenCalled();
     expect(beginAgentTurn).not.toHaveBeenCalled();
   });
 

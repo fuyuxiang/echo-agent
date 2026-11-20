@@ -11,6 +11,7 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
+      - 'patches/**'
       - 'rust-toolchain.toml'
       - 'tsconfig*.json'
       - 'vite.config.*'
@@ -23,7 +24,9 @@ on:
       - 'src-tauri/**'
       - 'scripts/**'
       - 'vendor/**'
+      - 'browser-extension/**'
       - 'LICENSE'
+      - 'LICENSES/**'
       - 'THIRD_PARTY_NOTICES.md'
   pull_request:
     paths: *packaging-paths

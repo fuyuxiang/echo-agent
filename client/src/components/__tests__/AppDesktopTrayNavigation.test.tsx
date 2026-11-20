@@ -44,7 +44,7 @@ vi.mock("../PlaceholderPage", () => ({ PlaceholderPage: ({ label, onRegisterCodi
 vi.mock("@/lib/agent-client", async original => ({
   ...await original<object>(), agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
-  agentLoadSession: vi.fn(async () => 'model-a'), subscribeAgentEvents: vi.fn(async () => () => {}),
+  agentRecoverSession: vi.fn(async () => ({ modelId: 'model-a' })), subscribeAgentEvents: vi.fn(async () => () => {}),
   internalReload: vi.fn(async () => {}),
 }));
 
@@ -95,7 +95,7 @@ describe('catalog search navigation', () => {
   it('keeps the actual search open after a native load failure and retries the selected task', async () => {
     await start();
     act(() => useSessionsStore.getState().upsert({sessionId:'retry-target',title:'另一个任务',cwd:'/workspace',currentModelId:'model-a'}));
-    vi.mocked(client.agentLoadSession).mockRejectedValueOnce(new Error('读取会话失败'));
+    vi.mocked(client.agentRecoverSession).mockRejectedValueOnce(new Error('读取会话失败'));
     fireEvent.click(screen.getByRole('button',{name:'打开搜索'}));
     fireEvent.click(await screen.findByRole('button',{name:'另一个任务 /workspace'}));
     const search=screen.getByRole('dialog',{name:'搜索会话'});
@@ -103,7 +103,7 @@ describe('catalog search navigation', () => {
     expect(search).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button',{name:'重试打开'}));
     await waitFor(()=>expect(screen.queryByRole('dialog',{name:'搜索会话'})).toBeNull());
-    expect(client.agentLoadSession).toHaveBeenLastCalledWith('retry-target','/workspace');
+    expect(client.agentRecoverSession).toHaveBeenLastCalledWith('retry-target','/workspace');
     expect(useSessionsStore.getState().currentSessionId).toBe('retry-target');
     expect(useSessionStore.getState().error).toBeNull();
   });
@@ -113,7 +113,7 @@ describe('catalog search navigation', () => {
     fireEvent.click(screen.getByRole('button',{name:'导航代码开发'}));
     await screen.findByText('代码开发页面');
     codingGuard.mockResolvedValueOnce(false);
-    const before=vi.mocked(client.agentLoadSession).mock.calls.length;
+    const before=vi.mocked(client.agentRecoverSession).mock.calls.length;
     fireEvent.click(screen.getByRole('button',{name:'打开搜索'}));
     fireEvent.click(await screen.findByRole('button',{name:'源会话 /workspace'}));
     await waitFor(()=>expect(codingGuard).toHaveBeenCalledOnce());
@@ -122,7 +122,7 @@ describe('catalog search navigation', () => {
     expect(search).toBeInTheDocument();
     expect(screen.getByText('代码开发页面')).toBeInTheDocument();
     expect(within(search).queryByRole('alert')).toBeNull();
-    expect(client.agentLoadSession).toHaveBeenCalledTimes(before);
+    expect(client.agentRecoverSession).toHaveBeenCalledTimes(before);
   });
 });
 

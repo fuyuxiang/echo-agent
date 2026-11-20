@@ -1250,6 +1250,36 @@ pub async fn cancel(
     cancel_trigger: &str,
     prompt_id: Option<&str>,
 ) -> Result<()> {
+    cancel_with_receipt(tx, session_id, cancel_trigger, prompt_id, false).await
+}
+
+pub(crate) async fn cancel_from_user(
+    tx: &AcpAgentTx,
+    session_id: &str,
+    cancel_trigger: &str,
+    prompt_id: Option<&str>,
+) -> Result<()> {
+    cancel_with_receipt(tx, session_id, cancel_trigger, prompt_id, true).await
+}
+
+#[derive(Debug)]
+pub(crate) struct StalePromptCancel;
+
+impl std::fmt::Display for StalePromptCancel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("所选消息已结束或切换，请在当前回合重试")
+    }
+}
+
+impl std::error::Error for StalePromptCancel {}
+
+async fn cancel_with_receipt(
+    tx: &AcpAgentTx,
+    session_id: &str,
+    cancel_trigger: &str,
+    prompt_id: Option<&str>,
+    report_stale: bool,
+) -> Result<()> {
     use echo_agent_acp::{AcpAgentMessage, AcpArgs};
     let mut meta = serde_json::Map::new();
     meta.insert(
@@ -1261,6 +1291,12 @@ pub async fn cancel(
             "promptId".to_string(),
             serde_json::Value::String(prompt_id.to_string()),
         );
+        if report_stale {
+            meta.insert(
+                "reportStalePrompt".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
     }
     let notif =
         acp::CancelNotification::new(acp::SessionId::new(session_id.to_string())).meta(Some(meta));
@@ -1274,8 +1310,20 @@ pub async fn cancel(
         .await
         .map_err(|_| anyhow!("cancel acknowledgement timed out"))?
         .map_err(|_| anyhow!("cancel acknowledgement channel closed"))?;
-    response.map_err(|error| anyhow!("cancel: {error:?}"))?;
-    Ok(())
+    response.map_err(|error| {
+        if report_stale
+            && error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("kind"))
+                .and_then(|kind| kind.as_str())
+                == Some("stale_prompt_cancel")
+        {
+            anyhow::Error::new(StalePromptCancel)
+        } else {
+            anyhow!("cancel: {error:?}")
+        }
+    })
 }
 
 /// Rename a session by calling EchoAgent's `echo.agent/session/rename` extension method.
@@ -1414,6 +1462,55 @@ mod tests {
     //! fresh data home, empty legacy/compatibility homes and synthetic model
     //! config, cleans inherited credentials, and never sends a model prompt.
     use super::*;
+
+    #[tokio::test]
+    async fn only_named_user_cancel_requests_opt_in_to_stale_prompt_errors() {
+        for (from_user, prompt_id) in [(true, Some("old")), (false, Some("old")), (true, None)] {
+            let (client, mut agent) = echo_agent_acp::acp_channels();
+            let request = async {
+                if from_user {
+                    cancel_from_user(&client.tx, "session", "stop", prompt_id).await
+                } else {
+                    cancel(&client.tx, "session", "stop", prompt_id).await
+                }
+            };
+            let respond = async {
+                let echo_agent_acp::AcpAgentMessage::Cancel(request) =
+                    agent.rx.recv().await.expect("cancel notification")
+                else {
+                    panic!("expected cancel notification");
+                };
+                let meta = request.request.meta.expect("cancel metadata");
+                let opted_in = from_user && prompt_id.is_some();
+                assert_eq!(
+                    meta.get("promptId").and_then(|value| value.as_str()),
+                    prompt_id
+                );
+                assert_eq!(
+                    meta.get("reportStalePrompt")
+                        .and_then(|value| value.as_bool()),
+                    opted_in.then_some(true)
+                );
+                let outcome = if opted_in {
+                    Err(acp::Error::invalid_params().data(serde_json::json!({
+                        "kind": "stale_prompt_cancel"
+                    })))
+                } else {
+                    Ok(())
+                };
+                request.response_tx.send(outcome).expect("cancel receipt");
+            };
+            let (outcome, ()) = tokio::join!(request, respond);
+            if from_user && prompt_id.is_some() {
+                assert!(outcome
+                    .unwrap_err()
+                    .to_string()
+                    .contains("所选消息已结束或切换"));
+            } else {
+                outcome.unwrap();
+            }
+        }
+    }
 
     #[test]
     fn desktop_advertises_interactive_folder_trust_under_capability_meta() {

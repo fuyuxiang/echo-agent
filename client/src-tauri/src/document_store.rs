@@ -4,10 +4,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
+pub(crate) const MAX_DOCUMENT_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
 static DELETED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 fn owner_key(home: &Path, session: &str) -> String {
     format!("{}\0{session}", home.display())
@@ -364,6 +366,35 @@ pub fn forget_session(home: &Path, session: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn hash_document(mut reader: impl Read) -> Result<(String, u64), String> {
+    let mut reader = reader.by_ref().take(MAX_DOCUMENT_FILE_BYTES + 1);
+    let mut buffer = [0u8; 64 * 1024];
+    let mut hasher = Sha256::new();
+    let mut byte_size = 0;
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("计算文件摘要失败：{error}"))?;
+        if count == 0 {
+            break;
+        }
+        byte_size += count as u64;
+        if byte_size > MAX_DOCUMENT_FILE_BYTES {
+            return Err(format!("文件超过 {MAX_DOCUMENT_FILE_BYTES} 字节安全上限"));
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok((format!("{:x}", hasher.finalize()), byte_size))
+}
+
+pub(crate) fn file_hash(path: &Path) -> Result<(String, u64), String> {
+    let file = crate::shell_fs::open_regular_file_no_follow(path)?;
+    if file.metadata().map_err(|e| format!("读取失败：{e}"))?.len() > MAX_DOCUMENT_FILE_BYTES {
+        return Err(format!("文件超过 {MAX_DOCUMENT_FILE_BYTES} 字节安全上限"));
+    }
+    hash_document(file)
+}
+
 /// Publish without overwriting a file another application has just replaced.
 /// The previous file is checked again after moving it aside; failed rollback
 /// retains the backup and reports its exact recovery path.
@@ -372,16 +403,7 @@ pub fn install_revision(
     destination: &Path,
     expected_hash: &str,
 ) -> Result<(), String> {
-    let hash = |path: &Path| -> Result<String, String> {
-        Ok(format!(
-            "{:x}",
-            Sha256::digest(crate::shell_fs::read_regular_file_bounded(
-                path,
-                50 * 1024 * 1024
-            )?)
-        ))
-    };
-    if hash(destination)? != expected_hash {
+    if file_hash(destination)?.0 != expected_hash {
         return Err("DOCUMENT_EXTERNAL_CHANGE:原文件已修改，未覆盖".into());
     }
     let parent = destination.parent().ok_or("文档目录无效")?;
@@ -403,8 +425,8 @@ pub fn install_revision(
         })?;
         std::fs::remove_file(&backup).map_err(|error| error.to_string())
     };
-    let protected_hash = match hash(&backup) {
-        Ok(hash) => hash,
+    let protected_hash = match file_hash(&backup) {
+        Ok((hash, _)) => hash,
         Err(error) => {
             let rollback = restore();
             return Err(format!(
@@ -507,6 +529,34 @@ mod tests {
         assert_eq!(value.revision, revision + 1);
         assert_eq!(value.document, previous);
     }
+    #[test]
+    fn document_digest_covers_multiple_buffers_and_counts_actual_bytes() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("夹具.docx");
+        let bytes = "正文\n".repeat(20_000);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            file_hash(&path).unwrap(),
+            (
+                format!("{:x}", Sha256::digest(bytes.as_bytes())),
+                bytes.len() as u64
+            )
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_DOCUMENT_FILE_BYTES + 1)
+            .unwrap();
+        assert!(file_hash(&path).unwrap_err().contains("超过"));
+    }
+
+    #[test]
+    fn document_digest_rejects_streams_growing_past_the_file_limit() {
+        let stream = std::io::repeat(0).take(MAX_DOCUMENT_FILE_BYTES + 1);
+        assert!(hash_document(stream).unwrap_err().contains("超过"));
+    }
+
     #[test]
     fn publishes_only_over_the_expected_file_and_preserves_external_edits() {
         let directory = tempfile::tempdir().unwrap();

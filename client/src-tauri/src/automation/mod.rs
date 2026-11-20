@@ -138,6 +138,9 @@ struct AutomationSession {
     mode: Mutex<AutomationMode>,
     task: Mutex<task::TaskExecution>,
     user_turn: Mutex<Option<admission::UserTurn>>,
+    // The latest admission owns prompt-scoped controls even after its live
+    // token is consumed. Serialize these controls against the next admission.
+    latest_prompt: AsyncMutex<Option<String>>,
     intent_generation: std::sync::atomic::AtomicU64,
     allow_private_network: Mutex<bool>,
     browser: AsyncMutex<Option<BrowserController>>,
@@ -156,6 +159,17 @@ struct AutomationSession {
 }
 
 impl AutomationSession {
+    async fn lock_prompt_control(
+        &self,
+        expected: Option<&str>,
+    ) -> Option<tokio::sync::MutexGuard<'_, Option<String>>> {
+        let latest = self.latest_prompt.lock().await;
+        if expected.is_some_and(|expected| latest.as_deref() != Some(expected)) {
+            return None;
+        }
+        Some(latest)
+    }
+
     fn require_existing_ui_task_for_file_check(&self) -> Result<(), String> {
         let computer_mode = *self.mode.lock().unwrap() == AutomationMode::ComputerUse;
         let task = self.task.lock().unwrap();
@@ -295,6 +309,7 @@ impl AutomationSession {
             mode: Mutex::new(mode),
             task: Mutex::new(task::TaskExecution::new(restored_automation, scope)),
             user_turn: Mutex::new(None),
+            latest_prompt: AsyncMutex::new(None),
             intent_generation: std::sync::atomic::AtomicU64::new(0),
             allow_private_network: Mutex::new(false),
             browser: AsyncMutex::new(None),
@@ -1327,12 +1342,21 @@ pub async fn forget_session(session_id: &str) {
     }
 }
 
-pub async fn pause_session(session_id: &str) -> Result<(), String> {
-    manager()?.pause(session_id, true).await
-}
-
-pub async fn stop_session(session_id: &str) -> Result<(), String> {
-    manager()?.stop(session_id).await
+pub(crate) async fn cancel_prompt(
+    session_id: &str,
+    prompt_id: Option<&str>,
+    pause: bool,
+) -> Result<(), String> {
+    let manager = manager()?;
+    let session = manager.session(session_id).await?;
+    let Some(_prompt_control) = session.lock_prompt_control(prompt_id).await else {
+        return Ok(());
+    };
+    if pause {
+        manager.pause(session_id, true).await
+    } else {
+        manager.stop_existing(session_id, &session).await
+    }
 }
 
 pub async fn stop_existing_session(session_id: &str) -> Result<(), String> {
@@ -1391,6 +1415,7 @@ pub(crate) async fn prepare_user_prompt(
         return Ok(None);
     };
     let session = manager.session(session_id).await?;
+    let mut latest_prompt = session.latest_prompt.lock().await;
     let previous_epoch = session.intent_generation.load(Ordering::SeqCst);
     let authorized = session.task.lock().unwrap().authorized;
     if authorized {
@@ -1456,6 +1481,8 @@ pub(crate) async fn prepare_user_prompt(
         return Err("cancelled: user control changed while preparing this turn".into());
     }
     *session.user_turn.lock().unwrap() = Some(turn);
+    *latest_prompt = prompt_id.map(str::to_owned);
+    drop(latest_prompt);
     drop(gate);
     manager.emit_status(session_id).await;
     Ok(Some((epoch, context)))
@@ -4073,6 +4100,22 @@ mod tests {
             assert_eq!(current.outcome, original.outcome);
             assert!(!current.authorized);
         }
+    }
+
+    #[tokio::test]
+    async fn late_prompt_control_cannot_revoke_a_new_admission() {
+        let session = AutomationSession::new(AutomationMode::BrowserUse);
+        *session.latest_prompt.lock().await = Some("first".into());
+        let mut admission = session.latest_prompt.lock().await;
+        let late_stop = session.lock_prompt_control(Some("first"));
+        tokio::pin!(late_stop);
+        assert!(futures::poll!(&mut late_stop).is_pending());
+        *admission = Some("second".into());
+        drop(admission);
+
+        assert!(late_stop.await.is_none());
+        assert!(session.lock_prompt_control(Some("second")).await.is_some());
+        assert!(session.lock_prompt_control(None).await.is_some());
     }
 
     fn stage_turn(session: &AutomationSession, text: &str, readonly: bool) -> String {

@@ -1097,20 +1097,24 @@ export class FileService {
         if (options?.fromUserGesture === false) {
             return this.doMove(source, target, options.overwrite);
         }
-        await this.runFileOperationParticipants(target, source, FileOperation.MOVE);
+        return this.runUserFileOperation(FileOperation.MOVE, target, source, () => this.doMove(source, target, options?.overwrite));
+    }
 
-        const event = { correlationId: this.correlationIds++, operation: FileOperation.MOVE, target, source };
+    /** Run participants and editor lifecycle events around the disk mutation. */
+    protected async runUserFileOperation<T>(operation: FileOperation, target: URI, source: URI | undefined, run: () => Promise<T>): Promise<T> {
+        await this.runFileOperationParticipants(target, source, operation);
+        const event = { correlationId: this.correlationIds++, operation, target, ...(source ? { source } : {}) };
         await this.onWillRunUserOperationEmitter.fire(event);
-        let stat: FileStatWithMetadata;
+        let result: T;
         try {
-            stat = await this.doMove(source, target, options?.overwrite);
+            result = await run();
         } catch (error) {
             await this.onDidFailUserOperationEmitter.fire(event);
             throw error;
         }
 
         await this.onDidRunUserOperationEmitter.fire(event);
-        return stat;
+        return result;
     }
 
     protected async doMove(source: URI, target: URI, overwrite?: boolean): Promise<FileStatWithMetadata> {
@@ -1379,18 +1383,7 @@ export class FileService {
         if (options?.fromUserGesture === false) {
             return this.doDelete(resource, options);
         }
-        await this.runFileOperationParticipants(resource, undefined, FileOperation.DELETE);
-
-        const event = { correlationId: this.correlationIds++, operation: FileOperation.DELETE, target: resource };
-        await this.onWillRunUserOperationEmitter.fire(event);
-        try {
-            await this.doDelete(resource, options);
-        } catch (error) {
-            await this.onDidFailUserOperationEmitter.fire(event);
-            throw error;
-        }
-
-        await this.onDidRunUserOperationEmitter.fire(event);
+        return this.runUserFileOperation(FileOperation.DELETE, resource, undefined, () => this.doDelete(resource, options));
     }
 
     protected async doDelete(resource: URI, options?: Partial<FileDeleteOptions>): Promise<void> {

@@ -373,6 +373,7 @@ impl SessionActor {
             cancel_subagents,
             kill_background_tasks,
             history,
+            expected_prompt_id: _,
             trigger,
             user_initiated,
             acknowledged: _,

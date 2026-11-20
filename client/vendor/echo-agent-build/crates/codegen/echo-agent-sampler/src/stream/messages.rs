@@ -75,9 +75,8 @@ enum BlockType {
 /// [`SamplingEvent`]s.
 ///
 /// Yields exactly one terminal event ([`SamplingEvent::Completed`] or
-/// [`SamplingEvent::Failed`]) per request. Server-side `Error` events
-/// translate to `SamplingError::Api { status: 500, .. }` so the actor's
-/// retry loop treats them as retryable transport-level errors.
+/// [`SamplingEvent::Failed`]) per request. The provider's `message_stop`
+/// completes the message. EOF before it is a stream interruption.
 pub fn stream_messages<'a>(
     raw_stream: BoxStream<'a, Result<MessageStreamEvent, SamplingError>>,
     model_metadata: Option<ResponseModelMetadata>,
@@ -146,7 +145,16 @@ pub fn stream_messages<'a>(
         loop {
             let event_result = match tokio::time::timeout(idle_timeout, stream.next()).await {
                 Ok(Some(event_result)) => event_result,
-                Ok(None) => break,
+                Ok(None) => {
+                    let err = SamplingError::EventStreamError(
+                        "Messages API stream ended before message_stop".to_string(),
+                    );
+                    yield SamplingEvent::Failed {
+                        request_id: request_id.clone(),
+                        error: SamplingErrorInfo::from(&err),
+                    };
+                    return;
+                }
                 Err(_elapsed) => {
                     let err = SamplingError::IdleTimeout {
                         elapsed_secs: idle_timeout.as_secs(),
@@ -475,10 +483,7 @@ pub fn stream_messages<'a>(
                     }
                 }
 
-                MessageStreamEvent::MessageStop => {
-                    // Final message complete; the loop exits naturally
-                    // when the underlying stream ends.
-                }
+                MessageStreamEvent::MessageStop => break,
 
                 MessageStreamEvent::Ping => {
                     // Liveness only, no action; the inner timeout was

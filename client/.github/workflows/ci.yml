@@ -83,7 +83,11 @@ jobs:
           cache: 'pnpm'
       - run: node scripts/verify-vendored-runtime.mjs
       - run: node scripts/release-version.mjs check
-      - run: bash -n scripts/build.sh scripts/prepare-update-artifacts.sh scripts/publish-update.sh scripts/publish-all-updates.sh
+      - name: Check release script syntax
+        run: |
+          for script in scripts/build.sh scripts/prepare-update-artifacts.sh scripts/publish-update.sh scripts/publish-all-updates.sh; do
+            bash -n "$script" || exit "$?"
+          done
       - run: python3 -m unittest discover -s deploy/update-server -p 'test_*.py'
       - run: python3 -m unittest discover -s scripts -p 'test_setup_protoc.py'
       - run: python3 -m unittest discover -s scripts -p 'test_extract_meeting_speech.py'

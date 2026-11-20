@@ -48,7 +48,7 @@ vi.mock("@/lib/agent-client", async (original) => ({
   agentsValidateReferences: vi.fn(async () => {}),
   agentPrepareTaskWorkspace: vi.fn(async () => "/workspace/Tasks/default-task"),
   agentNewSession: vi.fn(async () => "new-session"),
-  agentLoadSession: vi.fn(async () => "model-a"), agentSend: vi.fn(async () => {}), projectsSave: vi.fn(async () => {}),
+  agentRecoverSession: vi.fn(async () => ({ modelId: "model-a" })), agentSend: vi.fn(async () => {}), projectsSave: vi.fn(async () => {}),
   internalReload: vi.fn(async () => {}), subscribeAgentEvents: vi.fn(async () => () => {}),
 }));
 

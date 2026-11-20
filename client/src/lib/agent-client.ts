@@ -214,15 +214,15 @@ export function agentSessionLoadInFlight(sessionId: string): boolean {
 }
 
 export function agentLoadSession(sessionId: string, cwd: string): Promise<string | null> {
-  try { return attachSession(sessionId, cwd, false).promise; }
+  try { return attachSession(sessionId, cwd).promise; }
   catch (error) { return Promise.reject(error); }
 }
 
 export async function agentRecoverSession(sessionId: string, cwd: string): Promise<SessionAttachment> {
-  return attachSession(sessionId, cwd, true).attachment;
+  return attachSession(sessionId, cwd).attachment;
 }
 
-function attachSession(sessionId: string, cwd: string, recovering: boolean): SessionLoad {
+function attachSession(sessionId: string, cwd: string): SessionLoad {
   const pending = sessionLoads.get(sessionId);
   if (pending) {
     if (pending.cwd !== cwd) throw new Error("会话正在加载，请使用该会话绑定的工作目录重试");
@@ -232,7 +232,7 @@ function attachSession(sessionId: string, cwd: string, recovering: boolean): Ses
   // reentrant navigation then joins the same projection and request.
   let successful = false;
   const attachment = Promise.resolve().then(async () => {
-    const result = await loadSessionHistory(sessionId, cwd, recovering);
+    const result = await loadSessionHistory(sessionId, cwd);
     successful = true;
     return result;
   }).finally(() => {
@@ -268,7 +268,7 @@ export async function agentReloadSession(sessionId: string, cwd: string): Promis
   return agentLoadSession(sessionId, cwd);
 }
 
-async function loadSessionHistory(sessionId: string, cwd: string, recovering: boolean): Promise<SessionAttachment> {
+async function loadSessionHistory(sessionId: string, cwd: string): Promise<SessionAttachment> {
   useSessionStore.getState().beginHistoryReplay(sessionId);
   const transcript = useSessionStore.getState().transcripts[sessionId];
   const cursor = transcript?.incompleteReplay || transcript?.pendingSendNowPromptId ? undefined : transcript?.completionCursor;
@@ -278,7 +278,8 @@ async function loadSessionHistory(sessionId: string, cwd: string, recovering: bo
   // A load can recreate the resident Runtime session, so any renderer-side MCP
   // acknowledgement for the previous resident instance is stale.
   invalidateAgentKnowledgeSourceSync(sessionId);
-  if (!recovering && !cursor) return { modelId: await invoke<string | null>("agent_load_session", { sessionId, cwd }) };
+  // Share the full attachment across callers. Recovery can join an ordinary
+  // load after IPC dispatch and still needs the resident turn identity.
   const result = await invoke<SessionAttachment>("agent_recover_session", { sessionId, cwd, ...(cursor ? { cursor } : {}) });
   if (cursor && result.cursorRejected) {
     // A rewind or missing record can invalidate an otherwise complete cache.
@@ -606,7 +607,7 @@ function guardKnowledgeSend(sessionId: string, promptId?: string): () => void {
 }
 
 /** Send a user prompt; streamed updates arrive via the events below. */
-export async function agentSend(
+export function agentSend(
   sessionId: string,
   text: string,
   attachments: string[] = [],
@@ -614,37 +615,11 @@ export async function agentSend(
   promptId?: string,
   coding?: CodingTurnOptions,
 ): Promise<void> {
-  const assertKnowledgeBoundary = guardKnowledgeSend(sessionId, promptId);
-  if (coding?.workspace && coding.taskId && promptId) {
-    await invoke("coding_checkpoint_start",{root:coding.workspace,taskId:coding.taskId,runId:promptId});
-    assertKnowledgeBoundary();
-  }
-  await synchronizeKnowledgeSources(sessionId, promptId);
-  assertKnowledgeBoundary();
-  const prepared = await preparePromptWithPersonalKnowledge(
-    sessionId,
-    text,
-    displayText,
-    promptId,
-  );
-  assertKnowledgeBoundary();
-  await persistKnowledgeTrace(sessionId, promptId);
-  assertKnowledgeBoundary();
-  await invoke<void>("agent_send", {
-    sessionId,
-    text: prepared.promptText,
-    attachments,
-    displayText,
-    promptId: promptId ?? null,
-    sendNow: false,
-    ...(coding?.mode ? { mode: coding.mode } : {}),
-    ...(coding?.documentToolBridge ? { documentToolBridge: true } : {}),
-    ...(coding?.review ? {review:coding.review} : {}),
-  });
+  return sendAgentPrompt({ sessionId, text, attachments, displayText, promptId, coding, sendNow: false });
 }
 
 /** Atomically cancel the active turn and submit its replacement. */
-export async function agentSendNow(
+export function agentSendNow(
   sessionId: string,
   text: string,
   attachments: string[] = [],
@@ -652,40 +627,89 @@ export async function agentSendNow(
   promptId?: string,
   coding?: CodingTurnOptions,
 ): Promise<void> {
-  const assertKnowledgeBoundary = guardKnowledgeSend(sessionId, promptId);
-  await synchronizeKnowledgeSources(sessionId, promptId);
-  assertKnowledgeBoundary();
-  const prepared = await preparePromptWithPersonalKnowledge(
-    sessionId,
-    text,
-    displayText,
-    promptId,
-  );
-  assertKnowledgeBoundary();
-  await persistKnowledgeTrace(sessionId, promptId);
-  assertKnowledgeBoundary();
-  await invoke<void>("agent_send", {
-    sessionId,
-    text: prepared.promptText,
-    attachments,
-    displayText,
-    promptId: promptId ?? null,
-    sendNow: true,
-    ...(coding?.mode ? { mode: coding.mode } : {}),
-    ...(coding?.documentToolBridge ? { documentToolBridge: true } : {}),
-    ...(coding?.review ? {review:coding.review} : {}),
-  });
+  return sendAgentPrompt({ sessionId, text, attachments, displayText, promptId, coding, sendNow: true });
+}
+
+const pendingPromptSubmissions = new Map<string, { phase: "preparing" | "posted" | "withdrawn" }>();
+
+async function sendAgentPrompt({ sessionId, text, attachments, displayText, promptId, coding, sendNow }: {
+  sessionId: string;
+  text: string;
+  attachments: string[];
+  displayText: string;
+  promptId?: string;
+  coding?: CodingTurnOptions;
+  sendNow: boolean;
+}): Promise<void> {
+  const key = promptId ? `${sessionId}\0${promptId}` : undefined;
+  const submission: { phase: "preparing" | "posted" | "withdrawn" } = { phase: "preparing" };
+  if (key && pendingPromptSubmissions.has(key)) throw new Error("该消息正在处理，请等待当前发送结束");
+  if (key) pendingPromptSubmissions.set(key, submission);
+  const withdrawn = () => submission.phase === "withdrawn";
+  try {
+    const assertKnowledgeBoundary = guardKnowledgeSend(sessionId, promptId);
+    if (!sendNow && coding?.workspace && coding.taskId && promptId) {
+      await invoke("coding_checkpoint_start", { root: coding.workspace, taskId: coding.taskId, runId: promptId });
+      if (withdrawn()) return;
+      assertKnowledgeBoundary();
+    }
+    await synchronizeKnowledgeSources(sessionId, promptId);
+    if (withdrawn()) return;
+    assertKnowledgeBoundary();
+    const prepared = await preparePromptWithPersonalKnowledge(sessionId, text, displayText, promptId);
+    if (withdrawn()) return;
+    assertKnowledgeBoundary();
+    await persistKnowledgeTrace(sessionId, promptId);
+    if (withdrawn()) return;
+    assertKnowledgeBoundary();
+    submission.phase = "posted";
+    await invoke<void>("agent_send", {
+      sessionId,
+      text: prepared.promptText,
+      attachments,
+      displayText,
+      promptId: promptId ?? null,
+      sendNow,
+      ...(coding?.mode ? { mode: coding.mode } : {}),
+      ...(coding?.documentToolBridge ? { documentToolBridge: true } : {}),
+      ...(coding?.review ? { review: coding.review } : {}),
+    });
+  } catch (error) {
+    if (!withdrawn()) throw error;
+  } finally {
+    if (key) pendingPromptSubmissions.delete(key);
+  }
 }
 
 export async function agentCancel(
   sessionId: string,
   cancelAction: "pause" | "stop" = "stop",
   promptId?: string,
+  previousPromptId?: string,
 ): Promise<void> {
+  const promptSubmission = (id?: string) => id ? pendingPromptSubmissions.get(`${sessionId}\0${id}`) : undefined;
+  let submission = promptSubmission(promptId);
+  const previous = previousPromptId === promptId ? undefined : promptSubmission(previousPromptId);
+  if (previous && previous.phase !== "posted") {
+    previous.phase = "withdrawn";
+    previousPromptId = undefined;
+  }
+  let acceptEndedPrompt = false;
+  if (submission && submission.phase !== "posted") {
+    submission.phase = "withdrawn";
+    if (!previousPromptId || previousPromptId === promptId) return;
+    promptId = previousPromptId;
+    submission = previous;
+    previousPromptId = undefined;
+    acceptEndedPrompt = true;
+  }
   await invoke<void>("agent_cancel", {
     sessionId,
     cancelAction,
     promptId: promptId ?? null,
+    ...(submission ? { preparingPrompt: true } : {}),
+    ...(previousPromptId ? { previousPromptId, ...(previous ? { previousPromptPosted: true } : {}) } : {}),
+    ...(acceptEndedPrompt ? { acceptEndedPrompt: true } : {}),
   });
 }
 

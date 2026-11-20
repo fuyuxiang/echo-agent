@@ -201,6 +201,16 @@ export function formatAgentError(raw: string): string | null {
     return STREAM_INTERRUPTED_MESSAGE;
   }
   const lowerRaw = raw.toLowerCase();
+  if (lowerRaw.includes("response truncated by max_tokens")) {
+    return "回复已达到模型的输出长度上限。可在当前任务中接着处理，或将请求拆成较小的步骤。";
+  }
+  if (lowerRaw.includes("responses api reached the maximum number of messages")) {
+    return "模型服务已达到单次回复的消息数量上限。请在当前任务中分步继续。";
+  }
+  if (lowerRaw.includes("responses api ended this turn after steering")
+      || lowerRaw.includes("responses api returned an incomplete response")) {
+    return "模型服务提前结束了本轮回复。已有内容已保留，可在当前任务中继续。";
+  }
   if (isModelQuotaExhausted(raw)) {
     return "模型可用额度已用尽，本轮暂时无法继续。已有内容已保留，请等待服务恢复或选择其他可用模型。";
   }

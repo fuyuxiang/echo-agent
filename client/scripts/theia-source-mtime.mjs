@@ -20,6 +20,9 @@ export function latestTheiaSourceMtime(sourceRoot) {
   for (const path of [
     join(sourceRoot, "package.json"),
     join(sourceRoot, "package-lock.json"),
+    join(sourceRoot, "lerna.json"),
+    join(sourceRoot, "configs"),
+    join(sourceRoot, "scripts/compile-references.js"),
     join(sourceRoot, "packages"),
     join(sourceRoot, "dev-packages"),
     join(sourceRoot, "security"),
@@ -29,6 +32,7 @@ export function latestTheiaSourceMtime(sourceRoot) {
     join(projectRoot, "scripts/build-theia.mjs"),
     join(projectRoot, "scripts/prepare-theia.mjs"),
     join(projectRoot, "scripts/stage-theia-runtime.mjs"),
+    join(projectRoot, "scripts/theia-source-mtime.mjs"),
     join(projectRoot, "scripts/theia-runtime-manifest.mjs"),
     join(projectRoot, "scripts/node-runtime-version.mjs"),
     join(projectRoot, "scripts/patch-theia-scanoss.mjs"),

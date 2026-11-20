@@ -4,8 +4,8 @@ import { useEffect } from "react";
 import { groupCleanupAck, groupCleanupPending, groupDelete, groupList, groupSnapshot, onGroupChanged, type Group, type TeamTemplate } from "./group-client";
 import { readDurable, writeDurable, isStringMap, useStorageHealth } from "@/lib/durable-ui-state";
 import { invalidateAgentKnowledgeSourceSync, type RuntimeTeamInfo } from "@/lib/agent-client";
-import { touchDraft } from "@/lib/draft-lifecycle";
-import { saveDraftAttachments } from "@/lib/draft-attachments";
+import { draftRevision, touchDraft } from "@/lib/draft-lifecycle";
+import { draftAttachments, saveDraftAttachments } from "@/lib/draft-attachments";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { useSessionStore } from "@/stores/session-store";
 import { usePermissionStore } from "@/stores/permission-store";
@@ -24,7 +24,7 @@ interface GroupState {
   drafts: Record<string, string>;
   outbox: Record<string, string>;
   requestId: (id: string, fingerprint: string) => string;
-  acknowledgeSend: (id: string) => void;
+  acknowledgeSend: (id: string, requestId: string, submittedRevision?: number) => boolean;
   readRevisions: Record<string, number>;
   markRead: (id: string, revision: number) => void;
   cleanupError: string | null;
@@ -42,6 +42,8 @@ let listGeneration = 0, selectionGeneration = 0;
 const deletedGroups = new Set<string>();
 const pendingCleanup = new Map<string, string[]>();
 let cleanupRunning: Promise<void> | null = null;
+const DRAFTS_KEY = "echoagent.group-drafts.v1";
+const OUTBOX_KEY = "echoagent.group-outbox.v1";
 function submissionFingerprint(value: string): string {
   try {
     const input = JSON.parse(value);
@@ -51,25 +53,90 @@ function submissionFingerprint(value: string): string {
   } catch { /* Older callers may use an opaque fingerprint. */ }
   return value;
 }
+
+interface GroupSubmission {
+  id: string;
+  fingerprint: string;
+  acceptedDraft?: { text: string; attachments: string[] };
+}
+
+function pendingSubmission(value?: string): GroupSubmission | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const entry = JSON.parse(value);
+    if (typeof entry?.id === "string" && typeof entry.fingerprint === "string") {
+      const draft = entry.acceptedDraft;
+      return { id: entry.id, fingerprint: entry.fingerprint, ...(typeof draft?.text === "string"
+        && Array.isArray(draft.attachments) && draft.attachments.every((path: unknown) => typeof path === "string")
+        ? { acceptedDraft: draft } : {}) };
+    }
+  } catch { /* Replace invalid records when preparing the next send. */ }
+}
+
+function settleAcceptedDraft(id: string, saved: GroupSubmission, drafts: GroupState["drafts"], outbox: GroupState["outbox"]) {
+  let draftCleared = true;
+  const accepted = saved.acceptedDraft;
+  if (accepted) {
+    const scope = `group:${id}`;
+    const paths = draftAttachments(scope);
+    const text = drafts[id] ?? "";
+    // A process may have cleared one key before exiting. Keep any newer draft.
+    if ((!text || text === accepted.text) && (!paths.length || (
+      paths.length === accepted.attachments.length && paths.every((path, index) => path === accepted.attachments[index])
+    ))) {
+      const remainingDrafts = { ...drafts };
+      delete remainingDrafts[id];
+      if (writeDurable(DRAFTS_KEY, remainingDrafts)) {
+        drafts = remainingDrafts;
+        draftCleared = saveDraftAttachments(scope, []);
+      } else draftCleared = false;
+    }
+  }
+  if (!draftCleared) return { drafts, outbox, draftCleared };
+  const remainingOutbox = { ...outbox };
+  delete remainingOutbox[id];
+  if (writeDurable(OUTBOX_KEY, remainingOutbox)) outbox = remainingOutbox;
+  return { drafts, outbox, draftCleared };
+}
+
+function restoreGroupDrafts() {
+  let drafts = readDurable(DRAFTS_KEY, {}, isStringMap);
+  let outbox = readDurable(OUTBOX_KEY, {}, isStringMap);
+  for (const [id, record] of Object.entries(outbox)) {
+    const saved = pendingSubmission(record);
+    if (saved?.acceptedDraft) ({ drafts, outbox } = settleAcceptedDraft(id, saved, drafts, outbox));
+  }
+  return { drafts, outbox };
+}
+
 export const useGroupStore = create<GroupState>((set, get) => ({
   groups: [], currentId: null, current: null, error: null, loading: false, createFrom: null, createTemplate: null, cleanupError: null,
-  drafts: readDurable("echoagent.group-drafts.v1", {}, isStringMap),
-  outbox: readDurable("echoagent.group-outbox.v1", {}, isStringMap),
+  ...restoreGroupDrafts(),
   requestId: (id, fingerprint) => {
     if (deletedGroups.has(id)) throw new Error("专家团已删除，无法继续发送");
-    try {
-      const pending = JSON.parse(get().outbox[id] ?? "null");
-      if (typeof pending?.fingerprint === "string" && submissionFingerprint(pending.fingerprint) === submissionFingerprint(fingerprint) && typeof pending.id === "string") return pending.id;
-    } catch { /* Replace an invalid pending record before sending. */ }
+    const pending = pendingSubmission(get().outbox[id]);
+    if (pending && submissionFingerprint(pending.fingerprint) === submissionFingerprint(fingerprint)) return pending.id;
     const requestId = crypto.randomUUID();
     const outbox = { ...get().outbox, [id]: JSON.stringify({ id: requestId, fingerprint }) };
-    if (!writeDurable("echoagent.group-outbox.v1", outbox)) throw new Error("暂时无法保存待发送消息，请释放存储空间后重试");
+    if (!writeDurable(OUTBOX_KEY, outbox)) throw new Error("暂时无法保存待发送消息，请释放存储空间后重试");
     set({ outbox });
     return requestId;
   },
-  acknowledgeSend: (id) => {
-    const outbox = { ...get().outbox }; delete outbox[id];
-    writeDurable("echoagent.group-outbox.v1", outbox); set({ outbox });
+  acknowledgeSend: (id, requestId, submittedRevision) => {
+    const { drafts, outbox } = get();
+    const pending = pendingSubmission(outbox[id]);
+    if (pending?.id !== requestId) return true;
+    const scope = `group:${id}`;
+    if (submittedRevision !== undefined && submittedRevision === draftRevision(scope) && !pending.acceptedDraft) {
+      pending.acceptedDraft = { text: drafts[id] ?? "", attachments: draftAttachments(scope) };
+      const acknowledged = { ...outbox, [id]: JSON.stringify(pending) };
+      // Persist the receipt before touching either of the draft keys.
+      if (!writeDurable(OUTBOX_KEY, acknowledged)) return false;
+      set({ outbox: acknowledged });
+    }
+    const settled = settleAcceptedDraft(id, pending, get().drafts, get().outbox);
+    set({ drafts: settled.drafts, outbox: settled.outbox });
+    return settled.draftCleared;
   },
   readRevisions: readDurable<Record<string, number>>("echoagent.group-read.v3", {}, (value): value is Record<string, number> => !!value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every(value => typeof value === "number" && Number.isFinite(value))),
   markRead: (id, revision) => { if (deletedGroups.has(id)) return; if ((get().readRevisions[id] ?? 0) >= revision) return; const readRevisions = { ...get().readRevisions, [id]: revision }; if (writeDurable("echoagent.group-read.v3", readRevisions)) set({ readRevisions }); },
@@ -136,8 +203,8 @@ export const useGroupStore = create<GroupState>((set, get) => ({
     } catch (error) { if (generation === listGeneration) set({ error: String(error).replace(/^Error:\s*/, "") }); }
   },
   select: async (id) => {
-    const generation = ++selectionGeneration;
     if (id && deletedGroups.has(id)) return;
+    const generation = ++selectionGeneration;
     set({ currentId: id, ...(get().current?.id === id ? {} : { current: null }), loading: !!id, createFrom: null, createTemplate: null });
     if (!id) return;
     try {
@@ -165,8 +232,10 @@ export const useGroupStore = create<GroupState>((set, get) => ({
   },
   setDraft: (id, text) => {
     if (deletedGroups.has(id) || (id.startsWith("options:") && deletedGroups.has(id.slice(8)))) return;
+    const previous = get().drafts[id] ?? "";
     const drafts = { ...get().drafts, [id]: text };
-    if (writeDurable("echoagent.group-drafts.v1", drafts)) set({ drafts });
+    if (writeDurable(DRAFTS_KEY, drafts)) set({ drafts });
+    if (!id.startsWith("options:") && previous !== text) touchDraft(`group:${id}`);
   },
   clearCreationDraft: () => {
     const drafts = { ...get().drafts };
@@ -196,11 +265,11 @@ export function useGroupEvents(ready: boolean) {
     let closed = false, timer: ReturnType<typeof setTimeout> | undefined;
     let unlisten: (() => void) | undefined;
     const dirty = new Set<string>();
-    void useGroupStore.getState().refresh();
     void useGroupStore.getState().retryCleanup();
     const retry = () => { void useGroupStore.getState().retryCleanup(); };
     window.addEventListener("focus",retry);
     void onGroupChanged((id, deleted, sessionIds) => {
+      if (closed) return;
       if (deleted) { useGroupStore.getState().forget(id, sessionIds); dirty.delete(id); return; }
       if (deletedGroups.has(id)) return;
       dirty.add(id);
@@ -212,7 +281,19 @@ export function useGroupEvents(ready: boolean) {
         if (state.currentId && dirty.has(state.currentId)) void state.select(state.currentId);
         dirty.clear();
       }, 100);
-    }).then(stop => { if (closed) stop(); else unlisten = stop; }).catch(error => useGroupStore.setState({ error: String(error) }));
+    }).then(stop => {
+      if (closed) { stop(); return; }
+      unlisten = stop;
+      // A snapshot taken while registration is pending can miss a change
+      // permanently if the native side has no further events to deliver.
+      const state = useGroupStore.getState();
+      void state.refresh();
+      if (state.currentId) void state.select(state.currentId);
+    }).catch(async error => {
+      if (closed) return;
+      await useGroupStore.getState().refresh();
+      if (!closed && !useGroupStore.getState().error) useGroupStore.setState({ error: String(error) });
+    });
     return () => { closed = true; unlisten?.(); window.removeEventListener("focus",retry); if (timer) clearTimeout(timer); };
   }, [ready]);
 }

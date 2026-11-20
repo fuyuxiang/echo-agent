@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 
 import { beginAgentTurn } from "@/lib/agent-turn";
-import { agentLoadSession } from "@/lib/agent-client";
+import { agentRecoverSession } from "@/lib/agent-client";
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionsStore } from "@/stores/sessions-store";
 import type { SessionTranscript } from "@/stores/session-store";
@@ -291,8 +291,9 @@ function CodingTaskRuntime({ root, taskId, apiReady, availableModelIds }: Tracke
     restoredSession.current = sessionId;
     let disposed = false;
     setRestoring(true);
-    void agentLoadSession(sessionId, root)
-      .then(async () => {
+    void agentRecoverSession(sessionId, root)
+      .then(async ({ activePromptId }) => {
+        if (activePromptId) useSessionStore.getState().adoptRecoveredTurn(sessionId, activePromptId);
         const store = useSessionStore.getState();
         if (!store.transcripts[sessionId]) {
           throw new Error("会话历史未能载入");

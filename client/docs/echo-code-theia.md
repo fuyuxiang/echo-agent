@@ -30,4 +30,4 @@ Theia 的文件操作和交互终端以当前系统用户身份运行。授权�
 
 ## 维护与验证
 
-修改桥接或插件后运行 `pnpm ide:build`、`pnpm ide:stage`、`pnpm ide:verify-git` 和 `pnpm test:ide`；生产依赖与兼容补丁另见 [依赖维护](dependency-security.md)。原生 Git/编辑器驱动与文件、进程独立核验见 [开发与验收](testing.md)，Windows 文件切换、后台窗口和输入法按 [Windows 桌面验收](windows-desktop-feedback-acceptance.md) 检查。
+修改桥接或插件后运行 `pnpm ide:build`、`pnpm ide:stage`、`pnpm ide:verify-git` 和 `pnpm test:ide`；生产依赖与兼容补丁另见 [依赖维护](dependency-security.md)。原生 Git/编辑器驱动与文件、进程独立核验见 [开发与验收](testing.md)，Windows 安装与启动由 [桌面发行验收](desktop-release.md#构建与验收) 覆盖，文件切换、后台窗口和输入法在原生桌面验证。
