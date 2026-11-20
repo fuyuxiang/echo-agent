@@ -9,7 +9,10 @@ import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout"
 import { PageChromeProvider, PageToolbar } from "../PageToolbar";
 import { SIDEBAR_MENU_STORAGE_KEY } from "@/lib/sidebar-menu";
 import type { SessionStatus } from "@/lib/types";
-import { agentDeleteSession } from "@/lib/agent-client";
+import { agentDeleteSession, agentSetSessionPinned } from "@/lib/agent-client";
+import { persistSessionStatus } from "@/lib/session-status-persistence";
+
+vi.mock("@/lib/session-status-persistence", () => ({ persistSessionStatus: vi.fn() }));
 
 vi.mock("@/lib/agent-client", () => ({
   agentRenameSession: vi.fn().mockResolvedValue(undefined),
@@ -659,6 +662,28 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "前往项目页创建" }));
     expect(onNavigate).toHaveBeenCalledWith("项目");
     expect(screen.queryByRole("dialog", { name: "移入项目" })).toBeNull();
+  });
+
+  it.each([true, false])("等待置顶更新时保留最新任务状态和摘要字段 (%s)", async (pinned) => {
+    let confirm!: (value: boolean) => void;
+    vi.mocked(agentSetSessionPinned).mockImplementationOnce(() => new Promise(resolve => { confirm = resolve; }));
+    vi.mocked(persistSessionStatus).mockClear();
+    const store = useSessionsStore.getState();
+    store.setIndependent([{
+      sessionId: "pin-race", cwd: "/workspace", title: "旧标题",
+      status: "working", currentModelId: "m1", pinned: !pinned,
+    }]);
+    render(<Sidebar {...base} />);
+    fireEvent.click(screen.getByRole("button", { name: "旧标题的会话操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: pinned ? "置顶" : "取消置顶" }));
+    expect(agentSetSessionPinned).toHaveBeenLastCalledWith("pin-race", pinned);
+    act(() => store.upsert({ sessionId: "pin-race", status: "completed", title: "新标题", currentModelId: "m2" }));
+    await act(async () => confirm(pinned));
+    expect(useSessionsStore.getState().independent[0]).toMatchObject({
+      pinned, status: "completed", title: "新标题", currentModelId: "m2",
+    });
+    expect(persistSessionStatus).toHaveBeenCalledTimes(1);
+    expect(persistSessionStatus).toHaveBeenCalledWith("pin-race", "completed", expect.any(String));
   });
 
   it("侧栏项目对话提供移出、归档和经确认的永久删除", async () => {

@@ -1985,9 +1985,12 @@ impl SamplingClient {
                             )
                         }
                     }
-                    Err(e) => {
+                    Err(error) => {
                         *had_transport_error = true;
-                        Some(Err(SamplingError::EventStreamError(e.to_string())))
+                        Some(Err(SamplingError::ChatStreamInterrupted {
+                            retryable: matches!(&error, EventStreamError::Transport(_)),
+                            detail: format!("Messages API stream interrupted: {error}"),
+                        }))
                     }
                 };
                 std::future::ready(item)

@@ -1058,9 +1058,7 @@ pub(crate) async fn delete_mcp_server_config(server_name: &str) -> Result<bool> 
 /// Delete an MCP server entry from the config file at `path`.
 ///
 /// Same semantics as [`delete_mcp_server_config`] but targets an explicit
-/// config file, e.g. a project-scoped `.echo-agent/config.toml`. OAuth credential
-/// cleanup is keyed by server name against the global credential store, so it
-/// also drops credentials a same-named server in another config file uses.
+/// config file, e.g. a project-scoped `.echo-agent/config.toml`.
 pub async fn delete_mcp_server_config_at(
     path: &std::path::Path,
     server_name: &str,
@@ -1087,15 +1085,14 @@ pub async fn delete_mcp_server_config_at(
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!("config root is not a table"))?;
 
-    let existed = table
+    let removed = table
         .get_mut("mcp_servers")
         .and_then(|v| v.as_table_mut())
-        .and_then(|servers| servers.remove(server_name))
-        .is_some();
+        .and_then(|servers| servers.remove(server_name));
 
-    if !existed {
+    let Some(removed) = removed else {
         return Ok(false);
-    }
+    };
 
     // Clean up empty mcp_servers table.
     if table
@@ -1131,22 +1128,32 @@ pub async fn delete_mcp_server_config_at(
     let toml_str = toml::to_string_pretty(&root)?;
     super::persist::atomic_write_string(path, &toml_str)?;
 
-    remove_mcp_server_credentials(server_name);
+    if let Ok(config) = removed.try_into::<McpServerConfig>()
+        && let Err(error) = remove_mcp_server_credentials(server_name, &config)
+    {
+        tracing::warn!(%error, server_name, "could not remove MCP credentials");
+    }
 
     Ok(true)
 }
 
-/// Remove OAuth credentials associated with a server after a transactional
-/// bulk config update. Kept separate from the TOML mutation so callers can
-/// commit several MCP deletions in one config transaction without re-reading
-/// and rewriting the complete file once per server.
-pub fn remove_mcp_server_credentials(server_name: &str) {
-    if let Ok(mut cred_store) = echo_agent_mcp::credentials::McpCredentialStore::load_default() {
-        let removed = cred_store.remove_by_server_name(server_name);
-        if removed > 0 {
-            let _ = cred_store.save_default();
+/// Resolve the deleted definition just as at startup, then remove its exact
+/// credential key under the credential store's cross-process lock.
+pub fn remove_mcp_server_credentials(server_name: &str, config: &McpServerConfig) -> Result<()> {
+    let preferences = load_mcp_preferences().file();
+    let McpSetupResolution::Resolved(mut config) = config.resolve_setup(preferences.servers.get(server_name)) else {
+        return Ok(());
+    };
+    config.expand_strings(&crate::config::expand_env_vars_in_string);
+    if let McpServerTransportConfig::StreamableHttp { url, .. } = &config.transport
+        && let Ok(url) = url::Url::parse(url)
+    {
+        let mut store = echo_agent_mcp::credentials::McpCredentialStore::load_default()?;
+        if store.has_credentials(server_name, &url) {
+            store.remove_and_save(server_name, &url)?;
         }
     }
+    Ok(())
 }
 
 /// Load disabled_tools for all MCP servers from `[disabled_mcp_tools]` in config.toml.

@@ -1158,6 +1158,7 @@ mod tests {
         let mcp = |name: &str| ImportableItem::McpServer {
             name: name.into(),
             config: Box::new(McpServerConfig {
+                desktop_instance_id: None,
                 transport: McpServerTransportConfig::Stdio {
                     command: "true".into(),
                     args: vec![],

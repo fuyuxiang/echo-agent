@@ -305,26 +305,35 @@ fn messages_text_frames(text: &str) -> Vec<SseEvent> {
 
 #[tokio::test]
 async fn messages_truncation_after_visible_output_fails_without_retry() {
-    let server = MockInferenceServer::start().await.unwrap();
-    let mut frames = messages_text_frames("Draft.");
-    frames.pop();
-    server.enqueue_response("/v1/messages", ScriptedResponse::sse(frames));
-    let config = SamplerConfig {
-        api_backend: ApiBackend::Messages,
-        ..config(server.url())
-    };
-    let events = collect_backend_events(config, false).await;
-    let run = Run {
-        requests: server.messages_request_count(),
-        events,
-    };
-    assert_eq!(run.requests, 1);
-    assert!(run.events.iter().any(|event| matches!(
-        event,
-        SamplingEvent::ChannelToken { text, .. } if text == "Draft."
-    )));
-    assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
-        if error.kind == SamplingErrorKind::Http && error.message.contains("message_stop")));
+    // EOF after the block, EOF after stop_reason, and a message_stop
+    // without stop_reason must all preserve the published draft and fail.
+    for (keep_delta, keep_stop) in [(false, false), (true, false), (false, true)] {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut frames = messages_text_frames("Draft.");
+        if !keep_stop {
+            frames.pop();
+        }
+        if !keep_delta {
+            frames.remove(4);
+        }
+        server.enqueue_response("/v1/messages", ScriptedResponse::sse(frames));
+        let config = SamplerConfig {
+            api_backend: ApiBackend::Messages,
+            ..config(server.url())
+        };
+        let events = collect_backend_events(config, false).await;
+        let run = Run {
+            requests: server.messages_request_count(),
+            events,
+        };
+        assert_eq!(run.requests, 1);
+        assert!(run.events.iter().any(|event| matches!(
+            event,
+            SamplingEvent::ChannelToken { text, .. } if text == "Draft."
+        )));
+        assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+            if error.kind == SamplingErrorKind::ChatStreamInterrupted && error.message.contains("message_stop")));
+    }
 }
 
 #[tokio::test]

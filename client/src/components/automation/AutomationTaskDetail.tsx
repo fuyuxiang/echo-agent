@@ -156,7 +156,7 @@ export function AutomationTaskDetail({
           </div>
           <p className="atm-task-detail__muted">
             {localTimeZoneLabel()} · 本机运行 ·{" "}
-            <span title={task.cwds}>{workspaceName(task.cwds)}</span> ·{" "}
+            <span title={task.cwds[0]}>{workspaceName(task.cwds)}</span> ·{" "}
             {task.permissionMode === "fullAccess" ? "完全访问" : "默认权限"}
           </p>
           {taskState(task, runs) === "active" && runtimeNotice}
@@ -186,7 +186,7 @@ export function AutomationTaskDetail({
             <p className="atm-task-config__prompt">{task.prompt}</p>
             <dl>
               <dt>工作目录</dt>
-              <dd>{task.cwds || "默认工作目录"}</dd>
+              <dd>{task.cwds.join(" · ") || "默认工作目录"}</dd>
               <dt>通知</dt>
               <dd>
                 {task.pushToWeChat

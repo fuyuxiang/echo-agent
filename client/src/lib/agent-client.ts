@@ -38,6 +38,7 @@ import type {
   SessionSearchPage,
   SessionInfoResponse,
   SessionSummary,
+  SessionHistoryPage,
   SessionSummaryEvent,
   SessionUpdate,
   SessionUsage,
@@ -319,10 +320,19 @@ export interface WorkspaceInfo {
   lastTitle?: string;
 }
 
-/**
- * List every working directory EchoAgent has ever seen (deduplicated), with a
- * session count per cwd. Used to populate the Composer's working-directory picker.
- */
+export async function agentListSessionHistory(cursor?: string, refresh?: boolean): Promise<SessionHistoryPage> {
+  return invoke<SessionHistoryPage>("agent_list_session_history", { cursor, refresh });
+}
+
+export async function agentFindSessionSummary(sessionId: string): Promise<SessionSummary | null> {
+  return invoke<SessionSummary | null>("agent_find_session_summary", { sessionId });
+}
+
+export async function agentFindSessionSummaries(sessionIds: string[]): Promise<SessionSummary[]> {
+  return invoke<SessionSummary[]>("agent_find_session_summaries", { sessionIds });
+}
+
+/** List working directories for the Composer's picker. */
 export async function agentListWorkspaces(): Promise<WorkspaceInfo[]> {
   return invoke<WorkspaceInfo[]>("agent_list_workspaces");
 }

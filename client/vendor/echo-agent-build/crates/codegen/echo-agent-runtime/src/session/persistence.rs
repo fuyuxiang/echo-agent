@@ -686,7 +686,7 @@ pub(crate) fn find_persisted_session_dir_by_id_result(
     find_persisted_session_dir_by_id_in_root_result(session_id, &echo_agent_home().join("sessions"))
 }
 
-pub(crate) fn find_persisted_session_dir_by_id_in_root_result(
+pub fn find_persisted_session_dir_by_id_in_root_result(
     session_id: &str,
     sessions_root: &Path,
 ) -> io::Result<Option<PathBuf>> {

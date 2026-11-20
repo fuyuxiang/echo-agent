@@ -1637,6 +1637,7 @@ fn parse_mcp_add_fields(name: &str, url_or_cmd: &str) -> Option<ButtonAction> {
     Some(ButtonAction::AddMcpServer {
         name,
         config: Box::new(McpServerConfig {
+            desktop_instance_id: None,
             transport,
             enabled: true,
             oauth: None,

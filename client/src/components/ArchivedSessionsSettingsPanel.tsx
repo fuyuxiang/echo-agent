@@ -1,3 +1,4 @@
+import type { SessionHistoryControls } from "@/lib/types";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArchiveRestore,
@@ -31,6 +32,7 @@ interface ArchivedSessionEntry {
 }
 
 interface ArchivedSessionsSettingsPanelProps {
+  sessionHistory?: SessionHistoryControls;
   onRestoreSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
   onDeleteSession?: (sessionId: string, cwd?: string) => Promise<void>;
   onOpenSession?: (sessionId: string, cwd?: string) => void | Promise<void>;
@@ -74,6 +76,7 @@ function formatRecentActivity(value?: string): string {
  */
 export function ArchivedSessionsSettingsPanel({
   onRestoreSession,
+  sessionHistory,
   onDeleteSession,
   onOpenSession,
   onClose,
@@ -419,16 +422,18 @@ export function ArchivedSessionsSettingsPanel({
 
       {error && <div className="archived-settings__error" role="alert">{error}</div>}
 
-      {archived.length === 0 ? (
+      {archived.length === 0 && sessionHistory?.loading ? (
+        <p role="status">正在读取归档会话…</p>
+      ) : archived.length === 0 ? (
         <div className="archived-settings__empty">
           <ArchiveRestore size={34} aria-hidden="true" />
-          <strong>暂无已归档会话</strong>
-          <span>从会话的“…”菜单选择“归档”后，会显示在这里。</span>
+          <strong>{sessionHistory?.hasMore || sessionHistory?.incomplete ? "已加载历史中暂无归档会话" : "暂无已归档会话"}</strong>
+          {!sessionHistory?.hasMore && !sessionHistory?.incomplete && <span>从会话的“…”菜单选择“归档”后，会显示在这里。</span>}
         </div>
       ) : visible.length === 0 ? (
         <div className="archived-settings__empty">
           <Search size={32} aria-hidden="true" />
-          <strong>没有匹配的归档会话</strong>
+          <strong>{sessionHistory?.hasMore ? "已加载历史中没有匹配的归档会话" : "没有匹配的归档会话"}</strong>
           <span>尝试更换关键词或范围。</span>
         </div>
       ) : (
@@ -496,6 +501,16 @@ export function ArchivedSessionsSettingsPanel({
             );
           })}
         </ul>
+      )}
+      {sessionHistory?.hasMore && (
+        <button type="button" className="settings-btn" disabled={sessionHistory.loading || bulkBusy}
+          onClick={sessionHistory.loadMore}>
+          {sessionHistory.loading ? "正在加载历史…" : "加载更多历史"}
+        </button>
+      )}
+      {sessionHistory?.incomplete && <p role="status">部分历史暂未列出，可刷新历史后重试。</p>}
+      {sessionHistory?.incomplete && (
+        <button type="button" className="settings-btn" disabled={sessionHistory.loading} onClick={sessionHistory.refresh}>刷新历史</button>
       )}
       {dialog}
     </div>

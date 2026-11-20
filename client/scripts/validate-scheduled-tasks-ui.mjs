@@ -36,6 +36,9 @@ try {
         await page.evaluate((value) => {
           document.documentElement.style.fontSize = `${value}px`;
         }, font);
+        await page.locator('.atm-task-cards[data-view="list"]').waitFor();
+        await page.getByRole("button", { name: "卡片视图", exact: true }).click();
+        await page.locator('.atm-task-cards[data-view="cards"]').waitFor();
         const assertFits = async () => {
           const value = await page.evaluate(
             () =>
@@ -353,14 +356,14 @@ try {
     await card.screenshot({path:join(output,`retired-model-${width}-${theme}.png`)});
     await card.getByRole("button",{name:"编辑定时任务「每日 AI 新闻简报」"}).click();
     const editor=page.getByRole("dialog",{name:"编辑定时任务",exact:true});await editor.waitFor();
-    await editor.getByRole("button",{name:"跟随默认模型",exact:true}).waitFor();
+    await editor.getByRole("button",{name:"自动选择模型",exact:true}).waitFor();
     assert.equal(await editor.getByRole("button",{name:"高级设置",exact:true}).getAttribute("aria-expanded"),"false");
     const modelField=editor.getByRole("region",{name:"重新选择任务模型"});
     assert.equal(await modelField.isVisible(),true);
     assert.equal(await editor.getByRole("button",{name:"保存并立即运行",exact:true}).isEnabled(),false);
     assert.equal(await editor.evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
     await page.screenshot({path:join(output,`retired-model-editor-${width}-${theme}.png`)});
-    await editor.getByRole("button",{name:"跟随默认模型",exact:true}).click();
+    await editor.getByRole("button",{name:"自动选择模型",exact:true}).click();
     await editor.getByRole("button",{name:"保存修改",exact:true}).click();
     await editor.waitFor({state:"hidden"});
     const saved=await page.evaluate(()=>window.scheduledReview.snapshot().tasks.find(task=>task.id==="news"));
@@ -368,6 +371,21 @@ try {
     assert.equal(await page.evaluate(()=>window.scheduledReview.calls.some(call=>["automations_run","automations_set_status"].includes(call.command))),false);
     assert.deepEqual(errors,[]);await page.close();
   }
+  const legacy = await browser.newPage({ viewport: { width: 350, height: 760 } });
+  await legacy.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?legacy-directories=1`);
+  await legacy.getByRole("button", { name: "编辑定时任务「每日 AI 新闻简报」" }).click();
+  const legacyEditor = legacy.getByRole("dialog", { name: "编辑定时任务" });
+  await legacyEditor.getByRole("button", { name: "高级设置" }).click();
+  const extras = legacyEditor.getByRole("list", { name: "附加目录" });
+  await extras.waitFor();
+  assert.equal(await legacyEditor.getByRole("textbox", { name: /工作目录/ }).inputValue(), "/review/Reports,2026");
+  assert.equal(await extras.evaluate(element => element.scrollWidth > element.clientWidth + 1), false);
+  await legacy.screenshot({ path: join(output, "legacy-workspace-repair.png") });
+  await extras.getByRole("button", { name: /移除附加目录/ }).click();
+  await legacyEditor.getByRole("button", { name: "保存修改", exact: true }).click();
+  await legacyEditor.waitFor({ state: "hidden" });
+  assert.deepEqual(await legacy.evaluate(() => window.scheduledReview.snapshot().tasks.find(task => task.id === "news").cwds), ["/review/Reports,2026"]);
+  await legacy.close();
   writeFileSync(
     join(output, "evidence.json"),
     JSON.stringify(evidence, null, 2),

@@ -45,6 +45,15 @@ vi.mock("@/components/ChatView", async () => {
 vi.mock("@/lib/agent-client", async (original) => ({
   ...await original<object>(), agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
+  agentListSessionHistory: vi.fn(async () => ({
+    sessions: await (await import("@/lib/agent-client")).agentListAllSessions(true),
+    nextCursor: null,
+    nextArchiveCursor: null,
+    incomplete: false,
+  })),
+  agentFindSessionSummary: vi.fn(async (sessionId: string) =>
+    (await (await import("@/lib/agent-client")).agentListAllSessions(true)).find(entry => entry.sessionId === sessionId) ?? null),
+  agentFindSessionSummaries: vi.fn(async () => []),
   agentsValidateReferences: vi.fn(async () => {}),
   agentPrepareTaskWorkspace: vi.fn(async () => "/workspace/Tasks/default-task"),
   agentNewSession: vi.fn(async () => "new-session"),
@@ -280,6 +289,27 @@ it("项目会话保留返回路径，所有入口返回统一任务", async () =
   const activityPath = await screen.findByRole("navigation", { name: "项目会话路径" });
   fireEvent.click(within(activityPath).getByRole("button", { name: "项目" }));
   expect(await screen.findByRole("button", { name: "打开项目 Project" })).toBeVisible();
+});
+
+it("未进入全局历史首屏的项目任务可以直接验收", async () => {
+  await start();
+  const project = useProjectsStore.getState().projects[0];
+  act(() => useProjectsStore.setState({ projects: [{
+    ...project,
+    tasks: [{ id: "earlier-task", title: "早期交付", scope: "personal", source: "manual",
+      status: "in_progress", sessionId: "earlier-session" }],
+  }] }));
+  vi.mocked(client.agentFindSessionSummaries).mockResolvedValueOnce([{
+    sessionId: "earlier-session", cwd: "/workspace/early", title: "早期交付", status: "completed",
+  }]);
+  fireEvent.click(screen.getByRole("button", { name: "新建项目对话" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "任务" }));
+  fireEvent.click(screen.getByRole("button", { name: "待验收" }));
+  fireEvent.click(await screen.findByRole("button", { name: /早期交付/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "确认验收" }));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认验收" }));
+  await waitFor(() => expect(useProjectsStore.getState().projects[0].tasks[0].status).toBe("completed"));
+  expect(client.agentFindSessionSummaries).toHaveBeenCalledExactlyOnceWith(["earlier-session"]);
 });
 
 it("从任务详情启动后可以回到统一任务", async () => {

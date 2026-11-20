@@ -1189,7 +1189,12 @@ describe("session-store transcripts", () => {
     ]);
   });
 
-  it.each([false, true])("实时或重放的断流终态保留正文及中文错误提示（重放 %s）", isReplay => {
+  it.each([
+    [false, "error decoding response body"],
+    [true, "error decoding response body"],
+    [false, "Messages API stream ended before message_stop"],
+    [true, "Messages API stream ended before message_stop"],
+  ] as const)("实时或重放的断流终态保留正文及中文错误提示（重放 %s，%s）", (isReplay, message) => {
     const store = useSessionStore.getState();
     store.setSession("A");
     store.startStreaming("A", "interrupted-prompt");
@@ -1199,7 +1204,7 @@ describe("session-store transcripts", () => {
       sessionUpdate: "turn_completed",
       prompt_id: "interrupted-prompt",
       stop_reason: "error",
-      agent_result: JSON.stringify({ error_kind: "chat_stream_interrupted", message: "error decoding response body" }),
+      agent_result: JSON.stringify({ error_kind: "chat_stream_interrupted", message }),
       _meta: { isReplay },
     });
     expect(useSessionStore.getState().messages[0]).toMatchObject({

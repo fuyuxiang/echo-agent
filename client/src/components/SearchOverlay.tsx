@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Keyboar
 import { Search, X, Clock, FileText } from "lucide-react";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useGroupStore } from "@/features/groups/group-store";
-import { agentListSessions, sessionSearchPage } from "@/lib/agent-client";
+import { agentFindSessionSummary, sessionSearchPage } from "@/lib/agent-client";
 import type { SearchHit, SessionSummary } from "@/lib/types";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { TrayActionCancelled } from "@/lib/desktop-tray-connection";
@@ -197,11 +197,12 @@ export function SearchOverlay({
     try {
       let summary = sessions.find((item) => item.sessionId === sessionId);
       if (!summary) {
-        if (!cwd) throw new Error("检索结果缺少工作目录信息，无法打开");
-        const hydrated = await agentListSessions(cwd, true);
+        const persisted = await agentFindSessionSummary(sessionId);
         if (lifecycleGenerationRef.current !== lifecycleGeneration) return;
-        useSessionsStore.getState().mergeSessions(hydrated);
-        summary = hydrated.find((item) => item.sessionId === sessionId);
+        if (persisted) {
+          useSessionsStore.getState().mergeSessions([persisted]);
+          summary = useSessionsStore.getState().independent.find((item) => item.sessionId === sessionId);
+        }
       }
       if (!summary) {
         throw new Error("会话不存在、已归档，或当前无权访问");

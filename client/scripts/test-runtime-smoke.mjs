@@ -23,7 +23,7 @@ for (const { name, selection, scenario } of [
   { name: runtimeSmoke, selection: '[models]\ndefault = "  "', scenario: "Auto with a blank preference" },
   { name: runtimeSmoke, selection: retiredSelection, scenario: "retired catalog, preference, and model filters" },
   { name: "skills::runtime_tests::resident_skill_reload_smoke", selection: '[models]\ndefault = "review/mock"', scenario: "resident skill reload" },
-  { name: "mcp::tests::global_toggle_applies_to_loaded_sessions_new_sessions_and_agent_pool", selection: '[models]\ndefault = "review/mock"', scenario: "durable MCP disable and restore across live sessions and agent pool" },
+  { name: "mcp::tests::global_toggle_applies_to_loaded_sessions_new_sessions_and_agent_pool", selection: '[models]\ndefault = "review/mock"', scenario: "durable MCP disable, restore and deletion across live sessions and agent pool" },
   { name: "providers::tests::unsaved_provider_probes_never_send_an_inherited_key_to_another_origin", selection: '[models]\ndefault = "review/mock"', scenario: "provider probes with distinct loopback origins" },
 ]) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "echo-runtime-smoke-")));

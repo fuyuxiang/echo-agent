@@ -168,6 +168,7 @@ mod task_list_actor_tests {
                         server_name: "echoagent_organization_memory".into(),
                         enabled: false,
                         persist_enabled_state: false,
+                        revoked_user_instances_only: false,
                         server_config: None,
                         respond_to: detach_reply,
                     })
@@ -1701,7 +1702,7 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(Ok(()));
                             });
                         }
-                        SessionCommand::ToggleMcpServer { server_name, enabled, persist_enabled_state, server_config, respond_to } => {
+                        SessionCommand::ToggleMcpServer { server_name, enabled, persist_enabled_state, revoked_user_instances_only, server_config, respond_to } => {
                             if enabled && !crate::session::managed_mcp::agent_allows_mcp_server(
                                 session.agent.borrow().definition(), &server_name) {
                                 // Global settings broadcast session-scoped
@@ -1745,7 +1746,10 @@ pub(super) async fn run_session(
                                     continue;
                                 }
                             } else {
-                                configs.retain(|c| crate::session::mcp_servers::mcp_server_name(c) != server_name);
+                                configs.retain(|c| {
+                                    crate::session::mcp_servers::mcp_server_name(c) != server_name
+                                        || (revoked_user_instances_only && !echo_agent_mcp::servers::is_revoked_user_mcp_server(c))
+                                });
                             }
 
                             let diff = mcp_state.update_configs_diff(configs);

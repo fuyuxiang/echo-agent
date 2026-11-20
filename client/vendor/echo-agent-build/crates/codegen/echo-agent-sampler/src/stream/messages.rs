@@ -146,9 +146,10 @@ pub fn stream_messages<'a>(
             let event_result = match tokio::time::timeout(idle_timeout, stream.next()).await {
                 Ok(Some(event_result)) => event_result,
                 Ok(None) => {
-                    let err = SamplingError::EventStreamError(
-                        "Messages API stream ended before message_stop".to_string(),
-                    );
+                    let err = SamplingError::ChatStreamInterrupted {
+                        detail: "Messages API stream ended before message_stop".into(),
+                        retryable: true,
+                    };
                     yield SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
@@ -427,14 +428,16 @@ pub fn stream_messages<'a>(
                         final_stop_message = details.explanation;
                     }
                     // Keep the exact wire string so consumers can echo it.
-                    final_raw_stop_reason =
-                        delta.stop_reason.as_ref().map(messages_stop_reason_wire);
+                    if let Some(reason) = delta.stop_reason.as_ref() {
+                        final_raw_stop_reason = Some(messages_stop_reason_wire(reason));
+                    }
                     // The matched stop sequence rides the same terminal delta
                     // (present only on a `stop_sequence` stop); carry it verbatim.
                     if delta.stop_sequence.is_some() {
                         final_stop_sequence = delta.stop_sequence.clone();
                     }
-                    final_stop_reason = delta.stop_reason.map(|sr| match sr {
+                    if let Some(reason) = delta.stop_reason {
+                        final_stop_reason = Some(match reason {
                         messages::StopReason::EndTurn => StopReason::Stop,
                         messages::StopReason::MaxTokens => StopReason::Length,
                         messages::StopReason::StopSequence => StopReason::Stop,
@@ -469,7 +472,8 @@ pub fn stream_messages<'a>(
                             );
                             StopReason::Stop
                         }
-                    });
+                        });
+                    }
                     final_output_tokens = usage.output_tokens;
                     // Optional on the delta; preserve message_start values when omitted.
                     if let Some(input) = usage.input_tokens {
@@ -523,6 +527,17 @@ pub fn stream_messages<'a>(
             }
         }
 
+        if final_message_id.is_none() || final_stop_reason.is_none() || !blocks.is_empty() {
+            let err = SamplingError::ChatStreamInterrupted {
+                detail: "Messages API sent message_stop without a complete message (missing start, stop_reason, or content_block_stop)".into(),
+                retryable: false,
+            };
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&err),
+            };
+            return;
+        }
         if final_stop_reason == Some(StopReason::Length) {
             yield SamplingEvent::Failed {
                 request_id: request_id.clone(),

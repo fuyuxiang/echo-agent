@@ -252,6 +252,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
     };
 
     let config = McpServerConfig {
+        desktop_instance_id: None,
         transport: resolved.transport,
         enabled: true,
         oauth: None,

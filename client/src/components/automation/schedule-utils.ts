@@ -107,7 +107,7 @@ export function buildDraft(template?: AutomationTemplate, initialCwd = ""): Auto
     id: "",
     name: template?.title ?? "",
     prompt: template?.prompt ?? "",
-    cwds: initialCwd,
+    cwds: initialCwd ? [initialCwd] : [],
     status: "ACTIVE",
     modelId: undefined,
     modelIsThinking: false,
@@ -137,7 +137,7 @@ export function draftFromAutomation(a: Automation): AutomationDraft {
     id: a.id,
     name: a.name,
     prompt: a.prompt,
-    cwds: a.cwds,
+    cwds: [...a.cwds],
     status: a.status,
     modelId: a.modelId,
     modelIsThinking: a.modelIsThinking ?? false,
@@ -266,6 +266,9 @@ export function validateDraft(draft: AutomationDraft, opts: ValidateOptions): st
   }
   if (!draft.name.trim()) return "请填写自动化任务名称";
   if (!draft.prompt.trim()) return "请填写提示词";
+  if (draft.cwds.length > 1 && !draft.cwds[0]?.trim()) {
+    return "请选择主工作目录，或移除附加目录后使用默认目录";
+  }
   if (draft.schedule.byhour < 0 || draft.schedule.byhour > 23 || draft.schedule.byminute < 0 || draft.schedule.byminute > 59) {
     return "请选择有效的执行时间";
   }

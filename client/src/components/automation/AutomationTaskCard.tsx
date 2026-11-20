@@ -74,7 +74,7 @@ export function AutomationTaskCard({
           <div className="atm-task-card__details resource-row__meta">
             <span className="atm-task-card__schedule"><Clock3 size={14} />{describeSchedule(task)}</span>
             {!ended && !needsModel && task.status === "ACTIVE" && <span className="atm-task-card__next">下次：{nextRunLabel(task.nextRunAt)}</span>}
-            <span className="atm-task-card__workspace" title={task.cwds}><Folder size={14} />{workspaceName(task.cwds)}</span>
+            <span className="atm-task-card__workspace" title={task.cwds[0]}><Folder size={14} />{workspaceName(task.cwds)}</span>
             {describeValidity(task) && <span>{describeValidity(task)}</span>}
           </div>
           {!batch && <div className={`atm-task-card__activity${last?.needsAttention || last?.status === "failed" ? " needs-attention" : ""}`}>

@@ -1305,10 +1305,35 @@ async fn search_session_page(
         } => (results, next_offset, bootstrapping),
         SearchResponse::Hits(hits) => (hits, None, false),
     };
-    let results = raw
-        .into_iter()
-        .take(limit as usize)
-        .filter(|hit| valid_admin_id(&hit.session_id))
+    // FTS owns the raw offset. Filtering a page must not hide its continuation
+    // cursor when all of its matches belong to unavailable sessions.
+    let results = tauri::async_runtime::spawn_blocking(move || {
+        let archived = crate::meta::read_state().archived_set();
+        let root = crate::sessions::agent_sessions_root();
+        visible_search_hits(raw, &root, &archived, limit as usize)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(SearchPage {
+        results,
+        next_offset: next_offset.filter(|next| *next > offset),
+        bootstrapping,
+    })
+}
+
+fn visible_search_hits(
+    raw: Vec<RawSearchHit>,
+    root: &Path,
+    archived: &HashSet<String>,
+    limit: usize,
+) -> Vec<SearchHit> {
+    raw.into_iter()
+        .take(limit)
+        .filter(|hit| {
+            valid_admin_id(&hit.session_id)
+                && !archived.contains(&hit.session_id)
+                && crate::sessions::session_is_searchable(root, &hit.session_id, hit.cwd.as_deref())
+        })
         .map(|h| SearchHit {
             session_id: h.session_id,
             cwd: h.cwd.map(|value| bounded_text(value, MAX_LOCAL_PATH_CHARS)),
@@ -1317,12 +1342,7 @@ async fn search_session_page(
             rank: h.rank,
             updated_at: h.updated_at.map(|value| bounded_text(value, 128)),
         })
-        .collect();
-    Ok(SearchPage {
-        results,
-        next_offset: next_offset.filter(|next| *next > offset),
-        bootstrapping,
-    })
+        .collect()
 }
 
 // ========================================================================
@@ -2820,6 +2840,34 @@ pub async fn plugins_action(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_filters_unloaded_archived_hidden_and_missing_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().canonicalize().unwrap();
+        let root = temp.path().join("sessions");
+        let workspace = root.join(
+            echo_agent_runtime::util::echo_agent_home::encode_cwd_dirname(&cwd.to_string_lossy()),
+        );
+        for (id, hidden) in [("visible", false), ("archive-off-page", false), ("hidden-off-page", true)] {
+            let path = workspace.join(id);
+            std::fs::create_dir_all(&path).unwrap();
+            let summary = serde_json::json!({ "cwd": cwd, "hidden": hidden, "session_summary": "fixture" });
+            std::fs::write(path.join("summary.json"), serde_json::to_vec(&summary).unwrap()).unwrap();
+        }
+        let hits = ["visible", "archive-off-page", "hidden-off-page", "removed"].into_iter().map(|id| super::RawSearchHit {
+            session_id: id.into(),
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            title: Some(id.into()),
+            snippet: Some(format!("{id} content")),
+            rank: None,
+            updated_at: None,
+        }).collect();
+        let visible = super::visible_search_hits(hits, &root, &["archive-off-page".into()].into(), 10);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].session_id, "visible");
+        assert_eq!(visible[0].snippet.as_deref(), Some("visible content"));
+    }
+
     use super::{
         check_expected_revision, delete_session_memory_artifacts_from_storage, file_revision,
         init_sqlite_vec, kill_running_task, list_memory, list_running_tasks,

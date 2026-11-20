@@ -33,6 +33,14 @@ vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("
 vi.mock("@/lib/agent-client", async (original) => ({
   ...await original<object>(), agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
+  agentListSessionHistory: vi.fn(async () => ({
+    sessions: await (await import("@/lib/agent-client")).agentListAllSessions(true),
+    nextCursor: null,
+    nextArchiveCursor: null,
+    incomplete: false,
+  })),
+  agentFindSessionSummary: vi.fn(async (sessionId: string) =>
+    (await (await import("@/lib/agent-client")).agentListAllSessions(true)).find(entry => entry.sessionId === sessionId) ?? null),
   agentPrepareTaskWorkspace: vi.fn(async () => "/workspace/Tasks/default-task"),
   agentNewSession: vi.fn(async () => "new-session"), agentSessionInfo: vi.fn(async () => ({ model: "model-a" })), agentDeleteSession: vi.fn(async () => ({memorySummariesDeleted:0})), agentSetSessionExpert: vi.fn(async () => true),
   agentRecoverSession: vi.fn(async () => ({ modelId: "model-a" })), agentSend: vi.fn(async () => {}), projectsSave: vi.fn(async () => {}),

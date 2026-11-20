@@ -563,9 +563,16 @@ fn bounded_limit(requested: Option<u64>, hard_max: usize) -> usize {
 }
 
 pub(crate) fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|e| format!("读取失败：{e}"))?;
+    open_regular_file_no_follow_io(path).map_err(|error| format!("读取失败：{error}"))
+}
+
+fn open_regular_file_no_follow_io(path: &Path) -> std::io::Result<std::fs::File> {
+    let metadata = std::fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("读取目标必须是普通文件，不能是符号链接".into());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "读取目标必须是普通文件，不能是符号链接",
+        ));
     }
 
     let mut options = std::fs::OpenOptions::new();
@@ -582,10 +589,13 @@ pub(crate) fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, 
         // by the post-open regular-file check below.
         options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
     }
-    let file = options.open(path).map_err(|e| format!("读取失败：{e}"))?;
-    let opened = file.metadata().map_err(|e| format!("读取失败：{e}"))?;
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
     if !opened.is_file() {
-        return Err("读取目标必须是普通文件".into());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "读取目标必须是普通文件",
+        ));
     }
     Ok(file)
 }
@@ -594,17 +604,25 @@ pub(crate) fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, 
 /// pre-open size and the bytes actually consumed are capped, closing the
 /// metadata/open race and a file-growth allocation attack.
 pub(crate) fn read_regular_file_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let file = open_regular_file_no_follow(path)?;
-    let metadata = file.metadata().map_err(|e| format!("读取失败：{e}"))?;
+    read_regular_file_bounded_io(path, limit).map_err(|error| format!("读取失败：{error}"))
+}
+
+pub(crate) fn read_regular_file_bounded_io(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    let file = open_regular_file_no_follow_io(path)?;
+    let metadata = file.metadata()?;
     if metadata.len() > limit {
-        return Err(format!("文件超过 {} 字节安全上限", limit));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("文件超过 {limit} 字节安全上限"),
+        ));
     }
     let mut data = Vec::with_capacity(metadata.len().min(limit) as usize);
-    file.take(limit.saturating_add(1))
-        .read_to_end(&mut data)
-        .map_err(|e| format!("读取失败：{e}"))?;
+    file.take(limit.saturating_add(1)).read_to_end(&mut data)?;
     if data.len() as u64 > limit {
-        return Err(format!("文件超过 {} 字节安全上限", limit));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("文件超过 {limit} 字节安全上限"),
+        ));
     }
     Ok(data)
 }

@@ -236,6 +236,7 @@ async fn thinking_block_emits_reasoning_channel_and_preserved_in_response() {
         Ok(thinking_delta),
         Ok(sig_delta),
         Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
         Ok(MessageStreamEvent::MessageStop),
     ];
     let raw = stream::iter(events).boxed();
@@ -304,6 +305,7 @@ async fn multiple_thinking_blocks_emit_per_block_signatures_in_order() {
     events.push(Ok(text_delta(1, "interlude")));
     events.push(Ok(block_stop(1)));
     events.extend(thinking_block(2, "second", "sig-2"));
+    events.push(Ok(message_delta_with_stop(messages::StopReason::EndTurn)));
     events.push(Ok(MessageStreamEvent::MessageStop));
 
     let raw = stream::iter(events).boxed();

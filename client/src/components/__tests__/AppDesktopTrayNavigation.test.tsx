@@ -44,6 +44,14 @@ vi.mock("../PlaceholderPage", () => ({ PlaceholderPage: ({ label, onRegisterCodi
 vi.mock("@/lib/agent-client", async original => ({
   ...await original<object>(), agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
+  agentListSessionHistory: vi.fn(async () => ({
+    sessions: await (await import("@/lib/agent-client")).agentListAllSessions(true),
+    nextCursor: null,
+    nextArchiveCursor: null,
+    incomplete: false,
+  })),
+  agentFindSessionSummary: vi.fn(async (sessionId: string) =>
+    (await (await import("@/lib/agent-client")).agentListAllSessions(true)).find(entry => entry.sessionId === sessionId) ?? null),
   agentRecoverSession: vi.fn(async () => ({ modelId: 'model-a' })), subscribeAgentEvents: vi.fn(async () => () => {}),
   internalReload: vi.fn(async () => {}),
 }));

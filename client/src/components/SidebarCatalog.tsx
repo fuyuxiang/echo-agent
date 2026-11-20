@@ -64,6 +64,10 @@ export function useSidebarCatalog() {
           targets.add(heading);
           space -= outerHeight(heading);
         }
+        for (const footer of section.querySelectorAll(":scope > .sidebar__history-load, :scope > .sidebar__history-status")) {
+          targets.add(footer);
+          space -= outerHeight(footer);
+        }
         targets.add(rows);
         const id = list.dataset.catalogList as CatalogSection;
         const sizes = [0];

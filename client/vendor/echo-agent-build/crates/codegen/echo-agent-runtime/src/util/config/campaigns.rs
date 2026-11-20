@@ -219,7 +219,21 @@ fn resolve_dismissable_campaigns() -> Vec<CampaignEntry> {
 /// Effective config with remote/override-aware campaign overlay
 /// (base → resolve [override/kill/merge/dismiss] → apply), one `ConfigLayers::load`.
 pub fn load_effective_config() -> std::io::Result<toml::Value> {
-    let layers = ConfigLayers::load()?;
+    let mut layers = ConfigLayers::load()?;
+    if let Some(servers) = layers
+        .user
+        .get_mut("mcp_servers")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for server in servers
+            .iter_mut()
+            .filter_map(|(_, value)| value.as_table_mut())
+        {
+            server
+                .entry("desktop_instance_id")
+                .or_insert_with(|| "legacy".into());
+        }
+    }
     let dismissed = load_dismissed_ids();
     let remote = cached_remote_campaigns();
     let mut effective = layers.effective_config_base();

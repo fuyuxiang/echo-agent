@@ -245,6 +245,22 @@
   color: var(--echo-text-strong);
 }
 
+.sidebar__history-load:disabled {
+  cursor: default;
+  opacity: .7;
+}
+.sidebar__history-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.sidebar__history-status .btn {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  font-size: inherit;
+}
+
 .sidebar__catalog-more--compact { padding-inline: 6px; font-size: .6875rem; }
 .sidebar__section-head:has(> .sidebar__catalog-more--compact) .sidebar__section-label { padding-inline-end: 4px; }
 .sidebar__section-head:has(> .sidebar__catalog-more--compact) .sidebar__section-label > span {

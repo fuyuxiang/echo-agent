@@ -483,7 +483,7 @@ impl SessionHandle {
         enabled: bool,
         server_config: Option<agent_client_protocol::McpServer>,
     ) -> Result<(), agent_client_protocol::Error> {
-        self.toggle_mcp_server_with_persistence(server_name, enabled, server_config, true)
+        self.toggle_mcp_server_with_persistence(server_name, enabled, server_config, true, false)
             .await
     }
     /// Attach or detach an internal capability for this live session without
@@ -494,7 +494,14 @@ impl SessionHandle {
         enabled: bool,
         server_config: Option<agent_client_protocol::McpServer>,
     ) -> Result<(), agent_client_protocol::Error> {
-        self.toggle_mcp_server_with_persistence(server_name, enabled, server_config, false)
+        self.toggle_mcp_server_with_persistence(server_name, enabled, server_config, false, false)
+            .await
+    }
+    pub(crate) async fn remove_revoked_user_mcp_server(
+        &self,
+        server_name: String,
+    ) -> Result<(), agent_client_protocol::Error> {
+        self.toggle_mcp_server_with_persistence(server_name, false, None, false, true)
             .await
     }
     async fn toggle_mcp_server_with_persistence(
@@ -503,6 +510,7 @@ impl SessionHandle {
         enabled: bool,
         server_config: Option<agent_client_protocol::McpServer>,
         persist_enabled_state: bool,
+        revoked_user_instances_only: bool,
     ) -> Result<(), agent_client_protocol::Error> {
         let (tx, rx) = oneshot::channel();
         if self
@@ -511,6 +519,7 @@ impl SessionHandle {
                 server_name,
                 enabled,
                 persist_enabled_state,
+                revoked_user_instances_only,
                 server_config,
                 respond_to: tx,
             })

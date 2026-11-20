@@ -43,14 +43,20 @@ vi.mock("../FolderTrustDialog", () => ({ FolderTrustDialog: () => null }));
 vi.mock("../Sidebar", () => ({ Sidebar: ({
   onSelect,
   onNavigate,
+  onArchiveSession,
+  sessionHistory,
 }: {
   onSelect: (id: string) => void;
   onNavigate: (label: string) => void;
+  onArchiveSession: (sessionId: string, archived: boolean) => Promise<void>;
+  sessionHistory: import("@/lib/types").SessionHistoryControls;
 }) => (
   <>
     <button onClick={() => onSelect("auto-1")}>打开自动化</button>
     <button onClick={() => onSelect("other")}>打开其他任务</button>
     <button onClick={() => onNavigate("项目")}>打开项目页</button>
+    <button onClick={() => void onArchiveSession("unpaged", true)}>归档未加载任务</button>
+    {sessionHistory.hasMore && <button disabled={sessionHistory.loading} onClick={sessionHistory.loadMore}>加载更多历史</button>}
   </>
 ) }));
 // Keep the real shell, event handlers and stores; expose its composer contract.
@@ -72,6 +78,14 @@ vi.mock("@/lib/agent-client", async (original) => ({
   ...await original<object>(),
   agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(async () => []), agentListWorkspaces: vi.fn(async () => []),
+  agentListSessionHistory: vi.fn(async () => ({
+    sessions: await (await import("@/lib/agent-client")).agentListAllSessions(true),
+    nextCursor: null,
+    nextArchiveCursor: null,
+    incomplete: false,
+  })),
+  agentFindSessionSummary: vi.fn(async (sessionId: string) =>
+    (await (await import("@/lib/agent-client")).agentListAllSessions(true)).find(entry => entry.sessionId === sessionId) ?? null),
   agentsValidateReferences: vi.fn(async () => {}),
   agentPrepareTaskWorkspace: vi.fn(async () => "/workspace/Tasks/project-task"),
   agentLoadSession: vi.fn(), agentRecoverSession: vi.fn(), agentNewSession: vi.fn(async () => "project-session"),
@@ -908,6 +922,45 @@ describe("自动化会话模型同步", () => {
     expect(useSessionsStore.getState().drafts["auto-1"]).toBe("尚未发送的草稿");
     expect(client.agentSend).not.toHaveBeenCalled();
     expect(client.agentInit).toHaveBeenCalledTimes(1);
+  });
+
+  it("追加历史分页时保留已加载任务和请求期间发生的更新", async () => {
+    const first = { sessionId: "recent", cwd: "/workspace", title: "最近的任务", status: "working" as const };
+    const old = { sessionId: "old", cwd: "/workspace", title: "更早的任务" };
+    let resolvePage!: (page: import("@/lib/types").SessionHistoryPage) => void;
+    vi.mocked(client.agentListSessionHistory)
+      .mockResolvedValueOnce({ sessions: [first], nextCursor: "task-page-2", nextArchiveCursor: null, incomplete: false })
+      .mockImplementationOnce(() => new Promise(resolve => { resolvePage = resolve; }));
+    render(<App />);
+    const more = await screen.findByRole("button", { name: "加载更多历史" });
+    fireEvent.click(more);
+    expect(more).toBeDisabled();
+    expect(client.agentListSessionHistory).toHaveBeenLastCalledWith("task-page-2");
+    act(() => useSessionsStore.getState().upsert({ sessionId: "recent", status: "completed" }));
+    await act(async () => resolvePage({ sessions: [old, first], nextCursor: null, nextArchiveCursor: null, incomplete: false }));
+    expect(useSessionsStore.getState().independent).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: "recent", status: "completed" }),
+      expect.objectContaining(old),
+    ]));
+    expect(screen.queryByRole("button", { name: "加载更多历史" })).toBeNull();
+  });
+
+  it("归档未加载的任务后，在归档管理中立即显示", async () => {
+    const first = { sessionId: "recent", title: "近期任务", cwd: "/workspace" };
+    vi.mocked(client.agentListSessionHistory).mockResolvedValueOnce({
+      sessions: [first], nextCursor: "task-next", nextArchiveCursor: null, incomplete: false,
+    });
+    vi.mocked(client.agentFindSessionSummary).mockResolvedValueOnce({
+      sessionId: "unpaged", title: "刚归档的早期任务", cwd: "/workspace/earlier", archived: true,
+    });
+    vi.mocked(invoke).mockImplementation(async command => command === "agent_set_session_archived"
+      ? true : command === "notification_take_pending_opens" ? [] : null);
+    render(<App />);
+    await screen.findByRole("button", { name: "加载更多历史" });
+    fireEvent.click(screen.getByRole("button", { name: "归档未加载任务" }));
+    fireEvent.click(await screen.findByRole("button", { name: "管理归档" }));
+    expect(await screen.findByText("刚归档的早期任务", { exact: true })).toBeVisible();
+    expect(client.agentFindSessionSummary).toHaveBeenCalledExactlyOnceWith("unpaged");
   });
 
   it.each(["stopped", "working"] as const)("恢复 %s 任务时只结束已中断的历史轮次，保留仍在执行的任务", async status => {

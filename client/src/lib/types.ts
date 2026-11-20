@@ -420,6 +420,21 @@ export interface SessionSummary {
   continuation?: SessionContinuation;
 }
 
+export interface SessionHistoryPage {
+  sessions: SessionSummary[];
+  nextCursor: string | null;
+  nextArchiveCursor: string | null;
+  incomplete: boolean;
+}
+
+export interface SessionHistoryControls {
+  hasMore: boolean;
+  incomplete: boolean;
+  loading: boolean;
+  loadMore: () => void;
+  refresh: () => void;
+}
+
 export interface SessionContinuation {
   parentSessionId: string;
   parentTitle: string;
@@ -964,8 +979,8 @@ export interface Automation {
   id: string;
   name: string;
   prompt: string;
-  /** Comma-separated workspace directories (first entry is the run cwd). */
-  cwds: string;
+  /** Workspace directories. The first entry is the execution directory. */
+  cwds: string[];
   status: AutomationStatus;
   modelId?: string;
   modelIsThinking?: boolean;

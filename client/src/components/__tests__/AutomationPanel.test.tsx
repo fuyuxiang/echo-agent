@@ -635,15 +635,17 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
 
     fireEvent.change(input, { target: { value: "/new/custom" } });
     expect(input.value).toBe("/new/custom");
+    vi.mocked(filesystemPickDirectory).mockResolvedValueOnce("/new/Reports,2026");
     fireEvent.click(screen.getByRole("button", { name: "选择文件夹" }));
     await waitFor(() => expect(filesystemPickDirectory).toHaveBeenCalledWith("/new/custom"));
-    expect(input.value).toBe("/new/custom");
+    await waitFor(() => expect(input.value).toBe("/new/Reports,2026"));
+    await waitFor(() => expect(agentsList).toHaveBeenCalledWith("/new/Reports,2026"));
 
     fireEvent.change(document.querySelector(".atm-modal-input") as HTMLInputElement, { target: { value: "自定义目录任务" } });
     fireEvent.change(document.querySelector(".atm-prompt-textarea") as HTMLTextAreaElement, { target: { value: "运行任务" } });
     fireEvent.click(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ }));
     await waitFor(() => expect(automationsSave).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(automationsSave).mock.calls[0][0].cwds).toBe("/new/custom");
+    expect(vi.mocked(automationsSave).mock.calls[0][0].cwds).toEqual(["/new/Reports,2026"]);
   });
 
   it("引用目录分项失败时保留成功数据并可重试，不伪装空状态", async () => {
@@ -859,7 +861,7 @@ describe("AutomationPanel（有任务/有记录）", () => {
     id: "a1",
     name: "每日 AI 新闻推送",
     prompt: "整理 AI 新闻",
-    cwds: "",
+    cwds: [],
     status: "ACTIVE" as const,
     skills: [],
     connectorIds: [],
@@ -1289,6 +1291,37 @@ describe("自动化专家稳定引用", () => {
 
 
 describe("定时任务会话、结果与控制闭环", () => {
+  it("可以移除失效的附加目录，清空主目录输入时保留附加目录", async () => {
+    const task = beginRunnableEditor();
+    useAutomationEditorStore.getState().close();
+    snapshot = { automations: [{ ...task, cwds: ["/history/main", "/old/missing"] }], records: [] };
+    render(<AutomationPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑定时任务「原任务」" }));
+    openAdvanced();
+    const field = screen.getByRole("textbox", { name: /工作目录/ });
+    fireEvent.change(field, { target: { value: "" } });
+    expect(screen.getByText("/old/missing")).toBeInTheDocument();
+    fireEvent.change(field, { target: { value: "/history/new" } });
+    fireEvent.click(screen.getByRole("button", { name: "移除附加目录 /old/missing" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({ cwds: ["/history/new"] })));
+  });
+
+  it("重新编辑含逗号的工作目录后可保存并立即运行", async () => {
+    const task = beginRunnableEditor();
+    useAutomationEditorStore.getState().close();
+    snapshot = { automations: [{ ...task, cwds: ["/history/Reports,2026"] }], records: [] };
+    render(<AutomationPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑定时任务「原任务」" }));
+    openAdvanced();
+    expect(screen.getByRole("textbox", { name: /工作目录/ })).toHaveValue("/history/Reports,2026");
+    const run = screen.getByRole("button", { name: "保存并立即运行" });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    await waitFor(() => expect(automationsRun).toHaveBeenCalledExactlyOnceWith(task.id));
+    expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({ cwds: ["/history/Reports,2026"] }));
+  });
+
   it("筛选后全选按当前任务身份判断，不因旧选择数量相同而选错任务", async () => {
     const task = beginRunnableEditor(); useAutomationEditorStore.getState().close();
     snapshot.automations.push({ ...task, id: "other-task", name: "另一任务", status: "PAUSED" });
@@ -1305,7 +1338,7 @@ describe("定时任务会话、结果与控制闭环", () => {
     const input = screen.getByRole("textbox", { name: /工作目录/ }); fireEvent.change(input, { target: { value: "" } });
     const option = screen.getByRole("button", { name: "/history/workspace" });
     fireEvent.mouseDown(option); fireEvent.blur(input, { relatedTarget: null }); fireEvent.mouseUp(option); fireEvent.click(option);
-    expect(useAutomationEditorStore.getState().draft?.cwds).toBe("/history/workspace");
+    expect(useAutomationEditorStore.getState().draft?.cwds).toEqual(["/history/workspace"]);
     await waitFor(() => expect(agentsList).toHaveBeenCalledWith("/history/workspace"));
     expect(skillsList).toHaveBeenCalledWith("/history/workspace");
   });

@@ -1,3 +1,4 @@
+import type { SessionHistoryControls } from "@/lib/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Settings as SettingsIcon,
@@ -166,6 +167,7 @@ export function SettingsPanel({
   initialModelId,
   initialTarget,
   onRestoreSession,
+  sessionHistory,
   onDeleteSession,
   onOpenSession,
   onOpenAutomation,
@@ -185,6 +187,7 @@ export function SettingsPanel({
   initialSection?: SettingsSectionId;
   initialModelId?: string;
   initialTarget?: SettingsDirectTarget;
+  sessionHistory?: SessionHistoryControls;
   onRestoreSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
   onDeleteSession?: (sessionId: string, cwd?: string) => Promise<void>;
   onOpenSession?: (sessionId: string, cwd?: string) => void | Promise<void>;
@@ -409,6 +412,7 @@ export function SettingsPanel({
                 <SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={selectSection} />
                 <ArchivedSessionsSettingsPanel
                   onRestoreSession={onRestoreSession}
+                  sessionHistory={sessionHistory}
                   onDeleteSession={onDeleteSession}
                   onOpenSession={onOpenSession}
                   onClose={onClose}

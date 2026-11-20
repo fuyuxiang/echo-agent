@@ -1147,9 +1147,8 @@ pub(crate) fn trusted_existing_session_cwd(
     let canonical = filesystem.require_workspace(claimed)?;
     std::fs::read_dir(&canonical).map_err(|error| format!("无法访问原工作目录：{error}"))?;
     let canonical_text = canonical.to_string_lossy();
-    if !sessions::list_sessions(&canonical_text, true)
-        .iter()
-        .any(|summary| summary.session_id == session_id)
+    if !sessions::find_session_summary(session_id)?
+        .is_some_and(|summary| summary.cwd == canonical_text)
     {
         return Err("会话不属于声明的工作区".into());
     }
@@ -1172,9 +1171,7 @@ pub(crate) fn trusted_session_history_cwd(
         .or_else(|| crate::meta::session_workspace(session_id));
     let original = match bound {
         Some(path) => path,
-        None => sessions::list_all_sessions(true)?
-            .into_iter()
-            .find(|session| session.session_id == session_id)
+        None => sessions::find_session_summary(session_id)?
             .map(|session| PathBuf::from(session.cwd))
             .ok_or("会话不存在或已被删除")?,
     };
@@ -1982,6 +1979,39 @@ pub fn agent_list_all_sessions(
     include_archived: Option<bool>,
 ) -> Result<Vec<SessionSummary>, String> {
     sessions::list_all_sessions(include_archived.unwrap_or(false))
+}
+
+#[tauri::command]
+pub async fn agent_list_session_history(
+    cursor: Option<String>,
+    refresh: Option<bool>,
+) -> Result<sessions::SessionHistoryPage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        sessions::list_session_history_page(cursor.as_deref(), refresh.unwrap_or(false))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn agent_find_session_summary(
+    session_id: String,
+) -> Result<Option<sessions::SessionSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || sessions::find_session_summary(&session_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn agent_find_session_summaries(
+    session_ids: Vec<String>,
+) -> Result<Vec<sessions::SessionSummary>, String> {
+    if session_ids.len() > 200 || session_ids.iter().any(|id| !valid_session_id(id)) {
+        return Err("项目会话查询包含无效或过多的会话 ID".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || sessions::find_session_summaries(&session_ids))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2913,16 +2943,19 @@ pub async fn agent_set_model(
 /// List every working directory EchoAgent has seen (deduplicated), with a session
 /// count per cwd. Used to populate the Composer's workspace picker.
 #[tauri::command]
-pub fn agent_list_workspaces(
-    filesystem: State<'_, crate::shell_fs::FilesystemAccess>,
-) -> Vec<WorkspaceInfo> {
-    let workspaces = sessions::list_workspaces();
-    for workspace in &workspaces {
-        if let Err(error) = filesystem.authorize_workspace(&workspace.cwd) {
-            tracing::warn!(%error, cwd = %workspace.cwd, "persisted workspace was not added to filesystem allow-list");
+pub async fn agent_list_workspaces(app: tauri::AppHandle) -> Result<Vec<WorkspaceInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let filesystem = app.state::<crate::shell_fs::FilesystemAccess>();
+        let workspaces = sessions::list_workspaces();
+        for workspace in &workspaces {
+            if let Err(error) = filesystem.authorize_workspace(&workspace.cwd) {
+                tracing::warn!(%error, cwd = %workspace.cwd, "persisted workspace was not added to filesystem allow-list");
+            }
         }
-    }
-    workspaces
+        workspaces
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// Rename a session via EchoAgent's `echo.agent/session/rename` extension method. On
@@ -3112,20 +3145,25 @@ pub(crate) async fn forget_deleted_session(
 /// EchoAgent-only state stored in `~/.echo-agent/echoagent-state.json`. Returns the
 /// new pinned value so the frontend can update without a re-fetch.
 #[tauri::command]
-pub fn agent_set_session_pinned(
-    state: State<'_, AppState>,
+pub async fn agent_set_session_pinned(
+    app: tauri::AppHandle,
     session_id: String,
     pinned: bool,
 ) -> Result<bool, String> {
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
     }
-    if state.session_workspace(&session_id).is_err()
-        && !sessions::persisted_session_exists(&session_id)?
-    {
-        return Err("会话不存在或已被删除，无法修改置顶状态".into());
-    }
-    crate::meta::set_pinned(&session_id, pinned)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if state.session_workspace(&session_id).is_err()
+            && !sessions::persisted_session_exists(&session_id)?
+        {
+            return Err("会话不存在或已被删除，无法修改置顶状态".into());
+        }
+        crate::meta::set_pinned(&session_id, pinned)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Predict optional next-message text without submitting a conversation turn.
@@ -3207,20 +3245,25 @@ pub async fn agent_session_usage(
 /// Archived sessions are filtered by default from `list_sessions`. Returns the
 /// new archived value so the frontend can update without a re-fetch.
 #[tauri::command]
-pub fn agent_set_session_archived(
-    state: State<'_, AppState>,
+pub async fn agent_set_session_archived(
+    app: tauri::AppHandle,
     session_id: String,
     archived: bool,
 ) -> Result<bool, String> {
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
     }
-    if state.session_workspace(&session_id).is_err()
-        && !sessions::persisted_session_exists(&session_id)?
-    {
-        return Err("会话不存在或已被删除，无法修改归档状态".into());
-    }
-    crate::meta::set_archived(&session_id, archived)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if state.session_workspace(&session_id).is_err()
+            && !sessions::persisted_session_exists(&session_id)?
+        {
+            return Err("会话不存在或已被删除，无法修改归档状态".into());
+        }
+        crate::meta::set_archived(&session_id, archived)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Persist the latest turn lifecycle state for task lists and project activity.

@@ -1,0 +1,32 @@
+.automation-extra-directories {
+  margin-block-start: 8px;
+  min-width: 0;
+  font-size: .8125rem;
+}
+
+.automation-extra-directories p {
+  margin: 0 0 4px;
+  color: var(--echo-text-muted);
+}
+
+.automation-extra-directories ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.automation-extra-directories li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.automation-extra-directories li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.automation-extra-directories li button {
+  flex-shrink: 0;
+}

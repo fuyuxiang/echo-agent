@@ -131,9 +131,9 @@ pub struct Automation {
     pub name: String,
     /// The prompt to send when this automation fires.
     pub prompt: String,
-    /// Comma-separated workspace directories (first entry is the run cwd).
+    /// Authorized workspace directories. The first entry is the run cwd.
     #[serde(default)]
-    pub cwds: String,
+    pub cwds: Vec<String>,
     /// "ACTIVE" | "PAUSED".
     #[serde(default = "default_status")]
     pub status: String,
@@ -662,24 +662,17 @@ fn read_store_with_repairs() -> Result<(AutomationStore, bool), String> {
         Some(content) => content,
         None => return Ok((AutomationStore::default(), false)),
     };
-    if let Ok(mut store) = serde_json::from_str::<AutomationStore>(&content) {
-        let repaired = pause_automations_with_removed_models(&mut store);
-        // Keep the previous snapshot/tick's private-file repair on Unix for
-        // manually copied configs, without rewriting a correctly secured file.
-        #[cfg(unix)]
-        let repaired = repaired
-            || std::fs::symlink_metadata(&path)
-                .is_ok_and(|metadata| metadata.permissions().mode() & 0o777 != 0o600);
-        return Ok((store, repaired));
-    }
-    // Legacy fallback: reshape each automation object, then parse.
     let mut value = serde_json::from_str::<serde_json::Value>(&content)
         .map_err(|error| format!("parse {}: {error}", path.display()))?;
-    migrate_legacy_json(&mut value);
+    let migrated = migrate_legacy_json(&mut value);
     let mut store = serde_json::from_value(value)
         .map_err(|error| format!("migrate {}: {error}", path.display()))?;
-    pause_automations_with_removed_models(&mut store);
-    Ok((store, true))
+    let repaired = pause_automations_with_removed_models(&mut store) || migrated;
+    #[cfg(unix)]
+    let repaired = repaired
+        || std::fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o777 != 0o600);
+    Ok((store, repaired))
 }
 
 fn pause_automations_with_removed_models(store: &mut AutomationStore) -> bool {
@@ -702,10 +695,11 @@ fn pause_automations_with_removed_models(store: &mut AutomationStore) -> bool {
 }
 
 /// Convert legacy v1 automation objects to the current model, in place.
-fn migrate_legacy_json(root: &mut serde_json::Value) {
+fn migrate_legacy_json(root: &mut serde_json::Value) -> bool {
     let Some(items) = root.get_mut("automations").and_then(|a| a.as_array_mut()) else {
-        return;
+        return false;
     };
+    let mut changed = false;
     for item in items {
         let Some(obj) = item.as_object_mut() else {
             continue;
@@ -713,15 +707,25 @@ fn migrate_legacy_json(root: &mut serde_json::Value) {
         // status: "active"|"paused" → "ACTIVE"|"PAUSED"
         if let Some(status) = obj.get("status").and_then(|s| s.as_str()) {
             let upper = status.to_uppercase();
-            obj.insert("status".into(), serde_json::Value::String(upper));
-        }
-        // cwd → cwds
-        if !obj.contains_key("cwds") {
-            if let Some(cwd) = obj.get("cwd").and_then(|c| c.as_str()) {
-                obj.insert("cwds".into(), serde_json::Value::String(cwd.to_string()));
+            if upper != status {
+                obj.insert("status".into(), serde_json::Value::String(upper));
+                changed = true;
             }
         }
-        obj.remove("cwd");
+        if let Some(cwd) = obj.remove("cwd") {
+            changed = true;
+            if let Some(cwd) = cwd.as_str().filter(|cwd| !cwd.trim().is_empty()) {
+                obj.entry("cwds")
+                    .or_insert_with(|| serde_json::json!([cwd]));
+            }
+        }
+        if let Some(raw) = obj.get("cwds").and_then(|value| value.as_str()) {
+            obj.insert(
+                "cwds".into(),
+                serde_json::json!(legacy_workspace_paths(raw)),
+            );
+            changed = true;
+        }
         // schedule {type: ...} → {freq: ...} (+ once fields)
         let Some(schedule) = obj.get("schedule").cloned() else {
             continue;
@@ -732,6 +736,7 @@ fn migrate_legacy_json(root: &mut serde_json::Value) {
         let Some(kind) = schedule.get("type").and_then(|t| t.as_str()) else {
             continue;
         };
+        changed = true;
         let parse_time = |key: &str| -> (u32, u32) {
             schedule
                 .get(key)
@@ -816,6 +821,14 @@ fn migrate_legacy_json(root: &mut serde_json::Value) {
         }
         obj.insert("schedule".into(), new_schedule);
     }
+    changed
+}
+
+fn legacy_workspace_paths(raw: &str) -> Vec<&str> {
+    // The old scheduler always ran in the first nonempty element. Directory
+    // existence must never change where an unattended task runs on upgrade.
+    // Literal paths in the older singular `cwd` field are handled separately.
+    raw.split(',').map(str::trim).filter(|path| !path.is_empty()).collect()
 }
 
 fn write_store(store: &AutomationStore) -> Result<(), String> {
@@ -2746,26 +2759,31 @@ fn claim_due(store: &mut AutomationStore, now: DateTime<Local>) -> Vec<Automatio
 }
 
 fn first_cwd(a: &Automation) -> Option<String> {
-    a.cwds
-        .split(',')
-        .map(|c| c.trim())
-        .find(|c| !c.is_empty())
-        .map(|c| c.to_string())
+    a.cwds.first().cloned()
 }
 
 fn normalize_authorized_cwds(
     filesystem: &crate::shell_fs::FilesystemAccess,
-    raw: &str,
-) -> Result<String, String> {
+    paths: &[String],
+) -> Result<Vec<String>, String> {
+    if paths.len() == 1 && paths[0].trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    if paths.first().is_some_and(|path| path.trim().is_empty()) {
+        return Err("请选择主工作目录，或移除附加目录后使用默认目录".into());
+    }
     let mut normalized = Vec::new();
     let mut seen = HashSet::new();
-    for claimed in raw.split(',').map(str::trim).filter(|cwd| !cwd.is_empty()) {
-        let canonical = filesystem.require_workspace(claimed)?;
+    for (index, claimed) in paths.iter().enumerate() {
+        let canonical = filesystem.require_workspace(claimed).map_err(|error| {
+            let role = if index == 0 { "主工作目录" } else { "附加目录" };
+            format!("{role}「{claimed}」不可用：{error}")
+        })?;
         if seen.insert(canonical.clone()) {
             normalized.push(canonical.to_string_lossy().into_owned());
         }
     }
-    Ok(normalized.join(","))
+    Ok(normalized)
 }
 
 fn require_automation_cwd(
@@ -6062,16 +6080,76 @@ mod tests {
     #[test]
     fn first_cwd_extracts_first_entry() {
         let a = Automation {
-            cwds: "/home/user, /tmp".into(),
+            cwds: vec!["/home/user".into(), "/tmp".into()],
             ..test_automation()
         };
         assert_eq!(first_cwd(&a), Some("/home/user".into()));
     }
 
     #[test]
+    fn comma_workspace_survives_legacy_migration_save_and_reload() {
+        let parent = tempfile::tempdir().unwrap();
+        let comma_directory = parent.path().join("Reports,2026");
+        let other_directory = parent.path().join("Other");
+        std::fs::create_dir(&comma_directory).unwrap();
+        std::fs::create_dir(&other_directory).unwrap();
+        let filesystem = crate::shell_fs::FilesystemAccess::default();
+        filesystem
+            .authorize_workspace(&parent.path().to_string_lossy())
+            .unwrap();
+
+        let mut raw = serde_json::to_value(test_automation()).unwrap();
+        raw.as_object_mut().unwrap().remove("cwds");
+        raw["cwd"] = serde_json::json!(comma_directory);
+        let mut document = serde_json::json!({"automations": [raw]});
+        assert!(migrate_legacy_json(&mut document));
+        assert!(!migrate_legacy_json(&mut document));
+        let mut store: AutomationStore = serde_json::from_value(document).unwrap();
+        let task = &mut store.automations[0];
+        assert_eq!(
+            task.cwds,
+            vec![comma_directory.to_string_lossy().into_owned()]
+        );
+        task.cwds.extend([
+            other_directory.to_string_lossy().into_owned(),
+            task.cwds[0].clone(),
+        ]);
+        task.cwds = normalize_authorized_cwds(&filesystem, &task.cwds).unwrap();
+        assert_eq!(task.cwds.len(), 2);
+        let serialized = serde_json::to_vec(&store).unwrap();
+        let reopened: AutomationStore = serde_json::from_slice(&serialized).unwrap();
+        assert_eq!(
+            require_automation_cwd(&filesystem, &reopened.automations[0], parent.path())
+                .unwrap(),
+            comma_directory.canonicalize().unwrap()
+        );
+        let legacy = format!("{}, {}", other_directory.display(), parent.path().display());
+        assert_eq!(
+            legacy_workspace_paths(&legacy),
+            [
+                other_directory.to_str().unwrap(),
+                parent.path().to_str().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_list_preserves_its_primary_even_if_the_literal_exists() {
+        let parent = tempfile::tempdir().unwrap();
+        let first = parent.path().join("first");
+        let second = parent.path().join("second");
+        let legacy = format!("{},{}", first.display(), second.display());
+        for path in [first.as_path(), second.as_path(), Path::new(&legacy)] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        assert_eq!(legacy_workspace_paths(&legacy), [first.to_str().unwrap(), second.to_str().unwrap()]);
+        assert_eq!(legacy_workspace_paths(" , /work/first, , "), ["/work/first"]);
+    }
+
+    #[test]
     fn first_cwd_empty_returns_none() {
         let a = Automation {
-            cwds: "".into(),
+            cwds: Vec::new(),
             ..test_automation()
         };
         assert_eq!(first_cwd(&a), None);
@@ -6115,13 +6193,18 @@ mod tests {
             .unwrap();
 
         assert!(
-            normalize_authorized_cwds(&filesystem, &forged.to_string_lossy())
+            normalize_authorized_cwds(&filesystem, &[forged.to_string_lossy().into_owned()])
                 .unwrap_err()
                 .contains("未经用户授权")
         );
         assert_eq!(
-            normalize_authorized_cwds(&filesystem, &trusted.to_string_lossy()).unwrap(),
-            trusted.canonicalize().unwrap().to_string_lossy()
+            normalize_authorized_cwds(&filesystem, &[trusted.to_string_lossy().into_owned()])
+                .unwrap(),
+            vec![trusted
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()]
         );
     }
 
@@ -6137,14 +6220,14 @@ mod tests {
             .authorize_workspace(&trusted.to_string_lossy())
             .unwrap();
         let forged_task = Automation {
-            cwds: forged.to_string_lossy().into_owned(),
+            cwds: vec![forged.to_string_lossy().into_owned()],
             permission_mode: "fullAccess".into(),
             ..test_automation()
         };
         assert!(require_automation_cwd(&filesystem, &forged_task, &trusted).is_err());
 
         let trusted_task = Automation {
-            cwds: trusted.to_string_lossy().into_owned(),
+            cwds: vec![trusted.to_string_lossy().into_owned()],
             permission_mode: "fullAccess".into(),
             ..test_automation()
         };
@@ -6454,7 +6537,7 @@ mod tests {
         migrate_legacy_json(&mut json);
         let item = &json["automations"][0];
         assert_eq!(item["status"], "ACTIVE");
-        assert_eq!(item["cwds"], "/home");
+        assert_eq!(item["cwds"], serde_json::json!(["/home"]));
         assert_eq!(item["schedule"]["freq"], "DAILY");
         assert_eq!(item["schedule"]["byhour"], 8);
         assert_eq!(item["schedule"]["byminute"], 30);
@@ -6759,7 +6842,7 @@ mod tests {
         for change in 0..5 {
             let mut draft = original.clone();
             match change {
-                0 => draft.cwds = "/other-workspace".into(),
+                0 => draft.cwds = vec!["/other-workspace".into()],
                 1 => draft.permission_mode = "default".into(),
                 2 => draft.expert_path = Some("/different-expert.md".into()),
                 3 => draft.new_session_each_run = true,
@@ -6982,7 +7065,7 @@ mod tests {
             id: String::new(),
             name: String::new(),
             prompt: String::new(),
-            cwds: String::new(),
+            cwds: Vec::new(),
             status: "ACTIVE".into(),
             model_id: None,
             model_is_thinking: false,

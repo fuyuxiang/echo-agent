@@ -69,8 +69,8 @@ import {
   agentRecoverSession,
   agentReloadSession,
   agentSessionLoadInFlight,
-  agentListAllSessions,
-  agentListSessions,
+  agentListSessionHistory,
+  agentFindSessionSummary,
   agentListWorkspaces,
   agentRenameSession,
   agentDeleteSession,
@@ -254,7 +254,7 @@ function extractMarkdownBody(raw: string): string {
   return rest.slice(closeIdx + 1).replace(/^\n---\s*/, "").trim();
 }
 
-/** Find a session in the complete catalog without depending on a render. */
+/** Find a loaded summary without depending on a render. */
 function findSessionSummary(sessionId: string): SessionSummary | undefined {
   return useSessionsStore.getState().independent
     .find((entry) => entry.sessionId === sessionId);
@@ -461,6 +461,11 @@ function Shell() {
   const selectionGenerationRef = useRef(0);
   const handleProjectNavigation = useCallback(() => { selectionGenerationRef.current += 1; }, []);
   const sessionCatalogGenerationRef = useRef(0);
+  const historyRequestInFlight = useRef(false);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [archiveHistoryCursor, setArchiveHistoryCursor] = useState<string | null>(null);
+  const [historyIncomplete, setHistoryIncomplete] = useState(false);
+  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
   const modelCatalogGenerationRef = useRef(0);
   const memoryCommandsInFlightRef = useRef(new Set<string>());
   const manuallyNamedSessionsRef = useRef(new Set<string>());
@@ -471,6 +476,7 @@ function Shell() {
 
   const sessionStore = useSessionStore;
   const sessionsStore = useSessionsStore;
+  const sessionCatalogLoading = useSessionsStore(state => state.loading);
   const permissionStore = usePermissionStore;
   const questionStore = useQuestionStore;
   const updateStatus = useUpdateStore((state) => state.status);
@@ -589,23 +595,42 @@ function Shell() {
   }, [init?.auth.ready]);
 
   /** Session/directory discovery is recoverable and must not take down the shell. */
-  const refreshSessionCatalog = useCallback(async () => {
-    const generation = ++sessionCatalogGenerationRef.current;
+  const refreshSessionCatalog = useCallback(async (refresh = false) => {
     const store = sessionsStore.getState();
+    if (store.loading) return;
+    const generation = ++sessionCatalogGenerationRef.current;
     const catalogAtStart = store.independent;
     store.setLoading(true);
     store.setError(null);
+    historyRequestInFlight.current = false;
+    setLoadingMoreHistory(false);
     const [sessionResult, workspaceResult] = await Promise.allSettled([
-      agentListAllSessions(true),
+      refresh ? agentListSessionHistory(undefined, true) : agentListSessionHistory(),
       agentListWorkspaces(),
     ]);
     if (sessionCatalogGenerationRef.current !== generation) return;
     const failures: string[] = [];
     if (sessionResult.status === "fulfilled") {
-      const reconciled = reconcileSessionCatalog(sessionResult.value, catalogAtStart, sessionsStore.getState().independent);
-      sessionsStore.getState().setIndependent(reconciled);
+      const page = sessionResult.value;
+      const current = sessionsStore.getState().independent;
+      const reconciled = reconcileSessionCatalog(page.sessions, catalogAtStart, current);
+      if (page.nextCursor || page.nextArchiveCursor || page.incomplete) {
+        sessionsStore.getState().mergeSessions(reconciled);
+      } else {
+        // History pages omit hidden sessions. Keep summaries already opened
+        // through a parent task or a project association.
+        const included = new Set(reconciled.map(entry => entry.sessionId));
+        sessionsStore.getState().setIndependent([
+          ...reconciled,
+          ...current.filter(entry => entry.hidden && !included.has(entry.sessionId)),
+        ]);
+      }
+      setHistoryCursor(page.nextCursor);
+      setArchiveHistoryCursor(page.nextArchiveCursor);
+      setHistoryIncomplete(page.incomplete);
       useProjectsStore.getState().reconcileSessionArchiveStates(reconciled);
     } else {
+      setHistoryIncomplete(true);
       failures.push(`会话：${friendlyError(sessionResult.reason)}`);
     }
     if (workspaceResult.status === "fulfilled") {
@@ -618,6 +643,44 @@ function Shell() {
     latest.setError(failures.length > 0 ? failures.join("；") : null);
     latest.setLoading(false);
   }, [sessionsStore]);
+
+  const loadMoreSessionHistory = useCallback(async (archived: boolean) => {
+    const cursor = archived ? archiveHistoryCursor : historyCursor;
+    if (!cursor || historyRequestInFlight.current || sessionsStore.getState().loading) return;
+    const generation = sessionCatalogGenerationRef.current;
+    const before = sessionsStore.getState().independent;
+    historyRequestInFlight.current = true;
+    setLoadingMoreHistory(true);
+    try {
+      const page = await agentListSessionHistory(cursor);
+      if (generation !== sessionCatalogGenerationRef.current) return;
+      const store = sessionsStore.getState();
+      const reconciled = reconcileSessionCatalog(page.sessions, before, store.independent);
+      store.mergeSessions(reconciled);
+      useProjectsStore.getState().reconcileSessionArchiveStates(reconciled);
+      if (archived) setArchiveHistoryCursor(page.nextArchiveCursor);
+      else setHistoryCursor(page.nextCursor);
+      setHistoryIncomplete(current => current || page.incomplete);
+    } catch (error) {
+      if (generation === sessionCatalogGenerationRef.current) {
+        setHistoryIncomplete(true);
+        showToast(`加载历史任务失败：${friendlyError(error)}`, 6000);
+      }
+    } finally {
+      if (generation === sessionCatalogGenerationRef.current) {
+        historyRequestInFlight.current = false;
+        setLoadingMoreHistory(false);
+      }
+    }
+  }, [archiveHistoryCursor, historyCursor, sessionsStore, showToast]);
+
+  const historyControls = (archived: boolean) => ({
+    hasMore: (archived ? archiveHistoryCursor : historyCursor) !== null,
+    incomplete: historyIncomplete,
+    loading: loadingMoreHistory || sessionCatalogLoading,
+    loadMore: () => void loadMoreSessionHistory(archived),
+    refresh: () => void refreshSessionCatalog(true),
+  });
 
   /** Re-fetch providers + auth readiness after Settings add/edit/delete.
    *
@@ -736,13 +799,11 @@ function Shell() {
           if ((recovery?.phase === "restored" || recovery?.phase === "recovering")
               && selectionGenerationRef.current === selectionAtStart
               && !sessionsStore.getState().currentSessionId) {
-            const catalog = await agentListAllSessions(true);
+            const entry = await agentFindSessionSummary(recoverySessionId);
             if (disposed) return;
             if (selectionGenerationRef.current === selectionAtStart && !sessionsStore.getState().currentSessionId) {
-              const entry = catalog.find((session) => session.sessionId === recoverySessionId && !session.archived
-                && !sessionsStore.getState().deletedSessionIds.includes(session.sessionId));
-              if (entry) {
-                sessionsStore.getState().mergeSessions(catalog);
+              if (entry && !entry.archived && !sessionsStore.getState().deletedSessionIds.includes(entry.sessionId)) {
+                sessionsStore.getState().mergeSessions([entry]);
                 sessionsStore.getState().setCurrent(entry.sessionId);
                 rendererHistoryPending.current = true;
                 runtimeRecoveryRequested.current = true;
@@ -880,10 +941,6 @@ function Shell() {
               return;
             }
             // Unscoped legacy Runtime events must never overwrite a task mode.
-          },
-          onGitHead: (payload) => {
-            void payload;
-            void refreshSessionCatalog();
           },
           onComplete: (p) => {
             if (sessionsStore.getState().deletedSessionIds.includes(p.sessionId)) return;
@@ -2494,6 +2551,16 @@ function Shell() {
   const handleArchiveSession = async (sessionId: string, archived: boolean, _explicitCwd?: string) => {
     const next = await agentSetSessionArchived(sessionId, archived);
     syncArchivedSessionState(sessionId, next);
+    if (!findSessionSummary(sessionId)) {
+      try {
+        const entry = await agentFindSessionSummary(sessionId);
+        if (entry) sessionsStore.getState().mergeSessions([entry]);
+        else setHistoryIncomplete(true);
+      } catch (error) {
+        setHistoryIncomplete(true);
+        showToast(`任务状态已更新，暂时无法读取会话摘要：${friendlyError(error)}`, 6000);
+      }
+    }
     if (next) showArchivedSessionActions(sessionId);
   };
 
@@ -2546,7 +2613,7 @@ function Shell() {
 
   const handleSelectSession = async (
     sessionId: string,
-    sessionCwd?: string,
+    _sessionCwd?: string,
     preservePlaceholder = false,
     strict = false,
     intent?: SessionSelectionIntent,
@@ -2581,40 +2648,24 @@ function Shell() {
       }
     }
     let entry = findSessionSummary(sessionId);
-    // Subagent child sessions can be created after the last catalog refresh
-    // and may live in an isolated worktree. Refresh the global catalog first;
-    // a parent cwd is not authoritative for those children.
+    // Children and older tasks may be outside the loaded history pages.
     if (!entry) {
       try {
-        const list = await agentListAllSessions(true);
+        const persisted = await agentFindSessionSummary(sessionId);
         if (selectionGenerationRef.current !== generation) {
           if (strict) throw new SessionNavigationSupersededError();
           return;
         }
-        sessionsStore.getState().mergeSessions(list);
-        entry = list.find((item) => item.sessionId === sessionId);
-      } catch {
-        // Fall through to the scoped compatibility lookup below. Older
-        // runtimes may not support global discovery.
-      }
-      // FTS/project/automation links can still provide a precise cwd. Hydrate
-      // it as a compatibility fallback without replacing other directories.
-      if (!entry && sessionCwd) {
-        try {
-          const list = await agentListSessions(sessionCwd, true);
-          if (selectionGenerationRef.current !== generation) {
-            if (strict) throw new SessionNavigationSupersededError();
-            return;
-          }
-          sessionsStore.getState().mergeSessions(list);
-          entry = list.find((item) => item.sessionId === sessionId);
-        } catch (error) {
-          if (selectionGenerationRef.current === generation) {
-            showToast(`加载会话信息失败：${friendlyError(error)}`, 6000);
-          }
-          if (strict) throw error;
-          return;
+        if (persisted) {
+          sessionsStore.getState().mergeSessions([persisted]);
+          entry = findSessionSummary(sessionId);
         }
+      } catch (error) {
+        if (selectionGenerationRef.current === generation) {
+          showToast(`加载会话信息失败：${friendlyError(error)}`, 6000);
+        }
+        if (strict) throw error;
+        return;
       }
     }
     if (selectionGenerationRef.current !== generation) {
@@ -2916,7 +2967,7 @@ function Shell() {
     const cwd = source?.cwd ?? sourceCwd;
     if (!cwd) {
       showToast("接续对话已创建，但缺少工作目录信息，请刷新会话列表");
-      void refreshSessionCatalog();
+      void refreshSessionCatalog(true);
       return;
     }
     const modelId = resolveSessionModelId(models, source?.currentModelId);
@@ -3505,9 +3556,8 @@ function Shell() {
     if (groups.some(group => group.id === current.sessionId)) {
       await useGroupStore.getState().select(current.sessionId); assertCurrent(); handleNavigate("专家团"); return;
     }
-    const localSessions = await agentListAllSessions(true);
+    const local = await agentFindSessionSummary(current.sessionId);
     assertCurrent();
-    const local = localSessions.find(session => session.sessionId === current.sessionId);
     if (!local) throw new Error("该执行不在本机或已删除。共享报告仍可查看；需要继续时，请从任务发起新执行。");
     const localProject = useProjectsStore.getState().projects.find(p => projectOwnsSession(p, current.sessionId));
     await handleSelectSession(current.sessionId, local.cwd, false, true, localProject ? { kind: "project-work-item", projectId: localProject.id } : undefined);
@@ -3623,7 +3673,8 @@ function Shell() {
           onRenameSession={handleRenameSession}
           onArchiveSession={handleArchiveSession}
           onDeleteSession={handleDeleteSession}
-          onRetrySessions={() => void refreshSessionCatalog()}
+          onRetrySessions={() => void refreshSessionCatalog(true)}
+          sessionHistory={historyControls(false)}
           activeNav={activeNav}
         />
         <SidebarResizeHandle layout={sidebarLayout} />
@@ -3859,6 +3910,7 @@ function Shell() {
             onModelsChanged={refreshModels}
             onOpenOrganization={() => { setSettingsOpen(false); handleNavigate("组织"); }}
             onRestoreSession={handleArchiveSession}
+            sessionHistory={historyControls(true)}
             onDeleteSession={handleDeleteSession}
             onOpenSession={(sessionId) => handleSelectSession(sessionId, undefined, false, true)}
             onOpenAutomation={(automationId) => notificationAutomationNavigatorRef.current(automationId)}

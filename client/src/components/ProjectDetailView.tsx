@@ -41,7 +41,8 @@ import { useAppDialog } from "./AppDialog";
 import type { AgentEntry } from "@/lib/types";
 import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
-import { projectAssetsUse, projectAssetsImport, filesystemAttachmentStats, filesystemPickDirectory, type WorkspaceInfo } from "@/lib/agent-client";
+import { agentFindSessionSummaries, projectAssetsUse, projectAssetsImport, filesystemAttachmentStats, filesystemPickDirectory, type WorkspaceInfo } from "@/lib/agent-client";
+import { reconcileSessionCatalog } from "@/lib/session-catalog";
 import { friendlyError, isTaskWorkspaceError } from "@/lib/error-format";
 import { draftAttachments } from "@/lib/draft-attachments";
 import { draftRevision, touchDraft } from "@/lib/draft-lifecycle";
@@ -179,6 +180,41 @@ export function ProjectDetailView({
   };
   const actorId = useOrgSessionStore(state => state.session?.user?.id);
   const rows = projectTaskRows(live, workspace.snapshot, sharingAccount, projectPublicationLinks(live.id, sharingAccount, sharedId).tasks, actorId, sharedId);
+  const projectSessionIds = JSON.stringify([...new Set([
+    ...live.conversations.map(item => item.sessionId),
+    ...live.plans.map(item => item.sessionId),
+    ...rows.map(item => item.sessionId),
+  ].filter((id): id is string => !!id))].sort());
+  const [sessionStatusAttempt, setSessionStatusAttempt] = useState(0);
+  const [sessionStatusRequest, setSessionStatusRequest] = useState<{ loading: boolean; error?: string }>();
+  useEffect(() => {
+    let active = true;
+    const store = useSessionsStore.getState();
+    const present = new Set(store.independent.filter(entry => entry.status).map(entry => entry.sessionId));
+    const ids = (JSON.parse(projectSessionIds) as string[])
+      .filter(id => !present.has(id) && !store.deletedSessionIds.includes(id));
+    if (!ids.length) {
+      setSessionStatusRequest(undefined);
+      return;
+    }
+    setSessionStatusRequest({ loading: true });
+    const load = async () => {
+      for (let offset = 0; offset < ids.length && active; offset += 200) {
+        const before = useSessionsStore.getState().independent;
+        const summaries = await agentFindSessionSummaries(ids.slice(offset, offset + 200));
+        if (!active) return;
+        const latest = useSessionsStore.getState();
+        const reconciled = reconcileSessionCatalog(summaries, before, latest.independent);
+        latest.mergeSessions(reconciled);
+        useProjectsStore.getState().reconcileSessionArchiveStates(reconciled);
+      }
+      if (active) setSessionStatusRequest(undefined);
+    };
+    void load().catch(error => {
+      if (active) setSessionStatusRequest({ loading: false, error: friendlyError(error) });
+    });
+    return () => { active = false; };
+  }, [projectSessionIds, scopeKey, sessionStatusAttempt]);
   const persisting = useProjectsStore(state => state.persisting);
   const persistError = useProjectsStore(state => state.persistError);
   const toggleContext = () => setContextOpen(value => { try { localStorage.setItem("echoagent.project-context-hidden", value ? "1" : "0"); } catch {} return !value; });
@@ -407,6 +443,14 @@ export function ProjectDetailView({
           {workspace.snapshot?.syncWarning && <p className="project-inline-error" role="alert">{workspace.snapshot.syncWarning}</p>}
           {persistError && <p className="project-inline-error" role="alert">保存失败：{persistError}<button className="pd-btn" disabled={persisting} onClick={() => void useProjectsStore.getState().retryPersist().catch(() => {})}>重试保存</button></p>}
           <div className="pd-tab-content" id="project-content-panel" role="tabpanel" aria-labelledby={`project-tab-${tab}`}>
+            {(tab === "overview" || tab === "task") && sessionStatusRequest?.loading && (
+              <p className="project-workspace-hint" role="status">正在读取项目任务状态…</p>
+            )}
+            {(tab === "overview" || tab === "task") && sessionStatusRequest?.error && (
+              <p className="project-inline-error" role="alert">部分项目任务状态读取失败：{sessionStatusRequest.error}
+                <button type="button" className="pd-btn" onClick={() => setSessionStatusAttempt(attempt => attempt + 1)}>重试读取状态</button>
+              </p>
+            )}
             {tab === "overview" && <ProjectOverview project={live} rows={rows} outputs={outputs} onOpenTask={openTask} onOpenOutput={output => setResource({ output })} onTasks={() => setTab("task")} onFiles={() => showFiles("output")} onAddFiles={addFiles} />}
             {tab === "activity" && <ProjectActivity key={scopeKey} draftScope={scopeKey} project={live} sharedId={sharedId} workspace={workspace} onOpenTask={openTask} />}
             {tab === "task" && <ProjectTasks key={scopeKey} inlineDetails project={live} account={sharingAccount} sharedId={sharedId} workspace={workspace} models={models} defaultModelId={projectModelId} runDisabled={workItemPermissionMode === undefined} selectedTaskId={selectedTaskId} onSelectedTaskChange={setSelectedTaskId} outputs={outputs} onPreviewOutput={output => setResource({ output })}
