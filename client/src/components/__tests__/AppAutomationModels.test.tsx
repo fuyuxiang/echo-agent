@@ -155,8 +155,12 @@ afterEach(() => {
 describe("自动化会话模型同步", () => {
   let actualChatView: typeof import("../ChatView")["ChatView"];
   beforeAll(async () => {
-    // Load the production component before timing scenarios with deferred IPC.
-    ({ ChatView: actualChatView } = await vi.importActual<typeof import("../ChatView")>("../ChatView"));
+    // Load production components before measuring UI updates in the tests.
+    const [chatView] = await Promise.all([
+      vi.importActual<typeof import("../ChatView")>("../ChatView"),
+      import("../SettingsPanel"),
+    ]);
+    actualChatView = chatView.ChatView;
   }, 60_000);
 
   it("未登录组织时启动不额外重载个人模型和技能", async () => {
@@ -958,8 +962,10 @@ describe("自动化会话模型同步", () => {
     render(<App />);
     await screen.findByRole("button", { name: "加载更多历史" });
     fireEvent.click(screen.getByRole("button", { name: "归档未加载任务" }));
-    fireEvent.click(await screen.findByRole("button", { name: "管理归档" }));
-    expect(await screen.findByText("刚归档的早期任务", { exact: true })).toBeVisible();
+    const manageArchive = await screen.findByRole("button", { name: "管理归档" });
+    await act(async () => { fireEvent.click(manageArchive); });
+    const settings = await screen.findByRole("dialog", { name: "设置" });
+    expect(within(settings).getByText("刚归档的早期任务", { exact: true })).toBeVisible();
     expect(client.agentFindSessionSummary).toHaveBeenCalledExactlyOnceWith("unpaged");
   });
 
