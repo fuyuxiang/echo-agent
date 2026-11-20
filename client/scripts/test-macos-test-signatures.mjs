@@ -40,6 +40,7 @@ test('accepts the Cargo build/crate/hash/out layout only for the matching main t
   const binary = { ...base, executable,
     target: { name: 'echoagent', src_path: '/repo/src-tauri/src/main.rs', kind: ['bin'] } };
   assert.deepEqual(select([binary]), [executable]);
+  assert.deepEqual(select([{ ...binary, executable: executable + '.exe' }]), [executable + '.exe']);
   for (const path of [
     executable.replace('/0123456789abcdef/out/', '/fedcba9876543210/out/'),
     executable.replace('/build/echoagent/', '/build/another-crate/'),
