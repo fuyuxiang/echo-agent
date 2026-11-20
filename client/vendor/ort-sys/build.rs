@@ -11,6 +11,7 @@ const ORT_ENV_SYSTEM_LIB_LOCATION: &str = "ORT_LIB_LOCATION";
 const ORT_ENV_SYSTEM_LIB_PROFILE: &str = "ORT_LIB_PROFILE";
 const ORT_ENV_PREFER_DYNAMIC_LINK: &str = "ORT_PREFER_DYNAMIC_LINK";
 const ORT_ENV_SKIP_DOWNLOAD: &str = "ORT_SKIP_DOWNLOAD";
+const ORT_ENV_ARCHIVE: &str = "ORT_ARCHIVE";
 const ORT_ENV_CXX_STDLIB: &str = "ORT_CXX_STDLIB";
 const ENV_CXXSTDLIB: &str = "CXXSTDLIB"; // Used by the `cc` crate - we should mirror if this is set for other C++ crates
 #[cfg(feature = "download-binaries")]
@@ -471,7 +472,8 @@ fn prepare_libort_dir() -> (PathBuf, bool) {
 	} else {
 		#[cfg(feature = "download-binaries")]
 		{
-			if env::var("CARGO_NET_OFFLINE").as_deref() == Ok("true") || skip_download() {
+			let local_archive = env::var_os(ORT_ENV_ARCHIVE);
+			if local_archive.is_none() && (skip_download() || env::var("CARGO_NET_OFFLINE").as_deref() == Ok("true")) {
 				return (PathBuf::default(), true);
 			}
 
@@ -519,7 +521,10 @@ fn prepare_libort_dir() -> (PathBuf, bool) {
 
 			let lib_dir = bin_extract_dir.join(ORT_EXTRACT_DIR);
 			if !lib_dir.exists() {
-				let downloaded_file = fetch_file(prebuilt_url);
+				let downloaded_file = match local_archive {
+					Some(path) => std::fs::read(&path).unwrap_or_else(|error| panic!("Failed to read ONNX Runtime archive {}: {error}", Path::new(&path).display())),
+					None => fetch_file(prebuilt_url)
+				};
 				assert!(verify_file(&downloaded_file, prebuilt_hash), "hash of downloaded ONNX Runtime binary does not match!");
 
 				let mut temp_extract_dir = bin_extract_dir
@@ -625,6 +630,7 @@ fn real_main(link: bool) {
 }
 
 fn main() {
+	println!("cargo:rerun-if-env-changed={}", ORT_ENV_ARCHIVE);
 	if env::var("DOCS_RS").is_ok() || cfg!(feature = "disable-linking") {
 		// On docs.rs, A) we don't need to link, and B) we don't have network, so we couldn't download anything if we wanted to.
 		// If `disable-linking` is specified, presumably the application will configure a custom backend, and the crate
@@ -632,21 +638,15 @@ fn main() {
 		return;
 	}
 
+	// A caller supplying a pinned archive expects to use its exact runtime.
+	if env::var_os(ORT_ENV_ARCHIVE).is_none() && try_setup_with_pkg_config() {
+		return;
+	}
 	if cfg!(feature = "load-dynamic") {
-		if !try_setup_with_pkg_config() {
-			// Only execute the real main step if pkg-config fails and if we are using the download
-			// strategy
-			if cfg!(feature = "download-binaries") && env::var(ORT_ENV_SYSTEM_LIB_LOCATION).is_err() {
-				// but we don't need to link to the binaries we download (so all we are doing is
-				// downloading them and placing them in the output directory)
-				real_main(false); // but we don't need to link to the binaries we download
-			}
+		if cfg!(feature = "download-binaries") && env::var(ORT_ENV_SYSTEM_LIB_LOCATION).is_err() {
+			real_main(false); // Only stage the libraries for runtime loading.
 		}
 	} else {
-		// If pkg-config setup was successful, we don't need further action
-		// Otherwise, if we are not using the load-dynamic feature, we need to link to the dylibs.
-		if !try_setup_with_pkg_config() {
-			real_main(true);
-		}
+		real_main(true);
 	}
 }

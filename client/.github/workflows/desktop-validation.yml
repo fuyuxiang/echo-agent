@@ -87,6 +87,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install verified pinned protoc
         uses: ./.github/actions/setup-protoc
+      - name: Restore pinned ONNX Runtime archive
+        id: ort_archive
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ runner.temp }}/echo-onnx-runtime
+          key: ort-archive-${{ matrix.target }}-${{ hashFiles('vendor/ort-sys/dist.txt') }}
+      - name: Verify and prepare pinned ONNX Runtime before compilation
+        timeout-minutes: 8
+        run: node scripts/setup-onnx-runtime.mjs
+      - name: Save pinned ONNX Runtime archive
+        if: steps.ort_archive.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/echo-onnx-runtime
+          key: ${{ steps.ort_archive.outputs.cache-primary-key }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
