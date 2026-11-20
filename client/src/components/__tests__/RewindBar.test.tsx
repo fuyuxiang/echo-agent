@@ -9,11 +9,14 @@ vi.mock("@/lib/agent-client", () => ({
     { promptIndex: 0, promptPreview: "first prompt", timestamp: "2026-01-01T00:00:00Z" },
   ]),
   rewindExecute: vi.fn().mockResolvedValue({ targetPromptIndex: 0 }),
+  rewindPreview: vi.fn().mockResolvedValue({ revision: "revision", cleanFiles: ["ready.txt"], conflicts: [{ path: "user.txt", conflictType: "modified_externally" }] }),
+  rewindUndoPreview: vi.fn(),
+  rewindUndoExecute: vi.fn(),
   sessionFork: vi.fn().mockResolvedValue("forked-session-id-1234"),
 }));
 
 // Re-import the mocked module so we can assert call args on the stubs.
-const { rewindExecute, rewindPoints, sessionFork } = await import("@/lib/agent-client");
+const { rewindExecute, rewindPoints, rewindPreview, rewindUndoExecute, rewindUndoPreview, sessionFork } = await import("@/lib/agent-client");
 
 describe("RewindBar wiring", () => {
   it("接续会话只能回溯自己的新内容，继承历史保持只读", async () => {
@@ -50,13 +53,70 @@ describe("RewindBar wiring", () => {
     });
     fireEvent.click(actionBtn);
     expect(rewindExecute).not.toHaveBeenCalled();
-    const confirmation = screen.getByRole("alertdialog", { name: `确认回溯（${modeLabel}）？` });
+    const confirmation = await screen.findByRole("alertdialog", { name: `确认回溯（${modeLabel}）？` });
     expect(confirmation).toHaveTextContent("第 1 步执行前：first prompt");
-    expect(confirmation).toHaveTextContent("撤销此步骤及后续");
+    if (wireMode !== "conversation_only") {
+      expect(rewindPreview).toHaveBeenCalledWith("s1", 0, wireMode);
+      expect(confirmation).toHaveTextContent("ready.txt");
+      expect(confirmation).toHaveTextContent("user.txt");
+      expect(confirmation).toHaveTextContent("将保留当前状态");
+    }
     fireEvent.click(screen.getByRole("button", { name: "确认回溯" }));
     await waitFor(() => expect(onRewound).toHaveBeenCalledWith("s1"));
-    expect(rewindExecute).toHaveBeenCalledWith("s1", 0, wireMode, true);
+    const preview = wireMode === "conversation_only" ? [] : ["revision"];
+    expect(rewindExecute).toHaveBeenCalledWith("s1", 0, wireMode, true, ...preview);
     expect(onToast).toHaveBeenCalled();
+  });
+
+  it("从现有时间线预览并撤销上次文件恢复", async () => {
+    const onRewound = vi.fn();
+    vi.mocked(rewindPoints).mockResolvedValueOnce([]);
+    vi.mocked(rewindUndoPreview).mockResolvedValueOnce({
+      revision: "undo-revision",
+      cleanFiles: ["report.txt"],
+      conflicts: [{ path: "uncertain.txt", conflictType: "rewind_interrupted" }],
+    });
+    vi.mocked(rewindUndoExecute).mockResolvedValueOnce({ targetPromptIndex: 0, revertedFiles: ["report.txt"] });
+    render(<RewindBar sessionId="s1" action="rewind" onRewound={onRewound} />);
+    await screen.findByText("还没有回溯点，走几步再回头看。");
+    fireEvent.click(screen.getByRole("button", { name: "撤销上次文件恢复" }));
+    const confirmation = await screen.findByRole("alertdialog", { name: "撤销上次文件恢复？" });
+    expect(confirmation).toHaveTextContent("report.txt");
+    expect(confirmation).toHaveTextContent("上次写入中断，结果待核对");
+    expect(rewindUndoExecute).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "确认撤销" }));
+    await waitFor(() => expect(rewindUndoExecute).toHaveBeenCalledWith("s1", "undo-revision"));
+    expect(onRewound).toHaveBeenCalledWith("s1");
+    expect(rewindPoints).toHaveBeenCalledTimes(1);
+  });
+
+  it("回溯后保留并发修改的安全副本位置供用户核对", async () => {
+    vi.mocked(rewindExecute).mockResolvedValueOnce({
+      targetPromptIndex: 0,
+      revertedFiles: [],
+      conflicts: [{
+        path: "ready.txt", conflictType: "modified_externally", recoveryPath: "/private/rewind-copy/ready.txt",
+      }],
+    });
+    render(<RewindBar sessionId="s1" action="rewind" />);
+    fireEvent.click(await screen.findByRole("button", { name: "仅文件" }));
+    fireEvent.click(await screen.findByRole("button", { name: /回溯到此处/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认回溯" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("/private/rewind-copy/ready.txt");
+    expect(screen.getByRole("dialog", { name: "回溯时间线" })).toBeInTheDocument();
+  });
+
+  it("仅文件模式在没有可恢复文件时只显示核对结果", async () => {
+    vi.mocked(rewindPreview).mockResolvedValueOnce({ revision: "revision", cleanFiles: [], conflicts: [
+      { path: "kept.txt", conflictType: "modified_externally" },
+    ] });
+    render(<RewindBar sessionId="s1" action="rewind" />);
+    fireEvent.click(await screen.findByRole("button", { name: "仅文件" }));
+    fireEvent.click(await screen.findByRole("button", { name: /回溯到此处/ }));
+    const notice = await screen.findByRole("dialog", { name: "确认回溯（仅文件）？" });
+    expect(notice).toHaveTextContent("kept.txt");
+    fireEvent.click(screen.getByRole("button", { name: "知道了" }));
+    expect(rewindExecute).not.toHaveBeenCalled();
   });
 
   it("切换会话后不接收上一会话的迟到回溯点", async () => {
@@ -84,9 +144,10 @@ describe("RewindBar wiring", () => {
     const onActionDone = vi.fn();
     render(<RewindBar sessionId="s1" action={action} canExecute={() => allowed} onActionDone={onActionDone} />);
     if (action === "rewind") fireEvent.click(await screen.findByRole("button", { name: /回溯到此处/ }));
+    const confirmation = await screen.findByRole("button", { name: "确认回溯" });
     // The live session can change before React has committed another render.
     allowed = false;
-    fireEvent.click(screen.getByRole("button", { name: "确认回溯" }));
+    fireEvent.click(confirmation);
     await waitFor(() => expect(onActionDone).toHaveBeenCalled());
     expect(rewindExecute).not.toHaveBeenCalled();
     expect(sessionFork).not.toHaveBeenCalled();

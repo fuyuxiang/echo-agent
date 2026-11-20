@@ -476,7 +476,9 @@ Object.assign(window, {
               inheritedTurnCount:index+1,temporaryTitle:`${source.title} · 新方向`,createdAt:new Date().toISOString()}},warnings:[]};
         }
         case "rewind_points": return [{promptIndex: 0, promptPreview: "评审投影仪性能与内存泄漏"}];
+        case "rewind_preview": return { revision: "a".repeat(64), cleanFiles: [], conflicts: [] };
         case "rewind_execute": return { targetPromptIndex: args.targetPromptIndex };
+        case "rewind_undo": return null;
 
         case "agent_resolve_plan_approval": planReviewOutcomes.push(args); return true;
         case "team_snapshot": {

@@ -14,6 +14,71 @@ use windows_sys::Win32::{
     },
 };
 
+#[cfg(feature = "native-fixture")]
+pub fn verify_window_reveal(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use crate::desktop_window::{capture, restore, show, WindowState};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+    };
+
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let corrupt = WindowState::from_json(
+        br#"{"width":2863311516.0,"height":2863311522.0,"maximized":false,"position":[0,0]}"#,
+    );
+    if corrupt.is_some() {
+        return Err("incident window dimensions were accepted".into());
+    }
+    restore(window, corrupt)?;
+    let saved = capture(window).ok_or("fixture window must start with usable geometry")?;
+    let collapse = || -> Result<(), String> {
+        window.hide().map_err(|e| e.to_string())?;
+        if unsafe {
+            SetWindowPos(
+                hwnd.0 as _,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        if capture(window).is_some() {
+            return Err("injected invalid geometry could still be persisted".into());
+        }
+        Ok(())
+    };
+    collapse()?;
+    show(window, || Some(saved))?;
+    let restored = capture(window).ok_or("repaired geometry is invalid")?;
+    if window.hwnd().map_err(|e| e.to_string())? != hwnd
+        || !window.is_visible().map_err(|e| e.to_string())?
+        || (restored.width - saved.width).abs() > 2.0
+        || (restored.height - saved.height).abs() > 2.0
+    {
+        return Err(format!(
+            "fixture did not recover the original window in place: {saved:?} -> {restored:?}"
+        ));
+    }
+    let mut requested_saved_state = false;
+    show(window, || {
+        requested_saved_state = true;
+        None
+    })?;
+    if requested_saved_state {
+        return Err("a healthy window was unnecessarily repositioned".into());
+    }
+    collapse()?;
+    show(window, || corrupt)?;
+    if capture(window).is_none() || window.hwnd().map_err(|e| e.to_string())? != hwnd {
+        return Err("default geometry did not recover the original window".into());
+    }
+    Ok(())
+}
+
 pub fn terminate_owned_webview(core: &ICoreWebView2, renderer: bool) -> Result<(), String> {
     let mut browser_pid = 0;
     unsafe { core.BrowserProcessId(&mut browser_pid) }.map_err(|e| e.to_string())?;

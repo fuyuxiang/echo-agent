@@ -119,7 +119,7 @@ async fn blocked_source_is_excluded_even_if_its_chunk_has_no_forgotten_phrase() 
     assert!(provider.inputs.lock().unwrap().is_empty());
     let permit = storage.request_permit_for_paths(vec![path]);
     assert!(matches!(
-        permit(&["new wording without the forgotten phrase"]),
+        permit(0, &["new wording without the forgotten phrase"]),
         Err(MemoryPolicyError::ContentVetoed)
     ));
 }
@@ -202,7 +202,7 @@ async fn ledger_failure_is_distinct_and_sends_no_content() {
     std::fs::create_dir_all(storage.workspace_dir()).unwrap();
     std::fs::write(storage.workspace_dir().join("records.json"), b"corrupt").unwrap();
     assert!(matches!(
-        storage.request_permit()(&["allowed content"]),
+        storage.request_permit()(0, &["allowed content"]),
         Err(MemoryPolicyError::LedgerUnavailable(_))
     ));
     let provider = Provider::default();
@@ -245,7 +245,7 @@ async fn live_policy_race_reselects_the_batch_and_preserves_its_allowed_companio
                     .unwrap();
                 return Err(MemoryPolicyError::ContentVetoed.into());
             }
-            self.storage.request_permit()(texts)?;
+            self.storage.request_permit()(0, texts)?;
             Ok(texts.iter().map(|s| vector(s)).collect())
         }
         fn model_name(&self) -> &str {
@@ -342,7 +342,7 @@ async fn an_explicit_correction_can_extend_old_text_without_reviving_the_legacy_
         .is_empty());
     let projection = std::fs::read_to_string(&path).unwrap();
     assert!(matches!(
-        storage.request_permit_for_paths(vec![path])(&[&projection]),
+        storage.request_permit_for_paths(vec![path])(0, &[&projection]),
         Err(MemoryPolicyError::ContentVetoed)
     ));
 }
@@ -426,6 +426,6 @@ async fn managed_records_remain_searchable_and_embeddable_after_chunking() {
             );
         }
         let permit = storage.request_permit_for_paths(vec![path]);
-        assert!(permit(&["[Context: private invented fact]\n\n# Saved memories"]).is_err());
+        assert!(permit(0, &["[Context: private invented fact]\n\n# Saved memories"]).is_err());
     }
 }

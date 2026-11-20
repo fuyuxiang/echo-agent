@@ -591,6 +591,23 @@ impl SessionActor {
             self.resolve_turn_prompt_mode(input_origin.as_prompt_origin(), declared_mode);
         *self.turn_start_prompt_mode.lock() = prompt_mode;
         *self.turn_prompt_mode.lock() = prompt_mode;
+        let automation_mode = if self.client_identifier.as_deref() == Some("echo-agent-desktop") {
+            prompt_blocks
+                .iter()
+                .find_map(|block| match block {
+                    acp::ContentBlock::Text(text) => {
+                        text.meta.as_ref()?.get("desktopAutomation")?.as_str()
+                    }
+                    _ => None,
+                })
+                .map_or(AutomationTurnMode::Ordinary, |value| match value {
+                    "run" => AutomationTurnMode::Checkpoint,
+                    "finish" => AutomationTurnMode::Finish,
+                    _ => AutomationTurnMode::Ordinary,
+                })
+        } else {
+            AutomationTurnMode::Ordinary
+        };
         let desktop_document_tools = self
             .startup_hints
             .inherited_turn_authority
@@ -647,6 +664,18 @@ impl SessionActor {
             } else {
                 self.signals_handle().record_edit_and_retry();
             }
+        }
+        let mut prompt_blocks = prompt_blocks;
+        let host_project_context =
+            crate::session::helpers::host_prompt_context::take_project_context(
+                &mut prompt_blocks,
+                policy.authority.is_human_intent(),
+            );
+        if policy.authority.is_human_intent()
+            && !self.startup_hints.is_subagent
+            && let Ok(mut context) = self.tool_context.host_project_context.write()
+        {
+            *context = host_project_context.as_deref().map(Arc::from);
         }
         if let Some(bash_command) = Self::extract_bash_command(&prompt_blocks) {
             if self.is_readonly_turn() || desktop_document_tools {
@@ -1245,16 +1274,18 @@ impl SessionActor {
                 self.mark_front_message_committed().await;
             }
         }
-        self.dispatch_hook(
-            echo_agent_hooks::event::HookEventName::UserPromptSubmit,
-            echo_agent_hooks::event::HookPayload::UserPromptSubmit {
-                prompt: prompt_text_for_hook,
-                subagent_type: self.subagent_type_label(),
-            },
-            Some(prompt_id),
-            None,
-        )
-        .await;
+        if automation_mode != AutomationTurnMode::Finish {
+            self.dispatch_hook(
+                echo_agent_hooks::event::HookEventName::UserPromptSubmit,
+                echo_agent_hooks::event::HookPayload::UserPromptSubmit {
+                    prompt: prompt_text_for_hook,
+                    subagent_type: self.subagent_type_label(),
+                },
+                Some(prompt_id),
+                None,
+            )
+            .await;
+        }
         let turn_scope_guard =
             TurnSubagentScopeGuard::new(self.current_prompt_id.clone(), prompt_id.to_string());
         self.open_subagent_spawn_admission();
@@ -1272,14 +1303,17 @@ impl SessionActor {
                     self.set_goal_loop_active_resource(goal_loop_active).await;
                 }
                 let round = self
-                    .process_conversation_turn_with_recovery(
+                    .process_conversation_turn_for_input(
+                        automation_mode,
                         prompt_id,
                         round_trace.take(),
                         round_artifact.take(),
                         json_schema.clone(),
                     )
                     .await;
-                if !matches!(round, Ok(TurnOutcome::Completed { .. })) {
+                if automation_mode == AutomationTurnMode::Finish
+                    || !matches!(round, Ok(TurnOutcome::Completed { .. }))
+                {
                     break round;
                 }
                 if matches!(
@@ -1968,6 +2002,7 @@ impl SessionActor {
     // boxing only at each await site would still create that temporary there.
     fn boxed_conversation_turn<'turn>(
         self: &'turn Arc<Self>,
+        automation_mode: AutomationTurnMode,
         req_id: &'turn str,
         trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
         artifact_tracker: Option<&'turn crate::upload::manifest::ArtifactTracker>,
@@ -1976,6 +2011,7 @@ impl SessionActor {
         Box<impl std::future::Future<Output = Result<TurnOutcome, acp::Error>> + 'turn>,
     > {
         Box::pin(self.process_conversation_turn(
+            automation_mode,
             req_id,
             trace_gcs_config,
             artifact_tracker,
@@ -1991,14 +2027,33 @@ impl SessionActor {
     /// the turn with exponential backoff.
     ///
     /// Agents without `completion_requirement` bypass this entirely.
+    #[cfg(test)]
+    pub(super) async fn process_conversation_turn_with_recovery(
+        self: &Arc<Self>,
+        req_id: &str,
+        trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
+        artifact_tracker: Option<crate::upload::manifest::ArtifactTracker>,
+        json_schema: Option<serde_json::Value>,
+    ) -> Result<TurnOutcome, acp::Error> {
+        self.process_conversation_turn_for_input(
+            AutomationTurnMode::Ordinary,
+            req_id,
+            trace_gcs_config,
+            artifact_tracker,
+            json_schema,
+        )
+        .await
+    }
+
     #[tracing::instrument(
         name = "session.process_conversation_turn_with_recovery",
         skip_all,
         err,
         fields(req_id = %req_id, session_id = %self.session_info.id.0)
     )]
-    pub(super) async fn process_conversation_turn_with_recovery(
+    async fn process_conversation_turn_for_input(
         self: &Arc<Self>,
+        automation_mode: AutomationTurnMode,
         req_id: &str,
         trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
         artifact_tracker: Option<crate::upload::manifest::ArtifactTracker>,
@@ -2010,12 +2065,24 @@ impl SessionActor {
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
         );
+        if automation_mode == AutomationTurnMode::Finish {
+            return self
+                .boxed_conversation_turn(
+                    automation_mode,
+                    req_id,
+                    trace_gcs_config,
+                    artifact_tracker.as_ref(),
+                    json_schema,
+                )
+                .await;
+        }
         let agent_ref = self.agent.borrow();
         let completion_req = match agent_ref.completion_requirement() {
             Some(req) => req,
             None => {
                 return self
                     .boxed_conversation_turn(
+                        automation_mode,
                         req_id,
                         trace_gcs_config,
                         artifact_tracker.as_ref(),
@@ -2029,6 +2096,7 @@ impl SessionActor {
             None => {
                 return self
                     .boxed_conversation_turn(
+                        automation_mode,
                         req_id,
                         trace_gcs_config,
                         artifact_tracker.as_ref(),
@@ -2041,6 +2109,7 @@ impl SessionActor {
         let recovery_prompt = completion_req.reminder.clone();
         let mut result = self
             .boxed_conversation_turn(
+                automation_mode,
                 req_id,
                 trace_gcs_config.clone(),
                 artifact_tracker.as_ref(),
@@ -2108,6 +2177,7 @@ impl SessionActor {
             self.chat_state_handle.push_user_message(recovery_message);
             result = self
                 .boxed_conversation_turn(
+                    automation_mode,
                     req_id,
                     trace_gcs_config.clone(),
                     artifact_tracker.as_ref(),
@@ -2151,7 +2221,7 @@ impl SessionActor {
         else {
             return None;
         };
-        let core = records::core_context(&storage).unwrap_or_default();
+        let (core, core_sources) = records::core_context_with_sources(&storage).unwrap_or_default();
         self.memory
             .context_injected
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2162,6 +2232,7 @@ impl SessionActor {
             "enabled",
             self.memory.initial_injection_config.enabled,
         ) {
+            self.report_memory_sources(core_sources, &[]).await;
             return Some(format!(
                 "<memory-context>\n{instructions}\nCurrent saved preferences, rules and follow-ups:\n{core}\n</memory-context>"
             ));
@@ -2187,6 +2258,7 @@ impl SessionActor {
                             .is_ok_and(|text| text.contains(r.snippet.trim()))
                 })
             {
+                self.report_memory_sources(core_sources, &results).await;
                 let recalled =
                     crate::session::helpers::memory_context::format_memory_reminder(&results)
                         .unwrap_or_default()
@@ -2272,8 +2344,10 @@ impl SessionActor {
         if !self.memory.setting("memory", None, "enabled", true) {
             return None;
         }
-        let core = records::core_context(&storage).unwrap_or_default();
+        let (core, core_sources) = records::core_context_with_sources(&storage).unwrap_or_default();
         *self.memory.cached_context.borrow_mut() = Some((cache_key, inject_results.clone()));
+        self.report_memory_sources(core_sources, &inject_results)
+            .await;
         let retrieved =
             crate::session::helpers::memory_context::format_memory_reminder(&inject_results)
                 .unwrap_or_default()
@@ -2282,6 +2356,42 @@ impl SessionActor {
         Some(format!(
             "<memory-context>\n{instructions}\nCurrent saved preferences, rules and follow-ups:\n{core}\n{retrieved}\n</memory-context>"
         ))
+    }
+    async fn report_memory_sources(
+        &self,
+        mut sources: Vec<String>,
+        recalled: &[echo_agent_tools::types::memory_backend::MemorySearchResult],
+    ) {
+        let prompt_id = self.current_prompt_id.lock().ok().and_then(|id| id.clone());
+        let Some(prompt_id) = prompt_id else {
+            return;
+        };
+        sources.extend(recalled.iter().filter_map(|result| {
+            let basename = std::path::Path::new(&result.path).file_name()?.to_str()?;
+            Some(format!(
+                "{}/{} · {}–{}",
+                result.source,
+                basename,
+                result.start_line.saturating_add(1),
+                result.end_line
+            ))
+        }));
+        sources.retain(|source| {
+            !source.is_empty() && source.len() <= 256 && !source.chars().any(char::is_control)
+        });
+        sources.sort_unstable();
+        sources.dedup();
+        sources.truncate(24);
+        if !sources.is_empty() {
+            self.send_echo_agent_notification_with_extra_meta(
+                EchoAgentSessionUpdate::MemoryContextUsed { sources },
+                Some(serde_json::Map::from_iter([(
+                    "promptId".into(),
+                    prompt_id.into(),
+                )])),
+            )
+            .await;
+        }
     }
     /// Inspect `tool_calls` for a `StructuredOutput` call and decide the turn's
     /// next step, pushing the call's `tool_result` (correction / retry error /
@@ -2435,6 +2545,7 @@ impl SessionActor {
     )]
     async fn process_conversation_turn(
         self: &Arc<Self>,
+        automation_mode: AutomationTurnMode,
         req_id: &str,
         trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
         artifact_tracker: Option<&crate::upload::manifest::ArtifactTracker>,
@@ -2509,6 +2620,10 @@ impl SessionActor {
         let mut metrics_drop_guard = TurnMetrics::new();
         let mut turn_tools_called: Vec<String> = Vec::new();
         let mut tool_turn_count: usize = 1;
+        let recovery_file = crate::session::persistence::session_dir(&self.session_info)
+            .join("desktop-automation-checkpoint");
+        let mut checkpoint_eligible = false;
+        let mut checkpoint_written = false;
         let mut loop_index: u32 = 0;
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut todo_gate_fires: u32 = 0;
@@ -2728,6 +2843,19 @@ impl SessionActor {
                 })),
             );
             let mut request = request;
+            if !self.startup_hints.is_subagent
+                && let Some(project_context) = self
+                    .tool_context
+                    .host_project_context
+                    .read()
+                    .ok()
+                    .and_then(|context| context.clone())
+            {
+                crate::session::helpers::host_prompt_context::apply_project_context(
+                    &mut request.items,
+                    &project_context,
+                );
+            }
             request.x_echo_agent_session_id = Some(self.session_info.id.to_string());
             request.x_echo_agent_turn_idx =
                 Some(self.chat_state_handle.get_prompt_index().await.to_string());
@@ -2741,6 +2869,11 @@ impl SessionActor {
                 request.json_schema = json_schema.clone();
             }
             request.hosted_tools = self.hosted_tools_for_turn();
+            if automation_mode == AutomationTurnMode::Finish {
+                request.hosted_tools.clear();
+                request.tools.clear();
+                request.tool_choice = None;
+            }
             request.max_output_tokens = self
                 .tool_context
                 .clamp_task_model_request(request.max_output_tokens)
@@ -2763,6 +2896,22 @@ impl SessionActor {
                     "elapsed_since_turn_start_ms": conv_turn_start.elapsed().as_millis() as u64,
                 })),
             );
+            if automation_mode == AutomationTurnMode::Checkpoint
+                && checkpoint_eligible
+                && !checkpoint_written
+                && request.hosted_tools.is_empty()
+            {
+                // The tool result must be present in model history before a
+                // replacement Runtime may use it. A failed flush is not a receipt.
+                if self.flush_to_disk().await.is_ok() {
+                    match write_automation_checkpoint(&recovery_file, req_id.as_bytes()) {
+                        Ok(()) => checkpoint_written = true,
+                        Err(error) => {
+                            tracing::warn!(%error, "automation recovery checkpoint unavailable")
+                        }
+                    }
+                }
+            }
             let model_timer = std::time::Instant::now();
             let (mut response, latency) = match self
                 .run_turn_via_sampler(request.clone(), &mut rate_limit_waits)
@@ -3025,6 +3174,16 @@ impl SessionActor {
                 );
                 return Err(error);
             }
+            if automation_mode == AutomationTurnMode::Finish && !response.tool_calls().is_empty() {
+                return Err(acp::Error::internal_error().data("恢复阶段只允许汇总已落盘的结果"));
+            }
+            if checkpoint_written {
+                // Invalidate before any new tool or local hook can run.
+                write_automation_checkpoint(&recovery_file, b"")
+                    .map_err(|_| acp::Error::internal_error().data("无法关闭旧的恢复检查点"))?;
+                checkpoint_written = false;
+            }
+            checkpoint_eligible = false;
             let mut tool_calls = response.tool_calls().to_vec();
             let over_cap = self.media_gen_over_cap(&tool_calls);
             if echo_agent_tools::media_gen_limits::should_resample_egregious(
@@ -3288,6 +3447,9 @@ impl SessionActor {
                     },
                 );
             }
+            let foreground_shell = automation_mode == AutomationTurnMode::Checkpoint
+                && matches!(step_tool_kinds.as_slice(), [Some(ToolKind::Execute)])
+                && matches!(tool_calls.as_slice(), [tool] if foreground_shell_arguments(&tool.arguments));
             let tool_call_responses: Vec<ToolCallResponse> = tool_calls
                 .into_iter()
                 .map(|tc| ToolCallResponse {
@@ -3310,6 +3472,17 @@ impl SessionActor {
                 )
                 .await;
             let execute_tool_calls_result = self.execute_tool_calls(tool_call_responses).await;
+            checkpoint_eligible = foreground_shell
+                && matches!(&execute_tool_calls_result, Ok(ToolLoop::Continue))
+                && !tool_bridge
+                    .list_background_tasks()
+                    .await
+                    .iter()
+                    .any(echo_agent_tools::computer::types::TaskSnapshot::is_outstanding)
+                && self
+                    .outstanding_reply_for_prompt(req_id)
+                    .await
+                    .is_none_or(|reply| reply.live_ids.is_empty());
             match execute_tool_calls_result {
                 Ok(ToolLoop::PermissionReject { tool_name, reason }) => {
                     return Ok(TurnOutcome::Cancelled {
@@ -3365,6 +3538,40 @@ impl SessionActor {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AutomationTurnMode {
+    Ordinary,
+    Checkpoint,
+    Finish,
+}
+
+fn foreground_shell_arguments(arguments: &str) -> bool {
+    let Ok(input) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return false;
+    };
+    input["command"].is_string()
+        && input["is_background"].as_bool() != Some(true)
+        && input["isBackground"].as_bool() != Some(true)
+        && input["run_in_background"].as_bool() != Some(true)
+        && input["command"]
+            .as_str()
+            .is_some_and(|command| !command.contains('&'))
+}
+
+fn write_automation_checkpoint(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing session directory"))?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(content)?;
+    crate::session::storage::sync_file_durable(file.as_file())?;
+    file.persist(path)?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 /// Discard an egregious (2× cap) media-gen generation and re-sample this
 /// many times; later over-caps in the same turn use first-K.
 const MAX_MEDIA_GEN_OVER_CAP_RESAMPLES: u32 = 1;

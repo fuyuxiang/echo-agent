@@ -329,6 +329,18 @@ pub struct RewindRequest {
     /// Defaults to `All` for backwards compatibility with older clients.
     #[serde(default = "default_rewind_mode")]
     pub mode: RewindMode,
+    /// Opts into guarded local file restoration. An empty revision requests
+    /// a preview; execution must present the revision from that preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_guard: Option<RewindFileGuard>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewindFileGuard {
+    pub revision: Option<String>,
+    #[serde(default)]
+    pub undo: bool,
 }
 
 pub(crate) fn default_rewind_mode() -> RewindMode {
@@ -357,6 +369,8 @@ pub struct RewindResponse {
     pub prompt_text: Option<String>,
     /// Optional error message
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_revision: Option<String>,
 }
 
 /// Info about a conflict during rewind
@@ -364,6 +378,8 @@ pub struct RewindResponse {
 pub struct RewindConflictInfo {
     pub path: String,
     pub conflict_type: String, // "missing_file", "extra_file", "content_mismatch"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_path: Option<String>,
 }
 
 /// Request to get available rewind points for the session
@@ -821,6 +837,7 @@ mod tests {
         let original = RewindRequest {
             target_prompt_index: 3,
             force: false,
+            file_guard: None,
             mode: RewindMode::ConversationOnly,
         };
         let json = serde_json::to_value(&original).unwrap();
@@ -842,6 +859,7 @@ mod tests {
             conflicts: vec![],
             prompt_text: Some("fix the bug".into()),
             error: None,
+            preview_revision: None,
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["mode"], json!("conversation_only"));
@@ -860,6 +878,7 @@ mod tests {
             conflicts: vec![],
             prompt_text: None,
             error: None,
+            preview_revision: None,
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert!(v["prompt_text"].is_null());

@@ -9725,6 +9725,12 @@ button.diff__path {
   margin: 0;
   padding: 0 6px;
 }
+
+.rewind-bar__file-preview {
+  max-height: 15rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
 .rewind-bar__timeline-item {
   display: flex;
   gap: 10px;

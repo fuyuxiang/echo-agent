@@ -5,7 +5,7 @@ vi.mock("../tauri-kb-reader", async original => ({
   ...await original<object>(), isTauriAvailable: () => true,
 }));
 import { invoke } from "@tauri-apps/api/core";
-import { agentDeleteSession, agentLoadSession, agentReloadSession, agentSessionLoadInFlight } from "../agent-client";
+import { agentDeleteSession, agentLoadSession, agentRecoverSession, agentReloadSession, agentSessionLoadInFlight } from "../agent-client";
 import { restoreKnowledgeTraces } from "../knowledge-traces-client";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -80,6 +80,37 @@ it("恢复中断后保留已显示历史，重试时读取完整历史", async (
   store.setSession(id);
   await agentLoadSession(id, "/workspace");
   expect(useSessionStore.getState().messages).toMatchObject([{ parts: [{ text: "已显示余下历史" }] }]);
+});
+
+it("失效的增量游标会用完整回放重建无活动的会话缓存", async () => {
+  const id = "expired-cursor";
+  const store = useSessionStore.getState();
+  store.setSession(id);
+  const reply = (text: string, promptId: string, isReplay = false) => store.applyUpdate({
+    __sessionId: id, sessionUpdate: "agent_message_chunk", content: { type: "text", text },
+    _meta: { promptId, isReplay },
+  });
+  reply("旧分支", "old");
+  store.applyUpdate({
+    __sessionId: id, sessionUpdate: "turn_completed", prompt_id: "old", stop_reason: "end_turn",
+    _meta: { eventId: "expired-cursor-29" },
+  });
+  let attempts = 0;
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command !== "agent_recover_session") return null;
+    reply("新分支", "new", true);
+    return {
+      modelId: "model-a",
+      activePromptId: null,
+      ...(attempts++ === 0 ? { cursorRejected: true } : {}),
+    };
+  });
+  await expect(agentRecoverSession(id, "/workspace")).resolves.toMatchObject({ modelId: "model-a", activePromptId: null });
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "agent_recover_session")).toEqual([
+    ["agent_recover_session", { sessionId: id, cwd: "/workspace", cursor: "expired-cursor-29" }],
+    ["agent_recover_session", { sessionId: id, cwd: "/workspace" }],
+  ]);
+  expect(useSessionStore.getState().messages).toMatchObject([{ parts: [{ text: "新分支" }] }]);
 });
 
 it.each([false, true])("回退历史等待旧回放结束后重新读取，旧回放失败=%s", async failOldLoad => {

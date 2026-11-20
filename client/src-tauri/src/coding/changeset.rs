@@ -1614,6 +1614,8 @@ fn restore_one_if_current(
     ensure_safe_parent_chain(root, &target, false)?;
     let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
     let lease_path = resolve_in_workspace(&canonical_root, &baseline.path)?;
+    let _workspace_lease = echo_agent_runtime::try_workspace_mutation(&lease_path)
+        .map_err(|error| format!("文件正在修改或无法核验：{error}"))?;
     let transaction = crate::coding_workspace::document_write_lock(&lease_path)?;
     let _guard = transaction
         .lock()

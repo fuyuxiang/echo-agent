@@ -179,7 +179,7 @@ function ModelChip({
         disabled={disabled}
         onClick={() => onChange(undefined)}
       >
-        跟随默认模型
+        自动选择模型
       </button>
       <ModelSelector
         ariaLabel="选择定时任务模型"
@@ -191,7 +191,7 @@ function ModelChip({
         menuAlign="start"
         menuZIndex={1400}
       />
-      {!value && <small>每次运行使用当前默认模型</small>}
+      {!value && <small>优先使用默认模型，长任务可选用同连接下更长上下文的模型</small>}
     </div>
   );
 }
@@ -896,7 +896,7 @@ export function AutomationEditPage({
                     models.find((model) => model.id === draft.modelId) ||
                       draft.modelId,
                   )
-                : "跟随默认模型"}
+                : "自动选择模型"}
             </span>
             <span>
               {draft.permissionMode === "fullAccess" ? "完全访问" : "默认权限"}
@@ -1046,6 +1046,32 @@ export function AutomationEditPage({
                   onChange={(pushToWeChat) => set({ pushToWeChat })}
                 />
               </div>
+              <div className="atm-option-row">
+                <div>
+                  <strong>跨供应商回退</strong>
+                  <p>连接预检失败时，可将任务发送给另一个已配置的个人模型连接。</p>
+                </div>
+                <Switch ariaLabel="跨供应商回退" checked={draft.crossProviderFallback ?? false}
+                  disabled={saving} onChange={(crossProviderFallback) => set({ crossProviderFallback })} />
+              </div>
+              <div className="atm-option-row">
+                <div>
+                  <strong>中断后恢复汇总</strong>
+                  <p>Agent 重启后可继续汇总已保存的前台命令结果。执行状态不明时需要人工核查。</p>
+                </div>
+                <Switch ariaLabel="中断后恢复汇总" checked={draft.recoverAfterInterruption ?? false}
+                  disabled={saving} onChange={(recoverAfterInterruption) => set({ recoverAfterInterruption })} />
+              </div>
+              {draft.pushToWeChat && (
+                <div className="atm-option-row">
+                  <div>
+                    <strong>发布前审批</strong>
+                    <p>先保存到本机。在运行详情确认后，才会向已启用的通知渠道发布。</p>
+                  </div>
+                  <Switch ariaLabel="发布前审批" checked={draft.reviewPublication ?? false}
+                    disabled={saving} onChange={(reviewPublication) => set({ reviewPublication })} />
+                </div>
+              )}
               {isEditMode && onDelete && (
                 <button
                   type="button"

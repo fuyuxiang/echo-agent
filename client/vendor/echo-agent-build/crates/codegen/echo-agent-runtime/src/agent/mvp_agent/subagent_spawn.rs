@@ -220,6 +220,14 @@ impl MvpAgent {
             .and_then(|ps| ps.resolved_tool_overrides.load_full().map(|o| (*o).clone()));
         Some(crate::agent::subagent::SubagentSpawnContext {
             parent_turn_authority: None,
+            parent_host_project_context: ps.and_then(|parent| {
+                parent
+                    .tool_context
+                    .host_project_context
+                    .read()
+                    .ok()?
+                    .clone()
+            }),
             lsp: parent_lsp,
             process_scope: parent_process_scope,
             client_hooks: Default::default(),

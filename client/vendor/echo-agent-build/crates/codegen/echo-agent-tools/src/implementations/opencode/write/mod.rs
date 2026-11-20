@@ -148,6 +148,7 @@ impl echo_agent_tool_runtime::Tool for WriteTool {
             content: input.content.clone(),
             previous_content: old_content.clone(),
             is_new_file: !existed,
+            is_deleted: false,
         });
 
         let old_string = old_content.unwrap_or_default();

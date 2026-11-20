@@ -4,7 +4,7 @@
 //! EchoAgent's private data directory and let the frontend retain localStorage
 //! only as an offline/migration cache.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -51,7 +51,7 @@ pub struct ProjectAssetImport {
     pub updated_at: String,
 }
 
-fn validate_project_id(project_id: &str) -> Result<(), String> {
+pub(crate) fn validate_project_id(project_id: &str) -> Result<(), String> {
     if project_id.is_empty()
         || project_id.len() > 160
         || !project_id
@@ -442,33 +442,207 @@ pub fn projects_load() -> Result<Vec<Value>, String> {
     let _guard = access()
         .lock()
         .map_err(|_| "项目存储锁已损坏".to_string())?;
-    read_from(&store_path())
-}
-
-/// Scheduled work reads the durable project again, rather than freezing a
-/// renderer snapshot. Shared account data is deliberately not read here.
-pub(crate) fn automation_context(project_id: &str) -> Result<String, String> {
-    validate_project_id(project_id)?;
-    let projects = projects_load()?;
-    let project = projects
-        .iter()
-        .find(|p| p.get("id").and_then(Value::as_str) == Some(project_id))
-        .ok_or("定时工作关联的项目已删除，请重新选择项目后运行")?;
+    let mut projects = read_from(&store_path())?;
     let metadata = crate::meta::read_state();
-    build_automation_context(project, metadata.session_status_map())
+    add_unlisted_conversations(&mut projects, &metadata);
+    Ok(projects)
 }
 
-fn build_automation_context(
-    project: &Value,
-    lifecycles: &std::collections::HashMap<String, crate::meta::SessionLifecycle>,
-) -> Result<String, String> {
-    let mut context = vec![format!(
-        "你正在 EchoAgent 项目「{}」中执行定时工作。",
-        project
-            .get("name")
+fn project_memberships(projects: &[Value]) -> HashMap<&str, Option<&str>> {
+    let mut memberships = HashMap::new();
+    for project in projects {
+        let Some(project_id) = project.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        // Legacy plans can still be opened in old catalogues. The v3
+        // legacyPlans field is an archived copy, not a live link.
+        for session in ["conversations", "tasks", "plans"]
+            .into_iter()
+            .flat_map(|key| {
+                project
+                    .get(key)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .filter_map(|entry| entry.get("sessionId").and_then(Value::as_str))
+            .filter(|session| !session.is_empty())
+        {
+            memberships
+                .entry(session)
+                .and_modify(|owner| {
+                    if *owner != Some(project_id) {
+                        *owner = None;
+                    }
+                })
+                .or_insert(Some(project_id));
+        }
+    }
+    memberships
+}
+
+fn add_unlisted_conversations(projects: &mut [Value], metadata: &crate::meta::EchoAgentState) {
+    let listed: HashSet<String> = project_memberships(projects)
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    let mut reservations: Vec<_> = metadata.session_projects.iter().collect();
+    reservations.sort_unstable_by_key(|(id, _)| *id);
+    for project in projects {
+        let Some(project_id) = project.get("id").and_then(Value::as_str).map(str::to_owned) else {
+            continue;
+        };
+        let created_at = project
+            .get("createdAt")
             .and_then(Value::as_str)
-            .unwrap_or("项目")
-    )];
+            .unwrap_or_default()
+            .to_owned();
+        let mut additions = Vec::new();
+        for (session, owner) in &reservations {
+            if owner.as_str() == project_id
+                && !listed.contains(session.as_str())
+                && metadata
+                    .session_workspaces
+                    .get(session.as_str())
+                    .is_some_and(|cwd| {
+                        echo_agent_runtime::session::persistence::session_history_paths(
+                            session,
+                            Some(cwd),
+                        )
+                        .is_ok_and(|paths| paths.len() == 1)
+                    })
+            {
+                additions.push(serde_json::json!({
+                    "sessionId": session,
+                    "title": "未命名会话",
+                    "createdAt": created_at,
+                }));
+            }
+        }
+        if !additions.is_empty() {
+            let conversations = project["conversations"].as_array_mut();
+            if let Some(conversations) = conversations {
+                conversations.extend(additions);
+            } else {
+                project["conversations"] = Value::Array(additions);
+            }
+        }
+    }
+}
+
+fn project_id_for_session<'a>(
+    projects: &'a [Value],
+    memberships: &HashMap<&str, Option<&'a str>>,
+    reservations: &'a HashMap<String, String>,
+    session_id: &str,
+) -> Result<Option<&'a str>, String> {
+    match memberships.get(session_id) {
+        Some(Some(project_id)) => Ok(Some(*project_id)),
+        Some(None) => Err("会话关联了多个项目，请先在项目列表中修正归属".into()),
+        None => Ok(reservations
+            .get(session_id)
+            .map(String::as_str)
+            .filter(|id| {
+                projects
+                    .iter()
+                    .any(|project| project.get("id").and_then(Value::as_str) == Some(*id))
+            })),
+    }
+}
+
+pub(crate) fn session_project_ids<'a>(
+    metadata: &crate::meta::EchoAgentState,
+    sessions: impl IntoIterator<Item = &'a str>,
+) -> Result<HashMap<String, String>, String> {
+    let _guard = access()
+        .lock()
+        .map_err(|_| "项目存储锁已损坏".to_string())?;
+    let projects = read_from(&store_path())?;
+    let memberships = project_memberships(&projects);
+    Ok(sessions
+        .into_iter()
+        .filter_map(|session_id| {
+            project_id_for_session(
+                &projects,
+                &memberships,
+                &metadata.session_projects,
+                session_id,
+            )
+            .ok()
+            .flatten()
+            .map(|owner| (session_id.to_owned(), owner.to_owned()))
+        })
+        .collect())
+}
+
+fn with_session_project<T>(
+    session_id: &str,
+    read: impl FnOnce(Option<&Value>) -> T,
+) -> Result<T, String> {
+    let _guard = access()
+        .lock()
+        .map_err(|_| "项目存储锁已损坏".to_string())?;
+    let projects = read_from(&store_path())?;
+    let metadata = crate::meta::read_state();
+    let memberships = project_memberships(&projects);
+    let owner = project_id_for_session(
+        &projects,
+        &memberships,
+        &metadata.session_projects,
+        session_id,
+    )?;
+    Ok(read(owner.and_then(|owner| {
+        projects
+            .iter()
+            .find(|project| project.get("id").and_then(Value::as_str) == Some(owner))
+    })))
+}
+
+pub(crate) fn session_project_id(session_id: &str) -> Result<Option<String>, String> {
+    with_session_project(session_id, |project| {
+        project
+            .and_then(|project| project.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+    })
+}
+
+pub(crate) fn require_local_project(project_id: &str) -> Result<(), String> {
+    load_local_project(project_id)?
+        .map(|_| ())
+        .ok_or_else(|| "关联的本地项目已删除或尚未保存".into())
+}
+
+fn load_local_project(project_id: &str) -> Result<Option<Value>, String> {
+    validate_project_id(project_id)?;
+    let _guard = access()
+        .lock()
+        .map_err(|_| "项目存储锁已损坏".to_string())?;
+    Ok(read_from(&store_path())?
+        .into_iter()
+        .find(|project| project.get("id").and_then(Value::as_str) == Some(project_id)))
+}
+
+pub(crate) fn session_prompt_context(session_id: &str) -> Result<Option<String>, String> {
+    let joined = with_session_project(session_id, |project| {
+        project.map(|project| {
+            let name = project
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("项目");
+            project_prompt_sections(project, format!("你正在 EchoAgent 项目「{name}」中工作。"))
+                .join("\n\n")
+        })
+    })?;
+    if joined.as_ref().is_some_and(|context| {
+        context.len() > echo_agent_runtime::session::helpers::host_prompt_context::MAX_CONTEXT_BYTES
+    }) {
+        return Err("项目上下文过长，请合并过时指令与决定后重试".into());
+    }
+    Ok(joined)
+}
+
+fn project_prompt_sections(project: &Value, introduction: String) -> Vec<String> {
+    let mut context = vec![introduction];
     for (field, label) in [
         ("description", "项目目标与背景"),
         ("instructions", "项目指令"),
@@ -476,7 +650,8 @@ fn build_automation_context(
         if let Some(text) = project
             .get(field)
             .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty())
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
         {
             context.push(format!("[{label}]\n{text}"));
         }
@@ -484,13 +659,62 @@ fn build_automation_context(
     if let Some(decisions) = project.get("decisions").and_then(Value::as_array) {
         for decision in decisions
             .iter()
-            .filter(|d| d.get("status").and_then(Value::as_str) == Some("active"))
+            .filter(|item| item.get("status").and_then(Value::as_str) == Some("active"))
         {
             if let Some(text) = decision.get("content").and_then(Value::as_str) {
-                context.push(format!("[用户已确认的项目决定]\n{text}"));
+                let rationale = decision
+                    .get("rationale")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                context.push(format!("[用户已确认的项目决定]\n{text}\n{rationale}"));
             }
         }
     }
+    for (field, label) in [
+        ("experts", "项目偏好专家"),
+        ("skills", "项目偏好技能"),
+        ("connectors", "项目偏好连接器"),
+    ] {
+        let names = project
+            .get(field)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| {
+                let name = item.get("name")?.as_str()?;
+                let id = item.get("id").and_then(Value::as_str).unwrap_or(name);
+                Some(format!("{name} (id: {id})"))
+            })
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            context.push(format!("[{label}]\n{}", names.join("、")));
+        }
+    }
+    context.push("需要使用专家、技能或连接器时，以本轮实际可用的能力和授权为准。".into());
+    context
+}
+
+/// Scheduled work reads the durable project again, rather than freezing a
+/// renderer snapshot. Shared account data is deliberately not read here.
+pub(crate) fn automation_context(project_id: &str) -> Result<String, String> {
+    let project =
+        load_local_project(project_id)?.ok_or("定时工作关联的项目已删除，请重新选择项目后运行")?;
+    let metadata = crate::meta::read_state();
+    build_automation_context(&project, metadata.session_status_map())
+}
+
+fn build_automation_context(
+    project: &Value,
+    lifecycles: &std::collections::HashMap<String, crate::meta::SessionLifecycle>,
+) -> Result<String, String> {
+    let name = project
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("项目");
+    let mut context = project_prompt_sections(
+        project,
+        format!("你正在 EchoAgent 项目「{name}」中执行定时工作。"),
+    );
     if let Some(tasks) = project.get("tasks").and_then(Value::as_array) {
         let mut work = Vec::new();
         for task in tasks.iter().take(300) {
@@ -535,11 +759,32 @@ fn build_automation_context(
 }
 
 #[tauri::command]
-pub fn projects_save(projects: Vec<Value>) -> Result<(), String> {
+pub fn projects_save(
+    projects: Vec<Value>,
+    detached_session_id: Option<String>,
+) -> Result<(), String> {
     let _guard = access()
         .lock()
         .map_err(|_| "项目存储锁已损坏".to_string())?;
-    write_to(&store_path(), &projects)
+    validate(&projects)?;
+    let path = store_path();
+    let previous = read_from(&path)?;
+    let next = project_memberships(&projects);
+    let retired: HashSet<String> = project_memberships(&previous)
+        .into_iter()
+        .filter(|(session, owner)| next.get(session).copied() != Some(*owner))
+        .map(|(session, _)| session.to_owned())
+        .collect();
+    // The catalogue is authoritative once linked. Retire the provisional
+    // binding before publishing a move or unlink so it cannot reappear on retry.
+    crate::meta::clear_project_reservations(&retired)?;
+    write_to(&path, &projects)?;
+    // For a reservation-only row, this is the sole durable link. Preserve
+    // it if saving the catalogue fails.
+    if let Some(detached) = detached_session_id.filter(|id| !retired.contains(id)) {
+        crate::meta::clear_project_reservations(&HashSet::from([detached]))?;
+    }
+    Ok(())
 }
 
 /// Grant only selected, catalogued project files. Sharing uses import-size
@@ -786,6 +1031,36 @@ mod tests {
         validate_selected_assets, write_to, MAX_BYTES,
     };
     use serde_json::json;
+
+    #[test]
+    fn saved_membership_takes_precedence_over_the_original_project_reservation() {
+        let mut projects = vec![
+            json!({"id": "project-a", "conversations": [], "legacyPlans": [{"sessionId": "session"}]}),
+            json!({"id": "project-b", "tasks": [{"sessionId": "session"}]}),
+        ];
+        let mut reservations =
+            std::collections::HashMap::from([("session".into(), "project-a".into())]);
+        let owner = |projects: &[serde_json::Value],
+                     reservations: &std::collections::HashMap<String, String>| {
+            super::project_id_for_session(
+                projects,
+                &super::project_memberships(projects),
+                reservations,
+                "session",
+            )
+            .map(|owner| owner.map(str::to_owned))
+        };
+        assert_eq!(
+            owner(&projects, &reservations).unwrap().as_deref(),
+            Some("project-b")
+        );
+        projects[0]["conversations"] = json!([{"sessionId": "session"}]);
+        assert!(owner(&projects, &reservations).is_err());
+        projects[0]["conversations"] = json!([]);
+        projects[1]["tasks"] = json!([]);
+        reservations.clear();
+        assert_eq!(owner(&projects, &reservations).unwrap(), None);
+    }
 
     #[test]
     fn automation_context_uses_only_active_decisions_and_distinguishes_execution_from_acceptance() {

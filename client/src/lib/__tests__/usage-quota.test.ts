@@ -114,8 +114,8 @@ describe("recordTurnUsage", () => {
         },
       },
     };
-    const first = recordTurnUsage([], entry);
-    const replay = recordTurnUsage(first, entry);
+    const first = recordTurnUsage([], { ...entry, projectId: "project-a", turnOrigin: "scheduled", fallbackModelId: "current-model" });
+    const replay = recordTurnUsage(first, { ...entry, occurredAt: undefined });
     expect(replay).toHaveLength(1);
     expect(replay[0]).toMatchObject({
       id: "s1:p1",
@@ -127,7 +127,11 @@ describe("recordTurnUsage", () => {
       modelCalls: 3,
       agentTurns: 2,
       source: "turn",
+      projectId: "project-a",
+      modelId: "gpt-4",
+      turnOrigin: "scheduled",
     });
+    expect(summarizeUsage(replay).byProject["project-a"]).toMatchObject({ tokens: 1000, count: 3, requests: 1 });
   });
 
   it("优先使用可信的运行时成本，不完整账本改用本地费率", () => {

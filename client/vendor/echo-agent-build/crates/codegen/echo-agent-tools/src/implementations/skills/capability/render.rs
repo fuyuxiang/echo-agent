@@ -72,11 +72,22 @@ pub(super) fn render_runtime_contract_from_manifest(
             }),
         );
         for (action, entrypoint) in &runtime.entrypoints {
-            push_json_line(
-                &mut output,
-                "action",
-                &serde_json::json!({"id": action, "entrypoint": entrypoint}),
-            );
+            let mut invocation = serde_json::json!({"id": action, "entrypoint": entrypoint});
+            if runtime.kind == SkillRuntimeKind::Python && command == "uv" {
+                invocation["arguments"] = serde_json::json!([
+                    "run",
+                    "--isolated",
+                    "--no-project",
+                    "--offline",
+                    "--no-python-downloads",
+                    "--script",
+                    entrypoint
+                ]);
+            }
+            push_json_line(&mut output, "action", &invocation);
+        }
+        if runtime.kind == SkillRuntimeKind::Python && command == "uv" {
+            output.push_str("Follow the declared arguments in order. This isolated Python runner uses existing local dependencies. Report missing dependencies in preflight before launching the entrypoint.\n");
         }
         output.push_str("Execute entrypoints only with the normal Bash tool, from the skill directory, using timeoutSeconds as the tool timeout. Never bypass tool approval or sandboxing, and do not retry a timed-out consequential action without approval.\n");
     }

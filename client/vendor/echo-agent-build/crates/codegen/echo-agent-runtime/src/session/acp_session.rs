@@ -204,6 +204,8 @@ pub use stop_gate::MAX_STOP_HOOK_CONTINUATIONS_PER_TURN;
 mod recap;
 #[path = "acp_session_impl/rewind.rs"]
 mod rewind;
+#[path = "acp_session_impl/rewind_files.rs"]
+mod rewind_files;
 #[path = "acp_session_impl/run_loop.rs"]
 mod run_loop;
 #[path = "acp_session_impl/session_setup.rs"]

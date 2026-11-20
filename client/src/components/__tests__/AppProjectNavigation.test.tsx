@@ -111,7 +111,7 @@ it("侧栏加号聚焦并复用项目草稿，只在发送时绑定任务目录"
   expect(screen.getByRole("button", { name: "自动判断" })).toBeVisible();
   await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
-  await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/task", "model-a", "auto", "auto"));
+  await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/task", "model-a", "auto", "auto", undefined, "project-no-cwd"));
   await waitFor(() => expect(screen.getByTestId("session-cwd")).toHaveTextContent("/task"));
   expect(useSessionsStore.getState().independent.find(item => item.sessionId === "new-session")?.permissionMode).toBe("auto");
   expect(usePermissionModeStore.getState().homeMode).toBe("always-approve");
@@ -223,12 +223,12 @@ it("权限变化时刷新预览并保留草稿，用户确认后才按新权限�
   await waitFor(() => expect(settings).toHaveTextContent("免审批"));
   expect(screen.getByRole("textbox", { name: "输入问题或任务" })).toHaveValue("执行项目任务");
   expect(client.agentNewSession).toHaveBeenCalledOnce();
-  expect(client.agentNewSession).toHaveBeenLastCalledWith(expect.any(String), "model-a", undefined, "ask");
+  expect(client.agentNewSession).toHaveBeenLastCalledWith(expect.any(String), "model-a", undefined, "ask", undefined, "project-no-cwd");
   expect(client.agentSend).not.toHaveBeenCalled();
 
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   await waitFor(() => expect(client.agentSend).toHaveBeenCalledOnce());
-  expect(client.agentNewSession).toHaveBeenLastCalledWith(expect.any(String), "model-a", undefined, "always-approve");
+  expect(client.agentNewSession).toHaveBeenLastCalledWith(expect.any(String), "model-a", undefined, "always-approve", undefined, "project-no-cwd");
 });
 
 it("创建对话期间通过项目面包屑返回列表，迟到结果只注册原项目", async () => {

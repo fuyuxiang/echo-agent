@@ -207,6 +207,10 @@ pub struct FileWritten {
 
     /// Whether this was a new file creation (old_string was empty)
     pub is_new_file: bool,
+
+    /// The path was removed. An empty file still has a present postimage.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub is_deleted: bool,
 }
 
 /// Notification that the agent has entered plan mode.

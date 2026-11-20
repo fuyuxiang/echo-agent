@@ -32,6 +32,8 @@ mod desktop_preferences;
 mod desktop_tray;
 mod desktop_tray_model;
 mod desktop_validation;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod desktop_window;
 mod document_export;
 mod document_store;
 mod document_verification;
@@ -495,11 +497,6 @@ async fn restart_prepared_application(app: tauri::AppHandle) -> Result<(), Strin
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const DESKTOP_MIN_WIDTH: f64 = 1024.0;
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const DESKTOP_MIN_HEIGHT: f64 = 680.0;
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn show_main_window(app: &tauri::AppHandle) {
     use tauri::Manager;
 
@@ -510,11 +507,16 @@ fn show_main_window(app: &tauri::AppHandle) {
     {
         webview_recovery::retry(app);
     }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        host_watchdog::visibility(true);
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+    let handle = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            match desktop_window::show(&window, || read_desktop_window_state(&handle)) {
+                Ok(()) => host_watchdog::visibility(true),
+                Err(error) => tracing::warn!(%error, "failed to reveal the main window"),
+            }
+        }
+    }) {
+        tracing::warn!(%error, "failed to dispatch main window reveal");
     }
 }
 
@@ -610,16 +612,6 @@ fn ensure_custom_profile_macos_support() -> Result<(), String> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct DesktopWindowState {
-    width: f64,
-    height: f64,
-    maximized: bool,
-    #[serde(default)]
-    position: Option<(i32, i32)>,
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn desktop_window_state_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     paths::desktop_data_dir(app)
         .ok()
@@ -628,91 +620,44 @@ fn desktop_window_state_path(app: &tauri::AppHandle) -> Option<std::path::PathBu
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn save_desktop_window_state(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
-    let Ok(maximized) = window.is_maximized() else {
-        return;
-    };
-    let Ok(scale_factor) = window.scale_factor() else {
-        return;
-    };
-    let Ok(size) = window.inner_size() else {
-        return;
-    };
-    let logical = size.to_logical::<f64>(scale_factor);
-    if logical.width < DESKTOP_MIN_WIDTH || logical.height < DESKTOP_MIN_HEIGHT {
-        return;
-    }
     let Some(path) = desktop_window_state_path(app) else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let state = DesktopWindowState {
-        width: logical.width,
-        height: logical.height,
-        maximized,
-        position: window.outer_position().ok().map(|p| (p.x, p.y)),
-    };
-    if let Ok(payload) = serde_json::to_vec(&state) {
-        let _ = crate::paths::write_private_file(&path, &payload);
+    let window = window.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let Some(state) = desktop_window::capture(&window) else {
+            return;
+        };
+        if let Ok(payload) = serde_json::to_vec(&state) {
+            let _ = crate::paths::write_private_file(&path, &payload);
+        }
+    }) {
+        tracing::debug!(%error, "failed to dispatch window state capture");
     }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn restore_desktop_window_state(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
-    use tauri::{LogicalSize, Size};
-
-    let Some(path) = desktop_window_state_path(app) else {
-        return;
-    };
-    let Ok(payload) = crate::shell_fs::read_regular_file_bounded(&path, 16 * 1024) else {
-        return;
-    };
-    let Ok(state) = serde_json::from_slice::<DesktopWindowState>(&payload) else {
-        return;
-    };
-
-    let mut max_width = 4096.0;
-    let mut max_height = 2160.0;
-    if let Ok(Some(monitor)) = window.current_monitor() {
-        if let Ok(scale_factor) = window.scale_factor() {
-            let screen = monitor.size().to_logical::<f64>(scale_factor);
-            max_width = (screen.width * 0.92).max(DESKTOP_MIN_WIDTH);
-            max_height = (screen.height * 0.92).max(DESKTOP_MIN_HEIGHT);
-        }
-    }
-
-    let width = state.width.clamp(DESKTOP_MIN_WIDTH, max_width);
-    let height = state.height.clamp(DESKTOP_MIN_HEIGHT, max_height);
-    let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
-    let _ = window.center();
-    if let Some((x, y)) = state.position {
-        let visible = window
-            .available_monitors()
-            .unwrap_or_default()
-            .iter()
-            .any(|monitor| {
-                let origin = monitor.position();
-                let size = monitor.size();
-                i64::from(x) + 64 >= i64::from(origin.x)
-                    && i64::from(y) + 64 >= i64::from(origin.y)
-                    && i64::from(x) < i64::from(origin.x) + i64::from(size.width) - 64
-                    && i64::from(y) < i64::from(origin.y) + i64::from(size.height) - 64
-            });
-        if visible {
-            let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-        }
-    }
-    if state.maximized {
-        let _ = window.maximize();
-    }
+fn read_desktop_window_state(app: &tauri::AppHandle) -> Option<desktop_window::WindowState> {
+    let path = desktop_window_state_path(app)?;
+    let payload = crate::shell_fs::read_regular_file_bounded(&path, 16 * 1024).ok()?;
+    desktop_window::WindowState::from_json(&payload)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn bind_main_window_lifecycle(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
     use tauri::{DragDropEvent, Manager, WindowEvent};
     use tauri_plugin_notification::NotificationExt;
-    restore_desktop_window_state(app, window);
+    let app_handle = app.clone();
+    let restore_window = window.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        if let Err(error) =
+            desktop_window::restore(&restore_window, read_desktop_window_state(&app_handle))
+        {
+            tracing::warn!(%error, "failed to restore desktop window geometry");
+        }
+    }) {
+        tracing::warn!(%error, "failed to dispatch window state restore");
+    }
     let app_handle = app.clone();
     let close_window = window.clone();
     window.on_window_event(move |event| match event {
@@ -801,6 +746,7 @@ fn setup_desktop_lifecycle(app: &mut tauri::App) -> Result<(), Box<dyn std::erro
         }
     }
     webview_recovery::start_monitor(app.handle().clone());
+    automations::start_runtime_supervisor(app.handle().clone());
     Ok(())
 }
 
@@ -1037,6 +983,7 @@ pub fn run() {
             commands::agent_prepare_task_workspace,
             commands::agent_session_workspace_status,
             commands::agent_load_session,
+            commands::agent_recover_session,
             commands::agent_list_sessions,
             commands::agent_list_all_sessions,
             commands::agent_set_model,
@@ -1238,9 +1185,12 @@ pub fn run() {
             agent_admin::memory_rewrite,
             agent_admin::memory_flush,
             agent_admin::memory_dream,
+            agent_admin::memory_dream_undo,
             agent_admin::session_search,
             agent_admin::session_search_page,
             agent_admin::rewind_points,
+            agent_admin::rewind_preview,
+            agent_admin::rewind_undo,
             agent_admin::rewind_execute,
             agent_admin::session_fork,
             session_continuation::session_continue,
@@ -1319,6 +1269,7 @@ pub fn run() {
             automations::automation_run_stop,
             automations::automation_run_retry_cleanup,
             automations::automation_run_result,
+            automations::automation_publication_decide,
             automations::automation_records_archive,
             automations::automation_records_delete,
             // shell / filesystem (markdown links, path click, apply write)

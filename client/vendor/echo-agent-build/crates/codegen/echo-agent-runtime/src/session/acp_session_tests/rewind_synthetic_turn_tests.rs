@@ -72,6 +72,7 @@ async fn run_rewind_over_synthetic_turn(mark_turn_starts: bool) {
         .handle_rewind(RewindRequest {
             target_prompt_index: 2,
             force: true,
+            file_guard: None,
             mode: RewindMode::ConversationOnly,
         })
         .await
@@ -140,6 +141,7 @@ async fn rewind_with_no_prompts_lists_no_points_and_rejects_execute() {
                 .handle_rewind(RewindRequest {
                     target_prompt_index: 0,
                     force: true,
+                    file_guard: None,
                     mode: RewindMode::ConversationOnly,
                 })
                 .await
@@ -189,6 +191,7 @@ async fn rewind_to_start_keeps_only_preamble() {
                 .handle_rewind(RewindRequest {
                     target_prompt_index: 0,
                     force: true,
+                    file_guard: None,
                     mode: RewindMode::ConversationOnly,
                 })
                 .await
@@ -212,6 +215,7 @@ async fn rewind_to_start_keeps_only_preamble() {
                 .handle_rewind(RewindRequest {
                     target_prompt_index: 0,
                     force: true,
+                    file_guard: None,
                     mode: RewindMode::ConversationOnly,
                 })
                 .await
@@ -278,6 +282,7 @@ async fn rewind_twice_narrows_history_each_time() {
                 .handle_rewind(RewindRequest {
                     target_prompt_index: 3,
                     force: true,
+                    file_guard: None,
                     mode: RewindMode::ConversationOnly,
                 })
                 .await
@@ -307,6 +312,7 @@ async fn rewind_twice_narrows_history_each_time() {
                 .handle_rewind(RewindRequest {
                     target_prompt_index: 1,
                     force: true,
+                    file_guard: None,
                     mode: RewindMode::ConversationOnly,
                 })
                 .await
@@ -393,6 +399,7 @@ async fn rewind_to_midpoint_with_synthetic_turns_on_both_sides() {
                     .handle_rewind(RewindRequest {
                         target_prompt_index: 2,
                         force: true,
+                        file_guard: None,
                         mode: RewindMode::ConversationOnly,
                     })
                     .await
@@ -449,6 +456,7 @@ async fn rewind_to_synthetic_auto_wake_turn_cuts_at_the_wake() {
                 .handle_rewind(RewindRequest {
                     target_prompt_index: 1,
                     force: true,
+                    file_guard: None,
                     mode: RewindMode::ConversationOnly,
                 })
                 .await

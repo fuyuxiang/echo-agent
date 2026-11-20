@@ -38,6 +38,7 @@ import {
   automationsRun,
   automationsResetSession,
   automationRunStop,
+  automationPublicationDecide,
   automationRunRetryCleanup,
   desktopPreferencesGet,
   automationsSave,
@@ -144,7 +145,7 @@ const RECORD_FILTERS: { key: RecordFilter; label: string }[] = [
   { key: "all", label: "全部" },
   { key: "success", label: "成功" },
   { key: "failed", label: "失败" },
-  { key: "interrupted", label: "人工接管" },
+  { key: "interrupted", label: "中断或人工接管" },
   { key: "running", label: "进行中" },
   { key: "attention", label: "待确认" },
   { key: "stopped", label: "已停止" },
@@ -883,6 +884,22 @@ export function AutomationPanel({
       onToast?.(`清理尚未完成，可重试：${String(error).replace(/^Error:\s*/, "")}`);
     }
   }, [onToast, refresh]);
+  const handlePublication = useCallback((recordId: string, approve: boolean) => {
+    setConfirmState({
+      title: approve ? "发布本次运行通知？" : "拒绝发布本次运行通知？",
+      content: approve ? "向当前已启用的通知渠道发送任务名称和运行状态。运行内容和错误详情保存在本机。" : "运行结果会保存在本机。",
+      okText: approve ? "确认发布" : "拒绝发布",
+      action: async () => {
+        try {
+          await automationPublicationDecide(recordId, approve);
+          await refresh(true);
+        } catch (error) {
+          onToast?.(`发布状态更新失败：${String(error).replace(/^Error:\s*/, "")}`);
+          await refresh(true);
+        }
+      },
+    });
+  }, [onToast, refresh]);
   const openRecord = useCallback((record: AutomationRunRecord) => {
     setDetailId(record.automationId);
     setDetailRecordId(record.id);
@@ -1060,7 +1077,7 @@ export function AutomationPanel({
     else if (filterStatus === "stopped")
       items = items.filter((i) => i.status === "stopped" && !i.archived);
     else if (filterStatus === "attention")
-      items = items.filter((i) => i.needsAttention && runBusy(i) && !i.archived);
+      items = items.filter((i) => (i.publicationPending || (i.needsAttention && runBusy(i))) && !i.archived);
     else if (filterStatus === "running") {
       items = items.filter(
         (i) => runBusy(i) && !i.archived,
@@ -1318,6 +1335,7 @@ export function AutomationPanel({
           onReset={handleResetSession}
           onStop={handleStopRun}
           onRetryCleanup={handleRetryCleanup}
+          onPublication={handlePublication}
           onDelete={handleRowDelete}
           onArchive={handleArchiveRecord}
           onOpenSession={onOpenSession}
@@ -1900,6 +1918,7 @@ function InboxRow({
           >
             {runStatusLabel(item)}
             {item.error ? ` · ${item.error}` : ""}
+            {item.publicationPending ? " · 通知待审批" : ""}
             {item.notificationDelivery ? ` · ${item.notificationDelivery}` : ""}
           </span>
         </div>
@@ -1916,7 +1935,7 @@ function InboxRow({
             <RecordStatusIcon item={item} />
           )}
         </span>
-        {!isUnfinished && (
+        {!isUnfinished && !item.publicationPending && (
           <div className="atm-row-hover-actions">
             {!archived && item.status === "failed" && (
               <button

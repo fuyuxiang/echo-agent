@@ -222,6 +222,7 @@ pub struct ToolContext {
     /// Same Arc as `SessionRegistry`'s retained heal lock so the actor tick
     /// and tray `list_running` cannot double-emit `SubagentFinished`.
     pub(crate) live_orphan_heal_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) host_project_context: Arc<std::sync::RwLock<Option<Arc<str>>>>,
 }
 impl ToolContext {
     pub(crate) fn clamp_task_model_request(
@@ -307,6 +308,7 @@ impl ToolContext {
             sampler_retry_only_before_output: false,
             process_scope: None,
             live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
+            host_project_context: Arc::new(std::sync::RwLock::new(None)),
         }
     }
     pub(crate) fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
@@ -399,6 +401,7 @@ mod tests {
                 sampler_retry_only_before_output: false,
                 process_scope: None,
                 live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
+                host_project_context: Arc::new(std::sync::RwLock::new(None)),
             }
         }
     }

@@ -11,6 +11,9 @@
   const expected = "恢复后保留草稿：中文、空格与附件说明";
   const step = config.step;
   if (step === 0) localStorage.setItem(draftKey, expected);
+  if (step === 0 && config.testWindowGeometry) {
+    await invoke("fixture_window_geometry", { nonce: config.nonce });
+  }
   const draft = localStorage.getItem(draftKey);
   if (draft !== expected) throw new Error("草稿未能跨界面/宿主重建保留");
   document.getElementById("draft").value = draft;

@@ -128,6 +128,8 @@ vi.mock("@/lib/agent-client", async () => {
   mod.sessionContinue = vi.fn(async () => ({session:{sessionId:"new-fork", title:"新方向", cwd:"/bound/workspace"},warnings:[]}));
   mod.rewindExecute = vi.fn(asyncEmpty);
   mod.rewindPoints = vi.fn(asyncArr);
+  mod.rewindPreview = vi.fn(async () => ({ revision: "revision", cleanFiles: ["report.txt"], conflicts: [] }));
+  mod.rewindUndoPreview = vi.fn(async () => null);
   mod.setCodingMode = vi.fn(asyncEmpty);
   mod.providersList = async () => ({ providers: [], models: [] });
   mod.flattenModels = () => [];
@@ -1483,10 +1485,10 @@ describe("session workbench entry paths", () => {
     fireEvent.click(screen.getByRole("button",{name:"仅文件"}));
     fireEvent.click(await screen.findByRole("button",{name:/回溯到此处/}));
     expect(rewindExecute).not.toHaveBeenCalled();
-    expect(screen.getByRole("alertdialog",{name:"确认回溯（仅文件）？"})).toHaveTextContent("第 4 步执行前：交付核验");
+    expect(await screen.findByRole("alertdialog",{name:"确认回溯（仅文件）？"})).toHaveTextContent("第 4 步执行前：交付核验");
     expect(screen.getByRole("alertdialog",{name:"确认回溯（仅文件）？"})).toHaveTextContent("保留对话");
     fireEvent.click(screen.getByRole("button",{name:"确认回溯"}));
-    await waitFor(()=>expect(rewindExecute).toHaveBeenCalledWith("workbench",3,"files_only",true));
+    await waitFor(()=>expect(rewindExecute).toHaveBeenCalledWith("workbench",3,"files_only",true,"revision"));
     expect(onRewound).toHaveBeenCalledWith("workbench");
   });
   it("接续直接创建并沿用原目录，不需要重复确认", async () => {
@@ -1594,7 +1596,7 @@ describe("session workbench entry paths", () => {
       const view = renderChat();
       sessionItem(action === "rewind" ? "回溯…" : "在新对话中继续");
       if (action === "rewind") fireEvent.click(await screen.findByRole("button", { name: /回溯到此处/ }));
-      expect(screen.getByRole("button", { name: action === "rewind" ? "确认回溯" : "创建分叉" })).toBeEnabled();
+      expect(await screen.findByRole("button", { name: action === "rewind" ? "确认回溯" : "创建分叉" })).toBeEnabled();
       setStore(patch);
       view.rerender(<ThemeProvider><ChatView {...baseProps} modelLoading={loading} /></ThemeProvider>);
       expect(screen.queryByRole("button", { name: "确认回溯" })).toBeNull();
@@ -1617,8 +1619,9 @@ describe("session workbench entry paths", () => {
     renderChat();
     sessionItem("回溯…");
     fireEvent.click(await screen.findByRole("button", { name: /回溯到此处/ }));
+    const confirm = await screen.findByRole("button", { name: "确认回溯" });
     setStore({ streaming: true });
-    fireEvent.click(screen.getByRole("button", { name: "确认回溯" }));
+    fireEvent.click(confirm);
     await act(async () => {});
     expect(rewindExecute).not.toHaveBeenCalled();
   });

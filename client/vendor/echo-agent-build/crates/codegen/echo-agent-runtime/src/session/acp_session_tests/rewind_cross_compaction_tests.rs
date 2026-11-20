@@ -135,6 +135,7 @@ async fn run_rewind_scenario() {
         .handle_rewind(RewindRequest {
             target_prompt_index: 3,
             force: true,
+            file_guard: None,
             mode: RewindMode::ConversationOnly,
         })
         .await
@@ -194,6 +195,7 @@ async fn run_files_only_bound_scenario() {
         .handle_rewind(RewindRequest {
             target_prompt_index: 5,
             force: true,
+            file_guard: None,
             mode: RewindMode::FilesOnly,
         })
         .await
@@ -209,6 +211,7 @@ async fn run_files_only_bound_scenario() {
         .handle_rewind(RewindRequest {
             target_prompt_index: 1,
             force: true,
+            file_guard: None,
             mode: RewindMode::FilesOnly,
         })
         .await
@@ -223,6 +226,7 @@ async fn run_files_only_bound_scenario() {
         .handle_rewind(RewindRequest {
             target_prompt_index: 5,
             force: true,
+            file_guard: None,
             mode: RewindMode::ConversationOnly,
         })
         .await
@@ -320,6 +324,7 @@ async fn run_clears_marker_scenario() {
         .handle_rewind(RewindRequest {
             target_prompt_index: 3,
             force: true,
+            file_guard: None,
             mode: RewindMode::ConversationOnly,
         })
         .await
@@ -437,6 +442,7 @@ async fn run_forked_rewind_scenario() {
         .handle_rewind(RewindRequest {
             target_prompt_index: 6,
             force: true,
+            file_guard: None,
             mode: RewindMode::ConversationOnly,
         })
         .await

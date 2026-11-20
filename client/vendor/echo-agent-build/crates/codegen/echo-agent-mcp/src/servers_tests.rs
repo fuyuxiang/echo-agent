@@ -129,7 +129,10 @@ async fn owned_stdio_teardown_reaps_twenty_four_sessions_with_external_reference
             1,
             "tools must be available after every reconnect"
         );
-        let output = client.call_tool("ping", serde_json::json!({})).await.unwrap();
+        let output = client
+            .call_tool("ping", serde_json::json!({}))
+            .await
+            .unwrap();
         assert!(serde_json::to_string(&output).unwrap().contains("pong"));
         state.lock().await.finish_init();
         state.lock().await.owned_clients.clear();
@@ -992,6 +995,23 @@ fn test_update_configs_diff_changed() {
     assert!(diff.retained.is_empty());
     assert_eq!(diff.added, vec!["a"]);
     assert_eq!(diff.removed, vec!["a"]);
+}
+
+#[test]
+fn stale_initialization_cannot_change_the_new_generation_progress() {
+    let mut state = McpState::new(vec![make_stdio_server("a", "/bin/previous")]);
+    let old_generation = state.generation();
+    assert!(state.try_start_init());
+    state
+        .update_configs_diff(vec![make_stdio_server("a", "/bin/current")])
+        .unwrap();
+    assert!(state.try_start_init());
+    state.mark_servers_initializing(["a".to_string()]);
+    assert!(!state.finish_init_for_generation(old_generation));
+    assert!(!state.has_finished_init());
+    assert!(state.finish_init_for_generation(state.generation()));
+    assert!(state.has_finished_init());
+    assert!(state.handshaking_servers_iter().any(|name| name == "a"));
 }
 
 #[test]

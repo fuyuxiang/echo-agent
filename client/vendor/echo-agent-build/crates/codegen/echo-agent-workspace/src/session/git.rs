@@ -65,14 +65,8 @@ pub struct DiffSizeExceededFile {
 /// unaffected.  See `git(1)` and `GIT_OPTIONAL_LOCKS`.
 pub async fn git_cli(cwd: &Path, args: &[&str]) -> Result<String> {
     tracing::debug!(cwd = %cwd.display(), args = ?args, "git_cli");
-    let mut cmd = Command::new("git");
-    cmd.current_dir(cwd).arg("--no-optional-locks");
-    for &(key, val) in echo_agent_tty_utils::GIT_AUTH_SUPPRESSION_ENVS.iter() {
-        cmd.env(key, val);
-    }
-    cmd.stdin(std::process::Stdio::null());
-    echo_agent_tools::util::detach_command(&mut cmd);
-    cmd.envs(echo_agent_tools::util::pager_env());
+    let mut cmd = Command::from(echo_agent_tty_utils::git_command());
+    cmd.current_dir(cwd);
     let output = match cmd.args(args).output().await {
         Ok(o) => o,
         Err(e) => {
@@ -82,6 +76,11 @@ pub async fn git_cli(cwd: &Path, args: &[&str]) -> Result<String> {
                 cwd = %cwd.display(),
                 "git_cli: Command::output() FAILED (spawn error)"
             );
+            if e.kind() == std::io::ErrorKind::NotFound && cwd.is_dir() {
+                return Err(anyhow::Error::new(e).context(
+                    "Git executable unavailable. Install Git on PATH or set GIT_BIN_PATH to its executable.",
+                ));
+            }
             return Err(e.into());
         }
     };
@@ -2783,15 +2782,8 @@ pub async fn restage_git_paths(cwd: &Path, git_ref: &GitStateRef, session_id: &s
 /// string-match. Errors only on spawn failure.
 async fn git_cli_raw(cwd: &Path, args: &[&str]) -> Result<(bool, String)> {
     tracing::debug!(cwd = %cwd.display(), args = ?args, "git_cli_raw");
-    let mut cmd = Command::new("git");
-    cmd.current_dir(cwd).arg("--no-optional-locks");
-    for &(key, val) in echo_agent_tty_utils::GIT_AUTH_SUPPRESSION_ENVS.iter() {
-        cmd.env(key, val);
-    }
-    cmd.env("LC_ALL", "C");
-    cmd.stdin(std::process::Stdio::null());
-    echo_agent_tools::util::detach_command(&mut cmd);
-    cmd.envs(echo_agent_tools::util::pager_env());
+    let mut cmd = Command::from(echo_agent_tty_utils::git_command());
+    cmd.current_dir(cwd).env("LC_ALL", "C");
     let output = cmd.args(args).output().await?;
     let mut combined = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -2806,15 +2798,8 @@ async fn git_cli_raw(cwd: &Path, args: &[&str]) -> Result<(bool, String)> {
 /// Like [`git_cli_raw`] but returns the process exit code (`-1` if none).
 async fn git_cli_status(cwd: &Path, args: &[&str]) -> Result<(i32, String)> {
     tracing::debug!(cwd = %cwd.display(), args = ?args, "git_cli_status");
-    let mut cmd = Command::new("git");
-    cmd.current_dir(cwd).arg("--no-optional-locks");
-    for &(key, val) in echo_agent_tty_utils::GIT_AUTH_SUPPRESSION_ENVS.iter() {
-        cmd.env(key, val);
-    }
-    cmd.env("LC_ALL", "C");
-    cmd.stdin(std::process::Stdio::null());
-    echo_agent_tools::util::detach_command(&mut cmd);
-    cmd.envs(echo_agent_tools::util::pager_env());
+    let mut cmd = Command::from(echo_agent_tty_utils::git_command());
+    cmd.current_dir(cwd).env("LC_ALL", "C");
     let output = cmd.args(args).output().await?;
     let mut combined = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

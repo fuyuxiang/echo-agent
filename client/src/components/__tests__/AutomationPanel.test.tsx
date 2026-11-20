@@ -17,6 +17,7 @@ vi.mock("@/lib/agent-client", () => ({
   automationsResetSession: vi.fn(async () => ({ ...snapshot.automations[0], dedicatedSessionId: undefined })),
   automationRunStop: vi.fn(async () => {}),
   automationRunRetryCleanup: vi.fn(async () => {}),
+  automationPublicationDecide: vi.fn(async () => {}),
   desktopPreferencesGet: vi.fn(async () => ({ closeToTray: true, showNotificationTaskTitle: true })),
   automationRunResult: vi.fn(async () => ({ text: "本次结果", truncated: false })),
   automationsSave: vi.fn(async (a: unknown) => a),
@@ -53,6 +54,7 @@ import {
   automationsResetSession,
   automationRunStop,
   automationRunRetryCleanup,
+  automationPublicationDecide,
   automationRunResult,
   automationsSave,
   automationsSnapshot,
@@ -69,6 +71,7 @@ beforeEach(() => {
   vi.mocked(automationsResetSession).mockClear();
   vi.mocked(automationRunStop).mockReset().mockResolvedValue(undefined);
   vi.mocked(automationRunRetryCleanup).mockReset().mockResolvedValue(undefined);
+  vi.mocked(automationPublicationDecide).mockReset().mockResolvedValue(undefined);
   vi.mocked(automationRunResult).mockReset().mockResolvedValue({ text: "本次结果", truncated: false });
   vi.mocked(automationsSnapshot).mockReset().mockImplementation(async () => snapshot);
   vi.mocked(agentListWorkspaces).mockReset().mockResolvedValue([]);
@@ -121,7 +124,7 @@ describe("自动化编辑流程与通知导航", () => {
     expect(screen.getByRole("button", {name: "保存并立即运行"})).toBeDisabled();
     expect(document.querySelector(".atm-execution-summary")).toHaveTextContent("原模型已移除，请重新选择");
     expect(useAutomationEditorStore.getState().draft?.modelId).toBe("echoagent-ojlab/Echo Reed");
-    fireEvent.click(screen.getByRole("button", {name: "跟随默认模型"}));
+    fireEvent.click(screen.getByRole("button", {name: "自动选择模型"}));
     expect(screen.getByRole("region", {name: "重新选择任务模型"})).toBeInTheDocument();
     expect(screen.getByRole("button", {name: "保存并立即运行"})).toBeEnabled();
     expect(document.querySelector(".atm-editor-footer")).toHaveTextContent("保存后保持暂停，可在任务详情中启用。");
@@ -607,7 +610,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     expect(screen.getByText("取消")).toBeInTheDocument();
     expect(screen.getByText("创建任务")).toBeInTheDocument();
     // 提示词工具条 chips
-    expect(screen.getByRole("button", { name: "跟随默认模型" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "自动选择模型" })).toBeInTheDocument();
     expect(screen.getByText(/技能/)).toBeInTheDocument();
     expect(screen.getByText("召唤专家")).toBeInTheDocument();
     expect(screen.getAllByText("默认权限").length).toBeGreaterThan(0);
@@ -706,7 +709,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
     await waitFor(() => expect(automationsSave).toHaveBeenCalledWith(expect.objectContaining({ modelId: "other-model" })));
     act(() => useAutomationEditorStore.getState().begin(draftFromAutomation(snapshot.automations[0]), snapshot.automations[0])); openAdvanced();
-    fireEvent.click(screen.getByRole("button", { name: "跟随默认模型" }));
+    fireEvent.click(screen.getByRole("button", { name: "自动选择模型" }));
     expect(useAutomationEditorStore.getState().draft?.modelId).toBeUndefined();
   });
 
@@ -760,7 +763,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     openAdvanced();
 
     expect(await screen.findByRole("button", { name: /选择定时任务模型：MiniMax-M3/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "跟随默认模型" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "自动选择模型" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.change(document.querySelector(".atm-modal-input") as HTMLInputElement, { target: { value: "Auto 报告" } });
     fireEvent.change(document.querySelector(".atm-prompt-textarea") as HTMLTextAreaElement, { target: { value: "执行任务" } });
     fireEvent.click(screen.getByRole("button", { name: /保存修改|创建任务|保存中/ }));
@@ -1152,7 +1155,7 @@ describe("AutomationPanel（有任务/有记录）", () => {
     fireEvent.click(screen.getByText("运行记录"));
     expect(await screen.findByText("已人工接管")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", {name: "筛选运行记录"}));
-    fireEvent.click(screen.getByRole("button", {name: "人工接管"}));
+    fireEvent.click(screen.getByRole("button", {name: "中断或人工接管"}));
     fireEvent.click(screen.getByRole("button", {name: /人工继续的任务/}));
     fireEvent.click(screen.getByRole("button", { name: "查看完整会话" }));
     expect(onOpenSession).toHaveBeenCalledWith("manual-session", undefined);
@@ -1352,6 +1355,28 @@ describe("定时任务会话、结果与控制闭环", () => {
     const result = screen.getByRole("region", { name: "本次运行结果" }); expect(result).toHaveTextContent("已完成"); expect(result).toHaveTextContent("通知投递未全部成功");
     expect(screen.queryByRole("button", { name: "使用当前配置重试" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "检查通知设置" })); expect(settings).toHaveBeenCalledWith("notifications");
+  });
+
+  it.each([true, false])("在运行详情确认发布决定 %s", async (approve) => {
+    const task = beginRunnableEditor();
+    useAutomationEditorStore.getState().close();
+    snapshot.records = [{
+      id: "pending-review", automationId: task.id, automationName: task.name,
+      status: approve ? "success" : "failed", publicationPending: true, startedAt: "2026-10-01T00:00:00Z", archived: false,
+    }];
+    vi.mocked(automationPublicationDecide).mockImplementation(async () => {
+      snapshot = { ...snapshot, records: snapshot.records.map(record => ({ ...record, publicationPending: false })) };
+    });
+    render(<AutomationPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: task.name }));
+    const result = await screen.findByRole("region", { name: "本次运行结果" });
+    fireEvent.click(within(result).getByRole("button", { name: approve ? "发布通知" : "拒绝发布" }));
+    expect(automationPublicationDecide).not.toHaveBeenCalled();
+    const dialog = screen.getByRole("dialog", { name: approve ? "发布本次运行通知？" : "拒绝发布本次运行通知？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: approve ? "确认发布" : "拒绝发布" }));
+    await waitFor(() => expect(automationPublicationDecide).toHaveBeenCalledWith("pending-review", approve));
+    await waitFor(() => expect(within(result).queryByRole("button", { name: "发布通知" })).toBeNull());
+    expect(automationsRun).not.toHaveBeenCalled();
   });
 
   it("停止排队轮次只调用该记录的停止接口，不修改未来计划", async () => {

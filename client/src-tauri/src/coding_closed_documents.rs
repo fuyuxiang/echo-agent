@@ -518,6 +518,8 @@ fn remove_or_move(
     expected: &str,
     destination: Option<&Path>,
 ) -> Result<(), String> {
+    let _lease = echo_agent_runtime::try_workspace_mutation(root)
+        .map_err(|error| format!("工程正在修改或无法核验：{error}"))?;
     let transaction = coding_workspace::document_write_lock(source)?;
     let _guard = transaction.lock().map_err(|_| "文档写入协调状态已损坏")?;
     let parent = source.parent().ok_or("源文件目录无效")?;
@@ -552,6 +554,8 @@ fn remove_or_move(
 }
 
 fn create_new(root: &Path, prepared: &Prepared) -> Result<(), String> {
+    let _lease = echo_agent_runtime::try_workspace_mutation(&prepared.path)
+        .map_err(|error| format!("文件正在修改或无法核验：{error}"))?;
     let transaction = coding_workspace::document_write_lock(&prepared.path)?;
     let _guard = transaction.lock().map_err(|_| "文档写入协调状态已损坏")?;
     let confirmed = target_path(root, &prepared.target.uri)?;

@@ -949,6 +949,8 @@ pub struct CompleteEvent {
     pub cancellation_category: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_result: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub recovery_summary: bool,
 }
 
 /// Exact per-prompt usage carried by EchoAgent's durable `TurnCompleted`
@@ -965,6 +967,10 @@ pub struct TurnUsageEvent {
     pub occurred_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_origin: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 /// Payload emitted on `agent://turn-error` — a turn that ended abnormally
@@ -1932,10 +1938,11 @@ pub(crate) fn parse_complete_event(params: &Value) -> CompleteEvent {
         cancel_trigger: string_field("cancelTrigger", "cancel_trigger"),
         cancellation_category: string_field("cancellationCategory", "cancellation_category"),
         agent_result: string_field("agentResult", "agent_result"),
+        recovery_summary: false,
     }
 }
 
-fn parse_live_durable_completion(
+pub(crate) fn parse_live_durable_completion(
     session_id: &str,
     params: &Value,
     update: &Value,
@@ -1983,7 +1990,7 @@ fn claim_public_completion(complete: &CompleteEvent) -> bool {
 }
 /// Both ACP response and notification enter here. The durable automation record
 /// claims finalization, so channel order cannot change status or duplicate delivery.
-pub(crate) async fn handle_prompt_complete(app: &AppHandle, complete: CompleteEvent) {
+pub(crate) async fn handle_prompt_complete(app: &AppHandle, mut complete: CompleteEvent) {
     if complete.session_id.is_empty() || complete.prompt_id.is_empty() {
         tracing::warn!("ignored completion without an admitted prompt identity");
         return;
@@ -2020,6 +2027,8 @@ pub(crate) async fn handle_prompt_complete(app: &AppHandle, complete: CompleteEv
         &automation,
         crate::automations::AutomationCompletionOutcome::NotAutomation
     );
+    complete.recovery_summary =
+        automation_handled && crate::automations::is_recovery_summary_prompt(&complete.prompt_id);
     match automation {
         crate::automations::AutomationCompletionOutcome::Persisted(completion) => {
             crate::automations::publish_automation_completion(app, *completion)
@@ -2285,7 +2294,19 @@ async fn handle_session_notification(app: &AppHandle, params: &Value) {
     crate::groups::observe(session_id, update, params.get("_meta"));
     match kind {
         "turn_completed" => {
+            let mut usage = parse_turn_usage_event(session_id, params, update);
             if let Some(complete) = parse_live_durable_completion(session_id, params, update) {
+                if let Some(event) = usage.as_mut() {
+                    event.project_id = crate::projects::session_project_id(session_id)
+                        .ok()
+                        .flatten();
+                    if let Some(run) =
+                        crate::automations::active_run_for_prompt(session_id, &event.prompt_id)
+                    {
+                        event.turn_origin =
+                            Some(serde_json::json!({"origin":"scheduled","sourceId":run}));
+                    }
+                }
                 handle_prompt_complete(app, complete).await;
             }
             // Durable turn endings arrive through this extension notification,
@@ -2295,7 +2316,7 @@ async fn handle_session_notification(app: &AppHandle, params: &Value) {
                 "agent://update",
                 durable_completion_update_event(session_id, params, update),
             );
-            if let Some(event) = parse_turn_usage_event(session_id, params, update) {
+            if let Some(event) = usage {
                 let _ = app.emit("agent://turn-usage", event);
             }
         }
@@ -2338,7 +2359,7 @@ async fn handle_session_notification(app: &AppHandle, params: &Value) {
         "subagent_spawned" | "subagent_progress" | "subagent_finished" => {
             emit_subagent_event(app, session_id, kind, update, params);
         }
-        "task_backgrounded" => {
+        "task_backgrounded" | "memory_context_used" => {
             let _ = app.emit(
                 "agent://update",
                 durable_completion_update_event(session_id, params, update),
@@ -2391,6 +2412,11 @@ fn parse_turn_usage_event(
             .and_then(|value| value.get("eventId"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        turn_origin: meta
+            .and_then(|value| value.get("turnOrigin"))
+            .filter(|value| value.is_object())
+            .cloned(),
+        project_id: None,
     })
 }
 
@@ -3395,6 +3421,7 @@ mod tests {
             cancel_trigger: None,
             cancellation_category: None,
             agent_result: None,
+            recovery_summary: false,
         };
         assert!(claim_public_completion(&first));
         assert!(!claim_public_completion(&first));

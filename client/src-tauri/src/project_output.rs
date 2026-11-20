@@ -63,22 +63,17 @@ impl Outputs {
         let Some(text) = update.pointer("/content/text").and_then(Value::as_str) else {
             return;
         };
-        let prompt = meta
+        let Some(prompt) = meta
             .and_then(|m| m.get("promptId").or_else(|| m.get("prompt_id")))
             .or_else(|| update.get("promptId").or_else(|| update.get("prompt_id")))
-            .and_then(Value::as_str);
-        // Ambiguous or old prompt events never enter another execution's record.
-        let mut matches = self
-            .runs
-            .keys()
-            .filter(|(sid, run)| sid == session && prompt.is_none_or(|id| id == run));
-        let Some(key) = matches.next().cloned() else {
+            .and_then(Value::as_str)
+        else {
             return;
         };
-        if matches.next().is_some() {
+        // Publication requires the prompt that was explicitly bound to the run.
+        let Some(capture) = self.runs.get_mut(&(session.to_owned(), prompt.to_owned())) else {
             return;
-        }
-        let capture = self.runs.get_mut(&key).unwrap();
+        };
         if let Some(event) = meta.and_then(|m| m.get("eventId")).and_then(Value::as_str) {
             if capture.events.iter().any(|id| id == event) {
                 return;
@@ -165,6 +160,7 @@ mod tests {
     fn project_output_fences_overlapping_prompts_and_unbound_sessions() {
         let mut output = Outputs::default();
         output.start("session", "old");
+        output.observe("session", &chunk("unbound with one active run"), None);
         output.start("session", "new");
         output.observe("session", &chunk("ambiguous"), None);
         output.observe("private", &chunk("private chat"), None);
@@ -193,8 +189,9 @@ mod tests {
     fn project_output_keeps_bounded_unicode_tail() {
         let mut output = Outputs::default();
         output.start("session", "run");
-        output.observe("session", &chunk(&"中".repeat(20_000)), None);
-        output.observe("session", &chunk("最终结果"), None);
+        let meta = json!({"promptId":"run"});
+        output.observe("session", &chunk(&"中".repeat(20_000)), Some(&meta));
+        output.observe("session", &chunk("最终结果"), Some(&meta));
         let text = output.finish("session", "run").unwrap();
         assert_eq!(text.chars().count(), MAX_OUTPUT_CHARS);
         assert!(text.ends_with("最终结果"));

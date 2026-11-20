@@ -37,6 +37,14 @@ pub(crate) fn history_mutation_guard(
         .map_err(|_| "正在创建接续对话，请稍候再操作原对话".into())
 }
 
+pub(crate) fn history_exclusive_guard(
+    id: &str,
+) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, String> {
+    history_lock(id)
+        .try_write_owned()
+        .map_err(|_| "原对话正在执行或修改历史，请稍后重试".into())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContinuationResult {
@@ -111,9 +119,7 @@ async fn continue_session(
     {
         return Err("接续请求标识无效".into());
     }
-    let _history_guard = history_lock(&session_id)
-        .try_write_owned()
-        .map_err(|_| "原对话正在执行或修改历史，请稍后重试")?;
+    let _history_guard = history_exclusive_guard(&session_id)?;
     // Scheduled prompts bypass the interactive send command but hold this fence
     // through completion and permission cleanup. Prevent their next run racing
     // an otherwise idle continuation snapshot.

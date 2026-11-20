@@ -589,12 +589,34 @@ pub async fn load_session(
     cwd: &Path,
     permission_mode: &str,
 ) -> Result<Option<String>> {
+    load_session_attachment(tx, session_id, cwd, permission_mode, None)
+        .await
+        .map(|attachment| attachment.model_id)
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAttachment {
+    pub model_id: Option<String>,
+    pub active_prompt_id: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_rejected: bool,
+}
+
+pub async fn load_session_attachment(
+    tx: &AcpAgentTx,
+    session_id: &str,
+    cwd: &Path,
+    permission_mode: &str,
+    cursor: Option<&str>,
+) -> Result<SessionAttachment> {
     load_session_with_servers(
         tx,
         session_id,
         cwd,
         permission_mode,
         current_desktop_mcp_servers(),
+        cursor,
     )
     .await
 }
@@ -605,7 +627,8 @@ async fn load_session_with_servers(
     cwd: &Path,
     permission_mode: &str,
     servers: Vec<acp::McpServer>,
-) -> Result<Option<String>> {
+    cursor: Option<&str>,
+) -> Result<SessionAttachment> {
     crate::sessions::require_migrated_model(session_id, cwd).map_err(|error| anyhow!(error))?;
     let mut req = acp::LoadSessionRequest::new(
         acp::SessionId::new(session_id.to_string()),
@@ -613,6 +636,11 @@ async fn load_session_with_servers(
     )
     .mcp_servers(servers)
     .meta(Some(permission_mode_meta(permission_mode)));
+    if let Some(cursor) = cursor {
+        let meta = req.meta.get_or_insert_with(Default::default);
+        meta.insert("cursor".into(), serde_json::json!(cursor));
+        meta.insert("desktopCatchup".into(), serde_json::json!(true));
+    }
     if let Some(profile) =
         crate::agents_store::session_profile(session_id).map_err(|e| anyhow!(e))?
     {
@@ -623,9 +651,26 @@ async fn load_session_with_servers(
     let response: acp::LoadSessionResponse = acp_send(req, tx)
         .await
         .map_err(|e| anyhow!("load_session: {e:?}"))?;
-    Ok(response
-        .models
-        .map(|models| models.current_model_id.0.to_string()))
+    let active_prompt_id = response
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("echo.agent/runningPromptId"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
+        .map(str::to_owned);
+    let cursor_rejected = response
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("echo.agent/desktopCursorRejected"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    Ok(SessionAttachment {
+        model_id: response
+            .models
+            .map(|models| models.current_model_id.0.to_string()),
+        active_prompt_id,
+        cursor_rejected,
+    })
 }
 
 fn permission_mode_meta(mode: &str) -> serde_json::Map<String, serde_json::Value> {
@@ -934,8 +979,18 @@ pub async fn prompt_for_automation(
     session_id: &str,
     prompt_id: &str,
     text: &str,
+    checkpoint: bool,
+    recovering: bool,
 ) -> Result<crate::bridge::CompleteEvent> {
-    let blocks = build_team_prompt_blocks(session_id, prompt_id, text, &[], None)?;
+    let mut blocks = build_team_prompt_blocks(session_id, prompt_id, text, &[], None)?;
+    if checkpoint || recovering {
+        if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
+            block.meta.get_or_insert_with(Default::default).insert(
+                "desktopAutomation".into(),
+                serde_json::json!(if recovering { "finish" } else { "run" }),
+            );
+        }
+    }
     let meta = serde_json::Map::from_iter([("promptId".into(), serde_json::json!(prompt_id))]);
     let req = acp::PromptRequest::new(session_id.to_string(), blocks).meta(Some(meta));
     let response: acp::PromptResponse = acp_send(req, tx)
@@ -1446,6 +1501,7 @@ mod tests {
                 Path::new("/workspace"),
                 "auto",
                 servers,
+                None,
             )
             .await
         });
@@ -1499,11 +1555,44 @@ mod tests {
             .response_tx
             .send(Ok(acp::LoadSessionResponse::new()))
             .expect("load response");
-        assert!(task
+        let attachment = task.await.expect("load task").expect("load success");
+        assert!(attachment.model_id.is_none());
+        assert!(attachment.active_prompt_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn desktop_recovery_uses_the_saved_cursor_and_attaches_the_runtime_prompt() {
+        let (client, mut agent) = echo_agent_acp::acp_channels();
+        let task = tokio::spawn(async move {
+            load_session_with_servers(
+                &client.tx,
+                "restored-session",
+                Path::new("/workspace"),
+                "ask",
+                Vec::new(),
+                Some("restored-session-55"),
+            )
             .await
-            .expect("load task")
-            .expect("load success")
-            .is_none());
+        });
+        let message = agent.rx.recv().await.expect("load request");
+        let echo_agent_acp::AcpAgentMessage::LoadSession(call) = message else {
+            panic!("expected LoadSession request");
+        };
+        let meta = call.request.meta.as_ref().unwrap();
+        assert_eq!(meta["cursor"], "restored-session-55");
+        assert_eq!(meta["desktopCatchup"], true);
+        call.response_tx
+            .send(Ok(acp::LoadSessionResponse::new().meta(Some(
+                serde_json::Map::from_iter([(
+                    "echo.agent/runningPromptId".into(),
+                    serde_json::json!("active-prompt"),
+                )]),
+            ))))
+            .unwrap();
+        assert_eq!(
+            task.await.unwrap().unwrap().active_prompt_id.as_deref(),
+            Some("active-prompt")
+        );
     }
 
     #[test]
@@ -1796,6 +1885,178 @@ mod tests {
         let error = build_prompt_blocks("inspect", &[link.to_string_lossy().into_owned()], None)
             .expect_err("image symlink must be rejected");
         assert!(error.to_string().contains("regular file"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "two fresh processes, an isolated profile, and an operator-supplied model endpoint"]
+    async fn automation_runtime_recovery_real_model() {
+        use echo_agent_acp::AcpClientMessage;
+        use std::time::Duration;
+        const COMMAND: &str =
+            "/usr/bin/printf 'ECHO_RECOVERY_EXTERNAL\\n' | /usr/bin/tee -a recovery-proof.txt";
+        let home = crate::paths::redirected_data_home().expect("isolated data home");
+        assert!(home.starts_with("/private/tmp") || home.starts_with("/tmp"));
+        assert!(home
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("echo-runtime-recovery-"));
+        let phase = std::env::var("ECHO_AUTOMATION_RECOVERY_PHASE").unwrap();
+        assert!(matches!(phase.as_str(), "first" | "resume"));
+        let cwd = home.join("workspace");
+        let mut handle = spawn_agent_runtime(cwd.clone()).unwrap();
+        let mut rx = std::mem::replace(&mut handle.rx, echo_agent_acp::acp_channels().0.rx);
+        let first = phase == "first";
+        let updates = tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                match message {
+                    AcpClientMessage::SessionNotification(args) => {
+                        let _ = args.response_tx.send(Ok(()));
+                    }
+                    AcpClientMessage::ExtNotification(args) => {
+                        let _ = args.response_tx.send(Ok(()));
+                    }
+                    AcpClientMessage::RequestPermission(args) => {
+                        let command = args
+                            .request
+                            .tool_call
+                            .fields
+                            .raw_input
+                            .as_ref()
+                            .and_then(|input| input.get("command"))
+                            .and_then(serde_json::Value::as_str);
+                        let approved = if first && command == Some(COMMAND) {
+                            args.request
+                                .options
+                                .iter()
+                                .find(|option| option.kind == acp::PermissionOptionKind::AllowOnce)
+                        } else {
+                            None
+                        };
+                        let outcome =
+                            approved.map_or(acp::RequestPermissionOutcome::Cancelled, |option| {
+                                acp::RequestPermissionOutcome::Selected(
+                                    acp::SelectedPermissionOutcome::new(option.option_id.clone()),
+                                )
+                            });
+                        let _ = args
+                            .response_tx
+                            .send(Ok(acp::RequestPermissionResponse::new(outcome)));
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let init = initialize(&handle.tx).await.unwrap();
+        let model_id = init.default_model_id.as_deref().unwrap();
+        assert_eq!(model_id, "recovery/real");
+        let proof = cwd.join("recovery-proof.txt");
+        let binding = home.join("first-session");
+        if first {
+            let catalog = crate::providers::providers_list();
+            let eligible = catalog
+                .models
+                .iter()
+                .map(|model| model.model_id.as_str())
+                .collect();
+            let candidates = crate::commands::automation_route(
+                &catalog,
+                "recovery/unavailable",
+                &eligible,
+                4096,
+                true,
+                true,
+            );
+            let verified_model = crate::commands::verify_automation_model_route(candidates)
+                .await
+                .unwrap();
+            assert_eq!(verified_model, model_id);
+            let session_id = new_session_with_options(
+                &handle.tx,
+                &cwd,
+                Some(&verified_model),
+                None,
+                Some("default"),
+            )
+            .await
+            .unwrap();
+            let prompt_id = uuid::Uuid::now_v7().to_string();
+            std::fs::write(&binding, format!("{session_id}\n{prompt_id}")).unwrap();
+            let prompt = format!(
+                "Use the shell tool exactly once with the exact command from the following line:\n{COMMAND}\nWhen the command returns, report ECHO_RECOVERY_EXTERNAL."
+            );
+            let completion = tokio::time::timeout(
+                Duration::from_secs(110),
+                prompt_for_automation(&handle.tx, &session_id, &prompt_id, &prompt, true, false),
+            )
+            .await;
+            panic!("first Runtime was expected to be terminated by the driver at the durable checkpoint: timeout={}", completion.is_err());
+        } else {
+            let binding = std::fs::read_to_string(&binding).unwrap();
+            let (session_id, original_prompt_id) = binding.split_once('\n').unwrap();
+            let paths = echo_agent_runtime::session::persistence::session_history_paths(
+                session_id,
+                cwd.to_str(),
+            )
+            .unwrap();
+            assert_eq!(paths.len(), 1);
+            assert_eq!(
+                std::fs::read_to_string(paths[0].join("desktop-automation-checkpoint")).unwrap(),
+                original_prompt_id
+            );
+            assert_eq!(
+                std::fs::read_to_string(&proof).unwrap(),
+                "ECHO_RECOVERY_EXTERNAL\n"
+            );
+            load_session(&handle.tx, session_id, &cwd, "default")
+                .await
+                .unwrap();
+            set_session_model(&handle.tx, session_id, model_id)
+                .await
+                .unwrap();
+            let prompt_id = uuid::Uuid::now_v7().to_string();
+            let completion = tokio::time::timeout(Duration::from_secs(80), prompt_for_automation(
+                &handle.tx, session_id, &prompt_id,
+                "The original turn was interrupted. From the previous command result, return the exact marker that it wrote. Do not use tools.",
+                false, true,
+            )).await.unwrap().unwrap();
+            assert_eq!(
+                crate::bridge::completion_disposition(&completion),
+                crate::bridge::CompletionDisposition::Success
+            );
+            assert_eq!(
+                std::fs::read_to_string(&proof).unwrap(),
+                "ECHO_RECOVERY_EXTERNAL\n"
+            );
+            let transcript = std::fs::read_to_string(paths[0].join("updates.jsonl")).unwrap();
+            let output = transcript
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter_map(|entry| {
+                    let params = &entry["params"];
+                    if params["_meta"]["promptId"].as_str() != Some(prompt_id.as_str())
+                        || params["update"]["sessionUpdate"] != "agent_message_chunk"
+                    {
+                        return None;
+                    }
+                    params["update"]["content"]["text"]
+                        .as_str()
+                        .map(str::to_owned)
+                })
+                .collect::<String>();
+            assert!(
+                output.contains("ECHO_RECOVERY_EXTERNAL"),
+                "the resumed model did not recover the tool result"
+            );
+        }
+        handle.cancel.cancel();
+        if let Some(thread) = handle.thread.take() {
+            tokio::task::spawn_blocking(move || thread.join().unwrap().unwrap())
+                .await
+                .unwrap();
+        }
+        updates.abort();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

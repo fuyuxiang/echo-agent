@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import type { PersonalMemoryRecord } from "@/lib/agent-client";
 
-const api = vi.hoisted(() => ({ memoryRecordsGet: vi.fn(), memoryRecordSave: vi.fn(), memoryRecordRetire: vi.fn(), memoryFlush: vi.fn() }));
+const api = vi.hoisted(() => ({ memoryRecordsGet: vi.fn(), memoryRecordSave: vi.fn(), memoryRecordRetire: vi.fn(), memoryFlush: vi.fn(), memoryDreamUndo: vi.fn() }));
 vi.mock("@/lib/agent-client", () => api);
 vi.mock("../ResourcesPanel", async () => {
   const { useState } = await import("react");
@@ -235,6 +235,24 @@ describe("记忆设置与二级管理", () => {
 });
 
 describe("按需访问原有记忆状态", () => {
+  it("确认后按工作区与版本撤销整理，并刷新可撤销状态", async () => {
+    const onToast = vi.fn();
+    api.memoryRecordsGet.mockResolvedValueOnce({
+      records: [record], enabled: true, pendingCount: 0, extraction: {}, retrieval: { at: 0, sources: [] },
+      dreamUndo: { version: "first-workspace-memory", at: 1_763_596_800 },
+    });
+    api.memoryDreamUndo.mockResolvedValueOnce(undefined);
+    render(<PersonalMemoryPanel cwd="/project-a" onToast={onToast} />);
+    openManager();
+    openAction("记忆状态与排查");
+    fireEvent.click(await screen.findByRole("button", { name: "撤销上次记忆整理" }));
+    expect(api.memoryDreamUndo).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "恢复记忆" }));
+    await waitFor(() => expect(api.memoryDreamUndo).toHaveBeenCalledWith("/project-a", "first-workspace-memory"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "撤销上次记忆整理" })).toBeNull());
+    expect(onToast).toHaveBeenCalledWith("已恢复整理前的工作区记忆");
+  });
+
   it.each([
     [false, false, "待整理内容已保存在本机，开启记忆并恢复自动整理后继续处理"],
     [true, false, "待整理内容已保存在本机，自动整理已暂停，可恢复推荐策略后继续处理"],

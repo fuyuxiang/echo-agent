@@ -111,6 +111,8 @@ export function buildDraft(template?: AutomationTemplate, initialCwd = ""): Auto
     status: "ACTIVE",
     modelId: undefined,
     modelIsThinking: false,
+    crossProviderFallback: false,
+    recoverAfterInterruption: true,
     skills: [],
     expertId: undefined,
     expertName: undefined,
@@ -124,6 +126,7 @@ export function buildDraft(template?: AutomationTemplate, initialCwd = ""): Auto
     validFromDate: template?.validFromDate ?? "",
     validUntilDate: template?.validUntilDate ?? "",
     pushToWeChat: template?.pushToChannels ?? false,
+    reviewPublication: true,
     newSessionEachRun: true,
   };
 }
@@ -138,6 +141,8 @@ export function draftFromAutomation(a: Automation): AutomationDraft {
     status: a.status,
     modelId: a.modelId,
     modelIsThinking: a.modelIsThinking ?? false,
+    crossProviderFallback: a.crossProviderFallback ?? false,
+    recoverAfterInterruption: a.recoverAfterInterruption ?? false,
     skills: [...(a.skills ?? [])],
     expertId: a.expertId,
     expertName: a.expertName,
@@ -156,6 +161,7 @@ export function draftFromAutomation(a: Automation): AutomationDraft {
     validFromDate: a.validFromDate ?? "",
     validUntilDate: a.validUntilDate ?? "",
     pushToWeChat: a.pushToWeChat ?? false,
+    reviewPublication: a.reviewPublication ?? false,
     newSessionEachRun: a.newSessionEachRun ?? true,
   };
 }

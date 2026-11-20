@@ -4,6 +4,7 @@ use agent_client_protocol as acp;
 use serde_json::Value;
 
 use super::MvpAgent;
+use super::replay::ReplayOrigin;
 use crate::tools::task_completed_frame::FRAME_MAX_BYTES;
 use echo_agent_acp::{AcpAgentGatewaySender as GatewaySender, AcpClientMessage};
 
@@ -19,7 +20,7 @@ async fn replay_shrinks_an_oversized_completion() {
         &line,
         /*persist_data*/ None,
         /*target_client_id*/ None,
-        /*mark_replay*/ false,
+        ReplayOrigin::Live,
         &mut crate::session::storage::ReplayToolCollapser::new(),
     );
 
@@ -93,7 +94,7 @@ async fn a_marked_replay_is_fitted_after_its_metadata_is_added() {
         &line,
         Some(&persist),
         /*target_client_id*/ None,
-        /*mark_replay*/ true,
+        ReplayOrigin::History,
         &mut crate::session::storage::ReplayToolCollapser::new(),
     );
 
@@ -104,6 +105,25 @@ async fn a_marked_replay_is_fitted_after_its_metadata_is_added() {
         params.len()
     );
     assert!(params.contains("isReplay"));
+}
+
+#[tokio::test]
+async fn desktop_cursor_replay_preserves_event_id_and_stays_historical() {
+    let (agent, mut rx) = build_agent_with_gateway();
+    let mut record = recorded_completion(String::new());
+    record["_meta"] = serde_json::json!({"eventId": "s-42"});
+    agent.forward_raw_replay_line(
+        &replay_line(&record),
+        None,
+        None,
+        ReplayOrigin::DesktopCatchup,
+        &mut crate::session::storage::ReplayToolCollapser::new(),
+    );
+    let params = next_ext_notification_params(&mut rx).unwrap();
+    let value: Value = serde_json::from_str(&params).unwrap();
+    assert_eq!(value["_meta"]["eventId"], "s-42");
+    assert_eq!(value["_meta"]["isReplay"], true);
+    assert_eq!(value["_meta"]["desktopCatchup"], true);
 }
 
 /// A completion nothing can shrink is dropped, because sending it is what
@@ -119,7 +139,7 @@ async fn replay_drops_a_completion_nothing_can_shrink() {
         &line,
         /*persist_data*/ None,
         /*target_client_id*/ None,
-        /*mark_replay*/ false,
+        ReplayOrigin::Live,
         &mut crate::session::storage::ReplayToolCollapser::new(),
     );
 
@@ -136,7 +156,7 @@ async fn replay_forwards_records_within_the_limit_untouched() {
         &line,
         /*persist_data*/ None,
         /*target_client_id*/ None,
-        /*mark_replay*/ false,
+        ReplayOrigin::Live,
         &mut crate::session::storage::ReplayToolCollapser::new(),
     );
 
@@ -157,7 +177,7 @@ async fn replay_leaves_other_oversized_records_alone() {
         &line,
         /*persist_data*/ None,
         /*target_client_id*/ None,
-        /*mark_replay*/ false,
+        ReplayOrigin::Live,
         &mut crate::session::storage::ReplayToolCollapser::new(),
     );
 
@@ -171,8 +191,8 @@ async fn parent_replay_does_not_emit_meta_less_unfinished_tool_call() {
     let mut collapser = crate::session::storage::ReplayToolCollapser::new();
     let tool = r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"t1","title":"bash","status":"pending"},"_meta":{"eventId":"s-1"}}}"#;
     let start = r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","title":"ls"},"_meta":{"eventId":"s-2"}}}"#;
-    agent.forward_raw_replay_line(tool, None, None, false, &mut collapser);
-    agent.forward_raw_replay_line(start, None, None, false, &mut collapser);
+    agent.forward_raw_replay_line(tool, None, None, ReplayOrigin::Live, &mut collapser);
+    agent.forward_raw_replay_line(start, None, None, ReplayOrigin::Live, &mut collapser);
     assert_eq!(collapser.pending_len(), 1);
     assert!(
         rx.try_recv().is_err(),
@@ -212,8 +232,10 @@ fn build_agent_with_gateway() -> (
     use crate::auth::{AuthManager, EchoAgentComConfig};
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let auth_manager =
-        std::sync::Arc::new(AuthManager::new(temp_dir.path(), EchoAgentComConfig::default()));
+    let auth_manager = std::sync::Arc::new(AuthManager::new(
+        temp_dir.path(),
+        EchoAgentComConfig::default(),
+    ));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let agent = MvpAgent::new(
         GatewaySender::new(tx),

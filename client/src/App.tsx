@@ -66,6 +66,7 @@ import {
   agentSendNow,
   agentCancel,
   agentLoadSession,
+  agentRecoverSession,
   agentReloadSession,
   agentSessionLoadInFlight,
   agentListAllSessions,
@@ -100,7 +101,7 @@ import type { AgentEntry, SessionSummary, ContinuationTarget, ConversationNaviga
 import { buildCodingWorkflowPrompt } from "./features/coding/lib/workflow";
 import { CodingTaskRuntimeManager } from "./features/coding/lib/coding-task-runtime";
 import { codingQueueOwner, settleCodingQueueTurn } from "./features/coding/lib/coding-followup";
-import { hydrateProjectsFromBackend, projectOwnsSession, useProjectsStore, type ProjectMeta, type ProjectTab } from "./stores/projects-store";
+import { flushProjectPersistence, hydrateProjectsFromBackend, projectOwnsSession, useProjectsStore, type ProjectMeta, type ProjectTab } from "./stores/projects-store";
 import {
   onSessionStatusPersistenceIssue,
   retryPendingSessionStatuses,
@@ -111,6 +112,7 @@ import {
   queueTerminalPolicy,
 } from "./stores/message-queue-store";
 import { useSubagentStore } from "./stores/subagent-store";
+import { readTurnIdentity } from "./lib/execution-turn";
 import { groupCreate, groupDelete, groupList, groupSend, resolveGroupForSession } from "./features/groups/group-client";
 import { useGroupEvents, useGroupStore } from "./features/groups/group-store";
 import {
@@ -144,7 +146,7 @@ import {
   usePermissionModeStore,
 } from "./stores/permission-mode-store";
 import { agentsValidateReferences } from "./lib/agent-client";
-import { buildProjectPrompt, projectPromptForTurn, projectSessionTitle, type ProjectConversationOptions, type StartProjectConversation } from "./lib/project-context";
+import { buildProjectPrompt, projectSessionTitle, type ProjectConversationOptions, type StartProjectConversation } from "./lib/project-context";
 import { migrateCatalogRootStorage } from "./lib/catalog-root-storage";
 import { parseRememberArguments, type SlashCommandInvocation } from "./lib/slash-commands";
 import { useUpdateStore } from "./stores/update-store";
@@ -268,36 +270,37 @@ export default function App() {
 
 function prepareExistingProjectTurn(sessionId: string, body: string) {
   const project = useProjectsStore.getState().projects.find((item) =>
-    item.conversations.some((conversation) => conversation.sessionId === sessionId),
+    projectOwnsSession(item, sessionId),
   );
   const conversation = project?.conversations.find((item) => item.sessionId === sessionId);
   const isFirstUserTurn = !useSessionStore.getState().transcripts[sessionId]?.messages.some(
     (message) => message.role === "user",
   );
-  const { promptText, consumedPendingContext } = projectPromptForTurn(
-    project, conversation, isFirstUserTurn, body,
-  );
+  const consumedPendingContext = !!conversation?.pendingProjectContext;
   const appliesContext = Boolean(project && conversation && (isFirstUserTurn || consumedPendingContext));
   const prepared = {
-    promptText,
+    promptText: body,
     setPending: (pending: boolean) => {
       if (project && (pending ? appliesContext : consumedPendingContext)) {
         useProjectsStore.getState().setProjectContextPending(project.id, sessionId, pending);
       }
     },
   };
-  if (!project || !appliesContext) return prepared;
-  const cwd = findSessionSummary(sessionId)?.cwd;
-  if (!cwd) throw new Error("无法确认本会话的原工作目录，请重新打开任务");
-  return agentsValidateReferences(cwd, project.experts).then(() => {
-    const currentProject = useProjectsStore.getState().projects.find((item) => item.id === project.id);
-    const currentConversation = currentProject?.conversations.find((item) => item.sessionId === sessionId);
-    if (!currentProject || !currentConversation || !!currentConversation.pendingProjectContext !== consumedPendingContext
-      || buildProjectPrompt(currentProject, body) !== promptText || findSessionSummary(sessionId)?.cwd !== cwd) {
-      throw new Error("项目约定或工作目录已变更，请重新发送");
+  const summary = findSessionSummary(sessionId);
+  if (!project && !summary?.projectId) return prepared;
+  return (async () => {
+    if (project && appliesContext) {
+      const cwd = summary?.cwd;
+      if (!cwd) throw new Error("无法确认本会话的原工作目录，请重新打开任务");
+      await agentsValidateReferences(cwd, project.experts);
+      const current = useProjectsStore.getState().projects.find(item => projectOwnsSession(item, sessionId));
+      if (current?.id !== project.id || current.experts !== project.experts || findSessionSummary(sessionId)?.cwd !== cwd) {
+        throw new Error("项目专家或工作目录已变更，请重新发送");
+      }
     }
+    await flushProjectPersistence();
     return prepared;
-  });
+  })();
 }
 
 function Shell() {
@@ -340,7 +343,7 @@ function Shell() {
   const [automationRefreshSignal, setAutomationRefreshSignal] = useState(0);
   const [notificationAutomationOpen, setNotificationAutomationOpen] = useState<{ id: string; sequence: number } | null>(null);
   const notificationAutomationSequenceRef = useRef(0);
-  const automationAdmissionRecordsRef = useRef(new Set<string>());
+  const automationAdmissionsRef = useRef(new Set<string>());
   const automationSessionRunsRef = useRef(new Map<string, { recordId: string; promptId?: string }>());
   const [commandRefreshKey, setCommandRefreshKey] = useState(0);
   const [placeholderView, setPlaceholderView] = useState<string | null>(null);
@@ -885,7 +888,7 @@ function Shell() {
           onComplete: (p) => {
             if (sessionsStore.getState().deletedSessionIds.includes(p.sessionId)) return;
             const requestedAction = sessionStore.getState().transcripts[p.sessionId]?.control?.action;
-            const terminalStatus = terminalSessionStatus(p, requestedAction);
+            const terminalStatus = p.recoverySummary ? "stopped" : terminalSessionStatus(p, requestedAction);
             reportEvent(
               "session_complete",
               terminalStatus === "failed" ? "error" : terminalStatus === "stopped" ? "warn" : "info",
@@ -923,7 +926,7 @@ function Shell() {
             // cannot settle the replacement turn's UI or dispatch more work.
             if (!completedCurrentTurn || currentTranscript?.streamingMessageId
               || currentTranscript?.pendingSendNowPromptId) return;
-            if (!queuePolicy.autoAdvance || requestedAction) {
+            if (!queuePolicy.autoAdvance || requestedAction || p.recoverySummary) {
               useMessageQueueStore.getState().pauseQueued(p.sessionId);
             }
             if (summary) {
@@ -945,6 +948,7 @@ function Shell() {
             if (
               !summary
               || requestedAction
+              || p.recoverySummary
               || !queuePolicy.autoAdvance
               || pendingInteractionStatus(p.sessionId)
             ) return;
@@ -1023,14 +1027,18 @@ function Shell() {
           },
           onTurnUsage: (payload) => {
             const config = loadQuotaConfig();
-            const fallbackModelId = findSessionSummary(payload.sessionId)?.currentModelId;
+            const session = findSessionSummary(payload.sessionId);
+            const identity = readTurnIdentity({ turnOrigin: payload.turnOrigin }, payload.promptId);
             const next = recordTurnUsage(loadUsage(), {
               sessionId: payload.sessionId,
               promptId: payload.promptId,
               usage: payload.usage,
               occurredAt: payload.occurredAt,
               eventId: payload.eventId,
-              fallbackModelId,
+              fallbackModelId: session?.currentModelId,
+              projectId: payload.projectId ?? undefined,
+              turnOrigin: identity.origin,
+              turnSourceId: identity.sourceId,
             }, config ?? undefined);
             publishQuotaAlert(next, config, payload.sessionId);
           },
@@ -1109,22 +1117,24 @@ function Shell() {
             setAutomationRefreshSignal((value) => value + 1);
             // Cleanup progresses after execution ended. It only invalidates
             // history; a delayed cleanup event must not settle a newer turn.
-            if (event.phase === "cleanup") return;
+            if (["cleanup", "publication", "queued", "running"].includes(event.phase)) return;
             if (event.sessionId && event.cwd) {
               const sessionStore = sessionsStore.getState();
               if (sessionStore.deletedSessionIds.includes(event.sessionId)) return;
               const existing = sessionStore.independent.find(
                 (session) => session.sessionId === event.sessionId,
               );
-              const newAdmission = event.phase === "sessionCreated" && Boolean(event.recordId) && !automationAdmissionRecordsRef.current.has(event.recordId);
+              const admission = JSON.stringify([event.recordId, event.promptId]);
+              const admissions = automationAdmissionsRef.current;
+              const newAdmission = event.phase === "sessionCreated" && Boolean(event.recordId) && !admissions.has(admission);
               if (event.phase === "sessionCreated" && !newAdmission) return;
               const admissionControl = useSessionStore.getState().transcripts[event.sessionId]?.control
                 ?? readPersistedSessionControl(event.sessionId);
               const admitNewPrompt = newAdmission && Boolean(event.promptId)
                 && admissionControl?.promptId !== event.promptId;
               if (newAdmission) {
-                automationAdmissionRecordsRef.current.add(event.recordId);
-                if (automationAdmissionRecordsRef.current.size > 2000) automationAdmissionRecordsRef.current.delete(automationAdmissionRecordsRef.current.values().next().value!);
+                admissions.add(admission);
+                if (admissions.size > 2000) admissions.delete(admissions.values().next().value!);
                 automationSessionRunsRef.current.set(event.sessionId, { recordId: event.recordId, promptId: event.promptId });
                 if (automationSessionRunsRef.current.size > 2000) automationSessionRunsRef.current.delete(automationSessionRunsRef.current.keys().next().value!);
                 // Native dispatch owns this new prompt. Retire only the old
@@ -1151,12 +1161,13 @@ function Shell() {
                 ? "failed"
                 : event.status === "success"
                   ? "completed"
-                  : event.status === "stopped"
+                  : event.status === "stopped" || event.status === "interrupted"
                     ? "stopped"
                     : "working";
               sessionStore.upsert({
                 sessionId: event.sessionId,
                 cwd: event.cwd,
+                ...(newAdmission && event.projectId ? { projectId: event.projectId } : {}),
                 ...(event.currentModelId && (newAdmission || !existing?.currentModelId)
                   ? { currentModelId: event.currentModelId }
                   : {}),
@@ -1167,20 +1178,24 @@ function Shell() {
                 updatedAt: new Date().toISOString(),
               });
               if (event.projectId && event.phase === "sessionCreated") {
-                const project = useProjectsStore.getState().projects.find(p => p.id === event.projectId);
-                if (project && !projectOwnsSession(project, event.sessionId)) useProjectsStore.getState().addConversation(project.id, { sessionId: event.sessionId, title: `定时：${event.automationName}`, createdAt: new Date().toISOString(), modelId: event.currentModelId });
+                const projects = useProjectsStore.getState().projects;
+                const project = projects.find(p => p.id === event.projectId);
+                if (project && !projects.some(item => projectOwnsSession(item, event.sessionId!))) {
+                  useProjectsStore.getState().addConversation(project.id, { sessionId: event.sessionId, title: `定时：${event.automationName}`, createdAt: new Date().toISOString(), modelId: event.currentModelId });
+                }
               }
               // Launch/transport failures may have no public prompt-complete
               // event. Close only the identified occurrence, keeping a visible
               // terminal bubble instead of leaving an empty live placeholder.
               if (event.phase === "finished" && finishedPromptId
-                && (event.status === "failed" || event.status === "stopped")) {
+                && (event.status === "failed" || event.status === "stopped" || event.status === "interrupted")) {
+                const summarized = event.recoverySummaryStatus === "completed";
                 const transcriptStore = useSessionStore.getState();
                 const completion = {
                   sessionId: event.sessionId,
                   promptId: finishedPromptId,
-                  stopReason: event.status === "failed" ? "error" : "cancelled",
-                  agentResult: event.error,
+                  stopReason: summarized ? "end_turn" : event.status === "failed" ? "error" : "cancelled",
+                  agentResult: summarized ? undefined : event.error,
                 };
                 const settled = transcriptStore.finalizeTurn(completion);
                 if (settled) {
@@ -1191,7 +1206,7 @@ function Shell() {
                   queue.holdSending(event.sessionId, finishedPromptId, true, event.error);
                   queue.pauseQueued(event.sessionId);
                 }
-                if (settled && event.error && transcriptStore.sessionId === event.sessionId) {
+                if (settled && !summarized && event.error && transcriptStore.sessionId === event.sessionId) {
                   useSessionStore.getState().setError(event.error, { sessionId: event.sessionId, promptId: finishedPromptId });
                 }
               }
@@ -1318,16 +1333,34 @@ function Shell() {
             sessionStore.getState().setSession(entry.sessionId);
             let loadedModel: string | null;
             let historyLoaded = false;
+            let activePromptId: string | null | undefined;
             try {
-              loadedModel = await agentLoadSession(entry.sessionId, entry.cwd);
+              const attachment = await agentRecoverSession(entry.sessionId, entry.cwd);
+              loadedModel = attachment.modelId;
+              activePromptId = attachment.activePromptId;
               historyLoaded = true;
               rendererHistoryPending.current = false;
             } finally {
               const status = findSessionSummary(entry.sessionId)?.status;
-              // A host crash can leave history without a terminal event. A
-              // healthy Runtime may still own a live turn during UI recovery.
-              if (!agentSessionLoadInFlight(entry.sessionId) && !isAgentOwnedActiveStatus(status)) {
+              const pendingInteraction = pendingInteractionStatus(entry.sessionId);
+              const adopted = activePromptId && sessionStore.getState().adoptRecoveredTurn(entry.sessionId, activePromptId);
+              const knownIdle = activePromptId === null && !pendingInteraction;
+              if (adopted && !pendingInteraction) {
+                sessionsStore.getState().upsert({ sessionId: entry.sessionId, status: "working" });
+              } else if (!agentSessionLoadInFlight(entry.sessionId)
+                && (knownIdle || !isAgentOwnedActiveStatus(status))) {
                 sessionStore.getState().finalizeIncompleteReplay(entry.sessionId, historyLoaded && status === "completed");
+                const transcript = sessionStore.getState().transcripts[entry.sessionId];
+                if (knownIdle && isAgentOwnedActiveStatus(status) && !transcript?.streamingMessageId && !transcript?.control) {
+                  const latest = transcript?.messages.slice().reverse().find(message => message.role === "assistant");
+                  const terminal = latest?.complete && latest.stopReason
+                    ? terminalSessionStatus({
+                      stopReason: latest.stopReason,
+                      cancelTrigger: latest.cancelTrigger,
+                      cancellationCategory: latest.cancellationCategory,
+                    }) : "stopped";
+                  sessionsStore.getState().upsert({ sessionId: entry.sessionId, status: terminal === "working" ? "stopped" : terminal });
+                }
               }
               if (!agentSessionLoadInFlight(entry.sessionId)) sessionStore.getState().clearReplaySuppression(entry.sessionId);
             }
@@ -2648,14 +2681,17 @@ function Shell() {
     try {
       // Load with the session's own cwd. Opening history must not re-aim the
       // working directory selected for the next new task.
-      const loadedModelId = await agentLoadSession(sessionId, entry.cwd);
+      const attachment = isAgentOwnedActiveStatus(entry.status)
+        ? await agentRecoverSession(sessionId, entry.cwd)
+        : { modelId: await agentLoadSession(sessionId, entry.cwd), activePromptId: undefined };
+      if (attachment.activePromptId) sessionStore.getState().adoptRecoveredTurn(sessionId, attachment.activePromptId);
       historyLoaded = true;
       if (selectionGenerationRef.current !== generation) {
         if (strict) throw new SessionNavigationSupersededError();
         return;
       }
       // The load response is authoritative; older runtimes may omit models.
-      const actualModelId = loadedModelId || findSessionSummary(sessionId)?.currentModelId;
+      const actualModelId = attachment.modelId || findSessionSummary(sessionId)?.currentModelId;
       sessionsStore.getState().upsert({ sessionId, currentModelId: actualModelId });
       if (sessionsStore.getState().currentSessionId === sessionId) {
         setCurrentModelId(resolveSessionModelId(modelsRef.current, actualModelId));
@@ -3209,7 +3245,8 @@ function Shell() {
           : "请检查项目默认专家配置和所选目录。";
         throw new Error(`无法验证项目专家。 ${recovery} ${String(error).replace(/^Error:\s*/, "")}`);
       }
-      const sessionId = await agentNewSession(cwd, modelId, options.requestedPermissionMode, options.expectedPermissionMode);
+      await flushProjectPersistence();
+      const sessionId = await agentNewSession(cwd, modelId, options.requestedPermissionMode, options.expectedPermissionMode, undefined, project.id);
       requests.delete(project.id);
       return { sessionId, cwd, creation, attachments };
     } finally {
@@ -3251,6 +3288,7 @@ function Shell() {
         sessionId,
         title: project.name,
         cwd,
+        projectId: project.id,
         status: "working",
         currentModelId: modelId,
         permissionMode: expectedPermissionMode,
@@ -3263,7 +3301,7 @@ function Shell() {
         modelId,
       });
       const seed = `开始「${project.name}」项目，请先根据项目配置确认目标、约束和下一步。`;
-      beginAgentTurn({ sessionId, promptText: buildProjectPrompt(project, seed), displayText: seed, allowBackgroundSession: true });
+      beginAgentTurn({ sessionId, promptText: seed, displayText: seed, allowBackgroundSession: true });
     } catch (e) {
       if (startedSessionId && !sessionsStore.getState().independent.some(entry => entry.sessionId === startedSessionId)) {
         if (startedSessionCwd) await discardUnstartedTask(startedSessionId, startedSessionCwd);
@@ -3330,13 +3368,13 @@ function Shell() {
         sessionId,
         title,
         cwd,
+        projectId,
         status: "working",
         currentModelId: modelId,
         permissionMode: options.expectedPermissionMode,
       });
 
-      const prompt = buildProjectPrompt(project, message);
-      beginAgentTurn({ sessionId, promptText: prompt, displayText: message, attachments, allowBackgroundSession: true });
+      beginAgentTurn({ sessionId, promptText: message, displayText: message, attachments, allowBackgroundSession: true });
       return sessionId;
     } catch (e) {
       if (startedSessionId && !sessionsStore.getState().independent.some(entry => entry.sessionId === startedSessionId)) {

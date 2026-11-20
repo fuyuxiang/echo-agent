@@ -917,14 +917,12 @@ impl SessionActor {
         };
         if mcp_server_configs.is_empty() && !has_acp {
             let mut mcp_state = self.mcp_state.lock().await;
-            if mcp_state.generation() == generation {
-                mcp_state.finish_init();
-            } else {
-                mcp_state.cancel_init();
+            if !mcp_state.finish_init_for_generation(generation) {
                 self.events
                     .emit(echo_agent_session_events::Event::McpInitCancelled {
                         reason: MCP_INIT_CANCELLED_CONFIG_CHANGED.to_string(),
                     });
+                return;
             }
             drop(mcp_state);
             self.register_shared_client_tools().await;
@@ -963,6 +961,9 @@ impl SessionActor {
         };
         {
             let mut mcp_state = self.mcp_state.lock().await;
+            if mcp_state.generation() != generation {
+                return;
+            }
             let names: Vec<String> = configs_to_start
                 .iter()
                 .map(|c| mcp_server_name(c).to_string())
@@ -989,14 +990,12 @@ impl SessionActor {
         }
         if configs_to_start.is_empty() && acp_pending_names.is_empty() {
             let mut mcp_state = self.mcp_state.lock().await;
-            if mcp_state.generation() == generation {
-                mcp_state.finish_init();
-            } else {
-                mcp_state.cancel_init();
+            if !mcp_state.finish_init_for_generation(generation) {
                 self.events
                     .emit(echo_agent_session_events::Event::McpInitCancelled {
                         reason: MCP_INIT_CANCELLED_CONFIG_CHANGED.to_string(),
                     });
+                return;
             }
             drop(mcp_state);
             self.register_shared_client_tools().await;
@@ -1095,7 +1094,6 @@ impl SessionActor {
         {
             let mut mcp_state = self.mcp_state.lock().await;
             if mcp_state.generation() != generation {
-                mcp_state.cancel_init();
                 self.events
                     .emit(echo_agent_session_events::Event::McpInitCancelled {
                         reason: MCP_INIT_CANCELLED_CONFIG_CHANGED.to_string(),
@@ -1117,7 +1115,7 @@ impl SessionActor {
                 }
                 mcp_state.mark_server_ready(name);
             }
-            mcp_state.finish_init();
+            mcp_state.finish_init_for_generation(generation);
         }
         let shared_clients_for_bg: Vec<(
             String,
@@ -1168,7 +1166,13 @@ impl SessionActor {
         let init_total_bg = init_total;
         tokio::task::spawn_local(async move {
             let handshake_start = std::time::Instant::now();
-            let dispatcher_event_tx = mcp_state_bg.lock().await.client_event_tx();
+            let dispatcher_event_tx = {
+                let state = mcp_state_bg.lock().await;
+                if state.generation() != generation {
+                    return;
+                }
+                state.client_event_tx()
+            };
             use futures::stream::StreamExt;
             let mut futs = futures::stream::FuturesUnordered::new();
             for client in mcp_clients.iter() {
@@ -1240,6 +1244,9 @@ impl SessionActor {
             }
             let mut handle_results = Vec::with_capacity(futs.len());
             while let Some(result) = futs.next().await {
+                if mcp_state_bg.lock().await.generation() != generation {
+                    return;
+                }
                 handle_results.push(result);
                 if let Ok(params) = serde_json::value::to_raw_value(&serde_json::json!({
                     "total": init_total_bg,

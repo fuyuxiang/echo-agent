@@ -74,7 +74,7 @@ vi.mock("@/lib/agent-client", async (original) => ({
   agentListAllSessions: vi.fn(async () => []), agentListWorkspaces: vi.fn(async () => []),
   agentsValidateReferences: vi.fn(async () => {}),
   agentPrepareTaskWorkspace: vi.fn(async () => "/workspace/Tasks/project-task"),
-  agentLoadSession: vi.fn(), agentNewSession: vi.fn(async () => "project-session"),
+  agentLoadSession: vi.fn(), agentRecoverSession: vi.fn(), agentNewSession: vi.fn(async () => "project-session"),
   agentSendNow: vi.fn(() => new Promise<void>(() => {})), agentSend: vi.fn(async () => {}), agentSetModel: vi.fn(async () => {}),
   projectsSave: vi.fn(async () => {}),
   internalReload: vi.fn(async () => {}), subscribeAgentEvents: vi.fn(),
@@ -126,6 +126,7 @@ beforeEach(() => {
   vi.mocked(client.providersList).mockResolvedValue({ providers: [], models: [{ modelId: "model-a", name: "模型 A", providerId: "p" }, { modelId: "model-b", name: "模型 B", providerId: "p" }] } as never);
   vi.mocked(client.agentSendNow).mockImplementation(() => new Promise<void>(() => {}));
   vi.mocked(client.agentLoadSession).mockResolvedValue("model-a");
+  vi.mocked(client.agentRecoverSession).mockImplementation(async (id, cwd) => ({ modelId: await client.agentLoadSession(id, cwd) }));
   vi.mocked(client.agentListAllSessions).mockResolvedValue([]);
   vi.mocked(client.subscribeAgentEvents).mockImplementation(async (value) => { handlers = value; return () => {}; });
   vi.mocked(listen).mockImplementation(async () => () => {});
@@ -174,6 +175,31 @@ describe("自动化会话模型同步", () => {
     act(() => handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "r", status: "stopped", sessionId: "auto-1", cwd: "/workspace" }));
     expect(useSessionsStore.getState().independent[0].status).toBe("working");
     act(() => handlers.onAutomationUpdate?.({ phase: "finished", automationId: "a", automationName: "每日任务", recordId: "r-next", status: "stopped", sessionId: "auto-1", cwd: "/workspace" }));
+    expect(useSessionsStore.getState().independent[0].status).toBe("stopped");
+  });
+
+  it("同一运行可启动恢复汇总，汇总结束后保留原任务的中断状态", async () => {
+    await start();
+    const run = { automationId: "a", automationName: "每日任务", recordId: "same-run", sessionId: "auto-1", cwd: "/workspace" };
+    const original = "original-prompt";
+    const recovery = "automation-recovery-prompt";
+    act(() => {
+      handlers.onAutomationUpdate?.({ ...run, phase: "sessionCreated", promptId: original, status: "running" });
+      handlers.onAutomationUpdate?.({ ...run, phase: "finished", promptId: original, status: "interrupted", runtimeInterrupted: true });
+    });
+    expect(useSessionsStore.getState().independent[0].status).toBe("stopped");
+    act(() => {
+      handlers.onAutomationUpdate?.({ ...run, phase: "sessionCreated", promptId: recovery, status: "running" });
+      handlers.onAutomationUpdate?.({ ...run, phase: "finished", promptId: original, status: "interrupted", runtimeInterrupted: true });
+    });
+    expect(useSessionsStore.getState().independent[0].status).toBe("working");
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "报表已生成，待提交" }, _meta: { promptId: recovery } });
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: recovery, stopReason: "end_turn", recoverySummary: true });
+    });
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    expect(transcript.streamingMessageId).toBeNull();
+    expect(transcript.messages.find(message => message.promptId === recovery)?.parts).toContainEqual({ kind: "text", text: "报表已生成，待提交" });
     expect(useSessionsStore.getState().independent[0].status).toBe("stopped");
   });
 
@@ -859,6 +885,20 @@ describe("自动化会话模型同步", () => {
     expect(client.agentSend).not.toHaveBeenCalled();
   });
 
+  it("运行时接回未产生首条输出的任务，旧目录状态不会结束该轮", async () => {
+    saveRecoverySessionId("auto-1");
+    vi.mocked(invoke).mockImplementation(async command => command === "desktop_recovery_status"
+      ? { phase: "restored" } : command === "notification_take_pending_opens" ? [] : null);
+    vi.mocked(client.agentListAllSessions).mockResolvedValue([
+      { sessionId: "auto-1", cwd: "/workspace", title: "原任务", status: "stopped", currentModelId: "model-a" },
+    ]);
+    vi.mocked(client.agentRecoverSession).mockResolvedValueOnce({ modelId: "model-a", activePromptId: "native-live" });
+    render(<App />);
+    await waitFor(() => expect(useSessionStore.getState().streaming).toBe(true));
+    expect(useSessionStore.getState().messages.find(message => message.promptId === "native-live")?.complete).toBe(false);
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
   it("恢复首次回放中途失败后，重试重新加载完整历史而不保留半份缓存", async () => {
     saveRecoverySessionId("auto-1");
     vi.mocked(invoke).mockImplementation(async command => command === "desktop_recovery_status"
@@ -1207,7 +1247,7 @@ describe("自动化会话模型同步", () => {
     fireEvent.click(screen.getByText("打开项目页"));
     fireEvent.click(await screen.findByRole("button", { name: "执行项目任务" }));
 
-    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/workspace", "model-a", undefined, "ask"));
+    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/workspace", "model-a", undefined, "ask", undefined, "project-1"));
     await waitFor(() => expect(client.agentSend).toHaveBeenCalledWith(
       "project-session",
       expect.stringContaining("执行项目任务"),
@@ -1260,7 +1300,7 @@ describe("队列发送与原生接收确认", () => {
     }] });
   }
 
-  it.each(["normal", "queued", "background", "replace"])("移入项目的下一次实际派发带原会话的约定：%s", async (route) => {
+  it.each(["normal", "queued", "background", "replace"])("移入项目后将原消息交给宿主附加当前项目约定：%s", async (route) => {
     await start();
     created("model-a");
     if (route !== "background") {
@@ -1283,7 +1323,7 @@ describe("队列发送与原生接收确认", () => {
     await waitFor(() => expect(send).toHaveBeenCalledOnce());
     const [sessionId, prompt, , displayText, promptId] = vi.mocked(send).mock.calls[0];
     expect({ sessionId, displayText }).toEqual({ sessionId: "auto-1", displayText: "继续解释" });
-    expect(prompt.match(/PROJECT_CONTRACT/g)).toHaveLength(1);
+    expect(prompt).toBe("继续解释");
     expect(promptId).toBeTruthy();
     expect(client.agentsValidateReferences).toHaveBeenCalledWith("/workspace", []);
     expect(useProjectsStore.getState().projects[0].conversations[0].pendingProjectContext).toBe(false);
@@ -1304,7 +1344,7 @@ describe("队列发送与原生接收确认", () => {
     expect(release).toBeDefined();
     act(() => useProjectsStore.getState().updateConversationTitle("project-1", "auto-1", "新的标题"));
     await act(async () => release());
-    expect(client.agentSend).toHaveBeenCalledWith("auto-1", expect.stringContaining("PROJECT_CONTRACT"), [], "保持续发", expect.any(String));
+    expect(client.agentSend).toHaveBeenCalledWith("auto-1", "保持续发", [], "保持续发", expect.any(String));
   });
 
   it("立即发送校验期间原回复结束时，保留顺序并明确暂停后续消息", async () => {
@@ -1336,10 +1376,10 @@ describe("队列发送与原生接收确认", () => {
     const first = within(screen.getAllByRole("listitem")[0]);
     fireEvent.click(first.getByRole("button", { name: "恢复" }));
     fireEvent.click(first.getByRole("button", { name: "立即发送" }));
-    await waitFor(() => expect(client.agentSend).toHaveBeenCalledWith("auto-1", expect.stringContaining("PROJECT_CONTRACT"), [], "第一条", expect.any(String)));
+    await waitFor(() => expect(client.agentSend).toHaveBeenCalledWith("auto-1", "第一条", [], "第一条", expect.any(String)));
   });
 
-  it("空白项目会话原生拒绝后，重发仍带项目约定", async () => {
+  it("空白项目会话原生拒绝后，重发仍核验项目并提交原消息", async () => {
     vi.mocked(client.agentSend).mockRejectedValueOnce(new Error("暂时无法接收"));
     await start();
     created("model-a");
@@ -1353,7 +1393,8 @@ describe("队列发送与原生接收确认", () => {
     await waitFor(() => expect(useProjectsStore.getState().projects[0].conversations[0].pendingProjectContext).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "追问" }));
     await waitFor(() => expect(client.agentSend).toHaveBeenCalledTimes(2));
-    expect(vi.mocked(client.agentSend).mock.calls[1][1]).toContain("PROJECT_CONTRACT");
+    expect(vi.mocked(client.agentSend).mock.calls[1][1]).toBe("继续解释");
+    expect(client.agentsValidateReferences).toHaveBeenCalledTimes(2);
   });
 
   it("项目引用验证失败时后台队列仍保留且不会派发", async () => {

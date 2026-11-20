@@ -6,6 +6,8 @@
 mod desktop_tray;
 #[path = "../../src-tauri/src/desktop_tray_model.rs"]
 mod desktop_tray_model;
+#[path = "../../src-tauri/src/desktop_window.rs"]
+mod desktop_window;
 fn show_main_window(_: &tauri::AppHandle) {}
 fn request_graceful_exit(_: tauri::AppHandle) {}
 extern crate self as echo_agent_tools;

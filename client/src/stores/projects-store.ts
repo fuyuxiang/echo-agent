@@ -246,7 +246,7 @@ function saveLocal(list: ProjectMeta[]) {
   }
 }
 
-function persist(list: ProjectMeta[]): Promise<void> {
+function persist(list: ProjectMeta[], detachedSessionId?: string): Promise<void> {
   saveLocal(list);
   try { window.localStorage.setItem(DIRTY_KEY, "1"); } catch { /* cache unavailable */ }
   const revision = ++persistRevision;
@@ -254,7 +254,7 @@ function persist(list: ProjectMeta[]): Promise<void> {
   // Serialize snapshots so a slower old write can never overwrite a newer one.
   persistChain = persistChain
     .catch(() => {})
-    .then(() => projectsSave(list));
+    .then(() => detachedSessionId ? projectsSave(list, detachedSessionId) : projectsSave(list));
   void persistChain.then(() => {
     if (revision !== persistRevision) return;
     try { window.localStorage.removeItem(DIRTY_KEY); } catch { /* cache unavailable */ }
@@ -345,12 +345,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     set({ projects: next });
     persist(next);
   };
-  const commitMembership = async (next: ProjectMeta[]): Promise<void> => {
+  const commitMembership = async (next: ProjectMeta[], detachedSessionId?: string): Promise<void> => {
     next = next.map(project => ({ ...project, schemaVersion: 3, tasks: unifyProjectTasks(project.tasks, project.conversations) }));
     const previous = get().projects;
     set({ projects: next });
     try {
-      await persist(next);
+      await persist(next, detachedSessionId);
     } catch (error) {
       // A later edit may already contain this move. Only roll back the exact
       // snapshot we submitted; otherwise keep the dirty cache for retry.
@@ -626,7 +626,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           tasks,
         };
       });
-      await commitMembership(next);
+      await commitMembership(next, sessionId);
     },
     setProjectContextPending: (id, sessionId, pending) => {
       const project = get().projects.find((item) => item.id === id);

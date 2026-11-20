@@ -360,6 +360,7 @@ impl echo_agent_tool_runtime::Tool for ApplyPatchTool {
                         content: content.clone(),
                         previous_content: None,
                         is_new_file: true,
+                        is_deleted: false,
                     });
 
                     file_results.push(ApplyPatchFileResult {
@@ -387,6 +388,7 @@ impl echo_agent_tool_runtime::Tool for ApplyPatchTool {
                         content: String::new(),
                         previous_content: Some(original_content.clone()),
                         is_new_file: false,
+                        is_deleted: true,
                     });
 
                     file_results.push(ApplyPatchFileResult {
@@ -418,6 +420,7 @@ impl echo_agent_tool_runtime::Tool for ApplyPatchTool {
                         content: new_content.clone(),
                         previous_content: Some(original_content.clone()),
                         is_new_file: false,
+                        is_deleted: false,
                     });
 
                     file_results.push(ApplyPatchFileResult {
@@ -445,13 +448,6 @@ impl echo_agent_tool_runtime::Tool for ApplyPatchTool {
                                 e.to_string(),
                             )
                         })?;
-                    fs.delete_file(source_path).await.map_err(|e| {
-                        echo_agent_tool_runtime::ToolError::execution(
-                            echo_agent_tool_protocol::ToolId::new("apply_patch").expect("valid"),
-                            e.to_string(),
-                        )
-                    })?;
-
                     // Notify destination (new file at new location).
                     notification_handle.send_file_written(FileWritten {
                         tool_call_id: tool_call_id.clone(),
@@ -459,7 +455,14 @@ impl echo_agent_tool_runtime::Tool for ApplyPatchTool {
                         content: new_content.clone(),
                         previous_content: None,
                         is_new_file: true,
+                        is_deleted: false,
                     });
+                    fs.delete_file(source_path).await.map_err(|e| {
+                        echo_agent_tool_runtime::ToolError::execution(
+                            echo_agent_tool_protocol::ToolId::new("apply_patch").expect("valid"),
+                            e.to_string(),
+                        )
+                    })?;
                     // Notify source (deleted).
                     notification_handle.send_file_written(FileWritten {
                         tool_call_id: tool_call_id.clone(),
@@ -467,6 +470,7 @@ impl echo_agent_tool_runtime::Tool for ApplyPatchTool {
                         content: String::new(),
                         previous_content: Some(original_content.clone()),
                         is_new_file: false,
+                        is_deleted: true,
                     });
 
                     file_results.push(ApplyPatchFileResult {

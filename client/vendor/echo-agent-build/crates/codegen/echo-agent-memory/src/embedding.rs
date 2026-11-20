@@ -26,8 +26,10 @@ impl std::fmt::Display for MemoryPolicyError {
 }
 impl std::error::Error for MemoryPolicyError {}
 
+/// Check a contiguous slice of the request. The offset binds each text to
+/// its original candidate even when the provider splits or retries a batch.
 pub type MemoryRequestPermit =
-    std::sync::Arc<dyn Fn(&[&str]) -> Result<(), MemoryPolicyError> + Send + Sync>;
+    std::sync::Arc<dyn Fn(usize, &[&str]) -> Result<(), MemoryPolicyError> + Send + Sync>;
 
 /// Maximum retry attempts for transient API errors (429, 5xx).
 const MAX_RETRIES: usize = 3;
@@ -62,7 +64,7 @@ pub trait EmbeddingProvider: Send + Sync {
         texts: &[&str],
         permit: MemoryRequestPermit,
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
-        permit(texts)?;
+        permit(0, texts)?;
         self.embed_batch(texts).await
     }
 
@@ -292,11 +294,11 @@ impl EmbeddingProvider for ApiEmbeddingProvider {
         let previous = self.request_permit.clone();
         let provider = self
             .clone()
-            .with_request_permit(std::sync::Arc::new(move |texts| {
+            .with_request_permit(std::sync::Arc::new(move |offset, texts| {
                 if let Some(previous) = &previous {
-                    previous(texts)?;
+                    previous(offset, texts)?;
                 }
-                permit(texts)
+                permit(offset, texts)
             }));
         provider.embed_batch(texts).await
     }
@@ -312,7 +314,8 @@ impl EmbeddingProvider for ApiEmbeddingProvider {
         let mut all_embeddings = Vec::with_capacity(texts.len());
 
         // Process in batches to respect API payload limits
-        for batch in texts.chunks(self.max_batch_size) {
+        for (index, batch) in texts.chunks(self.max_batch_size).enumerate() {
+            let offset = index * self.max_batch_size;
             let input: Vec<&str> = batch.to_vec();
             let body_json = self.request_body(input);
 
@@ -331,7 +334,7 @@ impl EmbeddingProvider for ApiEmbeddingProvider {
                 }
 
                 if let Some(permit) = &self.request_permit {
-                    permit(batch)?;
+                    permit(offset, batch)?;
                 }
                 let request = echo_agent_http::shared_client()
                     .post(self.endpoint_url())
@@ -354,7 +357,7 @@ impl EmbeddingProvider for ApiEmbeddingProvider {
                         echo_agent_auth::retry_middleware::RequestPermit(std::sync::Arc::new(
                             move || {
                                 let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-                                permit(&refs).is_ok()
+                                permit(offset, &refs).is_ok()
                             },
                         )),
                     )
@@ -364,6 +367,9 @@ impl EmbeddingProvider for ApiEmbeddingProvider {
                 } {
                     Ok(r) => r,
                     Err(e) => {
+                        if let Some(permit) = &self.request_permit {
+                            permit(offset, batch)?;
+                        }
                         last_err = format!("request failed: {e}");
                         continue;
                     }
@@ -556,7 +562,7 @@ mod tests {
                     write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
                 }
             });
-            let permit: MemoryRequestPermit = Arc::new(move |_| {
+            let permit: MemoryRequestPermit = Arc::new(move |_, _| {
                 if allowed.load(Ordering::Acquire) {
                     Ok(())
                 } else {

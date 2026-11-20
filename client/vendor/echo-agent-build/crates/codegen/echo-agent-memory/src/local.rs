@@ -112,13 +112,15 @@ impl LocalEmbeddingProvider {
         query: bool,
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
         if let Some(permit) = &self.permit {
-            permit(texts)?;
+            permit(0, texts)?;
         }
         #[cfg(feature = "local-inference")]
         {
-            let result = inference::run(texts, None, query, self.permit.clone()).await?;
+            let result = inference::run(texts, None, query, self.permit.clone())
+                .await
+                .map_err(|error| -> Box<dyn std::error::Error> { error })?;
             if let Some(permit) = &self.permit {
-                permit(texts)?;
+                permit(0, texts)?;
             }
             Ok(result)
         }
@@ -152,11 +154,11 @@ impl super::embedding::EmbeddingProvider for LocalEmbeddingProvider {
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
         let previous = self.permit.clone();
         self.clone()
-            .with_request_permit(Arc::new(move |texts| {
+            .with_request_permit(Arc::new(move |offset, texts| {
                 if let Some(previous) = &previous {
-                    previous(texts)?;
+                    previous(offset, texts)?;
                 }
-                permit(texts)
+                permit(offset, texts)
             }))
             .embed_batch(texts)
             .await
@@ -179,7 +181,9 @@ pub async fn rerank(
 ) -> Result<Vec<f64>, String> {
     #[cfg(feature = "local-inference")]
     {
-        let values = inference::run(documents, Some(query), true, permit).await?;
+        let values = inference::run(documents, Some(query), true, permit)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(values
             .into_iter()
             .map(|value| sigmoid(value[0] as f64))
@@ -425,7 +429,7 @@ mod inference {
         query: Option<&str>,
         foreground: bool,
         permit: Option<super::super::embedding::MemoryRequestPermit>,
-    ) -> Result<Vec<Vec<f32>>, String> {
+    ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -448,7 +452,9 @@ mod inference {
             .collect::<Vec<_>>();
         let query = query.map(str::to_owned);
         let mut all = Vec::with_capacity(texts.len());
-        for batch in texts.chunks(if foreground { 4 } else { 2 }) {
+        let batch_size = if foreground { 4 } else { 2 };
+        for (index, batch) in texts.chunks(batch_size).enumerate() {
+            let offset = index * batch_size;
             if !foreground {
                 while FOREGROUND.load(Ordering::Acquire) > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -470,8 +476,7 @@ mod inference {
             let values = tokio::task::spawn_blocking(move || {
                 let _owned = owned;
                 if let Some(permit) = &permit {
-                    permit(&batch.iter().map(String::as_str).collect::<Vec<_>>())
-                        .map_err(|e| e.to_string())?;
+                    permit(offset, &batch.iter().map(String::as_str).collect::<Vec<_>>())?;
                 }
                 let tokenizers = tokenizers(&root)?;
                 let embedding_tokens = tokenizers.embedding;
@@ -608,7 +613,7 @@ mod inference {
                 if result.iter().flatten().any(|v| !v.is_finite()) {
                     return Err("invalid local inference output".into());
                 }
-                Ok::<_, String>(result)
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(result)
             })
             .await
             .map_err(|e| e.to_string())??;
@@ -639,9 +644,38 @@ mod tests {
             "北京地区出差住宿报销上限为每晚五百元，超标部分须另行审批。",
             "公司每周五下午组织羽毛球活动，自愿参加。",
         ];
+        let temp = tempfile::tempdir().unwrap();
+        let storage = crate::MemoryStorage::with_paths(
+            temp.path().join("global"),
+            temp.path().join("workspace"),
+        );
+        let paths = (0..documents.len())
+            .map(|idx| temp.path().join(format!("memory-{idx}.md")))
+            .collect();
+        let permit = storage.request_permit_for_paths(paths);
         let started = std::time::Instant::now();
-        let embeddings = provider.embed_batch(&documents).await.unwrap();
+        let embeddings = provider
+            .embed_batch_with_policy(&documents, permit.clone())
+            .await
+            .unwrap();
         let document_ms = started.elapsed().as_millis();
+        let denied = provider
+            .embed_batch_with_policy(
+                &documents[..3],
+                Arc::new(|offset, _| {
+                    if offset == 2 {
+                        Err(crate::embedding::MemoryPolicyError::ContentVetoed)
+                    } else {
+                        Ok(())
+                    }
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denied.downcast_ref(),
+            Some(&crate::embedding::MemoryPolicyError::ContentVetoed)
+        );
         assert!(embeddings.iter().all(|vector| vector.len() == DIMENSIONS
             && (vector.iter().map(|v| v * v).sum::<f32>() - 1.0).abs() < 0.001));
         let cases = [
@@ -679,7 +713,7 @@ mod tests {
                 "embedding miss: {query}, {order:?}"
             );
             let started = std::time::Instant::now();
-            let scores = rerank(query, &documents, None).await.unwrap();
+            let scores = rerank(query, &documents, Some(permit.clone())).await.unwrap();
             let rank_ms = started.elapsed().as_millis();
             let best = (0..scores.len())
                 .max_by(|a, b| scores[*a].total_cmp(&scores[*b]))

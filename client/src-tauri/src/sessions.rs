@@ -39,6 +39,8 @@ pub struct SessionSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
     pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_git_repo: Option<bool>,
     /// Pinned-to-top flag (EchoAgent-only state, NOT a EchoAgent field).
@@ -340,6 +342,7 @@ fn to_session_summary(
         is_git_repo,
         pinned: None,
         archived: None,
+        project_id: None,
         session_kind: summary
             .session_kind
             .map(|value| bounded_text(value, MAX_MODEL_ID_CHARS)),
@@ -386,6 +389,19 @@ fn apply_metadata_and_sort(out: &mut Vec<SessionSummary>, include_archived: bool
     // Summary has no such fields and would clobber any we tried to add).
     let state = crate::meta::read_state();
     apply_metadata_from_state(out, include_archived, &state);
+    match crate::projects::session_project_ids(
+        &state,
+        out.iter().map(|entry| entry.session_id.as_str()),
+    ) {
+        Ok(project_ids) => {
+            for entry in out {
+                entry.project_id = project_ids.get(&entry.session_id).cloned();
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not load project membership for session catalog")
+        }
+    }
 }
 
 fn apply_metadata_from_state(
@@ -1013,6 +1029,7 @@ mod tests {
             title: id.into(),
             updated_at: None,
             cwd: "/tmp".into(),
+            project_id: None,
             is_git_repo: None,
             pinned: None,
             archived: None,

@@ -1422,12 +1422,25 @@ async fn ensure_binding_forks_conv_branch_off_base_and_is_idempotent() {
             .await
             .unwrap()
     );
-    assert_eq!(Some(main_sha.clone()), res.head_sha);
+    let fork_sha = git_cli(&work, &["rev-parse", "HEAD"]).await.unwrap();
+    assert_eq!(Some(fork_sha), res.head_sha);
+    assert_eq!(main_sha, git_cli(&work, &["rev-parse", "HEAD^"]).await.unwrap());
+    assert_eq!(
+        git_cli(&work, &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
+            .await
+            .unwrap(),
+        ".gitignore"
+    );
+    assert_eq!(
+        std::fs::read_to_string(work.join(".gitignore")).unwrap(),
+        echo_agent_workspace_types::binding::DEFAULT_GITIGNORE
+    );
     std::fs::write(work.join("f.txt"), "x").unwrap();
     git_cli(&work, &["add", "-A"]).await.unwrap();
     git_cli(&work, &["commit", "-m", "conv work"])
         .await
         .unwrap();
+    let conv_sha = git_cli(&work, &["rev-parse", "HEAD"]).await.unwrap();
     assert_eq!(
         main_sha,
         git_cli(&work, &["rev-parse", "main"]).await.unwrap()
@@ -1435,6 +1448,7 @@ async fn ensure_binding_forks_conv_branch_off_base_and_is_idempotent() {
     git_cli(&work, &["checkout", "main"]).await.unwrap();
     let again = ensure_binding(&work, "conv/new", "main").await.unwrap();
     assert!(!again.created);
+    assert_eq!(Some(conv_sha), again.head_sha);
     assert_eq!(
         "conv/new",
         git_cli(&work, &["rev-parse", "--abbrev-ref", "HEAD"])

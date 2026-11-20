@@ -33,9 +33,13 @@ pub use fs::{AsyncFileSystem, AsyncFsWrapper, FsError, bytes_to_string};
 
 mod local_fs;
 pub use local_fs::LocalFs;
+pub use local_fs::{RewindFileRestore, read_rewind_file, restore_rewind_file};
 
 mod mock_fs;
 pub use mock_fs::MockFs;
+
+mod mutation;
+pub use mutation::{WorkspaceMutationLease, acquire_workspace_mutation, try_workspace_mutation};
 
 mod file_tree;
 pub use file_tree::{ListContentsLimits, list_contents, list_contents_multi};

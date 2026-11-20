@@ -62,6 +62,79 @@ fn record_tool_span_outcome(
     span.record("tool_result_size_bytes", result_size);
     success
 }
+/// Execute read-only work in bounded runs, with mutating and unknown calls as barriers.
+async fn dispatch_approved<F: std::future::Future>(
+    dispatch_futures: Vec<(bool, F)>,
+    dispatch_tx: tokio::sync::mpsc::UnboundedSender<F::Output>,
+) {
+    const MAX_PARALLEL_TOOLS: usize = 4;
+    let mut active = futures::stream::FuturesUnordered::new();
+    for (parallel, dispatch) in dispatch_futures {
+        if parallel {
+            if active.len() == MAX_PARALLEL_TOOLS
+                && let Some(item) = active.next().await
+                && dispatch_tx.send(item).is_err()
+            {
+                return;
+            }
+            active.push(dispatch);
+        } else {
+            while let Some(item) = active.next().await {
+                if dispatch_tx.send(item).is_err() {
+                    return;
+                }
+            }
+            if dispatch_tx.send(dispatch.await).is_err() {
+                return;
+            }
+        }
+    }
+    while let Some(item) = active.next().await {
+        if dispatch_tx.send(item).is_err() {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn dispatch_respects_the_read_limit_and_mutation_barrier() {
+    use std::cell::Cell;
+    let active = Cell::new(0);
+    let maximum = Cell::new(0);
+    let mutation_finished = Cell::new(false);
+    let futures = (0..9)
+        .map(|index| {
+            let (active, maximum, mutation_finished) = (&active, &maximum, &mutation_finished);
+            let mutates = index == 6;
+            (!mutates, async move {
+                if mutates {
+                    assert_eq!(active.get(), 0);
+                }
+                if index > 6 {
+                    assert!(mutation_finished.get());
+                }
+                active.set(active.get() + 1);
+                maximum.set(maximum.get().max(active.get()));
+                tokio::task::yield_now().await;
+                active.set(active.get() - 1);
+                if mutates {
+                    mutation_finished.set(true);
+                }
+                index
+            })
+        })
+        .collect();
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+    dispatch_approved(futures, send).await;
+    let mut completed = Vec::new();
+    while let Some(index) = receive.recv().await {
+        completed.push(index);
+    }
+    assert_eq!(maximum.get(), 4);
+    assert_eq!(completed.len(), 9);
+    assert_eq!(completed[6], 6);
+}
 /// Blocking wait tools that should abort when a mid-turn interjection is pending.
 fn is_interruptible_wait_tool(tool_name: &str, args: &serde_json::Value) -> bool {
     match tool_name {
@@ -615,24 +688,6 @@ impl SessionActor {
         if approved.iter().any(|p| p.tool_name == "search_tool") {
             self.retry_auth_required_servers().await;
         }
-        let write_paths: std::collections::HashSet<String> = approved
-            .iter()
-            .filter(|prepared| !prepared.is_read_only)
-            .filter_map(|prepared| lock_path_for_args(&prepared.parsed_args).map(str::to_owned))
-            .collect();
-        let file_locks = {
-            let mut map: std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>> =
-                std::collections::HashMap::new();
-            for prepared in &approved {
-                if let Some(fp) = lock_path_for_args(&prepared.parsed_args)
-                    && write_paths.contains(fp)
-                {
-                    map.entry(fp.to_owned())
-                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())));
-                }
-            }
-            map
-        };
         let shared_recovery = Arc::new(tokio::sync::OnceCell::<bool>::const_new());
         let workspace_ops = self.workspace_ops.clone();
         let pending_interjections = self.pending_interjections.clone();
@@ -684,10 +739,10 @@ impl SessionActor {
                 let blocking_wait_depth = self.tool_context.blocking_wait_depth.clone();
                 let interruptible =
                     is_interruptible_wait_tool(&prepared.tool_name, &prepared.parsed_args);
-                let lock = lock_path_for_args(&prepared.parsed_args)
-                    .and_then(|fp| file_locks.get(fp).cloned());
+                let parallel = interruptible || self.parallel_tool(&prepared);
+                let mutation_path = self.tool_mutation_path(&prepared, desktop_bridge.is_some());
                 let tools_execute_span = tracing::Span::current();
-                async move {
+                let dispatch = async move {
                     let exec_start = std::time::Instant::now();
                     let tool_span = tool_execution_span(
                         &tools_execute_span,
@@ -702,12 +757,21 @@ impl SessionActor {
                         let desktop_bridge = desktop_bridge.clone();
                         let workspace_ops = workspace_ops.clone();
                         let session_id = session_id.clone();
-                        let lock = lock.clone();
+                        let mutation_path = mutation_path.clone();
                         async move {
-                            let _guard = if let Some(ref l) = lock {
-                                Some(l.lock().await)
-                            } else {
-                                None
+                            let _lease = match mutation_path.as_deref() {
+                                Some(path) => Some(
+                                    echo_agent_workspace::file_system::acquire_workspace_mutation(
+                                        path,
+                                    )
+                                    .await
+                                    .map_err(|error| {
+                                        echo_agent_tool_runtime::ToolError::invalid_arguments(
+                                            format!("Cannot coordinate workspace write: {error}"),
+                                        )
+                                    })?,
+                                ),
+                                None => None,
                             };
                             dispatch_tool(
                                 &workspace_ops,
@@ -763,14 +827,11 @@ impl SessionActor {
                         })),
                     );
                     (idx, result, duration_ms)
-                }
+                };
+                (parallel, dispatch)
             })
             .collect();
         tokio::task::yield_now().await;
-        let mut dispatch_stream = futures::stream::FuturesUnordered::new();
-        for fut in dispatch_futures {
-            dispatch_stream.push(fut);
-        }
         let mut approved_slots: Vec<Option<PreparedToolCall>> =
             approved.into_iter().map(Some).collect();
         let (dispatch_tx, mut dispatch_rx) = tokio::sync::mpsc::unbounded_channel::<(
@@ -778,16 +839,8 @@ impl SessionActor {
             Result<ToolRunResult, echo_agent_tool_runtime::ToolError>,
             u64,
         )>();
-        let drainer = tokio::spawn(
-            async move {
-                while let Some(item) = dispatch_stream.next().await {
-                    if dispatch_tx.send(item).is_err() {
-                        break;
-                    }
-                }
-            }
-            .in_current_span(),
-        );
+        let drainer =
+            tokio::spawn(dispatch_approved(dispatch_futures, dispatch_tx).in_current_span());
         let _drainer_guard = crate::util::AbortOnDrop(drainer);
         while let Some((idx, result, duration_ms)) = dispatch_rx.recv().await {
             let prepared = approved_slots[idx]
@@ -1014,6 +1067,54 @@ impl SessionActor {
             }
         }
         Ok(())
+    }
+
+    /// Classify the effective tool after parsing, hooks and approval.
+    /// Unknown adapters and tools with possibly mutable state form a barrier.
+    fn parallel_tool(&self, prepared: &PreparedToolCall) -> bool {
+        use echo_agent_tools::types::tool::ToolKind;
+        let name = prepared
+            .dispatch_target_name
+            .as_deref()
+            .unwrap_or(&prepared.tool_name);
+        prepared.is_read_only
+            && !name.contains("__")
+            && matches!(
+                self.tool_bridge_handle().tool_kind(name),
+                Some(
+                    ToolKind::Read
+                        | ToolKind::Search
+                        | ToolKind::ListDir
+                        | ToolKind::MemorySearch
+                        | ToolKind::MemoryGet
+                        | ToolKind::WebSearch
+                        | ToolKind::WebFetch
+                )
+            )
+    }
+
+    fn tool_mutation_path(
+        &self,
+        prepared: &PreparedToolCall,
+        editor_coordinated: bool,
+    ) -> Option<std::path::PathBuf> {
+        use echo_agent_tools::types::tool::ToolKind;
+        let root = self.tool_context.fs.root();
+        let name = prepared
+            .dispatch_target_name
+            .as_deref()
+            .unwrap_or(&prepared.tool_name);
+        match self.tool_bridge_handle().tool_kind(name) {
+            // Editor-coordinated file tools acquire their lease at the native
+            // write boundary, including when modifying unsaved buffers.
+            Some(ToolKind::Edit | ToolKind::Write) if !editor_coordinated => Some(
+                lock_path_for_args(&prepared.parsed_args)
+                    .map(|path| root.join(path))
+                    .unwrap_or_else(|| root.to_owned()),
+            ),
+            Some(ToolKind::Execute | ToolKind::Move | ToolKind::Delete) => Some(root.to_owned()),
+            _ => None,
+        }
     }
     /// `use_tool` is the existing stable MCP entry point. In coordinated
     /// runs it may target native-registered MCP tools or an authenticated
@@ -1346,17 +1447,27 @@ impl SessionActor {
         // UseTool checks the same policy again at the actual dispatch boundary.
         let bounded_mcp = if let ToolInput::UseTool(input) = &tool_input {
             self.tool_bridge_handle()
-                .read_resource::<echo_agent_tools::types::resources::Params<echo_agent_tools::implementations::use_tool::UseToolParams>>()
+                .read_resource::<echo_agent_tools::types::resources::Params<
+                    echo_agent_tools::implementations::use_tool::UseToolParams,
+                >>()
                 .await
-                .and_then(|params| params.0.allowed_tool_names.map(|names| names.contains(&input.tool_name)))
+                .and_then(|params| {
+                    params
+                        .0
+                        .allowed_tool_names
+                        .map(|names| names.contains(&input.tool_name))
+                })
         } else {
             None
         };
         if bounded_mcp == Some(false) {
             let target = tool_input.dispatch_target_name().unwrap_or_default();
-            self.handle_tool_not_executed(&call.id, &tool_call_id,
+            self.handle_tool_not_executed(
+                &call.id,
+                &tool_call_id,
                 format!("Integration tool '{target}' is not permitted in this read-only session"),
-            ).await?;
+            )
+            .await?;
             return Ok(Err(ToolLoop::Continue));
         }
         let access_kind = AccessKind::from(&tool_input);

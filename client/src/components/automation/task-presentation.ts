@@ -60,6 +60,8 @@ export function runStatusLabel(run: AutomationRunRecord): string {
   if (run.stopRequested && runBusy(run)) return "正在停止";
   if (run.waitingReason && runBusy(run)) return run.waitingReason;
   if (run.needsAttention && runBusy(run)) return "待确认";
+  if (run.recoverySummaryStatus === "completed") return "运行中断 · 已汇总";
+  if (run.recoverySummaryStatus === "failed") return "运行中断 · 汇总失败";
   return (
     (
       {
@@ -67,7 +69,7 @@ export function runStatusLabel(run: AutomationRunRecord): string {
         running: "运行中",
         success: "已完成",
         failed: "失败",
-        interrupted: "已人工接管",
+        interrupted: run.runtimeInterrupted ? "已中断" : "已人工接管",
         stopped: "已停止",
       } as Record<string, string>
     )[run.status] ?? run.status

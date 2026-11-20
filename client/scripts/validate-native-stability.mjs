@@ -54,6 +54,10 @@ try {
   assert.equal(child.exitCode, 73, "The original host must actually fail during injection");
   const boots = rows.filter(row => row.value.document);
   const expected = process.platform === "win32" ? 6 : 5;
+  if (process.platform === "win32") {
+    assert.equal(rows.filter(row => row.value.windowGeometryRepaired === true).length, 1,
+      "A zero-size native window must be repaired in place");
+  }
   assert.equal(boots.length, expected);
   assert.equal(new Set(boots.map(row => row.value.document)).size, expected, "Recovery must create a new document");
   assert.equal(new Set(boots.slice(0,-2).map(row => row.pid)).size, 1, "Renderer recovery must retain the healthy native host");

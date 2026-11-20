@@ -486,6 +486,12 @@ export const MessageItem = memo(function MessageItem({
               {part.text}
             </Markdown>
           ))}
+          {!!message.memorySources?.length && (
+            <details className="knowledge-trace">
+              <summary>本轮参考了 {message.memorySources.length} 处记忆来源</summary>
+              <ul>{message.memorySources.map(source => <li key={source}><code>{source}</code></li>)}</ul>
+            </details>
+          )}
           {generatingAnswer && !generatingInProcess && (
             <div className="msg-progress-row msg__writing" role="status"><span aria-hidden="true" />正在生成回复</div>
           )}

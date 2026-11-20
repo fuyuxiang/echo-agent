@@ -362,14 +362,15 @@ pub fn has_claude_compat(cwd: &Path) -> bool {
 /// for conflicts as documented below).
 /// `defaultMode` uses scope precedence: the most specific file that sets it wins.
 pub fn find_claude_settings_paths(cwd: &Path) -> Vec<PathBuf> {
-    let mut paths = global_claude_settings_paths();
+    find_claude_settings_paths_with_home(cwd, echo_agent_config::discovery_home_dir())
+}
 
-    // Project paths (higher priority — closer to cwd wins)
-    // Walk from cwd up to find .claude directories
-    let project_paths = collect_project_claude_paths(cwd);
-    // Prepend project paths (so they come first, higher priority)
-    paths.splice(0..0, project_paths);
-
+pub(super) fn find_claude_settings_paths_with_home(
+    cwd: &Path,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut paths = collect_project_claude_paths(cwd);
+    paths.extend(global_claude_settings_paths_from(home));
     paths
 }
 

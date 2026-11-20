@@ -372,7 +372,7 @@ impl MemoryBackendImpl {
         if self.embed_chunks_on_search {
             self.storage.request_permit()
         } else {
-            std::sync::Arc::new(|_| Ok(()))
+            std::sync::Arc::new(|_, _| Ok(()))
         }
     }
 

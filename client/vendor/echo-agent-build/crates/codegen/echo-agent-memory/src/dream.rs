@@ -5,11 +5,164 @@
 //! construction, response processing, and lock lifecycle management
 //! for the dream consolidation pass.
 
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::SystemTime;
 
 use super::dream_lock::DreamLock;
 use echo_agent_config_types::MemoryDreamConfig;
+
+const DREAM_REVISION_FILE: &str = "dream-revision.json";
+const MAX_RESTORABLE_DREAM_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DreamRevision {
+    version: String,
+    at: i64,
+    backup: Option<String>,
+    previous: Option<String>,
+    current: String,
+}
+
+fn read_regular(path: &Path, limit: u64) -> io::Result<String> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(io::Error::other("invalid memory revision file"));
+    }
+    let path = dunce::canonicalize(path)?;
+    let file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("invalid memory revision file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(io::Error::other("memory revision file exceeds limit"));
+    }
+    String::from_utf8(bytes).map_err(io::Error::other)
+}
+
+fn record_revision(
+    storage: &super::storage::MemoryStorage,
+    backup: Option<&Path>,
+    current: &str,
+) -> io::Result<()> {
+    let previous = backup
+        .map(|path| read_regular(path, MAX_RESTORABLE_DREAM_BYTES))
+        .transpose()?
+        .map(|content| blake3::hash(content.as_bytes()).to_hex().to_string());
+    let backup = backup
+        .map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+                .ok_or_else(|| io::Error::other("invalid memory backup name"))
+        })
+        .transpose()?;
+    let now = chrono::Utc::now();
+    let current = blake3::hash(current.as_bytes()).to_hex().to_string();
+    let first_revision = format!("first:{now:?}:{current}");
+    let revision = DreamRevision {
+        version: blake3::hash(backup.as_deref().unwrap_or(&first_revision).as_bytes())
+            .to_hex()
+            .to_string(),
+        at: now.timestamp(),
+        backup,
+        previous,
+        current,
+    };
+    let mut temporary = tempfile::NamedTempFile::new_in(storage.workspace_dir())?;
+    temporary.write_all(&serde_json::to_vec(&revision).map_err(io::Error::other)?)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(storage.workspace_dir().join(DREAM_REVISION_FILE))?;
+    Ok(())
+}
+
+fn restorable_revision(
+    storage: &super::storage::MemoryStorage,
+) -> io::Result<Option<(DreamRevision, Option<String>)>> {
+    if storage.is_ephemeral() || storage.workspace_dir() == storage.global_dir() {
+        return Ok(None);
+    }
+    let revision: DreamRevision =
+        match read_regular(&storage.workspace_dir().join(DREAM_REVISION_FILE), 4096) {
+            Ok(json) => serde_json::from_str(&json).map_err(io::Error::other)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+    let current = read_regular(&storage.workspace_memory_file(), MAX_RESTORABLE_DREAM_BYTES)?;
+    if revision.previous.as_deref() == Some(revision.current.as_str())
+        || revision.current != blake3::hash(current.as_bytes()).to_hex().as_str()
+    {
+        return Ok(None);
+    }
+    let previous = match (&revision.backup, &revision.previous) {
+        (None, None) => None,
+        (Some(backup), Some(digest)) => {
+            let history = storage.workspace_dir().join(".history");
+            if !std::fs::symlink_metadata(&history).is_ok_and(|entry| entry.is_dir())
+                || !backup.starts_with("MEMORY-")
+                || !backup.ends_with(".md")
+                || Path::new(backup).file_name().and_then(|name| name.to_str())
+                    != Some(backup.as_str())
+                || revision.version != blake3::hash(backup.as_bytes()).to_hex().as_str()
+            {
+                return Ok(None);
+            }
+            let previous = read_regular(&history.join(backup), MAX_RESTORABLE_DREAM_BYTES)?;
+            if digest.as_str() != blake3::hash(previous.as_bytes()).to_hex().as_str()
+                || !super::records::permitted(storage, &previous)?
+            {
+                return Ok(None);
+            }
+            Some(previous)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some((revision, previous)))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DreamUndoVersion {
+    pub version: String,
+    pub at: i64,
+}
+
+pub fn latest_undo_version(
+    storage: &super::storage::MemoryStorage,
+) -> io::Result<Option<DreamUndoVersion>> {
+    Ok(
+        restorable_revision(storage)?.map(|(revision, _)| DreamUndoVersion {
+            version: revision.version,
+            at: revision.at,
+        }),
+    )
+}
+
+/// Returns whether the workspace memory file was removed.
+pub fn undo_latest_consolidation(
+    storage: &super::storage::MemoryStorage,
+    version: &str,
+) -> io::Result<bool> {
+    let _guard = super::storage::memory_mutation_lock()
+        .lock()
+        .map_err(|_| io::Error::other("memory write lock is poisoned"))?;
+    let (_, previous) = restorable_revision(storage)?
+        .filter(|(revision, _)| revision.version == version)
+        .ok_or_else(|| {
+            io::Error::other("memory changed or its prior version can no longer be restored")
+        })?;
+    if let Some(previous) = &previous {
+        storage.write_long_term(super::storage::MemoryScope::Workspace, previous)?;
+    } else {
+        std::fs::remove_file(storage.workspace_memory_file())?;
+    }
+    if let Err(error) = std::fs::remove_file(storage.workspace_dir().join(DREAM_REVISION_FILE)) {
+        tracing::warn!(target: LOG, %error, "restored memory but the now-stale revision could not be removed");
+    }
+    Ok(previous.is_none())
+}
 
 /// Result of the dream gate check.
 #[derive(Debug, PartialEq, Eq)]
@@ -537,7 +690,15 @@ pub fn execute_dream_with_expected(
                 }
             }
         }
-        storage.write_long_term(super::storage::MemoryScope::Workspace, &content)
+        let backup = storage
+            .write_long_term_with_backup(super::storage::MemoryScope::Workspace, &content)?;
+        if !storage.is_ephemeral()
+            && let Err(error) = record_revision(storage, backup.as_deref(), &content)
+        {
+            let _ = std::fs::remove_file(storage.workspace_dir().join(DREAM_REVISION_FILE));
+            tracing::warn!(target: LOG, %error, "DREAM_EXECUTE: consolidation written but undo version unavailable");
+        }
+        Ok::<_, io::Error>(())
     })();
     if let Err(e) = write_result {
         let _ = lock.rollback(prior);
@@ -965,6 +1126,63 @@ mod tests {
         let p = tmp.path().join("empty-sessions");
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn consolidation_undo_requires_the_persisted_version_and_preserves_newer_edits() {
+        let tmp = TempDir::new().unwrap();
+        let (storage, workspace) = test_storage(&tmp);
+        let scope = super::super::storage::MemoryScope::Workspace;
+        let original = "## Preferences\n\nOriginal version";
+        let consolidated = "## Preferences\n\nConsolidated version";
+        storage.write_long_term(scope, original).unwrap();
+        let lock = DreamLock::new(&workspace);
+        let result = execute_dream(
+            &lock,
+            &storage,
+            consolidated,
+            0,
+            900,
+            &empty_sessions_dir(&tmp),
+            &[],
+        );
+        assert!(matches!(result.status, DreamStatus::Completed { .. }));
+        let saved = latest_undo_version(&storage).unwrap().unwrap();
+        assert!(undo_latest_consolidation(&storage, "stale").is_err());
+        fs::write(storage.workspace_memory_file(), "new user edit").unwrap();
+        assert!(latest_undo_version(&storage).unwrap().is_none());
+        assert!(undo_latest_consolidation(&storage, &saved.version).is_err());
+        assert_eq!(
+            fs::read_to_string(storage.workspace_memory_file()).unwrap(),
+            "new user edit"
+        );
+        fs::write(storage.workspace_memory_file(), consolidated).unwrap();
+        undo_latest_consolidation(&storage, &saved.version).unwrap();
+        assert_eq!(
+            fs::read_to_string(storage.workspace_memory_file()).unwrap(),
+            original
+        );
+        assert!(latest_undo_version(&storage).unwrap().is_none());
+    }
+
+    #[test]
+    fn first_consolidation_can_be_undone_to_no_workspace_memory() {
+        let tmp = TempDir::new().unwrap();
+        let (storage, workspace) = test_storage(&tmp);
+        let result = execute_dream(
+            &DreamLock::new(&workspace),
+            &storage,
+            "## Preferences\n\nA first memory",
+            0,
+            900,
+            &empty_sessions_dir(&tmp),
+            &[],
+        );
+        assert!(matches!(result.status, DreamStatus::Completed { .. }));
+        let saved = latest_undo_version(&storage).unwrap().unwrap();
+        assert!(undo_latest_consolidation(&storage, &saved.version).unwrap());
+        assert!(!storage.workspace_memory_file().exists());
+        assert!(latest_undo_version(&storage).unwrap().is_none());
     }
 
     #[test]

@@ -282,59 +282,29 @@ fn integration_claude_settings_file_to_permission_config() {
 /// - settings.local.json before settings.json within each directory
 #[test]
 fn discovery_priority_order() {
-    let tmp = tempfile::tempdir().unwrap();
-    let cwd = tmp.path();
-
-    // Create .claude dir at cwd
-    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
-
-    let paths = find_claude_settings_paths(cwd);
-
-    // Find indices of key files
-    let local_idx = paths
-        .iter()
-        .position(|p| p.ends_with(".claude/settings.local.json"));
-    let base_idx = paths.iter().position(|p| {
-        p.ends_with(".claude/settings.json") && !p.to_string_lossy().contains("settings.local")
-    });
-
-    // Local should come before base (within project)
-    if let (Some(li), Some(bi)) = (local_idx, base_idx) {
-        assert!(li < bi, "settings.local.json should precede settings.json");
-    }
-
-    // Project paths should be at the front (before global)
-    let project_local = cwd.join(".claude/settings.local.json");
-    if let Some(idx) = paths.iter().position(|p| p == &project_local) {
-        // Ensure global paths (if any) come after project
-        for (i, p) in paths.iter().enumerate() {
-            if p.to_string_lossy().contains("/.claude/") && i < idx {
-                // This is a project path before our project_local, which is fine
-            }
-        }
-    }
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let paths = find_claude_settings_paths_with_home(project.path(), Some(home.path().into()));
+    assert_eq!(
+        paths,
+        [
+            project.path().join(".claude/settings.local.json"),
+            project.path().join(".claude/settings.json"),
+            home.path().join(".claude/settings.local.json"),
+            home.path().join(".claude/settings.json"),
+        ]
+    );
 }
 
 /// Test: when no .claude/settings.json exists anywhere, find returns paths
 /// but load returns None for each.
 #[test]
 fn discovery_with_no_settings_files() {
-    let tmp = tempfile::tempdir().unwrap();
-    let cwd = tmp.path();
-
-    let paths = find_claude_settings_paths(cwd);
-    // Should return candidate paths
-    assert!(!paths.is_empty(), "should return candidate paths");
-
-    // None should actually load
-    let loaded: Vec<_> = paths
-        .iter()
-        .filter_map(|p| load_claude_settings(p))
-        .collect();
-    assert!(
-        loaded.is_empty(),
-        "no settings files exist, none should load"
-    );
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let paths = find_claude_settings_paths_with_home(project.path(), Some(home.path().into()));
+    assert_eq!(paths.len(), 4);
+    assert!(paths.iter().all(|path| load_claude_settings(path).is_none()));
 }
 
 #[test]

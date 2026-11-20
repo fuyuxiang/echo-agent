@@ -11,7 +11,7 @@
 use super::{ExtResult, parse_params, to_raw_response};
 use crate::agent::MvpAgent;
 use crate::session::handle::SessionHandle;
-use crate::session::{RewindMode, RewindRequest, SessionCommand};
+use crate::session::{RewindFileGuard, RewindMode, RewindRequest, SessionCommand};
 use agent_client_protocol as acp;
 use serde::Deserialize;
 use tokio::sync::oneshot;
@@ -36,6 +36,8 @@ struct RewindSessionRequest {
     force: bool,
     #[serde(default)]
     mode: Option<RewindMode>,
+    #[serde(default, alias = "fileGuard")]
+    file_guard: Option<RewindFileGuard>,
 }
 impl RewindSessionRequest {
     fn prompt_index_for_local(&self) -> Result<usize, acp::Error> {
@@ -77,6 +79,7 @@ async fn handle_execute(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
                 target_prompt_index,
                 force: request.force,
                 mode: request.mode.unwrap_or(RewindMode::All),
+                file_guard: request.file_guard,
             },
             respond_to: tx,
         })

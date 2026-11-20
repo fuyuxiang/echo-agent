@@ -222,6 +222,9 @@ pub struct FileSnapshot {
     pub path: FlexiblePath,
     /// The content of the file at the time of snapshot (None if file didn't exist)
     pub content: Option<String>,
+    /// True only when a successful tool write supplied this exact, continuous postimage.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tool_verified: bool,
     /// When this snapshot was taken
     pub captured_at: DateTime<Utc>,
 }
@@ -232,6 +235,7 @@ impl FileSnapshot {
         Self {
             path: FlexiblePath::Relative(path),
             content,
+            tool_verified: false,
             captured_at: Utc::now(),
         }
     }
@@ -241,6 +245,7 @@ impl FileSnapshot {
         Self {
             path,
             content,
+            tool_verified: false,
             captured_at: Utc::now(),
         }
     }
@@ -263,6 +268,7 @@ impl FileSnapshot {
         FileSnapshot {
             path: self.path.try_to_relative(root),
             content: self.content.clone(),
+            tool_verified: self.tool_verified,
             captured_at: self.captured_at,
         }
     }
@@ -623,7 +629,12 @@ impl FileStateTracker {
         let paths_to_capture: Vec<FlexiblePath> = {
             let points = self.rewind_points.lock().await;
             if let Some(point) = points.get(&prompt_index) {
-                point.file_snapshots.keys().cloned().collect()
+                point
+                    .file_snapshots
+                    .keys()
+                    .filter(|path| !point.after_snapshots.contains_key(*path))
+                    .cloned()
+                    .collect()
             } else {
                 vec![]
             }
@@ -769,6 +780,35 @@ impl FileStateTracker {
             .entry(prompt_index)
             .or_insert_with(|| RewindPoint::new(prompt_index));
         point.add_snapshot(snapshot);
+    }
+
+    pub async fn record_tool_write(
+        &self,
+        prompt_index: usize,
+        path: &Path,
+        cwd: &Path,
+        before: Option<String>,
+        after: Option<String>,
+    ) {
+        let Ok(relative) = RelPathBuf::from_absolute(cwd, path) else {
+            return;
+        };
+        let key = FlexiblePath::Relative(relative.clone());
+        let mut points = self.rewind_points.lock().await;
+        let point = points
+            .entry(prompt_index)
+            .or_insert_with(|| RewindPoint::new(prompt_index));
+        let continuous = match point.after_snapshots.get(&key) {
+            Some(previous) => previous.tool_verified && previous.content == before,
+            None => point
+                .file_snapshots
+                .get(&key)
+                .is_none_or(|previous| previous.content == before),
+        };
+        point.add_snapshot(FileSnapshot::new(relative.clone(), before));
+        let mut after = FileSnapshot::new(relative, after);
+        after.tool_verified = continuous;
+        point.set_after_snapshot(after);
     }
 
     /// Get all rewind points (materializes the deferred historical set).
@@ -1093,6 +1133,49 @@ mod tests {
         let point = tracker.get_rewind_point(0).await;
         assert!(point.is_some());
         assert_eq!(point.unwrap().prompt_index, 0);
+    }
+
+    #[tokio::test]
+    async fn tool_postimages_survive_end_of_turn_and_preserve_discontinuities() {
+        let cwd = PathBuf::from("/test");
+        let fs = AsyncFsWrapper::new(Arc::new(MockFs::new(cwd.clone())));
+        let tracker = FileStateTracker::new();
+        let path = cwd.join("report.txt");
+        let deleted = cwd.join("removed.txt");
+        tracker.begin_prompt(0).await;
+        tracker
+            .record_tool_write(0, &path, &cwd, None, Some("agent edit".into()))
+            .await;
+        tracker
+            .record_tool_write(0, &deleted, &cwd, Some("original".into()), None)
+            .await;
+        tracker.end_prompt(&fs, 0).await;
+        let point = tracker.get_rewind_point(0).await.unwrap();
+        let saved: RewindPoint =
+            serde_json::from_slice(&serde_json::to_vec(&point).unwrap()).unwrap();
+        let key = FlexiblePath::Relative(RelPathBuf::from_absolute(&cwd, &path).unwrap());
+        let deleted_key =
+            FlexiblePath::Relative(RelPathBuf::from_absolute(&cwd, &deleted).unwrap());
+        assert_eq!(
+            saved.after_snapshots[&key].content.as_deref(),
+            Some("agent edit")
+        );
+        assert!(saved.after_snapshots[&key].tool_verified);
+        assert_eq!(saved.after_snapshots[&deleted_key].content, None);
+        assert!(saved.after_snapshots[&deleted_key].tool_verified);
+
+        tracker
+            .record_tool_write(
+                0,
+                &path,
+                &cwd,
+                Some("user edit".into()),
+                Some("second agent edit".into()),
+            )
+            .await;
+        let point = tracker.get_rewind_point(0).await.unwrap();
+        assert_eq!(point.file_snapshots[&key].content, None);
+        assert!(!point.after_snapshots[&key].tool_verified);
     }
 
     #[tokio::test]

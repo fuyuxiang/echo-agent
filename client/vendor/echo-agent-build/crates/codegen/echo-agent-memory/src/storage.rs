@@ -245,14 +245,21 @@ impl MemoryStorage {
         paths: Vec<(PathBuf, echo_agent_config_types::MemoryIndexConfig)>,
     ) -> crate::embedding::MemoryRequestPermit {
         let storage = self.clone();
-        std::sync::Arc::new(move |texts| {
+        std::sync::Arc::new(move |offset, texts| {
             let rules = storage.recall_rules()?;
-            if (paths.is_empty() && texts.iter().all(|text| rules.permits(text)))
-                || (paths.len() == texts.len()
-                    && paths.iter().zip(texts).all(|((path, config), text)| {
-                        rules.permits_candidate_with_config(path, text, config)
-                    }))
-            {
+            let permitted = if paths.is_empty() {
+                texts.iter().all(|text| rules.permits(text))
+            } else {
+                paths
+                    .get(offset..)
+                    .and_then(|tail| tail.get(..texts.len()))
+                    .is_some_and(|batch| {
+                        batch.iter().zip(texts).all(|((path, config), text)| {
+                            rules.permits_candidate_with_config(path, text, config)
+                        })
+                    })
+            };
+            if permitted {
                 Ok(())
             } else {
                 Err(crate::embedding::MemoryPolicyError::ContentVetoed)
@@ -481,9 +488,17 @@ impl MemoryStorage {
     ///
     /// Creates parent directories as needed. Overwrites any existing content.
     pub fn write_long_term(&self, scope: MemoryScope, content: &str) -> std::io::Result<()> {
+        self.write_long_term_with_backup(scope, content).map(|_| ())
+    }
+
+    pub(crate) fn write_long_term_with_backup(
+        &self,
+        scope: MemoryScope,
+        content: &str,
+    ) -> std::io::Result<Option<PathBuf>> {
         if self.ephemeral && scope == MemoryScope::Workspace {
             tracing::debug!("MEMORY_EPHEMERAL_SKIP: workspace long-term write skipped");
-            return Ok(());
+            return Ok(None);
         }
 
         let path = match scope {
@@ -497,10 +512,10 @@ impl MemoryStorage {
             }
         };
 
-        atomic_write_with_history(&path, content.as_bytes())?;
+        let backup = atomic_write_returning_backup(&path, content.as_bytes())?;
         tracing::debug!(path = %path.display(), scope = ?scope, "wrote long-term memory");
 
-        Ok(())
+        Ok(backup)
     }
 
     /// Append content to the `MEMORY.md` for the given scope.
@@ -827,6 +842,10 @@ fn is_empty_workspace(dir: &Path) -> bool {
 /// The history copy is made before replacement, and the temporary file lives
 /// beside the destination so persistence never crosses filesystem boundaries.
 pub(crate) fn atomic_write_with_history(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    atomic_write_returning_backup(path, content).map(|_| ())
+}
+
+fn atomic_write_returning_backup(path: &Path, content: &[u8]) -> std::io::Result<Option<PathBuf>> {
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(std::io::Error::new(
@@ -846,9 +865,12 @@ pub(crate) fn atomic_write_with_history(path: &Path, content: &[u8]) -> std::io:
     })?;
     std::fs::create_dir_all(parent)?;
 
-    if path.exists() {
+    let backup = if path.exists() {
         let history_dir = parent.join(".history");
         std::fs::create_dir_all(&history_dir)?;
+        if !std::fs::symlink_metadata(&history_dir)?.is_dir() {
+            return Err(std::io::Error::other("invalid memory history directory"));
+        }
         let stem = path
             .file_stem()
             .and_then(|value| value.to_str())
@@ -856,13 +878,20 @@ pub(crate) fn atomic_write_with_history(path: &Path, content: &[u8]) -> std::io:
         let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.9fZ");
         let history_path = history_dir.join(format!("{stem}-{stamp}-{}.md", std::process::id()));
         let mut source = std::fs::File::open(path)?;
-        let mut history = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&history_path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut history = options.open(&history_path)?;
         std::io::copy(&mut source, &mut history)?;
         history.sync_all()?;
-    }
+        Some(history_path)
+    } else {
+        None
+    };
 
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(content)?;
@@ -871,7 +900,7 @@ pub(crate) fn atomic_write_with_history(path: &Path, content: &[u8]) -> std::io:
     if let Ok(directory) = std::fs::File::open(parent) {
         let _ = directory.sync_all();
     }
-    Ok(())
+    Ok(backup)
 }
 
 /// Normalize both existing and just-deleted watcher paths. Canonicalizing the
@@ -1147,6 +1176,26 @@ pub fn slugify(input: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_request_keeps_the_source_of_identical_texts() {
+        use crate::embedding::MemoryPolicyError;
+        let temp = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(temp.path().join("global"), temp.path().join("workspace"));
+        let paths = ["first.md", "second.md", "2026-11-19-summary-12345678.md"]
+            .map(|name| temp.path().join(name));
+        let permit = storage.request_permit_for_paths(paths.to_vec());
+        let texts = ["same excerpt", "second excerpt", "same excerpt"];
+        assert_eq!(permit(0, &texts[..2]), Ok(()));
+        assert_eq!(permit(2, &texts[2..]), Ok(()));
+        assert_eq!(permit(3, &texts[2..]), Err(MemoryPolicyError::ContentVetoed));
+
+        crate::records::forget_source(&storage, "12345678-private-source").unwrap();
+        assert_eq!(permit(0, &texts[..2]), Ok(()));
+        assert_eq!(permit(2, &texts[2..]), Err(MemoryPolicyError::ContentVetoed));
+    }
+
     #[test]
     fn session_source_matching_is_exact_through_history_and_archive() {
         let first = "01a1b736-b69b-7f72-9e6f-d29a21ad9f8a";

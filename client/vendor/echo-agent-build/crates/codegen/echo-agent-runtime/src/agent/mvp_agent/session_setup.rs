@@ -138,6 +138,7 @@ struct ReplayRouting<'a> {
     persist_data: Option<&'a serde_json::Value>,
     target_client_id: Option<&'a serde_json::Value>,
     cursor: Option<&'a str>,
+    desktop_catchup: bool,
 }
 /// The trusted workspace a session will run in.
 struct SessionWorkspace {
@@ -880,7 +881,7 @@ impl MvpAgent {
                 folder_trust::project_scope_allowed(cwd.as_path()),
             ))
         };
-        let (initial_total_tokens, unfinished_subagents) = self
+        let (initial_total_tokens, unfinished_subagents, desktop_cursor_rejected) = self
             .replay_transcript_gate(
                 &session_id,
                 &cwd,
@@ -889,6 +890,11 @@ impl MvpAgent {
                     persist_data: persist_data.as_ref(),
                     target_client_id: target_client_id.as_ref(),
                     cursor: cursor.as_deref(),
+                    desktop_catchup: request_meta
+                        .as_ref()
+                        .and_then(|meta| meta.get("desktopCatchup"))
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true),
                 },
                 no_replay,
             )
@@ -907,8 +913,9 @@ impl MvpAgent {
             .map(|s| s.to_string())
             .or_else(|| summary.prompt_display_cwd.clone());
         let mcp_lifecycle = self.mcp_session_lifecycle.read().await;
-        let (initial_client_mcp_servers, mcp_servers) =
-            self.resolve_mcp_servers(client_mcp_servers, cwd.as_path()).await;
+        let (initial_client_mcp_servers, mcp_servers) = self
+            .resolve_mcp_servers(client_mcp_servers, cwd.as_path())
+            .await;
         let restored_from_disk = if !self.is_resident(&session_id) {
             tracing::info!(
                 session_id = %session_id.0,
@@ -1025,10 +1032,23 @@ impl MvpAgent {
             .await;
         self.restore_persisted_model(&session_id, &summary, initial_reasoning_effort)
             .await;
-        let (model_state, response_meta) = self
+        let (model_state, mut response_meta) = self
             .build_attach_response_meta(&session_id, &summary, persist_data, code_restore_info)
             .await;
-        echo_agent_telemetry::unified_log::info("session loaded", Some(session_id.0.as_ref()), None);
+        echo_agent_telemetry::unified_log::info(
+            "session loaded",
+            Some(session_id.0.as_ref()),
+            None,
+        );
+        if let Some(running_prompt_id) = self
+            .resident_handle(&session_id)
+            .and_then(|handle| handle.current_prompt_id.lock().ok()?.clone())
+        {
+            response_meta["echo.agent/runningPromptId"] = serde_json::json!(running_prompt_id);
+        }
+        if desktop_cursor_rejected {
+            response_meta["echo.agent/desktopCursorRejected"] = serde_json::json!(true);
+        }
         let response = acp::LoadSessionResponse::new()
             .models(Some(model_state))
             .meta(response_meta.as_object().cloned());
@@ -1077,7 +1097,9 @@ impl MvpAgent {
     ) -> Option<serde_json::Value> {
         let registry_client_for_restore = self.session_registry_client();
         if restore_code_requested && registry_client_for_restore.is_none() {
-            echo_agent_workspace::session::git::warn_registry_disabled_restore(session_id.0.as_ref());
+            echo_agent_workspace::session::git::warn_registry_disabled_restore(
+                session_id.0.as_ref(),
+            );
         }
         let restore_checkout_allowed =
             echo_agent_workspace::session::git::restore_code_checkout_allowed(
@@ -1145,14 +1167,19 @@ impl MvpAgent {
         updates_file_path: &Option<PathBuf>,
         routing: ReplayRouting<'_>,
         no_replay: bool,
-    ) -> Result<(u64, Vec<(String, String)>), acp::Error> {
+    ) -> Result<(u64, Vec<(String, String)>, bool), acp::Error> {
         let session_id = session_id.clone();
         let cwd = cwd.clone();
         let updates_file_path = updates_file_path.clone();
         let persist_data = routing.persist_data.cloned();
         let target_client_id = routing.target_client_id.cloned();
         let cursor = routing.cursor.map(str::to_string);
-        let (initial_total_tokens, delta_completions, unfinished_subagents) = if no_replay {
+        let (
+            initial_total_tokens,
+            delta_completions,
+            unfinished_subagents,
+            desktop_cursor_rejected,
+        ) = if no_replay {
             tracing::info!(
                 session_id = %session_id.0,
                 "Skipping session replay (session/resume, or a noReplay load)"
@@ -1161,9 +1188,10 @@ impl MvpAgent {
                 Self::extract_initial_tokens_from_updates(&updates_file_path),
                 Vec::new(),
                 Vec::new(),
+                false,
             )
         } else {
-            let (tokens, replay_end_offset, unfinished_subagents) = self
+            let (tokens, replay_end_offset, unfinished_subagents, matched_cursor) = self
                 .replay_session_updates(
                     &session_id,
                     &cwd,
@@ -1171,9 +1199,12 @@ impl MvpAgent {
                     persist_data.as_ref(),
                     target_client_id.as_ref(),
                     cursor.as_deref(),
+                    routing.desktop_catchup,
                 )
                 .await?;
-            let cursor_mark_replay = cursor.is_none();
+            let desktop_cursor_rejected =
+                routing.desktop_catchup && cursor.is_some() && !matched_cursor;
+            let cursor_mark_replay = cursor.is_none() || desktop_cursor_rejected;
             let _timer = crate::instrumentation_timer!("session.delta_flush_replay");
             let completions = match self.flush_session(&session_id).await {
                 Ok(()) => self.replay_session_updates_from_offset_enqueue(
@@ -1183,6 +1214,7 @@ impl MvpAgent {
                     persist_data.as_ref(),
                     target_client_id.as_ref(),
                     cursor_mark_replay,
+                    routing.desktop_catchup,
                 ),
                 Err(reason) => {
                     tracing::warn!(
@@ -1193,7 +1225,12 @@ impl MvpAgent {
                     Vec::new()
                 }
             };
-            (tokens, completions, unfinished_subagents)
+            (
+                tokens,
+                completions,
+                unfinished_subagents,
+                desktop_cursor_rejected,
+            )
         };
         if let Some(handle) = self.resident_handle(&session_id) {
             handle
@@ -1210,7 +1247,11 @@ impl MvpAgent {
         for rx in reconcile_completions {
             let _ = rx.await;
         }
-        Ok((initial_total_tokens, unfinished_subagents))
+        Ok((
+            initial_total_tokens,
+            unfinished_subagents,
+            desktop_cursor_rejected,
+        ))
     }
     /// Reconnect phase: re-apply per-client capability and permission state
     /// to the resident handle, which still reflects the client that spawned it.
@@ -1476,15 +1517,6 @@ impl MvpAgent {
         }
         if let Some(info) = code_restore_info {
             response_meta_map.insert("codeRestore".to_string(), info);
-        }
-        if let Some(running_prompt_id) = self
-            .resident_handle(&session_id)
-            .and_then(|h| h.current_prompt_id.lock().ok().and_then(|g| g.clone()))
-        {
-            response_meta_map.insert(
-                "echo.agent/runningPromptId".to_string(),
-                serde_json::json!(running_prompt_id),
-            );
         }
         let model_state = self.model_state(Some(&session_id));
         self.insert_session_config_meta(

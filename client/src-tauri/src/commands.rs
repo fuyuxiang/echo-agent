@@ -4,7 +4,7 @@
 //! They drive the in-process EchoAgent runtime (see agent_runtime.rs) and bridge streamed
 //! events back via Tauri events (see bridge.rs).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -124,6 +124,7 @@ pub(crate) struct OrphanedSession {
     pub(crate) model_id: Option<String>,
     pub(crate) permission_mode: String,
     pub(crate) profile_key: Option<String>,
+    pub(crate) project_id: Option<String>,
 }
 
 impl AppState {
@@ -170,6 +171,7 @@ impl AppState {
         model_id: Option<&str>,
         permission_mode: &str,
         profile_key: Option<&str>,
+        project_id: Option<&str>,
     ) -> Option<String> {
         let mut orphaned = self.orphaned_sessions.lock().unwrap();
         let index = orphaned.iter().position(|candidate| {
@@ -177,6 +179,7 @@ impl AppState {
                 && candidate.model_id.as_deref() == model_id
                 && candidate.permission_mode == permission_mode
                 && candidate.profile_key.as_deref() == profile_key
+                && candidate.project_id.as_deref() == project_id
         })?;
         Some(orphaned.remove(index).session_id)
     }
@@ -191,7 +194,16 @@ impl AppState {
         session_id: &str,
         cwd: &Path,
     ) -> Result<(), String> {
-        crate::meta::bind_session_workspace(session_id, cwd)?;
+        self.record_session_workspace_with_project(session_id, cwd, None)
+    }
+
+    pub(crate) fn record_session_workspace_with_project(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        project_id: Option<&str>,
+    ) -> Result<(), String> {
+        crate::meta::bind_session_scope(session_id, cwd, project_id)?;
         self.session_workspaces
             .lock()
             .unwrap()
@@ -700,6 +712,157 @@ pub(crate) fn resolve_automation_model_id(
         .ok_or_else(|| "自动化任务没有可用的默认模型，请先在“设置 → 模型与连接”配置模型。".into())
 }
 
+pub(crate) fn automation_route<'a>(
+    catalog: &'a crate::providers::ProviderListModel,
+    primary_id: &str,
+    eligible: &HashSet<&str>,
+    input_budget: u64,
+    pinned: bool,
+    allow_fallback: bool,
+) -> Vec<(
+    &'a crate::providers::ModelEntry,
+    &'a crate::providers::ModelProviderEntry,
+)> {
+    let Some(primary) = catalog
+        .models
+        .iter()
+        .find(|model| model.model_id == primary_id)
+    else {
+        return vec![];
+    };
+    let Some(connection) = catalog
+        .providers
+        .iter()
+        .find(|provider| provider.id == primary.provider_id)
+    else {
+        return vec![];
+    };
+    let mut candidates = catalog
+        .models
+        .iter()
+        .filter_map(|model| {
+            if !eligible.contains(model.model_id.as_str()) {
+                return None;
+            }
+            let provider = catalog
+                .providers
+                .iter()
+                .find(|provider| provider.id == model.provider_id)?;
+            let primary_connection = provider.id == connection.id;
+            if provider.managed != connection.managed
+                || (!primary_connection && (!allow_fallback || connection.managed))
+                || (pinned && primary_connection && model.model_id != primary_id)
+            {
+                return None;
+            }
+            let window = model.context_window.or(provider.context_window);
+            let fits = window.map_or(model.model_id == primary_id, |window| {
+                let output = u64::from(model.max_output_tokens.unwrap_or(2_048)).min(window / 4);
+                input_budget.saturating_add(output) <= window
+            });
+            if !fits && !(pinned && model.model_id == primary_id) {
+                return None;
+            }
+            Some((model, provider))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(model, provider)| {
+        (
+            provider.id != connection.id,
+            model.model_id != primary_id,
+            std::cmp::Reverse(
+                model
+                    .context_window
+                    .or(provider.context_window)
+                    .unwrap_or_default(),
+            ),
+            model.model_id.as_str(),
+        )
+    });
+    let mut seen = HashSet::new();
+    candidates.retain(|(_, provider)| seen.insert(provider.id.as_str()));
+    // A healthy connection with an insufficient context window does not
+    // authorize routing the task to a different provider.
+    if !seen.contains(connection.id.as_str()) {
+        return vec![];
+    }
+    candidates
+}
+
+pub(crate) async fn select_automation_execution_model(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    automation: &crate::automations::Automation,
+    prompt: &str,
+) -> Result<String, String> {
+    let pinned = automation.model_id.as_deref();
+    let primary = resolve_automation_model_id(Some(app), state, pinned)?;
+    crate::policy::require_model(&primary)?;
+    if pinned.is_some() && !automation.cross_provider_fallback {
+        return Ok(primary);
+    }
+    let catalog = crate::providers::providers_list();
+    let (configured, _) = crate::providers::usable_model_ids();
+    let status = auth_status(state);
+    let eligible = configured
+        .iter()
+        .filter(|id| {
+            status.unfiltered_runtime_models.contains(id)
+                && crate::policy::require_model(id).is_ok()
+        })
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    // Conservative estimate for CJK and mixed input, plus room for ACP instructions.
+    let input_budget = prompt
+        .chars()
+        .map(|ch| if ch.is_ascii() { 1u64 } else { 3 })
+        .sum::<u64>()
+        .div_ceil(3)
+        .saturating_add(2048);
+    let route = automation_route(
+        &catalog,
+        &primary,
+        &eligible,
+        input_budget,
+        pinned.is_some(),
+        automation.cross_provider_fallback,
+    );
+    let Some((model, _)) = route.first() else {
+        return Err("当前配置中没有能容纳这项任务的模型，请选择上下文更长的模型。".into());
+    };
+    if !automation.cross_provider_fallback || route.len() == 1 {
+        return Ok(model.model_id.clone());
+    }
+    verify_automation_model_route(route).await
+}
+
+pub(crate) async fn verify_automation_model_route(
+    route: Vec<(
+        &crate::providers::ModelEntry,
+        &crate::providers::ModelProviderEntry,
+    )>,
+) -> Result<String, String> {
+    // Only a fixed, content-free connectivity prompt is sent while choosing a
+    // connection. The actual task is admitted once on one verified model.
+    for (model, provider) in route.into_iter().take(3) {
+        let probe = crate::providers::providers_test_model_connection(
+            provider.clone(),
+            model
+                .remote_model_id
+                .clone()
+                .unwrap_or_else(|| model.model_id.clone()),
+        );
+        if matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), probe).await,
+            Ok(Ok(()))
+        ) {
+            return Ok(model.model_id.clone());
+        }
+        tracing::warn!(provider_id = %provider.id, "automation model preflight did not succeed");
+    }
+    Err("候选模型连接均未通过预检。任务内容尚未发送，请检查模型与连接。".into())
+}
+
 fn validate_runtime_ready(
     status: &AuthStatus,
     requested_model: Option<&str>,
@@ -1043,6 +1206,9 @@ pub async fn agent_init(
     // once. Serializing the whole lifecycle keeps one initialization's spawn,
     // handshake and cleanup from interleaving with another's.
     let _init_guard = state.init_lock.lock().await;
+    if crate::EXIT_IN_PROGRESS.load(std::sync::atomic::Ordering::Acquire) {
+        return Err("应用正在退出，Agent 未启动".into());
+    }
     let _permission_transition_guard = crate::permission_config::permission_transition_lock()
         .lock()
         .await;
@@ -1388,9 +1554,13 @@ pub async fn agent_new_session(
     permission_mode: Option<String>,
     expected_permission_mode: Option<String>,
     expert: Option<crate::agents_store::ExpertSelection>,
+    project_id: Option<String>,
 ) -> Result<String, String> {
     crate::policy::require_feature("sessions")?;
     crate::org::enforce_skill_lease();
+    if let Some(project_id) = project_id.as_deref() {
+        crate::projects::require_local_project(project_id)?;
+    }
     let cwd = {
         let filesystem = app.state::<crate::shell_fs::FilesystemAccess>();
         authorized_session_cwd(&filesystem, &cwd)?
@@ -1441,6 +1611,7 @@ pub async fn agent_new_session(
         model_id.as_deref(),
         &permission_mode,
         profile_key.as_deref(),
+        project_id.as_deref(),
     ) {
         tracing::info!(%session_id, "adopting session created by a timed-out request");
         if crate::policy::locked_permission_mode().is_none() {
@@ -1453,6 +1624,7 @@ pub async fn agent_new_session(
                     model_id: model_id.clone(),
                     permission_mode: permission_mode.clone(),
                     profile_key: profile_key.clone(),
+                    project_id: project_id.clone(),
                 });
                 return Err(format!(
                     "无法保存当前任务的权限模式：{error}；重试不会重复创建任务"
@@ -1470,18 +1642,24 @@ pub async fn agent_new_session(
                 model_id: model_id.clone(),
                 permission_mode: permission_mode.clone(),
                 profile_key: profile_key.clone(),
+                project_id: project_id.clone(),
             });
             return Err(format!(
                 "无法保存当前任务的代理模式：{error}；重试不会重复创建任务"
             ));
         }
-        if let Err(error) = state.record_session_workspace(&session_id, Path::new(&cwd)) {
+        if let Err(error) = state.record_session_workspace_with_project(
+            &session_id,
+            Path::new(&cwd),
+            project_id.as_deref(),
+        ) {
             state.record_orphaned_session(OrphanedSession {
                 session_id: session_id.clone(),
                 cwd: cwd.clone(),
                 model_id: model_id.clone(),
                 permission_mode: permission_mode.clone(),
                 profile_key: profile_key.clone(),
+                project_id: project_id.clone(),
             });
             return Err(format!(
                 "无法保存任务工作目录：{error}；重试不会重复创建任务"
@@ -1505,6 +1683,7 @@ pub async fn agent_new_session(
 
     let creation_key = crate::session_creation::SessionCreationKey {
         cwd: cwd.clone(),
+        project_id: project_id.clone(),
         profile_key: profile_key.clone(),
         model_id: model_id.clone(),
         permission_mode: permission_mode.clone(),
@@ -1520,6 +1699,7 @@ pub async fn agent_new_session(
         let creation_id = creation.id;
         let task_profile = profile.clone();
         let task_profile_key = profile_key.clone();
+        let task_project_id = project_id.clone();
         tokio::spawn(async move {
             let result = agent_runtime::new_session_with_profile(
                 &task_tx,
@@ -1575,9 +1755,11 @@ pub async fn agent_new_session(
                     if let Err(error) = crate::meta::set_agent_mode(&session_id, "default") {
                         tracing::error!(%error, %session_id, "failed to persist orphaned task agent mode");
                     }
-                    if let Err(error) =
-                        task_state.record_session_workspace(&session_id, Path::new(&task_cwd))
-                    {
+                    if let Err(error) = task_state.record_session_workspace_with_project(
+                        &session_id,
+                        Path::new(&task_cwd),
+                        task_project_id.as_deref(),
+                    ) {
                         tracing::error!(%error, %session_id, "failed to persist orphaned task workspace");
                     }
                     task_state.record_orphaned_session(OrphanedSession {
@@ -1586,6 +1768,7 @@ pub async fn agent_new_session(
                         model_id: task_model,
                         permission_mode: task_permission_mode,
                         profile_key: task_profile_key,
+                        project_id: task_project_id,
                     });
                     let _ = task_app.emit(
                         "agent://session-reclaimed",
@@ -1638,6 +1821,7 @@ pub async fn agent_new_session(
                 model_id: model_id.clone(),
                 permission_mode: permission_mode.clone(),
                 profile_key: profile_key.clone(),
+                project_id: project_id.clone(),
             });
             return Err(format!(
                 "无法保存当前任务的权限模式：{error}；重试不会重复创建任务"
@@ -1652,18 +1836,24 @@ pub async fn agent_new_session(
             model_id: model_id.clone(),
             permission_mode: permission_mode.clone(),
             profile_key: profile_key.clone(),
+            project_id: project_id.clone(),
         });
         return Err(format!(
             "无法保存当前任务的代理模式：{error}；重试不会重复创建任务"
         ));
     }
-    if let Err(error) = state.record_session_workspace(&session_id, Path::new(&cwd)) {
+    if let Err(error) = state.record_session_workspace_with_project(
+        &session_id,
+        Path::new(&cwd),
+        project_id.as_deref(),
+    ) {
         state.record_orphaned_session(OrphanedSession {
             session_id: session_id.clone(),
             cwd: cwd.clone(),
             model_id: model_id.clone(),
             permission_mode: permission_mode.clone(),
             profile_key: profile_key.clone(),
+            project_id: project_id.clone(),
         });
         return Err(format!(
             "无法保存任务工作目录：{error}；重试不会重复创建任务"
@@ -1689,8 +1879,26 @@ pub async fn agent_load_session(
     session_id: String,
     cwd: String,
 ) -> Result<Option<String>, String> {
+    agent_recover_session(app, state, session_id, cwd, None)
+        .await
+        .map(|attachment| attachment.model_id)
+}
+
+#[tauri::command]
+pub async fn agent_recover_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    cwd: String,
+    cursor: Option<String>,
+) -> Result<agent_runtime::SessionAttachment, String> {
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
+    }
+    if cursor.as_ref().is_some_and(|cursor| {
+        cursor.is_empty() || cursor.len() > 4096 || cursor.chars().any(char::is_control)
+    }) {
+        return Err("恢复游标无效".into());
     }
     crate::org::project_session_context(&app, &session_id, "项目恢复与工作接手").await?;
     crate::automations::require_session_cleanup_complete(&session_id)?;
@@ -1716,10 +1924,15 @@ pub async fn agent_load_session(
         .unwrap()
         .clone()
         .ok_or("agent not initialized")?;
-    let current_model_id =
-        agent_runtime::load_session(&tx, &session_id, &PathBuf::from(&cwd), &permission_mode)
-            .await
-            .map_err(|e| e.to_string())?;
+    let attachment = agent_runtime::load_session_attachment(
+        &tx,
+        &session_id,
+        &PathBuf::from(&cwd),
+        &permission_mode,
+        cursor.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     crate::permission_config::mark_session_permission_mode_synced(&session_id, &permission_mode);
     let _ = app.emit(
         "agent://permission-mode",
@@ -1744,7 +1957,7 @@ pub async fn agent_load_session(
     if let Err(error) = crate::automation::restore_session(&session_id).await {
         tracing::warn!(%error, %session_id, %agent_mode, "failed to restore automation mode");
     }
-    Ok(current_model_id)
+    Ok(attachment)
 }
 
 #[tauri::command]
@@ -1936,9 +2149,11 @@ async fn agent_send_impl(
     // interactive replacement instead of silently cancelling a scheduled turn.
     let turn_lock = crate::automations::session_turn_lock(&session_id);
     let _turn_guard = if crate::automations::owns_session(&session_id) {
-        Some(turn_lock.try_lock().map_err(|_| {
+        let guard = turn_lock.try_lock().map_err(|_| {
             "此会话正在执行任务，请等待完成或先停止本次运行后再发送消息".to_string()
-        })?)
+        })?;
+        crate::automations::require_no_pending_session_recovery(&session_id)?;
+        Some(guard)
     } else {
         None
     };
@@ -2031,6 +2246,7 @@ async fn agent_send_impl(
     } else {
         text
     };
+    let project_context = crate::projects::session_prompt_context(&session_id)?;
     let mut prepared_prompt = agent_runtime::prepare_mode_prompt(
         &session_id,
         &text,
@@ -2042,6 +2258,14 @@ async fn agent_send_impl(
         document_tool_bridge,
     )
     .map_err(|error| error.to_string())?;
+    if let (Some(context), Some(agent_client_protocol::ContentBlock::Text(block))) =
+        (project_context, prepared_prompt.prompt.first_mut())
+    {
+        block.meta.get_or_insert_with(Default::default).insert(
+            echo_agent_runtime::session::helpers::host_prompt_context::PROJECT_CONTEXT_KEY.into(),
+            serde_json::json!(context),
+        );
+    }
     crate::coding_document_bridge::ensure_workspace_admission(&workspace.to_string_lossy()).await?;
     let task_admitted = crate::automation::prepare_user_prompt(
         &session_id,
@@ -2996,6 +3220,51 @@ pub fn agent_clear_session_expert(session_id: String) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn automation_route_preserves_explicit_models_and_respects_provider_boundaries() {
+        use crate::providers::{ModelEntry, ModelProviderEntry, ProviderListModel};
+        fn model(id: &str, provider: &str, context_window: u64) -> ModelEntry {
+            ModelEntry {
+                model_id: id.into(),
+                provider_id: provider.into(),
+                context_window: Some(context_window),
+                ..ModelEntry::default()
+            }
+        }
+        let catalog = ProviderListModel {
+            providers: [("first", false), ("second", false), ("org", true)]
+                .into_iter()
+                .map(|(id, managed)| ModelProviderEntry {
+                    id: id.into(),
+                    managed,
+                    ..Default::default()
+                })
+                .collect(),
+            models: vec![
+                model("small", "first", 8192),
+                model("large", "first", 65536),
+                model("backup", "second", 65536),
+                model("managed", "org", 65536),
+            ],
+        };
+        let eligible = ["small", "large", "backup", "managed"]
+            .into_iter()
+            .collect();
+        let models = |primary, budget, pinned, fallback| {
+            super::automation_route(&catalog, primary, &eligible, budget, pinned, fallback)
+                .into_iter()
+                .map(|(model, _)| model.model_id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(models("small", 4096, false, false), ["small"]);
+        assert_eq!(models("small", 24000, false, false), ["large"]);
+        assert_eq!(models("small", 24000, true, false), ["small"]);
+        assert_eq!(models("small", 24000, false, true), ["large", "backup"]);
+        assert_eq!(models("managed", 24000, true, true), ["managed"]);
+        let eligible = HashSet::from(["small", "backup"]);
+        assert!(automation_route(&catalog, "small", &eligible, 24000, false, true).is_empty());
+    }
+
     use super::*;
 
     #[test]
@@ -3528,6 +3797,7 @@ mod tests {
             model_id: Some("model-a".into()),
             permission_mode: "auto".into(),
             profile_key: None,
+            project_id: None,
         });
         // Recording the same session twice must not duplicate it.
         state.record_orphaned_session(OrphanedSession {
@@ -3536,31 +3806,32 @@ mod tests {
             model_id: Some("model-a".into()),
             permission_mode: "auto".into(),
             profile_key: None,
+            project_id: None,
         });
 
         assert_eq!(
-            state.take_orphaned_session("/other", Some("model-a"), "auto", None),
+            state.take_orphaned_session("/other", Some("model-a"), "auto", None, None),
             None
         );
         assert_eq!(
-            state.take_orphaned_session("/work", Some("model-b"), "auto", None),
+            state.take_orphaned_session("/work", Some("model-b"), "auto", None, None),
             None
         );
         assert_eq!(
-            state.take_orphaned_session("/work", None, "auto", None),
+            state.take_orphaned_session("/work", None, "auto", None, None),
             None
         );
         assert_eq!(
-            state.take_orphaned_session("/work", Some("model-a"), "ask", None),
+            state.take_orphaned_session("/work", Some("model-a"), "ask", None, None),
             None
         );
         assert_eq!(
-            state.take_orphaned_session("/work", Some("model-a"), "auto", None),
+            state.take_orphaned_session("/work", Some("model-a"), "auto", None, None),
             Some("session-1".to_string())
         );
         // Adopted once only.
         assert_eq!(
-            state.take_orphaned_session("/work", Some("model-a"), "auto", None),
+            state.take_orphaned_session("/work", Some("model-a"), "auto", None, None),
             None
         );
     }

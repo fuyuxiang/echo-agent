@@ -51,6 +51,8 @@ export interface ChatMessage {
   promptId?: string;
   /** Native execution boundary, including internal background follow-ups. */
   execution?: ExecutionTurn;
+  /** Source identities from the memory context that Runtime assembled for this turn. */
+  memorySources?: string[];
   /** False while the assistant is still streaming this message. */
   complete: boolean;
   /** Original Runtime event times for the message action bars. */
@@ -164,6 +166,8 @@ export interface SessionTranscript {
   closedPlanApprovalRequestIds?: string[];
   /** Completion identity survives removal of an empty assistant placeholder. */
   completedPromptIds?: string[];
+  /** Durable boundary usable only while this transcript projection is retained. */
+  completionCursor?: string;
   /** Public completion effects (queue/status) run once, even after durable completion. */
   handledPromptCompletionIds?: string[];
   /** An admitted background turn is waiting for its canonical user echo.
@@ -253,6 +257,7 @@ interface SessionState {
   /** Begin/end the one owned native replay; refocusing must not fence its tail. */
   beginHistoryReplay: (id: string) => void;
   finishHistoryReplay: (id: string, successful?: boolean) => void;
+  adoptRecoveredTurn: (id: string, promptId: string) => boolean;
   /** Finish only a replay-created, unterminated historical tail after
    *  agentLoadSession returns. A process exit can leave the durable log at a
    *  tool_call with no turn_completed event; that must not look live forever.
@@ -1401,6 +1406,27 @@ export const useSessionStore = create<SessionState>((set, get) => {
       get().clearReplaySuppression(id);
     },
 
+    adoptRecoveredTurn: (id, promptId) => {
+      let adopted = false;
+      applyToTranscript(id, transcript => {
+        if (transcript.control || transcript.completedPromptIds?.includes(promptId)
+          || transcript.messages.some(message => message.role === "assistant" && message.promptId === promptId && message.complete)) {
+          return transcript;
+        }
+        const active = transcript.messages.find(message => message.id === transcript.streamingMessageId);
+        if (active?.promptId && active.promptId !== promptId && !active.replayed) return transcript;
+        const stream = ensureStreamingAssistant(transcript.messages, transcript.streamingMessageId, promptId);
+        adopted = true;
+        return {
+          ...transcript,
+          streamingMessageId: stream.id,
+          messages: stream.messages.map(message => message.id === stream.id && message.replayed
+            ? { ...message, replayed: false } : message),
+        };
+      });
+      return adopted;
+    },
+
     clearReplaySuppression: (id) => {
       const target = id ?? get().sessionId;
       if (!target) return;
@@ -1554,6 +1580,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
       const eventId = typeof updateMeta?.eventId === "string" && updateMeta.eventId.length <= 4096
         ? updateMeta.eventId : undefined;
       const isReplay = updateMeta?.isReplay === true;
+      const isCatchup = isReplay && updateMeta?.desktopCatchup === true;
       const toolTimestamp = typeof updateMeta?.agentTimestampMs === "number" && Number.isFinite(updateMeta.agentTimestampMs)
         ? updateMeta.agentTimestampMs : isReplay ? undefined : Date.now();
       const toolName = toolNameFromMeta(updateMeta);
@@ -1590,7 +1617,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
             sentAt: user.sentAt ?? chunk.sentAt };
           return { ...tr, messages };
         }
-        if (isReplay && tr.suppressReplay && REPLAY_SUPPRESSED.has(t)) {
+        if (isReplay && !isCatchup && tr.suppressReplay && REPLAY_SUPPRESSED.has(t)) {
           // The cached projection already represents this replay prefix. Keep
           // its ids fenced after the load ends as well (late duplicate delivery).
           if (eventId) rememberEvent(tr, eventId);
@@ -1599,6 +1626,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
         // History is never admission of a locally pending replacement. Keep
         // its identity and spinner until Runtime accepts that exact live turn.
         if (isReplay && tr.pendingSendNowPromptId && CONTROL_SUPPRESSED.has(t)) return tr;
+        if (isCatchup && updatePromptId && tr.completedPromptIds?.includes(updatePromptId)
+          && CONTROL_SUPPRESSED.has(t) && t !== "tool_call_update") return tr;
         const activePromptId = tr.pendingSendNowPromptId
           ?? tr.messages.find(message => message.id === tr.streamingMessageId)?.promptId;
         const activeIndex = tr.messages.find(message => message.id === tr.streamingMessageId)?.promptIndex;
@@ -1863,6 +1892,24 @@ export const useSessionStore = create<SessionState>((set, get) => {
             const uu = u as unknown as UsageUpdate;
             return { ...tr, usage: { ...tr.usage, ...uu.usage } };
           }
+          case "memory_context_used": {
+            const raw = (u as { sources?: unknown }).sources;
+            if (!updatePromptId || !Array.isArray(raw)) return tr;
+            const sources = [...new Set(raw.slice(0, 24).filter((source): source is string =>
+              typeof source === "string" && source.length > 0 && source.length <= 256))];
+            if (!sources.length) return tr;
+            const index = tr.messages.findIndex(message => message.role === "assistant" && message.promptId === updatePromptId);
+            if (index < 0) {
+              if (tr.control || tr.completedPromptIds?.includes(updatePromptId)
+                || activePromptId && activePromptId !== updatePromptId) return tr;
+              const assistant = ensureStreamingAssistant(tr.messages, tr.streamingMessageId, updatePromptId, isReplay);
+              return { ...tr, streamingMessageId: assistant.id, messages: assistant.messages.map(message =>
+                message.id === assistant.id ? { ...message, memorySources: sources } : message) };
+            }
+            const messages = [...tr.messages];
+            messages[index] = { ...messages[index], memorySources: sources };
+            return { ...tr, messages };
+          }
           case "plan": {
             const uu = u as unknown as PlanUpdate;
             // ACP serializes Plan directly beside sessionUpdate, without a
@@ -1946,6 +1993,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         const previousMessage = tr.messages.find(message => message.id === tr.streamingMessageId);
         let next = applySessionUpdate(tr);
         if (next !== tr && eventId) rememberEvent(tr, eventId);
+        if (next !== tr && eventId && t === "turn_completed") next = { ...next, completionCursor: eventId };
         if (next !== tr && updatePromptId && ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk", "tool_call", "plan"].includes(t)) {
           const index = next.messages.findIndex(message => message.role === "assistant" && message.promptId === updatePromptId);
           if (index >= 0) {

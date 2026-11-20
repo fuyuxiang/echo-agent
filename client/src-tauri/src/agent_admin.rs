@@ -1039,6 +1039,8 @@ pub struct PersonalMemorySnapshot {
     quarantined_count: usize,
     auto_processing_enabled: bool,
     enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dream_undo: Option<echo_agent_memory::dream::DreamUndoVersion>,
 }
 
 #[tauri::command]
@@ -1062,6 +1064,11 @@ pub fn memory_records_get(
         })
         .unwrap_or(0);
     let config = crate::agent_config::memory_config_get()?;
+    let dream_undo = cwd.as_ref().and_then(|_| {
+        echo_agent_memory::dream::latest_undo_version(&storage)
+            .inspect_err(|error| tracing::warn!(%error, "unable to read memory undo version"))
+            .unwrap_or(None)
+    });
     Ok(PersonalMemorySnapshot {
         records,
         extraction: {
@@ -1080,7 +1087,31 @@ pub fn memory_records_get(
             .unwrap_or(0),
         auto_processing_enabled: config.auto_flush_enabled,
         enabled: config.enabled,
+        dream_undo,
     })
+}
+
+#[tauri::command]
+pub fn memory_dream_undo(
+    filesystem: State<'_, FilesystemAccess>,
+    cwd: String,
+    version: String,
+) -> Result<(), String> {
+    if !valid_rewind_revision(&version) {
+        return Err("记忆整理版本无效".into());
+    }
+    let cwd = authorized_optional_cwd(&filesystem, Some(cwd))?.ok_or("请先选择工作区")?;
+    let storage = memory_storage(Some(&cwd))?;
+    ensure_memory_hierarchy(&storage, MemoryEntryScope::Workspace, false)?;
+    let deleted = echo_agent_memory::dream::undo_latest_consolidation(&storage, &version)
+        .map_err(|error| format!("无法撤销记忆整理：{error}"))?;
+    sync_memory_indexes(
+        &storage,
+        MemoryEntryScope::Workspace,
+        &storage.workspace_memory_file(),
+        deleted,
+    )
+    .map_err(|error| format!("记忆已恢复，检索索引更新失败：{error}"))
 }
 
 fn sync_record_projection(storage: &MemoryStorage, scope: MemoryEntryScope) -> Result<(), String> {
@@ -1397,6 +1428,56 @@ pub(crate) fn parse_rewind_points(v: serde_json::Value) -> Result<Vec<RewindPoin
 pub struct RewindExecution {
     target_prompt_index: u32,
     prompt_text: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reverted_files: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    conflicts: Vec<RewindFileConflict>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RewindFileConflict {
+    path: String,
+    #[serde(alias = "conflict_type")]
+    conflict_type: String,
+    #[serde(
+        default,
+        alias = "recovery_path",
+        skip_serializing_if = "Option::is_none"
+    )]
+    recovery_path: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewindPreview {
+    revision: String,
+    clean_files: Vec<String>,
+    conflicts: Vec<RewindFileConflict>,
+}
+
+fn rewind_file_list<T: serde::de::DeserializeOwned>(
+    response: &serde_json::Value,
+    wire: &str,
+    alias: &str,
+) -> Result<Vec<T>, String> {
+    response
+        .get(wire)
+        .or_else(|| response.get(alias))
+        .map(|files| serde_json::from_value(files.clone()).map_err(|error| error.to_string()))
+        .unwrap_or_else(|| Ok(Vec::new()))
+}
+
+fn validate_rewind_target(response: &serde_json::Value, target: u32) -> Result<(), String> {
+    if response
+        .get("targetPromptIndex")
+        .or_else(|| response.get("target_prompt_index"))
+        .and_then(serde_json::Value::as_u64)
+        != Some(u64::from(target))
+    {
+        return Err("Agent Runtime 返回的恢复位置与请求不一致".into());
+    }
+    Ok(())
 }
 
 fn parse_rewind_execution(
@@ -1433,21 +1514,15 @@ fn parse_rewind_execution(
         }
         None => return Err("Agent Runtime 返回了无效的回溯结果".into()),
     }
-    let response_target = response
-        .get("targetPromptIndex")
-        .or_else(|| response.get("target_prompt_index"))
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or("Agent Runtime 返回的恢复位置无效")?;
-    if response_target != requested_prompt_index {
-        return Err("Agent Runtime 返回的恢复位置与请求不一致".into());
-    }
+    validate_rewind_target(&response, requested_prompt_index)?;
     let prompt_text = prompt_value
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
     Ok(RewindExecution {
-        target_prompt_index: response_target,
+        target_prompt_index: requested_prompt_index,
         prompt_text,
+        reverted_files: rewind_file_list(&response, "reverted_files", "revertedFiles")?,
+        conflicts: rewind_file_list(&response, "conflicts", "conflicts")?,
     })
 }
 
@@ -1478,9 +1553,52 @@ fn rewind_execute_payload(
     }))
 }
 
-/// Rewind a session to a specific prompt index. Current clients use Runtime's
-/// canonical `all` / `conversation_only` / `files_only` wire values; legacy
-/// desktop values are normalized at this boundary for update compatibility.
+#[tauri::command]
+pub async fn rewind_preview(
+    state: State<'_, AppState>,
+    filesystem: State<'_, FilesystemAccess>,
+    session_id: String,
+    target_prompt_index: u32,
+    mode: String,
+) -> Result<RewindPreview, String> {
+    let mut payload = rewind_execute_payload(&session_id, target_prompt_index, Some(&mode), false)?;
+    payload["fileGuard"] = serde_json::json!({ "revision": null });
+    let response = request_rewind(
+        &state,
+        &filesystem,
+        &session_id,
+        Some(target_prompt_index),
+        payload,
+    )
+    .await?;
+    validate_admin_response(&response)?;
+    validate_rewind_target(&response, target_prompt_index)?;
+    parse_rewind_preview(&response)
+}
+
+fn parse_rewind_preview(response: &serde_json::Value) -> Result<RewindPreview, String> {
+    let revision = response
+        .get("preview_revision")
+        .and_then(serde_json::Value::as_str)
+        .filter(|revision| valid_rewind_revision(revision))
+        .ok_or_else(|| {
+            response
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("无法取得文件回溯预览")
+                .to_string()
+        })?;
+    Ok(RewindPreview {
+        revision: revision.into(),
+        clean_files: rewind_file_list(response, "clean_files", "cleanFiles")?,
+        conflicts: rewind_file_list(response, "conflicts", "conflicts")?,
+    })
+}
+
+fn valid_rewind_revision(revision: &str) -> bool {
+    revision.len() == 64 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[tauri::command]
 pub async fn rewind_execute(
     state: State<'_, AppState>,
@@ -1489,15 +1607,95 @@ pub async fn rewind_execute(
     target_prompt_index: u32,
     mode: Option<String>,
     force: Option<bool>,
+    preview_revision: Option<String>,
 ) -> Result<RewindExecution, String> {
-    let _history_guard = crate::session_continuation::history_mutation_guard(&session_id)?;
-    require_live_session(&state, &session_id)?;
-    crate::commands::trusted_existing_session_cwd(&state, &filesystem, &session_id, None)?;
-    if crate::meta::read_state()
-        .session_continuations
-        .get(&session_id)
-        .is_some_and(|origin| target_prompt_index <= origin.prompt_index)
+    let mut payload = rewind_execute_payload(
+        &session_id,
+        target_prompt_index,
+        mode.as_deref(),
+        force.unwrap_or(false),
+    )?;
+    if normalize_rewind_mode(mode.as_deref())? != RuntimeRewindMode::ConversationOnly {
+        let revision = preview_revision
+            .filter(|value| valid_rewind_revision(value))
+            .ok_or("请先预览文件变更，再确认回溯")?;
+        payload["fileGuard"] = serde_json::json!({ "revision": revision });
+    }
+    let response = request_rewind(
+        &state,
+        &filesystem,
+        &session_id,
+        Some(target_prompt_index),
+        payload,
+    )
+    .await?;
+    parse_rewind_execution(response, target_prompt_index)
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum RewindUndoResult {
+    Preview(RewindPreview),
+    Applied(RewindExecution),
+}
+
+#[tauri::command]
+pub async fn rewind_undo(
+    state: State<'_, AppState>,
+    filesystem: State<'_, FilesystemAccess>,
+    session_id: String,
+    preview_revision: Option<String>,
+) -> Result<Option<RewindUndoResult>, String> {
+    if preview_revision
+        .as_deref()
+        .is_some_and(|revision| !valid_rewind_revision(revision))
     {
+        return Err("请先预览撤销变更".into());
+    }
+    let execute = preview_revision.is_some();
+    let mut payload = rewind_execute_payload(&session_id, 0, Some("files_only"), execute)?;
+    payload["fileGuard"] = serde_json::json!({ "undo": true, "revision": preview_revision });
+    let response = request_rewind(&state, &filesystem, &session_id, None, payload).await?;
+    if execute {
+        return parse_rewind_execution(response, 0)
+            .map(|result| Some(RewindUndoResult::Applied(result)));
+    }
+    validate_admin_response(&response)?;
+    if response.get("preview_revision").is_none() {
+        return Ok(None);
+    }
+    parse_rewind_preview(&response).map(|preview| Some(RewindUndoResult::Preview(preview)))
+}
+
+async fn request_rewind(
+    state: &AppState,
+    filesystem: &FilesystemAccess,
+    session_id: &str,
+    target_prompt_index: Option<u32>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let _history_guard = crate::session_continuation::history_exclusive_guard(session_id)?;
+    let _scheduled_guard = crate::automations::session_turn_lock(session_id)
+        .try_lock_owned()
+        .map_err(|_| "请先停止当前运行，再回溯任务")?;
+    if payload.get("force").and_then(serde_json::Value::as_bool) == Some(true)
+        && crate::automations::owns_session(session_id)
+    {
+        crate::automations::require_no_pending_session_recovery(session_id)?;
+    }
+    require_live_session(state, session_id)?;
+    let workspace =
+        crate::commands::trusted_existing_session_cwd(state, filesystem, session_id, None)?;
+    if payload.get("fileGuard").is_some() {
+        crate::coding_document_bridge::ensure_workspace_admission(&workspace.to_string_lossy())
+            .await?;
+    }
+    if target_prompt_index.is_some_and(|target| {
+        crate::meta::read_state()
+            .session_continuations
+            .get(session_id)
+            .is_some_and(|origin| target <= origin.prompt_index)
+    }) {
         return Err("继承的历史仅供查看，请返回原对话回溯，或从该位置接续新对话".into());
     }
     let tx = state
@@ -1506,17 +1704,9 @@ pub async fn rewind_execute(
         .unwrap()
         .clone()
         .ok_or("agent not initialized")?;
-    let payload = rewind_execute_payload(
-        &session_id,
-        target_prompt_index,
-        mode.as_deref(),
-        force.unwrap_or(false),
-    )?;
-    let params = raw_params(&payload);
-    let response: serde_json::Value = call_ext(&tx, "echo.agent/rewind/execute", params)
+    call_ext(&tx, "echo.agent/rewind/execute", raw_params(&payload))
         .await
-        .map_err(|e| e.to_string())?;
-    parse_rewind_execution(response, target_prompt_index)
+        .map_err(|e| e.to_string())
 }
 
 // ========================================================================

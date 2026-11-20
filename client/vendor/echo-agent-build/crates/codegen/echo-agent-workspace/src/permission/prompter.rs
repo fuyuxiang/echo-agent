@@ -191,19 +191,25 @@ pub fn mcp_tool_action<'a>(tool_name: &'a str, server_prefix: Option<&str>) -> &
 }
 
 /// Pretty-format a single MCP server- or tool-name segment for display:
-/// split on `'_'`, title-case each word, join with spaces. Leaves
-/// non-underscore characters (camelCase, hyphens) intact, so
+/// split on `'_'`, title-case each word, join with spaces. Preserve the
+/// EchoAgent brand and leave camelCase and hyphens intact, so
 /// `"list_issues"` → `"List Issues"`, `"echo_agent_com_notion"` →
 /// `"EchoAgent Com Notion"`, and `"getMyTaskList"` → `"GetMyTaskList"`.
 pub fn mcp_titleize_segment(name: &str) -> String {
-    name.split('_')
-        .map(|word| {
+    if name == "echo_agent" {
+        return "EchoAgent".into();
+    }
+    let (brand, name) = name
+        .strip_prefix("echo_agent_")
+        .map_or((None, name), |rest| (Some("EchoAgent"), rest));
+    brand.into_iter().map(str::to_owned)
+        .chain(name.split('_').map(|word| {
             let mut chars = word.chars();
             match chars.next() {
                 Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
                 None => String::new(),
             }
-        })
+        }))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -1829,6 +1835,8 @@ mod tests {
             mcp_titleize_segment("echo_agent_com_notion"),
             "EchoAgent Com Notion"
         );
+        assert_eq!(mcp_titleize_segment("echo_agent"), "EchoAgent");
+        assert_eq!(mcp_titleize_segment("echo_agentic"), "Echo Agentic");
         // single word: just capitalize first letter
         assert_eq!(mcp_titleize_segment("linear"), "Linear");
         // camelCase preserved (no `_` to split on, only first letter touched)

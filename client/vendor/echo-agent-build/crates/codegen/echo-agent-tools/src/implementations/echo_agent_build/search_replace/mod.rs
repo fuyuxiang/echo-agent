@@ -369,6 +369,7 @@ async fn handle_new_file_creation(
             content: input.new_string.clone(),
             previous_content: Some(old_text.clone()),
             is_new_file: false,
+            is_deleted: false,
         });
     } else {
         notification_handle.send_file_written(FileWritten {
@@ -377,6 +378,7 @@ async fn handle_new_file_creation(
             content: input.new_string.clone(),
             previous_content: None,
             is_new_file: true,
+            is_deleted: false,
         });
     }
     let tool_output_for_prompt = format!(
@@ -742,6 +744,7 @@ async fn handle_replacement(
         content: write_text.clone(),
         previous_content: Some(old_text.clone()),
         is_new_file: false,
+        is_deleted: false,
     });
     let edits = build_edit_details(
         &new_text,

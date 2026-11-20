@@ -139,22 +139,26 @@ pub(crate) fn should_prune(total_tokens: u64, context_window: std::num::NonZeroU
 
 /// Prune old, large tool results from the conversation in place.
 ///
-/// Turn age is estimated by walking backward through the conversation and
-/// counting `User` items to determine which "turn" each tool result belongs to.
+/// Only prompt boundaries age the preceding results. Reminders and
+/// interjections belong to their admitting turn.
 pub(crate) fn prune_conversation(conversation: &mut [ConversationItem], config: &PruningConfig) {
     if !config.enabled {
         return;
     }
 
     let mut turn_from_end: usize = 0;
-    let mut seen_first_user = false;
 
     for i in (0..conversation.len()).rev() {
-        if matches!(&conversation[i], ConversationItem::User(_)) {
-            if seen_first_user {
+        if let ConversationItem::User(user) = &conversation[i] {
+            if user.prompt_index.is_some()
+                || user
+                    .synthetic_reason
+                    .as_ref()
+                    .is_some_and(|reason| reason.starts_prompt_turn())
+                || crate::compaction_utils::is_real_user_turn(&conversation[i])
+            {
                 turn_from_end += 1;
             }
-            seen_first_user = true;
             continue;
         }
 
@@ -283,6 +287,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pruning_protects_recent_tools_across_mid_turn_reminders() {
+        let old = "old tool result".repeat(1000);
+        let recent = "current tool result".repeat(1000);
+        let mut conversation = vec![
+            ConversationItem::user("old user prompt"),
+            ConversationItem::tool_result("old", old),
+            ConversationItem::user("current user prompt"),
+            ConversationItem::tool_result("current", recent.clone()),
+            ConversationItem::system_reminder("runtime reminder one"),
+            ConversationItem::system_reminder("runtime reminder two"),
+        ];
+        prune_conversation(
+            &mut conversation,
+            &PruningConfig {
+                enabled: true,
+                keep_last_n_turns: 1,
+                hard_clear_age_turns: 1,
+                ..Default::default()
+            },
+        );
+        let ConversationItem::ToolResult(old) = &conversation[1] else {
+            panic!("expected tool result");
+        };
+        let ConversationItem::ToolResult(current) = &conversation[3] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(old.content.as_ref(), HARD_CLEAR_PLACEHOLDER);
+        assert_eq!(current.content.as_ref(), recent);
+    }
     #[test]
     fn inject_memory_into_existing_system() {
         let mut items = vec![

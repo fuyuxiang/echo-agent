@@ -297,6 +297,7 @@ async fn handle_new_file_creation(
         content: input.new_string.clone(),
         previous_content: None,
         is_new_file: true,
+        is_deleted: false,
     });
 
     // Build output.
@@ -428,6 +429,7 @@ async fn handle_replacement(
         content: new_text.clone(),
         previous_content: Some(old_text.clone()),
         is_new_file: false,
+        is_deleted: false,
     });
 
     // Build edit details using shared helpers.

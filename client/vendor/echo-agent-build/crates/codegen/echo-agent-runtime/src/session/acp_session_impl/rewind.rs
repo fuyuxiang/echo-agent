@@ -1,7 +1,13 @@
 //! Rewind concern for `SessionActor`: rewind points, cross-compaction
 //! replay detection, and `handle_rewind`.
 
+use super::rewind_files::{
+    ProtectedRewind, RewindJournal, apply_file_rewind, protected_rewind, rewind_undo,
+    save_new_rewind,
+};
 use super::*;
+use echo_agent_workspace::file_system::try_workspace_mutation;
+use std::path::Path;
 
 impl SessionActor {
     pub(super) async fn close_rewind_window(&self) {
@@ -164,11 +170,18 @@ impl SessionActor {
         &self,
         request: RewindRequest,
     ) -> anyhow::Result<RewindResponse> {
-        // Track revert for feedback signals
-        self.signals_handle().mark_reverted();
-
         let target_index = request.target_prompt_index;
         let mode = request.mode;
+        let session_dir = crate::session::persistence::session_dir(&self.session_info);
+        if let Some(guard) = request.file_guard.as_ref().filter(|guard| guard.undo) {
+            let root = self.tool_context.fs.root().to_owned();
+            let _lease = self.guard_file_rewind(request.force)?;
+            let revision = guard.revision.clone();
+            return tokio::task::spawn_blocking(move || {
+                rewind_undo(&root, &session_dir, request.force, revision.as_deref())
+            })
+            .await?;
+        }
 
         // Validate: target must be less than current prompt_index. FilesOnly
         // reverts the on-disk snapshot index (bounded by `get_rewind_points`,
@@ -184,6 +197,7 @@ impl SessionActor {
                 clean_files: vec![],
                 conflicts: vec![],
                 prompt_text: None,
+                preview_revision: None,
                 error: Some(format!(
                     "Cannot rewind to prompt #{} — current prompt index is {}. \
                      Valid targets: 0..{}",
@@ -201,6 +215,59 @@ impl SessionActor {
         let wants_file_revert = matches!(mode, RewindMode::All | RewindMode::FilesOnly);
         let wants_conversation_rewind =
             matches!(mode, RewindMode::All | RewindMode::ConversationOnly);
+        let protected = request.file_guard.is_some() && wants_file_revert;
+        let _workspace_lease = if protected {
+            self.guard_file_rewind(request.force)?
+        } else {
+            None
+        };
+        let mut protected_plan = None;
+        if protected {
+            let root = self.tool_context.fs.root().to_owned();
+            let session = self.session_info.id.to_string();
+            let points = self.file_state_tracker.get_rewind_points().await;
+            let plan = tokio::task::spawn_blocking(move || {
+                protected_rewind(
+                    &root,
+                    &points,
+                    &session,
+                    current_prompt_index,
+                    target_index,
+                    mode,
+                )
+            })
+            .await?;
+            if !request.force {
+                return Ok(RewindResponse {
+                    success: false,
+                    target_prompt_index: target_index,
+                    mode,
+                    reverted_files: vec![],
+                    clean_files: plan
+                        .ready
+                        .keys()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect(),
+                    conflicts: plan.conflicts,
+                    prompt_text: None,
+                    error: None,
+                    preview_revision: Some(plan.revision),
+                });
+            }
+            if request
+                .file_guard
+                .as_ref()
+                .and_then(|guard| guard.revision.as_deref())
+                != Some(plan.revision.as_str())
+                || self
+                    .session_turn_active
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                || self.chat_state_handle.get_prompt_index().await != current_prompt_index
+            {
+                anyhow::bail!("回溯预览已失效，请重新查看文件并确认");
+            }
+            protected_plan = Some(plan);
+        }
 
         // Collect files that would be reverted and detect conflicts.
         // This is read-only — no mutations happen here.
@@ -209,7 +276,7 @@ impl SessionActor {
             Option<String>,
         > = std::collections::HashMap::new();
 
-        if wants_file_revert {
+        if wants_file_revert && !protected {
             let all_points = self.file_state_tracker.get_rewind_points().await;
 
             for point in all_points.iter().filter(|p| p.prompt_index >= target_index) {
@@ -253,6 +320,7 @@ impl SessionActor {
                     conflicts.push(RewindConflictInfo {
                         path: path.to_string(),
                         conflict_type: conflict_type.to_string(),
+                        recovery_path: None,
                     });
                 }
             }
@@ -276,14 +344,16 @@ impl SessionActor {
                 conflicts,
                 prompt_text: None,
                 error,
+                preview_revision: None,
             });
         }
 
         // ── Commit mode (force=true): execute the rewind ─────────────
+        self.signals_handle().mark_reverted();
 
         // Execute file revert
         let mut reverted_files = Vec::new();
-        if wants_file_revert {
+        if wants_file_revert && !protected {
             for (rel_path, content) in files_to_revert {
                 match &content {
                     Some(data) => {
@@ -316,17 +386,12 @@ impl SessionActor {
 
         // Execute conversation rewind
         let mut prompt_text: Option<String> = None;
+        let mut journal = None;
         if wants_conversation_rewind {
-            let session_dir = crate::session::persistence::session_dir(&self.session_info);
             let updates_path = session_dir.join("updates.jsonl");
 
             if let Some(snap) = self.chat_state_handle.snapshot().await {
                 prompt_text = snap.prompt_texts.get(target_index).cloned();
-            }
-
-            // Store for edit-and-retry detection in the next prompt() call
-            if let Ok(mut pending) = self.rewind_pending_prompt.lock() {
-                *pending = prompt_text.clone();
             }
 
             // Check cross-compaction before rewinding.
@@ -414,6 +479,7 @@ impl SessionActor {
                             clean_files: vec![],
                             conflicts: vec![],
                             prompt_text: None,
+                            preview_revision: None,
                             error: Some(format!(
                                 "Cannot rewind to prompt #{} — compaction checkpoint data is \
                                  unavailable ({e}). Try rewinding to a prompt after the \
@@ -431,6 +497,16 @@ impl SessionActor {
                 conversation.truncate(keep_count);
             }
 
+            if let Some(plan) = protected_plan
+                .as_mut()
+                .filter(|plan| !plan.ready.is_empty())
+            {
+                journal = Some(self.stage_file_rewind(&session_dir, plan).await?);
+            }
+            // Store for edit-and-retry detection in the next prompt() call.
+            if let Ok(mut pending) = self.rewind_pending_prompt.lock() {
+                *pending = prompt_text.clone();
+            }
             // Write the truncated conversation back via the actor
             // (handles both state update + persistence).
             self.chat_state_handle.replace_conversation(conversation);
@@ -513,8 +589,23 @@ impl SessionActor {
             }
         }
 
-        // Update the file state tracker to reflect the rewind.
-        if wants_file_revert {
+        if let Some(mut plan) = protected_plan {
+            if !plan.ready.is_empty() {
+                journal = Some(self.stage_file_rewind(&session_dir, &mut plan).await?);
+            }
+            conflicts = plan.conflicts;
+            if let Some(journal) = journal {
+                (reverted_files, conflicts) = tokio::task::spawn_blocking(move || {
+                    let reverted = apply_file_rewind(&session_dir, &journal, &mut conflicts)?;
+                    Ok::<_, anyhow::Error>((reverted, conflicts))
+                })
+                .await??;
+            }
+        }
+
+        // Keep file evidence with the surviving conversation. A new preview
+        // skips already-restored files, and undo can bring them back into scope.
+        if wants_file_revert && (!protected || wants_conversation_rewind) {
             // All/FilesOnly: files were reverted, snapshots are stale — truncate.
             self.file_state_tracker.truncate_from(target_index).await;
             let _ = self
@@ -523,7 +614,7 @@ impl SessionActor {
                 .send(PersistenceMsg::TruncateRewindPoints {
                     from_index: target_index,
                 });
-        } else if wants_conversation_rewind {
+        } else if !wants_file_revert && wants_conversation_rewind {
             // ConversationOnly: files are untouched but the conversation is rewound.
             self.merge_rewind_tracker_from(target_index).await;
         }
@@ -537,7 +628,38 @@ impl SessionActor {
             conflicts,
             prompt_text,
             error: None,
+            preview_revision: None,
         })
+    }
+
+    fn guard_file_rewind(
+        &self,
+        execute: bool,
+    ) -> anyhow::Result<Option<echo_agent_workspace::file_system::WorkspaceMutationLease>> {
+        let lease = execute
+            .then(|| try_workspace_mutation(self.tool_context.fs.root()))
+            .transpose()
+            .map_err(|error| {
+                anyhow::anyhow!("工作区正在修改或无法核验，请稍后重新预览：{error}")
+            })?;
+        anyhow::ensure!(
+            !self
+                .session_turn_active
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "请先停止当前运行，再回溯文件"
+        );
+        Ok(lease)
+    }
+
+    async fn stage_file_rewind(
+        &self,
+        session_dir: &Path,
+        plan: &mut ProtectedRewind,
+    ) -> anyhow::Result<RewindJournal> {
+        let root = self.tool_context.fs.root().to_owned();
+        let session_dir = session_dir.to_owned();
+        let files = std::mem::take(&mut plan.ready);
+        tokio::task::spawn_blocking(move || save_new_rewind(&root, &session_dir, files)).await?
     }
 
     /// `ConversationOnly` rewind-tracker bookkeeping: merge the discarded

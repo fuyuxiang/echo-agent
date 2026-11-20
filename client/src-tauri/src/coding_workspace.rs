@@ -1135,6 +1135,8 @@ pub(crate) fn write_coding_document_blocking(
     request: CodingWriteDocumentRequest,
 ) -> Result<CodingDocument, String> {
     let path = resolve_coding_document_path(root, &request.path)?;
+    let _workspace_lease = echo_agent_runtime::try_workspace_mutation(&path)
+        .map_err(|error| format!("文件正在修改或无法核验：{error}"))?;
     let transaction = document_write_lock(&path)?;
     let _guard = transaction
         .lock()

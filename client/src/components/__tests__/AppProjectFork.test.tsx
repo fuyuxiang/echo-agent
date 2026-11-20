@@ -323,7 +323,7 @@ describe("project fork continuation", () => {
     expect(useSessionStore.getState().messages).toEqual(messages);
     expect(await screen.findByText("暂时无法重试：原目录已丢失")).toBeVisible();
   });
-  it.each([true, false])("inherits pending=%s without cloning work items; next turn follows that exact contract", async (pending) => {
+  it.each([true, false])("inherits pending=%s without cloning work items and sends the original text to the host", async (pending) => {
     await start(pending); const before = structuredClone(useProjectsStore.getState().projects[0]); completeFork();
     await waitFor(() => expect(useProjectsStore.getState().projects[0].conversations).toEqual(expect.arrayContaining([
       expect.objectContaining({ sessionId: "fork", title: "项目源标题 · 新方向", modelId: "model-a", pendingProjectContext: pending }),
@@ -335,7 +335,7 @@ describe("project fork continuation", () => {
     await waitFor(() => expect(client.agentSend).toHaveBeenCalled());
     const calls = vi.mocked(client.agentSend).mock.calls;
     const sent = calls[calls.length - 1];
-    expect(sent[0]).toBe("fork"); expect(sent[1].includes("保留当前项目契约")).toBe(pending);
+    expect(sent.slice(0, 2)).toEqual(["fork", "继续分叉"]);
     if (pending) expect(client.agentsValidateReferences).toHaveBeenCalledWith("/workspace", []);
     expect(useSessionsStore.getState().independent.find(s => s.sessionId === "fork")?.cwd).toBe("/workspace");
     const saved = useProjectsStore.getState().projects[0];

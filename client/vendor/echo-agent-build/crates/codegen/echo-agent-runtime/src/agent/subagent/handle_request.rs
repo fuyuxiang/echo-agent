@@ -9,6 +9,30 @@ use echo_agent_tools::implementations::{echo_agent_build, opencode};
 /// Budget for the pre-completion child transcript flush (replay buffer +
 /// persistence to disk). Mirrors the workflow-shutdown persistence bound.
 const CHILD_COMPLETION_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn same_project_workspace(parent: &std::path::Path, child: &std::path::Path) -> bool {
+    dunce::canonicalize(parent)
+        .ok()
+        .zip(dunce::canonicalize(child).ok())
+        .is_some_and(|(parent, child)| parent == child)
+}
+
+#[cfg(test)]
+#[test]
+fn host_project_context_stays_inside_the_parent_workspace() {
+    let parent = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    assert!(same_project_workspace(
+        parent.path(),
+        &parent.path().join(".")
+    ));
+    assert!(!same_project_workspace(parent.path(), other.path()));
+    assert!(!same_project_workspace(
+        parent.path(),
+        &parent.path().join("missing")
+    ));
+}
+
 pub(super) fn task_model_override_error(
     requested: Option<&str>,
     provenance: ModelOverrideProvenance,
@@ -539,6 +563,22 @@ pub(crate) async fn run_shell_child(
     let task_prompt_text = prompt.clone();
     let (mut forked_conversation, mut inherited_prefix_len) =
         (forked_conversation, inherited_prefix_len.unwrap_or(0));
+    let host_project_context = ctx.parent_host_project_context.clone().filter(|_| {
+        same_project_workspace(
+            &ctx.parent_cwd,
+            std::path::Path::new(&child_session_info.cwd),
+        )
+    });
+    if context_source == InitialContextSource::New
+        && let Some(project) = host_project_context.as_deref()
+    {
+        let reminder = echo_agent_sampling_types::ConversationItem::system_reminder(format!(
+            "<system-reminder>\n{project}\n</system-reminder>"
+        ));
+        let insert_at = inherited_prefix_len.min(forked_conversation.len());
+        forked_conversation.insert(insert_at, reminder);
+        inherited_prefix_len += 1;
+    }
     if context_source != InitialContextSource::Resumed
         && !verbatim_mirror_fork
         && let Some(ref pi) = effective_runtime.persona_instructions
@@ -714,6 +754,9 @@ pub(crate) async fn run_shell_child(
         (*ctx.session_env).clone(),
     )
     .with_hunk_tracking_enabled(ctx.hunk_tracking_enabled);
+    if let Ok(mut context) = tool_ctx.host_project_context.write() {
+        *context = host_project_context;
+    }
     tool_ctx.subagent_event_tx = Some(ctx.subagent_event_tx.clone());
     let task_output_budget = request
         .runtime_overrides

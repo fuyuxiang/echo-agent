@@ -124,6 +124,9 @@ pub struct EchoAgentState {
     /// Immutable canonical directory recorded when a session is first created/loaded.
     #[serde(default)]
     pub session_workspaces: HashMap<String, String>,
+    /// Durable local project identity, independent of the working directory.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub session_projects: HashMap<String, String>,
     /// User task description, never an execution token. Restoring it stays paused.
     #[serde(default)]
     pub session_desktop_tasks: HashMap<String, String>,
@@ -144,6 +147,7 @@ impl Default for EchoAgentState {
             session_permission_modes: HashMap::new(),
             session_agent_modes: HashMap::new(),
             session_workspaces: HashMap::new(),
+            session_projects: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
             session_statuses: HashMap::new(),
             session_continuations: HashMap::new(),
@@ -241,6 +245,7 @@ fn validate_state(state: &EchoAgentState) -> Result<(), String> {
         || state.session_permission_modes.len() > MAX_SESSION_ENTRIES
         || state.session_agent_modes.len() > MAX_SESSION_ENTRIES
         || state.session_workspaces.len() > MAX_SESSION_ENTRIES
+        || state.session_projects.len() > MAX_SESSION_ENTRIES
         || state.session_desktop_tasks.len() > MAX_SESSION_ENTRIES
         || state.session_statuses.len() > MAX_SESSION_ENTRIES
         || state.session_continuations.len() > MAX_SESSION_ENTRIES
@@ -274,6 +279,11 @@ fn validate_state(state: &EchoAgentState) -> Result<(), String> {
     for (id, cwd) in &state.session_workspaces {
         if !valid_session_id(id) || !valid_field(cwd, 16384, false) {
             return Err("会话目录绑定无效".into());
+        }
+    }
+    for (id, project) in &state.session_projects {
+        if !valid_session_id(id) || crate::projects::validate_project_id(project).is_err() {
+            return Err("会话项目归属无效".into());
         }
     }
     for (id, scope) in &state.session_desktop_tasks {
@@ -320,6 +330,7 @@ pub fn save_continuation(
     validate_continuation(id, &origin)?;
     crate::org::copy_project_binding(source, id)?;
     crate::agents_store::copy_session_definition(source, id)?;
+    let project = crate::projects::session_project_id(source)?;
     update_state_at(&state_path(), |state| {
         if state.session_continuations.contains_key(id) {
             return Ok(((), false));
@@ -329,6 +340,9 @@ pub fn save_continuation(
             .insert(id.into(), origin.clone());
         if let Some(binding) = state.expert_sessions.get(source).cloned() {
             state.expert_sessions.insert(id.into(), binding);
+        }
+        if let Some(project) = project {
+            state.session_projects.insert(id.into(), project);
         }
         if let Some(mode) = state.session_agent_modes.get(source).cloned() {
             state.session_agent_modes.insert(id.into(), mode);
@@ -415,6 +429,14 @@ fn sanitize_state(mut state: EchoAgentState) -> EchoAgentState {
     state
         .session_desktop_tasks
         .retain(|id, scope| valid_session_id(id) && !scope.is_empty() && scope.len() <= 16384);
+    state.session_projects.retain(|id, project| {
+        valid_session_id(id) && crate::projects::validate_project_id(project).is_ok()
+    });
+    let mut project_sessions = state.session_projects.keys().cloned().collect::<Vec<_>>();
+    project_sessions.sort();
+    for id in project_sessions.into_iter().skip(MAX_SESSION_ENTRIES) {
+        state.session_projects.remove(&id);
+    }
     state.session_statuses.retain(|session_id, lifecycle| {
         valid_session_id(session_id) && validate_lifecycle(lifecycle).is_ok()
     });
@@ -733,23 +755,51 @@ pub fn set_agent_mode(session_id: &str, mode: &str) -> Result<String, String> {
 
 /// Persist a binding once; reopening, project moves and Runtime restarts cannot retarget it.
 fn bind_session_workspace_at(path: &Path, session_id: &str, cwd: &str) -> Result<(), String> {
+    bind_session_scope_at(path, session_id, cwd, None)
+}
+
+fn bind_session_scope_at(
+    path: &Path,
+    session_id: &str,
+    cwd: &str,
+    project_id: Option<&str>,
+) -> Result<(), String> {
     if !valid_session_id(session_id) || !valid_field(cwd, 16384, false) {
         return Err("会话目录绑定无效".into());
     }
+    if let Some(project) = project_id {
+        crate::projects::validate_project_id(project)?;
+    }
     update_state_at(path, |state| {
-        if let Some(original) = state.session_workspaces.get(session_id) {
-            if original != cwd {
+        let mut changed = false;
+        match state.session_workspaces.get(session_id) {
+            Some(original) if original != cwd => {
                 return Err("本会话的工作目录已固定；如需使用其他目录，请新建任务".into());
             }
-            return Ok(((), false));
+            None => {
+                if state.session_workspaces.len() >= MAX_SESSION_ENTRIES {
+                    return Err("会话目录绑定数量超过上限".into());
+                }
+                state
+                    .session_workspaces
+                    .insert(session_id.into(), cwd.into());
+                changed = true;
+            }
+            _ => {}
         }
-        if state.session_workspaces.len() >= MAX_SESSION_ENTRIES {
-            return Err("会话目录绑定数量超过上限".into());
+        if let Some(project) = project_id {
+            match state.session_projects.get(session_id) {
+                Some(original) if original != project => return Err("会话已属于其他项目".into()),
+                None => {
+                    state
+                        .session_projects
+                        .insert(session_id.into(), project.into());
+                    changed = true;
+                }
+                _ => {}
+            }
         }
-        state
-            .session_workspaces
-            .insert(session_id.into(), cwd.into());
-        Ok(((), true))
+        Ok(((), changed))
     })
 }
 
@@ -762,6 +812,32 @@ pub fn session_workspace(session_id: &str) -> Option<PathBuf> {
         .session_workspaces
         .get(session_id)
         .map(PathBuf::from)
+}
+
+pub(crate) fn bind_session_scope(
+    session_id: &str,
+    cwd: &Path,
+    project_id: Option<&str>,
+) -> Result<(), String> {
+    bind_session_scope_at(
+        &state_path(),
+        session_id,
+        &cwd.to_string_lossy(),
+        project_id,
+    )
+}
+
+pub(crate) fn clear_project_reservations(
+    ids: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    update_state_at(&state_path(), |state| {
+        let before = state.session_projects.len();
+        state.session_projects.retain(|id, _| !ids.contains(id));
+        Ok(((), state.session_projects.len() != before))
+    })
 }
 
 pub fn desktop_task_scope(session_id: &str) -> Option<String> {
@@ -888,6 +964,7 @@ fn clear_session_metadata_at(path: &Path, session_id: &str) -> Result<bool, Stri
         changed |= state.session_permission_modes.remove(session_id).is_some();
         changed |= state.session_agent_modes.remove(session_id).is_some();
         changed |= state.session_workspaces.remove(session_id).is_some();
+        changed |= state.session_projects.remove(session_id).is_some();
         changed |= state.session_desktop_tasks.remove(session_id).is_some();
         changed |= state.session_statuses.remove(session_id).is_some();
         changed |= state.session_continuations.remove(session_id).is_some();
@@ -958,6 +1035,26 @@ mod tests {
     // --- EchoAgentState::default ---
 
     #[test]
+    fn projects_sharing_a_directory_keep_distinct_session_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        bind_session_workspace_at(&path, "legacy", "/shared").unwrap();
+        bind_session_scope_at(&path, "first", "/shared", Some("project-first")).unwrap();
+        bind_session_scope_at(&path, "second", "/shared", Some("project-second")).unwrap();
+        assert!(bind_session_scope_at(&path, "first", "/shared", Some("project-second")).is_err());
+        assert!(bind_session_scope_at(&path, "legacy", "/other", Some("project-second")).is_err());
+        let restored = read_state_from(&path, true).unwrap();
+        assert!(!restored.session_projects.contains_key("legacy"));
+        assert_eq!(restored.session_projects["first"], "project-first");
+        assert_eq!(restored.session_projects["second"], "project-second");
+        clear_session_metadata_at(&path, "first").unwrap();
+        assert!(!read_state_from(&path, true)
+            .unwrap()
+            .session_projects
+            .contains_key("first"));
+    }
+
+    #[test]
     fn default_state() {
         let state = EchoAgentState::default();
         assert_eq!(state.version, 1);
@@ -980,6 +1077,7 @@ mod tests {
             session_permission_modes: HashMap::new(),
             session_agent_modes: HashMap::new(),
             session_workspaces: HashMap::new(),
+            session_projects: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
             session_statuses: HashMap::new(),
             session_continuations: HashMap::new(),
@@ -1000,6 +1098,7 @@ mod tests {
             session_permission_modes: HashMap::new(),
             session_agent_modes: HashMap::new(),
             session_workspaces: HashMap::new(),
+            session_projects: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
             session_statuses: HashMap::new(),
             session_continuations: HashMap::new(),
@@ -1029,6 +1128,7 @@ mod tests {
             session_permission_modes: HashMap::from([("s1".into(), "auto".into())]),
             session_agent_modes: HashMap::from([("s1".into(), "browser_use".into())]),
             session_workspaces: HashMap::new(),
+            session_projects: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
             session_statuses: HashMap::from([(
                 "s1".into(),

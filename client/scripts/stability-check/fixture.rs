@@ -47,7 +47,35 @@ fn record(app: &tauri::AppHandle, value: Value) -> Result<(), String> {
 }
 #[tauri::command]
 fn fixture_config(state: tauri::State<'_, Fixture>) -> Result<Value, String> {
-    Ok(json!({"nonce":state.nonce, "steps":steps(), "step":read_step(&state.profile)?}))
+    Ok(
+        json!({"nonce":state.nonce, "steps":steps(), "step":read_step(&state.profile)?, "testWindowGeometry":cfg!(windows)}),
+    )
+}
+
+#[tauri::command]
+async fn fixture_window_geometry(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    nonce: String,
+) -> Result<(), String> {
+    crate::native_review_scope::require_main_internal(&window)?;
+    if nonce != app.state::<Fixture>().nonce {
+        return Err("wrong private fixture identity".into());
+    }
+    #[cfg(windows)]
+    {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let handle = app.clone();
+        app.run_on_main_thread(move || {
+            let result = crate::windows_injection::verify_window_reveal(&window)
+                .and_then(|()| record(&handle, json!({"windowGeometryRepaired":true})));
+            let _ = send.send(result);
+        })
+        .map_err(|e| e.to_string())?;
+        receive.await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    Err("window geometry injection requires Windows".into())
 }
 #[tauri::command]
 fn fixture_report(app: tauri::AppHandle, value: Value) -> Result<(), String> {
@@ -205,6 +233,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             fixture_config,
+            fixture_window_geometry,
             fixture_report,
             fixture_finish,
             fixture_fail,

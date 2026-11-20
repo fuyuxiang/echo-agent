@@ -17,6 +17,25 @@ pub(super) const REPLAY_COMPLETION_WINDOW: usize = 64;
 
 type ReplayCompletionRx = tokio::sync::oneshot::Receiver<echo_agent_acp::AcpResult<()>>;
 
+#[derive(Clone, Copy)]
+pub(super) enum ReplayOrigin {
+    History,
+    Live,
+    DesktopCatchup,
+}
+
+impl ReplayOrigin {
+    fn for_cursor(mark_replay: bool, desktop_catchup: bool) -> Self {
+        if mark_replay {
+            Self::History
+        } else if desktop_catchup {
+            Self::DesktopCatchup
+        } else {
+            Self::Live
+        }
+    }
+}
+
 /// Sliding window of replay completion receivers. Awaits the oldest when full
 /// so at most [`REPLAY_COMPLETION_WINDOW`] notifications sit un-acked.
 pub(super) struct ReplayCompletionDrain {
@@ -92,7 +111,7 @@ impl MvpAgent {
         line: &str,
         persist_data: Option<&serde_json::Value>,
         target_client_id: Option<&serde_json::Value>,
-        mark_replay: bool,
+        origin: ReplayOrigin,
         collapser: &mut ReplayToolCollapser,
     ) -> Option<ReplayCompletionRx> {
         use crate::session::storage::RawLinePeek;
@@ -118,7 +137,7 @@ impl MvpAgent {
             // can stamp nothing. When a `target_client_id` is present we MUST take
             // the injection path instead, otherwise the replay would lose the
             // target and the leader would broadcast it to every subscriber.
-            if target_client_id.is_none() && !mark_replay {
+            if target_client_id.is_none() && matches!(origin, ReplayOrigin::Live) {
                 if let Ok(owned) =
                     serde_json::value::RawValue::from_string(raw_params.get().to_owned())
                     && let Some(owned) = Self::fitted_replay_params(owned)
@@ -142,8 +161,11 @@ impl MvpAgent {
                 if let Some(m) = meta.as_object_mut() {
                     // `isReplay` only applies to historical replay events, not the
                     // post-cursor live deltas that reach this path when a target is set.
-                    if mark_replay {
+                    if !matches!(origin, ReplayOrigin::Live) {
                         m.insert("isReplay".to_string(), serde_json::json!(true));
+                    }
+                    if matches!(origin, ReplayOrigin::DesktopCatchup) {
+                        m.insert("desktopCatchup".to_string(), serde_json::json!(true));
                     }
                     if let Some(pd) = persist_data {
                         m.insert("echo.agent/persist".to_string(), pd.clone());
@@ -181,8 +203,15 @@ impl MvpAgent {
         let update = collapser.push(update)?;
         let mut notification = acp::SessionNotification::new(session_id, update);
         notification.meta = meta;
-        if mark_replay {
+        if !matches!(origin, ReplayOrigin::Live) {
             mark_as_replay(&mut notification.meta, persist_data);
+        }
+        if matches!(origin, ReplayOrigin::DesktopCatchup) {
+            stamp_meta_value(
+                &mut notification.meta,
+                "desktopCatchup",
+                &serde_json::json!(true),
+            );
         }
         // Stamp the leader unicast target regardless of mark_replay so the
         // leader routes both historical and post-cursor live deltas only to
@@ -194,7 +223,7 @@ impl MvpAgent {
     }
 
     /// Replay updates from disk and drain completions.
-    /// Returns `(initial_total_tokens, end_offset, unfinished_subagents)`.
+    /// Returns the usage, resume offset, unfinished children, and whether the cursor matched.
     pub(super) async fn replay_session_updates(
         &self,
         session_id: &acp::SessionId,
@@ -203,7 +232,8 @@ impl MvpAgent {
         persist_data: Option<&serde_json::Value>,
         target_client_id: Option<&serde_json::Value>,
         cursor: Option<&str>,
-    ) -> Result<(u64, u64, Vec<(String, String)>), acp::Error> {
+        desktop_catchup: bool,
+    ) -> Result<(u64, u64, Vec<(String, String)>, bool), acp::Error> {
         let mut replay_timer = crate::instrumentation_timer!("session.load_session_replay");
         replay_timer.with_field("session_id", session_id.0.as_ref());
         replay_timer.with_field("cwd", cwd.as_str());
@@ -211,7 +241,7 @@ impl MvpAgent {
 
         let Some(updates_path) = updates_file_path.as_ref() else {
             tracing::warn!(session_id = %session_id.0, "replay: no updates file path");
-            return Ok((0, 0, Vec::new()));
+            return Ok((0, 0, Vec::new(), false));
         };
 
         let file_size = std::fs::metadata(updates_path)
@@ -221,7 +251,7 @@ impl MvpAgent {
         // Inline blocking I/O: spawn_blocking has multi-second latency on LocalSet.
         let raw_contents = match std::fs::read_to_string(updates_path) {
             Ok(s) if !s.is_empty() => s,
-            _ => return Ok((0, 0, Vec::new())),
+            _ => return Ok((0, 0, Vec::new(), false)),
         };
         let end_offset = raw_contents.len() as u64;
 
@@ -249,7 +279,7 @@ impl MvpAgent {
         }
 
         let last_tokens = prepared.last_tokens;
-        let mark_replay = prepared.mark_replay;
+        let origin = ReplayOrigin::for_cursor(prepared.mark_replay, desktop_catchup);
 
         if let Some(max_seq) = prepared.max_event_seq {
             crate::util::event_id::ensure_event_counter_at_least(max_seq + 1);
@@ -267,7 +297,7 @@ impl MvpAgent {
                     line,
                     persist_data,
                     target_client_id,
-                    mark_replay,
+                    origin,
                     &mut collapser,
                 ) {
                     drain.push(rx).await;
@@ -301,7 +331,12 @@ impl MvpAgent {
 
         replay_timer.with_field("updates_count", updates_count);
 
-        Ok((last_tokens, end_offset, unfinished_subagents))
+        Ok((
+            last_tokens,
+            end_offset,
+            unfinished_subagents,
+            !prepared.mark_replay,
+        ))
     }
 
     /// Enqueue replay notifications for updates appended after `from_offset`.
@@ -323,6 +358,7 @@ impl MvpAgent {
         persist_data: Option<&serde_json::Value>,
         target_client_id: Option<&serde_json::Value>,
         mark_replay: bool,
+        desktop_catchup: bool,
     ) -> Vec<ReplayCompletionRx> {
         use std::io::{Read, Seek, SeekFrom};
 
@@ -352,7 +388,7 @@ impl MvpAgent {
                 line,
                 persist_data,
                 target_client_id,
-                mark_replay,
+                ReplayOrigin::for_cursor(mark_replay, desktop_catchup),
                 &mut collapser,
             ) {
                 completions.push(rx);

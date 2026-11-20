@@ -47,3 +47,4 @@ pub mod upload;
 pub mod util;
 #[doc(hidden)]
 pub mod waterfall;
+pub use echo_agent_workspace::file_system::try_workspace_mutation;

@@ -13,7 +13,7 @@ import { useContinuationStore } from "@/stores/continuation-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { restoreKnowledgeTraces } from "@/lib/knowledge-traces-client";
 import { createMarkdownHostConfig, openLocalPath } from "@/lib/markdown-host";
-import { rewindExecute, rewindPoints, setCodingMode, sessionContinue, type ContinuationRequest } from "@/lib/agent-client";
+import { rewindExecute, rewindPoints, rewindUndoPreview, setCodingMode, sessionContinue, type ContinuationRequest } from "@/lib/agent-client";
 import { continuationTargets, inheritedMessageIds, continuationAnchor, latestContinuationTarget } from "@/lib/session-continuation";
 import { ConversationOrigin, ContinuationLinks } from "./ConversationContinuation";
 import {
@@ -763,6 +763,16 @@ export function ChatView({
   const subagentCount = collaboration.length;
   const searchable = messages.some(m => m.parts.some(p => p.kind === "text" && p.text.trim()));
   const hasContent = messages.some(m => m.parts.length > 0 || m.attachments?.length);
+  const [undoableEmptySession, setUndoableEmptySession] = useState<string | null>(null);
+  useEffect(() => {
+    setUndoableEmptySession(null);
+    if (!sessionId || hasContent || historyDisabled) return;
+    let stale = false;
+    void rewindUndoPreview(sessionId).then(preview => {
+      if (!stale && preview) setUndoableEmptySession(sessionId);
+    }).catch(() => {});
+    return () => { stale = true; };
+  }, [hasContent, historyDisabled, sessionId]);
   const awaitingPlan = planApproval?.sessionId === sessionId;
   const attentionItems = [
     ...(awaitingDecision ? [{ kind: "permission" as const, label: "待审批" }] : []),
@@ -1172,7 +1182,7 @@ export function ChatView({
         onStop: taskRunning ? () => { void cancelTask("stop"); } : undefined,
         stopping: cancellationPending,
         stopDisabled: sendNowPending || replacingTurn,
-        onRewind: hasContent ? () => setHistoryAction("rewind") : undefined,
+        onRewind: hasContent || undoableEmptySession === sessionId ? () => setHistoryAction("rewind") : undefined,
         onFork: hasContent && onForked ? () => { void startContinuation(); } : undefined,
       }} historyDisabled={historyDisabled || replacingTurn || continuationPending || retryBlocked}
       summary={{ searchable, hasContent, changeCount: changes.totalFiles, artifactCount: artifacts.length,

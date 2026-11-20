@@ -8,6 +8,7 @@
  */
 
 import type { SessionUsage, SessionUsageModel } from "./types";
+import type { TurnOrigin } from "./execution-turn";
 
 export interface UsageModelBreakdown {
   promptTokens: number;
@@ -42,6 +43,9 @@ export interface UsageRecord {
   /** Prompt id emitted by the durable TurnCompleted event. */
   promptId?: string;
   eventId?: string;
+  projectId?: string;
+  turnOrigin?: TurnOrigin;
+  turnSourceId?: string;
   /** Actual model requests folded into this prompt. */
   modelCalls?: number;
   /** Main-agent loop rounds; distinct from provider model requests. */
@@ -91,6 +95,7 @@ export interface UsageSummary {
   }>;
   /** 按日期分组(YYYY-MM-DD)。 */
   byDate: Record<string, { tokens: number; cost: number; count: number; requests: number }>;
+  byProject: Record<string, { tokens: number; cost: number; count: number; requests: number }>;
 }
 
 /** 配额配置。 */
@@ -285,21 +290,26 @@ export function recordTurnUsage(
     occurredAt?: number;
     eventId?: string;
     fallbackModelId?: string;
+    projectId?: string;
+    turnOrigin?: TurnOrigin;
+    turnSourceId?: string;
   },
   config?: QuotaConfig,
 ): UsageRecord[] {
   if (!entry.sessionId || !entry.promptId || !entry.usage) return records;
+  const id = `${entry.sessionId}:${entry.promptId}`;
+  const previous = records.find(item => item.id === id);
   const ts = typeof entry.occurredAt === "number" && Number.isFinite(entry.occurredAt) && entry.occurredAt > 0
     ? entry.occurredAt
-    : Date.now();
+    : previous?.ts ?? Date.now();
   const incomplete = entry.usage.usageIsIncomplete === true;
   const modelUsage = normalizeModelUsage(entry.usage.modelUsage, incomplete);
   const modelIds = modelUsage ? Object.keys(modelUsage) : [];
-  const modelId = entry.fallbackModelId || (modelIds.length === 1 ? modelIds[0] : "unknown");
+  const modelId = modelIds.length === 1 ? modelIds[0] : previous?.modelId || entry.fallbackModelId || "unknown";
   const promptTokens = nonNegative(entry.usage.inputTokens);
   const completionTokens = nonNegative(entry.usage.outputTokens);
   const record: UsageRecord = {
-    id: `${entry.sessionId}:${entry.promptId}`,
+    id,
     date: todayKey(new Date(ts)),
     modelId,
     promptTokens,
@@ -307,7 +317,10 @@ export function recordTurnUsage(
     ts,
     sessionId: entry.sessionId,
     promptId: entry.promptId,
-    eventId: entry.eventId,
+    eventId: entry.eventId ?? previous?.eventId,
+    projectId: previous?.projectId ?? entry.projectId,
+    turnOrigin: previous?.turnOrigin && previous.turnOrigin !== "user" ? previous.turnOrigin : entry.turnOrigin ?? previous?.turnOrigin,
+    turnSourceId: previous?.turnSourceId ?? entry.turnSourceId,
     modelCalls: nonNegative(entry.usage.modelCalls) || (promptTokens + completionTokens > 0 ? 1 : 0),
     agentTurns: nonNegative(entry.usage.numTurns),
     cachedReadTokens: nonNegative(entry.usage.cachedReadTokens),
@@ -463,6 +476,7 @@ export function summarizeUsage(
     : records;
   const byModel: UsageSummary["byModel"] = {};
   const byDate: UsageSummary["byDate"] = {};
+  const byProject: UsageSummary["byProject"] = Object.create(null);
   let totalPrompt = 0;
   let totalCompletion = 0;
   let totalCost = 0;
@@ -515,6 +529,13 @@ export function summarizeUsage(
     byDate[r.date].cost += recordCost;
     byDate[r.date].count += recordCalls;
     byDate[r.date].requests += 1;
+    if (r.projectId) {
+      const project = byProject[r.projectId] ??= { tokens: 0, cost: 0, count: 0, requests: 0 };
+      project.tokens += tokens;
+      project.cost += recordCost;
+      project.count += recordCalls;
+      project.requests += 1;
+    }
   }
   return {
     totalTokens: totalPrompt + totalCompletion,
@@ -531,6 +552,7 @@ export function summarizeUsage(
     incompleteCount,
     byModel,
     byDate,
+    byProject,
   };
 }
 

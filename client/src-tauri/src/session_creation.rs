@@ -7,6 +7,7 @@ type CreationResult = Option<Result<String, String>>;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SessionCreationKey {
     pub cwd: String,
+    pub project_id: Option<String>,
     pub profile_key: Option<String>,
     pub model_id: Option<String>,
     pub permission_mode: String,
@@ -82,6 +83,7 @@ mod tests {
     fn key() -> SessionCreationKey {
         SessionCreationKey {
             cwd: "/task".into(),
+            project_id: None,
             profile_key: None,
             model_id: Some("model".into()),
             permission_mode: "ask".into(),

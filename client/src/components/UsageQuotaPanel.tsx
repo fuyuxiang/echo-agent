@@ -21,6 +21,7 @@ import {
   type UsageRecord,
 } from "@/lib/usage-quota";
 import { stripUpstreamBrandedIds } from "@/lib/model-branding";
+import { useProjectsStore } from "@/stores/projects-store";
 import { useAppDialog } from "./AppDialog";
 
 type Period = "daily" | "monthly";
@@ -89,6 +90,7 @@ export function UsageQuotaPanel() {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { requestConfirmation, dialog } = useAppDialog();
+  const projects = useProjectsStore(state => state.projects);
 
   const refresh = useCallback(() => {
     setRecords(loadUsage());
@@ -289,6 +291,19 @@ export function UsageQuotaPanel() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {Object.keys(summary.byProject).length > 0 && (
+        <div className="quota-panel__section">
+          <h3>按项目</h3>
+          <ul>
+            {Object.entries(summary.byProject).sort((a, b) => b[1].tokens - a[1].tokens).map(([id, row]) => (
+              <li key={id}>
+                {projects.find(project => project.id === id)?.name ?? id} · {formatTokens(row.tokens)} Token · {formatTokens(row.count)} 次调用
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

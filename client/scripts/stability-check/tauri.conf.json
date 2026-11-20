@@ -5,7 +5,7 @@
   "identifier": "com.echoagent.stability-fixture",
   "build": { "frontendDist": "fixture" },
   "app": {
-    "windows": [{ "label": "main", "title": "EchoAgent 隔离恢复验收", "width": 640, "height": 320, "create": false }],
+    "windows": [{ "label": "main", "title": "EchoAgent 隔离恢复验收", "width": 640, "height": 320, "center": true, "decorations": false, "shadow": true, "create": false }],
     "security": { "csp": null }
   },
   "bundle": { "active": false, "icon": ["../../src-tauri/icons/32x32.png", "../../src-tauri/icons/icon.ico"] }

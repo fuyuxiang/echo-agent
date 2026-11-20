@@ -364,11 +364,12 @@ async fn handle_notification(
             if written.previous_content.is_some() || written.is_new_file {
                 config
                     .file_state_tracker
-                    .add_before_snapshot_for_prompt(
+                    .record_tool_write(
                         prompt_index,
                         &written.absolute_path,
                         &config.cwd,
                         written.previous_content,
+                        (!written.is_deleted).then_some(written.content),
                     )
                     .await;
             }

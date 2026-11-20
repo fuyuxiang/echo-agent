@@ -187,6 +187,7 @@ export type AcpSessionUpdate = (
 export type HostSessionUpdate = (
   | { sessionUpdate: "plan_approval_request"; requestId: string; toolCallId: string; planContent?: string }
   | { sessionUpdate: "plan_approval_resolved"; requestId: string }
+  | { sessionUpdate: "memory_context_used"; sources: string[] }
   | ({ sessionUpdate: "turn_completed" | "session_summary_generated" | "subagent_spawned" | "subagent_progress" | "subagent_finished" | "task_backgrounded" } & Record<string, unknown>)
 ) & SessionUpdateMetadata;
 
@@ -277,6 +278,8 @@ export interface TurnUsageEvent {
   usage: SessionUsage;
   occurredAt?: number;
   eventId?: string;
+  turnOrigin?: Record<string, unknown>;
+  projectId?: string;
 }
 
 export type SessionUpdate = (
@@ -338,6 +341,7 @@ export interface PromptComplete {
   cancellationCategory?: string;
   /** Provider/runtime detail for terminal failures, when safe to surface. */
   agentResult?: string;
+  recoverySummary?: boolean;
   usage?: {
     promptTokens?: number;
     completionTokens?: number;
@@ -381,6 +385,8 @@ export interface SessionSummary {
   updatedAt?: string;
   /** Working directory the session is bound to. */
   cwd: string;
+  /** Native project ownership, independent of the execution directory. */
+  projectId?: string;
   /** True if it's a git repo (inferred from `git_root_dir` in summary.json). */
   isGitRepo?: boolean;
   /** True if the session is pinned to the top of the list.
@@ -769,6 +775,20 @@ export interface RewindPoint {
 export interface RewindExecution {
   targetPromptIndex: number;
   promptText?: string;
+  revertedFiles?: string[];
+  conflicts?: RewindFileConflict[];
+}
+
+export interface RewindFileConflict {
+  path: string;
+  conflictType: string;
+  recoveryPath?: string;
+}
+
+export interface RewindPreview {
+  revision: string;
+  cleanFiles: string[];
+  conflicts: RewindFileConflict[];
 }
 
 // ---------- slash commands + prompt history ----------
@@ -950,6 +970,8 @@ export interface Automation {
   status: AutomationStatus;
   modelId?: string;
   modelIsThinking?: boolean;
+  crossProviderFallback?: boolean;
+  recoverAfterInterruption?: boolean;
   skills: string[];
   expertId?: string;
   expertName?: string;
@@ -967,6 +989,7 @@ export interface Automation {
   validFromDate?: string;
   validUntilDate?: string;
   pushToWeChat: boolean;
+  reviewPublication?: boolean;
   /** Legacy tasks default to independent conversations. */
   newSessionEachRun?: boolean;
   contextGeneration?: number;
@@ -986,7 +1009,11 @@ export interface AutomationRunRecord {
   completionPending?: boolean;
   cleanup?: { status: "running" | "failed" | "completed"; error?: string };
   notificationDelivery?: string;
+  publicationPending?: boolean;
   id: string;
+  recoveredFromPromptId?: string;
+  recoverySummaryStatus?: "completed" | "failed";
+  runtimeInterrupted?: boolean;
   automationId: string;
   automationName: string;
   status: "queued" | "running" | "success" | "failed" | "interrupted" | "stopped" | string;
@@ -1013,6 +1040,8 @@ export interface AutomationUpdateEvent {
   automationName: string;
   recordId: string;
   status: AutomationRunRecord["status"];
+  recoverySummaryStatus?: AutomationRunRecord["recoverySummaryStatus"];
+  runtimeInterrupted?: boolean;
   sessionId?: string;
   promptId?: string;
   currentModelId?: string;

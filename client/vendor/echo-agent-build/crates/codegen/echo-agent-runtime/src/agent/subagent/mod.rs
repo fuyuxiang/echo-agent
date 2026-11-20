@@ -112,6 +112,7 @@ impl AutoCompactThresholdTiers {
 /// about the full agent struct). Built by `MvpAgent::build_subagent_spawn_context()`.
 pub(crate) struct SubagentSpawnContext {
     pub parent_turn_authority: Option<crate::session::InheritedTurnAuthority>,
+    pub parent_host_project_context: Option<Arc<str>>,
     /// Parent's LSP runtime — inherited via ToolContext, same as fs/terminal.
     pub lsp: Option<std::sync::Arc<dyn echo_agent_tools::implementations::lsp::LspBackend>>,
     /// Root session's process scope, inherited so the subagent's own child

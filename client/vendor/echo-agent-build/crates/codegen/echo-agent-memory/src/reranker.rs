@@ -55,7 +55,7 @@ impl ConfiguredReranker {
                     .collect::<Vec<_>>();
                 let scores = crate::local::rerank(query, &documents, permit.clone()).await?;
                 if let Some(permit) = permit {
-                    permit(&documents)?;
+                    permit(0, &documents)?;
                 }
                 if scores.len() != candidates.len() {
                     return Err("local reranker returned an invalid result count".into());
@@ -141,7 +141,7 @@ impl ApiReranker {
             }
 
             if let Some(permit) = &self.request_permit {
-                permit(&documents)?;
+                permit(0, &documents)?;
             }
             let mut request =
                 echo_agent_http::shared_client().post(self.endpoint.trim_end_matches('/'));

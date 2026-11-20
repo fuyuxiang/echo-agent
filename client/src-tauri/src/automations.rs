@@ -142,6 +142,10 @@ pub struct Automation {
     #[serde(default)]
     pub model_is_thinking: bool,
     #[serde(default)]
+    pub cross_provider_fallback: bool,
+    #[serde(default)]
+    pub recover_after_interruption: bool,
+    #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
     pub expert_id: Option<String>,
@@ -173,6 +177,8 @@ pub struct Automation {
     pub valid_until_date: Option<String>,
     #[serde(default)]
     pub push_to_we_chat: bool,
+    #[serde(default)]
+    pub review_publication: bool,
     /// Missing in legacy tasks: preserve their independent-session behavior.
     #[serde(default = "default_new_session_each_run")]
     pub new_session_each_run: bool,
@@ -245,8 +251,16 @@ pub struct AutomationRunRecord {
     /// Identity of this run's first prompt; historical sessions may be reused.
     #[serde(default)]
     pub prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovered_from_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_summary_status: Option<RecoverySummaryStatus>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub runtime_interrupted: bool,
     #[serde(default)]
     pub notification_delivery: Option<String>,
+    #[serde(default, skip_deserializing)]
+    pub publication_pending: bool,
     #[serde(default)]
     pub completion_pending: bool,
     /// Execution is already terminal; resource cleanup has its own lifecycle.
@@ -284,6 +298,13 @@ pub struct AutomationRunRecord {
     pub archived: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoverySummaryStatus {
+    Completed,
+    Failed,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AutomationStore {
     #[serde(default)]
@@ -315,6 +336,10 @@ pub struct AutomationUpdateEvent {
     pub automation_name: String,
     pub record_id: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_summary_status: Option<RecoverySummaryStatus>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub runtime_interrupted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -389,6 +414,8 @@ fn run_update_event(
         automation_name: automation.name.clone(),
         record_id: record_id.into(),
         status: status.into(),
+        recovery_summary_status: None,
+        runtime_interrupted: false,
         session_id: session_id.map(str::to_string),
         cwd: Some(cwd.to_string_lossy().into_owned()),
         error: error.map(str::to_string),
@@ -497,6 +524,69 @@ fn sync_autostart_enabled(app: &AppHandle, enabled: bool) {
 
 pub fn sync_autostart_state(app: &AppHandle) {
     sync_autostart_enabled(app, has_active_automations());
+}
+
+fn resident_runtime_has_work() -> bool {
+    let has_schedule = {
+        let _guard = store_access().lock().unwrap();
+        read_store().is_ok_and(|store| store.automations.iter().any(|item| item.status == "ACTIVE"))
+    };
+    if has_schedule {
+        return true;
+    }
+    let _guard = record_access().lock().unwrap();
+    read_records().is_ok_and(|store| {
+        store
+            .records
+            .iter()
+            .any(|record| matches!(record.status.as_str(), "queued" | "running"))
+    })
+}
+
+pub(crate) fn start_runtime_supervisor(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        use crate::bridge::{FolderTrusts, Permissions, PlanApprovals, Questions};
+        use std::{sync::atomic::Ordering, time::Duration};
+        let mut retry_delay = Duration::from_secs(2);
+        loop {
+            tokio::time::sleep(retry_delay).await;
+            let state = app.state::<AppState>();
+            if crate::EXIT_IN_PROGRESS.load(Ordering::Acquire)
+                || state
+                    .tx
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|tx| !tx.is_closed())
+                || crate::policy::require_feature("automations").is_err()
+            {
+                retry_delay = Duration::from_secs(2);
+                continue;
+            }
+            if !resident_runtime_has_work() {
+                retry_terminal_completions(&app);
+                retry_delay = Duration::from_secs(10);
+                continue;
+            }
+            let result = crate::commands::agent_init(
+                app.clone(),
+                state,
+                app.state::<Permissions>(),
+                app.state::<Questions>(),
+                app.state::<PlanApprovals>(),
+                app.state::<FolderTrusts>(),
+                None,
+            )
+            .await;
+            match result {
+                Ok(_) => retry_delay = Duration::from_secs(2),
+                Err(error) => {
+                    tracing::warn!(%error, "resident automation runtime start failed");
+                    retry_delay = (retry_delay * 2).min(Duration::from_secs(60));
+                }
+            }
+        }
+    });
 }
 
 fn write_json(path: &Path, body: &str) -> Result<(), String> {
@@ -787,7 +877,11 @@ fn append_run_started(
         finished_at: None,
         session_id: None,
         prompt_id: None,
+        recovered_from_prompt_id: None,
+        recovery_summary_status: None,
+        runtime_interrupted: false,
         notification_delivery: None,
+        publication_pending: false,
         completion_pending: false,
         cleanup: None,
         stop_requested: false,
@@ -871,6 +965,7 @@ fn mark_record_running(record_id: &str, resolved_model_id: &str) -> Result<(), S
     match record.status.as_str() {
         "queued" => {
             record.status = "running".into();
+            record.waiting_reason = None;
             // Auto is resolved at dispatch time. Persist the concrete id so the
             // history row remains an accurate audit record after defaults change.
             record.model_id = Some(resolved_model_id.to_string());
@@ -891,6 +986,25 @@ fn record_session_id(record_id: &str) -> Result<Option<String>, String> {
         .into_iter()
         .find(|record| record.id == record_id)
         .and_then(|record| record.session_id))
+}
+
+fn record_recovery(record_id: &str) -> Result<Option<(String, String)>, String> {
+    let _guard = record_access().lock().unwrap();
+    let record = read_records()?
+        .records
+        .into_iter()
+        .find(|record| record.id == record_id)
+        .ok_or("运行记录不存在")?;
+    let Some(source) = record.recovered_from_prompt_id else {
+        return Ok(None);
+    };
+    if record.prompt_id.as_ref() != Some(&source) {
+        return Err("本次运行的恢复消息已发送".into());
+    }
+    Ok(Some((
+        record.session_id.ok_or("检查点未绑定会话")?,
+        record.model_id.ok_or("检查点未绑定模型")?,
+    )))
 }
 
 fn set_run_waiting(record_id: &str, reason: Option<&str>) -> Result<(), String> {
@@ -918,6 +1032,26 @@ fn terminal_status(stop_requested: bool, interrupted: bool, ok: bool) -> &'stati
     } else {
         "failed"
     }
+}
+
+fn fact_is_recovery_summary(record: &AutomationRunRecord, fact: &TerminalFact) -> bool {
+    record
+        .recovered_from_prompt_id
+        .as_ref()
+        .is_some_and(|original| fact.prompt_id.as_ref() != Some(original))
+}
+
+fn fact_status(record: &AutomationRunRecord, fact: &TerminalFact) -> &'static str {
+    if fact_is_recovery_summary(record, fact) && !record.stop_requested {
+        return "interrupted";
+    }
+    terminal_status(record.stop_requested, fact.interrupted, fact.ok)
+}
+
+const RECOVERY_PROMPT_PREFIX: &str = "automation-recovery-";
+
+pub(crate) fn is_recovery_summary_prompt(prompt_id: &str) -> bool {
+    prompt_id.starts_with(RECOVERY_PROMPT_PREFIX)
 }
 
 const AUTOMATION_STOPPED_MESSAGE: &str = "本次运行已停止，后续计划不受影响";
@@ -973,22 +1107,8 @@ fn record_run_finished_with_cleanup(
     {
         return false;
     }
-    let fact = TerminalFact {
-        record_id: record_id.into(),
-        session_id: session_id.map(str::to_string),
-        prompt_id: None,
-        interrupted: false,
-        ok,
-        error: error.map(str::to_string),
-        cleanup,
-        finished_at: Local::now().to_rfc3339(),
-        completion: None,
-        local_notification_id: None,
-        external_claimed: false,
-        external_result: None,
-        restored_orphan: false,
-        cleanup_only: false,
-    };
+    let mut fact = TerminalFact::new(record_id, session_id, None, ok, error, false);
+    fact.cleanup = cleanup;
     match persist_terminal(fact) {
         Ok(completion) => completion.is_some(),
         Err(error) => {
@@ -1038,6 +1158,7 @@ fn cleanup_update_fact(
         prompt_id: record.prompt_id.clone(),
         ok: record.status == "success",
         interrupted: record.status == "interrupted",
+        runtime_interrupted: record.runtime_interrupted,
         error: record.error.clone(),
         cleanup: Some(cleanup),
         finished_at: record
@@ -1049,6 +1170,7 @@ fn cleanup_update_fact(
         external_claimed: true,
         external_result: record.notification_delivery.clone(),
         restored_orphan: false,
+        publication_approved: None,
         cleanup_only: true,
     }
 }
@@ -1113,6 +1235,8 @@ impl Drop for TimeoutPublicationHold {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationCompletion {
     pub push: bool,
+    #[serde(default)]
+    pub requires_review: bool,
     pub automation_name: String,
     pub event: AutomationUpdateEvent,
 }
@@ -1134,6 +1258,8 @@ struct TerminalFact {
     ok: bool,
     #[serde(default)]
     interrupted: bool,
+    #[serde(default)]
+    runtime_interrupted: bool,
     error: Option<String>,
     #[serde(default)]
     cleanup: Option<AutomationRunCleanup>,
@@ -1147,9 +1273,41 @@ struct TerminalFact {
     #[serde(default)]
     external_result: Option<String>,
     #[serde(default)]
+    publication_approved: Option<bool>,
+    #[serde(default)]
     restored_orphan: bool,
     #[serde(default)]
     cleanup_only: bool,
+}
+
+impl TerminalFact {
+    fn new(
+        record_id: &str,
+        session_id: Option<&str>,
+        prompt_id: Option<&str>,
+        ok: bool,
+        error: Option<&str>,
+        interrupted: bool,
+    ) -> Self {
+        Self {
+            record_id: record_id.into(),
+            session_id: session_id.map(str::to_owned),
+            prompt_id: prompt_id.map(str::to_owned),
+            ok,
+            error: error.map(str::to_owned),
+            interrupted,
+            runtime_interrupted: false,
+            cleanup: None,
+            finished_at: Local::now().to_rfc3339(),
+            completion: None,
+            local_notification_id: None,
+            external_claimed: false,
+            external_result: None,
+            publication_approved: None,
+            restored_orphan: false,
+            cleanup_only: false,
+        }
+    }
 }
 
 /// Reconcile a staged backup before any service can retry an outbox. Restored
@@ -1212,7 +1370,7 @@ pub(crate) fn prepare_restored_terminals(home: &Path) -> Result<(), String> {
                 return Err("自动化恢复事实轮次不一致".into());
             }
             finalize_from_fact(&mut record, &fact);
-            let expected_status = terminal_status(record.stop_requested, fact.interrupted, fact.ok);
+            let expected_status = fact_status(&record, &fact);
             if record.status != expected_status {
                 return Err("自动化恢复事实与终态历史冲突，原数据已保留".into());
             }
@@ -1249,6 +1407,14 @@ pub(crate) fn prepare_restored_terminals(home: &Path) -> Result<(), String> {
 fn active_run_prompts() -> &'static Mutex<HashMap<(String, String), String>> {
     static ACTIVE: OnceLock<Mutex<HashMap<(String, String), String>>> = OnceLock::new();
     ACTIVE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn active_run_for_prompt(session_id: &str, prompt_id: &str) -> Option<String> {
+    active_run_prompts()
+        .lock()
+        .ok()?
+        .get(&(session_id.into(), prompt_id.into()))
+        .cloned()
 }
 fn pending_terminals() -> &'static Mutex<HashMap<String, TerminalFact>> {
     static PENDING: OnceLock<Mutex<HashMap<String, TerminalFact>>> = OnceLock::new();
@@ -1292,7 +1458,20 @@ fn finalize_from_fact(record: &mut AutomationRunRecord, fact: &TerminalFact) -> 
         fact.error.as_deref(),
     );
     if changed {
-        record.status = terminal_status(record.stop_requested, fact.interrupted, fact.ok).into();
+        record.status = fact_status(record, fact).into();
+        record.runtime_interrupted = record.status == "interrupted"
+            && (fact.runtime_interrupted || fact_is_recovery_summary(record, fact));
+        if fact_is_recovery_summary(record, fact) && !record.stop_requested {
+            record.recovery_summary_status = Some(if fact.ok && !fact.interrupted {
+                RecoverySummaryStatus::Completed
+            } else {
+                RecoverySummaryStatus::Failed
+            });
+        } else if fact.prompt_id.is_some() && fact.prompt_id == record.recovered_from_prompt_id {
+            // A late durable completion for the original run settles it before
+            // a recovery summary was sent.
+            record.recovered_from_prompt_id = None;
+        }
     }
     if fact.cleanup.is_some() && record.cleanup != fact.cleanup {
         record.cleanup = fact.cleanup.clone();
@@ -1323,6 +1502,10 @@ fn completion_for_record(record: &AutomationRunRecord) -> AutomationCompletion {
         .unwrap_or(false);
     AutomationCompletion {
         push,
+        requires_review: record
+            .automation_snapshot
+            .as_ref()
+            .is_some_and(|a| a.review_publication),
         automation_name: record.automation_name.clone(),
         event: AutomationUpdateEvent {
             project_id: record
@@ -1336,9 +1519,17 @@ fn completion_for_record(record: &AutomationRunRecord) -> AutomationCompletion {
             automation_name: record.automation_name.clone(),
             record_id: record.id.clone(),
             status: record.status.clone(),
+            recovery_summary_status: record.recovery_summary_status,
+            runtime_interrupted: record.runtime_interrupted,
             session_id: record.session_id.clone(),
             cwd: record.cwd.clone(),
-            error: completion_error(record.error.as_deref(), record.cleanup.as_ref()),
+            error: completion_error(
+                record.error.as_deref().or_else(|| {
+                    (record.recovery_summary_status == Some(RecoverySummaryStatus::Completed))
+                        .then_some("已汇总保存的结果，请核查原任务剩余步骤")
+                }),
+                record.cleanup.as_ref(),
+            ),
         },
     }
 }
@@ -1364,14 +1555,10 @@ fn persist_terminal_transition(
             .find(|record| record.id == fact.record_id)
             .cloned()
             .ok_or_else(|| "自动化完成记录不存在，保留待恢复事实".to_string())?;
-        let push = terminal
-            .automation_snapshot
-            .as_ref()
-            .is_some_and(|a| a.push_to_we_chat);
+        let snapshot = terminal.automation_snapshot.take();
         finalize_from_fact(&mut terminal, fact);
-        let mut completion = completion_for_record(&terminal);
-        completion.push = push;
-        fact.completion = Some(completion);
+        terminal.automation_snapshot = snapshot;
+        fact.completion = Some(completion_for_record(&terminal));
     }
     save_fact(fact)?;
     if apply_terminal_fact(records, fact)? {
@@ -1483,22 +1670,14 @@ fn complete_run_prompt(
     let Some(record_id) = record.map(|r| r.id).or(known_id) else {
         return AutomationCompletionOutcome::NotAutomation;
     };
-    let fact = TerminalFact {
-        record_id,
-        session_id: Some(session_id.into()),
-        prompt_id: Some(prompt_id.into()),
-        interrupted,
+    let fact = TerminalFact::new(
+        &record_id,
+        Some(session_id),
+        Some(prompt_id),
         ok,
-        error: error.map(str::to_string),
-        cleanup: None,
-        finished_at: Local::now().to_rfc3339(),
-        completion: None,
-        local_notification_id: None,
-        external_claimed: false,
-        external_result: None,
-        restored_orphan: false,
-        cleanup_only: false,
-    };
+        error,
+        interrupted,
+    );
     match persist_terminal(fact) {
         Ok(Some(completion)) => AutomationCompletionOutcome::Persisted(Box::new(completion)),
         Ok(None) => AutomationCompletionOutcome::AlreadyFinalized,
@@ -1506,9 +1685,9 @@ fn complete_run_prompt(
     }
 }
 
-/// Bounded-frequency retries persist facts only; they never dispatch a prompt again.
-fn retry_terminal_completions(app: &AppHandle) {
-    let _guard = record_access().lock().unwrap();
+/// Called with record_access held so no caller can replace a newly saved
+/// publication decision with an earlier read.
+fn load_pending_terminals() {
     if let Ok(entries) = std::fs::read_dir(terminal_dir()) {
         for entry in entries.flatten().take(10_000) {
             let path = entry.path();
@@ -1530,6 +1709,12 @@ fn retry_terminal_completions(app: &AppHandle) {
             }
         }
     }
+}
+
+/// Bounded-frequency retries persist facts only; they never dispatch a prompt again.
+fn retry_terminal_completions(app: &AppHandle) {
+    let _guard = record_access().lock().unwrap();
+    load_pending_terminals();
     let pending: Vec<_> = pending_terminals()
         .lock()
         .unwrap()
@@ -1537,6 +1722,9 @@ fn retry_terminal_completions(app: &AppHandle) {
         .cloned()
         .collect();
     for fact in pending {
+        if waiting_for_publication_review(&fact) && fact.local_notification_id.is_some() {
+            continue;
+        }
         match persist_terminal(fact) {
             Ok(Some(completion)) => publish_automation_completion(app, completion),
             Ok(None) => {}
@@ -1552,12 +1740,52 @@ fn claim_external_attempt(
     push: bool,
     mut save: impl FnMut(&TerminalFact) -> Result<(), String>,
 ) -> Result<bool, String> {
-    let should_send = push && !fact.external_claimed;
+    let should_send = push
+        && !fact.external_claimed
+        && fact.external_result.is_none()
+        && !waiting_for_publication_review(fact)
+        && fact.publication_approved != Some(false);
     if should_send {
         fact.external_claimed = true;
     }
     save(fact)?;
     Ok(should_send)
+}
+
+fn waiting_for_publication_review(fact: &TerminalFact) -> bool {
+    !fact.external_claimed
+        && fact.external_result.is_none()
+        && fact.publication_approved.is_none()
+        && fact
+            .completion
+            .as_ref()
+            .is_some_and(|completion| completion.push && completion.requires_review)
+}
+
+#[tauri::command]
+pub fn automation_publication_decide(
+    app: AppHandle,
+    id: String,
+    approve: bool,
+) -> Result<(), String> {
+    crate::policy::require_feature("automations")?;
+    let completion = {
+        let _guard = record_access().lock().unwrap();
+        let mut fact = pending_terminal(&id)?.ok_or("该运行没有待确认的发布")?;
+        if !waiting_for_publication_review(&fact) || fact.local_notification_id.is_none() {
+            return Err("发布状态已变化，请刷新运行记录".into());
+        }
+        fact.publication_approved = Some(approve);
+        if !approve {
+            fact.external_result = Some("已拒绝发布，结果保留在本机".into());
+        }
+        let completion = fact.completion.clone().ok_or("发布记录不完整")?;
+        write_terminal_fact(&fact)?;
+        pending_terminals().lock().unwrap().insert(id, fact);
+        completion
+    };
+    publish_automation_completion(&app, completion);
+    Ok(())
 }
 
 fn publish_pending_completion(app: &AppHandle, record_id: &str) {
@@ -1582,7 +1810,11 @@ fn publication_title(completion: &AutomationCompletion) -> String {
         if completion.event.status == "stopped" {
             "已停止"
         } else if completion.event.status == "interrupted" {
-            "已人工接管"
+            if completion.event.runtime_interrupted {
+                "已中断"
+            } else {
+                "已人工接管"
+            }
         } else if completion.event.status == "failed" {
             "运行失败"
         } else {
@@ -1645,7 +1877,7 @@ pub(crate) fn publish_automation_completion(app: &AppHandle, completion: Automat
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let prepared = (|| -> Result<(TerminalFact, bool), String> {
+        let prepared = (|| -> Result<(TerminalFact, bool, bool), String> {
             let _guard = record_access().lock().unwrap();
             let mut fact = pending_terminals()
                 .lock()
@@ -1653,6 +1885,7 @@ pub(crate) fn publish_automation_completion(app: &AppHandle, completion: Automat
                 .get(&record_id)
                 .cloned()
                 .ok_or("完成事实不存在")?;
+            let first_publication = fact.local_notification_id.is_none();
             let failed = completion.event.status == "failed";
             let body = completion
                 .event
@@ -1685,23 +1918,26 @@ pub(crate) fn publish_automation_completion(app: &AppHandle, completion: Automat
                 .lock()
                 .unwrap()
                 .insert(record_id.clone(), fact.clone());
-            Ok((fact, send_external))
+            Ok((fact, send_external, first_publication))
         })();
         match prepared {
-            Ok((fact, send_external)) => {
-                emit_automation_update(&app, completion.event.clone());
+            Ok((fact, send_external, first_publication)) => {
+                let mut update = completion.event.clone();
+                if !first_publication {
+                    update.phase = "publication".into();
+                }
+                if waiting_for_publication_review(&fact) {
+                    publications_in_flight().lock().unwrap().remove(&record_id);
+                    emit_automation_update(&app, update);
+                    return;
+                }
+                emit_automation_update(&app, update.clone());
                 let delivery = if send_external {
                     let results = crate::notifications::dispatch_with_desktop_fallback(
                         &app,
                         crate::notifications::NotifyMessage {
                             title: publication_title(&completion),
-                            body: Some(
-                                completion
-                                    .event
-                                    .error
-                                    .clone()
-                                    .unwrap_or_else(|| "打开任务查看结果".into()),
-                            ),
+                            body: Some("打开 EchoAgent 查看本次运行记录".into()),
                             level: if completion.event.status == "failed" {
                                 "error".into()
                             } else if completion.event.status == "interrupted" {
@@ -1733,6 +1969,9 @@ pub(crate) fn publish_automation_completion(app: &AppHandle, completion: Automat
                 };
                 if let Err(error) = finish_publication(&record_id, &delivery) {
                     tracing::warn!(%error, %record_id, "automation publication receipt pending retry");
+                } else {
+                    update.phase = "publication".into();
+                    emit_automation_update(&app, update);
                 }
             }
             Err(error) => {
@@ -1911,39 +2150,235 @@ pub fn clear_runtime_sessions() {
     full_access_sessions().lock().unwrap().clear();
 }
 
-fn fail_stale_running_records() {
+fn persisted_turn_completion(
+    mut reader: impl BufRead,
+    session_id: &str,
+    prompt_id: &str,
+) -> Option<crate::bridge::CompleteEvent> {
+    let mut line = Vec::new();
+    let mut completion = None;
+    loop {
+        // TurnCompleted is small. Drain other records without allocating their
+        // entire tool outputs or mistaking a torn trailing write for a receipt.
+        let count = (&mut reader)
+            .take(256 * 1024)
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if count == 0 {
+            return completion;
+        }
+        if line.last() != Some(&b'\n') {
+            loop {
+                let chunk = reader.fill_buf().ok()?;
+                if chunk.is_empty() {
+                    return completion;
+                }
+                let newline = chunk.iter().position(|byte| *byte == b'\n');
+                let consumed = newline.map_or(chunk.len(), |position| position + 1);
+                reader.consume(consumed);
+                if newline.is_some() {
+                    break;
+                }
+            }
+        } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) {
+            let params = &value["params"];
+            let update = &params["update"];
+            if params["sessionId"].as_str() == Some(session_id)
+                && update["sessionUpdate"].as_str() == Some("turn_completed")
+            {
+                if let Some(event) =
+                    crate::bridge::parse_live_durable_completion(session_id, params, update)
+                        .filter(|event| event.prompt_id == prompt_id)
+                {
+                    completion = Some(event);
+                }
+            }
+        }
+        line.clear();
+    }
+}
+
+fn run_session_directory(record: &AutomationRunRecord) -> Option<PathBuf> {
+    let session_id = record.session_id.as_deref()?;
+    let paths = echo_agent_runtime::session::persistence::session_history_paths(
+        session_id,
+        record.cwd.as_deref(),
+    )
+    .ok()?;
+    let [directory] = paths.as_slice() else {
+        return None;
+    };
+    Some(directory.clone())
+}
+
+fn read_persisted_turn_completion(
+    record: &AutomationRunRecord,
+) -> Option<crate::bridge::CompleteEvent> {
+    let session_id = record.session_id.as_deref()?;
+    let prompt_id = record.prompt_id.as_deref()?;
+    let directory = run_session_directory(record)?;
+    // The latest automation turn necessarily lies near the tail. An older
+    // matching receipt outside this budget leaves the run for user review.
+    use std::io::{Seek, SeekFrom};
+    let mut file =
+        crate::shell_fs::open_regular_file_no_follow(&directory.join("updates.jsonl")).ok()?;
+    let len = file.metadata().ok()?.len();
+    let offset = len.saturating_sub(16 * 1024 * 1024);
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    persisted_turn_completion(
+        BufReader::new(file.take(len - offset)),
+        session_id,
+        prompt_id,
+    )
+}
+
+fn has_recovery_checkpoint(record: &AutomationRunRecord) -> bool {
+    record.recovered_from_prompt_id.is_none()
+        && record.model_id.is_some()
+        && record
+            .automation_snapshot
+            .as_ref()
+            .is_some_and(|automation| automation.recover_after_interruption)
+        && record.prompt_id.as_deref().is_some_and(|prompt_id| {
+            run_session_directory(record).is_some_and(|directory| {
+                read_bounded_string(&directory.join("desktop-automation-checkpoint"), 256)
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some(prompt_id)
+            })
+        })
+}
+
+fn interrupted_run_candidates() -> Vec<AutomationRunRecord> {
     let _guard = record_access().lock().unwrap();
-    let mut records = match read_records() {
-        Ok(records) => records,
+    match read_records() {
+        Ok(records) => records
+            .records
+            .into_iter()
+            .filter(|record| {
+                record.status == "running"
+                    && !pending_terminals().lock().unwrap().contains_key(&record.id)
+            })
+            .collect::<Vec<_>>(),
         Err(error) => {
             tracing::error!(%error, "failed to read automation records during startup recovery");
+            Vec::new()
+        }
+    }
+}
+
+fn requeue_interrupted_record(
+    record: &mut AutomationRunRecord,
+    checkpoint: bool,
+) -> Option<AutomationUpdateEvent> {
+    let before_send = record.session_id.is_none()
+        && record.prompt_id.is_none()
+        && record.automation_snapshot.is_some()
+        && record.recovered_from_prompt_id.is_none();
+    if record.stop_requested || (!before_send && !checkpoint) {
+        return None;
+    }
+    record.status = "queued".into();
+    record.waiting_reason = checkpoint.then(|| "等待恢复并汇总已保存的工具结果".into());
+    if checkpoint {
+        record.recovered_from_prompt_id = record.prompt_id.clone();
+    }
+    let mut event = completion_for_record(record).event;
+    event.phase = "queued".into();
+    Some(event)
+}
+
+async fn recover_interrupted_runs(
+    app: &AppHandle,
+    tx: &echo_agent_acp::AcpAgentTx,
+    candidates: Vec<AutomationRunRecord>,
+) {
+    let decisions = match tokio::task::spawn_blocking(move || {
+        candidates
+            .into_iter()
+            .map(|record| {
+                let completion = read_persisted_turn_completion(&record);
+                let checkpoint = completion.is_none() && has_recovery_checkpoint(&record);
+                (record, completion, checkpoint)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    {
+        Ok(results) => results,
+        Err(error) => {
+            tracing::error!(%error, "failed to inspect automation run receipts");
             return;
         }
     };
-    let now = Local::now().to_rfc3339();
-    let mut changed = false;
-    for record in &mut records.records {
-        if record.status == "running"
-            && !pending_terminals().lock().unwrap().contains_key(&record.id)
-        {
-            record.status = "failed".into();
-            record.finished_at = Some(now.clone());
-            record.error = Some("运行结果未知：应用或 Agent 中断，未找到可恢复的完成事实；请核查会话，系统不会自动重跑".into());
-            record.automation_snapshot = None;
-            changed = true;
+    for (stale, completion, checkpoint) in decisions {
+        if !runtime_channel_is_current(app, tx) {
+            return;
         }
-    }
-    if changed {
+        if let Some(completion) = completion {
+            crate::bridge::handle_prompt_complete(app, completion).await;
+            continue;
+        }
+        let _guard = record_access().lock().unwrap();
+        let Ok(mut records) = read_records() else {
+            continue;
+        };
+        let Some(record) = records.records.iter_mut().find(|record| {
+            record.id == stale.id
+                && record.status == "running"
+                && record.prompt_id == stale.prompt_id
+                && record.session_id == stale.session_id
+        }) else {
+            continue;
+        };
+        if pending_terminals().lock().unwrap().contains_key(&record.id) {
+            continue;
+        }
+        let Some(event) = requeue_interrupted_record(record, checkpoint) else {
+            let mut fact = TerminalFact::new(
+                &record.id,
+                record.session_id.as_deref(),
+                record.prompt_id.as_deref(),
+                false,
+                (!record.stop_requested)
+                    .then_some("运行已中断，未确认完整结果。请打开原会话核对已执行的操作。"),
+                !record.stop_requested,
+            );
+            fact.runtime_interrupted = !record.stop_requested;
+            let completion = persist_terminal(fact);
+            drop(_guard);
+            match completion {
+                Ok(Some(completion)) => publish_automation_completion(app, completion),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::error!(%error, "interrupted automation settlement pending retry")
+                }
+            }
+            continue;
+        };
         if let Err(error) = write_records(&mut records) {
-            tracing::error!(%error, "failed to persist stale automation recovery");
-        } else {
-            let pending = pending_terminals().lock().unwrap();
-            active_run_prompts()
-                .lock()
-                .unwrap()
-                .retain(|_, id| pending.contains_key(id));
+            tracing::error!(%error, "failed to persist interrupted automation recovery");
+            continue;
         }
+        active_run_prompts()
+            .lock()
+            .unwrap()
+            .retain(|_, id| id != &stale.id);
+        drop(_guard);
+        emit_automation_update(app, event);
     }
+}
+
+fn runtime_channel_is_current(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx) -> bool {
+    !tx.is_closed()
+        && app
+            .state::<AppState>()
+            .tx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|current| current.same_channel(tx))
 }
 
 fn recover_interrupted_cleanups() {
@@ -2500,9 +2935,13 @@ pub async fn automations_snapshot(app: AppHandle) -> Result<AutomationSnapshot, 
     };
     let mut records = {
         let _guard = record_access().lock().unwrap();
+        load_pending_terminals();
         let mut records = read_records()?.records;
         let pending = pending_terminals().lock().unwrap();
         for record in &mut records {
+            record.publication_pending = pending.get(&record.id).is_some_and(|fact| {
+                fact.local_notification_id.is_some() && waiting_for_publication_review(fact)
+            });
             if pending.contains_key(&record.id)
                 && matches!(record.status.as_str(), "queued" | "running")
             {
@@ -2660,6 +3099,23 @@ pub(crate) fn owns_session(session_id: &str) -> bool {
             .iter()
             .any(|item| item.dedicated_session_id.as_deref() == Some(session_id))
     })
+}
+
+pub(crate) fn require_no_pending_session_recovery(session_id: &str) -> Result<(), String> {
+    let _guard = record_access().lock().unwrap();
+    if read_records()?.records.iter().any(|record| {
+        record.session_id.as_deref() == Some(session_id)
+            && matches!(record.status.as_str(), "queued" | "running")
+            && (record.recovered_from_prompt_id.is_some()
+                || (record
+                    .automation_snapshot
+                    .as_ref()
+                    .is_some_and(|automation| automation.recover_after_interruption)
+                    && record.prompt_id.is_some()))
+    }) {
+        return Err("此会话正在恢复自动化结果。可查看进度，或停止本次运行后继续发送。".into());
+    }
+    Ok(())
 }
 
 fn record_needs_cleanup(record: &AutomationRunRecord) -> bool {
@@ -2840,7 +3296,7 @@ pub async fn automation_run_stop(
     id: String,
 ) -> Result<(), String> {
     crate::policy::require_feature("automations")?;
-    let (session_id, prompt_id) = {
+    let (session_id, prompt_id, completion) = {
         let _guard = record_access().lock().unwrap();
         let mut store = read_records()?;
         let record = store
@@ -2852,21 +3308,33 @@ pub async fn automation_run_stop(
             return Ok(());
         }
         record.stop_requested = true;
-        let identity = (record.session_id.clone(), record.prompt_id.clone());
-        if record.status == "queued"
+        let mut identity = (record.session_id.clone(), record.prompt_id.clone());
+        let settle_without_runtime = record.status == "queued"
             || (record.waiting_reason.is_some() && record.session_id.is_none())
-        {
-            finalize_record(
-                record,
+            || (record.recovered_from_prompt_id.is_some()
+                && record.recovered_from_prompt_id == record.prompt_id);
+        let fact = settle_without_runtime.then(|| {
+            TerminalFact::new(
+                &id,
+                identity.0.as_deref(),
+                identity.1.as_deref(),
                 false,
-                &Local::now().to_rfc3339(),
                 None,
-                Some("用户停止"),
-            );
-        }
+                false,
+            )
+        });
         write_records(&mut store)?;
-        identity
+        let completion = if let Some(fact) = fact {
+            identity = (None, None);
+            persist_terminal(fact)?
+        } else {
+            None
+        };
+        (identity.0, identity.1, completion)
     };
+    if let Some(completion) = completion {
+        publish_automation_completion(&app, completion);
+    }
     if let Some(session_id) = session_id {
         let tx = state
             .tx
@@ -3389,36 +3857,6 @@ pub async fn automations_run(
     Ok(record_id)
 }
 
-async fn notify_run_failure(app: &AppHandle, automation: &Automation, error: &str) {
-    tracing::warn!(automation_id = %automation.id, %error, "automation run failed");
-    let notification_id = crate::notifications::append_with_target(
-        crate::notifications::NotificationKind::Error,
-        &format!("自动化《{}》运行失败", automation.name),
-        Some(error),
-        None,
-        None,
-        Some(&automation.id),
-        "error",
-    )
-    .ok();
-    if automation.push_to_we_chat {
-        let _ = crate::notifications::dispatch_with_desktop_fallback(
-            app,
-            crate::notifications::NotifyMessage {
-                title: format!("自动化失败：{}", automation.name),
-                body: Some("打开自动化查看运行记录".into()),
-                level: "error".into(),
-                session_id: None,
-                automation_id: Some(automation.id.clone()),
-                notification_id,
-                hidden_title: Some("自动化运行失败".into()),
-                ..Default::default()
-            },
-        )
-        .await;
-    }
-}
-
 async fn execute_automation_run(
     app: AppHandle,
     tx: echo_agent_acp::AcpAgentTx,
@@ -3477,14 +3915,7 @@ async fn execute_automation_run(
     // Runtime was replaced while this dispatch waited for a concurrency slot,
     // leave the durable row queued for the replacement scheduler to recover;
     // never consume it through a retired channel.
-    let runtime_is_current = app
-        .state::<AppState>()
-        .tx
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|current| current.same_channel(&tx));
-    if !runtime_is_current {
+    if !runtime_channel_is_current(&app, &tx) {
         tracing::info!(
             automation_id = %automation.id,
             %record_id,
@@ -3492,12 +3923,37 @@ async fn execute_automation_run(
         );
         return;
     }
-    let resolved_model_id = match crate::commands::resolve_automation_model_id(
-        Some(&app),
-        &app.state::<AppState>(),
-        automation.model_id.as_deref(),
-    ) {
-        Ok(model_id) => model_id,
+    let recovery = record_recovery(&record_id);
+    let dispatch = match &recovery {
+        Ok(Some((_, model_id))) => crate::commands::resolve_automation_model_id(
+            Some(&app),
+            &app.state::<AppState>(),
+            Some(model_id),
+        ).map(|model| (model, "应用已恢复。仅依据会话中已保存的工具结果汇总结论，并明确哪些步骤尚未完成或无法确认。".to_owned())),
+        Ok(None) => async {
+            let context = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                resolve_execution_context(&tx, &automation, &cwd),
+            )
+            .await
+            .map_err(|_| "读取自动化项目、技能或连接器配置超时，请重试")??;
+            let prompt = automation_prompt(&automation, &context);
+            let model = crate::commands::select_automation_execution_model(
+                &app,
+                &app.state::<AppState>(),
+                &automation,
+                &prompt,
+            )
+            .await?;
+            Ok((model, prompt))
+        }.await,
+        Err(error) => Err(error.clone()),
+    };
+    if !runtime_channel_is_current(&app, &tx) {
+        return;
+    }
+    let (resolved_model_id, prompt) = match dispatch {
+        Ok(input) => input,
         Err(error) => {
             if record_run_finished(&record_id, false, None, Some(&error)) {
                 emit_run_update(
@@ -3541,14 +3997,7 @@ async fn execute_automation_run(
                     "automation dispatch could not be persisted as running; retrying"
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                let runtime_is_current = app
-                    .state::<AppState>()
-                    .tx
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .is_some_and(|current| current.same_channel(&tx));
-                if !runtime_is_current {
+                if !runtime_channel_is_current(&app, &tx) {
                     return;
                 }
             }
@@ -3558,6 +4007,7 @@ async fn execute_automation_run(
     // Kept outside the timeout future so every error/cancellation still holds
     // the session fence until launch-only permissions have been restored.
     let mut session_guard = None;
+    let recovery_session = recovery.ok().flatten().map(|(session, _)| session);
     let result = {
         let state = app.state::<AppState>();
         tokio::time::timeout(
@@ -3571,6 +4021,8 @@ async fn execute_automation_run(
                     cwd: &cwd,
                     record_id: &record_id,
                     resolved_model_id: &resolved_model_id,
+                    recovery_session: recovery_session.as_deref(),
+                    prompt: &prompt,
                 },
                 &mut session_guard,
             ),
@@ -3584,6 +4036,9 @@ async fn execute_automation_run(
             release_full_access_session(&app, &tx, &session_id).await;
         }
         Ok(Err(error)) => {
+            if !runtime_channel_is_current(&app, &tx) {
+                return;
+            }
             match record_session_id(&record_id) {
                 Ok(Some(session_id)) => {
                     release_full_access_session(&app, &tx, &session_id).await;
@@ -3611,6 +4066,9 @@ async fn execute_automation_run(
             }
         }
         Err(_) => {
+            if !runtime_channel_is_current(&app, &tx) {
+                return;
+            }
             let error = format!(
                 "执行超过 {} 分钟，本次运行已超时",
                 AUTOMATION_RUN_TIMEOUT.as_secs() / 60
@@ -3746,6 +4204,8 @@ struct AutomationRunRequest<'a> {
     cwd: &'a Path,
     record_id: &'a str,
     resolved_model_id: &'a str,
+    recovery_session: Option<&'a str>,
+    prompt: &'a str,
 }
 
 /// Create or resume the task's owned session and send one identified prompt.
@@ -3761,6 +4221,8 @@ async fn run_automation_once(
         cwd,
         record_id,
         resolved_model_id,
+        recovery_session,
+        prompt,
     } = request;
     require_automation_cleanup_complete(&automation.id)?;
     crate::policy::require_feature("automations")?;
@@ -3769,11 +4231,27 @@ async fn run_automation_once(
     if !cwd.is_dir() {
         return Err(format!("自动化工作空间不存在：{}", cwd.display()));
     }
-    let context = resolve_execution_context(tx, automation, cwd).await?;
+    let recovering = recovery_session.is_some();
     let reasoning_effort = automation.model_is_thinking.then_some("high");
-    let full_access = automation.permission_mode == "fullAccess";
-    let prompt_id = uuid::Uuid::now_v7().to_string();
-    let existing = dedicated_session_for_run(automation)?;
+    let full_access = !recovering && automation.permission_mode == "fullAccess";
+    let id = uuid::Uuid::now_v7();
+    let prompt_id = if recovering {
+        format!("{RECOVERY_PROMPT_PREFIX}{id}")
+    } else {
+        id.to_string()
+    };
+    let existing = match recovery_session {
+        Some(session_id) => Some(session_id.to_string()),
+        None => match dedicated_session_for_run(automation)? {
+            Some(session)
+                if crate::projects::session_project_id(&session)?.as_deref()
+                    == automation.project_id.as_deref() =>
+            {
+                Some(session)
+            }
+            _ => None,
+        },
+    };
     if let Some(session_id) = &existing {
         let lock = session_turn_lock(session_id);
         *session_guard = Some(match lock.clone().try_lock_owned() {
@@ -3868,7 +4346,10 @@ async fn run_automation_once(
         &session_id,
         full_access,
         &target_mode,
-        || state.record_session_workspace(&session_id, cwd),
+        || {
+            let project = (!recovering).then_some(automation.project_id.as_deref()).flatten();
+            state.record_session_workspace_with_project(&session_id, cwd, project)
+        },
         || record_run_session(record_id, &session_id, &prompt_id).and_then(|()| bind_dedicated_session(automation, &session_id)),
         |reset_error| {
             let reason = format!(
@@ -3890,13 +4371,18 @@ async fn run_automation_once(
         state.forget_session_workspace(&session_id);
         return Err(failure.error);
     }
-    emit_run_update(
-        app,
+    let mut update = run_update_event(
         automation,
         record_id,
         cwd,
         RunUpdate::SessionCreated(&session_id, resolved_model_id, &prompt_id),
     );
+    if recovering {
+        update.project_id = crate::projects::session_project_id(&session_id)
+            .ok()
+            .flatten();
+    }
+    emit_automation_update(app, update);
     if full_access {
         full_access_sessions()
             .lock()
@@ -3915,14 +4401,19 @@ async fn run_automation_once(
             },
         );
     }
-    let prompt = automation_prompt(automation, &context);
-    let completion =
-        crate::agent_runtime::prompt_for_automation(tx, &session_id, &prompt_id, &prompt)
-            .await
-            .map_err(|e| {
-                state.forget_session_workspace(&session_id);
-                e.to_string()
-            })?;
+    let completion = crate::agent_runtime::prompt_for_automation(
+        tx,
+        &session_id,
+        &prompt_id,
+        prompt,
+        automation.recover_after_interruption,
+        recovering,
+    )
+    .await
+    .map_err(|e| {
+        state.forget_session_workspace(&session_id);
+        e.to_string()
+    })?;
     Ok((session_id, completion))
 }
 
@@ -4156,6 +4647,13 @@ pub fn automation_records_archive(id: String, archived: bool) -> Result<(), Stri
     if matches!(record.status.as_str(), "queued" | "running") || record_needs_cleanup(record) {
         return Err("运行中的记录不能归档".into());
     }
+    if archived
+        && pending_terminal(&id)?
+            .as_ref()
+            .is_some_and(waiting_for_publication_review)
+    {
+        return Err("请先处理本次运行的发布审批".into());
+    }
     record.archived = archived;
     write_records(&mut records)
 }
@@ -4173,6 +4671,9 @@ pub fn automation_records_delete(id: String) -> Result<(), String> {
     if matches!(record.status.as_str(), "queued" | "running") || record_needs_cleanup(record) {
         return Err("运行中的记录不能删除".into());
     }
+    if pending_terminal(&id)?.is_some() {
+        return Err("请先处理本次运行的发布状态".into());
+    }
     records.records.retain(|r| r.id != id);
     write_records(&mut records)
 }
@@ -4188,10 +4689,16 @@ struct AutomationDispatch {
 
 #[derive(Debug)]
 struct RejectedAutomationDispatch {
-    automation: Automation,
-    cwd: PathBuf,
     record_id: String,
     error: String,
+}
+
+fn finish_rejected_dispatches(app: &AppHandle, rejected: Vec<RejectedAutomationDispatch>) {
+    for rejected in rejected {
+        if record_run_finished(&rejected.record_id, false, None, Some(&rejected.error)) {
+            publish_pending_completion(app, &rejected.record_id);
+        }
+    }
 }
 
 fn advance_recovered_occurrence(
@@ -4228,31 +4735,31 @@ fn advance_recovered_occurrence(
 fn recover_queued_dispatches(
     default_cwd: &Path,
     filesystem: &crate::shell_fs::FilesystemAccess,
-) -> Result<Vec<AutomationDispatch>, String> {
+) -> Result<(Vec<AutomationDispatch>, Vec<RejectedAutomationDispatch>), String> {
     let _record_guard = record_access().lock().unwrap();
     let _store_guard = store_access().lock().unwrap();
-    let mut records = read_records()?;
+    let records = read_records()?;
     let mut store = read_store()?;
     let now = now_local();
-    let mut records_changed = false;
     let mut store_changed = false;
     let mut dispatches = Vec::new();
+    let mut rejected = Vec::new();
+    let pending = pending_terminals().lock().unwrap();
 
     for record in records
         .records
-        .iter_mut()
-        .filter(|record| record.status == "queued")
+        .iter()
+        .filter(|record| record.status == "queued" && !pending.contains_key(&record.id))
     {
         let Some(automation) = store
             .automations
             .iter_mut()
             .find(|automation| automation.id == record.automation_id)
         else {
-            record.status = "failed".into();
-            record.finished_at = Some(now.to_rfc3339());
-            record.error = Some("自动化任务已删除，无法恢复未完成的运行".into());
-            record.automation_snapshot = None;
-            records_changed = true;
+            rejected.push(RejectedAutomationDispatch {
+                record_id: record.id.clone(),
+                error: "自动化任务已删除，无法恢复未完成的运行".into(),
+            });
             continue;
         };
 
@@ -4269,11 +4776,10 @@ fn recover_queued_dispatches(
         let cwd = match filesystem.require_workspace(&claimed_cwd.to_string_lossy()) {
             Ok(cwd) => cwd,
             Err(error) => {
-                record.status = "failed".into();
-                record.finished_at = Some(now.to_rfc3339());
-                record.error = Some(format!("恢复任务的工作区未授权：{error}"));
-                record.automation_snapshot = None;
-                records_changed = true;
+                rejected.push(RejectedAutomationDispatch {
+                    record_id: record.id.clone(),
+                    error: format!("恢复任务的工作区未授权：{error}"),
+                });
                 continue;
             }
         };
@@ -4286,34 +4792,21 @@ fn recover_queued_dispatches(
             record_id: record.id.clone(),
         });
     }
+    drop(pending);
 
     if store_changed {
         if let Err(error) = write_store(&store) {
-            tracing::error!(%error, "failed to reconcile recovered automation schedule");
-            let failed_at = now.to_rfc3339();
-            let ids: HashSet<&str> = dispatches
-                .iter()
-                .map(|dispatch| dispatch.record_id.as_str())
-                .collect();
-            for record in &mut records.records {
-                if ids.contains(record.id.as_str()) {
-                    record.status = "failed".into();
-                    record.finished_at = Some(failed_at.clone());
-                    record.error = Some(format!("恢复自动化调度状态失败：{error}"));
-                    record.automation_snapshot = None;
-                    records_changed = true;
-                }
-            }
-            dispatches.clear();
+            rejected.extend(
+                dispatches
+                    .drain(..)
+                    .map(|dispatch| RejectedAutomationDispatch {
+                        record_id: dispatch.record_id,
+                        error: format!("恢复自动化调度状态失败：{error}"),
+                    }),
+            );
         }
     }
-    if records_changed {
-        if let Err(error) = write_records(&mut records) {
-            tracing::error!(%error, "failed to persist recovered automation records");
-            return Err(error);
-        }
-    }
-    Ok(dispatches)
+    Ok((dispatches, rejected))
 }
 
 /// Scheduler tick. Fires any automation whose `next_run_at` has passed.
@@ -4357,54 +4850,23 @@ pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, de
             let claimed_cwd = first_cwd(&claim.automation)
                 .map(PathBuf::from)
                 .unwrap_or_else(|| default_cwd.to_path_buf());
-            let resolved_model_id = crate::commands::resolve_automation_model_id(
-                Some(app),
-                &state,
-                claim.automation.model_id.as_deref(),
-            );
             let record_id = append_run_started(
                 &mut records,
                 &claim.automation,
                 &started,
                 &claimed_cwd,
                 Some(&claim.scheduled_for),
-                resolved_model_id.as_deref().ok(),
+                claim.automation.model_id.as_deref(),
             );
-            if let Err(error) = resolved_model_id {
-                if let Some(record) = records
-                    .records
-                    .iter_mut()
-                    .find(|record| record.id == record_id)
-                {
-                    finalize_record(record, false, &started, None, Some(&error));
-                }
-                rejected_dispatches.push(RejectedAutomationDispatch {
-                    automation: claim.automation,
-                    cwd: claimed_cwd,
-                    record_id,
-                    error,
-                });
-                continue;
-            }
             let cwd = match app
                 .state::<crate::shell_fs::FilesystemAccess>()
                 .require_workspace(&claimed_cwd.to_string_lossy())
             {
                 Ok(cwd) => cwd,
                 Err(error) => {
-                    let error = format!("自动化工作区未授权：{error}");
-                    if let Some(record) = records
-                        .records
-                        .iter_mut()
-                        .find(|record| record.id == record_id)
-                    {
-                        finalize_record(record, false, &started, None, Some(&error));
-                    }
                     rejected_dispatches.push(RejectedAutomationDispatch {
-                        automation: claim.automation,
-                        cwd: claimed_cwd,
                         record_id,
-                        error,
+                        error: format!("自动化工作区未授权：{error}"),
                     });
                     continue;
                 }
@@ -4426,23 +4888,16 @@ pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, de
             }
         }
         if let Err(error) = write_store(&store) {
-            let failed_at = now.to_rfc3339();
-            let ids: HashSet<&str> = dispatches
-                .iter()
-                .map(|dispatch| dispatch.record_id.as_str())
-                .collect();
-            for record in &mut records.records {
-                if ids.contains(record.id.as_str()) {
-                    record.status = "failed".into();
-                    record.finished_at = Some(failed_at.clone());
-                    record.error = Some(format!("保存下次调度时间失败：{error}"));
-                    record.automation_snapshot = None;
-                }
-            }
-            if let Err(record_error) = write_records(&mut records) {
-                tracing::error!(error = %record_error, "failed to persist rejected automation dispatches");
-            }
             tracing::error!(%error, "failed to persist automation schedule claim");
+            rejected_dispatches.extend(dispatches.into_iter().map(|dispatch| {
+                RejectedAutomationDispatch {
+                    record_id: dispatch.record_id,
+                    error: format!("保存下次调度时间失败：{error}"),
+                }
+            }));
+            drop(_store_guard);
+            drop(_record_guard);
+            finish_rejected_dispatches(app, rejected_dispatches);
             return;
         }
         (
@@ -4459,19 +4914,7 @@ pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, de
     // Emit only after releasing the persistence locks: notification delivery
     // can await network IO (for example WeChat push) and must not stall the
     // scheduler's durable state.
-    for rejected in rejected_dispatches {
-        emit_run_update(
-            app,
-            &rejected.automation,
-            &rejected.record_id,
-            &rejected.cwd,
-            RunUpdate::Failed {
-                session_id: None,
-                error: &rejected.error,
-            },
-        );
-        notify_run_failure(app, &rejected.automation, &rejected.error).await;
-    }
+    finish_rejected_dispatches(app, rejected_dispatches);
     for dispatch in dispatches {
         emit_run_update(
             app,
@@ -4499,14 +4942,19 @@ pub fn start_scheduler(
 ) -> tauri::async_runtime::JoinHandle<()> {
     retry_terminal_completions(&app);
     recover_interrupted_cleanups();
-    fail_stale_running_records();
+    let interrupted = interrupted_run_candidates();
     tauri::async_runtime::spawn(async move {
+        recover_interrupted_runs(&app, &tx, interrupted).await;
         // Give the renderer time to subscribe to interaction events before a
         // recovered unattended turn can request input.
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if !runtime_channel_is_current(&app, &tx) {
+            return;
+        }
         let filesystem = app.state::<crate::shell_fs::FilesystemAccess>();
         match recover_queued_dispatches(&default_cwd, &filesystem) {
-            Ok(dispatches) => {
+            Ok((dispatches, rejected)) => {
+                finish_rejected_dispatches(&app, rejected);
                 for dispatch in dispatches {
                     tauri::async_runtime::spawn(execute_automation_run(
                         app.clone(),
@@ -4525,6 +4973,9 @@ pub fn start_scheduler(
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
+            if !runtime_channel_is_current(&app, &tx) {
+                return;
+            }
             retry_terminal_completions(&app);
             scheduler_tick(&app, &tx, &default_cwd).await;
         }
@@ -4537,6 +4988,135 @@ pub fn start_scheduler(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn publication_approval_survives_terminal_write_and_blocks_unapproved_attempts() {
+        let (mut records, mut fact) = terminal_fixture();
+        let snapshot = records.records[0].automation_snapshot.as_mut().unwrap();
+        snapshot.push_to_we_chat = true;
+        snapshot.review_publication = true;
+        persist_terminal_transition(&mut records, &mut fact, |_| Ok(()), |_| Ok(())).unwrap();
+        assert!(records.records[0].automation_snapshot.is_none());
+        let serialized = serde_json::to_vec(&fact).unwrap();
+        let mut restored: TerminalFact = serde_json::from_slice(&serialized).unwrap();
+        assert!(waiting_for_publication_review(&restored));
+        assert!(!claim_external_attempt(&mut restored, true, |_| Ok(())).unwrap());
+        let mut denied = restored.clone();
+        denied.publication_approved = Some(false);
+        assert!(!claim_external_attempt(&mut denied, true, |_| Ok(())).unwrap());
+        restored.publication_approved = Some(true);
+        assert!(claim_external_attempt(&mut restored, true, |_| Ok(())).unwrap());
+        assert!(!claim_external_attempt(&mut restored, true, |_| Ok(())).unwrap());
+    }
+
+    #[test]
+    fn recovery_reads_only_intact_non_replay_completion_for_the_recorded_prompt() {
+        let receipt = |session: &str, prompt: &str, replay: bool, reason: &str| {
+            serde_json::json!({
+                "method": "_echo.agent/session/update",
+                "params": {"sessionId": session, "_meta": {"isReplay": replay},
+                "update": {"sessionUpdate":"turn_completed", "prompt_id":prompt, "stop_reason":reason}}
+            })
+        };
+        let history = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            "x".repeat(300_000),
+            receipt("other", "run", false, "cancelled"),
+            receipt("session", "run", false, "end_turn"),
+            receipt("session", "followup", false, "error"),
+            receipt("session", "run", true, "error"),
+            receipt("session", "run", false, "error")
+        );
+        let completion = persisted_turn_completion(history.as_bytes(), "session", "run").unwrap();
+        assert_eq!(completion.stop_reason, "end_turn");
+        assert!(persisted_turn_completion(history.as_bytes(), "session", "missing").is_none());
+    }
+
+    #[test]
+    fn restart_requeues_only_a_never_sent_run_or_a_verified_checkpoint() {
+        let (store, _) = terminal_fixture();
+        let original = &store.records[0];
+        let mut before_send = original.clone();
+        before_send.session_id = None;
+        before_send.prompt_id = None;
+        let mut resumable = original.clone();
+        let mut unknown = original.clone();
+        let mut stopped = original.clone();
+        stopped.stop_requested = true;
+        assert_eq!(
+            requeue_interrupted_record(&mut before_send, false)
+                .unwrap()
+                .status,
+            "queued"
+        );
+        assert_eq!(
+            requeue_interrupted_record(&mut resumable, true)
+                .unwrap()
+                .status,
+            "queued"
+        );
+        assert_eq!(resumable.recovered_from_prompt_id, original.prompt_id);
+        assert!(requeue_interrupted_record(&mut unknown, false).is_none());
+        assert!(requeue_interrupted_record(&mut stopped, true).is_none());
+    }
+
+    #[test]
+    fn a_recovered_summary_cannot_pass_as_original_run_success() {
+        let (mut store, mut fact) = terminal_fixture();
+        let record = &mut store.records[0];
+        record.recovered_from_prompt_id = record.prompt_id.clone();
+        let original_record = record.clone();
+        let mut received_original = original_record.clone();
+        assert!(finalize_from_fact(&mut received_original, &fact));
+        assert_eq!(received_original.status, "success");
+        assert!(received_original.recovery_summary_status.is_none());
+
+        record.prompt_id = Some(format!("{RECOVERY_PROMPT_PREFIX}fixture"));
+        fact.prompt_id = record.prompt_id.clone();
+        record.automation_snapshot.as_mut().unwrap().push_to_we_chat = true;
+        record
+            .automation_snapshot
+            .as_mut()
+            .unwrap()
+            .review_publication = true;
+        persist_terminal_transition(&mut store, &mut fact, |_| Ok(()), |_| Ok(())).unwrap();
+        let record = &store.records[0];
+        assert_eq!(record.status, "interrupted");
+        assert_eq!(
+            record.recovery_summary_status,
+            Some(RecoverySummaryStatus::Completed)
+        );
+        assert!(record.runtime_interrupted);
+        assert!(waiting_for_publication_review(&fact));
+        assert_eq!(
+            fact.completion.as_ref().unwrap().event.status,
+            "interrupted"
+        );
+    }
+
+    #[test]
+    fn a_pre_dispatch_failure_persists_an_approvable_notification() {
+        let (mut store, mut fact) = terminal_fixture();
+        let record = &mut store.records[0];
+        record.session_id = None;
+        record.prompt_id = None;
+        record.status = "queued".into();
+        let snapshot = record.automation_snapshot.as_mut().unwrap();
+        snapshot.push_to_we_chat = true;
+        snapshot.review_publication = true;
+        fact = TerminalFact::new(
+            &fact.record_id,
+            None,
+            None,
+            false,
+            Some("automatic workspace denied"),
+            false,
+        );
+        persist_terminal_transition(&mut store, &mut fact, |_| Ok(()), |_| Ok(())).unwrap();
+        assert_eq!(store.records[0].status, "failed");
+        assert!(waiting_for_publication_review(&fact));
+        assert!(!claim_external_attempt(&mut fact, true, |_| Ok(())).unwrap());
+    }
 
     #[test]
     fn edits_cannot_recreate_deleted_tasks_or_rewind_scheduler_metadata() {
@@ -6374,6 +6954,8 @@ mod tests {
             status: "ACTIVE".into(),
             model_id: None,
             model_is_thinking: false,
+            cross_provider_fallback: false,
+            recover_after_interruption: false,
             skills: vec![],
             expert_id: None,
             expert_name: None,
@@ -6387,6 +6969,7 @@ mod tests {
             valid_from_date: None,
             valid_until_date: None,
             push_to_we_chat: false,
+            review_publication: false,
             new_session_each_run: true,
             context_generation: 0,
             dedicated_session_id: None,
@@ -6415,6 +6998,7 @@ mod tests {
             prompt_id: Some("first-prompt".into()),
             ok: true,
             interrupted: false,
+            runtime_interrupted: false,
             error: None,
             cleanup: None,
             finished_at: "end".into(),
@@ -6423,6 +7007,7 @@ mod tests {
             external_claimed: false,
             external_result: None,
             restored_orphan: false,
+            publication_approved: None,
             cleanup_only: false,
         };
         (records, fact)

@@ -19,6 +19,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
     let (tx, _rx) = mpsc::unbounded_channel();
     SubagentSpawnContext {
         parent_turn_authority: None,
+        parent_host_project_context: None,
         lsp: None,
         process_scope: None,
         parent_max_turns: None,

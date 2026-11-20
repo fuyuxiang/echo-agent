@@ -1309,6 +1309,45 @@ describe("session-store transcripts", () => {
     expect(textOf(1)).toBe("realLIVE");
   });
 
+  it("恢复游标只应用增量事件，并按事件 ID 去除晚到的重复通知", () => {
+    const s = useSessionStore.getState();
+    s.setSession("A");
+    s.applyUpdate({ ...chunk("已显示", "A"), _meta: { promptId: "first", eventId: "A-1" } });
+    s.applyUpdate({
+      __sessionId: "A", sessionUpdate: "turn_completed", prompt_id: "first", stop_reason: "end_turn",
+      _meta: { eventId: "A-2" },
+    });
+    expect(useSessionStore.getState().transcripts.A.completionCursor).toBe("A-2");
+    s.beginHistoryReplay("A");
+    const meta = { promptId: "second", promptIndex: 1, eventId: "A-3" };
+    s.applyUpdate({ ...chunk("已显示", "A"), _meta: { promptId: "first", eventId: "A-1", isReplay: true } });
+    s.applyUpdate({ ...chunk("恢复后接上", "A"), _meta: { ...meta, isReplay: true, desktopCatchup: true } });
+    s.finishHistoryReplay("A");
+    expect(s.adoptRecoveredTurn("A", "second")).toBe(true);
+    s.applyUpdate({ ...chunk("恢复后接上", "A"), _meta: meta });
+    expect(useSessionStore.getState().messages.map(userMessageTextForTest)).toEqual(["已显示", "恢复后接上"]);
+    expect(useSessionStore.getState().streaming).toBe(true);
+  });
+
+  it("回放只把记忆来源关联到对应回复，不开启另一轮任务", () => {
+    const s = useSessionStore.getState();
+    s.setSession("A");
+    s.applyUpdate({ ...chunk("旧回复", "A"), _meta: { promptId: "first" } });
+    s.applyUpdate({
+      __sessionId: "A", sessionUpdate: "turn_completed", prompt_id: "first", stop_reason: "end_turn",
+    });
+    s.startStreaming("A", "second");
+    s.applyUpdate({
+      __sessionId: "A", sessionUpdate: "memory_context_used",
+      sources: ["global/MEMORY.md", "workspace/decision.md", "workspace/decision.md"],
+      _meta: { promptId: "first", eventId: "A-73", isReplay: true },
+    });
+    const state = useSessionStore.getState();
+    expect(state.messages.find(message => message.promptId === "first")?.memorySources)
+      .toEqual(["global/MEMORY.md", "workspace/decision.md"]);
+    expect(state.messages.find(message => message.id === state.streamingMessageId)?.promptId).toBe("second");
+  });
+
   it("历史回放停在未完成工具调用时关闭假运行状态", () => {
     const s = useSessionStore.getState();
     s.setSession("A");

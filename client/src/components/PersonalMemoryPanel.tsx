@@ -13,7 +13,7 @@ import { SettingsDraftContext, type SettingsDraftState } from "@/lib/settings-dr
 import { parseMemoryImport } from "@/lib/memory-import";
 import { memoryFlushMessage } from "@/lib/memory-feedback";
 import { isContentDerivedMemoryTitle, memoryTitleFromContent } from "@/lib/memory-title";
-import { memoryRecordsGet, memoryRecordSave, memoryRecordRetire, memoryFlush, type MemoryConfig, type PersonalMemoryInput, type PersonalMemoryRecord, type PersonalMemorySnapshot } from "@/lib/agent-client";
+import { memoryRecordsGet, memoryRecordSave, memoryRecordRetire, memoryFlush, memoryDreamUndo, type MemoryConfig, type PersonalMemoryInput, type PersonalMemoryRecord, type PersonalMemorySnapshot } from "@/lib/agent-client";
 import "@/styles/personal-memory.css";
 
 const kinds = { user: "个人信息与偏好", feedback: "回复与执行约定", project: "项目记忆", reference: "常用资料", task: "待跟进事项" };
@@ -96,6 +96,27 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
     } catch (e) { if (generation.current === version) setError(message(e)); }
     finally { if (generation.current === version) setLoading(false); }
   }, [cwd]);
+  const confirmDreamUndo = () => {
+    if (!cwd || !snapshot?.dreamUndo) return;
+    const { at, version } = snapshot.dreamUndo;
+    requestConfirmation({
+      title: "撤销上次记忆整理？",
+      description: `撤销 ${date(at)} 整理对工作区长期记忆的改动。会话原始记录继续保存在本机。`,
+      confirmLabel: "恢复记忆",
+      danger: true,
+      action: async () => {
+        if (currentCwd.current !== cwd) throw new Error("工作区已变化，请重新查看记忆整理记录");
+        setBusy(true);
+        try {
+          await memoryDreamUndo(cwd, version);
+          onToast?.("已恢复整理前的工作区记忆");
+        } finally {
+          await reload(true);
+          setBusy(false);
+        }
+      },
+    });
+  };
   useEffect(() => {
     setSnapshot(null); void reload();
     const timer = window.setInterval(() => { if (!document.hidden) void reload(true); }, 5000);
@@ -233,6 +254,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
         </div></div>
         <LocalRetrievalModels />
         {!!snapshot?.retrieval.at && <details className="personal-memory__health"><summary>最近一次检索参考了 {snapshot.retrieval.count} 处记忆 · {date(snapshot.retrieval.at)}</summary><ul>{snapshot.retrieval.sources.map(source => <li key={source}><code>{source}</code></li>)}</ul><span>{snapshot.retrieval.mode === "Hybrid" ? "语义与关键词检索" : "关键词检索（语义检索暂不可用，已有记忆仍可参考）"}</span></details>}
+        {cwd && snapshot?.dreamUndo && <Button size="compact" disabled={loading || locked || dirty} onClick={confirmDreamUndo}>撤销上次记忆整理</Button>}
         <Button size="compact" disabled={loading || locked} onClick={() => void reload()}>刷新状态</Button>
       </>}
       {view === "documents" && <div className="personal-memory__legacy"><SettingsDraftContext.Provider value={reportLegacyDraft}><ResourcesPanel cwd={cwd} sessionId={sessionId} onToast={onToast} /></SettingsDraftContext.Provider></div>}

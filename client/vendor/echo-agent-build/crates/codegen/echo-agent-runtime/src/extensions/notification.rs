@@ -501,6 +501,8 @@ pub enum SessionUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
+    /// Local references to the memory sources included in a specific model turn.
+    MemoryContextUsed { sources: Vec<String> },
     /// Memory dream consolidation completed
     MemoryDreamCompleted {
         /// Outcome description

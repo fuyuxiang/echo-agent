@@ -32,6 +32,7 @@ describe("project session movement", () => {
     expect(useProjectsStore.getState().projects[0].conversations[0].pendingProjectContext).toBe(false);
     await useProjectsStore.getState().detachSessionFromProject("p1", "s1");
     expect(useProjectsStore.getState().projects[0].conversations).toEqual([]);
+    expect(projectsSave).toHaveBeenLastCalledWith(useProjectsStore.getState().projects, "s1");
     expect(session).toMatchObject({ sessionId: "s1", cwd: "/original" });
   });
 

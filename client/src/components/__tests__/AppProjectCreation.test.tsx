@@ -196,7 +196,7 @@ describe.each(["发送项目草稿","启动项目"] as const)("%s creation recov
     await start();
     act(() => useProjectsStore.setState({projects:useProjectsStore.getState().projects.map(project => ({...project,cwd:"/manual-repository"}))}));
     await create(entry);
-    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/manual-repository", "model-a", undefined, "ask"));
+    await waitFor(() => expect(client.agentNewSession).toHaveBeenCalledWith("/manual-repository", "model-a", undefined, "ask", undefined, "project-no-cwd"));
     expect(client.agentPrepareTaskWorkspace).not.toHaveBeenCalled();
   });
 });

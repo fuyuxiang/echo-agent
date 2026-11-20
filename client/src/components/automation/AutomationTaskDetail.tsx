@@ -49,6 +49,7 @@ export function AutomationTaskDetail({
   onReset,
   onStop,
   onRetryCleanup,
+  onPublication,
   onDelete,
   onArchive,
   onOpenSession,
@@ -67,6 +68,7 @@ export function AutomationTaskDetail({
   onReset: (task: Automation) => void;
   onStop: (id: string) => Promise<void>;
   onRetryCleanup: (id: string) => Promise<void>;
+  onPublication?: (id: string, approve: boolean) => void;
   onDelete: (id: string) => void;
   onArchive: (id: string) => void;
   onOpenSession?: (sessionId: string, cwd?: string) => void;
@@ -322,6 +324,19 @@ export function AutomationTaskDetail({
                 这里展示可读取的部分结果。完整内容请进入会话查看。
               </p>
             )}
+            {selected.publicationPending && onPublication && (
+              <div className="atm-notification-receipt">
+                <span>通知待审批</span>
+                <button type="button" className="atm-text-button" onClick={() => onPublication(selected.id, true)}>发布通知</button>
+                <button type="button" className="atm-text-button" onClick={() => onPublication(selected.id, false)}>拒绝发布</button>
+              </div>
+            )}
+            {selected.recoverySummaryStatus === "completed" && (
+              <p className="atm-record-note">已汇总保存的工具结果。请核对尚未完成的步骤，再决定如何继续。</p>
+            )}
+            {selected.recoverySummaryStatus === "failed" && (
+              <p className="atm-record-note">原会话仍可查看。请先核对已经执行的操作。</p>
+            )}
             {selected.notificationDelivery && (
               <div className="atm-notification-receipt">
                 <span>通知：{selected.notificationDelivery}</span>
@@ -427,7 +442,7 @@ export function AutomationTaskDetail({
                   使用当前配置重试
                 </button>
               )}
-              {!runBusy(selected) && !runNeedsCleanup(selected) && !selected.archived && (
+              {!runBusy(selected) && !runNeedsCleanup(selected) && !selected.archived && !selected.publicationPending && (
                 <button
                   type="button"
                   className="atm-text-button"

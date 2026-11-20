@@ -17,8 +17,8 @@ use tokio::{
 use rmcp::{
     ClientHandler, ServiceExt,
     model::{
-        CallToolRequestParams, ClientCapabilities, ClientConfig, CustomNotification, Implementation,
-        PaginatedRequestParams,
+        CallToolRequestParams, ClientCapabilities, ClientConfig, CustomNotification,
+        Implementation, PaginatedRequestParams,
     },
     service::{
         ClientInitializeError, NotificationContext, RequestContext, RoleClient, RunningService,
@@ -870,9 +870,17 @@ impl McpState {
         self.init_progress.finish();
     }
 
+    /// An earlier initializer may complete after a config replacement started
+    /// a new generation. Only the current initializer owns the progress state.
+    pub fn finish_init_for_generation(&mut self, generation: u64) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.finish_init();
+        true
+    }
+
     /// Cancel initialization back to [`InitProgress::NotStarted`].
-    /// Used when generation changed during init (config change races
-    /// with active init) and on full reset.
     pub fn cancel_init(&mut self) {
         self.init_progress.cancel();
     }

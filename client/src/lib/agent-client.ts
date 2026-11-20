@@ -30,6 +30,7 @@ import type {
   PermissionRule,
   PromptComplete,
   RewindExecution,
+  RewindPreview,
   RewindMode,
   RewindPoint,
   RunningTask,
@@ -151,6 +152,7 @@ export async function agentNewSession(
   permissionMode?: PermissionMode,
   expectedPermissionMode?: PermissionMode,
   expert?: { name: string; path: string; raw: string; modelOverride?: string },
+  projectId?: string,
 ): Promise<string> {
   const invocation = invoke<string>("agent_new_session", {
     cwd,
@@ -158,6 +160,7 @@ export async function agentNewSession(
     permissionMode: permissionMode ?? (expectedPermissionMode === undefined ? "ask" : null),
     ...(expectedPermissionMode === undefined ? {} : { expectedPermissionMode }),
     ...(expert ? { expert } : {}),
+    ...(projectId ? { projectId } : {}),
   });
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -193,35 +196,60 @@ export async function agentSessionWorkspaceStatus(sessionId: string, cwd: string
 
 // Loading replays history through agent://update and returns the runtime's
 // actual session model. Never substitute the global default for this value.
-const sessionLoads = new Map<string, { cwd: string; promise: Promise<string | null> }>();
+interface SessionAttachment {
+  modelId: string | null;
+  activePromptId?: string | null;
+  cursorRejected?: boolean;
+}
+
+interface SessionLoad {
+  cwd: string;
+  attachment: Promise<SessionAttachment>;
+  readonly promise: Promise<string | null>;
+}
+const sessionLoads = new Map<string, SessionLoad>();
 
 export function agentSessionLoadInFlight(sessionId: string): boolean {
   return sessionLoads.has(sessionId);
 }
 
 export function agentLoadSession(sessionId: string, cwd: string): Promise<string | null> {
+  try { return attachSession(sessionId, cwd, false).promise; }
+  catch (error) { return Promise.reject(error); }
+}
+
+export async function agentRecoverSession(sessionId: string, cwd: string): Promise<SessionAttachment> {
+  return attachSession(sessionId, cwd, true).attachment;
+}
+
+function attachSession(sessionId: string, cwd: string, recovering: boolean): SessionLoad {
   const pending = sessionLoads.get(sessionId);
   if (pending) {
-    return pending.cwd === cwd ? pending.promise
-      : Promise.reject(new Error("会话正在加载，请使用该会话绑定的工作目录重试"));
+    if (pending.cwd !== cwd) throw new Error("会话正在加载，请使用该会话绑定的工作目录重试");
+    return pending;
   }
   // Register ownership before touching stores or invoking native replay. Any
   // reentrant navigation then joins the same projection and request.
   let successful = false;
-  const promise = Promise.resolve().then(async () => {
-    const model = await loadSessionHistory(sessionId, cwd);
+  const attachment = Promise.resolve().then(async () => {
+    const result = await loadSessionHistory(sessionId, cwd, recovering);
     successful = true;
-    return model;
+    return result;
   }).finally(() => {
-    if (sessionLoads.get(sessionId)?.promise !== promise) return;
+    if (sessionLoads.get(sessionId)?.attachment !== attachment) return;
     sessionLoads.delete(sessionId);
     // Citations have their own request ownership. A later open must read the
     // current model from the runtime even while those citations are loading.
     if (successful) void restoreKnowledgeTraces(sessionId);
     useSessionStore.getState().finishHistoryReplay(sessionId, successful);
   });
-  sessionLoads.set(sessionId, { cwd, promise });
-  return promise;
+  let model: Promise<string | null> | undefined;
+  const load: SessionLoad = {
+    cwd, attachment,
+    get promise() { return model ??= attachment.then(result => result.modelId); },
+  };
+  sessionLoads.set(sessionId, load);
+  return load;
 }
 
 /** Rewind invalidates the projection. An older replay must finish before the
@@ -240,15 +268,30 @@ export async function agentReloadSession(sessionId: string, cwd: string): Promis
   return agentLoadSession(sessionId, cwd);
 }
 
-async function loadSessionHistory(sessionId: string, cwd: string): Promise<string | null> {
+async function loadSessionHistory(sessionId: string, cwd: string, recovering: boolean): Promise<SessionAttachment> {
   useSessionStore.getState().beginHistoryReplay(sessionId);
+  const transcript = useSessionStore.getState().transcripts[sessionId];
+  const cursor = transcript?.incompleteReplay || transcript?.pendingSendNowPromptId ? undefined : transcript?.completionCursor;
   // Only the owner of a new replay clears its derived child list. Callers
   // joining an existing request must keep the events already delivered.
-  useSubagentStore.getState().clearSession(sessionId);
+  if (!cursor) useSubagentStore.getState().clearSession(sessionId);
   // A load can recreate the resident Runtime session, so any renderer-side MCP
   // acknowledgement for the previous resident instance is stale.
   invalidateAgentKnowledgeSourceSync(sessionId);
-  return invoke<string | null>("agent_load_session", { sessionId, cwd });
+  if (!recovering && !cursor) return { modelId: await invoke<string | null>("agent_load_session", { sessionId, cwd }) };
+  const result = await invoke<SessionAttachment>("agent_recover_session", { sessionId, cwd, ...(cursor ? { cursor } : {}) });
+  if (cursor && result.cursorRejected) {
+    // A rewind or missing record can invalidate an otherwise complete cache.
+    // Rebuild the projection only if no new local turn claimed it meanwhile.
+    const latest = useSessionStore.getState().transcripts[sessionId];
+    const live = latest?.messages.find(message => message.id === latest.streamingMessageId);
+    if (!latest?.control && !latest?.pendingSendNowPromptId && (!live || live.replayed)) {
+      useSessionStore.getState().dropSessionCache(sessionId);
+      useSubagentStore.getState().clearSession(sessionId);
+      return invoke<SessionAttachment>("agent_recover_session", { sessionId, cwd });
+    }
+  }
+  return result;
 }
 
 export async function agentListSessions(
@@ -1355,9 +1398,11 @@ export interface PersonalMemorySnapshot {
   autoProcessingEnabled?: boolean;
   extraction: { attemptedAt: number | null; succeededAt: number | null; outcome: string; detail: string; recordsWritten: number };
   retrieval: { at: number; mode: string; count: number; sources: string[]; durationMs: number };
+  dreamUndo?: { version: string; at: number };
 }
 
 export const memoryRecordsGet = (cwd?: string) => invoke<PersonalMemorySnapshot>("memory_records_get", { cwd: cwd ?? null });
+export const memoryDreamUndo = (cwd: string, version: string) => invoke<void>("memory_dream_undo", { cwd, version });
 export const memoryRecordSave = (input: PersonalMemoryInput, cwd?: string) => invoke<PersonalMemoryRecord>("memory_record_save", { input, cwd: cwd ?? null });
 export const memoryRecordRetire = (record: PersonalMemoryRecord, cwd?: string, completed = false) => invoke<void>("memory_record_retire", {
   cwd: cwd ?? null, scope: record.scope, id: record.id, revision: record.revision, completed,
@@ -1457,18 +1502,36 @@ export async function rewindPoints(sessionId: string): Promise<RewindPoint[]> {
   return invoke<RewindPoint[]>("rewind_points", { sessionId });
 }
 
+export function rewindPreview(
+  sessionId: string,
+  targetPromptIndex: number,
+  mode: Exclude<RewindMode, "conversation_only">,
+): Promise<RewindPreview> {
+  return invoke<RewindPreview>("rewind_preview", { sessionId, targetPromptIndex, mode });
+}
+
+export function rewindUndoPreview(sessionId: string): Promise<RewindPreview | null> {
+  return invoke("rewind_undo", { sessionId });
+}
+
+export function rewindUndoExecute(sessionId: string, previewRevision: string): Promise<RewindExecution> {
+  return invoke("rewind_undo", { sessionId, previewRevision });
+}
+
 /** Rewind a session to a specific prompt index. */
 export async function rewindExecute(
   sessionId: string,
   targetPromptIndex: number,
   mode: RewindMode,
   force = false,
+  previewRevision?: string,
 ): Promise<RewindExecution> {
   return invoke<RewindExecution>("rewind_execute", {
     sessionId,
     targetPromptIndex,
     mode,
     force,
+    ...(previewRevision ? { previewRevision } : {}),
   });
 }
 
@@ -1698,6 +1761,10 @@ export async function automationsResetSession(id: string): Promise<Automation> {
 
 export async function automationRunStop(id: string): Promise<void> {
   await invoke<void>("automation_run_stop", { id });
+}
+
+export function automationPublicationDecide(id: string, approve: boolean): Promise<void> {
+  return invoke("automation_publication_decide", { id, approve });
 }
 
 /** Stop resources left by an expired run without executing the task again. */
@@ -2189,8 +2256,8 @@ export async function projectsLoad<T>(): Promise<T[]> {
 }
 
 /** Atomically replace the canonical project collection. */
-export async function projectsSave(projects: unknown[]): Promise<void> {
-  await invoke<void>("projects_save", { projects });
+export async function projectsSave(projects: unknown[], detachedSessionId?: string): Promise<void> {
+  await invoke<void>("projects_save", { projects, ...(detachedSessionId ? { detachedSessionId } : {}) });
 }
 
 export interface ImportedProjectAsset {

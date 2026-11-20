@@ -987,7 +987,12 @@ pub fn source_path_blocked(storage: &MemoryStorage, path: &Path) -> io::Result<b
 }
 
 pub fn core_context(storage: &MemoryStorage) -> io::Result<String> {
+    core_context_with_sources(storage).map(|(context, _)| context)
+}
+
+pub fn core_context_with_sources(storage: &MemoryStorage) -> io::Result<(String, Vec<String>)> {
     let mut context = String::new();
+    let mut sources = Vec::new();
     let records = list(storage, true)?;
     let preferences = records.iter().filter(|r| {
         active(r) && (r.pinned || r.kind == "user" || r.kind == "feedback" || r.kind == "task")
@@ -1006,6 +1011,7 @@ pub fn core_context(storage: &MemoryStorage) -> io::Result<String> {
             continue;
         }
         context.push_str(&line);
+        sources.push(record.id.clone());
     }
     // Existing global documents were maintained explicitly before records
     // existed. Keep their preferences available during migration too.
@@ -1020,9 +1026,12 @@ pub fn core_context(storage: &MemoryStorage) -> io::Result<String> {
                 }
             }
             context.extend(legacy_context.chars().take(remaining));
+            if remaining > 0 && !legacy_context.trim().is_empty() {
+                sources.push("global/MEMORY.md".into());
+            }
         }
     }
-    Ok(context)
+    Ok((context, sources))
 }
 
 pub fn refresh_documents(storage: &MemoryStorage) -> io::Result<()> {

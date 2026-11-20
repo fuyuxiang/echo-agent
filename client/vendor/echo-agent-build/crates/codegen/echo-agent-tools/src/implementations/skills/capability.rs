@@ -507,6 +507,33 @@ mod tests {
     }
 
     #[test]
+    fn declared_uv_python_runs_in_an_isolated_environment_with_offline_dependencies() {
+        let manifest: SkillCapabilityManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "runtime": { "kind": "python", "command": "uv", "entrypoints": { "create": "scripts/run.py" } }
+        })).unwrap();
+        let contract =
+            render_runtime_contract_from_manifest(&manifest, |command| command == "uv").unwrap();
+        let action = contract
+            .lines()
+            .find_map(|line| line.strip_prefix("action: "))
+            .unwrap();
+        let action: serde_json::Value = serde_json::from_str(action).unwrap();
+        assert_eq!(
+            action["arguments"],
+            serde_json::json!([
+                "run",
+                "--isolated",
+                "--no-project",
+                "--offline",
+                "--no-python-downloads",
+                "--script",
+                "scripts/run.py"
+            ])
+        );
+    }
+
+    #[test]
     fn rejects_missing_entrypoints_and_unsafe_origins() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(

@@ -9282,7 +9282,7 @@ mod tests {
                 let config = crate::permission::types::PermissionConfig::new(vec![
                     crate::permission::rules::parse_permission_rule(
                         "MCPTool(echoagent__group_call_member)",
-                        RuleAction::Deny,
+                        crate::permission::types::RuleAction::Deny,
                     )
                     .unwrap(),
                 ]);
