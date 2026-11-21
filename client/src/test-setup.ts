@@ -2,6 +2,11 @@
 // testing-library v16 在检测到 vitest afterEach 时会自动 cleanup,
 // 但显式导入确保跨版本一致。
 import "@testing-library/jest-dom/vitest";
+import { configure } from "@testing-library/react";
+
+// Give DOM updates time to commit on shared CI runners, including when a
+// component's first render needs to load a lazy module.
+configure({ asyncUtilTimeout: 3000 });
 
 // monaco-editor 0.52 的 editor.main.js 间接加载 editor.all.js,
 // 后者在模块顶层就调用 document.queryCommandSupported 探测剪贴板命令。
