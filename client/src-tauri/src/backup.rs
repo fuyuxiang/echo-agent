@@ -680,7 +680,10 @@ fn rebase_document_workspaces(
         {
             let path = staging.join(&entry.name);
             atomic_copy(&snapshot.path().join(&entry.name), &path)?;
-            let bytes = crate::shell_fs::read_regular_file_bounded(&path, 12 * 1024 * 1024)?;
+            let bytes = crate::shell_fs::read_regular_file_bounded(
+                &path,
+                crate::document_store::MAX_DOCUMENT_RECORD_BYTES,
+            )?;
             entry.bytes = bytes.len() as u64;
             entry.sha256 = format!("{:x}", Sha256::digest(&bytes));
         }

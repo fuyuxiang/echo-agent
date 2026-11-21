@@ -79,7 +79,7 @@ fn resolve_original(
     Ok(canonical)
 }
 
-fn read_record_at(
+pub(crate) fn read_record_at(
     home: &Path,
     session: &str,
     path: &Path,
@@ -444,6 +444,7 @@ pub(crate) async fn publish_for_session(
         format: "docx".into(),
         byte_size,
         sha256: sha256.clone(),
+        editable_source_warning: None,
     };
     crate::session_artifacts::stage(session, receipt.clone(), &value.title)?;
     crate::document_store::install_revision(&output, &path, &value.file_sha256)?;

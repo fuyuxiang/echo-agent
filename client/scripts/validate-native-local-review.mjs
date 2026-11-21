@@ -42,7 +42,7 @@ export function localMeetingFixture(home, nonce, timestamp = Date.now()) {
     // metadata makes the production player available for the missing-file path.
     durationSeconds: 0.02, recordedSamples: 320, audioPath: join(home, 'meetings', id, '原生缺文件恢复.wav'),
     captureSource: 'imported', originalFileName: '显式隔离验收 fixture.wav', transcript: [], chunks: [],
-    live: { processedSamples: 0 }, minutesStale: false,
+    live: { processedSamples: 0 }, localSpeakers: { pending: [], recent: [], tracks: [] }, minutesStale: true,
     minutes: `# 显式隔离测试记录\n这是验收 fixture，未录音、未转写。${nonce}` };
 }
 export function verifyNativeLocalReport({ report, phase, home, nonce, pid, startedAt, previousExpected }) {

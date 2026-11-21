@@ -9,6 +9,8 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 pub(crate) const MAX_DOCUMENT_FILE_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const MAX_EDITABLE_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_DOCUMENT_RECORD_BYTES: u64 = 13 * 1024 * 1024;
 
 static DELETED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 fn owner_key(home: &Path, session: &str) -> String {
@@ -76,7 +78,7 @@ pub fn read(home: &Path, id: &str) -> Result<Option<EditableDocument>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let bytes = crate::shell_fs::read_regular_file_bounded(&path, 12 * 1024 * 1024)?;
+    let bytes = crate::shell_fs::read_regular_file_bounded(&path, MAX_DOCUMENT_RECORD_BYTES)?;
     let value: EditableDocument =
         serde_json::from_slice(&bytes).map_err(|e| format!("编辑稿记录损坏，原文件已保留：{e}"))?;
     if value.id != id {
@@ -95,7 +97,7 @@ pub fn write(home: &Path, value: &EditableDocument) -> Result<(), String> {
     }
     let path = store_path(home, &value.id)?;
     let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-    if bytes.len() > 12 * 1024 * 1024 {
+    if bytes.len() as u64 > MAX_DOCUMENT_RECORD_BYTES {
         return Err("文档历史记录超出保存范围".into());
     }
     let mut stage =
@@ -114,9 +116,9 @@ pub fn validate(document: &Value) -> Result<(), String> {
     if serde_json::to_vec(document)
         .map_err(|e| e.to_string())?
         .len()
-        > 2 * 1024 * 1024
+        > MAX_EDITABLE_DOCUMENT_BYTES
     {
-        return Err("文档内容超过 2 MiB".into());
+        return Err("可编辑文档内容超过 4 MiB，请拆分后重试".into());
     }
     fn node(
         value: &Value,
@@ -357,7 +359,7 @@ pub fn forget_session(home: &Path, session: &str) -> Result<(), String> {
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        let bytes = crate::shell_fs::read_regular_file_bounded(&path, 12 * 1024 * 1024)?;
+        let bytes = crate::shell_fs::read_regular_file_bounded(&path, MAX_DOCUMENT_RECORD_BYTES)?;
         let record: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         if record.get("sessionId").and_then(Value::as_str) == Some(session) {
             std::fs::remove_file(&path).map_err(|error| error.to_string())?;

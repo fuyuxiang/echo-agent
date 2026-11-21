@@ -10,6 +10,10 @@ describe("toastMessage", () => {
   it.each([
     ["读取失败：ENOENT: no such file or directory", "读取失败：找不到所需文件或内容，请刷新后重试"],
     ["保存失败：EACCES (os error 13)", "保存失败：没有访问权限，请检查授权"],
+    ["保存失败：写入文件 失败：HTTP 403 Forbidden <!DOCTYPE HTML PUBLIC '-//W3C//DTD HTML 4.01//EN'>", "保存失败：没有访问权限，请检查授权"],
+    ["保存失败：写入文件 失败：HTTP 403 Forbidden <p>Resource not found</p>", "保存失败：没有访问权限，请检查授权"],
+    ["读取失败：HTTP 404 Not Found <p>Previous request returned 403</p>", "读取失败：找不到所需文件或内容，请刷新后重试"],
+    ["保存失败：HTTP 507 Insufficient Storage <p>Upstream timed out</p>", "保存失败：存储空间不足，请清理后重试"],
     ["加载失败：TypeError: Failed to fetch", "加载失败：暂时无法连接服务，请检查网络后重试"],
     ['ApiError { status: 401, message: "Unauthorized" }', "登录或模型凭据已失效，请检查设置"],
     ["Error: request timed out", "等待响应超时，请稍后重试"],

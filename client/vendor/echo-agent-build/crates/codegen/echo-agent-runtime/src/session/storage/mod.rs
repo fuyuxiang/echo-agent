@@ -56,17 +56,21 @@ pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 pub(crate) fn sync_file_durable(file: &std::fs::File) -> io::Result<()> {
     use std::os::fd::AsRawFd;
 
-    file.sync_all()?;
     fullfsync_raw(file.as_raw_fd())
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn fullfsync_raw(fd: std::os::fd::RawFd) -> io::Result<()> {
-    // macOS fsync may stop at volatile drive caches; F_FULLFSYNC requests stable media.
-    if unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) } == -1 {
-        return Err(io::Error::last_os_error());
+    // F_FULLFSYNC includes fsync and asks the device to flush volatile caches.
+    loop {
+        if unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) } != -1 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
-    Ok(())
 }
 
 #[cfg(any(all(unix, not(target_os = "macos")), windows))]

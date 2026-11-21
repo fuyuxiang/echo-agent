@@ -90,12 +90,14 @@ describe("assistant execution process", () => {
     expect(screen.queryByRole("region", { name: "执行过程详情" })).toBeNull();
     expect(screen.getByRole("list", { name: "最近执行进展" }).children).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: / · (展开|查看|收起)过程$/ }));
+    expect(container.querySelector(".execution-process__footer")).toBeNull();
     const target = screen.getByRole("button", { name: "read focused 运行中" });
     act(() => target.focus());
     rerender(view([tool("focused"), tool("second"), tool("third", "in_progress")]));
     expect(target).toHaveFocus();
     expect(container.querySelectorAll(".toolcall")).toHaveLength(3);
     expect(container.querySelector(".execution-process__operations-toggle")).toBeNull();
+    expect(container.querySelector(".execution-process__footer")).toHaveTextContent(/^回到最新进展$/);
     fireEvent.click(target);
     expect(onOpenTool).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "focused", status: "completed" }));
   });

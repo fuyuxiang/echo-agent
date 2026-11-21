@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
 
 const separator = '[data-sidebar-resize]';
+const defaultWidth = 248;
 const hint = '.pointer-side-hint';
 
 async function geometry(page, selector) {
@@ -234,26 +235,26 @@ export async function validateSidebarResizeHint(page, output, { baseURL = 'http:
   await page.keyboard.press('End');
   await assertWidth(400, 'End selects the available maximum width');
   await page.keyboard.press('Home');
-  await assertWidth(264, 'Home restores the default width');
+  await assertWidth(defaultWidth, 'Home restores the default width');
   await assertOnlyTooltip(await page.locator(separator).getAttribute('data-tip-focus'), 'Home keyboard hint');
-  assert.equal(await page.evaluate(() => localStorage.getItem('app-sidebar-width')), '264', 'Home should persist the default width');
+  assert.equal(await page.evaluate(() => localStorage.getItem('app-sidebar-width')), String(defaultWidth), 'Home should persist the default width');
   await page.keyboard.press('Enter');
   await assertWidth(0, 'Enter collapses');
   await assertOnlyTooltip(await page.locator(separator).getAttribute('data-tip-focus'), 'Enter collapsed keyboard hint');
   await page.keyboard.press('Enter');
-  await assertWidth(264, 'Enter restores the preferred width');
+  await assertWidth(defaultWidth, 'Enter restores the preferred width');
   await page.keyboard.press('Space');
   await assertWidth(0, 'Space collapses');
   await page.keyboard.press('Home');
-  await assertWidth(264, 'Home restores from a collapsed state');
+  await assertWidth(defaultWidth, 'Home restores from a collapsed state');
   await inspect('keyboard-actions-complete', { screenshot: true });
 
   // Beginning a drag transfers ownership from a different focused control to
   // the live width status immediately, before the first pointer move.
   await open({ platform: 'mac', width: 264 });
-  await page.getByRole('button', { name: '收起侧边栏', exact: true }).focus();
+  await collapseButton.focus();
   const dragFromOtherTip = await moveToHandle(page);
-  await assertOnlyTooltip('收起侧边栏', 'other tooltip before drag');
+  await assertOnlyTooltip(await collapseButton.getAttribute('data-tip'), 'other tooltip before drag');
   await page.mouse.down();
   await inspect('drag-dismisses-other-focused-tip', { point: dragFromOtherTip, role: 'status', screenshot: true });
   await page.mouse.move(dragFromOtherTip.x + 40, dragFromOtherTip.y + 20, { steps: 3 });
@@ -345,30 +346,30 @@ export async function validateSidebarResizeDoubleClick(page, output, { baseURL }
   try {
     for (const platform of ['mac', 'other']) for (const theme of ['light', 'dark']) for (const font of [16, 22]) {
       const suffix = `${platform}-${theme}-${font}`;
-      await open({ platform, theme, font, width: 264 });
+      await open({ platform, theme, font, width: defaultWidth });
       await hover('拖动调整宽度，双击展开到最大宽度', `${suffix}: default help`);
       await page.locator(separator).dblclick();
       await check(400, `${suffix}: default to maximum`);
       await hover('拖动调整宽度，双击恢复默认宽度', `${suffix}: maximum help`);
       await page.screenshot({ path: join(output, `sidebar-double-click-${suffix}-maximum.png`) });
       await page.locator(separator).dblclick();
-      await check(264, `${suffix}: maximum to default`);
+      await check(defaultWidth, `${suffix}: maximum to default`);
       // Moving the divider must not interfere with subsequent double-clicks.
-      for (const width of [400, 264, 400, 264]) {
+      for (const width of [400, defaultWidth, 400, defaultWidth]) {
         await page.locator(separator).dblclick();
         await check(width, `${suffix}: repeated toggle to ${width}`);
       }
       // Home remains an unconditional reset even at the default width.
       await page.keyboard.press('Home');
       await page.keyboard.press('Home');
-      assert.equal(await page.locator(separator).getAttribute('aria-valuenow'), '264');
+      assert.equal(await page.locator(separator).getAttribute('aria-valuenow'), String(defaultWidth));
       await page.keyboard.press('End');
       assert.equal(await page.locator(separator).getAttribute('aria-valuenow'), '400');
       await page.keyboard.press('Enter');
       assert.equal(await page.locator(separator).getAttribute('aria-valuenow'), '0');
       await hover('向右拖动展开，双击恢复默认宽度', `${suffix}: collapsed help`);
       await page.locator(separator).dblclick();
-      await check(264, `${suffix}: collapsed custom width to default`);
+      await check(defaultWidth, `${suffix}: collapsed custom width to default`);
       await hover('拖动调整宽度，双击展开到最大宽度', `${suffix}: restored help`);
       await page.screenshot({ path: join(output, `sidebar-double-click-${suffix}-default.png`) });
     }
@@ -376,27 +377,27 @@ export async function validateSidebarResizeDoubleClick(page, output, { baseURL }
       await open({ platform: 'mac', width });
       await hover('拖动调整宽度，双击恢复默认宽度', `${width}: custom width help`);
       await page.locator(separator).dblclick();
-      await check(264, `${width}: custom/minimum to default`);
+      await check(defaultWidth, `${width}: custom/minimum to default`);
     }
-    await open({ platform: 'mac', width: 264 }, 780);
+    await open({ platform: 'mac', width: defaultWidth }, 780);
     await page.locator(separator).dblclick();
     await check(300, 'narrow window: maximum preserves main content space');
     assert.ok(await page.locator('.app__main').evaluate(element => element.getBoundingClientRect().width >= 480), 'maximum must reserve the main content minimum');
     await page.locator(separator).dblclick();
-    await check(264, 'narrow window: restore default');
-    for (const viewport of [744, 720]) {
-      await open({ platform: 'mac', width: 264 }, viewport);
+    await check(defaultWidth, 'narrow window: restore default');
+    for (const viewport of [728, 720]) {
+      await open({ platform: 'mac', width: defaultWidth }, viewport);
       const actual = await page.locator(separator).getAttribute('aria-valuenow');
       await hover('拖动调整宽度，双击恢复默认宽度', `${viewport}: no room to expand`);
       await page.locator(separator).dblclick();
       assert.equal(await page.locator(separator).getAttribute('aria-valuenow'), actual);
-      assert.equal(await page.evaluate(() => localStorage.getItem('app-sidebar-width')), '264', 'temporary constraints must not overwrite the default preference');
+      assert.equal(await page.evaluate(() => localStorage.getItem('app-sidebar-width')), String(defaultWidth), 'temporary constraints must not overwrite the default preference');
       await page.setViewportSize({ width: 1024, height: 720 });
-      await page.waitForFunction(() => document.querySelector('[data-sidebar-resize]')?.getAttribute('aria-valuenow') === '264');
-      evidence.push({ label: `constrained-${viewport}-restored`, width: 264 });
+      await page.waitForFunction(width => document.querySelector('[data-sidebar-resize]')?.getAttribute('aria-valuenow') === String(width), defaultWidth);
+      evidence.push({ label: `constrained-${viewport}-restored`, width: defaultWidth });
     }
     // A normal drag must still work immediately after a real double-click.
-    await open({ platform: 'mac', width: 264 });
+    await open({ platform: 'mac', width: defaultWidth });
     await page.locator(separator).dblclick();
     const start = await moveToHandle(page);
     await page.mouse.down();
@@ -404,7 +405,7 @@ export async function validateSidebarResizeDoubleClick(page, output, { baseURL }
     await page.mouse.up();
     await check(336, 'drag after double-click');
     await page.locator(separator).dblclick();
-    await check(264, 'double-click after drag');
+    await check(defaultWidth, 'double-click after drag');
     writeFileSync(join(output, 'sidebar-double-click.json'), JSON.stringify(evidence, null, 2));
     return evidence.length;
   } finally {

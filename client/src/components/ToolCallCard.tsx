@@ -227,7 +227,9 @@ export function ToolCallDetailBody({
 
       {officeReceipt && (
         <div className="toolcall__text">
-          <p>已生成 {officeReceipt.format.toUpperCase()} 文件</p>
+          {officeReceipt.editableSourceWarning
+            ? <p className="tool-detail__document-warning">{officeReceipt.editableSourceWarning}</p>
+            : <p>已生成 {officeReceipt.format.toUpperCase()} 文件</p>}
           <button type="button" className="diff__path diff__path--clickable"
             onClick={() => onOpenPath?.(officeReceipt.path)}
             title={`打开：${officeReceipt.path}`}>

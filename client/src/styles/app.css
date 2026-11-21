@@ -2204,6 +2204,11 @@
   line-height: var(--echo-process-line-height);
 }
 .msg__writing { margin-top: 8px; }
+.msg__memory-reference {
+  margin: 6px 0 0;
+  color: var(--echo-text-secondary);
+  font-size: 0.75rem;
+}
 .execution-process__status,
 .msg__writing > span {
   flex: none;
@@ -2581,19 +2586,10 @@
 }
 .execution-process__footer {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
   justify-content: flex-end;
-  gap: 4px 12px;
   margin-top: 10px;
-  padding: 6px 0 0 17px;
+  padding-top: 6px;
   border-top: 1px solid var(--echo-border-subtle, var(--echo-border-default));
-}
-.execution-process__footer > .execution-process__hint {
-  flex: 1 1 220px;
-  margin: 0;
-  padding: 0;
-  border: 0;
 }
 .execution-process__latest { color: var(--echo-color-text-brand-default); }
 .knowledge-trace {
@@ -2820,6 +2816,12 @@ button.knowledge-trace__item:hover {
   overflow-y: auto;
   overflow-x: hidden;
   font-size: 0.75rem;
+}
+.tool-detail__document-warning {
+  margin: 0 0 6px;
+  color: var(--echo-color-text-warning-default);
+  font-family: system-ui, sans-serif;
+  word-break: normal;
 }
 .toolcall__cmd-line {
   margin: 4px 0;

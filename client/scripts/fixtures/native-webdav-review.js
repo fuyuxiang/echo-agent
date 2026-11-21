@@ -278,9 +278,14 @@ window.__echoNativeWebDavReview = async ({ invoke, context, scope }) => {
       inputValue(recoveryInput, recovery);
       const deniedToasts = toastSnapshot();
       await clickButton(() => panel()?.querySelector('.storage-panel__preview'), '保存');
-      const deniedToast = await newToast(deniedToasts, '保存失败：');
-      assert((deniedToast.closest('.toast')?.textContent.includes('403') || deniedToast.textContent.includes('没有访问权限')) && previewInput(recoveryName)?.value === recovery,
-        'Readonly save did not report real 403 and retain draft');
+      const deniedToast = await newToast(deniedToasts, '保存失败');
+      assert(deniedToast.textContent.includes('没有访问权限'), 'Readonly save should explain the permission problem');
+      const details = deniedToast.closest('.toast')?.querySelector('.toast__details');
+      if (details && !details.open) details.querySelector('summary').click();
+      const failure = details?.querySelector('pre') ?? deniedToast;
+      assert(visible(failure) && /\bHTTP\s+403\b/i.test(failure.textContent)
+        && previewInput(recoveryName)?.value === recovery,
+        'Readonly save did not expose the real HTTP 403 and retain the draft');
       assert(await call('storage_read_text', { id: report.expected.rwId, path: `/${directory}/${recoveryName}` }) === initial, 'Readonly failure modified physical source');
       record(activeCheck, { status: 403, draftRetained: true, remoteInitialContentPreserved: true });
       activeCheck = required[7];

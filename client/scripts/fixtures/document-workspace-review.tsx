@@ -1,6 +1,7 @@
 import React, {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType } from 'docx';
+import { PDFDocument } from 'pdf-lib';
 import '../../src/styles/index.css';
 import {ToolSidePanel} from '../../src/components/ToolSidePanel';
 import {markdownToDocument} from '../../src/lib/document-model';
@@ -40,6 +41,11 @@ Object.assign(window,{documentReview:review,__TAURI_INTERNALS__:{transformCallba
     return;
   }
   if(command==='read_file_base64'){
+    if (args.path === '/review/导出恢复稿.pdf') {
+      const pdf = await PDFDocument.create();
+      pdf.addPage().drawText('Recovered editable document', { x: 64, y: 720 });
+      return pdf.saveAsBase64();
+    }
     return Packer.toBase64String(new Document({sections:[{children:wordBlocks(record?.document.content ?? initial.document.content)}]}));
   }
   if(command==='read_text_file')return markdownContent;
@@ -74,7 +80,15 @@ Object.assign(window,{documentReview:review,__TAURI_INTERNALS__:{transformCallba
   }
   if(command==='document_workspace_export') {
     if(missing && (args.path!==path || args.expectedRevision!==2 || args.recoveredCopy!==true))throw new Error('恢复稿导出参数不匹配');
-    return {path:`/review/${missing?'导出恢复稿':'当前版本'}.${args.format}`,format:args.format,sha256:'b'.repeat(64),byteSize:100};
+    const destination = `/review/${missing?'导出恢复稿':'当前版本'}.${args.format}`;
+    const sha256 = 'b'.repeat(64);
+    if (args.format === 'docx' && record) {
+      records[destination] = {
+        ...clone(record), id: 'exported-copy', path: destination, fileSha256: sha256,
+        revision: 1, exportedRevision: 1, history: [],
+      };
+    }
+    return {path:destination,format:args.format,sha256,byteSize:100};
   }
   if(command==='plugin:event|listen')return 1;
   if(command==='plugin:event|unlisten')return;

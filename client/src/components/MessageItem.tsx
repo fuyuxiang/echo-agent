@@ -359,7 +359,7 @@ export const MessageItem = memo(function MessageItem({
       const receipt = await exportOfficeDocument(title, markdownText, format, sessionId ?? undefined);
       if (receipt) {
         if (sessionId) setExportedArtifact(registerDocumentArtifact(receipt, sessionId, title, cwd ?? ""));
-        onToast?.(`已导出“${receipt.path.split(/[\\/]/).pop()}”${sessionId ? "，可在成果中查看" : ""}`);
+        onToast?.(receipt.editableSourceWarning ?? `已导出“${receipt.path.split(/[\\/]/).pop()}”${sessionId ? "，可在成果中查看" : ""}`);
       }
     } catch (error) {
       onToast?.(`导出失败：${String(error).replace(/^Error:\s*/, "")}`);
@@ -486,12 +486,7 @@ export const MessageItem = memo(function MessageItem({
               {part.text}
             </Markdown>
           ))}
-          {!!message.memorySources?.length && (
-            <details className="knowledge-trace">
-              <summary>本轮参考了 {message.memorySources.length} 处记忆来源</summary>
-              <ul>{message.memorySources.map(source => <li key={source}><code>{source}</code></li>)}</ul>
-            </details>
-          )}
+          {!!message.memorySources?.length && <p className="msg__memory-reference">本轮参考了记忆</p>}
           {generatingAnswer && !generatingInProcess && (
             <div className="msg-progress-row msg__writing" role="status"><span aria-hidden="true" />正在生成回复</div>
           )}

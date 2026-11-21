@@ -2247,21 +2247,39 @@ mod tests {
             new_session_with_options(&first.tx, cwd, init.default_model_id.as_deref(), None, None)
                 .await
                 .unwrap();
+        let storage = echo_agent_memory::MemoryStorage::new(cwd, None);
+        assert!(!storage.is_ephemeral());
+        // Simulate a concurrent writer in the real memory index. The final
+        // session write is required, but an optional chunk-count metric must
+        // never keep the persistence acknowledgement waiting for SQLite.
+        let index = rusqlite::Connection::open_with_flags(
+            storage.index_path(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )
+        .unwrap();
+        index
+            .query_row("SELECT COUNT(*) FROM chunks", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("the fixture must lock the initialized memory index");
+        index
+            .execute_batch("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;")
+            .unwrap();
         first.cancel.cancel();
         tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             first.shutdown_complete.wait_for(|done| *done),
         )
         .await
-        .unwrap()
+        .expect("shutdown did not acknowledge durable session saves while the index was locked")
         .unwrap();
+        index.execute_batch("ROLLBACK;").unwrap();
+        drop(index);
         if let Some(thread) = first.thread.take() {
             tokio::task::spawn_blocking(move || thread.join().unwrap().unwrap())
                 .await
                 .unwrap();
         }
-        let storage = echo_agent_memory::MemoryStorage::new(cwd, None);
-        assert!(!storage.is_ephemeral());
         let job = echo_agent_runtime::session::memory::pending::PendingMemory {
             source_id: sid.clone(),
             history: vec![echo_agent_runtime::sampling::ConversationItem::user(

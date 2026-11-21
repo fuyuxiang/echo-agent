@@ -13,7 +13,10 @@ const build = (phase = 'flush-failure') => {
   const scope = { schema: 1, home: '/private/tmp/echo-native-review-exit-synthetic', cwd: '/private/tmp/echo-native-review-exit-synthetic/workspaces/default', nonce: 'a'.repeat(32), phase, expectedSessionId: phase === 'restart' ? 'synthetic-session-1' : null };
   const context = { scope, pid: 42, evaluations: 1, hasRuntimeSender: false, hasInitOutcome: false };
   const evidence = {
-    'native-init-failure-visible': { error: '初始化失败: synthetic', context },
+    'native-init-failure-visible': {
+      error: '初始化未完成：synthetic-invalid-runtime-memory-type 重试初始化',
+      context,
+    },
     'native-no-recording': { count: 0, listenerReadyObserved: true },
     'native-dirty-plan-update': { sessionId: 'synthetic-session-1', sessionUpdate: 'current_mode_update', currentModeId: 'plan' },
     'native-save-failure-retained': { context: { hasRuntimeHandle: true, lifecycle: { exitReady: false, exitInProgress: false }, shutdownFailure: 'Permission denied' }, failure: { message: '未退出，应用已保留：保存失败' }, failureVisible: true },

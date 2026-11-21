@@ -259,7 +259,7 @@ it("原生退出在可交互的应用对话框等待 IDE，取消或超时都不
   await screen.findByText("代码开发页面");
   act(() => desktop.get("desktop://prepare-exit")?.({ requestId: "ide-cancel" }));
   const dialog = await screen.findByRole("alertdialog", { name: "保存未写入的文件？" });
-  expect(screen.queryByText("正在保存录音与任务数据并准备退出…")).toBeNull();
+  expect(document.querySelector(".app__exit-overlay")).toBeNull();
   expect(invoke).not.toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "ide-cancel", error: null });
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "ide-cancel", error: "已取消退出，代码编辑器仍保留在当前窗口" }));

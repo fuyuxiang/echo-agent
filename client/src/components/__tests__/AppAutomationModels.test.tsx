@@ -791,7 +791,7 @@ describe("自动化会话模型同步", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_exit_listener_ready"));
     act(() => desktop.get("desktop://prepare-exit")?.({ requestId: "draft-cancel" }));
     let dialog = await screen.findByRole("alertdialog", { name: "退出前舍弃自动化草稿？" });
-    expect(screen.queryByText("正在保存录音与任务数据并准备退出…")).toBeNull();
+    expect(document.querySelector(".app__exit-overlay")).toBeNull();
     expect(invoke).not.toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "draft-cancel", error: null });
     fireEvent.click(within(dialog).getByRole("button", { name: "继续编辑" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "draft-cancel", error: "退出已取消，自动化草稿已保留。" }));
@@ -856,9 +856,9 @@ describe("自动化会话模型同步", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_exit_listener_ready"));
     act(() => desktop.get("desktop://prepare-exit")?.({ requestId: "recording-exit" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "recording-exit", error: "磁盘已满" }));
-    expect(screen.getByText("正在保存录音与任务数据并准备退出…")).toBeInTheDocument();
+    expect(screen.getByText("正在保存录音…")).toBeInTheDocument();
     act(() => desktop.get("desktop://exit-failed")?.({ requestId: "recording-exit", message: "未退出：录音保存失败" }));
-    expect(screen.queryByText("正在保存录音与任务数据并准备退出…")).toBeNull();
+    expect(document.querySelector(".app__exit-overlay")).toBeNull();
     expect(await screen.findByText("未退出：录音保存失败")).toBeInTheDocument();
   });
 
@@ -869,7 +869,7 @@ describe("自动化会话模型同步", () => {
       : command === "notification_take_pending_opens" ? [] : null);
     await start();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "early-exit", error: null }));
-    expect(screen.getByText("正在保存录音与任务数据并准备退出…")).toBeInTheDocument();
+    expect(await screen.findByText("正在保存任务数据…")).toBeInTheDocument();
     expect(recorder.stop).not.toHaveBeenCalled();
   });
 

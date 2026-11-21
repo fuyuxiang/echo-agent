@@ -7,8 +7,13 @@ import { reviewChromium } from "./ui-review-runtime.mjs";
 const source = await readFile("src-tauri/src/automation/browser.rs", "utf8");
 const editableText = await readFile("src-tauri/src/automation/editable-text.js", "utf8");
 const interactionTarget = await readFile("src-tauri/src/automation/interaction-target.js", "utf8");
+const deepQuery = await readFile("src-tauri/src/automation/deep-query.js", "utf8");
+const withDeepQuery = expression => `globalThis.__echoQueryAll=(${deepQuery});${expression}`;
 function programs(method, next) {
-  const body = source.slice(source.indexOf("pub async fn " + method), source.indexOf("pub async fn " + next));
+  const start = source.indexOf(`pub async fn ${method}(`);
+  const end = source.indexOf(`pub async fn ${next}(`, start + 1);
+  assert(start >= 0 && end > start, `Missing production method boundary: ${method} → ${next}`);
+  const body = source.slice(start, end);
   return [...body.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(m => {
     try { return JSON.parse('"' + m[1] + '"'); } catch { return ""; }
   }).filter(s => s.startsWith("(() =>"));
@@ -17,7 +22,7 @@ function program(source, values, selection = "") {
   let result = source.replace(" {} return ", " " + selection + " return ");
   result = result.replaceAll("{EDITABLE_TEXT_JS}", editableText);
   for (const [key, value] of Object.entries(values)) result = result.replaceAll("{" + key + "}", value);
-  return result.replaceAll("{{", "{").replaceAll("}}", "}");
+  return withDeepQuery(result.replaceAll("{{", "{").replaceAll("}}", "}"));
 }
 const [focus, native, readback] = programs("type_text", "select");
 const [select] = programs("select", "upload");
@@ -96,7 +101,9 @@ try {
 
   await page.setContent(`<style>button { width:120px;height:40px } button:active { transform:translateY(1px) }</style>
     <form action="https://portal.example/approved"><input><button data-echo-ref="submit">提交</button></form>`);
-  const sample = (input, point = null, guard = null) => page.evaluate(`(${interactionTarget})(${JSON.stringify(input)},"test-document",false,false,${JSON.stringify(point)},${JSON.stringify(guard)})`);
+  const sample = (input, point = null, guard = null) => page.evaluate(withDeepQuery(
+    `(${interactionTarget})(${JSON.stringify(input)},"test-document",false,false,${JSON.stringify(point)},${JSON.stringify(guard)})`,
+  ));
   const clickTarget = { kind: "click", reference: "submit", button: "left" };
   const before = await sample(clickTarget);
   await page.evaluate(() => {

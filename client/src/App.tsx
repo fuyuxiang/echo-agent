@@ -48,7 +48,7 @@ import { useDesktopTray } from "./lib/use-desktop-tray";
 import { TrayActionCancelled } from "./lib/desktop-tray-connection";
 import { reconcileSessionCatalog } from "./lib/session-catalog";
 import { meetingDrafts } from "./lib/meeting-drafts";
-import { createExitPreparationController, type DesktopExitNotice, type DesktopExitFailure } from "./lib/recording-exit";
+import { createExitPreparationController, type DesktopExitNotice, type DesktopExitFailure, type ExitPreparationStage } from "./lib/recording-exit";
 import { usePermissionStore } from "./stores/permission-store";
 import {
   hasPendingQuestionForSession,
@@ -320,7 +320,8 @@ function Shell() {
   useGroupEvents(!!init?.ok);
   const groupChatOpen = useGroupStore(state => !!state.current);
   const [initAttempt, setInitAttempt] = useState(0);
-  const [exitPreparing, setExitPreparing] = useState(false);
+  const [exitStage, setExitStage] = useState<ExitPreparationStage | null>(null);
+  const exitPreparing = exitStage !== null;
   const runtimeRecoveryRequested = useRef(false);
   const [recoverySessionId] = useState(readRecoverySessionId);
   const rendererRestoreChecked = useRef(false);
@@ -1516,7 +1517,7 @@ function Shell() {
     let disposed = false;
     const stops: Array<() => void> = [];
     const exit = createExitPreparationController({
-      preparing: setExitPreparing,
+      preparing: setExitStage,
       failed: (message) => showToast(message, 8000),
       beforePrepare: async (isCurrent) => {
         const confirmEditorExit: ConfirmAction = (options) =>
@@ -3642,7 +3643,9 @@ function Shell() {
     <ModelManagementContext.Provider value={openModelManagement}>
     <ModelCatalogContext.Provider value={models}>
     <div className={`app${IS_MACOS ? " app--macos" : ""}${codingWorkspaceActive ? " app--coding" : ""}`}>
-      {exitPreparing && !automationExitDialog && <div className="app__exit-overlay" role="status" aria-live="polite">正在保存录音与任务数据并准备退出…</div>}
+      {exitStage && !automationExitDialog && <div className="app__exit-overlay" role="status" aria-live="polite">
+        {exitStage === "recording" ? "正在保存录音…" : exitStage === "tasks" ? "正在保存任务数据…" : "正在退出…"}
+      </div>}
       {init?.ok && <CodingTaskRuntimeManager apiReady={init.auth.ready} availableModelIds={models.map(model => model.id)} roots={[...new Set([
         ...codingWorkspaces.map((workspace) => workspace.cwd),
         codingWorkspaceCwd,

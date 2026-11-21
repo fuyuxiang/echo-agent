@@ -41,6 +41,48 @@ type AppendProbe = dyn Fn(AppendDurability) -> io::Result<()> + Send + Sync;
 
 /// Checked teardown syncs local SessionEnd artifacts and propagates errors.
 fn sync_directory_checked(directory: &Path) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut devices = std::collections::HashMap::new();
+    sync_directory_files(directory, &mut |file| {
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+            // Rust's File::sync_all uses F_FULLFSYNC on macOS. Use POSIX
+            // fsync here and issue the device-wide barrier after the walk.
+            loop {
+                if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+                    break;
+                }
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            }
+            devices.entry(file.metadata()?.dev()).or_insert(file);
+            Ok(())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            super::sync_file_durable(&file)
+        }
+    })?;
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        // F_FULLFSYNC also drains earlier fsyncs on the same device. Flush
+        // once per device after syncing every file and directory, rather
+        // than draining the device queue for every artifact during exit.
+        for file in devices.into_values() {
+            super::fullfsync_raw(file.as_raw_fd())?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_directory_files(
+    directory: &Path,
+    sync_file: &mut impl FnMut(std::fs::File) -> io::Result<()>,
+) -> io::Result<()> {
     let metadata = std::fs::symlink_metadata(directory)?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(io::Error::new(
@@ -52,13 +94,13 @@ fn sync_directory_checked(directory: &Path) -> io::Result<()> {
         let entry = entry?;
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            sync_directory_checked(&entry.path())?;
+            sync_directory_files(&entry.path(), sync_file)?;
         } else if kind.is_file() {
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .open(entry.path())?;
-            super::sync_file_durable(&file)?;
+            sync_file(file)?;
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -70,7 +112,7 @@ fn sync_directory_checked(directory: &Path) -> io::Result<()> {
         }
     }
     #[cfg(unix)]
-    std::fs::File::open(directory)?.sync_all()?;
+    sync_file(std::fs::File::open(directory)?)?;
     Ok(())
 }
 

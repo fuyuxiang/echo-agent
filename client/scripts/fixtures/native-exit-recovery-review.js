@@ -79,7 +79,7 @@ window.__echoNativeExitRecoveryReview = async function () {
         const title = `退出保存恢复 ${scope.nonce.slice(0, 8)}`;
         await invoke('agent_rename_session', { sessionId, title, cwd: scope.cwd });
         await write('exit-session-ready.json', { nonce: scope.nonce, sessionId, cwd: scope.cwd, title });
-        const fault = await wait(() => control('fault-applied'), 'owned session chmod applied');
+        const fault = await wait(() => control('fault-applied'), 'owned plan write fault applied');
         require(fault.sessionId === sessionId, 'Parent fault applied to a different session');
         await invoke('set_plan_mode', { sessionId, enabled: true });
         const update = await wait(() => planUpdate, 'real dirty CurrentModeUpdate');
@@ -88,7 +88,9 @@ window.__echoNativeExitRecoveryReview = async function () {
         // This incomplete report must not count as acceptance. Native failure,
         // retained handle, physical repair and the final graceful exit follow.
         await invoke('desktop_review_complete', { report: { ...report, sessionId, passed: false, attempt: 'faulted-exit' } });
-        const failed = await wait(() => exitFailure, 'real failed graceful exit', 45000);
+        // The Runtime can retry a durable write for up to 60 seconds before
+        // the host reports the failed exit.
+        const failed = await wait(() => exitFailure, 'real failed graceful exit', 75000);
         await wait(() => document.body.textContent.includes('未退出，应用已保留'), 'actual exit-failed UI');
         // App immediately retries init after native cleanup failed. During
         // that bounded retry the retained handle is owned by the init future,
@@ -97,7 +99,7 @@ window.__echoNativeExitRecoveryReview = async function () {
         context = await wait(async () => {
           const value = await freshContext();
           return value.hasRuntimeHandle && !value.lifecycle.exitReady && !value.lifecycle.exitInProgress ? value : null;
-        }, 'actual retained save handle after failed recovery attempt', 45000);
+        }, 'actual retained save handle after failed recovery attempt', 75000);
         require(/保存|Permission|permission|denied|权限|持久化/.test(`${failed.message} ${context.shutdownFailure || ''}`), 'Failure did not describe the actual save error');
         record('native-save-failure-retained', { failure: failed, context, failureVisible: true });
         await write('exit-failed-ready.json', { nonce: scope.nonce, sessionId, failure: failed, context });

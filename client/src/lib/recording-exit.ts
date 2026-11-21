@@ -4,13 +4,19 @@ import { invoke } from "@tauri-apps/api/core";
 
 export interface DesktopExitNotice { requestId: string; recordingSaved?: boolean }
 export interface DesktopExitFailure { requestId?: string | null; message: string }
+export type ExitPreparationStage = "preparing" | "recording" | "tasks";
 
 /** A stopped empty recording has no buffered data to lose. A failed save does. */
-export async function saveRecordingBeforeExit(): Promise<void> {
+export async function saveRecordingBeforeExit(
+  isCurrent: () => boolean = () => true,
+  onSaving?: () => void,
+): Promise<void> {
   meetingDrafts.ensureDurable();
   await meetingRecorder.prepareForExit();
+  if (!isCurrent()) return;
   const snapshot = meetingRecorder.current();
   if (!snapshot.active && !snapshot.pendingSave) return;
+  onSaving?.();
   try {
     await meetingRecorder.stop();
   } catch (error) {
@@ -21,7 +27,7 @@ export async function saveRecordingBeforeExit(): Promise<void> {
 
 /** Request-owned handlers shared by the actual shell and its IPC regression. */
 export function createExitPreparationController(callbacks: {
-  preparing: (preparing: boolean) => void;
+  preparing: (stage: ExitPreparationStage | null) => void;
   failed: (message: string) => void;
   beforePrepare?: (isCurrent: () => boolean) => Promise<void>;
   cancelPrepare?: () => void;
@@ -44,14 +50,17 @@ export function createExitPreparationController(callbacks: {
     callbacks.cancelPrepare?.();
     meetingDrafts.cancelExitDiscard();
     meetingRecorder.resumeAfterExitFailure();
-    callbacks.preparing(false);
+    callbacks.preparing(null);
     callbacks.failed(notice.message);
   };
   const acknowledge = async (id: string, error: string | null) => {
     if (disposed || active !== id || closed.has(id)) return;
     const accepted = await invoke<boolean>("desktop_exit_prepared", { requestId: id, error });
-    if (!disposed && active === id && accepted === false) {
+    if (disposed || active !== id) return;
+    if (accepted === false) {
       fail({ requestId: id, message: "退出准备请求已结束，应用已保留，请重试退出。" });
+    } else if (error === null) {
+      callbacks.preparing("tasks");
     }
   };
   const prepare = (notice: DesktopExitNotice, replay = false) => {
@@ -60,17 +69,19 @@ export function createExitPreparationController(callbacks: {
     if (replay && active && active !== notice.requestId) return;
     if (active === notice.requestId) return;
     active = notice.requestId;
-    callbacks.preparing(true);
     if (notice.recordingSaved) {
+      callbacks.preparing("tasks");
       void meetingRecorder.prepareForExit();
       return;
     }
+    callbacks.preparing("preparing");
     const id = notice.requestId;
     const isCurrent = () => !disposed && active === id && !closed.has(id);
-    const save = callbacks.beforePrepare
-      ? Promise.resolve().then(() => callbacks.beforePrepare?.(isCurrent)).then(() => isCurrent() ? saveRecordingBeforeExit() : undefined)
-      : saveRecordingBeforeExit();
-    void save.then(
+    const save = async () => {
+      await callbacks.beforePrepare?.(isCurrent);
+      if (isCurrent()) await saveRecordingBeforeExit(isCurrent, () => callbacks.preparing("recording"));
+    };
+    void save().then(
       () => acknowledge(id, null),
       (error) => acknowledge(id, String(error).replace(/^Error:\s*/, "").slice(0, 1024)),
     ).catch((error) => {
