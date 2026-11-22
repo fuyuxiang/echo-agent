@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ask, save } from "@tauri-apps/plugin-dialog";
 import type { MarkdownConfig, PathType } from "@/components/markdown/types";
+import { developmentEndpoint } from "./browser-preview";
 
 export type MarkdownHostOptions = {
   cwd?: string;
@@ -152,7 +153,8 @@ export function createMarkdownHostConfig(
 
   const onLinkClick: MarkdownConfig["onLinkClick"] = ({ href, event }) => {
     if (!href) return;
-    if (opts.onOpenWeb && /^https?:\/\//i.test(href) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+    if (opts.onOpenWeb && /^https?:\/\//i.test(href) && !event.metaKey && !event.ctrlKey && !event.shiftKey
+      && (event.altKey || developmentEndpoint(href))) {
       event.preventDefault();
       opts.onOpenWeb(href);
       return false;
@@ -279,6 +281,9 @@ export function createMarkdownHostConfig(
     resolveCode,
     openCodeLink,
     onLinkClick,
+    openLinkPreview: opts.onOpenWeb ? href => {
+      if (/^https?:\/\//i.test(href) && !developmentEndpoint(href)) return () => opts.onOpenWeb?.(href);
+    } : undefined,
     onApplyCode,
   };
 }

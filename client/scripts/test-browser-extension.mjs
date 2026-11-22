@@ -8,7 +8,7 @@ import test from 'node:test';
 const source = readFileSync('browser-extension/background.js', 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture() {
-  const handlers = {}, commands = [], detached = [], sockets = [];
+  const handlers = {}, commands = [], detached = [], sockets = [], focused = [];
   const timers = new Map();
   let timerId = 0;
   let pendingAttach, pendingDetach;
@@ -34,7 +34,8 @@ function fixture() {
         return { id, url: 'https://example.invalid/', title: `tab ${id}` };
       },
       query: async () => [1, 2].map(id => ({ id, url: 'https://example.invalid/' })),
-      update: async () => {}, remove: async () => { throw new Error('Unexpected tab close'); },
+      update: async id => ({ id, windowId: 7, url: 'https://example.invalid/' }),
+      remove: async () => { throw new Error('Unexpected tab close'); },
       onRemoved: { addListener: fn => handlers.removed = fn },
     },
     debugger: {
@@ -48,6 +49,7 @@ function fixture() {
       onDetach: { addListener: fn => handlers.detach = fn },
     },
     action: { setBadgeText: async () => {} },
+    windows: { update: async (id, options) => { focused.push([id, options.focused]); } },
   };
   vm.runInNewContext(source, { chrome, WebSocket: Socket, URL, queueMicrotask,
     setInterval: fn => { const id = ++timerId; timers.set(id, fn); return id; },
@@ -67,7 +69,7 @@ function fixture() {
     await tick();
     return socket;
   }
-  return { handlers, commands, detached, sockets, pair, requestPair, message, timers,
+  return { handlers, commands, detached, sockets, pair, requestPair, message, timers, focused,
     deferAttach: value => pendingAttach = value,
     deferDetach: value => pendingDetach = value,
     deferOpen: () => { autoOpen = false; },
@@ -119,6 +121,21 @@ test('pause during debugger attachment invalidates both active and queued input,
   s.message({ id: 'after-resume', method: 'Input.insertText', targetId: '1', params: { text: 'approved' } });
   await tick();
   assert.equal(f.commands.length, 1);
+});
+
+test('a paused task can reveal only its authorized tab without attaching a debugger', async () => {
+  const f = fixture(), s = await f.pair();
+  s.message({ id: 'pause', method: 'Echo.pause' });
+  await tick();
+  s.message({ id: 'wrong', method: 'Echo.focusTaskTab', targetId: '2' });
+  s.message({ id: 'reveal', method: 'Echo.focusTaskTab', targetId: '1' });
+  s.message({ id: 'type', method: 'Input.insertText', targetId: '1', params: { text: 'blocked' } });
+  await tick();
+  assert.match(s.sent.find(value => value.id === 'wrong').error, /authorized/);
+  assert.equal(s.sent.find(value => value.id === 'reveal').result.id, '1');
+  assert.match(s.sent.find(value => value.id === 'type').error, /paused/);
+  assert.deepEqual(f.focused, [[7, true]]);
+  assert.equal(f.commands.length, 0);
 });
 
 test('replacement pairing revokes old commands and disconnect preserves user tabs', async () => {

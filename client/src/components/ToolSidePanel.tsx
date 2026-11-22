@@ -35,7 +35,7 @@ import { ArtifactTabsBar } from "./workspace-panel/ArtifactTabsBar";
 import { FileTreeView } from "./workspace-panel/FileTreeView";
 import { ActionMenu } from "./ActionMenu";
 import { ArrowLeft, Settings2, FolderOpen, ExternalLink, Copy, RotateCw } from "lucide-react";
-import { BrowserPreview, type BrowserOpenRequest } from "./BrowserPreview";
+import { BrowserPreview, type BrowserArtifactEditContext, type BrowserOpenRequest } from "./BrowserPreview";
 import type { DocumentEditContext, OpenDocument } from "@/lib/document-workspace";
 const DocumentWorkbench = lazy(() => import("./DocumentWorkbench"));
 import {
@@ -78,8 +78,11 @@ interface ToolSidePanelProps {
   previewPath?: string | null;
   previewRequestId?: number;
   browserRequest?: BrowserOpenRequest;
+  browserPanel?: import("@/lib/automation-client").BrowserPanelCapabilities;
   onBrowserRequestHandled?: (sequence: number) => void;
   onBrowserTakeOver?: () => Promise<boolean | void>;
+  onShowBrowserArtifactSource?: (path: string) => void;
+  onEditBrowserArtifact?: (context: BrowserArtifactEditContext) => void;
   navigationRequestId?: number;
   cwd?: string;
   workspaceInfo?: ReactNode;
@@ -115,8 +118,11 @@ export function ToolSidePanel({
   previewPath,
   previewRequestId,
   browserRequest,
+  browserPanel,
   onBrowserRequestHandled,
   onBrowserTakeOver,
+  onShowBrowserArtifactSource,
+  onEditBrowserArtifact,
   navigationRequestId,
   cwd,
   messages,
@@ -477,10 +483,15 @@ export function ToolSidePanel({
           const value = selectionRef.current.value;
           value.bodyScroll = {...value.bodyScroll, [view]:e.currentTarget.scrollTop};
           if (sessionId) sessionSelections.set(sessionId,value);
-        }} className="tool-side-panel__body task-details__body">
+        }} className={"tool-side-panel__body task-details__body" + (view === "browser" && !showToolDetail ? " task-details__body--browser" : "")}>
           <div hidden={!runtimeView || showToolDetail}>{details}</div>
           {browserVisited.current && <div className="task-details__browser" hidden={view !== "browser" || showToolDetail}><BrowserPreview key={sessionId} sessionId={sessionId} active={open && view === "browser" && !showToolDetail}
-            request={browserRequest} browserAvailable={automationStatus?.browser?.available} onRequestHandled={onBrowserRequestHandled} onTakeOver={onBrowserTakeOver}
+            request={browserRequest} panelCapabilities={browserPanel} onRequestHandled={onBrowserRequestHandled} onTakeOver={onBrowserTakeOver}
+            onShowArtifactSource={onShowBrowserArtifactSource}
+            onEditArtifact={documentAgentDisabled ? undefined : onEditBrowserArtifact}
+            taskPage={automationStatus?.sessionId === sessionId && automationStatus?.browserRunning
+              ? { url: automationStatus.browserUrl, title: automationStatus.browserTitle,
+                shared: automationStatus.execution?.browserSource === "panel" } : undefined}
             agentWorking={automationStatus?.sessionId === sessionId && computerTaskRunning(automationStatus)} /></div>}
           {(!listView || split || !showList) && ((!runtimeView && view !== "browser") || showToolDetail) && (showToolDetail ? toolCall ? <ToolCallDetailBody tc={toolCall} executionEnded={toolMessage ? !toolMessageActive : false} executionState={toolState} onOpenPath={path => onSelectArtifact({id:path,path,kind:toolCall.kind,title:toolCall.title,toolCallId:toolCall.toolCallId,status:toolCall.status})} /> : <p className="tool-side-panel__empty">选择操作查看详情</p> : <MainContent key={sessionId} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={setDocumentEditing} onOpenArtifact={onSelectArtifact} view={view} artifacts={artifacts} sessionId={sessionId} cwd={cwd} previewPath={previewPath}
             active={open} selectedArtifactId={selectedArtifactId} selectedFilePath={selectedFilePath}

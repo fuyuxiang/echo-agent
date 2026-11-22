@@ -58,9 +58,10 @@ import { useStickToBottom } from "./use-stick-to-bottom";
 import { isGlobalShortcutBlocked } from "@/lib/keyboard-scope";
 import { stripAttachmentTransportContext } from "@/lib/user-message";
 import { automationStatusForMessage, computerTaskRunning } from "@/lib/computer-task";
+import type { BrowserOpenRequest } from "./BrowserPreview";
 import { AutomationApprovalCard } from "./AutomationControls";
 import { useSessionAutomation } from "@/lib/use-session-automation";
-import { type AutomationMode } from "@/lib/automation-client";
+import { automationCapabilities, type AutomationMode, type BrowserPanelCapabilities } from "@/lib/automation-client";
 import { useAppDialog } from "./AppDialog";
 import type {
   MessageRetryKind,
@@ -223,6 +224,16 @@ export function ChatView({
   const [attentionChoice, setAttentionChoice] = useState<{ sessionId: string | null; kind: "permission" | "question" | "plan" }>();
   const handledAttentionRef = useRef<number | undefined>(undefined);
   const automation = useSessionAutomation(sessionId);
+  const [detectedBrowserPanel, setDetectedBrowserPanel] = useState<BrowserPanelCapabilities>();
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
+    void automationCapabilities().then(value => {
+      if (active && value?.browserPanel) setDetectedBrowserPanel(value.browserPanel);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  const browserPanel = automation.status?.browserPanel ?? detectedBrowserPanel;
   const taskRunning = streaming || computerTaskRunning(automation.status);
   const runtimeErrorContext = useSessionStore(s => s.runtimeErrorContext);
   const workspaceRefreshSignal = useMemo(() => ({error, revision:taskRefreshSignal}), [error, taskRefreshSignal]);
@@ -705,7 +716,7 @@ export function ChatView({
   const workspaceSelectionRef = useRef({tool: activeTool, preview: previewRequest});
   workspaceSelectionRef.current = {tool: activeTool, preview: previewRequest};
   const previewSequence = useRef(0);
-  const [browserRequest, setBrowserRequest] = useState<{ sessionId: string; url: string; sequence: number }>();
+  const [browserRequest, setBrowserRequest] = useState<BrowserOpenRequest & { sessionId: string }>();
   const consumeBrowserRequest = useCallback((sequence: number) => {
     setBrowserRequest(current => current?.sequence === sequence ? undefined : current);
   }, []);
@@ -825,17 +836,26 @@ export function ChatView({
     setWorkspaceView(next);
   }, [closeQuestionHistory, sessionId]);
 
-  const useBrowserPanel = automation.status?.browser?.available !== false
-    && !automation.status?.extensionConnected && automation.status?.execution?.browserSource !== "extension";
   const markdownConfig = useMemo(() => createMarkdownHostConfig({
     cwd,
     sessionId,
     onToast,
-    onOpenWeb: sessionId && useBrowserPanel && typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? url => {
-      setBrowserRequest({ sessionId, url, sequence: ++previewSequence.current });
+    onOpenWeb: sessionId && browserPanel?.web !== false && typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? url => {
+      setBrowserRequest({ sessionId, kind: "open", url, sequence: ++previewSequence.current });
       transitionWorkspace("browser");
     } : undefined,
-  }), [cwd, sessionId, onToast, transitionWorkspace, useBrowserPanel]);
+  }), [browserPanel?.web, cwd, sessionId, onToast, transitionWorkspace]);
+
+  const lastBrowserRun = useRef<string | null>(null);
+  useEffect(() => {
+    const status = automation.status;
+    if (!sessionId || status?.sessionId !== sessionId || !status.browserRunning || !computerTaskRunning(status)) return;
+    if (status.mode !== "browser_use" && !status.task?.currentTool?.startsWith("browser_")) return;
+    const run = `${sessionId}:${status.task?.runId ?? status.task?.promptId ?? status.task?.generation}`;
+    if (lastBrowserRun.current === run) return;
+    lastBrowserRun.current = run;
+    transitionWorkspace("browser");
+  }, [automation.status, sessionId, transitionWorkspace]);
 
   type WorkspaceFrame = { view: WorkspaceView; tool: ToolCallView | null; path?: string; artifact?: SessionArtifact };
   const workspaceTrail = useRef<WorkspaceFrame[]>([]);
@@ -855,13 +875,18 @@ export function ChatView({
     setPreviewRequest(null);
     transitionWorkspace("tool");
   }, [pushWorkspaceFrame, transitionWorkspace]);
-  const handleSelectArtifact = useCallback((artifact: SessionArtifact) => {
+  const handleSelectArtifact = useCallback((artifact: SessionArtifact, sourceOnly = false) => {
     const current = workspaceViewRef.current;
     if (current === "tool") pushWorkspaceFrame();
+    if (!sourceOnly && sessionId && browserPanel?.artifacts !== false && /\.html?$/i.test(artifact.path) && "__TAURI_INTERNALS__" in window) {
+      setBrowserRequest({ sessionId, kind: "artifact", path: artifact.path, sequence: ++previewSequence.current });
+      transitionWorkspace("browser");
+      return;
+    }
     setPreviewRequest({ path: artifact.path, artifact, sessionId, sequence: ++previewSequence.current });
     const catalogued = artifact.verifiedOutput || artifactCatalogRef.current.some(item => artifactFileKey(item.path, cwd) === artifactFileKey(artifact.path, cwd));
     transitionWorkspace(current === "fileTree" ? "fileTree" : catalogued ? "artifacts" : "fileTree");
-  }, [cwd, pushWorkspaceFrame, sessionId, transitionWorkspace]);
+  }, [browserPanel?.artifacts, cwd, pushWorkspaceFrame, sessionId, transitionWorkspace]);
   const handleWorkspaceBack = () => {
     const previous = workspaceTrail.current.pop();
     setWorkspaceTrailDepth(workspaceTrail.current.length);
@@ -1460,8 +1485,23 @@ export function ChatView({
         previewPath={previewPath}
         previewRequestId={previewRequest?.sequence}
         browserRequest={browserRequest?.sessionId === sessionId ? browserRequest : undefined}
+        browserPanel={browserPanel}
         onBrowserRequestHandled={consumeBrowserRequest}
         onBrowserTakeOver={() => cancelTask("pause")}
+        onShowBrowserArtifactSource={path => handleSelectArtifact({ id: path, path, kind: "file", title: path,
+          toolCallId: "", status: "completed" }, true)}
+        onEditBrowserArtifact={({ path, tag, id, label }) => {
+          if (!sessionId) return;
+          const target = `<${tag}>${id ? `（id 为 ${JSON.stringify(id)}）` : ""}${label ? `，内容为 ${JSON.stringify(label)}` : ""}`;
+          const prompt = `请修改 HTML 产物 ${JSON.stringify(path)} 中的元素 ${target}。\n具体修改要求：`;
+          setDraft(sessionId, draft.trim() ? `${draft}\n\n${prompt}` : prompt);
+          closeWorkspace();
+          requestAnimationFrame(() => {
+            const input = document.querySelector<HTMLTextAreaElement>(".chatview .echo-composer__input");
+            input?.focus();
+            if (input) input.setSelectionRange(input.value.length, input.value.length);
+          });
+        }}
         navigationRequestId={workspaceNavigationId}
         workspaceInfo={<SessionWorkspaceDirectory workspace={workspace} managedTaskWorkspace={managedTaskWorkspace} onOpen={openWorkspaceDirectory} />}
         workspaceAvailable={workspace.available}

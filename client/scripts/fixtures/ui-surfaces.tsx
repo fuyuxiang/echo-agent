@@ -1,4 +1,3 @@
-import type { BrowserPanelView } from "../../src/lib/automation-client";
 import { BrowserPreview } from "../../src/components/BrowserPreview";
 import { AboutDialog } from "../../src/components/AboutDialog";
 import { FeedbackDialog } from "../../src/components/FeedbackDialog";
@@ -400,23 +399,14 @@ if (query.has("continuation")) {
   useSessionsStore.getState().upsert({sessionId:"review-conversation",title:"登录页交互优化",cwd:"/Users/review/项目/EchoAgent/一个很长的任务工作目录/desktop-client"});
 }
 const browserTaskOverrides = new Map<string, Record<string, unknown>>();
-const browserPanels = new Map<string, BrowserPanelView>();
-const emptyBrowserPanel: BrowserPanelView = {
-  tabs: [], activeId: null, external: false, allowPrivateNetwork: false, developmentEndpoints: [], page: null,
+const emptyBrowserPanel = {
+  tabs: [] as { id: number; title: string; url: string }[],
+  activeId: null as number | null,
+  developmentEndpoints: [],
+  canGoBack: false,
+  canGoForward: false,
 };
-let browserFrame = 0;
-function browserFixtureFrame() {
-  const canvas = document.createElement("canvas");
-  canvas.width = 440;
-  canvas.height = 320;
-  const context = canvas.getContext("2d")!;
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = "#222";
-  context.font = "20px sans-serif";
-  context.fillText("网页验收样例", 24, 48);
-  return canvas.toDataURL("image/jpeg").split(",")[1];
-}
+const browserPanels = new Map<string, typeof emptyBrowserPanel>();
 let automationApprovalResolved = false;
 const workbenchCalls: unknown[] = [];
 Object.assign(window, { workbenchCalls });
@@ -604,27 +594,16 @@ Object.assign(window, {
         case "permission_list": return rules;
         case "permission_save": rules = args.rules; return;
         case "automation_capabilities": return { browser: { available: true, browserName: "Chrome" }, computer: { available: true, platform: "macos", screenCapture: true, inputControl: true } };
-        case "automation_browser_view": {
-          const panel = browserPanels.get(args.sessionId) ?? emptyBrowserPanel;
-          return panel.page?.frameId === args.knownFrame && panel.page
-            ? { ...panel, page: { ...panel.page, image: null } }
-            : panel;
-        }
-        case "automation_browser_action": {
-          if (args.action.kind !== "navigate" && args.action.kind !== "open") return;
-          const url = args.action.url;
-          const targetId = "review-browser-tab";
-          const frameId = `frame-${++browserFrame}`;
-          browserPanels.set(args.sessionId, {
-            ...emptyBrowserPanel,
-            tabs: [{ id: targetId, title: "网页验收样例", url }],
-            activeId: targetId,
-            page: {
-              document: { url, targetId, loaderId: frameId }, frameId, image: browserFixtureFrame(),
-              canGoBack: false, canGoForward: false, width: 440, height: 320, error: false,
-            },
-          });
-          return;
+        case "browser_panel": {
+          if (args.action.kind === "dispose") browserPanels.delete(args.sessionId);
+          if (args.action.kind === "open") {
+            browserPanels.set(args.sessionId, {
+              ...emptyBrowserPanel,
+              tabs: [{ id: 1, url: args.action.url, title: "网页验收样例" }],
+              activeId: 1,
+            });
+          }
+          return browserPanels.get(args.sessionId) ?? emptyBrowserPanel;
         }
         case "automation_status": return {
           sessionId: args.sessionId,

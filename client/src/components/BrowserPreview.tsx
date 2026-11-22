@@ -1,453 +1,539 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent } from "react";
-import { ExternalLink } from "lucide-react";
-import {
-  automationBrowserAction,
-  automationBrowserView,
-  type BrowserPageInput,
-  type BrowserPanelAction,
-  type BrowserPanelView,
-} from "@/lib/automation-client";
+import { ArrowRight, ExternalLink, MoreHorizontal, Search } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { developmentEndpoint, normalizePreviewUrl } from "@/lib/browser-preview";
 import { openUrl } from "@/lib/agent-client";
 import { friendlyError } from "@/lib/error-format";
-import {
-  ChevronLeftIcon, ChevronRightIcon, RefreshCwIcon, AddIcon, CloseIcon,
-} from "@/foundation/components/Icon/icons";
+import type { BrowserPanelCapabilities } from "@/lib/automation-client";
+import { ChevronLeftIcon, ChevronRightIcon, RefreshCwIcon, AddIcon, CloseIcon } from "@/foundation/components/Icon/icons";
 
-export interface BrowserOpenRequest {
-  url: string;
-  sequence: number;
-}
+export type BrowserOpenRequest = (
+  | { kind: "open"; url: string }
+  | { kind: "artifact"; path: string }
+) & { sequence: number };
 
 interface BrowserPreviewProps {
   sessionId?: string;
   active: boolean;
   request?: BrowserOpenRequest;
+  panelCapabilities?: BrowserPanelCapabilities;
   agentWorking?: boolean;
-  browserAvailable?: boolean;
+  taskPage?: { url?: string | null; title?: string | null; shared?: boolean };
   onRequestHandled?: (sequence: number) => void;
   onTakeOver?: () => Promise<boolean | void>;
+  onEditArtifact?: (context: BrowserArtifactEditContext) => void;
+  onShowArtifactSource?: (path: string) => void;
 }
 
-type Navigation = Extract<BrowserPanelAction, { url: string }>;
-type Gesture = { pointerId: number; x: number; y: number; start: [number, number]; frame: Page; moved: boolean };
-type Page = NonNullable<BrowserPanelView["page"]>;
-
-function modifiers(event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
-  return Number(event.altKey) | (Number(event.ctrlKey) << 1)
-    | (Number(event.metaKey) << 2) | (Number(event.shiftKey) << 3);
+export interface BrowserArtifactEditContext {
+  path: string;
+  tag: string;
+  id: string;
+  label: string;
 }
+
+type ArtifactSelection = Omit<BrowserArtifactEditContext, "path"> & {
+  token: string;
+  text: string | null;
+  color: string;
+  fontSize: number;
+  bold: boolean;
+  image: string | null;
+};
+type ArtifactChange = Partial<Pick<ArtifactSelection, "text" | "color" | "fontSize" | "bold" | "image">>;
+
+type Bounds = { x: number; y: number; width: number; height: number };
+type Open = { kind: "open"; url: string; allowDevelopment?: boolean; newTab?: boolean };
+type Action = Open
+  | { kind: "artifact"; path: string }
+  | { kind: "select" | "close"; id: number }
+  | { kind: "layout"; bounds: Bounds | null }
+  | { kind: "find"; query: string; backwards?: boolean }
+  | { kind: "zoom"; scale: number }
+  | { kind: "device"; viewport: DeviceViewport | null }
+  | { kind: "editSave"; token: string; change: ArtifactChange }
+  | { kind: "mount" | "view" | "new" | "back" | "forward" | "reload" | "capture" | "revokeDevelopment" | "dispose"
+    | "editBegin" | "editSelection" | "editEnd" | "editUndo" | "editRedo" | "clearBrowsingData" | "openDownloads" };
+
+type DeviceViewport = { width: number; height: number };
+
+interface PanelView {
+  tabs: { id: number; title: string; url: string; artifactPath?: string; canUndo?: boolean; canRedo?: boolean }[];
+  activeId: number | null;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  developmentEndpoints: string[];
+  allowPrivateNetwork?: boolean;
+  inputLocked?: boolean;
+  zoom?: number;
+  device?: DeviceViewport | null;
+  findMatch?: boolean;
+  image?: string;
+  history?: { title: string; url: string }[];
+  canClearBrowsingData?: boolean;
+  profileTabCount?: number;
+  selection?: ArtifactSelection;
+}
+
+const devices = {
+  phone: { width: 390, height: 844 },
+  tablet: { width: 768, height: 1024 },
+  desktop: { width: 1280, height: 800 },
+};
+
+function resolveAddress(text: string) {
+  const value = text.trim();
+  if (!value) return null;
+  const normalized = normalizePreviewUrl(value);
+  if (normalized && (/^https?:\/\//i.test(value) || /[.:/]/.test(value) || /^localhost$/i.test(value))) {
+    return normalized;
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) || /^(?:javascript|file|data|about|blob):/i.test(value)) return null;
+  const provider = navigator.language.startsWith("zh") ? "https://www.baidu.com/s?wd=" : "https://www.google.com/search?q=";
+  return provider + encodeURIComponent(value);
+}
+
+let nextPanelOwner = 0;
 
 export function BrowserPreview({
-  sessionId, active, request, agentWorking = false, browserAvailable = true, onRequestHandled, onTakeOver,
+  sessionId, active, request, panelCapabilities, agentWorking = false, taskPage,
+  onRequestHandled, onTakeOver, onEditArtifact, onShowArtifactSource,
 }: BrowserPreviewProps) {
-  const [view, setView] = useState<BrowserPanelView | null>(null);
+  const [owner] = useState(() => `${Date.now()}-${++nextPanelOwner}`);
+  const [view, setView] = useState<PanelView | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
-  const [permission, setPermission] = useState<{ action: Navigation; endpoint: string; target: string | null } | null>(null);
+  const [permission, setPermission] = useState<{ action: Open; endpoint: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [takingOver, setTakingOver] = useState(false);
-  const [externalOpening, setExternalOpening] = useState(false);
-  const [externalOpened, setExternalOpened] = useState(false);
-  const [keyboardFocused, setKeyboardFocused] = useState(false);
-  const [actionError, setActionError] = useState("");
-  const [viewError, setViewError] = useState("");
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [tools, setTools] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<boolean | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [editTab, setEditTab] = useState<number | null>(null);
+  const [selection, setSelection] = useState<ArtifactSelection>();
+  const [change, setChange] = useState<ArtifactChange>({});
+  const searchInput = useRef<HTMLInputElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
-  const image = useRef<HTMLImageElement>(null);
-  const keyboard = useRef<HTMLTextAreaElement>(null);
-  const address = useRef<HTMLInputElement>(null);
   const queue = useRef(Promise.resolve());
-  const pendingInput = useRef(0);
-  const handled = useRef<number | undefined>(undefined);
-  const generation = useRef(0);
-  const mountedActive = useRef(false);
-  const queueOwner = useRef(sessionId);
-  const refreshNow = useRef(() => {});
-  const latestPage = useRef<Page | null>(null);
-  const gesture = useRef<Gesture | null>(null);
-  const lastMove = useRef(0);
-  const lastClick = useRef<{ point: [number, number]; time: number; count: number; target: string } | null>(null);
+  const mount = useRef<Promise<PanelView | null>>(Promise.resolve(null));
+  const lastRequest = useRef<number | undefined>(undefined);
+  const selected = view?.tabs.find(tab => tab.id === view.activeId);
+  const shownUrl = selected?.url === "about:blank" ? "" : selected?.url ?? "";
+  const normalized = draft === null ? (/^https?:\/\//i.test(shownUrl) ? shownUrl : null) : resolveAddress(draft);
+  const history = view?.history ?? [];
+  const hasPage = Boolean(selected && shownUrl);
+  const sharedBusy = Boolean(view?.inputLocked || agentWorking && taskPage?.shared);
+  const artifactPath = selected?.artifactPath;
+  const editing = editTab !== null && editTab === selected?.id;
+  const webAvailable = panelCapabilities?.web !== false;
+  const ready = Boolean(sessionId && active && "__TAURI_INTERNALS__" in window
+    && (webAvailable || panelCapabilities?.artifacts));
+  const showTask = Boolean(taskPage && !selected && !permission);
+  const layoutSync = useRef<() => void>(() => {});
 
-  const page = view?.page;
-  const tab = view?.tabs.find(item => item.id === view.activeId);
-  const currentUrl = page?.document.url ?? tab?.url ?? "";
-  const shownUrl = currentUrl === "about:blank" ? "" : currentUrl;
-  const normalized = normalizePreviewUrl(draft ?? shownUrl);
-  const disabled = !sessionId || busy || agentWorking;
-  const navigationDisabled = disabled || !browserAvailable || view?.external || !view?.activeId;
+  const callHost = useCallback((action: Action): Promise<PanelView | null> => {
+    if (!sessionId || !("__TAURI_INTERNALS__" in window)) return Promise.resolve(null);
+    return invoke<PanelView>("browser_panel", { sessionId, owner, action })
+      .then(result => Array.isArray(result?.tabs) ? result : null);
+  }, [owner, sessionId]);
+
+  const command = useCallback((action: Action) => {
+    const mounted = mount.current;
+    const result = queue.current.then(async () => {
+      await mounted;
+      return callHost(action);
+    });
+    queue.current = result.then(() => {}, () => {});
+    return result;
+  }, [callHost]);
+
+  useEffect(() => () => {
+    void callHost({ kind: "dispose" }).catch(() => {});
+  }, [callHost]);
 
   useLayoutEffect(() => {
-    if (queueOwner.current !== sessionId || !active) {
-      queueOwner.current = sessionId;
-      generation.current++;
-      setPermission(null);
+    const element = viewport.current;
+    if (!ready || !element) return;
+    let mounted = true;
+    const opening = callHost({ kind: "mount" });
+    mount.current = opening;
+    void opening.then(next => {
+      if (mounted && next) setView(next);
+    }).catch(cause => { if (mounted) setError(friendlyError(cause)); });
+    let frame = 0;
+    let lastBounds = "";
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      const shellOverlay = document.querySelector('[aria-modal="true"]:not([hidden]), dialog[open]');
+      const x = Math.max(0, rect.left);
+      const y = Math.max(0, rect.top);
+      const width = Math.min(innerWidth, rect.right) - x;
+      const height = Math.min(innerHeight, rect.bottom) - y;
+      const bounds = width > 0 && height > 0 && !shellOverlay && document.visibilityState !== "hidden"
+        ? { x, y, width, height }
+        : null;
+      const key = JSON.stringify(bounds);
+      if (key === lastBounds) return;
+      lastBounds = key;
+      void opening.then(() => mounted ? callHost({ kind: "layout", bounds }) : null)
+        .catch(cause => { if (mounted) setError(friendlyError(cause)); });
+    };
+    const sync = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    layoutSync.current = () => {
+      lastBounds = "";
+      sync();
+    };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync);
+    observer?.observe(element);
+    const overlays = new MutationObserver(sync);
+    overlays.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-modal", "hidden", "open"] });
+    window.addEventListener("resize", sync);
+    window.addEventListener("scroll", sync, true);
+    document.addEventListener("visibilitychange", sync);
+    sync();
+    return () => {
+      mounted = false;
+      layoutSync.current = () => {};
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      overlays.disconnect();
+      window.removeEventListener("resize", sync);
+      window.removeEventListener("scroll", sync, true);
+      document.removeEventListener("visibilitychange", sync);
+      void callHost({ kind: "layout", bounds: null }).catch(() => {});
+    };
+  }, [callHost, ready]);
+
+  useEffect(() => {
+    if (!ready || (view?.activeId == null && !taskPage?.shared)) return;
+    let current = true;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void callHost({ kind: "view" }).then(next => {
+        if (current && next) setView(next);
+      }).catch(() => {});
+    }, 1000);
+    return () => { current = false; clearInterval(timer); };
+  }, [callHost, ready, taskPage?.shared, view?.activeId]);
+
+  const run = useCallback(async (action: Action) => {
+    setBusy(true);
+    setError("");
+    setFeedback("");
+    try {
+      if (editing && ["artifact", "open", "new", "select", "close", "back", "forward", "reload"].includes(action.kind)) {
+        await command({ kind: "editEnd" }).catch(() => {});
+        setEditTab(null);
+        setSelection(undefined);
+      }
+      const next = await command(action);
+      if (next) setView(next);
+      setDraft(null);
+      if (action.kind === "clearBrowsingData") setFeedback("已清除内置浏览器数据");
+      layoutSync.current();
+    } catch (cause) {
+      setError(friendlyError(cause));
+      if (action.kind === "artifact" && /当前桌面系统不支持内嵌网页/.test(String(cause))) {
+        onShowArtifactSource?.(action.path);
+      }
+    } finally {
       setBusy(false);
     }
-    mountedActive.current = active;
-    return () => {
-      mountedActive.current = false;
-      gesture.current = null;
-      lastClick.current = null;
-    };
-  }, [active, sessionId]);
+  }, [command, editing, onShowArtifactSource]);
 
   useEffect(() => {
-    if (!active || !sessionId || !("__TAURI_INTERNALS__" in window)) return;
-    let disposed = false;
-    let running = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let resizeTimer: ReturnType<typeof setTimeout>;
-    let size: [number, number] | null = null;
-    let failures = 0;
-    let lastRefresh = 0;
-    const refresh = async () => {
-      if (disposed || running) return;
-      clearTimeout(timer);
-      running = true;
-      lastRefresh = performance.now();
+    if (!editing || !active || sharedBusy) return;
+    let live = true;
+    let timer = 0;
+    const poll = async () => {
       try {
-        if (document.visibilityState === "hidden") return;
-        const known = latestPage.current;
-        const next = await automationBrowserView(sessionId, size, known?.frameId ?? null);
-        if (disposed || !next || !Array.isArray(next.tabs)) return;
-        // Keep the last usable frame while Chromium is navigating or scrolling within the same tab.
-        if (!next.external && !next.page && next.activeId === known?.document.targetId) return;
-        if (next.page?.frameId && next.page.frameId === known?.frameId && !next.page.image) {
-          next.page = { ...next.page, image: known.image };
-        }
-        latestPage.current = next.page;
-        failures = 0;
-        setView(next);
-        setViewError("");
-      } catch (error) {
-        if (!disposed) {
-          failures++;
-          setViewError(friendlyError(error));
-        }
+        const next = await callHost({ kind: "editSelection" });
+        if (live) setSelection(current => current?.token === next?.selection?.token ? current : next?.selection);
+      } catch {
+        if (live) setSelection(undefined);
       } finally {
-        running = false;
-        if (!disposed) timer = setTimeout(refresh, failures ? 1500 : agentWorking ? 950 : 400);
+        if (live) timer = window.setTimeout(poll, 240);
       }
     };
-    const measure = () => {
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        const bounds = viewport.current?.getBoundingClientRect();
-        if (bounds && bounds.width > 0 && bounds.height > 0) {
-          const next = [Math.round(bounds.width), Math.round(bounds.height)] as const;
-          if (size?.[0] !== next[0] || size?.[1] !== next[1]) {
-            size = [...next];
-            void refresh();
-          }
-        }
-      }, 160);
-    };
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
-    if (viewport.current) observer?.observe(viewport.current);
-    refreshNow.current = () => {
-      if (running) return;
-      clearTimeout(timer);
-      timer = setTimeout(refresh, Math.max(0, 120 - (performance.now() - lastRefresh)));
-    };
-    measure();
-    void refresh();
-    return () => {
-      disposed = true;
-      observer?.disconnect();
-      clearTimeout(timer);
-      clearTimeout(resizeTimer);
-      refreshNow.current = () => {};
-    };
-  }, [active, sessionId, agentWorking]);
+    void poll();
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [active, callHost, editing, sharedBusy]);
 
-  const perform = useCallback((action: BrowserPanelAction, target: string | null) => {
-    if (!sessionId || !active) return;
-    const input = action.kind === "input";
-    const owner = generation.current;
-    if (input) {
-      if ((action.input.kind === "move" && pendingInput.current > 0)
-        || (action.input.kind === "wheel" && pendingInput.current >= 12)) return;
-      if (pendingInput.current >= 48) {
-        setActionError("网页响应较慢，部分输入未发送，请稍后重试");
+  useEffect(() => {
+    if (editTab !== null && (!active || sharedBusy || editTab !== selected?.id)) {
+      if (editing) void callHost({ kind: "editEnd" }).catch(() => {});
+      setEditTab(null);
+      setSelection(undefined);
+    }
+  }, [active, callHost, editTab, editing, selected?.id, sharedBusy]);
+
+  useEffect(() => setChange({}), [selection?.token]);
+
+  const open = useCallback((action: Open) => {
+    setError("");
+    const endpoint = developmentEndpoint(action.url);
+    if (endpoint && !view?.allowPrivateNetwork && !view?.developmentEndpoints.includes(endpoint)) {
+      setPermission({ action, endpoint });
+      return;
+    }
+    setPermission(null);
+    void run(action);
+  }, [run, view?.allowPrivateNetwork, view?.developmentEndpoints]);
+
+  useEffect(() => {
+    if (!active || busy || sharedBusy || !request || lastRequest.current === request.sequence) return;
+    lastRequest.current = request.sequence;
+    onRequestHandled?.(request.sequence);
+    if (request.kind === "artifact") {
+      setPermission(null);
+      if (ready && panelCapabilities?.artifacts !== false) void run({ kind: "artifact", path: request.path });
+      else onShowArtifactSource?.(request.path);
+      return;
+    }
+    setDraft(request.url);
+    if (ready && webAvailable) open({ kind: "open", url: request.url, newTab: true });
+    else if (!webAvailable) void openUrl(request.url).catch(cause => setError(friendlyError(cause)));
+  }, [active, busy, onRequestHandled, onShowArtifactSource, open, panelCapabilities?.artifacts, ready, request, run, sharedBusy, webAvailable]);
+
+  async function revealTask() {
+    if (!sessionId) return;
+    setError("");
+    try {
+      if ((agentWorking || view?.inputLocked) && await onTakeOver?.() === false) {
+        setError("暂停尚未确认，请重试");
         return;
       }
-      pendingInput.current++;
-    } else {
-      setBusy(true);
-      setPermission(null);
-      setActionError("");
-      setExternalOpened(false);
-    }
-    queue.current = queue.current.then(async () => {
-      try {
-        if (!mountedActive.current || generation.current !== owner) return;
-        await automationBrowserAction(sessionId, target, action);
-        if (!input && action.kind !== "revokeDevelopment" && mountedActive.current && generation.current === owner) setDraft(null);
-      } catch (error) {
-        if (mountedActive.current && generation.current === owner) setActionError(friendlyError(error));
-      } finally {
-        if (input) pendingInput.current--;
-        if (!mountedActive.current || generation.current !== owner) return;
-        if (!input) setBusy(false);
-        if (!input || action.input.kind !== "move") refreshNow.current();
+      if (taskPage?.shared || view?.inputLocked) {
+        const next = await command({ kind: "view" });
+        if (next) setView(next);
+        return;
       }
+      await invoke("automation_focus_browser", { sessionId });
+    } catch (cause) {
+      setError(friendlyError(cause));
+    }
+  }
+
+  async function find(backwards = false, text = query) {
+    try {
+      const next = await command({ kind: "find", query: text, backwards });
+      setFound(text && next?.findMatch != null ? next.findMatch : null);
+    } catch (cause) {
+      setError(friendlyError(cause));
+    }
+  }
+
+  function showFind() {
+    setFinding(true);
+    requestAnimationFrame(() => searchInput.current?.focus());
+  }
+
+  function closeFind() {
+    setFinding(false);
+    setFound(null);
+    setQuery("");
+    void find(false, "");
+  }
+
+  async function capture() {
+    setError("");
+    setFeedback("");
+    const png = command({ kind: "capture" }).then(next => {
+      if (!next?.image) throw new Error("网页截图未生成");
+      return new Blob([Uint8Array.from(atob(next.image), byte => byte.charCodeAt(0))], { type: "image/png" });
     });
-  }, [active, sessionId]);
-
-  const navigate = useCallback((action: Navigation) => {
-    if (agentWorking || view?.external) {
-      setActionError(agentWorking ? "暂停并接手后可在面板打开此网址，也可以用系统浏览器打开。" : "可在已连接的浏览器中操作，或用系统浏览器打开此网址。");
-      return;
-    }
-    if (!browserAvailable) {
-      setActionError("当前设备没有可用的任务浏览器，可用系统浏览器打开此网址。");
-      return;
-    }
-    const target = action.kind === "navigate" && !viewError ? view?.activeId ?? null : null;
-    const endpoint = developmentEndpoint(action.url);
-    if (endpoint && !view?.allowPrivateNetwork && !view?.developmentEndpoints?.includes(endpoint)) {
-      setPermission({ action, endpoint, target });
-      return;
-    }
-    setPermission(null);
-    perform(action, target);
-  }, [agentWorking, browserAvailable, perform, view, viewError]);
-
-  useEffect(() => {
-    if (!active || !sessionId || busy || !request || handled.current === request.sequence) return;
-    handled.current = request.sequence;
-    onRequestHandled?.(request.sequence);
-    setDraft(request.url);
-    setExternalOpened(false);
-    setPermission(null);
-    const url = normalizePreviewUrl(request.url);
-    if (!url) {
-      setActionError("网址格式无效");
-      return;
-    }
-    navigate({ kind: "open", url });
-  }, [active, busy, navigate, onRequestHandled, request, sessionId]);
-
-  const sendInput = useCallback((input: BrowserPageInput, frame = page) => {
-    if (!frame?.image || !frame.frameId || disabled || viewError) return;
-    perform({ kind: "input", document: frame.document, frameId: frame.frameId, input }, frame.document.targetId);
-  }, [disabled, page, perform, viewError]);
-
-  const point = useCallback((x: number, y: number): [number, number] | null => {
-    const element = image.current;
-    const rect = element?.getBoundingClientRect();
-    if (!page || !element?.complete || !element.naturalWidth || !element.naturalHeight
-      || !rect?.width || !rect.height || !page.width || !page.height) return null;
-    const scale = Math.min(rect.width / element.naturalWidth, rect.height / element.naturalHeight);
-    const width = element.naturalWidth * scale;
-    const height = element.naturalHeight * scale;
-    const fractionX = (x - rect.left - (rect.width - width) / 2) / width;
-    const fractionY = (y - rect.top - (rect.height - height) / 2) / height;
-    if (fractionX < 0 || fractionY < 0 || fractionX >= 1 || fractionY >= 1) return null;
-    return [fractionX * page.width, fractionY * page.height];
-  }, [page]);
-
-  useEffect(() => {
-    const element = viewport.current;
-    if (!element || !active || disabled) return;
-    const onWheel = (event: WheelEvent) => {
-      const location = point(event.clientX, event.clientY);
-      if (!location) return;
-      event.preventDefault();
-      const [x, y] = location;
-      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? (page?.height ?? 600) : 1;
-      sendInput({ kind: "wheel", x, y, dx: event.deltaX * unit, dy: event.deltaY * unit });
-    };
-    element.addEventListener("wheel", onWheel, { passive: false });
-    return () => element.removeEventListener("wheel", onWheel);
-  }, [active, disabled, page?.height, point, sendInput]);
-
-  function onPointerDown(event: PointerEvent<HTMLImageElement>) {
-    if (disabled || viewError || !page?.frameId || event.button > 2) return;
-    const start = point(event.clientX, event.clientY);
-    if (!start) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    gesture.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, start, frame: page, moved: false };
-  }
-
-  function onPointerMove(event: PointerEvent<HTMLImageElement>) {
-    const pending = gesture.current;
-    if (pending?.pointerId === event.pointerId) {
-      pending.moved ||= Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > 5;
-      return;
-    }
-    if (event.buttons || performance.now() - lastMove.current < 85) return;
-    const location = point(event.clientX, event.clientY);
-    if (!location) return;
-    lastMove.current = performance.now();
-    sendInput({ kind: "move", x: location[0], y: location[1] });
-  }
-
-  function onPointerUp(event: PointerEvent<HTMLImageElement>) {
-    const pending = gesture.current;
-    gesture.current = null;
-    if (!pending || pending.pointerId !== event.pointerId || disabled || viewError || !page?.frameId) return;
-    const end = point(event.clientX, event.clientY);
-    if (!end) return;
-    if (pending.frame.document.targetId !== page.document.targetId
-      || pending.frame.document.loaderId !== page.document.loaderId
-      || pending.frame.width !== page.width || pending.frame.height !== page.height) {
-      setActionError("网页画面已变化，请重试");
-      return;
-    }
-    const [x, y] = pending.start;
-    const moved = pending.moved || Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > 5;
-    if (moved && event.button !== 0) return;
-    const button = event.button === 0 ? "left" : event.button === 1 ? "middle" : "right";
-    const previous = lastClick.current;
-    const time = performance.now();
-    const count = button === "left" && !moved && previous?.target === page.document.targetId
-      && time - previous.time < 400 && Math.hypot(x - previous.point[0], y - previous.point[1]) < 5
-      ? previous.count % 3 + 1 : 1;
-    lastClick.current = button === "left" && !moved ? { point: pending.start, time, count, target: page.document.targetId } : null;
-    if (button === "left") keyboard.current?.focus({ preventScroll: true });
-    setActionError("");
-    sendInput({ kind: "pointer", x, y, destination: moved ? end : null, button, count, modifiers: modifiers(event) }, pending.frame);
-  }
-
-  function onPageKey(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-    if (event.key === "Escape" && !event.shiftKey) {
-      event.preventDefault();
-      address.current?.focus();
-      return;
-    }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") return;
-    event.preventDefault();
-    const flags = event.key === "Escape" ? modifiers(event) & ~8 : modifiers(event);
-    sendInput({ kind: "key", key: event.key, code: event.code, virtualKey: event.keyCode, modifiers: flags });
-  }
-
-  async function takeOver() {
-    setTakingOver(true);
-    setActionError("");
     try {
-      if (await onTakeOver?.() === false) setActionError("暂停尚未确认，请重试");
-      refreshNow.current();
-    } catch (error) {
-      setActionError(friendlyError(error));
-    } finally {
-      setTakingOver(false);
+      if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") throw new Error("需要保存截图");
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+      setFeedback("已复制网页截图");
+    } catch {
+      try {
+        const url = URL.createObjectURL(await png);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "网页截图.png";
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setFeedback("已保存网页截图");
+      } catch (cause) {
+        setError(friendlyError(cause));
+      }
     }
   }
 
-  async function openExternally() {
-    if (!normalized) return;
-    setExternalOpening(true);
-    setExternalOpened(false);
-    setActionError("");
+  async function edit(action: Extract<Action, { kind: "editSave" }> | {
+    kind: "editBegin" | "editEnd" | "editUndo" | "editRedo";
+  }) {
+    setBusy(true);
+    setError("");
+    setFeedback("");
     try {
-      await openUrl(normalized);
-      setExternalOpened(true);
-    } catch (error) {
-      setActionError(friendlyError(error));
+      const next = await command(action);
+      if (next) setView(next);
+      setSelection(undefined);
+      setEditTab(action.kind === "editBegin" ? selected?.id ?? null : null);
+      if (action.kind === "editSave") setFeedback("已保存到 HTML 产物");
+      if (action.kind === "editUndo") setFeedback("已撤销 HTML 修改");
+      if (action.kind === "editRedo") setFeedback("已重做 HTML 修改");
+      layoutSync.current();
+    } catch (cause) {
+      setError(friendlyError(cause));
     } finally {
-      setExternalOpening(false);
+      setBusy(false);
     }
+  }
+
+  function openExternally() {
+    if (normalized) void openUrl(normalized).catch(cause => setError(friendlyError(cause)));
   }
 
   return (
-    <div className="browser-preview" role="region" aria-label="网页">
-      {!!view?.tabs.length && <div className="browser-preview__tabs" aria-label="网页标签">
-        {view.tabs.map(item => <div className="browser-preview__tab" key={item.id}>
-          <button type="button" aria-pressed={item.id === view.activeId} title={item.url}
-            disabled={disabled || view.external} onClick={() => perform({ kind: "select", id: item.id }, null)}>
-            {item.title || (item.url === "about:blank" ? "新标签页" : item.url)}
-          </button>
-          {!view.external && <button type="button" aria-label={`关闭 ${item.title || "标签页"}`} disabled={disabled}
-            onClick={() => perform({ kind: "close", id: item.id }, null)}><CloseIcon size="sm" /></button>}
-        </div>)}
-      </div>}
+    <div className="browser-preview" role="region" aria-label="网页" onKeyDown={event => {
+      if (hasPage && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        showFind();
+      }
+    }}>
+      <div className="browser-preview__tab-strip">
+        <div className="browser-preview__tabs" aria-label="网页标签">
+          {view?.tabs.map(tab => (
+            <div className="browser-preview__tab" key={tab.id}>
+              <button type="button" aria-pressed={tab.id === view.activeId} title={tab.url} disabled={busy || sharedBusy}
+                onClick={() => { setPermission(null); void run({ kind: "select", id: tab.id }); }}>
+                {tab.title || (tab.url === "about:blank" ? "新标签页" : tab.url)}
+              </button>
+              <button type="button" aria-label={`关闭 ${tab.title || "标签页"}`} disabled={busy || sharedBusy}
+                onClick={() => void run({ kind: "close", id: tab.id })}><CloseIcon size="sm" /></button>
+            </div>
+          ))}
+        </div>
+        <button type="button" className="browser-preview__nav-btn" aria-label="网页工具" title="网页工具"
+          aria-expanded={tools} onClick={() => setTools(!tools)}><MoreHorizontal size={16} aria-hidden="true" /></button>
+        <button type="button" className="browser-preview__nav-btn" aria-label="新建网页标签" title="新建网页标签"
+          disabled={busy || !ready || !webAvailable || sharedBusy} onClick={() => { setPermission(null); void run({ kind: "new" }); }}>
+          <AddIcon size="sm" />
+        </button>
+      </div>
       <form className="browser-preview__toolbar" onSubmit={event => {
         event.preventDefault();
-        if (normalized && !disabled && !view?.external) navigate({ kind: "navigate", url: normalized });
+        if (!normalized || busy || sharedBusy) return;
+        if (ready && webAvailable) open({ kind: "open", url: normalized });
+        else if (!webAvailable) openExternally();
       }}>
         <button type="button" className="browser-preview__nav-btn" aria-label="后退" title="后退"
-          disabled={navigationDisabled || !page?.canGoBack} onClick={() => perform({ kind: "back" }, view?.activeId ?? null)}>
-          <ChevronLeftIcon size="sm" />
-        </button>
+          disabled={busy || sharedBusy || !view?.canGoBack} onClick={() => void run({ kind: "back" })}><ChevronLeftIcon size="sm" /></button>
         <button type="button" className="browser-preview__nav-btn" aria-label="前进" title="前进"
-          disabled={navigationDisabled || !page?.canGoForward} onClick={() => perform({ kind: "forward" }, view?.activeId ?? null)}>
-          <ChevronRightIcon size="sm" />
-        </button>
+          disabled={busy || sharedBusy || !view?.canGoForward} onClick={() => void run({ kind: "forward" })}><ChevronRightIcon size="sm" /></button>
         <button type="button" className="browser-preview__nav-btn" aria-label="刷新" title="刷新"
-          disabled={navigationDisabled || !shownUrl || !!viewError} onClick={() => perform({ kind: "reload" }, view?.activeId ?? null)}>
-          <RefreshCwIcon size="sm" />
-        </button>
-        <input ref={address} className="browser-preview__input" aria-label="预览网址" value={draft ?? shownUrl}
-          readOnly={busy} placeholder="输入网址" onChange={event => {
+          disabled={busy || sharedBusy || !shownUrl} onClick={() => void run({ kind: "reload" })}><RefreshCwIcon size="sm" /></button>
+        <input className="browser-preview__input" aria-label="预览网址" value={draft ?? shownUrl} list={history.length ? `preview-history-${owner}` : undefined}
+          readOnly={busy || sharedBusy} placeholder="输入网址或搜索词" onChange={event => {
             setDraft(event.target.value);
-            setExternalOpened(false);
             setPermission(null);
-            setActionError("");
-          }}
-          onKeyDown={event => {
-            if (event.key === "Enter" && (event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault();
-            if (event.key === "Escape") {
-              setDraft(null);
-              setPermission(null);
-            }
+            setError("");
           }} />
-        <button type="submit" className="browser-preview__go" disabled={disabled || !browserAvailable || !normalized || view?.external}>打开</button>
-        <button type="button" className="browser-preview__nav-btn" aria-label="新建网页标签" title="新建网页标签"
-          disabled={disabled || !browserAvailable || view?.external} onClick={() => perform({ kind: "new" }, null)}><AddIcon size="sm" /></button>
-        <button type="button" className="browser-preview__nav-btn" aria-label="用系统浏览器打开" title="用系统浏览器打开地址栏中的网址"
-          disabled={!normalized || externalOpening} aria-busy={externalOpening} onClick={() => void openExternally()}>
-          <ExternalLink size={14} aria-hidden="true" />
-        </button>
+        {history.length > 0 && <datalist id={`preview-history-${owner}`}>
+          {history.map(item => <option key={item.url} value={item.url} label={item.title} />)}
+        </datalist>}
+        <button type="submit" className="browser-preview__nav-btn browser-preview__go" aria-label="打开网址" title="打开网址"
+          disabled={!normalized || (!ready && webAvailable) || busy || sharedBusy}><ArrowRight size={16} aria-hidden="true" /></button>
+        <button type="button" className="browser-preview__nav-btn" aria-label="在系统浏览器中打开" title="在系统浏览器中打开"
+          disabled={!normalized} onClick={openExternally}><ExternalLink size={16} aria-hidden="true" /></button>
       </form>
-      {(actionError || viewError || page?.error) && <p className="browser-preview__status browser-preview__status--error" role="alert">
-        {actionError || viewError || "网页加载失败。可以重试或用系统浏览器打开。"}
-      </p>}
-      {externalOpened && <p className="browser-preview__status" role="status">已在系统浏览器中打开。</p>}
-      {agentWorking && <div className="browser-preview__status browser-preview__status-actions">
-        <span role="status">Agent 正在控制当前任务。</span>
-        <button type="button" disabled={!onTakeOver || takingOver} onClick={() => void takeOver()}>
-          {takingOver ? "正在暂停…" : "暂停并接手"}
-        </button>
+      {tools && <div className="browser-preview__status browser-preview__status-actions browser-preview__tools" role="group" aria-label="网页工具">
+        <button type="button" disabled={!hasPage || sharedBusy} onClick={showFind}><Search size={14} /> 页内查找</button>
+        <button type="button" disabled={!hasPage || sharedBusy} onClick={() => void capture()}>截取网页</button>
+        <label>缩放 <select aria-label="网页缩放" disabled={!hasPage || sharedBusy}
+          value={view?.zoom ?? 1} onChange={event => void run({ kind: "zoom", scale: Number(event.target.value) })}>
+          {[0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 2].map(scale => <option key={scale} value={scale}>{scale * 100}%</option>)}
+        </select></label>
+        <label>视口 <select aria-label="设备视口" disabled={!hasPage || sharedBusy}
+          value={Object.entries(devices).find(([, device]) => device.width === view?.device?.width)?.[0] ?? ""}
+          onChange={event => void run({ kind: "device", viewport: devices[event.target.value as keyof typeof devices] ?? null })}>
+          <option value="">自适应</option><option value="phone">手机</option>
+          <option value="tablet">平板</option><option value="desktop">桌面</option>
+        </select></label>
+        <button type="button" disabled={!selected || busy} onClick={() => void run({ kind: "openDownloads" })}>打开下载目录</button>
+        <button type="button" disabled={!view?.canClearBrowsingData || busy || sharedBusy}
+          onClick={() => setConfirmClear(true)}>清除浏览数据</button>
       </div>}
+      {confirmClear && <div className="browser-preview__status browser-preview__status-actions" role="group" aria-label="清除浏览数据确认">
+        <span>清除当前账号在内置浏览器中的登录、缓存和浏览记录，并关闭各会话中的公网网页标签{view?.profileTabCount ? `（${view.profileTabCount} 个）` : ""}。网页上尚未提交的内容可能丢失。</span>
+        <button type="button" disabled={busy || sharedBusy} onClick={() => {
+          setConfirmClear(false);
+          void run({ kind: "clearBrowsingData" });
+        }}>清除</button>
+        <button type="button" onClick={() => setConfirmClear(false)}>取消</button>
+      </div>}
+      {finding && <form className="browser-preview__status browser-preview__status-actions" aria-label="页内查找" onSubmit={event => {
+        event.preventDefault();
+        void find((event.nativeEvent as SubmitEvent).submitter?.getAttribute("data-direction") === "previous");
+      }} onKeyDown={event => { if (event.key === "Escape") closeFind(); }}>
+        <input ref={searchInput} className="browser-preview__input" aria-label="查找网页内容" value={query}
+          onChange={event => { setQuery(event.target.value); setFound(null); }} />
+        <button type="submit" disabled={!query} data-direction="previous">上一处</button>
+        <button type="submit" disabled={!query}>下一处</button>
+        <button type="button" onClick={closeFind}>关闭查找</button>
+        {found === false && <span role="status">未找到匹配内容</span>}
+      </form>}
+      {feedback && <div className="browser-preview__status" role="status">{feedback}</div>}
+      {error && <div className="browser-preview__status browser-preview__status--error" role="alert">{error}</div>}
       {permission && <div className="browser-preview__status browser-preview__status-actions" role="group" aria-label="本地端口授权">
-        <span>允许本任务访问 {permission.endpoint}？该权限也适用于此任务的 Agent 和其他标签页。</span>
-        <button type="button" disabled={disabled} onClick={() => {
+        <span>允许在此会话访问本地预览 {permission.endpoint}？</span>
+        <button type="button" disabled={busy} onClick={() => {
           setPermission(null);
-          perform({ ...permission.action, allowDevelopment: true }, permission.target);
+          void run({ ...permission.action, allowDevelopment: true });
         }}>允许并打开</button>
         <button type="button" onClick={() => setPermission(null)}>取消</button>
       </div>}
-      {!!view?.developmentEndpoints?.length && <div className="browser-preview__status browser-preview__status-actions">
-        <span title={view.developmentEndpoints.join("、")}>已授权端口 {view.developmentEndpoints.join("、")}</span>
-        <button type="button" disabled={busy} onClick={() => perform({ kind: "revokeDevelopment" }, null)}>撤销本地端口授权</button>
+      {Boolean(view?.developmentEndpoints.length) && <div className="browser-preview__status browser-preview__status-actions">
+        <span>已授权本地端口 {view?.developmentEndpoints.join("、")}</span>
+        <button type="button" disabled={busy || sharedBusy} onClick={() => void run({ kind: "revokeDevelopment" })}>撤销全部端口授权</button>
       </div>}
-      <div className="browser-preview__surface" ref={viewport} aria-busy={busy}>
-        {page?.image ? <>
-          <img className="browser-preview__frame" ref={image} alt={tab?.title || "当前网页"}
-            src={`data:image/jpeg;base64,${page.image}`} draggable={false}
-            onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-            onPointerCancel={() => { gesture.current = null; }}
-            onContextMenu={event => event.preventDefault()} />
-          <textarea ref={keyboard} className="browser-preview__keyboard" aria-label="网页键盘输入" tabIndex={-1}
-            disabled={disabled} onFocus={() => setKeyboardFocused(true)} onBlur={() => setKeyboardFocused(false)}
-            onKeyDown={onPageKey} onCompositionEnd={event => {
-              sendInput({ kind: "text", text: event.data });
-              event.currentTarget.value = "";
-            }} onPaste={event => {
-              event.preventDefault();
-              sendInput({ kind: "text", text: event.clipboardData.getData("text/plain") });
-            }} />
-        </> : <p className="browser-preview__empty">
-          {busy ? "正在打开网页…" : view?.external ? "在已连接的浏览器中查看和操作网页。" : !browserAvailable ? "可用系统浏览器打开地址栏中的网址。" : shownUrl && !page?.error ? "正在加载网页…" : "输入网址以打开网页。"}
-        </p>}
+      {(sharedBusy || taskPage && !taskPage.shared) && <div className="browser-preview__status browser-preview__status-actions">
+        <span title={taskPage?.url ?? undefined}>{sharedBusy ? "Agent 正在操作网页" : taskPage?.title || taskPage?.url || "Agent 网页任务"}</span>
+        <button type="button" onClick={() => void revealTask()}>{sharedBusy ? "暂停并接手" : agentWorking ? "暂停并打开任务浏览器" : "打开任务浏览器"}</button>
+      </div>}
+      {artifactPath && <div className="browser-preview__status browser-preview__status-actions browser-preview__tools" role="group" aria-label="HTML 产物编辑">
+        {onShowArtifactSource && <button type="button" onClick={() => onShowArtifactSource(artifactPath)}>查看源码</button>}
+        <button type="button" disabled={busy || sharedBusy} onClick={() => void edit({ kind: editing ? "editEnd" : "editBegin" })}>
+          {editing ? "退出编辑" : "编辑网页"}
+        </button>
+        <button type="button" disabled={busy || sharedBusy || !selected?.canUndo} onClick={() => void edit({ kind: "editUndo" })}>撤销编辑</button>
+        <button type="button" disabled={busy || sharedBusy || !selected?.canRedo} onClick={() => void edit({ kind: "editRedo" })}>重做编辑</button>
+        {editing && !selection && <span>点击网页上的文字或图片进行编辑。</span>}
+      </div>}
+      {editing && selection && artifactPath && <form className="browser-preview__status browser-preview__status-actions browser-preview__tools browser-preview__editor"
+        aria-label="编辑选中元素" onSubmit={event => {
+          event.preventDefault();
+          if (!busy && !sharedBusy && Object.keys(change).length) void edit({ kind: "editSave", token: selection.token, change });
+        }}>
+        <span title={selection.label}>{selection.tag}{selection.id ? `#${selection.id}` : ""}</span>
+        {selection.text !== null && <input className="browser-preview__input" aria-label="元素文字" placeholder="输入文字"
+          value={change.text ?? selection.text} onChange={event => setChange({ ...change, text: event.target.value })} />}
+        {selection.image !== null && <input className="browser-preview__input" aria-label="图片相对路径" placeholder="图片相对路径"
+          value={change.image ?? selection.image} onChange={event => setChange({ ...change, image: event.target.value })} />}
+        <label>颜色 <input type="color" aria-label="文字颜色" value={change.color ?? selection.color}
+          onChange={event => setChange({ ...change, color: event.target.value })} /></label>
+        <label>字号 <input type="number" aria-label="字号" min={8} max={240} value={change.fontSize ?? selection.fontSize}
+          onChange={event => setChange({ ...change, fontSize: event.target.valueAsNumber || undefined })} /></label>
+        <button type="button" aria-pressed={change.bold ?? selection.bold}
+          onClick={() => setChange({ ...change, bold: !(change.bold ?? selection.bold) })}>加粗</button>
+        <button type="submit" disabled={busy || sharedBusy || !Object.values(change).some(value => value !== undefined)}>保存</button>
+        {onEditArtifact && <button type="button" disabled={busy || sharedBusy}
+          onClick={() => onEditArtifact({ path: artifactPath, tag: selection.tag, id: selection.id, label: selection.label })}>让 Agent 修改</button>}
+      </form>}
+      <div className="browser-preview__surface" ref={viewport}>
+        {sharedBusy && <p className="browser-preview__empty" role="status">Agent 正在使用此标签。暂停后可在同一网页继续操作。</p>}
+        {(!selected || !shownUrl) && !sharedBusy && !showTask && !busy && !permission && !error && (
+          <p className="browser-preview__empty">{webAvailable ? "输入网址以打开网页。" : "当前系统支持在系统浏览器中打开网址。"}</p>
+        )}
       </div>
-      {page?.image && <div className="browser-preview__keyboard-bar">
-        <button type="button" disabled={disabled} onClick={() => keyboard.current?.focus({ preventScroll: true })}>使用网页键盘</button>
-        {keyboardFocused && <span role="status">Esc 返回工具栏，Shift + Esc 将 Esc 发送给网页</span>}
-      </div>}
     </div>
   );
 }

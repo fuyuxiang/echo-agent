@@ -1602,7 +1602,7 @@ export function Composer({
               <span
                 className={`echo-composer__automation-badge echo-composer__automation-badge--${automationMode}`}
                 title={automationMode === "browser_use"
-                  ? "本任务可以在独立浏览器中操作网页"
+                  ? "本任务可以打开和操作网页"
                   : "本任务可以查看屏幕并操作本机应用"}
               >
                 {automationMode === "browser_use"

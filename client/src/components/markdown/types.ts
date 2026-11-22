@@ -68,6 +68,7 @@ export type MarkdownConfig = {
     children: ReactNode;
     event: MouseEvent<HTMLAnchorElement>;
   }) => boolean | void;
+  openLinkPreview?: (href: string) => (() => void) | undefined;
   onDownloadMermaid?: (svg: string, code: string) => void;
   onPreviewMermaid?: (svg: string, code: string) => void;
   expandThreshold?: number;

@@ -1,4 +1,4 @@
-use super::network_proxy::{resolve_allowed_destination, BrowserNetworkProxy};
+use super::network_proxy::{resolve_allowed_destinations, BrowserNetworkProxy};
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,8 +10,6 @@ use tokio::process::{Child, Command};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use url::Url;
-
-pub(super) mod surface;
 
 const START_TIMEOUT: Duration = Duration::from_secs(12);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -100,6 +98,8 @@ pub struct BrowserDownload {
 /// the session manager, so a CDP command can never race another action in the
 /// same task.
 pub struct BrowserController {
+    #[cfg(any(target_os = "macos", windows))]
+    native: Option<super::native_panel::SharedBrowser>,
     child: Option<Child>,
     extension: Option<std::sync::Arc<super::browser_bridge::Connection>>,
     page_connection: Option<(String, CdpConnection)>,
@@ -117,8 +117,6 @@ pub struct BrowserController {
     // Chromium releases download overrides when their DevTools session ends.
     // Keep a browser-level connection alive across page commands and tabs.
     download_session: Option<CdpConnection>,
-    panel_size: Option<(String, u32, u32)>,
-    panel_frames: surface::PanelFrames,
 }
 
 impl std::fmt::Debug for BrowserController {
@@ -141,25 +139,70 @@ impl Drop for BrowserController {
 }
 
 impl BrowserController {
+    pub(super) async fn launch_for_task(
+        app: &tauri::AppHandle,
+        session_id: &str,
+        allow_private_network: bool,
+        #[cfg_attr(not(any(target_os = "macos", windows)), allow(unused_variables))]
+        source: super::TaskBrowserSource,
+        #[cfg_attr(not(any(target_os = "macos", windows)), allow(unused_variables))]
+        account_generation: u64,
+    ) -> Result<Self, String> {
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            use tauri::Manager;
+            if source == super::TaskBrowserSource::Panel
+                && super::browser_bridge::connected(session_id).is_none()
+                && super::native_panel::network_available()
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let native = super::native_panel::SharedBrowser::start(
+                        window,
+                        session_id,
+                        allow_private_network,
+                        account_generation,
+                    )
+                    .await?;
+                    let target_id = native.active().await?.id;
+                    return Ok(Self {
+                        native: Some(native),
+                        child: None,
+                        extension: None,
+                        page_connection: None,
+                        active_frame: None,
+                        snapshot_pages: Default::default(),
+                        reference_documents: Default::default(),
+                        _protection: None,
+                        port: 0,
+                        browser_name: "会话网页".into(),
+                        profile_dir: profile_dir(session_id)?,
+                        target_id: Some(target_id),
+                        allow_private_network,
+                        network_proxy: None,
+                        next_cdp_id: 1,
+                        download_session: None,
+                    });
+                }
+            }
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let _ = app;
+        Self::launch(session_id, allow_private_network).await
+    }
+
+    pub(super) fn is_native(&self) -> bool {
+        #[cfg(any(target_os = "macos", windows))]
+        return self.native.is_some();
+        #[cfg(not(any(target_os = "macos", windows)))]
+        false
+    }
+
     pub async fn launch(session_id: &str, allow_private_network: bool) -> Result<Self, String> {
-        Self::launch_with_surface(session_id, allow_private_network, false).await
-    }
-
-    pub(super) async fn launch_for_panel(
-        session_id: &str,
-        allow_private_network: bool,
-    ) -> Result<Self, String> {
-        Self::launch_with_surface(session_id, allow_private_network, true).await
-    }
-
-    async fn launch_with_surface(
-        session_id: &str,
-        allow_private_network: bool,
-        in_panel: bool,
-    ) -> Result<Self, String> {
         if let Some(extension) = super::browser_bridge::connected(session_id) {
             extension.resume().await?;
             let mut browser = Self {
+                #[cfg(any(target_os = "macos", windows))]
+                native: None,
                 child: None,
                 extension: Some(extension),
                 page_connection: None,
@@ -175,8 +218,6 @@ impl BrowserController {
                 network_proxy: None,
                 next_cdp_id: 1,
                 download_session: None,
-                panel_size: None,
-                panel_frames: Default::default(),
             };
             let target = browser.ensure_page().await?;
             browser.target_id = Some(target.id);
@@ -198,7 +239,7 @@ impl BrowserController {
         let network_proxy = BrowserNetworkProxy::start(allow_private_network).await?;
 
         let mut command = Command::new(&executable);
-        if in_panel || (cfg!(test) && std::env::var_os("ECHO_BROWSER_TEST_HEADLESS").is_some()) {
+        if cfg!(test) && std::env::var_os("ECHO_BROWSER_TEST_HEADLESS").is_some() {
             command.arg("--headless=new");
         }
         command
@@ -236,6 +277,8 @@ impl BrowserController {
             child.id().ok_or("浏览器在身份核验前已退出")?,
         )?;
         let mut controller = Self {
+            #[cfg(any(target_os = "macos", windows))]
+            native: None,
             child: Some(child),
             extension: None,
             page_connection: None,
@@ -251,8 +294,6 @@ impl BrowserController {
             network_proxy: Some(network_proxy),
             next_cdp_id: 1,
             download_session: None,
-            panel_size: None,
-            panel_frames: Default::default(),
         };
         let target = controller.ensure_page().await?;
         controller.target_id = Some(target.id);
@@ -300,6 +341,14 @@ impl BrowserController {
         Ok(controller)
     }
 
+    #[cfg(any(target_os = "macos", windows))]
+    pub(super) async fn claim_native_input(&self) -> Result<(), String> {
+        if let Some(native) = &self.native {
+            native.set_agent_controlled(true).await?;
+        }
+        Ok(())
+    }
+
     pub fn set_allow_private_network(&mut self, allowed: bool) {
         self.allow_private_network = allowed;
         if let Some(proxy) = &self.network_proxy {
@@ -322,6 +371,25 @@ impl BrowserController {
     }
 
     pub async fn status(&mut self) -> Result<BrowserStatus, String> {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            let (active, tabs) = native.view().await?;
+            let current = tabs
+                .into_iter()
+                .find(|tab| Some(&tab.id) == active.as_ref());
+            if active != self.target_id {
+                self.reset_observation_context();
+                self.target_id = active.clone();
+            }
+            return Ok(BrowserStatus {
+                running: current.is_some(),
+                browser_name: Some(self.browser_name.clone()),
+                target_id: active,
+                title: current.as_ref().map(|tab| tab.title.clone()),
+                url: current.map(|tab| tab.url),
+                profile_dir: Some(self.profile_dir.to_string_lossy().into_owned()),
+            });
+        }
         if self.extension.as_ref().is_some_and(|c| !c.live()) {
             return Err("browser_extension_disconnected".into());
         }
@@ -354,25 +422,13 @@ impl BrowserController {
         })
     }
 
-    pub(super) async fn panel_browser_healthy(&mut self) -> bool {
-        tokio::time::timeout(Duration::from_secs(3), async {
-            if !self.status().await?.running {
-                return Err("任务浏览器已停止".to_string());
-            }
-            let download = self
-                .download_session
-                .as_mut()
-                .ok_or("浏览器下载隔离连接已失效")?;
-            let id = self.next_cdp_id;
-            self.next_cdp_id = id.saturating_add(1);
-            cdp_request(download, id, "Browser.getVersion", json!({})).await?;
-            Ok(())
-        })
-        .await
-        .is_ok_and(|result| result.is_ok())
-    }
-
     pub async fn stop(&mut self) -> Result<(), String> {
+        #[cfg(any(target_os = "macos", windows))]
+        if self.native.is_some() {
+            self.target_id = None;
+            self.reset_observation_context();
+            return Ok(());
+        }
         if let Some(extension) = &self.extension {
             // Detach only this task's debugger sessions; never close user tabs.
             let paused = if extension.live() {
@@ -404,6 +460,28 @@ impl BrowserController {
         self.snapshot_pages.clear();
         self.reference_documents.clear();
         let url = self.validate_page_url(raw_url).await?;
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            let old_url = native.active().await?.url;
+            let target = native.navigate(url.as_str(), false).await?;
+            self.target_id = Some(target.id);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                let observed = self.current_url().await.unwrap_or_default();
+                if observed == url.as_str()
+                    || (!observed.is_empty() && observed != old_url && observed != "about:blank")
+                {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err("等待内嵌网页导航完成超时，请在侧栏查看".into());
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+            self.wait_for_ready(Duration::from_secs(20)).await?;
+            let current = self.enforce_current_url_policy().await?;
+            return Ok(json!({"url": current,"targetId":self.target_id}));
+        }
         let result = self
             .call_page("Page.navigate", json!({ "url": url.as_str() }))
             .await?;
@@ -695,7 +773,7 @@ impl BrowserController {
             .or(frames["frameTree"]["frame"]["id"].as_str())
             .ok_or("无法识别浏览器文档")?
             .to_owned();
-        let offset = if self.active_frame.is_some() {
+        let offset = if self.active_frame.is_some() && !self.uses_webkit() {
             let owner = self
                 .call_page("DOM.getFrameOwner", json!({"frameId":frame_id}))
                 .await?;
@@ -740,6 +818,14 @@ impl BrowserController {
             .await?;
         if !expected.is_object() {
             return Err("无法确认网页操作的实际目标，请重新观察页面".into());
+        }
+        if self.uses_webkit() {
+            if let Some(frame) = &approval.frame_id {
+                let point = expected["x"].as_f64().zip(expected["y"].as_f64());
+                let projected = self.webkit_frame_projection(frame, point).await?;
+                let (x, y) = point.unwrap_or_default();
+                approval.offset = (projected.0 - x, projected.1 - y);
+            }
         }
         let submission = &expected["submission"];
         if submission.is_object() && submission["method"] != "dialog" {
@@ -798,21 +884,14 @@ impl BrowserController {
             return Err("target_changed: top-level page changed after approval".into());
         }
         if let Some(frame) = &approval.frame_id {
-            let owner = self
-                .call_page("DOM.getFrameOwner", json!({"frameId":frame}))
-                .await?;
-            let model = self
-                .call_page(
-                    "DOM.getBoxModel",
-                    json!({"backendNodeId":owner["backendNodeId"]}),
-                )
-                .await?;
-            let x = model["model"]["content"][0]
-                .as_f64()
-                .ok_or("frame_geometry_unavailable")?;
-            let y = model["model"]["content"][1]
-                .as_f64()
-                .ok_or("frame_geometry_unavailable")?;
+            let (x, y) = if self.uses_webkit() {
+                self.webkit_frame_projection(frame, None).await?
+            } else {
+                let owner = self.call_page("DOM.getFrameOwner", json!({"frameId":frame})).await?;
+                let model = self.call_page("DOM.getBoxModel", json!({"backendNodeId":owner["backendNodeId"]})).await?;
+                model["model"]["content"][0].as_f64().zip(model["model"]["content"][1].as_f64())
+                    .ok_or("frame_geometry_unavailable")?
+            };
             if (x - approval.offset.0).abs() > 0.5 || (y - approval.offset.1).abs() > 0.5 {
                 return Err("target_changed: iframe moved after approval; observe again".into());
             }
@@ -852,6 +931,9 @@ impl BrowserController {
         mut x: f64,
         mut y: f64,
     ) -> Result<(f64, f64), String> {
+        if self.uses_webkit() {
+            return self.webkit_frame_projection(frame, Some((x, y))).await;
+        }
         let tree = self.call_page("Page.getFrameTree", json!({})).await?;
         let mut parents = std::collections::HashMap::new();
         fn collect(
@@ -913,6 +995,39 @@ impl BrowserController {
             frame = parent;
         }
         Err("frame_limit: iframe ancestry exceeds the observation budget".into())
+    }
+
+    fn uses_webkit(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.native.is_some();
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
+    async fn webkit_frame_projection(&mut self, frame: &str, point: Option<(f64, f64)>) -> Result<(f64, f64), String> {
+        let target = json!({"frameId":frame});
+        let identity = self.call_page("Echo.framePath", target.clone()).await?;
+        let mut path = serde_json::from_value::<Vec<u16>>(identity.clone())
+            .ok().filter(|path| !path.is_empty() && path.len() <= 16)
+            .ok_or("frame_geometry_unavailable")?;
+        let (mut x, mut y) = point.unwrap_or_default();
+        while let Some(index) = path.pop() {
+            let hit = self.call_page("Echo.projectFrame", json!({
+                "parentPath":path, "index":index, "point":point.map(|_| json!({"x":x,"y":y}))
+            })).await?;
+            let (projected_x, projected_y) = hit["x"].as_f64().zip(hit["y"].as_f64())
+                .ok_or("target_changed: iframe moved, is obscured, or is transformed")?;
+            if point.is_some() {
+                (x, y) = (projected_x, projected_y);
+            } else {
+                x += projected_x;
+                y += projected_y;
+            }
+        }
+        if self.call_page("Echo.framePath", target).await? != identity {
+            return Err("target_changed: iframe position changed during verification".into());
+        }
+        Ok((x, y))
     }
 
     async fn finish_form_guard(&mut self, approval: &BrowserInteraction) -> Result<(), String> {
@@ -1078,8 +1193,14 @@ impl BrowserController {
                     .await?;
                 self.key(&approval, "Backspace", &[]).await?;
             } else {
-                self.call_page("Input.insertText", json!({ "text": text }))
-                    .await?;
+                let mut input = json!({"text":text});
+                if self.uses_webkit() {
+                    input["echoReference"] = json!(element_ref);
+                    if let Some(frame) = &self.active_frame {
+                        input["echoFrameId"] = json!(frame);
+                    }
+                }
+                self.call_page("Input.insertText", input).await?;
             }
         }
         let readback = self.evaluate(&format!(
@@ -1162,12 +1283,7 @@ impl BrowserController {
         let object = target["objectId"]
             .as_str()
             .ok_or("file_input_unavailable")?;
-        let selected = self
-            .call_page(
-                "DOM.setFileInputFiles",
-                json!({"objectId":object,"files":canonical_paths}),
-            )
-            .await;
+        let selected = self.select_upload_files(object, canonical_paths).await;
         let _ = self
             .call_page("Runtime.releaseObject", json!({"objectId":object}))
             .await;
@@ -1191,6 +1307,34 @@ impl BrowserController {
         Ok(
             json!({ "uploaded": true, "fileCount": canonical_paths.len(), "verified": true, "status":"files_selected_unsubmitted", "uploadConfirmed":false }),
         )
+    }
+
+    async fn select_upload_files(&mut self, object: &str, paths: &[String]) -> Result<Value, String> {
+        #[cfg(target_os = "macos")]
+        if self.native.is_some() {
+            let files = super::native_browser_engine::upload_contents(paths).await?;
+            let result = self.call_page("Runtime.callFunctionOn", json!({
+                "objectId":object,"returnByValue":true,"arguments":[{"value":files}],
+                "functionDeclaration":r#"function(files) {
+                    if (!(this instanceof HTMLInputElement) || this.type !== 'file' || this.disabled
+                        || !this.isConnected || (!this.multiple && files.length !== 1)) throw Error('网页文件选择器已变化');
+                    const data = new DataTransfer();
+                    for (const file of files) {
+                        const bytes = Uint8Array.from(atob(file.base64), value => value.charCodeAt(0));
+                        data.items.add(new File([bytes], file.name));
+                    }
+                    this.files = data.files;
+                    this.dispatchEvent(new Event('input',{bubbles:true}));
+                    this.dispatchEvent(new Event('change',{bubbles:true}));
+                    return true;
+                }"#,
+            })).await?;
+            if result["result"]["value"] != true {
+                return Err("网页未接受文件，请重新检查文件选择器".into());
+            }
+            return Ok(result);
+        }
+        self.call_page("DOM.setFileInputFiles", json!({"objectId":object,"files":paths})).await
     }
 
     pub fn downloads(&self) -> Result<Vec<BrowserDownload>, String> {
@@ -1355,8 +1499,55 @@ impl BrowserController {
         self.targets().await
     }
 
+    pub(crate) fn has_current_tab(&self) -> bool {
+        self.target_id.is_some()
+    }
+
+    pub(super) async fn focus_current_tab(&mut self) -> Result<(), String> {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            return native
+                .call(self.target_id.as_deref(), "Page.bringToFront", json!({}))
+                .await
+                .map(|_| ());
+        }
+        if let Some(extension) = &self.extension {
+            let id = self.target_id.as_deref().ok_or("任务浏览器标签页已关闭")?;
+            extension
+                .call("Echo.focusTaskTab", json!({}), Some(id))
+                .await?;
+        } else {
+            let target = self.ensure_page().await?;
+            self.call_page_at(Some(&target.id), "Page.bringToFront", json!({}))
+                .await?;
+            #[cfg(target_os = "macos")]
+            if let Some(process) = self.child.as_ref().and_then(Child::id) {
+                use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+                if let Some(application) =
+                    NSRunningApplication::runningApplicationWithProcessIdentifier(process as i32)
+                {
+                    let _ =
+                        application.activateWithOptions(NSApplicationActivationOptions::empty());
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn new_tab(&mut self, raw_url: Option<&str>) -> Result<BrowserTarget, String> {
         self.reset_observation_context();
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            let tab = if let Some(url) = raw_url {
+                let url = self.validate_page_url(url).await?;
+                native.navigate(url.as_str(), true).await?
+            } else {
+                native.action(super::native_panel::Action::New).await?;
+                native.active().await?
+            };
+            self.target_id = Some(tab.id.clone());
+            return Ok(tab);
+        }
         if let Some(extension) = &self.extension {
             let url = raw_url.unwrap_or("about:blank");
             self.validate_page_url(url).await?;
@@ -1394,6 +1585,12 @@ impl BrowserController {
 
     pub async fn select_tab(&mut self, target_id: &str) -> Result<BrowserTarget, String> {
         self.reset_observation_context();
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            let tab = native.select(target_id).await?;
+            self.target_id = Some(tab.id.clone());
+            return Ok(tab);
+        }
         if let Some(extension) = &self.extension {
             let target: BrowserTarget = serde_json::from_value(
                 extension
@@ -1423,6 +1620,19 @@ impl BrowserController {
     }
 
     pub async fn close_tab(&mut self, target_id: &str) -> Result<Value, String> {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            let id = target_id.parse().map_err(|_| "网页标签标识无效")?;
+            if !native.view().await?.1.iter().any(|tab| tab.id == target_id) {
+                return Err("网页标签已关闭".into());
+            }
+            native
+                .action(super::native_panel::Action::Close { id })
+                .await?;
+            self.target_id = native.view().await?.0;
+            self.reset_observation_context();
+            return Ok(json!({ "closed": target_id, "activeTargetId": self.target_id }));
+        }
         if let Some(extension) = &self.extension {
             let result = extension
                 .call("Echo.closeTab", json!({}), Some(target_id))
@@ -1526,6 +1736,13 @@ impl BrowserController {
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            let expected = expected_target
+                .or(self.target_id.as_deref())
+                .ok_or("网页标签已关闭")?;
+            return native.call(Some(expected), method, params).await;
+        }
         if let Some(extension) = &self.extension {
             if let Some(target) = expected_target {
                 if self.target_id.as_deref() != Some(target) {
@@ -1600,6 +1817,10 @@ impl BrowserController {
     }
 
     async fn ensure_page(&mut self) -> Result<BrowserTarget, String> {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            return native.active().await;
+        }
         let targets = self.targets().await?;
         if let Some(current) = self
             .target_id
@@ -1621,6 +1842,10 @@ impl BrowserController {
     }
 
     async fn targets(&self) -> Result<Vec<BrowserTarget>, String> {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            return native.view().await.map(|(_, tabs)| tabs);
+        }
         if let Some(extension) = &self.extension {
             return serde_json::from_value(extension.call("Echo.tabs", json!({}), None).await?)
                 .map_err(|e| e.to_string());
@@ -1707,7 +1932,20 @@ pub fn capability() -> BrowserCapability {
     }
 }
 
-fn profile_dir(session_id: &str) -> Result<PathBuf, String> {
+pub(super) fn task_capability() -> BrowserCapability {
+    #[cfg(any(target_os = "macos", windows))]
+    if super::native_panel::network_available() {
+        return BrowserCapability {
+            available: true,
+            browser_name: Some("会话网页".into()),
+            executable: None,
+            reason: None,
+        };
+    }
+    capability()
+}
+
+pub(super) fn profile_dir(session_id: &str) -> Result<PathBuf, String> {
     if session_id.is_empty()
         || session_id.chars().count() > 256
         || session_id.chars().any(char::is_control)
@@ -1743,6 +1981,10 @@ pub async fn remove_profile(session_id: &str) -> Result<(), String> {
 
 pub fn profile_exists(session_id: &str) -> bool {
     profile_dir(session_id).is_ok_and(|path| path.is_dir())
+}
+
+pub(super) fn has_chromium_profile(session_id: &str) -> bool {
+    profile_dir(session_id).is_ok_and(|path| path.join("Local State").is_file() || path.join("Default").is_dir())
 }
 
 async fn wait_for_debug_port(path: &Path, timeout: Duration) -> Result<u16, String> {
@@ -1856,7 +2098,7 @@ fn browser_candidates() -> Vec<(String, PathBuf)> {
     .collect()
 }
 
-fn parse_navigation_url(raw: &str) -> Result<Url, String> {
+pub(super) fn parse_navigation_url(raw: &str) -> Result<Url, String> {
     let trimmed = raw.trim();
     if trimmed.len() > 8192 || trimmed.chars().any(char::is_control) {
         return Err("网址过长或包含控制字符".into());
@@ -1881,6 +2123,10 @@ fn parse_navigation_url(raw: &str) -> Result<Url, String> {
 
 impl BrowserController {
     async fn validate_page_url(&self, raw: &str) -> Result<Url, String> {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            return native.validate_url(raw).await;
+        }
         let url = parse_navigation_url(raw)?;
         if !self.allow_private_network
             && url.as_str() != "about:blank"
@@ -1891,7 +2137,7 @@ impl BrowserController {
         {
             let host = url.host_str().ok_or("网址缺少主机名")?;
             let port = url.port_or_known_default().unwrap_or(443);
-            resolve_allowed_destination(host, port, false).await?;
+            resolve_allowed_destinations(host, port, false, self.network_proxy.is_some()).await?;
         }
         Ok(url)
     }
@@ -1957,6 +2203,8 @@ mod tests {
     #[test]
     fn paginated_snapshot_keeps_controls_on_the_first_page_and_preserves_all_text() {
         let mut browser = BrowserController {
+            #[cfg(any(target_os = "macos", windows))]
+            native: None,
             child: None,
             extension: None,
             page_connection: None,
@@ -1972,8 +2220,6 @@ mod tests {
             network_proxy: None,
             next_cdp_id: 1,
             download_session: None,
-            panel_size: None,
-            panel_frames: Default::default(),
         };
         let text = "中文正文\n".repeat(1800);
         let nodes: Vec<_> = (0..500)

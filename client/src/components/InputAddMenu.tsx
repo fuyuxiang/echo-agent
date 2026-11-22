@@ -62,7 +62,7 @@ const AUTOMATION_ITEMS: MenuItem[] = [
   {
     id: "browser-use",
     label: "操作网页",
-    description: "在独立浏览器中完成网页任务",
+    description: "让 Agent 打开和操作网页",
     icon: <Globe2 size={16} />,
   },
   {

@@ -66,8 +66,11 @@ impl acp::Agent for MvpAgent {
             }
             Self::reclaim_worktrees(echo_agent_home, auto_gc_policy);
         });
-        tokio::task::spawn_blocking(|| {
-            crate::session::persistence::cleanup_stale_sessions(None);
+        let data_home = crate::util::echo_agent_home::echo_agent_home();
+        tokio::spawn(async move {
+            if let Err(error) = crate::session::persistence::recover_session_relocations(&data_home).await {
+                tracing::error!(%error, "session relocation recovery failed after initialization");
+            }
         });
         if remote_settled {
             self.start_search_index_once();

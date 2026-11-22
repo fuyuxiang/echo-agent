@@ -54,16 +54,16 @@ export async function validateWorkbenchTransitions(page, base, output) {
   assert.ok((await address.boundingBox()).width >= 100, "browser address must have usable width in the default panel");
   const previewUrl = "https://example.com/workbench-review";
   await address.fill(previewUrl);
-  await page.getByRole("button", { name: "打开", exact: true }).click();
-  await page.locator(".browser-preview__frame").waitFor();
-  assert.match(await page.locator(".browser-preview__frame").getAttribute("src"), /^data:image\/jpeg;base64,/);
+  await page.getByRole("button", { name: "打开网址", exact: true }).click();
+  await page.getByRole("button", { name: "网页验收样例", exact: true }).waitFor();
+  assert.equal(await page.locator(".browser-preview__surface img, .browser-preview__surface iframe").count(), 0);
   assert.equal(await address.inputValue(), previewUrl);
   assert.equal(await page.getByRole("button", { name: "网页验收样例", exact: true }).getAttribute("aria-pressed"), "true");
   await openView("文件");
   await page.locator(".task-details__list").waitFor();
   await openView("网页预览");
   assert.equal(await address.inputValue(), previewUrl, "view changes preserve the browser tab");
-  assert.equal(await page.evaluate(() => window.workbenchCalls.filter(c => c.command === "automation_browser_action").length), 1);
+  assert.equal(await page.evaluate(() => window.workbenchCalls.filter(c => c.command === "browser_panel" && c.args?.action?.kind === "open").length), 1);
   await page.screenshot({ path: join(output, "empty-session-workspace.png") });
   console.log("Empty sessions retain directory and web browsing.");
 
@@ -104,7 +104,7 @@ export async function validateWorkbenchTransitions(page, base, output) {
   await page.getByRole("button",{name:"关闭标签 report.md",exact:true}).waitFor();
   await openView("网页预览");
   await address.fill("https://example.com/workbench-review");
-  await page.getByRole("button",{name:"打开",exact:true}).click();
+  await page.getByRole("button",{name:"打开网址",exact:true}).click();
   await reportTab.click();
   await page.getByRole("tab", { name: "成果", exact: true }).waitFor();
   await page.getByRole("button", { name: "查看关联工具", exact: true }).waitFor();

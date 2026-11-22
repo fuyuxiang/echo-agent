@@ -1759,8 +1759,8 @@ describe("所有工具模式统一使用会话交互", () => {
 
 it("已消费的聊天链接在切回会话时不再打开第二次", async () => {
   const ipc = vi.fn(async (command: string, _args: { action?: { kind: string } }) =>
-    command === "automation_browser_view" ? { tabs: [], activeId: null, external: false,
-      allowPrivateNetwork: false, developmentEndpoints: [], page: null } : undefined);
+    command === "browser_panel" ? { tabs: [], activeId: null,
+      developmentEndpoints: [], canGoBack: false, canGoForward: false } : undefined);
   vi.stubGlobal("__TAURI_INTERNALS__", { invoke: ipc });
   try {
     setStore({ sessionId: "browser-link-a", messages: [{
@@ -1768,8 +1768,12 @@ it("已消费的聊天链接在切回会话时不再打开第二次", async () =
       parts: [{ kind: "text", text: "[打开评审网页](https://example.com/review-link)" }],
     }] });
     const { rerender } = renderChat();
-    fireEvent.click(await screen.findByRole("link", { name: "打开评审网页" }));
-    const opens = () => ipc.mock.calls.filter(([command, args]) => command === "automation_browser_action"
+    const link = await screen.findByRole("link", { name: "打开评审网页" });
+    fireEvent.click(link);
+    await waitFor(() => expect(ipc.mock.calls.some(([name, args]) =>
+      name === "open_url" && (args as { url?: string }).url === "https://example.com/review-link")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "在侧栏预览网页" }));
+    const opens = () => ipc.mock.calls.filter(([command, args]) => command === "browser_panel"
       && args?.action?.kind === "open");
     await waitFor(() => expect(opens()).toHaveLength(1));
     setStore({ sessionId: "browser-link-b", messages: [] });
@@ -1781,6 +1785,39 @@ it("已消费的聊天链接在切回会话时不再打开第二次", async () =
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it("本地服务链接进入侧栏，并且打开前确认准确端口", async () => {
+  const url = "http://127.0.0.1:4317/preview";
+  const ipc = vi.fn(async (_name: string, _args: object) => undefined);
+  vi.stubGlobal("__TAURI_INTERNALS__", { invoke: ipc });
+  try {
+    setStore({ sessionId: "local-preview", messages: [{
+      id: "local-preview-message", role: "assistant", complete: true,
+      parts: [{ kind: "text", text: `[查看预览](${url})` }],
+    }] });
+    renderChat();
+    fireEvent.click(await screen.findByRole("link", { name: "查看预览" }));
+    expect(await screen.findByRole("group", { name: "本地端口授权" })).toHaveTextContent("127.0.0.1:4317");
+    expect(ipc.mock.calls.some(([command]) => command === "open_url")).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("真正启动网页任务时打开侧栏的任务浏览器入口", async () => {
+  const sessionId = "active-browser-task";
+  setStore({ sessionId, messages: [] });
+  automationState.status = {
+    sessionId, mode: "browser_use", paused: false,
+    task: { phase: "running", reason: null, scope: "查看网页", authorized: true, generation: 2, runId: "web-task" },
+    allowPrivateNetwork: false, browser: { available: true }, browserRunning: true, browserHasData: true,
+    browserUrl: "https://example.com/task", browserTitle: "任务页面",
+    computer: { available: false, platform: "local", screenCapture: false, inputControl: false },
+  };
+  renderChat();
+  expect(await screen.findByRole("button", { name: "暂停并打开任务浏览器" })).toBeInTheDocument();
+  expect(screen.getByText("任务页面")).toBeInTheDocument();
 });
 
 it.each([

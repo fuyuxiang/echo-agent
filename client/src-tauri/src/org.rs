@@ -248,6 +248,12 @@ pub(crate) fn knowledge_account_generation() -> u64 {
         .load(Ordering::Acquire)
 }
 
+pub(crate) async fn browser_profile_account() -> Option<String> {
+    let state = shared_state();
+    let session = state.inner.session.lock().await;
+    session_account_id(&session)
+}
+
 pub fn shared_state() -> OrgState {
     SHARED_ORG_STATE.get_or_init(OrgState::default).clone()
 }
@@ -474,6 +480,7 @@ fn invalidate_account_generation(inner: &OrgInner) {
         *reporting = ClientReportingState::default();
     }
     inner.account_generation.fetch_add(1, Ordering::SeqCst);
+    crate::automation::browser_account_changed();
 }
 
 fn require_current_model_epoch(expected: u64, current: u64) -> Result<(), String> {

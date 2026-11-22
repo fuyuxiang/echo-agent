@@ -107,17 +107,17 @@ describe("设置中的任务浏览器管理",()=>{
     expect(select()).toBeEnabled();
   });
 
-  it("配对前说明网络边界，生成地址后可主动取消并使用独立浏览器",async()=>{
+  it("配对前说明网络边界，生成地址后可主动取消并使用任务浏览器",async()=>{
     render(<BrowserTaskSettings/>);
-    expect(await screen.findByText(/网页的请求不经过任务独立浏览器的网络隔离/)).toBeVisible();
+    expect(await screen.findByText(/所连接的网页沿用原浏览器的网络权限/)).toBeVisible();
     fireEvent.click(screen.getByRole("button",{name:"连接已登录浏览器"}));
     expect(await screen.findByRole("textbox",{name:"浏览器连接地址"})).toHaveValue("ws://127.0.0.1:12345/owned-ticket");
     expect(screen.getByRole("checkbox",{name:/允许导航到本机与内网页面/})).not.toBeChecked();
-    expect(screen.getByText(/网页自身的请求仍按原浏览器的网络权限执行/)).toBeVisible();
+    expect(screen.getByText(/网页自身的请求沿用原浏览器的网络权限/)).toBeVisible();
     expect(client.automationUseIsolatedBrowser).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button",{name:"使用独立浏览器"}));
+    fireEvent.click(screen.getByRole("button",{name:"使用任务浏览器"}));
     await waitFor(()=>expect(client.automationUseIsolatedBrowser).toHaveBeenCalledWith("a"));
-    expect(await screen.findByText("已切换为任务独立浏览器，可返回对话继续。")).toBeVisible();
+    expect(await screen.findByText("已切换为任务浏览器，可返回对话继续。")).toBeVisible();
     expect(screen.queryByRole("textbox",{name:"浏览器连接地址"})).toBeNull();
     expect(screen.getByRole("checkbox",{name:/允许访问本机与内网/})).toBeVisible();
   });
@@ -127,9 +127,9 @@ describe("设置中的任务浏览器管理",()=>{
     render(<BrowserTaskSettings/>);
     await screen.findByText("已连接所选浏览器标签页");
     await act(async()=>vi.mocked(client.onAutomationStatus).mock.calls[0][0](extensionStatus));
-    expect(screen.getByText("浏览器尚未连接，可重新连接或使用独立浏览器")).toBeVisible();
+    expect(screen.getByText("浏览器尚未连接，可重新连接或使用任务浏览器")).toBeVisible();
     expect(screen.getByRole("button",{name:"重新生成连接地址"})).toBeEnabled();
-    expect(screen.getByRole("button",{name:"使用独立浏览器"})).toBeEnabled();
+    expect(screen.getByRole("button",{name:"使用任务浏览器"})).toBeEnabled();
     expect(client.automationUseIsolatedBrowser).not.toHaveBeenCalled();
   });
 
@@ -140,10 +140,10 @@ describe("设置中的任务浏览器管理",()=>{
     });
     render(<BrowserTaskSettings/>);
     fireEvent.click(await screen.findByRole("button",{name:"连接已登录浏览器"}));
-    expect(await screen.findByText("连接地址已过期，请重新生成连接地址，或使用独立浏览器。")).toBeVisible();
+    expect(await screen.findByText("连接地址已过期，请重新生成连接地址，或使用任务浏览器。")).toBeVisible();
     expect(screen.queryByRole("textbox",{name:"浏览器连接地址"})).toBeNull();
     expect(screen.getByRole("button",{name:"重新生成连接地址"})).toBeEnabled();
-    expect(screen.getByRole("button",{name:"使用独立浏览器"})).toBeEnabled();
+    expect(screen.getByRole("button",{name:"使用任务浏览器"})).toBeEnabled();
   });
 
   it("连接成功后移除配对地址，复制地址有明确反馈",async()=>{
@@ -169,17 +169,17 @@ describe("设置中的任务浏览器管理",()=>{
     vi.mocked(client.automationUseIsolatedBrowser).mockRejectedValueOnce(new Error("停止尚未确认"));
     render(<BrowserTaskSettings/>);
     fireEvent.click(await screen.findByRole("button",{name:"连接已登录浏览器"}));
-    fireEvent.click(await screen.findByRole("button",{name:"使用独立浏览器"}));
+    fireEvent.click(await screen.findByRole("button",{name:"使用任务浏览器"}));
     expect(await screen.findByRole("alert")).toHaveTextContent("停止尚未确认");
     expect(screen.getByRole("textbox",{name:"浏览器连接地址"})).toBeVisible();
-    expect(screen.getByRole("button",{name:"使用独立浏览器"})).toBeEnabled();
+    expect(screen.getByRole("button",{name:"使用任务浏览器"})).toBeEnabled();
   });
 
   it("模型空档仍有执行权时不允许更改浏览器来源",async()=>{
     vi.mocked(client.automationStatus).mockResolvedValue({...extensionStatus,task:{phase:"running",authorized:true,reason:null,scope:"桌面任务",generation:1},paused:false});
     render(<BrowserTaskSettings/>);
     expect(await screen.findByRole("button",{name:"重新生成连接地址"})).toBeDisabled();
-    expect(screen.getByRole("button",{name:"使用独立浏览器"})).toBeDisabled();
+    expect(screen.getByRole("button",{name:"使用任务浏览器"})).toBeDisabled();
   });
 
 });

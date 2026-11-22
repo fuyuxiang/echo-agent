@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type AutomationMode = "default" | "browser_use" | "computer_use";
+export type TaskBrowserSource = "panel" | "isolated";
+export interface BrowserPanelCapabilities { web: boolean; artifacts: boolean }
 
 export interface BrowserCapability {
   available: boolean;
@@ -59,6 +61,8 @@ export interface AutomationStatus {
   execution?:{nativeIsolation:string;backgroundNativeActions?:boolean;backgroundPointerInput?:boolean;foregroundCoordinateInput?:boolean;humanInputPolicy?:string;inputConflictDetection?:boolean;browserSource?:string;emergencyShortcut?:boolean;backgroundInput:boolean;inputMode:string;platform:string;fileDialog:boolean;windowClick:boolean};
   allowPrivateNetwork: boolean;
   browser: BrowserCapability;
+  browserPanel?: BrowserPanelCapabilities;
+  isolatedBrowserAvailable?: boolean;
   computer: ComputerCapability;
   browserRunning: boolean;
   browserUrl?: string | null;
@@ -69,6 +73,7 @@ export interface AutomationStatus {
 export interface AutomationCapabilities {
   browser: BrowserCapability;
   computer: ComputerCapability;
+  browserPanel?: BrowserPanelCapabilities;
 }
 
 export interface AutomationApproval {
@@ -87,40 +92,6 @@ export interface AutomationApprovalClosedEvent {
 
 export const automationStatus = (sessionId: string) =>
   invoke<AutomationStatus>("automation_status", { sessionId });
-
-type BrowserDocument = { targetId: string; loaderId: string; url: string };
-export type BrowserPageInput =
-  | { kind: "pointer"; x: number; y: number; destination: [number, number] | null; button: "left" | "middle" | "right"; count: number; modifiers: number }
-  | { kind: "move"; x: number; y: number }
-  | { kind: "wheel"; x: number; y: number; dx: number; dy: number }
-  | { kind: "key"; key: string; code: string; virtualKey: number; modifiers: number }
-  | { kind: "text"; text: string };
-export type BrowserPanelAction =
-  | { kind: "open" | "navigate"; url: string; allowDevelopment?: boolean }
-  | { kind: "new" | "back" | "forward" | "reload" | "revokeDevelopment" }
-  | { kind: "select" | "close"; id: string }
-  | { kind: "input"; document: BrowserDocument; frameId: string; input: BrowserPageInput };
-export interface BrowserPanelView {
-  tabs: { id: string; title: string; url: string }[];
-  activeId: string | null;
-  external: boolean;
-  allowPrivateNetwork: boolean;
-  developmentEndpoints: string[];
-  page: {
-    document: BrowserDocument;
-    canGoBack: boolean;
-    canGoForward: boolean;
-    frameId: string | null;
-    image: string | null;
-    width: number;
-    height: number;
-    error: boolean;
-  } | null;
-}
-export const automationBrowserView = (sessionId: string, size: [number, number] | null, knownFrame: string | null) =>
-  invoke<BrowserPanelView | null>("automation_browser_view", { sessionId, size, knownFrame });
-export const automationBrowserAction = (sessionId: string, targetId: string | null, action: BrowserPanelAction) =>
-  invoke<void>("automation_browser_action", { sessionId, targetId, action });
 
 export const automationCapabilities = () =>
   invoke<AutomationCapabilities>("automation_capabilities");
@@ -171,4 +142,4 @@ export const automationSelectTarget=(sessionId:string,applicationId:string)=>inv
 export const automationPreview=(sessionId:string)=>invoke<{data:string;meta:unknown}>("automation_preview",{sessionId});
 export const automationPairBrowser=(sessionId:string)=>invoke<{endpoint:string;extensionPath:string;expiresInSeconds:number}>("automation_pair_browser",{sessionId});
 export const automationDisconnectBrowser=(sessionId:string)=>invoke<void>("automation_disconnect_browser",{sessionId});
-export const automationUseIsolatedBrowser=(sessionId:string)=>invoke<AutomationStatus>("automation_use_isolated_browser",{sessionId});
+export const automationUseIsolatedBrowser=(sessionId:string, source?:TaskBrowserSource)=>invoke<AutomationStatus>("automation_use_isolated_browser",{sessionId, ...(source ? { source } : {})});

@@ -2329,27 +2329,168 @@ mod tests {
         );
     }
 
+    fn receive_no_model_notifications(mut rx: AcpClientRx) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                match message {
+                    echo_agent_acp::AcpClientMessage::SessionNotification(args) => {
+                        let _ = args.response_tx.send(Ok(()));
+                    }
+                    echo_agent_acp::AcpClientMessage::ExtNotification(args) => {
+                        let _ = args.response_tx.send(Ok(()));
+                    }
+                    unexpected => panic!("unexpected no-model client request: {unexpected:?}"),
+                }
+            }
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "run through the isolated no-model Runtime smoke harness"]
+    async fn persisted_sessions_survive_clock_skew_on_initialize_and_load() {
+        use echo_agent_runtime::sampling::ConversationItem;
+        use echo_agent_runtime::session::{
+            info::Info,
+            persistence::session_dir,
+            storage::{JsonlStorageAdapter, SessionUpdate, StorageAdapter},
+        };
+        use std::fs::{self, FileTimes, OpenOptions};
+        use std::time::{Duration, SystemTime};
+
+        let home = crate::paths::redirected_data_home().expect("isolated session store");
+        assert_eq!(
+            std::env::var("ECHO_AGENT_REVIEW_ISOLATED").as_deref(),
+            Ok("1")
+        );
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(
+            config.contains("cleanup_ttl_days = 1"),
+            "include the legacy setting"
+        );
+        let workspace = tempfile::tempdir().unwrap();
+        let cwd = workspace.path().canonicalize().unwrap();
+        let storage = JsonlStorageAdapter::with_root(home);
+        let now = SystemTime::now();
+        let year = Duration::from_secs(365 * 86_400);
+        let fixtures = [
+            ("retained-old", now - year),
+            ("retained-archived", now - Duration::from_secs(3 * 86_400)),
+            ("retained-future", now + year),
+        ];
+        let mut protected_files = Vec::new();
+        for (id, modified) in fixtures {
+            let info = Info {
+                id: acp::SessionId::new(id),
+                cwd: cwd.to_str().unwrap().into(),
+            };
+            storage
+                .init_session(&info, acp::ModelId::new("review/mock"))
+                .await
+                .unwrap();
+            storage
+                .append_chat_message(&info, &ConversationItem::user(id))
+                .await
+                .unwrap();
+            storage
+                .append_update(
+                    &info,
+                    &SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+                        info.id.clone(),
+                        acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(
+                            acp::ContentBlock::Text(acp::TextContent::new(id)),
+                        )),
+                    ))),
+                )
+                .await
+                .unwrap();
+
+            let directory = session_dir(&info);
+            for name in ["summary.json", "chat_history.jsonl", "updates.jsonl"] {
+                let path = directory.join(name);
+                OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_times(FileTimes::new().set_modified(modified))
+                    .unwrap();
+                let contents = fs::read(&path).unwrap();
+                protected_files.push((id, path, contents));
+            }
+        }
+        assert!(crate::meta::set_archived("retained-archived", true).unwrap());
+        assert!(crate::meta::set_pinned("retained-old", true).unwrap());
+
+        crate::team_mcp::serve();
+        let launch_cwd = cwd.clone();
+        let handle = tokio::task::spawn_blocking(move || spawn_agent_runtime(launch_cwd))
+            .await
+            .unwrap()
+            .unwrap();
+        let receiver = receive_no_model_notifications(handle.rx);
+        assert!(initialize(&handle.tx).await.unwrap().ok);
+        let history_payload = || {
+            serde_json::to_value(crate::sessions::list_session_history_page(None, true).unwrap())
+                .unwrap()
+        };
+        let payload = history_payload();
+        let sessions = payload["sessions"].as_array().unwrap();
+        assert!(sessions
+            .iter()
+            .any(|entry| entry["sessionId"] == "retained-old" && entry["pinned"] == true));
+        assert!(sessions
+            .iter()
+            .any(|entry| entry["sessionId"] == "retained-future" && entry["archived"] == false));
+        assert!(sessions
+            .iter()
+            .any(|entry| entry["sessionId"] == "retained-archived" && entry["archived"] == true));
+        for (_, path, expected) in &protected_files {
+            assert!(
+                fs::read(path).unwrap() == *expected,
+                "initialization changed {}",
+                path.display()
+            );
+        }
+
+        assert!(!crate::meta::set_archived("retained-archived", false).unwrap());
+        assert!(history_payload()["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["sessionId"] == "retained-archived" && entry["archived"] == false));
+        let model = load_session(&handle.tx, "retained-archived", &cwd, "default")
+            .await
+            .unwrap();
+        assert_eq!(model.as_deref(), Some("review/mock"));
+
+        handle.cancel.cancel();
+        let thread = handle.thread.unwrap();
+        tokio::task::spawn_blocking(move || thread.join().unwrap().unwrap())
+            .await
+            .unwrap();
+        receiver.abort();
+        for (id, path, expected) in protected_files {
+            let contents = fs::read(&path).unwrap();
+            if id != "retained-archived" {
+                assert!(contents == expected, "loading changed {}", path.display());
+            } else if path.ends_with("summary.json") {
+                serde_json::from_slice::<serde_json::Value>(&contents).unwrap();
+            } else {
+                // Loading may add system context. The original history and
+                // replay update must still be present after shutdown.
+                assert!(
+                    contents
+                        .split_inclusive(|byte| *byte == b'\n')
+                        .any(|line| line == expected.as_slice()),
+                    "original record missing from {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires an explicit isolated ECHO_AGENT_HOME and local MCP port (~10s)"]
     async fn spawn_smoke_spawn_initialize_new_session() {
-        fn receive_notifications(mut rx: AcpClientRx) -> tokio::task::JoinHandle<()> {
-            tokio::spawn(async move {
-                while let Some(message) = rx.recv().await {
-                    match message {
-                        echo_agent_acp::AcpClientMessage::SessionNotification(args) => {
-                            let _ = args.response_tx.send(Ok(()));
-                        }
-                        echo_agent_acp::AcpClientMessage::ExtNotification(args) => {
-                            let _ = args.response_tx.send(Ok(()));
-                        }
-                        // This acceptance never performs inference or requests
-                        // client-side tools. Dropping an unexpected request also
-                        // closes its response instead of hanging the test.
-                        unexpected => panic!("unexpected no-model client request: {unexpected:?}"),
-                    }
-                }
-            })
-        }
         assert!(
             crate::paths::redirected_data_home().is_some(),
             "Set ECHO_AGENT_HOME to an isolated directory before running this smoke test"
@@ -2381,7 +2522,7 @@ mod tests {
         .expect("spawn_agent_runtime failed");
         // Real clients acknowledge replay notifications before LoadSession
         // returns. The no-UI acceptance must provide the same receiver.
-        let receiver = receive_notifications(handle.rx);
+        let receiver = receive_no_model_notifications(handle.rx);
 
         // 2. ACP initialize handshake: protocol version + auth methods.
         let init = tokio::time::timeout(std::time::Duration::from_secs(30), initialize(&handle.tx))
@@ -2534,7 +2675,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        let receiver = receive_notifications(restored.rx);
+        let receiver = receive_no_model_notifications(restored.rx);
         initialize(&restored.tx).await.unwrap();
         assert_eq!(
             tokio::time::timeout(

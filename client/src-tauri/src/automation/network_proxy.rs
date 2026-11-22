@@ -4,7 +4,7 @@
 //! iframes, images, WebSockets and redirects can all contact other hosts. The
 //! browser is therefore forced through this proxy, which resolves every
 //! destination and applies the private-network policy before connecting. The
-//! selected IP address is also pinned for that connection to close the usual
+//! checked IP addresses are also pinned for that connection to close the usual
 //! DNS-rebinding gap between validation and use.
 
 use axum::body::Body;
@@ -36,6 +36,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+#[cfg(any(target_os = "macos", windows))]
+mod interface_dns;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -55,7 +58,7 @@ fn development_endpoint(host: &str, port: u16) -> Option<(String, u16)> {
     matches!(host, "localhost" | "127.0.0.1" | "::1").then(|| (host.to_owned(), port))
 }
 
-fn development_url_endpoint(url: &Url) -> Option<(String, u16)> {
+pub(super) fn development_url_endpoint(url: &Url) -> Option<(String, u16)> {
     if !matches!(url.scheme(), "http" | "https") {
         return None;
     }
@@ -72,9 +75,7 @@ async fn resolve_browser_destinations(
         .is_some_and(|endpoint| allow_private || development.lock().unwrap().contains(&endpoint));
     let host = host.trim_matches(['[', ']']);
     if !approved {
-        return resolve_allowed_destination(host, port, allow_private)
-            .await
-            .map(|address| vec![address]);
+        return resolve_allowed_destinations(host, port, allow_private, true).await;
     }
     let addresses: Vec<_> = tokio::time::timeout(CONNECT_TIMEOUT, lookup_host((host, port)))
         .await
@@ -225,6 +226,10 @@ impl BrowserNetworkProxy {
         let mut cancellation = self.connection_cancellation.lock().unwrap();
         cancellation.cancel();
         *cancellation = CancellationToken::new();
+    }
+
+    pub(super) fn allows_private_network(&self) -> bool {
+        self.allow_private_network.load(Ordering::Acquire)
     }
 
     pub fn set_allow_private_network(&self, allowed: bool) {
@@ -478,17 +483,23 @@ fn error_response(message: String) -> Response<Body> {
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
-pub(crate) async fn resolve_allowed_destination(
+pub(crate) async fn resolve_allowed_destinations(
     host: &str,
     port: u16,
     allow_private_network: bool,
-) -> Result<SocketAddr, String> {
+    managed_browser: bool,
+) -> Result<Vec<SocketAddr>, String> {
     let host = host.trim_matches(['[', ']']);
-    let addresses = tokio::time::timeout(CONNECT_TIMEOUT, lookup_host((host, port)))
-        .await
-        .map_err(|_| format!("解析目标主机 {host} 超时"))?
-        .map_err(|error| format!("无法解析目标主机 {host}：{error}"))?
-        .collect::<Vec<_>>();
+    let addresses = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        lookup_destination(host, port, managed_browser && !allow_private_network),
+    )
+    .await
+    .map_err(|_| {
+        tracing::warn!(host, "browser DNS lookup timed out");
+        format!("解析目标主机 {host} 超时")
+    })?
+    .map_err(|error| format!("无法解析目标主机 {host}：{error}"))?;
     if addresses.is_empty() {
         return Err(format!("目标主机 {host} 没有可用地址"));
     }
@@ -504,7 +515,21 @@ pub(crate) async fn resolve_allowed_destination(
             ));
         }
     }
-    Ok(addresses[0])
+    Ok(addresses)
+}
+
+async fn lookup_destination(
+    host: &str,
+    port: u16,
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(unused_variables))]
+    allow_interface_dns: bool,
+) -> std::io::Result<Vec<SocketAddr>> {
+    let system = async { Ok(lookup_host((host, port)).await?.collect()) };
+    #[cfg(any(target_os = "macos", windows))]
+    if allow_interface_dns && interface_dns::is_public_dns_name(host) {
+        return interface_dns::with_fallback(system, interface_dns::lookup(host, port)).await;
+    }
+    system.await
 }
 
 pub(crate) fn is_private_or_local(ip: IpAddr) -> bool {
@@ -575,10 +600,10 @@ mod tests {
 
     #[tokio::test]
     async fn resolver_rejects_loopback_unless_explicitly_allowed() {
-        assert!(resolve_allowed_destination("127.0.0.1", 80, false)
+        assert!(resolve_allowed_destinations("127.0.0.1", 80, false, true)
             .await
             .is_err());
-        assert!(resolve_allowed_destination("127.0.0.1", 80, true)
+        assert!(resolve_allowed_destinations("127.0.0.1", 80, true, true)
             .await
             .is_ok());
     }

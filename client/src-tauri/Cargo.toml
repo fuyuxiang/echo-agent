@@ -124,6 +124,8 @@ symphonia = { version = "0.5", features = ["all"] }
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 # Native input and output-loopback capture for meeting transcription.
 cpal = { path = "../vendor/cpal-loopback" }
+# An isolated child view without the application WebView's IPC bridge.
+wry = { version = "=0.57.2", default-features = false }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-autostart = "2"
@@ -133,12 +135,13 @@ tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
 security-framework = "3.7"
 security-framework-sys = "2.17"
 objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
 block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", features = ["std", "NSError", "NSFileManager", "NSString", "NSURL"] }
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKUserContentController", "WKUserScript"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKContentWorld", "WKFrameInfo", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript", "WKUIDelegate"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
 core-graphics = { version = "0.25", features = ["elcapitan", "highsierra"] }
 
@@ -152,6 +155,10 @@ windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Co
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
+  "Win32_NetworkManagement_Dns",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
   "Win32_Security",
   "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",

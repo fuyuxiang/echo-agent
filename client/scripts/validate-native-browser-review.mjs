@@ -1,7 +1,7 @@
 import { cleanNativeReviewEnvironment, withNativeReviewLoopbackBypass } from "./lib/native-review-isolation.mjs";
 import { isReviewModelId, reviewModelId, seedReviewModel, redactReviewModelSecrets, captureReviewModelLogs } from './lib/native-review-model.mjs';
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
-// Parent accepts only real native reports, Chrome requests and physical bytes.
+// Parent accepts only real native reports, engine requests and physical bytes.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -128,8 +128,9 @@ export async function runNativeBrowserReview(executable, modelId = 'echoagent-re
         }
         const ready = join(cwd, 'browser-download-ready.json');
         if (phase === 'first-launch' && !downloadObserved && existsSync(ready)) {
-          const data = JSON.parse(physical(ready)); assert.deepEqual(Object.keys(data).sort(), ['nonce', 'sessionId']);
+          const data = JSON.parse(physical(ready)); assert.deepEqual(Object.keys(data).sort(), ['browserSource', 'nonce', 'sessionId']);
           assert.equal(data.nonce, nonce); assert(/^[A-Za-z0-9-]{1,128}$/.test(data.sessionId));
+          assert(['panel', 'isolated'].includes(data.browserSource));
           const profile = join(home, 'automation/browser-profiles', digest(data.sessionId).slice(0, 32));
           const file = join(profile, 'Downloads', resource.filename);
           if (existsSync(file)) {
@@ -138,7 +139,8 @@ export async function runNativeBrowserReview(executable, modelId = 'echoagent-re
             assert.equal(snapshot.submitted, true); assert.equal(snapshot.deleted, false);
             assert.equal(snapshot.events.filter(item => item.route === 'submit' && item.status === 200).length, 1);
             assert.equal(snapshot.events.filter(item => item.route === 'download' && item.status === 200).length, 1);
-            assert(snapshot.events.filter(item => item.status === 200).every(item => /Chrome\//.test(item.userAgent)), 'Page/download did not come from real Chrome');
+            const agent = data.browserSource === 'panel' ? /AppleWebKit\// : /Chrome\//;
+            assert(snapshot.events.filter(item => item.status === 200).every(item => agent.test(item.userAgent)), 'Page/download did not come from the selected browser engine');
             const proof = { nonce, sessionId: data.sessionId, passed: true, profile, filename: resource.filename,
               sha256: resource.sha256, size: content.length, observedAt: new Date().toISOString() };
             writeFileSync(join(cwd, 'browser-download-proof.json'), JSON.stringify(proof), { flag: 'wx', mode: 0o600 });

@@ -334,7 +334,7 @@ export function ArchivedSessionsSettingsPanel({
       <header className="settings-section__header archived-settings__header">
         <div className="settings-section__heading">
           <h2 className="settings-section__title">已归档会话</h2>
-          <p className="settings-section__desc">归档只会收起会话，不会删除历史记录。可在这里恢复并继续任务。</p>
+          <p className="settings-section__desc">已归档会话会保留完整历史。你可以在这里恢复并继续任务，也可以确认永久删除。</p>
         </div>
         <button
           type="button"

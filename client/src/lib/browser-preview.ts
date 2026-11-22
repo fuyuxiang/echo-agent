@@ -1,10 +1,4 @@
-/**
- * 浏览器预览 —— 对齐 EchoAgent `context-viewer-components/browser-preview`
- * (嵌入式网页预览框)。
- *
- * 纯函数:URL 安全校验 + iframe sandbox 策略。EchoAgent 是本地桌面应用,在 WebView 内
- * 再嵌 iframe 预览外部页面,需限制可加载的协议 + sandbox 属性。便于单测。
- */
+/** URL parsing shared by the native browser panel and link routing. */
 
 /** 判定 URL 是否可安全嵌入预览。 */
 export function isPreviewableUrl(url: string): boolean {
@@ -84,7 +78,7 @@ export function safeRemoteImageUrl(value?: string): string | undefined {
   }
 }
 
-/** Parse an address for the managed browser. Network policy is enforced by its native controller. */
+/** Parse an address for the native browser. Its proxy enforces the network policy. */
 export function normalizePreviewUrl(input: string): string | null {
   const address = input.trim();
   if (!address || address.length > 8192 || /[\u0000-\u001f\u007f]/.test(address)) return null;

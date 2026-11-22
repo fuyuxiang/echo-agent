@@ -4249,6 +4249,7 @@ dependencies = [
  "block2",
  "bytes",
  "chrono",
+ "core-foundation",
  "core-graphics",
  "cpal",
  "dirs 6.0.0",
@@ -4321,6 +4322,7 @@ dependencies = [
  "windows 0.61.3",
  "windows-core 0.62.2",
  "windows-sys 0.61.2",
+ "wry",
  "x11rb",
  "zip",
 ]

@@ -968,16 +968,14 @@
 .md-code-action-icon--error { color: var(--echo-status-error); }
 .browser-preview__status { flex: none; margin: 0; padding: 9px 12px; border-bottom: 1px solid var(--echo-border-default); color: var(--echo-text-medium); font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; }
 .browser-preview__status--error { color: var(--echo-status-error); background: var(--echo-status-error-soft); }
-.browser-preview__status-actions,
-.browser-preview__keyboard-bar {
+.browser-preview__status-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
 }
 .browser-preview__status-actions > span { flex: 1 1 160px; }
-.browser-preview__status-actions button,
-.browser-preview__keyboard-bar button {
+.browser-preview__status-actions button {
   color: var(--echo-text-strong);
   background: var(--echo-bg-secondary);
   border: 1px solid var(--echo-border-default);
@@ -986,18 +984,8 @@
   font: inherit;
   cursor: pointer;
 }
-.browser-preview__status-actions button:hover:not(:disabled),
-.browser-preview__keyboard-bar button:hover:not(:disabled) { background: var(--echo-bg-hover); }
-.browser-preview__status-actions button:disabled,
-.browser-preview__keyboard-bar button:disabled { cursor: not-allowed; opacity: .6; }
-.browser-preview__keyboard-bar {
-  flex: none;
-  min-height: 30px;
-  padding: 3px 8px;
-  border-top: 1px solid var(--echo-border-default);
-  color: var(--echo-text-medium);
-  font-size: .75rem;
-}
+.browser-preview__status-actions button:hover:not(:disabled) { background: var(--echo-bg-hover); }
+.browser-preview__status-actions button:disabled { cursor: not-allowed; opacity: .6; }
 
 .file-preview__body {
   margin: 0;
@@ -1783,16 +1771,6 @@
   border-radius: 10px;
   overflow: hidden;
   background: var(--echo-bg-primary);
-}
-.browser-preview__bar {
-  display: flex;
-  gap: 6px;
-  padding: 8px;
-  border-bottom: 1px solid var(--echo-border-default);
-  background: var(--echo-bg-tertiary);
-}
-.browser-preview__frame {
-  display: block;
 }
 .browser-preview__empty {
   padding: 40px 16px;
@@ -3347,9 +3325,9 @@ button.knowledge-trace__item:hover {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 8px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--echo-border-default);
-  background: var(--echo-bg-secondary);
+  background: var(--echo-bg-primary);
   flex: none;
   box-sizing: border-box;
 }
@@ -3366,7 +3344,8 @@ button.knowledge-trace__item:hover {
   cursor: pointer;
   flex: none;
 }
-.browser-preview__nav-btn:hover:not(:disabled) {
+.browser-preview__nav-btn:hover:not(:disabled),
+.browser-preview__nav-btn[aria-pressed="true"] {
   background: var(--echo-bg-hover);
   color: var(--echo-text-strong);
 }
@@ -3379,9 +3358,9 @@ button.knowledge-trace__item:hover {
   min-width: 0;
   height: var(--echo-size-control-sm);
   padding: 4px 8px;
-  border: 1px solid var(--echo-border-default);
+  border: 1px solid transparent;
   border-radius: var(--echo-radius-control);
-  background: var(--echo-bg-primary);
+  background: var(--echo-bg-secondary);
   color: var(--echo-text-strong);
   font-size: var(--echo-control-font-size);
   line-height: var(--echo-control-line-height);
@@ -3391,15 +3370,6 @@ button.knowledge-trace__item:hover {
   outline: none;
   border-color: var(--echo-brand);
 }
-.browser-preview__go {
-  flex: none;
-}
-.browser-preview__frame {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  user-select: none;
-}
 .browser-preview__surface {
   position: relative;
   flex: 1;
@@ -3407,18 +3377,33 @@ button.knowledge-trace__item:hover {
   overflow: hidden;
   background: var(--echo-bg-primary);
 }
+.browser-preview__tab-strip {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 4px;
+  padding: 5px 10px;
+  background: var(--echo-bg-secondary);
+  border-bottom: 1px solid var(--echo-border-default);
+}
 .browser-preview__tabs {
   display: flex;
   overflow-x: auto;
-  flex: none;
-  gap: 3px;
-  padding: 4px 8px;
+  scrollbar-width: none;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
 }
 .browser-preview__tab {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  max-width: 200px;
+  max-width: min(220px, 100%);
+  border-radius: 6px;
+}
+.browser-preview__tab:has(button[aria-pressed="true"]) {
+  background: var(--echo-bg-primary);
+  box-shadow: inset 0 0 0 1px var(--echo-border-default);
 }
 .browser-preview__tab button {
   border: none;
@@ -3426,24 +3411,16 @@ button.knowledge-trace__item:hover {
   background: transparent;
   color: var(--echo-text-medium);
   cursor: pointer;
-  padding: 4px 6px;
+  padding: 5px 8px;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 .browser-preview__tab button[aria-pressed="true"] {
-  background: var(--echo-bg-hover);
   color: var(--echo-text-strong);
 }
-.browser-preview__keyboard {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
+.browser-preview__tab button[aria-label] { flex: none; }
 .browser-preview__empty {
   margin: 32px 16px;
   font-size: 0.8125rem;
@@ -13244,3 +13221,48 @@ body:has([aria-modal="true"]) .global-tooltip:not(.global-tooltip--dialog) {
 .meeting-processing-model select { min-width: 0; width: 100%; height: 36px; padding: 0 10px; color: var(--echo-text-primary); background: var(--echo-bg-primary); border: 1px solid var(--echo-border-control); border-radius: 8px; }
 .meeting-processing-model select:focus-visible { outline: 2px solid var(--echo-accent); outline-offset: 2px; }
 .app__exit-overlay { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; background: var(--echo-bg-secondary); color: var(--echo-text-primary); }
+
+.browser-preview__tools label,
+.browser-preview__tools button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.browser-preview__tools select {
+  color: inherit;
+  background: var(--echo-bg-secondary);
+  border: 1px solid var(--echo-border-default);
+  border-radius: var(--echo-radius-control);
+  padding: 3px 4px;
+  font: inherit;
+}
+.browser-preview__editor .browser-preview__input {
+  flex: 1 1 10rem;
+}
+.browser-preview__editor input[type="number"] {
+  width: 4.25rem;
+}
+.browser-preview__editor input[type="color"] {
+  width: 1.75rem;
+  height: 1.5rem;
+}
+
+.md-link-preview__button {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-inline-start: 2px;
+  vertical-align: text-bottom;
+  background: transparent;
+  color: var(--echo-text-link);
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: .8;
+}
+.md-link-preview__button:hover,
+.md-link-preview__button:focus-visible {
+  background: var(--echo-bg-hover);
+  opacity: 1;
+}

@@ -93,6 +93,13 @@ async function execute(command, connection, generation) {
     guard(connection, generation, true);
     return tabs.filter(tab => allowed.has(tab.id)).map(descriptor);
   }
+  if (method === 'Echo.focusTaskTab') {
+    guard(connection, generation, true);
+    const tab = await chrome.tabs.update(authorizedTab(targetId), { active: true });
+    guard(connection, generation, true);
+    await chrome.windows.update(tab.windowId, { focused: true });
+    return descriptor(tab);
+  }
   if (method === 'Echo.newTab') {
     guard(connection, generation);
     if (!validUrl(params.url)) throw new Error('Unsupported URL');
