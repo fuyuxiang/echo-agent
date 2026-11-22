@@ -1211,6 +1211,8 @@ pub fn run() {
             // first-party Browser Use / Computer Use runtime and safety UI
             automation::automation_capabilities,
             automation::automation_status,
+            automation::automation_browser_view,
+            automation::automation_browser_action,
             automation::automation_targets,
             automation::automation_select_target,
             automation::automation_preview,

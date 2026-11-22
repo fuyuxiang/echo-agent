@@ -705,6 +705,10 @@ export function ChatView({
   const workspaceSelectionRef = useRef({tool: activeTool, preview: previewRequest});
   workspaceSelectionRef.current = {tool: activeTool, preview: previewRequest};
   const previewSequence = useRef(0);
+  const [browserRequest, setBrowserRequest] = useState<{ sessionId: string; url: string; sequence: number }>();
+  const consumeBrowserRequest = useCallback((sequence: number) => {
+    setBrowserRequest(current => current?.sequence === sequence ? undefined : current);
+  }, []);
   const [workspaceNavigationId, setWorkspaceNavigationId] = useState(0);
   const previewPath = previewRequest?.sessionId === sessionId ? previewRequest?.path ?? null : null;
 
@@ -797,16 +801,6 @@ export function ChatView({
   const inlineRuntimeError = errorBelongsToTurn && terminalMessage
     && ["runtime", "environment"].includes(getExecutionNotice(terminalMessage, streaming, error ?? undefined)?.kind ?? "") ? error ?? undefined : undefined;
 
-  const markdownConfig = useMemo(
-    () =>
-      createMarkdownHostConfig({
-        cwd,
-        sessionId,
-        onToast,
-      }),
-    [cwd, sessionId, onToast],
-  );
-
   const {
     scrollRef,
     contentRef,
@@ -830,6 +824,18 @@ export function ChatView({
     }
     setWorkspaceView(next);
   }, [closeQuestionHistory, sessionId]);
+
+  const useBrowserPanel = automation.status?.browser?.available !== false
+    && !automation.status?.extensionConnected && automation.status?.execution?.browserSource !== "extension";
+  const markdownConfig = useMemo(() => createMarkdownHostConfig({
+    cwd,
+    sessionId,
+    onToast,
+    onOpenWeb: sessionId && useBrowserPanel && typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? url => {
+      setBrowserRequest({ sessionId, url, sequence: ++previewSequence.current });
+      transitionWorkspace("browser");
+    } : undefined,
+  }), [cwd, sessionId, onToast, transitionWorkspace, useBrowserPanel]);
 
   type WorkspaceFrame = { view: WorkspaceView; tool: ToolCallView | null; path?: string; artifact?: SessionArtifact };
   const workspaceTrail = useRef<WorkspaceFrame[]>([]);
@@ -1453,6 +1459,9 @@ export function ChatView({
         artifacts={artifacts}
         previewPath={previewPath}
         previewRequestId={previewRequest?.sequence}
+        browserRequest={browserRequest?.sessionId === sessionId ? browserRequest : undefined}
+        onBrowserRequestHandled={consumeBrowserRequest}
+        onBrowserTakeOver={() => cancelTask("pause")}
         navigationRequestId={workspaceNavigationId}
         workspaceInfo={<SessionWorkspaceDirectory workspace={workspace} managedTaskWorkspace={managedTaskWorkspace} onOpen={openWorkspaceDirectory} />}
         workspaceAvailable={workspace.available}

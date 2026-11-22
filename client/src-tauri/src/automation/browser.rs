@@ -11,6 +11,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use url::Url;
 
+pub(super) mod surface;
+
 const START_TIMEOUT: Duration = Duration::from_secs(12);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CDP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -115,6 +117,8 @@ pub struct BrowserController {
     // Chromium releases download overrides when their DevTools session ends.
     // Keep a browser-level connection alive across page commands and tabs.
     download_session: Option<CdpConnection>,
+    panel_size: Option<(String, u32, u32)>,
+    panel_frames: surface::PanelFrames,
 }
 
 impl std::fmt::Debug for BrowserController {
@@ -138,6 +142,21 @@ impl Drop for BrowserController {
 
 impl BrowserController {
     pub async fn launch(session_id: &str, allow_private_network: bool) -> Result<Self, String> {
+        Self::launch_with_surface(session_id, allow_private_network, false).await
+    }
+
+    pub(super) async fn launch_for_panel(
+        session_id: &str,
+        allow_private_network: bool,
+    ) -> Result<Self, String> {
+        Self::launch_with_surface(session_id, allow_private_network, true).await
+    }
+
+    async fn launch_with_surface(
+        session_id: &str,
+        allow_private_network: bool,
+        in_panel: bool,
+    ) -> Result<Self, String> {
         if let Some(extension) = super::browser_bridge::connected(session_id) {
             extension.resume().await?;
             let mut browser = Self {
@@ -156,6 +175,8 @@ impl BrowserController {
                 network_proxy: None,
                 next_cdp_id: 1,
                 download_session: None,
+                panel_size: None,
+                panel_frames: Default::default(),
             };
             let target = browser.ensure_page().await?;
             browser.target_id = Some(target.id);
@@ -177,8 +198,7 @@ impl BrowserController {
         let network_proxy = BrowserNetworkProxy::start(allow_private_network).await?;
 
         let mut command = Command::new(&executable);
-        #[cfg(test)]
-        if std::env::var_os("ECHO_BROWSER_TEST_HEADLESS").is_some() {
+        if in_panel || (cfg!(test) && std::env::var_os("ECHO_BROWSER_TEST_HEADLESS").is_some()) {
             command.arg("--headless=new");
         }
         command
@@ -231,6 +251,8 @@ impl BrowserController {
             network_proxy: Some(network_proxy),
             next_cdp_id: 1,
             download_session: None,
+            panel_size: None,
+            panel_frames: Default::default(),
         };
         let target = controller.ensure_page().await?;
         controller.target_id = Some(target.id);
@@ -290,7 +312,7 @@ impl BrowserController {
     /// all redirect independently after navigation.
     pub async fn enforce_current_url_policy(&mut self) -> Result<String, String> {
         let current = self.current_url().await?;
-        if let Err(error) = validate_navigation_url(&current, self.allow_private_network).await {
+        if let Err(error) = self.validate_page_url(&current).await {
             let _ = self
                 .call_page("Page.navigate", json!({ "url": "about:blank" }))
                 .await;
@@ -332,6 +354,24 @@ impl BrowserController {
         })
     }
 
+    pub(super) async fn panel_browser_healthy(&mut self) -> bool {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            if !self.status().await?.running {
+                return Err("任务浏览器已停止".to_string());
+            }
+            let download = self
+                .download_session
+                .as_mut()
+                .ok_or("浏览器下载隔离连接已失效")?;
+            let id = self.next_cdp_id;
+            self.next_cdp_id = id.saturating_add(1);
+            cdp_request(download, id, "Browser.getVersion", json!({})).await?;
+            Ok(())
+        })
+        .await
+        .is_ok_and(|result| result.is_ok())
+    }
+
     pub async fn stop(&mut self) -> Result<(), String> {
         if let Some(extension) = &self.extension {
             // Detach only this task's debugger sessions; never close user tabs.
@@ -363,7 +403,7 @@ impl BrowserController {
         self.active_frame = None;
         self.snapshot_pages.clear();
         self.reference_documents.clear();
-        let url = validate_navigation_url(raw_url, self.allow_private_network).await?;
+        let url = self.validate_page_url(raw_url).await?;
         let result = self
             .call_page("Page.navigate", json!({ "url": url.as_str() }))
             .await?;
@@ -706,7 +746,7 @@ impl BrowserController {
             let action = submission["action"]
                 .as_str()
                 .ok_or("无法核对表单的 HTTP/HTTPS 提交地址，请在浏览器中手动操作")?;
-            validate_navigation_url(action, self.allow_private_network).await?;
+            self.validate_page_url(action).await?;
         }
         let mut expected = expected;
         expected["topUrl"] = json!(self.current_url().await?);
@@ -1319,7 +1359,7 @@ impl BrowserController {
         self.reset_observation_context();
         if let Some(extension) = &self.extension {
             let url = raw_url.unwrap_or("about:blank");
-            validate_navigation_url(url, self.allow_private_network).await?;
+            self.validate_page_url(url).await?;
             let target: BrowserTarget = serde_json::from_value(
                 extension
                     .call("Echo.newTab", json!({"url":url}), None)
@@ -1330,9 +1370,7 @@ impl BrowserController {
             return Ok(target);
         }
         let url = match raw_url {
-            Some(value) => validate_navigation_url(value, self.allow_private_network)
-                .await?
-                .to_string(),
+            Some(value) => self.validate_page_url(value).await?.to_string(),
             None => "about:blank".to_string(),
         };
         let endpoint = format!(
@@ -1587,18 +1625,22 @@ impl BrowserController {
             return serde_json::from_value(extension.call("Echo.tabs", json!({}), None).await?)
                 .map_err(|e| e.to_string());
         }
-        let endpoint = format!("http://127.0.0.1:{}/json/list", self.port);
-        control_client()?
-            .get(endpoint)
-            .send()
-            .await
-            .map_err(|error| format!("读取浏览器标签页失败：{error}"))?
-            .error_for_status()
-            .map_err(|error| format!("读取浏览器标签页失败：{error}"))?
-            .json::<Vec<BrowserTarget>>()
-            .await
-            .map_err(|error| format!("解析浏览器标签页失败：{error}"))
+        isolated_targets(self.port).await
     }
+}
+
+async fn isolated_targets(port: u16) -> Result<Vec<BrowserTarget>, String> {
+    let endpoint = format!("http://127.0.0.1:{port}/json/list");
+    control_client()?
+        .get(endpoint)
+        .send()
+        .await
+        .map_err(|error| format!("读取浏览器标签页失败：{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("读取浏览器标签页失败：{error}"))?
+        .json::<Vec<BrowserTarget>>()
+        .await
+        .map_err(|error| format!("解析浏览器标签页失败：{error}"))
 }
 
 async fn cdp_request(
@@ -1814,8 +1856,11 @@ fn browser_candidates() -> Vec<(String, PathBuf)> {
     .collect()
 }
 
-async fn validate_navigation_url(raw: &str, allow_private_network: bool) -> Result<Url, String> {
+fn parse_navigation_url(raw: &str) -> Result<Url, String> {
     let trimmed = raw.trim();
+    if trimmed.len() > 8192 || trimmed.chars().any(char::is_control) {
+        return Err("网址过长或包含控制字符".into());
+    }
     if trimmed.eq_ignore_ascii_case("about:blank") {
         return Url::parse("about:blank").map_err(|error| error.to_string());
     }
@@ -1831,15 +1876,25 @@ async fn validate_navigation_url(raw: &str, allow_private_network: bool) -> Resu
     if host.len() > 253 || host.chars().any(char::is_control) {
         return Err("网址主机名无效或过长".into());
     }
-    if !allow_private_network {
-        let port = url.port_or_known_default().unwrap_or(443);
-        resolve_allowed_destination(host, port, false)
-            .await
-            .map_err(|_| {
-                "默认禁止访问本机或内网地址；请由用户在“设置 > 安全与权限 > 浏览器数据与访问范围”中为当前任务显式授权".to_string()
-            })?;
-    }
     Ok(url)
+}
+
+impl BrowserController {
+    async fn validate_page_url(&self, raw: &str) -> Result<Url, String> {
+        let url = parse_navigation_url(raw)?;
+        if !self.allow_private_network
+            && url.as_str() != "about:blank"
+            && !self
+                .network_proxy
+                .as_ref()
+                .is_some_and(|proxy| proxy.permits_development_url(&url))
+        {
+            let host = url.host_str().ok_or("网址缺少主机名")?;
+            let port = url.port_or_known_default().unwrap_or(443);
+            resolve_allowed_destination(host, port, false).await?;
+        }
+        Ok(url)
+    }
 }
 
 fn cdp_modifiers(modifiers: &[String]) -> Result<u8, String> {
@@ -1917,6 +1972,8 @@ mod tests {
             network_proxy: None,
             next_cdp_id: 1,
             download_session: None,
+            panel_size: None,
+            panel_frames: Default::default(),
         };
         let text = "中文正文\n".repeat(1800);
         let nodes: Vec<_> = (0..500)

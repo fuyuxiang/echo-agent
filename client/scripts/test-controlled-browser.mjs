@@ -14,7 +14,7 @@ mkdirSync(legacy, { mode: 0o700 });
 const clean = cleanNativeReviewEnvironment(process.env);
 const env = { ...clean, ECHO_AGENT_HOME: home, GROK_HOME: legacy,
   ECHO_BROWSER_TEST_HEADLESS: '1', NO_PROXY: '127.0.0.1,localhost,::1', no_proxy: '127.0.0.1,localhost,::1' };
-const filter = 'automation::browser::tests::controlled_browser';
+const filter = 'controlled_browser_';
 console.log(`Isolated CDP test home: ${home}`);
 if (process.platform === 'darwin') {
   const prepared = prepareMacosTestSignatures(env);

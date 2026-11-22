@@ -284,10 +284,12 @@ describe("ToolSidePanel navigation collapse", () => {
   );
 
   it("keeps browser navigation usable without a blank list column and can switch back to files", async () => {
-    const { container } = renderPanel("browser");
+    renderPanel("browser");
     fireEvent.change(screen.getByRole("textbox", { name: "预览网址" }), { target: { value: "https://example.com/review" } });
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
-    expect(container.querySelector("iframe")).toHaveAttribute("src", "https://example.com/review");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("automation_browser_action", {
+      sessionId: "session-1", targetId: null, action: { kind: "navigate", url: "https://example.com/review" },
+    }));
     fireEvent.click(screen.getByRole("tab", { name: "文件" }));
     expect(await screen.findByText("当前目录暂无可见文件。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "详情布局" })).toBeInTheDocument();

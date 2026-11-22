@@ -17,7 +17,7 @@ import {
 } from "@/lib/use-unified-tabs";
 import { ToolCallDetailBody } from "./ToolCallCard";
 import { executionToolStates } from "@/lib/tool-execution-state";
-import { automationStatusForMessage } from "@/lib/computer-task";
+import { automationStatusForMessage, computerTaskRunning } from "@/lib/computer-task";
 import type { AutomationStatus } from "@/lib/automation-client";
 import { openLocalPath } from "@/lib/markdown-host";
 import { FilePreview as RichFilePreview } from "./FilePreview";
@@ -35,7 +35,7 @@ import { ArtifactTabsBar } from "./workspace-panel/ArtifactTabsBar";
 import { FileTreeView } from "./workspace-panel/FileTreeView";
 import { ActionMenu } from "./ActionMenu";
 import { ArrowLeft, Settings2, FolderOpen, ExternalLink, Copy, RotateCw } from "lucide-react";
-import { BrowserPreview } from "./BrowserPreview";
+import { BrowserPreview, type BrowserOpenRequest } from "./BrowserPreview";
 import type { DocumentEditContext, OpenDocument } from "@/lib/document-workspace";
 const DocumentWorkbench = lazy(() => import("./DocumentWorkbench"));
 import {
@@ -49,7 +49,7 @@ import {
 /** The outer navigation and panel use the same view identifiers. */
 export type ToolSidePanelMode = WorkspaceView | "tool";
 interface PanelSelection {
-  artifact?: string; file?: string; url?: string; list: boolean; scroll: number;
+  artifact?: string; file?: string; list: boolean; scroll: number;
   listScroll?: Partial<Record<WorkspaceView, number>>;
   bodyScroll?: Partial<Record<WorkspaceView, number>>;
   fileTree?: { root?: string; expandedPaths: string[] };
@@ -77,6 +77,9 @@ interface ToolSidePanelProps {
   artifacts: SessionArtifact[];
   previewPath?: string | null;
   previewRequestId?: number;
+  browserRequest?: BrowserOpenRequest;
+  onBrowserRequestHandled?: (sequence: number) => void;
+  onBrowserTakeOver?: () => Promise<boolean | void>;
   navigationRequestId?: number;
   cwd?: string;
   workspaceInfo?: ReactNode;
@@ -111,6 +114,9 @@ export function ToolSidePanel({
   artifacts,
   previewPath,
   previewRequestId,
+  browserRequest,
+  onBrowserRequestHandled,
+  onBrowserTakeOver,
   navigationRequestId,
   cwd,
   messages,
@@ -148,7 +154,6 @@ export function ToolSidePanel({
   const saved = sessionId ? sessionSelections.get(sessionId) : undefined;
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(saved?.artifact);
   const [selectedFilePath, setSelectedFilePath] = useState<string | undefined>(saved?.file);
-  const [browserUrl, setBrowserUrl] = useState<string | undefined>(saved?.url);
   const [showList, setShowList] = useState(saved?.list ?? true);
   const [selectionOwner, setSelectionOwner] = useState(sessionId);
   const listRef = useRef<HTMLDivElement>(null);
@@ -166,11 +171,10 @@ export function ToolSidePanel({
     setSelectionOwner(sessionId);
     setSelectedArtifactId(saved?.artifact);
     setSelectedFilePath(saved?.file);
-    setBrowserUrl(saved?.url);
     setShowList(saved?.list ?? true);
   } else {
     selectionRef.current = { owner: sessionId, value: { artifact: selectedArtifactId, file: selectedFilePath,
-      url: browserUrl, list: showList,
+      list: showList,
       bodyScroll: selectionRef.current.value.bodyScroll ?? saved?.bodyScroll,
       listScroll: selectionRef.current.value.listScroll ?? saved?.listScroll,
       fileTree: selectionRef.current.value.fileTree ?? saved?.fileTree,
@@ -255,13 +259,11 @@ export function ToolSidePanel({
     currentView: view,
     selectedArtifactId: view === "changes" && details ? undefined : selectedArtifactId,
     selectedFilePath,
-    browserUrl,
     artifacts,
     changes,
     onViewChange: handleViewChange,
     onArtifactSelect: handleArtifactSelect,
     onFileSelect: handleFileSelect,
-    onBrowserUrlChange: setBrowserUrl,
   });
 
   // ---- 面板布局状态 ----
@@ -477,11 +479,13 @@ export function ToolSidePanel({
           if (sessionId) sessionSelections.set(sessionId,value);
         }} className="tool-side-panel__body task-details__body">
           <div hidden={!runtimeView || showToolDetail}>{details}</div>
-          {browserVisited.current && <div className="task-details__browser" hidden={view !== "browser" || showToolDetail}><BrowserPreview url={browserUrl ?? ""} onUrlChange={setBrowserUrl} /></div>}
+          {browserVisited.current && <div className="task-details__browser" hidden={view !== "browser" || showToolDetail}><BrowserPreview key={sessionId} sessionId={sessionId} active={open && view === "browser" && !showToolDetail}
+            request={browserRequest} browserAvailable={automationStatus?.browser?.available} onRequestHandled={onBrowserRequestHandled} onTakeOver={onBrowserTakeOver}
+            agentWorking={automationStatus?.sessionId === sessionId && computerTaskRunning(automationStatus)} /></div>}
           {(!listView || split || !showList) && ((!runtimeView && view !== "browser") || showToolDetail) && (showToolDetail ? toolCall ? <ToolCallDetailBody tc={toolCall} executionEnded={toolMessage ? !toolMessageActive : false} executionState={toolState} onOpenPath={path => onSelectArtifact({id:path,path,kind:toolCall.kind,title:toolCall.title,toolCallId:toolCall.toolCallId,status:toolCall.status})} /> : <p className="tool-side-panel__empty">选择操作查看详情</p> : <MainContent key={sessionId} onEditDocument={onEditDocument} documentAgentDisabled={documentAgentDisabled} onEditModeChange={setDocumentEditing} onOpenArtifact={onSelectArtifact} view={view} artifacts={artifacts} sessionId={sessionId} cwd={cwd} previewPath={previewPath}
-            active={open} selectedArtifactId={selectedArtifactId} selectedFilePath={selectedFilePath} browserUrl={browserUrl}
+            active={open} selectedArtifactId={selectedArtifactId} selectedFilePath={selectedFilePath}
             onArtifactSelect={a => { const tc = findToolCall?.(a.toolCallId); if (tc) onSelectTool(tc); else onToast?.("关联工具记录已不可用，可继续预览文件内容"); }}
-            onBrowserUrlChange={setBrowserUrl} onOpenOs={path => openLocalPath(path,{cwd,type:"file",onToast,revealFile:false})} onToast={onToast} />)}
+            onOpenOs={path => openLocalPath(path,{cwd,type:"file",onToast,revealFile:false})} onToast={onToast} />)}
         </div>
       </div>
     </div>
@@ -618,9 +622,7 @@ function MainContent({
   previewPath,
   selectedArtifactId,
   selectedFilePath,
-  browserUrl,
   onArtifactSelect,
-  onBrowserUrlChange,
   onOpenOs,
   onToast,
 }: {
@@ -636,20 +638,10 @@ function MainContent({
   previewPath?: string | null;
   selectedArtifactId?: string;
   selectedFilePath?: string;
-  browserUrl?: string;
   onArtifactSelect: (a: SessionArtifact) => void;
-  onBrowserUrlChange: (url?: string) => void;
   onOpenOs: (path: string) => Promise<boolean>;
   onToast?: (msg: string) => void;
 }) {
-  if (view === "browser") {
-    return (
-      <BrowserPreview
-        url={browserUrl ?? ""}
-        onUrlChange={onBrowserUrlChange}
-      />
-    );
-  }
   if (view === "fileTree") {
     const path = selectedFilePath ?? null;
     if (!path) {

@@ -6,6 +6,7 @@ export type MarkdownHostOptions = {
   cwd?: string;
   sessionId?: string | null;
   onToast?: (msg: string) => void;
+  onOpenWeb?: (url: string) => void;
 };
 
 type PathStat = {
@@ -151,8 +152,11 @@ export function createMarkdownHostConfig(
 
   const onLinkClick: MarkdownConfig["onLinkClick"] = ({ href, event }) => {
     if (!href) return;
-    // Intercept http(s) so we open in the system browser (Tauri webview
-    // target=_blank is unreliable / may be blocked).
+    if (opts.onOpenWeb && /^https?:\/\//i.test(href) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      opts.onOpenWeb(href);
+      return false;
+    }
     if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
       event.preventDefault();
       void invoke("open_url", { url: href }).catch((e) =>

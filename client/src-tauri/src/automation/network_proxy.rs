@@ -18,6 +18,7 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use std::{
+    collections::HashSet,
     convert::Infallible,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
@@ -41,9 +42,50 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct BrowserNetworkProxy {
     address: SocketAddr,
     allow_private_network: Arc<AtomicBool>,
+    development: DevelopmentEndpoints,
     connection_cancellation: Arc<Mutex<CancellationToken>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<()>,
+}
+
+type DevelopmentEndpoints = Arc<Mutex<HashSet<(String, u16)>>>;
+
+fn development_endpoint(host: &str, port: u16) -> Option<(String, u16)> {
+    let host = host.trim_matches(['[', ']']);
+    matches!(host, "localhost" | "127.0.0.1" | "::1").then(|| (host.to_owned(), port))
+}
+
+fn development_url_endpoint(url: &Url) -> Option<(String, u16)> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    development_endpoint(url.host_str()?, url.port_or_known_default()?)
+}
+
+async fn resolve_browser_destinations(
+    host: &str,
+    port: u16,
+    allow_private: bool,
+    development: &DevelopmentEndpoints,
+) -> Result<Vec<SocketAddr>, String> {
+    let approved = development_endpoint(host, port)
+        .is_some_and(|endpoint| allow_private || development.lock().unwrap().contains(&endpoint));
+    let host = host.trim_matches(['[', ']']);
+    if !approved {
+        return resolve_allowed_destination(host, port, allow_private)
+            .await
+            .map(|address| vec![address]);
+    }
+    let addresses: Vec<_> = tokio::time::timeout(CONNECT_TIMEOUT, lookup_host((host, port)))
+        .await
+        .map_err(|_| "解析本地开发服务超时")?
+        .map_err(|error| format!("无法解析本地开发服务：{error}"))?
+        .filter(|address| address.ip().is_loopback())
+        .collect();
+    if addresses.is_empty() {
+        return Err("开发服务地址必须解析到本机".into());
+    }
+    Ok(addresses)
 }
 
 impl std::fmt::Debug for BrowserNetworkProxy {
@@ -68,8 +110,10 @@ impl BrowserNetworkProxy {
             .local_addr()
             .map_err(|error| format!("读取浏览器代理地址失败：{error}"))?;
         let policy = Arc::new(AtomicBool::new(allow_private_network));
+        let development = DevelopmentEndpoints::default();
         let connection_cancellation = Arc::new(Mutex::new(CancellationToken::new()));
         let task_policy = Arc::clone(&policy);
+        let task_development = Arc::clone(&development);
         let task_cancellation = Arc::clone(&connection_cancellation);
         let connection_slots = Arc::new(Semaphore::new(256));
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
@@ -87,6 +131,7 @@ impl BrowserNetworkProxy {
                     continue;
                 };
                 let connection_policy = Arc::clone(&task_policy);
+                let connection_development = Arc::clone(&task_development);
                 let cancellation = task_cancellation.lock().unwrap().clone();
                 tokio::spawn(async move {
                     let _connection_slot = connection_slot;
@@ -95,6 +140,7 @@ impl BrowserNetworkProxy {
                         handle_request(
                             request,
                             Arc::clone(&connection_policy),
+                            Arc::clone(&connection_development),
                             request_cancellation.clone(),
                         )
                     });
@@ -118,6 +164,7 @@ impl BrowserNetworkProxy {
         Ok(Self {
             address,
             allow_private_network: policy,
+            development,
             connection_cancellation,
             shutdown: Some(shutdown_tx),
             task,
@@ -128,18 +175,70 @@ impl BrowserNetworkProxy {
         self.address
     }
 
+    pub(super) fn allow_development_url(&self, url: &Url) -> Result<(), String> {
+        let endpoint = development_url_endpoint(url).ok_or("仅可授权本机环回端口")?;
+        let mut endpoints = self.development.lock().unwrap();
+        if endpoints.len() >= 16 && !endpoints.contains(&endpoint) {
+            return Err("已达到本地端口授权上限，请先撤销不再使用的授权".into());
+        }
+        endpoints.insert(endpoint);
+        Ok(())
+    }
+
+    pub(super) fn permits_development_url(&self, url: &Url) -> bool {
+        development_url_endpoint(url)
+            .is_some_and(|endpoint| self.development.lock().unwrap().contains(&endpoint))
+    }
+
+    pub(super) fn development_endpoints(&self) -> Vec<String> {
+        let mut endpoints: Vec<_> = self
+            .development
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(host, port)| {
+                if host.contains(':') {
+                    format!("[{host}]:{port}")
+                } else {
+                    format!("{host}:{port}")
+                }
+            })
+            .collect();
+        endpoints.sort();
+        endpoints
+    }
+
+    fn clear_development(&self) -> bool {
+        let mut endpoints = self.development.lock().unwrap();
+        let had_endpoints = !endpoints.is_empty();
+        endpoints.clear();
+        had_endpoints
+    }
+
+    pub(super) fn revoke_development(&self) {
+        if self.clear_development() {
+            self.cancel_connections();
+        }
+    }
+
+    fn cancel_connections(&self) {
+        let mut cancellation = self.connection_cancellation.lock().unwrap();
+        cancellation.cancel();
+        *cancellation = CancellationToken::new();
+    }
+
     pub fn set_allow_private_network(&self, allowed: bool) {
         let previous = self.allow_private_network.swap(allowed, Ordering::AcqRel);
-        if previous != allowed {
-            let mut cancellation = self.connection_cancellation.lock().unwrap();
-            cancellation.cancel();
-            *cancellation = CancellationToken::new();
+        let revoked = self.clear_development();
+        if previous != allowed || revoked {
+            self.cancel_connections();
         }
     }
 }
 
 impl Drop for BrowserNetworkProxy {
     fn drop(&mut self) {
+        self.connection_cancellation.lock().unwrap().cancel();
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -150,12 +249,14 @@ impl Drop for BrowserNetworkProxy {
 async fn handle_request(
     mut request: Request<hyper::body::Incoming>,
     allow_private_network: Arc<AtomicBool>,
+    development: DevelopmentEndpoints,
     cancellation: CancellationToken,
 ) -> Result<Response<Body>, Infallible> {
     let response = if request.method() == Method::CONNECT {
         handle_connect(
             &mut request,
             allow_private_network.load(Ordering::Acquire),
+            &development,
             cancellation,
         )
         .await
@@ -163,6 +264,7 @@ async fn handle_request(
         forward_http(
             request,
             allow_private_network.load(Ordering::Acquire),
+            &development,
             cancellation,
         )
         .await
@@ -173,6 +275,7 @@ async fn handle_request(
 async fn handle_connect(
     request: &mut Request<hyper::body::Incoming>,
     allow_private_network: bool,
+    development: &DevelopmentEndpoints,
     cancellation: CancellationToken,
 ) -> Result<Response<Body>, String> {
     let authority = request
@@ -181,11 +284,13 @@ async fn handle_connect(
         .ok_or_else(|| "CONNECT 请求缺少目标地址".to_string())?;
     let host = authority.host().to_string();
     let port = authority.port_u16().unwrap_or(443);
-    let destination = resolve_allowed_destination(&host, port, allow_private_network).await?;
-    let upstream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
-        .await
-        .map_err(|_| format!("连接 {host}:{port} 超时"))?
-        .map_err(|error| format!("连接 {host}:{port} 失败：{error}"))?;
+    let destinations =
+        resolve_browser_destinations(&host, port, allow_private_network, development).await?;
+    let upstream =
+        tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(destinations.as_slice()))
+            .await
+            .map_err(|_| format!("连接 {host}:{port} 超时"))?
+            .map_err(|error| format!("连接 {host}:{port} 失败：{error}"))?;
     let upgrade = hyper::upgrade::on(request);
     tokio::spawn(async move {
         match upgrade.await {
@@ -209,6 +314,7 @@ async fn handle_connect(
 async fn forward_http(
     request: Request<hyper::body::Incoming>,
     allow_private_network: bool,
+    development: &DevelopmentEndpoints,
     cancellation: CancellationToken,
 ) -> Result<Response<Body>, String> {
     let url = Url::parse(&request.uri().to_string())
@@ -223,12 +329,13 @@ async fn forward_http(
         .host_str()
         .ok_or_else(|| "代理请求缺少主机名".to_string())?;
     let port = url.port_or_known_default().unwrap_or(80);
-    let destination = resolve_allowed_destination(host, port, allow_private_network).await?;
+    let destinations =
+        resolve_browser_destinations(host, port, allow_private_network, development).await?;
 
     if header_has_token(request.headers(), CONNECTION, "upgrade")
         && request.headers().contains_key(UPGRADE)
     {
-        return forward_http_upgrade(request, &url, destination, cancellation).await;
+        return forward_http_upgrade(request, &url, &destinations, cancellation).await;
     }
 
     let client = reqwest::Client::builder()
@@ -236,7 +343,7 @@ async fn forward_http(
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
-        .resolve(host, destination)
+        .resolve_to_addrs(host, &destinations)
         .build()
         .map_err(|error| format!("创建代理请求失败：{error}"))?;
 
@@ -269,10 +376,10 @@ async fn forward_http(
 async fn forward_http_upgrade(
     mut request: Request<hyper::body::Incoming>,
     url: &Url,
-    destination: SocketAddr,
+    destinations: &[SocketAddr],
     cancellation: CancellationToken,
 ) -> Result<Response<Body>, String> {
-    let upstream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
+    let upstream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(destinations))
         .await
         .map_err(|_| format!("连接 {} 超时", url.host_str().unwrap_or_default()))?
         .map_err(|error| format!("连接 {} 失败：{error}", url.host_str().unwrap_or_default()))?;
@@ -376,8 +483,10 @@ pub(crate) async fn resolve_allowed_destination(
     port: u16,
     allow_private_network: bool,
 ) -> Result<SocketAddr, String> {
-    let addresses = lookup_host((host, port))
+    let host = host.trim_matches(['[', ']']);
+    let addresses = tokio::time::timeout(CONNECT_TIMEOUT, lookup_host((host, port)))
         .await
+        .map_err(|_| format!("解析目标主机 {host} 超时"))?
         .map_err(|error| format!("无法解析目标主机 {host}：{error}"))?
         .collect::<Vec<_>>();
     if addresses.is_empty() {
@@ -508,6 +617,68 @@ mod tests {
         assert_eq!(allowed.status(), StatusCode::OK);
         assert_eq!(allowed.text().await.unwrap(), "ok");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn approved_localhost_uses_ipv4_fallback_and_revokes_only_the_grant() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().route("/health", axum::routing::get(|| async { "ok" })),
+            )
+            .await
+        });
+        let proxy = BrowserNetworkProxy::start(false).await.unwrap();
+        let url = Url::parse(&format!("http://localhost:{port}/health")).unwrap();
+        let client = || {
+            reqwest::Client::builder()
+                .proxy(reqwest::Proxy::all(format!("http://{}", proxy.address())).unwrap())
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap()
+        };
+        assert_eq!(
+            client().get(url.clone()).send().await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        proxy.allow_development_url(&url).unwrap();
+        assert_eq!(
+            proxy.development_endpoints(),
+            vec![format!("localhost:{port}")]
+        );
+        assert_eq!(
+            client()
+                .get(url.clone())
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "ok"
+        );
+        assert!(!proxy
+            .permits_development_url(&Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap()));
+        proxy.revoke_development();
+        assert!(proxy.development_endpoints().is_empty());
+        assert_eq!(
+            client().get(url).send().await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn development_endpoint_rejects_private_lan_and_keeps_default_ports() {
+        assert!(
+            development_url_endpoint(&Url::parse("http://192.168.1.2:5173/").unwrap()).is_none()
+        );
+        assert_eq!(
+            development_url_endpoint(&Url::parse("http://localhost:80/").unwrap()),
+            Some(("localhost".into(), 80))
+        );
     }
 
     #[tokio::test]

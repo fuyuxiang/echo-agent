@@ -1471,10 +1471,9 @@ describe("session workbench entry paths", () => {
     expect(await screen.findByRole("button", { name: "关闭标签 report.md" })).toBeInTheDocument();
     workspaceItem("网页预览");
     fireEvent.change(screen.getByRole("textbox",{name:"预览网址"}), {target:{value:"https://example.com"}});
-    fireEvent.click(screen.getByRole("button",{name:"预览"}));
     fireEvent.click(screen.getByRole("tab", { name: /report\.md/ }));
-    expect(screen.getByRole("tab", { name: "成果" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /report\.md/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "成果" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "关闭标签 report.md" })).toBeVisible();
     expect(screen.getByRole("button", { name: "查看关联工具" })).toBeInTheDocument();
   });
   it("从更多进入回溯，仅在确认范围后调用当前会话并刷新", async () => {
@@ -1756,4 +1755,57 @@ describe("所有工具模式统一使用会话交互", () => {
     expect(screen.queryByRole("button",{name:"继续任务"})).toBeNull();expect(screen.getByRole("textbox")).toBeEnabled();
   });
 
+});
+
+it("已消费的聊天链接在切回会话时不再打开第二次", async () => {
+  const ipc = vi.fn(async (command: string, _args: { action?: { kind: string } }) =>
+    command === "automation_browser_view" ? { tabs: [], activeId: null, external: false,
+      allowPrivateNetwork: false, developmentEndpoints: [], page: null } : undefined);
+  vi.stubGlobal("__TAURI_INTERNALS__", { invoke: ipc });
+  try {
+    setStore({ sessionId: "browser-link-a", messages: [{
+      id: "browser-link-message", role: "assistant", complete: true,
+      parts: [{ kind: "text", text: "[打开评审网页](https://example.com/review-link)" }],
+    }] });
+    const { rerender } = renderChat();
+    fireEvent.click(await screen.findByRole("link", { name: "打开评审网页" }));
+    const opens = () => ipc.mock.calls.filter(([command, args]) => command === "automation_browser_action"
+      && args?.action?.kind === "open");
+    await waitFor(() => expect(opens()).toHaveLength(1));
+    setStore({ sessionId: "browser-link-b", messages: [] });
+    rerender(<ThemeProvider><ChatView {...baseProps} /></ThemeProvider>);
+    setStore({ sessionId: "browser-link-a", messages: [] });
+    rerender(<ThemeProvider><ChatView {...baseProps} /></ThemeProvider>);
+    await act(async () => {});
+    expect(opens()).toHaveLength(1);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it.each([
+  ["连接了已有浏览器", true, true],
+  ["没有可用的独立浏览器", false, false],
+] as const)("%s时，聊天链接直接使用系统浏览器", async (_label, extensionConnected, available) => {
+  const sessionId = "browser-link-external";
+  const url = "https://example.com/external";
+  const ipc = vi.fn(async () => undefined);
+  vi.stubGlobal("__TAURI_INTERNALS__", { invoke: ipc });
+  try {
+    automationState.status = {
+      sessionId, mode: "default", paused: false, extensionConnected, allowPrivateNetwork: false,
+      browser: { available }, browserRunning: false, browserHasData: false,
+      computer: { available: false, platform: "local", screenCapture: false, inputControl: false },
+    };
+    setStore({ sessionId, messages: [{
+      id: "external-link-message", role: "assistant", complete: true,
+      parts: [{ kind: "text", text: `[打开外部网页](${url})` }],
+    }] });
+    renderChat();
+    fireEvent.click(await screen.findByRole("link", { name: "打开外部网页" }));
+    await waitFor(() => expect(ipc).toHaveBeenCalledWith("open_url", { url }, undefined));
+    expect(screen.queryByRole("textbox", { name: "预览网址" })).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

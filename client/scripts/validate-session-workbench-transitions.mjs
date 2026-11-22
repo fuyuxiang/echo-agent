@@ -52,15 +52,18 @@ export async function validateWorkbenchTransitions(page, base, output) {
   const address = page.getByRole("textbox", { name: "预览网址", exact: true });
   await address.waitFor();
   assert.ok((await address.boundingBox()).width >= 100, "browser address must have usable width in the default panel");
-  await page.route("https://example.com/workbench-review", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Preview fixture</title><p>Isolated preview</p>" }));
-  await address.fill("https://example.com/workbench-review");
-  await page.getByRole("button", { name: "预览", exact: true }).click();
+  const previewUrl = "https://example.com/workbench-review";
+  await address.fill(previewUrl);
+  await page.getByRole("button", { name: "打开", exact: true }).click();
   await page.locator(".browser-preview__frame").waitFor();
-  assert.equal(await page.locator(".browser-preview__frame").getAttribute("src"), "https://example.com/workbench-review");
+  assert.match(await page.locator(".browser-preview__frame").getAttribute("src"), /^data:image\/jpeg;base64,/);
+  assert.equal(await address.inputValue(), previewUrl);
+  assert.equal(await page.getByRole("button", { name: "网页验收样例", exact: true }).getAttribute("aria-pressed"), "true");
   await openView("文件");
   await page.locator(".task-details__list").waitFor();
   await openView("网页预览");
-  assert.equal(await page.locator(".browser-preview__frame").getAttribute("src"), "https://example.com/workbench-review", "view changes preserve the browser tab");
+  assert.equal(await address.inputValue(), previewUrl, "view changes preserve the browser tab");
+  assert.equal(await page.evaluate(() => window.workbenchCalls.filter(c => c.command === "automation_browser_action").length), 1);
   await page.screenshot({ path: join(output, "empty-session-workspace.png") });
   console.log("Empty sessions retain directory and web browsing.");
 
@@ -101,7 +104,7 @@ export async function validateWorkbenchTransitions(page, base, output) {
   await page.getByRole("button",{name:"关闭标签 report.md",exact:true}).waitFor();
   await openView("网页预览");
   await address.fill("https://example.com/workbench-review");
-  await page.getByRole("button",{name:"预览",exact:true}).click();
+  await page.getByRole("button",{name:"打开",exact:true}).click();
   await reportTab.click();
   await page.getByRole("tab", { name: "成果", exact: true }).waitFor();
   await page.getByRole("button", { name: "查看关联工具", exact: true }).waitFor();

@@ -88,6 +88,40 @@ export interface AutomationApprovalClosedEvent {
 export const automationStatus = (sessionId: string) =>
   invoke<AutomationStatus>("automation_status", { sessionId });
 
+type BrowserDocument = { targetId: string; loaderId: string; url: string };
+export type BrowserPageInput =
+  | { kind: "pointer"; x: number; y: number; destination: [number, number] | null; button: "left" | "middle" | "right"; count: number; modifiers: number }
+  | { kind: "move"; x: number; y: number }
+  | { kind: "wheel"; x: number; y: number; dx: number; dy: number }
+  | { kind: "key"; key: string; code: string; virtualKey: number; modifiers: number }
+  | { kind: "text"; text: string };
+export type BrowserPanelAction =
+  | { kind: "open" | "navigate"; url: string; allowDevelopment?: boolean }
+  | { kind: "new" | "back" | "forward" | "reload" | "revokeDevelopment" }
+  | { kind: "select" | "close"; id: string }
+  | { kind: "input"; document: BrowserDocument; frameId: string; input: BrowserPageInput };
+export interface BrowserPanelView {
+  tabs: { id: string; title: string; url: string }[];
+  activeId: string | null;
+  external: boolean;
+  allowPrivateNetwork: boolean;
+  developmentEndpoints: string[];
+  page: {
+    document: BrowserDocument;
+    canGoBack: boolean;
+    canGoForward: boolean;
+    frameId: string | null;
+    image: string | null;
+    width: number;
+    height: number;
+    error: boolean;
+  } | null;
+}
+export const automationBrowserView = (sessionId: string, size: [number, number] | null, knownFrame: string | null) =>
+  invoke<BrowserPanelView | null>("automation_browser_view", { sessionId, size, knownFrame });
+export const automationBrowserAction = (sessionId: string, targetId: string | null, action: BrowserPanelAction) =>
+  invoke<void>("automation_browser_action", { sessionId, targetId, action });
+
 export const automationCapabilities = () =>
   invoke<AutomationCapabilities>("automation_capabilities");
 

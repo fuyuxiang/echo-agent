@@ -126,7 +126,7 @@ export function BrowserTaskSettings() {
         <label className="settings-row settings-row--comfortable">
           <span className="settings-row__label settings-row__label--stacked">
             <span className="settings-row__name">{extensionSource ? "允许导航到本机与内网页面" : "允许访问本机与内网"}</span>
-            <span className="settings-row__description">{extensionSource ? "仅限制代理主动打开的页面地址；网页自身的请求仍按原浏览器的网络权限执行。" : "仅对所选任务生效，关闭时拦截本地服务及内网站点的页面与子资源请求。"}</span>
+            <span className="settings-row__description">{extensionSource ? "仅限制代理主动打开的页面地址；网页自身的请求仍按原浏览器的网络权限执行。" : "仅对所选任务生效。关闭时，可在网页面板单独授权本任务访问某个本地端口，并随时撤销。"}</span>
           </span>
           <input type="checkbox" checked={status.allowPrivateNetwork} disabled={busy}
             onChange={event => void run(() => automationSetPrivateNetwork(selectedId, event.target.checked), "访问范围已更新。")}/>
