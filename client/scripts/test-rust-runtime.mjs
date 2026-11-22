@@ -131,7 +131,7 @@ const toolsStatus = await runNativeTestProcess(toolsProgram, [reminderFilter, '-
 if (toolsStatus !== 0) status = toolsStatus;
 const samplerWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-sampler'));
 const samplerProgram = buildHarness('echo-agent-sampler', samplerWorkspace, 'chat_stream_termination');
-console.log('Running Chat Completions stream termination contracts');
+console.log('Running Chat Completions, Messages and Responses stream contracts');
 const samplerStatus = await runNativeTestProcess(samplerProgram, ['--test-threads=1'], {
   cwd: samplerWorkspace, env: groupEnvironment('sampler-stream'),
 });

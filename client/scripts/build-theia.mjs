@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -6,10 +6,14 @@ import { patchNodePtyConsoleHelper, patchNodePtyPipeErrors, ensureNodePtyConptyS
 import { patchTheiaWindowlessHelpers, isTheiaWindowlessRuntime } from "./patch-theia-windowless-helpers.mjs";
 import { assertSupportedNodeVersion, assertSupportedNpmVersion } from "./node-runtime-version.mjs";
 import { patchTheiaScanoss } from "./patch-theia-scanoss.mjs";
+import { clearTheiaBuildOutputs, theiaBuildStampPath, theiaSourceFingerprint } from "./theia-source-fingerprint.mjs";
 
 assertSupportedNodeVersion();
 
 const sourceRoot = resolve(import.meta.dirname, "../vendor/theia-platform");
+const buildStamp = theiaBuildStampPath(sourceRoot);
+const previousFingerprint = existsSync(buildStamp) ? readFileSync(buildStamp, "utf8").trim() : undefined;
+rmSync(buildStamp, { force: true });
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const env = { ...process.env, PUPPETEER_SKIP_DOWNLOAD: "1" };
 const npmVersion = spawnSync(npm, ["--version"], { env, encoding: "utf8", shell: process.platform === "win32" });
@@ -57,7 +61,13 @@ if (plugins.status !== 0) throw new Error("Failed to stage vendored Theia VSIX p
 run(["exec", "--", "theia-re-exports", "generate", "@theia/core"]);
 // An incremental build can reuse node_modules without running postinstall.
 run(["run", "compute-references"]);
-run(["run", "compile"]);
+const sourceFingerprint = theiaSourceFingerprint(sourceRoot);
+const rebuild = sourceFingerprint !== previousFingerprint || installedFingerprint !== installFingerprint;
+if (rebuild) {
+  // tsc -b can skip older-timestamp edits and leave output for deleted inputs.
+  clearTheiaBuildOutputs(sourceRoot);
+}
+run(["run", "compile"], rebuild ? { NX_SKIP_NX_CACHE: "true" } : {});
 if (!isTheiaWindowlessRuntime(sourceRoot)) {
   throw new Error("Theia background workers were compiled without windowless Windows spawn options.");
 }
@@ -73,4 +83,8 @@ if (process.platform === "win32") markNodePtyConptyRebuilt(sourceRoot);
 if (!existsSync(join(sourceRoot, "examples/browser/lib/backend/main.js"))) {
   throw new Error("Theia backend entry point was not produced by the build.");
 }
+if (theiaSourceFingerprint(sourceRoot) !== sourceFingerprint) {
+  throw new Error("Theia sources changed during compilation; run pnpm ide:build again.");
+}
+writeFileSync(buildStamp, `${sourceFingerprint}\n`);
 console.log("Echo Code IDE built from vendored Theia source.");

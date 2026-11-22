@@ -2,7 +2,7 @@
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::OnceLock};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, watch, Mutex};
 
 struct Pending {
     tx: oneshot::Sender<Value>,
@@ -458,11 +458,34 @@ pub async fn coding_document_tool_respond(
 }
 
 struct CancelAck {
-    notify: oneshot::Sender<()>,
+    notify: watch::Sender<bool>,
     session_id: String,
     run_id: String,
     workspace: String,
-    app: AppHandle,
+}
+
+impl CancelAck {
+    fn subscribe(
+        acks: &mut HashMap<String, Self>,
+        cancellation_id: &str,
+        session_id: &str,
+        run_id: &str,
+        workspace: &str,
+    ) -> watch::Receiver<bool> {
+        acks.entry(cancellation_id.into())
+            .or_insert_with(|| Self {
+                notify: watch::channel(false).0,
+                session_id: session_id.into(),
+                run_id: run_id.into(),
+                workspace: workspace.into(),
+            })
+            .notify
+            .subscribe()
+    }
+
+    fn finish(self) {
+        self.notify.send_replace(true);
+    }
 }
 static CANCEL_ACKS: OnceLock<Mutex<HashMap<String, CancelAck>>> = OnceLock::new();
 fn cancel_acks() -> &'static Mutex<HashMap<String, CancelAck>> {
@@ -518,7 +541,8 @@ pub async fn coding_document_cancellation_state(
             session_id: session_id.clone(),
             run_id: run.run_id.clone(),
             pending: true,
-            cancellation_id: Some(format!("cancel:{session_id}:{}", run.run_id)),
+            cancellation_id: (!run.editor_acknowledged)
+                .then(|| format!("cancel:{session_id}:{}", run.run_id)),
         })
         .collect();
     for lease in crate::coding_external_tools::pending(workspace.as_deref()).await? {
@@ -553,38 +577,42 @@ pub(crate) async fn ensure_workspace_admission(workspace: &str) -> Result<(), St
 }
 
 async fn await_editor_fence(
-    ack: oneshot::Receiver<()>,
+    mut ack: watch::Receiver<bool>,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
-    match tokio::time::timeout(timeout, ack).await {
-        Ok(Ok(())) => Ok(()),
+    match tokio::time::timeout(timeout, ack.wait_for(|confirmed| *confirmed)).await {
+        Ok(Ok(_)) => Ok(()),
         _ => Err("编辑器尚未确认文档写入停止；已阻止后续运行，请重新连接编辑器后重试停止".into()),
     }
 }
 
-async fn mark_session_cancellation(
+fn mark_editor_cancellation<'a>(
+    authority: &'a mut HashMap<String, RunAuthority>,
     session_id: &str,
     expected_run_id: Option<&str>,
-) -> Option<RunAuthority> {
-    let registered = {
-        let mut authority = runs().lock().await;
-        authority.get_mut(session_id).and_then(|run| {
-            if run.grant.begin_cancellation_if_matching(expected_run_id) {
-                emit_cancellation_state(&run.app, &run.workspace, session_id, &run.run_id, true);
-                Some(run.clone())
-            } else {
-                None
-            }
-        })
-    };
+) -> Option<&'a RunAuthority> {
+    let run = authority.get_mut(session_id)?;
+    if !run.grant.begin_cancellation_if_matching(expected_run_id) {
+        return None;
+    }
+    if !run.editor_acknowledged {
+        emit_cancellation_state(&run.app, &run.workspace, session_id, &run.run_id, true);
+    }
+    Some(run)
+}
+
+async fn mark_external_cancellation(session_id: &str, expected_run_id: Option<&str>) {
     if let Err(error) = crate::coding_external_tools::cancel(session_id, expected_run_id).await {
         tracing::warn!(%error,"external tool cancellation remains unconfirmed");
     }
-    registered
 }
 
 pub(crate) async fn fence_session_run(session_id: &str, expected_run_id: Option<&str>) {
-    let _ = mark_session_cancellation(session_id, expected_run_id).await;
+    {
+        let mut authority = runs().lock().await;
+        let _ = mark_editor_cancellation(&mut authority, session_id, expected_run_id);
+    }
+    mark_external_cancellation(session_id, expected_run_id).await;
 }
 
 pub async fn cancel_session(session_id: &str) -> Result<(), String> {
@@ -595,8 +623,12 @@ pub(crate) async fn cancel_session_run(
     session_id: &str,
     expected_run_id: Option<&str>,
 ) -> Result<(), String> {
-    let registered = mark_session_cancellation(session_id, expected_run_id).await;
-    let entries = {
+    let (entries, requests) = {
+        // Keep registration ordered with the ACK's grant update.
+        // A retry must neither replace existing waiters nor reopen a confirmed fence.
+        let mut authority = runs().lock().await;
+        let registered = mark_editor_cancellation(&mut authority, session_id, expected_run_id)
+            .map(|run| ((run.run_id.clone(), run.workspace.clone()), run.app.clone()));
         let mut registry = pending().lock().await;
         let ids: Vec<String> = registry
             .iter()
@@ -606,43 +638,66 @@ pub(crate) async fn cancel_session_run(
             })
             .map(|(id, _)| id.clone())
             .collect();
-        ids.into_iter()
+        let entries = ids
+            .into_iter()
             .filter_map(|id| registry.remove(&id))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        drop(registry);
+        // Retain the run owner even after a tool timeout removes its pending request.
+        let mut owners: HashMap<(String, String), AppHandle> = HashMap::new();
+        if let Some((owner, app)) = registered {
+            owners.insert(owner, app);
+        }
+        for entry in &entries {
+            owners.insert(
+                (entry.run_id.clone(), entry.workspace.clone()),
+                entry.app.clone(),
+            );
+        }
+        let current_run = authority.get(session_id);
+        let mut acks = cancel_acks().lock().await;
+        let mut requests = Vec::new();
+        for ((run_id, workspace), app) in owners {
+            if current_run.is_some_and(|run| {
+                run.run_id == run_id && run.workspace == workspace && run.editor_acknowledged
+            }) {
+                continue;
+            }
+            let cancellation_id = format!("cancel:{session_id}:{run_id}");
+            let receipt =
+                CancelAck::subscribe(&mut acks, &cancellation_id, session_id, &run_id, &workspace);
+            requests.push((cancellation_id, run_id, workspace, app, receipt));
+        }
+        (entries, requests)
     };
-    // Keep run ownership after a tool timeout removes PENDING: its editor may
-    // still be processing a versioned write and must acknowledge the fence.
-    let mut owners: HashMap<(String, String), AppHandle> = HashMap::new();
-    if let Some(run) = registered {
-        owners.insert((run.grant.run_id, run.grant.workspace), run.app);
-    }
-    for entry in &entries {
-        owners.insert(
-            (entry.run_id.clone(), entry.workspace.clone()),
-            entry.app.clone(),
-        );
-    }
+    mark_external_cancellation(session_id, expected_run_id).await;
+    let receipts = {
+        let acks = cancel_acks().lock().await;
+        let mut receipts = Vec::with_capacity(requests.len());
+        for (cancellation_id, run_id, workspace, app, receipt) in requests {
+            // A previous caller may have received the ACK during lease persistence.
+            let emitted = !acks.contains_key(&cancellation_id)
+                || app
+                    .emit(
+                        "agent://document-run-cancelled",
+                        json!({
+                            "cancellationId": cancellation_id,
+                            "workspace": workspace,
+                            "sessionId": session_id,
+                            "runId": run_id,
+                        }),
+                    )
+                    .is_ok();
+            receipts.push((receipt, emitted));
+        }
+        receipts
+    };
     let mut failure = None;
-    for ((run_id, workspace), app) in owners {
-        // Stable for this exact run: a retry must not make a legitimate late
-        // editor ACK unrecognizable, and it cannot clear a later run's fence.
-        let cancellation_id = format!("cancel:{session_id}:{run_id}");
-        let (tx, rx) = oneshot::channel();
-        cancel_acks().lock().await.insert(
-            cancellation_id.clone(),
-            CancelAck {
-                notify: tx,
-                session_id: session_id.into(),
-                run_id: run_id.clone(),
-                workspace: workspace.clone(),
-                app: app.clone(),
-            },
-        );
-        let emitted = app.emit("agent://document-run-cancelled", json!({"cancellationId":cancellation_id,"workspace":workspace,"sessionId":session_id,"runId":run_id}));
+    for (receipt, emitted) in receipts {
         // Wait for native document writes already in flight before acknowledging stop.
         // Unmounted renderers have no live document operation and will time out fail-closed.
-        if emitted.is_err()
-            || await_editor_fence(rx, std::time::Duration::from_secs(25))
+        if !emitted
+            || await_editor_fence(receipt, std::time::Duration::from_secs(25))
                 .await
                 .is_err()
         {
@@ -676,39 +731,32 @@ pub(crate) async fn cancel_session_run(
 
 #[tauri::command]
 pub async fn coding_document_cancel_ack(cancellation_id: String) -> Result<(), String> {
+    let mut authority = runs().lock().await;
     let ack = cancel_acks()
         .lock()
         .await
         .remove(&cancellation_id)
         .ok_or("Cancellation is no longer pending")?;
-    let (matched, external_pending) = {
-        let mut authority = runs().lock().await;
-        let external_pending = crate::coding_external_tools::has_run(&ack.session_id, &ack.run_id)
-            .await
-            .unwrap_or(true);
-        let matched = authority.get_mut(&ack.session_id).is_some_and(|run| {
-            if run
-                .grant
-                .acknowledge_if_matching(&ack.workspace, &ack.run_id, external_pending)
-            {
-                emit_cancellation_state(
-                    &ack.app,
-                    &ack.workspace,
-                    &ack.session_id,
-                    &ack.run_id,
-                    external_pending,
-                );
-                true
-            } else {
-                false
-            }
-        });
-        (matched, external_pending)
-    };
-    let _ = (matched, external_pending);
+    let external_pending = crate::coding_external_tools::has_run(&ack.session_id, &ack.run_id)
+        .await
+        .unwrap_or(true);
+    if let Some(run) = authority.get_mut(&ack.session_id) {
+        if run
+            .grant
+            .acknowledge_if_matching(&ack.workspace, &ack.run_id, external_pending)
+        {
+            emit_cancellation_state(
+                &run.app,
+                &ack.workspace,
+                &ack.session_id,
+                &ack.run_id,
+                external_pending,
+            );
+        }
+    }
     // A timed-out caller has dropped its receiver; the actual ACK is still
     // authoritative and must release the retained fence instead of failing.
-    let _ = ack.notify.send(());
+    ack.finish();
     Ok(())
 }
 
@@ -733,7 +781,6 @@ pub(crate) async fn validate_pending(
     Ok(())
 }
 
-#[derive(Clone)]
 struct RunGrant {
     run_id: String,
     workspace: String,
@@ -747,10 +794,9 @@ impl RunGrant {
             return false;
         }
         self.cancelled = true;
-        if !self.cancellation_pending {
-            self.editor_acknowledged = false;
+        if !self.editor_acknowledged {
+            self.cancellation_pending = true;
         }
-        self.cancellation_pending = true;
         true
     }
     fn acknowledge_if_matching(
@@ -774,7 +820,6 @@ impl RunGrant {
         true
     }
 }
-#[derive(Clone)]
 struct RunAuthority {
     grant: RunGrant,
     app: AppHandle,
@@ -855,28 +900,25 @@ pub(crate) async fn register_run(
 /// A late completion from a superseded turn must not retire its replacement.
 /// Normal tools (including bounded children) have settled before CompleteEvent.
 pub(crate) async fn complete_run(session_id: &str, run_id: &str) {
-    let pending = {
-        let mut authority = runs().lock().await;
-        let external_pending = crate::coding_external_tools::has_run(session_id, run_id)
-            .await
-            .unwrap_or(true);
-        if external_pending {
-            let _ = crate::coding_external_tools::cancel(session_id, Some(run_id)).await;
-        }
-        authority.get_mut(session_id).and_then(|run| {
-            if !run.grant.complete_if_matching(run_id) {
-                return None;
-            }
-            if external_pending {
-                run.cancellation_pending = true;
-            }
-            if run.cancellation_pending {
-                emit_cancellation_state(&run.app, &run.workspace, session_id, run_id, true);
-            }
-            run.cancellation_pending.then(|| run.clone())
-        })
+    let mut authority = runs().lock().await;
+    let external_pending = crate::coding_external_tools::has_run(session_id, run_id)
+        .await
+        .unwrap_or(true);
+    if external_pending {
+        let _ = crate::coding_external_tools::cancel(session_id, Some(run_id)).await;
+    }
+    let Some(run) = authority.get_mut(session_id) else {
+        return;
     };
-    let _ = pending;
+    if !run.grant.complete_if_matching(run_id) {
+        return;
+    }
+    if external_pending {
+        run.cancellation_pending = true;
+    }
+    if run.cancellation_pending {
+        emit_cancellation_state(&run.app, &run.workspace, session_id, run_id, true);
+    }
 }
 
 pub(crate) async fn with_pending_action<T: Send + 'static>(
@@ -1002,23 +1044,36 @@ pub async fn coding_document_editor_present(
 mod cancellation_tests {
     use super::*;
     #[tokio::test]
+    async fn concurrent_stops_share_the_exact_editor_ack() {
+        let mut acks = HashMap::new();
+        let mut subscribe =
+            |run_id| CancelAck::subscribe(&mut acks, run_id, "session", run_id, "/workspace");
+        let first = subscribe("run");
+        let second = subscribe("run");
+        let other = subscribe("other-run");
+        acks.remove("run").unwrap().finish();
+
+        let timeout = std::time::Duration::from_millis(10);
+        assert!(await_editor_fence(first, timeout).await.is_ok());
+        assert!(await_editor_fence(second, timeout).await.is_ok());
+        assert!(await_editor_fence(other, timeout).await.is_err());
+    }
+
+    #[tokio::test]
     async fn missing_or_late_editor_ack_cannot_confirm_stop() {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = watch::channel(false);
         drop(tx);
         assert!(await_editor_fence(rx, std::time::Duration::from_secs(1))
             .await
             .is_err());
-        let (tx, rx) = oneshot::channel();
+        let mut acks = HashMap::new();
+        let rx = CancelAck::subscribe(&mut acks, "cancel", "session", "run", "/workspace");
         assert!(await_editor_fence(rx, std::time::Duration::from_millis(1))
             .await
             .is_err());
-        assert!(
-            tx.send(()).is_err(),
-            "late ACK cannot revive an expired fence"
-        );
-        let (tx, rx) = oneshot::channel();
-        tx.send(()).unwrap();
-        assert!(await_editor_fence(rx, std::time::Duration::from_secs(1))
+        let retry = CancelAck::subscribe(&mut acks, "cancel", "session", "run", "/workspace");
+        acks.remove("cancel").unwrap().finish();
+        assert!(await_editor_fence(retry, std::time::Duration::from_secs(1))
             .await
             .is_ok());
     }
@@ -1085,6 +1140,8 @@ mod cancellation_tests {
         assert!(grant.cancellation_pending);
         assert!(grant.acknowledge_if_matching("/workspace", "active-run", false));
         assert!(!grant.cancellation_pending);
+        assert!(grant.begin_cancellation_if_matching(Some("active-run")));
+        assert!(grant.editor_acknowledged && !grant.cancellation_pending);
         assert!(
             grant.cancelled,
             "acknowledgement does not reactivate a cancelled grant"

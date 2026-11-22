@@ -85,8 +85,6 @@ interface QueueState {
   holdSending: (sessionId: string, promptId: string, uncertain?: boolean, message?: string) => void;
   /** Pause all process-owned in-flight rows for review after reconnecting. */
   retryAllSending: () => void;
-  /** 取下一条 active(非 paused)项并从队列移除;无则返回 null。 */
-  shiftNext: (sessionId: string) => QueueItem | null;
   /** 清空某会话的整个队列。 */
   clear: (sessionId: string) => void;
   /** 读取某会话的队列(只读视图)。 */
@@ -291,17 +289,6 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
       );
       return changed ? { queues } : state;
     }),
-  shiftNext: (sessionId) => {
-    const q = [...queueOf(get().queues, sessionId)];
-    const idx = q.findIndex((it) => it.status === "queued");
-    if (idx === -1) return null;
-    const [item] = q.splice(idx, 1);
-    const queues = { ...get().queues };
-    if (q.length === 0) delete queues[sessionId];
-    else queues[sessionId] = q;
-    set({ queues });
-    return item;
-  },
   clear: (sessionId) =>
     set((s) => {
       if (!(sessionId in s.queues)) return s;

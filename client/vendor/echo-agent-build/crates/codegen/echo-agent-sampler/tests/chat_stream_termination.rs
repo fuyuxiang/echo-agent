@@ -304,6 +304,114 @@ fn messages_text_frames(text: &str) -> Vec<SseEvent> {
 }
 
 #[tokio::test]
+async fn messages_streams_initial_text_before_later_deltas() {
+    let server = MockInferenceServer::start().await.unwrap();
+    let mut frames = messages_text_frames("answer.");
+    frames[1] = SseEvent::data(
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Verified "}})
+            .to_string(),
+    );
+    server.enqueue_response("/v1/messages", ScriptedResponse::sse(frames));
+    let events = collect_backend_events(
+        SamplerConfig {
+            api_backend: ApiBackend::Messages,
+            ..config(server.url())
+        },
+        false,
+    )
+    .await;
+    let run = Run {
+        requests: server.messages_request_count(),
+        events,
+    };
+    assert_eq!(run.requests, 1);
+    assert!(
+        matches!(run.terminal(), SamplingEvent::Completed { response, .. }
+        if response.assistant().unwrap().content.as_ref() == "Verified answer.")
+    );
+    let streamed: String = run
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::ChannelToken { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(streamed, "Verified answer.");
+}
+
+#[tokio::test]
+async fn messages_preserves_tool_input_from_either_start_or_deltas() {
+    let server = MockInferenceServer::start().await.unwrap();
+    let inline_args = json!({"file_path":"first.txt","content":"inline"});
+    let streamed_args = json!({"file_path":"second.txt","content":"streamed"});
+    let mut frames = messages_text_frames("");
+    frames.splice(1..5, [
+        json!({"type":"content_block_start","index":0,"content_block":{
+            "type":"tool_use","id":"tool_inline","name":"write_file","input":inline_args
+        }}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{
+            "type":"tool_use","id":"tool_streamed","name":"write_file","input":{}
+        }}),
+        json!({"type":"content_block_delta","index":1,"delta":{
+            "type":"input_json_delta","partial_json":"{\"file_path\":\"second.txt\","
+        }}),
+        json!({"type":"content_block_delta","index":1,"delta":{
+            "type":"input_json_delta","partial_json":"\"content\":\"streamed\"}"
+        }}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}),
+    ].into_iter().map(|frame| SseEvent::data(frame.to_string())));
+    server.enqueue_response("/v1/messages", ScriptedResponse::sse(frames));
+    let events = collect_backend_events(
+        SamplerConfig {
+            api_backend: ApiBackend::Messages,
+            ..config(server.url())
+        },
+        false,
+    )
+    .await;
+    let run = Run {
+        requests: server.messages_request_count(),
+        events,
+    };
+    assert_eq!(run.requests, 1);
+    let SamplingEvent::Completed { response, .. } = run.terminal() else {
+        panic!("expected a completed tool response");
+    };
+    assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
+    let calls = &response.assistant().unwrap().tool_calls;
+    assert_eq!(calls.len(), 2);
+    for (tool_index, (id, expected)) in [
+        ("tool_inline", inline_args),
+        ("tool_streamed", streamed_args),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(calls[tool_index].id.as_ref(), id);
+        assert_eq!(
+            serde_json::from_str::<Value>(&calls[tool_index].arguments).unwrap(),
+            expected
+        );
+        let streamed: String = run
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ToolCallDelta {
+                    tool_index: index,
+                    arguments_delta: Some(arguments),
+                    ..
+                } if *index as usize == tool_index => Some(arguments.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(serde_json::from_str::<Value>(&streamed).unwrap(), expected);
+    }
+}
+
+#[tokio::test]
 async fn messages_truncation_after_visible_output_fails_without_retry() {
     // EOF after the block, EOF after stop_reason, and a message_stop
     // without stop_reason must all preserve the published draft and fail.

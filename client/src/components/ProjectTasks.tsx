@@ -15,6 +15,7 @@ import { captureTeamProjectOperation, projectCollaborationCapabilities, TEAM_TAS
 import type { ProjectWorkspace } from "@/lib/use-project-workspace";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { useAppDialog } from "./AppDialog";
+import { SessionInteractionNotice } from "./SessionInteractionNotice";
 import { ModelSelector, type ModelOption } from "./ModelSelector";
 import { Markdown } from "./markdown/Markdown";
 import { displayPath } from "@/lib/display-path";
@@ -136,6 +137,7 @@ export function ProjectTasks(props: Props) {
     {!inline && <div className="project-task-list">{visible.map(row => <button type="button" className="project-task-row" key={row.id} onClick={() => { select(row.id); setModelOverride(undefined); }}><span className="project-task-dot" data-status={state(row)} /><span className="project-task-row__name">{row.title}<small>{row.remote?.assigneeName ?? (sharedId && row.private ? "仅自己" : !row.private && !row.remote ? "等待同步到项目" : "我")} · {PROJECT_TASK_STATES[state(row)].hint}</small></span><span className="project-status" data-state={state(row)}>{archived(row) ? "已归档" : taskStatus(row)}</span><ArrowUpRight size={14} /></button>)}</div>}
     {current && <TaskSurface inline={!!props.inlineDetails} title={current.title} onClose={() => { if (!busy) select(undefined); }}>
       <div className="project-task-detail-meta"><span>{taskStatus(current)}</span><span>{current.remote?.assigneeName ?? (current.private ? "仅自己" : "项目成员可见")}</span></div>
+      {current.sessionId && <SessionInteractionNotice sessionId={current.sessionId} />}
       <p className="project-task-description">{current.remote?.description || current.local?.description || "尚未填写任务说明"}</p>
       {!!props.outputs?.some(o => o.sessionId === current.sessionId) && <section><h4>交付成果</h4><div className="project-output-grid">{props.outputs.filter(o => o.sessionId === current.sessionId).map(o => <button className="project-output-card" key={o.id} onClick={() => props.onPreviewOutput?.(o)}><FileText size={21} /><span><strong>{o.path.replace(/\\/g, "/").split("/").pop()}</strong><small>打开文件预览</small></span></button>)}</div></section>}
       {(current.remote?.acceptance || current.local?.acceptance) && <section><h4>验收要求</h4><p>{current.remote?.acceptance ?? current.local?.acceptance}</p></section>}

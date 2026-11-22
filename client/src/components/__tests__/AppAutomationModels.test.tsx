@@ -101,7 +101,7 @@ import { useSessionsStore } from "@/stores/sessions-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { usePermissionStore } from "@/stores/permission-store";
-import { useQuestionStore } from "@/stores/question-store";
+import { useQuestionStore, type QuestionRequest } from "@/stores/question-store";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
 import { useSubagentStore } from "@/stores/subagent-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
@@ -118,6 +118,70 @@ async function start() {
   await waitFor(() => expect(client.providersList).toHaveBeenCalled());
   // Flush both catalog promises before selecting a task.
   await act(async () => {});
+}
+
+const stopPermission = {
+  sessionId: "auto-1", requestId: "stop-permission", toolCallId: "write-tool",
+  title: "修改文件需要授权", toolKind: "edit", options: [],
+};
+const stopQuestion: QuestionRequest = {
+  sessionId: "auto-1", requestId: "stop-question", toolCallId: "ask-tool",
+  title: "请确认输出目录", mode: "default", questions: [],
+};
+const stopPlan = {
+  sessionId: "auto-1", requestId: "stop-plan", toolCallId: "plan-tool", planContent: "执行计划",
+};
+const emptyInteractions: client.PendingInteractions = {
+  permissions: [], questions: [], planApprovals: [], folderTrustRequests: [],
+};
+
+async function startStoppingTurn(
+  readPending: () => client.PendingInteractions | Promise<client.PendingInteractions>,
+  sendNowPromptId?: string,
+) {
+  const listeners = new Map<string, (payload: unknown) => void>();
+  vi.mocked(listen).mockImplementation(async (event, callback) => {
+    listeners.set(event, (payload) => callback({ event, id: 1, payload }));
+    return () => { listeners.delete(event); };
+  });
+  const realClient = await vi.importActual<typeof client>("@/lib/agent-client");
+  vi.mocked(client.subscribeAgentEvents).mockImplementation(realClient.subscribeAgentEvents);
+  const emit = (event: string, payload: unknown) => {
+    const listener = listeners.get(event);
+    expect(listener, event).toBeDefined();
+    listener!(payload);
+  };
+  const native = vi.mocked(invoke).getMockImplementation()!;
+  let confirmStop!: () => void;
+  let rejectStop!: (error: Error) => void;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "agent_cancel") return new Promise<void>((resolve, reject) => {
+      confirmStop = resolve;
+      rejectStop = reject;
+    });
+    if (command === "agent_list_pending_interactions") {
+      return (args as { sessionId: string | null }).sessionId ? readPending() : emptyInteractions;
+    }
+    return native(command, args);
+  });
+  await start();
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("agent_list_pending_interactions", { sessionId: null }));
+  act(() => emit("agent://automation-update", {
+    phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "r",
+    status: "running", sessionId: "auto-1", cwd: "/workspace", currentModelId: "model-a", promptId: "current-prompt",
+  }));
+  fireEvent.click(screen.getByRole("button", { name: "打开自动化" }));
+  const stop = chatViewHarness.actual ? "停止任务" : "停止执行";
+  const ready = chatViewHarness.actual ? stop : "追问";
+  await waitFor(() => expect(screen.getByRole("button", { name: ready })).toBeEnabled());
+  if (sendNowPromptId) act(() => useSessionStore.getState().requestSendNow(sendNowPromptId, "auto-1"));
+  fireEvent.click(screen.getByRole("button", { name: stop }));
+  expect(invoke).toHaveBeenCalledWith("agent_cancel", {
+    sessionId: "auto-1", cancelAction: "stop", promptId: sendNowPromptId ?? "current-prompt",
+    ...(sendNowPromptId ? { previousPromptId: "current-prompt" } : {}),
+  });
+  expect(useSessionStore.getState().transcripts["auto-1"].control?.phase).toBe("stopping");
+  return { emit, confirmStop: () => confirmStop(), rejectStop: (error: Error) => rejectStop(error) };
 }
 beforeEach(() => {
   resetOrgSessionMirror();
@@ -557,6 +621,348 @@ describe("自动化会话模型同步", () => {
     fireEvent.click(screen.getByRole("button",{name:"停止执行"}));
     await waitFor(() => expect(useSessionStore.getState().transcripts["auto-1"].control?.phase).toBe("stopped"));
     expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{text:"保留的下一条",status:"paused"}]);
+  });
+
+  it.each([
+    { status: "awaiting_permission", event: "agent://permission", request: stopPermission, key: "permissions" },
+    { status: "awaiting_answer", event: "agent://question", request: stopQuestion, key: "questions" },
+    { status: "awaiting_approval", event: "agent://update", request: stopPlan, key: "planApprovals" },
+  ])("停止 IPC 失败后恢复等待期间登记的交互：$status", async ({ status, event, request, key }) => {
+    let registered: client.PendingInteractions = emptyInteractions;
+    const { emit, rejectStop } = await startStoppingTurn(() => registered);
+    registered = { ...emptyInteractions, [key]: [request] };
+    act(() => emit(event, key === "planApprovals"
+      ? { ...request, sessionUpdate: "plan_approval_request" }
+      : request));
+    expect(usePermissionStore.getState().queues["auto-1"]).toBeUndefined();
+    expect(useQuestionStore.getState().queues["auto-1"]).toBeUndefined();
+    expect(useSessionStore.getState().transcripts["auto-1"].planApprovals).toEqual([]);
+    await act(async () => rejectStop(new Error("停止暂未确认")));
+
+    await waitFor(() => expect(useSessionsStore.getState().independent.find(
+      session => session.sessionId === "auto-1",
+    )?.status).toBe(status));
+    expect(invoke).toHaveBeenCalledWith("agent_list_pending_interactions", { sessionId: "auto-1" });
+    expect(useSessionStore.getState().transcripts["auto-1"].control).toBeUndefined();
+    const restored = key === "permissions" ? usePermissionStore.getState().queues["auto-1"]
+      : key === "questions" ? useQuestionStore.getState().queues["auto-1"]
+        : useSessionStore.getState().transcripts["auto-1"].planApprovals;
+    expect(restored).toMatchObject([{ requestId: request.requestId }]);
+  });
+
+  it("停止和读取交互的 IPC 均失败后，在连接恢复时找回待处理请求", async () => {
+    let connected = false;
+    const readPending = vi.fn(async () => {
+      if (!connected) throw new Error("IPC 连接暂不可用");
+      return {
+        ...emptyInteractions, permissions: [stopPermission], questions: [stopQuestion], planApprovals: [stopPlan],
+      };
+    });
+    const { emit, rejectStop } = await startStoppingTurn(readPending);
+    act(() => {
+      emit("agent://permission", stopPermission);
+      emit("agent://question", stopQuestion);
+      emit("agent://update", { ...stopPlan, sessionUpdate: "plan_approval_request" });
+    });
+    vi.useFakeTimers();
+    try {
+      await act(async () => rejectStop(new Error("停止回执丢失")));
+      expect(readPending).toHaveBeenCalledTimes(1);
+      expect(useSessionStore.getState().transcripts["auto-1"].control).toBeUndefined();
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(readPending).toHaveBeenCalledTimes(2);
+      expect(usePermissionStore.getState().queues["auto-1"]).toBeUndefined();
+      expect(useQuestionStore.getState().queues["auto-1"]).toBeUndefined();
+      expect(useSessionStore.getState().transcripts["auto-1"].planApprovals).toEqual([]);
+
+      connected = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(usePermissionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: stopPermission.requestId }]);
+      expect(useQuestionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: stopQuestion.requestId }]);
+      expect(useSessionStore.getState().transcripts["auto-1"].planApprovals)
+        .toMatchObject([{ requestId: stopPlan.requestId }]);
+      expect(useSessionsStore.getState().independent.find((session) => session.sessionId === "auto-1")?.status)
+        .toBe("awaiting_permission");
+      const reads = readPending.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(readPending).toHaveBeenCalledTimes(reads);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("读取持续超时后停止自动重试，用户可手动找回待处理事项", async () => {
+    chatViewHarness.actual = actualChatView;
+    const question: QuestionRequest = {
+      ...stopQuestion,
+      questions: [{ id: "folder", question: "请选择输出目录", options: [{ label: "项目目录", description: "保存到当前项目" }], multiSelect: false }],
+    };
+    const snapshot = { ...emptyInteractions, questions: [question] };
+    const readPending = vi.fn<() => Promise<client.PendingInteractions>>()
+      .mockImplementation(() => new Promise(() => {}));
+    const { rejectStop } = await startStoppingTurn(readPending);
+    vi.useFakeTimers();
+    try {
+      await act(async () => rejectStop(new Error("停止回执丢失")));
+      expect(screen.getByText("正在检查待处理事项…")).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(readPending).toHaveBeenCalledTimes(3);
+      expect(screen.getByText("暂时无法获取待处理事项")).toBeInTheDocument();
+      expect(useQuestionStore.getState().queues["auto-1"]).toBeUndefined();
+
+      readPending.mockResolvedValue(snapshot);
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "重试检查" })));
+      // One manual recovery and the question card's usual registry check.
+      expect(readPending).toHaveBeenCalledTimes(5);
+      expect(screen.queryByRole("button", { name: "重试检查" })).toBeNull();
+      expect(useQuestionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: stopQuestion.requestId }]);
+      expect(screen.getByText("请选择输出目录")).toBeInTheDocument();
+      expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status)
+        .toBe("awaiting_answer");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([false, true])("立即发送在恢复期间保留新回合的提问，是否已接收：%s", async (admitted) => {
+    let reply!: (snapshot: client.PendingInteractions) => void;
+    const promptId = "send-now-replacement";
+    const { emit, rejectStop } = await startStoppingTurn(() => new Promise(resolve => { reply = resolve; }), promptId);
+    act(() => emit("agent://question", stopQuestion));
+    expect(useQuestionStore.getState().queues["auto-1"]).toBeUndefined();
+    await act(async () => rejectStop(new Error("停止回执丢失")));
+    act(() => {
+      emit("agent://complete", { sessionId: "auto-1", promptId: "current-prompt", stopReason: "cancelled", cancelTrigger: "send_now" });
+      if (admitted) emit("agent://update", {
+        sessionId: "auto-1", sessionUpdate: "agent_message_chunk", _meta: { promptId },
+        content: { type: "text", text: "新回合已开始" },
+      });
+    });
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    expect(transcript.pendingSendNowPromptId).toBe(admitted ? null : promptId);
+    if (admitted) expect(transcript.messages.find(message => message.id === transcript.streamingMessageId)?.promptId).toBe(promptId);
+
+    await act(async () => reply({ ...emptyInteractions, questions: [stopQuestion] }));
+    expect(useQuestionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: stopQuestion.requestId }]);
+    expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status)
+      .toBe("awaiting_answer");
+  });
+
+  it("读取交互的 IPC 挂起时，连接恢复后查回仍待处理的请求", async () => {
+    let connected = false;
+    let replyToFirst!: (snapshot: client.PendingInteractions) => void;
+    const recovered = {
+      ...emptyInteractions, permissions: [stopPermission], questions: [stopQuestion], planApprovals: [stopPlan],
+    };
+    const readPending = vi.fn<() => Promise<client.PendingInteractions>>()
+      .mockImplementationOnce(() => new Promise(resolve => { replyToFirst = resolve; }))
+      .mockImplementation(async () => connected ? recovered : new Promise(() => {}));
+    const { emit, rejectStop } = await startStoppingTurn(readPending);
+    act(() => {
+      emit("agent://permission", stopPermission);
+      emit("agent://question", stopQuestion);
+      emit("agent://update", { ...stopPlan, sessionUpdate: "plan_approval_request" });
+    });
+    vi.useFakeTimers();
+    try {
+      await act(async () => rejectStop(new Error("停止回执丢失")));
+      expect(readPending).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(readPending).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+      expect(readPending).toHaveBeenCalledTimes(2);
+      expect(usePermissionStore.getState().queues["auto-1"]).toBeUndefined();
+      expect(useQuestionStore.getState().queues["auto-1"]).toBeUndefined();
+
+      connected = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(usePermissionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: stopPermission.requestId }]);
+      expect(useQuestionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: stopQuestion.requestId }]);
+      expect(useSessionStore.getState().transcripts["auto-1"].planApprovals)
+        .toMatchObject([{ requestId: stopPlan.requestId }]);
+      expect(readPending).toHaveBeenCalledTimes(3);
+
+      await act(async () => replyToFirst({
+        ...emptyInteractions,
+        permissions: [{ ...stopPermission, requestId: "expired-permission" }],
+        questions: [{ ...stopQuestion, requestId: "expired-question" }],
+        planApprovals: [{ ...stopPlan, requestId: "expired-plan" }],
+      }));
+      expect(usePermissionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: stopPermission.requestId }]);
+      expect(useQuestionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: stopQuestion.requestId }]);
+      expect(useSessionStore.getState().transcripts["auto-1"].planApprovals)
+        .toMatchObject([{ requestId: stopPlan.requestId }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("查询挂起超时后，原查询和重试的迟到回执均不修改新回合", async () => {
+    let replyToFirst!: (snapshot: client.PendingInteractions) => void;
+    let replyToRetry!: (snapshot: client.PendingInteractions) => void;
+    const stale = {
+      ...emptyInteractions, permissions: [stopPermission], questions: [stopQuestion], planApprovals: [stopPlan],
+    };
+    const readPending = vi.fn<() => Promise<client.PendingInteractions>>()
+      .mockImplementationOnce(() => new Promise(resolve => { replyToFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { replyToRetry = resolve; }))
+      .mockResolvedValue(stale);
+    const { emit, rejectStop } = await startStoppingTurn(readPending);
+    const newQuestion = { ...stopQuestion, requestId: "replacement-question" };
+    vi.useFakeTimers();
+    try {
+      await act(async () => rejectStop(new Error("停止回执丢失")));
+      expect(readPending).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+      expect(readPending).toHaveBeenCalledTimes(2);
+
+      act(() => {
+        emit("agent://automation-update", {
+          phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "new-run",
+          status: "running", sessionId: "auto-1", cwd: "/workspace", promptId: "replacement",
+        });
+        emit("agent://question", newQuestion);
+      });
+      await act(async () => {
+        replyToFirst(stale);
+        replyToRetry(stale);
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      const transcript = useSessionStore.getState().transcripts["auto-1"];
+      expect(transcript.messages.find(message => message.id === transcript.streamingMessageId))
+        .toMatchObject({ promptId: "replacement", complete: false });
+      expect(transcript.planApprovals).toEqual([]);
+      expect(usePermissionStore.getState().queues["auto-1"]).toBeUndefined();
+      expect(useQuestionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: newQuestion.requestId }]);
+      expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status)
+        .toBe("awaiting_answer");
+      expect(readPending).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["replacement", "completed"] as const)("连接恢复前旧回合已结束时停止重试：%s", async (outcome) => {
+    const readPending = vi.fn<() => Promise<client.PendingInteractions>>()
+      .mockRejectedValueOnce(new Error("IPC 连接暂不可用"))
+      .mockResolvedValue({ ...emptyInteractions, permissions: [stopPermission], questions: [stopQuestion] });
+    const { emit, rejectStop } = await startStoppingTurn(readPending);
+    vi.useFakeTimers();
+    try {
+      await act(async () => rejectStop(new Error("停止回执丢失")));
+      expect(readPending).toHaveBeenCalledTimes(1);
+      act(() => {
+        if (outcome === "replacement") {
+          emit("agent://automation-update", {
+            phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "new-run",
+            status: "running", sessionId: "auto-1", cwd: "/workspace", promptId: "replacement",
+          });
+        } else {
+          emit("agent://complete", { sessionId: "auto-1", promptId: "current-prompt", stopReason: "end_turn" });
+        }
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(readPending).toHaveBeenCalledTimes(1);
+      expect(usePermissionStore.getState().queues["auto-1"]).toBeUndefined();
+      expect(useQuestionStore.getState().queues["auto-1"]).toBeUndefined();
+      expect(useSessionsStore.getState().independent.find((session) => session.sessionId === "auto-1")?.status)
+        .toBe(outcome === "replacement" ? "working" : "completed");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("同一回合再次停止失败时，仅保留最新的交互恢复", async () => {
+    let reply!: (snapshot: client.PendingInteractions) => void;
+    const snapshot = { ...emptyInteractions, questions: [stopQuestion] };
+    const readPending = vi.fn<() => Promise<client.PendingInteractions>>()
+      .mockRejectedValueOnce(new Error("IPC 连接暂不可用"))
+      .mockImplementationOnce(() => new Promise((resolve) => { reply = resolve; }))
+      .mockResolvedValue(snapshot);
+    const { rejectStop } = await startStoppingTurn(readPending);
+    vi.useFakeTimers();
+    try {
+      await act(async () => rejectStop(new Error("第一次停止回执丢失")));
+      expect(readPending).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole("button", { name: "停止执行" }));
+      await act(async () => rejectStop(new Error("第二次停止回执丢失")));
+      expect(readPending).toHaveBeenCalledTimes(2);
+      // The old retry would already have fired, while the newest read can still reply.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(readPending).toHaveBeenCalledTimes(2);
+      expect(useQuestionStore.getState().queues["auto-1"]).toBeUndefined();
+
+      await act(async () => reply(snapshot));
+      expect(useQuestionStore.getState().queues["auto-1"]).toMatchObject([{ requestId: stopQuestion.requestId }]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(readPending).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("恢复等待交互时合并实时通知并忽略已关闭的请求", async () => {
+    let reply!: (snapshot: client.PendingInteractions) => void;
+    const { emit, rejectStop } = await startStoppingTurn(() => new Promise(resolve => { reply = resolve; }));
+    const live = { ...stopPermission, requestId: "live-permission" };
+    const newer = { ...stopPermission, requestId: "permission-after-snapshot" };
+    await act(async () => rejectStop(new Error("停止暂未确认")));
+    expect(invoke).toHaveBeenCalledWith("agent_list_pending_interactions", { sessionId: "auto-1" });
+    act(() => {
+      emit("agent://permission", live);
+      emit("agent://permission", newer);
+      emit("agent://permission-closed", stopPermission);
+      emit("agent://question-closed", stopQuestion);
+      emit("agent://update", { ...stopPlan, sessionUpdate: "plan_approval_resolved" });
+    });
+    await act(async () => reply({
+      ...emptyInteractions,
+      permissions: [stopPermission, live],
+      questions: [stopQuestion],
+      planApprovals: [stopPlan],
+    }));
+
+    expect(usePermissionStore.getState().queues["auto-1"]).toMatchObject([
+      { requestId: live.requestId }, { requestId: newer.requestId },
+    ]);
+    expect(useQuestionStore.getState().queues["auto-1"] ?? []).toEqual([]);
+    expect(useSessionStore.getState().transcripts["auto-1"].planApprovals).toEqual([]);
+    expect(useSessionsStore.getState().independent.find(
+      session => session.sessionId === "auto-1",
+    )?.status).toBe("awaiting_permission");
+  });
+
+  it.each(["replacement", "completed"] as const)("恢复结果迟到时保留更新的会话状态：%s", async (outcome) => {
+    let reply!: (snapshot: client.PendingInteractions) => void;
+    const { emit, rejectStop } = await startStoppingTurn(() => new Promise(resolve => { reply = resolve; }));
+    await act(async () => rejectStop(new Error("停止暂未确认")));
+    expect(invoke).toHaveBeenCalledWith("agent_list_pending_interactions", { sessionId: "auto-1" });
+    act(() => {
+      if (outcome === "replacement") {
+        emit("agent://automation-update", {
+          phase: "sessionCreated", automationId: "a", automationName: "每日任务", recordId: "new-run",
+          status: "running", sessionId: "auto-1", cwd: "/workspace", promptId: "replacement",
+        });
+      } else {
+        emit("agent://complete", { sessionId: "auto-1", promptId: "current-prompt", stopReason: "end_turn" });
+      }
+    });
+    await act(async () => reply({
+      ...emptyInteractions, permissions: [stopPermission], questions: [stopQuestion], planApprovals: [stopPlan],
+    }));
+    expect(usePermissionStore.getState().queues["auto-1"]).toBeUndefined();
+    expect(useQuestionStore.getState().queues["auto-1"]).toBeUndefined();
+    expect(useSessionStore.getState().transcripts["auto-1"].planApprovals).toEqual([]);
+    expect(useSessionsStore.getState().independent.find(
+      session => session.sessionId === "auto-1",
+    )?.status).toBe(outcome === "replacement" ? "working" : "completed");
+  });
+
+  it.each(["ipc-ack", "terminal-before-ipc-error"] as const)("停止确认后不恢复等待期间登记的提问：%s", async (outcome) => {
+    const readPending = vi.fn(() => ({ ...emptyInteractions, questions: [stopQuestion] }));
+    const { emit, confirmStop, rejectStop } = await startStoppingTurn(readPending);
+    act(() => emit("agent://question", stopQuestion));
+    if (outcome === "terminal-before-ipc-error") {
+      act(() => emit("agent://complete", {
+        sessionId: "auto-1", promptId: "current-prompt", stopReason: "cancelled", cancelTrigger: "stop",
+      }));
+      await act(async () => rejectStop(new Error("IPC 回执丢失")));
+    } else {
+      await act(async () => confirmStop());
+    }
+
+    expect(readPending).not.toHaveBeenCalled();
+    expect(useQuestionStore.getState().queues["auto-1"]).toBeUndefined();
+    expect(useSessionStore.getState().transcripts["auto-1"].control?.phase).toBe("stopped");
   });
 
   it.each(["acknowledged", "rejected"] as const)("旧轮次停止请求%s时保留原生接续的新轮次和待处理交互", async outcome => {

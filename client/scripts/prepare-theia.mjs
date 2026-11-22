@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { latestTheiaSourceMtime } from "./theia-source-mtime.mjs";
+import { theiaSourceFingerprint } from "./theia-source-fingerprint.mjs";
 import { ensureTheiaNodeWritable } from "./ensure-theia-node-writable.mjs";
 import { isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyReady } from "./patch-theia-node-pty.mjs";
 import { isTheiaWindowlessRuntime } from "./patch-theia-windowless-helpers.mjs";
@@ -57,7 +57,7 @@ if (existsSync(runtime) && existsSync(node)
     && platform?.platform === process.platform && platform?.arch === process.arch
     && platform?.node === process.version
     && stagedNodeVersion?.status === 0 && stagedNodeVersion.stdout.trim() === process.version
-    && platform?.sourceMtimeMs >= latestTheiaSourceMtime(join(root, "vendor/theia-platform"))) {
+    && platform?.sourceFingerprint === theiaSourceFingerprint(join(root, "vendor/theia-platform"))) {
   ensureTheiaNodeWritable(root, node);
   console.log("Echo Code IDE runtime is already staged.");
   process.exit(0);

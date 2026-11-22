@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { latestTheiaSourceMtime } from "./theia-source-mtime.mjs";
+import { theiaBuildStampPath, theiaSourceFingerprint } from "./theia-source-fingerprint.mjs";
 import { ensureTheiaNodeWritable } from "./ensure-theia-node-writable.mjs";
 import { patchNodePtyConsoleHelper, patchNodePtyPipeErrors, ensureNodePtyConptySourceUnmodified, syncNodePtyPrebuilds, markNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
 import { isTheiaWindowlessRuntime } from "./patch-theia-windowless-helpers.mjs";
@@ -17,6 +17,14 @@ const sourceRoot = join(projectRoot, "vendor/theia-platform");
 const appRoot = join(sourceRoot, "examples/browser");
 const resourcesRoot = join(projectRoot, "src-tauri/resources/theia");
 const runtimeRoot = join(resourcesRoot, "browser");
+const platformFile = join(resourcesRoot, "runtime-platform.json");
+assertSupportedNodeVersion();
+const buildStamp = theiaBuildStampPath(sourceRoot);
+const sourceFingerprint = theiaSourceFingerprint(sourceRoot);
+if (!existsSync(buildStamp) || readFileSync(buildStamp, "utf8").trim() !== sourceFingerprint
+    || !existsSync(join(appRoot, "lib/backend/main.js"))) {
+  throw new Error("Theia build is missing or out of date; run pnpm ide:build before staging.");
+}
 const app = JSON.parse(readFileSync(join(appRoot, "package.json"), "utf8"));
 const pluginSpecs = pinnedTheiaPlugins(app);
 const runtimePlugins = [
@@ -36,16 +44,12 @@ const copyUnlessSameFile = (source, target) => {
   if (existsSync(target) && realpathSync(source) === realpathSync(target)) return;
   cpSync(source, target);
 };
-assertSupportedNodeVersion();
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmShell = process.platform === "win32";
 const npmVersion = spawnSync(npm, ["--version"], { encoding: "utf8", shell: npmShell });
 if (npmVersion.status !== 0) throw new Error(npmVersion.stderr || "npm is unavailable");
 assertSupportedNpmVersion(npmVersion.stdout);
 
-if (!existsSync(join(appRoot, "lib/backend/main.js"))) {
-  throw new Error("Build Theia first: pnpm ide:build");
-}
 if (!isTheiaWindowlessRuntime(sourceRoot)) {
   throw new Error("Theia background workers are not windowless; run pnpm ide:build.");
 }
@@ -72,6 +76,7 @@ while (queue.length) {
   queue.push(...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {}));
 }
 
+rmSync(platformFile, { force: true });
 rmSync(runtimeRoot, { recursive: true, force: true });
 mkdirSync(runtimeRoot, { recursive: true });
 writeFileSync(join(runtimeRoot, ".keep"), "");
@@ -152,11 +157,14 @@ const nodeLicense = licenseCandidates.find(existsSync);
 if (!nodeLicense) throw new Error("The bundled Node.js runtime needs its LICENSE file.");
 copyUnlessSameFile(nodeLicense, join(resourcesRoot, "node/LICENSE"));
 writeFileSync(join(resourcesRoot, "node/.keep"), "");
-writeFileSync(join(resourcesRoot, "runtime-platform.json"), JSON.stringify({
+if (theiaSourceFingerprint(sourceRoot) !== sourceFingerprint) {
+  throw new Error("Theia sources changed during staging; run pnpm ide:prepare again.");
+}
+writeFileSync(platformFile, JSON.stringify({
   platform: process.platform,
   arch: process.arch,
   node: process.version,
-  sourceMtimeMs: latestTheiaSourceMtime(sourceRoot),
+  sourceFingerprint,
   pluginManifestSha256: createHash("sha256").update(readFileSync(join(projectRoot, "vendor/theia-vsix/manifest.json"))).digest("hex"),
   gitWindowlessPatch: GIT_WINDOWLESS_PATCH,
   pluginTreeSha256: theiaPluginTreeFingerprint(pluginsTarget, runtimePlugins.map(plugin => plugin.id)),

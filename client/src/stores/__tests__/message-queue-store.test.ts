@@ -167,49 +167,6 @@ describe("message-queue-store — 暂停/恢复", () => {
   });
 });
 
-describe("message-queue-store — shiftNext", () => {
-  beforeEach(resetStore);
-
-  it("取第一条 active 并从队列移除", () => {
-    const s = useMessageQueueStore.getState();
-    s.enqueue("s1", "a");
-    s.enqueue("s1", "b");
-    const item = s.shiftNext("s1");
-    expect(item?.text).toBe("a");
-    expect(store().getQueue("s1").map((i) => i.text)).toEqual(["b"]);
-  });
-
-  it("跳过 paused 项取下一条 active", () => {
-    const s = useMessageQueueStore.getState();
-    const id1 = s.enqueue("s1", "a");
-    s.enqueue("s1", "b");
-    s.setStatus("s1", id1, "paused");
-    const item = s.shiftNext("s1");
-    expect(item?.text).toBe("b");
-    // paused 项保留
-    expect(store().getQueue("s1").map((i) => i.text)).toEqual(["a"]);
-  });
-
-  it("无 active 项返回 null", () => {
-    const s = useMessageQueueStore.getState();
-    const id = s.enqueue("s1", "a");
-    s.setStatus("s1", id, "paused");
-    expect(s.shiftNext("s1")).toBeNull();
-    expect(store().getQueue("s1")).toHaveLength(1);
-  });
-
-  it("空队列返回 null", () => {
-    expect(useMessageQueueStore.getState().shiftNext("s1")).toBeNull();
-  });
-
-  it("取走最后一条 active 后会话键被清理", () => {
-    const s = useMessageQueueStore.getState();
-    s.enqueue("s1", "a");
-    s.shiftNext("s1");
-    expect(store().queues["s1"]).toBeUndefined();
-  });
-});
-
 describe("message-queue-store — claimNext", () => {
   beforeEach(resetStore);
 
@@ -233,6 +190,24 @@ describe("message-queue-store — claimNext", () => {
     s.settleSending("s1", "retry");
 
     expect(s.claimNext("s1")?.id).toBe(id);
+  });
+
+  it("跳过暂停项，最后一条消息完成后清理队列", () => {
+    const queue = store();
+    const paused = queue.enqueue("s1", "稍后发送");
+    const next = queue.enqueue("s1", "先发送");
+    queue.setStatus("s1", paused, "paused");
+
+    expect(queue.claimNext("s1", "p1")?.id).toBe(next);
+    expect(queue.settleSending("s1", "consume", "p1")?.id).toBe(next);
+    expect(queue.claimNext("s1", "p2")).toBeNull();
+    expect(queue.getQueue("s1")).toMatchObject([{ id: paused, status: "paused" }]);
+
+    queue.setStatus("s1", paused, "queued");
+    expect(queue.claimNext("s1", "p3")?.id).toBe(paused);
+    expect(queue.settleSending("s1", "consume", "p3")?.id).toBe(paused);
+    expect(store().queues["s1"]).toBeUndefined();
+    expect(queue.claimNext("s1", "p4")).toBeNull();
   });
 
   it("按 id 认领用户选择的条目并绑定 promptId", () => {

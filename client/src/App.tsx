@@ -47,6 +47,7 @@ import { latestContinuationTarget } from "./lib/session-continuation";
 import { useDesktopTray } from "./lib/use-desktop-tray";
 import { TrayActionCancelled } from "./lib/desktop-tray-connection";
 import { reconcileSessionCatalog } from "./lib/session-catalog";
+import { pendingSessionInteractionStatus, restoreSessionInteractions } from "./lib/session-interactions";
 import { meetingDrafts } from "./lib/meeting-drafts";
 import { createExitPreparationController, type DesktopExitNotice, type DesktopExitFailure, type ExitPreparationStage } from "./lib/recording-exit";
 import { usePermissionStore } from "./stores/permission-store";
@@ -828,18 +829,6 @@ function Shell() {
           authReadyRef.current = result.auth.ready;
         }
 
-        const pendingInteractionStatus = (sessionId: string) => {
-          const pending = [
-            ["awaiting_permission", !!permissionStore.getState().queues[sessionId]?.length],
-            ["awaiting_answer", hasPendingQuestionForSession(sessionId)],
-            ["awaiting_approval", !!sessionStore.getState().transcripts[sessionId]?.planApprovals.length],
-          ] as const;
-          const current = findSessionSummary(sessionId)?.status;
-          // Keep the currently presented interaction until it closes, then
-          // surface another required action before reporting running again.
-          return pending.find(([status, waiting]) => waiting && status === current)?.[0]
-            ?? pending.find(([, waiting]) => waiting)?.[0];
-        };
         const stopListening = await subscribeAgentEvents({
           onUpdate: (u) => {
             const updateType = (u as { sessionUpdate?: string; type?: string }).sessionUpdate
@@ -857,7 +846,7 @@ function Shell() {
               !updatedTranscript?.completedPromptIds?.includes(updatePromptId)
               && (!activePromptId || updatePromptId === activePromptId)
             );
-            const pendingStatus = updateSessionId ? pendingInteractionStatus(updateSessionId) : undefined;
+            const pendingStatus = updateSessionId ? pendingSessionInteractionStatus(updateSessionId) : undefined;
             const currentStatus = updateSessionId
               ? findSessionSummary(updateSessionId)?.status
               : undefined;
@@ -924,7 +913,7 @@ function Shell() {
             ) {
               sessionsStore.getState().upsert({
                 sessionId,
-                status: pendingInteractionStatus(sessionId) ?? "working",
+                status: pendingSessionInteractionStatus(sessionId) ?? "working",
                 updatedAt: new Date().toISOString(),
               });
             }
@@ -1008,7 +997,7 @@ function Shell() {
               || requestedAction
               || p.recoverySummary
               || !queuePolicy.autoAdvance
-              || pendingInteractionStatus(p.sessionId)
+              || pendingSessionInteractionStatus(p.sessionId)
             ) return;
             // Internal/external notifications are dispatched by the Rust bridge
             // for every session (including background automation sessions).
@@ -1051,7 +1040,7 @@ function Shell() {
                   const latest = sessionStore.getState().transcripts[p.sessionId];
                   if (sessionsStore.getState().deletedSessionIds.includes(p.sessionId)
                     || latest?.streamingMessageId || latest?.pendingSendNowPromptId
-                    || latest?.control || pendingInteractionStatus(p.sessionId)) {
+                    || latest?.control || pendingSessionInteractionStatus(p.sessionId)) {
                     retry();
                     return;
                   }
@@ -1290,7 +1279,7 @@ function Shell() {
             ) {
               sessionsStore.getState().upsert({
                 sessionId,
-                status: pendingInteractionStatus(sessionId) ?? "working",
+                status: pendingSessionInteractionStatus(sessionId) ?? "working",
                 updatedAt: new Date().toISOString(),
               });
             }
@@ -1402,7 +1391,7 @@ function Shell() {
               rendererHistoryPending.current = false;
             } finally {
               const status = findSessionSummary(entry.sessionId)?.status;
-              const pendingInteraction = pendingInteractionStatus(entry.sessionId);
+              const pendingInteraction = pendingSessionInteractionStatus(entry.sessionId);
               const adopted = activePromptId && sessionStore.getState().adoptRecoveredTurn(entry.sessionId, activePromptId);
               const knownIdle = activePromptId === null && !pendingInteraction;
               if (adopted && !pendingInteraction) {
@@ -2277,12 +2266,10 @@ function Shell() {
       if (receipt === "pending") {
         sessionStore.getState().rejectControl(sessionId, action);
         const transcript = sessionStore.getState().transcripts[sessionId];
-        sessionsStore.getState().upsert({
+        void restoreSessionInteractions(
           sessionId,
-          status: transcript?.streamingMessageId || transcript?.pendingSendNowPromptId
-            ? "working"
-            : "failed",
-        });
+          transcript?.streamingMessageId || transcript?.pendingSendNowPromptId ? "working" : "failed",
+        );
       }
       if (sessionStore.getState().sessionId === sessionId) {
         sessionStore.getState().setError(friendlyError(e));

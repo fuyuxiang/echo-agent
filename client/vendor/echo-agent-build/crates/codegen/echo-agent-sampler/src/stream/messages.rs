@@ -59,6 +59,7 @@ struct BlockState {
     text_acc: String,
     tool_name: String,
     tool_id: String,
+    initial_tool_args: String,
     args_acc: String,
     thinking_acc: String,
     signature: String,
@@ -220,6 +221,7 @@ pub fn stream_messages<'a>(
                                 text_acc: String::new(),
                                 tool_name: String::new(),
                                 tool_id: String::new(),
+                                initial_tool_args: String::new(),
                                 args_acc: String::new(),
                                 thinking_acc: thinking.clone(),
                                 signature: signature.clone(),
@@ -240,6 +242,7 @@ pub fn stream_messages<'a>(
                                 text_acc: text.clone(),
                                 tool_name: String::new(),
                                 tool_id: String::new(),
+                                initial_tool_args: String::new(),
                                 args_acc: String::new(),
                                 thinking_acc: String::new(),
                                 signature: String::new(),
@@ -251,8 +254,19 @@ pub fn stream_messages<'a>(
                                 request_id: request_id.clone(),
                             };
                         }
+                        if !text.is_empty() {
+                            chunk_timestamps.push(Instant::now());
+                            chunk_index += 1;
+                            message_chunk_count += 1;
+                            yield SamplingEvent::ChannelToken {
+                                request_id: request_id.clone(),
+                                channel: SamplingChannel::Text,
+                                text,
+                                chunk_index,
+                            };
+                        }
                     }
-                    ContentBlock::ToolUse { id, name, .. } => {
+                    ContentBlock::ToolUse { id, name, input, .. } => {
                         let tool_index = next_tool_index;
                         next_tool_index += 1;
                         block_to_tool_index.insert(index, tool_index);
@@ -264,10 +278,9 @@ pub fn stream_messages<'a>(
                                 text_acc: String::new(),
                                 tool_name: name.clone(),
                                 tool_id: id.clone(),
-                                // Anthropic Messages API streams arguments via
-                                // InputJsonDelta events; starting from
-                                // "{}" then appending fragments would
-                                // produce invalid JSON.
+                                // Keep the start snapshot independently of the
+                                // delta buffer, which replaces it when present.
+                                initial_tool_args: input.to_string(),
                                 args_acc: String::new(),
                                 thinking_acc: String::new(),
                                 signature: String::new(),
@@ -411,10 +424,25 @@ pub fn stream_messages<'a>(
                                 }
                             }
                             BlockType::ToolUse => {
+                                let tool_index = block_to_tool_index.remove(&index);
+                                let arguments = if state.args_acc.is_empty() {
+                                    if let Some(tool_index) = tool_index {
+                                        yield SamplingEvent::ToolCallDelta {
+                                            request_id: request_id.clone(),
+                                            tool_index,
+                                            id: None,
+                                            name: None,
+                                            arguments_delta: Some(state.initial_tool_args.clone()),
+                                        };
+                                    }
+                                    state.initial_tool_args
+                                } else {
+                                    state.args_acc
+                                };
                                 assistant_tool_calls.push(ToolCall {
                                     id: std::sync::Arc::<str>::from(state.tool_id),
                                     name: state.tool_name,
-                                    arguments: std::sync::Arc::<str>::from(state.args_acc),
+                                    arguments: std::sync::Arc::<str>::from(arguments),
                                 });
                             }
                         }

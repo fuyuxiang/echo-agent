@@ -101,27 +101,27 @@ export function beginAgentTurn(
     if (isAgentPromptSettled(sessionId, promptId)) return;
     const latest = useSessionStore.getState();
     const detail = friendlyError(error);
-    latest.markComplete({
+    const completedCurrentTurn = latest.markComplete({
       sessionId,
       promptId,
       stopReason: "error",
       agentResult: detail,
     });
-    if (previousControl) {
-      latest.restoreControl(sessionId, previousControl);
+    // The old turn can settle its own transcript and queue row after Send Now
+    // starts. Only the current turn can change the session's control and status.
+    if (completedCurrentTurn) {
+      if (previousControl) latest.restoreControl(sessionId, previousControl);
+      if (latest.sessionId === sessionId) {
+        latest.setError(detail, { sessionId, promptId });
+      }
+      useSessionsStore.getState().upsert({
+        sessionId,
+        status: previousControl ? sessionControlStatus(previousControl) : "failed",
+      });
     }
-    // Error banners belong to the focused conversation. A late failure from a
-    // background turn must not stop or overwrite whichever session is active.
-    if (latest.sessionId === sessionId) {
-      latest.setError(detail, { sessionId, promptId });
-    }
-    useSessionsStore.getState().upsert({
-      sessionId,
-      status: previousControl ? sessionControlStatus(previousControl) : "failed",
-    });
     input.onRejected?.(error, promptId);
     const current = useSessionStore.getState().transcripts[sessionId];
-    if (!current?.streamingMessageId && !current?.pendingSendNowPromptId) {
+    if (completedCurrentTurn && !current?.streamingMessageId && !current?.pendingSendNowPromptId) {
       useMessageQueueStore.getState().pauseQueued(sessionId);
     }
   });

@@ -1,4 +1,6 @@
 import { agentCancel } from "./agent-client";
+import { restoreSessionInteractions } from "./session-interactions";
+import { isAgentOwnedActiveStatus } from "./turn-status";
 import { sessionControlReceiptState, useSessionStore } from "@/stores/session-store";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
@@ -34,7 +36,10 @@ export async function pauseProjectSession(sessionId: string) {
     if (!receipt) return;
     if (receipt === "pending") {
       useSessionStore.getState().rejectControl(sessionId, "pause");
-      useSessionsStore.getState().upsert({ sessionId, status: previousStatus ?? (transcript?.streamingMessageId ? "working" : "pending") });
+      const live = useSessionStore.getState().transcripts[sessionId];
+      const stillActive = isAgentOwnedActiveStatus(previousStatus) || live?.streamingMessageId || live?.pendingSendNowPromptId;
+      const fallback = previousStatus === "planning" ? "planning" : stillActive ? "working" : "pending";
+      void restoreSessionInteractions(sessionId, fallback);
     }
     throw error;
   }

@@ -29,6 +29,7 @@ import { PlanPanel } from "./PlanPanel";
 import { RewindBar } from "./RewindBar";
 import { PermissionInlineCard } from "./PermissionDialog";
 import { QuestionInlineCard } from "./QuestionInlineCard";
+import { SessionInteractionNotice } from "./SessionInteractionNotice";
 import { ToolSidePanel, type ToolSidePanelMode } from "./ToolSidePanel";
 import { FindBar, isFindHit, type FindOccurrence } from "./FindBar";
 import { buildQuestionHistory, QuestionHistoryPopover } from "./QuestionHistoryPopover";
@@ -1313,6 +1314,7 @@ export function ChatView({
           )}
         </div>
         <div className="chatview__footer" ref={trayAttentionRef}>
+          {sessionId && <SessionInteractionNotice sessionId={sessionId} />}
           {/* Inline permission / question cards: session-scoped, never block sidebar. */}
           {attentionItems.length > 1 && <div className="chatview__attention-tabs" role="group" aria-label="待处理事项">
             {attentionItems.map(item => <button type="button" key={item.kind}

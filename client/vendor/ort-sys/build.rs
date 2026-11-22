@@ -519,7 +519,7 @@ fn prepare_libort_dir() -> (PathBuf, bool) {
 				.join(target)
 				.join(prebuilt_hash);
 
-			let lib_dir = bin_extract_dir.join(ORT_EXTRACT_DIR);
+			let mut lib_dir = bin_extract_dir.join(ORT_EXTRACT_DIR);
 			if !lib_dir.exists() {
 				let downloaded_file = match local_archive {
 					Some(path) => std::fs::read(&path).unwrap_or_else(|error| panic!("Failed to read ONNX Runtime archive {}: {error}", Path::new(&path).display())),
@@ -534,6 +534,7 @@ fn prepare_libort_dir() -> (PathBuf, bool) {
 				let mut should_rename = true;
 				if std::fs::create_dir_all(&temp_extract_dir).is_err() {
 					temp_extract_dir = env::var("OUT_DIR").unwrap().into();
+					lib_dir = temp_extract_dir.join(ORT_EXTRACT_DIR);
 					should_rename = false;
 				}
 				extract_tgz(&downloaded_file, &temp_extract_dir);

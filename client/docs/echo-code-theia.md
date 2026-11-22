@@ -4,7 +4,7 @@
 
 ## 构建与打包
 
-- 开发机器使用 Node.js 22 或 24。`pnpm ide:build` 编译 [`vendor/theia-platform/`](../vendor/theia-platform/)，`pnpm ide:stage` 将 Theia 后端、生产依赖和当前平台的 Node.js 放入 Tauri 资源目录。
+- 开发机器使用 Node.js 22 或 24。`pnpm ide:build` 编译 [`vendor/theia-platform/`](../vendor/theia-platform/)。源码路径、内容或工具链变化时，先清理工作区生成产物再编译，确保改名或删除的模块从安装包移除。`pnpm ide:stage` 核对编译记录中的源码路径与内容指纹，再将 Theia 后端、生产依赖和当前平台的 Node.js 放入 Tauri 资源目录。
 - `pnpm tauri dev` 和 `pnpm tauri build` 的前置钩子会运行 `pnpm ide:prepare`；缺少资源、架构变化或源码更新时重新构建和暂存。安装包中的 IDE 使用随包分发的 Node.js，普通用户不需另装。
 - `pnpm ide:build` 从仓库内经过 SHA-256 核对的 VSIX 解包固定版本基础语言扩展、VS Code Git 与 Git Base；`pnpm ide:stage` 将它们与轻量 TOML 语法扩展一起放入安装包。运行时从本地 `plugins/` 加载，不依赖用户联网或手动安装扩展。基础语法覆盖 JavaScript/JSX、TypeScript/TSX、Rust、Python、Java、JSON、YAML、TOML、HTML、CSS、Markdown 和 Shell Script。TOML 仅提供语法功能。Git/Git Base 固定为 `1.95.3`；Git provider 使用系统 Git、真实 SCM 页面及 Git 命令，Git Base 是其必需依赖。`pnpm ide:plugins:update` 才从固定 OpenVSX URL 更新仓库 VSIX 及摘要；普通准备验证许可证、语言语法/可执行入口、版本、依赖和 Git 命令，缓存复用还核对 staged 插件完整内容摘要。
 - Git 扩展的版本探测与非交互进程由 [`patch-theia-git-windowless.mjs`](../scripts/patch-theia-git-windowless.mjs) 定点补丁，在 Windows 隐藏后台控制台，同时保留 cwd、环境、stdio、取消和错误传播。原 VSIX 与摘要保持不变，暂存目录记录补丁来源；未知版本、入口或摘要会阻断构建。构建、暂存、缓存复用和安装包验收均核验补丁与插件树指纹，升级 Git 扩展时需同步复核。
