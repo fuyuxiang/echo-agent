@@ -169,7 +169,13 @@ jobs:
           PYTHON: ${{ steps.python.outputs.python-path }}
       - run: pnpm test:security
       - run: node vendor/theia-platform/node_modules/playwright/cli.js install chromium
-      - run: node scripts/validate-theia-runtime.mjs
+      - name: Verify staged Theia runtime
+        run: >-
+          node --input-type=module -e
+          "import { runNativeTestProcess } from './scripts/lib/native-test-process.mjs';
+          process.exitCode = await runNativeTestProcess(process.execPath, ['scripts/validate-theia-runtime.mjs']);"
+        env:
+          NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
       - run: pnpm test:rust
         env:
           NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
