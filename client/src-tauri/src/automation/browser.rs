@@ -887,9 +887,18 @@ impl BrowserController {
             let (x, y) = if self.uses_webkit() {
                 self.webkit_frame_projection(frame, None).await?
             } else {
-                let owner = self.call_page("DOM.getFrameOwner", json!({"frameId":frame})).await?;
-                let model = self.call_page("DOM.getBoxModel", json!({"backendNodeId":owner["backendNodeId"]})).await?;
-                model["model"]["content"][0].as_f64().zip(model["model"]["content"][1].as_f64())
+                let owner = self
+                    .call_page("DOM.getFrameOwner", json!({"frameId":frame}))
+                    .await?;
+                let model = self
+                    .call_page(
+                        "DOM.getBoxModel",
+                        json!({"backendNodeId":owner["backendNodeId"]}),
+                    )
+                    .await?;
+                model["model"]["content"][0]
+                    .as_f64()
+                    .zip(model["model"]["content"][1].as_f64())
                     .ok_or("frame_geometry_unavailable")?
             };
             if (x - approval.offset.0).abs() > 0.5 || (y - approval.offset.1).abs() > 0.5 {
@@ -1004,18 +1013,25 @@ impl BrowserController {
         false
     }
 
-    async fn webkit_frame_projection(&mut self, frame: &str, point: Option<(f64, f64)>) -> Result<(f64, f64), String> {
+    async fn webkit_frame_projection(
+        &mut self,
+        frame: &str,
+        point: Option<(f64, f64)>,
+    ) -> Result<(f64, f64), String> {
         let target = json!({"frameId":frame});
         let identity = self.call_page("Echo.framePath", target.clone()).await?;
         let mut path = serde_json::from_value::<Vec<u16>>(identity.clone())
-            .ok().filter(|path| !path.is_empty() && path.len() <= 16)
+            .ok()
+            .filter(|path| !path.is_empty() && path.len() <= 16)
             .ok_or("frame_geometry_unavailable")?;
         let (mut x, mut y) = point.unwrap_or_default();
         while let Some(index) = path.pop() {
             let hit = self.call_page("Echo.projectFrame", json!({
                 "parentPath":path, "index":index, "point":point.map(|_| json!({"x":x,"y":y}))
             })).await?;
-            let (projected_x, projected_y) = hit["x"].as_f64().zip(hit["y"].as_f64())
+            let (projected_x, projected_y) = hit["x"]
+                .as_f64()
+                .zip(hit["y"].as_f64())
                 .ok_or("target_changed: iframe moved, is obscured, or is transformed")?;
             if point.is_some() {
                 (x, y) = (projected_x, projected_y);
@@ -1309,7 +1325,11 @@ impl BrowserController {
         )
     }
 
-    async fn select_upload_files(&mut self, object: &str, paths: &[String]) -> Result<Value, String> {
+    async fn select_upload_files(
+        &mut self,
+        object: &str,
+        paths: &[String],
+    ) -> Result<Value, String> {
         #[cfg(target_os = "macos")]
         if self.native.is_some() {
             let files = super::native_browser_engine::upload_contents(paths).await?;
@@ -1334,7 +1354,11 @@ impl BrowserController {
             }
             return Ok(result);
         }
-        self.call_page("DOM.setFileInputFiles", json!({"objectId":object,"files":paths})).await
+        self.call_page(
+            "DOM.setFileInputFiles",
+            json!({"objectId":object,"files":paths}),
+        )
+        .await
     }
 
     pub fn downloads(&self) -> Result<Vec<BrowserDownload>, String> {
@@ -1984,7 +2008,8 @@ pub fn profile_exists(session_id: &str) -> bool {
 }
 
 pub(super) fn has_chromium_profile(session_id: &str) -> bool {
-    profile_dir(session_id).is_ok_and(|path| path.join("Local State").is_file() || path.join("Default").is_dir())
+    profile_dir(session_id)
+        .is_ok_and(|path| path.join("Local State").is_file() || path.join("Default").is_dir())
 }
 
 async fn wait_for_debug_port(path: &Path, timeout: Duration) -> Result<u16, String> {

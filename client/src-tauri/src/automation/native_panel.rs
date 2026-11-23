@@ -91,6 +91,8 @@ pub(super) fn account_changed(app: &tauri::AppHandle) {
     desktop::account_changed(app);
 }
 
+// The command retains its input schema on platforms without the native panel.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 #[derive(Clone, Copy, Deserialize)]
 pub(crate) struct Bounds {
     x: f64,
@@ -99,6 +101,7 @@ pub(crate) struct Bounds {
     height: f64,
 }
 
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 #[derive(Deserialize)]
 #[serde(
     tag = "kind",
@@ -278,7 +281,7 @@ pub(crate) async fn browser_panel(
                 .load(std::sync::atomic::Ordering::Acquire)
                 && session.allows_private_network()
         });
-        return desktop::dispatch_for_profile(
+        desktop::dispatch_for_profile(
             window,
             session_id,
             Some(owner),
@@ -286,7 +289,7 @@ pub(crate) async fn browser_panel(
             desktop::BrowserProfile::current().await,
             allow_private,
         )
-        .await;
+        .await
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {

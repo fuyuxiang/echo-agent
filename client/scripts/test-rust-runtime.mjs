@@ -7,7 +7,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cleanNativeReviewEnvironment, withNativeReviewLoopbackBypass } from './lib/native-review-isolation.mjs';
 import { ownedTestExecutables } from './prepare-macos-test-signatures.mjs';
-import { runNativeTestProcess } from './lib/native-test-process.mjs';
+import { reportNativeTestFailure, runNativeTestProcess } from './lib/native-test-process.mjs';
 
 assert.equal(process.argv.length, 2, 'This entry runs the complete Runtime library suite');
 const root = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
@@ -41,7 +41,13 @@ function buildHarness(packageName, directory, integrationTest) {
   for (const message of messages) {
     if (message.reason === 'compiler-message' && message.message?.rendered) process.stderr.write(message.message.rendered);
   }
-  assert.equal(build.status, 0, build.error?.message || `${packageName} test compilation failed`);
+  const failureTitle = `${packageName} test compilation failed`;
+  if (build.status !== 0) {
+    const errors = messages.filter(message => message.reason === 'compiler-message' && message.message?.level === 'error');
+    const details = errors.map(({ message }) => message.rendered ?? message.message).join('\n');
+    reportNativeTestFailure(build.status ?? 1, ['', details || build.error?.message || failureTitle], env, failureTitle);
+  }
+  assert.equal(build.status, 0, build.error?.message || failureTitle);
   const programs = ownedTestExecutables(messages, directory, realpathSync(target));
   assert.equal(programs.length, 1, `Expected exactly one ${packageName} test harness`);
   const program = programs[0];

@@ -251,6 +251,7 @@ pub(crate) fn knowledge_account_generation() -> u64 {
         .load(Ordering::Acquire)
 }
 
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) async fn browser_profile_account() -> Option<String> {
     let state = shared_state();
     let session = state.inner.session.lock().await;
@@ -2391,8 +2392,13 @@ pub async fn org_logout(app: AppHandle, state: State<'_, OrgState>) -> Result<()
         let mut session = state.inner.session.lock().await;
         let current_profile = session.profile.clone();
         let access_token = session.access_token.clone();
-        let cleanup =
-            clear_local_session(&state.inner, &mut session, current_profile.as_ref(), false, true);
+        let cleanup = clear_local_session(
+            &state.inner,
+            &mut session,
+            current_profile.as_ref(),
+            false,
+            true,
+        );
         (current_profile, access_token, cleanup)
     };
     crate::org_mcp::reconcile_all_sessions(&app).await;
@@ -3185,7 +3191,9 @@ pub async fn org_project_session_scope(
 
 pub(crate) fn require_shared_project_prompt(question: &str) -> Result<(), String> {
     if echo_agent_runtime::session::is_private_memory_query(question) {
-        return Err("共享项目会话无法查询私人记忆。请在个人会话中查询，或从记忆管理查看原文。".into());
+        return Err(
+            "共享项目会话无法查询私人记忆。请在个人会话中查询，或从记忆管理查看原文。".into(),
+        );
     }
     Ok(())
 }
@@ -4907,8 +4915,8 @@ fn extract_skill_package(
 fn pinned_signing_key() -> Result<VerifyingKey, String> {
     let profile = read_json::<OrgProfile>(&profile_path())?;
     validate_profile(&profile)?;
-    let text = read_profile_signing_key(&profile)?
-        .ok_or("organization signing key is not pinned")?;
+    let text =
+        read_profile_signing_key(&profile)?.ok_or("organization signing key is not pinned")?;
     decode_public_key(&text)
 }
 
@@ -5262,7 +5270,9 @@ fn suspend_managed_skills(inner: &OrgInner) -> Result<(), String> {
     if !has_managed_skill_artifacts_at(&crate::paths::echo_agent_home_dir()) {
         return Ok(());
     }
-    with_skill_state_transaction(inner, || write_runtime_skill_config(&SkillSyncState::default()))
+    with_skill_state_transaction(inner, || {
+        write_runtime_skill_config(&SkillSyncState::default())
+    })
 }
 
 fn deactivate_managed_skills(inner: &OrgInner) -> Result<(), String> {
@@ -5305,7 +5315,8 @@ pub fn enforce_skill_lease() {
     }
     let state = shared_state();
     let migration_pending = read_json::<OrgProfile>(&profile_path()).is_ok_and(|profile| {
-        validate_profile(&profile).is_ok() && uses_legacy_profile_keychain(&profile)
+        validate_profile(&profile).is_ok()
+            && uses_legacy_profile_keychain(&profile)
             && !matches!(read_profile_signing_key(&profile), Ok(Some(_)))
     });
     if migration_pending {
@@ -6530,7 +6541,10 @@ mod tests {
 
     #[test]
     fn shared_project_prompts_cannot_run_isolated_private_memory_queries() {
-        for query in ["查记忆 global「报告语言」", "查记忆 workspace「项目代号」。提取〈代号〉。"] {
+        for query in [
+            "查记忆 global「报告语言」",
+            "查记忆 workspace「项目代号」。提取〈代号〉。",
+        ] {
             assert!(require_shared_project_prompt(query).is_err());
         }
         assert!(require_shared_project_prompt("读取团队项目已确认的决定").is_ok());
@@ -6539,18 +6553,41 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn legacy_profile_migrates_the_existing_public_pin_and_surfaces_keychain_failures() {
-        let raw = ed25519_dalek::SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
-        let mut der = vec![0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
+        let raw = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+            .verifying_key()
+            .to_bytes();
+        let mut der = vec![
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+        ];
         der.extend(raw);
         let pin = base64::engine::general_purpose::STANDARD.encode(der);
         let mut stored = None;
-        assert_eq!(preserve_profile_signing_key(None, || Ok(Some(pin.as_bytes().to_vec())), |value| {
-            stored = Some(value.to_owned());
-            Ok(())
-        }), Ok(Some(pin.clone())));
+        assert_eq!(
+            preserve_profile_signing_key(
+                None,
+                || Ok(Some(pin.as_bytes().to_vec())),
+                |value| {
+                    stored = Some(value.to_owned());
+                    Ok(())
+                }
+            ),
+            Ok(Some(pin.clone()))
+        );
         assert_eq!(stored, Some(pin.clone()));
-        assert_eq!(preserve_profile_signing_key(Some(pin.clone()), || panic!("legacy lookup after migration"), |_| panic!("pin overwrite")), Ok(Some(pin)));
-        assert!(preserve_profile_signing_key(None, || Err("Keychain is locked".into()), |_| panic!("pin overwrite")).is_err());
+        assert_eq!(
+            preserve_profile_signing_key(
+                Some(pin.clone()),
+                || panic!("legacy lookup after migration"),
+                |_| panic!("pin overwrite")
+            ),
+            Ok(Some(pin))
+        );
+        assert!(preserve_profile_signing_key(
+            None,
+            || Err("Keychain is locked".into()),
+            |_| panic!("pin overwrite")
+        )
+        .is_err());
     }
 
     #[test]

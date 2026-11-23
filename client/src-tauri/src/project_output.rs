@@ -55,7 +55,8 @@ impl Outputs {
         if update.get("sessionUpdate").and_then(Value::as_str) != Some("agent_message_chunk")
             || meta
                 .and_then(|m| m.get(echo_agent_runtime::session::PRIVATE_MEMORY_LOOKUP_META))
-                .and_then(Value::as_bool) == Some(true)
+                .and_then(Value::as_bool)
+                == Some(true)
             || meta
                 .and_then(|m| m.get("isReplay").or_else(|| m.get("replay")))
                 .and_then(Value::as_bool)

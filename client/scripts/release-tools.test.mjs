@@ -218,6 +218,8 @@ function macosPackagingProject() {
   command("protoc", "exit 0");
   command("sw_vers", "echo 'macOS test fixture'");
   command("hdiutil", "echo 'test disk image state'");
+  command("df", "echo 'test filesystem capacity'");
+  command("du", "echo 'test bundle size'");
   command("pnpm", `
 printf '%s\\n' "$*" >> "$ECHO_TEST_PACKAGE_COMMANDS"
 case "$*" in

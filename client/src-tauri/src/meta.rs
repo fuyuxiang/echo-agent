@@ -295,7 +295,11 @@ fn validate_state(state: &EchoAgentState) -> Result<(), String> {
             return Err("电脑任务范围无效".into());
         }
     }
-    if state.session_browser_sources.keys().any(|id| !valid_session_id(id)) {
+    if state
+        .session_browser_sources
+        .keys()
+        .any(|id| !valid_session_id(id))
+    {
         return Err("浏览器来源包含无效会话 ID".into());
     }
     for (session_id, lifecycle) in &state.session_statuses {
@@ -436,9 +440,15 @@ fn sanitize_state(mut state: EchoAgentState) -> EchoAgentState {
     state
         .session_desktop_tasks
         .retain(|id, scope| valid_session_id(id) && !scope.is_empty() && scope.len() <= 16384);
-    state.session_browser_sources.retain(|id, _| valid_session_id(id));
+    state
+        .session_browser_sources
+        .retain(|id, _| valid_session_id(id));
     if state.session_browser_sources.len() > MAX_SESSION_ENTRIES {
-        let mut ids = state.session_browser_sources.keys().cloned().collect::<Vec<_>>();
+        let mut ids = state
+            .session_browser_sources
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         ids.sort();
         for id in ids.into_iter().skip(MAX_SESSION_ENTRIES) {
             state.session_browser_sources.remove(&id);
@@ -859,16 +869,26 @@ pub fn desktop_task_scope(session_id: &str) -> Option<String> {
     read_state().session_desktop_tasks.get(session_id).cloned()
 }
 
-pub(crate) fn task_browser_source(session_id: &str) -> Option<crate::automation::TaskBrowserSource> {
-    read_state().session_browser_sources.get(session_id).copied()
+pub(crate) fn task_browser_source(
+    session_id: &str,
+) -> Option<crate::automation::TaskBrowserSource> {
+    read_state()
+        .session_browser_sources
+        .get(session_id)
+        .copied()
 }
 
-pub(crate) fn set_task_browser_source(session_id: &str, source: crate::automation::TaskBrowserSource) -> Result<(), String> {
+pub(crate) fn set_task_browser_source(
+    session_id: &str,
+    source: crate::automation::TaskBrowserSource,
+) -> Result<(), String> {
     if !valid_session_id(session_id) {
         return Err("浏览器来源包含无效会话 ID".into());
     }
     update_state_at(&state_path(), |state| {
-        let previous = state.session_browser_sources.insert(session_id.into(), source);
+        let previous = state
+            .session_browser_sources
+            .insert(session_id.into(), source);
         Ok(((), previous != Some(source)))
     })
 }
@@ -1142,7 +1162,10 @@ mod tests {
             session_workspaces: HashMap::new(),
             session_projects: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
-            session_browser_sources: HashMap::from([("s1".into(), crate::automation::TaskBrowserSource::Isolated)]),
+            session_browser_sources: HashMap::from([(
+                "s1".into(),
+                crate::automation::TaskBrowserSource::Isolated,
+            )]),
             session_statuses: HashMap::from([(
                 "s1".into(),
                 SessionLifecycle {
@@ -1157,7 +1180,10 @@ mod tests {
         assert_eq!(parsed.version, 1);
         assert_eq!(parsed.pinned_sessions, vec!["s1"]);
         assert_eq!(parsed.archived_sessions, vec!["a1", "a2"]);
-        assert_eq!(parsed.session_browser_sources.get("s1"), Some(&crate::automation::TaskBrowserSource::Isolated));
+        assert_eq!(
+            parsed.session_browser_sources.get("s1"),
+            Some(&crate::automation::TaskBrowserSource::Isolated)
+        );
         assert_eq!(
             parsed
                 .session_permission_modes

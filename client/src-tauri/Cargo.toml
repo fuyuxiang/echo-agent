@@ -112,7 +112,7 @@ open = "5"
 # rustls-tls avoids a native OpenSSL dependency on Windows.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
 quick-xml = "0.41"
-url = "2.5"
+url = "2.5.9"
 urlencoding = "2.1"
 # Enterprise Skill sync: package digest/signature verification and safe ZIP extraction.
 sha2 = "0.10"

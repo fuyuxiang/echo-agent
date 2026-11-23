@@ -176,6 +176,7 @@ impl BrowserNetworkProxy {
         self.address
     }
 
+    #[cfg(any(target_os = "macos", windows, test))]
     pub(super) fn allow_development_url(&self, url: &Url) -> Result<(), String> {
         let endpoint = development_url_endpoint(url).ok_or("仅可授权本机环回端口")?;
         let mut endpoints = self.development.lock().unwrap();
@@ -191,6 +192,7 @@ impl BrowserNetworkProxy {
             .is_some_and(|endpoint| self.development.lock().unwrap().contains(&endpoint))
     }
 
+    #[cfg(any(target_os = "macos", windows, test))]
     pub(super) fn development_endpoints(&self) -> Vec<String> {
         let mut endpoints: Vec<_> = self
             .development
@@ -216,6 +218,7 @@ impl BrowserNetworkProxy {
         had_endpoints
     }
 
+    #[cfg(any(target_os = "macos", windows, test))]
     pub(super) fn revoke_development(&self) {
         if self.clear_development() {
             self.cancel_connections();
@@ -228,6 +231,7 @@ impl BrowserNetworkProxy {
         *cancellation = CancellationToken::new();
     }
 
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn allows_private_network(&self) -> bool {
         self.allow_private_network.load(Ordering::Acquire)
     }

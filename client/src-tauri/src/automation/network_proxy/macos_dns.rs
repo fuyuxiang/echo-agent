@@ -119,7 +119,10 @@ fn lookup(host: &str, interface: &str) -> Option<Vec<IpAddr>> {
         return None;
     }
     let deadline = Instant::now() + SCOPED_LOOKUP_TIMEOUT;
-    while !reply.complete {
+    loop {
+        if reply.complete {
+            break;
+        }
         let wait = deadline.checked_duration_since(Instant::now())?;
         let mut fd = libc::pollfd {
             fd,
