@@ -241,10 +241,6 @@ Dashboard 构建和独立包验证见 [Runtime 开发说明](echo-agent-runtime/
 - 中文交流：[QQ 群 47572014](https://qm.qq.com/q/JWOPDBNssw)
 - 安全漏洞：[GitHub 私密安全报告](https://github.com/fuyuxiang/echo-agent/security/advisories/new)，披露流程见 [SECURITY.md](SECURITY.md)
 
-## 项目发起人
-
-Echo Agent 由 **付玉祥**、**高延荣** 共同发起。
-
 ## 许可证
 
 本项目原创代码采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，允许许可证规定的非商业用途。超出许可范围的商业用途需事先取得另行授权，请联系仓库维护者。
