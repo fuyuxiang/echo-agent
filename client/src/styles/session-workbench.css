@@ -129,7 +129,6 @@
 }
 .session-background-tasks:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 
-.echo-theia-agent__queue { flex:none; max-height:25vh; overflow:auto; padding:0 12px; }
 
 /* Quiet session chrome, with labels available through the shared tooltip portal. */
 .session-header__workspace-toggle { position:relative; }

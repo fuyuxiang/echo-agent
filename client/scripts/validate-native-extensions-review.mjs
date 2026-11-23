@@ -22,7 +22,7 @@ export const EXTENSIONS_CHECKS = Object.freeze({
 });
 export function extensionsEnvironment(base, legacy, phase) {
   assert(Object.hasOwn(EXTENSIONS_CHECKS, phase)); const env = cleanNativeReviewEnvironment(base);
-  for (const key of ['ECHO_AGENT_HOME', 'ECHO_THEIA_NODE', 'NODE_OPTIONS', 'NODE_PATH']) delete env[key];
+  for (const key of ['ECHO_AGENT_HOME', 'NODE_OPTIONS', 'NODE_PATH']) delete env[key];
   return { ...env, GROK_HOME: legacy, RUST_LOG: 'warn,echoagent_lib::mcp=info', ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_EXTENSIONS: '1', ECHO_DESKTOP_REVIEW_PHASE: phase };
 }
 export function createExtensionResources(home, nonce) {

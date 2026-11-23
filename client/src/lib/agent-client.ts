@@ -600,13 +600,8 @@ export async function agentPrepareSend(sessionId: string, cwd: string): Promise<
   }
 }
 
-export interface CodingTurnOptions {
+export interface AgentTurnOptions {
   mode?: "ask" | "plan" | "agent";
-  documentToolBridge?: boolean;
-  review?: {taskId:string;kind:"requirements"|"code_quality";contentRevision:string};
-  workspace?: string;
-  taskId?: string;
-  attachments?: string[];
 }
 
 /** Knowledge preparation may await native checkpoints, retrieval and disk I/O.
@@ -630,9 +625,9 @@ export function agentSend(
   attachments: string[] = [],
   displayText: string = text,
   promptId?: string,
-  coding?: CodingTurnOptions,
+  options?: AgentTurnOptions,
 ): Promise<void> {
-  return sendAgentPrompt({ sessionId, text, attachments, displayText, promptId, coding, sendNow: false });
+  return sendAgentPrompt({ sessionId, text, attachments, displayText, promptId, options, sendNow: false });
 }
 
 /** Atomically cancel the active turn and submit its replacement. */
@@ -642,20 +637,20 @@ export function agentSendNow(
   attachments: string[] = [],
   displayText: string = text,
   promptId?: string,
-  coding?: CodingTurnOptions,
+  options?: AgentTurnOptions,
 ): Promise<void> {
-  return sendAgentPrompt({ sessionId, text, attachments, displayText, promptId, coding, sendNow: true });
+  return sendAgentPrompt({ sessionId, text, attachments, displayText, promptId, options, sendNow: true });
 }
 
 const pendingPromptSubmissions = new Map<string, { phase: "preparing" | "posted" | "withdrawn" }>();
 
-async function sendAgentPrompt({ sessionId, text, attachments, displayText, promptId, coding, sendNow }: {
+async function sendAgentPrompt({ sessionId, text, attachments, displayText, promptId, options, sendNow }: {
   sessionId: string;
   text: string;
   attachments: string[];
   displayText: string;
   promptId?: string;
-  coding?: CodingTurnOptions;
+  options?: AgentTurnOptions;
   sendNow: boolean;
 }): Promise<void> {
   const key = promptId ? `${sessionId}\0${promptId}` : undefined;
@@ -665,14 +660,9 @@ async function sendAgentPrompt({ sessionId, text, attachments, displayText, prom
   const withdrawn = () => submission.phase === "withdrawn";
   try {
     const assertKnowledgeBoundary = guardKnowledgeSend(sessionId, promptId);
-    const privateLookup = !coding && await isPrivateMemoryLookup(displayText);
+    const privateLookup = await isPrivateMemoryLookup(displayText);
     if (withdrawn()) return;
     if (!privateLookup) assertKnowledgeBoundary();
-    if (!sendNow && coding?.workspace && coding.taskId && promptId) {
-      await invoke("coding_checkpoint_start", { root: coding.workspace, taskId: coding.taskId, runId: promptId });
-      if (withdrawn()) return;
-      assertKnowledgeBoundary();
-    }
     let promptText = text;
     if (privateLookup) {
       useKnowledgeStore.getState().beginTurnTrace(sessionId, promptId, []);
@@ -695,9 +685,7 @@ async function sendAgentPrompt({ sessionId, text, attachments, displayText, prom
       displayText,
       promptId: promptId ?? null,
       sendNow,
-      ...(coding?.mode ? { mode: coding.mode } : {}),
-      ...(coding?.documentToolBridge ? { documentToolBridge: true } : {}),
-      ...(coding?.review ? { review: coding.review } : {}),
+      ...(options?.mode ? { mode: options.mode } : {}),
     });
   } catch (error) {
     if (!withdrawn()) throw error;
@@ -1744,11 +1732,11 @@ export async function folderTrustRespond(
 // ---------- plan mode ----------
 
 /** Select EchoAgent's native Ask / Plan / Agent prompt mode. */
-export async function setCodingMode(
+export async function setAgentMode(
   sessionId: string,
   mode: "ask" | "plan" | "agent" | "browser_use" | "computer_use",
 ): Promise<void> {
-  await invoke<void>("set_coding_mode", { sessionId, mode });
+  await invoke<void>("set_agent_mode", { sessionId, mode });
 }
 
 /** Idempotently set plan mode; CurrentModeUpdate is the authoritative result. */
@@ -2001,252 +1989,6 @@ export async function writeTextFile(
   workspaceRoot: string,
 ): Promise<string> {
   return invoke<string>("write_text_file", { path, content, workspaceRoot });
-}
-
-// ---------- dedicated Coding Workspace ----------
-
-export interface CodingLanguageStat {
-  language: string;
-  files: number;
-}
-
-export interface CodingModuleInfo {
-  name: string;
-  path: string;
-  kind: string;
-  dependencies: string[];
-}
-
-export interface CodingWorkspaceAnalysis {
-  root: string;
-  name: string;
-  projectType: string;
-  fileCount: number;
-  truncated: boolean;
-  languages: CodingLanguageStat[];
-  modules: CodingModuleInfo[];
-  validationCommands: string[];
-  hasGit: boolean;
-  gitBranch?: string;
-  gitChangedFiles: number;
-  instructionFiles: string[];
-  scannedAt: string;
-}
-
-export type CodingGitFileStatus = "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflict" | "ignored";
-
-export interface CodingGitFile {
-  path: string;
-  oldPath?: string;
-  status: CodingGitFileStatus;
-  staged: boolean;
-  unstaged: boolean;
-  untracked: boolean;
-  added: number;
-  removed: number;
-}
-
-export interface CodingGitSnapshot {
-  hasGit: boolean;
-  branch?: string;
-  head?: string;
-  files: CodingGitFile[];
-  totalAdded: number;
-  totalRemoved: number;
-  capturedAt: string;
-}
-
-export interface CodingDocument {
-  path: string;
-  relativePath: string;
-  content: string;
-  hash: string;
-  size: number;
-  modifiedAt: number;
-  language: string;
-  lineEnding: "LF" | "CRLF";
-}
-
-export interface CodingSearchHit {
-  path: string;
-  line: number;
-  column: number;
-  preview: string;
-}
-
-export interface CodingSearchOptions {
-  caseSensitive?: boolean;
-  wholeWord?: boolean;
-  regex?: boolean;
-  includeGlob?: string;
-  excludeGlob?: string;
-}
-
-export interface CodingTerminalEvent {
-  terminalId: string;
-  dataBase64: string;
-}
-
-export async function codingAnalyzeWorkspace(root: string): Promise<CodingWorkspaceAnalysis> {
-  return invoke<CodingWorkspaceAnalysis>("coding_analyze_workspace", { root });
-}
-
-export async function codingGitSnapshot(root: string): Promise<CodingGitSnapshot> {
-  return invoke<CodingGitSnapshot>("coding_git_snapshot", { root });
-}
-
-export async function codingGitDiff(root: string, path?: string): Promise<string> {
-  return invoke<string>("coding_git_diff", { root, path: path ?? null });
-}
-
-export async function codingGitSetStaged(
-  root: string,
-  path: string,
-  staged: boolean,
-): Promise<CodingGitSnapshot> {
-  return invoke<CodingGitSnapshot>("coding_git_set_staged", { root, path, staged });
-}
-
-export async function codingReadDocument(root: string, path: string): Promise<CodingDocument> {
-  return invoke<CodingDocument>("coding_read_document", { root, path });
-}
-
-export async function codingWriteDocument(
-  root: string,
-  path: string,
-  content: string,
-  expectedHash: string,
-): Promise<CodingDocument> {
-  return invoke<CodingDocument>("coding_write_document", {
-    request: { root, path, content, expectedHash },
-  });
-}
-
-export async function codingCreateEntry(
-  root: string,
-  parent: string,
-  name: string,
-  directory: boolean,
-): Promise<string> {
-  return invoke<string>("coding_create_entry", {
-    request: { root, parent, name, directory },
-  });
-}
-
-export interface CodingBatchOpResult {
-  /** Result path on success; source path on failure. */
-  path: string;
-  /** Original source path for stable partial-batch correlation. */
-  sourcePath: string;
-  ok: boolean;
-  error?: string | null;
-  /** Opaque system-trash restore token, present only after a successful delete. */
-  restoreToken?: string | null;
-}
-
-export interface CodingRenameResult {
-  path: string;
-  oldPath: string;
-}
-
-export async function codingDeleteEntries(
-  root: string,
-  paths: string[],
-): Promise<CodingBatchOpResult[]> {
-  return invoke<CodingBatchOpResult[]>("coding_delete_entries", {
-    request: { root, paths },
-  });
-}
-
-export async function codingRenameEntry(
-  root: string,
-  path: string,
-  newName: string,
-): Promise<CodingRenameResult> {
-  return invoke<CodingRenameResult>("coding_rename_entry", {
-    request: { root, path, newName },
-  });
-}
-
-export async function codingCopyEntries(
-  root: string,
-  sources: string[],
-  destination: string,
-): Promise<CodingBatchOpResult[]> {
-  return invoke<CodingBatchOpResult[]>("coding_copy_entries", {
-    request: { root, sources, destination },
-  });
-}
-
-export async function codingMoveEntries(
-  root: string,
-  sources: string[],
-  destination: string,
-): Promise<CodingBatchOpResult[]> {
-  return invoke<CodingBatchOpResult[]>("coding_move_entries", {
-    request: { root, sources, destination },
-  });
-}
-
-export interface CodingRestoreResult {
-  path: string;
-  ok: boolean;
-  error?: string | null;
-}
-
-export async function codingRestoreFromTrash(
-  root: string,
-  originalPaths: string[],
-  restoreTokens: string[],
-): Promise<CodingRestoreResult[]> {
-  return invoke<CodingRestoreResult[]>("coding_restore_from_trash", {
-    request: { root, originalPaths, restoreTokens },
-  });
-}
-
-export async function codingSearchWorkspace(
-  root: string,
-  query: string,
-  options: CodingSearchOptions = {},
-): Promise<CodingSearchHit[]> {
-  return invoke<CodingSearchHit[]>("coding_search_workspace", { root, query, options });
-}
-
-export async function codingTerminalCreate(
-  root: string,
-  cols: number,
-  rows: number,
-): Promise<string> {
-  const result = await invoke<{ terminalId: string }>("coding_terminal_create", { root, cols, rows });
-  return result.terminalId;
-}
-
-export async function codingTerminalWrite(terminalId: string, data: string): Promise<void> {
-  await invoke<void>("coding_terminal_write", { terminalId, data });
-}
-
-export async function codingTerminalResize(
-  terminalId: string,
-  cols: number,
-  rows: number,
-): Promise<void> {
-  await invoke<void>("coding_terminal_resize", { terminalId, cols, rows });
-}
-
-export async function codingTerminalClose(terminalId: string): Promise<boolean> {
-  return invoke<boolean>("coding_terminal_close", { terminalId });
-}
-
-export function codingListenTerminalOutput(
-  callback: (event: CodingTerminalEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<CodingTerminalEvent>("coding://terminal-output", (event) => callback(event.payload));
-}
-
-export function codingListenTerminalExit(
-  callback: (event: CodingTerminalEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<CodingTerminalEvent>("coding://terminal-exit", (event) => callback(event.payload));
 }
 
 /** Show the backend-owned native save dialog and export to its exact result.

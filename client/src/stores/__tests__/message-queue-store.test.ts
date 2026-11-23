@@ -4,7 +4,6 @@ import {
   hasActiveItems,
   queueTerminalPolicy,
 } from "../message-queue-store";
-import { codingQueueId } from "@/lib/queue-owner";
 
 const resetStore = () => useMessageQueueStore.setState({ queues: {} });
 
@@ -54,11 +53,11 @@ describe("message-queue-store — 入队与读取", () => {
   it("文档修改指令保留当前文档上下文并拒绝跨任务入队", () => {
     const documentEdit = {sessionId:"s1",path:"/work/作息表.docx",title:"作息表",revision:3,selectedText:"6:30 起床"};
     const s = useMessageQueueStore.getState();
-    const id = s.enqueue("s1", "改成七点半", [], undefined, documentEdit);
+    const id = s.enqueue("s1", "改成七点半", [], documentEdit);
     s.update("s1", id, "改成八点");
     expect(s.claimById("s1", id, "turn")?.documentEdit).toEqual(documentEdit);
     expect(JSON.parse(localStorage.getItem("echoagent.outbox.v1")!).data.s1[0].documentEdit).toEqual(documentEdit);
-    expect(() => s.enqueue("s2", "修改", [], undefined, documentEdit)).toThrow("任务不一致");
+    expect(() => s.enqueue("s2", "修改", [], documentEdit)).toThrow("任务不一致");
     expect(s.getQueue("s2")).toEqual([]);
   });
 });
@@ -292,9 +291,9 @@ describe("message-queue-store — settleSending", () => {
 describe("message-queue-store — 原生接收确认", () => {
   beforeEach(resetStore);
 
-  it("仅确认同一会话和 prompt，重复确认不改状态，编码队列沿用相同身份边界", () => {
+  it("仅确认同一会话和 prompt，重复确认不改状态", () => {
     const queue = store();
-    const key = codingQueueId("/repo", "A", "s1")!;
+    const key = "s1";
     for (const owner of ["s1", "s2", key]) {
       const id = queue.enqueue(owner, "重复文本");
       queue.claimById(owner, id, "same-prompt");

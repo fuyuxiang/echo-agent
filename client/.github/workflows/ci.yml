@@ -51,7 +51,7 @@ jobs:
           if-no-files-found: ignore
 
   dependency-security:
-    name: Dependency security / frontend, IDE and Rust
+    name: Dependency security / frontend and Rust
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -64,6 +64,7 @@ jobs:
       - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
       - run: pnpm install --frozen-lockfile
       - run: python3 -m unittest discover -s scripts -p 'test_audit_dependencies.py'
+      - run: pnpm test:security
       - run: python3 scripts/audit-dependencies.py --output security-audit-results
       - uses: actions/upload-artifact@v7
         if: always()
@@ -608,40 +609,6 @@ jobs:
           path: ${{ runner.temp }}/windows-shortcut-evidence
           if-no-files-found: ignore
 
-  windows-native-addons:
-    name: Windows native addons / Node ${{ matrix.node }}
-    # node-gyp 11 and the locked node-pty build use the VS 2022/v143 toolchain.
-    runs-on: windows-2022
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ['22.23.4', '24.22.1']
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-          cache-dependency-path: vendor/theia-platform/package-lock.json
-      - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
-      - uses: actions/setup-python@v7
-        id: python
-        with:
-          python-version: '3.12'
-          architecture: 'x64'
-      - name: Compile locked drive and terminal addons with the release toolchain
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          . ./scripts/windows-packaging.ps1
-          $vcvars = Initialize-PackagingMsvc
-          Write-Host "Using $vcvars"
-          Invoke-PackagingCommand npm @('ci', '--prefix', 'vendor/theia-platform', '--ignore-scripts', '--no-audit', '--no-fund')
-          Invoke-PackagingCommand node @('scripts/validate-windows-native-addons.mjs')
-        env:
-          PYTHON: ${{ steps.python.outputs.python-path }}
-
   windows-search-bundle:
     name: Windows built-in tool reliability
     runs-on: windows-latest
@@ -687,53 +654,3 @@ jobs:
           --manifest-path vendor/echo-agent-build/Cargo.toml
           -p echo-agent-sampler
           ambiguous_parallel_tools_retry_once_with_parallel_disabled
-
-  theia-bridge:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.1.1
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22.23.4'
-          cache: npm
-          cache-dependency-path: vendor/theia-platform/package-lock.json
-      - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
-      - run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbfile-dev libsecret-1-dev
-      - uses: actions/cache@v6.1.0
-        with:
-          path: |
-            vendor/theia-platform/packages/*/lib
-            vendor/theia-platform/packages/*/tsconfig.tsbuildinfo
-          key: theia-types-${{ runner.os }}-${{ hashFiles('vendor/theia-platform/package-lock.json', 'vendor/theia-platform/packages/**/*.ts', 'vendor/theia-platform/dev-packages/**/*.ts', 'vendor/theia-platform/configs/*.json') }}
-      - run: npm ci --prefix vendor/theia-platform
-        env:
-          PUPPETEER_SKIP_DOWNLOAD: '1'
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-      # Script-level filesystem tests import the root TypeScript dependency.
-      - run: pnpm install --frozen-lockfile
-      - name: Verify native dependency platform metadata
-        run: node vendor/theia-platform/scripts/verify-lockfile-platforms.js
-      - run: node --test scripts/test-theia-archive-security.mjs scripts/test-dependency-patches.mjs scripts/test-dependency-runtime-security.mjs scripts/test-theia-scanoss.mjs
-      - run: node scripts/check-theia-bridge.mjs
-      - name: Compile IDE contracts
-        working-directory: vendor/theia-platform
-        run: node node_modules/typescript/bin/tsc -b packages/ai-vercel-ai packages/ai-chat-ui packages/scm packages/plugin-ext packages/core packages/filesystem packages/file-search dev-packages/request
-      - name: Verify IDE streams, RPC, filesystem and access control
-        run: pnpm test:ide:unit
-        env:
-          THEIA_UNIT_OUTPUT_DIR: ${{ runner.temp }}/theia-unit-results
-      - name: Upload IDE contract results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: theia-unit-results
-          path: ${{ runner.temp }}/theia-unit-results
-          if-no-files-found: ignore
-          retention-days: 7
-      - name: Verify pinned IDE plugins and SCM command completion
-        run: |
-          node scripts/manage-theia-vsix.mjs stage
-          pnpm test:ide

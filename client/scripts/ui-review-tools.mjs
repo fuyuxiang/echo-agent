@@ -4,16 +4,17 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Browser launch and screenshot decoding must use the same installation.
-// CI supplies an isolated package; local reviews can reuse the optional IDE tools.
+// CI supplies an isolated package; local reviews use the root dev dependency.
 function playwrightModule() {
   const configured = process.env.PLAYWRIGHT_MODULE;
-  const candidate = configured || resolve("vendor/theia-platform/node_modules/playwright/index.mjs");
-  if (existsSync(candidate)) return realpathSync(candidate);
-  if (configured) throw new Error("PLAYWRIGHT_MODULE does not exist: " + configured);
+  if (configured) {
+    if (!existsSync(configured)) throw new Error("PLAYWRIGHT_MODULE does not exist: " + configured);
+    return realpathSync(configured);
+  }
   try {
     return fileURLToPath(import.meta.resolve("playwright"));
   } catch {
-    throw new Error("Set PLAYWRIGHT_MODULE to an installed Playwright index.mjs, or prepare the Theia browser test dependencies.");
+    throw new Error("Set PLAYWRIGHT_MODULE to an installed Playwright index.mjs, or install the root development dependencies.");
   }
 }
 

@@ -1,23 +1,39 @@
+#[cfg(not(feature = "desktop"))]
 pub mod capabilities;
+#[cfg(not(feature = "desktop"))]
 pub mod client;
 pub mod config;
+#[cfg(not(feature = "desktop"))]
 pub mod diagnostics;
+#[cfg(not(feature = "desktop"))]
 pub mod dispatch;
+#[cfg(not(feature = "desktop"))]
 pub mod documents;
+#[cfg(not(feature = "desktop"))]
 pub mod format;
+#[cfg(not(feature = "desktop"))]
 pub mod manager;
+#[cfg(not(feature = "desktop"))]
 pub mod pending;
+#[cfg(not(feature = "desktop"))]
 pub mod pull;
+#[cfg(not(feature = "desktop"))]
 pub mod refresh;
+#[cfg(not(feature = "desktop"))]
 pub mod restart;
 mod types;
+#[cfg(not(feature = "desktop"))]
 pub mod workspace_open;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "desktop")))]
 mod tests;
 
+#[cfg(not(feature = "desktop"))]
 pub use dispatch::LspBackendAdapter;
-pub use manager::{DiagnosticsSummary, LspManager, drain_lsp_diagnostics};
+#[cfg(not(feature = "desktop"))]
+pub use manager::{LspManager, drain_lsp_diagnostics};
+pub use types::DiagnosticsSummary;
+#[cfg(not(feature = "desktop"))]
 pub use restart::restart_monitor;
 pub use types::{
     DiagnosticEntry, DiagnosticSeverityLevel, FileDiagnosticEntry, LspBackend, LspConfig,
@@ -26,9 +42,12 @@ pub use types::{
 
 // ── Shared types used across submodules ─────────────────────────────────
 
+#[cfg(not(feature = "desktop"))]
 use std::path::Path;
+#[cfg(not(feature = "desktop"))]
 use std::sync::Arc;
 
+#[cfg(not(feature = "desktop"))]
 use async_lsp::lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams, Url};
 
 /// How long a reader will wait for diagnostics to arrive after an edit before
@@ -40,6 +59,7 @@ use async_lsp::lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositio
 /// have to agree on it, rather than as a number at the call site.
 pub const DIAGNOSTICS_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
+#[cfg(not(feature = "desktop"))]
 #[derive(Debug, thiserror::Error)]
 pub enum LspError {
     #[error("failed to spawn LSP server: {0}")]
@@ -54,13 +74,17 @@ pub enum LspError {
     InvalidPath,
 }
 
+#[cfg(not(feature = "desktop"))]
 pub type DiagnosticsNotify = Arc<tokio::sync::Notify>;
+#[cfg(not(feature = "desktop"))]
 pub type LspMainLoop = async_lsp::MainLoop<async_lsp::router::Router<()>>;
 
+#[cfg(not(feature = "desktop"))]
 pub fn file_uri(path: &Path) -> Result<Url, LspError> {
     Url::from_file_path(path).map_err(|_| LspError::InvalidPath)
 }
 
+#[cfg(not(feature = "desktop"))]
 pub fn text_document_position(
     path: &Path,
     line: u32,

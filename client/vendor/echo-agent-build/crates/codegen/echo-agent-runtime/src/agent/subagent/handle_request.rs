@@ -135,7 +135,7 @@ pub(crate) async fn run_shell_child(
     if let Some(authority) = ctx
         .parent_turn_authority
         .as_ref()
-        .filter(|authority| authority.document_tools || authority.prompt_mode.is_read_only())
+        .filter(|authority| authority.prompt_mode.is_read_only())
     {
         // Resolve policy before any resume/worktree setup can mutate a project.
         // All children operate in the exact parent workspace under its run.
@@ -150,7 +150,7 @@ pub(crate) async fn run_shell_child(
             return child_run_output(
                 failure_result(
                     &request,
-                    "This turn requires a fresh subagent in the same editor-owned workspace; resume, alternate cwd and worktree isolation are unavailable",
+                    "This turn requires a fresh subagent in the same workspace; resume, alternate cwd and worktree isolation are unavailable",
                 ),
                 completion_data,
                 None,
@@ -255,6 +255,20 @@ pub(crate) async fn run_shell_child(
     ) {
         return child_run_output(failure_result(&request, &error), completion_data, None);
     }
+    #[cfg(feature = "desktop")]
+    let worktree_path: Option<PathBuf> = {
+        if effective_runtime.isolation != echo_agent_tool_types::SubagentIsolationMode::None
+            || resume_source.as_ref().is_some_and(|source| source.worktree_path.is_some())
+        {
+            return child_run_output(
+                failure_result(&request, "Managed worktrees are unavailable in EchoAgent Desktop"),
+                completion_data,
+                None,
+            );
+        }
+        None
+    };
+    #[cfg(not(feature = "desktop"))]
     let worktree_path = if let Some(ref source) = resume_source {
         if effective_runtime.isolation != echo_agent_tool_types::SubagentIsolationMode::None
             && source.worktree_path.is_none()

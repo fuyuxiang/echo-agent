@@ -20,13 +20,6 @@ import { ThemeProvider } from "../../src/components/ThemeProvider";
 import { SettingsPanel, type SettingsDirectTarget, type SettingsSectionId } from "../../src/components/SettingsPanel";
 import { PlaceholderPage } from "../../src/components/PlaceholderPage";
 import { ProjectDetailView } from "../../src/components/ProjectDetailView";
-import { WorkbenchIdentity } from "../../src/features/coding/shell/WorkbenchIdentity";
-import { ProjectSwitcher } from "../../src/features/coding/shell/ProjectSwitcher";
-import { TaskSwitcher } from "../../src/features/coding/shell/TaskSwitcher";
-import { useTheiaWorkbenchBridge } from "../../src/features/coding/hooks/useTheiaWorkbenchBridge";
-import { TheiaAgentComposer } from "../../src/features/coding/agent/TheiaAgentComposer";
-import { AgentPane } from "../../src/features/coding/agent/AgentPane";
-import type { CodingTask } from "../../src/features/coding/lib/types";
 import { OrganizationMemoryPanel } from "../../src/components/OrganizationMemoryPanel";
 import { useSubagentStore } from "../../src/stores/subagent-store";
 import { usePermissionStore } from "../../src/stores/permission-store";
@@ -337,7 +330,7 @@ if (query.get("surface") === "sidebar-scroll" || query.has("sidebarCatalog")) {
     useProjectsStore.setState({ projects: [{ ...project, name: "产品设计", conversations: [{ sessionId: "sidebar-project-session", title: "项目中的方案讨论与细节确认", createdAt: ago(120) }] }] });
   }
 }
-if (["workbench", "coding-question"].includes(query.get("surface") ?? "")) {
+if (query.get("surface") === "workbench") {
   const chat = useSessionStore.getState();
   const state = query.get("state") || "complete";
   useSessionsStore.setState({ tasksOpen: true });
@@ -433,7 +426,7 @@ Object.assign(window, {
       if (modelSettingsReview?.commands.has(command)) return modelSettingsReview.invoke(command, args);
       if (advancedSettingsReview?.commands.has(command)) return advancedSettingsReview.invoke(command, args);
       if (securitySettingsReview?.commands.has(command)) return securitySettingsReview.invoke(command, args);
-      if (["workbench", "coding-question"].includes(query.get("surface") ?? "")) workbenchCalls.push({command, args});
+      if (query.get("surface") === "workbench") workbenchCalls.push({command, args});
       if (command === "agent_resolve_permission") recoveryReview.permissionResolutions++;
       if (command === "permission_mode_set") recoveryReview.modeChanges++;
       if (extensionState === "error" && ["agents_list", "skills_list", "plugins_list", "mcp_list"].includes(command)) {
@@ -498,7 +491,7 @@ Object.assign(window, {
         case "list_dir": return [];
         case "agent_list_pending_interactions": {
           const state = query.get("state") ?? "long";
-          if (query.get("surface") === "execution" || ["workbench", "coding-question"].includes(query.get("surface") ?? "") && state === "question") return {
+          if (query.get("surface") === "execution" || query.get("surface") === "workbench" && state === "question") return {
             permissions: [], questions: useQuestionStore.getState().queues[args.sessionId] ?? [], planApprovals: [], folderTrustRequests: [],
           };
           if (query.get("surface") !== "trust" || trustResolved) return { permissions: [], questions: [], planApprovals: [], folderTrustRequests: [] };
@@ -875,78 +868,6 @@ function HomeReviewFixture() {
   </SidebarLayoutContext.Provider></div>;
 }
 
-function CodingQuestionReview() {
-  const pending = useQuestionStore(state => Boolean(state.queues["review-conversation"]?.length));
-  const width = Math.min(800, Math.max(300, Number(query.get("panelWidth")) || 410));
-  const task: CodingTask = {
-    schemaVersion: 2, id: "question-review", name: "确认实现方案", requirement: "确认实现方案", phase: "implementing",
-    acceptanceCriteria: [], taskNodes: [], planIssues: [], globalConstraints: [],
-    sessionId: "review-conversation", createdAt: "2026-10-31T00:00:00Z", updatedAt: "2026-10-31T00:00:00Z",
-  };
-  return <div className="coding-workbench coding-workbench--theia" style={{ "--echo-agent-width": `${width}px` } as React.CSSProperties}>
-    <header className="coding-workbench__topbar"><WorkbenchIdentity onExit={() => {}}><span>确认实现方案</span></WorkbenchIdentity><div /></header>
-    <main className="echo-theia-workspace" />
-    <div className="echo-theia-agent__splitter" />
-    <aside className="echo-theia-agent">
-      <div className="echo-theia-agent__heading"><strong>Agent</strong></div>
-      <div className="echo-theia-agent__content"><AgentPane task={task} changeSet={null} verifications={[]}
-        sessionId="review-conversation" messages={[]} streaming awaitingPermission={false} awaitingQuestion={pending}
-        sending={false} onContinue={() => {}} onOpenChanges={() => {}} onOpenReport={() => {}} /></div>
-      <TheiaAgentComposer workspaceRoot="/review/EchoAgent" task={task} sessionId="review-conversation"
-        models={[{ id: "review/model", label: "评审模型", providerId: "review", providerKind: "custom" }]}
-        modelId="review/model" contextPaths={[]} apiReady starting={false} sending={false} streaming awaitingDecision={pending}
-        onModelChange={() => {}} onStart={() => {}} onSend={() => {}} onRemoveContext={() => {}} onDraftContextPaths={() => {}} />
-    </aside>
-  </div>;
-}
-
-function CodingLayoutReview({ cwd, onCwdChange, active = true }: { cwd: string; onCwdChange: (cwd: string) => void; active?: boolean }) {
-  const bridge = useTheiaWorkbenchBridge(cwd, [], undefined, active);
-    const coding = <div className="app--macos" style={{ height: "100%" }}><div ref={bridge.workbenchRef} className={`coding-workbench coding-workbench--theia${bridge.agentResizing ? " coding-workbench--resizing" : ""}`}
-      style={{ "--echo-agent-width": `${bridge.agentWidth}px` } as React.CSSProperties}>
-    <header className="coding-workbench__topbar"><WorkbenchIdentity onExit={() => {}}>
-      <ProjectSwitcher activeCwd={cwd} projects={[{ cwd: "/review/EchoAgent" }, { cwd: "/review/一个名称很长但仍然可以完整查看路径的项目" }]} onSelect={onCwdChange} onRemove={() => {}} onOpenFolder={() => {}} />
-    </WorkbenchIdentity><div /></header>
-    <main className="echo-theia-workspace"><iframe title="调整宽度测试 IDE" className="echo-theia__frame" srcDoc="<!doctype html><html><body style='color:#999;font:14px sans-serif'>隔离 IDE 文档 · 拖动经过这里</body></html>" /></main>
-    <div className="echo-theia-agent__splitter" role="separator" tabIndex={0} aria-label="调整 Agent 面板宽度" aria-orientation="vertical" aria-valuenow={bridge.agentWidth} aria-valuemin={300} aria-valuemax={bridge.agentMaximumWidth}
-      onPointerDown={bridge.startAgentResize} onDoubleClick={bridge.resetAgentWidth}
-      onKeyDown={event => { if (["ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); bridge.resizeAgentByKey(event.key); } }} />
-    <aside className="echo-theia-agent"><div className="echo-theia-agent__heading">
-      <TaskSwitcher
-        tasks={[
-          { id: "task-1", name: "修复代码开发页面菜单遮挡问题", phase: "delivered", updatedAt: "2026-09-29T10:00:00Z" },
-          { id: "task-2", name: "完成任务报告并检查回归测试", phase: "stopped", updatedAt: "2026-09-29T09:00:00Z" },
-          { id: "task-3", name: "继续进行中任务的开发", phase: "implementing", updatedAt: "2026-09-29T08:00:00Z" },
-        ]}
-        activeId={null}
-        onSelect={() => {}}
-        onNew={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
-      />
-    </div><div className="echo-theia-agent__content" /><TheiaAgentComposer workspaceRoot={cwd} task={null} sessionId={null}
-      models={[{ id:"review/model", label:"评审模型", providerId:"review", providerKind:"custom" }]}
-      modelId="review/model" contextPaths={[]} apiReady starting={false} sending={false} streaming={false}
-      onModelChange={() => {}} onStart={() => {}} onSend={() => {}} onRemoveContext={() => {}} onDraftContextPaths={() => {}} />
-    </aside>
-    </div></div>;
-  return coding;
-}
-
-function CodingSidebarReview({ cwd, onCwdChange }: { cwd: string; onCwdChange: (cwd: string) => void }) {
-  const layout = useAppSidebarLayout();
-  const [active, setActive] = useState(true);
-  return <div className="app app--macos app--coding"><SidebarLayoutContext.Provider value={layout.context}>
-    <div ref={layout.bodyRef} style={layout.style} className={"app__body" + (layout.collapsed ? " app__body--collapsed" : "")}>
-      <Sidebar activeNav={active ? "代码开发" : "新建任务"} onNewSession={() => setActive(false)} onSelect={() => {}} onNavigate={label => setActive(label === "代码开发")} onOpenSettings={() => {}} onOpenSearch={() => {}} />
-      <SidebarResizeHandle layout={layout} />
-      <main className="app__main"><div className="app__coding-surface" hidden={!active}>
-        <CodingLayoutReview cwd={cwd} onCwdChange={onCwdChange} active={active} />
-      </div>{!active && <div>首页</div>}</main>
-    </div>
-  </SidebarLayoutContext.Provider></div>;
-}
-
 function ManagementReviewFixture({ surface }: { surface: string }) {
   const layout = useAppSidebarLayout();
   const [settingsTarget, setSettingsTarget] = useState<SettingsDirectTarget>();
@@ -974,7 +895,6 @@ function Fixture() {
   const [label, setLabel] = useState(aliases[query.get("label") ?? ""] ?? query.get("label") ?? "专家·技能·连接器");
   const [expertPageOpen, setExpertPageOpen] = useState(false);
   const [recoverySent, setRecoverySent] = useState("");
-  const [cwd, setCwd] = useState("/review/EchoAgent");
   const [automationNotificationSequence, setAutomationNotificationSequence] = useState(0);
   const [automationDraft, setAutomationDraft] = useState(() => buildDraft(
     createAutomationTemplates()[0], "/Users/review/Documents/EchoAgent",
@@ -1047,7 +967,6 @@ function Fixture() {
     </div>
     <GlobalTooltip />
   </div>;
-  if (surface === "coding-question") return <CodingQuestionReview />;
   if (surface === "conversation-layout" || surface === "workbench") return <ConversationLayoutFixture />;
   if (surface.startsWith("modal-")) return <ModalReview variant={surface === "modal-short" ? "short" : surface === "modal-error" ? "error" : "long"} />;
   if (surface === "results") return <ResultReviewFixture />;
@@ -1091,10 +1010,6 @@ function Fixture() {
   if (surface === "permission-picker") return <div style={{ position: "relative", height: "100%", background: "var(--echo-bg-secondary)" }}>
     <div style={{ position: "absolute", left: "46%", top: "63%" }}><PermissionPicker /></div>
   </div>;
-  if (surface === "coding") {
-    const coding = <CodingLayoutReview cwd={cwd} onCwdChange={setCwd} />;
-    return query.get("codingShell") === "1" ? <CodingSidebarReview cwd={cwd} onCwdChange={setCwd} /> : coding;
-  }
   return <SettingsPanel open onOpenOrganization={modelSettingsReview ? () => { modelSettingsReview.calls.logins++; } : undefined} initialModelId={query.get("initialModelId") ?? undefined} initialSection={(surface === "weixin-connected" || surface === "weixin-offline" || surface === "weixin-unconnected" ? "weixin-channel" : surface) as SettingsSectionId} cwd={surface === "personal-memory" ? "/Users/fuyuxiang/Documents/EchoAgent" : undefined} onClose={() => {}} />;
 }
 createRoot(document.getElementById("root")!).render(<ThemeProvider><Fixture /></ThemeProvider>);

@@ -179,15 +179,10 @@
   align-items: center;
 }
 
-.app__body:has(> .window-sidebar-navigation) .coding-workbench {
-  grid-template-rows: max(var(--window-chrome-height), 3rem) minmax(0, 1fr);
-}
-
 .titlebar--caption-only ~ .app__body:has(> .window-sidebar-navigation) :is(
   .page-toolbar.management-toolbar.page-toolbar--window-navigation,
   .main-page-controls,
-  :is(.app__main, .app__composer-source) > .session-header,
-  .coding-workbench__topbar
+  :is(.app__main, .app__composer-source) > .session-header
 ) {
   padding-inline-end: calc(var(--window-caption-width) + var(--echo-page-gutter, 24px));
 }
@@ -210,8 +205,7 @@
 /* Single-row workbench headers share the window controls' row. */
 .app__body.app__body--collapsed:has(> .window-sidebar-navigation) :is(
   .main-page-controls,
-  .main-topbar,
-  .coding-workbench__topbar
+  .main-topbar
 ) {
   padding-inline-start: var(--window-navigation-space);
 }

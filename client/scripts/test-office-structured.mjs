@@ -10,9 +10,9 @@ import { createStructuredWorkbook, createStructuredPresentation } from "./office
 
 const directory = await mkdtemp(join(tmpdir(), "echo-structured-office-test-"));
 const root = resolve(import.meta.dirname, "..");
-const stagedNode = join(root, "src-tauri/resources/theia/node", process.platform === "win32" ? "node.exe" : "bin/node");
+const stagedNode = join(root, "src-tauri/resources/office/node", process.platform === "win32" ? "node.exe" : "bin/node");
 function createViaWorker(request, output) {
-  const result = spawnSync(existsSync(stagedNode) ? stagedNode : process.execPath,
+  const result = spawnSync(stagedNode,
     [join(root, "src-tauri/resources/office/worker.mjs"), output,
       join(root, "src-tauri/resources/office/fonts/NotoSansCJKsc-Regular.otf")],
     { input: JSON.stringify(request), encoding: "utf8", timeout: 30000 });

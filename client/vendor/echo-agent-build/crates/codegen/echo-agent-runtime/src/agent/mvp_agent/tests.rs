@@ -3683,6 +3683,7 @@ async fn search_index_honors_the_session_search_feature() {
 }
 /// Reclaiming is the one irreversible half of the deferred work, and the six hour
 /// throttle then hides the run that could have honored a remote veto.
+#[cfg(not(feature = "desktop"))]
 #[tokio::test]
 #[serial_test::serial]
 async fn auto_gc_declines_until_the_remote_answer_settles() {

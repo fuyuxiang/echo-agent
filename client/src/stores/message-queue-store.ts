@@ -10,7 +10,7 @@ import type { DocumentEditContext } from "@/lib/document-workspace";
  */
 import { create } from "zustand";
 import { readDurable, writeDurable } from "@/lib/durable-ui-state";
-import { queueBelongsToSession } from "@/lib/queue-owner";
+import { isRetiredQueueRow } from "@/lib/legacy-workspace";
 
 export type QueueItemStatus = "queued" | "paused" | "sending" | "accepted";
 type EditableQueueItemStatus = "queued" | "paused";
@@ -30,8 +30,6 @@ export interface QueueTerminalPolicy {
   failed: boolean;
 }
 
-export interface CodingQueuedContext { mode: "ask" | "plan" | "agent"; editorContext?: string; imagePaths?: string[] }
-
 export interface QueueItem {
   /** 稳定 id(用于 React key 与操作寻址)。 */
   id: string;
@@ -39,7 +37,6 @@ export interface QueueItem {
   text: string;
   /** Local paths that must travel with this queued prompt. */
   attachments?: string[];
-  coding?: CodingQueuedContext;
   documentEdit?: DocumentEditContext;
   status: QueueItemStatus;
   recovery?: "queued" | "uncertain" | "failed";
@@ -52,11 +49,12 @@ export interface QueueItem {
 
 /** sessionId → 有序队列。 */
 type QueueMap = Record<string, QueueItem[]>;
+type StoredQueueMap = Record<string, Array<QueueItem & { coding?: unknown }>>;
 
 interface QueueState {
   queues: QueueMap;
   /** 入队一条(追加到末尾,默认 queued)。返回新 item 的 id。 */
-  enqueue: (sessionId: string, text: string, attachments?: string[], coding?: CodingQueuedContext, documentEdit?: DocumentEditContext) => string;
+  enqueue: (sessionId: string, text: string, attachments?: string[], documentEdit?: DocumentEditContext) => string;
   /** 编辑某条文本。 */
   update: (sessionId: string, id: string, text: string) => boolean;
   /** 删除某条。 */
@@ -100,10 +98,10 @@ function queueOf(map: QueueMap, sessionId: string): QueueItem[] {
 }
 
 const OUTBOX_KEY = "echoagent.outbox.v1";
-function validQueues(value: unknown): value is QueueMap {
+function validQueues(value: unknown): value is StoredQueueMap {
   return !!value && typeof value === "object" && !Array.isArray(value)
     && Object.entries(value).every(([sessionId, items]) => Array.isArray(items) && items.every((item) =>
-      item && typeof item.id === "string" && typeof item.text === "string"
+      isRetiredQueueRow(sessionId, item) || (item && typeof item.id === "string" && typeof item.text === "string"
       && ["queued", "paused", "sending", "accepted"].includes(item.status) && Number.isFinite(item.createdAt)
       && (item.promptId === undefined || typeof item.promptId === "string")
       && (item.documentEdit === undefined || (item.documentEdit
@@ -112,39 +110,57 @@ function validQueues(value: unknown): value is QueueMap {
         && typeof item.documentEdit.title === "string"
         && Number.isSafeInteger(item.documentEdit.revision) && item.documentEdit.revision > 0
         && typeof item.documentEdit.selectedText === "string"))
-      && (item.attachments === undefined || (Array.isArray(item.attachments) && item.attachments.every((p: unknown) => typeof p === "string")))));
+      && (item.attachments === undefined || (Array.isArray(item.attachments) && item.attachments.every((p: unknown) => typeof p === "string"))))));
 }
+const archivedQueues = new Map<string, StoredQueueMap[string]>();
+
 function restoredQueues(): QueueMap {
-  const queues = readDurable<QueueMap>(OUTBOX_KEY, {}, validQueues);
-  return Object.fromEntries(Object.entries(queues).map(([id, items]) => [id, items.map((item) => ({
-    ...item, status: "paused" as const,
-    recovery: item.recovery ?? (isQueueItemInFlight(item) ? "uncertain" as const : "queued" as const),
-  }))]));
+  const stored = readDurable<StoredQueueMap>(OUTBOX_KEY, {}, validQueues);
+  return Object.fromEntries(Object.entries(stored).flatMap(([id, items]) => {
+    const retired = items.filter(item => isRetiredQueueRow(id, item));
+    if (retired.length) archivedQueues.set(id, retired);
+    const active = items.filter(item => !retired.includes(item));
+    if (!active.length) return [];
+    return [[id, active.map(item => ({
+      ...item, status: "paused" as const,
+      recovery: item.recovery ?? (isQueueItemInFlight(item) ? "uncertain" as const : "queued" as const),
+    }))]];
+  }));
+}
+
+function persistQueues(active: QueueMap): boolean {
+  // Keep the original archive in the same atomic snapshot as the active outbox.
+  // A restore never promotes an archived row into an executable queue.
+  const snapshot: StoredQueueMap = { ...active };
+  for (const [id, items] of archivedQueues) {
+    snapshot[id] = [...items, ...(active[id] ?? [])];
+  }
+  return writeDurable(OUTBOX_KEY, snapshot);
 }
 
 /** User edits are acknowledged only once the restart snapshot is saved. */
 function commitQueues(queues: QueueMap, set: (state: { queues: QueueMap }) => void): boolean {
-  if (!writeDurable(OUTBOX_KEY, queues)) return false;
+  if (!persistQueues(queues)) return false;
   set({ queues });
   return true;
 }
 
 export const useMessageQueueStore = create<QueueState>((set, get) => ({
   queues: restoredQueues(),
-  enqueue: (sessionId, text, attachments = [], coding, documentEdit) => {
+  enqueue: (sessionId, text, attachments = [], documentEdit) => {
+    if (sessionId.startsWith("coding:")) throw new Error("旧版队列已归档");
     if (documentEdit && documentEdit.sessionId !== sessionId) throw new Error("文档修改上下文与任务不一致");
     const id = newId();
     const item: QueueItem = {
       id,
       text,
       attachments: [...new Set(attachments)],
-      ...(coding ? {coding} : {}),
       ...(documentEdit ? {documentEdit} : {}),
       status: "queued",
       createdAt: Date.now(),
     };
     const queues = { ...get().queues, [sessionId]: [...queueOf(get().queues, sessionId), item] };
-    if (!writeDurable(OUTBOX_KEY, queues)) throw new Error("队列未能保存，请保留输入并检查本机存储空间");
+    if (!persistQueues(queues)) throw new Error("队列未能保存，请保留输入并检查本机存储空间");
     set({ queues });
     return id;
   },
@@ -194,7 +210,7 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
       const next = [...q];
       claimed = { ...next[idx], status: "sending", ...(promptId ? { promptId } : {}) };
       next[idx] = claimed;
-      if (!writeDurable(OUTBOX_KEY, { ...s.queues, [sessionId]: next })) { claimed = null; return s; }
+      if (!persistQueues({ ...s.queues, [sessionId]: next })) { claimed = null; return s; }
       return { queues: { ...s.queues, [sessionId]: next } };
     });
     return claimed;
@@ -208,7 +224,7 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
       const next = [...q];
       claimed = { ...next[idx], status: "sending", promptId };
       next[idx] = claimed;
-      if (!writeDurable(OUTBOX_KEY, { ...s.queues, [sessionId]: next })) { claimed = null; return s; }
+      if (!persistQueues({ ...s.queues, [sessionId]: next })) { claimed = null; return s; }
       return { queues: { ...s.queues, [sessionId]: next } };
     });
     return claimed;
@@ -226,7 +242,7 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
       let changed = false;
       const queues = { ...state.queues };
       for (const [key, items] of Object.entries(queues)) {
-        if (!queueBelongsToSession(key, sessionId)
+        if (key !== sessionId
           || !items.some(item => item.status === "sending" && item.promptId === promptId)) continue;
         queues[key] = items.map(item => item.status === "sending" && item.promptId === promptId
           ? { ...item, status: "accepted" as const } : item);
@@ -271,7 +287,7 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
         promptId: needsReview ? promptId : undefined, sendError: message };
     });
     const queues = {...state.queues, [sessionId]:next};
-    writeDurable(OUTBOX_KEY, queues);
+    persistQueues(queues);
     return {queues};
   }),
   retryAllSending: () =>
@@ -301,7 +317,7 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
 
 /** 是否存在任意 active(非 paused)项 —— App 判定「回完一条是否自动续发」。 */
 useMessageQueueStore.subscribe((state, previous) => {
-  if (state.queues !== previous.queues) writeDurable(OUTBOX_KEY, state.queues);
+  if (state.queues !== previous.queues) persistQueues(state.queues);
 });
 
 export function hasActiveItems(q: QueueItem[]): boolean {
@@ -318,7 +334,7 @@ export function settleQueuedPrompt(completion: {
   const store = useMessageQueueStore.getState();
   const policy = queueTerminalPolicy(completion.stopReason, completion.cancellationCategory);
   for (const [key, items] of Object.entries(store.queues)) {
-    if (!queueBelongsToSession(key, completion.sessionId)
+    if (key !== completion.sessionId
       || !items.some(item => item.promptId === completion.promptId
         && (isQueueItemInFlight(item) || item.recovery === "uncertain" || item.recovery === "failed"))) continue;
     store.settleSending(key, policy.settlement, completion.promptId);

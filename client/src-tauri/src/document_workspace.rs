@@ -419,6 +419,7 @@ pub(crate) async fn publish_for_session(
     if value.exported_revision == value.revision {
         return Ok(value);
     }
+    crate::legacy_workspace::ensure_workspace_available(&path)?;
     let request = DocumentExportRequest {
         title: value.title.clone(),
         markdown: String::new(),

@@ -127,6 +127,7 @@ name = "workspace-server-probe"
 path = "src/bin/workspace_server_probe.rs"
 
 [features]
+desktop = ["echo-agent-tools/desktop"]
 default = ["sandbox-enforce"]
 compression = []
 test-support = []

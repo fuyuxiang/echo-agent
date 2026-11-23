@@ -10,9 +10,6 @@ vi.mock("../experts-panel", () => ({
 vi.mock("../PluginsPanel", () => ({
   PluginsPanel: () => <div>installed plugins</div>,
 }));
-vi.mock("@/features/coding/CodingWorkbench", () => ({
-  CodingWorkbench: () => <div>coding workbench</div>,
-}));
 
 import { PlaceholderPage } from "../PlaceholderPage";
 
@@ -23,7 +20,7 @@ describe("PlaceholderPage", () => {
     expect(screen.getByText(/未注册该功能路由/)).toBeInTheDocument();
   });
 
-  it.each(["助理", "灵感", "网页预览", "策略设置", "发现", "插件市场", "插件·市场"])(
+  it.each(["代码开发", "助理", "灵感", "网页预览", "策略设置", "发现", "插件市场", "插件·市场"])(
     "已移除路由「%s」不会再渲染旧功能页",
     (label) => {
       render(<PlaceholderPage label={label} />);
@@ -42,10 +39,6 @@ describe("PlaceholderPage", () => {
     expect(await screen.findByTestId("experts-panel")).toHaveTextContent(tab);
   });
 
-  it("代码开发路由加载专属工作台", async () => {
-    render(<PlaceholderPage label="代码开发" />);
-    expect(await screen.findByText("coding workbench")).toBeInTheDocument();
-  });
 
   it("知识库页面只展示知识库，不混入个人记忆导航", async () => {
     render(<PlaceholderPage label="知识库" />);

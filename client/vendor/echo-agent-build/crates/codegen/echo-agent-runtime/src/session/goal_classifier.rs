@@ -1290,7 +1290,7 @@ fn extract_path_line_tokens(text: &str) -> Vec<String> {
 /// to `None` (no lens — the generic adversarial verifier).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GoalKind {
-    CodeChange,
+    Deliverable,
     Analysis,
     Research,
 }
@@ -1316,7 +1316,7 @@ pub(crate) fn parse_goal_kind(plan: &str) -> Option<GoalKind> {
                 .map(|c| if c == ' ' || c == '_' { '-' } else { c })
                 .collect();
             return match normalized.as_str() {
-                "code-change" => Some(GoalKind::CodeChange),
+                "deliverable" | "code-change" => Some(GoalKind::Deliverable),
                 "analysis" => Some(GoalKind::Analysis),
                 "research" => Some(GoalKind::Research),
                 _ => None,
@@ -1326,12 +1326,11 @@ pub(crate) fn parse_goal_kind(plan: &str) -> Option<GoalKind> {
     None
 }
 
-/// `code-change` review lens — adversarial code review layered on the
-/// acceptance criteria, hunting real defects, test-theater, and cheating.
+/// Additional evidence checks for goals that create or change a deliverable.
 /// Leading `\n` so `{KIND_LENS}` splices as a blank-line-bounded section.
-const KIND_LENS_CODE_CHANGE: &str = concat!(
+const KIND_LENS_DELIVERABLE: &str = concat!(
     "\n",
-    include_str!("templates/goal_verifier_kind_lens_code_change.md")
+    include_str!("templates/goal_verifier_kind_lens_deliverable.md")
 );
 
 /// `research` fact-check lens — verify every claim against its cited source.
@@ -1349,7 +1348,7 @@ const KIND_LENS_ANALYSIS: &str = concat!(
 /// The review-lens block for `kind` (empty string for `None` — generic verifier).
 fn kind_lens(kind: Option<GoalKind>) -> &'static str {
     match kind {
-        Some(GoalKind::CodeChange) => KIND_LENS_CODE_CHANGE,
+        Some(GoalKind::Deliverable) => KIND_LENS_DELIVERABLE,
         Some(GoalKind::Research) => KIND_LENS_RESEARCH,
         Some(GoalKind::Analysis) => KIND_LENS_ANALYSIS,
         None => "",

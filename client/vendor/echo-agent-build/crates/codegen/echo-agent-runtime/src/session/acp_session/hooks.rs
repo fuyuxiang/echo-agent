@@ -148,8 +148,7 @@ impl SessionActor {
     }
 
     pub(super) fn is_hook_execution_allowed(&self) -> bool {
-        !self.is_readonly_turn() && !self.desktop_document_turn.get()
-            && !self.startup_hints.inherited_turn_authority.as_ref().is_some_and(|authority|authority.document_tools)
+        !self.is_readonly_turn()
             // A desktop session is created before its first prompt declares
             // capabilities. Startup/idle hooks cannot execute on that gap.
             && !(self.client_identifier.as_deref()==Some("echo-agent-desktop")

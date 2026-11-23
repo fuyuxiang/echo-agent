@@ -9,12 +9,12 @@ afterEach(() => localStorage.removeItem(SIDEBAR_MENU_STORAGE_KEY));
 describe("sidebar menu preferences", () => {
   it("repairs stale, duplicated and malformed entries without losing destinations", () => {
     const result = normalizeSidebarMenuLayout({
-      primary: ["automation", "retired", "automation", "__proto__", null],
+      primary: ["automation", "coding", "retired", "automation", "__proto__", null],
       more: ["projects", "automation"],
     });
     expect(result).toEqual({
       primary: ["automation", "organization", "capabilities"],
-      more: ["projects", "knowledge", "coding"],
+      more: ["projects", "knowledge"],
     });
     expect(normalizeSidebarMenuLayout({ primary: "projects" })).toEqual(normalizeSidebarMenuLayout(null));
   });
@@ -29,7 +29,7 @@ describe("sidebar menu preferences", () => {
     const moved = moveSidebarMenuItem(initial, "knowledge", "primary", 0);
     const reordered = moveSidebarMenuItem(moved, "knowledge", "primary", 3);
     expect(reordered.primary).toEqual(["projects", "organization", "knowledge", "capabilities"]);
-    expect(reordered.more).toEqual(["automation", "coding"]);
+    expect(reordered.more).toEqual(["automation"]);
     expect(initial.primary).toHaveLength(3);
     expect(moveSidebarMenuItem(reordered, "knowledge", "primary", 2)).toEqual(reordered);
   });
@@ -43,7 +43,7 @@ describe("sidebar menu preferences", () => {
     for (const id of [...layout.primary]) layout = moveSidebarMenuItem(layout, id, "more");
     saveSidebarMenuLayout(layout);
     expect(loadSidebarMenuLayout().primary).toEqual([]);
-    expect(loadSidebarMenuLayout().more).toHaveLength(6);
+    expect(loadSidebarMenuLayout().more).toHaveLength(5);
   });
 
   it("recognizes aliases independently of the entry's placement", () => {

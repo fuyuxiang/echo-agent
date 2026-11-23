@@ -128,8 +128,6 @@ export async function validateWorkbenchTransitions(page, base, output) {
 
   for (const width of [900, 1536]) for (const theme of ["light", "dark"]) {
     const url = new URL(base);
-    url.searchParams.set("surface", "coding");
-    url.searchParams.set("codingShell", "1");
     url.searchParams.set("theme", theme);
     await page.setViewportSize({ width, height: 900 });
     await page.goto(url.href);
@@ -142,7 +140,7 @@ export async function validateWorkbenchTransitions(page, base, output) {
     assert.ok(await toggle.evaluate(e => e === document.activeElement));
     assert.equal(await toggle.getAttribute("aria-expanded"), "true");
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
-    await page.screenshot({ path: join(output, `coding-sidebar-${width}-${theme}.png`) });
+    await page.screenshot({ path: join(output, `session-sidebar-${width}-${theme}.png`) });
   }
-  console.log("Workbench transitions passed: live history invalidation, rewind boundary, empty-session resources, fresh reading snapshots, 8 unified tool-mode layouts and 4 coding sidebar layouts.");
+  console.log("Workbench transitions passed: live history invalidation, rewind boundary, empty-session resources, fresh reading snapshots, 8 unified tool-mode layouts and 4 session sidebar layouts.");
 }

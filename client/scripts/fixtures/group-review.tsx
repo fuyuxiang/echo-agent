@@ -155,7 +155,6 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: 
     if (command === "subagents_config_get") return { maxDepth: 1 };
     if (command === "path_stat") return { exists: true, kind: "file", absolute: args.path, path: args.path };
     if (command === "reveal_in_folder" || command === "open_path") return;
-    if (command === "coding_fs_read_dir" || command === "coding_list_dir") return [];
     if (command.includes("list") || command.includes("commands")) return [];
     return {};
   },

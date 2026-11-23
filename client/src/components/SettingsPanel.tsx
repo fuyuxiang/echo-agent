@@ -67,7 +67,7 @@ export type SettingsSectionId =
   | "security"
   | "help";
 
-export type SettingsDirectTarget = "background" | "local-retrieval";
+export type SettingsDirectTarget = "background" | "local-retrieval" | "legacy-workspace" | "ui-recovery";
 
 interface NavItem {
   id: SettingsSectionId;
@@ -405,7 +405,7 @@ export function SettingsPanel({
             ) : active === "data" ? (
               <div className="settings-subview">
                 <SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={selectSection} />
-                <DataSettingsPanel />
+                <DataSettingsPanel recoveryRequested={searchTarget?.target === "ui-recovery"} />
               </div>
             ) : active === "archived" ? (
               <div className="settings-subview">

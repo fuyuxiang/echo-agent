@@ -541,7 +541,6 @@ export function ProjectDetailView({
               onOpenOrganization={onOpenOrganization}
               onClientSlashCommand={onClientSlashCommand}
               filePaths={mentionCandidates.filePaths}
-              workspaceSymbols={mentionCandidates.workspaceSymbols}
             />
             {(sendError || (!projectModelId && live.defaultModelId)) && (
               <div className="pd-composer-warning" role="alert">

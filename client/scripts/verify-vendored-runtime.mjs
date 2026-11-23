@@ -75,7 +75,6 @@ function verifyNoGitCargoSources(root) {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if (entry.name === ".git" || entry.name === "target" || entry.name === "node_modules") continue;
     const path = join(root, entry.name);
-    if (path === join(projectRoot, "src-tauri", "resources", "theia")) continue;
     if (entry.isSymbolicLink()) {
       fail(`Vendored 源码不得包含符号链接：${path.slice(projectRoot.length + 1)}`);
     }

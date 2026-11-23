@@ -1,8 +1,0 @@
-require:
-  - 'ignore-styles'
-  - 'reflect-metadata/Reflect'
-  - '@theia/test-setup'
-reporter: 'spec'
-watch-files:
-    - '**/*.js'
-exit: true

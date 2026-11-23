@@ -2041,7 +2041,6 @@ pub(super) async fn run_session(
                             let authority=if let Some(authority)=inherited {authority} else {
                                 crate::session::InheritedTurnAuthority {
                                     prompt_mode:*session.turn_start_prompt_mode.lock(),
-                                    document_tools:session.tool_bridge_handle().read_resource::<DesktopDocumentTools>().await.is_some_and(|policy|policy.0),
                                     session_id:session.session_id_string(),
                                     run_id:session.current_prompt_id.lock().unwrap().clone().unwrap_or_default(),
                                     workspace:session.tool_context.cwd.as_path().to_string_lossy().into_owned(),

@@ -7,7 +7,6 @@ const readCss = (name: string) =>
 
 const tokensCss = readCss("tokens.css");
 const appCss = readCss("app.css");
-const codingCss = readCss("coding-workbench.css");
 const toastCss = readCss("toast.css");
 
 function layerValue(name: string): number {
@@ -38,9 +37,8 @@ describe("global overlay layering contract", () => {
     expect(appCss).toMatch(/\.app-dialog-overlay\s*\{[^}]*z-index:\s*var\(--echo-layer-confirm\)/s);
   });
 
-  it("keeps coding dropdowns on the shared popover layer", () => {
-    expect(codingCss).toMatch(/\.coding-project-switcher__menu\s*\{[^}]*z-index:\s*var\(--echo-layer-popover\)/s);
-    expect(codingCss).toMatch(/\.coding-task-switcher__menu\s*\{[^}]*z-index:\s*var\(--echo-layer-popover\)/s);
+  it("keeps the workspace picker menu on the shared popover layer", () => {
+    expect(appCss).toMatch(/\.workspace-picker__menu\s*\{[^}]*z-index:\s*var\(--echo-layer-popover\)/s);
   });
 
   it("hides page hover chrome behind a modal while allowing hints inside it", () => {

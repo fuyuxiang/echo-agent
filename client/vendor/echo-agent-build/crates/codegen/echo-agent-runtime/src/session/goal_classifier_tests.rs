@@ -1452,7 +1452,11 @@ async fn verification_stage_renders_per_index_tool_names() {
 #[test]
 fn parse_goal_kind_reads_the_tag() {
     let plan = "# Plan: x\n\n## Goal kind\n\ncode-change\n\n## Acceptance criteria\n1. a\n";
-    assert_eq!(parse_goal_kind(plan), Some(GoalKind::CodeChange));
+    assert_eq!(parse_goal_kind(plan), Some(GoalKind::Deliverable));
+    assert_eq!(
+        parse_goal_kind("## Goal kind\ndeliverable\n"),
+        Some(GoalKind::Deliverable),
+    );
     assert_eq!(
         parse_goal_kind("## Goal kind\n`research`\n"),
         Some(GoalKind::Research)
@@ -1481,7 +1485,7 @@ fn parse_goal_kind_tolerates_emphasis_and_separator_variants() {
     }
     assert_eq!(
         parse_goal_kind("## Goal kind\n**code change**\n"),
-        Some(GoalKind::CodeChange),
+        Some(GoalKind::Deliverable),
     );
 }
 
@@ -1501,7 +1505,7 @@ fn render_skeptic_prompt_substitutes_kind_lens_and_leaves_no_placeholder() {
         "final",
         "/tmp/goal-verifier-details-x-1-0.md",
         "/tmp/goal-verdict-x-1-0.json",
-        kind_lens(Some(GoalKind::CodeChange)),
+        kind_lens(Some(GoalKind::Deliverable)),
         "/tmp/echo-agent-goal-x/skeptic-0",
         "/tmp/echo-agent-goal-x/implementer",
         None,
@@ -1557,7 +1561,7 @@ fn render_skeptic_prompt_scratch_status_reflects_readiness() {
             "final",
             "/tmp/goal-verifier-details-x-1-0.md",
             "/tmp/goal-verdict-x-1-0.json",
-            kind_lens(Some(GoalKind::CodeChange)),
+            kind_lens(Some(GoalKind::Deliverable)),
             "/tmp/echo-agent-goal-x/skeptic-0",
             "/tmp/echo-agent-goal-x/implementer",
             None,
@@ -1608,7 +1612,7 @@ fn render_skeptic_prompt_substitutes_prior_gaps() {
             "final",
             "/tmp/goal-verifier-details-x-2-1.md",
             "/tmp/goal-verdict-x-2-1.json",
-            kind_lens(Some(GoalKind::CodeChange)),
+            kind_lens(Some(GoalKind::Deliverable)),
             "/tmp/echo-agent-goal-x/skeptic-1",
             "/tmp/echo-agent-goal-x/implementer",
             prior,
@@ -1641,7 +1645,7 @@ fn render_skeptic_resume_prompt_is_delta_focused_and_substitutes_paths() {
         "final",
         "/tmp/goal-classifier-x-2-skeptic-0.md",
         "/tmp/goal-verdict-x-2-0.json",
-        kind_lens(Some(GoalKind::CodeChange)),
+        kind_lens(Some(GoalKind::Deliverable)),
         "/tmp/echo-agent-goal-x/skeptic-0",
         "/tmp/echo-agent-goal-x/implementer",
         None,

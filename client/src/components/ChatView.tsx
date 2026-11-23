@@ -13,7 +13,7 @@ import { useContinuationStore } from "@/stores/continuation-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { restoreKnowledgeTraces } from "@/lib/knowledge-traces-client";
 import { createMarkdownHostConfig, openLocalPath } from "@/lib/markdown-host";
-import { rewindExecute, rewindPoints, rewindUndoPreview, setCodingMode, sessionContinue, type ContinuationRequest } from "@/lib/agent-client";
+import { rewindExecute, rewindPoints, rewindUndoPreview, setAgentMode, sessionContinue, type ContinuationRequest } from "@/lib/agent-client";
 import { continuationTargets, inheritedMessageIds, continuationAnchor, latestContinuationTarget } from "@/lib/session-continuation";
 import { ConversationOrigin, ContinuationLinks } from "./ConversationContinuation";
 import {
@@ -372,7 +372,7 @@ export function ChatView({
         const stopped = await onCancel("pause");
         if (stopped === false) throw new Error("暂停尚未确认，请稍后重试");
       }
-      await setCodingMode(sessionId, nextMode === "default" ? "agent" : nextMode);
+      await setAgentMode(sessionId, nextMode === "default" ? "agent" : nextMode);
       // Native automation status owns tool mode; this local projection also
       // covers the initial status load and asynchronous acknowledgements.
       useSessionStore.getState().setAgentMode(nextMode, sessionId);
@@ -1376,10 +1376,10 @@ export function ChatView({
                       if (latest.sessionId !== sessionId || cancelRequests.current.has(sessionId)
                         || latest.control || latest.error) return false;
                       if (!latest.streaming) return sendDocumentMessage(text, attachments);
-                      useMessageQueueStore.getState().enqueue(sessionId, text, attachments, undefined, activeDocumentEdit);
+                      useMessageQueueStore.getState().enqueue(sessionId, text, attachments, activeDocumentEdit);
                       setDocumentEdit(null);
                     })();
-                    useMessageQueueStore.getState().enqueue(sessionId, text, attachments, undefined, activeDocumentEdit ?? undefined);
+                    useMessageQueueStore.getState().enqueue(sessionId, text, attachments, activeDocumentEdit ?? undefined);
                     if (activeDocumentEdit) setDocumentEdit(null);
                   }
                 : undefined

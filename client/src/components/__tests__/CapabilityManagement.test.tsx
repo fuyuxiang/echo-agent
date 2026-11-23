@@ -77,12 +77,12 @@ describe("统一扩展管理的真实页面交互", () => {
 
   it("专家模板只预填创建草稿，保留指令和模型标签", async () => {
     render(<ExpertsTab pills={null} />);
-    fireEvent.click(await screen.findByRole("button", { name: "代码专家" }));
+    fireEvent.click(await screen.findByRole("button", { name: "文档助手" }));
     const editor = await screen.findByRole("dialog", { name: "创建专家" });
-    expect(within(editor).getByRole("textbox", { name: "专家名称" })).toHaveValue("代码专家");
-    expect((within(editor).getByRole("textbox", { name: "专家指令" }) as HTMLTextAreaElement).value).toContain("你是一名代码专家");
+    expect(within(editor).getByRole("textbox", { name: "专家名称" })).toHaveValue("文档助手");
+    expect((within(editor).getByRole("textbox", { name: "专家指令" }) as HTMLTextAreaElement).value).toContain("你是一名技术文档工程师");
     expect(within(editor).getByRole("button", { name: "默认" })).toHaveAttribute("aria-pressed", "true");
-    expect(within(editor).getByRole("button", { name: "推理" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(editor).getByRole("button", { name: "推理" })).toHaveAttribute("aria-pressed", "false");
     expect(api.agentsSave).not.toHaveBeenCalled();
   });
 

@@ -6,6 +6,7 @@ edition.workspace = true
 description = "Canonical tool-description types for the EchoAgent platform"
 
 [features]
+desktop = []
 # Enables `BuiltinSubagent::render_prompt` (MiniJinja rendering of the
 # built-in subagent prompt bodies).
 prompt-render = ["dep:minijinja"]

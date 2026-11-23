@@ -42,7 +42,8 @@ import {
 } from "lucide-react";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 import { useTheme } from "./ThemeProvider";
-import { exportBackup, inspectBackup, restoreBackup, backupLastError } from "@/lib/backup-client";
+import { exportBackup, inspectBackup, restoreBackup, backupLastError, hasDeferredUiArchive, exportDeferredUiArchive } from "@/lib/backup-client";
+import { confirmExternalOperationStopped, exportLegacyWorkspaceArchive, pendingExternalOperations } from "@/lib/legacy-workspace";
 import {
   internalReload,
   memoryConfigGet,
@@ -669,14 +670,27 @@ export function SecuritySettingsPanel() {
 
 // ---------- 数据管理 ----------
 
-export function DataSettingsPanel() {
+export function DataSettingsPanel({ recoveryRequested = false }: { recoveryRequested?: boolean } = {}) {
   const [agentHome, setAgentHome] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [hasRecoveryArchive, setHasRecoveryArchive] = useState(false);
   const { requestConfirmation, dialog } = useAppDialog();
+
+  const [operations, setOperations] = useState<Awaited<ReturnType<typeof pendingExternalOperations>>>();
+  const [verificationNotes, setVerificationNotes] = useState<Record<string, string>>({});
+
+  async function refreshOperations() {
+    try {
+      setOperations(await pendingExternalOperations());
+    } catch (error) {
+      setMessage(`读取旧版外部操作失败：${String(error)}`);
+    }
+  }
 
   useEffect(() => {
     void backupLastError().then((error) => { if (error) setMessage(`上次恢复失败，已保留原有数据：${error}`); }).catch(() => {});
+    void hasDeferredUiArchive().then(setHasRecoveryArchive).catch(() => {});
     void echoAgentDataDir()
       .then(setAgentHome)
       .catch((error) => setMessage(`读取数据目录失败：${String(error).replace(/^Error:\s*/, "")}`));
@@ -709,8 +723,21 @@ export function DataSettingsPanel() {
           }}>从备份恢复</button>
         </div>
       </SettingsGroup>
+      {(hasRecoveryArchive || recoveryRequested) && <SettingsGroup title="待恢复的界面数据" settingId="ui-recovery" desc="界面存储空间不足时，备份里的草稿和队列会留在本机恢复档案，可导出查阅。">
+        <div className="settings-group__footer">
+          <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
+            setBusy(true);
+            try {
+              const path = await exportDeferredUiArchive();
+              if (path) setMessage(`恢复档案已保存：${path}`);
+            } catch (error) {
+              setMessage(`导出恢复档案失败：${String(error)}`);
+            } finally { setBusy(false); }
+          }}>导出恢复档案</button>
+        </div>
+      </SettingsGroup>}
       <SettingsDisclosure title="本地数据与备份范围" description="查看存储位置，以及备份包含的内容">
-        <p className="settings-hint">备份包含会话、项目资料、代码任务记录、记忆、粘贴附件、草稿、队列和本机用量。恢复会替换同名记录，其他数据保留。历史外部文件仍依赖原工作目录。原件缺失时，可从所属任务的成果面板打开已恢复的编辑稿并另存为 Word 或 PDF。</p>
+        <p className="settings-hint">备份包含会话、项目资料、旧版工作台历史、记忆、粘贴附件、草稿、队列和本机用量。旧版工作台草稿和队列可导出为档案。恢复会替换同名记录，其他数据保留。历史外部文件仍依赖原工作目录。原件缺失时，可从所属任务的成果面板打开已恢复的编辑稿并另存为 Word 或 PDF。</p>
         <SettingsGroup title="本地数据目录" settingId="data-directory" desc="会话、项目、自动化、通知和配置都保存在此目录。">
           <div className="settings-row settings-row--comfortable settings-row--path">
             <div className="settings-row__label settings-row__label--stacked">
@@ -728,6 +755,48 @@ export function DataSettingsPanel() {
           </div>
         </SettingsGroup>
         <p className="settings-hint">请通过应用管理会话和资料，避免直接删除数据目录中的文件。</p>
+      </SettingsDisclosure>
+      <SettingsDisclosure title="旧版工作台资料" settingId="legacy-workspace" description="导出草稿和队列，核验待处理的外部操作">
+        <p className="settings-hint">代码工作台已下线。已有会话可在历史中打开，源码和工作树仍位于各自的原目录。旧版计划、输入草稿和队列可导出为 JSON。</p>
+        <div className="settings-group__footer">
+          <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
+            setBusy(true);
+            try {
+              const path = await exportLegacyWorkspaceArchive();
+              if (path) setMessage(`旧版工作台历史已保存：${path}`);
+            } catch (error) {
+              setMessage(String(error).replace(/^Error:\s*/, ""));
+            } finally { setBusy(false); }
+          }}>导出旧版草稿和队列</button>
+          <button type="button" className="settings-btn" disabled={busy} onClick={() => void refreshOperations()}>
+            查看待核验操作
+          </button>
+        </div>
+        {operations?.length === 0 && <p className="settings-hint">没有待核验的旧版外部操作。</p>}
+        {operations?.map(operation => (
+          <SettingsGroup key={operation.operationId} title={operation.toolName} desc={operation.workspace}>
+            <label className="settings-row">
+              核验依据
+              <textarea className="settings-input" maxLength={2000} value={verificationNotes[operation.operationId] ?? ""} onChange={event => {
+                const note = event.currentTarget.value;
+                setVerificationNotes(notes => ({ ...notes, [operation.operationId]: note }));
+              }} />
+            </label>
+            <button type="button" className="settings-btn" disabled={busy || [...(verificationNotes[operation.operationId] ?? "").trim()].length < 8}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await confirmExternalOperationStopped(operation.operationId, verificationNotes[operation.operationId]);
+                  setMessage("核验已保存，已解除这项操作的目录限制。");
+                  await refreshOperations();
+                } catch (error) {
+                  setMessage(String(error));
+                } finally {
+                  setBusy(false);
+                }
+              }}>核验并解除目录限制</button>
+          </SettingsGroup>
+        ))}
       </SettingsDisclosure>
       {message && <p className="settings-msg" role="status">{message}</p>}
       {dialog}

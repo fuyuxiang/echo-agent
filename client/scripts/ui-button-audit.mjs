@@ -9,9 +9,9 @@ const primarySelector = [
   ".meeting-primary", ".kb-panel__add-btn", ".org-memory__primary",
   ".feedback-dialog__btn--primary", ".browser-preview__go", ".um-btn--primary",
   ".plan-panel__approve-btn", ".plan-panel__add-btn", ".plan-panel__row-edit-save",
-  ".coding-primary-btn", ".pd-btn--primary",
-  ".echo-composer__send", ".context-menu__rename-save", ".coding-agent__send", ".echo-theia-agent__send",
-  ".coding-agent__decision button.is-primary", ".perm-inline__action--allow",
+  ".pd-btn--primary",
+  ".echo-composer__send", ".context-menu__rename-save",
+  ".perm-inline__action--allow",
 ].join(",");
 
 export async function inspectButtonBackgrounds(page, theme) {
@@ -28,7 +28,7 @@ export async function inspectButtonBackgrounds(page, theme) {
     const buttons = [...document.querySelectorAll('button,[role="button"]')].filter(e => {
       const rect = e.getBoundingClientRect(), style = getComputedStyle(e);
       return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden"
-        && !e.closest(".monaco-editor,.xterm,.markdown-body,.md-content,.create-colleague-avatar-item");
+        && !e.closest(".markdown-body,.md-content,.create-colleague-avatar-item");
     }).map(e => {
       const style = getComputedStyle(e);
       // The compact group drawer uses an accessible empty button as its scrim.

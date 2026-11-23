@@ -163,16 +163,6 @@ describe.each([["普通发送", agentSend], ["立即发送", agentSendNow]] as c
   });
 });
 
-it("Code 检查点等待期间换号，尚未同步组织知识也必须停止", async () => {
-  const checkpoint = deferred<void>();
-  vi.mocked(invoke).mockImplementation(async command => command === "coding_checkpoint_start" ? checkpoint.promise : attached);
-  const pending = agentSend("task", "实现需求", [], "实现需求", "turn", { workspace: "/repo", taskId: "coding-task" });
-  const rejected = expect(pending).rejects.toThrow("组织账号或权限已改变");
-  useOrgSessionStore.getState().setSession(account("bob"));
-  checkpoint.resolve();
-  await rejected;
-  expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual(["coding_checkpoint_start"]);
-});
 
 it("普通本地任务在准备期间退出组织也能发送", async () => {
   useKnowledgeStore.getState().setSessionSources("task", []);

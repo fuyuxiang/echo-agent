@@ -7,7 +7,7 @@ import { useProjectsStore } from "@/stores/projects-store";
 import { resetOrgSessionMirror, useOrgSessionStore } from "@/stores/org-session-store";
 import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout";
 import { PageChromeProvider, PageToolbar } from "../PageToolbar";
-import { SIDEBAR_MENU_STORAGE_KEY } from "@/lib/sidebar-menu";
+import { loadSidebarMenuLayout, SIDEBAR_MENU_STORAGE_KEY } from "@/lib/sidebar-menu";
 import type { SessionStatus } from "@/lib/types";
 import { agentDeleteSession, agentSetSessionPinned } from "@/lib/agent-client";
 import { persistSessionStatus } from "@/lib/session-status-persistence";
@@ -288,7 +288,7 @@ describe("Sidebar", () => {
     const onNavigate = vi.fn();
     const { rerender } = render(<Sidebar {...base} onNavigate={onNavigate} />);
     let dialog = openMenuCustomizer();
-    for (const label of ["知识库", "定时任务", "代码开发"]) moveMenuEntry(dialog, label, "ArrowLeft");
+    for (const label of ["知识库", "定时任务"]) moveMenuEntry(dialog, label, "ArrowLeft");
     expect(within(dialog).getByText("将入口拖到这里")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
     fireEvent.click(screen.getByRole("button", { name: "定时任务" }));
@@ -302,7 +302,7 @@ describe("Sidebar", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "恢复默认" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
     expect(screen.queryByRole("button", { name: "定时任务" })).not.toBeInTheDocument();
-    expect(JSON.parse(localStorage.getItem(SIDEBAR_MENU_STORAGE_KEY)!).more).toEqual(["knowledge", "automation", "coding"]);
+    expect(JSON.parse(localStorage.getItem(SIDEBAR_MENU_STORAGE_KEY)!).more).toEqual(["knowledge", "automation"]);
   });
 
   it("保存失败时保留草稿并提示重试，不应用未保存的菜单", () => {
@@ -766,7 +766,7 @@ describe("Sidebar", () => {
     expect(within(menu).getByRole("menuitem", { name: "定时任务" })).toBeInTheDocument();
     expect(within(menu).getByRole("menuitem", { name: "自定义菜单栏" })).toBeInTheDocument();
     expect(within(menu).getAllByRole("menuitem").map(item => item.textContent)).toEqual([
-      "知识库", "定时任务", "代码开发", "自定义菜单栏",
+      "知识库", "定时任务", "自定义菜单栏",
     ]);
     for (const settingsEntry of ["我的文件", "个人记忆", "用量统计", "通知渠道", "云存储", "已归档"]) {
       expect(within(menu).queryByText(settingsEntry)).not.toBeInTheDocument();
@@ -891,18 +891,15 @@ describe("Sidebar", () => {
     expect(screen.getByRole("menuitem", { name: "定时任务" })).toHaveClass("sidebar__more-item--active");
   });
 
-  it("「更多」中的代码开发可进入工作台并显示选中状态", () => {
-    const onNavigate = vi.fn();
-    const { rerender } = render(<Sidebar {...base} onNavigate={onNavigate} />);
-    const more = screen.getByRole("button", { name: /更多/ });
-    fireEvent.click(more);
-    fireEvent.click(screen.getByRole("menuitem", { name: "代码开发" }));
-    expect(onNavigate).toHaveBeenCalledWith("代码开发");
-
-    rerender(<Sidebar {...base} activeNav="代码开发" onNavigate={onNavigate} />);
-    expect(more).toHaveClass("sidebar__nav-item--active");
-    fireEvent.click(more);
-    expect(screen.getByRole("menuitem", { name: "代码开发" })).toHaveClass("sidebar__more-item--active");
+  it("旧菜单配置移除退役入口并保留其它排序", () => {
+    localStorage.setItem(SIDEBAR_MENU_STORAGE_KEY, JSON.stringify({
+      primary: ["organization", "coding", "projects", "capabilities"],
+      more: ["automation", "knowledge"],
+    }));
+    expect(loadSidebarMenuLayout()).toEqual({
+      primary: ["organization", "projects", "capabilities"],
+      more: ["automation", "knowledge"],
+    });
   });
 
   it("「更多」菜单支持方向键、Home/End 和 Escape 焦点回退", async () => {

@@ -12,7 +12,7 @@ import { waitForVisualPolishSurface } from "./ui-review-readiness.mjs";
 // box and text range. Fixtures replace native IPC only; no presentation CSS is added.
 const output = reviewOutput(join(tmpdir(), "echo-visual-polish"));
 const surfaces = ["home", "conversation", "general", "model", "agent-settings",
-  "page:技能", "page:连接器", "page:项目", "coding", "execution", "modal-error",
+  "page:技能", "page:连接器", "page:项目", "execution", "modal-error",
   "controls", "toast", "workspace-picker", "permission-picker", "content-menus", "search"];
 const layouts = [[1280, 800, 13], [1024, 680, 13], [1024, 680, 18]];
 const records = [], differences = [], colorFailures = [], errors = [];

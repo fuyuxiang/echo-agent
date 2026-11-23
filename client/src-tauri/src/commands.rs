@@ -2099,13 +2099,6 @@ pub struct KnowledgeSourcesView {
     organization_attached: bool,
 }
 
-fn coding_session_owns_task(workspace: &Path, session_id: &str) -> bool {
-    crate::coding::task::list_tasks(workspace)
-        .into_iter()
-        .filter_map(|summary| crate::coding::task::load(workspace, &summary.id))
-        .any(|task| task.session_id.as_deref() == Some(session_id))
-}
-
 #[tauri::command]
 pub fn agent_is_private_memory_query(text: String) -> bool {
     echo_agent_runtime::session::is_private_memory_query(&text)
@@ -2124,8 +2117,6 @@ pub async fn agent_send(
     prompt_id: Option<String>,
     send_now: Option<bool>,
     mode: Option<String>,
-    document_tool_bridge: Option<bool>,
-    review: Option<crate::coding_review_runtime::ReviewRequest>,
 ) -> Result<(), String> {
     if prompt_id.as_deref().is_some_and(|id| !valid_session_id(id))
         || !valid_session_id(&session_id)
@@ -2146,8 +2137,6 @@ pub async fn agent_send(
         prompt_id,
         send_now,
         mode,
-        document_tool_bridge,
-        review,
         None,
         admission.as_ref(),
     )
@@ -2184,8 +2173,6 @@ pub(crate) async fn agent_send_from_weixin(
         Some(prompt_id),
         None,
         None,
-        None,
-        None,
         Some(authorization),
         Some(&admission),
     )
@@ -2208,8 +2195,6 @@ async fn agent_send_impl(
     prompt_id: Option<String>,
     send_now: Option<bool>,
     mode: Option<String>,
-    document_tool_bridge: Option<bool>,
-    review: Option<crate::coding_review_runtime::ReviewRequest>,
     weixin: Option<&crate::weixin::PromptAuthorization>,
     admission: Option<&HostPromptAdmission>,
 ) -> Result<(), String> {
@@ -2252,15 +2237,6 @@ async fn agent_send_impl(
         &session_id,
         None,
     )?;
-    let ownership_workspace = workspace.clone();
-    let ownership_session = session_id.clone();
-    let coding_owned_session = tokio::task::spawn_blocking(move || {
-        coding_session_owns_task(&ownership_workspace, &ownership_session)
-    })
-    .await
-    .map_err(|error| format!("无法确认开发会话的文档执行边界：{error}"))?;
-    // Generic retry/deep-link paths cannot disable a persisted Coding owner.
-    let document_tool_bridge = document_tool_bridge.unwrap_or(false) || coding_owned_session;
     let attachments = attachments.unwrap_or_default();
     let attachments = if attachments.is_empty() {
         Vec::new()
@@ -2289,22 +2265,10 @@ async fn agent_send_impl(
             crate::providers::require_model_images_if_declared(model)?;
         }
     }
-    let mut prompt_id = prompt_id.or_else(|| {
-        (review.is_some() || document_tool_bridge).then(|| uuid::Uuid::now_v7().to_string())
-    });
+    let mut prompt_id = prompt_id;
     let send_now = send_now.unwrap_or(false);
     if withdrawn() {
         return Ok(());
-    }
-    if send_now {
-        if let Err(error) = crate::coding_document_bridge::cancel_session(&session_id).await {
-            // A failed editor fence never permits a replacement run. Still
-            // deliver the real Runtime cancellation so old shell work stops.
-            if !withdrawn() {
-                let _ = agent_runtime::cancel(&tx, &session_id, "stop", None).await;
-            }
-            return Err(error);
-        }
     }
     // All local payload/attachment/team validation completes before acquiring
     // native execution authority. A rejected local payload leaves no live run.
@@ -2340,7 +2304,6 @@ async fn agent_send_impl(
         prompt_id.as_deref(),
         send_now,
         mode.as_deref(),
-        document_tool_bridge,
     )
     .map_err(|error| error.to_string())?;
     if let (Some(context), Some(agent_client_protocol::ContentBlock::Text(block))) =
@@ -2351,7 +2314,7 @@ async fn agent_send_impl(
             serde_json::json!(context),
         );
     }
-    crate::coding_document_bridge::ensure_workspace_admission(&workspace.to_string_lossy()).await?;
+    crate::legacy_workspace::ensure_workspace_available(&workspace)?;
     if withdrawn() {
         return Ok(());
     }
@@ -2372,39 +2335,6 @@ async fn agent_send_impl(
                     .into(),
                 serde_json::json!(context),
             );
-        }
-    }
-    if let Some(review) = review {
-        if let Err(error) = crate::coding_review_runtime::begin(
-            &workspace,
-            &session_id,
-            prompt_id.as_deref().ok_or("审查运行身份缺失")?,
-            mode.as_deref(),
-            review,
-        ) {
-            if let Some((generation, _)) = task_admitted {
-                crate::automation::prompt_admission_failed(&session_id, generation).await;
-            }
-            return Err(error);
-        }
-    }
-    if document_tool_bridge {
-        let registration = crate::coding_document_bridge::register_run(
-            app.clone(),
-            &session_id,
-            prompt_id.as_deref().ok_or("版本化编辑运行身份缺失")?,
-            &workspace.to_string_lossy(),
-            mode.as_deref(),
-        )
-        .await;
-        if let Err(error) = registration {
-            if let Some(prompt_id) = prompt_id.as_deref() {
-                crate::coding_review_runtime::discard(&session_id, prompt_id);
-            }
-            if let Some((generation, _)) = task_admitted {
-                crate::automation::prompt_admission_failed(&session_id, generation).await;
-            }
-            return Err(error);
         }
     }
     let registration = match prepared_prompt
@@ -2434,7 +2364,6 @@ async fn agent_send_impl(
             None => enqueue(),
         },
     };
-    let submitted = response.is_ok();
     let result = match response {
         Ok(response) => response.await.map_err(|error| error.to_string()),
         Err(error) => Err(error),
@@ -2454,29 +2383,6 @@ async fn agent_send_impl(
                 (!withdrawn()).then_some("本轮执行未成功，请执行者检查结果并更新工作项。"),
             )
             .await;
-        }
-        if let Some(prompt_id) = prompt_id.as_deref() {
-            crate::coding_review_runtime::discard(&session_id, prompt_id);
-            // Settle this exact failed admission. A transport error may still
-            // have dispatched work, so use the real cancellation handshake.
-            if document_tool_bridge {
-                let (document, runtime) = tokio::join!(
-                    crate::coding_document_bridge::cancel_session_run(&session_id, Some(prompt_id)),
-                    async {
-                        if submitted {
-                            agent_runtime::cancel(&tx, &session_id, "stop", Some(prompt_id))
-                                .await?;
-                        }
-                        Ok::<(), anyhow::Error>(())
-                    },
-                );
-                if let Err(error) = document {
-                    tracing::warn!(%error, "Failed prompt retains editor protection");
-                }
-                if let Err(error) = runtime {
-                    tracing::warn!(%error, "Failed prompt runtime cancellation unavailable");
-                }
-            }
         }
     }
     if let Some((generation, _)) = task_admitted {
@@ -2544,21 +2450,14 @@ pub async fn agent_cancel(
     } else {
         prompt_id.as_deref()
     };
-    // Fence editor transactions immediately; the UI still waits for the
-    // Runtime's real cancellation acknowledgement if the prompt was dispatched.
-    crate::coding_document_bridge::fence_session_run(&session_id, target_prompt).await;
     let stop_automation =
         crate::automation::cancel_prompt(&session_id, target_prompt, cancel_trigger == "pause");
-    let (document_result, automation_result, runtime_result) = tokio::join!(
-        crate::coding_document_bridge::cancel_session_run(&session_id, target_prompt),
-        stop_automation,
-        async {
-            if withdrawn && previous_live.is_none() {
-                return Ok(());
-            }
-            agent_runtime::cancel_from_user(&tx, &session_id, cancel_trigger, target_prompt).await
-        },
-    );
+    let (automation_result, runtime_result) = tokio::join!(stop_automation, async {
+        if withdrawn && previous_live.is_none() {
+            return Ok(());
+        }
+        agent_runtime::cancel_from_user(&tx, &session_id, cancel_trigger, target_prompt).await
+    },);
     if let Err(ref error) = automation_result {
         tracing::warn!(%error, %session_id, cancel_trigger, "failed to stop automation while cancelling turn");
     }
@@ -2570,7 +2469,7 @@ pub async fn agent_cancel(
             return Err(error.to_string());
         }
     }
-    document_result.and(automation_result)
+    automation_result
 }
 
 /// Cleanly shut down the agent (cancel token + clear state) so the frontend
@@ -3410,25 +3309,6 @@ mod tests {
     }
 
     use super::*;
-
-    #[test]
-    fn coding_document_authority_follows_persisted_session_ownership() {
-        let workspace = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
-        let root = workspace.path().canonicalize().unwrap();
-        let mut task = crate::coding::task::create_task(
-            &root,
-            "native owner",
-            "retain shared document authority",
-        )
-        .unwrap();
-        assert!(!coding_session_owns_task(&root, "owned-session"));
-        task.session_id = Some("owned-session".into());
-        crate::coding::task::save(&root, &task).unwrap();
-        assert!(coding_session_owns_task(&root, "owned-session"));
-        assert!(!coding_session_owns_task(&root, "unrelated-chat"));
-        assert!(!coding_session_owns_task(other.path(), "owned-session"));
-    }
 
     fn shutdown_fixture(state: &AppState) -> tokio::sync::watch::Sender<bool> {
         let (client, _agent) = echo_agent_acp::acp_channels();

@@ -800,7 +800,6 @@ impl AutomationManager {
         desktop_coordinator::finish_run(&run_id);
         self.reject_session_approvals(session_id).await;
         self.emit_status(session_id).await;
-        crate::coding_document_bridge::fence_session_run(session_id, None).await;
         let tx = self
             .app
             .state::<crate::commands::AppState>()
@@ -823,11 +822,7 @@ impl AutomationManager {
                 }
             }
         };
-        let (cancel, _, _) = tokio::join!(
-            runtime,
-            extension,
-            crate::coding_document_bridge::cancel_session_run(session_id, None)
-        );
+        let (cancel, _) = tokio::join!(runtime, extension);
         if let Err(error) = cancel {
             tracing::warn!(%error,%session_id,"blocked desktop turn model cancellation unavailable; native authority revoked");
         }
@@ -845,11 +840,10 @@ impl AutomationManager {
 
     async fn pause_user_task(&self, session_id: &str, reason: &str) -> Result<(), String> {
         let session = self.session(session_id).await?;
-        // Fence physical work immediately, then cancel all three lanes together.
+        // Fence physical work immediately, then pause native and model work together.
         // Browser detach or an unresponsive provider must not delay model stop.
         session.cancel_actions();
         session.task.lock().unwrap().pause(reason);
-        crate::coding_document_bridge::fence_session_run(session_id, None).await;
         let tx = self
             .app
             .state::<crate::commands::AppState>()
@@ -871,13 +865,9 @@ impl AutomationManager {
             }
             Ok(())
         };
-        let (document, native, runtime) = tokio::join!(
-            crate::coding_document_bridge::cancel_session_run(session_id, None),
-            self.pause_with_reason(session_id, true, reason),
-            runtime,
-        );
+        let (native, runtime) = tokio::join!(self.pause_with_reason(session_id, true, reason), runtime);
         runtime.map_err(|e| format!("已撤销桌面执行权，模型暂停未确认：{e}"))?;
-        document.and(native)
+        native
     }
 
     async fn pause_with_reason(

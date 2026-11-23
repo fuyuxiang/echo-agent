@@ -29,7 +29,6 @@ vi.mock("@/components/Sidebar", () => ({Sidebar: (props: ComponentProps<typeof i
   <button onClick={() => props.onSelect("work-session", "/workspace")}>从侧栏打开项目会话</button>
   <button onClick={() => props.onNavigate?.("项目")}>查看项目</button>
   <button onClick={() => props.onNewSession()}>返回首页</button>
-  <button onClick={() => props.onNavigate?.("代码开发")}>打开 Code</button>
 </aside>}));
 vi.mock("@/components/ChatView", async () => {
   const { SessionHeader } = await import("@/components/SessionHeader");
@@ -88,7 +87,7 @@ beforeEach(() => {
   vi.mocked(client.agentPrepareTaskWorkspace).mockReset().mockImplementation(async id => `/workspace/Tasks/${id}`);
   vi.mocked(invoke).mockImplementation(async command => command === "permission_mode_get"
     ? { permissionMode: "ask", configuredPermissionMode: "ask", locked: false }
-    : ["notification_take_pending_opens", "coding_task_list"].includes(String(command)) ? [] : null);
+    : ["notification_take_pending_opens"].includes(String(command)) ? [] : null);
 });
 async function start() {
   useProjectsStore.setState({projects:[{id:"project-no-cwd",name:"Project",createdAt:"2026-10-26T00:00:00Z",connectors:[],experts:[],skills:[],assets:[],members:[],plans:[],tasks:[],conversations:[]}]});

@@ -845,7 +845,7 @@ fn visible_completion_text(value: &str) -> &str {
 
 async fn chat_completion(
     client: &reqwest::Client,
-    access: &crate::providers::InlineModelAccess,
+    access: &crate::providers::ConfiguredModelAccess,
     system: &str,
     user: &str,
 ) -> Result<String, String> {
@@ -924,7 +924,7 @@ fn check_minutes_response_complete(value: &serde_json::Value, backend: &str) -> 
 
 async fn generate_minutes_text(
     client: &reqwest::Client,
-    access: &crate::providers::InlineModelAccess,
+    access: &crate::providers::ConfiguredModelAccess,
     title: &str,
     transcript: &str,
 ) -> Result<String, String> {
@@ -1076,11 +1076,17 @@ pub(crate) fn preload_speech(app: &tauri::AppHandle) {
 fn resolve_minutes_target(
     app: &tauri::AppHandle,
     state: &crate::commands::AppState,
-) -> Result<(MeetingMinutesTarget, crate::providers::InlineModelAccess), String> {
+) -> Result<
+    (
+        MeetingMinutesTarget,
+        crate::providers::ConfiguredModelAccess,
+    ),
+    String,
+> {
     let revision = crate::providers::model_config_revision();
     let model_id = crate::commands::meeting_default_model_id(app, state)?;
-    let access = crate::providers::inline_model_access(&model_id)
-        .map_err(|error| error.replace("Tab 模型", "默认会议纪要模型"))?;
+    let access = crate::providers::configured_model_access(&model_id)
+        .map_err(|error| error.replace("模型", "默认会议纪要模型"))?;
     if revision != crate::providers::model_config_revision() {
         return Err("默认模型配置正在更新，请重新确认纪要接收方".into());
     }
@@ -1106,8 +1112,14 @@ pub fn meeting_minutes_target(
 
 fn confirmed_minutes_access(
     expected: &MeetingMinutesTarget,
-    resolved: Result<(MeetingMinutesTarget, crate::providers::InlineModelAccess), String>,
-) -> Result<crate::providers::InlineModelAccess, String> {
+    resolved: Result<
+        (
+            MeetingMinutesTarget,
+            crate::providers::ConfiguredModelAccess,
+        ),
+        String,
+    >,
+) -> Result<crate::providers::ConfiguredModelAccess, String> {
     let (target, access) = resolved?;
     if &target != expected {
         return Err("默认纪要模型或连接已变更，请重新确认接收方后生成纪要".into());
@@ -1117,7 +1129,7 @@ fn confirmed_minutes_access(
 
 async fn summarize(
     record: &mut MeetingRecord,
-    access: Result<crate::providers::InlineModelAccess, String>,
+    access: Result<crate::providers::ConfiguredModelAccess, String>,
 ) -> Result<(), String> {
     let transcript = record
         .transcript_text
@@ -1812,7 +1824,7 @@ model = "configured-chat"
         .unwrap();
         let mut complete = saved;
         complete.minutes = Some("现有纪要".into());
-        let access = || crate::providers::inline_model_access("local/preferred");
+        let access = || crate::providers::configured_model_access("local/preferred");
         assert!(summarize(&mut complete, access()).await.is_err());
         complete = read_meeting(&complete.id).unwrap();
         assert_eq!(complete.status, "transcribed");
@@ -1889,7 +1901,7 @@ model = "configured-chat"
         };
         let mut changed = target.clone();
         changed.revision = "two".into();
-        let access = crate::providers::InlineModelAccess {
+        let access = crate::providers::ConfiguredModelAccess {
             api_key: String::new(),
             endpoint: "https://organization.example/v1/responses".into(),
             remote_model_id: "model".into(),

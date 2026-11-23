@@ -169,6 +169,7 @@ pub(crate) fn install_output(
     destination: &Path,
     overwrite: bool,
 ) -> Result<(), String> {
+    crate::legacy_workspace::ensure_workspace_available(destination)?;
     let parent = destination.parent().ok_or("无效的保存目录")?;
     let stage = tempfile::Builder::new()
         .prefix(".echo-office-stage-")
@@ -215,12 +216,12 @@ pub(crate) async fn generate(
 ) -> Result<(), String> {
     let script = office_resource(app, "worker.mjs")?;
     let font = office_resource(app, "fonts/NotoSansCJKsc-Regular.otf")?;
-    let executable = crate::theia::node_executable(app);
-    let executable = crate::theia::node_compatible_path(&executable)?;
-    let script = crate::theia::node_compatible_path(&script)?;
-    let output = crate::theia::node_compatible_path(output)?;
-    let font = crate::theia::node_compatible_path(&font)?;
-    let mut worker = tokio::process::Command::new(executable);
+    let executable = office_resource(app, crate::office_node::NODE_RELATIVE)?;
+    let executable = crate::office_node::node_compatible_path(&executable)?;
+    let script = crate::office_node::node_compatible_path(&script)?;
+    let output = crate::office_node::node_compatible_output_path(output)?;
+    let font = crate::office_node::node_compatible_path(&font)?;
+    let mut worker = crate::process_supervisor::background_async_command(executable);
     worker
         .arg("--max-old-space-size=512")
         .arg(script)
@@ -230,8 +231,6 @@ pub(crate) async fn generate(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    #[cfg(windows)]
-    worker.creation_flags(crate::process_supervisor::CREATE_NO_WINDOW);
     let mut child = worker
         .spawn()
         .map_err(|error| format!("无法启动内置文档处理程序：{error}"))?;

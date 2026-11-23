@@ -7,13 +7,13 @@
  * 根目录取 cwd（会话工作区）。隐藏/构建目录已在后端过滤。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listDir, type DirEntry, type CodingGitFile } from "@/lib/agent-client";
+import { listDir, type DirEntry } from "@/lib/agent-client";
 import { formatFileSize } from "@/lib/file-utils";
 import { ChevronRightIcon } from "@/foundation/components/Icon/icons";
 import { InlineRenameField } from "./InlineRenameField";
-import { FileTypeIcon } from "@/features/coding/lib/file-type-icon";
-import { useFileTreeSelectionStore } from "@/features/coding/store/file-tree-selection-store";
-import { FixedSizeList, type FixedSizeListHandle } from "@/features/coding/components/FixedSizeList";
+import { FileTypeIcon } from "@/lib/file-type-icon";
+import { useFileTreeSelectionStore } from "@/stores/file-tree-selection-store";
+import { FixedSizeList, type FixedSizeListHandle } from "@/components/FixedSizeList";
 import { useElementSize } from "@/lib/use-element-size";
 
 /** 已加载的目录条目缓存：path → entries。 */
@@ -25,49 +25,6 @@ type VisibleTreeRow =
 
 function normalize(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "");
-}
-
-const GIT_STATUS_LETTER: Record<string, string> = {
-  added: "A",
-  modified: "M",
-  deleted: "D",
-  renamed: "R",
-  untracked: "U",
-  ignored: "I",
-  conflict: "!",
-};
-
-function letterForGitStatus(status: string): string {
-  return GIT_STATUS_LETTER[status] ?? "?";
-}
-
-function gitStatusTooltip(file: CodingGitFile): string {
-  const label: Record<string, string> = {
-    added: "新增已暂存",
-    modified: "已修改",
-    deleted: "已删除",
-    renamed: "已重命名",
-    untracked: "未跟踪",
-    ignored: "已忽略",
-    conflict: "冲突",
-  };
-  const name = label[file.status] ?? file.status;
-  if (file.added || file.removed) {
-    return `${name}（+${file.added} / -${file.removed}）`;
-  }
-  return name;
-}
-
-/** Trim the workspace root from an absolute path; returns POSIX. */
-function toWorkspaceRelative(root: string, absolute: string): string | null {
-  if (!root) return null;
-  const trimmed = absolute.replace(/\\/g, "/");
-  const normRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
-  if (trimmed === normRoot) return "";
-  if (trimmed.startsWith(`${normRoot}/`)) {
-    return trimmed.slice(normRoot.length + 1);
-  }
-  return null;
 }
 
 /**
@@ -133,8 +90,6 @@ interface FileTreeViewProps {
   onRenameCancel?: () => void;
   /** SP2: include hidden dotfile entries (still honouring .gitignore / .echoagentignore). */
   includeHidden?: boolean;
-  /** SP2: git status indexed by workspace-relative POSIX path. */
-  gitStatusByPath?: Map<string, CodingGitFile>;
   /** SP2: top-level entries above this count trigger virtualisation. */
   topLevelThreshold?: number;
   /** SP2: row height used by the virtual list, in px. */
@@ -168,7 +123,6 @@ export function FileTreeView({
   onRenameSubmit,
   onRenameCancel,
   includeHidden = false,
-  gitStatusByPath,
   topLevelThreshold = 200,
   virtualItemHeight = 26,
   filter,
@@ -563,7 +517,6 @@ export function FileTreeView({
         cutPaths={cutPaths}
         renamingPath={renamingPath ?? null}
         visiblePaths={visiblePaths}
-        gitStatusByPath={gitStatusByPath}
         onContextMenu={onContextMenu}
         onRenameSubmit={onRenameSubmit}
         onRenameCancel={onRenameCancel}
@@ -664,7 +617,6 @@ function TreeNode({
   cutPaths,
   renamingPath,
   visiblePaths,
-  gitStatusByPath,
   onContextMenu,
   onRenameSubmit,
   onRenameCancel,
@@ -686,7 +638,6 @@ function TreeNode({
   cutPaths?: Set<string>;
   renamingPath: string | null;
   visiblePaths: string[];
-  gitStatusByPath?: Map<string, CodingGitFile>;
   onContextMenu?: (event: React.MouseEvent, entry: DirEntry) => void;
   onRenameSubmit?: (path: string, newName: string) => Promise<void>;
   onRenameCancel?: () => void;
@@ -707,8 +658,6 @@ function TreeNode({
   const children = isDir ? loaded.get(entry.path) : undefined;
   const childLoading = isDir && isExpanded && loadingDirs.has(entry.path);
   const childError = isDir && isExpanded ? errors.get(entry.path) : undefined;
-  const relativePath = gitStatusByPath ? toWorkspaceRelative(root, entry.path) : null;
-  const gitStatus = relativePath !== null ? gitStatusByPath?.get(relativePath) : undefined;
   const isSymlink = entry.kind === "symlink";
 
   const handleClick = (event: React.MouseEvent) => {
@@ -904,14 +853,6 @@ function TreeNode({
             ) : null}
           </>
         )}
-        {gitStatus && !isRenaming ? (
-          <span
-            className={`file-tree__git-badge file-tree__git-badge--${gitStatus.status}`}
-            title={gitStatusTooltip(gitStatus)}
-          >
-            {letterForGitStatus(gitStatus.status)}
-          </span>
-        ) : null}
       </div>
       {renderChildren && isDir &&
         isExpanded &&
@@ -932,7 +873,6 @@ function TreeNode({
             cutPaths={cutPaths}
             renamingPath={renamingPath}
             visiblePaths={visiblePaths}
-            gitStatusByPath={gitStatusByPath}
             onContextMenu={onContextMenu}
             onRenameSubmit={onRenameSubmit}
             onRenameCancel={onRenameCancel}

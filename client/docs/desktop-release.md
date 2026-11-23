@@ -6,14 +6,14 @@
 
 1. 在三种目标机器或对应的原生 CI runner 上，使用 Node.js 22 或 24、pnpm 10 和项目要求的 Rust、protoc 及平台工具链安装依赖。使用 `pnpm install --frozen-lockfile`。
 2. 在 Windows x64 上运行 `pnpm dist:win`；在两种 macOS 架构上分别运行 `pnpm dist:mac`。正式发布须配置平台签名，macOS 构建还必须通过 Gatekeeper 检查。`-AllowUnsignedPlatform` 和 `--allow-unsigned-platform` 只用于 CI 与本地验证。
-3. `desktop-validation` 工作流会在三个原生 runner 上调用同一套发行构建脚本，安装或挂载安装包，并验证 WebView、原生 IPC 和包内 Theia IDE 启动。正式发布前检查对应版本的三个作业均通过。
+3. `desktop-validation` 工作流会在三个原生 runner 上调用同一套发行构建脚本，安装或挂载安装包，并验证 WebView、原生 IPC 和通过随包 Node.js 的离线 Office 导出。正式发布前检查对应版本的三个作业均通过。
 4. 在受控 macOS 发行机运行 `scripts/prepare-update-artifacts.sh`，传入一个 Windows 安装包和两个 DMG。脚本核对文件名与包内版本、架构、平台签名，然后生成并验证三个 updater 签名。正式发布不要使用 `--unsigned` 或 `--allow-unsigned-platform`。
 
 Windows 打包脚本的快速回归检查为 `pnpm test:windows-packaging`，无需编译安装包。CI 在 Windows PowerShell 5.1 和 PowerShell 7 下分别检查原生命令警告、失败退出码、版本输出与含方括号的项目路径。脚本在构建失败时停止，并恢复调用前的工作目录；原生命令仅输出警告且退出码为零时继续。
 
 Windows NSIS 默认安装在当前用户的 `%LOCALAPPDATA%\EchoAgent`，不要求管理员权限。自定义的长期目录会在升级时保留；Temp、系统临时目录、浏览器缓存及指向这些目录的 junction 不可作为安装位置。安装器在维护页面之前、目录选择之后和复制文件之前校验路径。旧版本若记录到了临时目录，即使清理缓存后旧卸载程序已丢失，新安装包也会恢复到固定目录、更新安装注册信息及快捷方式，保留任务和设置。已存在的开机启动项会更新程序路径，保留参数和启用状态。应用内升级显式传入已校验的目录，`/D=` 保持为最后一个未加引号的参数。受影响用户可直接运行修复后的完整安装包；如果客户端本体已被清除，无法依赖应用内更新恢复。
 
-`scripts/validate-windows-installer.ps1` 只能在没有旧产品记录的一次性 Windows GitHub Actions runner 上运行。它检查默认安装、中文含空格目录及升级、残留 Temp 注册与缺失卸载程序恢复、临时目录与 junction 拒绝、快捷方式、保留用户数据，以及清理测试缓存后的真实 WebView/IPC/IDE 启动。不要在日常 Windows 用户账户中把测试安装目录放到 Temp，也不要让验收脚本复用正式用户的产品注册记录。安装模板基于锁定的 Tauri CLI 2.11.4；升级 CLI 时需同步审查 `src-tauri/windows/installer.nsi`。
+`scripts/validate-windows-installer.ps1` 只能在没有旧产品记录的一次性 Windows GitHub Actions runner 上运行。它检查默认安装、中文含空格目录及升级、残留 Temp 注册与缺失卸载程序恢复、临时目录与 junction 拒绝、快捷方式、保留用户数据，以及清理测试缓存后的真实 WebView、原生 IPC 和 Office 导出。不要在日常 Windows 用户账户中把测试安装目录放到 Temp，也不要让验收脚本复用正式用户的产品注册记录。安装模板基于锁定的 Tauri CLI 2.11.4；升级 CLI 时需同步审查 `src-tauri/windows/installer.nsi`。
 
 客户端更新地址保持为 `https://123.56.188.16:8787/desktop-updates/stable/<target>-<arch>.json`。HTTP 410 表示服务当前没有提供可用的更新路由，客户端会明确提示检查发布服务；不会把它当成“已是最新版”，也不会根据响应正文擅自切换服务地址。
 
@@ -21,9 +21,10 @@ macOS 的 DMG 打包通过 `scripts/macos-dmg.mjs` 记录本次创建的临时�
 
 Windows 原生构建使用 Visual Studio 2022 C++ x64 工具链、MSVC v143 Spectre-mitigated libraries 和 Windows SDK。打包脚本仅选择 VS 2022，并为 npm/node-gyp 设置一致的版本；仅安装 VS 2026 的机器会在依赖安装前得到明确提示。CI 固定使用 `windows-2022` 和 Python 3.12，避免 `windows-latest` 迁移到 VS 2026 后与锁定的 node-gyp 11 不兼容。
 
-`Windows native addons` 作业在 Node.js 22.23.4 和 24.22.1 下，使用真实 IDE 锁文件安装依赖并从源码编译 `drivelist`、`node-pty`，随后验证磁盘枚举和 ConPTY 终端生命周期。此检查与完整安装包构建均需通过。
 
 ## 更新服务升级
+
+内置代码工作台已下线。原会话仍可从历史打开，工作目录和工作树保存在原位置。旧会话中的「查看迁移资料」可导出计划草稿与队列。Windows 安装器清理已知的旧程序文件，保留旧资源目录中的其他内容。[旧版工作台数据](desktop-recovery.md#旧版工作台数据)
 
 更新服务须安装本仓库当前版本的 `deploy/update-server/publish-update.py` 和 `deploy/update-server/nginx-location.conf`。按 `deploy/update-server/install.sh` 的要求上传两个文件并执行安装脚本。安装脚本保留旧的单平台清单，并将其复制到初始清单目录；Nginx 随后通过 `stable/current` 读取清单。升级完成后，应核对三个现有更新 URL 与升级前结果一致，再发布新版本。
 
@@ -34,3 +35,5 @@ Windows 原生构建使用 Visual Studio 2022 C++ x64 工具链、MSVC v143 Spec
 先运行 `bash scripts/publish-all-updates.sh --artifacts-dir release/v<版本> --dry-run` 进行本地预检，再去掉 `--dry-run` 发布。脚本上传三个更新文件及签名，由服务端一次性切换三个清单。发布后分别读取三个 `stable/<target>.json` URL，核对版本、签名和下载地址，并下载文件与 `artifacts.json`、`SHA256SUMS` 对照。
 
 若发布后需要回滚，保留旧发行文件并将 `stable/current` 原子切回上一清单目录；先确认旧文件仍可下载。回滚操作应由发行负责人执行，并记录切换前后的目录名称。
+
+Office Worker 和 Node.js 由 `pnpm office:build` 准备，许可文件随 `office/node/` 打包。包级启动检查在清空可执行文件搜索路径的环境验证 Word、Excel、PPT 和 PDF 生成。Windows 安装验收还覆盖已登记安装目录中的旧 IDE 资源清理、覆盖安装及卸载，清理前检查固定资源标记和重解析点。

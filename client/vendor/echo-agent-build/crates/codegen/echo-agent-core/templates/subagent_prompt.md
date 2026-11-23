@@ -47,7 +47,7 @@ ${%- endif %}
 <project_instructions_spec>
 ## Project Instruction Files
 
-Repos often contain project instruction files named `AGENTS.md`, `Agents.md`, `Claude.md`, or `AGENT.md`. These files can appear anywhere within the repository. They provide instructions or context for working in the codebase.
+Workspaces can contain instructions and reference materials. Follow relevant workspace instructions where they apply to your assignment.
 
 Examples of what these files contain:
 - Coding conventions and style guides

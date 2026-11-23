@@ -135,4 +135,4 @@ cargo check --locked --manifest-path scripts/desktop-native-check/Cargo.toml --t
 node scripts/validate-computer-task-ui.mjs
 ```
 
-浏览器界面检查需要配置 `PLAYWRIGHT_MODULE` 或准备项目原有的 Theia 浏览器依赖；截图测试只使用合成 Tauri 传输。原生模块测试中的事件对象创建要求可访问 WindowServer，普通测试不派发真实输入。真实桌面探测和隔离应用验收需显式执行，不能把默认忽略当作通过。真实模型验收驱动及独立文件核验见 [验收](validation.md)。
+浏览器界面检查默认使用根开发依赖中的 Playwright，亦可配置 `PLAYWRIGHT_MODULE`；截图测试只使用合成 Tauri 传输。原生模块测试中的事件对象创建要求可访问 WindowServer，普通测试不派发真实输入。真实桌面探测和隔离应用验收需显式执行，不能把默认忽略当作通过。真实模型验收驱动及独立文件核验见 [验收](validation.md)。

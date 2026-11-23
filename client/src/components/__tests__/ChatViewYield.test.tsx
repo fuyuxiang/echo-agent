@@ -110,7 +110,7 @@ vi.mock("@/lib/agent-client", async () => {
     "sessionSearch", "sessionFork", "agentsList", "agentsGet", "agentsSave",
     "agentsDelete", "agentsTemplate", "mcpList", "mcpUpsert", "mcpDelete",
     "mcpToggle", "mcpConfigPath", "mcpConfigRead", "mcpConfigSave", "mcpAuthTrigger",
-    "mcpAuthStatus", "togglePlanMode", "setCodingMode", "internalReload", "automationsSnapshot",
+    "mcpAuthStatus", "togglePlanMode", "setAgentMode", "internalReload", "automationsSnapshot",
     "automationsSave", "automationsDelete", "automationsSetStatus", "automationsRun",
     "automationRecordsArchive", "automationRecordsDelete",
     "agentsDefaultsGet", "agentsDefaultsSave",
@@ -130,7 +130,7 @@ vi.mock("@/lib/agent-client", async () => {
   mod.rewindPoints = vi.fn(asyncArr);
   mod.rewindPreview = vi.fn(async () => ({ revision: "revision", cleanFiles: ["report.txt"], conflicts: [] }));
   mod.rewindUndoPreview = vi.fn(async () => null);
-  mod.setCodingMode = vi.fn(asyncEmpty);
+  mod.setAgentMode = vi.fn(asyncEmpty);
   mod.providersList = async () => ({ providers: [], models: [] });
   mod.flattenModels = () => [];
   mod.agentAuthStatus = async () => ({ ready: true, providers: [] });
@@ -159,7 +159,7 @@ vi.mock("@/lib/automation-client", async (importOriginal) => ({
 import { automationResume, automationPause } from "@/lib/automation-client";
 import { ChatView } from "../ChatView";
 import { ThemeProvider } from "../ThemeProvider";
-import { rewindExecute, rewindPoints, sessionFork, sessionContinue, setCodingMode, commandsList } from "@/lib/agent-client";
+import { rewindExecute, rewindPoints, sessionFork, sessionContinue, setAgentMode, commandsList } from "@/lib/agent-client";
 import { useSubagentStore } from "@/stores/subagent-store";
 
 function workspaceItem(name: string) {
@@ -244,7 +244,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
     scrollIntoViewMock.mockClear();
     vi.mocked(rewindExecute).mockReset().mockResolvedValue({ targetPromptIndex: 0 });
     vi.mocked(rewindPoints).mockReset().mockResolvedValue([]);
-    vi.mocked(setCodingMode).mockClear();
+    vi.mocked(setAgentMode).mockClear();
   });
 
   it("后台接续失败保留主回复的分支入口，不暴露重跑原问题的操作", () => {
@@ -709,7 +709,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
     });
     fireEvent.click(screen.getByRole("menuitemradio", { name: /操作网页/ }));
 
-    await waitFor(() => expect(setCodingMode).toHaveBeenCalledWith("s1", "browser_use"));
+    await waitFor(() => expect(setAgentMode).toHaveBeenCalledWith("s1", "browser_use"));
     expect(baseProps.onToast).not.toHaveBeenCalledWith("已启用操作网页");
   });
 
@@ -1124,7 +1124,7 @@ describe("ChatView pause/yield/resume 闭环", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "添加" })));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /操作网页/ }));
     await waitFor(() => expect(baseProps.onCancel).toHaveBeenCalledWith("pause"));
-    expect(setCodingMode).not.toHaveBeenCalled();
+    expect(setAgentMode).not.toHaveBeenCalled();
   });
 
   it("运行中切换网页工具在暂停确认后才生效，等待时保留原模式", async () => {
@@ -1135,10 +1135,10 @@ describe("ChatView pause/yield/resume 闭环", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "添加" })));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /操作网页/ }));
     await waitFor(() => expect(baseProps.onCancel).toHaveBeenCalledWith("pause"));
-    expect(setCodingMode).not.toHaveBeenCalled();
+    expect(setAgentMode).not.toHaveBeenCalled();
     expect(storeState.agentMode).toBe("default");
     await act(async () => confirmPause(true));
-    await waitFor(() => expect(setCodingMode).toHaveBeenCalledWith("s1", "browser_use"));
+    await waitFor(() => expect(setAgentMode).toHaveBeenCalledWith("s1", "browser_use"));
     expect(storeState.agentMode).toBe("browser_use");
     expect(baseProps.onSend).not.toHaveBeenCalled();
   });

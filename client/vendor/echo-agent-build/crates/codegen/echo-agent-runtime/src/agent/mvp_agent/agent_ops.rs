@@ -4599,71 +4599,74 @@ impl MvpAgent {
                 agent_definition.override_file_tools(file_tools);
             }
         }
-        let lsp_tools_enabled = self
-            .cfg
-            .borrow()
-            .is_feature_enabled(crate::agent::config::Feature::LspTools);
-        if lsp_tools_enabled && tool_ctx.lsp.is_none() {
-            let snapshot = self.plugin_registry_handle.snapshot();
-            let active: Vec<_> = snapshot
-                .iter()
-                .flat_map(|reg| reg.active_plugins())
-                .collect();
-            let (plugin_lsp_paths, plugin_names): (Vec<std::path::PathBuf>, Vec<&str>) = active
-                .iter()
-                .filter_map(|p| {
-                    p.lsp_config_path.clone().map(|path| (path, p.name.as_str()))
-                })
-                .unzip();
-            let (
-                plugin_inline_lsp,
-                inline_names,
-            ): (Vec<&serde_json::Value>, Vec<&str>) = active
-                .iter()
-                .filter_map(|p| {
-                    p.inline_lsp_servers.as_ref().map(|v| (v, p.name.as_str()))
-                })
-                .unzip();
-            let sourced = echo_agent_tools::implementations::lsp::config::load_servers_with_plugins_sourced(
-                tool_ctx.cwd.as_path(),
-                &plugin_lsp_paths,
-                &plugin_inline_lsp,
-                &plugin_names,
-                &inline_names,
-            );
-            let servers = folder_trust::filter_untrusted_project_lsp(
-                tool_ctx.cwd.as_path(),
-                sourced,
-            );
-            tool_ctx.lsp_server_names = servers.keys().cloned().collect();
-            if servers.is_empty() {
-                let user_path = echo_agent_tools::util::echo_agent_home::echo_agent_home()
-                    .join("lsp.json");
-                let project_path = tool_ctx.cwd.as_path().join(".echo-agent").join("lsp.json");
-                tracing::debug!(
-                    cwd = %tool_ctx.cwd,
-                    user_lsp_path = %user_path.display(),
-                    project_lsp_path = %project_path.display(),
-                    "LSP tools enabled, but no language servers are configured"
+        #[cfg(not(feature = "desktop"))]
+        {
+            let lsp_tools_enabled = self
+                .cfg
+                .borrow()
+                .is_feature_enabled(crate::agent::config::Feature::LspTools);
+            if lsp_tools_enabled && tool_ctx.lsp.is_none() {
+                let snapshot = self.plugin_registry_handle.snapshot();
+                let active: Vec<_> = snapshot
+                    .iter()
+                    .flat_map(|reg| reg.active_plugins())
+                    .collect();
+                let (plugin_lsp_paths, plugin_names): (Vec<std::path::PathBuf>, Vec<&str>) = active
+                    .iter()
+                    .filter_map(|p| {
+                        p.lsp_config_path.clone().map(|path| (path, p.name.as_str()))
+                    })
+                    .unzip();
+                let (
+                    plugin_inline_lsp,
+                    inline_names,
+                ): (Vec<&serde_json::Value>, Vec<&str>) = active
+                    .iter()
+                    .filter_map(|p| {
+                        p.inline_lsp_servers.as_ref().map(|v| (v, p.name.as_str()))
+                    })
+                    .unzip();
+                let sourced = echo_agent_tools::implementations::lsp::config::load_servers_with_plugins_sourced(
+                    tool_ctx.cwd.as_path(),
+                    &plugin_lsp_paths,
+                    &plugin_inline_lsp,
+                    &plugin_names,
+                    &inline_names,
                 );
-            } else {
-                use echo_agent_tools::implementations::lsp::{
-                    LspBackend, LspBackendAdapter, LspManager,
-                };
-                let mgr = std::sync::Arc::new(
-                    tokio::sync::Mutex::new(
-                        LspManager::new(
-                                servers,
-                                tool_ctx.cwd.as_path().to_path_buf(),
-                                true,
-                                echo_agent_tools::notification::ToolNotificationHandle::noop(),
-                            )
-                            .with_process_scope(tool_ctx.process_scope.clone()),
-                    ),
+                let servers = folder_trust::filter_untrusted_project_lsp(
+                    tool_ctx.cwd.as_path(),
+                    sourced,
                 );
-                let adapter = std::sync::Arc::new(LspBackendAdapter::new(mgr));
-                adapter.ensure_started_background();
-                tool_ctx.lsp = Some(adapter as std::sync::Arc<dyn LspBackend>);
+                tool_ctx.lsp_server_names = servers.keys().cloned().collect();
+                if servers.is_empty() {
+                    let user_path = echo_agent_tools::util::echo_agent_home::echo_agent_home()
+                        .join("lsp.json");
+                    let project_path = tool_ctx.cwd.as_path().join(".echo-agent").join("lsp.json");
+                    tracing::debug!(
+                        cwd = %tool_ctx.cwd,
+                        user_lsp_path = %user_path.display(),
+                        project_lsp_path = %project_path.display(),
+                        "LSP tools enabled, but no language servers are configured"
+                    );
+                } else {
+                    use echo_agent_tools::implementations::lsp::{
+                        LspBackend, LspBackendAdapter, LspManager,
+                    };
+                    let mgr = std::sync::Arc::new(
+                        tokio::sync::Mutex::new(
+                            LspManager::new(
+                                    servers,
+                                    tool_ctx.cwd.as_path().to_path_buf(),
+                                    true,
+                                    echo_agent_tools::notification::ToolNotificationHandle::noop(),
+                                )
+                                .with_process_scope(tool_ctx.process_scope.clone()),
+                        ),
+                    );
+                    let adapter = std::sync::Arc::new(LspBackendAdapter::new(mgr));
+                    adapter.ensure_started_background();
+                    tool_ctx.lsp = Some(adapter as std::sync::Arc<dyn LspBackend>);
+                }
             }
         }
         let inference_idle_timeout_secs = {
@@ -4879,8 +4882,8 @@ impl MvpAgent {
             let fs_watch_caps = crate::session::fs_watch::FsWatchCapabilities::resolve(crate::session::fs_watch::CapabilityInputs {
                 client_notify: fs_notify_config.is_some(),
                 hunk_tracking: hunk_plan.enabled(),
-                code_nav: client_code_nav_enabled,
-                git_head_changed,
+                code_nav: !cfg!(feature = "desktop") && client_code_nav_enabled,
+                git_head_changed: git_head_changed.filter(|_| !cfg!(feature = "desktop")),
             });
             tool_ctx.live_orphan_heal_lock = self
                 .session_registry
@@ -4918,7 +4921,7 @@ impl MvpAgent {
                     buffering_settings,
                     origin_client.clone(),
                     self.codebase_indexes.clone(),
-                    client_code_nav_enabled,
+                    !cfg!(feature = "desktop") && client_code_nav_enabled,
                     fs_watch_caps,
                     status_line_enabled,
                     feedback_proxy_url,

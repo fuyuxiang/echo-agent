@@ -7,7 +7,6 @@
 | 主题 | 文档 |
 | --- | --- |
 | 任务、搜索、资料来源与失败恢复 | [产品体验约定](product-experience.md) |
-| 代码编辑、Git、终端与工作区 | [Echo Code 与 Theia](echo-code-theia.md) |
 | 浏览器和电脑操作的平台与权限 | [自动化平台说明](automation-platform-support.md) |
 | 原生桌面工具、引用及读取限制 | [桌面控件](desktop-control/README.md) |
 | 电脑任务的交互与暂停续做 | [桌面任务体验](desktop-control/task-experience-design.md) |

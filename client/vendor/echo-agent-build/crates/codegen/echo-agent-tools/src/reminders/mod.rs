@@ -14,10 +14,12 @@
 //!
 //! All reminders are collected and appended in `call_new_tool()`.
 
+#[cfg(not(feature = "desktop"))]
 pub mod lsp_diagnostics;
 pub mod skill_discovery;
 pub mod task_completion;
 
+#[cfg(not(feature = "desktop"))]
 pub use lsp_diagnostics::LspDiagnosticsReminder;
 pub use skill_discovery::SkillDiscoveryReminder;
 pub use task_completion::TaskCompletionReminder;

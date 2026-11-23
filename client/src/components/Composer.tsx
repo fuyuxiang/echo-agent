@@ -28,7 +28,7 @@ import { PermissionPicker, type ProjectDraftPermission } from "./PermissionPicke
 import { AutomationBoundaryNotice, type PermissionRole } from "./AutomationBoundaryNotice";
 import { usePermissionModeStore } from "@/stores/permission-mode-store";
 import { SlashCommands, type SlashCommandsHandle } from "./SlashCommands";
-import { AtMentionMenu, type AtMentionHandle, type AtMentionSymbol } from "@/components/AtMentionMenu";
+import { AtMentionMenu, type AtMentionHandle } from "@/components/AtMentionMenu";
 import {
   isClientSlashCommand,
   parseSlashInvocation,
@@ -116,7 +116,6 @@ export function Composer({
   disabled,
   sendDisabled = false,
   filePaths,
-  workspaceSymbols,
   onSend,
   onCancel,
   onControl,
@@ -207,8 +206,6 @@ export function Composer({
   sendDisabled?: boolean;
   /** SP4: workspace-relative file paths to back the `@` candidate picker. */
   filePaths?: string[];
-  /** SP4: workspace symbols (mirrors `SymbolIndexClient.symbols()`). */
-  workspaceSymbols?: AtMentionSymbol[];
   mentionMembers?: { id: string; name: string; role?: string }[];
   onMentionMember?: (memberId: string) => void;
   onSend: (text: string, attachments?: string[]) => boolean | void | Promise<boolean | void>;
@@ -1520,7 +1517,6 @@ export function Composer({
           text={text}
           cursor={cursorPos}
           filePaths={filePaths ?? mentionCandidates.filePaths}
-          workspaceSymbols={workspaceSymbols ?? mentionCandidates.workspaceSymbols}
           members={mentionMembers}
           onPick={(mention, _replacement, memberId) => {
             if (memberId) onMentionMember?.(memberId);

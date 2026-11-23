@@ -1041,7 +1041,6 @@ pub async fn prompt_with_attachments(
         prompt_id,
         send_now,
         None,
-        false,
     )
     .await
 }
@@ -1057,7 +1056,6 @@ pub async fn prompt_with_mode_and_attachments(
     prompt_id: Option<&str>,
     send_now: bool,
     mode: Option<&str>,
-    document_tool_bridge: bool,
 ) -> Result<()> {
     let request = prepare_mode_prompt(
         session_id,
@@ -1067,7 +1065,6 @@ pub async fn prompt_with_mode_and_attachments(
         prompt_id,
         send_now,
         mode,
-        document_tool_bridge,
     )?;
     enqueue_prepared_prompt(tx, request)?.await
 }
@@ -1081,21 +1078,11 @@ pub(crate) fn prepare_mode_prompt(
     prompt_id: Option<&str>,
     send_now: bool,
     mode: Option<&str>,
-    document_tool_bridge: bool,
 ) -> Result<acp::PromptRequest> {
     let prompt_id = prompt_id
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-    let mut blocks =
-        build_team_prompt_blocks(session_id, &prompt_id, text, attachments, display_text)?;
-    if document_tool_bridge {
-        if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
-            block
-                .meta
-                .get_or_insert_with(acp::Meta::new)
-                .insert("desktopDocumentTools".into(), serde_json::json!(true));
-        }
-    }
+    let blocks = build_team_prompt_blocks(session_id, &prompt_id, text, attachments, display_text)?;
     let mut meta = acp::Meta::new();
     meta.insert(
         "promptId".into(),
@@ -1106,9 +1093,6 @@ pub(crate) fn prepare_mode_prompt(
             return Err(anyhow!("invalid prompt mode"));
         }
         meta.insert("mode".into(), serde_json::json!(mode));
-    }
-    if document_tool_bridge {
-        meta.insert("desktopDocumentTools".into(), serde_json::json!(true));
     }
     if send_now {
         meta.insert("sendNow".into(), serde_json::Value::Bool(true));
@@ -2956,4 +2940,21 @@ mod memory_retrieval_tests {
             Some(ConfiguredEmbeddingProvider::Api(_))
         ));
     }
+}
+#[cfg(test)]
+#[test]
+fn desktop_registry_exposes_workspace_tools_without_the_language_server_tool() {
+    use echo_agent_tools::registry::types::ToolRegistryBuilder;
+
+    let registry = ToolRegistryBuilder::new();
+    for id in [
+        "EchoAgentBuild:read_file",
+        "EchoAgentBuild:list_dir",
+        "EchoAgentBuild:search_replace",
+        "EchoAgentBuild:run_terminal_cmd",
+        "EchoAgentBuild:task",
+    ] {
+        assert!(registry.has_tool_id(id), "missing shared tool {id}");
+    }
+    assert!(!registry.has_tool_id("EchoAgentBuild:lsp"));
 }

@@ -55,18 +55,14 @@ uuid = { version = "1", features = ["v7"] }
 tempfile = "3"
 # statusMatch patterns in connector cli.json files (CLI connector auth).
 regex = "1"
-# Phase 2 cross-file symbol index: walk the workspace honouring .gitignore.
+# Workspace traversal and nested ignore rules shared by file browsing.
 ignore = "0.4"
 globset = "0.4"
 walkdir = "2"
-# Task checkpoints must also work outside Git repositories.  Use an in-process
-# line diff so local-folder change tracking does not quietly depend on a Git
-# executable being installed.
+# These retired direct entries currently preserve the existing Cargo.lock.
+# Prune them with Cargo after the locked registry graph can be resolved.
 similar = "2.7"
-# Phase 2 file watcher: debounced events for incremental symbol index updates.
 notify-debouncer-full = "0.5"
-# Phase 2 reference search: word-boundary scanning uses the same `regex`
-# engine already imported for symbol parsing; no extra crate needed.
 fs2 = "0.4"
 libc = "0.2"
 # SP1: cross-platform "move to OS trash" for file deletion from the workbench.
@@ -78,7 +74,7 @@ trash = "5"
 # resolves their `.workspace = true` fields against that root Cargo.toml. We do
 # not join that workspace (see the explicit [workspace] table below).
 echo-agent-acp = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-acp" }
-echo-agent-runtime = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-runtime" }
+echo-agent-runtime = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-runtime", features = ["desktop"] }
 echo-agent-sampler = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-sampler" }
 echo-agent-memory = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-memory", features = ["local-inference"] }
 echo-agent-tools = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-tools" }

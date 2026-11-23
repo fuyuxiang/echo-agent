@@ -741,9 +741,8 @@ impl MvpAgent {
         let mut load_timer = crate::instrumentation_timer!("session.load_session");
         load_timer.with_field("session_id", session_id.0.as_ref());
         load_timer.with_field("cwd", cwd.as_str());
-        let git_root =
-            echo_agent_workspace::session::git::find_git_root_from_path(cwd.as_path()).ok();
-        if let Some(root) = git_root {
+        #[cfg(not(feature = "desktop"))]
+        if let Ok(root) = echo_agent_workspace::session::git::find_git_root_from_path(cwd.as_path()) {
             tokio::task::spawn_blocking(move || {
                 crate::session::worktree_pool::cleanup_stale_pool_worktrees(Some(&root));
             });
@@ -849,9 +848,12 @@ impl MvpAgent {
         );
         #[allow(unused_variables)]
         let session_computer_sessions = resolve_session_computer_sessions(request_meta.as_ref())?;
+        #[cfg(not(feature = "desktop"))]
         let code_restore_info = self
             .restore_session_code(&session_id, &cwd, &summary, policy.restore_code)
             .await;
+        #[cfg(feature = "desktop")]
+        let code_restore_info = None;
         let load_envrc = {
             let skip_envrc = request_meta
                 .as_ref()
@@ -1084,6 +1086,7 @@ impl MvpAgent {
     }
     /// Restore-code phase: check the persisted HEAD out into `cwd`, then
     /// worktree nor the session's own, so it cannot detach a real checkout.
+    #[cfg(not(feature = "desktop"))]
     async fn restore_session_code(
         &self,
         session_id: &acp::SessionId,

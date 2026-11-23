@@ -4277,6 +4277,7 @@ async fn run_automation_once(
     if !cwd.is_dir() {
         return Err(format!("自动化工作空间不存在：{}", cwd.display()));
     }
+    crate::legacy_workspace::ensure_workspace_available(cwd)?;
     let recovering = recovery_session.is_some();
     let reasoning_effort = automation.model_is_thinking.then_some("high");
     let full_access = !recovering && automation.permission_mode == "fullAccess";

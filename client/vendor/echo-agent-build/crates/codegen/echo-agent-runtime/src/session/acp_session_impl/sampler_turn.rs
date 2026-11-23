@@ -219,20 +219,6 @@ impl SessionActor {
                 readonly_tool_kind_allowed(bridge.tool_kind(&definition.function.name))
             });
         }
-        if bridge
-            .read_resource::<DesktopDocumentTools>()
-            .await
-            .is_some_and(|policy| policy.0)
-        {
-            // Task children inherit root authority. MCP use_tool is coordinated
-            // by the same before/after dispatch; workflows have a separate adapter.
-            defs.retain(|definition| {
-                !matches!(
-                    bridge.tool_kind(&definition.function.name),
-                    Some(echo_agent_tools::types::tool::ToolKind::Workflow)
-                )
-            });
-        }
         let plan_active = self.plan_mode.lock().is_active();
         filter_cursor_tools_by_plan_mode(defs, plan_active)
     }

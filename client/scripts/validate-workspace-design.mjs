@@ -12,7 +12,7 @@ const revision = process.env.UI_REVIEW_BASELINE_REVISION || "c44d09e513472b22a64
 const server = await createUiReviewServer(0, { baseline, baselineRevision: revision, currentFixtures: true });
 let browser;
 const evidence = [];
-const surfaces = (process.env.UI_REVIEW_SURFACES || "home,workbench,projects,management-experts,management-knowledge,automation-templates,resource-groups,organization-shell,page:技能,page:连接器,page:插件,meeting,coding,general,model,personal-memory,automation-edit,execution,modal-long,trust,search").split(",");
+const surfaces = (process.env.UI_REVIEW_SURFACES || "home,workbench,projects,management-experts,management-knowledge,automation-templates,resource-groups,organization-shell,page:技能,page:连接器,page:插件,meeting,general,model,personal-memory,automation-edit,execution,modal-long,trust,search").split(",");
 const scenarios = process.env.UI_REVIEW_SCENARIOS ? JSON.parse(process.env.UI_REVIEW_SCENARIOS)
   : [[1440,900,"light",13],[1440,900,"dark",13],[1280,800,"light",13],[1280,800,"dark",13],[1024,680,"light",13],[1024,680,"dark",13],[1024,680,"dark",18]];
 try {
@@ -45,7 +45,7 @@ try {
         main:document.querySelector(".app__main")?.getBoundingClientRect().toJSON(),
         dialogs:[...document.querySelectorAll('[aria-modal="true"]')].map(e=>e.getBoundingClientRect().toJSON()),
         headings:[...document.querySelectorAll("h1,h2")].filter(e=>e.getBoundingClientRect().height>0).map(e=>({text:e.textContent,size:getComputedStyle(e).fontSize})),
-        headerControls:[...document.querySelectorAll(".capability-page__header button,.capability-page__header input,.settings-modal__toolbar button,.meeting-workbench__toolbar button,.session-header button,.coding-workbench__topbar button")]
+        headerControls:[...document.querySelectorAll(".capability-page__header button,.capability-page__header input,.settings-modal__toolbar button,.meeting-workbench__toolbar button,.session-header button")]
           .filter(e=>e.checkVisibility()).map(e=>{
             const r=e.getBoundingClientRect();
             return {label:e.getAttribute("aria-label") || e.textContent,reachable:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),...r.toJSON()};

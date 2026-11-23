@@ -10,7 +10,7 @@ import type { DiffContent } from "@/lib/types";
 import type { ReactNode } from "react";
 import React from "react";
 import { extOf } from "./drop-utils";
-import { FileTypeIcon } from "@/features/coding/lib/file-type-icon";
+import { FileTypeIcon } from "@/lib/file-type-icon";
 
 /** 单个文件的聚合变更。 */
 export interface FileChange {

@@ -309,6 +309,7 @@ async fn execute(
     let root = app
         .state::<crate::shell_fs::FilesystemAccess>()
         .require_workspace(&g.cwd)?;
+    crate::legacy_workspace::ensure_workspace_available(&root)?;
     let tx = state
         .tx
         .lock()

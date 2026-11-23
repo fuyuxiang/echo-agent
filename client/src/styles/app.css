@@ -306,15 +306,7 @@
   overflow: hidden;
 }
 
-.app__coding-surface {
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-}
 
-.app__coding-surface[hidden] {
-  display: none;
-}
 
 .app__composer-source {
   display: contents;
@@ -3258,27 +3250,6 @@ button.knowledge-trace__item:hover {
 }
 
 /* SP2: Git status badge (A/M/D/R/U/I/?) shown on the right of a node */
-.file-tree__git-badge {
-  margin-inline-start: auto;
-  font-size: 0.625rem;
-  font-weight: 700;
-  font-family: var(--echo-font-mono, ui-monospace);
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  color: #fff;
-  flex-shrink: 0;
-}
-.file-tree__git-badge--added    { background: var(--echo-status-success-surface); color: var(--echo-status-success); }
-.file-tree__git-badge--modified { background: var(--echo-status-warning-soft); color: var(--echo-status-warning); }
-.file-tree__git-badge--deleted  { background: var(--echo-status-error-soft); color: var(--echo-status-error); }
-.file-tree__git-badge--renamed  { background: var(--echo-status-info-soft); color: var(--echo-status-info); }
-.file-tree__git-badge--untracked{ background: var(--echo-status-info-soft); color: var(--echo-status-info); }
-.file-tree__git-badge--ignored  { background: var(--echo-bg-tertiary); color: var(--echo-text-medium); }
-.file-tree__git-badge--conflict { background: var(--echo-status-error-soft); color: var(--echo-status-error); }
 
 /* SP2: virtualised container — nothing fancy, just layout */
 .file-tree--virtual {
@@ -13261,4 +13232,16 @@ body:has([aria-modal="true"]) .global-tooltip:not(.global-tooltip--dialog) {
 .md-link-preview__button:focus-visible {
   background: var(--echo-bg-hover);
   opacity: 1;
+}
+
+.file-tree__empty--cwd-hint {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-tree__empty-actions {
+  display: flex;
+  gap: 4px;
 }

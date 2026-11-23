@@ -4,13 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AtMentionMenu,
-  type AtMentionSymbol,
 } from "@/components/AtMentionMenu";
-
-const SYMBOLS: AtMentionSymbol[] = [
-  { name: "handleFormSubmit", file: "src/form.tsx", line: 12 },
-  { name: "formatText", file: "src/format.ts", line: 1 },
-];
 
 describe("AtMentionMenu", () => {
   it("renders nothing when there is no active mention", () => {
@@ -19,7 +13,6 @@ describe("AtMentionMenu", () => {
         text="plain text"
         cursor={5}
         filePaths={["src/foo.ts"]}
-        workspaceSymbols={SYMBOLS}
         onPick={() => {}}
       />,
     );
@@ -32,29 +25,25 @@ describe("AtMentionMenu", () => {
         text="@zzzz"
         cursor={5}
         filePaths={["src/foo.ts"]}
-        workspaceSymbols={SYMBOLS}
         onPick={() => {}}
       />,
     );
     expect(container.querySelector(".at-menu")).toBeNull();
   });
 
-  it("lists file matches first, then symbol matches", () => {
+  it("lists members and matching files", () => {
     render(
       <AtMentionMenu
         text="@for"
         cursor={4}
-        filePaths={["src/form.tsx"]}
-        workspaceSymbols={SYMBOLS}
+        filePaths={["src/form.tsx", "notes.md"]}
+        members={[{id: "1", name: "Format Expert"}]}
         onPick={() => {}}
       />,
     );
     const items = screen.getAllByTestId("at-menu-item");
-    // 1 file + 2 symbols (both handleFormSubmit + formatText match "for")
-    expect(items).toHaveLength(3);
-    expect(items[0].getAttribute("data-kind")).toBe("file");
-    expect(items[1].getAttribute("data-kind")).toBe("symbol");
-    expect(items[2].getAttribute("data-kind")).toBe("symbol");
+    expect(items.map(item => item.getAttribute("data-kind"))).toEqual(["member", "file"]);
+    expect(screen.queryByText("notes.md")).not.toBeInTheDocument();
   });
 
   it("calls onPick when an item is clicked", () => {
@@ -64,7 +53,6 @@ describe("AtMentionMenu", () => {
         text="@for"
         cursor={4}
         filePaths={["src/form.tsx"]}
-        workspaceSymbols={SYMBOLS}
         onPick={onPick}
       />,
     );
@@ -81,7 +69,6 @@ describe("AtMentionMenu", () => {
         text="@for"
         cursor={4}
         filePaths={["src/form.tsx"]}
-        workspaceSymbols={SYMBOLS}
         onPick={onPick}
       />,
     );
@@ -100,8 +87,7 @@ describe("AtMentionMenu", () => {
       <AtMentionMenu
         text="@x"
         cursor={2}
-        filePaths={["x.ts"]}
-        workspaceSymbols={[{ name: "xFn", file: "y.ts", line: 3 }]}
+        filePaths={["x.ts", "draft-x.md"]}
         onPick={onPick}
       />,
     );
@@ -109,7 +95,7 @@ describe("AtMentionMenu", () => {
     fireEvent.click(items[0]);
     expect(onPick).toHaveBeenCalledWith("@x.ts", "x.ts");
     fireEvent.click(items[1]);
-    expect(onPick).toHaveBeenCalledWith("@y.ts#xFn", "y.ts#xFn");
+    expect(onPick).toHaveBeenCalledWith("@draft-x.md", "draft-x.md");
   });
 
   it("handleKeyDown Escape returns true even with no matches (dismiss)", () => {
@@ -120,7 +106,6 @@ describe("AtMentionMenu", () => {
         text="@zzzz"
         cursor={5}
         filePaths={["src/foo.ts"]}
-        workspaceSymbols={SYMBOLS}
         onPick={() => {}}
       />,
     );
@@ -135,8 +120,8 @@ describe("AtMentionMenu", () => {
         ref={ref as never}
         text="@for"
         cursor={4}
-        filePaths={["src/form.tsx"]}
-        workspaceSymbols={SYMBOLS}
+        filePaths={["src/form.tsx", "notes.md"]}
+        members={[{id: "1", name: "Format Expert"}]}
         onPick={() => {}}
       />,
     );
@@ -152,8 +137,8 @@ describe("AtMentionMenu", () => {
         ref={ref as never}
         text="@for"
         cursor={4}
-        filePaths={["src/form.tsx"]}
-        workspaceSymbols={SYMBOLS}
+        filePaths={["src/form.tsx", "notes.md"]}
+        members={[{id: "1", name: "Format Expert"}]}
         onPick={() => {}}
       />,
     );

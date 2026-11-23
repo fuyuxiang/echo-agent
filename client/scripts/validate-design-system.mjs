@@ -23,7 +23,7 @@ const scenarios = [
 const surfaces = process.argv.includes("--controls-only") ? ["page:技能", "page:连接器", "page:插件", "page:项目"] : [
   "home", "home:unconfigured", "home:loading", "home:error", "conversation", "search", "browser-toolbar", "color-system",
   "capabilities", "page:技能", "page:连接器", "page:插件", "page:项目", "collapsed-project",
-  "page:自动化", "automation-edit", "page:知识库", "organization", "organization-login", "meeting", "coding",
+  "page:自动化", "automation-edit", "page:知识库", "organization", "organization-login", "meeting",
   "model", "general", "personalize", "memory", "personal-memory", "agent-settings", "shortcuts",
   "usage", "cloud-storage", "data", "archived", "security", "help", "agent-mail", "notify-channels", "weixin-unconnected",
   "modal-long", "modal-error", "about", "feedback", "update", "results", "details", "trust", "execution", "runtime", "queue",
@@ -166,7 +166,7 @@ try {
         const toggles=await page.locator(".echo-switch--checked").evaluateAll(elements=>elements.map(e=>({track:getComputedStyle(e).backgroundColor,thumb:getComputedStyle(e.querySelector(".echo-switch-thumb")).backgroundColor})));
         assert.ok(toggles.length>0 && toggles.every(toggle=>toggle.track!==toggle.thumb),"Checked switch thumb disappears into its track");
       }
-      await inspect(page,spec,scenario,["capabilities","page:项目","general","modal-long","coding","meeting"].includes(spec));
+      await inspect(page,spec,scenario,["capabilities","page:项目","general","modal-long","meeting"].includes(spec));
       if(surface === "model") await assertSettingsActionsSeparated(page);
       if(surface==="organization") for(const tab of ["经验","文档","Skills"]) {
         await page.locator(".org-memory__nav button").filter({hasText:tab}).click();

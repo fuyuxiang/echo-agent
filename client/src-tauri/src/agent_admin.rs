@@ -1709,8 +1709,7 @@ async fn request_rewind(
     let workspace =
         crate::commands::trusted_existing_session_cwd(state, filesystem, session_id, None)?;
     if payload.get("fileGuard").is_some() {
-        crate::coding_document_bridge::ensure_workspace_admission(&workspace.to_string_lossy())
-            .await?;
+        crate::legacy_workspace::ensure_workspace_available(&workspace)?;
     }
     if target_prompt_index.is_some_and(|target| {
         crate::meta::read_state()
@@ -2266,7 +2265,7 @@ pub async fn folder_trust_respond(
 /// Use install purpose-built prompts while their tools remain isolated in the
 /// session-bound, authenticated automation MCP server.
 #[tauri::command]
-pub async fn set_coding_mode(
+pub async fn set_agent_mode(
     state: State<'_, AppState>,
     session_id: String,
     mode: String,
@@ -2278,7 +2277,7 @@ pub async fn set_coding_mode(
         "agent" => "default",
         "browser_use" => "browser_use",
         "computer_use" => "computer_use",
-        _ => return Err("unsupported coding mode".into()),
+        _ => return Err("unsupported session mode".into()),
     };
     let automation_mode = crate::automation::AutomationMode::parse(mode_id)
         .unwrap_or(crate::automation::AutomationMode::Default);

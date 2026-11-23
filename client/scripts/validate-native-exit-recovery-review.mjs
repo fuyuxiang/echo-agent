@@ -159,7 +159,7 @@ export async function runNativeExitReview(executableArgument) {
       const reportPath = join(home, 'native-review.json');
       const beforeHash = existsSync(reportPath) ? hash(readFileSync(reportPath)) : null;
       const env = { ...cleanNativeReviewEnvironment(process.env) };
-      for (const key of Object.keys(env)) if (key.startsWith('ECHO_DESKTOP_REVIEW') || key.startsWith('ECHO_EXIT_REVIEW') || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'ECHO_THEIA_NODE', 'GROK_AUTH', 'GROK_AUTH_PATH'].includes(key)) delete env[key];
+      for (const key of Object.keys(env)) if (key.startsWith('ECHO_DESKTOP_REVIEW') || key.startsWith('ECHO_EXIT_REVIEW') || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'GROK_AUTH', 'GROK_AUTH_PATH'].includes(key)) delete env[key];
       Object.assign(env, { GROK_HOME: legacy, ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_EXIT: '1', ECHO_EXIT_REVIEW_PHASE: phase, ECHO_EXIT_REVIEW_MANIFEST: manifest });
       const startedAt = Date.now();
       const child = spawn(executable, ['--data-home', home], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });

@@ -468,7 +468,7 @@ function MoreDropdown({
       >
         <EchoMoreNavIcon size="md" />
         <span>更多</span>
-        {items.length > 0 && items.every(id => id === "knowledge" || id === "automation" || id === "coding") && <span className="sidebar__nav-sub">知识与工具</span>}
+        {items.length > 0 && items.every(id => id === "knowledge" || id === "automation") && <span className="sidebar__nav-sub">知识与工具</span>}
       </button>
       {open && (
         <div

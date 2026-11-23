@@ -8,13 +8,13 @@ import JSZip from 'jszip';
 import {PDFDocument,PDFName,decodePDFRawStream} from 'pdf-lib';
 const directory=await mkdtemp(join(tmpdir(),'echo-editable-office-'));
 const root=resolve(import.meta.dirname,'..'),worker=join(root,'src-tauri/resources/office/worker.mjs'),font=join(root,'src-tauri/resources/office/fonts/NotoSansCJKsc-Regular.otf');
-const staged=join(root,'src-tauri/resources/theia/node',process.platform==='win32'?'node.exe':'bin/node');
+const staged=join(root,'src-tauri/resources/office/node',process.platform==='win32'?'node.exe':'bin/node');
 const p=(text,marks)=>({type:'paragraph',content:text?[{type:'text',text,...(marks?{marks}:{})}]:[]});
 const cell=(text,header=false)=>({type:header?'tableHeader':'tableCell',attrs:{colspan:1,rowspan:1,colwidth:null},content:[p(text)]});
 const document={type:'doc',content:[{type:'heading',attrs:{level:1,textAlign:'center'},content:[{type:'text',text:'当前修订稿'}]},p('人工加粗的内容',[{type:'bold'},{type:'underline'}]),{type:'table',content:[{type:'tableRow',content:[cell('时间',true),cell('儿童安排',true),cell('家长安排',true)]},{type:'tableRow',content:[cell('7:30'),cell('起床、洗漱'),cell('准备早餐')]},{type:'tableRow',content:[cell('8:00'),cell(''),cell('送学')] }]}]};
 async function run(format,model=document,markdown,name='current'){
   const output=join(directory,name+'.'+format);
-  const child=spawn(existsSync(staged)?staged:process.execPath,[worker,output,font],{stdio:['pipe','ignore','pipe']});let errors='';child.stderr.on('data',chunk=>{errors+=chunk;});
+  const child=spawn(staged,[worker,output,font],{stdio:['pipe','ignore','pipe']});let errors='';child.stderr.on('data',chunk=>{errors+=chunk;});
   child.stdin.end(JSON.stringify({format,title:'当前修订稿',...(markdown===undefined?{document:model}:{markdown})}));
   const status=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('close',resolve);});
   return {output,status,errors};

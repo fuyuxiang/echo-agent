@@ -25,7 +25,6 @@ const routes = [
   ['skills', 'ui-surfaces', { surface: 'page', label: '技能', extensionState: 'populated' }, '.page-toolbar'],
   ['connectors', 'ui-surfaces', { surface: 'page', label: '连接器', extensionState: 'populated' }, '.page-toolbar'],
   ['plugins', 'ui-surfaces', { surface: 'page', label: '插件', extensionState: 'populated' }, '.page-toolbar'],
-  ['coding-host', 'ui-surfaces', { surface: 'coding' }, '.coding-workbench'],
   ['document', 'document-workspace-review', {}, '.document-workbench'],
   ['groups', 'group-review', {}, '.group-workspace'],
 ];

@@ -204,7 +204,7 @@ function macosPackagingProject() {
   fs.copyFileSync(new URL("./build.sh", import.meta.url), path.join(scripts, "build.sh"));
   fs.copyFileSync(new URL("./macos-dmg.mjs", import.meta.url), path.join(scripts, "macos-dmg.mjs"));
   fs.symlinkSync(process.execPath, path.join(bin, "node"));
-  for (const name of ["verify-vendored-runtime.mjs", "validate-theia-git-runtime.mjs"]) {
+  for (const name of ["verify-vendored-runtime.mjs"]) {
     fs.writeFileSync(path.join(scripts, name), "");
   }
   fs.writeFileSync(path.join(scripts, "release-version.mjs"), 'console.log("1.2.3");');

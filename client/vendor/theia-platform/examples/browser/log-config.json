@@ -1,8 +1,0 @@
-{
-  "defaultLevel": "info",
-  "levels": {
-    "terminal-manager*": "debug",
-    "terminal-manager:TerminalManagerWidget": "info",
-    "ai-core:DefaultPromptFragmentCustomizationService": "debug"
-  }
-}

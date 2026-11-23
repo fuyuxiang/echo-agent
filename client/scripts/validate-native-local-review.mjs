@@ -257,7 +257,7 @@ export async function runNativeLocalReview({ executable, resourceOnly = false } 
       result.binarySha256 = binaryHash.digest('hex');
       const launchEnv = { ...cleanNativeReviewEnvironment(process.env) };
       for (const name of Object.keys(launchEnv)) if (name.startsWith('ECHO_DESKTOP_REVIEW') || name.startsWith('ECHO_LOCAL_REVIEW')
-        || name.startsWith('ECHO_WEBDAV_REVIEW') || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'ECHO_THEIA_NODE', 'NATIVE_REVIEW_SEED_CONFIG', 'NATIVE_REVIEW_AUDIO'].includes(name)) delete launchEnv[name];
+        || name.startsWith('ECHO_WEBDAV_REVIEW') || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'NATIVE_REVIEW_SEED_CONFIG', 'NATIVE_REVIEW_AUDIO'].includes(name)) delete launchEnv[name];
       Object.assign(launchEnv, { GROK_HOME: legacy, ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_LOCAL: '1',
         ECHO_DESKTOP_REVIEW_MEDIA: '0', ECHO_DESKTOP_REVIEW_EXTENDED: '0', ECHO_LOCAL_REVIEW_MANIFEST: manifest,
         NO_PROXY: '127.0.0.1,localhost,::1', no_proxy: '127.0.0.1,localhost,::1' });

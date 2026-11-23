@@ -815,6 +815,7 @@ pub async fn group_send(
         let root = app
             .state::<crate::shell_fs::FilesystemAccess>()
             .require_workspace(&g.cwd)?;
+        crate::legacy_workspace::ensure_workspace_available(&root)?;
         input.attachments = app
             .state::<crate::shell_fs::FilesystemAccess>()
             .validate_session_attachments(&root, &input.attachments)?;

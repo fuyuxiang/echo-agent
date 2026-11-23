@@ -81,6 +81,8 @@ Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
 !insertmacro EchoInstallPathFunctions
+!insertmacro EchoRetiredResourceFunctions ""
+!insertmacro EchoRetiredResourceFunctions "un."
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -712,6 +714,7 @@ Section Install
   !endif
 
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  Call EchoRemoveRetiredResources
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -850,6 +853,7 @@ Section Uninstall
   !endif
 
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  Call un.EchoRemoveRetiredResources
 
   ; Delete the app directory and its content from disk
   ; Copy main executable

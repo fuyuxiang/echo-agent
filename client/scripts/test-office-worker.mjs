@@ -13,9 +13,9 @@ const root = resolve(import.meta.dirname, "..");
 const worker = join(root, "src-tauri/resources/office/worker.mjs");
 const font = join(root, "src-tauri/resources/office/fonts/NotoSansCJKsc-Regular.otf");
 const stagedNode = process.platform === "win32"
-  ? join(root, "src-tauri/resources/theia/node/node.exe")
-  : join(root, "src-tauri/resources/theia/node/bin/node");
-const executable = existsSync(stagedNode) ? stagedNode : process.execPath;
+  ? join(root, "src-tauri/resources/office/node/node.exe")
+  : join(root, "src-tauri/resources/office/node/bin/node");
+const executable = stagedNode;
 const directory = await mkdtemp(join(tmpdir(), "echo-office-test-"));
 const markdown = "# 季度报告\n\n中文段落与 English。\n\n| 项目 | 金额 |\n| --- | ---: |\n| 收入 | 1200 |\n| 公式样本 | =SUM(B2) |\n";
 

@@ -25,6 +25,7 @@ impl MvpAgent {
     /// This is the narrow `pub(crate)` entry point for lazy index startup
     /// from `extensions/code_nav.rs`.  Callers must verify eligibility with
     /// [`code_nav_eligibility_for_request`] before calling this.
+    #[cfg(not(feature = "desktop"))]
     pub(crate) fn start_codebase_index_for_code_nav(
         &self,
         session_id: Option<&acp::SessionId>,
@@ -46,6 +47,7 @@ impl MvpAgent {
     /// This is the single place that applies all four gates.  Call it via
     /// [`code_nav_eligibility_for_request`] (leader-mode safe) or
     /// [`code_nav_eligibility`] (global state, non-leader use only).
+    #[cfg(not(feature = "desktop"))]
     pub(super) fn code_nav_eligibility_inner(
         &self,
         cwd: &std::path::Path,
@@ -128,6 +130,7 @@ impl MvpAgent {
     /// only the **last** client to call `initialize()`.
     ///
     /// Falls back to global agent state when no session_id is given.
+    #[cfg(not(feature = "desktop"))]
     pub(crate) fn code_nav_eligibility_for_request(
         &self,
         session_id: Option<&acp::SessionId>,
@@ -160,6 +163,7 @@ impl MvpAgent {
     /// Returns `Some((handle, was_newly_started))` when an index is available,
     /// `None` when config or git-root checks rule it out.  The bool is the
     /// authoritative "was this a first spawn?" signal from the manager.
+    #[cfg(not(feature = "desktop"))]
     pub(super) fn resolve_codebase_index(
         &self,
         cwd: &std::path::Path,
@@ -230,6 +234,7 @@ impl MvpAgent {
 
     /// Returns `(handle, was_newly_started)` — the bool is the authoritative
     /// "did this call spawn a new actor?" bit from `CodebaseIndexManager::get_or_create`.
+    #[cfg(not(feature = "desktop"))]
     pub(super) fn get_or_create_codebase_index(
         &self,
         cwd: PathBuf,

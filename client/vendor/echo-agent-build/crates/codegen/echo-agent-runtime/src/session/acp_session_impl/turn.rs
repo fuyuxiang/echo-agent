@@ -609,35 +609,15 @@ impl SessionActor {
         } else {
             AutomationTurnMode::Ordinary
         };
-        let desktop_document_tools = self
-            .startup_hints
-            .inherited_turn_authority
-            .as_ref()
-            .is_some_and(|authority| authority.document_tools)
-            || self.client_identifier.as_deref() == Some("echo-agent-desktop")
-                && prompt_blocks.iter().any(|block| match block {
-                    acp::ContentBlock::Text(text) => {
-                        text.meta
-                            .as_ref()
-                            .and_then(|meta| meta.get("desktopDocumentTools"))
-                            .and_then(serde_json::Value::as_bool)
-                            == Some(true)
-                    }
-                    _ => false,
-                });
-        self.tool_bridge_handle()
-            .update_resource(DesktopDocumentTools(desktop_document_tools))
-            .await;
         self.tool_bridge_handle()
             .update_resource(echo_agent_tools::types::resources::DesktopMcpNoReplay(
-                desktop_document_tools,
+                cfg!(feature = "desktop") || self.client_identifier.as_deref() == Some("echo-agent-desktop"),
             ))
             .await;
-        self.desktop_document_turn.set(desktop_document_tools);
         self.tool_bridge_handle()
             .update_resource(
                 echo_agent_tools::implementations::echo_agent_build::task::BoundSubagentToTurn(
-                    desktop_document_tools || prompt_mode.is_read_only(),
+                    prompt_mode.is_read_only(),
                 ),
             )
             .await;
@@ -679,8 +659,8 @@ impl SessionActor {
             *context = host_project_context.as_deref().map(Arc::from);
         }
         if let Some(bash_command) = Self::extract_bash_command(&prompt_blocks) {
-            if self.is_readonly_turn() || desktop_document_tools {
-                return Err(acp::Error::invalid_params().data("Direct shell input is unavailable for this run; use an authorized Agent tool so editor state can be checked"));
+            if self.is_readonly_turn() {
+                return Err(acp::Error::invalid_params().data("Direct shell input is unavailable in read-only mode"));
             }
             return self
                 .handle_direct_bash_command(prompt_id, bash_command, &prompt_blocks)
@@ -772,9 +752,9 @@ impl SessionActor {
                         }
                     }
                     BuiltinAction::WorkflowLaunch { name, input } => {
-                        if self.is_readonly_turn() || desktop_document_tools {
+                        if self.is_readonly_turn() {
                             return Err(acp::Error::invalid_params()
-                                .data("Readonly or editor-coordinated runs cannot launch executable workflows"));
+                                .data("Read-only runs cannot launch executable workflows"));
                         }
                         self.persist_host_turn_user_echo(&original_prompt_text, prompt_id);
                         self.mark_front_message_committed().await;

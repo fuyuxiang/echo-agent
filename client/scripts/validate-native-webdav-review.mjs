@@ -226,7 +226,7 @@ export async function runNativeWebDavReview({ executable, resourceOnly = false }
         ECHO_DESKTOP_REVIEW_WEBDAV: '1', ECHO_DESKTOP_REVIEW_MEDIA: '0', ECHO_DESKTOP_REVIEW_EXTENDED: '0',
         ECHO_WEBDAV_REVIEW_MANIFEST: manifest, NO_PROXY: '127.0.0.1,localhost,::1', no_proxy: '127.0.0.1,localhost,::1' };
       for (const name of ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'ECHO_DESKTOP_REVIEW_CODE',
-        'ECHO_DESKTOP_REVIEW_CODE_CONTINUE', 'ECHO_THEIA_NODE', 'NATIVE_REVIEW_SEED_CONFIG', 'NATIVE_REVIEW_AUDIO']) delete launchEnv[name];
+        'NATIVE_REVIEW_SEED_CONFIG', 'NATIVE_REVIEW_AUDIO']) delete launchEnv[name];
       const reportPath = join(home, 'native-review.json');
       const historyPath = join(home, 'native-review-history.jsonl');
       for (const phase of ['first-launch', 'restart']) {

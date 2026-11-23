@@ -1,4 +1,4 @@
-import { agentSend, type CodingTurnOptions } from "@/lib/agent-client";
+import { agentSend, type AgentTurnOptions } from "@/lib/agent-client";
 import { friendlyError } from "@/lib/error-format";
 import { sessionControlStatus } from "@/lib/session-control";
 import { useSessionsStore } from "@/stores/sessions-store";
@@ -12,7 +12,7 @@ export type AgentTurnSender = (
   attachments: string[],
   displayText: string,
   promptId: string,
-  coding?: CodingTurnOptions,
+  options?: AgentTurnOptions,
 ) => Promise<void>;
 
 export interface AgentTurnInput {
@@ -20,7 +20,7 @@ export interface AgentTurnInput {
   promptText: string;
   displayText: string;
   attachments?: string[];
-  coding?: CodingTurnOptions;
+  options?: AgentTurnOptions;
   /** Reuse the id assigned while atomically claiming a queued row. */
   promptId?: string;
   /** Message replacement may finish after navigation and must remain scoped to
@@ -84,7 +84,7 @@ export function beginAgentTurn(
   useSessionsStore.getState().upsert({ sessionId, status: "working" });
   // This records the admitted turn, not the next composer selection. Runtime
   // receives the same immutable mode, including background/queued turns.
-  if (input.coding?.mode) transcript.setAgentMode(input.coding.mode === "agent" ? "default" : input.coding.mode, sessionId);
+  if (input.options?.mode) transcript.setAgentMode(input.options.mode === "agent" ? "default" : input.options.mode, sessionId);
   transcript.pushUser(displayText, attachments, sessionId, promptText);
   transcript.startStreaming(sessionId, promptId);
   // A new request reopens an accepted local task; merely viewing it does not.
@@ -94,8 +94,8 @@ export function beginAgentTurn(
     }
   }
 
-  const sending = input.coding
-    ? send(sessionId, promptText, attachments, displayText, promptId, input.coding)
+  const sending = input.options
+    ? send(sessionId, promptText, attachments, displayText, promptId, input.options)
     : send(sessionId, promptText, attachments, displayText, promptId);
   void sending.catch((error) => {
     if (isAgentPromptSettled(sessionId, promptId)) return;

@@ -19,7 +19,7 @@ on:
       - 'app-icon.png'
       - 'public/**'
       # Validate every installer input, including platform config, embedded
-      # Runtime/IDE source and scripts included by the native validation code.
+      # Runtime source and scripts included by the native validation code.
       - 'src/**'
       - 'src-tauri/**'
       - 'scripts/**'
@@ -68,7 +68,7 @@ jobs:
         with:
           node-version: ${{ runner.os == 'Windows' && '24.22.1' || '22.23.4' }}
           cache: pnpm
-      - name: Enable Windows long paths for IDE validation
+      - name: Enable Windows long paths for Office verification
         if: runner.os == 'Windows'
         shell: pwsh
         run: New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -PropertyType DWord -Value 1 -Force
@@ -79,7 +79,6 @@ jobs:
       - name: Run frontend and script unit tests
         id: unit_tests
         run: pnpm test --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit="${{ runner.temp }}/echo-unit-tests.xml"
-      - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
       - uses: actions/setup-python@v7
         id: python
         with:
@@ -129,7 +128,7 @@ jobs:
           fi
           {
             df -h . "$RUNNER_TEMP"
-            du -sh src-tauri/target/release/bundle src-tauri/resources/theia
+            du -sh src-tauri/target/release/bundle src-tauri/resources/office
             hdiutil info
           } > "$diagnostics/environment-after.log" 2>&1 || true
           bundle_script="src-tauri/target/release/bundle/dmg/bundle_dmg.sh"
@@ -146,7 +145,6 @@ jobs:
           fi
           exit "$build_exit"
         env:
-          PUPPETEER_SKIP_DOWNLOAD: '1'
           # Vite can exceed the default V8 heap on hosted macOS runners.
           NODE_OPTIONS: --max-old-space-size=4096
       - name: Package Windows validation build
@@ -165,17 +163,8 @@ jobs:
             exit $buildExit
           }
         env:
-          PUPPETEER_SKIP_DOWNLOAD: '1'
           PYTHON: ${{ steps.python.outputs.python-path }}
       - run: pnpm test:security
-      - run: node vendor/theia-platform/node_modules/playwright/cli.js install chromium
-      - name: Verify staged Theia runtime
-        run: >-
-          node --input-type=module -e
-          "import { runNativeTestProcess } from './scripts/lib/native-test-process.mjs';
-          process.exitCode = await runNativeTestProcess(process.execPath, ['scripts/validate-theia-runtime.mjs']);"
-        env:
-          NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
       - run: pnpm test:rust
         env:
           NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
@@ -187,7 +176,7 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: '0'
           CARGO_PROFILE_TEST_DEBUG: '0'
-      - name: Start packaged macOS WebView, IDE and native IPC
+      - name: Start packaged macOS WebView, Office and native IPC
         if: runner.os == 'macOS'
         env:
           ECHO_DESKTOP_VALIDATION_OUTPUT: ${{ runner.temp }}/echo-packaged-desktop-diagnostics
@@ -202,6 +191,7 @@ jobs:
         if: runner.os == 'Windows'
         env:
           ECHO_DESKTOP_VALIDATION_OUTPUT: ${{ runner.temp }}/echo-packaged-desktop-diagnostics
+          ECHO_VALIDATE_LONG_PATHS: '1'
         shell: pwsh
         run: |
           $version = node scripts/release-version.mjs check

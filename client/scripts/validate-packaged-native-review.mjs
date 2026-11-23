@@ -2,10 +2,8 @@ import { cleanNativeReviewEnvironment } from "./lib/native-review-isolation.mjs"
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants, copyFileSync, createReadStream, existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, renameSync, realpathSync, lstatSync, statSync, linkSync, unlinkSync } from 'node:fs';
+import { constants, copyFileSync, createReadStream, existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, realpathSync, lstatSync, statSync, linkSync, unlinkSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { validateGitRuntime } from './validate-theia-git-runtime.mjs';
 
 // A reversible verification wrapper, run only after Cargo and staging finish.
 // Hide exactly the four development entry files to exercise bundle fallbacks.
@@ -44,8 +42,7 @@ const run = (command, args, env, timeout) => new Promise((accept, reject) => {
 });
 const result = { executable, binarySha256: await digest(executable), resources, checks: [], stagedFiles: journal, errors: [] };
 try {
-  result.checks.push({ id: 'bundled-git-windowless', ...validateGitRuntime(join(resources, 'theia/browser')), passed: true });
-  for (const relative of ['theia/browser/lib/backend/main.js', 'theia/node/bin/node', 'office/worker.mjs', 'office/fonts/NotoSansCJKsc-Regular.otf']) {
+  for (const relative of ['office/node/bin/node', 'office/node/LICENSE', 'office/worker.mjs', 'office/fonts/NotoSansCJKsc-Regular.otf']) {
     assert.equal(interrupted, false, 'Package validation interrupted');
     const source = join(repository, 'src-tauri/resources', relative);
     const bundled = join(resources, relative);
@@ -63,24 +60,14 @@ try {
     writeFileSync(join(output, 'package-resource-review.json'), JSON.stringify(result, null, 2));
   }
   const env = { ...cleanNativeReviewEnvironment(process.env) };
-  delete env.ECHO_THEIA_NODE;
   const nativeCode = await run(process.execPath, [join(repository, 'scripts/validate-native-review.mjs'), executable], {
     ...env, UI_REVIEW_OUTPUT: join(output, 'native'),
   }, 1550000);
   result.checks.push({ id: 'native-bundled-journey', exitCode: nativeCode, passed: nativeCode === 0 });
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'echo-bundle-theia-review-')));
-  const legacy = join(home, 'empty-legacy');
-  mkdirSync(legacy, { mode: 0o700 });
-  const validationEnv = { ...env, GROK_HOME: legacy, ECHO_DESKTOP_VALIDATION: '1' };
-  for (const key of ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_REVIEW', 'ECHO_DESKTOP_REVIEW_PHASE', 'ECHO_DESKTOP_REVIEW_MEDIA']) delete validationEnv[key];
-  const ideCode = await run(executable, ['--data-home', home], validationEnv, 180000);
-  const path = join(home, 'desktop-validation.json');
-  const report = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null;
-  if (report) writeFileSync(join(output, 'theia-desktop-validation.json'), JSON.stringify({ home, ...report }, null, 2));
-  result.checks.push({ id: 'theia-bundled-native-iframe', home, exitCode: ideCode, report,
-    passed: ideCode === 0 && report?.webviewRendered === true && report?.ipcReady === true
-      && report?.resourcesPresent === true && report?.ideStarted === true && report?.ideError === null && report?.cliError === null,
-  });
+  const officeCode = await run(process.execPath, [join(repository, 'scripts/validate-packaged-desktop.mjs'), executable], {
+    ...env, ECHO_DESKTOP_VALIDATION_OUTPUT: join(output, 'startup'),
+  }, 180000);
+  result.checks.push({ id: 'bundled-webview-and-office', exitCode: officeCode, passed: officeCode === 0 });
 } catch (error) {
   result.errors.push(String(error));
 } finally {

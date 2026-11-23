@@ -3,7 +3,7 @@
 :is(.echo-button, .btn, .form-button, .capability-button, .settings-btn, .atm-btn,
     .app-dialog__button, .atm-create-btn, .atm-detail-btn, .meeting-primary,
     .meeting-secondary, .meeting-danger,
-    .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save, .coding-primary-btn) {
+    .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save) {
   --control-height: var(--echo-size-control-md);
   --button-bg: var(--echo-button-secondary-bg);
   --button-hover: var(--echo-button-secondary-bg-hover);
@@ -39,7 +39,7 @@
     .app-dialog__button--primary, .atm-create-btn, .atm-detail-btn--primary,
     .meeting-primary, .kb-panel__add-btn, .org-memory__primary,
     .feedback-dialog__btn--primary, .browser-preview__go, .um-btn--primary,
-    .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save, .coding-primary-btn) {
+    .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save) {
   --button-bg: var(--echo-button-primary-bg);
   --button-hover: var(--echo-button-primary-bg-hover);
   --button-active: var(--echo-button-primary-bg-active);
@@ -85,14 +85,14 @@
 :is(.echo-button, .btn, .form-button, .capability-button, .settings-btn, .atm-btn,
     .app-dialog__button, .atm-create-btn, .atm-detail-btn, .meeting-primary,
     .meeting-secondary, .meeting-danger,
-    .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save, .coding-primary-btn):hover:not(:disabled):not([aria-disabled="true"]) {
+    .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save):hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--button-hover);
   color: var(--button-fg);
 }
 :is(.echo-button, .btn, .form-button, .capability-button, .settings-btn, .atm-btn,
     .app-dialog__button, .atm-create-btn, .atm-detail-btn, .meeting-primary,
     .meeting-secondary, .meeting-danger,
-    .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save, .coding-primary-btn):active:not(:disabled):not([aria-disabled="true"]) {
+    .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save):active:not(:disabled):not([aria-disabled="true"]) {
   background: var(--button-active);
 }
 /* A deeper danger tint needs its paired foreground, especially over secondary
@@ -108,7 +108,7 @@
 :is(.echo-button, .btn, .form-button, .capability-button, .settings-btn, .atm-btn,
     .app-dialog__button, .atm-create-btn, .atm-detail-btn, .meeting-primary,
     .meeting-secondary, .meeting-danger,
-    .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save, .coding-primary-btn):is(:disabled, [aria-disabled="true"]) {
+    .kb-panel__add-btn, .kb-panel__refresh-btn, .org-memory__primary, .feedback-dialog__btn, .browser-preview__go, .um-btn, .plan-panel__approve-btn, .plan-panel__add-btn, .plan-panel__row-edit-save):is(:disabled, [aria-disabled="true"]) {
   background: var(--echo-control-disabled-bg);
   color: var(--echo-control-disabled-fg);
   border-color: var(--echo-border-default);
@@ -156,7 +156,7 @@
     .group-form textarea, .group-form select, .meeting-panel__create input,
     .meeting-panel__create select)):focus { border-color: var(--echo-focus-ring); }
 /* Native WebView placeholder defaults differ across platforms and themes. */
-:where(input, textarea):not(:where(.monaco-editor *, .xterm *))::placeholder {
+:where(input, textarea)::placeholder {
   color: var(--echo-text-weak);
   opacity: 1;
 }
@@ -182,23 +182,17 @@ select.form-control {
 :is(.app, .settings-modal, .app-dialog, .modal-overlay, .panel-section, .groups-page,
     .group-chat, .automation-panel, .atm-floating-layer, .atm-modal-scope,
     .org-memory, .org-document-modal, .meeting-panel, .conversation-search-modal,
-    .create-colleague-dialog, .about-dialog, .feedback-dialog, .update-dialog, .trust-dialog, .coding-workbench, .echo-coding-portal,
+    .create-colleague-dialog, .about-dialog, .feedback-dialog, .update-dialog, .trust-dialog,
     .capability-page, .placeholder-page, .project-page, .pd-page)
-  :is(button, input, select, textarea, a, summary, [role="button"], [tabindex]):not(:where(.monaco-editor *, .xterm *, .markdown-body *, .md-content *, [contenteditable="true"], .echo-composer__input, .echo-theia-agent__input, .echo-theia-agent__splitter)):focus-visible {
+  :is(button, input, select, textarea, a, summary, [role="button"], [tabindex]):not(:where(.markdown-body *, .md-content *, [contenteditable="true"], .echo-composer__input)):focus-visible {
   outline: 2px solid var(--echo-focus-ring);
   outline-offset: 2px;
 }
 /* Composer's enclosing card and the IDE separator render their own focus.
  * Keep every other control on the fallback ring, including toolbar buttons. */
 .echo-composer:has(.echo-composer__input:focus-visible),
-.echo-theia-agent__composer-box:has(.echo-theia-agent__input:focus-visible) {
-  outline: 2px solid var(--echo-focus-ring);
-  outline-offset: 2px;
-}
 @media (forced-colors: active) {
   .echo-composer:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
-  .echo-theia-agent__composer-box:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
-  .echo-theia-agent__splitter:focus-visible { outline: 1px solid Highlight; }
 }
 @media (prefers-reduced-motion: reduce) {
   .echo-composer__tool--active { animation: none; }

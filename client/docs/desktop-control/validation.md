@@ -6,7 +6,7 @@
 
 当前固定驱动运行于 macOS，需要可访问且已解锁的图形会话，以及实际验收应用的辅助功能和屏幕录制权限。终端或单元测试程序获授权不代表应用具有同样授权；重新签名后应重新核对。
 
-先按 [开发与验收](../testing.md) 准备显式私有模型资源、检索模型、Theia、Office 和前端，再构建带 `tauri/custom-protocol` 的程序。该驱动创建独立的私有数据目录和合成工作区，不复用真实会话或业务资料。
+先按 [开发与验收](../testing.md) 准备显式私有模型资源、检索模型、语音资源、Office 和前端，再构建带 `tauri/custom-protocol` 的程序。该驱动创建独立的私有数据目录和合成工作区，不复用真实会话或业务资料。
 
 ```sh
 node scripts/validate-native-desktop-controls.mjs src-tauri/target/debug/echoagent --task-flow

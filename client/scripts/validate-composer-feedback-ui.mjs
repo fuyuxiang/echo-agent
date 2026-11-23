@@ -100,13 +100,6 @@ try {
     }
   }
   const page = await browser.newPage({viewport:{width:1280,height:800}});
-  await page.goto(`${base}/__ui-review?surface=coding`, {waitUntil:"networkidle"});
-  const splitter = page.locator(".echo-theia-agent__splitter");
-  await splitter.waitFor();
-  const before = await splitter.evaluate(e => getComputedStyle(e).backgroundColor);
-  await splitter.focus();
-  assert.equal(await splitter.evaluate(e=>getComputedStyle(e).outlineStyle), "none", "IDE splitter regained a large outline");
-  assert.notEqual(await splitter.evaluate(e=>getComputedStyle(e).backgroundColor), before, "IDE splitter lacks its own focus indicator");
   await page.goto(`${base}/__ui-review?surface=notify-channels`, {waitUntil:"networkidle"});
   const desktop = page.getByRole("switch", {name:"桌面通知", exact:true});
   assert(await desktop.isChecked());

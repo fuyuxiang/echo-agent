@@ -692,45 +692,11 @@ impl SessionActor {
         let workspace_ops = self.workspace_ops.clone();
         let pending_interjections = self.pending_interjections.clone();
         let session_id: Arc<str> = Arc::from(&*self.session_info.id.0);
-        let desktop_bridge = if self
-            .tool_bridge_handle()
-            .read_resource::<DesktopDocumentTools>()
-            .await
-            .is_some_and(|policy| policy.0)
-        {
-            Some(DesktopDocumentBridge {
-                gateway: self.notifications.gateway.clone(),
-                authority: self.startup_hints.inherited_turn_authority.clone(),
-                run_id: self
-                    .current_prompt_id
-                    .lock()
-                    .unwrap()
-                    .clone()
-                    .unwrap_or_default(),
-                workspace: self
-                    .tool_context
-                    .cwd
-                    .as_path()
-                    .to_string_lossy()
-                    .into_owned(),
-                tool_kinds: approved
-                    .iter()
-                    .filter_map(|prepared| {
-                        self.tool_bridge_handle()
-                            .tool_kind(&prepared.tool_name)
-                            .map(|kind| (prepared.tool_name.clone(), kind.as_key().to_string()))
-                    })
-                    .collect(),
-            })
-        } else {
-            None
-        };
         let dispatch_futures: Vec<_> = approved
             .iter()
             .enumerate()
             .map(|(idx, prepared)| {
                 let prepared = Arc::new(prepared.clone());
-                let desktop_bridge = desktop_bridge.clone();
                 let am = self.auth_manager.clone();
                 let shared_recovery = Arc::clone(&shared_recovery);
                 let workspace_ops = workspace_ops.clone();
@@ -740,7 +706,7 @@ impl SessionActor {
                 let interruptible =
                     is_interruptible_wait_tool(&prepared.tool_name, &prepared.parsed_args);
                 let parallel = interruptible || self.parallel_tool(&prepared);
-                let mutation_path = self.tool_mutation_path(&prepared, desktop_bridge.is_some());
+                let mutation_path = self.tool_mutation_path(&prepared);
                 let tools_execute_span = tracing::Span::current();
                 let dispatch = async move {
                     let exec_start = std::time::Instant::now();
@@ -754,7 +720,6 @@ impl SessionActor {
                     let tool_span_for_record = tool_span.clone();
                     let run_tool = || {
                         let prepared = Arc::clone(&prepared);
-                        let desktop_bridge = desktop_bridge.clone();
                         let workspace_ops = workspace_ops.clone();
                         let session_id = session_id.clone();
                         let mutation_path = mutation_path.clone();
@@ -777,7 +742,6 @@ impl SessionActor {
                                 &workspace_ops,
                                 &prepared,
                                 &session_id,
-                                desktop_bridge.as_ref(),
                             )
                             .await
                         }
@@ -1096,7 +1060,6 @@ impl SessionActor {
     fn tool_mutation_path(
         &self,
         prepared: &PreparedToolCall,
-        editor_coordinated: bool,
     ) -> Option<std::path::PathBuf> {
         use echo_agent_tools::types::tool::ToolKind;
         let root = self.tool_context.fs.root();
@@ -1105,9 +1068,7 @@ impl SessionActor {
             .as_deref()
             .unwrap_or(&prepared.tool_name);
         match self.tool_bridge_handle().tool_kind(name) {
-            // Editor-coordinated file tools acquire their lease at the native
-            // write boundary, including when modifying unsaved buffers.
-            Some(ToolKind::Edit | ToolKind::Write) if !editor_coordinated => Some(
+            Some(ToolKind::Edit | ToolKind::Write) => Some(
                 lock_path_for_args(&prepared.parsed_args)
                     .map(|path| root.join(path))
                     .unwrap_or_else(|| root.to_owned()),
@@ -1116,29 +1077,6 @@ impl SessionActor {
             _ => None,
         }
     }
-    /// `use_tool` is the existing stable MCP entry point. In coordinated
-    /// runs it may target native-registered MCP tools or an authenticated
-    /// managed catalog/client pair, never another built-in execution adapter.
-    async fn desktop_mcp_target_is_trusted(&self, target: &str) -> bool {
-        use echo_agent_tools::types::resources::{
-            ManagedGatewayToolCatalog, ManagedGatewayToolClient,
-        };
-        let bridge = self.tool_bridge_handle();
-        if let Some(metadata) = bridge.toolset().get_tool_metadata(target) {
-            return metadata.tool_namespace() == echo_agent_tools::types::tool::ToolNamespace::MCP;
-        }
-        let catalog = bridge.read_resource::<ManagedGatewayToolCatalog>().await;
-        let source = catalog.as_ref().and_then(|catalog| catalog.get(target));
-        source.is_some_and(|source| {
-            !source.connector_id.is_empty()
-                && !source.call_id.is_empty()
-                && !source.tool_id.is_empty()
-        }) && bridge
-            .read_resource::<ManagedGatewayToolClient>()
-            .await
-            .is_some()
-    }
-
     /// Phase 1: pre-flight (MCP, args, hooks, permission, ExitPlanMode).
     pub(crate) async fn prepare_tool_call(
         &self,
@@ -1199,20 +1137,6 @@ impl SessionActor {
                 &call.id, &tool_call_id,
                 "Ask/Plan capability policy blocked this tool before execution. Arbitrary shell, MCP, unrestricted delegation and writes are unavailable in read-only runs.".into(),
             ).await?;
-            return Ok(Err(ToolLoop::Continue));
-        }
-        if self
-            .tool_bridge_handle()
-            .read_resource::<DesktopDocumentTools>()
-            .await
-            .is_some_and(|policy| policy.0)
-            && matches!(
-                self.tool_bridge_handle().tool_kind(&call.function.name),
-                Some(echo_agent_tools::types::tool::ToolKind::Workflow)
-            )
-        {
-            self.handle_tool_not_executed(&call.id, &tool_call_id,
-                "Workflow dispatch is unavailable in editor-coordinated runs. Use Task for subagents with inherited document authority, or use_tool for registered MCP integrations.".into()).await?;
             return Ok(Err(ToolLoop::Continue));
         }
         let mcp_parts = parse_mcp_tool_name(&call.function.name);
@@ -1354,18 +1278,6 @@ impl SessionActor {
                 &call.id, &tool_call_id,
                 "Ask/Plan is read-only for this run. This tool is unavailable; select Agent for a later run to authorize changes.".into(),
             ).await?;
-            return Ok(Err(ToolLoop::Continue));
-        }
-        if self
-            .tool_bridge_handle()
-            .read_resource::<DesktopDocumentTools>()
-            .await
-            .is_some_and(|policy| policy.0)
-            && let ToolInput::UseTool(input) = &tool_input
-            && !self.desktop_mcp_target_is_trusted(&input.tool_name).await
-        {
-            self.handle_tool_not_executed(&call.id,&tool_call_id,
-                "Coding MCP dispatch requires an existing registered MCP tool or authenticated managed catalog/client. Native tools and Task cannot be routed through use_tool; call their native entry directly.".into()).await?;
             return Ok(Err(ToolLoop::Continue));
         }
         if !self.is_readonly_turn()

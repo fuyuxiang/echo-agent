@@ -22,7 +22,7 @@ export function collaborationEnvironment(base, legacy, phase) {
   assert(Object.hasOwn(COLLABORATION_CHECKS, phase));
   const env = cleanNativeReviewEnvironment(base);
   for (const key of Object.keys(env)) if (key.startsWith('ECHO_DESKTOP_REVIEW')
-    || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'ECHO_THEIA_NODE', 'NODE_OPTIONS', 'NODE_PATH'].includes(key)) delete env[key];
+    || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'NODE_OPTIONS', 'NODE_PATH'].includes(key)) delete env[key];
   return { ...env, GROK_HOME: legacy, ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_COLLABORATION: '1', ECHO_DESKTOP_REVIEW_PHASE: phase };
 }
 export function verifyCollaborationReport(report, scope, pid, startedAt) {

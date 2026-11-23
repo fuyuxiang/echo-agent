@@ -52,20 +52,23 @@ impl acp::Agent for MvpAgent {
             self.spawn_settings_reapply();
         }
         let remote_settled = self.remote_settings_settled();
-        let auto_gc_policy = self.cfg.borrow().resolve_worktree_auto_gc();
-        if !remote_settled {
-            tracing::debug!(
-                "auto worktree gc and session search deferred until remote_settings arrive"
-            );
-        }
-        let echo_agent_home = echo_agent_fast_worktree::resolve_echo_agent_home();
-        tokio::task::spawn_blocking(move || {
-            crate::session::worktree_pool::cleanup_stale_pool_worktrees(None);
+        #[cfg(not(feature = "desktop"))]
+        {
+            let auto_gc_policy = self.cfg.borrow().resolve_worktree_auto_gc();
             if !remote_settled {
-                return;
+                tracing::debug!(
+                    "auto worktree cleanup deferred until remote_settings arrive"
+                );
             }
-            Self::reclaim_worktrees(echo_agent_home, auto_gc_policy);
-        });
+            let echo_agent_home = echo_agent_fast_worktree::resolve_echo_agent_home();
+            tokio::task::spawn_blocking(move || {
+                crate::session::worktree_pool::cleanup_stale_pool_worktrees(None);
+                if !remote_settled {
+                    return;
+                }
+                Self::reclaim_worktrees(echo_agent_home, auto_gc_policy);
+            });
+        }
         let data_home = crate::util::echo_agent_home::echo_agent_home();
         tokio::spawn(async move {
             if let Err(error) = crate::session::persistence::recover_session_relocations(&data_home).await {
@@ -141,7 +144,7 @@ impl acp::Agent for MvpAgent {
         }
         *self.client_type.borrow_mut() = client_type;
         tracing::info!("Client type set to: {:?}", client_type);
-        let code_nav_enabled = Self::parse_code_nav_capability(&arguments);
+        let code_nav_enabled = !cfg!(feature = "desktop") && Self::parse_code_nav_capability(&arguments);
         self.code_nav_enabled.set(code_nav_enabled);
         tracing::info!(
             code_nav_enabled,
@@ -2256,6 +2259,7 @@ impl acp::Agent for MvpAgent {
             "echo.agent/session/search" => {
                 crate::extensions::session_search::handle(self, &args).await
             }
+            #[cfg(not(feature = "desktop"))]
             "echo.agent/session/resolve_local_for_worktree_resume"
             | "echo.agent/session/rehydrate" => {
                 let ops = self.resolve_workspace_ops()?;
@@ -2514,10 +2518,12 @@ impl acp::Agent for MvpAgent {
             s if s.starts_with("echo.agent/session_summaries/") => {
                 crate::agent::handlers::session::handle(self, &args).await
             }
+            #[cfg(not(feature = "desktop"))]
             s if s.starts_with("echo.agent/git/worktree/") => {
                 let ops = self.resolve_workspace_ops()?;
                 crate::extensions::worktree::handle(self, &ops, &args).await
             }
+            #[cfg(not(feature = "desktop"))]
             s if s.starts_with("echo.agent/git/") => {
                 let ops = self.resolve_workspace_ops()?;
                 crate::extensions::git::handle(self, &ops, &args).await
@@ -2553,6 +2559,7 @@ impl acp::Agent for MvpAgent {
             s if s.starts_with("echo.agent/subagent/") => {
                 crate::extensions::task::handle_subagent(self, &args).await
             }
+            #[cfg(not(feature = "desktop"))]
             s if s.starts_with("echo.agent/terminal/") => {
                 crate::extensions::terminal::handle(self, &args).await
             }
@@ -2565,6 +2572,7 @@ impl acp::Agent for MvpAgent {
             s if s.starts_with("echo.agent/bundle/") => {
                 crate::extensions::bundle::handle(self, &args).await
             }
+            #[cfg(not(feature = "desktop"))]
             s if s.starts_with("echo.agent/code/") => {
                 let ops = self.resolve_workspace_ops()?;
                 crate::extensions::code_nav::handle(self, &ops, &args).await
@@ -2938,6 +2946,7 @@ impl acp::Agent for MvpAgent {
                 }
             }
         }
+        #[cfg(not(feature = "desktop"))]
         if args.method.as_ref() == "echo.agent/terminal/pty/input"
             && let Ok(params) = serde_json::from_str::<
                 serde_json::Value,

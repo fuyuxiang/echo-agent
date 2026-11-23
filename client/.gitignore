@@ -17,7 +17,6 @@ __pycache__/
 # crates.io extraction marker and upstream-only GitHub workflows/templates.
 /vendor/cpal-loopback/.cargo-ok
 /vendor/cpal-loopback/.github/
-/vendor/theia-platform/.github/
 
 # Spare generated icons not used by the current macOS/Windows bundle.icon list.
 # Keep the five configured PNG/ICO/ICNS inputs tracked.
@@ -45,16 +44,7 @@ __pycache__/
 /vendor/lru-0.12/Cargo.lock
 /vendor/lru-0.16/target/
 /vendor/lru-0.16/Cargo.lock
-/vendor/theia-platform/**/lib/
-/vendor/theia-platform/**/src-gen/
-/vendor/theia-platform/.nx/
-/vendor/theia-platform/.browser_modules/
-/vendor/theia-platform/plugins/
-/src-tauri/resources/theia/browser/*
-!/src-tauri/resources/theia/browser/.keep
-/src-tauri/resources/theia/node/*
-!/src-tauri/resources/theia/node/.keep
-/src-tauri/resources/theia/runtime-platform.json
+/src-tauri/resources/office/node/*
 /src-tauri/resources/office/worker.mjs
 /src-tauri/resources/office/licenses/
 /src-tauri/resources/retrieval-models/*

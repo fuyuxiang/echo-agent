@@ -57,6 +57,7 @@ pub struct TaskToolInput {
             affecting the parent workspace until explicitly merged."
     )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "desktop", schemars(skip))]
     pub isolation: Option<SubagentIsolationMode>,
 
     /// Resume a previous subagent's conversation instead of starting fresh.
@@ -84,12 +85,13 @@ pub struct TaskToolInput {
     /// effective cwd — setting both is ambiguous).
     /// Path validation (exists, is a directory) happens at subagent launch
     /// time, not here.
-    #[schemars(
+    #[cfg_attr(not(feature = "desktop"), schemars(
         description = "Explicit working directory for the subagent. The path must exist and \
             be a directory. Mutually exclusive with isolation=\"worktree\". \
             Ignored when resume_from is set (the resumed child inherits \
             its source's cwd/worktree)."
-    )]
+    ))]
+    #[cfg_attr(feature = "desktop", schemars(description = "Working directory for the subagent. The path must be an existing directory."))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 
@@ -941,8 +943,8 @@ Report results in the format and length the task specifies; otherwise give a cle
 complete writeup.
 
 Strengths:
-- Searching across large codebases for code, configurations, and patterns
-- Multi-file analysis and architecture investigation
+- Searching across workspace files and reference materials
+- Multi-file analysis and information synthesis
 - Multi-step research requiring exploration of many files
 
 Guidelines:\
@@ -955,7 +957,7 @@ ${%- if tools.by_kind.edit %}
 - NEVER create files unless absolutely necessary. Prefer editing existing files.
 - NEVER create documentation files (*.md) unless explicitly requested.\
 ${%- endif %}
-- Return absolute file paths and relevant code snippets in your final response.
+- Return absolute file paths and relevant source excerpts in your final response.
 
 Workspace boundary:
 - Default scope is the workspace in <user_info>. Stay within it unless told otherwise.
@@ -963,9 +965,9 @@ Workspace boundary:
 
 /// Prompt body for the **explore** subagent.
 ///
-/// A fast, read-only agent specialized for codebase exploration.
+/// A fast, read-only agent specialized for workspace research.
 pub const EXPLORE_PROMPT: &str = "\
-You are a fast, read-only codebase exploration agent.
+You are a fast, read-only workspace research agent.
 
 === READ-ONLY MODE ===
 \
@@ -995,7 +997,7 @@ Workspace boundary:
 /// A read-only architect agent that explores the codebase and produces
 /// implementation plans.
 pub const PLAN_PROMPT: &str = "\
-You are a read-only software architect. Explore the codebase and design implementation plans.
+You are a read-only planning specialist. Review relevant materials and develop actionable plans.
 
 === READ-ONLY MODE ===
 \
@@ -1015,7 +1017,7 @@ Process:
 
 End your response with:
 
-### Critical Files for Implementation
+### Relevant Materials for Execution
 List 3-5 files most critical for implementing this plan:
 - path/to/file1 - [Brief reason: e.g., \"Core logic to modify\"]
 - path/to/file2 - [Brief reason: e.g., \"Interfaces to implement\"]
@@ -1039,7 +1041,7 @@ pub const GENERAL_PURPOSE_SUBAGENT: BuiltinSubagent = BuiltinSubagent {
 /// The **explore** built-in subagent.
 pub const EXPLORE_SUBAGENT: BuiltinSubagent = BuiltinSubagent {
     name: "explore",
-    description: "Fast, read-only agent specialized for codebase exploration.",
+    description: "Fast, read-only agent specialized for workspace research.",
     tools_template: "Read-only \u{2014} has access to: \
          ${{ tools.by_kind.read }}, ${{ tools.by_kind.list }}, \
          ${{ tools.by_kind.search }}.",
@@ -1109,10 +1111,11 @@ pub fn build_task_description(subagents: &[SubagentDescriptor], naming: &TaskToo
         run_in_background_param,
         resume_from_param,
         background_retrieval_tool,
-        isolation_param,
+        ..
     } = *naming;
 
-    let out = format!(
+    #[allow(unused_mut)]
+    let mut out = format!(
         "Start a subagent that works on a task independently and reports back.\n\n\
          Agent types:\n\n\
          {agent_lines}\n\n\
@@ -1124,11 +1127,18 @@ pub fn build_task_description(subagents: &[SubagentDescriptor], naming: &TaskToo
          - When launching independent subagents, you MUST incorporate the results into the task based on requirements BEFORE concluding.\n\n\
          Resuming a previous agent (resume_from):\n\
          - Use {resume_from_param} to continue a previously completed subagent's conversation. Pass the subagent_id returned by a prior {task_tool} call. A resumed agent keeps its full transcript and tool state, so you only need to describe what changed since the last run — don't re-explain the original task.\n\
-         - The resumed agent must use the same subagent_type as the source.\n\n\
-         Isolation mode:\n\
-         - Use {isolation_param} to control the child's execution environment. With \"worktree\", the child runs in an isolated git worktree whose edits don't affect the parent workspace; the worktree is preserved after completion and its path is returned in the output."
+         - The resumed agent must use the same subagent_type as the source."
     );
 
+    #[cfg(not(feature = "desktop"))]
+    {
+        use std::fmt::Write;
+        let _ = write!(
+            out,
+            "\n\nIsolation mode:\n- Use {} to control the child's execution environment. With \"worktree\", the child runs in an isolated git worktree whose edits don't affect the parent workspace; the worktree is preserved after completion and its path is returned in the output.",
+            naming.isolation_param,
+        );
+    }
     out
 }
 

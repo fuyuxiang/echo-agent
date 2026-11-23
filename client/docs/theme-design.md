@@ -37,7 +37,6 @@
 
 ## 编辑器与导出
 
-宿主 Monaco 与 Theia 共用 [编辑器颜色映射](../src/lib/editor-theme.ts)。主题切换应更新语法颜色表、编辑区、输入、终端和状态栏；关闭后重新打开 Diff 仍使用当前主题，先清理 widget 再释放其独立模型。
 
 Diff 的行与字符背景可叠加，新增/删除字符另有底部标记。验收等待 worker 真正产生装饰，分别检查行、字符和标记；仅文字可读不能证明差异清楚。复杂编辑器背景用实际字形承托像素核验，不能只取祖先元素的背景。
 
@@ -55,9 +54,7 @@ pnpm test:ui:contrast
 pnpm test:ui:contrast:complex
 pnpm test:ui:theme-lifecycle
 pnpm test:ui:brand-palette
-pnpm test:ui:editor-paint
 pnpm ide:prepare
-pnpm test:ui:editor-theme
 ```
 
-浏览器组件、真实 Theia、macOS WKWebView 与 Windows WebView2 的结果分开记录。布局夹具中的占位 iframe 不代表实际 IDE 已通过；已测语言和 ANSI 样本也不代表任意插件或真彩色组合。证据输出与平台签核见 [开发与验收](testing.md)。
+浏览器组件、macOS WKWebView 与 Windows WebView2 的结果分开记录。聊天代码块和历史差异由 Markdown 与文件版本视图覆盖。证据输出与平台签核见 [开发与验收](testing.md)。

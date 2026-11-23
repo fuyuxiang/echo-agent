@@ -67,7 +67,6 @@ export function inspectRenderedColors() {
     if (!direct && !placeholder && !value) continue;
     const s = placeholder ? getComputedStyle(e, "::placeholder") : style(e);
     const complex = [];
-    if (e.closest(".monaco-diff-editor .view-lines")) complex.push("layered-editor-background: use editor-paint-audit");
     for (let p = e; p; p = p.parentElement) if (style(p).backgroundImage !== "none" || style(p).filter !== "none" || style(p).mixBlendMode !== "normal") complex.push(label(p));
     const fg = [...rgba(s.color)];
     if (placeholder) fg[3] *= Number(s.opacity);
@@ -88,7 +87,7 @@ export function inspectRenderedColors() {
     controls.push({selector:label(e),role:"boundary",ratio:ratio(pixel(e,rgba(boundaryColor)), e.matches(".echo-switch") ? pixel(e.parentElement,[0,0,0,0]) : background),threshold:3});
     if (s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0) controls.push({selector:label(e),role:"focus",ratio:ratio(pixel(e.parentElement,rgba(s.outlineColor)),pixel(e.parentElement,[0,0,0,0])),threshold:3});
   }
-  for (const e of document.querySelectorAll(".echo-composer,.echo-theia-agent__composer-box")) {
+  for (const e of document.querySelectorAll(".echo-composer")) {
     if (!visible(e)) continue;
     const s = style(e);
     if (s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0) controls.push({selector:label(e),role:"focus",ratio:ratio(pixel(e.parentElement,rgba(s.outlineColor)),pixel(e.parentElement,[0,0,0,0])),threshold:3});

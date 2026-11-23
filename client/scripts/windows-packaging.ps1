@@ -46,7 +46,7 @@ function Get-PackagingVcVars {
         [string]$BuildTools = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
     )
 
-    # node-gyp 11 and node-pty's Spectre libraries require the VS 2022 toolchain.
+    # The release uses the supported Visual Studio 2022 toolchain.
     # Selecting `-latest` without a range can silently choose VS 2026 instead.
     if (Test-Path -LiteralPath $VsWhere -PathType Leaf) {
         $installations = @(Invoke-PackagingCommand $VsWhere @(

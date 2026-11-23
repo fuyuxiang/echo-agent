@@ -1,6 +1,6 @@
 // Isolated acceptance data around production components. No native installs,
 // real credentials, file writes, model requests or publishing are performed.
-import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../../src/styles/index.css";
 import { ThemeProvider, initializeTheme, useTheme } from "../../src/components/ThemeProvider";
@@ -10,15 +10,12 @@ import { RefPickerDialog } from "../../src/components/project-picker";
 import { KnowledgePicker } from "../../src/components/KnowledgePicker";
 import { AgentSettingsPanel } from "../../src/components/SettingsSections";
 import { ProjectDetailView } from "../../src/components/ProjectDetailView";
-import type { TheiaIdeFrameHandle } from "../../src/features/coding/TheiaIdeFrame";
 import { useKnowledgeStore } from "../../src/stores/knowledge-store";
 import { useOrgSessionStore } from "../../src/stores/org-session-store";
 import { useProjectsStore, type ProjectMeta } from "../../src/stores/projects-store";
 import type { SkillPackageInspection, SkillCapabilityState } from "../../src/lib/types";
 
 const query = new URLSearchParams(location.search);
-const TheiaTaskReview = lazy(() => import("../../src/features/coding/TheiaTaskReview").then(module => ({ default: module.TheiaTaskReview })));
-const TheiaIdeFrame = lazy(() => import("../../src/features/coding/TheiaIdeFrame").then(module => ({ default: module.TheiaIdeFrame })));
 const surface = query.get("surface") ?? "skill-import";
 if (!query.has("restore")) localStorage.setItem("echoagent.theme", query.get("theme") ?? "light");
 initializeTheme();
@@ -77,10 +74,6 @@ Object.assign(window, {
         case "mcp_config_save": config = String(args.content); return { warnings: [] };
         case "subagents_config_get": return { maxDepth: 2 };
         case "subagents_config_save": if (query.get("state") === "error") throw new Error("隔离验证：配置暂不可写"); return args.maxDepth;
-        case "coding_changeset_diff": return { original: "export const status = 'pending';\n", modified: "export const status = 'completed';\n// 保留语法颜色与可读的差异标记\nexport const retries: number = 3;\n", binary: false, modifiedHash: "review-sha256" };
-        case "coding_theia_start": return { url: query.get("ideUrl"), embedToken: query.get("embedToken") };
-        case "coding_document_editor_attach": return args.root;
-        case "coding_document_editor_detach": case "coding_inline_cancel": return;
         case "projects_save": return;
         case "automations_snapshot": return { automations: [], records: [] };
         case "agent_models": return [{ id: "review/available", name: "团队工作模型" }];
@@ -97,23 +90,13 @@ Object.assign(window, {
 
 function Review() {
   const theme = useTheme();
-  const ide = useRef<TheiaIdeFrameHandle>(null);
-  const ideRoot = query.get("root") ?? "/isolated-review";
-  const openFile = useMemo(() => ({ path: `${ideRoot}/status.ts`, id: 1 }), [ideRoot]);
   const [referenceOpen, setReferenceOpen] = useState(true);
-  const [editorOpen, setEditorOpen] = useState(true);
   useEffect(() => {
-    Object.assign(window, { enterpriseThemeReview: { calls, setTheme: theme.setTheme, setEditorOpen,
-      editorModelCount: async () => (await import("monaco-editor")).editor.getModels().length,
-      ideContext: () => ide.current?.getContext(),
-      ideDiff: () => ide.current?.openDiff(`${ideRoot}/status.ts`, "export const status = 'pending';\n", "主题差异验收"),
-    } });
+    Object.assign(window, { enterpriseThemeReview: { calls, setTheme: theme.setTheme } });
   }, [theme.setTheme]);
   if (surface === "skill-import") return <ImportSkillModal onClose={() => {}} />;
   if (surface === "references") return referenceOpen ? <RefPickerDialog title={query.get("kind") ?? "专家"} options={references} selected={[references[0]]} onCancel={() => setReferenceOpen(false)} onConfirm={() => setReferenceOpen(false)} /> : null;
   if (surface === "project") return <ProjectDetailView project={query.get("state") === "unavailable" ? { ...project, defaultModelId: "review/removed" } : project} picker={{ options: { experts: references, skills: references, connectors: references }, loading: false, error: null }} models={[{ id: "review/available", label: "团队工作模型", providerId: "review" }]} onBack={() => {}} />;
-  if (surface === "monaco") return editorOpen ? <TheiaTaskReview root="/isolated-review" taskId="theme-task" path="status.ts" onClose={() => setEditorOpen(false)} onOpenFile={() => {}} onReviewed={async () => {}} /> : null;
-  if (surface === "real-ide") return <main className="app"><TheiaIdeFrame ref={ide} root={ideRoot} completionEnabled={false} onBeforeMutation={async () => null} onAfterMutation={async () => {}} openFileRequest={openFile} /></main>;
   return <main className="app"><section className="panel-section" style={{ padding: 24, height: "100%", overflow: "auto", background: "var(--echo-surface-canvas)" }}>
     {surface === "knowledge" ? <KnowledgePicker /> : surface === "connector" ? <McpConfigEditor onBack={() => {}} /> : <AgentSettingsPanel />}
   </section></main>;

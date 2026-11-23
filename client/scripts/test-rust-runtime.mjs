@@ -117,6 +117,18 @@ for (const group of groups) {
   const result = await runNativeTestProcess(program, [...group.args, `--test-threads=${group.threads}`], { ...options, env: group.env });
   if (result !== 0) status = result;
 }
+const coreWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-core'));
+const coreProgram = buildHarness('echo-agent-core', coreWorkspace);
+const templateFilter = 'prompt::template::tests::';
+const coreOptions = { cwd: coreWorkspace, env: groupEnvironment('prompt-templates') };
+const templates = spawnSync(coreProgram, [templateFilter, '--list'], { ...coreOptions, encoding: 'utf8' });
+assert.equal(templates.status, 0, templates.error?.message || templates.stderr);
+for (const name of ['test_encrypted_templates_not_stale', 'test_base_template_renders',
+    'test_apply_patch_template_renders', 'test_subagent_template_deterministic_across_renders']) {
+  assert(templates.stdout.includes(`${templateFilter}${name}: test`), `Missing real prompt template test: ${name}`);
+}
+const coreStatus = await runNativeTestProcess(coreProgram, [templateFilter, '--test-threads=2'], coreOptions);
+if (coreStatus !== 0) status = coreStatus;
 const toolsWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-tools'));
 const toolsProgram = buildHarness('echo-agent-tools', toolsWorkspace);
 const reminderFilter = 'reminders::task_completion::tests::';

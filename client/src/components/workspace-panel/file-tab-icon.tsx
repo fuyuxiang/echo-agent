@@ -3,7 +3,7 @@
  *
  * SP2 起废除 emoji，统一用 lucide-react。
  */
-import { FileTypeIcon } from "@/features/coding/lib/file-type-icon";
+import { FileTypeIcon } from "@/lib/file-type-icon";
 import type { ReactNode } from "react";
 
 /** 按文件名返回 SVG 图标节点（无扩展名走 default）。 */

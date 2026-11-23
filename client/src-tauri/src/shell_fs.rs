@@ -84,10 +84,6 @@ impl FilesystemAccess {
             let _ = access.authorize_workspace(&workspace.cwd);
         }
 
-        for root in crate::coding::isolation::managed_worktrees() {
-            let _ = access.authorize_workspace(&root.to_string_lossy());
-        }
-
         // Knowledge sources are also durable user selections. Load this file
         // only once at native startup: a compromised renderer cannot expand
         // the live allow-list merely by rewriting the descriptor store.
@@ -677,7 +673,10 @@ fn resolve_path(path: &str, cwd: Option<&str>) -> PathBuf {
 /// existing ancestor plus the missing suffix. Resolving symlinks before the
 /// allow-list comparison prevents an authorized directory symlink from being
 /// used to escape into another tree.
-fn canonicalize_candidate(candidate: &Path, allow_missing: bool) -> Result<PathBuf, String> {
+pub(crate) fn canonicalize_candidate(
+    candidate: &Path,
+    allow_missing: bool,
+) -> Result<PathBuf, String> {
     if !candidate.is_absolute() {
         return Err("文件系统路径必须是绝对路径".into());
     }
@@ -1249,6 +1248,7 @@ fn write_text_file_authorized(
     let resolved = resolve_path(&path, Some(&workspace_root));
     let safe = ensure_under_workspace(&authorized_root, &resolved)?;
     access.is_authorized(&safe, true)?;
+    crate::legacy_workspace::ensure_workspace_available(&safe)?;
     if let Some(parent) = safe.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
@@ -1257,6 +1257,7 @@ fn write_text_file_authorized(
     // Re-resolve after directory creation to close symlink escapes introduced
     // between the first check and the actual write.
     let final_path = access.is_authorized(&safe, true)?;
+    crate::legacy_workspace::ensure_workspace_available(&final_path)?;
     write_text_atomically(&final_path, content.as_bytes())?;
     Ok(final_path.to_string_lossy().to_string())
 }
@@ -1327,6 +1328,7 @@ pub async fn export_text_file(
         .file_name()
         .ok_or_else(|| "导出路径没有文件名".to_string())?;
     let destination = canonical_parent.join(file_name);
+    crate::legacy_workspace::ensure_workspace_available(&destination)?;
     write_text_atomically(&destination, content.as_bytes())?;
     Ok(Some(destination.to_string_lossy().into_owned()))
 }
@@ -1491,7 +1493,7 @@ fn list_dir_resolved(
     // Translate ignore_files basenames to &str slices for the chain helper.
     let ignore_names: Vec<&str> = match ignore_files.as_ref() {
         Some(list) => list.iter().map(String::as_str).collect(),
-        None => crate::coding::gitignore_chain::DEFAULT_IGNORE_FILES.to_vec(),
+        None => crate::workspace_ignore::DEFAULT_IGNORE_FILES.to_vec(),
     };
     let read = authorized
         .read_dir()
@@ -1534,7 +1536,7 @@ fn list_dir_resolved(
         }
         // Apply the nested ignore chain to honour `.echoagentignore` /
         // `.gitignore` (deeper whitelist wins, matching Git precedence).
-        if crate::coding::gitignore_chain::apply_nested_gitignore(
+        if crate::workspace_ignore::apply_nested_gitignore(
             &ignore_root,
             &entry.path(),
             is_dir,
