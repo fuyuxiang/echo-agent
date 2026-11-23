@@ -1392,9 +1392,6 @@ export function ChatView({
             models={models}
             onModelChange={onModelChange}
             cwd={workspace.cwd}
-            managedTaskWorkspace={managedTaskWorkspace}
-            onOpenWorkspace={openWorkspaceDirectory}
-            openWorkspaceDisabled={draftOnly || !workspace.available || workspace.busy}
             showDisclaimer
             showMeta
             compact

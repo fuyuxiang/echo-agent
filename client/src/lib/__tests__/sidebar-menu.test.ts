@@ -13,8 +13,8 @@ describe("sidebar menu preferences", () => {
       more: ["projects", "automation"],
     });
     expect(result).toEqual({
-      primary: ["automation", "organization", "coding", "capabilities"],
-      more: ["projects", "knowledge"],
+      primary: ["automation", "organization", "capabilities"],
+      more: ["projects", "knowledge", "coding"],
     });
     expect(normalizeSidebarMenuLayout({ primary: "projects" })).toEqual(normalizeSidebarMenuLayout(null));
   });
@@ -28,9 +28,9 @@ describe("sidebar menu preferences", () => {
     const initial = normalizeSidebarMenuLayout(null);
     const moved = moveSidebarMenuItem(initial, "knowledge", "primary", 0);
     const reordered = moveSidebarMenuItem(moved, "knowledge", "primary", 3);
-    expect(reordered.primary).toEqual(["projects", "organization", "knowledge", "coding", "capabilities"]);
-    expect(reordered.more).toEqual(["automation"]);
-    expect(initial.primary).toHaveLength(4);
+    expect(reordered.primary).toEqual(["projects", "organization", "knowledge", "capabilities"]);
+    expect(reordered.more).toEqual(["automation", "coding"]);
+    expect(initial.primary).toHaveLength(3);
     expect(moveSidebarMenuItem(reordered, "knowledge", "primary", 2)).toEqual(reordered);
   });
 

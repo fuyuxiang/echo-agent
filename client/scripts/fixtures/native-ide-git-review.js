@@ -37,8 +37,12 @@
     const sidebar = async () => {
       const reveal = document.querySelector('button[aria-label="展开侧边栏"]');
       if (visible(reveal)) reveal.click();
-      return wait(() => [...document.querySelectorAll('.sidebar__nav-item')]
-        .find(node => visible(node) && node.textContent.trim() === '代码开发'), 'Code navigation');
+      return wait(() => {
+        const nav = document.querySelector('.sidebar__nav');
+        const entry = button(nav, '代码开发');
+        if (!entry) nav?.querySelector('.sidebar__more-wrap > button[aria-expanded="false"]')?.click();
+        return entry;
+      }, 'Code navigation');
     };
     const listener = event => {
       if (!frame || event.source !== frame.contentWindow || event.origin !== new URL(frame.src).origin) return;

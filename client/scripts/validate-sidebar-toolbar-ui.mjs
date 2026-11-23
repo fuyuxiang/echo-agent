@@ -418,7 +418,8 @@ try {
   assert.deepEqual(await toggle.boundingBox(), collapsedAnchor, "changing the page moved window navigation");
   await codingPage.emulateMedia({ reducedMotion: "reduce" });
   await codingPage.mouse.click(collapsedAnchor.x + 16, collapsedAnchor.y + 16);
-  await codingPage.getByRole("button", { name: "代码开发", exact: true }).click();
+  await codingPage.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /更多/ }).click();
+  await codingPage.getByRole("menuitem", { name: "代码开发", exact: true }).click();
   await codingPage.locator(".app__coding-surface:not([hidden])").waitFor();
   assert.ok(await toggle.evaluate((element, original) => element === original, original), "returning to coding replaced window navigation");
   assert.deepEqual(await toggle.boundingBox(), anchor, "returning to coding moved window navigation");

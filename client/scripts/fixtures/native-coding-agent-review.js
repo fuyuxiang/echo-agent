@@ -68,7 +68,12 @@
   };
   const nav = async (label) => {
     await ensureSidebar();
-    (await waitFor(() => button(document.querySelector('.sidebar__nav'), label), `UI: visible nav ${label}`)).click();
+    (await waitFor(() => {
+      const sidebar = document.querySelector('.sidebar__nav');
+      const entry = button(sidebar, label);
+      if (!entry) sidebar?.querySelector('.sidebar__more-wrap > button[aria-expanded="false"]')?.click();
+      return entry;
+    }, `UI: visible nav ${label}`)).click();
   };
   const chooseModel = async (selector) => {
     (await waitFor(() => {

@@ -245,7 +245,12 @@
       await call('plugin:event|listen',{event:'agent://complete',target:{kind:'Any'},handler:completeCallback});
       await wait(async()=>{const status=await call('agent_auth_status');return status.ready&&status.runtimeReady&&status.synchronized&&status.runtimeModels?.includes(modelId);},'Existing configured model ready',60000);
       if(document.querySelector('.app__body--collapsed')) (await wait(()=>document.querySelector('button[aria-label="展开侧边栏"]'),'Actual sidebar expansion')).click();
-      const nav=await wait(()=>button(document.querySelector('.sidebar__nav'),'代码开发'),'Actual Code navigation');nav.click();
+      const nav=await wait(()=>{
+        const sidebar=document.querySelector('.sidebar__nav');
+        const entry=button(sidebar,'代码开发');
+        if(!entry) sidebar?.querySelector('.sidebar__more-wrap > button[aria-expanded="false"]')?.click();
+        return entry;
+      },'Actual Code navigation');nav.click();
       await wait(()=>visible(document.querySelector('.echo-theia__frame'))&&!document.querySelector('.echo-theia__cover'),'Actual production Theia startup',90000);
       if(scope.inlineOnly===true) {
         assert((await call('coding_task_list',{root:cwd})).length===0,'Tab-only fixture already has a CodingTask');

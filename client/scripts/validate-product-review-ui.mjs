@@ -107,7 +107,8 @@ try {
   await page.locator(".app__coding-surface").waitFor({ state: "hidden" });
   await page.mouse.up();
   assert.equal(await page.evaluate(() => localStorage.getItem("echo-agent-panel-width")), committed, "hidden Code committed a cancelled drag");
-  await page.getByRole("button", { name: "代码开发", exact: true }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /更多/ }).click();
+  await page.getByRole("menuitem", { name: "代码开发", exact: true }).click();
   await splitter.waitFor({ state: "visible" });
   assert.equal(await splitter.getAttribute("aria-valuenow"), committed, "returning to Code lost the saved width");
   assert.equal(await page.locator(".coding-workbench--resizing").count(), 0, "returning Code still owns a stale drag");

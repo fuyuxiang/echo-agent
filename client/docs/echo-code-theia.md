@@ -1,6 +1,6 @@
 # Echo Code 与 Theia 集成
 
-侧栏「代码开发」使用仓库内 Eclipse Theia 1.74.0 的浏览器 IDE。自定义菜单布局后，该入口也可能位于「更多」。Theia 提供文件树、Monaco 编辑器、搜索、终端、Git 和网页预览；旁边的 EchoAgent 面板负责 Agent 会话、任务阶段、变更审阅、验证记录与交付。
+从左侧栏的「更多 → 代码开发」打开仓库内 Eclipse Theia 1.74.0 的浏览器 IDE。也可以通过「自定义菜单栏」把入口移到一级菜单。Theia 提供文件树、Monaco 编辑器、搜索、终端、Git 和网页预览。旁边的 EchoAgent 面板负责 Agent 会话、任务阶段、变更审阅、验证记录与交付。
 
 ## 构建与打包
 

@@ -13,6 +13,7 @@ try {
   browser = await (await reviewChromium()).launch({ headless: true,
     executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
   const page = await browser.newPage();
+  const composer = page.locator(".echo-composer");
   page.setDefaultTimeout(15000);
   page.setDefaultNavigationTimeout(60000);
   const errors = [];
@@ -23,13 +24,13 @@ try {
     await page.locator(".session-header").waitFor();
     if (width < 900) await page.getByRole("button", {name:"收起侧边栏",exact:true}).click();
     assert.equal(await page.locator(".session-header").getByRole("button", {name:"打开工作目录"}).count(), 0);
-    await page.getByRole("button", {name:/^打开工作目录：/}).click();
-    await page.waitForFunction(() => window.workbenchCalls.some(c => c.command === "open_path" && c.args.path.includes("desktop-client")));
+    await composer.waitFor();
+    assert.equal(await composer.getByRole("button", {name:/^打开工作目录/}).count(), 0);
     await openWorkspaceView(page, "文件");
     const directory = page.getByRole("region", {name:"本任务工作目录"});
     await directory.waitFor();
     await directory.getByRole("button", { name: "打开文件夹", exact: true }).click();
-    await page.waitForFunction(() => window.workbenchCalls.filter(c => c.command === "open_path" && c.args.path.includes("desktop-client")).length === 2);
+    await page.waitForFunction(() => window.workbenchCalls.some(c => c.command === "open_path" && c.args.path.includes("desktop-client")));
     const fits = await directory.evaluate(element => {
       const rect = element.getBoundingClientRect();
       return rect.x >= 0 && rect.right <= innerWidth + 1 && element.scrollWidth <= element.clientWidth + 1;
@@ -65,10 +66,13 @@ try {
   }
   await page.goto(`${base}?surface=workbench&workspace=automatic`);
   await page.getByRole("button", { name: "收起侧边栏", exact: true }).click();
-  const taskFolder = page.getByRole("button", { name: "打开任务文件夹", exact: true });
-  assert.equal(await taskFolder.innerText(), "任务文件夹");
-  assert.match(await taskFolder.getAttribute("title"), /打开任务文件夹 · .*\/Tasks\/c2856c21-0e33-43a3-8541-bc06cebcdc89$/);
-  await taskFolder.click();
+  await composer.waitFor();
+  assert.equal(await composer.getByText("任务文件夹", {exact:true}).count(), 0);
+  await openWorkspaceView(page, "文件");
+  const taskDirectory = page.getByRole("region", {name:"本任务工作目录"});
+  await taskDirectory.getByText("任务文件夹", {exact:true}).waitFor();
+  assert.match(await taskDirectory.locator(".session-workspace-directory__path").getAttribute("title"), /\/Tasks\/c2856c21-0e33-43a3-8541-bc06cebcdc89$/);
+  await taskDirectory.getByRole("button", {name:"打开文件夹",exact:true}).click();
   await page.waitForFunction(() => window.workbenchCalls.some(call => call.command === "open_path" && call.args.path.endsWith("/Tasks/c2856c21-0e33-43a3-8541-bc06cebcdc89")));
   await page.screenshot({ path: join(output, "automatic-task-folder.png") });
   await page.setViewportSize({width:1280,height:900});

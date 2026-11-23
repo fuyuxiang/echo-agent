@@ -6068,10 +6068,6 @@ button.diff__path {
   font-size: 0.8125rem;
 }
 .echo-composer-meta__value > svg { flex: none; }
-.echo-composer-meta__workspace { min-width: 0; max-width: min(180px, 100%); }
-.echo-composer-meta__open-workspace { min-height: 32px; }
-.echo-composer-meta__open-workspace > svg { flex: none; }
-.echo-composer-meta__open-workspace:disabled { color: var(--echo-control-disabled-fg); cursor: default; background: transparent; }
 .echo-composer-meta__workspace-error {
   flex-basis: 100%;
   margin: 2px 8px 4px;

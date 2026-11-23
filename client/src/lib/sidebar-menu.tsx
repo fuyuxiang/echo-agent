@@ -19,8 +19,8 @@ export type SidebarMenuLayout = Record<SidebarMenuGroup, SidebarMenuId[]>;
 export const SIDEBAR_MENU_STORAGE_KEY = "echoagent.sidebar-menu.v1";
 
 const DEFAULT_LAYOUT: SidebarMenuLayout = {
-  primary: ["projects", "organization", "coding", "capabilities"],
-  more: ["knowledge", "automation"],
+  primary: ["projects", "organization", "capabilities"],
+  more: ["knowledge", "automation", "coding"],
 };
 
 /** Keep every available destination exactly once, including after upgrades. */

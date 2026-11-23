@@ -45,7 +45,12 @@ window.__echoNativeCodingReview = async ({ invoke, home, cwd, nonce, sessionId, 
   };
   const buttonWithText = (root, text) => [...(root?.querySelectorAll('button') ?? [])]
     .find((button) => button.getClientRects().length > 0 && button.textContent.trim() === text && !button.disabled);
-  const nav = (label) => buttonWithText(document.querySelector('.sidebar__nav'), label);
+  const nav = (label) => {
+    const sidebar = document.querySelector('.sidebar__nav');
+    const entry = buttonWithText(sidebar, label);
+    if (!entry && label === '代码开发') sidebar?.querySelector('.sidebar__more-wrap > button[aria-expanded="false"]')?.click();
+    return entry;
+  };
   const modal = (text) => [...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')]
     .find((element) => element.getClientRects().length > 0 && element.textContent.includes(text));
   const visible = (element) => {
