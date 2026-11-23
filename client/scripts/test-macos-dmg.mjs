@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { bundleDmg, detachImage, mountedImages, rememberAttachment } from './macos-dmg.mjs';
+import { bundleDmg, createStagingImage, detachImage, mountedImages, rememberAttachment } from './macos-dmg.mjs';
 
 function fixture(t) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "echo dmg's test-")));
@@ -50,6 +50,79 @@ for (const entry of ['direct', 'directory link', 'file link']) {
     assert.match(detach.stderr, /Refusing to detach a disk not created by this build/);
   });
 }
+
+test('disk image creation retries busy errors and discards partial images before publishing', t => {
+  const { directory } = fixture(t);
+  const image = join(directory, 'rw.124.EchoAgent_0.3.11_x64.dmg');
+  const args = ['create', '-srcfolder', join(directory, 'EchoAgent.app'), '-format', 'UDRW', image];
+  const delays = [], messages = [];
+  let calls = 0, scratch;
+  const status = createStagingImage(args, image, {
+    sleep: ms => delays.push(ms), report: text => messages.push(text),
+    run: forwarded => {
+      calls++;
+      scratch = forwarded.at(-1);
+      assert.deepEqual(forwarded.slice(0, -1), args.slice(0, -1));
+      assert.equal(dirname(dirname(scratch)), directory);
+      assert.equal(existsSync(scratch), false);
+      assert.equal(existsSync(image), false);
+      if (calls === 1) {
+        writeFileSync(scratch, 'incomplete output');
+        return { status: 1, output: 'hdiutil: create failed - Resource busy\n' };
+      }
+      if (calls === 2) return { status: 16 };
+      writeFileSync(scratch, 'completed image');
+      return { status: 0 };
+    },
+  });
+  assert.equal(status, 0);
+  assert.equal(calls, 3);
+  assert.deepEqual(delays, [2000, 4000]);
+  assert.equal(messages.filter(text => text.startsWith('Retrying disk image creation')).length, 2);
+  assert.equal(readFileSync(image, 'utf8'), 'completed image');
+  assert.equal(existsSync(dirname(scratch)), false);
+});
+
+test('disk image creation preserves permanent failures and caps repeated contention', t => {
+  const { directory } = fixture(t);
+  const image = join(directory, 'rw.124.EchoAgent_0.3.11_x64.dmg');
+  for (const [result, expectedDelays] of [
+    [{ status: 7, output: 'hdiutil: create failed - No space left on device' }, []],
+    [{ status: 1, output: 'hdiutil: create failed - Resource busy' }, [2000, 4000, 8000, 16000]],
+  ]) {
+    const delays = [];
+    let calls = 0, scratch;
+    assert.equal(createStagingImage(['create', image], image, {
+      sleep: ms => delays.push(ms), report: () => {},
+      run: args => { calls++; scratch = args.at(-1); return result; },
+    }), result.status);
+    assert.deepEqual(delays, expectedDelays);
+    assert.equal(calls, expectedDelays.length + 1);
+    assert.equal(existsSync(image), false);
+    assert.equal(existsSync(dirname(scratch)), false);
+  }
+});
+
+test('disk image creation preserves existing or concurrently created staging paths', t => {
+  const { directory, image } = fixture(t);
+  assert.throws(() => createStagingImage(['create', image], image, {
+    run: () => assert.fail('must not create over an existing image'),
+  }), /Disk image already exists/);
+  assert.equal(readFileSync(image, 'utf8'), 'temporary disk image');
+
+  const concurrent = join(directory, 'rw.124.EchoAgent_0.3.11_x64.dmg');
+  let scratch;
+  assert.throws(() => createStagingImage(['create', concurrent], concurrent, {
+    run: args => {
+      scratch = args.at(-1);
+      writeFileSync(scratch, 'completed image');
+      writeFileSync(concurrent, 'different image');
+      return { status: 0 };
+    },
+  }), { code: 'EEXIST' });
+  assert.equal(readFileSync(concurrent, 'utf8'), 'different image');
+  assert.equal(existsSync(dirname(scratch)), false);
+});
 
 test('a DiskArbitration timeout retries the same owned image and can recover', t => {
   const { image, mounted } = fixture(t);
