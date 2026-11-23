@@ -52,6 +52,7 @@ mod memory_listing_privacy_tests {
             scope: "global".into(),
             kind: "user".into(),
             key: key.into(),
+            key_is_custom: false,
             content: format!("{key}_BODY"),
             status: status.into(),
             pinned: true,

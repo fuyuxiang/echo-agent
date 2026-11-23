@@ -42,6 +42,18 @@ describe("project session movement", () => {
     expect(useProjectsStore.getState().projects[0].conversations).toEqual([]);
   });
 
+  it("共享关联保存失败后重新落盘同一个关联，才向发布流程确认成功", async () => {
+    vi.mocked(projectsSave).mockRejectedValueOnce(new Error("disk full"));
+    const { linkSharedProject } = useProjectsStore.getState();
+    await expect(linkSharedProject("p1", "org-account", "shared-1")).rejects.toThrow("disk full");
+    await expect(linkSharedProject("p1", "org-account", "shared-1")).resolves.toBeUndefined();
+    expect(projectsSave).toHaveBeenCalledTimes(2);
+    expect(projectsSave).toHaveBeenLastCalledWith([
+      expect.objectContaining({ sharedProjects: { "org-account": "shared-1" } }),
+    ]);
+    expect(useProjectsStore.getState().persistError).toBeNull();
+  });
+
   it("普通独立会话分叉不创建项目或发起无关保存", async () => {
     await expect(useProjectsStore.getState().associateForkWithSourceProject("s1", { ...session, sessionId: "fork" })).resolves.toBeNull();
     expect(projectsSave).not.toHaveBeenCalled();

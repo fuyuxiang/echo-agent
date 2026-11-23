@@ -11,7 +11,7 @@ import { useSessionsStore } from "@/stores/sessions-store";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import { projectTaskRows, type UnifiedTask } from "@/lib/project-tasks";
 import { projectPublicationLinks } from "@/lib/project-sharing";
-import { captureTeamProjectOperation, projectCollaborationCapabilities, TEAM_TASK_LABELS, type StartTeamWork, type OpenTeamExecution } from "@/lib/team-project-client";
+import { canEditTeamProject, captureTeamProjectOperation, projectCollaborationCapabilities, TEAM_TASK_LABELS, type StartTeamWork, type OpenTeamExecution } from "@/lib/team-project-client";
 import type { ProjectWorkspace } from "@/lib/use-project-workspace";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { useAppDialog } from "./AppDialog";
@@ -48,7 +48,7 @@ export function ProjectTasks(props: Props) {
   const { requestInput, requestConfirmation, dialog } = useAppDialog(`${project.id}:${account}`);
   const summary = (row: UnifiedTask) => summaries.find(s => s.sessionId === row.sessionId);
   const archived = (row: UnifiedTask) => row.private && (summary(row)?.archived ?? row.local?.sessionArchived ?? false);
-  const writable = !sharedId || workspace.snapshot?.role === "admin" || workspace.snapshot?.role === "collaborator";
+  const writable = !sharedId || canEditTeamProject(workspace.snapshot?.role);
   const current = rows.find(row => row.id === selected);
   // Publishing a task does not publish its former private conversation. Keep
   // that source reachable separately from native-bound collaborative runs.
@@ -68,7 +68,7 @@ export function ProjectTasks(props: Props) {
   const publishTask = async (localId: string) => {
     const local = useProjectsStore.getState().projects.find(p => p.id === project.id)?.tasks.find(t => t.id === localId);
     const link = local?.sharedTasks?.[account];
-    if (!local || !sharedId || link?.projectId !== sharedId || !link.requestId) throw new Error("任务关联尚未保存，请重试");
+    if (!writable || !local || !sharedId || link?.projectId !== sharedId || !link.requestId) throw new Error("任务关联尚未保存，请重试");
     const identity = captureTeamProjectOperation();
     const caps = await projectCollaborationCapabilities(identity);
     identity.assertCurrent();
@@ -105,7 +105,7 @@ export function ProjectTasks(props: Props) {
   const start = (row: UnifiedTask) => run(async () => {
     const modelId = modelOverride ?? row.local?.modelId ?? defaultModelId;
     if (!modelId || !models.some(m => m.id === modelId)) throw new Error("请先选择可用模型");
-    if (row.remote && workspace.snapshot && onStartTeamWork) {
+    if (row.remote && workspace.snapshot && onStartTeamWork && canEditTeamProject(workspace.snapshot.role)) {
       const identity = captureTeamProjectOperation();
       const sessionId = await onStartTeamWork(workspace.snapshot, row.remote, modelId);
       identity.assertCurrent();

@@ -78,6 +78,18 @@ describe("team project collaboration", () => {
   expect(screen.queryByLabelText("项目问答结果")).toBeNull();
   expect(screen.getByRole("button", { name: "登录组织" })).toBeInTheDocument();
  });
+ it("keeps project questions available while an unrecognized role cannot start work", async () => {
+  const onStartWork = vi.fn();
+  api.teamProjectRequest.mockImplementation(async action => action === "ask" ? answer : { ...snapshot, role: null });
+  render(<TeamProjectsPanel selectedId="p" onSelect={vi.fn()} onStartWork={onStartWork} />);
+  expect(await screen.findByText(/未返回可识别的项目角色/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "新成员快速了解项目" }));
+  expect(await screen.findByLabelText("项目问答结果")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "工作项" }));
+  expect(screen.queryByRole("button", { name: "接手并执行" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "新增工作项" })).toBeNull();
+  expect(onStartWork).not.toHaveBeenCalled();
+ });
  it("a question completing after logout cannot restore the previous organization's content", async () => {
   let complete!: (a: ProjectAnswer) => void;
   api.teamProjectRequest.mockImplementation(async action => action === "ask" ? new Promise<ProjectAnswer>(resolve => { complete = resolve; }) : snapshot);

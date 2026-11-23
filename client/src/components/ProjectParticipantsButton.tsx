@@ -30,12 +30,9 @@ function ProjectParticipantsControl({ sharedId, project, onLinked, onOpenOrganiz
   const generation = useRef(0), operation = useRef(false);
   const { requestConfirmation, dialog } = useAppDialog(`${boundary}:${sharedId ?? project?.id}`);
   const dialogRef = useModalFocus<HTMLDivElement>(open, () => setOpen(false));
+  useEffect(() => () => { generation.current += 1; }, []);
   useEffect(() => {
-    generation.current += 1; setOpen(false); setSnapshot(null); setCapabilities(null); setError(""); setQuery(""); setCandidate(null); setCandidates([]); setNotice(""); setBusy(false); operation.current = false;
-    return () => { generation.current += 1; };
-  }, [boundary, project?.id]);
-  useEffect(() => {
-    generation.current += 1; setSnapshot(null); setCandidate(null); setCandidates([]); setQuery(""); setSearchError("");
+    generation.current += 1; operation.current = false; setSnapshot(null); setCandidate(null); setCandidates([]); setQuery(""); setSearchError(""); setBusy(false);
     return () => { generation.current += 1; };
   }, [sharedId]);
   const reload = useCallback(async () => {

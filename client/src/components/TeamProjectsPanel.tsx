@@ -8,7 +8,7 @@ import type { AgentEntry } from "@/lib/types";
 import type { ModelOption } from "./ModelSelector";
 import { useAppDialog } from "./AppDialog";
 import { Markdown } from "./markdown/Markdown";
-import { captureTeamProjectOperation, TEAM_TASK_LABELS, teamProjectRequest, teamProjectUpload, type OpenTeamExecution, type ProjectAnswer, type ProjectCitation, type SharedAsset, type StartTeamWork, type TeamProject, type TeamProjectSnapshot, type TeamTask, type TeamTaskStatus } from "@/lib/team-project-client";
+import { canEditTeamProject, captureTeamProjectOperation, projectRoleUnavailable, TEAM_TASK_LABELS, teamProjectRequest, teamProjectUpload, type OpenTeamExecution, type ProjectAnswer, type ProjectCitation, type SharedAsset, type StartTeamWork, type TeamProject, type TeamProjectSnapshot, type TeamTask, type TeamTaskStatus } from "@/lib/team-project-client";
 import "@/styles/team-projects.css";
 import { ProjectParticipantsButton } from "./ProjectParticipantsButton";
 
@@ -166,6 +166,7 @@ function TeamProjectsWorkspace({ embedded = false, selectedId, onSelect, onStart
   const proposeDecision = () => requestInput({ title: "记录决策候选", description: "候选经项目管理员确认后，成为当前项目问答的正式依据。", fields: [{ name: "content", label: "决策内容", required: true, multiline: true, maxLength: 8000 }, { name: "rationale", label: "决策理由", multiline: true, maxLength: 8000 }], confirmLabel: "记录候选", action: async values => { await mutate("createDecision", values); } });
   const start = (task: TeamTask) => run(async () => {
     if (!project || !onStartWork) throw new Error("项目执行入口尚未准备好");
+    if (!canEditTeamProject(project.role)) throw new Error(project.role === "viewer" ? "当前项目权限只允许查看，请使用项目问答" : projectRoleUnavailable);
     if (!models.some(model => model.id === modelId)) throw new Error("请先选择可用模型");
     const expert = experts.find(e => `expert:${e.path}` === capability), team = teams.find(t => `team:${t.id}` === capability);
     if (capability && !expert && !team) throw new Error("所选专家或专家团已不可用，请重新选择执行能力");
@@ -180,9 +181,9 @@ function TeamProjectsWorkspace({ embedded = false, selectedId, onSelect, onStart
   if (!session?.loggedIn) return <section className="team-projects"><h2>团队项目</h2><p>登录组织后，与成员共享项目资料、进展和工作成果。</p><button type="button" onClick={onOpenOrganization}>登录组织</button></section>;
   if (!selectedId) return <section className="team-projects" aria-label="团队项目"><header><h2>团队项目</h2><button type="button" onClick={() => void run(reload)} disabled={busy}>刷新团队项目</button><button type="button" onClick={create}>新建团队项目</button></header>
     {error && <p role="alert">{error}</p>}{!projects.length && !error && <p>暂无已加入的团队项目。</p>}
-    <div className="team-project-grid">{projects.map(p => <button type="button" className="team-project-card" key={p.id} onClick={() => onSelect(p.id)}><strong>{p.name}</strong><span>{p.goal || "待补充项目目标"}</span><small>组织项目 · {p.role === "viewer" ? "查看者" : p.role === "admin" ? "管理员" : "协作者"}</small></button>)}</div>{dialog}</section>;
+    <div className="team-project-grid">{projects.map(p => <button type="button" className="team-project-card" key={p.id} onClick={() => onSelect(p.id)}><strong>{p.name}</strong><span>{p.goal || "待补充项目目标"}</span><small>组织项目 · {p.role === "viewer" ? "查看者" : p.role === "admin" ? "管理员" : p.role === "collaborator" ? "协作者" : "角色待确认"}</small></button>)}</div>{dialog}</section>;
   if (!project) return <section className="team-projects"><button onClick={() => onSelect(null)}>返回项目</button>{error ? <p role="alert">{error}</p> : <p role="status">正在读取团队项目…</p>}<button onClick={() => void run(reload)}>重试</button></section>;
-  const writable = project.role !== "viewer", admin = project.role === "admin";
+  const writable = canEditTeamProject(project.role), admin = project.role === "admin";
   const runs = project.runs ?? [];
   const requestStart = (task: TeamTask) => {
     const running = runs.some(run => run.taskId === task.id && run.status === "running");
@@ -197,6 +198,7 @@ function TeamProjectsWorkspace({ embedded = false, selectedId, onSelect, onStart
     {!embedded && <header><button type="button" onClick={() => onSelect(null)}>返回项目</button><h1>{project.name}</h1><ProjectParticipantsButton sharedId={selectedId} onOpenOrganization={onOpenOrganization} /></header>}
     <div className="project-collaboration-status"><span>已共享 · 版本 {project.revision} · {new Date(project.updatedAt).toLocaleString()}</span><button type="button" onClick={() => void run(reload)} disabled={busy}>刷新共享内容</button></div>
     {error && <p role="alert">{error}</p>}{project.syncWarning && <p role="alert">{project.syncWarning}</p>}
+    {!writable && project.role !== "viewer" && <p role="status">{projectRoleUnavailable}</p>}
     <nav aria-label="团队项目页面">{([["overview", "概览"], ["tasks", "工作项"], ["assets", "资料与成果"], ["runs", "执行记录"]] as const).map(([key, label]) => <button type="button" key={key} aria-current={tab === key ? "page" : undefined} onClick={() => setTab(key)}>{label}</button>)}</nav>
     {tab === "overview" && <>
       <section><header><h2>项目简报</h2>{admin && <button type="button" disabled={busy} onClick={() => requestInput({ title: "维护项目目标", fields: [{ name: "goal", label: "目标与约束", multiline: true, defaultValue: project.goal, maxLength: 12000 }], action: async values => { await mutate("update", { name: project.name, goal: values.goal, expectedRevision: project.revision }); } })}>编辑目标</button>}</header><p>{project.goal || "项目目标尚未填写"}</p>

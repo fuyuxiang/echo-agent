@@ -1,4 +1,5 @@
 import { isRemovedModelId, withoutRemovedModels } from "./retired-models";
+import { isPrivateMemoryLookup } from "./private-memory-lookup";
 /**
  * agent-client — typed wrappers over the EchoAgent Tauri commands and events.
  *
@@ -429,7 +430,7 @@ function knowledgeSourcesKey(sources: KnowledgeSource[]): string {
 
 function knowledgeConfigurationKey(sources: KnowledgeSource[], organizationScopeIds: string[]): string {
   const organizationIdentity = sources.includes("organization")
-    ? organizationKnowledgeAvailability().identity
+    ? [useOrgSessionStore.getState().boundaryRevision, organizationKnowledgeAvailability().identity]
     : "local-only";
   return `${knowledgeSourcesKey(sources)}:${organizationIdentity}:${[...organizationScopeIds].sort().join(",")}`;
 }
@@ -479,14 +480,21 @@ export async function agentSetKnowledgeSources(
 ): Promise<AgentKnowledgeSourcesResult> {
   const personal = sources.includes("personal");
   const organization = sources.includes("organization");
+  const configurationKey = knowledgeConfigurationKey(sources, organizationScopeIds);
+  const expectedGeneration = useOrgSessionStore.getState().session?.accountGeneration;
+  const requireCurrentOrganization = () => {
+    if (configurationKey !== knowledgeConfigurationKey(sources, organizationScopeIds)) {
+      throw new Error("组织账号或权限已改变，请重新选择知识来源后重试");
+    }
+  };
   const organizationError = organization
     ? await organizationSelectionError(sessionId, organizationScopeIds)
     : undefined;
+  requireCurrentOrganization();
   if (organizationError) {
     invalidateAgentKnowledgeSourceSync(sessionId);
     throw new Error(`组织知识库不可用：${organizationError}`);
   }
-  const configurationKey = knowledgeConfigurationKey(sources, organizationScopeIds);
   // Any mutation attempt makes the previous acknowledgement unsafe to reuse.
   // A failed native transaction may also report that rollback failed.
   invalidateAgentKnowledgeSourceSync(sessionId);
@@ -495,7 +503,9 @@ export async function agentSetKnowledgeSources(
     personal,
     organization,
     organizationScopeIds: organization ? organizationScopeIds : [],
+    ...(organization && { expectedGeneration }),
   });
+  requireCurrentOrganization();
   const mismatches = [
     result.personalSelected !== personal ? "个人知识选择状态" : null,
     result.organizationSelected !== organization ? "组织知识选择状态" : null,
@@ -504,9 +514,6 @@ export async function agentSetKnowledgeSources(
   ].filter((label): label is string => Boolean(label));
   if (mismatches.length > 0) {
     throw new Error(`Runtime 未能确认知识来源状态：${mismatches.join("、")}`);
-  }
-  if (configurationKey !== knowledgeConfigurationKey(sources, organizationScopeIds)) {
-    throw new Error("组织账号在知识来源同步期间发生变化，请重试");
   }
   appliedKnowledgeSources.set(sessionId, {
     key: configurationKey,
@@ -658,24 +665,32 @@ async function sendAgentPrompt({ sessionId, text, attachments, displayText, prom
   const withdrawn = () => submission.phase === "withdrawn";
   try {
     const assertKnowledgeBoundary = guardKnowledgeSend(sessionId, promptId);
+    const privateLookup = !coding && await isPrivateMemoryLookup(displayText);
+    if (withdrawn()) return;
+    if (!privateLookup) assertKnowledgeBoundary();
     if (!sendNow && coding?.workspace && coding.taskId && promptId) {
       await invoke("coding_checkpoint_start", { root: coding.workspace, taskId: coding.taskId, runId: promptId });
       if (withdrawn()) return;
       assertKnowledgeBoundary();
     }
-    await synchronizeKnowledgeSources(sessionId, promptId);
-    if (withdrawn()) return;
-    assertKnowledgeBoundary();
-    const prepared = await preparePromptWithPersonalKnowledge(sessionId, text, displayText, promptId);
-    if (withdrawn()) return;
-    assertKnowledgeBoundary();
-    await persistKnowledgeTrace(sessionId, promptId);
-    if (withdrawn()) return;
-    assertKnowledgeBoundary();
+    let promptText = text;
+    if (privateLookup) {
+      useKnowledgeStore.getState().beginTurnTrace(sessionId, promptId, []);
+    } else {
+      await synchronizeKnowledgeSources(sessionId, promptId);
+      if (withdrawn()) return;
+      assertKnowledgeBoundary();
+      ({ promptText } = await preparePromptWithPersonalKnowledge(sessionId, text, displayText, promptId));
+      if (withdrawn()) return;
+      assertKnowledgeBoundary();
+      await persistKnowledgeTrace(sessionId, promptId);
+      if (withdrawn()) return;
+      assertKnowledgeBoundary();
+    }
     submission.phase = "posted";
     await invoke<void>("agent_send", {
       sessionId,
-      text: prepared.promptText,
+      text: promptText,
       attachments,
       displayText,
       promptId: promptId ?? null,
@@ -1405,6 +1420,7 @@ export interface PersonalMemoryRecord {
   scope: "global" | "workspace";
   kind: "user" | "feedback" | "project" | "reference" | "task";
   key: string;
+  keyIsCustom?: boolean;
   content: string;
   status: "active" | "forgotten" | "completed";
   pinned: boolean;
@@ -1418,7 +1434,7 @@ export interface PersonalMemoryRecord {
   revision: number;
 }
 
-export type PersonalMemoryInput = Pick<PersonalMemoryRecord, "scope" | "kind" | "key" | "content" | "pinned" | "validUntil"> & {
+export type PersonalMemoryInput = Pick<PersonalMemoryRecord, "scope" | "kind" | "key" | "keyIsCustom" | "content" | "pinned" | "validUntil"> & {
   id?: string;
   evidence?: string;
   expectedRevision?: number;
@@ -1427,6 +1443,7 @@ export type PersonalMemoryInput = Pick<PersonalMemoryRecord, "scope" | "kind" | 
 export interface PersonalMemorySnapshot {
   records: PersonalMemoryRecord[];
   enabled: boolean;
+  workspaceAvailable?: boolean;
   pendingCount: number;
   quarantinedCount?: number;
   autoProcessingEnabled?: boolean;

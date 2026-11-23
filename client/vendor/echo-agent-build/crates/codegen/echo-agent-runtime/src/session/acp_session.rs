@@ -181,6 +181,13 @@ use memory_dream::*;
 mod goal_support;
 #[path = "acp_session_impl/memory_tools.rs"]
 mod memory_tools;
+#[path = "acp_session_impl/scoped_memory_lookup.rs"]
+mod scoped_memory_lookup;
+
+/// Decide whether a displayed prompt requests an isolated personal-memory read.
+pub fn is_private_memory_query(text: &str) -> bool {
+    scoped_memory_lookup::ExactMemoryQuery::parse(text).is_ok_and(|query| query.is_some())
+}
 pub(crate) use goal_support::*;
 #[path = "acp_session_impl/hook_dispatch.rs"]
 mod hook_dispatch;

@@ -2023,11 +2023,16 @@ pub async fn agent_set_knowledge_sources(
     personal: bool,
     organization: bool,
     organization_scope_ids: Option<Vec<String>>,
+    expected_generation: Option<u64>,
 ) -> Result<KnowledgeSourcesView, String> {
     if !valid_session_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
     }
     state.session_workspace(&session_id)?;
+    if organization {
+        let expected = expected_generation.ok_or("组织连接尚未就绪，请重新选择知识来源")?;
+        crate::org::require_project_account_generation(&app, expected).await?;
+    }
     let tx = state
         .tx
         .lock()
@@ -2044,9 +2049,12 @@ pub async fn agent_set_knowledge_sources(
                 personal,
                 organization,
                 organization_scope_ids.unwrap_or_default(),
-                crate::org::knowledge_account_generation(),
+                expected_generation.unwrap_or_else(crate::org::knowledge_account_generation),
             )
         };
+    if expected_generation.is_some_and(|expected| expected != account_generation) {
+        return Err("组织账号已改变，请重新发起本次操作".into());
+    }
     if organization_scope_ids.len() > 64
         || organization_scope_ids.iter().any(|scope_id| {
             scope_id.trim().is_empty()
@@ -2067,6 +2075,9 @@ pub async fn agent_set_knowledge_sources(
         account_generation,
     )
     .await?;
+    if organization && account_generation != crate::org::knowledge_account_generation() {
+        return Err("组织账号已改变，请重新发起本次操作".into());
+    }
     let active = crate::org_mcp::effective_selection(crate::org_mcp::KnowledgeSourceSelection {
         personal,
         organization,
@@ -2093,6 +2104,11 @@ fn coding_session_owns_task(workspace: &Path, session_id: &str) -> bool {
         .into_iter()
         .filter_map(|summary| crate::coding::task::load(workspace, &summary.id))
         .any(|task| task.session_id.as_deref() == Some(session_id))
+}
+
+#[tauri::command]
+pub fn agent_is_private_memory_query(text: String) -> bool {
+    echo_agent_runtime::session::is_private_memory_query(&text)
 }
 
 #[tauri::command]

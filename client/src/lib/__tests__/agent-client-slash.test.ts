@@ -264,6 +264,7 @@ describe("agentSend attachment contract", () => {
       personal: false,
       organization: true,
       organizationScopeIds: ["team-1"],
+      expectedGeneration: 0,
     });
   });
 
@@ -403,6 +404,23 @@ describe("agentSend attachment contract", () => {
     expect(invokeMock.mock.calls.filter(([command]) => (
       command === "agent_set_knowledge_sources"
     ))).toHaveLength(3);
+  });
+
+  it("相同账号重新登录后拒绝旧的组织知识连接回执", async () => {
+    const sessionId = "session-late-organization-ack";
+    let complete!: (value: unknown) => void;
+    invokeMock.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const result = agentSetKnowledgeSources(sessionId, ["organization"], ["team-1"]);
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "agent_set_knowledge_sources", expect.objectContaining({ sessionId }),
+    ));
+
+    const organization = useOrgSessionStore.getState().session!;
+    useOrgSessionStore.getState().clearSession();
+    useOrgSessionStore.getState().setSession({ ...organization, accountGeneration: 2 });
+    complete({ personalSelected: false, organizationSelected: true, personalAttached: false, organizationAttached: true });
+
+    await expect(result).rejects.toThrow("组织账号或权限已改变");
   });
 });
 

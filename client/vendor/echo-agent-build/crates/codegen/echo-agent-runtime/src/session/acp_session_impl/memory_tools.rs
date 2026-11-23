@@ -157,6 +157,7 @@ impl Tool for ManageMemoryTool {
                         valid_until: input.valid_until,
                         expected_revision: input.expected_revision,
                         observed_at: None,
+                        key_is_custom: None,
                     },
                     Some(&self.session_id),
                     false,

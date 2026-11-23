@@ -11,6 +11,11 @@ describe("记忆导入预览", () => {
     const items = parseMemoryImport(JSON.stringify([{ id: "old", status: "forgotten", content: "不要重新记住" }, { id: "new", status: "active", scope: "workspace", kind: "task", key: "初稿", content: "完成初稿" }]));
     expect(items).toHaveLength(1); expect(items[0]).toMatchObject({ scope: "workspace", kind: "task", key: "初稿" }); expect(items[0].id).toBeUndefined();
   });
+  it("同一正文的个人与工作区备份分别导入，并保留固定状态", () => {
+    const global = { scope: "global", kind: "user", content: "EA-QA 合成偏好", pinned: false };
+    const workspace = { ...global, scope: "workspace", kind: "project", pinned: true };
+    expect(parseMemoryImport(JSON.stringify([global, global, workspace]))).toMatchObject([global, workspace]);
+  });
   it("错误和超长导入不会静默部分保存", () => {
     expect(() => parseMemoryImport('[{"content":')).toThrow(/JSON/);
     expect(() => parseMemoryImport("a".repeat(4001))).toThrow(/4000/);

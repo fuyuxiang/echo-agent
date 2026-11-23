@@ -74,6 +74,7 @@ const MAX_FALLBACK_CREDENTIALS: usize = 32;
 const CREDENTIAL_SERVICE: &str = "com.echoagent.organization.v2";
 #[cfg(target_os = "macos")]
 const LEGACY_CREDENTIAL_SERVICE: &str = "com.echoagent.organization";
+const ORG_CREDENTIAL_ACCOUNT_PREFIX: &str = "echoagent-org-";
 const PROFILE_FILE: &str = "organization-profile.json";
 const LOGIN_HINT_FILE: &str = "organization-login-hint.json";
 const SKILL_STATE_FILE: &str = "organization-skills.json";
@@ -89,6 +90,8 @@ struct OrgProfile {
     username: String,
     user_id: String,
     device_id: String,
+    #[serde(default)]
+    profile_keychain: bool,
 }
 
 /// Non-secret identity fields retained independently from the authenticated
@@ -784,11 +787,59 @@ fn credential_account(profile: &OrgProfile) -> String {
     digest.update(profile.server_url.as_bytes());
     digest.update(b"\0");
     digest.update(profile.user_id.as_bytes());
-    format!("echoagent-org-{:x}", digest.finalize())
+    format!("{ORG_CREDENTIAL_ACCOUNT_PREFIX}{:x}", digest.finalize())
 }
 
 fn signing_key_account(profile: &OrgProfile) -> String {
     format!("{}-signing-key", credential_account(profile))
+}
+
+fn uses_legacy_profile_keychain(profile: &OrgProfile) -> bool {
+    cfg!(target_os = "macos")
+        && !profile.profile_keychain
+        && crate::paths::redirected_data_home().is_some()
+}
+
+fn read_profile_signing_key(profile: &OrgProfile) -> Result<Option<String>, String> {
+    let account = signing_key_account(profile);
+    let current = credential_read(&account)?;
+    #[cfg(target_os = "macos")]
+    if uses_legacy_profile_keychain(profile) {
+        return preserve_profile_signing_key(
+            current,
+            || Ok(default_keychain_read(&account)?.0),
+            |key| credential_write(&account, key),
+        );
+    }
+    Ok(current)
+}
+
+#[cfg(target_os = "macos")]
+fn preserve_profile_signing_key(
+    current: Option<String>,
+    read_legacy: impl FnOnce() -> Result<Option<Vec<u8>>, String>,
+    save_scoped: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    if current.is_some() {
+        return Ok(current);
+    }
+    // Only the public trust anchor has a safe migration. The shared refresh
+    // token has no directory ownership and stays in its legacy location.
+    let Some(bytes) = read_legacy()? else {
+        return Ok(None);
+    };
+    let key = String::from_utf8(bytes).map_err(|_| "invalid organization signing key")?;
+    decode_public_key(&key)?;
+    save_scoped(&key)?;
+    Ok(Some(key))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_profile_credential_service(data_home: Option<&Path>, account: &str) -> Option<String> {
+    let home = data_home.filter(|_| account.starts_with(ORG_CREDENTIAL_ACCOUNT_PREFIX))?;
+    let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    let digest = Sha256::digest(home.as_os_str().as_encoded_bytes());
+    Some(format!("{CREDENTIAL_SERVICE}.profile.{digest:x}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -854,25 +905,38 @@ fn legacy_keychain_cli_delete(account: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn credential_write(account: &str, secret: &str) -> Result<(), String> {
-    keychain_write(CREDENTIAL_SERVICE, account, secret)
+    let service =
+        macos_profile_credential_service(crate::paths::redirected_data_home().as_deref(), account);
+    keychain_write(
+        service.as_deref().unwrap_or(CREDENTIAL_SERVICE),
+        account,
+        secret,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn default_keychain_read(account: &str) -> Result<(Option<Vec<u8>>, bool), String> {
+    if let Some(bytes) = keychain_read(CREDENTIAL_SERVICE, account)? {
+        return Ok((Some(bytes), false));
+    }
+    match keychain_read(LEGACY_CREDENTIAL_SERVICE, account) {
+        Ok(value) => Ok((value, true)),
+        // Older entries created by the security tool can require that tool's ACL.
+        Err(direct_error) => match legacy_keychain_cli_read(account)? {
+            Some(bytes) => Ok((Some(bytes), true)),
+            None => Err(direct_error),
+        },
+    }
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn credential_read(account: &str) -> Result<Option<String>, String> {
-    let (bytes, migrate) = match keychain_read(CREDENTIAL_SERVICE, account)? {
-        Some(bytes) => (Some(bytes), false),
-        None => match keychain_read(LEGACY_CREDENTIAL_SERVICE, account) {
-            Ok(value) => (value, true),
-            // Releases before 0.3.10 created Keychain entries through the
-            // `security` tool. Their ACL can reject direct process access
-            // after an application update, while the original tool remains
-            // authorized. Read once through that compatibility path and copy
-            // into the stable v2 service owned by EchoAgent.
-            Err(direct_error) => match legacy_keychain_cli_read(account)? {
-                Some(bytes) => (Some(bytes), true),
-                None => return Err(direct_error),
-            },
-        },
+    let service =
+        macos_profile_credential_service(crate::paths::redirected_data_home().as_deref(), account);
+    let (bytes, migrate) = if let Some(service) = service {
+        (keychain_read(&service, account)?, false)
+    } else {
+        default_keychain_read(account)?
     };
     let Some(bytes) = bytes else {
         return Ok(None);
@@ -892,11 +956,16 @@ pub(crate) fn credential_read(account: &str) -> Result<Option<String>, String> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn credential_delete(account: &str) -> Result<(), String> {
+    let service =
+        macos_profile_credential_service(crate::paths::redirected_data_home().as_deref(), account);
     let mut errors = Vec::new();
-    match delete_generic_password(CREDENTIAL_SERVICE, account) {
+    match delete_generic_password(service.as_deref().unwrap_or(CREDENTIAL_SERVICE), account) {
         Ok(()) => {}
         Err(error) if error.code() == errSecItemNotFound => {}
         Err(error) => errors.push(format!("delete macOS Keychain credential: {error}")),
+    }
+    if service.is_some() {
+        return errors.into_iter().next().map_or(Ok(()), Err);
     }
     match delete_generic_password(LEGACY_CREDENTIAL_SERVICE, account) {
         Ok(()) => {}
@@ -1120,7 +1189,13 @@ fn normalize_server_url(raw: &str) -> Result<String, String> {
     if raw.chars().count() > MAX_SERVER_URL_CHARS {
         return Err("organization server URL is too long".into());
     }
-    let mut url = Url::parse(raw.trim()).map_err(|e| format!("invalid server URL: {e}"))?;
+    let raw = raw.trim();
+    let (_, address) = raw.split_once("://").ok_or("请输入完整的组织服务器地址")?;
+    let authority = address.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.ends_with(':') || raw.contains('\\') {
+        return Err("组织服务器地址格式无效，请检查协议、主机名和端口".into());
+    }
+    let mut url = Url::parse(raw).map_err(|e| format!("invalid server URL: {e}"))?;
     let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
     if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
         return Err(
@@ -1232,6 +1307,7 @@ fn clear_local_session(
     session: &mut OrgSession,
     profile: Option<&OrgProfile>,
     requires_reauthentication: bool,
+    forget_signing_key: bool,
 ) -> Result<(), String> {
     crate::org_mcp::set_capability_enabled(false);
     let mut errors = Vec::new();
@@ -1260,8 +1336,10 @@ fn clear_local_session(
         if let Err(error) = credential_delete(&credential_account(profile)) {
             errors.push(error);
         }
-        if let Err(error) = credential_delete(&signing_key_account(profile)) {
-            errors.push(error);
+        if forget_signing_key {
+            if let Err(error) = credential_delete(&signing_key_account(profile)) {
+                errors.push(error);
+            }
         }
     }
     if let Err(error) = with_model_state_transaction(inner, || {
@@ -1445,7 +1523,7 @@ where
                 {
                     return Ok(());
                 }
-                let cleanup = clear_local_session(inner, &mut session, Some(&profile), true);
+                let cleanup = clear_local_session(inner, &mut session, Some(&profile), true, false);
                 drop(session);
                 drop(_refresh_guard);
                 if let Some(app) = inner.app.get() {
@@ -1968,7 +2046,7 @@ async fn update_bootstrap_with_context_inner(
         .as_ref()
         .ok_or("organization profile missing")?;
     let key_account = signing_key_account(profile);
-    match credential_read(&key_account)? {
+    match read_profile_signing_key(profile)? {
         Some(pinned) if pinned != key_text => {
             return Err(
                 "organization signing key changed; explicit administrator migration is required"
@@ -2160,6 +2238,7 @@ pub async fn org_login(
         username,
         user_id,
         device_id,
+        profile_keychain: true,
     };
     validate_profile(&profile)?;
     let login_hint = login_hint_from_profile(&profile)?;
@@ -2170,11 +2249,23 @@ pub async fn org_login(
     let login_context = {
         let mut session = login_session_for_generation(&state.inner, generation).await?;
         let previous_profile = session.profile.clone();
+        let upgrading_same_profile = previous_profile.as_ref().is_some_and(|previous| {
+            uses_legacy_profile_keychain(previous)
+                && credential_account(previous) == new_credential_account
+        });
+        if let Some(previous) = previous_profile.as_ref().filter(|_| upgrading_same_profile) {
+            // Persist the former pin before replacing the legacy profile.
+            read_profile_signing_key(previous)?;
+        }
         // A sync may still be in flight under the previous account. Invalidate
         // it and purge while the session lock prevents a new old-account
         // snapshot, then publish the new identity.
         invalidate_account_generation(&state.inner);
-        deactivate_managed_skills(&state.inner)?;
+        if upgrading_same_profile {
+            suspend_managed_skills(&state.inner)?;
+        } else {
+            deactivate_managed_skills(&state.inner)?;
+        }
         with_model_state_transaction(&state.inner, || {
             // Any old-model commit either completed before this lock and is
             // removed here, or observes the new account generation after it.
@@ -2249,6 +2340,7 @@ pub async fn org_login(
                     &mut session,
                     profile.as_ref(),
                     false,
+                    false,
                 ) {
                     Ok(()) => error,
                     Err(cleanup_error) => {
@@ -2300,7 +2392,7 @@ pub async fn org_logout(app: AppHandle, state: State<'_, OrgState>) -> Result<()
         let current_profile = session.profile.clone();
         let access_token = session.access_token.clone();
         let cleanup =
-            clear_local_session(&state.inner, &mut session, current_profile.as_ref(), false);
+            clear_local_session(&state.inner, &mut session, current_profile.as_ref(), false, true);
         (current_profile, access_token, cleanup)
     };
     crate::org_mcp::reconcile_all_sessions(&app).await;
@@ -2620,6 +2712,15 @@ pub(crate) async fn authorize_project_binding(
     let state = app.state::<OrgState>();
     authorize_project_binding_inner(&state.inner, binding).await
 }
+
+fn require_project_execution_role(project: &Value) -> Result<(), String> {
+    match project.get("role").and_then(Value::as_str) {
+        Some("admin" | "collaborator") => Ok(()),
+        Some("viewer") => Err("当前项目权限只允许查看，请使用项目问答".into()),
+        _ => Err("组织服务未返回可识别的项目角色。请刷新项目后再开始或继续执行".into()),
+    }
+}
+
 async fn authorize_project_binding_inner(
     inner: &Arc<OrgInner>,
     binding: &ProjectSessionBinding,
@@ -2636,9 +2737,7 @@ async fn authorize_project_binding_inner(
         &context,
     )
     .await?;
-    if project.get("role").and_then(Value::as_str) == Some("viewer") {
-        return Err("当前项目权限只允许查看，不能继续执行项目工作".into());
-    }
+    require_project_execution_role(&project)?;
     Ok(context.generation)
 }
 
@@ -2677,9 +2776,7 @@ pub(crate) async fn authorize_project(
         None,
     )
     .await?;
-    if project.get("role").and_then(Value::as_str) == Some("viewer") {
-        return Err("查看者不能执行项目工作".into());
-    }
+    require_project_execution_role(&project)?;
     Ok(ProjectSessionBinding {
         account_id: context.account_id,
         project_id: project_id.into(),
@@ -3052,9 +3149,7 @@ async fn authorized_project_session(
         &context,
     )
     .await?;
-    if project.get("role").and_then(Value::as_str) == Some("viewer") {
-        return Err("当前项目权限只允许查看，请使用项目问答".into());
-    }
+    require_project_execution_role(&project)?;
     let scope = project
         .get("scopeId")
         .and_then(Value::as_str)
@@ -3088,6 +3183,13 @@ pub async fn org_project_session_scope(
     Ok(scope.map(|(scope, _)| scope))
 }
 
+pub(crate) fn require_shared_project_prompt(question: &str) -> Result<(), String> {
+    if echo_agent_runtime::session::is_private_memory_query(question) {
+        return Err("共享项目会话无法查询私人记忆。请在个人会话中查询，或从记忆管理查看原文。".into());
+    }
+    Ok(())
+}
+
 /// Every new turn resolves fresh project facts and checks live membership under
 /// the original account. Persisted private tokens and another user's CWD never
 /// become part of a handoff.
@@ -3096,9 +3198,13 @@ pub(crate) async fn project_session_context(
     session: &str,
     question: &str,
 ) -> Result<Option<(String, String, u64)>, String> {
+    if project_binding(session)?.is_some() {
+        require_shared_project_prompt(question)?;
+    }
     let Some((binding, context, scope)) = authorized_project_session(app, session).await? else {
         return Ok(None);
     };
+    require_shared_project_prompt(question)?;
     let state = app.state::<OrgState>();
     let evidence = authenticated_json_for_context(
         &state.inner,
@@ -4800,7 +4906,8 @@ fn extract_skill_package(
 
 fn pinned_signing_key() -> Result<VerifyingKey, String> {
     let profile = read_json::<OrgProfile>(&profile_path())?;
-    let text = credential_read(&signing_key_account(&profile))?
+    validate_profile(&profile)?;
+    let text = read_profile_signing_key(&profile)?
         .ok_or("organization signing key is not pinned")?;
     decode_public_key(&text)
 }
@@ -5150,6 +5257,14 @@ fn skill_precedes(candidate: &InstalledSkill, current: &InstalledSkill) -> bool 
         || (candidate_rank == current_rank && candidate.skill_id < current.skill_id)
 }
 
+fn suspend_managed_skills(inner: &OrgInner) -> Result<(), String> {
+    invalidate_skill_sync(inner);
+    if !has_managed_skill_artifacts_at(&crate::paths::echo_agent_home_dir()) {
+        return Ok(());
+    }
+    with_skill_state_transaction(inner, || write_runtime_skill_config(&SkillSyncState::default()))
+}
+
 fn deactivate_managed_skills(inner: &OrgInner) -> Result<(), String> {
     // Increment before waiting on the state lock. An in-flight sync either
     // finishes an already locked package write (which this cleanup then
@@ -5189,6 +5304,16 @@ pub fn enforce_skill_lease() {
         return;
     }
     let state = shared_state();
+    let migration_pending = read_json::<OrgProfile>(&profile_path()).is_ok_and(|profile| {
+        validate_profile(&profile).is_ok() && uses_legacy_profile_keychain(&profile)
+            && !matches!(read_profile_signing_key(&profile), Ok(Some(_)))
+    });
+    if migration_pending {
+        if let Err(error) = suspend_managed_skills(&state.inner) {
+            tracing::warn!(%error, "unable to suspend managed Skills while migrating organization trust");
+        }
+        return;
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -6404,6 +6529,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shared_project_prompts_cannot_run_isolated_private_memory_queries() {
+        for query in ["查记忆 global「报告语言」", "查记忆 workspace「项目代号」。提取〈代号〉。"] {
+            assert!(require_shared_project_prompt(query).is_err());
+        }
+        assert!(require_shared_project_prompt("读取团队项目已确认的决定").is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn legacy_profile_migrates_the_existing_public_pin_and_surfaces_keychain_failures() {
+        let raw = ed25519_dalek::SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
+        let mut der = vec![0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
+        der.extend(raw);
+        let pin = base64::engine::general_purpose::STANDARD.encode(der);
+        let mut stored = None;
+        assert_eq!(preserve_profile_signing_key(None, || Ok(Some(pin.as_bytes().to_vec())), |value| {
+            stored = Some(value.to_owned());
+            Ok(())
+        }), Ok(Some(pin.clone())));
+        assert_eq!(stored, Some(pin.clone()));
+        assert_eq!(preserve_profile_signing_key(Some(pin.clone()), || panic!("legacy lookup after migration"), |_| panic!("pin overwrite")), Ok(Some(pin)));
+        assert!(preserve_profile_signing_key(None, || Err("Keychain is locked".into()), |_| panic!("pin overwrite")).is_err());
+    }
+
+    #[test]
     fn project_member_search_is_bounded_and_cannot_inject_query_fields() {
         let path = project_member_search_path(
             "/api/v1/projects/example/member-candidates",
@@ -6480,8 +6630,11 @@ mod tests {
     #[test]
     fn server_url_requires_tls_except_loopback() {
         assert!(normalize_server_url("https://memory.example.com/").is_ok());
+        assert!(normalize_server_url("https://memory.example.com/organization/").is_ok());
         assert!(normalize_server_url("https://10.132.19.82:8787/").is_ok());
         assert!(normalize_server_url("http://127.0.0.1:8787").is_ok());
+        assert!(normalize_server_url("https://https://memory.example.com").is_err());
+        assert!(normalize_server_url("https:///memory.example.com").is_err());
         assert!(normalize_server_url("http://memory.example.com").is_err());
         assert!(normalize_server_url("https://u:p@memory.example.com").is_err());
         assert!(normalize_server_url(&format!(
@@ -6489,6 +6642,21 @@ mod tests {
             "a".repeat(MAX_SERVER_URL_CHARS)
         ))
         .is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn organization_keychain_namespace_follows_the_canonical_data_home() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let alias = second.path().join("same-profile");
+        std::os::unix::fs::symlink(first.path(), &alias).unwrap();
+        let account = format!("{ORG_CREDENTIAL_ACCOUNT_PREFIX}fixture");
+        let service = |path| macos_profile_credential_service(Some(path), &account);
+        assert!(macos_profile_credential_service(None, &account).is_none());
+        assert_ne!(service(first.path()), service(second.path()));
+        assert_eq!(service(first.path()), service(&alias));
+        assert!(macos_profile_credential_service(Some(first.path()), "unrelated").is_none());
     }
 
     #[test]
@@ -6501,6 +6669,7 @@ mod tests {
             username: "alice".into(),
             user_id: "user-1".into(),
             device_id: "device-1".into(),
+            profile_keychain: false,
         };
         assert!(validate_profile(&valid).is_ok());
         let mut invalid = valid;
@@ -6935,6 +7104,7 @@ mod tests {
                     username: "test".into(),
                     user_id: Uuid::now_v7().to_string(),
                     device_id: Uuid::now_v7().to_string(),
+                    profile_keychain: false,
                 }),
                 access_token: Some("access-old".into()),
                 refresh_token: Some("refresh-old".into()),
@@ -7153,6 +7323,39 @@ mod tests {
             .unwrap_err()
             .contains("其他组织账号"));
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn project_execution_requires_an_explicit_writable_role_from_the_service() {
+        use axum::{routing::get, Json, Router};
+        for (project, writable) in [
+            (json!({"role":"admin"}), true),
+            (json!({"role":"collaborator"}), true),
+            (json!({"role":"viewer"}), false),
+            (json!({"role":"unrecognized"}), false),
+            (json!({"role":null}), false),
+            (json!({}), false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let inner = test_org_inner(&format!("http://{}", listener.local_addr().unwrap()));
+            let binding =
+                project_run_fixture(active_account_context(&inner).await.unwrap().account_id);
+            let router = Router::new().route(
+                &format!("/api/v1/projects/{}", binding.project_id),
+                get(move || {
+                    let project = project.clone();
+                    async move { Json(json!({"code":0,"data":project})) }
+                }),
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            assert_eq!(
+                authorize_project_binding_inner(&inner, &binding)
+                    .await
+                    .is_ok(),
+                writable
+            );
+            server.abort();
+        }
     }
 
     #[tokio::test]

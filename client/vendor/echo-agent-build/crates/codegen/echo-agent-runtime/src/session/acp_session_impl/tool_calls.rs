@@ -2964,6 +2964,12 @@ impl SessionActor {
     ) {
         use echo_agent_sampler::{SamplingChannel, SamplingEvent};
         match event {
+            SamplingEvent::ChannelToken { ref request_id, .. }
+            | SamplingEvent::ToolCallDelta { ref request_id, .. }
+            | SamplingEvent::ReasoningCompleted { ref request_id, .. }
+            | SamplingEvent::BackendToolCallStarted { ref request_id, .. }
+            | SamplingEvent::BackendToolCallCompleted { ref request_id, .. }
+                if super::scoped_memory_lookup::buffers_output(request_id) => {}
             SamplingEvent::StreamStarted { timestamp_ms, .. } => {
                 {
                     let prompt_id = self

@@ -99,8 +99,7 @@ async fn response_reasoning_does_not_inflate_model_reported_context() {
             actor.record_response_token_usage(&response, None);
             let usage_reported = response.usage.is_some();
             actor
-                .record_response_items(response.items, usage_reported)
-                .await;
+                .record_response_items(response.items, usage_reported);
 
             assert_eq!(actor.chat_state_handle.get_total_tokens().await, 440_000);
             assert_eq!(
@@ -174,8 +173,7 @@ async fn response_without_usage_keeps_model_output_as_estimated_growth() {
             actor.record_response_token_usage(&response, None);
             let usage_reported = response.usage.is_some();
             actor
-                .record_response_items(response.items, usage_reported)
-                .await;
+                .record_response_items(response.items, usage_reported);
 
             assert_eq!(actor.chat_state_handle.get_total_tokens().await, 100_000);
             assert!(

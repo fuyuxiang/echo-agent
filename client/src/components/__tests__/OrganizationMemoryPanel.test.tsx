@@ -65,6 +65,21 @@ function documentAction(name: string, index = 0) {
 }
 
 describe("OrganizationMemoryPanel", () => {
+  it("从空白地址输入框粘贴完整 HTTPS 服务地址", async () => {
+    api.orgSession.mockResolvedValueOnce({ loggedIn: false });
+    api.orgLogin.mockRejectedValueOnce(new Error("合成测试登录失败"));
+    render(<OrganizationMemoryPanel />);
+    const address = await screen.findByLabelText("服务器地址");
+    expect(address).toHaveValue("");
+    fireEvent.change(address, { target: { value: "https://organization.example.test:8787/" } });
+    fireEvent.change(screen.getByLabelText("账号"), { target: { value: "qa-synthetic" } });
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "synthetic-only" } });
+    fireEvent.click(screen.getByRole("button", { name: "安全登录" }));
+    await waitFor(() => expect(api.orgLogin).toHaveBeenCalledWith(
+      "https://organization.example.test:8787/", "qa-synthetic", "synthetic-only",
+    ));
+  });
+
   beforeEach(() => {
     resetOrgSessionMirror();
     for (const mock of Object.values(api)) mock.mockReset();
@@ -131,7 +146,7 @@ describe("OrganizationMemoryPanel", () => {
     expect(await screen.findByLabelText("服务器地址")).toHaveValue("https://memory.example.com");
     expect(screen.getByLabelText("账号")).toHaveValue("alice");
     expect(screen.getByLabelText("密码")).toHaveValue("");
-    expect(screen.getByText("登录状态已过期，服务器和账号已为你保留，请重新输入密码。")).toBeInTheDocument();
+    expect(screen.getByText("请重新输入密码。服务器地址和账号已为你保留。")).toBeInTheDocument();
     expect(api.orgListScopes).not.toHaveBeenCalled();
   });
 
@@ -599,6 +614,7 @@ describe("OrganizationMemoryPanel", () => {
     render(<OrganizationMemoryPanel />);
     await screen.findByRole("button", { name: "组织账号：Alice" });
     fireEvent.click(screen.getByRole("button", { name: "组织账号：Alice" }));
+    expect(screen.getByText("组织角色 · 成员")).toBeVisible();
     fireEvent.click(screen.getByRole("menuitem", { name: "退出登录" }));
     expect(screen.getByRole("heading", { name: "连接组织" })).toBeInTheDocument();
     expect(screen.queryByText("Alice · https://memory.example.com")).not.toBeInTheDocument();

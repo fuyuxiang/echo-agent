@@ -38,6 +38,18 @@ beforeEach(() => {
   useKnowledgeStore.setState({ defaultSources: [], sessionSources: { task: ["organization"] }, sessionOrganizationScopeIds: {}, turnTraces: {} });
 });
 
+it("isolates a native-confirmed memory lookup from the session's organization knowledge connector", async () => {
+  const text = "查记忆 global「工作约定」";
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "agent_is_private_memory_query") return true;
+    if (command === "agent_set_knowledge_sources") throw new Error("组织离线");
+  });
+  await agentSend("task", text, [], text, "lookup");
+  expect(invoke).toHaveBeenCalledWith("agent_send", expect.objectContaining({ text, promptId: "lookup" }));
+  expect(invoke).not.toHaveBeenCalledWith("agent_set_knowledge_sources", expect.anything());
+  expect(preparation.prompt).not.toHaveBeenCalled();
+});
+
 it.each(["pause", "stop"] as const)("收回准备中的消息后，知识检索结束也不会提交", async action => {
   const retrieval = deferred<Awaited<ReturnType<typeof preparation.prompt>>>();
   preparation.prompt.mockReturnValueOnce(retrieval.promise);

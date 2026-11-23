@@ -23,6 +23,8 @@ export function captureTeamProjectOperation(): TeamProjectOperation {
 }
 
 export type ProjectRole = "admin" | "collaborator" | "viewer";
+export const canEditTeamProject = (role: unknown) => role === "admin" || role === "collaborator";
+export const projectRoleUnavailable = "组织服务未返回可识别的项目角色。请刷新项目，若仍无法确认请联系组织管理员。";
 export type TeamTaskStatus = "pending" | "in_progress" | "blocked" | "review" | "accepted";
 export const TEAM_TASK_LABELS: Record<TeamTaskStatus, string> = { pending: "待开始", in_progress: "进行中", blocked: "阻塞", review: "待验收", accepted: "已验收" };
 export interface TeamProject { syncWarning?: string; id: string; name: string; goal: string; scopeId: string; ownerId: string; revision: number; updatedAt: number; role: ProjectRole }

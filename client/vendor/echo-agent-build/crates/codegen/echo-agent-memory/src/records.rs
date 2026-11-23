@@ -18,6 +18,8 @@ pub struct MemoryRecord {
     pub scope: String,
     pub kind: String,
     pub key: String,
+    #[serde(default)]
+    pub key_is_custom: bool,
     pub content: String,
     pub status: String,
     pub pinned: bool,
@@ -44,6 +46,8 @@ pub struct RecordInput {
     pub kind: String,
     #[serde(default)]
     pub key: String,
+    #[serde(default)]
+    pub key_is_custom: Option<bool>,
     #[serde(default)]
     pub content: String,
     #[serde(default)]
@@ -208,7 +212,7 @@ fn load(storage: &MemoryStorage, scope: &str) -> io::Result<Ledger> {
         .flat_map(|text| title_variants(text))
         .collect();
     for record in &mut ledger.records {
-        if active(record)
+        if active(record) && !record.key_is_custom
             && (replaced_titles.contains(&normalized(&record.key))
                 || replaced_symbols.contains(record.key.trim()))
         {
@@ -312,7 +316,8 @@ fn same_record_topic(record: &MemoryRecord, input: &RecordInput) -> bool {
     if record.kind == "task" && same_key {
         return true;
     }
-    if content_derived_title(&record.key, &record.content)
+    if !record.key_is_custom && input.key_is_custom != Some(true)
+        && content_derived_title(&record.key, &record.content)
         && content_derived_title(&input.key, &input.content)
     {
         // A generated title is a display prefix, not a unique topic. Match the
@@ -328,7 +333,7 @@ fn coalesce_derived_title_duplicates(records: &mut Vec<MemoryRecord>) {
     let mut canonical: HashMap<_, usize> = HashMap::new();
     let mut unique: Vec<MemoryRecord> = Vec::with_capacity(records.len());
     for record in records.drain(..) {
-        if active(&record) && content_derived_title(&record.key, &record.content) {
+        if active(&record) && !record.key_is_custom && content_derived_title(&record.key, &record.content) {
             // Only title-format duplicates with equivalent record semantics
             // may merge. Preserve custom topics, expired/retired entries,
             // different evidence, origins, pinning and validity periods.
@@ -452,6 +457,49 @@ pub fn list(storage: &MemoryStorage, include_workspace: bool) -> io::Result<Vec<
     }
     records.sort_by_key(|r| (std::cmp::Reverse(r.pinned), std::cmp::Reverse(r.updated_at)));
     Ok(records)
+}
+
+/// Resolve an exact key in one authoritative ledger. Keys may be shared by
+/// different kinds, so an ambiguous lookup must not silently pick a record.
+pub fn lookup_active_exact(
+    storage: &MemoryStorage,
+    scope: &str,
+    key: &str,
+) -> io::Result<Option<MemoryRecord>> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "请指定记忆键名"));
+    }
+    let ledger = load(storage, scope)?;
+    let mut matches = ledger
+        .records
+        .into_iter()
+        .filter(|record| record.scope == scope && record.key == key && active(record));
+    let matched = matches.next();
+    if matches.next().is_some() {
+        return Err(io::Error::other("该范围内有多条同名有效记忆，请先在记忆管理中区分键名"));
+    }
+    Ok(matched)
+}
+
+/// Serialize result admission with ledger edits, including edits in another
+/// process using the same data home. The callback must only enqueue the result.
+pub fn commit_exact_lookup(
+    storage: &MemoryStorage,
+    scope: &str,
+    key: &str,
+    expected: Option<&MemoryRecord>,
+    publish: impl FnOnce() -> io::Result<()>,
+) -> io::Result<bool> {
+    let _guard = crate::storage::memory_mutation_lock()
+        .lock()
+        .map_err(|_| io::Error::other("memory lock poisoned"))?;
+    let _file_lock = lock_storage(storage)?;
+    if !storage.enabled() || lookup_active_exact(storage, scope, key)?.as_ref() != expected {
+        return Ok(false);
+    }
+    publish()?;
+    Ok(true)
 }
 
 pub fn source_blocked(storage: &MemoryStorage, session_id: &str) -> io::Result<bool> {
@@ -723,6 +771,8 @@ pub fn remember(
         let previous = &ledger.records[index];
         if !automatic
             && input.id.is_some()
+            && input.key_is_custom.is_none()
+            && !previous.key_is_custom
             && ((input.key == previous.key
                 && content_derived_title(&previous.key, &previous.content))
                 || ledger
@@ -741,11 +791,13 @@ pub fn remember(
             return Err(io::Error::other("已有同主题和类型的记忆，请更正原条目"));
         }
         let previous = &mut ledger.records[index];
+        let key_is_custom = input.key_is_custom.unwrap_or(previous.key_is_custom);
         if !automatic && input.id.is_none() {
             if previous.content == input.content
                 && (previous.key == input.key
-                    || (content_derived_title(&previous.key, &previous.content)
+                    || (!key_is_custom && content_derived_title(&previous.key, &previous.content)
                         && content_derived_title(&input.key, &input.content)))
+                && previous.key_is_custom == key_is_custom
                 && previous.kind == input.kind
                 && previous.valid_until == input.valid_until
                 && previous.pinned == input.pinned
@@ -784,6 +836,7 @@ pub fn remember(
         if previous.content == input.content
             && previous.valid_until == input.valid_until
             && previous.key == input.key
+            && previous.key_is_custom == key_is_custom
             && previous.kind == input.kind
             && previous.pinned == input.pinned
             && previous.status == "active"
@@ -804,6 +857,7 @@ pub fn remember(
         }
         previous.content = input.content;
         previous.key = input.key;
+        previous.key_is_custom = key_is_custom;
         previous.kind = input.kind;
         previous.evidence = input.evidence;
         previous.updated_at = now();
@@ -848,6 +902,7 @@ pub fn remember(
         scope: input.scope.clone(),
         kind: input.kind,
         key: input.key,
+        key_is_custom: input.key_is_custom.unwrap_or(false),
         content: input.content,
         status: "active".into(),
         pinned: input.pinned,
@@ -1780,6 +1835,26 @@ mod tests {
             .is_err()
         );
         assert_eq!(list(&storage, true).unwrap()[0], updated);
+    }
+
+    #[test]
+    fn an_explicit_key_survives_legacy_title_repair_after_a_content_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            MemoryStorage::with_paths(dir.path().join("global"), dir.path().join("workspace"));
+        let old = "旧约定";
+        let original = remember(&storage, RecordInput {
+            key: old.into(),
+            ..input("global", old)
+        }, None, false).unwrap().unwrap();
+        let updated = remember(&storage, RecordInput {
+            id: Some(original.id),
+            key: old.into(),
+            key_is_custom: Some(true),
+            expected_revision: Some(original.revision),
+            ..input("global", "当前约定")
+        }, None, false).unwrap().unwrap();
+        assert_eq!(lookup_active_exact(&storage, "global", old).unwrap(), Some(updated));
     }
 
     #[test]

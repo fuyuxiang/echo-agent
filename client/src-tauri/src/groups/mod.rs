@@ -809,6 +809,7 @@ pub async fn group_send(
     let g = db()?.get(&group_id)?;
     if !is_stop_request(&input) {
         if let Some(binding) = &g.project_binding {
+            crate::org::require_shared_project_prompt(&input.text)?;
             crate::org::authorize_project_binding(&app, binding).await?;
         }
         let root = app

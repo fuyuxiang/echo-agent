@@ -1039,6 +1039,7 @@ pub struct PersonalMemorySnapshot {
     quarantined_count: usize,
     auto_processing_enabled: bool,
     enabled: bool,
+    workspace_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     dream_undo: Option<echo_agent_memory::dream::DreamUndoVersion>,
 }
@@ -1087,6 +1088,7 @@ pub fn memory_records_get(
             .unwrap_or(0),
         auto_processing_enabled: config.auto_flush_enabled,
         enabled: config.enabled,
+        workspace_available: cwd.is_some() && !storage.is_ephemeral(),
         dream_undo,
     })
 }

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PROJECT_CHECKS, PROJECT_MODEL_ID, verifyProjectReport } from './validate-native-project-review.mjs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PROJECT_CHECKS, PROJECT_MODEL_ID, readPreparedProjectReviewProfile, verifyProjectReport } from './validate-native-project-review.mjs';
 function fixture() {
   const now=Date.now(),nonce='0123456789abcdef0123456789abcdef',home='/private/tmp/echo-native-review-project-test';
   const scope={home,nonce,phase:'first-launch',modelId:PROJECT_MODEL_ID,serverUrl:'https://org.example:8787',expectedUserId:'user',expectedUsername:'reviewer'};
@@ -47,4 +49,23 @@ test('project knowledge reads cannot authorize another scope or write outside th
   {sessionId:'session-1',via:'production allow-once UI',name:'write_file',path:report.expected.copiedPath},
   {sessionId:'session-1',via:'production allow-once UI',name:'write_file',path:'/tmp/foreign.md'},
  ]) {const bad=structuredClone(report);bad.permissions=[permission];assert.throws(()=>verifyProjectReport(bad,scope,1234,now-1000));}
+});
+
+test('the selected project review profile stays in its own private login home', { skip: process.platform !== 'darwin' }, () => {
+ const home=mkdtempSync('/private/tmp/echo-native-review-project-');
+ const other=mkdtempSync('/private/tmp/echo-native-review-project-');
+ try {
+  const profile=join(home,'organization-profile.json');
+  const identity={serverUrl:'https://org.example:8787',userId:'user',username:'reviewer',deviceId:'qa-device'};
+  writeFileSync(profile,JSON.stringify(identity),{mode:0o600});
+  assert.deepEqual(readPreparedProjectReviewProfile(profile),{home,original:identity});
+  const alias=join(other,'organization-profile.json');
+  symlinkSync(profile,alias);
+  assert.throws(()=>readPreparedProjectReviewProfile(alias));
+  writeFileSync(join(home,'echoagent-projects.json'),'[]',{mode:0o600});
+  assert.throws(()=>readPreparedProjectReviewProfile(profile),/fresh dedicated data home/);
+ } finally {
+  rmSync(home,{recursive:true,force:true});
+  rmSync(other,{recursive:true,force:true});
+ }
 });

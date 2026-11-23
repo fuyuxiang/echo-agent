@@ -1,4 +1,5 @@
-import { bindTeamProjectSession, captureTeamProjectOperation, teamProjectRequest, type OpenTeamExecution, type TeamProjectSnapshot, type StartTeamWork } from "@/lib/team-project-client";
+import { bindTeamProjectSession, canEditTeamProject, captureTeamProjectOperation, projectRoleUnavailable, teamProjectRequest, type OpenTeamExecution, type TeamProjectSnapshot, type StartTeamWork } from "@/lib/team-project-client";
+import { isPrivateMemoryLookup, privateMemoryInSharedProject } from "@/lib/private-memory-lookup";
 import { documentEditPrompt, forgetDocumentSessions } from "@/lib/document-workspace";
 import type { CodingTurnOptions } from "./lib/agent-client";
 import { codingApi } from "./features/coding/lib/tauri-api";
@@ -3447,7 +3448,12 @@ function Shell() {
   };
 
   const handleStartTeamWork: StartTeamWork = async (project, task, requestedModel, capability) => {
+    if (!canEditTeamProject(project.role)) throw new Error(project.role === "viewer" ? "当前项目权限只允许查看，请使用项目问答" : projectRoleUnavailable);
     const identity = captureTeamProjectOperation();
+    if (await isPrivateMemoryLookup(task.title) || await isPrivateMemoryLookup(task.description)) {
+      throw new Error(privateMemoryInSharedProject);
+    }
+    identity.assertCurrent();
     const model = requireExplicitProjectModel(requestedModel);
     if (!model) throw new Error("执行模型暂不可用，任务尚未接手，请配置模型后重试");
     if (!ensureQuotaAllowsSend()) throw new Error("当前配额不足，任务尚未接手");
@@ -3537,6 +3543,7 @@ function Shell() {
     };
     const latest = await teamProjectRequest<TeamProjectSnapshot>("snapshot", project.id, undefined, undefined, identity);
     assertCurrent();
+    if (!canEditTeamProject(latest.role)) throw new Error(latest.role === "viewer" ? "当前权限只允许查看共享报告" : projectRoleUnavailable);
     const current = latest.runs?.find(item => item.id === run.id);
     if (!current || current.actorId !== useOrgSessionStore.getState().session?.user?.id) throw new Error("请查看该执行的共享报告；继续工作需要接手后新建执行");
     const groups = await groupList();

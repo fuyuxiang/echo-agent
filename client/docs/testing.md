@@ -85,7 +85,7 @@ macOS 固定验收驱动接收该可执行文件路径；其平台、窗口、�
 
 模型流程要求显式设置 `NATIVE_REVIEW_MODEL_CONFIG`，指向独立私有目录中的普通 JSON 文件，目录权限 0700、文件权限 0600。当前固定契约见 [模型资源校验](../scripts/lib/native-review-model.mjs)：字段为 `baseUrl`、`model`、`protocol`、`apiKey`；模型固定为 `claude-opus-5-5`，协议为 `chat_completions`，端点必须是无内嵌凭据的 HTTPS URL。凭据不写入文档或命令行参数。
 
-项目工作台验收通过 `pnpm test:project:native <当前构建的程序> <明确选定的 organization-profile.json>` 运行。它在独立私有目录中，使用该账号的正常钥匙串与令牌刷新流程，并固定验证组织模型 `organization/MiniMax-M3.1-Flash`。现有私有模型资源仅用于初始化隔离 Runtime；项目任务与调度记录必须证明实际使用组织模型。账号、HTTPS 服务来源、工作目录、构建内嵌脚本和重启身份均有绑定，不能用任意脚本替换。
+用 `mktemp -d /private/tmp/echo-native-review-project-XXXXXXXX` 准备原生项目验收目录。运行当前构建并用 `--data-home <该目录>` 打开，使用获授权的测试账号正常登录，然后退出。用同一程序运行 `pnpm test:project:native <当前构建的程序> <该目录中的 organization-profile.json>`。驱动复用该目录专属的钥匙串与令牌刷新流程，要求目录专用于本次验收。现有私有模型资源用于初始化隔离 Runtime，实际项目任务与调度记录固定核对组织模型 `organization/MiniMax-M3.1-Flash`。账号、HTTPS 服务来源、工作目录、构建内嵌脚本和重启身份继续绑定。
 
 macOS 在程序重新编译后可能要求再次授权钥匙串访问；此时需在本机完成系统弹窗中的授权，桌面窗口可能尚未出现。驱动不会读取或填写系统密码，也不会绕过钥匙串授权。
 

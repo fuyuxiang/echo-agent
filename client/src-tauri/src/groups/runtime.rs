@@ -325,6 +325,7 @@ async fn execute(
         .await;
     let permission_mode = super::permissions::effective_mode(&g);
     if let Some(binding) = &g.project_binding {
+        crate::org::require_shared_project_prompt(&work.prompt)?;
         crate::org::authorize_project_binding(app, binding).await?;
     }
     if let Some(binding) = &g.project_binding {

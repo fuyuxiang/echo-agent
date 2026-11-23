@@ -410,9 +410,17 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       const previous = get().projects.find(project => project.id === id);
       if (!previous) throw new Error("本机项目已删除，无法保存协作关联");
       if (previous.deletedSharedProjects?.[account] === sharedId) throw new Error(PROJECT_DELETED_MESSAGE);
-      if (previous.sharedProjects?.[account] === sharedId) return;
-      patch(id, project => ({ ...project, sharedProjects: { ...project.sharedProjects, [account]: sharedId } }));
-      await flushProjectPersistence();
+      if (previous.sharedProjects?.[account] === sharedId) {
+        // A failed write leaves the link in the renderer's recovery cache.
+        // Retry that same link instead of treating the cache as a disk receipt.
+        await flushProjectPersistence().catch(() => persist(get().projects));
+      } else {
+        patch(id, project => ({ ...project, sharedProjects: { ...project.sharedProjects, [account]: sharedId } }));
+        await flushProjectPersistence();
+      }
+      if (get().projects.find(project => project.id === id)?.sharedProjects?.[account] !== sharedId) {
+        throw new Error("本机项目的协作关联已变化，请刷新项目后重试");
+      }
     },
     detachDeletedSharedProject: (localIds, account, sharedId) => {
       if (!localIds.size) return;

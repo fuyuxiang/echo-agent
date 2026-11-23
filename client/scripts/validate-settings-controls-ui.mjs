@@ -56,7 +56,7 @@ async function inspect(page, context) {
     const fields = [...root.querySelectorAll("input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]),select,textarea")].filter(visible).filter(element => !element.closest(".archived-settings__search")).map(element => {
       const css = getComputedStyle(element);
       return { name:element.getAttribute("aria-label") || element.id || element.getAttribute("placeholder"), classes:element.className,
-        border:css.borderTopColor, radius:css.borderTopLeftRadius,
+        border:css.borderTopColor, radius:css.borderTopLeftRadius, disabled:element.matches(":disabled"),
         focused:element === document.activeElement, invalid:element.getAttribute("aria-invalid") === "true",
       };
     });
@@ -83,7 +83,7 @@ async function inspect(page, context) {
     }
   }
   for (const field of controls.fields) {
-    if(!field.focused && !field.invalid) assert.equal(field.border,controls.palette.fieldBorder,`${JSON.stringify(context)} ${field.name}: field border`);
+    if(!field.focused && !field.invalid) assert.equal(field.border,field.disabled ? controls.palette.disabledBorder : controls.palette.fieldBorder,`${JSON.stringify(context)} ${field.name}: field border`);
     assert.equal(field.radius,controls.palette.radius,`${JSON.stringify(context)} ${field.name}: field radius`);
   }
 }
@@ -160,7 +160,10 @@ try {
         await page.getByRole("button",{name:"更多",exact:true}).click();
         await page.getByRole("menuitem",{name:"添加记忆",exact:true}).click();
         await inspect(page,{surface:"memory-editor",width,height,theme,font});
-        assert.equal(await page.getByLabel("主题（可选）").count(),0,"memory editor should preserve metadata without asking users to configure it");
+        const key = page.getByLabel("记忆键名（选填）");
+        assert.equal(await key.inputValue(), "", "New memories should derive a key until the user names them");
+        await key.fill("年度「预算」");
+        assert.equal(await key.inputValue(), "年度「预算」");
       }
     }
     assert.deepEqual(errors,[]);
