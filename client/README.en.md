@@ -1,30 +1,33 @@
-<p align="center"><img src="app-icon.png" width="88" height="88" alt="EchoAgent icon" /></p>
+<p align="center"><img src="src-tauri/icons/128x128.png" width="72" height="72" alt="EchoAgent icon" /></p>
 
 <h1 align="center">EchoAgent</h1>
 
-<p align="center"><strong>Let AI finish work in a real workspace, with every step visible and under your control.</strong><br />A source-available, local-first desktop agent workspace for conversations, tool use, coding, and reviewable delivery.</p>
+<p align="center">A local-first desktop agent workspace for code, documents, and project work. Track progress, review approvals, and inspect what the agent delivers.</p>
 
-<p align="center"><a href="README.md">简体中文</a> · <a href="#quick-start">Quick start</a> · <a href="#capabilities">Capabilities</a> · <a href="#architecture-and-data-flow">Architecture</a> · <a href="#contributing">Contribute</a> · <a href="https://github.com/fuyuxiang/echo-agent-desktop/issues">Issues</a></p>
+<p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/releases">Download Desktop</a> · <a href="#quick-start">Quick start</a> · <a href="docs/README.md">Documentation</a> · <a href="README.md">简体中文</a></p>
 
 <p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fuyuxiang/echo-agent-desktop/ci.yml?branch=main&amp;label=CI" alt="CI status" /></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-2ea44f" alt="PolyForm Noncommercial 1.0.0 license" /></a> <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows-2563eb" alt="Desktop platforms: macOS and Windows" /> <img src="https://img.shields.io/badge/Tauri-2-24c8db" alt="Tauri 2" /></p>
 
-<p align="center"><img src="docs/images/echoagent-home.png" width="100%" alt="EchoAgent home screen with a task composer, model picker, workspace picker, and permission mode" /></p>
+EchoAgent binds each conversation to a real working directory. The project workspace brings tasks, references, and outputs together. Review work awaiting acceptance, then use its outputs as references for new tasks.
 
-EchoAgent binds each conversation to a real working directory. Choose a model and permission mode, describe a goal, then inspect plans, tool calls, file changes, and results in one desktop app. Most application state stays on your computer; model inference and optional external services still require network access.
+[![EchoAgent project overview with a task awaiting acceptance, work in progress, recent outputs, and project context](docs/images/echoagent-project-workspace.png)](docs/images/echoagent-project-workspace.png)
+
+*The project overview with sample data. The Chinese UI shows a competitive analysis awaiting acceptance, a roadmap in progress, and a report available for reuse.*
 
 ## Capabilities
 
 | Area | Current implementation |
 | --- | --- |
+| **Project workspace** | Organize tasks, references, outputs, and decisions. New tasks inherit project instructions and confirmed decisions, and can use existing outputs as references. |
 | **Expert groups** | Reuse local experts and saved group templates; address members with @mentions, discuss with read-only tools, delegate work, collect results, review approvals, and retain decisions and deliverables. |
 | **Agent tasks** | Streaming conversations, plans and tasks, tool calls, approvals, session history, rewind and fork, and subagent status. |
 | **Coding** | Embedded Eclipse Theia IDE with an editor, file tree, search, terminal, Git, and previews; Echo Code manages task stages, diff review, verification, and delivery. |
 | **Browser and desktop control** | Browser Use has a separate profile for each task and confirms operations with side effects separately. Computer Use supports native macOS AX / Windows UIA controls with screenshot fallback, starts from an explicit desktop task, and runs continuously with pause controls. Availability is detected on the current device; see the documented real-device verification status. |
 | **Models and extensions** | Personal model connections and organization models; MCP, Skills, Plugins, connectors, and reusable experts. |
 | **Knowledge and documents** | Local knowledge index, project context, memory, common-file reading, and local generation of Word, PDF, Excel, and PowerPoint files. |
-| **Ongoing work** | Projects and work items, scheduled automations, notifications, meeting recordings and minutes, plus optional WeChat remote sessions and organization services. |
+| **Ongoing work** | Scheduled automations, notifications, meeting recordings and minutes, plus optional WeChat remote sessions and organization services. |
 
-Read more: [Echo Code](docs/echo-code-theia.md) · [Browser Use / Computer Use](docs/automation-platform-support.md) · [Native desktop controls and validation](docs/desktop-control/README.md) · [Office documents](docs/office-documents.md) · [Live information](docs/live-information.md) · [WeChat remote sessions](docs/weixin-remote.md) · [Skill capability declarations](docs/skill-capability-manifest.md)
+Explore the guides for [experts and team projects](docs/team-projects.md), [Echo Code](docs/echo-code-theia.md), [Browser Use / Computer Use](docs/automation-platform-support.md), [native desktop controls and validation](docs/desktop-control/README.md), [office documents](docs/office-documents.md), [live information](docs/live-information.md), [WeChat remote sessions](docs/weixin-remote.md), and [Skill capability declarations](docs/skill-capability-manifest.md).
 
 The [documentation index](docs/README.md) links to all current guides. Shared interaction and visual rules are maintained in [product experience](docs/product-experience.md) and [theme design](docs/theme-design.md) (Chinese).
 
@@ -62,17 +65,13 @@ The first launch builds and stages the embedded Theia IDE, Office Worker, and Ru
 
 ### Start your first task
 
+Add and test a personal connection and model under **Settings → Models**, or select a model provided by your organization. Custom connections support OpenAI, Anthropic, and compatible APIs. Tool use and other model features depend on the service. Personal model configuration is stored locally in `~/.echo-agent/config.toml`.
+
 1. Select a working directory, model, and permission mode on the home screen.
 2. Describe your goal and send it. For file tasks, select the directory you intend to authorize.
 3. Follow the plan and tool activity, handle approval requests when they appear, and inspect diffs and verification results for file changes.
 
-Before using the app, add and test a personal connection and model under **Settings → Models**. Custom connections support OpenAI, Anthropic, and compatible APIs. Tool use and other model features depend on the service. Personal model configuration is stored locally in `~/.echo-agent/config.toml`.
-
 Built-in chat models are no longer provided. Upgrades remove their catalog and saved selections while preserving conversations, files, personal connections, and organization models. Scheduled tasks bound to a retired model are paused and marked as needing a model selection. Edit the task to choose an available model or explicitly follow the default, save, then enable it again; upgrades never silently switch these tasks to another service. Knowledge and memory retrieval services are unchanged.
-
-<p align="center"><img src="docs/images/echoagent-task-flow.png" width="100%" alt="Typical task flow: choose a workspace, select a model and mode, send a goal, plan and use tools, review permissions, inspect changes, verify and deliver; inspection may lead to another iteration" /></p>
-
-<p align="center"><sub>This shows a typical file-editing task. Skip approval or change-review stages when they do not apply.</sub></p>
 
 ### Control your desktop through chat
 

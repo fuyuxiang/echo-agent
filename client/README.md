@@ -1,30 +1,33 @@
-<p align="center"><img src="app-icon.png" width="88" height="88" alt="EchoAgent 图标" /></p>
+<p align="center"><img src="src-tauri/icons/128x128.png" width="72" height="72" alt="EchoAgent 图标" /></p>
 
 <h1 align="center">EchoAgent</h1>
 
-<p align="center"><strong>让 AI 在真实工作区中完成任务，并让每一步都可查看、可控制。</strong><br />源码开放、本地优先的桌面 Agent 工作台，集成对话、工具执行、代码开发与任务交付。</p>
+<p align="center">本地优先的桌面 Agent 工作台。围绕项目处理代码、文档与日常任务，跟踪进度、审批和交付结果。</p>
 
-<p align="center"><a href="README.en.md">English</a> · <a href="#快速开始">快速开始</a> · <a href="#主要能力">主要能力</a> · <a href="#架构与数据流">架构</a> · <a href="#参与贡献">参与贡献</a> · <a href="https://github.com/fuyuxiang/echo-agent-desktop/issues">反馈问题</a></p>
+<p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/releases">下载桌面端</a> · <a href="#快速开始">快速开始</a> · <a href="docs/README.md">文档</a> · <a href="README.en.md">English</a></p>
 
 <p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fuyuxiang/echo-agent-desktop/ci.yml?branch=main&amp;label=CI" alt="CI 状态" /></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-2ea44f" alt="PolyForm Noncommercial 1.0.0 许可证" /></a> <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows-2563eb" alt="桌面平台：macOS、Windows" /> <img src="https://img.shields.io/badge/Tauri-2-24c8db" alt="Tauri 2" /></p>
 
-<p align="center"><img src="docs/images/echoagent-home.png" width="100%" alt="EchoAgent 首页，包含任务输入框、模型选择、工作目录和权限模式" /></p>
+EchoAgent 将会话绑定到实际工作目录。项目工作台汇总任务状态、参考资料和成果。在这里，你可以检查待验收任务的输出，再把成果用作新任务的资料。
 
-EchoAgent 将会话绑定到实际工作目录。你可以选择模型和权限模式，提出目标，随后在同一桌面应用中查看 Agent 的计划、工具调用、文件变更和结果。应用状态主要保存在本机；模型推理及按需启用的外部服务仍需要网络连接。
+[![EchoAgent 项目概览，展示待验收任务、进行中的工作、最近成果和项目上下文](docs/images/echoagent-project-workspace.png)](docs/images/echoagent-project-workspace.png)
+
+*EchoAgent 的项目概览。示例项目包含待验收的竞品分析、进行中的路线图和一份可复用的分析报告。*
 
 ## 主要能力
 
 | 场景 | 当前实现 |
 | --- | --- |
+| **项目工作台** | 管理任务、资料、成果和项目决定；新任务继承项目指令和已确认决定，已有成果可作为新任务的参考资料。 |
 | **专家团** | 复用本地专家与已有专家团；支持中文 @成员、只读讨论、协作派发、成员结果汇总、权限审批、决定记录与交付物。 |
 | **Agent 任务** | 流式对话、计划与任务、工具调用、权限审批、会话历史、回溯与分叉、子 Agent 状态。 |
 | **代码开发** | 内嵌 Eclipse Theia IDE，提供编辑器、文件树、搜索、终端、Git 和预览；Echo Code 管理任务阶段、Diff 审阅、验证与交付。 |
 | **浏览器与桌面操作** | Browser Use 使用任务独立的浏览器资料，有副作用的操作单独确认；Computer Use 支持 macOS AX / Windows UIA 原生控件与截图坐标后备，从明确任务启动，支持按应用定向操作，统一使用消息停止与普通对话续接。能力由当前设备实时检测，实机验证状态见文档。 |
 | **模型与扩展** | 个人模型连接与组织模型；支持 MCP、Skills、Plugins、连接器与专家。 |
 | **知识与办公** | 本地知识索引、项目上下文、记忆；在任务中读取常见文件，并在本机生成 Word、PDF、Excel 和 PowerPoint。 |
-| **持续工作** | 项目与工作项、定时任务、通知、会议录音与纪要，以及可选的微信远程会话和组织服务。 |
+| **持续工作** | 定时任务、通知、会议录音与纪要，以及可选的微信远程会话和组织服务。 |
 
-进一步了解：[Echo Code](docs/echo-code-theia.md) · [Browser Use / Computer Use](docs/automation-platform-support.md) · [原生桌面控件与验收](docs/desktop-control/README.md) · [办公文档](docs/office-documents.md) · [实时信息](docs/live-information.md) · [微信远程会话](docs/weixin-remote.md) · [Skill 能力声明](docs/skill-capability-manifest.md)
+专题指南包括 [专家与团队项目](docs/team-projects.md)、[Echo Code](docs/echo-code-theia.md)、[Browser Use / Computer Use](docs/automation-platform-support.md)、[原生桌面控件与验收](docs/desktop-control/README.md)、[办公文档](docs/office-documents.md)、[实时信息](docs/live-information.md)、[微信远程会话](docs/weixin-remote.md)和 [Skill 能力声明](docs/skill-capability-manifest.md)。
 
 完整专题导航见 [项目文档](docs/README.md)，共享交互和主题规则见 [产品体验约定](docs/product-experience.md) 与 [主题设计](docs/theme-design.md)。
 
@@ -64,17 +67,13 @@ pnpm install --frozen-lockfile
 
 ### 创建第一个任务
 
+在「设置 → 模型」中添加连接、模型并测试，或选用组织提供的模型。自定义连接支持 OpenAI、Anthropic 及其兼容接口；模型的工具调用等能力取决于实际服务。个人模型配置保存在本机 `~/.echo-agent/config.toml`。
+
 1. 在首页选择工作目录、模型和权限模式。
 2. 输入目标并发送；如果任务要读写文件，请选择实际要授权的目录。
 3. 查看计划与工具执行过程，按需处理权限请求；有文件修改时检查 Diff 和验证结果。
 
-使用前请在「设置 → 模型」中添加连接、模型并测试。自定义连接支持 OpenAI、Anthropic 及其兼容接口；模型的工具调用等能力取决于实际服务。个人模型配置保存在本机 `~/.echo-agent/config.toml`。
-
 应用不再提供内置聊天模型。升级后会清除旧内置模型目录及相关默认选择，保留已有对话、文件、个人连接和组织模型。绑定旧模型的定时任务会暂停，并显示“待选模型”；请编辑任务明确选择可用模型或“跟随默认模型”，保存后再启用，不会自动换用其他服务。知识库与记忆检索服务不受影响。
-
-<p align="center"><img src="docs/images/echoagent-task-flow.png" width="100%" alt="典型任务流程：选择目录、模型与模式，发送目标，执行计划与工具，审批操作，检查变更，验证并交付；检查后可返回继续迭代" /></p>
-
-<p align="center"><sub>图示为涉及文件修改的典型路径；没有权限请求或文件变更时，可跳过相应步骤。</sub></p>
 
 ### 用自然语言操作电脑
 

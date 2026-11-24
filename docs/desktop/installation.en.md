@@ -18,9 +18,9 @@ Build from source if no suitable package is available. Releases include Node.js 
 
 ## Models and networking
 
-Built-in models do not require a personal API key; inference uses the project's remote service. Add a connection under **Settings → Models** if preferred. Connectivity and model capabilities affect task execution.
+Add and test a personal model connection under **Settings → Models**, or sign in to use an organization-provided model. Task execution depends on service availability and model capabilities. See [model setup](models-extensions.md).
 
-Local storage does not imply fully offline processing. Models receive selected task context, and enabled embedding or reranking services may receive retrieval text. See [Data management](operations.md).
+Personal knowledge and memory use on-device retrieval models. The selected chat model receives task context, and organization knowledge is retrieved by the organization service. See [Data management](operations.md).
 
 ## Run from this repository
 

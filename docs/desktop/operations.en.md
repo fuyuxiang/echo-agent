@@ -17,7 +17,7 @@ Both products can use the same default root, but have different formats and stor
 
 ## Local storage and remote processing
 
-Sessions, workspace state, memory, and working files are mainly local. Models receive selected context. Automation can provide page text, controls, and screenshots. Desktop configures remote memory embedding and reranking services, which may receive retrieval text. Enabled MCP, connectors, notifications, cloud storage, and organization services have their own network interactions.
+Sessions, workspace state, memory, and working files are mainly local. Embedding and reranking for personal knowledge and memory run on the device. The selected chat model receives task context, which can include page text, controls, and screenshots from Browser Use or Computer Use. Enabled MCP, connectors, notifications, cloud storage, and organization services access the network according to their own configuration.
 
 Keys are stored in local configuration. Remove credentials and personal or business content before sharing diagnostics. Avoid publishing entire configurations or sessions.
 

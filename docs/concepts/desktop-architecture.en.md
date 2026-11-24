@@ -37,4 +37,4 @@ Restart can restore records without replaying interrupted operations. Automation
 
 ## Data boundaries
 
-Working files and application records are mainly local. Models, embedding, reranking, MCP, and connectors may receive text, file contents, or screenshots. Memory is not automatically shared with standalone Runtime. See the [Desktop guide](../desktop/index.md) for operations.
+Working files and application records are mainly local. Personal knowledge and memory use on-device embedding and reranking models. Chat models, external MCP servers, and connectors can receive text, file contents, or screenshots needed for the task. Desktop and standalone Runtime manage memory independently. See the [Desktop guide](../desktop/index.md).

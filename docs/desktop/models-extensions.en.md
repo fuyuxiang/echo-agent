@@ -11,7 +11,7 @@
 
 Custom connections support OpenAI, Anthropic, and compatible interfaces. Compatibility does not guarantee identical image, tool, context-window, or streaming capabilities.
 
-Personal connections require HTTPS by default. Built-in models use the project's remote HTTP service. No personal key does not imply offline execution or unlimited usage. Local usage estimates are not provider bills.
+Personal connections require HTTPS by default. Sign in to use organization-provided models when available. The app records and estimates usage locally. Your provider determines actual charges.
 
 ## Choose an extension
 

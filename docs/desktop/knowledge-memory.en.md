@@ -41,4 +41,4 @@ Corrections and forgetting exclude outdated facts and related sources from later
 | Stable preferences and project facts | Scoped memory |
 | Current task progress | Session and execution records |
 
-Retrieval may use remote embedding and reranking services. Local storage does not imply retrieval text stays offline. See [Data boundaries](operations.md).
+Personal knowledge and memory use on-device embedding and reranking. The selected chat model receives retrieved passages used in the answer, and organization knowledge is retrieved by the organization service. See [Data boundaries](operations.md).
