@@ -1,12 +1,32 @@
-# Echo Agent
+<div align="center">
 
-用 Echo Agent 处理代码、文档和重复性工作，把有用的资料、成果和上下文留给后续任务。你可以在桌面按项目跟踪进度、检查成果，也可以在自己的机器上运行 Agent，定时执行任务，或通过消息通道和 API 接收请求。
+<h1><img src="docs/assets/readme/hero.svg" alt="Echo Agent" width="100%" /></h1>
 
-[下载桌面端](https://github.com/fuyuxiang/echo-agent-desktop/releases) · [运行自己的 Agent](#运行自己的-agent) · [文档](#文档) · [English](README.en.md)
+**让 Agent 记住上下文，把经验转化为技能。**
+
+在桌面处理项目，或自托管 Agent，运行定时任务并接入消息通道和 API。
+
+<p>
+  <a href="#运行自己的-agent"><img src="docs/assets/readme/runtime-button.svg" alt="运行自己的 Agent" width="164" height="44" /></a>
+  &nbsp;
+  <a href="#在桌面处理项目"><img src="docs/assets/readme/desktop-button.svg" alt="在桌面处理项目" width="164" height="44" /></a>
+</p>
+
+[记忆与技能](#记忆与技能) · [架构](docs/concepts/architecture.md) · [文档](#文档) · [English](README.en.md)
 
 [![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
+[![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
 [![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
-[![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://fuyuxiang.github.io/echo-agent/)
+[![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
+
+<!-- Download badges are refreshed by .github/workflows/download-stats.yml. -->
+![Runtime 累计下载](.github/badges/runtime-downloads.svg)
+![桌面端累计下载](.github/badges/desktop-downloads.svg)
+[![统计更新日期](.github/badges/stats-updated.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/download-stats.yml)
+
+</div>
 
 ## 在桌面处理项目
 
@@ -35,6 +55,8 @@ echo-agent setup --flow quickstart
 
 配置完成后，用 `echo-agent run` 在终端发起任务，或用 `echo-agent gateway` 启动服务。Gateway 默认在 [Dashboard](http://127.0.0.1:58123/) 提供管理界面，在 [Playground](http://127.0.0.1:58123/playground) 提供对话入口。同一工作区选择一种启动方式。向导如果已启动 Gateway，可以直接打开网页，也可以用 `echo-agent cli` 连接它。[首次运行](docs/getting-started/quickstart.md) · [服务部署](echo-agent-runtime/README.md)
 
+### 记忆与技能
+
 - **跨会话记忆。** 新会话可以找回相关的会话摘要、项目背景和用户偏好。例如，下一次生成周报时，可以用上此前保存的报告格式。[记忆系统](docs/concepts/memory-system.md)
 - **技能进化。** Runtime 可以从执行记录中提出技能改动，在同一组用例上比较改动前后的表现。你可以要求人工审核，也可以回滚已应用的改动。技能进化默认关闭。[技能进化与评估](docs/concepts/evolution-evaluation.md)
 
@@ -54,4 +76,4 @@ echo-agent setup --flow quickstart
 
 ## 许可证
 
-项目原创代码采用 [PolyForm Noncommercial License 1.0.0](LICENSE)。超出许可范围的商业使用需另行授权。此前授予的权利继续有效，第三方组件保留各自的许可证。[早期 MIT 声明](LICENSES/MIT.txt) · [桌面端第三方许可](client/THIRD_PARTY_NOTICES.md) · [Runtime 内置 FastEmbed 许可](echo-agent-runtime/echo_agent/_vendor/fastembed/VENDOR.md)
+项目原创代码采用 PolyForm Noncommercial License 1.0.0。超出许可范围的商业使用需另行授权。[许可证全文](LICENSE)

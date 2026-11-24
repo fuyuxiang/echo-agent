@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title description">
   <title id="title">Echo Agent</title>
-  <desc id="description">An open-source Agent Runtime and desktop Agent. Cognitive memory, self-evolving skills, and an embeddable runtime, represented by a luminous E and connected orbital nodes.</desc>
+  <desc id="description">Echo Agent Runtime and Desktop. Cognitive memory, self-evolving skills, and an embeddable runtime, represented by a luminous E and connected orbital nodes.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
       <stop stop-color="#080f24"/>
@@ -63,7 +63,7 @@
     <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif">
       <g transform="translate(52 43)">
         <rect y="-10" width="7" height="7" rx="2" fill="#69f3d6"/>
-        <text x="18" fill="#a9c0dd" font-size="13" font-weight="600" letter-spacing="2.5">OPEN SOURCE / RUNTIME + DESKTOP</text>
+        <text x="18" fill="#a9c0dd" font-size="13" font-weight="600" letter-spacing="2.5">SOURCE AVAILABLE / RUNTIME + DESKTOP</text>
       </g>
       <text x="48" y="151" fill="#f4f8ff" font-size="88" font-weight="750" letter-spacing="-4">Echo <tspan fill="url(#wordmark)">Agent</tspan></text>
       <text x="54" y="192" fill="#b7cae5" font-size="21" font-weight="500" letter-spacing="2.6">REMEMBER. EVOLVE. EMBED.</text>

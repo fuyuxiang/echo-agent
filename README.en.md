@@ -1,12 +1,32 @@
-# Echo Agent
+<div align="center">
 
-Use Echo Agent for code, documents, and recurring work, and keep useful references, results, and context for the next task. On your desktop, track progress and review outputs by project. On your own infrastructure, run scheduled jobs and take requests from messaging channels or your application.
+<h1><img src="docs/assets/readme/hero.svg" alt="Echo Agent" width="100%" /></h1>
 
-[Download Desktop](https://github.com/fuyuxiang/echo-agent-desktop/releases) · [Run your own agent](#run-your-own-agent) · [Documentation](#documentation) · [中文](README.md)
+**Give your agent memory. Turn experience into reusable skills.**
+
+Work on projects in EchoAgent Desktop or self-host Echo Agent Runtime for scheduled jobs, messaging, and API access.
+
+<p>
+  <a href="#run-your-own-agent"><img src="docs/assets/readme/runtime-button.svg" alt="Run your own agent" width="164" height="44" /></a>
+  &nbsp;
+  <a href="#work-on-a-project"><img src="docs/assets/readme/desktop-button.svg" alt="Work on a project in Desktop" width="164" height="44" /></a>
+</p>
+
+[Memory and skills](#memory-and-skills) · [Architecture](docs/concepts/architecture.en.md) · [Documentation](#documentation) · [中文](README.md)
 
 [![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
+[![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
 [![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
-[![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://fuyuxiang.github.io/echo-agent/en/)
+[![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
+
+<!-- Download badges are refreshed by .github/workflows/download-stats.yml. -->
+![Runtime total downloads](.github/badges/runtime-downloads.svg)
+![Desktop total downloads](.github/badges/desktop-downloads.svg)
+[![Statistics updated](.github/badges/stats-updated.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/download-stats.yml)
+
+</div>
 
 ## Work on a project
 
@@ -35,6 +55,8 @@ echo-agent setup --flow quickstart
 
 Use `echo-agent run` to start a task in the terminal, or `echo-agent gateway` to start the service. The default URLs are the [Dashboard](http://127.0.0.1:58123/) for management and the [Playground](http://127.0.0.1:58123/playground) for chat. Choose one way to start the Runtime per workspace. If the wizard already started Gateway, open it in your browser or connect with `echo-agent cli`. [Quickstart](docs/getting-started/quickstart.en.md) · [Deployment](echo-agent-runtime/README.en.md)
 
+### Memory and skills
+
 - **Memory across sessions.** New sessions can retrieve relevant summaries, project facts, and preferences. A weekly report can use the format you saved in an earlier conversation. [Memory system](docs/concepts/memory-system.en.md)
 - **Skill evolution.** Runtime can propose skill changes from execution records and compare versions on the same evaluation cases. You can require human review and roll back applied changes. Skill evolution is off by default. [Skill evolution and evaluation](docs/concepts/evolution-evaluation.en.md)
 
@@ -54,4 +76,4 @@ Desktop embeds a Rust engine. The standalone Python Runtime can be installed and
 
 ## License
 
-The project's original code is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Commercial use outside the license requires separate permission. Previously granted rights remain in effect, and third-party components retain their own licenses. [Earlier MIT notice](LICENSES/MIT.txt) · [Desktop third-party notices](client/THIRD_PARTY_NOTICES.md) · [Bundled FastEmbed licensing](echo-agent-runtime/echo_agent/_vendor/fastembed/VENDOR.md)
+The project's original code uses the PolyForm Noncommercial License 1.0.0. Commercial use outside the license requires separate permission. [Full license](LICENSE)
