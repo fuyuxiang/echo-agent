@@ -1,5 +1,5 @@
 import type { AutomationStatus } from "@/lib/automation-client";
-import { memo, useCallback, useEffect, useId, useRef, useState, useMemo, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useMemo, type ReactNode } from "react";
 import {
   ArrowRight,
   Check,
@@ -17,6 +17,7 @@ import {
   Volume2,
   GitFork,
   Info,
+  Sparkles,
 } from "lucide-react";
 import { Markdown, type MarkdownConfig } from "./markdown/index";
 import { LoadingRow } from "./LoadingRow";
@@ -31,6 +32,7 @@ import type { ChatMessage, ToolCallView } from "@/stores/session-store";
 import { openLocalPath } from "@/lib/agent-client";
 import {
   attachmentBasename,
+  parseLegacyAttachmentPrompt,
   stripInjectedUserContext,
 } from "@/lib/user-message";
 import { highlightSegments } from "@/lib/extract-text";
@@ -93,12 +95,107 @@ function speechText(markdown: string): string {
     .trim();
 }
 
+type MessageEdit = {
+  active: boolean;
+  sendDisabled: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+  onSend: (text: string, attachments: string[]) => boolean | void | Promise<boolean | void>;
+};
+
+function InlineMessageEditor({ initialText, initialAttachments, cwd, edit, onCancel }: {
+  initialText: string;
+  initialAttachments: string[];
+  cwd?: string;
+  edit: MessageEdit;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState(initialText);
+  const [attachments, setAttachments] = useState(initialAttachments);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const input = useRef<HTMLTextAreaElement>(null);
+  const inFlight = useRef(false);
+  const editDisabled = edit.sendDisabled || (!text.trim() && attachments.length === 0);
+
+  useLayoutEffect(() => {
+    const field = input.current;
+    if (!field) return;
+    field.focus({ preventScroll: true });
+    field.setSelectionRange(field.value.length, field.value.length);
+  }, []);
+  useLayoutEffect(() => {
+    const field = input.current;
+    if (!field) return;
+    const resize = () => {
+      field.style.height = "0px";
+      field.style.height = `${field.scrollHeight}px`;
+    };
+    resize();
+    let width = field.getBoundingClientRect().width;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      const next = field.getBoundingClientRect().width;
+      if (next === width) return;
+      width = next;
+      resize();
+    });
+    observer?.observe(field);
+    return () => observer?.disconnect();
+  }, [text]);
+
+  async function submit() {
+    if (editDisabled || inFlight.current) return;
+    inFlight.current = true;
+    setSending(true);
+    setError("");
+    try {
+      const accepted = await edit.onSend(text.trim() || "请分析附件。", attachments);
+      if (accepted === false) setError("发送未完成，请重试。");
+      else edit.onClose();
+    } catch {
+      setError("发送失败，请重试。");
+    } finally {
+      inFlight.current = false;
+      setSending(false);
+    }
+  }
+
+  return <form className="msg__inline-edit" aria-label="编辑消息"
+    onSubmit={(event) => { event.preventDefault(); void submit(); }}
+    onKeyDown={(event) => {
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
+        || !event.currentTarget.contains(event.target as Node)) return;
+      if (event.key === "Escape" && !inFlight.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel();
+      } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && event.target === input.current) {
+        event.preventDefault();
+        void submit();
+      }
+    }}>
+    <AttachmentList paths={attachments} cwd={cwd} onRemove={sending ? undefined
+      : (path) => setAttachments((files) => files.filter((file) => file !== path))} />
+    <textarea ref={input} className="msg__inline-edit-input" aria-label="编辑消息内容" rows={1}
+      placeholder="补充消息内容…" value={text} readOnly={sending}
+      onChange={(event) => { setText(event.target.value); setError(""); }} />
+    <div className="msg__inline-edit-footer">
+      {error && <span className="msg__inline-edit-error" role="alert">{error}</span>}
+      <div className="msg__inline-edit-actions">
+        <Button variant="ghost" size="compact" disabled={sending} onClick={onCancel}>取消</Button>
+        <Button type="submit" variant="primary" size="compact" disabled={editDisabled}
+          loading={sending} aria-keyshortcuts="Meta+Enter Control+Enter">作为新消息发送</Button>
+      </div>
+    </div>
+  </form>;
+}
+
 /**
  * Renders one chat message. Assistant messages are left-aligned with avatar +
  * name row; user messages are right-aligned bubbles with no avatar / name.
  *
  * Message action bar (对齐 EchoAgent):
- *  - user: 复制 / 编辑重发
+ *  - user: 复制 / 编辑消息
  *  - assistant: rendered after the complete answer, so read-then-act follows
  *    the visual and keyboard order.
  */
@@ -118,9 +215,10 @@ export const MessageItem = memo(function MessageItem({
   onOpenArtifact,
   compactIdentity = false,
   hideIdentity = false,
-  onEditResend,
+  edit,
   onRetry,
   onContinueInNewConversation,
+  onLearnWorkflow,
   continuationDisabled = false,
   continuationDisabledReason,
   retrying = false,
@@ -169,11 +267,12 @@ export const MessageItem = memo(function MessageItem({
   onToast?: (msg: string) => void;
   /** Open tool detail in the right-side panel (Phase 2). */
   onOpenTool?: (tc: ToolCallView) => void;
-  /** Put text back into the composer for re-editing (user messages only). */
-  onEditResend?: (text: string, attachments: string[]) => void;
+  /** Inline editor controls for this user message. */
+  edit?: MessageEdit;
   /** Retry the latest turn using semantics derived from whether it used tools. */
   onRetry?: (kind: MessageRetryKind) => void;
   onContinueInNewConversation?: () => void;
+  onLearnWorkflow?: () => void;
   continuationDisabled?: boolean;
   continuationDisabledReason?: string;
   /** Prevent duplicate retry gestures and expose progress in the local action. */
@@ -186,6 +285,13 @@ export const MessageItem = memo(function MessageItem({
   findQuery?: string;
 }) {
   const { theme } = useTheme();
+  const editTrigger = useRef<HTMLButtonElement>(null);
+  const restoreEditFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (edit?.active || !restoreEditFocus.current) return;
+    restoreEditFocus.current = false;
+    editTrigger.current?.focus({ preventScroll: true });
+  }, [edit?.active]);
   const [speaking, setSpeaking] = useState(false);
   const [copiedKind, setCopiedKind] = useState<"plain" | "markdown" | null>(null);
   const [actionView, setActionView] = useState("main");
@@ -306,7 +412,7 @@ export const MessageItem = memo(function MessageItem({
       || knowledgeTrace?.organization?.state === "unavailable",
   );
   const hasExecutionProcess = Boolean(assistantGroups && (
-    assistantGroups.processParts.length > 0 || hasTerminalProcessStatus || hasKnowledgeTrace || notice || automationStatus
+    assistantGroups.processParts.length > 0 || hasTerminalProcessStatus || hasKnowledgeTrace || Boolean(message.memorySources?.length) || notice || automationStatus
   ));
   const generatingAnswer = streaming && waitingForModel && !message.complete && hasFinalAnswer
     && !Array.from(messageExecution.values()).some(execution => execution.state === "in_progress")
@@ -370,6 +476,14 @@ export const MessageItem = memo(function MessageItem({
 
   if (message.role === "user") {
     const attachments = message.attachments ?? [];
+    if (edit?.active) {
+      const parsed = parseLegacyAttachmentPrompt(plainText);
+      return <div className="msg msg--user msg--user-editing">
+        <InlineMessageEditor initialText={parsed.text}
+          initialAttachments={attachments.length ? attachments : parsed.attachments} cwd={cwd} edit={edit}
+          onCancel={() => { restoreEditFocus.current = true; edit.onClose(); }} />
+      </div>;
+    }
     return (
       <div className="msg msg--user">
         <div>
@@ -403,12 +517,13 @@ export const MessageItem = memo(function MessageItem({
               >
                 {copiedKind === "plain" ? <Check size={14} /> : <Copy size={14} />}
               </button>
-              {onEditResend && (
+              {edit && (plainText || attachments.length > 0) && (
                 <button
+                  ref={editTrigger}
                   type="button"
                   className="msg__action-btn"
-                  onClick={() => onEditResend(plainText, attachments)}
-                  data-tip="编辑并重新发送" title="编辑并重新发送" aria-label="编辑并重新发送"
+                  onClick={edit.onOpen}
+                  data-tip="编辑消息" title="编辑消息" aria-label="编辑消息"
                 >
                   <Pencil size={14} />
                 </button>
@@ -422,7 +537,7 @@ export const MessageItem = memo(function MessageItem({
 
   const endTime = message.complete ? formatMessageTime(message.endedAt, messageDay) : undefined;
   const showReplyRetry = onRetry && !continueAction && !retryAction && !notice?.modelSettings && notice?.kind !== "environment";
-  const showReplyActions = message.complete && (hasAnswerText || showReplyRetry);
+  const showReplyActions = message.complete && (hasAnswerText || showReplyRetry || onLearnWorkflow);
 
   return (
     <div className={"msg msg--assistant" + (compactIdentity ? " msg--continuation" : "")}>
@@ -467,6 +582,7 @@ export const MessageItem = memo(function MessageItem({
                 onOpenTool={onOpenTool}
                 revealRequest={processReveal}
                 knowledgeTrace={knowledgeTrace}
+                memorySources={message.memorySources}
                 onOpenKnowledgePath={(path) => {
                   void openLocalPath(path, cwd).catch((error) => {
                     onToast?.(`打开知识文件失败：${String(error).replace(/^Error:\s*/, "")}`);
@@ -486,7 +602,6 @@ export const MessageItem = memo(function MessageItem({
               {part.text}
             </Markdown>
           ))}
-          {!!message.memorySources?.length && <p className="msg__memory-reference">本轮参考了记忆</p>}
           {generatingAnswer && !generatingInProcess && (
             <div className="msg-progress-row msg__writing" role="status"><span aria-hidden="true" />正在生成回复</div>
           )}
@@ -549,7 +664,7 @@ export const MessageItem = memo(function MessageItem({
               {(retryKind === "retry" || !hasAnswerText || message.stopReason && message.stopReason !== "end_turn" || retrying) && retryLabel}
             </button>}
             {exporting && <span className="msg__action-status" role="status">正在导出 {exporting.toUpperCase()}…</span>}
-            {hasAnswerText && <ActionMenu label="更多回复操作" menuLabel={actionView === "export" ? "选择导出格式" : "当前回复操作"}
+            {(hasAnswerText || onLearnWorkflow) && <ActionMenu label="更多回复操作" menuLabel={actionView === "export" ? "选择导出格式" : "当前回复操作"}
               resetKey={`${sessionId}:${message.id}`} contentKey={actionView} onBack={actionView === "export" ? () => setActionView("main") : undefined}
               onOpenChange={open => { if (!open) setActionView("main"); }}
               triggerClassName="msg__action-btn msg__more-trigger" trigger={<MoreHorizontal size={16} />}
@@ -566,9 +681,11 @@ export const MessageItem = memo(function MessageItem({
                   </button>)}
                 </> : <>
                   <div className="action-menu__heading">当前回复</div>
-                  <button type="button" role="menuitem" className="topbar-actions__item" data-chat-copy="true" onClick={() => { close(true); void copyText(plainText, "plain"); }}><Copy size={14} />复制纯文本</button>
+                  {hasAnswerText && <><button type="button" role="menuitem" className="topbar-actions__item" data-chat-copy="true" onClick={() => { close(true); void copyText(plainText, "plain"); }}><Copy size={14} />复制纯文本</button>
                   <button type="button" role="menuitem" className="topbar-actions__item" data-chat-copy="true" onClick={() => { close(true); void copyText(markdownText, "markdown"); }}><FileCode2 size={14} />复制 Markdown</button>
-                  <button type="button" role="menuitem" className="topbar-actions__item" disabled={Boolean(exporting)} onClick={() => setActionView("export")}><Download size={14} />导出本条回复为办公文件</button>
+                  <button type="button" role="menuitem" className="topbar-actions__item" disabled={Boolean(exporting)} onClick={() => setActionView("export")}><Download size={14} />导出本条回复为办公文件</button></>}
+                  {onLearnWorkflow && <button type="button" role="menuitem" className="topbar-actions__item"
+                    onClick={() => { close(true); onLearnWorkflow(); }}><Sparkles size={14} />从这次任务提炼</button>}
                 </>}
               </>}
             </ActionMenu>}

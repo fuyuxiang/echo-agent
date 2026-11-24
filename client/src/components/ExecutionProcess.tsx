@@ -56,6 +56,7 @@ interface ExecutionProcessProps {
   findQuery?: string;
   onOpenTool?: (tool: ToolCallView) => void;
   knowledgeTrace?: KnowledgeTurnTrace;
+  memorySources?: string[];
   onOpenKnowledgePath?: (path: string) => void;
   revealRequest?: number;
 }
@@ -145,7 +146,7 @@ export function ExecutionProcess({
   sessionId, messageId, cwd, automationStatus, parts, active: messageActive, settled, autoExpand = false, onReview, startedAt, completedAt,
   lastActivityAt, stopReason, cancelTrigger, cancellationCategory, agentResult,
   resultNotice, hasFinalAnswer = false, generatingAnswer = false, waitingReason: requestedWaitingReason, markdownConfig, findQuery, onOpenTool,
-  knowledgeTrace, onOpenKnowledgePath, revealRequest = 0,
+  knowledgeTrace, memorySources, onOpenKnowledgePath, revealRequest = 0,
 }: ExecutionProcessProps) {
   // Native work can continue between model turns. The message spinner alone
   // cannot retire its records or claim that physical operations have ended.
@@ -423,8 +424,11 @@ export function ExecutionProcess({
     result_unknown: "应用操作结果尚未确认，本轮其他处理仍在继续。",
     completed: "应用操作结果已核验，本轮其他处理仍在继续。",
   } as Partial<Record<typeof nativeTask.phase, string>>)[nativeTask.phase];
-  const toolAttention = [failedToolCount ? `${failedToolCount} 项操作失败` : "",
-    uncertainToolCount ? `${uncertainToolCount} 项操作结果待确认` : ""].filter(Boolean).join(" · ");
+  const toolAttention = [
+    !active && failedToolCount ? `${failedToolCount} 项操作失败` : "",
+    uncertainToolCount ? `${uncertainToolCount} 项操作结果待确认` : "",
+  ].filter(Boolean).join(" · ");
+  const memoryReferences = memorySources?.filter(source => / · \d+–\d+$/.test(source)) ?? [];
   const state = waitingReason ? "waiting"
     : messageActive ? summary.state
       : nativeTask?.phase === "result_unknown" ? "attention"
@@ -439,7 +443,7 @@ export function ExecutionProcess({
       aria-label={[title, timeLabel, disclosureLabel].filter(Boolean).join(" · ")}
       aria-expanded={expanded} aria-controls={expanded ? bodyId : undefined}
       aria-describedby={expanded && summary.description ? `${bodyId}-summary`
-        : !expanded && active && (failedToolCount > 0 || uncertainToolCount > 0) ? `${bodyId}-attention` : undefined}
+        : !expanded && (nativeContinuation || toolAttention) ? `${bodyId}-attention` : undefined}
       onClick={() => changeOpen(!expanded)}>
       {title && <>
         <span ref={thinkingDotRef} className={`execution-process__status${thinking ? " waiting-indicator" : ""}`} aria-hidden="true" />
@@ -477,14 +481,20 @@ export function ExecutionProcess({
     {nativeContinuation && <p id={`${bodyId}-attention`} className="execution-process__native-status" data-phase={nativeTask?.phase} role="note">
       {nativeContinuation}{!expanded && toolAttention ? ` ${toolAttention}。` : ""}
     </p>}
-    {!expanded && active && toolAttention && !nativeContinuation && <p id={`${bodyId}-attention`} className="execution-process__attention" role="note">
-      {toolAttention}，{waitingReason ? "等待你处理后继续" : "执行仍在继续"}。
+    {!expanded && toolAttention && !nativeContinuation && <p id={`${bodyId}-attention`} className="execution-process__attention" role="note">
+      {toolAttention}{active ? waitingReason ? "，等待你处理后继续" : "，执行仍在继续" : ""}。
     </p>}
     {longWait && <p className="execution-process__waiting-note" role="note">
       已 {formatProcessDuration(idleMs)} 未收到新进展，正在等待{waitingFor}返回。可继续等待，或停止本次执行。
     </p>}
     {expanded && <div className="execution-process__details" ref={detailsRef}>
       {automationStatus && <ComputerExecutionDetails status={automationStatus} />}
+      {!!memorySources?.length && <div className="execution-process__memory">
+        <p>本轮参考了 {memorySources.length} 项记忆来源</p>
+        {memoryReferences.length > 0 && <ul aria-label="记忆引用位置">
+          {memoryReferences.map(reference => <li key={reference}>{reference}</li>)}
+        </ul>}
+      </div>}
       {singleStageTitle && <h4 id={`${bodyId}-plan`} className="execution-process__single-stage-title">{singleStageTitle}</h4>}
       <div className="execution-process__body" id={bodyId} ref={bodyRef}
         data-chat-reading="true" tabIndex={0} role="region" aria-label="执行过程详情"

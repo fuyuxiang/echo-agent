@@ -154,6 +154,7 @@ vi.mock("@/lib/agent-client", async () => {
 vi.mock("@/lib/workflow-skills", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/workflow-skills")>(),
   workflowFindSource: vi.fn(async () => null),
+  workflowConversationSources: vi.fn(async () => ({})),
   workflowCaptureContext: vi.fn(async () => ({ cwd: "/shared", modelId: "m1", runWorkflow: null })),
   workflowLibrary: vi.fn(async () => ({ workflows: [], automaticDrafts: false })),
   listenWorkflowLibrary: vi.fn(async () => () => {}),
@@ -258,19 +259,56 @@ describe("ChatView pause/yield/resume 闭环", () => {
     vi.mocked(setAgentMode).mockClear();
   });
 
-  it("保存短回复时把原始用户文本作为流程证据，移除附件传输尾注", async () => {
+  it("追问后仍可提炼上一轮，并移除原始用户文本的附件传输尾注", async () => {
     setStore({ messages: [
       { id: "user", role: "user", promptId: "workflow-prompt", complete: true,
-        parts: [{ kind: "text", text: `请核验库存\n\n${LEGACY_ATTACHMENT_HEADING}\n- @/workspace/库存.csv` }] },
+        parts: [{ kind: "text", text: `以后请核验库存\n\n${LEGACY_ATTACHMENT_HEADING}\n- @/workspace/库存.csv` }] },
       { id: "assistant", role: "assistant", promptId: "workflow-prompt", complete: true,
         parts: [{ kind: "text", text: "每周对比并记录差异。" }] },
+      { id: "followup", role: "user", promptId: "later-prompt", complete: true, parts: [{ kind: "text", text: "谢谢" }] },
+      { id: "later", role: "assistant", promptId: "later-prompt", complete: true, parts: [{ kind: "text", text: "不客气。" }] },
     ] });
-    render(<ThemeProvider><ChatView {...baseProps} cwd="/workspace" /></ThemeProvider>);
-    fireEvent.click(screen.getByRole("button", { name: "保存为可复用流程" }));
+    const { container } = render(<ThemeProvider><ChatView {...baseProps} cwd="/workspace" /></ThemeProvider>);
+    expect(screen.queryByRole("button", { name: "保存为可复用流程" })).toBeNull();
+    const original = container.querySelector<HTMLElement>('[data-msg-id="assistant"]')!;
+    fireEvent.click(within(original).getByRole("button", { name: "更多回复操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "从这次任务提炼" }));
     await waitFor(() => expect(workflowCaptureContext).toHaveBeenCalledWith({
       kind: "chat", sessionId: "s1", promptId: "workflow-prompt",
-      request: "请核验库存", result: "每周对比并记录差异。",
+      request: "以后请核验库存", result: "每周对比并记录差异。",
     }));
+  });
+
+  it("问候回复不显示提炼入口", async () => {
+    setStore({ messages: [
+      { id: "hi-user", role: "user", promptId: "hi", complete: true, parts: [{ kind: "text", text: "你好" }] },
+      { id: "hi-assistant", role: "assistant", promptId: "hi", complete: true, parts: [{ kind: "text", text: "你好，有什么可以帮你？" }] },
+    ] });
+    render(<ThemeProvider><ChatView {...baseProps} cwd="/workspace" /></ThemeProvider>);
+    expect(screen.queryByRole("button", { name: "保存为可复用流程" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "更多回复操作" }));
+    expect(screen.queryByRole("menuitem", { name: "从这次任务提炼" })).toBeNull();
+  });
+
+  it("原地编辑历史消息时保留底部草稿，并通过当前会话发送", async () => {
+    const onSend = vi.fn().mockResolvedValue(true);
+    setStore({ messages: [
+      { id: "original", role: "user", complete: true, parts: [{ kind: "text", text: "原始问题" }] },
+      { id: "reply", role: "assistant", complete: true, parts: [{ kind: "text", text: "原有回复" }] },
+    ] });
+    render(<ThemeProvider><ChatView {...baseProps} onSend={onSend} cwd="/workspace" /></ThemeProvider>);
+    const composer = screen.getByRole("textbox", { name: "输入问题或任务" });
+    fireEvent.change(composer, { target: { value: "底部独立草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: "编辑消息" }));
+    const editor = screen.getByRole("form", { name: "编辑消息" });
+    expect(editor.closest("[data-msg-id]")).toHaveAttribute("data-msg-id", "original");
+    fireEvent.change(within(editor).getByRole("textbox"), { target: { value: "修改后的问题" } });
+    expect(composer).toHaveValue("底部独立草稿");
+    fireEvent.click(within(editor).getByRole("button", { name: "作为新消息发送" }));
+    await waitFor(() => expect(editor).not.toBeInTheDocument());
+    expect(onSend).toHaveBeenCalledWith("修改后的问题", []);
+    expect(screen.getByText("原有回复")).toBeInTheDocument();
+    expect(composer).toHaveValue("底部独立草稿");
   });
 
   it("后台接续失败保留主回复的分支入口，不暴露重跑原问题的操作", () => {

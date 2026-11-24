@@ -64,7 +64,8 @@ import { AutomationApprovalCard } from "./AutomationControls";
 import { useSessionAutomation } from "@/lib/use-session-automation";
 import { automationCapabilities, type AutomationMode, type BrowserPanelCapabilities } from "@/lib/automation-client";
 import { useAppDialog } from "./AppDialog";
-import { WorkflowCaptureAction } from "./workflow-skills/WorkflowSkills";
+import { WorkflowDialog, WorkflowSourceDialog, useWorkflowConversationSources } from "./workflow-skills/WorkflowSkills";
+import type { WorkflowCapture, WorkflowSourceMatch } from "@/lib/workflow-skills";
 import { useFeedbackStore } from "@/stores/feedback-store";
 import type {
   MessageRetryKind,
@@ -361,10 +362,12 @@ export function ChatView({
   const [automationModeChanging, setAutomationModeChanging] = useState(false);
   const terminalMessage = [...messages].reverse().find(message => message.role === "assistant"
     && (!control?.promptId || message.promptId === control.promptId));
-  const feedbackKey = sessionId && terminalMessage ? `${sessionId}:${terminalMessage.id}` : undefined;
-  const workflowFeedback = useFeedbackStore((state) => feedbackKey ? state.entries[feedbackKey] : undefined);
-  const feedbackSubmittedAt = useFeedbackStore((state) => state.lastSubmission?.key === feedbackKey
-    ? state.lastSubmission?.ts : undefined);
+  const feedbackEntries = useFeedbackStore((state) => state.entries);
+  const workflowSources = useWorkflowConversationSources(cwd, sessionId);
+  const [workflowDialog, setWorkflowDialog] = useState<{
+    sessionId: string; capture?: WorkflowCapture; source?: WorkflowSourceMatch; correction?: string;
+  }>();
+  useEffect(() => { setWorkflowDialog(undefined); }, [cwd, sessionId]);
   const stoppedCategory = terminalMessage?.cancellationCategory;
   // Runtime coding-mode notifications can be "default" while the native
   // browser/computer session remains active. Its own status owns tool mode.
@@ -456,20 +459,13 @@ export function ChatView({
     return entry?.expertAvatar;
   });
 
-  // ---- 消息"编辑重发":把消息文本回填到输入框 ----
-  const [resendText, setResendText] = useState<string | undefined>(undefined);
-  const [resendAttachments, setResendAttachments] = useState<string[] | undefined>(undefined);
-  const [resendNonce, setResendNonce] = useState(0);
+  const [editingMessage, setEditingMessage] = useState<{ sessionId: string; messageId: string }>();
+  const [composerInsertText, setComposerInsertText] = useState<string | undefined>(undefined);
+  const [composerInsertNonce, setComposerInsertNonce] = useState(0);
   useLayoutEffect(() => {
-    setResendText(undefined);
-    setResendAttachments(undefined);
+    setEditingMessage(undefined);
+    setComposerInsertText(undefined);
   }, [sessionId]);
-  const handleEditResend = useCallback((text: string, attachments: string[]) => {
-    if (!text.trim() && attachments.length === 0) return;
-    setResendText(text);
-    setResendAttachments(attachments);
-    setResendNonce((n) => n + 1);
-  }, []);
 
   // ---- 消息级重试：文本回复重新生成；工具轮次明确二次确认后重新执行 ----
   const [retryingSessions, setRetryingSessions] = useState(new Set<string>());
@@ -830,6 +826,17 @@ export function ChatView({
     streaming,
     sessionId,
   });
+  const inlineSendDisabled = retryBlocked || taskRunning || replacingTurn || cancellationPending
+    || continuationPending || !apiReady;
+  const sendEditedMessage = async (messageId: string, text: string, attachments: string[]) => {
+    const current = useSessionStore.getState();
+    if (!sessionId || current.sessionId !== sessionId || inlineSendDisabled || historyIsBusy(current)
+      || cancelRequests.current.has(sessionId) || useContinuationStore.getState().pending[sessionId]
+      || !current.messages.some((message) => message.id === messageId && message.role === "user")) return false;
+    const accepted = await onSend(text, attachments);
+    if (accepted !== false && useSessionStore.getState().sessionId === sessionId) scrollToBottom();
+    return accepted;
+  };
   const transitionWorkspace = useCallback((next: WorkspaceView | null) => {
     closeQuestionHistory();
     if (workspaceViewRef.current === next) return;
@@ -1084,19 +1091,46 @@ export function ChatView({
   const continuationNeedsScope = automationMode === "computer_use" && automation.status && !automation.status.task?.scope;
   const feedbackTarget = terminalMessage?.id;
   const blockingNotice = terminalMessage && getExecutionNotice(terminalMessage, streaming, inlineRuntimeError);
-  const workflowCapture = useMemo(() => {
-    if (!terminalMessage?.promptId || !terminalMessage.complete || !sessionId || streaming
-      || (blockingNotice && !workflowFeedback?.note) || resolveExecutionTurn(terminalMessage).origin !== "user"
-      || inheritedIds.has(terminalMessage.id)) return undefined;
-    const index = messages.indexOf(terminalMessage);
-    const source = messages.slice(0, index).reverse().find((message) => message.role === "user");
-    if (!source || inheritedIds.has(source.id) || (source.promptId && source.promptId !== terminalMessage.promptId)) return undefined;
-    const request = source.parts.flatMap((part) => part.kind === "text" ? [stripAttachmentTransportContext(part.text).text] : []).join("\n").trim();
-    const result = terminalMessage.parts.flatMap((part) => part.kind === "text" && part.phase !== "commentary" ? [part.text] : []).join("\n").trim();
-    const usedTools = terminalMessage.parts.some((part) => part.kind === "tool_call" && part.toolCall.status === "completed");
-    if (!request || (!usedTools && !result && !workflowFeedback?.note)) return undefined;
-    return { capture: { kind: "chat" as const, sessionId, promptId: terminalMessage.promptId, request, result }, usedTools };
-  }, [terminalMessage, sessionId, streaming, blockingNotice, inheritedIds, messages, workflowFeedback?.note]);
+  const workflowCaptures = useMemo(() => {
+    const captures = new Map<string, { messageId: string; capture: WorkflowCapture; correction?: string }>();
+    if (!sessionId) return captures;
+    const requests = new Map<string, (typeof messages)[number]>();
+    let previousRequest: (typeof messages)[number] | undefined;
+    for (const reply of messages) {
+      if (reply.role === "user") {
+        previousRequest = reply;
+        if (reply.promptId) requests.set(reply.promptId, reply);
+        continue;
+      }
+      if (reply.role !== "assistant" || !reply.promptId || inheritedIds.has(reply.id)
+        || resolveExecutionTurn(reply).origin !== "user") continue;
+      captures.delete(reply.promptId);
+      const source = requests.get(reply.promptId) ?? (previousRequest?.promptId ? undefined : previousRequest);
+      if (!reply.complete || !source || inheritedIds.has(source.id)) continue;
+      const correction = feedbackEntries[`${sessionId}:${reply.id}`]?.note;
+      if (getExecutionNotice(reply, streaming && reply.id === streamingMessageId,
+        reply === terminalMessage ? inlineRuntimeError : undefined) && !correction) continue;
+      const request = source.parts.flatMap((part) => part.kind === "text" ? [stripAttachmentTransportContext(part.text).text] : []).join("\n").trim();
+      const result = reply.parts.flatMap((part) => part.kind === "text" && part.phase !== "commentary" ? [part.text] : []).join("\n").trim();
+      const usedTools = reply.parts.some((part) => part.kind === "tool_call" && part.toolCall.status === "completed");
+      const repeatableRequest = /以后|下次|今后|记住|from now on|next time|remember to|always use/i.test(request);
+      if (!request || (!usedTools && !correction && !repeatableRequest
+        && !(request.length >= 24 && result.length >= 80))) continue;
+      captures.set(reply.promptId, {
+        messageId: reply.id, correction,
+        capture: { kind: "chat", sessionId, promptId: reply.promptId, request, result },
+      });
+    }
+    return captures;
+  }, [sessionId, messages, feedbackEntries, inheritedIds, streaming, streamingMessageId, terminalMessage, inlineRuntimeError]);
+  const workflowReplies = useMemo(() => {
+    const replies = new Map<string, string>();
+    if (workflowSources) for (const message of messages) {
+      if (message.role === "assistant" && message.complete && message.promptId && workflowSources[message.promptId]
+        && !inheritedIds.has(message.id)) replies.set(message.promptId, message.id);
+    }
+    return replies;
+  }, [workflowSources, messages, inheritedIds]);
   const desktopBlocker = automation.status?.task?.phase === "waiting_user" && !automation.status.task.authorized
     ? automation.status.task.outcome : null;
   const taskFeedback = desktopBlocker ? <div className="yield-banner session-turn-feedback" role="status"><span>{desktopBlocker}</span></div> : controlPhase && !inlineRuntimeError && !error && (!blockingNotice || blockingNotice.kind === "stopped") ? (
@@ -1143,6 +1177,8 @@ export function ChatView({
                   );
                 }
                 const m = node.message;
+                const workflowEntry = m.promptId && !workflowSources?.[m.promptId]
+                  ? workflowCaptures.get(m.promptId) : undefined;
                 const turn = m.role === "assistant" ? resolveExecutionTurn(m) : undefined;
                 const source = turn && turn.origin !== "user" ? executionSource(m, messages, liveSubagents) : undefined;
                 let execution = turn ? turnPresentation(turn, source?.description) : undefined;
@@ -1186,8 +1222,19 @@ export function ChatView({
                       onOpenTool={handleOpenTool}
                       onOpenArtifact={handleSelectArtifact}
                       findQuery={findOpen ? findQuery : undefined}
-                      onEditResend={inheritedIds.has(m.id) ? undefined : handleEditResend}
+                      edit={sessionId && m.role === "user" && m.complete && !inheritedIds.has(m.id) ? {
+                        active: editingMessage?.sessionId === sessionId && editingMessage.messageId === m.id,
+                        sendDisabled: inlineSendDisabled,
+                        onOpen: () => { pauseFollowing(); setEditingMessage({ sessionId, messageId: m.id }); },
+                        onClose: () => setEditingMessage((current) => (
+                          current?.sessionId === sessionId && current.messageId === m.id ? undefined : current
+                        )),
+                        onSend: (text, attachments) => sendEditedMessage(m.id, text, attachments),
+                      } : undefined}
                       onContinueInNewConversation={forkTargets.has(m.id) && onForked ? () => { void startContinuation(forkTargets.get(m.id)); } : undefined}
+                      onLearnWorkflow={cwd && sessionId && workflowEntry?.messageId === m.id
+                        ? () => setWorkflowDialog({ sessionId, capture: workflowEntry.capture, correction: workflowEntry.correction })
+                        : undefined}
                       continuationDisabled={continuationDisabled || replacingTurn}
                       continuationDisabledReason={continuationPending ? "正在创建新对话，请稍候" : continuationDisabled || replacingTurn ? "请等待当前执行和待处理操作结束后再继续" : undefined}
                       onReviewProcess={pauseFollowing}
@@ -1215,15 +1262,18 @@ export function ChatView({
                           : undefined
                       }
                     />
-                    {m === terminalMessage && cwd && workflowCapture && (
-                      <WorkflowCaptureAction key={workflowCapture.capture.promptId} cwd={cwd}
-                        capture={workflowCapture.capture} modelId={modelId} onToast={onToast}
-                        correction={workflowFeedback?.note}
-                        accepted={workflowFeedback && feedbackSubmittedAt === workflowFeedback.ts
-                          && Date.now() - workflowFeedback.ts < 120_000
-                          && ((workflowFeedback.rating === "up" && workflowCapture.usedTools && !blockingNotice)
-                            || workflowFeedback.note?.trim()) ? workflowFeedback.ts : undefined} />
-                    )}
+                    {sessionId && m.promptId && workflowReplies.get(m.promptId) === m.id && (() => {
+                      const source = workflowSources?.[m.promptId];
+                      if (!source) return null;
+                      const label = source.status === "draft" ? "技能建议"
+                        : source.learned ? source.revision ? "已更新技能" : "已学习技能" : "已保存技能";
+                      return <div className="workflow-learning-note">
+                        <span role="status">{label} · {source.title}</span>
+                        <button type="button" className="btn btn--ghost"
+                          aria-label={`查看技能 ${source.title}`}
+                          onClick={() => setWorkflowDialog({ sessionId, source })}>查看</button>
+                      </div>;
+                    })()}
                     <ContinuationLinks sessions={continuationLinks.get(m.id) ?? []}
                       onOpen={onOpenContinuationSession} />
                   </div>
@@ -1431,9 +1481,8 @@ export function ChatView({
             onDraftChange={
               sessionId ? (t) => setDraft(sessionId, t) : undefined
             }
-            externalText={resendText}
-            externalAttachments={resendAttachments}
-            externalTextNonce={resendNonce}
+            externalText={composerInsertText}
+            externalTextNonce={composerInsertNonce}
             onSelectExpert={onSelectExpert}
             automationMode={automationMode}
             automationModeDisabled={draftOnly || automationModeChanging}
@@ -1494,9 +1543,8 @@ export function ChatView({
                     const next = draft.trim()
                       ? `${draft}\n\n请使用团队“${teamId}”，按成员职责分工完成以上任务。`
                       : `请使用团队“${teamId}”，按成员职责分工完成以下任务：\n`;
-                    setResendText(next);
-                    setResendAttachments(undefined);
-                    setResendNonce((nonce) => nonce + 1);
+                    setComposerInsertText(next);
+                    setComposerInsertNonce((nonce) => nonce + 1);
                   }}
                   onViewTasks={() => {
                     transitionWorkspace("subagents");
@@ -1547,6 +1595,13 @@ export function ChatView({
         findToolCall={(id) => findToolCall(messages, id)}
       />
       {retryDialog}
+      {cwd && workflowDialog && workflowDialog.sessionId === sessionId && (workflowDialog.source
+        ? <WorkflowSourceDialog key={`${workflowDialog.source.workflowId}:${workflowDialog.source.version}`}
+          cwd={cwd} source={workflowDialog.source} modelId={modelId} onToast={onToast}
+          onClose={() => setWorkflowDialog(undefined)} />
+        : workflowDialog.capture && <WorkflowDialog key={workflowDialog.capture.kind === "chat" ? workflowDialog.capture.promptId : workflowDialog.capture.runId}
+          cwd={cwd} capture={workflowDialog.capture} correction={workflowDialog.correction} modelId={modelId}
+          onToast={onToast} autoExtract onClose={() => setWorkflowDialog(undefined)} />)}
       {sessionId && historyAction && !historyDisabled && !replacingTurn && <RewindBar key={`rewind:${sessionId}`} sessionId={sessionId}
         minPromptIndex={origin ? origin.promptIndex + 1 : undefined}
         canExecute={canExecuteHistory}

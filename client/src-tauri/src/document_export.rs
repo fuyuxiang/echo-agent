@@ -308,14 +308,20 @@ pub(crate) fn validate_request(request: &DocumentExportRequest) -> Result<(), St
         }
         crate::document_store::validate(document)?;
     }
-    if (request.markdown.trim().is_empty() && !structured)
-        || (request.document.is_none()
-            && serde_json::to_vec(request)
-                .map_err(|e| e.to_string())?
-                .len()
-                > MAX_MARKDOWN_BYTES)
+    if request.markdown.trim().is_empty() && !structured {
+        return Err(match request.format.as_str() {
+            "pptx" => "缺少 PPT 内容。请提供 slides 数组，将 title、body、table 或 chart 放在对应的页面对象中，或提供 markdown。",
+            "xlsx" => "缺少表格内容。请提供 workbook 或 markdown。",
+            _ => "缺少文档内容。请提供 markdown 或 document。",
+        }.into());
+    }
+    if request.document.is_none()
+        && serde_json::to_vec(request)
+            .map_err(|e| e.to_string())?
+            .len()
+            > MAX_MARKDOWN_BYTES
     {
-        return Err("文档内容为空或超过 2 MiB 上限".into());
+        return Err("文档内容超过 2 MiB 上限".into());
     }
     if (request.workbook.is_some() && request.format != "xlsx")
         || (request.slides.is_some() && request.format != "pptx")

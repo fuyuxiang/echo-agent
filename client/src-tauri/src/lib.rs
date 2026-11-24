@@ -1042,7 +1042,7 @@ pub fn run() {
             workflow_skills::workflow_skills_set_automatic,
             workflow_skills::workflow_skills_suggest,
             workflow_skills::workflow_skills_suggest_revision,
-            workflow_skills::workflow_skills_auto_draft,
+            workflow_skills::workflow_skills_conversation_sources,
             workflow_skills::workflow_skills_save,
             workflow_skills::workflow_skills_revise,
             workflow_skills::workflow_skills_evaluate,

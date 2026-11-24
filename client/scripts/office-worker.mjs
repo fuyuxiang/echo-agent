@@ -357,12 +357,17 @@ async function createPptx() {
   await deck.writeFile({ fileName: outputPath });
 }
 
-if (format === "xlsx" && request.workbook) await createStructuredWorkbook(request.workbook, outputPath);
-else if (format === "pptx" && request.slides) await createStructuredPresentation(title, request.slides, outputPath);
-else if (format === "docx") {
-  if (!request.document && !editableDocument.content.some(node => node.type === "heading" && node.attrs?.level === 1)) editableDocument.content.unshift({type:"heading", attrs:{level:1}, content:[{type:"text",text:title}]});
-  await renderDocument(editableDocument, title, outputPath);
+try {
+  if (format === "xlsx" && request.workbook) await createStructuredWorkbook(request.workbook, outputPath);
+  else if (format === "pptx" && request.slides) await createStructuredPresentation(title, request.slides, outputPath);
+  else if (format === "docx") {
+    if (!request.document && !editableDocument.content.some(node => node.type === "heading" && node.attrs?.level === 1)) editableDocument.content.unshift({type:"heading", attrs:{level:1}, content:[{type:"text",text:title}]});
+    await renderDocument(editableDocument, title, outputPath);
+  }
+  else if (format === "pdf") await createPdf();
+  else if (format === "xlsx") await createXlsx();
+  else await createPptx();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
 }
-else if (format === "pdf") await createPdf();
-else if (format === "xlsx") await createXlsx();
-else await createPptx();

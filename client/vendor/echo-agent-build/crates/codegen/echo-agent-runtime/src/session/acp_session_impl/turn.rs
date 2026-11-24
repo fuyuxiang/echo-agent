@@ -633,7 +633,19 @@ impl SessionActor {
             .ok()
             .and_then(|current| current.clone());
         let bridge = self.tool_bridge_handle();
-        if bridge.suppress_skill_for_turn(pinned_skill).await
+        let scheduled_turn = self.client_identifier.as_deref() == Some("echo-agent-desktop")
+            && !self.startup_hints.is_subagent
+            && prompt_blocks.iter().any(|block| {
+                matches!(block, acp::ContentBlock::Text(text)
+                    if text.meta.as_ref().and_then(|meta| meta.get("desktopScheduledTurn"))
+                        .and_then(serde_json::Value::as_bool) == Some(true))
+            });
+        let suppress_workspace_workflows = scheduled_turn || self.startup_hints.suppress_workspace_workflows
+            || automation_mode != AutomationTurnMode::Ordinary;
+        self.tool_context.suppress_workspace_workflows.store(
+            suppress_workspace_workflows, std::sync::atomic::Ordering::Release,
+        );
+        if bridge.suppress_skill_for_turn(pinned_skill, suppress_workspace_workflows).await
             && let Some(effects) = bridge.apply_pending_skill_update().await
         {
             self.apply_skill_update_effects(effects).await;
@@ -921,6 +933,10 @@ impl SessionActor {
         echo_agent_telemetry::session_ctx::begin_prompt_id();
         let mut chunk_meta = serde_json::Map::new();
         chunk_meta.insert("modelId".into(), serde_json::json!(model_id));
+        chunk_meta.insert(
+            "configuredModelId".into(),
+            serde_json::json!(self.models_manager.current_model_id().0.to_string()),
+        );
         chunk_meta.insert(
             "turnOrigin".into(),
             input_origin.as_prompt_origin().client_metadata(),

@@ -639,6 +639,8 @@ pub struct StartupHints {
     /// Hide the mutable skill when the parent turn supplies a pinned revision.
     #[serde(skip)]
     pub inherited_workflow_skill: Option<String>,
+    #[serde(skip)]
+    pub suppress_workspace_workflows: bool,
     #[serde(default)]
     pub non_interactive: bool,
     #[serde(default)]

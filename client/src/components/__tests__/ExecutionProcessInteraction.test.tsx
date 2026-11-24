@@ -98,17 +98,23 @@ describe("execution record control and result consistency", () => {
     expect(screen.queryByLabelText("当前阶段进展")).toBeNull();
   });
 
-  it("opens grouped reads as individual records, while preserving failure visibility outside recent actions", () => {
+  it("keeps failures in the live record and summarizes unresolved failures after completion", () => {
     const reads = [action("a", "completed", "read_file"), action("b", "completed", "read_file")];
     const { rerender } = render(<ThemeProvider><ExecutionProcess active parts={reads} /></ThemeProvider>);
     fireEvent.click(screen.getByRole("button", { name: /文件读取 · 2 次操作/ }));
     expect(screen.getByRole("region", { name: "执行过程详情" }).querySelectorAll(".toolcall")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: / · 收起过程$/ }));
-    rerender(<ThemeProvider><ExecutionProcess active parts={[action("failed", "failed"), ...["a", "b", "c"].map(id => action(id))]} /></ThemeProvider>);
+    const parts = [action("failed", "failed"), ...["a", "b", "c"].map(id => action(id))];
+    rerender(<ThemeProvider><ExecutionProcess active parts={parts} /></ThemeProvider>);
     expect(screen.queryByRole("button", { name: "bash failed 失败" })).toBeNull();
-    expect(screen.getByRole("note")).toHaveTextContent("1 项操作失败，执行仍在继续");
-    fireEvent.click(screen.getByRole("button", { name: /展开过程$/ }));
+    expect(screen.queryByRole("note")).toBeNull();
+    const disclosure = screen.getByRole("button", { name: /展开过程$/ });
+    expect(disclosure).not.toHaveAttribute("aria-describedby");
+    fireEvent.click(disclosure);
     expect(screen.getByRole("button", { name: "bash failed 失败" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: / · 收起过程$/ }));
+    rerender(<ThemeProvider><ExecutionProcess active={false} parts={parts} /></ThemeProvider>);
+    expect(screen.getByRole("note")).toHaveTextContent("1 项操作失败");
   });
 
   it("retains a focused live action through new records and completion, without falsely leaving it running", () => {

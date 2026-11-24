@@ -1169,36 +1169,6 @@ fn scan_risk(files: &[PackageFile]) -> Result<(SkillRiskLevel, Vec<SkillRiskFind
         "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd", "py", "js", "mjs", "cjs", "ts",
     ];
     let binary_exts = ["exe", "dll", "dylib", "so", "jar", "app", "msi"];
-    let high_patterns = [
-        ("rm -rf", "destructive-command", "包含递归强制删除命令"),
-        ("sudo ", "privilege-escalation", "要求管理员权限"),
-        ("curl | sh", "remote-execution", "下载并直接执行远程脚本"),
-        ("curl|sh", "remote-execution", "下载并直接执行远程脚本"),
-        ("wget | sh", "remote-execution", "下载并直接执行远程脚本"),
-        (".ssh/", "sensitive-files", "访问 SSH 敏感目录"),
-        ("id_rsa", "sensitive-files", "访问 SSH 私钥"),
-        (
-            "security find-generic-password",
-            "credential-access",
-            "访问系统密钥串",
-        ),
-        (
-            "powershell -enc",
-            "encoded-execution",
-            "执行编码的 PowerShell 命令",
-        ),
-    ];
-    let medium_patterns = [
-        ("curl ", "network-access", "使用 curl 访问网络"),
-        ("wget ", "network-access", "使用 wget 访问网络"),
-        ("pip install", "dependency-install", "安装 Python 依赖"),
-        ("npm install", "dependency-install", "安装 Node.js 依赖"),
-        ("npx ", "package-execution", "执行 npm 包"),
-        ("brew install", "dependency-install", "安装系统依赖"),
-        ("apt install", "dependency-install", "安装系统依赖"),
-        ("subprocess", "process-execution", "创建子进程"),
-        ("child_process", "process-execution", "创建子进程"),
-    ];
     let mut dedupe = HashSet::new();
     for file in files {
         let relative = file.relative.to_string_lossy().into_owned();
@@ -1235,31 +1205,7 @@ fn scan_risk(files: &[PackageFile]) -> Result<(SkillRiskLevel, Vec<SkillRiskFind
         let Ok(text) = String::from_utf8(bytes) else {
             continue;
         };
-        let lower = text.to_lowercase();
-        for (pattern, code, message) in high_patterns {
-            if lower.contains(pattern) {
-                add_finding(
-                    &mut findings,
-                    &mut dedupe,
-                    SkillRiskLevel::High,
-                    code,
-                    message,
-                    &relative,
-                );
-            }
-        }
-        for (pattern, code, message) in medium_patterns {
-            if lower.contains(pattern) {
-                add_finding(
-                    &mut findings,
-                    &mut dedupe,
-                    SkillRiskLevel::Medium,
-                    code,
-                    message,
-                    &relative,
-                );
-            }
-        }
+        scan_instruction_risk(&text, &relative, &mut findings, &mut dedupe);
     }
     let risk = findings
         .iter()
@@ -1267,6 +1213,75 @@ fn scan_risk(files: &[PackageFile]) -> Result<(SkillRiskLevel, Vec<SkillRiskFind
         .max()
         .unwrap_or(SkillRiskLevel::Low);
     Ok((risk, findings))
+}
+
+pub(crate) fn instruction_needs_review(text: &str) -> bool {
+    let mut findings = Vec::new();
+    scan_instruction_risk(text, "SKILL.md", &mut findings, &mut HashSet::new());
+    !findings.is_empty()
+}
+
+fn scan_instruction_risk(
+    text: &str,
+    relative: &str,
+    findings: &mut Vec<SkillRiskFinding>,
+    dedupe: &mut HashSet<String>,
+) {
+    let high_patterns = [
+        ("rm -rf", "destructive-command", "包含递归强制删除命令"),
+        ("sudo ", "privilege-escalation", "要求管理员权限"),
+        ("curl | sh", "remote-execution", "下载并直接执行远程脚本"),
+        ("curl|sh", "remote-execution", "下载并直接执行远程脚本"),
+        ("wget | sh", "remote-execution", "下载并直接执行远程脚本"),
+        (".ssh/", "sensitive-files", "访问 SSH 敏感目录"),
+        ("id_rsa", "sensitive-files", "访问 SSH 私钥"),
+        (
+            "security find-generic-password",
+            "credential-access",
+            "访问系统密钥串",
+        ),
+        (
+            "powershell -enc",
+            "encoded-execution",
+            "执行编码的 PowerShell 命令",
+        ),
+    ];
+    let medium_patterns = [
+        ("curl ", "network-access", "使用 curl 访问网络"),
+        ("wget ", "network-access", "使用 wget 访问网络"),
+        ("pip install", "dependency-install", "安装 Python 依赖"),
+        ("npm install", "dependency-install", "安装 Node.js 依赖"),
+        ("npx ", "package-execution", "执行 npm 包"),
+        ("brew install", "dependency-install", "安装系统依赖"),
+        ("apt install", "dependency-install", "安装系统依赖"),
+        ("subprocess", "process-execution", "创建子进程"),
+        ("child_process", "process-execution", "创建子进程"),
+    ];
+    let lower = text.to_lowercase();
+    for (pattern, code, message) in high_patterns {
+        if lower.contains(pattern) {
+            add_finding(
+                findings,
+                dedupe,
+                SkillRiskLevel::High,
+                code,
+                message,
+                relative,
+            );
+        }
+    }
+    for (pattern, code, message) in medium_patterns {
+        if lower.contains(pattern) {
+            add_finding(
+                findings,
+                dedupe,
+                SkillRiskLevel::Medium,
+                code,
+                message,
+                relative,
+            );
+        }
+    }
 }
 
 fn add_finding(

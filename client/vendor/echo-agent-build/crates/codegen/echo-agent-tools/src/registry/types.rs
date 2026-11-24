@@ -1512,7 +1512,7 @@ impl FinalizedToolset {
         tool_args: serde_json::Value,
         parent_ctx: echo_agent_tool_runtime::ToolCallContext,
     ) -> Result<crate::types::output::ToolOutput, echo_agent_tool_runtime::ToolError> {
-        let (registry_id, output_converter, reverse_params) = {
+        let (registry_id, output_converter, reverse_params, mcp_input_schema) = {
             let tools = self.tools.read();
             let entry = tools
                 .iter()
@@ -1522,8 +1522,15 @@ impl FinalizedToolset {
                 entry.registry_id.clone(),
                 entry.output_converter.clone(),
                 entry.reverse_params.clone(),
+                (entry.namespace == ToolNamespace::MCP.to_string())
+                    .then(|| entry.input_schema.clone()),
             )
         };
+        if let Some(schema) = mcp_input_schema {
+            crate::implementations::use_tool::validate_mcp_arguments(
+                tool_name, &schema, &tool_args,
+            )?;
+        }
         let canonical_params = if reverse_params.is_empty() {
             tool_args
         } else {
@@ -3269,9 +3276,36 @@ mod tests {
                 FakeMcpTool {
                     description: "Create or update a Linear issue".into(),
                 },
-                Some(serde_json::json!({"type": "object", "properties": {}})),
+                Some(serde_json::json!({
+                    "type": "object",
+                    "required": ["title"],
+                    "properties": {"title": {"type": "string"}},
+                })),
             )
             .unwrap();
+        let invalid = toolset
+            .call(
+                "use_tool",
+                serde_json::json!({
+                    "tool_name": "linear__save_issue",
+                    "tool_input": {"title": 42}
+                }),
+                "call-invalid",
+                None,
+            )
+            .await;
+        let Err(error) = invalid else {
+            panic!("use_tool accepted a numeric title");
+        };
+        assert_eq!(
+            error.kind,
+            echo_agent_tool_runtime::ToolErrorKind::InvalidArguments
+        );
+        assert!(error.detail.contains("tool_input/title"), "{error}");
+        assert!(
+            error.detail.contains(r#"a number is not of type "string""#),
+            "{error}"
+        );
         let result = toolset
             .call(
                 "use_tool",

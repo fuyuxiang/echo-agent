@@ -184,15 +184,14 @@ select.form-control {
     .org-memory, .org-document-modal, .meeting-panel, .conversation-search-modal,
     .create-colleague-dialog, .about-dialog, .feedback-dialog, .update-dialog, .trust-dialog,
     .capability-page, .placeholder-page, .project-page, .pd-page)
-  :is(button, input, select, textarea, a, summary, [role="button"], [tabindex]):not(:where(.markdown-body *, .md-content *, [contenteditable="true"], .echo-composer__input)):focus-visible {
+  :is(button, input, select, textarea, a, summary, [role="button"], [tabindex]):not(:where(.markdown-body *, .md-content *, [contenteditable="true"], .echo-composer__input, .msg__inline-edit-input)):focus-visible {
   outline: 2px solid var(--echo-focus-ring);
   outline-offset: 2px;
 }
-/* Composer's enclosing card and the IDE separator render their own focus.
- * Keep every other control on the fallback ring, including toolbar buttons. */
-.echo-composer:has(.echo-composer__input:focus-visible),
+/* The composer and inline editor indicate text focus on their cards. */
 @media (forced-colors: active) {
-  .echo-composer:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
+  .echo-composer:has(.echo-composer__input:focus),
+  .msg__inline-edit:has(.msg__inline-edit-input:focus) { outline: 2px solid Highlight; outline-offset: 2px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .echo-composer__tool--active { animation: none; }

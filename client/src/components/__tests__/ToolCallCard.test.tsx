@@ -1,7 +1,7 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ToolCallCard, ToolCallDetailBody } from "../ToolCallCard";
-import type { ToolCallView } from "@/stores/session-store";
+import { useSessionStore, type ToolCallView } from "@/stores/session-store";
 
 const orgApi = vi.hoisted(() => ({
   orgFetchDocument: vi.fn(),
@@ -176,6 +176,33 @@ describe("ToolCallCard", () => {
     expect(screen.getByText("北京")).toBeInTheDocument();
     expect(screen.getByText("🔍 网络搜索")).toBeInTheDocument();
     expect(screen.getByText("最新新闻")).toBeInTheDocument();
+  });
+
+  it.each([false, true])("详情显示会话中的 MCP 错误原文，历史回放为 %s", (isReplay) => {
+    const sessionId = `mcp-error-${isReplay}`;
+    const toolName = "echoagent-live-info__weather_forecast";
+    const event = { toolCallId: "weather-1", __sessionId: sessionId, _meta: { isReplay } };
+    const store = useSessionStore.getState();
+    store.setSession(sessionId);
+    store.applyUpdate({
+      ...event,
+      sessionUpdate: "tool_call",
+      title: toolName,
+      rawInput: { location: "北京", days: "3" },
+    });
+    store.applyUpdate({
+      ...event,
+      sessionUpdate: "tool_call_update",
+      status: "failed",
+      rawOutput: { type: "MCP", output: { Error: "天气参数无效" }, is_error: true },
+    });
+
+    const part = useSessionStore.getState().messages.flatMap((message) => message.parts)
+      .find((item) => item.kind === "tool_call");
+    if (part?.kind !== "tool_call") throw new Error("缺少天气工具记录");
+    render(<ToolCallDetailBody tc={part.toolCall} />);
+    expect(screen.getByText("失败")).toBeVisible();
+    expect(screen.getByText("天气参数无效")).toBeVisible();
   });
 
   it("shows running status mark while in progress", () => {

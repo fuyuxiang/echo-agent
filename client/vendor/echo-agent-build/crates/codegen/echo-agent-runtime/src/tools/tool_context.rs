@@ -224,6 +224,7 @@ pub struct ToolContext {
     pub(crate) live_orphan_heal_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) host_project_context: Arc<std::sync::RwLock<Option<Arc<str>>>>,
     pub(crate) pinned_workflow_skill: Arc<std::sync::RwLock<Option<String>>>,
+    pub(crate) suppress_workspace_workflows: Arc<std::sync::atomic::AtomicBool>,
 }
 impl ToolContext {
     pub(crate) fn clamp_task_model_request(
@@ -311,6 +312,7 @@ impl ToolContext {
             live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
             host_project_context: Arc::new(std::sync::RwLock::new(None)),
             pinned_workflow_skill: Arc::new(std::sync::RwLock::new(None)),
+            suppress_workspace_workflows: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
     pub(crate) fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
@@ -405,6 +407,7 @@ mod tests {
                 live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
                 host_project_context: Arc::new(std::sync::RwLock::new(None)),
                 pinned_workflow_skill: Arc::new(std::sync::RwLock::new(None)),
+                suppress_workspace_workflows: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }
         }
     }

@@ -7,7 +7,7 @@ import { agentListWorkspaces, agentAuthStatus } from "@/lib/agent-client";
 import { displayPath } from "@/lib/display-path";
 import type { Automation } from "@/lib/types";
 import {
-  fromWorkflowSource, listenWorkflowLibrary, workflowActivate, workflowAutoDraft, workflowBind, workflowCaptureContext,
+  fromWorkflowSource, listenWorkflowLibrary, workflowActivate, workflowBind, workflowCaptureContext, workflowConversationSources,
   workflowDismiss, workflowEvaluate, workflowFindSource, workflowLibrary, workflowPassed, workflowRevise, workflowSave,
   workflowSetAutomatic, workflowSuggest, workflowSuggestRevision, workflowVersions, workflowWorkspaces,
   type Workflow, type WorkflowBinding, type WorkflowCapture, type WorkflowCaptureContext, type WorkflowCase, type WorkflowDraft,
@@ -17,6 +17,30 @@ import {
 const blankDraft: WorkflowDraft = { title: "", description: "", instructions: "", change: "" };
 const errorText = (error: unknown) => String(error).replace(/^Error:\s*/, "");
 const sourceStatus = { draft: "有流程草稿", verified: "模型输出已验证", active: "流程已启用" };
+
+export function useWorkflowConversationSources(cwd: string | undefined, sessionId: string | null | undefined) {
+  const [sources, setSources] = useState<{ key: string; matches: Record<string, WorkflowSourceMatch> }>();
+  const key = JSON.stringify([cwd, sessionId]);
+  useEffect(() => {
+    if (!cwd || !sessionId) return;
+    let live = true;
+    let generation = 0;
+    let unsubscribe: (() => void) | undefined;
+    const load = () => {
+      const request = ++generation;
+      void workflowConversationSources(cwd, sessionId).then((matches) => {
+        if (live && request === generation) setSources({ key, matches });
+      }).catch(() => {});
+    };
+    load();
+    void listenWorkflowLibrary(load).then((stop) => {
+      if (live) { unsubscribe = stop; load(); }
+      else stop();
+    }).catch(() => {});
+    return () => { live = false; unsubscribe?.(); };
+  }, [cwd, sessionId, key]);
+  return sources?.key === key ? sources.matches : undefined;
+}
 
 function useLibrary(cwd: string) {
   const [snapshot, setSnapshot] = useState<WorkflowLibrarySnapshot>();
@@ -82,6 +106,7 @@ interface EditorProps extends CommonProps {
   sourceBinding?: WorkflowBinding | null;
   sourceModelId?: string | null;
   initialVersionNumber?: number;
+  autoExtract?: boolean;
   onClose: () => void;
 }
 
@@ -111,7 +136,7 @@ function EvalResults({ version }: { version: WorkflowVersion }) {
 }
 
 function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelId, initialCorrection = "",
-  sourceBinding, sourceModelId, initialVersionNumber, onToast, onClose, onBindingChanged, onOpenSource }: EditorProps) {
+  sourceBinding, sourceModelId, initialVersionNumber, autoExtract, onToast, onClose, onBindingChanged, onOpenSource }: EditorProps) {
   const initialVersion = initial && (capture
     ? workflowVersions(initial).find((version) => fromWorkflowSource(version.source, capture))
     : workflowVersions(initial).find((version) => version.number === initialVersionNumber) ?? workflowVersions(initial)[0]);
@@ -133,6 +158,8 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
   const [error, setError] = useState("");
   const [binding, setBinding] = useState(task?.workflowSkill);
   const operation = useRef(false);
+  const autoAttempted = useRef(false);
+  const [showEditor, setShowEditor] = useState(!autoExtract || Boolean(initialBase));
   const revisions = workflow ? workflowVersions(workflow) : [];
   const version = revisions.find((entry) => entry.number === selected);
   const base = revisions.find((entry) => entry.number === version?.baseVersion);
@@ -156,7 +183,23 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
     finally { operation.current = false; setBusy(""); }
   }
 
+  async function extract() {
+    if (!capture || !extractionModel) return;
+    await perform("正在提炼技能", async () => {
+      const next = await workflowSuggest(capture, correction, extractionModel, workflow?.id, baseNumber);
+      if (next) { setForm(next); setShowEditor(true); }
+      else setNotice("这次任务没有足够依据提炼可复用的做法。");
+    });
+  }
+
+  useEffect(() => {
+    if (!autoExtract || autoAttempted.current || initialVersion || !extractionModel) return;
+    autoAttempted.current = true;
+    void extract();
+  }, [autoExtract, extractionModel, initialVersion]);
+
   function editVersion(entry: WorkflowVersion) {
+    setShowEditor(true);
     setForm({ title: entry.title, description: entry.description, instructions: entry.instructions, change: entry.change });
     setCases(entry.cases);
     setBaseNumber(entry.number === workflow?.activeVersion || isBound ? entry.number : entry.baseVersion ?? null);
@@ -178,8 +221,8 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
     setNotice("");
   }
 
-  const title = capture && !version ? "保存为可复用流程" : version?.title ?? "编辑流程";
-  const footer = form ? <div className="workflow-actions">
+  const title = capture && !version ? autoExtract ? "从任务提炼技能" : "保存为可复用流程" : version?.title ?? "编辑流程";
+  const footer = form && showEditor ? <div className="workflow-actions">
           {version && <button type="button" className="capability-button" disabled={Boolean(busy)} onClick={() => setForm(null)}>取消编辑</button>}
           <button type="button" className="capability-button capability-button--primary"
             disabled={Boolean(busy) || !form.title.trim() || !form.description.trim() || !form.instructions.trim()
@@ -191,7 +234,12 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
               setSelected(next.versions.slice(-1)[0]?.number);
               setForm(null);
               setNotice("流程草稿已保存");
-            })}>保存草稿</button>
+              const savedVersion = next.versions[next.versions.length - 1];
+              if (autoExtract && savedVersion) {
+                setWorkflow(await workflowActivate(cwd, next.id, savedVersion.number, next.activeVersion));
+                setNotice("技能已启用，可在此工作区的对话中使用");
+              }
+            })}>{autoExtract ? "保存并启用" : "保存草稿"}</button>
         </div> : version && workflow ? <div className="workflow-actions">
           <button type="button" className="capability-button" disabled={Boolean(busy)} onClick={() => editVersion(version)}>编辑为新版本</button>
           {!workflowPassed(version) && <button type="button" className="capability-button" disabled={Boolean(busy) || !version.cases.length}
@@ -213,12 +261,14 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
               setWorkflow(await workflowActivate(cwd, workflow.id, null, workflow.activeVersion));
               setNotice("已从技能库停用");
             })}>从技能库停用</button> : <button type="button" className="capability-button"
-            disabled={Boolean(busy) || !workflowPassed(version)}
+            disabled={Boolean(busy) || Boolean(version.evaluation && !workflowPassed(version))}
             onClick={() => void perform("正在启用版本", async () => {
               setWorkflow(await workflowActivate(cwd, workflow.id, version.number, workflow.activeVersion));
               onToast?.("流程已在此工作区的技能库启用");
-              setNotice("流程已启用");
-            })}>{workflow.activeVersion && workflow.activeVersion > version.number ? "恢复此版本" : "在技能库启用"}</button>}
+              setNotice("此版本已启用，可在工作区的对话中使用");
+            })}>{workflow.activeVersion && workflow.activeVersion > version.number ? "恢复此版本" : "在对话中启用"}</button>}
+          {workflow.activeVersion !== version.number && version.evaluation && !workflowPassed(version)
+            && <small>此版本未通过验证，修订并通过验证后可启用。</small>}
           {task && !isBound && <button type="button" className="capability-button capability-button--primary"
             disabled={Boolean(busy) || !workflowPassed(version) || modelMismatch || !modelId}
             onClick={() => void perform("正在绑定任务版本", async () => {
@@ -229,7 +279,7 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
               setNotice("定时任务已绑定此版本");
             })}>用于这条定时任务</button>}
           {isBound && <span className="workflow-state"><Check size={15} />已绑定到此任务</span>}
-          {!workflowPassed(version) && <button type="button" className="capability-button" disabled={Boolean(busy)}
+          {!workflowPassed(version) && workflow.activeVersion !== version.number && <button type="button" className="capability-button" disabled={Boolean(busy)}
             onClick={() => void perform("正在忽略草稿", async () => {
               await workflowDismiss(cwd, workflow.id, version.number);
               onClose();
@@ -237,7 +287,7 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
         </div> : null;
   return <Modal title={title} busy={Boolean(busy)} onClose={onClose} footer={footer}>
     <div className="workflow-dialog__body">
-      {capture && form && <>
+      {capture && form && !autoExtract && <>
         {library.workflows.some((item) => workflowVersions(item).length) && <label>保存位置
           <select className="form-control" value={workflow?.id ?? ""} disabled={Boolean(busy)} onChange={(event) => chooseTarget(event.target.value)}>
             <option value="">新建流程</option>
@@ -245,7 +295,7 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
               <option key={item.id} value={item.id}>{workflowVersions(item)[0].title}</option>)}
           </select>
         </label>}
-        <p className="workflow-location">保存到 <span title={displayPath(cwd)}>{displayPath(cwd)}</span></p>
+        <p className="workflow-location">适用工作区 <span title={displayPath(cwd)}>{displayPath(cwd)}</span></p>
         {extractionModels.length > 1 && <label>提取模型
           <select className="form-control" value={extractionModel} disabled={Boolean(busy)}
             onChange={(event) => setExtractionModel(event.target.value)}>
@@ -267,7 +317,28 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
             : "选择可用模型后可以提取，也可直接填写流程。"}</small>
         </div>
       </>}
-      {form ? <>
+      {capture && form && autoExtract && <>
+        <p className="workflow-location">适用工作区 <span title={displayPath(cwd)}>{displayPath(cwd)}</span></p>
+        {extractionModel && <small>提炼模型 · {modelDisplayName(extractionModel)}</small>}
+        {extractionModel && !busy && <details>
+          <summary>补充提炼依据</summary>
+          {extractionModels.length > 1 && <label>提炼模型
+            <select className="form-control" value={extractionModel} onChange={(event) => setExtractionModel(event.target.value)}>
+              {extractionModels.map((id) => <option key={id} value={id}>{modelDisplayName(id)}</option>)}
+            </select>
+          </label>}
+          <label>补充说明（选填）
+            <textarea className="form-control" rows={2} maxLength={1200} value={correction}
+              onChange={(event) => setCorrection(event.target.value)} />
+          </label>
+          <button type="button" className="capability-button" onClick={() => void extract()}>重新提炼</button>
+        </details>}
+        {!showEditor && !busy && <>
+          {error && <button type="button" className="capability-button" onClick={() => void extract()}>重试提炼</button>}
+          <button type="button" className="capability-button" onClick={() => setShowEditor(true)}>手动编写技能</button>
+        </>}
+      </>}
+      {form && showEditor ? <>
         <label>流程名称 <input className="form-control" value={form.title} maxLength={48}
           onChange={(event) => setForm({ ...form, title: event.target.value })} disabled={Boolean(busy)} /></label>
         <label>适用范围 <input className="form-control" value={form.description} maxLength={220}
@@ -276,7 +347,7 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
           onChange={(event) => setForm({ ...form, instructions: event.target.value })} disabled={Boolean(busy)} /></label>
         {workflow && <label>改动说明 <input className="form-control" value={form.change} maxLength={500}
           onChange={(event) => setForm({ ...form, change: event.target.value })} disabled={Boolean(busy)} /></label>}
-        <section className="workflow-cases" aria-label="验收用例">
+        {(!autoExtract || version) && <section className="workflow-cases" aria-label="验收用例">
           <h3>验收用例</h3>
           <p>用与本次来源不同的任务输入。验证会比较模型输出，可检查文字或 JSON，不会运行工具、连接器或写入文件。</p>
           {cases.map((item, index) => {
@@ -293,7 +364,7 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
           })}
           {cases.length < 6 && <button className="capability-button" type="button" disabled={Boolean(busy)}
             onClick={() => setCases([...cases, { input: "", expected: "", kind: "contains" }])}><Plus size={15} />添加用例</button>}
-        </section>
+        </section>}
       </> : version && workflow && <>
         <div className="workflow-detail__meta">
           <label>查看版本 <select className="form-control" value={version.number} disabled={Boolean(busy)}
@@ -303,7 +374,7 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
             </option>)}
           </select></label>
           <p>{version.description}</p>
-          <p>{version.source.runId ? "来源于定时任务" : "来源于对话任务"} · {new Date(version.createdAt).toLocaleString()}</p>
+          <p>{version.learned ? "自动学习" : version.source.runId ? "来源于定时任务" : "来源于对话任务"} · {new Date(version.createdAt).toLocaleString()}</p>
           {onOpenSource && <button className="capability-button" type="button" onClick={() => {
             onClose(); onOpenSource(version.source.sessionId, version.source.cwd ?? cwd);
           }}>查看来源会话</button>}
@@ -323,7 +394,7 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
         </p>}
         <EvalResults version={version} />
         {version.evaluation && !workflowPassed(version) && <small>生成改进时，模型会分析首个失败用例的输入、预期和实际输出。</small>}
-        {!version.cases.length && <small>添加验收用例并通过验证后，可以启用版本。</small>}
+        {!version.cases.length && <small>用于定时任务前，请编辑一个带验收用例的版本并验证模型输出。</small>}
       </>}
       {busy && <p role="status">{busy}…</p>}
       {notice && <p role="status">{notice}</p>}
@@ -332,7 +403,7 @@ function WorkflowEditor({ cwd, library, capture, workflow: initial, task, modelI
   </Modal>;
 }
 
-function WorkflowDialog(props: CommonProps & { capture: WorkflowCapture; correction?: string; onClose: () => void }) {
+export function WorkflowDialog(props: CommonProps & { capture: WorkflowCapture; correction?: string; autoExtract?: boolean; onClose: () => void }) {
   const [context, setContext] = useState<WorkflowCaptureContext>();
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -347,7 +418,7 @@ function WorkflowDialog(props: CommonProps & { capture: WorkflowCapture; correct
     });
     return () => { current = false; };
   }, [attempt]);
-  if (!context) return <Modal title="保存为可复用流程" onClose={props.onClose}>
+  if (!context) return <Modal title={props.autoExtract ? "从任务提炼技能" : "保存为可复用流程"} onClose={props.onClose}>
     <div className="workflow-dialog__body">
       {error ? <><p role="alert">{error}</p><button type="button" className="capability-button" onClick={() => setAttempt(attempt + 1)}>重试</button></>
         : <p role="status">正在读取任务来源…</p>}
@@ -356,9 +427,9 @@ function WorkflowDialog(props: CommonProps & { capture: WorkflowCapture; correct
   return <CaptureEditor {...props} capture={captureRef.current} cwd={context.cwd} context={context} />;
 }
 
-function CaptureEditor(props: CommonProps & { capture: WorkflowCapture; correction?: string; onClose: () => void; context: WorkflowCaptureContext }) {
+function CaptureEditor(props: CommonProps & { capture: WorkflowCapture; correction?: string; autoExtract?: boolean; onClose: () => void; context: WorkflowCaptureContext }) {
   const { snapshot, error, retry } = useLibrary(props.cwd);
-  if (!snapshot) return <Modal title="保存为可复用流程" onClose={props.onClose}>
+  if (!snapshot) return <Modal title={props.autoExtract ? "从任务提炼技能" : "保存为可复用流程"} onClose={props.onClose}>
     <div className="workflow-dialog__body">
       {error ? <><p role="alert">{error}</p><button type="button" className="capability-button" onClick={retry}>重试</button></>
         : <p role="status">正在读取工作区流程…</p>}
@@ -372,15 +443,11 @@ function CaptureEditor(props: CommonProps & { capture: WorkflowCapture; correcti
 }
 
 export function WorkflowCaptureAction(props: CommonProps & {
-  capture: WorkflowCapture; correction?: string; accepted?: number;
+  capture: WorkflowCapture; correction?: string;
 }) {
-  const { capture, accepted, cwd } = props;
+  const { capture, cwd } = props;
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState<WorkflowSourceMatch | null>(null);
-  const attempted = useRef<number>();
-  const [automaticError, setAutomaticError] = useState("");
-  const latest = useRef(props);
-  latest.current = props;
   const runId = capture.kind === "scheduled" ? capture.runId : undefined;
   const sessionId = capture.kind === "chat" ? capture.sessionId : undefined;
   const promptId = capture.kind === "chat" ? capture.promptId : undefined;
@@ -401,23 +468,29 @@ export function WorkflowCaptureAction(props: CommonProps & {
     }).catch(() => {});
     return () => { live = false; dispose?.(); };
   }, [cwd, runId, sessionId, promptId]);
-  useEffect(() => {
-    if (!accepted || attempted.current === accepted || open) return;
-    attempted.current = accepted;
-    const input = latest.current;
-    setAutomaticError("");
-    void workflowAutoDraft(input.capture, input.cwd, input.correction ?? "").catch((cause) => {
-      setAutomaticError(errorText(cause));
-    });
-  }, [accepted, open]);
   return <div className="workflow-capture">
-    {!saved && automaticError && <span role="status">自动提炼未完成。{automaticError}</span>}
     {saved && <span role="status">{sourceStatus[saved.status]}「{saved.title}」 · 版本 {saved.version}</span>}
     <button type="button" className="capability-button" onClick={() => setOpen(true)}><BookmarkPlus size={15} />
       {saved ? "查看流程" : "保存为可复用流程"}
     </button>
     {open && <WorkflowDialog {...props} onClose={() => setOpen(false)} />}
   </div>;
+}
+
+export function WorkflowSourceDialog({ source, onClose, ...props }: CommonProps & {
+  source: WorkflowSourceMatch;
+  onClose: () => void;
+}) {
+  const { snapshot, error, retry } = useLibrary(props.cwd);
+  const workflow = snapshot?.workflows.find((entry) => entry.id === source.workflowId);
+  if (snapshot && workflow && workflowVersions(workflow).some((version) => version.number === source.version)) return <WorkflowEditor {...props} library={snapshot} workflow={workflow}
+    initialVersionNumber={source.version} onClose={onClose} />;
+  return <Modal title={source.title} onClose={onClose}>
+    <div className="workflow-dialog__body">
+      {error ? <><p role="alert">{error}</p><button type="button" className="capability-button" onClick={retry}>重试</button></>
+        : <p role="status">{snapshot ? "此技能版本已不可用。" : "正在读取技能…"}</p>}
+    </div>
+  </Modal>;
 }
 
 export function WorkflowCollection({ cwd, onToast, onOpenSource }: CommonProps) {
@@ -456,29 +529,41 @@ function WorkspaceWorkflows({ cwd, onToast, onOpenSource }: CommonProps) {
   }, []);
   const visible = snapshot?.workflows.filter((workflow) => workflowVersions(workflow).length) ?? [];
   const workflow = snapshot?.workflows.find((entry) => entry.id === selected);
-  return <section className="workflow-collection" aria-label="可复用流程">
+  async function setAutomatic(enabled: boolean, conversation: boolean) {
+    setChanging(true);
+    setSettingError("");
+    try { await workflowSetAutomatic(cwd, enabled, conversation); retry(); }
+    catch (cause) { setSettingError(errorText(cause)); }
+    finally { setChanging(false); }
+  }
+  return <section className="workflow-collection" aria-label="可复用技能">
     {error && <p role="alert">{error} <button className="capability-button" type="button" onClick={retry}>重新读取</button></p>}
     {snapshot ? <>
       <label className="workflow-setting">
-        <input type="checkbox" checked={snapshot.automaticDrafts} disabled={changing} onChange={async (event) => {
-          const enabled = event.target.checked;
-          setChanging(true);
-          setSettingError("");
-          try { await workflowSetAutomatic(cwd, enabled); retry(); }
-          catch (cause) { setSettingError(errorText(cause)); }
-          finally { setChanging(false); }
-        }} /><span>根据任务反馈和定时失败自动提炼草稿
-          <small>会把任务文字、结果和相关反馈发送给来源任务的模型。已有验收用例时，会自动验证候选版本。</small></span>
+        <input type="checkbox" checked={Boolean(snapshot.automaticLearning)} disabled={changing}
+          onChange={(event) => void setAutomatic(event.target.checked, true)} />
+        <span>从对话自动学习技能
+          <small>任务结束后，相关请求、结果和执行步骤会交给当次任务的模型。低风险的新技能可自动启用，已有技能的修订需审阅后启用。</small></span>
       </label>
+      <details className="workflow-learning-settings">
+        <summary>定时任务设置</summary>
+        <label className="workflow-setting">
+          <input type="checkbox" checked={snapshot.automaticDrafts} disabled={changing}
+            onChange={(event) => void setAutomatic(event.target.checked, false)} />
+          <span>从定时任务的工具失败中提炼改进草稿
+            <small>使用来源任务的模型。已有验收用例时，会自动比较候选版本的模型输出。</small></span>
+        </label>
+      </details>
       {settingError && <p role="alert">{settingError}</p>}
       {visible.length ? <ul className="workflow-list">{visible.map((entry) => {
         const latest = workflowVersions(entry)[0];
         return <li key={entry.id}>
           <div><strong>{latest.title}</strong><p>{latest.description}</p>
-            <small>{entry.activeVersion ? `已启用版本 ${entry.activeVersion} · ` : ""}{workflowPassed(latest) ? "最新版模型输出已验证" : "有待验证草稿"}</small></div>
-          <button type="button" className="capability-button" onClick={() => setSelected(entry.id)}>查看流程</button>
+            <small>{entry.activeVersion ? `对话使用版本 ${entry.activeVersion}` : "未在对话中启用"}
+              {workflowPassed(latest) ? " · 最新版模型输出已验证" : entry.activeVersion !== latest.number ? " · 有待审阅版本" : ""}</small></div>
+          <button type="button" className="capability-button" onClick={() => setSelected(entry.id)}>查看技能</button>
         </li>;
-      })}</ul> : <p className="workflow-empty">还没有可复用流程。在已完成的任务结果里，可以保存做法并为它添加验收用例。</p>}
+      })}</ul> : <p className="workflow-empty">学到的工作方法会显示在这里。你也可以从已完成任务的回复菜单里主动提炼。</p>}
       {workflow && <WorkflowEditor key={workflow.id} cwd={cwd} workflow={workflow} library={snapshot} modelId={defaultModel}
         onToast={onToast} onOpenSource={onOpenSource} onClose={() => { setSelected(undefined); retry(); }} />}
     </> : !error && <p role="status">正在读取工作区流程…</p>}

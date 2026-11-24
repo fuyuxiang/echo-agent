@@ -1106,6 +1106,12 @@ mod tests {
             other => panic!("Expected FileNotFound, got {other:?}"),
         }
     }
+    const EXPECTED_MISSING_SOURCE_GUIDANCE: &str = "\nIf this is a required user-supplied source, \
+        check only the task's authorized inputs. If the source is still missing, ask the user to \
+        attach or locate it before analyzing its contents. Do not expand the search into unrelated \
+        projects or invent missing data. A missing source, denied access and a parse failure are \
+        different conditions.";
+
     #[tokio::test]
     async fn missing_skill_read_suggests_registered_path() {
         let tmp = TempDir::new().unwrap();
@@ -1126,7 +1132,7 @@ mod tests {
             msg,
             format!(
                 "Error: /wrong/root/skills/code-review/SKILL.md does not exist.\n\
-                 The skill you are looking for is registered at:\n{}",
+                 The skill you are looking for is registered at:\n{}{EXPECTED_MISSING_SOURCE_GUIDANCE}",
                 skill_path.display()
             )
         );
@@ -1157,9 +1163,11 @@ mod tests {
         let msg = not_found_msg(resources, "/wrong/root/review/SKILL.md").await;
         assert_eq!(
             msg,
-            "Error: /wrong/root/review/SKILL.md does not exist.\n\
-             The skill you are looking for is registered at:\n\
-             /display/project/.echo-agent/skills/review/SKILL.md"
+            format!(
+                "Error: /wrong/root/review/SKILL.md does not exist.\n\
+                 The skill you are looking for is registered at:\n\
+                 /display/project/.echo-agent/skills/review/SKILL.md{EXPECTED_MISSING_SOURCE_GUIDANCE}"
+            )
         );
     }
     #[tokio::test]
@@ -1190,7 +1198,7 @@ mod tests {
             msg,
             format!(
                 "Error: /wrong/root/review/SKILL.md does not exist.\n\
-                 Note: your current working directory is {}",
+                 Note: your current working directory is {}{EXPECTED_MISSING_SOURCE_GUIDANCE}",
                 tmp.path().display()
             )
         );
@@ -1211,7 +1219,7 @@ mod tests {
             msg,
             format!(
                 "Error: /wrong/root/review/SKILL.md does not exist.\n\
-                 Note: your current working directory is {}",
+                 Note: your current working directory is {}{EXPECTED_MISSING_SOURCE_GUIDANCE}",
                 tmp.path().display()
             )
         );
@@ -2467,10 +2475,7 @@ pub fn verify(req: &HttpRequest) -> Result<Claims, Error> {
         let result = run_read_file_on("huge.pdf", &data).await;
         match result {
             ReadFileOutput::FileReadError(msg) => {
-                assert!(
-                    msg.contains("exceeds") && msg.contains("MB"),
-                    "expected size limit error, got: {msg}"
-                );
+                assert_eq!(msg, "Document exceeds the 50 MiB parsing limit");
             }
             other => panic!("Expected FileReadError for oversized PDF, got {:?}", other),
         }

@@ -223,6 +223,9 @@ impl MvpAgent {
             inherited_workflow_skill: parent_handle.as_ref().and_then(|handle| {
                 handle.tool_context.pinned_workflow_skill.read().ok()?.clone()
             }),
+            suppress_workspace_workflows: parent_handle.as_ref().is_some_and(|handle| {
+                handle.tool_context.suppress_workspace_workflows.load(std::sync::atomic::Ordering::Acquire)
+            }),
             parent_host_project_context: ps.and_then(|parent| {
                 parent
                     .tool_context

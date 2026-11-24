@@ -13,6 +13,27 @@
   margin-block: 8px 12px;
 }
 
+.workflow-learning-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-block: 4px 8px;
+  color: var(--echo-text-secondary);
+  font-size: 13px;
+}
+
+.workflow-learning-note .btn {
+  min-height: 28px;
+  font-size: inherit;
+}
+
+.workflow-learning-settings > summary {
+  cursor: pointer;
+  color: var(--echo-text-secondary);
+  font-size: 13px;
+}
+
 .workflow-capture > span,
 .workflow-task-binding > span,
 .workflow-state {

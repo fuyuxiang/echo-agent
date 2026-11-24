@@ -327,9 +327,17 @@ export async function createStructuredPresentation(title, slides, output) {
     }
     const y = body ? 2.6 : 1.55, height = 6.9 - y;
     if (item.table) {
-      const rows = item.table;
-      ensure(Array.isArray(rows) && rows.length > 0 && rows.length <= 12 && Array.isArray(rows[0]) && rows[0].length > 0 && rows[0].length <= 8, "每页表格最多 12 行、8 列");
-      ensure(rows.every(row => Array.isArray(row) && row.length === rows[0].length && row.every(v => typeof v === "string" && v.length <= 90)), "表格必须为等宽文本行，每格最多 90 字");
+      const source = item.table;
+      const tableLabel = `第 ${index + 1} 页表格`;
+      ensure(Array.isArray(source) && source.length > 0 && source.length <= 12 && Array.isArray(source[0]) && source[0].length > 0 && source[0].length <= 8, `${tableLabel}需要 1–12 行、1–8 列`);
+      const rows = source.map((row, r) => {
+        ensure(Array.isArray(row) && row.length === source[0].length, `${tableLabel}第 ${r + 1} 行需要 ${source[0].length} 列`);
+        return row.map((value, col) => {
+          const cell = typeof value === "number" && Number.isFinite(value) ? String(value) : value;
+          ensure(typeof cell === "string" && cell.length <= 90, `${tableLabel}第 ${r + 1} 行第 ${col + 1} 列需要有限数字或最多 90 字的文本`);
+          return cell;
+        });
+      });
       const capacity = Math.max(1, Math.floor((11.9 / rows[0].length - 0.14) * 72 / 8));
       const rowHeights = rows.map(row => Math.max(0.38, ...row.map(cell => cell.split("\n").reduce((lines, line) => {
         const units = [...line].reduce((n, ch) => n + (/[^\u0000-\u007f]/.test(ch) ? 2 : 1), 0);
@@ -346,9 +354,16 @@ export async function createStructuredPresentation(title, slides, output) {
       ensure(["bar", "line"].includes(c.type) && Array.isArray(c.categories) && c.categories.length > 0 && c.categories.length <= 40
         && c.categories.every(v => typeof v === "string" && v.length <= 50), "图表支持 bar/line，最多 40 个分类");
       ensure(Array.isArray(c.series) && c.series.length > 0 && c.series.length <= 8, "图表需要 1–8 个系列");
-      const data = c.series.map(s => {
-        ensure(Array.isArray(s.values) && s.values.length === c.categories.length, "图表分类与数值长度不一致");
-        return { name: text(s.name, 100), labels: c.categories, values: s.values.map(numeric) };
+      const data = c.series.map((s, seriesIndex) => {
+        const label = `第 ${index + 1} 页图表第 ${seriesIndex + 1} 个系列`;
+        ensure(Array.isArray(s.values) && s.values.length === c.categories.length, `${label}需要 ${c.categories.length} 个数值，与分类一一对应`);
+        const values = s.values.map((value, point) => {
+          const number = typeof value === "string" && /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value.trim())
+            ? Number(value) : value;
+          ensure(typeof number === "number" && Number.isFinite(number), `${label}第 ${point + 1} 个值需要有限数字，例如 -5 或 6.5`);
+          return number;
+        });
+        return { name: text(s.name, 100), labels: c.categories, values };
       });
       slide.addChart(c.type === "bar" ? deck.ChartType.bar : deck.ChartType.line, data, {
         x: 0.7, y, w: 11.9, h: height, showLegend: true, showTitle: Boolean(c.title), title: c.title ? text(c.title, 100) : "",

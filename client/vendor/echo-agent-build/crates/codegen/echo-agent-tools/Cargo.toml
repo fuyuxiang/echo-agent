@@ -42,6 +42,7 @@ pdf_oxide = { workspace = true }
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 quick-xml = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
+jsonschema = { workspace = true }
 minijinja = { version = "2", features = ["custom_syntax"] }
 parking_lot = { workspace = true }
 htmd = { workspace = true }

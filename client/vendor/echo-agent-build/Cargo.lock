@@ -4732,6 +4732,7 @@ dependencies = [
  "image",
  "indexmap",
  "infer 0.19.0",
+ "jsonschema",
  "kamadak-exif",
  "libc",
  "minijinja",

@@ -57,7 +57,7 @@ impl SkillManager {
             if !owned_paths.insert(canonical.clone()) {
                 continue;
             }
-            if !skill.enabled || self.is_suppressed(&skill.name) {
+            if !skill.enabled || self.should_hide(skill) {
                 continue;
             }
             let Some(directory_name) = skill_name_from_path(&skill.path) else {

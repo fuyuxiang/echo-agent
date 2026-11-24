@@ -251,11 +251,10 @@ pub async fn skills_list(
     Ok(skills)
 }
 
-/// Internal form used by automations for execution-time capability checks.
-pub async fn skills_list_with_tx(
+pub(crate) async fn skills_config_with_tx(
     tx: &echo_agent_acp::AcpAgentTx,
     cwd: Option<String>,
-) -> Result<Vec<SkillInfo>, String> {
+) -> Result<(Vec<SkillInfo>, Vec<String>), String> {
     // Current EchoAgent builds require `cwd` and reject both null and a missing
     // field. Older builds also accept the explicit string, so always provide a
     // concrete fallback for calls made outside an active project/session.
@@ -267,7 +266,7 @@ pub async fn skills_list_with_tx(
     // EchoAgent build.
     let res: Result<SkillsListResponse, _> =
         call_ext(tx, "echo.agent/skills/config", params.clone()).await;
-    let (skills, configured_paths) = match res {
+    Ok(match res {
         Ok(v) => v.into_parts(),
         Err(_) => {
             let v: SkillsListResponse = call_ext(tx, "echo.agent/skills/list", params)
@@ -275,7 +274,15 @@ pub async fn skills_list_with_tx(
                 .map_err(|e| e.to_string())?;
             v.into_parts()
         }
-    };
+    })
+}
+
+/// Internal form used by automations for execution-time capability checks.
+pub async fn skills_list_with_tx(
+    tx: &echo_agent_acp::AcpAgentTx,
+    cwd: Option<String>,
+) -> Result<Vec<SkillInfo>, String> {
+    let (skills, configured_paths) = skills_config_with_tx(tx, cwd).await?;
     let organization_metadata = crate::org::managed_skills_metadata();
     // Connector readiness belongs to the host product because credentials stay
     // inside connector implementations. A Skill receives status, never secrets.

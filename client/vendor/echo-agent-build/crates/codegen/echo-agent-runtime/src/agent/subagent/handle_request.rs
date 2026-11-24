@@ -1110,6 +1110,7 @@ pub(crate) async fn run_shell_child(
         crate::session::StartupHints {
             inherited_turn_authority: ctx.parent_turn_authority.clone(),
             inherited_workflow_skill: ctx.inherited_workflow_skill.clone(),
+            suppress_workspace_workflows: ctx.suppress_workspace_workflows,
             inherited_prefix_len: Some(inherited_prefix_len),
             is_subagent: true,
             non_interactive: ctx.parent_non_interactive,

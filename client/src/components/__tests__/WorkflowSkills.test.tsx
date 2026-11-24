@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Automation } from "@/lib/types";
 import type { Workflow, WorkflowCapture, WorkflowVersion } from "@/lib/workflow-skills";
-import { WorkflowCaptureAction, WorkflowCollection, WorkflowTaskBinding } from "../workflow-skills/WorkflowSkills";
+import { WorkflowCaptureAction, WorkflowCollection, WorkflowDialog, WorkflowTaskBinding, useWorkflowConversationSources } from "../workflow-skills/WorkflowSkills";
 
 const { invoke, subscribe } = vi.hoisted(() => ({ invoke: vi.fn(), subscribe: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -138,6 +138,22 @@ describe("工作区可复用流程", () => {
     expect(screen.getByText(/当前版本使用 model 验证/)).toBeInTheDocument();
   });
 
+  it("禁止启用已有失败验收结果的版本", async () => {
+    const failed = { ...passed, evaluation: { ...passed.evaluation,
+      cases: passed.evaluation.cases.map(check => ({ ...check, candidatePassed: false })),
+    } };
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "workflow_skills_list") return {
+        workflows: [{ ...workflow, versions: [failed] }], automaticDrafts: false,
+      };
+      throw new Error(command);
+    });
+    render(<WorkflowCollection cwd={cwd} />);
+    fireEvent.click(await screen.findByRole("button", { name: "查看技能" }));
+    expect(screen.getByRole("button", { name: "在对话中启用" })).toBeDisabled();
+    expect(screen.getByText(/此版本未通过验证/)).toBeVisible();
+  });
+
   it("停用工作区技能后保留已验证版本", async () => {
     const published = { ...workflow, activeVersion: 1, versions: [passed] };
     invoke.mockImplementation(async (command: string) => {
@@ -146,9 +162,9 @@ describe("工作区可复用流程", () => {
       throw new Error(command);
     });
     render(<WorkflowCollection cwd={cwd} />);
-    fireEvent.click(await screen.findByRole("button", { name: "查看流程" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看技能" }));
     fireEvent.click(screen.getByRole("button", { name: "从技能库停用" }));
-    expect(await screen.findByRole("button", { name: "在技能库启用" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "在对话中启用" })).toBeEnabled();
     expect(invoke).toHaveBeenCalledWith("workflow_skills_activate", {
       cwd, id: workflow.id, version: null, expectedActive: 1,
     });
@@ -166,7 +182,7 @@ describe("工作区可复用流程", () => {
       throw new Error(command);
     });
     render(<WorkflowCollection cwd={cwd} />);
-    fireEvent.click(await screen.findByRole("button", { name: "查看流程" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看技能" }));
     fireEvent.click(screen.getByRole("button", { name: "根据验证改进" }));
     expect(await screen.findByDisplayValue(revision.instructions)).toBeInTheDocument();
     expect(screen.getByDisplayValue(version.cases[0].input)).toBeInTheDocument();
@@ -178,22 +194,42 @@ describe("工作区可复用流程", () => {
     });
   });
 
-  it("后台沉淀完成后在来源任务展示可查看的流程", async () => {
+  it("后台学习完成后刷新来源记录，读取记录不触发模型", async () => {
     let completed = false;
     invoke.mockImplementation(async (command: string) => {
-      if (command === "workflow_skills_find_source") {
-        return completed ? { title: procedure.title, version: 1, status: "draft" } : null;
+      if (command === "workflow_skills_conversation_sources") {
+        return completed ? { p: { workflowId: workflow.id, title: procedure.title, version: 1, status: "active" } } : {};
       }
-      if (command === "workflow_skills_auto_draft") return workflow;
       throw new Error(command);
     });
-    render(<WorkflowCaptureAction cwd={cwd} capture={{ kind: "chat", sessionId: "s", promptId: "p", request: "请求", result: "结果" }}
-      accepted={Date.now()} correction="用户确认的修订" />);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("workflow_skills_auto_draft",
-      { correction: "用户确认的修订", cwd, capture: { kind: "chat", sessionId: "s", promptId: "p", request: "请求", result: "结果" } }));
+    function Sources() {
+      const source = useWorkflowConversationSources(cwd, "s")?.p;
+      return source ? <span role="status">{source.title}</span> : null;
+    }
+    render(<Sources />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("workflow_skills_conversation_sources", { cwd, sessionId: "s" }));
+    expect(screen.queryByRole("status")).toBeNull();
     completed = true;
     await act(async () => subscribe.mock.calls[0]?.[1]());
-    expect(await screen.findByRole("button", { name: "查看流程" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("有流程草稿「销售数据整理」");
+    expect(await screen.findByRole("status")).toHaveTextContent(procedure.title);
+  });
+
+  it("主动提炼直接显示填好的技能，并能启用到对话", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "workflow_skills_capture_context": return { cwd, modelId: "model", runWorkflow: null };
+        case "workflow_skills_list": return { workflows: [], automaticDrafts: false };
+        case "workflow_skills_suggest": return procedure;
+        case "workflow_skills_save": return workflow;
+        case "workflow_skills_activate": return { ...workflow, activeVersion: 1 };
+        default: throw new Error(command);
+      }
+    });
+    render(<WorkflowDialog cwd={cwd} capture={{ kind: "chat", sessionId: "s", promptId: "p", request: "请求", result: "结果" }}
+      autoExtract onClose={() => {}} />);
+    expect(await screen.findByDisplayValue(procedure.title)).toBeVisible();
+    expect(screen.queryByLabelText("验收用例")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "保存并启用" }));
+    expect(await screen.findByText("技能已启用，可在此工作区的对话中使用")).toBeVisible();
   });
 });

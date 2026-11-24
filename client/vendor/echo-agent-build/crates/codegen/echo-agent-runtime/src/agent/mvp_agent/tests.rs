@@ -3343,6 +3343,16 @@ async fn prepare_video_gen_config_respects_feature_flag() {
         VideoGenConfig::Disabled
     ));
 }
+#[tokio::test(flavor = "current_thread")]
+async fn prepare_image_gen_config_disables_placeholder_endpoint() {
+    use echo_agent_tools::implementations::echo_agent_build::image_gen::ImageGenConfig;
+    let agent = build_minimal_agent_for_tests();
+    agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
+    agent.cfg.borrow_mut().endpoints.echo_agent_api_base_url =
+        crate::agent::config::ECHO_AGENT_API_BASE_URL_DEFAULT.to_string();
+    assert!(matches!(agent.prepare_image_gen_config(), ImageGenConfig::Disabled));
+}
+
 /// The imagine tier gate fails **open**: with no resolved auth we can't confirm
 /// a restricted personal tier, so the tools stay advertised and un-flagged (the
 /// server 429 remains the authoritative backstop). Guards against accidentally
@@ -3352,6 +3362,8 @@ async fn prepare_image_gen_config_fails_open_without_auth() {
     use echo_agent_tools::implementations::echo_agent_build::image_gen::ImageGenConfig;
     let agent = build_minimal_agent_for_tests();
     agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
+    agent.cfg.borrow_mut().endpoints.echo_agent_api_base_url =
+        "https://imagine.example.test/v1".to_string();
     let ImageGenConfig::Enabled {
         tier_restricted, ..
     } = agent.prepare_image_gen_config()
@@ -3372,6 +3384,8 @@ async fn prepare_image_gen_config_sends_client_identifier_header() {
     use echo_agent_tools::implementations::echo_agent_build::image_gen::ImageGenConfig;
     let agent = build_minimal_agent_for_tests();
     agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
+    agent.cfg.borrow_mut().endpoints.echo_agent_api_base_url =
+        "https://imagine.example.test/v1".to_string();
     let ImageGenConfig::Enabled { extra_headers, .. } = agent.prepare_image_gen_config() else {
         panic!("expected Enabled");
     };

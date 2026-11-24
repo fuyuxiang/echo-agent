@@ -78,17 +78,23 @@ function Review() {
   const [scope, setScope] = useState("attachment-review");
   const [draft, setDraft] = useState("请根据截图和文件优化方案，保留原有业务逻辑。");
   const [sent, setSent] = useState<{ text: string; paths: string[] } | null>(null);
-  const [edit, setEdit] = useState<{ text: string; paths: string[]; nonce: number }>();
+  const [editing, setEditing] = useState(false);
   return <main style={{ height: "100%", overflow: "auto", padding: "24px 16px", background: "var(--echo-bg-secondary)", color: "var(--echo-text-strong)" }}>
     <div style={{ maxWidth: 880, margin: "0 auto" }}>
-      <button type="button" onClick={() => setScope(current => current === "attachment-review" ? "other-review" : "attachment-review")}>切换任务</button>
+      <button type="button" onClick={() => {
+        setEditing(false);
+        setScope(current => current === "attachment-review" ? "other-review" : "attachment-review");
+      }}>切换任务</button>
       <h1 style={{ fontSize: "1.75rem", textAlign: "center", margin: "24px 0" }}>今天想完成什么？</h1>
       {sent && <div style={{ marginBottom: 24 }}><MessageItem message={{ id: "sent", role: "user", complete: true, parts: [{ kind: "text", text: sent.text }], attachments: sent.paths }}
-        streaming={false} cwd="/review" onEditResend={(text, files) => setEdit(previous => ({ text, paths: files, nonce: (previous?.nonce ?? 0) + 1 }))} /></div>}
+        streaming={false} cwd="/review" edit={{
+          active: editing, sendDisabled: false, onOpen: () => setEditing(true), onClose: () => setEditing(false),
+          onSend: (text, files) => { setSent({ text, paths: files }); return true; },
+        }} /></div>}
       <Composer streaming={false} onCancel={() => {}} draftKey={scope} draft={draft} onDraftChange={setDraft}
-        showMeta cwd="/review" externalText={edit?.text} externalAttachments={edit?.paths} externalTextNonce={edit?.nonce}
+        showMeta cwd="/review"
         onSend={(text, files) => { setSent({ text, paths: files ?? [] }); return true; }} />
     </div>
   </main>;
 }
-createRoot(document.getElementById("root")!).render(<ThemeProvider><Review /></ThemeProvider>);
+createRoot(document.getElementById("root")!).render(<ThemeProvider><div className="app"><Review /></div></ThemeProvider>);

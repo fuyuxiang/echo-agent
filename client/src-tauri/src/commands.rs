@@ -2337,12 +2337,13 @@ async fn agent_send_impl(
             );
         }
     }
-    let registration = match prepared_prompt
+    let admitted_prompt_id = prepared_prompt
         .meta
         .as_ref()
         .and_then(|m| m.get("promptId"))
         .and_then(serde_json::Value::as_str)
-    {
+        .map(str::to_owned);
+    let registration = match admitted_prompt_id.as_deref() {
         Some(run_id) if !withdrawn() => {
             crate::org::record_project_run(&app, &session_id, run_id, "running", None).await
         }
@@ -2392,7 +2393,25 @@ async fn agent_send_impl(
             crate::automation::prompt_turn_finished(&session_id, generation).await;
         }
     }
-    result
+    if let (Ok(response), Some(prompt)) = (result.as_ref(), admitted_prompt_id) {
+        if !withdrawn()
+            && weixin.is_none()
+            && mode.as_deref() != Some("plan")
+            && !crate::automations::owns_session(&session_id)
+            && agent_runtime::completion_from_prompt_response(response.clone(), &session_id, &prompt)
+                .is_ok_and(|completion| {
+                    crate::bridge::completion_disposition(&completion)
+                        == crate::bridge::CompletionDisposition::Success
+                })
+        {
+            let request = display_text.unwrap_or(text);
+            tokio::spawn(async move {
+                crate::workflow_skills::review_chat_turn(&app, workspace, session_id, prompt, request)
+                    .await;
+            });
+        }
+    }
+    result.map(|_| ())
 }
 
 #[tauri::command]

@@ -104,6 +104,7 @@ export interface ToolCallView {
   status: "in_progress" | "completed" | "failed";
   content: ToolCallContent[];
   rawInput?: unknown;
+  mcpError?: string;
   /** Native Office receipt derived from the Runtime's trusted MCP rawOutput. */
   officeReceipt?: DocumentExportReceipt;
 }
@@ -330,6 +331,13 @@ const TRUNCATED_OUTPUT_MARKER = "\n\n… 输出过大，已停止在界面中继
 function boundedString(value: unknown, maxChars: number): string {
   if (typeof value !== "string") return "";
   return value.length <= maxChars ? value : value.slice(0, maxChars);
+}
+
+function mcpErrorFromRawOutput(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || !("type" in value) || value.type !== "MCP") return;
+  const output = "output" in value ? value.output : undefined;
+  if (!output || typeof output !== "object" || !("Error" in output)) return;
+  return boundedString(output.Error, MAX_TOOL_TEXT_CHARS).trim() || undefined;
 }
 
 function boundedRawInput(value: unknown): unknown {
@@ -1811,7 +1819,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
             // ACP omits `kind` when it's "other" and `status` when it's
             // "pending" (the defaults). Provide sensible fallbacks.
             const status = (raw.status as string) || "in_progress";
-            const officeReceipt = officeReceiptFromRawOutput(raw.rawOutput ?? raw.raw_output);
+            const rawOutput = raw.rawOutput ?? raw.raw_output;
+            const officeReceipt = officeReceiptFromRawOutput(rawOutput);
             const toolCallId = boundedString(raw.toolCallId ?? raw.tool_call_id, 4_096);
             const pendingSource = tr.pendingBackgroundTasks?.find(source => source.toolCallId === toolCallId);
             const view: ToolCallView = {
@@ -1829,12 +1838,13 @@ export const useSessionStore = create<SessionState>((set, get) => {
                 ? typeof updateMeta?.agentTimestampMs === "number" ? updateMeta.agentTimestampMs : isReplay ? undefined : Date.now()
                 : undefined,
               content: [
-                ...(knowledgeToolContent(raw.rawOutput ?? raw.raw_output) ?? normalizeToolCallContent(raw.content)),
+                ...(knowledgeToolContent(rawOutput) ?? normalizeToolCallContent(raw.content)),
                 ...(officeReceipt ? [{ type: "text" as const, text: JSON.stringify(officeReceipt) }] : []),
               ],
               rawInput: boundedRawInput(raw.rawInput ?? raw.raw_input),
+              mcpError: mcpErrorFromRawOutput(rawOutput),
               officeReceipt: officeReceipt ?? undefined,
-              documentProgress: documentProgressFromRawOutput(raw.rawOutput ?? raw.raw_output),
+              documentProgress: documentProgressFromRawOutput(rawOutput),
             };
             const nextMessages = messages === tr.messages ? messages.slice() : messages;
             nextMessages[index] = upsertToolCall(messages[index], view, streamId, tr.executionStageTitle);
@@ -1874,9 +1884,13 @@ export const useSessionStore = create<SessionState>((set, get) => {
                 deltaFields.content
               );
             }
-            const officeReceipt = officeReceiptFromRawOutput(raw.rawOutput ?? raw.raw_output);
-            const documentProgress = documentProgressFromRawOutput(raw.rawOutput ?? raw.raw_output);
-            const knowledgeContent = knowledgeToolContent(raw.rawOutput ?? raw.raw_output);
+            const rawOutput = raw.rawOutput ?? raw.raw_output;
+            const officeReceipt = officeReceiptFromRawOutput(rawOutput);
+            const documentProgress = documentProgressFromRawOutput(rawOutput);
+            const knowledgeContent = knowledgeToolContent(rawOutput);
+            if (raw.rawOutput !== undefined || raw.raw_output !== undefined) {
+              deltaFields.mcpError = mcpErrorFromRawOutput(rawOutput);
+            }
             if (knowledgeContent) deltaFields.content = knowledgeContent;
             if (documentProgress) deltaFields.documentProgress = documentProgress;
             if (officeReceipt) {

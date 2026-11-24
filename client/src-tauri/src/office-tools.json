@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "office_create",
-      "description": "Create real docx/pdf/xlsx/pptx using the bundled local generator; do not install Python or converters. Use markdown for basic exports, workbook for formulas/charts, or slides for an exact slide count (include the cover in the list). outputPath is relative to the task workspace, or an absolute path inside it; always honor the user's output directory/name. Never overwrites existing files. Reuse requestId for retries. Returns a verified file receipt, not proof of factual correctness. Formulas: arithmetic, comparisons, SUM/AVERAGE/MIN/MAX/COUNT/ROUND/IF/IFERROR, local/cross-sheet references. No external workbooks. Document generation is a file operation and does not require desktop mode. For content checks use office_verify; do not call automation_begin just to generate or verify a document.",
+      "description": "Create real docx/pdf/xlsx/pptx using the bundled local generator; do not install Python or converters. Supply title and format at the top level. Use markdown for basic exports, workbook for Excel formulas/charts, or slides for PPTX with an exact page count or native tables/charts. PPTX example: {\"title\":\"Overview\",\"format\":\"pptx\",\"slides\":[{\"title\":\"Cover\",\"body\":\"Summary\"}]}. Include the cover in slides and put each page's body, table, or chart inside its slide object. A basic deck can be generated in one call; if validation fails, correct the reported fields in the requested deck. outputPath is relative to the task workspace, or an absolute path inside it; always honor the user's output directory/name. Never overwrites existing files. Reuse requestId for retries. Returns a verified file receipt, not proof of factual correctness. Formulas: arithmetic, comparisons, SUM/AVERAGE/MIN/MAX/COUNT/ROUND/IF/IFERROR, local/cross-sheet references. No external workbooks. Document generation is a file operation and does not require desktop mode. For content checks use office_verify; do not call automation_begin just to generate or verify a document.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -162,6 +162,7 @@
           },
           "slides": {
             "type": "array",
+            "description": "PPTX pages in order including the cover. Each slide can have one native table or chart.",
             "minItems": 1,
             "maxItems": 100,
             "items": {
@@ -180,12 +181,15 @@
                 },
                 "table": {
                   "type": "array",
+                  "description": "Rows of text or numeric cells with the same number of columns; the first row is the header.",
+                  "minItems": 1,
                   "maxItems": 12,
                   "items": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 8,
                     "items": {
-                      "type": "string",
+                      "type": ["string", "number"],
                       "maxLength": 90
                     }
                   }
@@ -230,8 +234,10 @@
                           },
                           "values": {
                             "type": "array",
+                            "description": "One finite number per category, including negative and fractional values. Example: [-5, 6.5]. Plain decimal numeric strings are also accepted.",
                             "items": {
-                              "type": "number"
+                              "type": ["number", "string"],
+                              "pattern": "^\\s*-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\s*$"
                             }
                           }
                         }

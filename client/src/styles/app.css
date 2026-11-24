@@ -572,6 +572,54 @@
 .msg__bubble--with-attachments {
   min-width: min(320px, 68vw);
 }
+.msg__inline-edit {
+  display: inline-flex;
+  flex-direction: column;
+  width: min(100%, 30rem);
+  box-sizing: border-box;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: var(--echo-radius-dialog);
+  background: var(--echo-surface-raised);
+  text-align: left;
+  vertical-align: top;
+}
+.msg__inline-edit:has(.msg__inline-edit-input:focus) {
+  border-color: var(--echo-border-control);
+}
+.msg__inline-edit-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(1.65em + 4px);
+  max-height: min(40vh, 16rem);
+  padding: 2px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--echo-text-strong);
+  font: inherit;
+  font-size: .9375rem;
+  line-height: 1.65;
+  overflow-y: auto;
+  resize: none;
+}
+.msg__inline-edit-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.msg__inline-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.msg__inline-edit-error {
+  color: var(--echo-text-secondary);
+  font-size: .8125rem;
+}
 .msg__attachments {
   display: flex;
   flex-direction: column;
@@ -2202,11 +2250,6 @@
   line-height: var(--echo-process-line-height);
 }
 .msg__writing { margin-top: 8px; }
-.msg__memory-reference {
-  margin: 6px 0 0;
-  color: var(--echo-text-secondary);
-  font-size: 0.75rem;
-}
 .execution-process__status,
 .msg__writing > span {
   flex: none;
@@ -2401,6 +2444,9 @@
 }
 .execution-process__more:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 .execution-process__more:focus-visible { outline: 2px solid var(--echo-brand); outline-offset: 2px; }
+.execution-process__memory { margin: 8px 0 0 17px; color: var(--echo-text-secondary); font-size: .8125rem; line-height: 1.7; }
+.execution-process__memory p { margin: 0; }
+.execution-process__memory ul { margin: 0; padding-inline-start: 20px; overflow-wrap: anywhere; }
 .execution-process__attention { margin: 8px 0 0 17px; color: var(--echo-color-text-warning-default); font-size: .8125rem; line-height: 1.7; }
 .execution-process__native-status { margin: 8px 0 0 17px; color: var(--echo-text-medium); font-size: .8125rem; line-height: 1.7; overflow-wrap: anywhere; }
 .execution-process__native-status:not([data-phase="completed"]) { color: var(--echo-color-text-warning-default); }

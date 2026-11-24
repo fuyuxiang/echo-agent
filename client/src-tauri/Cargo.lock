@@ -3992,6 +3992,7 @@ dependencies = [
  "image",
  "indexmap 2.14.0",
  "infer 0.19.0",
+ "jsonschema",
  "libc",
  "minijinja",
  "nix 0.30.1",

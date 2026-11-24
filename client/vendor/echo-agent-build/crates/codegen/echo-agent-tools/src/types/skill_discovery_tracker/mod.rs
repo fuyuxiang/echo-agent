@@ -90,6 +90,7 @@ pub struct SkillManager {
     /// A desktop automation turn supplies its immutable revision in-band.
     /// Hide the mutable catalog entry of that same skill for the turn.
     suppressed_skill: Option<String>,
+    suppress_workspace_workflows: bool,
 
     /// Directories already stat'd (prevents re-checking on future tool calls).
     pub checked_dirs: HashSet<PathBuf>,
@@ -409,11 +410,12 @@ impl SkillManager {
         self.add_discovered(newly)
     }
 
-    pub(crate) fn suppress_skill(&mut self, name: Option<String>) -> bool {
-        if self.suppressed_skill == name {
+    pub(crate) fn suppress_skill(&mut self, name: Option<String>, workspace_workflows: bool) -> bool {
+        if self.suppressed_skill == name && self.suppress_workspace_workflows == workspace_workflows {
             return false;
         }
         self.suppressed_skill = name;
+        self.suppress_workspace_workflows = workspace_workflows;
         self.pending = Some(PendingKind::BaselineChange);
         true
     }
@@ -423,12 +425,21 @@ impl SkillManager {
     }
 
     pub(crate) fn is_suppressed_path(&self, path: &std::path::Path) -> bool {
-        let Some(name) = self.suppressed_skill.as_deref() else { return false; };
+        if self.suppressed_skill.is_none() && !self.suppress_workspace_workflows {
+            return false;
+        }
         let home = crate::util::echo_agent_home::echo_agent_home();
         let library = home.join("workflow-library");
-        let library = dunce::canonicalize(&library).unwrap_or(library);
-        path.starts_with(library) && path.parent().and_then(|parent| parent.file_name())
-            .is_some_and(|directory| directory == name)
+        let in_library = path.starts_with(&library)
+            || dunce::canonicalize(&library).is_ok_and(|canonical| path.starts_with(canonical));
+        in_library && (self.suppress_workspace_workflows
+            || path.parent().and_then(|parent| parent.file_name())
+                .is_some_and(|directory| self.suppressed_skill.as_deref().is_some_and(|name| directory == name)))
+    }
+
+    fn should_hide(&self, skill: &SkillInfo) -> bool {
+        self.is_suppressed(&skill.name)
+            || (self.suppress_workspace_workflows && self.is_suppressed_path(std::path::Path::new(&skill.path)))
     }
 
     /// Drain the pending reconciliation, computing projections internally
@@ -446,7 +457,7 @@ impl SkillManager {
         let pending = self.pending.take()?;
 
         let mut runtime_skills = dedup_by_canonical_path(&self.discovered_skills, &self.startup_skills);
-        runtime_skills.retain(|skill| !self.is_suppressed(&skill.name));
+        runtime_skills.retain(|skill| !self.should_hide(skill));
 
         let kind = match pending {
             PendingKind::Discovery => SkillUpdateKind::Discovery,
@@ -467,9 +478,9 @@ impl SkillManager {
         };
         let skills = skills_owned.as_deref().unwrap_or(&self.discovered_skills);
         let filtered;
-        let skills = if self.suppressed_skill.is_some() {
+        let skills = if self.suppressed_skill.is_some() || self.suppress_workspace_workflows {
             filtered = skills.iter()
-                .filter(|skill| !self.is_suppressed(&skill.name))
+                .filter(|skill| !self.should_hide(skill))
                 .cloned()
                 .collect::<Vec<_>>();
             &filtered
@@ -510,7 +521,7 @@ impl SkillManager {
     /// for slash command advertisement.
     pub fn slash_skills(&self) -> Vec<SkillInfo> {
         let mut skills = dedupe_by_canonical_path_and_name(&self.discovered_skills, &self.startup_skills);
-        skills.retain(|skill| !self.is_suppressed(&skill.name));
+        skills.retain(|skill| !self.should_hide(skill));
         skills
     }
 
@@ -637,15 +648,32 @@ mod tests {
             make_skill("echo-workflow-preview", "/original/SKILL.md"),
             make_skill("ordinary", "/ordinary/SKILL.md"),
         ], None, None, None);
-        assert!(manager.suppress_skill(Some("echo-workflow-preview".into())));
+        assert!(manager.suppress_skill(Some("echo-workflow-preview".into()), false));
         let first = manager.take_pending_reconciliation().unwrap();
         assert_eq!(first.runtime_skills.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(), ["ordinary"]);
         assert!(!first.effects.system_reminder.unwrap_or_default().contains("echo-workflow-preview"));
         manager.update_startup_baseline(vec![make_skill("echo-workflow-preview", "/updated/SKILL.md")]);
         assert!(manager.take_pending_reconciliation().unwrap().runtime_skills.is_empty());
         assert!(manager.slash_skills().is_empty());
-        assert!(manager.suppress_skill(None));
+        assert!(manager.suppress_skill(None, false));
         assert_eq!(manager.take_pending_reconciliation().unwrap().runtime_skills[0].path, "/updated/SKILL.md");
+    }
+
+    #[test]
+    fn scheduled_turn_uses_bound_instructions_without_other_workflow_skills() {
+        let home = crate::util::echo_agent_home::echo_agent_home();
+        let workflow = home.join("workflow-library/workspace/skills/echo-workflow-example/SKILL.md");
+        let mut manager = SkillManager::new();
+        manager.seed(None, None, vec![
+            make_skill("echo-workflow-example", workflow.to_str().unwrap()),
+            make_skill("ordinary", "/ordinary/SKILL.md"),
+        ], None, None, None);
+        assert!(manager.suppress_skill(None, true));
+        assert!(manager.is_suppressed_path(&workflow));
+        let scheduled = manager.take_pending_reconciliation().unwrap();
+        assert_eq!(scheduled.runtime_skills.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(), ["ordinary"]);
+        assert!(manager.suppress_skill(None, false));
+        assert_eq!(manager.take_pending_reconciliation().unwrap().runtime_skills.len(), 2);
     }
 
     #[test]

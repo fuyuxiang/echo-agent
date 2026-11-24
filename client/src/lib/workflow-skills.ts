@@ -51,6 +51,7 @@ export interface WorkflowVersion extends WorkflowDraft {
   cases: WorkflowCase[];
   evaluation?: { modelId: string; checkedAt: string; cases: WorkflowCheck[] } | null;
   dismissed?: boolean;
+  learned?: boolean;
 }
 
 export interface Workflow {
@@ -62,6 +63,7 @@ export interface Workflow {
 export interface WorkflowLibrarySnapshot {
   workflows: Workflow[];
   automaticDrafts: boolean;
+  automaticLearning?: boolean;
 }
 
 export interface WorkflowSave {
@@ -99,18 +101,23 @@ export const workflowWorkspaces = () => invoke<string[]>("workflow_skills_worksp
 export const workflowLibrary = (cwd: string) =>
   invoke<WorkflowLibrarySnapshot>("workflow_skills_list", { cwd });
 export interface WorkflowSourceMatch {
+  workflowId: string;
   version: number;
   title: string;
   status: "draft" | "verified" | "active";
+  learned?: boolean;
+  revision?: boolean;
 }
+export const workflowConversationSources = (cwd: string, sessionId: string) =>
+  invoke<Record<string, WorkflowSourceMatch>>("workflow_skills_conversation_sources", { cwd, sessionId });
 export const workflowFindSource = (cwd: string, runId?: string, sessionId?: string, promptId?: string) =>
   invoke<WorkflowSourceMatch | null>("workflow_skills_find_source", {
     cwd, runId: runId ?? null, sessionId: sessionId ?? null, promptId: promptId ?? null,
   });
 export const listenWorkflowLibrary = (callback: () => void) =>
   listen("workflow-skills://changed", callback);
-export const workflowSetAutomatic = (cwd: string, enabled: boolean) =>
-  invoke<void>("workflow_skills_set_automatic", { cwd, enabled });
+export const workflowSetAutomatic = (cwd: string, enabled: boolean, conversation = false) =>
+  invoke<void>("workflow_skills_set_automatic", { cwd, enabled, conversation });
 export const workflowSuggest = (capture: WorkflowCapture, correction: string, modelId?: string,
   workflowId?: string, baseVersion?: number | null) =>
   invoke<WorkflowDraft | null>("workflow_skills_suggest", {
@@ -118,8 +125,6 @@ export const workflowSuggest = (capture: WorkflowCapture, correction: string, mo
   });
 export const workflowSuggestRevision = (cwd: string, id: string, version: number) =>
   invoke<WorkflowDraft | null>("workflow_skills_suggest_revision", { cwd, id, version });
-export const workflowAutoDraft = (capture: WorkflowCapture, cwd: string, correction: string) =>
-  invoke<Workflow | null>("workflow_skills_auto_draft", { capture, cwd, correction });
 export const workflowSave = (capture: WorkflowCapture, input: WorkflowSave) =>
   invoke<Workflow>("workflow_skills_save", { capture, input });
 export const workflowRevise = (cwd: string, sourceVersion: number, input: WorkflowSave) =>

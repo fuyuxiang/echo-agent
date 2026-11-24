@@ -2236,7 +2236,19 @@ impl MvpAgent {
         };
         let tier_restricted = self.is_tier_restricted_capability();
         let cfg = self.cfg.borrow();
-        let base_url = cfg.endpoints.echo_agent_api_base_url.clone();
+        let base_url = &cfg.endpoints.echo_agent_api_base_url;
+        let Ok(endpoint) = url::Url::parse(base_url) else {
+            return ImageGenConfig::Disabled;
+        };
+        // A model API key does not make the bundled placeholder an image service.
+        if !matches!(endpoint.scheme(), "http" | "https")
+            || endpoint.host_str().is_none_or(|host| {
+                let host = host.trim_end_matches('.');
+                host == "invalid" || host.ends_with(".invalid")
+            })
+        {
+            return ImageGenConfig::Disabled;
+        }
         let version = cfg
             .client_version
             .clone()
@@ -2248,11 +2260,11 @@ impl MvpAgent {
             &mut headers,
             cfg.client_version.as_deref(),
             alpha_test_key.as_deref(),
-            &base_url,
+            base_url,
         );
         ImageGenConfig::Enabled {
             api_key: api_key.clone(),
-            base_url,
+            base_url: base_url.clone(),
             extra_headers: headers,
             image_gen_enabled: cfg.resolve_image_gen().value,
             image_edit_enabled: cfg.resolve_image_edit().value,

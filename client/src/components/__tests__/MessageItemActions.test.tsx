@@ -102,13 +102,17 @@ describe("assistant message actions", () => {
   it.each([
     { scenario: "实时回复", streaming: true },
     { scenario: "历史回复", streaming: false },
-  ])("$scenario提示使用了记忆，并隐藏内部标识", ({ streaming }) => {
+  ])("$scenario只在执行详情中显示可读的记忆引用", ({ streaming }) => {
     const memorySources = ["memory-entry-id", "workspace/REMEMBERED.md · 1–9"];
     renderMessage({ ...completedMessage, complete: !streaming, memorySources }, { streaming });
     expect(screen.getByText("第二段")).toBeVisible();
-    expect(screen.getByText("本轮参考了记忆")).toBeVisible();
+    expect(screen.queryByText("本轮参考了记忆")).toBeNull();
     expect(screen.queryByText(/本轮参考了.*记忆来源/)).toBeNull();
     for (const source of memorySources) expect(screen.queryByText(source)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /展开过程|查看过程/ }));
+    expect(screen.getByText("本轮参考了 2 项记忆来源")).toBeVisible();
+    expect(screen.getByText(memorySources[1])).toBeVisible();
+    expect(screen.queryByText(memorySources[0])).toBeNull();
   });
 
   it("回复操作栏可以从当前轮次在新对话中继续，并说明禁用原因", () => {

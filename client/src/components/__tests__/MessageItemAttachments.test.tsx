@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { ThemeProvider } from "../ThemeProvider";
 import { MessageItem } from "../MessageItem";
 import type { ChatMessage } from "@/stores/session-store";
@@ -23,17 +24,19 @@ const message: ChatMessage = {
   complete: true,
 };
 
-function renderMessage(onEditResend = vi.fn()) {
+function renderMessage(onSendEdit = vi.fn()) {
+  function EditableMessage() {
+    const [active, setActive] = useState(false);
+    return <MessageItem message={message} streaming={false} cwd="/tmp" edit={{
+      active, sendDisabled: false, onOpen: () => setActive(true), onClose: () => setActive(false),
+      onSend: onSendEdit,
+    }} />;
+  }
   return {
-    onEditResend,
+    onSendEdit,
     ...render(
       <ThemeProvider>
-        <MessageItem
-          message={message}
-          streaming={false}
-          cwd="/tmp"
-          onEditResend={onEditResend}
-        />
+        <EditableMessage />
       </ThemeProvider>,
     ),
   };
@@ -70,14 +73,37 @@ describe("MessageItem user attachments", () => {
     });
   });
 
-  it("编辑重发同时传回文本和附件", () => {
-    const onEditResend = vi.fn();
-    renderMessage(onEditResend);
-    fireEvent.click(screen.getByRole("button", { name: "编辑并重新发送" }));
-    expect(onEditResend).toHaveBeenCalledWith(
-      "请优化这份方案",
+  it("在原消息中编辑，发送时保留原有附件", async () => {
+    const onSendEdit = vi.fn();
+    renderMessage(onSendEdit);
+    fireEvent.click(screen.getByRole("button", { name: "编辑消息" }));
+    const field = screen.getByRole("textbox", { name: "编辑消息内容" });
+    expect(field).toHaveValue("请优化这份方案");
+    expect(field).toHaveFocus();
+    fireEvent.change(field, { target: { value: "请先梳理风险" } });
+    expect(onSendEdit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "作为新消息发送" }));
+    expect(onSendEdit).toHaveBeenCalledWith(
+      "请先梳理风险",
       ["/tmp/AI数据集平台-数据回流方案.docx"],
     );
+    await waitFor(() => expect(field).not.toBeInTheDocument());
+  });
+
+  it("失败时保留编辑内容，取消后恢复消息和焦点", async () => {
+    const onSendEdit = vi.fn().mockResolvedValue(false);
+    renderMessage(onSendEdit);
+    fireEvent.click(screen.getByRole("button", { name: "编辑消息" }));
+    const field = screen.getByRole("textbox", { name: "编辑消息内容" });
+    fireEvent.change(field, { target: { value: "还需要核对数据" } });
+    fireEvent.keyDown(field, { key: "Enter", ctrlKey: true, isComposing: true });
+    expect(onSendEdit).not.toHaveBeenCalled();
+    fireEvent.keyDown(field, { key: "Enter", ctrlKey: true });
+    expect(await screen.findByRole("alert")).toHaveTextContent("发送未完成");
+    expect(field).toHaveValue("还需要核对数据");
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(screen.getByText("请优化这份方案")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "编辑消息" })).toHaveFocus();
   });
 
   it("图片附件懒加载缩略图，点击后预览原图", async () => {

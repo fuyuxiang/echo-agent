@@ -206,7 +206,7 @@ impl super::LspBackend for LspBackendAdapter {
     async fn drain_diagnostics(
         &self,
         timeout: std::time::Duration,
-    ) -> Option<super::manager::DiagnosticsSummary> {
+    ) -> Option<super::DiagnosticsSummary> {
         if !self.is_ready() {
             return None;
         }

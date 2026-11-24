@@ -3461,6 +3461,8 @@ pub struct AutomationRunResult {
     source_model: Option<String>,
     #[serde(skip)]
     tool_failures: Vec<String>,
+    #[serde(skip)]
+    completed_steps: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -3535,6 +3537,7 @@ fn result_from_reader(
             progress: None,
             source_model: None,
             tool_failures: Vec::new(),
+            completed_steps: Vec::new(),
         });
     }
     let mut line = Vec::new();
@@ -3596,8 +3599,10 @@ fn result_from_reader(
             .get("sessionUpdate")
             .and_then(serde_json::Value::as_str);
         if kind == Some("user_message_chunk") {
-            let model = meta
-                .and_then(|m| m.get("modelId"))
+            let model = update
+                .pointer("/_meta/configuredModelId")
+                .or_else(|| meta.and_then(|m| m.get("configuredModelId")))
+                .or_else(|| meta.and_then(|m| m.get("modelId")))
                 .or_else(|| update.pointer("/content/_meta/modelId"))
                 .and_then(serde_json::Value::as_str)
                 .filter(|id| !id.is_empty() && id.len() <= 512);
@@ -3711,8 +3716,10 @@ fn result_from_reader(
         .filter(|tool| !matches!(tool.status.as_str(), "completed" | "failed"))
         .max_by_key(|tool| tool.order)
         .map(|tool| tool.title.clone());
+    let mut completed: Vec<_> = tools.values().filter(|tool| tool.status == "completed").collect();
+    completed.sort_unstable_by_key(|tool| tool.order);
     let mut completed_orders = HashMap::<&str, usize>::new();
-    for tool in tools.values().filter(|tool| tool.status == "completed") {
+    for tool in &completed {
         let order = completed_orders.entry(&tool.title).or_default();
         *order = (*order).max(tool.order);
     }
@@ -3748,6 +3755,11 @@ fn result_from_reader(
             source_model
         },
         tool_failures,
+        completed_steps: completed
+            .into_iter()
+            .take(24)
+            .map(|tool| tool.title.clone())
+            .collect(),
     })
 }
 
@@ -3784,6 +3796,7 @@ fn read_record_result(record: &AutomationRunRecord) -> Result<AutomationRunResul
             progress: None,
             source_model: None,
             tool_failures: Vec::new(),
+            completed_steps: Vec::new(),
         });
     };
     read_prompt_result(
@@ -3801,6 +3814,34 @@ pub(crate) fn workflow_prompt_model(
     read_prompt_result(session_id, cwd.to_str(), Some(prompt_id))
         .ok()?
         .source_model
+}
+
+pub(crate) fn workflow_chat_evidence(
+    cwd: PathBuf,
+    session_id: String,
+    prompt_id: String,
+    request: String,
+) -> Result<(workflow_skills::Evidence, Vec<String>, bool), String> {
+    let result = read_prompt_result(&session_id, cwd.to_str(), Some(&prompt_id))?;
+    Ok((
+        workflow_skills::Evidence {
+            source: workflow_skills::WorkflowSource {
+                session_id,
+                prompt_id,
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+                run_id: None,
+                automation_id: None,
+            },
+            cwd,
+            model_id: result.source_model,
+            request,
+            result: result.text,
+            run_workflow: None,
+            tool_failures: result.tool_failures,
+        },
+        result.completed_steps,
+        result.truncated,
+    ))
 }
 
 fn read_prompt_result(
@@ -7402,8 +7443,9 @@ mod tests {
         let rows = [
             serde_json::json!({"params":{"_meta":{"promptId":"older","modelId":"old-provider"},
                 "update":{"sessionUpdate":"user_message_chunk"}}}),
-            serde_json::json!({"params":{"_meta":{"promptId":"current","modelId":"source-provider"},
-                "update":{"sessionUpdate":"user_message_chunk"}}}),
+            serde_json::json!({"params":{"_meta":{"promptId":"current"},
+                "update":{"sessionUpdate":"user_message_chunk",
+                    "_meta":{"modelId":"remote-model","configuredModelId":"source-provider"}}}}),
             serde_json::json!({"params":{"_meta":{"promptId":"current"},
                 "update":{"sessionUpdate":"tool_call","toolCallId":"first","title":"读取数据",
                    "status":"failed","rawOutput":{"error":{"message":"字段缺失"}}}}}),
@@ -7423,6 +7465,7 @@ mod tests {
             );
         let result = result_from_updates(updates.as_bytes(), Some("current"));
         assert_eq!(result.source_model.as_deref(), Some("source-provider"));
+        assert_eq!(result.completed_steps, ["读取数据"]);
         assert_eq!(result.tool_failures, ["写入报告：格式不兼容"]);
     }
 

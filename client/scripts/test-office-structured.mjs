@@ -11,11 +11,14 @@ import { createStructuredWorkbook, createStructuredPresentation } from "./office
 const directory = await mkdtemp(join(tmpdir(), "echo-structured-office-test-"));
 const root = resolve(import.meta.dirname, "..");
 const stagedNode = join(root, "src-tauri/resources/office/node", process.platform === "win32" ? "node.exe" : "bin/node");
-function createViaWorker(request, output) {
-  const result = spawnSync(stagedNode,
+function runWorker(request, output) {
+  return spawnSync(stagedNode,
     [join(root, "src-tauri/resources/office/worker.mjs"), output,
       join(root, "src-tauri/resources/office/fonts/NotoSansCJKsc-Regular.otf")],
     { input: JSON.stringify(request), encoding: "utf8", timeout: 30000 });
+}
+function createViaWorker(request, output) {
+  const result = runWorker(request, output);
   assert.equal(result.status, 0, result.stderr || String(result.error));
 }
 try {
@@ -119,16 +122,34 @@ try {
   createViaWorker({ title: "六页汇报", format: "pptx", slides: [
     { title: "季度经营汇报", body: "收入 802，成本 480，利润 322。" },
     { title: "关键结论", body: "所有指标来自同一份已核对的数据。" },
-    { title: "收入趋势", chart: { type: "line", categories: ["1月", "2月"], series: [{ name: "收入", values: [100, 120] }] } },
+    { title: "气温趋势", chart: { type: "line", categories: ["1月", "2月", "3月"], series: [{ name: "气温", values: ["-5", "6.5", 14] }] } },
     { title: "收入与成本", chart: { type: "bar", categories: ["1月", "2月"], series: [{ name: "收入", values: [100, 120] }, { name: "成本", values: [60, 72] }] } },
-    { title: "行动计划", table: [["行动", "负责人"], ["复核异常订单", "待确认"]] },
+    { title: "气温记录", table: [["月份", "气温"], ["一月", -5], ["二月", "6.5℃"], ["三月", 14]] },
     { title: "下一步", body: "按已确认的口径开展后续复核。" },
   ] }, pptx);
   const deck = await JSZip.loadAsync(await readFile(pptx));
   const slideNames = Object.keys(deck.files).filter(p => /^ppt\/slides\/slide\d+\.xml$/.test(p));
   assert.equal(slideNames.length, 6);
   assert.equal(Object.keys(deck.files).filter(p => /^ppt\/charts\/chart\d+\.xml$/.test(p)).length, 2);
-  assert.match(await deck.file("ppt/slides/slide5.xml").async("string"), /<a:tbl>/);
+  const chartXml = await deck.file("ppt/charts/chart1.xml").async("string");
+  assert.match(chartXml, /<c:v>-5<\/c:v>/);
+  assert.match(chartXml, /<c:v>6\.5<\/c:v>/);
+  const tableXml = await deck.file("ppt/slides/slide5.xml").async("string");
+  assert.match(tableXml, /<a:tbl>/);
+  assert.match(tableXml, /<a:t>-5<\/a:t>/);
+  assert.match(tableXml, /<a:t>6\.5℃<\/a:t>/);
+
+  const invalidPptx = join(directory, "invalid.pptx");
+  for (const value of ["", "6℃", "0x10", "1e999", null, false]) {
+    const result = runWorker({ title: "汇报", format: "pptx", slides: [
+      { title: "封面" },
+      { title: "图表", chart: { type: "line", categories: ["1月"], series: [{ name: "气温", values: [value] }] } },
+    ] }, invalidPptx);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr.trim(), /^第 2 页图表第 1 个系列第 1 个值需要有限数字[^\n]*$/);
+    await assert.rejects(access(invalidPptx));
+  }
+  await assert.rejects(createStructuredPresentation("标题", [{ title: "表格", table: [["一", "二"], [1]] }], invalidPptx), /第 1 页表格第 2 行需要 2 列/);
 
   for (const [name, spec, expected] of [
     ["cycle", { sheets: [{ name: "表", rows: [[{ formula: "A1" }]] }] }, /循环引用/],

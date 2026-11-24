@@ -107,6 +107,7 @@ pub(super) async fn refresh_mcp_snapshot_and_schedule_reminder_with(
                     tool_id: tool.tool_id.clone(),
                     tool_name: tool.tool_name.clone(),
                     call_id: tool.call_id.clone(),
+                    input_schema: tool.json_schema.clone(),
                 },
             ));
             // Gateway ids are the model/search contract. Display labels stay

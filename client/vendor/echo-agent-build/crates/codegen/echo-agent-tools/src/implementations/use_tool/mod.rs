@@ -159,6 +159,48 @@ fn normalize_mcp_arguments(input: serde_json::Value) -> serde_json::Value {
     }
 }
 
+struct NoExternalSchemaReferences;
+
+impl jsonschema::Retrieve for NoExternalSchemaReferences {
+    fn retrieve(
+        &self,
+        _uri: &jsonschema::Uri<String>,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+        Err("external MCP schema references are unavailable".into())
+    }
+}
+
+pub(crate) fn validate_mcp_arguments(
+    tool_name: &str,
+    schema: &serde_json::Value,
+    arguments: &serde_json::Value,
+) -> Result<(), echo_agent_tool_runtime::ToolError> {
+    let Ok(validator) = jsonschema::options()
+        .with_retriever(NoExternalSchemaReferences)
+        .build(schema)
+    else {
+        // Let the integration validate its own arguments if its contract cannot be loaded locally.
+        tracing::warn!(%tool_name, "Could not compile MCP input schema for local validation");
+        return Ok(());
+    };
+    validator.validate(arguments).map_err(|error| {
+        use serde_json::Value;
+        let received = match error.instance.as_ref() {
+            Value::Null => "null",
+            Value::Bool(_) => "a boolean",
+            Value::Number(_) => "a number",
+            Value::String(_) => "a string",
+            Value::Array(_) => "an array",
+            Value::Object(_) => "an object",
+        };
+        echo_agent_tool_runtime::ToolError::invalid_arguments(format!(
+            "Invalid arguments for `{tool_name}` at `tool_input{}`: {}",
+            error.instance_path,
+            error.masked_with(received),
+        ))
+    })
+}
+
 fn is_local_tool_id_rejection(err: &echo_agent_tool_runtime::ToolError, tool_name: &str) -> bool {
     err.kind == echo_agent_tool_runtime::ToolErrorKind::InvalidArguments
         && err.detail == format!("invalid tool name: '{tool_name}'")
@@ -258,6 +300,7 @@ pub async fn dispatch_mcp_tool(
                 ),
             ));
         };
+        validate_mcp_arguments(tool_name, &source.input_schema, &tool_input)?;
         let response = client
             .0
             .call_tool(&source.call_id, tool_input, caller)
@@ -345,12 +388,12 @@ impl echo_agent_tool_runtime::Tool for UseTool {
                 ));
             }
         }
-        let (gateway_source, is_native, search_tool_name) =
+        let (is_gateway_tool, is_native, search_tool_name) =
             if let Some(resources) = resources.as_ref() {
                 let guard = resources.lock().await;
-                let gateway_source = guard
+                let is_gateway_tool = guard
                     .get::<ManagedGatewayToolCatalog>()
-                    .and_then(|catalog| catalog.get(&input.tool_name).cloned());
+                    .is_some_and(|catalog| catalog.get(&input.tool_name).is_some());
                 let correction_enabled = guard
                     .get::<Params<UseToolParams>>()
                     .is_none_or(|p| p.0.native_tool_correction);
@@ -363,12 +406,12 @@ impl echo_agent_tool_runtime::Tool for UseTool {
                     .and_then(|r| r.tool_for_kind(ToolKind::SearchTool))
                     .map(str::to_string)
                     .unwrap_or_else(|| "search_tool".to_string());
-                (gateway_source, native, st)
+                (is_gateway_tool, native, st)
             } else {
-                (None, false, "search_tool".to_string())
+                (false, false, "search_tool".to_string())
             };
 
-        if !input.tool_name.contains("__") && gateway_source.is_none() {
+        if !input.tool_name.contains("__") && !is_gateway_tool {
             return Err(if is_native {
                 // Native tool wrongly routed through use_tool. Tell the model
                 // to call it directly. Strategy chosen via offline eval over
@@ -694,6 +737,9 @@ mod tests {
                         tool_id: "search_dashboards".to_string(),
                         tool_name: "Search Dashboards".to_string(),
                         call_id: "grafana.searchDashboards".to_string(),
+                        input_schema: serde_json::json!({
+                            "type": "object", "properties": {"limit": {"type": "integer"}}
+                        }),
                     },
                 ),
                 (
@@ -704,6 +750,7 @@ mod tests {
                         tool_id: "tool".to_string(),
                         tool_name: "Tool".to_string(),
                         call_id: "gateway.collision".to_string(),
+                        input_schema: serde_json::json!({}),
                     },
                 ),
                 (
@@ -714,6 +761,7 @@ mod tests {
                         tool_id: "bad/id".to_string(),
                         tool_name: "Bad ID".to_string(),
                         call_id: "gateway.invalidLocal".to_string(),
+                        input_schema: serde_json::json!({}),
                     },
                 ),
             ],
@@ -724,6 +772,39 @@ mod tests {
             expected_call_id,
         })));
         resources.into_shared()
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_gateway_arguments_before_dispatch() {
+        let captured: SharedArgs = Arc::new(std::sync::Mutex::new(None));
+        let ctx = ctx_with_dispatch_and_resources(
+            NotFoundDispatch,
+            gateway_resources(Arc::clone(&captured), serde_json::json!("gateway ran")),
+        );
+        let error = echo_agent_tool_runtime::Tool::run(
+            &UseTool,
+            ctx,
+            UseToolInput {
+                tool_name: "grafana__search_dashboards".into(),
+                tool_input: serde_json::json!({"limit": "private input"}),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            echo_agent_tool_runtime::ToolErrorKind::InvalidArguments
+        );
+        assert!(error.detail.contains("tool_input/limit"), "{error}");
+        assert!(
+            error
+                .detail
+                .contains(r#"a string is not of type "integer""#),
+            "{error}"
+        );
+        assert!(!error.detail.contains("private input"), "{error}");
+        assert!(captured.lock().unwrap().is_none());
     }
 
     #[tokio::test]

@@ -559,6 +559,7 @@ pub struct ManagedGatewayToolSource {
     pub tool_id: String,
     pub tool_name: String,
     pub call_id: String,
+    pub input_schema: serde_json::Value,
 }
 #[derive(Debug, Clone, Default)]
 pub struct ManagedGatewayToolCatalog(pub HashMap<String, ManagedGatewayToolSource>);

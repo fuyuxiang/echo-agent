@@ -187,6 +187,7 @@ export function ToolCallDetailBody({
     type: "text";
     text: string;
   }>;
+  const mcpError = tc.status === "failed" ? tc.mcpError : undefined;
   const officeTool = isOfficeCreateTool(tc);
   const officeReceipt = officeReceiptFromToolCall(tc);
   const renderer = detectToolCallRenderer(tc);
@@ -210,6 +211,9 @@ export function ToolCallDetailBody({
         </span>
       </div>
       <h3 className="tool-detail__title">{officeTool ? "生成办公文档" : renderer === "knowledge" ? "组织知识" : renderer === "personal-knowledge" ? "个人知识库" : tc.title}</h3>
+      {mcpError && !texts.some((entry) => entry.text.trim() === mcpError) && (
+        <pre className="toolcall__text">{mcpError}</pre>
+      )}
       {tc.documentProgress && (
         <div className="document-read-progress" role="status" aria-label="资料读取进度">
           <span>{documentProgressLabel(tc.documentProgress)}</span>
@@ -290,7 +294,7 @@ export function ToolCallDetailBody({
             : JSON.stringify(tc.rawInput, null, 2)}
         </pre>
       )}
-      {!diff && !cmd && images.length === 0 && texts.length === 0 && tc.rawInput == null && (
+      {!mcpError && !diff && !cmd && images.length === 0 && texts.length === 0 && tc.rawInput == null && (
         <p className="tool-detail__empty">暂无详细输出</p>
       )}
     </div>

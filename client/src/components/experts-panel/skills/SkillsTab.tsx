@@ -255,11 +255,11 @@ export function SkillsTab({ pills, onToast, onOpenSource, cwd }: Props) {
   return (
     <div className="capability-tab">
       {pills && <header className="um-topbar"><div className="um-topbar-left">{pills}</div></header>}
-      <CapabilityPage title={showWorkflows ? "可复用流程" : "已安装技能"} className="capability-page--skills"
+      <CapabilityPage title={showWorkflows ? "可复用技能" : "已安装技能"} className="capability-page--skills"
         search={showWorkflows ? undefined : { value: search, onChange: setSearch, label: "搜索已安装技能", placeholder: "搜索技能…" }}
         actions={<>
           {cwd && <button type="button" className="capability-button" onClick={() => setShowWorkflows(!showWorkflows)}>
-            {showWorkflows ? "返回已安装技能" : "可复用流程"}
+            {showWorkflows ? "返回已安装技能" : "可复用技能"}
           </button>}
           {!showWorkflows && <>
           <button type="button" className="capability-button" onClick={() => void refreshAndReload()}

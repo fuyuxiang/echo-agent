@@ -71,12 +71,32 @@ try {
       await page.getByRole("button", { name: "打开附件 界面截图.png" }).click();
       await page.getByRole("dialog").waitFor();
       await page.keyboard.press("Escape");
-      await page.getByRole("button", { name: "编辑并重新发送" }).click();
-      await page.getByRole("button", { name: "预览附件 界面截图.png" }).waitFor();
-      assert.equal(await page.getByRole("list", { name: "待发送附件" }).getByRole("listitem").count(), 20);
-      await page.getByRole("button", { name: "预览附件 界面截图.png" }).click();
+      await input.fill("当前任务的独立草稿");
+      await page.getByRole("button", { name: "编辑消息", exact: true }).click();
+      const inlineEdit = page.getByRole("form", { name: "编辑消息" });
+      const inlineField = inlineEdit.getByRole("textbox", { name: "编辑消息内容" });
+      assert.equal(await inlineField.inputValue(), "逐项核对内容，关闭预览后继续编辑。");
+      assert.equal(await inlineField.evaluate(field => field === document.activeElement), true);
+      assert.equal(await inlineField.evaluate(field => getComputedStyle(field).outlineStyle), "none");
+      const singleLineHeight = await inlineField.evaluate(field => field.clientHeight);
+      assert(await inlineField.evaluate(field => field.clientHeight <= parseFloat(getComputedStyle(field).lineHeight) + 5));
+      await inlineField.fill("核对一行消息\n".repeat(40));
+      assert(await inlineField.evaluate(field => field.clientHeight > parseFloat(getComputedStyle(field).lineHeight)
+        && field.scrollHeight > field.clientHeight));
+      await inlineField.fill("逐项核对内容，关闭预览后继续编辑。");
+      assert.equal(await inlineField.evaluate(field => field.clientHeight), singleLineHeight);
+      await page.keyboard.press("Tab");
+      assert(await inlineEdit.getByRole("button", { name: "取消", exact: true }).evaluate(button =>
+        button === document.activeElement && getComputedStyle(button).outlineStyle === "solid"));
+      assert.equal(await input.inputValue(), "当前任务的独立草稿");
+      assert.equal(await inlineEdit.getByRole("list", { name: "待发送附件" }).getByRole("listitem").count(), 20);
+      await inlineEdit.getByRole("button", { name: "预览附件 界面截图.png" }).click();
       await page.getByRole("dialog").waitFor();
       await page.keyboard.press("Escape");
+      await inlineField.fill("从原消息修改后发送");
+      await inlineEdit.getByRole("button", { name: "作为新消息发送", exact: true }).click();
+      await page.getByText("从原消息修改后发送", { exact: true }).waitFor();
+      assert.equal(await input.inputValue(), "当前任务的独立草稿");
       await page.getByRole("button", { name: "切换任务", exact: true }).click();
       assert.equal(await page.getByRole("button", { name: "预览附件 另一任务.txt" }).count(), 1);
     }

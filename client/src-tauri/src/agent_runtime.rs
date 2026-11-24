@@ -997,6 +997,12 @@ pub async fn prompt_for_automation(
         return Ok(stopped_before_send());
     }
     let mut blocks = build_team_prompt_blocks(session_id, prompt_id, text, &[], None)?;
+    if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
+        block.meta.get_or_insert_with(Default::default).insert(
+            "desktopScheduledTurn".into(),
+            serde_json::Value::Bool(true),
+        );
+    }
     if checkpoint || recovering {
         if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
             block.meta.get_or_insert_with(Default::default).insert(
@@ -1090,7 +1096,7 @@ pub async fn prompt_with_mode_and_attachments(
         send_now,
         mode,
     )?;
-    enqueue_prepared_prompt(tx, request)?.await
+    enqueue_prepared_prompt(tx, request)?.await.map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1128,14 +1134,11 @@ pub(crate) fn prepare_mode_prompt(
 pub(crate) fn enqueue_prepared_prompt(
     tx: &AcpAgentTx,
     request: acp::PromptRequest,
-) -> Result<impl std::future::Future<Output = Result<()>> + use<>> {
+) -> Result<impl std::future::Future<Output = Result<acp::PromptResponse>> + use<>> {
     let response =
         echo_agent_acp::acp_enqueue(request, tx).map_err(|error| anyhow!("prompt: {error:?}"))?;
     Ok(async move {
-        response
-            .await
-            .map_err(|error| anyhow!("prompt: {error:?}"))?;
-        Ok(())
+        response.await.map_err(|error| anyhow!("prompt: {error:?}"))
     })
 }
 

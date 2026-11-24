@@ -62,7 +62,10 @@ struct RpcRequest {
 #[serde(deny_unknown_fields)]
 struct WeatherArgs {
     location: String,
-    #[serde(default = "default_days")]
+    #[serde(
+        default = "default_days",
+        deserialize_with = "deserialize_weather_days"
+    )]
     days: usize,
 }
 
@@ -76,6 +79,20 @@ struct SearchArgs {
 
 fn default_days() -> usize {
     3
+}
+
+fn deserialize_weather_days<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<usize, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    match (value.as_u64(), value.as_str()) {
+        (Some(1), _) | (_, Some("1")) => Ok(1),
+        (Some(2), _) | (_, Some("2")) => Ok(2),
+        (Some(3), _) | (_, Some("3")) => Ok(3),
+        _ => Err(serde::de::Error::custom(
+            "days 应为 1 到 3 的整数，也可以传 \"1\"、\"2\" 或 \"3\"",
+        )),
+    }
 }
 
 fn default_count() -> usize {
@@ -273,7 +290,10 @@ fn tools_list() -> Value {
                 "type": "object", "additionalProperties": false,
                 "properties": {
                     "location": { "type": "string", "minLength": 2, "maxLength": 100, "description": "City or region, optionally followed by country." },
-                    "days": { "type": "integer", "minimum": 1, "maximum": 3, "default": 3 }
+                    "days": {
+                        "type": ["integer", "string"], "enum": [1, 2, 3, "1", "2", "3"], "default": 3,
+                        "description": "Number of forecast days (1 to 3). Prefer an integer. The strings '1', '2', and '3' are also accepted."
+                    }
                 },
                 "required": ["location"]
             },
@@ -303,11 +323,9 @@ async fn call_tool(state: &ServerState, params: &Value) -> Result<Value, String>
     let args = params.get("arguments").cloned().ok_or("缺少工具参数")?;
     match name {
         "weather_forecast" => {
-            let args: WeatherArgs = serde_json::from_value(args).map_err(|_| "天气参数无效")?;
+            let args: WeatherArgs =
+                serde_json::from_value(args).map_err(|error| format!("天气参数无效：{error}"))?;
             let location = validate_text(&args.location, 100, "城市")?;
-            if !(1..=3).contains(&args.days) {
-                return Err("预报天数应为 1 到 3 天".into());
-            }
             let key = format!("weather:{location}:{}", args.days);
             if let Some(value) = cached(state, &key, WEATHER_TTL) {
                 return Ok(value);
@@ -815,6 +833,49 @@ mod tests {
         assert!(validate_text("\n", 100, "城市").is_err());
         assert!(validate_text("a", 100, "城市").is_err());
         assert!(validate_text("北京", 100, "城市").is_ok());
+    }
+
+    #[tokio::test]
+    async fn weather_accepts_string_days_and_reports_invalid_days() {
+        let state = ServerState {
+            authorization: String::new(),
+            expected_host: String::new(),
+            http: reqwest::Client::new(),
+            http_direct: reqwest::Client::new(),
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        };
+        save_cache(
+            &state,
+            "weather:北京:3".into(),
+            json!({"requested_location": "北京"}),
+        );
+        for arguments in [
+            json!({"location": "北京", "days": "3"}),
+            json!({"location": "北京", "days": 3}),
+            json!({"location": "北京"}),
+        ] {
+            let params = json!({"name": "weather_forecast", "arguments": arguments});
+            let result = call_tool(&state, &params).await.unwrap();
+            assert_eq!(
+                result,
+                json!({"requested_location": "北京", "cached": true})
+            );
+        }
+
+        for days in [
+            json!("4"),
+            json!("03"),
+            json!(4),
+            json!(1.5),
+            json!(3.0),
+            Value::Null,
+        ] {
+            let params = json!({
+                "name": "weather_forecast", "arguments": {"location": "北京", "days": days},
+            });
+            let error = call_tool(&state, &params).await.unwrap_err();
+            assert!(error.contains("days 应为 1 到 3"), "{error}");
+        }
     }
 
     #[tokio::test]
