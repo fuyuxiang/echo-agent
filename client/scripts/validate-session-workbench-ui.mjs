@@ -52,6 +52,28 @@ try {
         await workspace.click();
         await page.getByRole("complementary", { name: "工作区面板", exact: true }).waitFor();
         assert.equal((await page.locator(".session-header").boundingBox()).y, geometry.header.y, "Opening the workspace keeps the session header in place");
+        if (width === 1280 && !collapsed) {
+          const panel = page.getByRole("complementary", { name: "工作区面板", exact: true });
+          for (const [panelWidth, font] of [[360, 13], [380, 18], [480, 18]]) {
+            const tabs = await panel.evaluate((element, { panelWidth, font }) => {
+              const originalWidth = element.style.width;
+              const root = document.documentElement;
+              const originalFont = root.style.fontSize;
+              element.style.width = `${panelWidth}px`;
+              root.style.fontSize = `${16 * font / 13}px`;
+              const nav = element.querySelector(".workspace-view-tabs");
+              const result = {
+                overflow: nav.scrollWidth - nav.clientWidth,
+                iconsVisible: getComputedStyle(nav.querySelector(".workspace-view-icon")).display !== "none",
+              };
+              element.style.width = originalWidth;
+              root.style.fontSize = originalFont;
+              return result;
+            }, { panelWidth, font });
+            assert.ok(tabs.overflow <= 1, `Workspace tabs clipped at ${panelWidth}px, font ${font}`);
+            assert.equal(tabs.iconsVisible, panelWidth === 480);
+          }
+        }
         await page.getByRole("button", { name: "收起工作区", exact: true }).click();
       }
       if (platform === "mac" && collapsed) assert.ok(geometry.buttons[0].x >= 84, "native traffic-light safe area");

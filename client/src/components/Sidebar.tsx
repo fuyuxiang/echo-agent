@@ -26,6 +26,7 @@ import { isWaitingForUser } from "@/lib/turn-status";
 import {
   EchoNewTaskIcon,
   EchoMoreNavIcon,
+  FileTextIcon,
   SearchIcon,
   FilterIcon,
   SidebarToggleIcon,
@@ -466,7 +467,7 @@ function MoreDropdown({
           }
         }}
       >
-        <EchoMoreNavIcon size="md" />
+        <EchoMoreNavIcon size={18} />
         <span>更多</span>
         {items.length > 0 && items.every(id => id === "knowledge" || id === "automation") && <span className="sidebar__nav-sub">知识与工具</span>}
       </button>
@@ -917,8 +918,9 @@ export function Sidebar({
         >
           <span className="sidebar__conv-line">
             <span className="sidebar__conv-heading">
-              {(s.continuation || s.sessionKind === "fork") && <span className="sidebar__continuation-icon" role="img" aria-label="接续对话"
-                title={s.continuation ? `接续自 ${allSessions.find(row => row.sessionId === s.continuation?.parentSessionId)?.title || s.continuation.parentTitle}` : "接续对话"}><GitFork size={13} aria-hidden="true" /></span>}
+              {(s.continuation || s.sessionKind === "fork") ? <span className="sidebar__continuation-icon" role="img" aria-label="接续对话"
+                title={s.continuation ? `接续自 ${allSessions.find(row => row.sessionId === s.continuation?.parentSessionId)?.title || s.continuation.parentTitle}` : "接续对话"}><GitFork size={13} aria-hidden="true" /></span>
+                : <FileTextIcon className="sidebar__conv-type" size={15} />}
               <span className="sidebar__conv-title">{sessionTitle}</span>
               {s.pinned && <PinFilledIcon size="sm" className="sidebar__conv-pin" />}
               {s.status !== "awaiting_permission" && <SessionStatusIndicator status={s.status} />}
@@ -1102,7 +1104,7 @@ export function Sidebar({
           className="sidebar__nav-item"
           onClick={onNewSession}
         >
-          <EchoNewTaskIcon size="md" />
+          <EchoNewTaskIcon size={18} />
           <span>新建任务</span>
         </button>
         {menuLayout.primary.map(id => {
@@ -1119,7 +1121,7 @@ export function Sidebar({
               }
               onClick={() => onNavigate(route)}
             >
-              <Icon size="md" />
+              <Icon size={18} />
               <span>{label}</span>
             </button>
           );

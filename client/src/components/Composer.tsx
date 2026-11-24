@@ -6,8 +6,8 @@ import { draftRevision, useDraftRevision } from "@/lib/draft-lifecycle";
 import type { PromptPrediction } from "@/lib/use-prompt-prediction";
 import "@/styles/prompt-prediction.css";
 import { useStorageHealth } from "@/lib/durable-ui-state";
-import { ArrowUp, ListPlus, Pause, Square, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
-import { ChevronDownIcon } from "@/foundation/components/Icon/icons";
+import { ListPlus, Pause, Square, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
+import { ChevronDownIcon, SendPlaneIcon } from "@/foundation/components/Icon/icons";
 import { ModelSelector, type ModelOption } from "./ModelSelector";
 import { ThumbImg } from "./experts-panel/shared/ThumbImg";
 import { ContextUsagePill } from "./ContextUsagePill";
@@ -1680,7 +1680,7 @@ export function Composer({
               title={primaryTitle}>
               {stopAction || controlIntent === "stop" ? <Square size={13} fill="currentColor" />
                 : controlIntent === "pause" ? <Pause size={16} />
-                : streaming ? <ListPlus size={18} /> : <ArrowUp size={18} />}
+                : streaming ? <ListPlus size={18} /> : <SendPlaneIcon size={18} />}
             </button>
           </div>
         </div>

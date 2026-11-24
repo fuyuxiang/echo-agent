@@ -1,4 +1,5 @@
 import { ResourceDescription, ResourceIcon, ResourceList, ResourceMenu, ResourceRow } from "../../ResourceList";
+import { Layers3, Plug, Terminal } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AddCircleIcon, RefreshCwIcon, PuzzlePieceIcon,
@@ -60,6 +61,11 @@ function RuntimeSkillRow({
   onManageWorkflow?: () => void;
 }) {
   const name = skill.displayName || skill.name;
+  const manifest = skill.capability?.manifest;
+  const SkillIcon = onManageWorkflow ? Layers3
+    : manifest?.runtime ? Terminal
+    : manifest?.requirements.connectors.length ? Plug
+    : PuzzlePieceIcon;
   const organizationManaged = skill.orgManaged || skill.scope === "server";
   const mandatory = organizationManaged && skill.orgMandatory === true;
   const removablePath = skill.managed ? skill.path : skill.configuredPath;
@@ -69,7 +75,7 @@ function RuntimeSkillRow({
   return (
     <ResourceRow className={`sk-inst-row${organizationManaged ? " sk-inst-row--organization" : ""}`}>
       <div className="sk-card-head resource-row__main">
-        <ResourceIcon><PuzzlePieceIcon size="md" /></ResourceIcon>
+        <ResourceIcon><SkillIcon size={18} aria-hidden="true" /></ResourceIcon>
         <div className="sk-inst-info">
           <div className="sk-card-name resource-row__title">{name}</div>
           <ResourceDescription text={skill.description || "（无描述）"} label={`技能「${name}」的说明`} className="sk-card-desc" />

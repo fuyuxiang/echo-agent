@@ -324,6 +324,12 @@
   padding-bottom: 4px;
 }
 
+.sidebar__conv-type { display: none; }
+
+@container app-sidebar (min-width: 15rem) {
+  .sidebar__conv-type { display: inline-block; }
+}
+
 .sidebar__conv--active,
 .sidebar__conv--active:hover {
   background: var(--echo-control-selected-bg);

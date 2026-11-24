@@ -18,6 +18,26 @@ try {
       await page.getByRole('button', { name: '打开项目 客户洞察与产品规划' }).click();
       assert.equal(await page.getByRole('tab', { name: '概览', exact: true }).getAttribute('aria-selected'), 'true');
       assert.equal(await page.getByRole('tab').count(), 4);
+      if (width === 420) {
+        for (const narrowWidth of [360, 420]) {
+          await page.setViewportSize({ width: narrowWidth, height });
+          const tabs = await page.locator('.pd-tabs').evaluate(nav => {
+            const root = document.documentElement;
+            const originalFont = root.style.fontSize;
+            root.style.fontSize = `${16 * 18 / 13}px`;
+            const bounds = nav.getBoundingClientRect();
+            const buttons = [...nav.querySelectorAll('[role="tab"]')];
+            const result = {
+              fits: buttons.every(button => button.getBoundingClientRect().right <= bounds.right + 1),
+              singleRow: buttons.every(button => button.getBoundingClientRect().top === bounds.top),
+              iconsHidden: buttons.every(button => getComputedStyle(button.querySelector('svg')).display === 'none'),
+            };
+            root.style.fontSize = originalFont;
+            return result;
+          });
+          assert.deepEqual(tabs, { fits: true, singleRow: true, iconsHidden: true }, `Project tabs at ${narrowWidth}px, font 18`);
+        }
+      }
       await page.getByRole('button', { name: /检查成果/ }).waitFor();
       await page.screenshot({ path: join(output, `${width}-${theme}-overview.png`), fullPage: true });
       await page.getByRole('button', { name: /检查成果/ }).click();

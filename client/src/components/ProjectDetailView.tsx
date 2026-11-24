@@ -12,7 +12,7 @@ import { projectPublicationLinks } from "@/lib/project-sharing";
 import { importProjectOutput } from "@/lib/project-files";
 import type { TaskArtifact } from "@/lib/artifact-catalog";
 import { orgDownloadDocument } from "@/lib/org-client";
-import { PanelRight, Settings2, Users, LockKeyhole, Check } from "lucide-react";
+import { PanelRight, Settings2, Users, LockKeyhole, Check, LayoutDashboard, SquareCheck, Activity } from "lucide-react";
 import { useProjectWorkspace, type CheckedProjectSnapshot } from "@/lib/use-project-workspace";
 import { useSharedProjectId, projectSharingAccount } from "@/lib/project-sharing";
 import { useOrgSessionStore } from "@/stores/org-session-store";
@@ -433,7 +433,7 @@ export function ProjectDetailView({
           <div className="project-workspace-title"><h1>{workspace.snapshot?.name ?? live.name}</h1><p>{workspace.snapshot?.goal || live.description || "集中管理相关任务、背景资料与交付成果。"}</p><div><span>{sharedId ? <Users size={14} /> : <LockKeyhole size={14} />}{sharedId ? "共享项目" : "仅自己可见"}</span>{members && <span>{members.length} 位参与者</span>}<span><Check size={13} />{persistError ? "本机保存失败" : persisting ? "正在保存…" : "本机更改已保存"}</span></div></div>
           <div className="pd-tabs-row">
             <nav className="pd-tabs" aria-label="项目内容" role="tablist">
-              {([['overview','概览'],['task','任务'],['asset','资料与成果'],['activity','动态']] as const).map(([id,label]) => <button key={id} type="button" role="tab" id={`project-tab-${id}`} aria-label={label} aria-selected={tab === id} aria-controls="project-content-panel" className={`pd-tab-btn${tab === id ? " pd-tab-btn--on" : ""}`} onClick={() => { setTab(id); setSelectedTaskId(undefined); }}>{label}{id === "task" && <span>{rows.length}</span>}{id === "asset" && <span>{live.assets.length + outputs.length}</span>}</button>)}
+              {([['overview','概览',LayoutDashboard],['task','任务',SquareCheck],['asset','资料与成果',FolderIcon],['activity','动态',Activity]] as const).map(([id,label,Icon]) => <button key={id} type="button" role="tab" id={`project-tab-${id}`} aria-label={label} aria-selected={tab === id} aria-controls="project-content-panel" className={`pd-tab-btn${tab === id ? " pd-tab-btn--on" : ""}`} onClick={() => { setTab(id); setSelectedTaskId(undefined); }}><Icon size={16} aria-hidden="true" />{label}{id === "task" && <span>{rows.length}</span>}{id === "asset" && <span>{live.assets.length + outputs.length}</span>}</button>)}
             </nav>
             {sharedId && <div className="project-sync-state"><button type="button" className="pd-btn pd-btn--small" disabled={!workspace.snapshot} onClick={() => setQuestionsOpen(true)}>问项目</button><span>{workspace.loading ? "同步中…" : workspace.error ? "共享暂不可用" : workspace.snapshot ? "已同步" : "待连接"}</span>{!workspace.error && <button className="pd-btn pd-btn--small" disabled={workspace.loading} onClick={() => void workspace.refresh()}>刷新</button>}</div>}
           </div>

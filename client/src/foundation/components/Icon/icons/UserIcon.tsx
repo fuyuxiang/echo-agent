@@ -1,4 +1,4 @@
-import { User } from "lucide-react";
+import { UserRound } from "lucide-react";
 import { createIcon } from "../Icon";
 
-export const UserIcon = createIcon(User, { strokeWidth: 1.5 });
+export const UserIcon = createIcon(UserRound, { strokeWidth: "var(--echo-icon-stroke-width, 1.75)" });

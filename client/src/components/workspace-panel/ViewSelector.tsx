@@ -1,6 +1,6 @@
 import { useRef, type KeyboardEvent } from "react";
 import type { WorkspaceView } from "@/lib/use-unified-tabs";
-import { FileText, Folder, Globe, ListChecks, Users, GitCompareArrows } from "lucide-react";
+import { FileText, Folder, Globe, ListChecks, Users, GitCompareArrows, Network } from "lucide-react";
 
 export interface ViewDef {
   value: WorkspaceView;
@@ -39,7 +39,7 @@ export function ViewSelector({ view, views, onChange, secondary = false }: {
   return <div className={secondary ? "workspace-task-tabs" : "view-selector workspace-view-tabs"}
     role="tablist" aria-label={secondary ? "任务视图" : "工作区分类"} onKeyDown={onKeyDown}>
     {items.map(item => <button type="button" role="tab" key={item.label} aria-selected={selected(item.value)}
-      tabIndex={selected(item.value) ? 0 : -1} onClick={() => onChange(item.value)}>{item.label}</button>)}
+      tabIndex={selected(item.value) ? 0 : -1} onClick={() => onChange(item.value)}><span className="workspace-view-icon" aria-hidden="true">{item.icon()}</span>{item.label}</button>)}
   </div>;
 }
 
@@ -49,7 +49,7 @@ export function defaultViews(_opts: { hasChanges: boolean }): ViewDef[] {
     {value:"fileTree",label:"文件",icon:() => <Folder size={16} />},
     {value:"changes",label:"变更",icon:() => <GitCompareArrows size={16} />},
     {value:"plan",label:"执行计划",icon:() => <ListChecks size={16} />},
-    {value:"subagents",label:"运行与协作",icon:() => <Users size={16} />},
+    {value:"subagents",label:"运行与协作",icon:() => <Network size={16} />},
     {value:"teams",label:"任务团队",icon:() => <Users size={16} />},
     {value:"browser",label:"网页",icon:() => <Globe size={16} />},
   ];

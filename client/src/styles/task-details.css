@@ -25,8 +25,13 @@
 /* Keep visited editors mounted while changing category or collapsing the workspace. */
 .task-details[hidden], .task-details [hidden] { display:none !important; }
 .task-details > .task-details__shell > .tool-side-panel__header { gap:4px; padding:8px; flex-wrap:nowrap; }
-.task-details .workspace-view-tabs { display:flex; flex:1; gap:1px; min-width:0; overflow-x:auto; scrollbar-width:none; }
-.workspace-view-tabs button, .workspace-task-tabs button { flex:none; min-height:32px; padding:5px 6px; border:0; border-radius:6px; background:transparent; color:var(--echo-text-medium); font:inherit; font-size:.75rem; white-space:nowrap; cursor:pointer; }
+.task-details .workspace-view-tabs { container:workspace-view-tabs / inline-size; display:flex; flex:1; gap:1px; min-width:0; overflow-x:auto; scrollbar-width:thin; }
+.workspace-view-tabs button, .workspace-task-tabs button { display:inline-flex; align-items:center; gap:4px; flex:none; min-height:32px; padding:5px 6px; border:0; border-radius:6px; background:transparent; color:var(--echo-text-medium); font:inherit; font-size:.75rem; white-space:nowrap; cursor:pointer; }
+.workspace-view-icon { display:inline-flex; flex:none; }
+/* Allow five two-character labels, their icon slots, and button padding. */
+@container workspace-view-tabs (max-width: calc(7.5rem + 166px)) {
+  .workspace-view-tabs .workspace-view-icon { display:none; }
+}
 .workspace-view-tabs button[aria-selected=true], .workspace-task-tabs button[aria-selected=true] { background:var(--echo-bg-hover); color:var(--echo-text-strong); font-weight:600; }
 .workspace-view-tabs button:hover, .workspace-task-tabs button:hover { background:var(--echo-bg-hover); }
 .workspace-view-tabs button:focus-visible, .workspace-task-tabs button:focus-visible { outline:2px solid var(--echo-brand); outline-offset:-2px; }
