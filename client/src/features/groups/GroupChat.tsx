@@ -1,7 +1,8 @@
 import { Select } from "@/components/Select";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Users, Settings, Search, Pause, Square, Reply, X, AtSign } from "lucide-react";
-import { agentResolvePlanApproval } from "@/lib/agent-client";
+import { agentResolvePlanApproval, type PlanApprovalOutcome } from "@/lib/agent-client";
+import { refreshPendingPlanApprovals } from "@/lib/session-interactions";
 import type { ToolCallView } from "@/stores/session-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionsStore } from "@/stores/sessions-store";
@@ -283,7 +284,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
           })}
           {focused && <GroupTaskNotice group={group} request={focused} busy={busy} onDetails={() => showDetail("work")} onControl={(action, id) => { if (action === "retry") retry(id); else void control(action, id); }} />}
           {activity && !pending.length && <div className="group-activity" role="status" aria-live="polite"><span className="group-activity__dot" aria-hidden="true" />{activity}</div>}
-          {members.map(member => [member.sessionId, member.discussionSessionId].filter((id): id is string => !!id).map(session => <GroupInteractions key={session} member={member.name} session={session} onError={setError} />))}
+          {members.map(member => [member.sessionId, member.discussionSessionId].filter((id): id is string => !!id).map(session => <GroupInteractions key={session} member={member.name} session={session} onToast={onToast} />))}
         </div>
       </div>
       {newMessages && <button type="button" className="group-new-messages" onClick={() => { setQuery(""); following.current = true; setNewMessages(false); if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; useGroupStore.getState().markRead(group.id, groupPublicSeq(group)); }}>查看新消息 ↓</button>}
@@ -349,13 +350,50 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
   </div>;
 }
 
-function GroupInteractions({ member, session, onError }: { member: string; session: string; onError: (error: string) => void }) {
+function GroupInteractions({ member, session, onToast }: { member: string; session: string; onToast?: (message: string) => void }) {
   const permission = usePermissionStore(state => state.queues[session]?.[0]);
   const question = useQuestionStore(state => state.queues[session]?.[0]);
   const plan = useSessionStore(state => state.transcripts[session]?.planApprovals?.[0]);
-  const [busy, setBusy] = useState(false);
+  const [planDecision, setPlanDecision] = useState<{ requestId: string; pending: boolean; error?: string }>();
+  const pendingPlans = useRef(new Set<string>());
+  const decision = planDecision?.requestId === plan?.requestId ? planDecision : undefined;
+
+  const resolvePlan = async (requestId: string, outcome: PlanApprovalOutcome) => {
+    if (pendingPlans.current.has(requestId)) return;
+    pendingPlans.current.add(requestId);
+    setPlanDecision({ requestId, pending: true });
+    let error: string | undefined;
+    try {
+      const acknowledged = await agentResolvePlanApproval(requestId, outcome);
+      const state = useSessionStore.getState();
+      if (state.transcripts[session]) state.dismissPlanApproval(requestId, session);
+      if (!acknowledged) {
+        onToast?.("此方案的审批请求已结束。");
+        void refreshPendingPlanApprovals(session);
+      }
+    } catch (reason) {
+      error = errorText(reason);
+    } finally {
+      pendingPlans.current.delete(requestId);
+      setPlanDecision(current => current?.requestId === requestId ? { requestId, pending: false, error } : current);
+    }
+  };
+
   if (!permission && !question && !plan) return null;
-  return <section className="group-interaction" id={`group-interaction-${session}`}><strong>{member} 需要你处理</strong><PermissionInlineCard sessionId={session} groupScope /><QuestionInlineCard sessionId={session} />{plan && <div><h3>执行方案</h3><pre>{plan.planContent}</pre>{([['approved', '批准方案'], ['cancelled', '退回方案']] as const).map(([outcome, label]) => <button type="button" className="btn btn--ghost" key={outcome} disabled={busy} onClick={async () => { setBusy(true); try { await agentResolvePlanApproval(plan.requestId, outcome); useSessionStore.getState().dismissPlanApproval(plan.requestId, session); } catch (error) { onError(errorText(error)); } finally { setBusy(false); } }}>{label}</button>)}</div>}</section>;
+  return <section className="group-interaction" id={`group-interaction-${session}`}>
+    <strong>{member} 需要你处理</strong>
+    <PermissionInlineCard sessionId={session} groupScope />
+    <QuestionInlineCard sessionId={session} />
+    {plan && <div aria-busy={decision?.pending ?? false}>
+      <h3>执行方案</h3>
+      <pre>{plan.planContent}</pre>
+      {decision?.error && <p className="groups-error" role="alert">{decision.error}</p>}
+      <button type="button" className="btn btn--ghost" disabled={decision?.pending}
+        onClick={() => void resolvePlan(plan.requestId, "approved")}>批准方案</button>
+      <button type="button" className="btn btn--ghost" disabled={decision?.pending}
+        onClick={() => void resolvePlan(plan.requestId, "cancelled")}>退回方案</button>
+    </div>}
+  </section>;
 }
 export function GroupSettings({ group, models, onSaved, onError }: { group: Group; models: ModelOption[]; onSaved: () => void | Promise<void>; onError: (error: string) => void }) {
   const [name, setName] = useState(group.name), [goal, setGoal] = useState(group.goal), [coordinatorId, setCoordinator] = useState(group.coordinatorId);

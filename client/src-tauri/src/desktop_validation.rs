@@ -565,8 +565,13 @@ pub async fn desktop_validation_ready(
         }
     }
     let retired_payload = if cfg!(windows) {
-        ["theia/parent-guard.cjs", "theia/browser/lib/backend/main.js", "theia/node/node.exe"]
-            .iter().any(|file| resources.join(file).exists())
+        [
+            "theia/parent-guard.cjs",
+            "theia/browser/lib/backend/main.js",
+            "theia/node/node.exe",
+        ]
+        .iter()
+        .any(|file| resources.join(file).exists())
     } else {
         resources.join("theia").exists()
     };
@@ -583,9 +588,13 @@ pub async fn desktop_validation_ready(
             .tempdir_in(crate::paths::echo_agent_home_dir())
             .map_err(|error| error.to_string())?;
         let output_root = if cfg!(windows)
-            && std::env::var_os("ECHO_VALIDATE_LONG_PATHS").as_deref() == Some(std::ffi::OsStr::new("1"))
+            && std::env::var_os("ECHO_VALIDATE_LONG_PATHS").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
         {
-            let path = directory.path().join("长路径办公验证".repeat(18)).join("文件生成".repeat(32));
+            let path = directory
+                .path()
+                .join("长路径办公验证".repeat(18))
+                .join("文件生成".repeat(32));
             std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
             path.canonicalize().map_err(|error| error.to_string())?
         } else {

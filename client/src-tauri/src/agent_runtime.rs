@@ -33,6 +33,7 @@ use echo_agent_acp::{
 use echo_agent_runtime::agent::init::bootstrap;
 use echo_agent_runtime::agent::mvp_agent::MvpAgent;
 use echo_agent_runtime::auth::{AuthManager, EchoAgentComConfig};
+use echo_agent_runtime::session::helpers::host_prompt_admission::HostPromptAdmission;
 use echo_agent_runtime::util::config::load_effective_config;
 
 // Re-aliased to mirror EchoAgent's own internal import style.
@@ -248,10 +249,7 @@ pub fn spawn_agent_runtime(_cwd: PathBuf) -> Result<AgentHandle> {
             .collect();
         let model_urls = legacy_model_base_urls(&cfg);
         if let Some(first_byok_url) = pick_byok_base_url(provider_urls, model_urls) {
-            tracing::info!(
-                models_base_url = %first_byok_url,
-                "BYOK: set endpoints.models_base_url to skip built-in default models"
-            );
+            tracing::info!("BYOK: using the configured endpoint to skip built-in default models");
             cfg.endpoints.models_base_url = Some(first_byok_url);
         }
     }
@@ -310,7 +308,9 @@ pub fn spawn_agent_runtime(_cwd: PathBuf) -> Result<AgentHandle> {
                 // generic AcpGatewayReceiver (not the AcpAgentGatewayReceiver
                 // alias, which fixes C = AgentSideConnection).
                 let shutdown_agent = agent_rc.clone();
-                let gw_rx = AcpGatewayReceiver::new(acp_agent.rx, agent_rc).with_tracing(true);
+                // The gateway's verbose traces serialize complete ACP payloads,
+                // including MCP authorization headers and private user messages.
+                let gw_rx = AcpGatewayReceiver::new(acp_agent.rx, agent_rc);
                 let gateway_task = tokio::task::spawn_local(gw_rx.run());
                 tokio::pin!(gateway_task);
                 tokio::task::yield_now().await;
@@ -976,12 +976,25 @@ pub(crate) fn build_prompt_blocks(
 /// can load them on demand.
 pub async fn prompt_for_automation(
     tx: &AcpAgentTx,
+    admission: &HostPromptAdmission,
     session_id: &str,
     prompt_id: &str,
     text: &str,
     checkpoint: bool,
     recovering: bool,
 ) -> Result<crate::bridge::CompleteEvent> {
+    let stopped_before_send = || {
+        crate::bridge::parse_complete_event(&serde_json::json!({
+            "sessionId": session_id,
+            "promptId": prompt_id,
+            "stopReason": "cancelled",
+            "cancelTrigger": "stop",
+            "agentResult": "本次运行已停止，未发送任务消息",
+        }))
+    };
+    if admission.withdrawn() {
+        return Ok(stopped_before_send());
+    }
     let mut blocks = build_team_prompt_blocks(session_id, prompt_id, text, &[], None)?;
     if checkpoint || recovering {
         if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
@@ -992,11 +1005,13 @@ pub async fn prompt_for_automation(
         }
     }
     let meta = serde_json::Map::from_iter([("promptId".into(), serde_json::json!(prompt_id))]);
-    let req = acp::PromptRequest::new(session_id.to_string(), blocks).meta(Some(meta));
-    let response: acp::PromptResponse = acp_send(req, tx)
-        .await
-        .map_err(|e| anyhow!("prompt: {e:?}"))?;
-    completion_from_prompt_response(response, session_id, prompt_id)
+    let mut req = acp::PromptRequest::new(session_id.to_string(), blocks).meta(Some(meta));
+    admission.attach(&mut req);
+    match acp_send(req, tx).await {
+        Ok(response) => completion_from_prompt_response(response, session_id, prompt_id),
+        Err(_) if admission.withdrawn() => Ok(stopped_before_send()),
+        Err(error) => Err(anyhow!("prompt: {error:?}")),
+    }
 }
 
 pub(crate) fn completion_from_prompt_response(
@@ -1446,6 +1461,73 @@ mod tests {
     //! fresh data home, empty legacy/compatibility homes and synthetic model
     //! config, cleans inherited credentials, and never sends a model prompt.
     use super::*;
+
+    #[tokio::test]
+    async fn withdrawn_scheduled_prompt_never_reaches_the_runtime_channel() {
+        use echo_agent_runtime::session::helpers::host_prompt_admission::withdraw;
+
+        let session_id = "scheduled-withdrawn-session";
+        let prompt_id = "scheduled-withdrawn-prompt";
+        let admission = HostPromptAdmission::begin(session_id, prompt_id).unwrap();
+        assert!(withdraw(session_id, prompt_id, false));
+        let (client, mut agent) = acp_channels();
+
+        let completion = prompt_for_automation(
+            &client.tx,
+            &admission,
+            session_id,
+            prompt_id,
+            "Synthetic task",
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(completion.session_id, session_id);
+        assert_eq!(completion.prompt_id, prompt_id);
+        assert_eq!(completion.stop_reason, "cancelled");
+        assert_eq!(completion.cancel_trigger.as_deref(), Some("stop"));
+        assert!(matches!(
+            agent.rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn withdrawal_after_posting_is_reported_as_a_stop_when_the_runtime_rejects_admission() {
+        use echo_agent_runtime::session::helpers::host_prompt_admission::withdraw;
+
+        let session_id = "scheduled-withdrawn-after-posting";
+        let prompt_id = "scheduled-prompt-after-posting";
+        let admission = HostPromptAdmission::begin(session_id, prompt_id).unwrap();
+        let (client, mut agent) = acp_channels();
+        let submit = prompt_for_automation(
+            &client.tx,
+            &admission,
+            session_id,
+            prompt_id,
+            "Synthetic task",
+            false,
+            false,
+        );
+        let refuse = async {
+            let echo_agent_acp::AcpAgentMessage::Prompt(request) = agent.rx.recv().await.unwrap()
+            else {
+                panic!("expected prompt request");
+            };
+            assert!(withdraw(session_id, prompt_id, false));
+            request
+                .response_tx
+                .send(Err(acp::Error::invalid_params()))
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(submit, refuse);
+        let completion = result.unwrap();
+        assert_eq!(completion.prompt_id, prompt_id);
+        assert_eq!(completion.stop_reason, "cancelled");
+        assert_eq!(completion.cancel_trigger.as_deref(), Some("stop"));
+    }
 
     #[tokio::test]
     async fn only_named_user_cancel_requests_opt_in_to_stale_prompt_errors() {
@@ -2063,13 +2145,22 @@ mod tests {
             .await
             .unwrap();
             let prompt_id = uuid::Uuid::now_v7().to_string();
+            let admission = HostPromptAdmission::begin(&session_id, &prompt_id).unwrap();
             std::fs::write(&binding, format!("{session_id}\n{prompt_id}")).unwrap();
             let prompt = format!(
                 "Use the shell tool exactly once with the exact command from the following line:\n{COMMAND}\nWhen the command returns, report ECHO_RECOVERY_EXTERNAL."
             );
             let completion = tokio::time::timeout(
                 Duration::from_secs(110),
-                prompt_for_automation(&handle.tx, &session_id, &prompt_id, &prompt, true, false),
+                prompt_for_automation(
+                    &handle.tx,
+                    &admission,
+                    &session_id,
+                    &prompt_id,
+                    &prompt,
+                    true,
+                    false,
+                ),
             )
             .await;
             panic!("first Runtime was expected to be terminated by the driver at the durable checkpoint: timeout={}", completion.is_err());
@@ -2097,8 +2188,9 @@ mod tests {
                 .await
                 .unwrap();
             let prompt_id = uuid::Uuid::now_v7().to_string();
+            let admission = HostPromptAdmission::begin(session_id, &prompt_id).unwrap();
             let completion = tokio::time::timeout(Duration::from_secs(80), prompt_for_automation(
-                &handle.tx, session_id, &prompt_id,
+                &handle.tx, &admission, session_id, &prompt_id,
                 "The original turn was interrupted. From the previous command result, return the exact marker that it wrote. Do not use tools.",
                 false, true,
             )).await.unwrap().unwrap();

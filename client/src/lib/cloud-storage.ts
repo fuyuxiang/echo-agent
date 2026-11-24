@@ -36,6 +36,8 @@ export interface StorageProvider {
   readText(path: string): Promise<string | null>;
   /** 写入文件文本。 */
   writeText(path: string, content: string): Promise<boolean>;
+  /** 仅在目标不存在时创建文本。 */
+  createText(path: string, content: string): Promise<boolean>;
   /** 删除文件/目录。 */
   delete(path: string): Promise<boolean>;
   /** 创建目录。 */
@@ -93,6 +95,10 @@ export function createTauriWebDavProvider(config: StorageProviderConfig): Storag
     readText: (path) => invoke<string>("storage_read_text", { id: config.id, path }),
     writeText: async (path, content) => {
       await invoke<void>("storage_write_text", { id: config.id, path, content });
+      return true;
+    },
+    createText: async (path, content) => {
+      await invoke<void>("storage_create_text", { id: config.id, path, content });
       return true;
     },
     delete: async (path) => {

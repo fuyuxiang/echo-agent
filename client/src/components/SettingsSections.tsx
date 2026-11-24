@@ -454,7 +454,7 @@ export function HelpSettingsPanel() {
 const PERMISSION_ACTION_LABELS: Record<string, string> = { allow: "允许", ask: "询问", deny: "拒绝" };
 const PERMISSION_TOOL_LABELS: Record<string, string> = {
   bash: "执行命令", read: "读取文件", edit: "修改文件", grep: "搜索文件",
-  mcp: "连接器工具", webfetch: "访问网页", any: "所有工具",
+  mcp: "连接器工具", webfetch: "访问网页", websearch: "搜索网页", any: "所有工具",
 };
 
 export function SecuritySettingsPanel() {
@@ -471,7 +471,13 @@ export function SecuritySettingsPanel() {
   const [automationError, setAutomationError] = useState<string | null>(null);
   const [automationFeedback, setAutomationFeedback] = useState("");
   const rulesDirty = JSON.stringify(rules) !== savedRules;
+  const unparsedRuleCount = rules.filter(rule => rule.unparsed).length;
   const builderDirty = draft.action !== "ask" || draft.tool !== "bash" || Boolean(draft.pattern?.trim());
+  const rulesSummary = [
+    rules.length ? `${rules.length} 条自定义规则` : "未添加自定义规则",
+    unparsedRuleCount ? `${unparsedRuleCount} 条待核对` : "",
+    rulesDirty || builderDirty ? "有未保存的修改" : "",
+  ].filter(Boolean).join(" · ");
   useSettingsDraft({ dirty: rulesDirty || builderDirty, busy: saving, label: "权限规则" });
 
   const loadRules = useCallback(async () => {
@@ -594,7 +600,7 @@ export function SecuritySettingsPanel() {
       <SettingsDisclosure title="任务浏览器" settingId="browser-data" description="管理所选任务的登录数据和访问范围">
         <BrowserTaskSettings />
       </SettingsDisclosure>
-      <SettingsDisclosure title="高级权限规则" settingId="permission-rules" description={feedback.startsWith("保存失败") ? feedback : rulesError ? "读取失败，请展开重试；原有规则不会被覆盖。" : loading ? "正在读取…" : `${rules.length ? `${rules.length} 条自定义规则` : "未添加自定义规则"}${rulesDirty || builderDirty ? " · 有未保存的修改" : ""}`} defaultOpen={Boolean(rulesError) || feedback.startsWith("保存失败")}>
+      <SettingsDisclosure title="高级权限规则" settingId="permission-rules" description={feedback.startsWith("保存失败") ? feedback : rulesError ? "读取失败，请展开重试；原有规则不会被覆盖。" : loading ? "正在读取…" : rulesSummary} defaultOpen={Boolean(rulesError) || unparsedRuleCount > 0 || feedback.startsWith("保存失败")}>
         <SettingsGroup
           title="权限规则"
           desc="拒绝优先于询问，询问优先于允许。保存后重启 Agent 生效。"
@@ -607,13 +613,23 @@ export function SecuritySettingsPanel() {
               </button>
             </div>
           )}
+          {unparsedRuleCount > 0 && <p className="settings-msg settings-msg--warn" role="status">请核对旧格式或无法识别的规则。可转换的规则可先查看转换结果，再保存修改。其余规则可删除后重新添加。</p>}
           {rules.length > 0 ? (
             <ul className="rules-list" aria-label="权限规则列表">
               {rules.map((rule, index) => (
-                <li key={`${rule.action}-${rule.tool}-${rule.pattern ?? ""}-${index}`} className={`rules-list__item rules-list__item--${rule.action}`}>
+                <li key={`${rule.action}-${rule.tool}-${rule.pattern ?? ""}-${index}`} className={`rules-list__item rules-list__item--${rule.action}`} tabIndex={-1}>
                   <span className="rules-list__action">{PERMISSION_ACTION_LABELS[rule.action] || rule.action}</span>
-                  <span className="rules-list__tool">{PERMISSION_TOOL_LABELS[rule.tool] || rule.tool}</span>
-                  <span className="rules-list__pattern">{rule.pattern || "所有调用"}</span>
+                  <span className="rules-list__tool">{rule.unparsed ? "待核对" : PERMISSION_TOOL_LABELS[rule.tool] || rule.tool}</span>
+                  <span className="rules-list__pattern" title={rule.unparsed?.source}>
+                    {rule.unparsed?.source ?? `${rule.patternMode === "domain" ? "域名 · " : ""}${rule.pattern || "所有调用"}`}
+                    {rule.unparsed?.repairable && <button type="button" className="settings-btn settings-btn--ghost settings-btn--compact rules-list__repair"
+                      disabled={loading || saving || Boolean(rulesError)} aria-label={`转换旧规则 ${index + 1}`}
+                      onClick={event => {
+                        event.currentTarget.closest("li")?.focus();
+                        setFeedback("");
+                        setRules(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, unparsed: undefined } : item));
+                      }}>转换格式</button>}
+                  </span>
                   <button
                     type="button"
                     className="settings-btn settings-btn--ghost settings-btn--danger settings-btn--compact settings-btn--icon-only rules-list__remove"
@@ -642,7 +658,7 @@ export function SecuritySettingsPanel() {
             <label className="permission-rule-builder__field">
               <span>工具类型</span>
               <Select className="form-control" value={draft.tool} onChange={(e) => { setFeedback(""); setDraft({ ...draft, tool: e.target.value }); }} aria-label="工具类型" disabled={loading || saving || Boolean(rulesError)}>
-                {['bash', 'read', 'edit', 'grep', 'mcp', 'webfetch', 'any'].map((tool) => <option key={tool} value={tool}>{PERMISSION_TOOL_LABELS[tool]}（{tool}）</option>)}
+                {Object.entries(PERMISSION_TOOL_LABELS).map(([tool, label]) => <option key={tool} value={tool}>{label}（{tool}）</option>)}
               </Select>
             </label>
             <label className="permission-rule-builder__field permission-rule-builder__field--pattern">
@@ -673,6 +689,7 @@ export function SecuritySettingsPanel() {
 export function DataSettingsPanel({ recoveryRequested = false }: { recoveryRequested?: boolean } = {}) {
   const [agentHome, setAgentHome] = useState("");
   const [message, setMessage] = useState("");
+  const [exportFeedback, setExportFeedback] = useState<{ kind: "success" | "error"; text: string }>();
   const [busy, setBusy] = useState(false);
   const [hasRecoveryArchive, setHasRecoveryArchive] = useState(false);
   const { requestConfirmation, dialog } = useAppDialog();
@@ -703,9 +720,15 @@ export function DataSettingsPanel({ recoveryRequested = false }: { recoveryReque
         <div className="settings-group__footer">
           <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
             setBusy(true);
-            try { const path = await exportBackup(); if (path) setMessage(`备份已保存：${path}`); }
-            catch (error) { setMessage(`备份失败：${String(error)}`); }
-            finally { setBusy(false); }
+            setExportFeedback(undefined);
+            try {
+              const path = await exportBackup();
+              if (path) setExportFeedback({ kind: "success", text: `备份已保存到 ${path}` });
+            } catch (error) {
+              setExportFeedback({ kind: "error", text: `备份未生成。${String(error).replace(/^Error:\s*/, "")}` });
+            } finally {
+              setBusy(false);
+            }
           }}>{busy ? "处理中…" : "导出备份"}</button>
           <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
             setBusy(true);
@@ -722,6 +745,7 @@ export function DataSettingsPanel({ recoveryRequested = false }: { recoveryReque
             finally { setBusy(false); }
           }}>从备份恢复</button>
         </div>
+        {exportFeedback && <p className={`settings-msg settings-msg--${exportFeedback.kind}`} role={exportFeedback.kind === "error" ? "alert" : "status"}>{exportFeedback.text}</p>}
       </SettingsGroup>
       {(hasRecoveryArchive || recoveryRequested) && <SettingsGroup title="待恢复的界面数据" settingId="ui-recovery" desc="界面存储空间不足时，备份里的草稿和队列会留在本机恢复档案，可导出查阅。">
         <div className="settings-group__footer">

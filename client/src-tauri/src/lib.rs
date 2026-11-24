@@ -1284,6 +1284,7 @@ pub fn run() {
             storage::storage_list,
             storage::storage_read_text,
             storage::storage_write_text,
+            storage::storage_create_text,
             storage::storage_upload_file,
             storage::storage_download_file,
             storage::storage_delete,

@@ -730,11 +730,13 @@ export interface AgentEntry {
 
 // ---------- permission rules (~/.echo-agent/config.toml [permission]) ----------
 
-/** One permission rule. `action` ∈ allow|deny|ask; `tool` ∈ bash|read|edit|grep|mcp|any. */
+/** User permission rule passed to the Runtime. */
 export interface PermissionRule {
   action: string;
   tool: string;
   pattern?: string;
+  patternMode?: "glob" | "domain";
+  unparsed?: { source: string; repairable: boolean };
 }
 
 // ---------- memory (资料库 — ~/.echo-agent/memory/) ----------

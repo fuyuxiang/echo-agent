@@ -1,8 +1,6 @@
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 /** Browser verification of production components with isolated result data. */
 export async function validateResultReview(page, output, baseline = false) {
@@ -165,7 +163,7 @@ export async function validateResultReview(page, output, baseline = false) {
   return { baseline, screenshots, layouts: evidence.length + narrowEvidence.length };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const { createUiReviewServer, reviewChromium, reviewOutput } = await import("./ui-review-runtime.mjs");
   const output = reviewOutput("/private/tmp/echo-result-review");
   const server = await createUiReviewServer();

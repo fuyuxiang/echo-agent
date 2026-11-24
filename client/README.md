@@ -49,6 +49,8 @@ pnpm tauri dev
 
 **Windows（PowerShell）**
 
+准备语音资源需要 Python。将 `python` 加入 PATH，或在启动前通过 `PYTHON` 指定其可执行文件。CI 使用 Python 3.12。
+
 ```powershell
 git clone https://github.com/fuyuxiang/echo-agent-desktop.git
 cd echo-agent-desktop
@@ -103,7 +105,7 @@ flowchart LR
 | 目录 | 职责 |
 | --- | --- |
 | [`src/`](src/) | React 界面、状态管理与前端领域逻辑。 |
-| [`src-tauri/src/`](src-tauri/src/) | Tauri 命令、ACP 桥接、策略、存储、代码工作台和自动化后端。 |
+| [`src-tauri/src/`](src-tauri/src/) | Tauri 命令、ACP 桥接、权限策略、存储、文档及自动化后端。 |
 | [`vendor/echo-agent-build/`](vendor/echo-agent-build/) | 锁定的内嵌 Agent Runtime 源码快照。 |
 | [`scripts/`](scripts/) · [`docs/`](docs/) | 构建、验证、发行脚本与专题文档。 |
 
@@ -157,7 +159,7 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 
 ### 数据与权限边界
 
-- 默认数据根目录是 `~/.echo-agent/`，可在启动前通过 `ECHO_AGENT_HOME` 调整。模型配置位于 `config.toml`，MCP 配置位于 `mcp.json`，会话与工作台状态存放在该根目录下的对应子目录。
+- 默认数据根目录是 `~/.echo-agent/`，可在启动前通过 `ECHO_AGENT_HOME` 调整。模型配置位于 `config.toml`，MCP 配置位于 `mcp.json`，会话等本机数据存放在该根目录下的对应子目录。[旧版工作台资料迁移](docs/desktop-recovery.md#旧版工作台数据)
 - Provider API Key 保存在本机配置文件中。请保护该文件，避免将其提交到仓库或附在公开 Issue 中。个人模型连接默认要求 HTTPS；使用 HTTP 需要明确确认。
 - “本地优先”不等于离线。发送给模型的任务内容，以及启用 Browser Use / Computer Use 后提供的网页内容或屏幕截图，会到达所选模型服务；MCP、通知、云存储和可选组织能力也可能访问外部服务。
 - 工作区授权、权限模式与操作确认共同控制 Agent 行为。Browser Use 默认限制私网访问；Computer Use 从明确的用户任务启动，任务内连续操作，不逐步弹窗。暂停、停止、切换模式和重启撤销旧执行令牌；系统权限仍按操作系统要求授予。电脑任务范围是执行上下文，不是操作系统文件沙箱。
@@ -229,11 +231,11 @@ cargo clean --manifest-path src-tauri/Cargo.toml --target-dir src-tauri/target/x
 
 依赖升级、兼容补丁来源和锁文件更新步骤见 [依赖安全维护](docs/dependency-security.md)。
 
-原生验收入口为 `scripts/validate-native-review.mjs`，以及 `validate-native-browser-review.mjs`、`validate-native-core-review.mjs`、`validate-native-ide-git-review.mjs`、`validate-native-local-review.mjs`、`validate-native-webdav-review.mjs` 和 `validate-native-exit-recovery-review.mjs`。这些工具需要已构建的桌面可执行文件，使用独立临时数据目录；主验收流程包含首次启动和重启检查。涉及模型的流程需要通过 `NATIVE_REVIEW_MODEL_CONFIG` 显式提供独立的测试连接配置，定时任务验收会等待真实到点。它们不会由普通单元测试自动启动。
+原生验收从 `scripts/validate-native-review.mjs` 开始，包含首次启动和重启检查。各专题驱动、隔离数据目录和测试模型配置见 [开发与验收](docs/testing.md#原生应用与真实模型)。定时任务验收会等待任务实际到点。
 
 macOS 原生桌面任务使用 [`scripts/validate-native-desktop-controls.mjs`](scripts/validate-native-desktop-controls.mjs)，支持 `--smoke`、`--journey`、`--task-flow` 和 `--universal-flow`。桌面任务是否完成需结合真实 Runtime 日志、独立文件核验和界面证据判定；单元测试或 Windows 交叉编译通过不能替代实机验收。准备步骤和核验入口见 [桌面控制验收](docs/desktop-control/validation.md)，其他模块的验证层级及驱动见 [开发与验收](docs/testing.md)。
 
-新增原生验收工具默认将报告写入系统临时目录；可通过各入口的 `NATIVE_*_REVIEW_OUTPUT` 环境变量指定保留位置，通用桌面和会议界面验收使用 `UI_REVIEW_OUTPUT`。Code 验收中的续跑选项必须显式指定原输出目录，保留原始报告与独立临时数据目录。WebDAV 验收需在独立 Python 环境安装 `WsgiDAV` 和 `cheroot`，再用 `WEBDAV_REVIEW_PYTHON` 指定该环境的 Python；可选 `WEBDAV_REVIEW_PYTHONPATH` 用于显式依赖目录。Office 内容独立核验脚本 `validate-native-office-content.py` 另需 `python-docx`、`openpyxl`、`python-pptx` 和 `pypdf`。报告、截图、安装包和用户运行数据不属于项目源码。
+原生验收工具默认将报告写入系统临时目录。可通过各入口的 `NATIVE_*_REVIEW_OUTPUT` 环境变量指定保留位置，通用桌面和会议界面验收使用 `UI_REVIEW_OUTPUT`。WebDAV 验收需在独立 Python 环境安装 `WsgiDAV` 和 `cheroot`，再用 `WEBDAV_REVIEW_PYTHON` 指定该环境的 Python。需要显式设置依赖路径时使用 `WEBDAV_REVIEW_PYTHONPATH`。Office 内容独立核验脚本 `validate-native-office-content.py` 另需 `python-docx`、`openpyxl`、`python-pptx` 和 `pypdf`。报告、截图、安装包和用户运行数据保存在项目源码之外。
 
 图表验收默认使用根开发依赖中的 Playwright，也可通过 `PLAYWRIGHT_MODULE` 指向独立安装的 Playwright `index.mjs`。浏览器工具仅用于开发验证。验收使用随机本地端口和实际生产 SVG 图片，检查文字与节点边界、长圆形标签、显式换行、Markdown 多行、树连接、图表类型切换后的配置隔离，以及预览、源码、复制、下载和失败恢复。可用 `CHROME_BIN` 指定 Chromium 可执行文件、`UI_REVIEW_OUTPUT` 指定截图与几何数据目录；macOS 需要 Xcode Command Line Tools，原生 WKWebView 也会检查这些标签边界及配置隔离。CI 在 Windows、macOS 和 Linux 上运行该检查。
 

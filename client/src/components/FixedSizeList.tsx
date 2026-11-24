@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 
 export interface FixedSizeListProps<T> {
@@ -19,7 +20,10 @@ export interface FixedSizeListProps<T> {
   /** Initial scroll offset (parent may want to restore scroll position). */
   initialScrollTop?: number;
   onScroll?: (scrollTop: number) => void;
+  /** List occupying the start of an existing scroll viewport, such as the workspace. */
+  viewportRef?: RefObject<HTMLDivElement>;
   ariaLabel?: string;
+  role?: "listbox" | "presentation";
   className?: string;
 }
 
@@ -45,7 +49,9 @@ function FixedSizeListInner<T>(
     getKey,
     initialScrollTop = 0,
     onScroll,
+    viewportRef,
     ariaLabel,
+    role = "listbox",
     className,
   } = props;
 
@@ -54,28 +60,38 @@ function FixedSizeListInner<T>(
 
   // Apply initial scrollTop once the container has a height.
   useLayoutEffect(() => {
+    if (viewportRef) return;
     const node = containerRef.current;
     if (!node || height <= 0) return;
     if (initialScrollTop > 0 && node.scrollTop !== initialScrollTop) {
       node.scrollTop = initialScrollTop;
     }
-  }, [initialScrollTop, height]);
+  }, [initialScrollTop, height, viewportRef]);
 
-  const handleScroll = useCallback(
-    (event: React.UIEvent<HTMLDivElement>) => {
-      const next = event.currentTarget.scrollTop;
+  const recordScroll = useCallback(
+    (next: number) => {
       setScrollTop((prev) => (prev === next ? prev : next));
       onScroll?.(next);
     },
     [onScroll],
   );
 
+  useLayoutEffect(() => {
+    const viewport = viewportRef?.current;
+    if (!viewport) return;
+    const handleScroll = () => recordScroll(viewport.scrollTop);
+    handleScroll();
+    viewport.addEventListener("scroll", handleScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", handleScroll);
+  }, [viewportRef, recordScroll]);
+
   const { start, end, totalHeight } = useMemo(() => {
     if (height <= 0 || itemHeight <= 0) {
       return { start: 0, end: 0, totalHeight: items.length * itemHeight };
     }
     const total = items.length * itemHeight;
-    const first = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
+    const offset = Math.max(0, Math.min(scrollTop, total - height));
+    const first = Math.max(0, Math.floor(offset / itemHeight) - overscan);
     const visibleCount = Math.ceil(height / itemHeight) + overscan * 2;
     const last = Math.min(items.length, first + visibleCount);
     return { start: first, end: last, totalHeight: total };
@@ -84,25 +100,25 @@ function FixedSizeListInner<T>(
   const handle = useMemo<FixedSizeListHandle>(
     () => ({
       scrollToIndex: (index: number) => {
-        const node = containerRef.current;
+        const node = viewportRef?.current ?? containerRef.current;
         if (!node) return;
         const top = index * itemHeight;
         node.scrollTop = top;
-        setScrollTop(top);
+        recordScroll(node.scrollTop);
       },
     }),
-    [itemHeight],
+    [itemHeight, viewportRef, recordScroll],
   );
   useImperativeHandle(ref, () => handle, [handle]);
 
   return (
     <div
       ref={containerRef}
-      role="listbox"
+      role={role}
       aria-label={ariaLabel}
       className={["fixed-size-list", className].filter(Boolean).join(" ")}
-      style={{ height, overflowY: "auto" }}
-      onScroll={handleScroll}
+      style={viewportRef ? undefined : { height, overflowY: "auto" }}
+      onScroll={viewportRef ? undefined : (event) => recordScroll(event.currentTarget.scrollTop)}
       data-fixed-size-list=""
     >
       <div style={{ height: totalHeight, position: "relative" }}>

@@ -11,7 +11,6 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
   realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import ExcelJS from 'exceljs';
 import { readonlyCompatibilitySourceRevocations } from './lib/native-core-review-isolation.mjs';
@@ -317,7 +316,7 @@ export async function runNativeCoreReview({ executable, resourceOnly = false } =
   // Reads normally auto-allow in Ask mode. Add a stricter rule only in this
   // private profile so every synthetic Office read exercises the real prompt.
   writeFileSync(join(home, 'config.toml'), `[marketplace]\nofficial_marketplace_auto_installed = true\ndisabled_sources = [${revocations.map((value) => JSON.stringify(value)).join(', ')}]\n[claude_compat]\nimported = true\n[permission]\nask = [${JSON.stringify(`Read(${cwd}/办公读取/**)`)}]\n`, { flag: 'wx', mode: 0o600 });
-  const modelId = seedReviewModel(home);
+  const modelId = resourceOnly ? null : seedReviewModel(home);
   const beforeForeign = foreignSnapshot(), result = { version: 1, kind: 'native-core-driver', home, cwd, nonce, output,
     executable: executable || null, ...binaryProof, nativeVerified: false, passed: false,
     phases: [], errors: [], osPickerVerified: false, homeEnvironmentChanged: false, syntheticFixtures: true,
@@ -437,14 +436,17 @@ export async function runNativeCoreReview({ executable, resourceOnly = false } =
     await terminate(active); process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
     result.foreignAfter = foreignSnapshot(); result.defaultHomeChanged = JSON.stringify(result.foreignAfter) !== JSON.stringify(beforeForeign);
     if (result.defaultHomeChanged) { result.passed = false; result.nativeVerified = false; result.errors.push('Default/foreign configuration changed'); }
-    result.finishedAt = new Date().toISOString(); writeFileSync(join(output, 'result.json'), redactReviewModelSecrets(JSON.stringify(result, null, 2)), { mode: 0o600 });
+    result.finishedAt = new Date().toISOString();
+    const summary = JSON.stringify(result, null, 2);
+    writeFileSync(join(output, 'result.json'), resourceOnly ? summary : redactReviewModelSecrets(summary), { mode: 0o600 });
   }
   return result;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const resourceOnly = process.argv.includes('--resource-only');
   const result = await runNativeCoreReview({ executable: resourceOnly ? undefined : process.argv[2], resourceOnly });
-  console.log(redactReviewModelSecrets(JSON.stringify({ output: result.output, home: result.home, phases: result.phases, resourcesPrepared: result.resourcesPrepared || false,
-    passed: result.passed, nativeVerified: result.nativeVerified, errors: result.errors })));
+  const summary = JSON.stringify({ output: result.output, home: result.home, phases: result.phases, resourcesPrepared: result.resourcesPrepared || false,
+    passed: result.passed, nativeVerified: result.nativeVerified, errors: result.errors });
+  console.log(resourceOnly ? summary : redactReviewModelSecrets(summary));
   process.exitCode = resourceOnly ? (result.resourcesPrepared && result.errors.length === 0 ? 0 : 1) : result.passed ? 0 : 1;
 }

@@ -1,9 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { marked } from "marked";
-import {
-  Document, HeadingLevel, Packer, Paragraph, Table, TableCell, TableRow, TextRun,
-  WidthType, AlignmentType,
-} from "docx";
 import ExcelJS from "exceljs";
 import pptxgen from "pptxgenjs";
 import { PDFDocument, rgb } from "pdf-lib";
@@ -136,53 +132,6 @@ function blocks(items = tokens, depth = 0, listGutters = []) {
 
 const editableDocument = request.document ? normalizeDocument(request.document) : format === 'docx' ? markdownToDocument(markdown) : null;
 const content = request.document ? documentBlocks(editableDocument) : blocks();
-
-function docxTextRuns(value, options = {}) {
-  return String(value).split("\n").map((line, index) => new TextRun({
-    ...options, text: line, ...(index > 0 ? { break: 1 } : {}),
-  }));
-}
-
-async function createDocx() {
-  const children = [];
-  if (!content.some((block) => block.type === "heading" && block.level === 1)) {
-    children.push(new Paragraph({ text: title, heading: HeadingLevel.TITLE, spacing: { after: 300 } }));
-  }
-  for (const block of content) {
-    if (block.type === "table") {
-      children.push(new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        rows: block.rows.map((row, index) => new TableRow({
-          tableHeader: index === 0,
-          children: row.map((cell) => new TableCell({
-            children: [new Paragraph({
-              children: docxTextRuns(cell, { bold: index === 0 }),
-              spacing: { before: 80, after: 80 },
-            })],
-          })),
-        })),
-      }));
-      continue;
-    }
-    const heading = block.type === "heading"
-      ? [HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3][Math.min(block.level, 3) - 1]
-      : undefined;
-    children.push(new Paragraph({
-      heading,
-      children: docxTextRuns(`${block.prefix ? `${block.prefix} ` : ""}${block.text}`, { italics: Boolean(block.quote) }),
-      spacing: { after: block.type === "heading" ? 180 : 100, line: 330 },
-      indent: block.type === "list" || block.quote ? { left: 420 * ((block.depth ?? 0) + 1) } : undefined,
-      alignment: block.type === "code" ? AlignmentType.LEFT : undefined,
-    }));
-  }
-  const document = new Document({
-    creator: "EchoAgent",
-    title,
-    styles: { default: { document: { run: { font: "Noto Sans CJK SC", size: 22 } } } },
-    sections: [{ properties: { page: { margin: { top: 1150, bottom: 1150, left: 1200, right: 1200 } } }, children }],
-  });
-  await writeFile(outputPath, await Packer.toBuffer(document));
-}
 
 async function createPdf() {
   const document = await PDFDocument.create();

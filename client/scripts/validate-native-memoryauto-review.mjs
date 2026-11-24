@@ -3,7 +3,7 @@ import {spawn,execFileSync} from 'node:child_process';
 import {createHash,randomBytes} from 'node:crypto';
 import {chmodSync,existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,readdirSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join,resolve} from 'node:path';
-import {fileURLToPath,pathToFileURL} from 'node:url';
+import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {cleanNativeReviewEnvironment} from './lib/native-review-isolation.mjs';
 import {PRIVATE_REVIEW_MODEL_ID,seedReviewModel,captureReviewModelLogs,redactReviewModelSecrets} from './lib/native-review-model.mjs';
@@ -46,4 +46,4 @@ export async function runNativeMemoryAutoReview(executable){
  }catch(error){result.errors.push(String(error.stack??error).slice(0,6000));}finally{if(active&&active.exitCode===null&&active.signalCode===null){active.kill('SIGTERM');await delay(1000);if(active.exitCode===null&&active.signalCode===null)active.kill('SIGKILL');}await logs?.finished;process.removeListener('SIGINT',interrupt);process.removeListener('SIGTERM',interrupt);result.finishedAt=new Date().toISOString();writeFileSync(join(output,'result.json'),redactReviewModelSecrets(JSON.stringify(result,null,2)),{mode:0o600});}
  console.log(JSON.stringify({passed:result.passed,nativeVerified:result.nativeVerified,home,cwd,output,errors:result.errors}));return result;
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){assert.equal(process.argv.length,3);if(!(await runNativeMemoryAutoReview(process.argv[2])).passed)process.exitCode=1;}
+if (import.meta.main){assert.equal(process.argv.length,3);if(!(await runNativeMemoryAutoReview(process.argv[2])).passed)process.exitCode=1;}

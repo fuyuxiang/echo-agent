@@ -66,8 +66,7 @@ async function runPreparationPhase(label, command, args, { timeout, env = proces
 async function extractBzipArchive(label, archive, directory, members = []) {
   if (process.platform === "win32") {
     // Windows bsdtar can delegate bzip2 to a Git/MSYS executable, which hangs
-    // on native pipe handles. Python's standard library decodes bz2 in-process;
-    // Windows source builds already require Python for the native IDE modules.
+    // on native pipe handles. Python's standard library decodes bz2 in-process.
     const extractor = fileURLToPath(new URL("./extract_meeting_speech.py", import.meta.url));
     await runPreparationPhase(`${label}（Python bz2）`, process.env.PYTHON || "python",
       [extractor, "--archive", archive, "--directory", directory, "--", ...members],

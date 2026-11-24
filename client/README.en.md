@@ -49,6 +49,8 @@ pnpm tauri dev
 
 **Windows (PowerShell)**
 
+Speech asset preparation requires Python. Put `python` on PATH or set `PYTHON` to its executable before starting. CI uses Python 3.12.
+
 ```powershell
 git clone https://github.com/fuyuxiang/echo-agent-desktop.git
 cd echo-agent-desktop
@@ -119,7 +121,7 @@ Save reusable member, role, and model settings as templates without copying chat
 
 ### Data and permission boundaries
 
-- The default data root is `~/.echo-agent/`. Set `ECHO_AGENT_HOME` before launch to change it. Model configuration lives in `config.toml`, MCP configuration in `mcp.json`, and sessions and workbench state in subdirectories under that root.
+- The default data root is `~/.echo-agent/`. Set `ECHO_AGENT_HOME` before launch to change it. Model configuration lives in `config.toml`, MCP configuration in `mcp.json`, and sessions and other local data in subdirectories under that root. See [legacy workbench data migration](docs/desktop-recovery.md#旧版工作台数据).
 - Provider API keys are stored in a local configuration file. Protect it and do not commit it or attach it to a public issue. Personal model connections require HTTPS by default; HTTP requires explicit consent.
 - “Local-first” does not mean offline. Task content sent to a model, as well as webpage content or screenshots provided through Browser Use or Computer Use, reaches the selected model service. MCP, notifications, cloud storage, and optional organization features may also access external services.
 - Workspace authorization, permission modes, and action confirmations govern Agent activity. Browser Use restricts private-network access by default. Computer Use starts from an explicit user task and executes continuously without per-step approval. Pausing, stopping, switching modes, or restarting revokes the old execution lease; operating-system permissions remain required. Desktop task scope is execution context, not an OS filesystem sandbox.

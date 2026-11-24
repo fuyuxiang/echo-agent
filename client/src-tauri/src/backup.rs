@@ -283,6 +283,27 @@ fn copy_hash(
     }
     Ok((size, format!("{:x}", hash.finalize())))
 }
+fn backup_sources(home: &Path, app_data: &Path) -> Result<Vec<(&'static str, PathBuf)>, String> {
+    let mut sources = Vec::new();
+    let mut linked = Vec::new();
+    for &name in FILES.iter().chain(DIRS.iter()) {
+        let path = source_path(home, app_data, name);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if crate::paths::is_link_or_reparse_point(&metadata) => linked.push(name),
+            Ok(_) => sources.push((name, path)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("无法读取备份数据 {name}：{error}")),
+        }
+    }
+    if !linked.is_empty() {
+        return Err(format!(
+            "无法备份链接中的应用数据（{}）。请将数据移回应用数据目录后重试。",
+            linked.join("、")
+        ));
+    }
+    Ok(sources)
+}
+
 fn export(
     home: &Path,
     app_data: &Path,
@@ -298,22 +319,43 @@ fn export(
         app_data: app_data.to_string_lossy().into_owned(),
     };
     validate(&manifest)?;
+    let sources = backup_sources(home, app_data)?;
     let mut temporary =
         tempfile::NamedTempFile::new_in(destination.parent().ok_or("保存位置无效")?)
             .map_err(|e| e.to_string())?;
+    let previous_archive = match fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.is_file() => {
+            Some(destination.canonicalize().map_err(|e| e.to_string())?)
+        }
+        _ => None,
+    };
+    let outputs = [
+        Some(temporary.path().canonicalize().map_err(|e| e.to_string())?),
+        previous_archive,
+    ];
     let mut zip = ZipWriter::new(temporary.as_file_mut());
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o600);
     let mut total = 0;
-    for root in FILES.iter().chain(DIRS.iter()) {
-        let source = source_path(home, app_data, root);
-        if !source.exists() {
-            continue;
-        }
-        for file in walkdir::WalkDir::new(&source).follow_links(false) {
+    for (root, source) in sources {
+        for file in walkdir::WalkDir::new(&source)
+            .follow_links(false)
+            .follow_root_links(false)
+        {
             let file = file.map_err(|e| e.to_string())?;
+            if file.depth() == 0 && file.file_type().is_symlink() {
+                return Err(format!("备份期间应用数据位置发生变化：{root}。请重试。"));
+            }
             if !file.file_type().is_file() {
+                continue;
+            }
+            // A save dialog can select a folder included in the backup.
+            // Skip both the live writer and the archive being replaced.
+            if outputs.iter().flatten().any(|output| {
+                file.path().file_name() == output.file_name()
+                    && file.path().canonicalize().is_ok_and(|path| path == *output)
+            }) {
                 continue;
             }
             let relative = file
@@ -329,7 +371,7 @@ fn export(
                     .replace('\\', "/")
             };
             if !allowed(&name) {
-                if ["document-workspaces", LEGACY_UI_DIR, RECOVERY_UI_DIR].contains(root) {
+                if ["document-workspaces", LEGACY_UI_DIR, RECOVERY_UI_DIR].contains(&root) {
                     // Only committed identity-named records belong in the backup.
                     continue;
                 }
@@ -1138,6 +1180,14 @@ pub async fn backup_export(
     app: AppHandle,
     ui_state: BTreeMap<String, String>,
 ) -> Result<Option<String>, String> {
+    let home = crate::paths::echo_agent_home_dir();
+    let app_data = crate::paths::desktop_data_dir(&app)?;
+    let (home, app_data) = tauri::async_runtime::spawn_blocking(move || {
+        backup_sources(&home, &app_data)?;
+        Ok::<_, String>((home, app_data))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -1151,14 +1201,8 @@ pub async fn backup_export(
         return Ok(None);
     };
     let path = path.into_path().map_err(|e| e.to_string())?;
-    let app_data = crate::paths::desktop_data_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        export(
-            &crate::paths::echo_agent_home_dir(),
-            &app_data,
-            &path,
-            ui_state,
-        )?;
+        export(&home, &app_data, &path, ui_state)?;
         Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
@@ -1488,6 +1532,70 @@ pub(crate) async fn backup_export_ui_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_inside_backed_up_directory_excludes_its_own_output() {
+        let home = tempfile::tempdir().unwrap();
+        let projects = home.path().join("projects");
+        fs::create_dir(&projects).unwrap();
+        fs::write(projects.join("季度总结.txt"), "retained project data").unwrap();
+        // The same save location can use a different spelling (for example a
+        // macOS system alias or a path selected through a linked directory).
+        let archive = projects.canonicalize().unwrap().join("备份.zip");
+
+        for _ in 0..2 {
+            export(home.path(), home.path(), &archive, BTreeMap::new()).unwrap();
+
+            let staging = tempfile::tempdir().unwrap();
+            let manifest = unpack(&archive, staging.path()).unwrap();
+            let names: Vec<_> = manifest.files.into_iter().map(|file| file.name).collect();
+            assert_eq!(names, ["projects/季度总结.txt"]);
+            assert_eq!(
+                fs::read_to_string(staging.path().join("projects/季度总结.txt")).unwrap(),
+                "retained project data"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_linked_data_roots_and_preserves_the_previous_backup() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let archive = home.path().join("backup.zip");
+        fs::write(&archive, b"previous backup").unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("projects")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("missing"), home.path().join("sessions"))
+            .unwrap();
+
+        let error = export(home.path(), home.path(), &archive, BTreeMap::new()).unwrap_err();
+
+        assert!(error.contains("projects") && error.contains("sessions"));
+        assert_eq!(fs::read(&archive).unwrap(), b"previous backup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_excludes_nested_links_without_copying_external_files() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(
+            outside.path().join("outside.txt"),
+            "outside the backup scope",
+        )
+        .unwrap();
+        fs::create_dir(home.path().join("sessions")).unwrap();
+        fs::write(home.path().join("sessions/ordinary.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("sessions/nested")).unwrap();
+        let archive = home.path().join("backup.zip");
+
+        export(home.path(), home.path(), &archive, BTreeMap::new()).unwrap();
+
+        let staging = tempfile::tempdir().unwrap();
+        let manifest = unpack(&archive, staging.path()).unwrap();
+        let names: Vec<_> = manifest.files.into_iter().map(|file| file.name).collect();
+        assert_eq!(names, ["sessions/ordinary.json"]);
+    }
 
     #[test]
     fn archived_draft_versions_and_deferred_ui_survive_full_backup_restore() {

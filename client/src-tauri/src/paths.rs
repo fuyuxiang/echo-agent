@@ -214,11 +214,6 @@ fn default_workspace_path(base: &Path) -> PathBuf {
     base.join("EchoAgent")
 }
 
-/// Built-in skills follow the active data home during legacy migration.
-fn builtin_skills_root(data_home: &Path) -> PathBuf {
-    data_home.join("resources").join("builtin-skills")
-}
-
 fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     if !paths.contains(&path) {
         paths.push(path);
@@ -272,9 +267,6 @@ pub fn initialize_runtime_home() -> Result<PathBuf, String> {
         .map_err(|e| format!("write migration marker {}: {e}", marker.display()))?;
     }
 
-    // Preserve locally bundled skills without importing retired browse catalogs.
-    migrate_legacy_builtin_skills(&target);
-
     // Migration may have copied a world-readable legacy file. Harden it on
     // every startup so existing installations are repaired without requiring
     // the user to save provider settings again.
@@ -284,42 +276,6 @@ pub fn initialize_runtime_home() -> Result<PathBuf, String> {
     }
 
     Ok(target)
-}
-
-fn migrate_legacy_builtin_skills(data_home: &Path) {
-    let Some(user_home) = legacy_catalog_user_home() else {
-        return;
-    };
-    let old_default_home = user_home.join(HOME_DIR_NAME);
-
-    let builtin_source = old_default_home.join("resources").join("builtin-skills");
-    if builtin_source.is_dir() {
-        if let Err(error) = migrate_catalog_dir(&builtin_source, &builtin_skills_root(data_home)) {
-            eprintln!("migrate legacy built-in skills: {error}");
-        }
-    }
-}
-
-/// Copy a legacy catalog through a sibling staging directory, then rename it
-/// into place. The rename makes an interrupted import distinguishable from a
-/// complete target and ensures an existing target always wins.
-fn migrate_catalog_dir(source: &Path, target: &Path) -> io::Result<bool> {
-    if source == target || target.exists() || !source.is_dir() {
-        return Ok(false);
-    }
-    let parent = target.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "catalog target has no parent")
-    })?;
-    fs::create_dir_all(parent)?;
-    let name = target
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid catalog target"))?;
-    let staging = parent.join(format!(".{name}.migrating"));
-    fs::create_dir_all(&staging)?;
-    merge_missing(source, &staging)?;
-    fs::rename(staging, target)?;
-    Ok(true)
 }
 
 /// Write a secret-bearing file atomically with owner-only permissions on Unix.
@@ -480,6 +436,39 @@ pub(crate) fn harden_private_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {
+    let is_link = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    let is_link = {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        is_link || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    };
+    is_link
+}
+
+/// Resolve an existing application-managed directory without adopting a link
+/// to another directory. The data home itself can have a different spelling.
+pub(crate) fn canonical_managed_dir(path: &Path) -> io::Result<PathBuf> {
+    let metadata = fs::symlink_metadata(path)?;
+    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "应用管理目录必须是真实目录");
+    if !metadata.is_dir() || is_link_or_reparse_point(&metadata) {
+        return Err(invalid());
+    }
+    let parent = path.parent().ok_or_else(invalid)?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    }
+    .canonicalize()?;
+    let canonical = path.canonicalize()?;
+    if canonical.parent() != Some(parent.as_path()) {
+        return Err(invalid());
+    }
+    Ok(canonical)
+}
+
 pub(crate) fn harden_private_dir(path: &Path) -> Result<(), String> {
     #[cfg(not(unix))]
     let _ = path;
@@ -547,9 +536,8 @@ fn copy_file_if_missing(source: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        builtin_skills_root, default_workspace_path, legacy_catalog_home_for, merge_missing,
-        migrate_catalog_dir, parse_data_home_args, redirected_default_workspace,
-        reject_legacy_workbuddy_path, write_private_file,
+        default_workspace_path, legacy_catalog_home_for, merge_missing, parse_data_home_args,
+        redirected_default_workspace, reject_legacy_workbuddy_path, write_private_file,
     };
     use std::fs;
     use std::io::Write;
@@ -628,15 +616,6 @@ mod tests {
     }
 
     #[test]
-    fn builtin_skills_follow_the_active_data_home() {
-        let root = Path::new("/data/echo-agent-home");
-        assert_eq!(
-            builtin_skills_root(root),
-            Path::new("/data/echo-agent-home/resources/builtin-skills")
-        );
-    }
-
-    #[test]
     fn default_workspace_is_a_dedicated_child_not_the_user_home() {
         let user_documents = Path::new("/Users/demo/Documents");
         let workspace = default_workspace_path(user_documents);
@@ -703,7 +682,10 @@ mod tests {
     fn migration_copies_nested_files_without_overwriting() {
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
+        let skills = source.path().join("resources/builtin-skills/local-skill");
         fs::create_dir_all(source.path().join("memory/nested")).unwrap();
+        fs::create_dir_all(&skills).unwrap();
+        fs::write(skills.join("SKILL.md"), "legacy skill").unwrap();
         fs::create_dir_all(target.path().join("memory")).unwrap();
         fs::write(source.path().join("config.toml"), "legacy").unwrap();
         fs::write(source.path().join("auth.json"), "legacy credentials").unwrap();
@@ -726,6 +708,19 @@ mod tests {
             fs::read_to_string(target.path().join("memory/nested/fact.md")).unwrap(),
             "fact"
         );
+        assert_eq!(
+            fs::read_to_string(
+                target
+                    .path()
+                    .join("resources/builtin-skills/local-skill/SKILL.md")
+            )
+            .unwrap(),
+            "legacy skill"
+        );
+        assert_eq!(
+            fs::read_to_string(skills.join("SKILL.md")).unwrap(),
+            "legacy skill"
+        );
     }
 
     #[test]
@@ -742,29 +737,6 @@ mod tests {
             fs::read_to_string(target.path().join("memory")).unwrap(),
             "keep this file"
         );
-    }
-
-    #[test]
-    fn catalog_migration_is_non_destructive_and_idempotent() {
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("legacy-experts");
-        let target = temp.path().join("data-home").join("experts-marketplace");
-        fs::create_dir_all(source.join("_meta")).unwrap();
-        fs::write(source.join("_meta/_expert_center.json"), "catalog").unwrap();
-
-        assert!(migrate_catalog_dir(&source, &target).unwrap());
-        assert_eq!(
-            fs::read_to_string(target.join("_meta/_expert_center.json")).unwrap(),
-            "catalog"
-        );
-        assert!(
-            source.exists(),
-            "legacy source must remain available for rollback"
-        );
-
-        fs::write(source.join("newer.txt"), "must not merge later").unwrap();
-        assert!(!migrate_catalog_dir(&source, &target).unwrap());
-        assert!(!target.join("newer.txt").exists());
     }
 
     #[cfg(unix)]

@@ -20,6 +20,8 @@ UI 审计的浏览器启动和 PNG 解码共用 `scripts/ui-review-tools.mjs`，
 
 桌面与 Agent workspace 的 `quinn-udp` 均锁至 0.5.16，修复 [RUSTSEC-2026-0538](https://rustsec.org/advisories/RUSTSEC-2026-0538.html) 所述的截断 UDP 数据报后接收循环持续忙等问题。保留 0.5 API 分支，并分别维护两份锁文件。
 
+桌面宿主和稳定性验收工程通过 Tauri/Wry 间接依赖 `cookie`。两份锁文件均采用修复版 0.18.3，处理 Unix 进程派生后私有 Cookie 随机数可能重复的问题。 [RUSTSEC-2026-0594](https://rustsec.org/advisories/RUSTSEC-2026-0594.html)
+
 桌面构建辅助库要求官方 [tauri-build 2.7.4](https://crates.io/crates/tauri-build/2.7.4) 或更新的兼容 2.x 版本，同时识别 Cargo 的 `build/包名-摘要/out` 和 `build/包名/摘要/out` 布局。边车与应用资源必须复制到实际输出目录；不能继续通过固定向上三级推算目录，否则新版 Cargo 会把资源放到 `build/` 下。
 
 运行库和测试依赖同时要求 `tauri 2.12.5` 或更新的兼容 2.x 版本，与 `tauri-utils 2.10` 的配置结构对齐。旧运行库的 `mock_context` 缺少 `AppConfig.app_directories_override`，仅编译不含测试的库不能发现此问题；版本更新必须额外检查全部测试目标。

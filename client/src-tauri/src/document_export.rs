@@ -186,27 +186,9 @@ pub(crate) fn install_output(
             .map_err(|e| format!("目标文件已存在或无法保存，原文件保持：{}", e.error))?;
         return Ok(());
     }
-    let (stage_file, stage_path) = stage.keep().map_err(|error| error.error.to_string())?;
-    drop(stage_file);
-    let backup = parent.join(format!(".echo-office-backup-{}", uuid::Uuid::now_v7()));
-    let had_original = destination.exists();
-    if had_original {
-        if let Err(error) = std::fs::rename(destination, &backup) {
-            let _ = std::fs::remove_file(&stage_path);
-            return Err(format!("无法保护原文件：{error}"));
-        }
-    }
-    if let Err(error) = std::fs::rename(&stage_path, destination) {
-        if had_original {
-            let _ = std::fs::rename(&backup, destination);
-        }
-        let _ = std::fs::remove_file(&stage_path);
-        return Err(format!("保存文档失败：{error}"));
-    }
-    if had_original {
-        let _ = std::fs::remove_file(&backup);
-    }
-    Ok(())
+    let stage = stage.into_temp_path();
+    crate::paths::replace_file_atomically(&stage, destination)
+        .map_err(|error| format!("保存文档失败：{error}"))
 }
 
 pub(crate) async fn generate(
@@ -577,6 +559,36 @@ pub async fn document_export(
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn export_replacement_preserves_a_directory_at_the_destination() {
+        let folder = tempfile::tempdir().unwrap();
+        let generated = folder.path().join("generated.docx");
+        let destination = folder.path().join("report.docx");
+        std::fs::write(&generated, b"new document").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("notes.txt"), b"keep existing contents").unwrap();
+
+        assert!(install_output(&generated, &destination, true).is_err());
+        assert_eq!(
+            std::fs::read(destination.join("notes.txt")).unwrap(),
+            b"keep existing contents"
+        );
+        assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn export_replacement_publishes_the_complete_output_and_cleans_staging() {
+        let folder = tempfile::tempdir().unwrap();
+        let generated = folder.path().join("generated.docx");
+        let destination = folder.path().join("report.docx");
+        std::fs::write(&generated, b"new document").unwrap();
+        std::fs::write(&destination, b"old document").unwrap();
+
+        install_output(&generated, &destination, true).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new document");
+        assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 2);
+    }
 
     #[test]
     fn recovered_export_requires_a_different_path_and_preserves_existing_files() {

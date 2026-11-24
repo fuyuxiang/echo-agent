@@ -18,6 +18,14 @@ function temporaryDirectory() {
   return directory;
 }
 
+function aliasedReleaseScript(root, name) {
+  fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+  fs.copyFileSync(new URL(`./${name}`, import.meta.url), path.join(root, "scripts", name));
+  const alias = path.join(temporaryDirectory(), "linked checkout");
+  fs.symlinkSync(fs.realpathSync(root), alias, process.platform === "win32" ? "junction" : "dir");
+  return path.join(alias, "scripts", name);
+}
+
 function versionProject() {
   const root = fs.realpathSync(temporaryDirectory());
   fs.mkdirSync(path.join(root, "src-tauri"));
@@ -135,6 +143,10 @@ describe("updater signature metadata", () => {
 
     fs.appendFileSync(artifact, "tampered");
     expect(() => verifySignatureMetadata(artifact, undefined, root)).toThrow(/文件内容/);
+    const script = aliasedReleaseScript(root, "verify-updater-signature.mjs");
+    const invalid = spawnSync(process.execPath, [script, artifact], { encoding: "utf8" });
+    expect(invalid.status, invalid.stderr).toBe(1);
+    expect(invalid.stderr).toMatch(/文件内容/);
 
     fs.writeFileSync(artifact, "installer");
     const wrongKeyPacket = Buffer.from(signaturePacket);
@@ -191,6 +203,10 @@ describe("Windows installer version gate", () => {
     expect(() => checkInstallerVersion(installer, "1.2.4")).toThrow(/does not match/);
     expect(checkInstallerVersion(installer, "1.2.3")).toBe("1.2.3.0");
     expect(() => readPeVersion(bytes.subarray(0, 0x280))).toThrow(/truncated|outside/);
+    const script = aliasedReleaseScript(root, "inspect-windows-installer.mjs");
+    const invalid = spawnSync(process.execPath, [script, installer, "1.2.4"], { encoding: "utf8" });
+    expect(invalid.status, invalid.stderr).toBe(1);
+    expect(invalid.stderr).toMatch(/does not match/);
   });
 });
 

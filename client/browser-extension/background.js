@@ -3,6 +3,7 @@ let socket = null;
 let allowed = new Set();
 const attached = new Set();
 const detaching = new Set();
+let closingTab = null;
 let serial = Promise.resolve();
 let pauseBarrier = Promise.resolve();
 let epoch = 0;
@@ -116,9 +117,14 @@ async function execute(command, connection, generation) {
     return descriptor(await chrome.tabs.get(id));
   }
   if (method === 'Echo.closeTab') {
-    await chrome.tabs.remove(id);
-    allowed.delete(id);
-    return { closed: String(id) };
+    closingTab = id;
+    try {
+      await chrome.tabs.remove(id);
+      allowed.delete(id);
+      return { closed: String(id) };
+    } finally {
+      closingTab = null;
+    }
   }
   if (!methods.has(method)) throw new Error('CDP method is outside the desktop control protocol');
   if (method === 'Page.navigate' && !validUrl(params.url)) throw new Error('Unsupported navigation');
@@ -165,8 +171,10 @@ function receive(connection, event) {
   });
 }
 
-chrome.debugger.onDetach.addListener(({ tabId }) => {
+chrome.debugger.onDetach.addListener(({ tabId }, reason) => {
   attached.delete(tabId);
+  // Chrome can report the close before the pending tabs.remove resolves.
+  if (closingTab === tabId && reason === 'target_closed') return;
   if (!detaching.has(tabId) && allowed.has(tabId)) void disconnect();
 });
 chrome.tabs.onRemoved.addListener(id => { allowed.delete(id); attached.delete(id); });

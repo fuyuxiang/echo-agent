@@ -161,6 +161,7 @@ import { ChatView } from "../ChatView";
 import { ThemeProvider } from "../ThemeProvider";
 import { rewindExecute, rewindPoints, sessionFork, sessionContinue, setAgentMode, commandsList } from "@/lib/agent-client";
 import { useSubagentStore } from "@/stores/subagent-store";
+import { ARTIFACT_CATALOG_EVENT } from "@/lib/artifact-catalog";
 
 function workspaceItem(name: string) {
   const expand = screen.queryByRole("button", { name: "展开工作区" });
@@ -619,6 +620,21 @@ describe("ChatView pause/yield/resume 闭环", () => {
     workspaceItem("文件变更");
     expect(container.querySelector(".file-changes")).toBeInTheDocument();
     expect(container.querySelector(".rewind-bar")).toBeNull();
+  });
+
+  it("没有变更块的文件改写在汇总和文件行上标为约数", () => {
+    setStore({ messages: [{ id: "a1", role: "assistant", complete: true, parts: [{
+      kind: "tool_call",
+      toolCall: {
+        toolCallId: "edit", kind: "edit", title: "改写", status: "completed",
+        content: [{ type: "diff", diff: { path: "report.md", old: "保留\n修改前", new: "保留\n修改后" } }],
+      },
+    }] }] });
+    renderChat();
+    workspaceItem("文件变更");
+    const changes = screen.getByRole("region", { name: "文件变更" });
+    expect(changes.querySelector(".file-changes__summary")).toHaveTextContent(/1 个文件 · 约 \+2 -2/);
+    expect(changes.querySelector(".file-changes__stats")).toHaveTextContent(/约 \+2-2/);
   });
 
   it.each(["变更", "团队"])("跨会话关闭%s面板不会恢复旧会话的位置或停止跟随", (label) => {
@@ -1284,6 +1300,23 @@ it("restored native export receipts become reachable after history loading binds
   expect(artifactMocks.load).toHaveBeenCalledWith("export-history");
   fireEvent.click(button);
   expect((await screen.findAllByText("report.docx")).length).toBeGreaterThan(0);
+});
+
+it("does not report a stale session export failure after a newer read succeeds", async () => {
+  storeState = { ...storeState, sessionId: "export-history", messages: [], streaming: false, error: null, plan: null };
+  let rejectOld!: (error: Error) => void;
+  artifactMocks.load.mockReset()
+    .mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject; }))
+    .mockResolvedValueOnce([{ id: "manual", path: "/synthetic/report.docx", kind: "document_export",
+      title: "报告 · DOCX", toolCallId: "document-export:receipt", status: "completed", verifiedOutput: true }]);
+  const onToast = vi.fn();
+  render(<ThemeProvider><ChatView {...baseProps} onToast={onToast} /></ThemeProvider>);
+  await act(async () => {
+    window.dispatchEvent(new CustomEvent(ARTIFACT_CATALOG_EVENT, { detail: { source: "document-export", sessionId: "export-history" } }));
+  });
+  await screen.findByLabelText("1 项成果");
+  await act(async () => { rejectOld(new Error("旧读取失败")); });
+  expect(onToast).not.toHaveBeenCalledWith(expect.stringContaining("旧读取失败"));
 });
 
 

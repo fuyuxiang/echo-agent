@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { lstatSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 export function ownedTestExecutables(messages, workspace, targetDirectory) {
   const inside = (root, file) => {
@@ -93,7 +92,7 @@ export function prepareMacosTestSignatures(env = process.env) {
   }
   return { signed: artifacts, platform: process.platform, localAdHocOnly: true };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   assert.equal(process.argv.length, 2, 'No arbitrary signing paths are accepted');
   console.log(JSON.stringify(prepareMacosTestSignatures()));
 }

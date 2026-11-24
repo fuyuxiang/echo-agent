@@ -1909,9 +1909,9 @@ dependencies = [
 
 [[package]]
 name = "cookie"
-version = "0.18.1"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ddef33a339a91ea89fb53151bd0a4689cfce27055c291dfa69945475d22c747"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "time",
  "version_check",
@@ -4264,6 +4264,7 @@ dependencies = [
  "echo-agent-tool-runtime",
  "echo-agent-tool-types",
  "echo-agent-tools",
+ "echo-agent-workspace",
  "ed25519-dalek",
  "embed-resource",
  "fs2",
@@ -4277,7 +4278,6 @@ dependencies = [
  "image",
  "libc",
  "md-5",
- "notify-debouncer-full",
  "notify-rust",
  "objc2",
  "objc2-app-kit",
@@ -4296,7 +4296,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
- "similar",
  "symphonia",
  "tauri",
  "tauri-build",

@@ -1,9 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  isLikelyImageMime,
-  extractImageFilesFromClipboard,
-  blobToBytes,
-} from "../clipboard-paste";
+import { blobToBytes, extractFilesFromClipboard } from "../clipboard-paste";
+import { AttachmentKind } from "../user-message";
 
 class FakeFile {
   name: string;
@@ -40,32 +37,14 @@ class FakeDataTransferItem {
   }
 }
 
-describe("isLikelyImageMime", () => {
-  it("accepts common image mime types", () => {
-    expect(isLikelyImageMime("image/png")).toBe(true);
-    expect(isLikelyImageMime("image/jpeg")).toBe(true);
-    expect(isLikelyImageMime("image/jpg")).toBe(true);
-    expect(isLikelyImageMime("image/gif")).toBe(true);
-    expect(isLikelyImageMime("image/webp")).toBe(true);
-    expect(isLikelyImageMime("image/bmp")).toBe(false);
-  });
-
-  it("rejects non-image mimes", () => {
-    expect(isLikelyImageMime("text/plain")).toBe(false);
-    expect(isLikelyImageMime("application/pdf")).toBe(false);
-    expect(isLikelyImageMime("")).toBe(false);
-    expect(isLikelyImageMime("video/mp4")).toBe(false);
-  });
-});
-
-describe("extractImageFilesFromClipboard", () => {
+describe("extractFilesFromClipboard", () => {
   it("returns empty list when items is null/undefined/empty", () => {
-    expect(extractImageFilesFromClipboard(null)).toEqual([]);
-    expect(extractImageFilesFromClipboard(undefined)).toEqual([]);
-    expect(extractImageFilesFromClipboard([])).toEqual([]);
+    expect(extractFilesFromClipboard(null)).toEqual([]);
+    expect(extractFilesFromClipboard(undefined)).toEqual([]);
+    expect(extractFilesFromClipboard([])).toEqual([]);
   });
 
-  it("keeps only file-kind items with image/* mime", () => {
+  it("keeps files and reports attachment kinds for the composer", () => {
     const imageItem = new FakeDataTransferItem(
       "file",
       "image/png",
@@ -77,11 +56,16 @@ describe("extractImageFilesFromClipboard", () => {
       new FakeFile("b.pdf", "application/pdf"),
     );
     const textItem = new FakeDataTransferItem("string", "text/plain");
+    const unsupported = new FakeDataTransferItem(
+      "file",
+      "image/bmp",
+      new FakeFile("c.bmp", "image/bmp"),
+    );
 
-    const out = extractImageFilesFromClipboard([imageItem, pdfItem, textItem]);
-    expect(out).toHaveLength(1);
-    expect(out[0].mime).toBe("image/png");
+    const out = extractFilesFromClipboard([imageItem, pdfItem, textItem, unsupported]);
+    expect(out.map(item => item.kind)).toEqual([AttachmentKind.Image, AttachmentKind.Document, AttachmentKind.Unsupported]);
     expect(out[0].blob).toBe(imageItem.file);
+    expect(out[1].blob).toBe(pdfItem.file);
   });
 
   it("supports pasting several images at once", () => {
@@ -97,8 +81,9 @@ describe("extractImageFilesFromClipboard", () => {
         new FakeFile("b.jpg", "image/jpeg"),
       ),
     ];
-    const out = extractImageFilesFromClipboard(items);
+    const out = extractFilesFromClipboard(items);
     expect(out.map((i) => i.mime)).toEqual(["image/png", "image/jpeg"]);
+    expect(out.every(item => item.kind === AttachmentKind.Image)).toBe(true);
   });
 
   it("skips file items whose getAsFile() returns null", () => {
@@ -108,19 +93,20 @@ describe("extractImageFilesFromClipboard", () => {
       "image/png",
       new FakeFile("a.png", "image/png"),
     );
-    const out = extractImageFilesFromClipboard([brokenItem, realItem]);
+    const out = extractFilesFromClipboard([brokenItem, realItem]);
     expect(out).toHaveLength(1);
     expect(out[0].blob).toBe(realItem.file);
   });
 
-  it("falls back to 'image' when filename is missing", () => {
+  it("gives unnamed PNGs distinct names with the supported extension", () => {
     const item = new FakeDataTransferItem(
       "file",
       "image/png",
       new FakeFile("", "image/png"),
     );
-    const [first] = extractImageFilesFromClipboard([item]);
-    expect(first.suggestedName.length).toBeGreaterThan(0);
+    const items = extractFilesFromClipboard([item, item]);
+    expect(items.map(i => i.suggestedName)).toEqual(["image.png", "2-image.png"]);
+    expect(items.every(i => i.kind === AttachmentKind.Image)).toBe(true);
   });
 });
 

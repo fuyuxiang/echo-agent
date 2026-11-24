@@ -5,6 +5,8 @@ use quick_xml::{
 };
 use std::collections::{BTreeMap, HashMap};
 
+const MAX_TABLE_DEPTH: usize = 64;
+
 fn attribute(event: &BytesStart<'_>, name: &[u8], reader: &Reader<&[u8]>) -> Option<String> {
     event
         .attributes()
@@ -60,6 +62,20 @@ fn predefined(reference: &quick_xml::events::BytesRef<'_>) -> String {
     }
 }
 
+#[derive(Default)]
+struct Table {
+    rows: Vec<Vec<String>>,
+    cells: Vec<String>,
+    cell: Option<String>,
+}
+
+fn append_cell_block(cell: &mut String, text: &str) {
+    if !cell.is_empty() {
+        cell.push_str("; ");
+    }
+    cell.push_str(text);
+}
+
 /// Shared paragraph/table structure used by Word and PowerPoint.
 pub fn paragraphs(xml: &str) -> Result<String, String> {
     let mut reader = Reader::from_str(xml);
@@ -68,11 +84,7 @@ pub fn paragraphs(xml: &str) -> Result<String, String> {
     let mut output = Vec::new();
     let mut paragraph = String::new();
     let mut heading = 0usize;
-    let mut in_cell = false;
-    let mut cell_text = String::new();
-    let mut cells = Vec::new();
-    let mut rows = 0usize;
-    let mut table = Vec::new();
+    let mut tables = Vec::<Table>::new();
     loop {
         match reader
             .read_event()
@@ -86,13 +98,15 @@ pub fn paragraphs(xml: &str) -> Result<String, String> {
                         heading = 0;
                     }
                     b"tc" => {
-                        in_cell = true;
-                        cell_text.clear();
+                        if let Some(table) = tables.last_mut() {
+                            table.cell = Some(String::new());
+                        }
                     }
-                    b"tr" => cells.clear(),
                     b"tbl" => {
-                        rows = 0;
-                        table.clear();
+                        if tables.len() >= MAX_TABLE_DEPTH {
+                            return Err("文档嵌套表格超过读取深度上限".into());
+                        }
+                        tables.push(Table::default());
                     }
                     _ => {}
                 }
@@ -112,6 +126,11 @@ pub fn paragraphs(xml: &str) -> Result<String, String> {
                 }
                 b"tab" => paragraph.push('\t'),
                 b"br" | b"cr" => paragraph.push('\n'),
+                b"tc" => {
+                    if let Some(table) = tables.last_mut() {
+                        table.cells.push(String::new());
+                    }
+                }
                 _ => {}
             },
             Event::Text(value) if stack.last().is_some_and(|name| name == b"t") => {
@@ -124,11 +143,10 @@ pub fn paragraphs(xml: &str) -> Result<String, String> {
                 match event.local_name().as_ref() {
                     b"p" => {
                         if !paragraph.trim().is_empty() {
-                            if in_cell {
-                                if !cell_text.is_empty() {
-                                    cell_text.push_str("; ");
-                                }
-                                cell_text.push_str(paragraph.trim());
+                            if let Some(cell) =
+                                tables.last_mut().and_then(|table| table.cell.as_mut())
+                            {
+                                append_cell_block(cell, paragraph.trim());
                             } else if heading > 0 {
                                 output.push(format!(
                                     "{} {}",
@@ -141,16 +159,40 @@ pub fn paragraphs(xml: &str) -> Result<String, String> {
                         }
                     }
                     b"tc" => {
-                        in_cell = false;
-                        cells.push(cell_text.clone());
-                    }
-                    b"tr" => {
-                        if !cells.is_empty() {
-                            row(&mut table, &cells, rows == 0);
-                            rows += 1;
+                        if let Some(table) = tables.last_mut() {
+                            table.cells.push(table.cell.take().unwrap_or_default());
                         }
                     }
-                    b"tbl" if !table.is_empty() => output.push(table.join("\n")),
+                    b"tr" => {
+                        if let Some(table) =
+                            tables.last_mut().filter(|table| !table.cells.is_empty())
+                        {
+                            table.rows.push(std::mem::take(&mut table.cells));
+                        }
+                    }
+                    b"tbl" => {
+                        if let Some(table) = tables.pop().filter(|table| !table.rows.is_empty()) {
+                            if let Some(cell) =
+                                tables.last_mut().and_then(|parent| parent.cell.as_mut())
+                            {
+                                // Markdown tables cannot contain a nested table. Keep its rows
+                                // in order inside the containing cell.
+                                let nested = table
+                                    .rows
+                                    .iter()
+                                    .map(|cells| cells.join(" / "))
+                                    .collect::<Vec<_>>()
+                                    .join("；");
+                                append_cell_block(cell, &format!("[嵌套表格] {nested}"));
+                            } else {
+                                let mut rendered = Vec::new();
+                                for (index, cells) in table.rows.iter().enumerate() {
+                                    row(&mut rendered, cells, index == 0);
+                                }
+                                output.push(rendered.join("\n"));
+                            }
+                        }
+                    }
                     _ => {}
                 }
                 stack.pop();
@@ -356,7 +398,34 @@ fn relationship_id(event: &BytesStart<'_>, reader: &Reader<&[u8]>) -> Option<Str
         })
 }
 
-fn relationship_targets(xml: &str, base: &str) -> Result<HashMap<String, String>, String> {
+struct RelationshipTarget {
+    path: String,
+    kind: Option<String>,
+}
+
+impl RelationshipTarget {
+    fn is_non_worksheet_sheet(&self) -> bool {
+        self.kind.as_deref().is_some_and(|kind| {
+            [
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/",
+                "https://schemas.openxmlformats.org/officeDocument/2006/relationships/",
+                "http://purl.oclc.org/ooxml/officeDocument/relationships/",
+            ]
+            .into_iter()
+            .any(|prefix| {
+                matches!(
+                    kind.strip_prefix(prefix),
+                    Some("chartsheet" | "dialogsheet")
+                )
+            })
+        })
+    }
+}
+
+fn relationship_targets(
+    xml: &str,
+    base: &str,
+) -> Result<HashMap<String, RelationshipTarget>, String> {
     let mut reader = Reader::from_str(xml);
     let mut targets = HashMap::new();
     loop {
@@ -387,7 +456,11 @@ fn relationship_targets(xml: &str, base: &str) -> Result<HashMap<String, String>
                             _ => segments.push(segment),
                         }
                     }
-                    if targets.insert(id, segments.join("/")).is_some() {
+                    let target = RelationshipTarget {
+                        path: segments.join("/"),
+                        kind: attribute(&event, b"Type", &reader),
+                    };
+                    if targets.insert(id, target).is_some() {
                         return Err("Office 文档关系标识重复".into());
                     }
                 }
@@ -417,7 +490,7 @@ fn presentation(parts: &[(String, String)]) -> Result<String, String> {
                 if event.local_name().as_ref() == b"sldId" =>
             {
                 let id = relationship_id(&event, &reader).ok_or("PPT 幻灯片关系标识缺失")?;
-                let path = targets.get(&id).ok_or("PPT 幻灯片关系无法解析")?;
+                let path = &targets.get(&id).ok_or("PPT 幻灯片关系无法解析")?.path;
                 if !path.starts_with("ppt/slides/") {
                     return Err("PPT 幻灯片路径无效".into());
                 }
@@ -433,6 +506,11 @@ fn presentation(parts: &[(String, String)]) -> Result<String, String> {
         }
     }
     Ok(slides.join("\n\n"))
+}
+
+pub(crate) fn is_worksheet_part(name: &str) -> bool {
+    name.strip_prefix("xl/worksheets/")
+        .is_some_and(|part| part.ends_with(".xml") && !part.contains('/'))
 }
 
 pub fn extract(extension: &str, mut parts: Vec<(String, String)>) -> Result<String, String> {
@@ -465,26 +543,32 @@ pub fn extract(extension: &str, mut parts: Vec<(String, String)>) -> Result<Stri
                         Event::Empty(event) | Event::Start(event)
                             if event.local_name().as_ref() == b"sheet" =>
                         {
-                            if let (Some(name), Some(id)) = (
-                                attribute(&event, b"name", &reader),
-                                relationship_id(&event, &reader),
-                            ) {
-                                if let Some(path) = relationships.get(&id) {
-                                    sheets.push((name, path.clone()));
-                                }
+                            let name = attribute(&event, b"name", &reader)
+                                .ok_or("Excel 工作表名称缺失")?;
+                            let relationship = relationship_id(&event, &reader)
+                                .and_then(|id| relationships.get(&id))
+                                .ok_or_else(|| format!("Excel 工作表的关系无法解析：{name}"))?;
+                            if relationship.is_non_worksheet_sheet() {
+                                continue;
                             }
+                            if !is_worksheet_part(&relationship.path) {
+                                return Err(format!("Excel 工作表路径无效：{name}"));
+                            }
+                            sheets.push((name, relationship.path.clone()));
                         }
                         Event::Eof => break,
                         _ => {}
                     }
                 }
-            }
-            if sheets.is_empty() {
+            } else {
                 sheets = parts
                     .iter()
-                    .filter(|(name, _)| name.starts_with("xl/worksheets/sheet"))
+                    .filter(|(name, _)| is_worksheet_part(name))
                     .map(|(name, _)| (name.clone(), name.clone()))
                     .collect();
+            }
+            if sheets.is_empty() {
+                return Err("Excel 文件没有可读取的工作表".into());
             }
             sheets
                 .into_iter()
@@ -575,6 +659,51 @@ mod tests {
             paragraphs("<p><t>&#x4E2D;&#25991;&amp;</t></p>").unwrap(),
             "中文&"
         );
+    }
+
+    #[test]
+    fn workbook_with_one_unresolved_sheet_does_not_return_partial_success() {
+        let parts = vec![
+            ("xl/workbook.xml".into(), r#"<workbook xmlns:r="r"><sheets><sheet name="有效工作表" r:id="r1"/><sheet name="缺损工作表" r:id="r2"/></sheets></workbook>"#.into()),
+            ("xl/_rels/workbook.xml.rels".into(), r#"<Relationships><Relationship Id="r1" Target="worksheets/sheet1.xml"/></Relationships>"#.into()),
+            ("xl/worksheets/sheet1.xml".into(), "<worksheet><row><c><v>100</v></c></row></worksheet>".into()),
+            ("xl/worksheets/sheet2.xml".into(), "<worksheet><row><c><v>200</v></c></row></worksheet>".into()),
+        ];
+        assert!(extract("xlsx", parts).unwrap_err().contains("缺损工作表"));
+    }
+
+    #[test]
+    fn workbook_keeps_worksheets_alongside_chart_and_dialog_sheets() {
+        let parts = vec![
+            ("xl/workbook.xml".into(), r#"<workbook xmlns:r="r"><sheets><sheet name="图表" r:id="r1"/><sheet name="数据" r:id="r2"/><sheet name="对话框" r:id="r3"/></sheets></workbook>"#.into()),
+            ("xl/_rels/workbook.xml.rels".into(), r#"<Relationships>
+                <Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet" Target="chartsheets/sheet1.xml"/>
+                <Relationship Id="r2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/custom.xml"/>
+                <Relationship Id="r3" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/dialogsheet" Target="dialogsheets/sheet1.xml"/>
+            </Relationships>"#.into()),
+            ("xl/worksheets/custom.xml".into(), "<worksheet><row><c><v>100</v></c></row></worksheet>".into()),
+        ];
+        let result = extract("xlsx", parts).unwrap();
+        assert_eq!(result, "## 工作表：数据\n\n| 100 |\n| --- |");
+    }
+
+    #[test]
+    fn nested_word_tables_preserve_outer_text_order_and_each_cell_once() {
+        let xml = r#"<w:document xmlns:w="w"><w:tbl><w:tr><w:tc>
+            <w:p><w:t>外层前文</w:t></w:p>
+            <w:tbl><w:tr><w:tc><w:p><w:t>内层甲</w:t></w:p></w:tc>
+            <w:tc><w:p><w:t>内层乙</w:t></w:p></w:tc></w:tr></w:tbl>
+            <w:p><w:t>外层后文</w:t></w:p>
+            </w:tc><w:tc><w:p><w:t>外层旁列</w:t></w:p></w:tc></w:tr></w:tbl></w:document>"#;
+        let result = paragraphs(xml).unwrap();
+        let mut last = 0;
+        for cell in ["外层前文", "内层甲", "内层乙", "外层后文", "外层旁列"] {
+            assert_eq!(result.matches(cell).count(), 1, "{result}");
+            let position = result.find(cell).unwrap();
+            assert!(position >= last, "{result}");
+            last = position;
+        }
+        assert!(result.contains(" | 外层旁列 |"), "{result}");
     }
 
     #[test]

@@ -412,7 +412,7 @@ export function ToolSidePanel({
       selectedArtifactId={selectedArtifactId}
       onArtifactSelect={handleArtifactSelect} />}
     {fileTreeVisit.current.visited && <div hidden={view !== "fileTree"} className="task-details__file-tree">
-      {workspaceAvailable ? <FileTreeView key={`${sessionId}:${cwd}`} rootPath={cwd} selectedPath={selectedFilePath} showRootInEmptyState={false}
+      {workspaceAvailable ? <FileTreeView key={`${sessionId}:${cwd}`} rootPath={cwd} selectedPath={selectedFilePath} showRootInEmptyState={false} viewportRef={listRef}
         onFileSelect={handleFileSelect} onToast={onToast}
         initialExpandedPaths={selectionRef.current.value.fileTree?.root === cwd ? selectionRef.current.value.fileTree?.expandedPaths ?? [] : []}
         onExpandedPathsChange={expandedPaths => {
@@ -613,6 +613,7 @@ function ChangesNavList({
             <span className="artifacts-list__name">{f.name}</span>
             <span className="artifacts-list__path">{f.path}</span>
             <span className="artifacts-list__meta">
+              {f.approximate && "约 "}
               +{f.added} / -{f.removed}
             </span>
           </button>

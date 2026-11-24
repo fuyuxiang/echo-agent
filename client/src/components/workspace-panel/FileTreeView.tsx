@@ -6,7 +6,7 @@
  *
  * 根目录取 cwd（会话工作区）。隐藏/构建目录已在后端过滤。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { listDir, type DirEntry } from "@/lib/agent-client";
 import { formatFileSize } from "@/lib/file-utils";
 import { ChevronRightIcon } from "@/foundation/components/Icon/icons";
@@ -101,6 +101,8 @@ interface FileTreeViewProps {
   /** Invoked when the cwd-empty state "选择其他目录" action is clicked. */
   onSelectDirectory?: () => void;
   showRootInEmptyState?: boolean;
+  /** Use the workspace's scroll owner so view switching restores the same position. */
+  viewportRef?: RefObject<HTMLDivElement>;
 }
 
 export function FileTreeView({
@@ -129,6 +131,7 @@ export function FileTreeView({
   indexedPaths = [],
   onSelectDirectory,
   showRootInEmptyState = true,
+  viewportRef,
 }: FileTreeViewProps) {
   const [loaded, setLoaded] = useState<LoadedMap>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -444,29 +447,55 @@ export function FileTreeView({
   // return so the hook order is stable across renders.
   const treeRef = useRef<HTMLDivElement | null>(null);
   const listHandleRef = useRef<FixedSizeListHandle | null>(null);
-  const containerHeight = useElementSize(treeRef, "height");
+  const pendingFocusFrame = useRef<number>();
+  const [scrollTop, setScrollTop] = useState(0);
+  const [focusedPath, setFocusedPath] = useState<string>();
   const shouldVirtualize = filteredRows.length >= topLevelThreshold;
+  const containerHeight = useElementSize(viewportRef ?? treeRef, "height", shouldVirtualize && rootLoaded && rootEntries.length > 0);
+  const virtualized = shouldVirtualize && (Boolean(containerHeight) || Boolean(viewportRef && typeof ResizeObserver !== "undefined"));
+  const tabStopPath = useMemo(() => {
+    const preferred = [focusedPath, selectedPath, selectedDirectoryPath];
+    const choose = (paths: string[]) => preferred.find(path => path !== undefined && paths.includes(path)) ?? paths[0];
+    if (!virtualized) return choose(visiblePaths);
+    if (!containerHeight || virtualItemHeight <= 0) return undefined;
+    const offset = Math.max(0, Math.min(scrollTop, filteredRows.length * virtualItemHeight - containerHeight));
+    const start = Math.floor(offset / virtualItemHeight);
+    const end = Math.ceil((offset + containerHeight) / virtualItemHeight);
+    const visibleEntries = filteredRows.slice(start, end).flatMap(row => row.kind === "entry" ? [row.entry.path] : []);
+    return choose(visibleEntries);
+  }, [containerHeight, filteredRows, focusedPath, scrollTop, selectedDirectoryPath, selectedPath, virtualItemHeight, virtualized, visiblePaths]);
 
-  useEffect(() => {
-    if (!revealPath || previousRevealKeyRef.current !== revealKey) return;
-    const index = filteredRows.findIndex(
-      (row) => row.kind === "entry" && normalize(row.entry.path) === normalize(revealPath),
-    );
-    if (index < 0) return;
-    if (shouldVirtualize) {
-      listHandleRef.current?.scrollToIndex(index);
+  const focusPath = useCallback((path: string | undefined) => {
+    if (!path) return;
+    const findNode = () => Array.from(treeRef.current?.querySelectorAll<HTMLElement>("[data-tree-path]") ?? [])
+      .find(node => normalize(node.dataset.treePath ?? "") === normalize(path));
+    const focus = (node: HTMLElement) => {
+      node.scrollIntoView?.({ block: "nearest" });
+      node.focus({ preventScroll: true });
+    };
+    if (pendingFocusFrame.current !== undefined) window.cancelAnimationFrame(pendingFocusFrame.current);
+    const node = findNode();
+    if (node) {
+      focus(node);
       return;
     }
-    const frame = window.requestAnimationFrame(() => {
-      const candidates = treeRef.current?.querySelectorAll<HTMLElement>("[data-tree-path]");
-      const node = [...(candidates ?? [])].find(
-        (candidate) => normalize(candidate.dataset.treePath ?? "") === normalize(revealPath),
-      );
-      node?.scrollIntoView?.({ block: "nearest" });
-      node?.focus({ preventScroll: true });
+    const index = filteredRows.findIndex(row => row.kind === "entry" && normalize(row.entry.path) === normalize(path));
+    if (index < 0 || !listHandleRef.current) return;
+    listHandleRef.current.scrollToIndex(index);
+    pendingFocusFrame.current = window.requestAnimationFrame(() => {
+      pendingFocusFrame.current = undefined;
+      const rendered = findNode();
+      if (rendered) focus(rendered);
     });
-    return () => window.cancelAnimationFrame(frame);
-  }, [revealKey, revealPath, shouldVirtualize, filteredRows]);
+  }, [filteredRows]);
+
+  useEffect(() => () => {
+    if (pendingFocusFrame.current !== undefined) window.cancelAnimationFrame(pendingFocusFrame.current);
+  }, [root]);
+
+  useEffect(() => {
+    if (revealPath && previousRevealKeyRef.current === revealKey) focusPath(revealPath);
+  }, [revealKey, revealPath, focusPath, virtualized]);
 
   if (!root) {
     return (
@@ -500,18 +529,14 @@ export function FileTreeView({
     );
   }
 
-  const renderTreeNode = (entry: DirEntry, depth = 0, renderChildren = true) => {
+  const renderTreeNode = (entry: DirEntry, depth: number) => {
     return (
       <TreeNode
         key={entry.path}
         entry={entry}
         depth={depth}
-        root={root}
-        renderChildren={renderChildren}
+        tabbable={entry.path === tabStopPath}
         expanded={renderedExpanded}
-        loaded={loaded}
-        loadingDirs={loadingDirs}
-        errors={errors}
         selectedPath={selectedPath}
         selectedDirectoryPath={selectedDirectoryPath}
         cutPaths={cutPaths}
@@ -521,7 +546,8 @@ export function FileTreeView({
         onRenameSubmit={onRenameSubmit}
         onRenameCancel={onRenameCancel}
         onToggleDir={toggleDir}
-        onRetryDir={(path) => void loadDir(path, true)}
+        onFocusPath={focusPath}
+        onTakeFocus={setFocusedPath}
         onFileSelect={onFileSelect}
         onDirectorySelect={onDirectorySelect}
       />
@@ -535,15 +561,24 @@ export function FileTreeView({
       role="tree"
       aria-label="工作区文件树"
       aria-busy={loadingDirs.size > 0 || undefined}
+      tabIndex={!tabStopPath && visiblePaths.length ? 0 : undefined}
+      onKeyDown={event => {
+        if (event.target !== event.currentTarget || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const path = event.key === "End" || event.key === "ArrowUp" ? visiblePaths[visiblePaths.length - 1] : visiblePaths[0];
+        focusPath(path);
+      }}
     >
-      {shouldVirtualize && containerHeight && containerHeight > 0 ? (
+      {virtualized ? (
         <FixedSizeList
           ref={listHandleRef}
           items={filteredRows}
           itemHeight={virtualItemHeight}
-          height={containerHeight}
+          height={containerHeight ?? 0}
+          viewportRef={viewportRef}
+          onScroll={setScrollTop}
           renderItem={(row) => {
-            if (row.kind === "entry") return renderTreeNode(row.entry, row.depth, false);
+            if (row.kind === "entry") return renderTreeNode(row.entry, row.depth);
             if (row.kind === "loading") {
               return (
                 <div
@@ -569,11 +604,11 @@ export function FileTreeView({
           getKey={(row) => row.kind === "entry"
             ? row.entry.path
             : `${row.kind}:${row.directoryPath}`}
-          ariaLabel="工作区文件树"
+          role="presentation"
         />
       ) : filteredRows.length > 0 ? (
         filteredRows.map((row) => {
-          if (row.kind === "entry") return renderTreeNode(row.entry, row.depth, false);
+          if (row.kind === "entry") return renderTreeNode(row.entry, row.depth);
           if (row.kind === "loading") {
             return (
               <div
@@ -602,16 +637,12 @@ export function FileTreeView({
   );
 }
 
-/** 单个树节点（目录或文件），递归渲染子目录。 */
+/** 文件或目录在可见树中的一行。 */
 function TreeNode({
   entry,
   depth,
-  root,
-  renderChildren,
+  tabbable,
   expanded,
-  loaded,
-  loadingDirs,
-  errors,
   selectedPath,
   selectedDirectoryPath,
   cutPaths,
@@ -621,18 +652,15 @@ function TreeNode({
   onRenameSubmit,
   onRenameCancel,
   onToggleDir,
-  onRetryDir,
+  onFocusPath,
+  onTakeFocus,
   onFileSelect,
   onDirectorySelect,
 }: {
   entry: DirEntry;
   depth: number;
-  root: string;
-  renderChildren: boolean;
+  tabbable: boolean;
   expanded: Set<string>;
-  loaded: LoadedMap;
-  loadingDirs: Set<string>;
-  errors: Map<string, string>;
   selectedPath?: string;
   selectedDirectoryPath?: string;
   cutPaths?: Set<string>;
@@ -642,7 +670,8 @@ function TreeNode({
   onRenameSubmit?: (path: string, newName: string) => Promise<void>;
   onRenameCancel?: () => void;
   onToggleDir: (path: string) => void;
-  onRetryDir: (path: string) => void;
+  onFocusPath: (path: string | undefined) => void;
+  onTakeFocus: (path: string) => void;
   onFileSelect: (path: string) => void;
   onDirectorySelect?: (path: string) => void;
 }) {
@@ -655,9 +684,6 @@ function TreeNode({
   );
   const isCut = cutPaths?.has(entry.path) ?? false;
   const isRenaming = renamingPath === entry.path;
-  const children = isDir ? loaded.get(entry.path) : undefined;
-  const childLoading = isDir && isExpanded && loadingDirs.has(entry.path);
-  const childError = isDir && isExpanded ? errors.get(entry.path) : undefined;
   const isSymlink = entry.kind === "symlink";
 
   const handleClick = (event: React.MouseEvent) => {
@@ -682,17 +708,7 @@ function TreeNode({
     }
   };
 
-  const focusPath = (tree: HTMLElement | null, path: string | undefined) => {
-    if (!tree || !path) return;
-    const candidates = tree.querySelectorAll<HTMLElement>("[data-tree-path]");
-    const node = [...candidates].find(
-      (candidate) => normalize(candidate.dataset.treePath ?? "") === normalize(path),
-    );
-    node?.focus();
-  };
-
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const tree = event.currentTarget.closest<HTMLElement>('[role="tree"]');
     const index = visiblePaths.indexOf(entry.path);
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
@@ -701,20 +717,20 @@ function TreeNode({
         : Math.max(0, index - 1);
       const path = visiblePaths[nextIndex];
       if (path) useFileTreeSelectionStore.getState().select([path], path);
-      focusPath(tree, path);
+      onFocusPath(path);
       return;
     }
     if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
       const path = event.key === "Home" ? visiblePaths[0] : visiblePaths[visiblePaths.length - 1];
       if (path) useFileTreeSelectionStore.getState().select([path], path);
-      focusPath(tree, path);
+      onFocusPath(path);
       return;
     }
     if (event.key === "ArrowRight" && isDir) {
       event.preventDefault();
       if (!isExpanded) onToggleDir(entry.path);
-      else focusPath(tree, visiblePaths[index + 1]);
+      else onFocusPath(visiblePaths[index + 1]);
       return;
     }
     if (event.key === "ArrowLeft" && isDir && isExpanded) {
@@ -725,7 +741,7 @@ function TreeNode({
     if (event.key === "ArrowLeft") {
       event.preventDefault();
       const parent = normalize(entry.path).split("/").slice(0, -1).join("/");
-      focusPath(tree, visiblePaths.find((path) => normalize(path) === parent));
+      onFocusPath(visiblePaths.find((path) => normalize(path) === parent));
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -766,12 +782,8 @@ function TreeNode({
         className={classes}
         style={{ paddingInlineStart: `${depth * 14 + 8}px` }}
         role="treeitem"
-        tabIndex={
-          isSingleSelected
-          || (!selectedPath && !selectedDirectoryPath && visiblePaths[0] === entry.path)
-            ? 0
-            : -1
-        }
+        aria-level={depth + 1}
+        tabIndex={tabbable ? 0 : -1}
         aria-expanded={isDir ? isExpanded : undefined}
         aria-selected={isMultiSelected}
         data-tree-path={entry.path}
@@ -779,6 +791,7 @@ function TreeNode({
         draggable={!isSymlink}
         aria-disabled={isSymlink || undefined}
         onClick={handleClick}
+        onFocus={() => onTakeFocus(entry.path)}
         onKeyDown={handleKeyDown}
         onContextMenu={handleContextMenu}
         onDragStart={(event) => {
@@ -854,56 +867,6 @@ function TreeNode({
           </>
         )}
       </div>
-      {renderChildren && isDir &&
-        isExpanded &&
-        children &&
-        children.map((child) => (
-          <TreeNode
-            key={child.path}
-            entry={child}
-            depth={depth + 1}
-            root={root}
-            renderChildren
-            expanded={expanded}
-            loaded={loaded}
-            loadingDirs={loadingDirs}
-            errors={errors}
-            selectedPath={selectedPath}
-            selectedDirectoryPath={selectedDirectoryPath}
-            cutPaths={cutPaths}
-            renamingPath={renamingPath}
-            visiblePaths={visiblePaths}
-            onContextMenu={onContextMenu}
-            onRenameSubmit={onRenameSubmit}
-            onRenameCancel={onRenameCancel}
-            onToggleDir={onToggleDir}
-            onRetryDir={onRetryDir}
-            onFileSelect={onFileSelect}
-            onDirectorySelect={onDirectorySelect}
-          />
-        ))}
-      {renderChildren && childLoading && (
-        <div
-          className="file-tree__node file-tree__node--loading"
-          style={{ paddingInlineStart: `${(depth + 1) * 14 + 8}px` }}
-        >
-          …
-        </div>
-      )}
-      {renderChildren && childError && !childLoading && (
-        <button
-          type="button"
-          className="file-tree__retry"
-          style={{ paddingInlineStart: `${(depth + 1) * 14 + 8}px` }}
-          onClick={(event) => {
-            event.stopPropagation();
-            onRetryDir(entry.path);
-          }}
-          title={childError}
-        >
-          读取失败，点击重试
-        </button>
-      )}
     </>
   );
 }

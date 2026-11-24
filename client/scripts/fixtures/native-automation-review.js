@@ -73,8 +73,11 @@ window.__echoNativeAutomationReview = async ({ invoke, home, cwd, phase, expecte
     error: item.error || null, archived: !!item.archived, scheduledFor: item.scheduledFor || null,
   });
   const sameAutomation = (actual, saved) => actual && saved
-    && ['id', 'name', 'prompt', 'cwds', 'status', 'modelId', 'permissionMode', 'scheduleType',
+    && ['id', 'name', 'prompt', 'status', 'modelId', 'permissionMode', 'scheduleType',
       'scheduledDate', 'scheduledTime', 'pushToWeChat', 'createdAt'].every((key) => actual[key] === saved[key])
+    && Array.isArray(actual.cwds) && Array.isArray(saved.cwds)
+    && actual.cwds.length === saved.cwds.length
+    && actual.cwds.every((cwd, index) => cwd === saved.cwds[index])
     && actual.skills.length === 0 && actual.connectorIds.length === 0
     && !actual.expertId && !actual.expertName && !actual.modelIsThinking && !actual.nextRunAt;
   let isolated = false;
@@ -156,7 +159,8 @@ window.__echoNativeAutomationReview = async ({ invoke, home, cwd, phase, expecte
         report.expected.automation = result;
         report.observed.automation = result;
         assert(typeof result.id === 'string' && result.id.length > 0, 'Save did not return a task ID');
-        assert(result.status === 'PAUSED' && result.scheduleType === 'once' && result.cwds[0] === isolation.cwd
+        assert(result.status === 'PAUSED' && result.scheduleType === 'once'
+          && Array.isArray(result.cwds) && result.cwds.length === 1 && result.cwds[0] === isolation.cwd
           && result.modelId === automation.modelId && result.permissionMode === 'default'
           && result.name === automation.name && result.prompt === automation.prompt
           && result.scheduledDate === automation.scheduledDate && result.scheduledTime === automation.scheduledTime

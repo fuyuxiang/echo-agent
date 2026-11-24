@@ -9,7 +9,6 @@ import { createServer } from 'node:http';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
   realpathSync, statSync, unlinkSync, writeFileSync, createReadStream } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const REQUIRED_LOCAL_CHECKS = Object.freeze({
@@ -307,7 +306,7 @@ export async function runNativeLocalReview({ executable, resourceOnly = false } 
     phases: result.phases.length, errors: result.errors, serverStopped: result.serverStopped, output, home }));
   return result;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const args = process.argv.slice(2), resourceOnly = args.length === 1 && args[0] === '--resource-only';
   assert(resourceOnly || args.length === 1 && !args[0].startsWith('--'), 'Usage: node scripts/validate-native-local-review.mjs <built-executable> | --resource-only');
   const result = await runNativeLocalReview({ executable: resourceOnly ? undefined : args[0], resourceOnly });

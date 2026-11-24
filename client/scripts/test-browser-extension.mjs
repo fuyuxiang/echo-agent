@@ -13,6 +13,7 @@ function fixture() {
   let timerId = 0;
   let pendingAttach, pendingDetach;
   let autoOpen = true;
+  const tabIds = new Set([1, 2]);
   class Socket {
     static OPEN = 1;
     constructor() {
@@ -30,12 +31,16 @@ function fixture() {
     runtime: { id: 'owned', getURL: path => `chrome-extension://owned/${path}`, onMessage: { addListener: fn => handlers.message = fn } },
     tabs: {
       get: async id => {
-        if (id === 3) throw new Error('No tab with id: 3');
+        if (!tabIds.has(id)) throw new Error(`No tab with id: ${id}`);
         return { id, url: 'https://example.invalid/', title: `tab ${id}` };
       },
-      query: async () => [1, 2].map(id => ({ id, url: 'https://example.invalid/' })),
+      query: async () => [...tabIds].map(id => ({ id, url: 'https://example.invalid/' })),
       update: async id => ({ id, windowId: 7, url: 'https://example.invalid/' }),
-      remove: async () => { throw new Error('Unexpected tab close'); },
+      remove: async id => {
+        handlers.detach({ tabId: id }, 'target_closed');
+        tabIds.delete(id);
+        handlers.removed(id);
+      },
       onRemoved: { addListener: fn => handlers.removed = fn },
     },
     debugger: {
@@ -62,8 +67,8 @@ function fixture() {
     });
   }
   const requestPair = (tabs = [1]) => message({ kind: 'pair', endpoint: `ws://127.0.0.1:12345/${'a'.repeat(64)}`, tabs });
-  async function pair() {
-    assert.deepEqual(await requestPair(), { ok: true });
+  async function pair(tabs) {
+    assert.deepEqual(await requestPair(tabs), { ok: true });
     const socket = sockets.at(-1);
     socket.message({ id: 'resume', method: 'Echo.resume' });
     await tick();
@@ -145,6 +150,31 @@ test('replacement pairing revokes old commands and disconnect preserves user tab
   await tick();
   assert.equal(f.commands.length, 0);
   assert.deepEqual(await f.message({ kind: 'disconnect' }), { ok: true });
+});
+
+test('closing a paired debugged tab acknowledges the close and keeps other tabs paired', async () => {
+  const f = fixture(), s = await f.pair([1, 2]);
+  s.message({ id: 'attach', method: 'Runtime.evaluate', targetId: '1' });
+  s.message({ id: 'close', method: 'Echo.closeTab', targetId: '1' });
+  s.message({ id: 'tabs', method: 'Echo.tabs' });
+  s.message({ id: 'remaining', method: 'Runtime.evaluate', targetId: '2' });
+  await tick();
+  assert.deepEqual(s.sent.find(value => value.id === 'close')?.result, { closed: '1' });
+  assert.deepEqual(s.sent.find(value => value.id === 'tabs')?.result.map(tab => tab.id), ['2']);
+  assert.equal(s.sent.find(value => value.id === 'remaining')?.result.ok, true);
+  assert.equal(s.readyState, 1);
+});
+
+test('unsolicited debugger detach still invalidates the pairing', async () => {
+  for (const reason of ['canceled_by_user', 'target_closed']) {
+    const f = fixture(), s = await f.pair([1, 2]);
+    for (const targetId of ['1', '2']) s.message({ id: targetId, method: 'Runtime.evaluate', targetId });
+    await tick();
+    f.handlers.detach({ tabId: 1 }, reason);
+    await tick();
+    assert.equal(s.readyState, 3);
+    assert.deepEqual(f.detached, [2]);
+  }
 });
 
 test('a closed tab in the replacement leaves the current pairing connected', async () => {

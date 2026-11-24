@@ -6,7 +6,6 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { join, resolve, dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -233,7 +232,7 @@ export async function runNativeExitReview(executableArgument) {
   return result;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   assert.equal(process.argv.length, 3, 'Usage: node scripts/validate-native-exit-recovery-review.mjs <packaged-executable>');
   const result = await runNativeExitReview(process.argv[2]); if (!result.passed) process.exitCode = 1;
 }

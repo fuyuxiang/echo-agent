@@ -1,9 +1,25 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { ownedTestExecutables } from './prepare-macos-test-signatures.mjs';
 const base = { reason: 'compiler-artifact', executable: '/repo/src-tauri/target/debug/deps/echoagent_lib-abc',
   profile: { test: true }, target: { src_path: '/repo/src-tauri/src/lib.rs', kind: ['lib'] } };
 const select = values => ownedTestExecutables(values, '/repo/src-tauri', '/repo/src-tauri/target');
+
+test('an aliased signing entry rejects arbitrary paths before building or signing', t => {
+  const root = mkdtempSync(join(tmpdir(), 'echo-test-signatures-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const alias = join(root, 'checkout');
+  symlinkSync(fileURLToPath(new URL('../', import.meta.url)), alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const script = join(alias, 'scripts', 'prepare-macos-test-signatures.mjs');
+  const result = spawnSync(process.execPath, [script, 'unexpected'], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 1, result.error?.message || result.stderr);
+  assert.match(result.stderr, /No arbitrary signing paths are accepted/);
+});
 test('accepts only own Cargo test artifacts and deduplicates without directory scans', () => {
   assert.deepEqual(select([base, base, { reason: 'build-finished', success: true }]), [base.executable]);
 });

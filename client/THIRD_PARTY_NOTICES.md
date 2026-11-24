@@ -28,8 +28,8 @@ tree and its crate-specific license files.
 
 ## Tauri NSIS installer template
 
-- Source: https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
-- Version: Tauri CLI 2.11.4 (matching the lockfile)
+- Source: https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
+- Version: Tauri CLI 2.12.4 (matching the lockfile)
 - Integration: `src-tauri/windows/installer.nsi`
 - License: MIT OR Apache-2.0
 - Copyright: Tauri Programme within The Commons Conservancy

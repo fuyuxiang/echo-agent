@@ -9,7 +9,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, realpa
   lstatSync, statSync, unlinkSync, copyFileSync, createReadStream } from 'node:fs';
 import { resolve, join, relative, isAbsolute, basename, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const REQUIRED_WEBDAV_CHECKS = Object.freeze({
@@ -54,6 +54,12 @@ export function verifyNativeWebDavReport({ report, phase, home, pid, startedAt, 
     const checks = report.checks.filter((check) => check.id === id);
     assert.equal(checks.length, 1, `Missing or duplicate actual native check: ${id}`);
     assert.equal(checks[0].result, 'passed', `Native check did not pass: ${id}`);
+  }
+  if (phase === 'first-launch') {
+    assert.equal(report.checks.find(({ id }) => id === 'native-webdav-create-edit-read')
+      ?.evidence?.duplicatePreservedExistingFileAndDraft, true);
+    assert.equal(report.checks.find(({ id }) => id === 'native-webdav-retry-save')
+      ?.evidence?.maskedEndpointChangeRejected, true);
   }
   assert.equal(report.modelRequested, false);
   assert.equal(report.uploadDownloadDialogVerified, false, 'This driver cannot claim OS transfer-dialog acceptance');
@@ -133,12 +139,13 @@ function verifyFilesystem({ report, scope, phase, firstFilesystem }) {
   const ledger = ordinary(scope.requestAudit, dirname(scope.root)).toString('utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const puts = (share, name) => ledger.filter((entry) => entry.method === 'PUT'
     && entry.path === `/${share}/${expected.directory}/${name}`);
-  assert.deepEqual(puts('rw', expected.fileName).map((entry) => entry.status), [201, 204], 'Text create/edit was duplicated or did not execute');
+  const textPutStatuses = puts('rw', expected.fileName).map((entry) => entry.status);
+  assert.deepEqual(textPutStatuses, [201, 412, 204], 'Expected creation, a real rejected duplicate, then the edit');
   assert.deepEqual(puts('ro', expected.recoveryName).map((entry) => entry.status), [403], 'Readonly failure was not a real unique standard-server PUT');
   assert.deepEqual(puts('rw', expected.recoveryName).map((entry) => entry.status), [201, 204], 'Recovery draft retry was duplicated or never saved');
   assert.equal(ledger.filter((entry) => entry.method === 'DELETE' && entry.path === `/rw/${expected.directory}/${expected.deletedName}` && entry.status === 204).length, 1);
   return { files, originalSeedsPreserved: true, ownScratchDeleted: true, providerCount: providers.length,
-    readonlyPutStatus: 403, successfulRetryWrites: 1, requestAudit: scope.requestAudit,
+    readonlyPutStatus: 403, textPutStatuses, successfulRetryWrites: 1, requestAudit: scope.requestAudit,
     requestAuditSha256: hash(ordinary(scope.requestAudit, dirname(scope.root))), transferDialogVerified: false };
 }
 
@@ -305,7 +312,7 @@ export async function runNativeWebDavReview({ executable, resourceOnly = false }
   return result;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const arguments_ = process.argv.slice(2);
   const resourceOnly = arguments_.length === 1 && arguments_[0] === '--resource-only';
   assert(resourceOnly || arguments_.length === 1, 'Usage: node scripts/validate-native-webdav-review.mjs <built-executable> | --resource-only');

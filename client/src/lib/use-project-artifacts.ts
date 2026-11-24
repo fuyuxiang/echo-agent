@@ -14,11 +14,20 @@ export function useProjectArtifacts(project: ProjectMeta) {
   const summaries = useSessionsStore(s => s.independent);
   useEffect(() => {
     let active = true;
-    const refresh = () => {
+    let latestRequest = 0;
+    const refresh = async () => {
+      const request = ++latestRequest;
       setCached(loadTaskArtifacts());
-      void loadDocumentArtifactCatalog().then(items => { if (active) { setNative(items); setError(""); } }).catch(e => { if (active) setError(String(e).replace(/^Error:\s*/, "")); });
+      try {
+        const items = await loadDocumentArtifactCatalog();
+        if (!active || request !== latestRequest) return;
+        setNative(items);
+        setError("");
+      } catch (error) {
+        if (active && request === latestRequest) setError(String(error).replace(/^Error:\s*/, ""));
+      }
     };
-    refresh();
+    void refresh();
     window.addEventListener(ARTIFACT_CATALOG_EVENT, refresh);
     window.addEventListener("focus", refresh);
     return () => { active = false; window.removeEventListener(ARTIFACT_CATALOG_EVENT, refresh); window.removeEventListener("focus", refresh); };

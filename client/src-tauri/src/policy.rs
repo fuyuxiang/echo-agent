@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -97,7 +97,7 @@ pub fn read_policy() -> Result<PolicySet, String> {
     read_policy_at(&policy_path())
 }
 
-fn read_policy_at(path: &std::path::Path) -> Result<PolicySet, String> {
+fn read_policy_at(path: &Path) -> Result<PolicySet, String> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -137,13 +137,16 @@ fn read_policy_at(path: &std::path::Path) -> Result<PolicySet, String> {
     Ok(set)
 }
 
-fn write_policy(mut set: PolicySet) -> Result<PolicySet, String> {
+fn write_policy_at(path: &Path, mut set: PolicySet) -> Result<PolicySet, String> {
     for rule in &set.rules {
         validate_rule(rule)?;
     }
     set.rules = merge_rules(set.rules);
     let raw = serde_json::to_vec_pretty(&set).map_err(|e| format!("serialize policy: {e}"))?;
-    crate::paths::write_private_file(&policy_path(), &raw)?;
+    if raw.len() as u64 > MAX_POLICY_BYTES {
+        return Err("限制策略超过 1MB，请减少规则内容后重试".into());
+    }
+    crate::paths::write_private_file(path, &raw)?;
     Ok(set)
 }
 
@@ -224,7 +227,7 @@ pub async fn policy_save(
         .await;
     let previous_locked_mode = locked_permission_mode();
     let previous_effective_mode = crate::permission_config::read_permission_mode();
-    let saved = write_policy(normalize_local_policy(policy))?;
+    let saved = write_policy_at(&policy_path(), normalize_local_policy(policy))?;
     let current_locked_mode = locked_permission_mode();
     let current_effective_mode = crate::permission_config::read_permission_mode();
     if permission_policy_requires_runtime_restart(
@@ -288,6 +291,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read_policy_at(&path).unwrap().rules.len(), 1);
+    }
+
+    #[test]
+    fn oversized_serialization_leaves_the_previous_policy_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.json");
+        let original = normalize_local_policy(PolicySet {
+            rules: vec![PolicyRule {
+                rule_type: "permission-mode".into(),
+                value: Value::String("ask".into()),
+                priority: 0,
+                source: None,
+            }],
+        });
+        write_policy_at(&path, original).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let values = Value::Array(vec![
+            Value::String("\\".repeat(512));
+            MAX_POLICY_ARRAY_ITEMS
+        ]);
+        let oversized = normalize_local_policy(PolicySet {
+            rules: ["model-whitelist", "disabled-features"]
+                .map(|rule_type| PolicyRule {
+                    rule_type: rule_type.into(),
+                    value: values.clone(),
+                    priority: 0,
+                    source: None,
+                })
+                .to_vec(),
+        });
+        assert!(write_policy_at(&path, oversized)
+            .unwrap_err()
+            .contains("1MB"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(read_policy_at(&path).unwrap().rules[0].value, "ask");
     }
 
     #[test]

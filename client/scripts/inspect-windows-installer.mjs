@@ -1,6 +1,4 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 // Read the fixed FileVersion from the PE VERSIONINFO resource. This runs on
 // macOS too, where the release machine cannot use PowerShell's VersionInfo.
@@ -112,7 +110,7 @@ export function checkInstallerVersion(filePath, expectedVersion) {
   return actual.join(".");
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   try {
     const [filePath, expectedVersion, ...extra] = process.argv.slice(2);
     if (!filePath || !expectedVersion || extra.length) {

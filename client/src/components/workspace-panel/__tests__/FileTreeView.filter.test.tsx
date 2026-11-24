@@ -1,5 +1,7 @@
-import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useRef } from "react";
 
 const mocks = vi.hoisted(() => ({
   listDir: vi.fn(async (_path?: string) => [] as unknown[]),
@@ -72,4 +74,79 @@ describe("FileTreeView filter", () => {
     expect(screen.getByText("src")).toBeInTheDocument();
     expect(mocks.listDir).toHaveBeenCalledWith("/r/src", "/r", undefined, false);
   });
+});
+
+describe("FileTreeView 渲染范围", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function measureViewport() {
+    const observed = vi.fn();
+    vi.stubGlobal("ResizeObserver", class implements ResizeObserver {
+      constructor(private readonly update: ResizeObserverCallback) {}
+      observe(target: Element) {
+        observed(target);
+        this.update([{
+          target,
+          contentRect: new DOMRectReadOnly(0, 0, 320, 260),
+          borderBoxSize: [], contentBoxSize: [], devicePixelContentBoxSize: [],
+        }], this);
+      }
+      disconnect() {}
+      unobserve() {}
+    });
+    return observed;
+  }
+
+  it("目录异步返回后观察可见容器，固定窗口只渲染有限的行", async () => {
+    const rows = Array.from({ length: 500 }, (_, index) => ({
+      name: `row-${index}.txt`, path: `/r/row-${index}.txt`, kind: "file", size: 1, modifiedAt: 0,
+    }));
+    mocks.listDir.mockResolvedValue(rows);
+    const observe = measureViewport();
+    const { container } = render(<FileTreeView rootPath="/r" onFileSelect={() => {}} />);
+    expect(screen.getByText("加载文件树中…")).toBeInTheDocument();
+    await waitFor(() => expect(container.querySelector('[data-tree-path="/r/row-0.txt"]')).not.toBeNull(), { timeout: 12_000 });
+    const visibleRows = container.querySelectorAll('[data-tree-path]');
+    expect(visibleRows.length).toBe(26);
+    expect(observe).toHaveBeenCalledWith(screen.getByRole("tree"));
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.queryByText("row-499.txt")).not.toBeInTheDocument();
+  }, 15_000);
+
+  it("复用工作区滚动容器，并让键盘定位尚未渲染的目标文件", async () => {
+    mocks.listDir.mockResolvedValue(Array.from({ length: 500 }, (_, index) => ({
+      name: `row-${index}.txt`, path: `/r/row-${index}.txt`, kind: "file", size: 1, modifiedAt: 0,
+    })));
+    measureViewport();
+    function Workspace() {
+      const viewportRef = useRef<HTMLDivElement>(null);
+      return <>
+        <button type="button">工作区导航</button>
+        <div ref={viewportRef} data-testid="viewport">
+          <FileTreeView rootPath="/r" selectedPath="/r/row-0.txt" onFileSelect={() => {}} viewportRef={viewportRef} />
+        </div>
+      </>;
+    }
+    const { container } = render(<Workspace />);
+    const firstRow = await waitFor(() => {
+      const row = container.querySelector('[data-tree-path="/r/row-0.txt"]');
+      expect(row).not.toBeNull();
+      return row!;
+    }, { timeout: 12_000 });
+    const viewport = screen.getByTestId("viewport");
+    act(() => {
+      viewport.scrollTop = 2600;
+      fireEvent.scroll(viewport);
+    });
+    expect(await screen.findByText("row-100.txt")).toBeInTheDocument();
+    expect(firstRow).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    screen.getByRole("button", { name: "工作区导航" }).focus();
+    await user.tab();
+    expect(screen.getByRole("treeitem", { name: "row-100.txt" })).toHaveFocus();
+    await user.keyboard("{End}");
+    await waitFor(() => expect(screen.getByText("row-499.txt").closest('[role="treeitem"]')).toHaveFocus());
+    expect(screen.getByRole("treeitem", { name: "row-499.txt" })).toHaveAttribute("tabindex", "0");
+    expect(viewport.scrollTop).toBeGreaterThan(2600);
+  }, 15_000);
 });

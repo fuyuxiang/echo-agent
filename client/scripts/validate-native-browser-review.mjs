@@ -10,7 +10,6 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, isAbsolute } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
 import { createBrowserReviewResource } from './lib/browser-review-resource.mjs';
 import { readonlyCompatibilitySourceRevocations } from './lib/native-core-review-isolation.mjs';
 import { confirmNativeReviewWorkspace } from './lib/native-core-workspace-picker.mjs';
@@ -178,7 +177,7 @@ export async function runNativeBrowserReview(executable, modelId = 'echoagent-re
   console.log(redactReviewModelSecrets(JSON.stringify({ passed: result.passed, nativeVerified: result.nativeVerified, output, errors: result.errors })));
   return result;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   assert.equal(process.argv.length, 3, 'Pass a built desktop executable; configure the review model explicitly with NATIVE_REVIEW_MODEL_CONFIG');
   const result = await runNativeBrowserReview(process.argv[2]);
   if (!result.passed) process.exitCode = 1;

@@ -88,6 +88,21 @@ function reconcileRequests<T extends { sessionId: string; requestId: string }>(
   }
 }
 
+export async function refreshPendingPlanApprovals(sessionId: string) {
+  const isCurrent = () => {
+    const transcript = useSessionStore.getState().transcripts[sessionId];
+    return !!transcript && !transcript.control && !useSessionsStore.getState().deletedSessionIds.includes(sessionId);
+  };
+  const snapshot = await readPendingInteractions(sessionId, isCurrent);
+  if (!snapshot || !isCurrent()) return;
+  const { requestPlanApproval, dismissPlanApproval } = useSessionStore.getState();
+  reconcileRequests(sessionId, snapshot.visible.planApprovals, snapshot.pending.planApprovals, requestPlanApproval, dismissPlanApproval);
+  const sessions = useSessionsStore.getState();
+  if (sessions.independent.find(session => session.sessionId === sessionId)?.status === "awaiting_approval") {
+    sessions.upsert({ sessionId, status: pendingSessionInteractionStatus(sessionId) ?? "working" });
+  }
+}
+
 function activePromptId(transcript: SessionTranscript) {
   return transcript.pendingSendNowPromptId ?? transcript.messages.find(
     message => message.id === transcript.streamingMessageId,

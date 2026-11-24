@@ -2133,10 +2133,6 @@ export async function openEchoAgentDataDir(): Promise<void> {
 
 // ---------- event subscription ----------
 
-export interface AgentEventListeners {
-  unlisten: UnlistenFn;
-}
-
 /** Subscribe to all EchoAgent events, dispatching into the provided callbacks. */
 export async function subscribeAgentEvents(handlers: {
   onUpdate?: (u: SessionUpdate & { __sessionId?: string }) => void;
@@ -2159,8 +2155,6 @@ export async function subscribeAgentEvents(handlers: {
   onPlanMode?: (p: unknown) => void;
   /** Fired when the permission mode (auto/yolo) changes. */
   onPermissionMode?: (p: unknown) => void;
-  /** Fired when the current repository HEAD changes. */
-  onGitHead?: (p: unknown) => void;
   /** Fired when the model list updates. */
   onModelsUpdate?: (p: unknown) => void;
   /** Fired on background task lifecycle (`task_backgrounded`/`task_completed`). */
@@ -2210,7 +2204,6 @@ export async function subscribeAgentEvents(handlers: {
     await wire<PlanApprovalRequest>("agent://plan-approval", handlers.onPlanApproval);
     await wire("agent://plan-mode", handlers.onPlanMode);
     await wire("agent://permission-mode", handlers.onPermissionMode);
-    await wire("agent://git-head", handlers.onGitHead);
     await wire("agent://models-update", handlers.onModelsUpdate);
     await wire("agent://task-update", handlers.onTaskUpdate);
     await wire<AutomationUpdateEvent>("agent://automation-update", handlers.onAutomationUpdate);

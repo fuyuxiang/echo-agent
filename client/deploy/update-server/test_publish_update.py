@@ -30,6 +30,11 @@ class SemverTests(unittest.TestCase):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 MODULE.semver_key(version)
 
+    def test_core_version_rejects_non_ascii_digits(self) -> None:
+        for version in ("1۲.2.3", "1.2۲.3", "1.2.3۲"):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                MODULE.semver_key(version)
+
 
 class PublishingTests(unittest.TestCase):
     def initialize_root(self, root: Path) -> Path:

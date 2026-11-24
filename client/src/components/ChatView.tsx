@@ -738,7 +738,7 @@ export function ChatView({
       void loadSessionDocumentArtifacts(sessionId).then(items => {
         if (active && request === generation) setExportArtifacts({ sessionId, items });
       }).catch(error => {
-        if (active) onToast?.(`无法加载会话成果：${String(error).replace(/^Error:\s*/, "")}`);
+        if (active && request === generation) onToast?.(`无法加载会话成果：${String(error).replace(/^Error:\s*/, "")}`);
       });
     };
     load();

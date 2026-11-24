@@ -4,7 +4,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve, basename, dirname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
 import { seedReviewModel, captureReviewModelLogs, redactReviewModelSecrets } from './lib/native-review-model.mjs';
 import { cleanNativeReviewEnvironment } from './lib/native-review-isolation.mjs';
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
@@ -192,7 +191,7 @@ export async function runNativeProjectReview(executable,accountProfile) {
   }
   console.log(JSON.stringify({passed:result.passed,nativeVerified:result.nativeVerified,home,output,errors:result.errors}));return result;
 }
-if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
+if (import.meta.main){
   assert.equal(process.argv.length,4,'Pass the freshly built binary and the profile signed in to its dedicated project review home, with NATIVE_REVIEW_MODEL_CONFIG set');
   if(!(await runNativeProjectReview(process.argv[2],process.argv[3])).passed)process.exitCode=1;
 }

@@ -13,7 +13,7 @@ type DragDropPayload =
   | { type: "leave" };
 
 let dragDropCallback: ((event: { payload: DragDropPayload }) => void) | null = null;
-const unlistenMock = vi.fn();
+let unlistenMock = vi.fn<() => void>();
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -44,7 +44,8 @@ vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
     onDragDropEvent: (cb: (event: { payload: DragDropPayload }) => void) => {
       dragDropCallback = cb;
-      return Promise.resolve(() => unlistenMock());
+      unlistenMock = vi.fn<() => void>();
+      return Promise.resolve(unlistenMock);
     },
   }),
 }));
@@ -402,8 +403,9 @@ describe("Composer drag-drop via Tauri native event", () => {
     const { unmount } = render(<Composer {...base} />);
     // Effect is flushed synchronously by testing-library after render.
     expect(dragDropCallback).not.toBeNull();
+    const unlisten = unlistenMock;
     unmount();
-    expect(unlistenMock).toHaveBeenCalled();
+    await waitFor(() => expect(unlisten).toHaveBeenCalledTimes(1));
   });
 
   it("drop with image paths adds them as attachments", async () => {
@@ -420,6 +422,24 @@ describe("Composer drag-drop via Tauri native event", () => {
     });
     expect(await screen.findByText("a.png")).toBeInTheDocument();
     expect(await screen.findByText("b.jpg")).toBeInTheDocument();
+  });
+
+  it("原生拖放跳过保留草稿的隐藏输入框，返回后仍能添加附件", async () => {
+    const composer = (hidden: boolean) => <div hidden={hidden}><Composer {...base} /></div>;
+    const view = render(composer(false));
+    expect(dragDropCallback).not.toBeNull();
+    const drop = (path: string) => dragDropCallback!({
+      payload: { type: "drop", paths: [path], position: { x: 0, y: 0 } },
+    });
+
+    view.rerender(composer(true));
+    await act(async () => { drop("/work/other-page.txt"); });
+    expect(invoke).not.toHaveBeenCalledWith("filesystem_attachment_stats", expect.anything());
+
+    view.rerender(composer(false));
+    expect(screen.queryByText("other-page.txt")).not.toBeInTheDocument();
+    await act(async () => { drop("/work/current-task.txt"); });
+    expect(screen.getByText("current-task.txt")).toBeInTheDocument();
   });
 
   it("does not attach a late native inspection result to another task", async () => {

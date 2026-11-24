@@ -177,6 +177,21 @@ class NpmAuditReviewTests(AuditTestCase):
 
 
 class RustAuditReviewTests(AuditTestCase):
+    def test_audit_rejects_changes_to_the_onnx_and_hex_backports_before_querying_osv(self):
+        read_bytes = Path.read_bytes
+        for relative in ("vendor/ort-sys/build.rs", "vendor/faster-hex/src/lib.rs"):
+            changed = audit.ROOT / relative
+
+            def read_with_change(path):
+                contents = read_bytes(path)
+                return contents + b"\nfixture drift" if path == changed else contents
+
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(Path, "read_bytes", read_with_change), \
+                    patch.object(audit, "request", side_effect=AssertionError("audit unexpectedly reached OSV")):
+                with self.assertRaisesRegex(RuntimeError, "backport changed without review"):
+                    audit.rust_audit(Path(directory))
+
     def test_review_is_specific_to_the_verified_release_and_advisory(self):
         review = audit.reviewed_rust_exception("block-buffer", "0.10.4", ADVISORY, {IDENTITY})
         self.assertIn("outside the buffer", review["reason"])

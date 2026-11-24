@@ -807,7 +807,10 @@ export function Composer({
             | { type: string; paths?: string[] }
             | undefined;
           if (!payload) return;
-          if (draftOnlyRef.current) {
+          // The WebView reports drops even while capability management hides
+          // this Composer and preserves its draft for the return journey.
+          const input = ref.current;
+          if (!input || input.closest("[hidden]") || draftOnlyRef.current) {
             setDragHovering(false);
             return;
           }

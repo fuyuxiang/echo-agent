@@ -2,7 +2,7 @@
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -33,7 +33,7 @@ export function buildTrayIcons(output = join(root, "src-tauri/icons/tray")) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   buildTrayIcons();
   console.log("Tray icons regenerated. Run pnpm icons:generate to refresh all assets and their manifest.");
 }

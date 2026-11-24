@@ -33,6 +33,7 @@ use chrono::{
     DateTime, Datelike, Duration, Local, MappedLocalTime, NaiveDate, NaiveDateTime, NaiveTime,
     Weekday,
 };
+use echo_agent_runtime::session::helpers::host_prompt_admission::{self, HostPromptAdmission};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -3355,8 +3356,9 @@ pub async fn automation_run_stop(
         }
         record.stop_requested = true;
         let mut identity = (record.session_id.clone(), record.prompt_id.clone());
+        // A run cannot submit its prompt before publishing the session binding.
         let settle_without_runtime = record.status == "queued"
-            || (record.waiting_reason.is_some() && record.session_id.is_none())
+            || record.session_id.is_none()
             || (record.recovered_from_prompt_id.is_some()
                 && record.recovered_from_prompt_id == record.prompt_id);
         let fact = settle_without_runtime.then(|| {
@@ -3382,18 +3384,36 @@ pub async fn automation_run_stop(
         publish_automation_completion(&app, completion);
     }
     if let Some(session_id) = session_id {
-        let tx = state
-            .tx
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or("Agent 尚未初始化，本次运行将于恢复时结束")?;
-        let (tools, runtime) = tokio::join!(
-            crate::automation::stop_existing_session(&session_id),
-            crate::agent_runtime::cancel(&tx, &session_id, "stop", prompt_id.as_deref())
-        );
-        runtime.map_err(|e| e.to_string())?;
-        tools?;
+        let withdrawn = prompt_id
+            .as_deref()
+            .is_some_and(|prompt| host_prompt_admission::withdraw(&session_id, prompt, false));
+        // A withdrawn prompt has not taken ownership of the Runtime or desktop tools.
+        if !withdrawn {
+            let tx = state
+                .tx
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("Agent 尚未初始化，本次运行将于恢复时结束")?;
+            let (tools, runtime) = tokio::join!(
+                crate::automation::stop_existing_session_for_prompt(
+                    &session_id,
+                    prompt_id.as_deref()
+                ),
+                crate::agent_runtime::cancel_from_user(
+                    &tx,
+                    &session_id,
+                    "stop",
+                    prompt_id.as_deref()
+                )
+            );
+            if let Err(error) = runtime {
+                if !error.is::<crate::agent_runtime::StalePromptCancel>() {
+                    return Err(error.to_string());
+                }
+            }
+            tools?;
+        }
     }
     let _ = app.emit("automation://changed", ());
     Ok(())
@@ -4096,19 +4116,15 @@ async fn execute_automation_run(
                     tracing::error!(error = %read_error, %record_id, "failed to read failed automation session");
                 }
             }
-            let session_id = record_session_id(&record_id).ok().flatten();
             if record_run_finished(&record_id, false, None, Some(&error)) {
-                emit_run_update(
-                    &app,
-                    &automation,
-                    &record_id,
-                    &cwd,
-                    RunUpdate::Failed {
-                        session_id: session_id.as_deref(),
-                        error: &error,
-                    },
-                );
-                publish_pending_completion(&app, &record_id);
+                if let Some(completion) = pending_terminal(&record_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|fact| fact.completion)
+                {
+                    emit_automation_update(&app, completion.event.clone());
+                    publish_automation_completion(&app, completion);
+                }
             }
         }
         Err(_) => {
@@ -4342,7 +4358,7 @@ async fn run_automation_once(
         .lock()
         .await;
     let target_mode = crate::permission_config::permission_mode_for_session();
-    let session_id = if let Some(session_id) = existing {
+    let (session_id, mut admission) = if let Some(session_id) = existing {
         // Do not replay into an already-live actor; resume persisted history
         // only after a restart, then reapply the task's exact execution model.
         resume_automation_session(
@@ -4355,6 +4371,7 @@ async fn run_automation_once(
             state.session_workspace(&session_id).is_ok(),
         )
         .await?;
+        let admission = HostPromptAdmission::begin(&session_id, &prompt_id)?;
         // Persist identity before elevating an existing actor. Even a partial
         // permission-sync failure can then be found and revoked by the caller.
         record_run_session(record_id, &session_id, &prompt_id)?;
@@ -4374,7 +4391,7 @@ async fn run_automation_once(
             },
         )
         .await?;
-        session_id
+        (session_id, Some(admission))
     } else {
         let session_id = crate::agent_runtime::new_session_with_options(
             tx,
@@ -4386,7 +4403,7 @@ async fn run_automation_once(
         .await
         .map_err(|e| e.to_string())?;
         *session_guard = Some(session_turn_lock(&session_id).lock_owned().await);
-        session_id
+        (session_id, None)
     };
     if let Err(failure) = commit_created_automation_session(
         tx,
@@ -4397,7 +4414,15 @@ async fn run_automation_once(
             let project = (!recovering).then_some(automation.project_id.as_deref()).flatten();
             state.record_session_workspace_with_project(&session_id, cwd, project)
         },
-        || record_run_session(record_id, &session_id, &prompt_id).and_then(|()| bind_dedicated_session(automation, &session_id)),
+        || {
+            // Once a run's prompt ID is visible, Stop must be able to
+            // withdraw that exact request until the Runtime dispatches it.
+            if admission.is_none() {
+                admission = Some(HostPromptAdmission::begin(&session_id, &prompt_id)?);
+                record_run_session(record_id, &session_id, &prompt_id)?;
+            }
+            bind_dedicated_session(automation, &session_id)
+        },
         |reset_error| {
             let reason = format!(
                 "自动化会话创建失败后无法恢复权限（{reset_error}）；为避免残留全权限会话，Agent 已安全停止，请重新启动"
@@ -4418,6 +4443,7 @@ async fn run_automation_once(
         state.forget_session_workspace(&session_id);
         return Err(failure.error);
     }
+    let admission = admission.ok_or("定时任务的回合尚未准备好")?;
     let mut update = run_update_event(
         automation,
         record_id,
@@ -4450,6 +4476,7 @@ async fn run_automation_once(
     }
     let completion = crate::agent_runtime::prompt_for_automation(
         tx,
+        &admission,
         &session_id,
         &prompt_id,
         prompt,
@@ -4457,10 +4484,7 @@ async fn run_automation_once(
         recovering,
     )
     .await
-    .map_err(|e| {
-        state.forget_session_workspace(&session_id);
-        e.to_string()
-    })?;
+    .map_err(|error| error.to_string())?;
     Ok((session_id, completion))
 }
 

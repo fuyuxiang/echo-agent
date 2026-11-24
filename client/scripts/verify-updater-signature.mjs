@@ -153,8 +153,7 @@ export function verifySignatureMetadata(
   return publicMetadata.keyId;
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+if (import.meta.main) {
   try {
     const [artifactPath, signaturePath, ...extra] = process.argv.slice(2);
     if (!artifactPath || extra.length > 0) {

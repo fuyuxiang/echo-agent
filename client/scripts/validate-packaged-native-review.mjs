@@ -95,7 +95,7 @@ try {
       }
     }
   }
-  result.passed = result.errors.length === 0 && result.checks.length === 3 && result.checks.every((check) => check.passed)
+  result.passed = result.errors.length === 0 && result.checks.length === 2 && result.checks.every((check) => check.passed)
     && journal.length === 4 && journal.every((entry) => entry.restored);
   writeFileSync(join(output, 'package-resource-review.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ passed: result.passed, checks: result.checks, errors: result.errors,

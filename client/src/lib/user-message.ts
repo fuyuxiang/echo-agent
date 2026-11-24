@@ -15,11 +15,7 @@ export function attachmentBasename(path: string): string {
 }
 
 /**
- * 附件分类 —— 替代旧的 `isImageAttachment` 单一布尔判定。
- *
- * 背景:会话内粘贴/拖拽以前只接受 5 种图片格式,其它文件被 `filter` 静默
- * 丢弃(`Composer.tsx:507` 的 `filter(isImageAttachment)` 与粘贴路径的
- * `extractImageFilesFromClipboard`),用户毫无反馈。
+ * 分类会话内粘贴、拖拽和选择的附件。
  *
  * 设计要点:
  * - 白名单驱动。所有支持的扩展名显式列举,避免误判。

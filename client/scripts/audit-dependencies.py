@@ -234,7 +234,7 @@ def rust_audit(output):
     fuzz = tomllib.loads((ROOT / "vendor/echo-agent-build/crates/codegen/echo-agent-markdown/fuzz/Cargo.toml").read_text())
     if fuzz.get("patch", {}).get("crates-io", {}).get("lru", {}).get("path") != "../../../../../lru-0.12":
         raise RuntimeError("Markdown fuzz LRU security backport is not active")
-    for directory in ["vendor/glib", "vendor/lru-0.12", "vendor/lru-0.16"]:
+    for directory in ["vendor/glib", "vendor/lru-0.12", "vendor/lru-0.16", "vendor/ort-sys", "vendor/faster-hex"]:
         source = ROOT / directory
         provenance = json.loads((source / "SOURCE.json").read_text())
         for file, expected in provenance["patchedSha256"].items():

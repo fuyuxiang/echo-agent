@@ -6,9 +6,7 @@
  * 描述,且 `getAsFile()` 返回的 `File` 与 `Blob` 之间在跨平台差异比较大,
  * 这里使用 duck-typing:只要求 `kind`、`type` 和 `getAsFile()` 三个成员。
  *
- * 设计变化 (2026-09):从 `extractImageFilesFromClipboard` 扩展为多类型。
- * 之前只接 5 种图片,其它文件被 `filter` 静默丢弃,用户毫无反馈。
- * 现在按 [`classifyAttachment`] 的白名单过滤 —— 图片 + 文档 + 代码 +
+ * 按 [`classifyAttachment`] 的白名单分类 —— 图片 + 文档 + 代码 +
  * 文本 + 数据;不在白名单内的项目(可执行二进制、压缩包、音视频等)
  * 返回 `Unsupported` 标记,Composer 据此给用户 toast 提示。
  */
@@ -26,28 +24,10 @@ export interface PastedFileItem {
   kind: AttachmentKind;
 }
 
-/** @deprecated 保留旧名以避免一次性破坏调用点;语义已扩展到多类型。 */
-export type PastedImageItem = PastedFileItem;
-
 export interface DataTransferItemLike {
   kind: string;
   type: string;
   getAsFile(): File | Blob | null;
-}
-
-/** 判定 MIME 是否为图片(忽略 `image/svg+xml`,它无法被多模态管线消费)。 */
-const SUPPORTED_IMAGE_MIME_PREFIXES = [
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/gif",
-  "image/webp",
-];
-
-export function isLikelyImageMime(mime: string): boolean {
-  if (!mime) return false;
-  const lower = mime.toLowerCase();
-  return SUPPORTED_IMAGE_MIME_PREFIXES.includes(lower);
 }
 
 /**
@@ -116,14 +96,6 @@ export function extractFilesFromClipboard(
     out.push({ blob, mime, suggestedName, kind });
   }
   return out;
-}
-
-/** @deprecated 改名以避免一次性破坏调用点;新代码请用 [`extractFilesFromClipboard`]。 */
-export function extractImageFilesFromClipboard(
-  items: ArrayLike<DataTransferItemLike> | null | undefined,
-): PastedFileItem[] {
-  // 历史契约:只过滤图片。新契约改为返回全部 + 分类,调用方按 kind 决定。
-  return extractFilesFromClipboard(items).filter((item) => item.kind === AttachmentKind.Image);
 }
 
 /** 把 Blob 转成可直接通过 Tauri 命令发送的 `Uint8Array`。 */

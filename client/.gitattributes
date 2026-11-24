@@ -1,4 +1,3 @@
-patches/echo-agent-build/*.patch -whitespace
 # Preserve the imported upstream snapshot byte-for-byte; its historical files
 # intentionally contain whitespace that does not follow EchoAgent's style.
 vendor/echo-agent-build/** -whitespace

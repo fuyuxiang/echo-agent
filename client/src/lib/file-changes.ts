@@ -9,7 +9,7 @@ import type { ChatMessage } from "@/stores/session-store";
 import type { DiffContent } from "@/lib/types";
 import type { ReactNode } from "react";
 import React from "react";
-import { extOf } from "./drop-utils";
+import { basenameOf, extOf } from "./drop-utils";
 import { FileTypeIcon } from "@/lib/file-type-icon";
 
 /** 单个文件的聚合变更。 */
@@ -18,10 +18,12 @@ export interface FileChange {
   path: string;
   /** basename,用于紧凑展示。 */
   name: string;
-  /** 净增行数(old → new 的行数差;可为负)。 */
+  /** 新增行数。 */
   added: number;
-  /** 净删行数(取正)。 */
+  /** 删除行数。 */
   removed: number;
+  /** 缺少变更块的整文件替换使用行数估算。 */
+  approximate: boolean;
   /** 文件类型(扩展名),用于图标映射。 */
   ext: string;
   /** 涉及该文件的变更次数(同一文件多次 edit 会累加)。 */
@@ -41,7 +43,7 @@ export interface FileChangesSummary {
 }
 
 /** 从一条 diff 内容项计算增删行数(基于 new 与 old 的行数差,带 hunks 时更精确)。 */
-function diffLineStats(diff: DiffContent["diff"]): { added: number; removed: number } {
+function diffLineStats(diff: DiffContent["diff"]): Pick<FileChange, "added" | "removed" | "approximate"> {
   if (diff.hunks && diff.hunks.length > 0) {
     let added = 0;
     let removed = 0;
@@ -49,18 +51,12 @@ function diffLineStats(diff: DiffContent["diff"]): { added: number; removed: num
       added += h.new.lines.length;
       removed += h.old.lines.length;
     }
-    return { added, removed };
+    return { added, removed, approximate: false };
   }
   // 无 hunks 时用 old/new 整体行数近似:added = new 行数,removed = old 行数。
   const oldLines = diff.old ? diff.old.split("\n").length : 0;
   const newLines = diff.new ? diff.new.split("\n").length : 0;
-  return { added: newLines, removed: oldLines };
-}
-
-/** basename 提取。 */
-function basename(path: string): string {
-  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return slash >= 0 ? path.slice(slash + 1) : path;
+  return { added: newLines, removed: oldLines, approximate: oldLines > 0 && newLines > 0 };
 }
 
 /**
@@ -75,18 +71,18 @@ export function aggregateFileChanges(messages: ChatMessage[]): FileChangesSummar
       for (const c of p.toolCall.content ?? []) {
         if (c.type !== "diff") continue;
         const path = c.diff.path || "(unknown)";
-        const { added, removed } = diffLineStats(c.diff);
+        const stats = diffLineStats(c.diff);
         const existing = byPath.get(path);
         if (existing) {
-          existing.added += added;
-          existing.removed += removed;
+          existing.added += stats.added;
+          existing.removed += stats.removed;
+          existing.approximate ||= stats.approximate;
           existing.edits += 1;
         } else {
           byPath.set(path, {
             path,
-            name: basename(path),
-            added,
-            removed,
+            name: basenameOf(path),
+            ...stats,
             ext: extOf(path),
             edits: 1,
           });

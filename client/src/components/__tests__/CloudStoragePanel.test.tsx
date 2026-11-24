@@ -24,7 +24,7 @@ vi.mock("@/lib/cloud-storage", () => ({
 describe("CloudStoragePanel", () => {
   const provider = {
     list: vi.fn().mockResolvedValue([{ path: "/report.pdf", name: "report.pdf", isDir: false, size: 2048 }]),
-    readText: vi.fn(), writeText: vi.fn(), delete: vi.fn(), makeDir: vi.fn(),
+    readText: vi.fn(), writeText: vi.fn(), createText: vi.fn(), delete: vi.fn(), makeDir: vi.fn(),
     uploadFile: vi.fn().mockResolvedValue(10),
     downloadFile: vi.fn().mockResolvedValue(2048),
   };
@@ -38,6 +38,7 @@ describe("CloudStoragePanel", () => {
     vi.mocked(saveStorageProviderConfig).mockReset().mockResolvedValue(undefined);
     provider.list.mockReset().mockResolvedValue([{ path: "/report.pdf", name: "report.pdf", isDir: false, size: 2048 }]);
     provider.readText.mockReset();
+    provider.createText.mockReset();
     vi.mocked(getStorageProvider).mockReturnValue(provider as never);
   });
 
@@ -71,6 +72,25 @@ describe("CloudStoragePanel", () => {
     expect(screen.getByDisplayValue("••••")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(saveStorageProviderConfig).toHaveBeenCalledWith(expect.objectContaining({ id: "dav", password: "••••" })));
+  });
+
+  it("换址时展示宿主的密码提示，重新输入后再编辑仅展示掩码", async () => {
+    vi.mocked(saveStorageProviderConfig).mockRejectedValueOnce("WebDAV 地址或用户名已更改，请重新输入密码或清空密码后保存");
+    await selectProvider();
+    fireEvent.click(screen.getByRole("button", { name: "编辑配置" }));
+    const address = screen.getByRole("textbox", { name: "WebDAV 地址" });
+    fireEvent.change(address, { target: { value: "https://new-dav.example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("重新输入密码");
+    expect(address).toHaveValue("https://new-dav.example.com");
+    fireEvent.change(screen.getByLabelText("WebDAV 密码或应用令牌"), { target: { value: "replacement-test-value" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.queryByText("编辑 WebDAV")).toBeNull());
+    expect(saveStorageProviderConfig).toHaveBeenLastCalledWith(expect.objectContaining({
+      baseUrl: "https://new-dav.example.com", password: "replacement-test-value",
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "编辑配置" }));
+    expect(screen.getByLabelText("WebDAV 密码或应用令牌")).toHaveValue("••••");
   });
 
   it("存储配置保存中防止重复提交", async () => {
@@ -112,15 +132,38 @@ describe("CloudStoragePanel", () => {
   });
 
   it("新建文本在一个应用内表单填写文件名和内容", async () => {
-    provider.writeText.mockResolvedValueOnce(true);
+    provider.createText.mockResolvedValueOnce(true);
     await selectProvider();
     fireEvent.click(screen.getByRole("button", { name: "新建文本" }));
     const dialog = screen.getByRole("dialog", { name: "新建文本文件" });
     fireEvent.change(within(dialog).getByRole("textbox", { name: /文件名/ }), { target: { value: "readme.md" } });
     fireEvent.change(within(dialog).getByRole("textbox", { name: "文件内容" }), { target: { value: "hello" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "创建文件" }));
-    await waitFor(() => expect(provider.writeText).toHaveBeenCalledWith("/readme.md", "hello"));
+    await waitFor(() => expect(provider.createText).toHaveBeenCalledWith("/readme.md", "hello"));
+    expect(provider.writeText).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "新建文本文件" })).toBeNull());
+  });
+
+  it("新建时远端报告同名文件会保留表单并允许改名", async () => {
+    provider.createText.mockRejectedValueOnce(new Error("同名文件或文件夹已存在，请更换文件名"))
+      .mockResolvedValueOnce(true);
+    await selectProvider();
+    fireEvent.click(screen.getByRole("button", { name: "新建文本" }));
+    const dialog = screen.getByRole("dialog", { name: "新建文本文件" });
+    const name = within(dialog).getByRole("textbox", { name: /文件名/ });
+    const content = within(dialog).getByRole("textbox", { name: "文件内容" });
+    const submit = within(dialog).getByRole("button", { name: "创建文件" });
+    fireEvent.change(name, { target: { value: "appeared-remotely.md" } });
+    fireEvent.change(content, { target: { value: "保留我的草稿" } });
+    fireEvent.click(submit);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("同名文件或文件夹已存在");
+    expect(name).toHaveValue("appeared-remotely.md");
+    expect(content).toHaveValue("保留我的草稿");
+    fireEvent.change(name, { target: { value: "renamed.md" } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "新建文本文件" })).toBeNull());
+    expect(provider.createText).toHaveBeenLastCalledWith("/renamed.md", "保留我的草稿");
+    expect(provider.writeText).not.toHaveBeenCalled();
   });
 
   it("存储配置加载失败不伪装成未配置，并可重试", async () => {

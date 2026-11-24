@@ -865,7 +865,8 @@ impl AutomationManager {
             }
             Ok(())
         };
-        let (native, runtime) = tokio::join!(self.pause_with_reason(session_id, true, reason), runtime);
+        let (native, runtime) =
+            tokio::join!(self.pause_with_reason(session_id, true, reason), runtime);
         runtime.map_err(|e| format!("已撤销桌面执行权，模型暂停未确认：{e}"))?;
         native
     }
@@ -1497,6 +1498,13 @@ pub(crate) async fn cancel_prompt(
 }
 
 pub async fn stop_existing_session(session_id: &str) -> Result<(), String> {
+    stop_existing_session_for_prompt(session_id, None).await
+}
+
+pub(crate) async fn stop_existing_session_for_prompt(
+    session_id: &str,
+    prompt_id: Option<&str>,
+) -> Result<(), String> {
     if let Some(service) = SERVICE.get() {
         let session = service
             .manager
@@ -1506,6 +1514,14 @@ pub async fn stop_existing_session(session_id: &str) -> Result<(), String> {
             .get(session_id)
             .cloned();
         if let Some(session) = session {
+            let _prompt_control = if let Some(prompt_id) = prompt_id {
+                let Some(control) = session.lock_prompt_control(Some(prompt_id)).await else {
+                    return Ok(());
+                };
+                Some(control)
+            } else {
+                None
+            };
             service.manager.stop_existing(session_id, &session).await?;
         }
     }

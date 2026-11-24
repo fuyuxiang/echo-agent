@@ -59,10 +59,6 @@ regex = "1"
 ignore = "0.4"
 globset = "0.4"
 walkdir = "2"
-# These retired direct entries currently preserve the existing Cargo.lock.
-# Prune them with Cargo after the locked registry graph can be resolved.
-similar = "2.7"
-notify-debouncer-full = "0.5"
 fs2 = "0.4"
 libc = "0.2"
 # SP1: cross-platform "move to OS trash" for file deletion from the workbench.
@@ -75,6 +71,7 @@ trash = "5"
 # not join that workspace (see the explicit [workspace] table below).
 echo-agent-acp = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-acp" }
 echo-agent-runtime = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-runtime", features = ["desktop"] }
+echo-agent-workspace = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-workspace", default-features = false }
 echo-agent-sampler = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-sampler" }
 echo-agent-memory = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-memory", features = ["local-inference"] }
 echo-agent-tools = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-tools" }

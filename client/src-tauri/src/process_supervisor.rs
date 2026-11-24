@@ -1,24 +1,29 @@
 //! Owned process trees. Unix uses process groups; Windows uses Jobs.
+use std::io;
 #[cfg(all(test, windows))]
 use std::time::Instant;
-use std::{io, process::ExitStatus, time::Duration};
+#[cfg(test)]
+use std::{process::ExitStatus, time::Duration};
 
+#[cfg(test)]
 pub struct AsyncChild {
     inner: Box<dyn process_wrap::tokio::ChildWrapper>,
 }
+#[cfg(test)]
 impl std::ops::Deref for AsyncChild {
     type Target = dyn process_wrap::tokio::ChildWrapper;
     fn deref(&self) -> &Self::Target {
         &*self.inner
     }
 }
+#[cfg(test)]
 impl std::ops::DerefMut for AsyncChild {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut *self.inner
     }
 }
+#[cfg(all(test, windows))]
 impl AsyncChild {
-    #[cfg(windows)]
     fn kill_tree(&mut self) {
         let _ = self.inner.start_kill();
     }
@@ -62,7 +67,9 @@ impl Drop for SyncChild {
         let _ = self.inner.try_wait();
     }
 }
+#[cfg(test)]
 const GRACE: Duration = Duration::from_millis(500);
+#[cfg(test)]
 const REAP: Duration = Duration::from_secs(2);
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -403,6 +410,7 @@ pub fn with_external_installer_launch<T>(install: impl FnOnce() -> T) -> io::Res
     Ok(install())
 }
 
+#[cfg(test)]
 pub fn spawn_async(command: tokio::process::Command) -> io::Result<AsyncChild> {
     use process_wrap::tokio::*;
     let mut wrapped = CommandWrap::from(command);
@@ -475,6 +483,7 @@ pub fn spawn_sync(command: std::process::Command) -> io::Result<SyncChild> {
     }
 }
 
+#[cfg(test)]
 pub async fn stop_async(child: &mut AsyncChild) -> Option<ExitStatus> {
     #[cfg(unix)]
     let _ = child.signal(libc::SIGTERM);

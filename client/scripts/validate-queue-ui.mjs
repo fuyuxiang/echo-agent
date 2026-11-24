@@ -2,8 +2,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
 import { createUiReviewServer, reviewChromium, reviewOutput } from './ui-review-runtime.mjs';
 
 export async function validateQueueUi(page, output, origin = 'http://127.0.0.1:1439') {
@@ -49,7 +48,7 @@ export async function validateQueueUi(page, output, origin = 'http://127.0.0.1:1
   return layouts;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const output = reviewOutput(mkdtempSync(join(tmpdir(), 'echo-queue-ui-')));
   console.log(`Queue UI screenshots: ${output}`);
   const server = await createUiReviewServer(0);
