@@ -1,32 +1,29 @@
-<p align="center"><img src="src-tauri/icons/128x128.png" width="72" height="72" alt="EchoAgent 图标" /></p>
+<p align="center"><img src="app-icon.png" width="88" height="88" alt="EchoAgent 图标" /></p>
 
 <h1 align="center">EchoAgent</h1>
 
-<p align="center">本地优先的桌面 Agent 工作台。围绕项目处理文件、资料和办公文档，跟踪进度、审批和交付结果。</p>
+<p align="center"><strong>让 AI 在真实工作区中完成任务，并让每一步都可查看、可控制。</strong><br />源码开放、本地优先的桌面 Agent 工作台，集成对话、办公文档、知识管理、任务执行与交付。</p>
 
-<p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/releases">下载桌面端</a> · <a href="#快速开始">快速开始</a> · <a href="docs/README.md">文档</a> · <a href="README.en.md">English</a></p>
+<p align="center"><a href="README.en.md">English</a> · <a href="#快速开始">快速开始</a> · <a href="#主要能力">主要能力</a> · <a href="#架构与数据流">架构</a> · <a href="#参与贡献">参与贡献</a> · <a href="https://github.com/fuyuxiang/echo-agent-desktop/issues">反馈问题</a></p>
 
 <p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fuyuxiang/echo-agent-desktop/ci.yml?branch=main&amp;label=CI" alt="CI 状态" /></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-2ea44f" alt="PolyForm Noncommercial 1.0.0 许可证" /></a> <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows-2563eb" alt="桌面平台：macOS、Windows" /> <img src="https://img.shields.io/badge/Tauri-2-24c8db" alt="Tauri 2" /></p>
 
-EchoAgent 将会话绑定到实际工作目录。项目工作台汇总任务状态、参考资料和成果。在这里，你可以检查待验收任务的输出，再把成果用作新任务的资料。
+<p align="center"><img src="docs/images/echoagent-home.png" width="100%" alt="EchoAgent 首页，包含任务输入框、模型选择、工作目录和权限模式" /></p>
 
-[![EchoAgent 项目概览，展示待验收任务、进行中的工作、最近成果和项目上下文](docs/images/echoagent-project-workspace.png)](docs/images/echoagent-project-workspace.png)
-
-*EchoAgent 的项目概览。示例项目包含待验收的竞品分析、进行中的路线图和一份可复用的分析报告。*
+EchoAgent 将会话绑定到实际工作目录。你可以选择模型和权限模式，提出目标，随后在同一桌面应用中查看 Agent 的计划、工具调用、文件变更和结果。应用状态主要保存在本机；模型推理及按需启用的外部服务仍需要网络连接。
 
 ## 主要能力
 
 | 场景 | 当前实现 |
 | --- | --- |
-| **项目工作台** | 管理任务、资料、成果和项目决定。新任务继承项目指令和已确认决定，已有成果可作为新任务的参考资料。 |
 | **专家团** | 复用本地专家与已有专家团；支持中文 @成员、只读讨论、协作派发、成员结果汇总、权限审批、决定记录与交付物。 |
 | **Agent 任务** | 流式对话、计划与任务、工具调用、权限审批、会话历史、回溯与分叉、子 Agent 状态。 |
 | **浏览器与桌面操作** | Browser Use 支持会话内置浏览器、任务独立浏览器和浏览器扩展。内置浏览器的公网登录资料按账号共享，可暂停 Agent 并接手同一标签。Computer Use 支持 macOS AX / Windows UIA 原生控件与截图坐标后备，可按应用定向操作。能力由当前设备检测，实机验证状态见文档。 |
 | **模型与扩展** | 个人模型连接与组织模型；支持 MCP、Skills、Plugins、连接器与专家。 |
 | **知识与办公** | 本地知识索引、项目上下文、记忆；在任务中读取常见文件，并在本机生成 Word、PDF、Excel 和 PowerPoint。 |
-| **持续工作** | 定时任务、通知、会议录音与纪要，以及可选的微信远程会话和组织服务。 |
+| **持续工作** | 项目与工作项、定时任务、通知、会议录音与纪要，以及可选的微信远程会话和组织服务。 |
 
-[专家与团队项目](docs/team-projects.md) · [Browser Use / Computer Use](docs/automation-platform-support.md) · [原生桌面控件与验收](docs/desktop-control/README.md) · [办公文档](docs/office-documents.md) · [实时信息](docs/live-information.md) · [微信远程会话](docs/weixin-remote.md) · [Skill 能力声明](docs/skill-capability-manifest.md)
+进一步了解：[Browser Use / Computer Use](docs/automation-platform-support.md) · [原生桌面控件与验收](docs/desktop-control/README.md) · [办公文档](docs/office-documents.md) · [实时信息](docs/live-information.md) · [微信远程会话](docs/weixin-remote.md) · [Skill 能力声明](docs/skill-capability-manifest.md)
 
 完整专题导航见 [项目文档](docs/README.md)，共享交互和主题规则见 [产品体验约定](docs/product-experience.md) 与 [主题设计](docs/theme-design.md)。
 
@@ -68,13 +65,17 @@ pnpm install --frozen-lockfile
 
 ### 创建第一个任务
 
-在「设置 → 模型」中添加并测试个人模型连接，或选用组织提供的模型。自定义连接支持 OpenAI、Anthropic 及其兼容接口。模型的工具调用等能力取决于实际服务。个人模型配置保存在本机 `~/.echo-agent/config.toml`。
-
 1. 在首页选择工作目录、模型和权限模式。
 2. 输入目标并发送；如果任务要读写文件，请选择实际要授权的目录。
 3. 查看计划与工具执行过程，按需处理权限请求；有文件修改时检查 Diff 和验证结果。
 
+使用前请在「设置 → 模型」中添加连接、模型并测试。自定义连接支持 OpenAI、Anthropic 及其兼容接口；模型的工具调用等能力取决于实际服务。个人模型配置保存在本机 `~/.echo-agent/config.toml`。
+
 应用不再提供内置聊天模型。升级后会清除旧内置模型目录及相关默认选择，保留已有对话、文件、个人连接和组织模型。绑定旧模型的定时任务会暂停，并显示“待选模型”；请编辑任务明确选择可用模型或“跟随默认模型”，保存后再启用，不会自动换用其他服务。知识库与记忆检索服务不受影响。
+
+<p align="center"><img src="docs/images/echoagent-task-flow.png" width="100%" alt="典型任务流程：选择目录、模型与模式，发送目标，执行计划与工具，审批操作，检查变更，验证并交付；检查后可返回继续迭代" /></p>
+
+<p align="center"><sub>图示为涉及文件修改的典型路径；没有权限请求或文件变更时，可跳过相应步骤。</sub></p>
 
 ### 用自然语言操作电脑
 
@@ -135,6 +136,14 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 “设置 → 记忆”集中管理总开关与记忆内容。任务完成后自动提取有依据的个人偏好、工作背景、项目事实和近期事项；提取失败或快速退出时保留待处理内容，重新打开工作区后重试。全局偏好跨项目使用，项目事实按工作区隔离；短期事项可标记完成或设置有效期。历史问题可由助手查找原对话，并读取来源消息核实。
 
 支持添加、更正、遗忘、来源查看，以及粘贴其他 AI 的文本或 JSON 预览导入、复制导出。手动保存的内容不会被自动整理覆盖；更正和遗忘会排除旧事实及关联来源的再次使用。遗忘条目保留在“已停用”供检查，原聊天仍可在历史记录中查看。关闭总开关立即停止后续请求中的记忆使用和自动提取，已有内容仍可管理。排查状态与旧版文档按需展开，旧版关闭的独立策略保留并提供显式恢复入口。
+
+### 可复用流程
+
+在对话或定时结果中选择「保存为可复用流程」，编辑提取的草稿或直接编写步骤。默认任务把流程保存在共享的默认工作区，任务文件仍各自独立。指定工作区的任务使用该工作区的流程库。在「技能 → 可复用流程」可以查看保存位置、历史版本和来源。
+
+用独立的输入和预期输出验证草稿。同一模型会分别生成对照与候选输出，再按文本或 JSON 规则检查。验证通过表示模型输出符合用例，验证过程中不运行工具或连接器。验证失败时，可以用首个失败用例生成改进草稿。通过后可启用为工作区技能，或在定时任务详情锁定版本。定时任务运行前会核对实际模型与验收模型，工作区后续启用的版本不会替换已绑定的版本。
+
+各工作区可单独开启自动草稿。开启后，应用会将相关任务文字、结果和反馈发送给来源任务的模型，分析明确反馈或已绑定流程的定时工具失败。可确认的候选已有验收用例时会自动验证，启用和绑定由用户确认。
 
 ### 专家团
 

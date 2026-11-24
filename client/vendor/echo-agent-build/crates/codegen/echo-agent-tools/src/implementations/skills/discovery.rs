@@ -784,7 +784,10 @@ pub fn parse_skill_files(skill_files: Vec<(PathBuf, SkillScope)>) -> Vec<SkillIn
 
             Some(SkillInfo {
                 name: parsed.name,
-                display_name: None,
+                display_name: parsed.metadata.as_ref()
+                    .and_then(|metadata| metadata.get("echoagent-workflow-title"))
+                    .filter(|title| !title.chars().any(char::is_control))
+                    .map(|title| cap_string(title.clone(), 144)),
                 description: parsed.description,
                 short_description: parsed.short_description,
                 author: parsed.author,

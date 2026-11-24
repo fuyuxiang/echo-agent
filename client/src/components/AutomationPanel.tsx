@@ -109,6 +109,7 @@ interface AutomationPanelProps {
   onNavigate?: (label: string) => void;
   onOpenSession?: (sessionId: string, cwd?: string) => void;
   cwd?: string;
+  defaultWorkspaceCwd?: string;
   /** Incremented when the native scheduler persists a lifecycle transition. */
   refreshSignal?: number;
   notificationAutomationId?: string;
@@ -273,6 +274,7 @@ export function AutomationPanel({
   onNavigate,
   onOpenSession,
   cwd,
+  defaultWorkspaceCwd,
   refreshSignal = 0,
   notificationAutomationId,
   notificationAutomationSequence,
@@ -501,7 +503,7 @@ export function AutomationPanel({
       );
     } else captureError("models", modelResult.reason);
     if (skillResult.status === "fulfilled")
-      setSkills(skillResult.value.filter((skill) => skill.enabled));
+      setSkills(skillResult.value.filter((skill) => skill.enabled && !skill.name.startsWith("echo-workflow-")));
     else captureError("skills", skillResult.reason);
     if (expertResult.status === "fulfilled") setExperts(expertResult.value);
     else captureError("experts", expertResult.reason);
@@ -1318,6 +1320,8 @@ export function AutomationPanel({
           onToast={onToast}
           key={detailId}
           task={automationById.get(detailId)}
+          autoModelId={autoModelId}
+          defaultWorkspaceCwd={defaultWorkspaceCwd}
           runtimeNotice={runtimeNotice}
           records={snapshot.records.filter(
             (record) => record.automationId === detailId,
@@ -1339,6 +1343,7 @@ export function AutomationPanel({
           onDelete={handleRowDelete}
           onArchive={handleArchiveRecord}
           onOpenSession={onOpenSession}
+          onBindingChanged={() => void refresh(true, false)}
           onSettings={
             onOpenSettings ? () => onOpenSettings("notifications") : undefined
           }

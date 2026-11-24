@@ -220,6 +220,9 @@ impl MvpAgent {
             .and_then(|ps| ps.resolved_tool_overrides.load_full().map(|o| (*o).clone()));
         Some(crate::agent::subagent::SubagentSpawnContext {
             parent_turn_authority: None,
+            inherited_workflow_skill: parent_handle.as_ref().and_then(|handle| {
+                handle.tool_context.pinned_workflow_skill.read().ok()?.clone()
+            }),
             parent_host_project_context: ps.and_then(|parent| {
                 parent
                     .tool_context

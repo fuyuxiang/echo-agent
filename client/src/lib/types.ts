@@ -11,6 +11,8 @@
  * of `agent://update` / `agent://permission` / `agent://complete` events.
  */
 
+import type { WorkflowBinding } from "./workflow-skills";
+
 // ---------- content blocks ----------
 
 export interface TextContent {
@@ -989,6 +991,7 @@ export interface Automation {
   crossProviderFallback?: boolean;
   recoverAfterInterruption?: boolean;
   skills: string[];
+  workflowSkill?: WorkflowBinding;
   expertId?: string;
   expertName?: string;
   /** Absolute stable definition path captured when selecting the expert. */
@@ -1021,7 +1024,7 @@ export interface AutomationRunRecord {
   stopRequested?: boolean;
   needsAttention?: boolean;
   waitingReason?: string;
-  executionConfig?: { prompt: string; newSessionEachRun: boolean; permissionMode: AutomationPermissionMode };
+  executionConfig?: { prompt: string; newSessionEachRun: boolean; permissionMode: AutomationPermissionMode; workflowSkill?: WorkflowBinding };
   completionPending?: boolean;
   cleanup?: { status: "running" | "failed" | "completed"; error?: string };
   notificationDelivery?: string;

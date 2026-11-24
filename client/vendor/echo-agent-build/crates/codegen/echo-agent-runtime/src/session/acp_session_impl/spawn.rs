@@ -670,6 +670,11 @@ pub(crate) async fn spawn_session_actor(
             goal_loop_active: tool_context.goal_loop_active_gate.clone(),
         },
     );
+    if let Some(skill) = &startup_hints.inherited_workflow_skill
+        && let Ok(mut current) = tool_context.pinned_workflow_skill.write()
+    {
+        *current = Some(skill.clone());
+    }
     let tool_context_for_handle = tool_context.clone();
     let cursor_harness = false;
     let terminal_backend_kind = select_terminal_backend_kind(

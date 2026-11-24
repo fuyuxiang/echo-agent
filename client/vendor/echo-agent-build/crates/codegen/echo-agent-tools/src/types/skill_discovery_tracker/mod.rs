@@ -87,6 +87,10 @@ pub struct SkillManager {
     /// This is the non-dynamic baseline.
     startup_skills: Vec<SkillInfo>,
 
+    /// A desktop automation turn supplies its immutable revision in-band.
+    /// Hide the mutable catalog entry of that same skill for the turn.
+    suppressed_skill: Option<String>,
+
     /// Directories already stat'd (prevents re-checking on future tool calls).
     pub checked_dirs: HashSet<PathBuf>,
 
@@ -405,6 +409,28 @@ impl SkillManager {
         self.add_discovered(newly)
     }
 
+    pub(crate) fn suppress_skill(&mut self, name: Option<String>) -> bool {
+        if self.suppressed_skill == name {
+            return false;
+        }
+        self.suppressed_skill = name;
+        self.pending = Some(PendingKind::BaselineChange);
+        true
+    }
+
+    pub(crate) fn is_suppressed(&self, name: &str) -> bool {
+        self.suppressed_skill.as_deref() == Some(name)
+    }
+
+    pub(crate) fn is_suppressed_path(&self, path: &std::path::Path) -> bool {
+        let Some(name) = self.suppressed_skill.as_deref() else { return false; };
+        let home = crate::util::echo_agent_home::echo_agent_home();
+        let library = home.join("workflow-library");
+        let library = dunce::canonicalize(&library).unwrap_or(library);
+        path.starts_with(library) && path.parent().and_then(|parent| parent.file_name())
+            .is_some_and(|directory| directory == name)
+    }
+
     /// Drain the pending reconciliation, computing projections internally
     /// and returning only the runtime skills and session side-effects.
     ///
@@ -419,7 +445,8 @@ impl SkillManager {
     pub fn take_pending(&mut self) -> Option<(Vec<SkillInfo>, SkillUpdateEffects)> {
         let pending = self.pending.take()?;
 
-        let runtime_skills = dedup_by_canonical_path(&self.discovered_skills, &self.startup_skills);
+        let mut runtime_skills = dedup_by_canonical_path(&self.discovered_skills, &self.startup_skills);
+        runtime_skills.retain(|skill| !self.is_suppressed(&skill.name));
 
         let kind = match pending {
             PendingKind::Discovery => SkillUpdateKind::Discovery,
@@ -439,7 +466,16 @@ impl SkillManager {
             }
         };
         let skills = skills_owned.as_deref().unwrap_or(&self.discovered_skills);
-
+        let filtered;
+        let skills = if self.suppressed_skill.is_some() {
+            filtered = skills.iter()
+                .filter(|skill| !self.is_suppressed(&skill.name))
+                .cloned()
+                .collect::<Vec<_>>();
+            &filtered
+        } else {
+            skills
+        };
         let system_reminder = render_listing(skills, &mut announced, &self.render_params());
         self.announced_names = announced;
 
@@ -473,7 +509,9 @@ impl SkillManager {
     /// and name (discovered wins). This is the authoritative source
     /// for slash command advertisement.
     pub fn slash_skills(&self) -> Vec<SkillInfo> {
-        dedupe_by_canonical_path_and_name(&self.discovered_skills, &self.startup_skills)
+        let mut skills = dedupe_by_canonical_path_and_name(&self.discovered_skills, &self.startup_skills);
+        skills.retain(|skill| !self.is_suppressed(&skill.name));
+        skills
     }
 
     /// Set the full-discovery snapshot (see `discovery_snapshot_names`).
@@ -496,8 +534,7 @@ impl SkillManager {
     /// replay of the injected reminders, which accumulate incrementally.
     /// Returns `None` when no skill qualifies.
     pub fn listing_snapshot(&self) -> Option<SkillListingSnapshot> {
-        let skills =
-            dedupe_by_canonical_path_and_name(&self.discovered_skills, &self.startup_skills);
+        let skills = self.slash_skills();
         // A throwaway set keeps `self.announced_names` untouched and, once
         // filled by the renderer's filter pass, counts the qualifying skills.
         let mut qualified = HashSet::new();
@@ -591,6 +628,24 @@ mod tests {
             paths: Some(patterns.iter().map(|p| p.to_string()).collect()),
             ..make_skill(name, path)
         }
+    }
+
+    #[test]
+    fn pinned_skill_stays_hidden_until_the_next_ordinary_turn() {
+        let mut manager = SkillManager::new();
+        manager.seed(None, None, vec![
+            make_skill("echo-workflow-preview", "/original/SKILL.md"),
+            make_skill("ordinary", "/ordinary/SKILL.md"),
+        ], None, None, None);
+        assert!(manager.suppress_skill(Some("echo-workflow-preview".into())));
+        let first = manager.take_pending_reconciliation().unwrap();
+        assert_eq!(first.runtime_skills.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(), ["ordinary"]);
+        assert!(!first.effects.system_reminder.unwrap_or_default().contains("echo-workflow-preview"));
+        manager.update_startup_baseline(vec![make_skill("echo-workflow-preview", "/updated/SKILL.md")]);
+        assert!(manager.take_pending_reconciliation().unwrap().runtime_skills.is_empty());
+        assert!(manager.slash_skills().is_empty());
+        assert!(manager.suppress_skill(None));
+        assert_eq!(manager.take_pending_reconciliation().unwrap().runtime_skills[0].path, "/updated/SKILL.md");
     }
 
     #[test]

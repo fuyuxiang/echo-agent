@@ -420,6 +420,13 @@ pub(crate) async fn run_read_file(
         }
         Err(_) => (joined_path, None),
     };
+    if is_skill_markdown && resources.lock().await.get::<SkillManager>()
+        .is_some_and(|manager| manager.is_suppressed_path(&path))
+    {
+        return Ok(ReadFileOutput::FileReadError(
+            "This automation uses the fixed workflow instructions already supplied in the task.".to_string(),
+        ));
+    }
     let version = ReadFileVersion::from_contract(contract_version);
     let is_legacy = version.is_legacy();
     let skip_gitignore = is_legacy && versions::legacy_0_4_10::allows_gitignored_reads();

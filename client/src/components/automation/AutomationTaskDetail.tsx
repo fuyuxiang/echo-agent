@@ -16,6 +16,7 @@ import { useRunPreview } from "./use-run-preview";
 import { Markdown } from "@/components/Markdown";
 import { modelDisplayName } from "@/lib/model-presentation";
 import { createMarkdownHostConfig } from "@/lib/markdown-host";
+import { WorkflowCaptureAction, WorkflowTaskBinding } from "../workflow-skills/WorkflowSkills";
 import {
   describeSchedule,
   describeValidity,
@@ -38,6 +39,8 @@ import {
 
 export function AutomationTaskDetail({
   task,
+  autoModelId,
+  defaultWorkspaceCwd,
   runtimeNotice,
   records,
   starting,
@@ -53,10 +56,13 @@ export function AutomationTaskDetail({
   onDelete,
   onArchive,
   onOpenSession,
+  onBindingChanged,
   onSettings,
   onToast,
 }: {
   task?: Automation;
+  autoModelId?: string;
+  defaultWorkspaceCwd?: string;
   runtimeNotice?: ReactNode;
   records: AutomationRunRecord[];
   starting: boolean;
@@ -72,9 +78,11 @@ export function AutomationTaskDetail({
   onDelete: (id: string) => void;
   onArchive: (id: string) => void;
   onOpenSession?: (sessionId: string, cwd?: string) => void;
+  onBindingChanged?: () => void;
   onSettings?: () => void;
   onToast?: (message: string) => void;
 }) {
+  const taskCwd = task?.cwds[0] || defaultWorkspaceCwd;
   const runs = orderedRuns(records);
   const latestId = runs[0]?.id;
   const [selectedId, setSelectedId] = useState(initialRecordId ?? latestId);
@@ -154,6 +162,8 @@ export function AutomationTaskDetail({
               <span>下次：{nextRunLabel(task.nextRunAt)}</span>
             )}
           </div>
+          {taskCwd && <WorkflowTaskBinding key={taskCwd} cwd={taskCwd} task={task} modelId={task.modelId ?? autoModelId}
+            onBindingChanged={onBindingChanged} onToast={onToast} />}
           <p className="atm-task-detail__muted">
             {localTimeZoneLabel()} · 本机运行 ·{" "}
             <span title={task.cwds[0]}>{workspaceName(task.cwds)}</span> ·{" "}
@@ -324,6 +334,13 @@ export function AutomationTaskDetail({
                 这里展示可读取的部分结果。完整内容请进入会话查看。
               </p>
             )}
+            {selected.cwd && selected.sessionId && selected.promptId && !selected.completionPending
+              && (selected.status === "success" || selected.status === "failed")
+              && selected.executionConfig?.prompt && (result?.text || result?.progress?.totalTools || selected.error) && (
+                <WorkflowCaptureAction key={selected.id} cwd={selected.cwd} capture={{ kind: "scheduled", runId: selected.id }}
+                  task={taskCwd === selected.cwd ? task : undefined} modelId={task?.modelId ?? autoModelId}
+                  onToast={onToast} onBindingChanged={onBindingChanged} onOpenSource={onOpenSession} />
+              )}
             {selected.publicationPending && onPublication && (
               <div className="atm-notification-receipt">
                 <span>通知待审批</span>
@@ -391,6 +408,10 @@ export function AutomationTaskDetail({
                         ? "完全访问"
                         : "默认权限"}
                     </dd>
+                    {selected.executionConfig.workflowSkill && <>
+                      <dt>流程版本</dt>
+                      <dd>{selected.executionConfig.workflowSkill.title} · 版本 {selected.executionConfig.workflowSkill.version}</dd>
+                    </>}
                     <dt>当次任务要求</dt>
                     <dd className="atm-task-config__prompt">
                       {selected.executionConfig.prompt}

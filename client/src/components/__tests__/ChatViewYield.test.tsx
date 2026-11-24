@@ -151,6 +151,16 @@ vi.mock("@/lib/agent-client", async () => {
   return mod;
 });
 
+vi.mock("@/lib/workflow-skills", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/workflow-skills")>(),
+  workflowFindSource: vi.fn(async () => null),
+  workflowCaptureContext: vi.fn(async () => ({ cwd: "/shared", modelId: "m1", runWorkflow: null })),
+  workflowLibrary: vi.fn(async () => ({ workflows: [], automaticDrafts: false })),
+  listenWorkflowLibrary: vi.fn(async () => () => {}),
+}));
+import { workflowCaptureContext } from "@/lib/workflow-skills";
+import { LEGACY_ATTACHMENT_HEADING } from "@/lib/user-message";
+
 vi.mock("@/lib/automation-client", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/automation-client")>(),
   automationResume: vi.fn(async () => undefined),
@@ -246,6 +256,21 @@ describe("ChatView pause/yield/resume 闭环", () => {
     vi.mocked(rewindExecute).mockReset().mockResolvedValue({ targetPromptIndex: 0 });
     vi.mocked(rewindPoints).mockReset().mockResolvedValue([]);
     vi.mocked(setAgentMode).mockClear();
+  });
+
+  it("保存短回复时把原始用户文本作为流程证据，移除附件传输尾注", async () => {
+    setStore({ messages: [
+      { id: "user", role: "user", promptId: "workflow-prompt", complete: true,
+        parts: [{ kind: "text", text: `请核验库存\n\n${LEGACY_ATTACHMENT_HEADING}\n- @/workspace/库存.csv` }] },
+      { id: "assistant", role: "assistant", promptId: "workflow-prompt", complete: true,
+        parts: [{ kind: "text", text: "每周对比并记录差异。" }] },
+    ] });
+    render(<ThemeProvider><ChatView {...baseProps} cwd="/workspace" /></ThemeProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "保存为可复用流程" }));
+    await waitFor(() => expect(workflowCaptureContext).toHaveBeenCalledWith({
+      kind: "chat", sessionId: "s1", promptId: "workflow-prompt",
+      request: "请核验库存", result: "每周对比并记录差异。",
+    }));
   });
 
   it("后台接续失败保留主回复的分支入口，不暴露重跑原问题的操作", () => {

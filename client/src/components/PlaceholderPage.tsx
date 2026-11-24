@@ -76,6 +76,7 @@ interface PlaceholderPageProps {
   onToast?: (message: string) => void;
   /** Current cwd (for memory workspace scope, projects panel). */
   cwd?: string;
+  defaultWorkspaceCwd?: string;
   /** Switch the active workspace (projects panel). */
   onSelectWorkspace?: (cwd: string) => void;
   /** Known working directories for the project picker. */
@@ -116,6 +117,7 @@ export function PlaceholderPage({
   onStartOrganizationConversation,
   onToast,
   cwd,
+  defaultWorkspaceCwd,
   onSelectWorkspace,
   workspaces,
   onOpenModelSettings,
@@ -180,6 +182,7 @@ export function PlaceholderPage({
       <DeferredPanel>
         <CapabilitySection active={label} onNavigate={onNavigate} onBack={onCapabilityBack}>
           <ExpertsPanel cwd={cwd} onGoHome={onGoHome} onToast={onToast} initialTab={initialTab} hideNavigation
+            onOpenSession={onOpenSession}
             createExpertRequested={createExpertRequested} onCreateExpertRequestHandled={onCreateExpertRequestHandled}
             configureConnector={configureConnector} initialConnectorName={initialConnectorName} />
         </CapabilitySection>
@@ -196,6 +199,7 @@ export function PlaceholderPage({
           onNavigate={onNavigate}
           onOpenSession={onOpenSession}
           cwd={cwd}
+          defaultWorkspaceCwd={defaultWorkspaceCwd}
           refreshSignal={automationRefreshSignal}
           notificationAutomationId={notificationAutomationId}
           notificationAutomationSequence={notificationAutomationSequence}

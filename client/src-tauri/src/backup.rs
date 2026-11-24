@@ -44,6 +44,7 @@ const DIRS: &[&str] = &[
     "group-memory",
     "projects",
     "meetings",
+    crate::workflow_skills::DIRECTORY,
     "coding",
     "clipboard-images",
     LEGACY_UI_DIR,
@@ -172,6 +173,28 @@ fn source_path(home: &Path, app_data: &Path, name: &str) -> PathBuf {
     }
 }
 
+fn workflow_backup_path(name: &str) -> Option<(&str, Option<&str>)> {
+    let (key, tail) = name.strip_prefix("workflow-library/")?.split_once('/')?;
+    if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    if tail == "library.json" {
+        return Some((key, None));
+    }
+    let id = tail
+        .strip_prefix("skills/echo-workflow-")?
+        .strip_suffix("/SKILL.md")?;
+    (id.len() == 36 && uuid::Uuid::parse_str(id).is_ok()).then_some((key, Some(id)))
+}
+
+fn workflow_backup_key(cwd: &str) -> String {
+    echo_agent_core::prompt::skills::workflow_skill_dir(Path::new(""), Path::new(cwd))
+        .file_name()
+        .expect("workflow directory contains a workspace key")
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn allowed(name: &str) -> bool {
     if name.contains('\\')
         || name.len() > 4096
@@ -202,6 +225,9 @@ fn allowed(name: &str) -> bool {
         return record
             .strip_suffix(".json")
             .is_some_and(|id| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+    if path.starts_with(crate::workflow_skills::DIRECTORY) {
+        return workflow_backup_path(name).is_some();
     }
     FILES.contains(&name) || (parts.len() > 1 && DIRS.iter().any(|dir| path.starts_with(dir)))
 }
@@ -371,7 +397,14 @@ fn export(
                     .replace('\\', "/")
             };
             if !allowed(&name) {
-                if ["document-workspaces", LEGACY_UI_DIR, RECOVERY_UI_DIR].contains(&root) {
+                if [
+                    "document-workspaces",
+                    LEGACY_UI_DIR,
+                    RECOVERY_UI_DIR,
+                    crate::workflow_skills::DIRECTORY,
+                ]
+                .contains(&root)
+                {
                     // Only committed identity-named records belong in the backup.
                     continue;
                 }
@@ -602,6 +635,7 @@ fn rebase_session_directories(
 ) -> Result<Vec<PathBuf>, String> {
     use echo_agent_runtime::util::echo_agent_home::encode_cwd_dirname;
     let mut directories = BTreeMap::new();
+    let mut workflow_directories = BTreeMap::new();
     for entry in &manifest.files {
         let Some(rest) = entry.name.strip_prefix("sessions/") else {
             continue;
@@ -635,6 +669,7 @@ fn rebase_session_directories(
         let mut value = serde_json::Value::String(old_cwd.clone());
         rebase_value(&mut value, manifest, home, app_data);
         let new_cwd = value.as_str().ok_or("会话工作区无效")?.to_string();
+        workflow_directories.insert(workflow_backup_key(&old_cwd), workflow_backup_key(&new_cwd));
         // A reinstall can restore into exactly the original data-home path.
         // Collect every verified CWD so missing application-owned task folders
         // are recreated even when no archive path needs to move.
@@ -643,7 +678,54 @@ fn rebase_session_directories(
             (encode_cwd_dirname(&new_cwd), new_cwd),
         );
     }
-    if directories.is_empty() {
+    // A workflow library can outlive every source session.
+    for index in 0..manifest.files.len() {
+        let Some((key, None)) = workflow_backup_path(&manifest.files[index].name) else {
+            continue;
+        };
+        let root = staging.join(crate::workflow_skills::DIRECTORY).join(key);
+        let (workspace, shared_default) = crate::workflow_skills::backup_library_identity(&root)?;
+        let Some(workspace) = workspace else { continue };
+        if !Path::new(&workspace).is_absolute() || workflow_backup_key(&workspace) != key {
+            return Err("备份中的流程工作区与索引不一致".into());
+        }
+        let mut value = serde_json::Value::String(workspace);
+        rebase_value(&mut value, manifest, home, app_data);
+        if shared_default {
+            if let Some(default) = echo_agent_core::prompt::skills::default_workflow_workspace() {
+                value = serde_json::Value::String(default.to_string_lossy().into_owned());
+            }
+        }
+        let cwd = value.as_str().ok_or("流程工作区路径无效")?;
+        workflow_directories.insert(key.to_owned(), workflow_backup_key(cwd));
+        let path = root.join("library.json");
+        let mut library: serde_json::Value =
+            serde_json::from_slice(&crate::shell_fs::read_regular_file_bounded(
+                &path,
+                crate::workflow_skills::MAX_LIBRARY_BYTES,
+            )?)
+            .map_err(|error| error.to_string())?;
+        library["workspace"] = value;
+        if let Some(workflows) = library["workflows"].as_array_mut() {
+            for workflow in workflows {
+                if let Some(versions) = workflow["versions"].as_array_mut() {
+                    for version in versions {
+                        if let Some(cwd) = version.pointer_mut("/source/cwd") {
+                            rebase_value(cwd, manifest, home, app_data);
+                        }
+                    }
+                }
+            }
+        }
+        let body = serde_json::to_vec(&library).map_err(|error| error.to_string())?;
+        if body.len() as u64 > crate::workflow_skills::MAX_LIBRARY_BYTES {
+            return Err("恢复后的工作区流程库超过大小上限".into());
+        }
+        crate::paths::write_private_file(&path, &body)?;
+        manifest.files[index].bytes = body.len() as u64;
+        manifest.files[index].sha256 = format!("{:x}", Sha256::digest(&body));
+    }
+    if directories.is_empty() && workflow_directories.is_empty() {
         return Ok(Vec::new());
     }
     let mut targets = HashSet::new();
@@ -657,6 +739,15 @@ fn rebase_session_directories(
         {
             if let Some((replacement, _)) = directories.get(directory) {
                 name = format!("sessions/{replacement}/{tail}");
+            }
+        }
+        if let Some((directory, tail)) = entry
+            .name
+            .strip_prefix("workflow-library/")
+            .and_then(|rest| rest.split_once('/'))
+        {
+            if let Some(replacement) = workflow_directories.get(directory) {
+                name = format!("workflow-library/{replacement}/{tail}");
             }
         }
         if !allowed(&name) || !targets.insert(name.clone()) {
@@ -771,6 +862,64 @@ fn rebase_document_workspaces(
     validate(manifest)
 }
 
+fn obsolete_workflow_skills(
+    staging: &Path,
+    manifest: &mut Manifest,
+    home: &Path,
+    app_data: &Path,
+) -> Result<Vec<String>, String> {
+    let scopes: HashSet<String> = manifest
+        .files
+        .iter()
+        .filter_map(|entry| {
+            let (key, skill) = workflow_backup_path(&entry.name)?;
+            skill.is_none().then(|| key.to_string())
+        })
+        .collect();
+    let mut invalid = HashSet::new();
+    for entry in &manifest.files {
+        let Some((key, Some(id))) = workflow_backup_path(&entry.name) else {
+            continue;
+        };
+        let root = staging.join(crate::workflow_skills::DIRECTORY).join(key);
+        if !scopes.contains(key) || !crate::workflow_skills::backup_skill_matches(&root, id)? {
+            invalid.insert(entry.name.clone());
+        }
+    }
+    manifest
+        .files
+        .retain(|entry| !invalid.contains(&entry.name));
+    let mut obsolete = Vec::new();
+    for key in scopes {
+        let prefix = format!("workflow-library/{key}/skills");
+        let probe = format!("{prefix}/echo-workflow-00000000-0000-0000-0000-000000000000/SKILL.md");
+        let target = destination(home, app_data, &probe)?;
+        let directory = target
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("流程技能路径无效")?;
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let name = format!("{prefix}/{}/SKILL.md", entry.file_name().to_string_lossy());
+            if workflow_backup_path(&name).is_none()
+                || manifest.files.iter().any(|file| file.name == name)
+            {
+                continue;
+            }
+            let target = destination(home, app_data, &name)?;
+            if target.is_file() {
+                obsolete.push(name);
+            }
+        }
+    }
+    Ok(obsolete)
+}
+
 fn restore_managed_task_directory(home: &Path, cwd: &Path) -> Result<(), String> {
     let root = home.join("workspaces/default/Tasks");
     let relative = cwd.strip_prefix(&root).map_err(|_| "恢复工作区超出范围")?;
@@ -853,6 +1002,7 @@ fn prepare_file(
         || name.starts_with("projects/")
         || name.starts_with("document-workspaces/")
         || name.starts_with("coding/")
+        || name.starts_with("workflow-library/")
     {
         return Ok(());
     }
@@ -975,6 +1125,7 @@ fn apply_pending_at(home: &Path, app_data: &Path) -> Result<(), String> {
     let managed_task_directories =
         rebase_session_directories(staging.path(), &mut manifest, home, app_data)?;
     rebase_document_workspaces(staging.path(), &mut manifest, home, app_data)?;
+    let obsolete_skills = obsolete_workflow_skills(staging.path(), &mut manifest, home, app_data)?;
     let retaining_target_history = !manifest
         .files
         .iter()
@@ -1091,6 +1242,10 @@ fn apply_pending_at(home: &Path, app_data: &Path) -> Result<(), String> {
             obsolete_terminals.push(name);
         }
     }
+    for name in &obsolete_skills {
+        atomic_copy(&destination(home, app_data, name)?, &previous.join(name))?;
+        journal.files.push((name.clone(), true));
+    }
     let restoring_groups = manifest
         .files
         .iter()
@@ -1111,7 +1266,7 @@ fn apply_pending_at(home: &Path, app_data: &Path) -> Result<(), String> {
         &serde_json::to_vec(&journal).map_err(|e| e.to_string())?,
     )?;
     let result = (|| {
-        for name in &obsolete_terminals {
+        for name in obsolete_terminals.iter().chain(&obsolete_skills) {
             fs::remove_file(destination(home, app_data, name)?).map_err(|e| e.to_string())?;
         }
         if restoring_groups {
@@ -1871,6 +2026,56 @@ mod tests {
                 "History recovery must not fabricate business files"
             );
         }
+    }
+
+    #[test]
+    fn restore_rebases_workflow_library_without_sessions_and_removes_obsolete_publication() {
+        use echo_agent_core::prompt::skills::workflow_skill_dir;
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let source_root = source.path().canonicalize().unwrap();
+        let target_root = target.path().canonicalize().unwrap();
+        let old_cwd = source_root.join("workspaces/default");
+        let new_cwd = target_root.join("workspaces/default");
+        fs::create_dir_all(&old_cwd).unwrap();
+        fs::create_dir_all(&new_cwd).unwrap();
+        let archived = workflow_skill_dir(&source_root, &old_cwd);
+        fs::create_dir_all(&archived).unwrap();
+        fs::write(
+            archived.join("library.json"),
+            serde_json::json!({
+                "workspace": old_cwd.canonicalize().unwrap(),
+                "workflows": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let destination = workflow_skill_dir(&target_root, &new_cwd);
+        let stale =
+            destination.join("skills/echo-workflow-00000000-0000-0000-0000-000000000001/SKILL.md");
+        fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        fs::write(&stale, "stale publication").unwrap();
+        let unrelated = workflow_skill_dir(&target_root, &target_root)
+            .join("skills/echo-workflow-00000000-0000-0000-0000-000000000002/SKILL.md");
+        fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
+        fs::write(&unrelated, "unrelated workspace").unwrap();
+
+        export(
+            &source_root,
+            &source_root,
+            &target_root.join("restore-pending.zip"),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        apply_pending_at(&target_root, &target_root).unwrap();
+
+        assert!(!stale.exists());
+        assert!(unrelated.exists());
+        let (workspace, _) = crate::workflow_skills::backup_library_identity(&destination).unwrap();
+        assert_eq!(
+            workflow_backup_key(workspace.as_deref().unwrap()),
+            workflow_backup_key(&new_cwd.to_string_lossy())
+        );
     }
 
     #[test]

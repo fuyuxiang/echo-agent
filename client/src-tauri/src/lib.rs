@@ -67,6 +67,7 @@ mod process_supervisor;
 mod project_output;
 mod projects;
 mod provider_response;
+mod provider_text;
 mod providers;
 mod recording_recovery;
 mod recovery_policy;
@@ -88,6 +89,7 @@ mod webview_recovery;
 mod weixin;
 #[cfg(any(windows, test))]
 mod windows_install;
+mod workflow_skills;
 mod workspace_ignore;
 
 use bridge::{FolderTrusts, Permissions, PlanApprovals, Questions};
@@ -789,6 +791,9 @@ pub fn run() {
         let identifier = custom_profile_identifier(&context.config().identifier, &home, validation);
         context.config_mut().identifier = identifier;
     }
+    if let Ok(workspace) = paths::default_workspace_dir() {
+        echo_agent_core::prompt::skills::set_default_workflow_workspace(&workspace);
+    }
     let builder = tauri::Builder::default().register_asynchronous_uri_scheme_protocol(
         "meeting-audio",
         |context, request, responder| {
@@ -1030,6 +1035,20 @@ pub fn run() {
             skill_installer::skills_inspect_packages,
             skill_installer::skills_install_package,
             skill_installer::skills_uninstall_package,
+            workflow_skills::workflow_skills_list,
+            workflow_skills::workflow_skills_capture_context,
+            workflow_skills::workflow_skills_workspaces,
+            workflow_skills::workflow_skills_find_source,
+            workflow_skills::workflow_skills_set_automatic,
+            workflow_skills::workflow_skills_suggest,
+            workflow_skills::workflow_skills_suggest_revision,
+            workflow_skills::workflow_skills_auto_draft,
+            workflow_skills::workflow_skills_save,
+            workflow_skills::workflow_skills_revise,
+            workflow_skills::workflow_skills_evaluate,
+            workflow_skills::workflow_skills_activate,
+            workflow_skills::workflow_skills_dismiss,
+            automations::automations_set_workflow_skill,
             // organization server connection, RAG, documents, and managed Skills
             org::org_login,
             org::org_logout,

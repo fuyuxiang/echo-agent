@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
@@ -29,7 +28,6 @@ const WAV_HEADER_BYTES: u64 = 44;
 const MAX_APPEND_SAMPLES: usize = SAMPLE_RATE as usize * 15;
 pub(crate) const MAX_RECORDING_SAMPLES: u64 = SAMPLE_RATE as u64 * 60 * 60 * 24;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_API_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CAPTURE_ISSUES_PER_SOURCE: usize = 32;
 const MANIFEST_METADATA_RESERVE: usize = 64 * 1024;
@@ -790,19 +788,6 @@ pub async fn meeting_import_audio(
     Ok(record)
 }
 
-async fn response_bytes_bounded(response: reqwest::Response) -> Result<Vec<u8>, String> {
-    let mut stream = response.bytes_stream();
-    let mut bytes = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("读取转写服务响应失败：{error}"))?;
-        if bytes.len().saturating_add(chunk.len()) > MAX_API_RESPONSE_BYTES {
-            return Err("转写服务响应超过安全上限".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
-}
-
 fn format_time(seconds: f64) -> String {
     let seconds = seconds.max(0.0) as u64;
     format!(
@@ -832,94 +817,15 @@ fn transcript_as_text(segments: &[TranscriptSegment]) -> String {
         .join("\n")
 }
 
-fn visible_completion_text(value: &str) -> &str {
-    let mut visible = value.trim();
-    while let Some(reasoning) = visible.strip_prefix("<think>") {
-        let Some((_, remainder)) = reasoning.split_once("</think>") else {
-            return "";
-        };
-        visible = remainder.trim_start();
-    }
-    visible.trim()
-}
-
 async fn chat_completion(
     client: &reqwest::Client,
     access: &crate::providers::ConfiguredModelAccess,
     system: &str,
     user: &str,
 ) -> Result<String, String> {
-    let body = match access.api_backend.as_str() {
-        "responses" => serde_json::json!({
-            "model": access.remote_model_id, "instructions": system, "input": user,
-            "max_output_tokens": 4096, "stream": false,
-        }),
-        "messages" => serde_json::json!({
-            "model": access.remote_model_id, "system": system, "max_tokens": 4096,
-            "messages": [{ "role": "user", "content": user }], "stream": false,
-        }),
-        _ => serde_json::json!({
-            "model": access.remote_model_id,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user}
-            ],
-            "stream": false,
-        }),
-    };
-    let response = access
-        .authorize(client.post(&access.endpoint).json(&body))
-        .send()
+    crate::provider_text::complete_text(client, access, system, user)
         .await
-        .map_err(|_| "无法连接默认会议纪要模型")?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("默认会议纪要模型返回 HTTP {status}"));
-    }
-    let bytes = response_bytes_bounded(response).await?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| "会议纪要模型返回了无效响应")?;
-    check_minutes_response_complete(&value, &access.api_backend)?;
-    let text = access
-        .response_text(&value)
-        .ok_or("会议纪要模型没有返回文本")?;
-    let visible = visible_completion_text(&text);
-    if visible.is_empty() || value.get("error").is_some_and(|error| !error.is_null()) {
-        return Err("会议纪要模型没有返回文本".into());
-    }
-    if access.api_key.is_empty() {
-        Ok(visible.to_owned())
-    } else {
-        Ok(visible.replace(&access.api_key, "[REDACTED]"))
-    }
-}
-
-fn check_minutes_response_complete(value: &serde_json::Value, backend: &str) -> Result<(), String> {
-    let incomplete = match backend {
-        "responses" => value["status"]
-            .as_str()
-            .is_some_and(|status| status != "completed"),
-        "messages" => matches!(
-            value["stop_reason"].as_str(),
-            Some(
-                "max_tokens"
-                    | "model_context_window_exceeded"
-                    | "pause_turn"
-                    | "refusal"
-                    | "tool_use"
-            )
-        ),
-        _ => matches!(
-            value
-                .pointer("/choices/0/finish_reason")
-                .and_then(serde_json::Value::as_str),
-            Some("length" | "content_filter" | "tool_calls" | "function_call")
-        ),
-    };
-    if incomplete {
-        return Err("纪要模型未完成输出，请重试或在设置中更换默认模型".into());
-    }
-    Ok(())
+        .map_err(|error| format!("生成会议纪要失败：{error}"))
 }
 
 async fn generate_minutes_text(
@@ -1888,7 +1794,7 @@ model = "configured-chat"
             ),
         ] {
             assert!(crate::providers::model_response_text(&response, backend).is_some());
-            assert!(check_minutes_response_complete(&response, backend).is_err());
+            assert!(crate::provider_text::check_response_complete(&response, backend).is_err());
         }
     }
 
@@ -1915,10 +1821,15 @@ model = "configured-chat"
     #[test]
     fn meeting_minutes_hide_leading_model_reasoning() {
         assert_eq!(
-            visible_completion_text("<think>internal notes</think>\n\n# 会议纪要"),
+            crate::provider_text::visible_completion_text(
+                "<think>internal notes</think>\n\n# 会议纪要"
+            ),
             "# 会议纪要"
         );
-        assert_eq!(visible_completion_text("<think>unfinished"), "");
+        assert_eq!(
+            crate::provider_text::visible_completion_text("<think>unfinished"),
+            ""
+        );
     }
 
     #[test]

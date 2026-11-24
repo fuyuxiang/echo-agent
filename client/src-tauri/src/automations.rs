@@ -42,6 +42,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::commands::AppState;
+use crate::workflow_skills::{self, WorkflowBinding};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -148,6 +149,8 @@ pub struct Automation {
     pub recover_after_interruption: bool,
     #[serde(default)]
     pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_skill: Option<WorkflowBinding>,
     #[serde(default)]
     pub expert_id: Option<String>,
     #[serde(default)]
@@ -212,6 +215,8 @@ pub struct AutomationExecutionSummary {
     pub prompt: String,
     pub new_session_each_run: bool,
     pub permission_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_skill: Option<WorkflowBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -922,6 +927,7 @@ fn append_run_started(
             prompt: automation.prompt.clone(),
             new_session_each_run: automation.new_session_each_run,
             permission_mode: automation.permission_mode.clone(),
+            workflow_skill: automation.workflow_skill.clone(),
         }),
         cwd: Some(cwd.to_string_lossy().into_owned()),
         model_id: resolved_model_id
@@ -1201,6 +1207,7 @@ fn cleanup_update_fact(
         external_claimed: true,
         external_result: record.notification_delivery.clone(),
         restored_orphan: false,
+        restored: false,
         publication_approved: None,
         cleanup_only: true,
     }
@@ -1308,6 +1315,8 @@ struct TerminalFact {
     #[serde(default)]
     restored_orphan: bool,
     #[serde(default)]
+    restored: bool,
+    #[serde(default)]
     cleanup_only: bool,
 }
 
@@ -1336,6 +1345,7 @@ impl TerminalFact {
             external_result: None,
             publication_approved: None,
             restored_orphan: false,
+            restored: false,
             cleanup_only: false,
         }
     }
@@ -1409,6 +1419,7 @@ pub(crate) fn prepare_restored_terminals(home: &Path) -> Result<(), String> {
             let mut completion = completion_for_record(&record);
             completion.push = false;
             fact.completion = Some(completion);
+            fact.restored = true;
             fact.external_claimed = true;
             fact.external_result = Some("由备份恢复，仅恢复本地结果，未补发外部通知".into());
             crate::paths::write_private_file(
@@ -1956,6 +1967,18 @@ pub(crate) fn publish_automation_completion(app: &AppHandle, completion: Automat
                 let mut update = completion.event.clone();
                 if !first_publication {
                     update.phase = "publication".into();
+                }
+                if let Some(cwd) = update.cwd.clone().filter(|_| {
+                    first_publication
+                        && !fact.restored
+                        && matches!(update.status.as_str(), "success" | "failed")
+                        && update.session_id.is_some()
+                }) {
+                    let review_app = app.clone();
+                    let run = record_id.clone();
+                    tauri::async_runtime::spawn(async move {
+                        workflow_skills::review_failed_run(&review_app, &cwd, run).await;
+                    });
                 }
                 if waiting_for_publication_review(&fact) {
                     publications_in_flight().lock().unwrap().remove(&record_id);
@@ -3070,6 +3093,7 @@ fn save_automation_in_store(
     if creating {
         automation.context_generation = 0;
         automation.dedicated_session_id = None;
+        automation.workflow_skill = None;
         store.automations.push(automation.clone());
     } else {
         let existing = store
@@ -3093,6 +3117,13 @@ fn save_automation_in_store(
         // Scheduler metadata can advance while an editor is suspended.
         automation.created_at = existing.created_at.clone();
         automation.last_run_at = existing.last_run_at.clone();
+        automation.workflow_skill = if automation.cwds.first() == existing.cwds.first()
+            && automation.project_id == existing.project_id
+        {
+            existing.workflow_skill.clone()
+        } else {
+            None
+        };
         // A stale/suspended editor must not rewind a reset or inject another
         // task's session. Workspace and authority changes start a fresh chain.
         let reset = automation.new_session_each_run != existing.new_session_each_run
@@ -3426,6 +3457,10 @@ pub struct AutomationRunResult {
     truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     progress: Option<AutomationRunProgress>,
+    #[serde(skip)]
+    source_model: Option<String>,
+    #[serde(skip)]
+    tool_failures: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -3440,6 +3475,41 @@ struct AutomationRunProgress {
     last_activity_at: Option<i64>,
 }
 
+struct RunToolEvidence {
+    title: String,
+    status: String,
+    order: usize,
+    detail: Option<String>,
+}
+
+fn failed_tool_detail(update: &serde_json::Value) -> Option<String> {
+    let raw = update.get("rawOutput").or_else(|| update.get("raw_output"));
+    let detail = raw
+        .and_then(|value| {
+            value
+                .as_str()
+                .or_else(|| value.get("message").and_then(serde_json::Value::as_str))
+                .or_else(|| value.get("error").and_then(serde_json::Value::as_str))
+                .or_else(|| {
+                    value
+                        .pointer("/error/message")
+                        .and_then(serde_json::Value::as_str)
+                })
+        })
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| {
+            update
+                .get("content")?
+                .as_array()?
+                .iter()
+                .take(12)
+                .filter_map(|block| block.pointer("/content/text").or_else(|| block.get("text")))
+                .filter_map(serde_json::Value::as_str)
+                .find(|text| !text.trim().is_empty())
+        })?;
+    Some(detail.trim().chars().take(500).collect())
+}
+
 /// Read only the prompt recorded by the native scheduler. A later follow-up in
 /// the same conversation must never appear as an older occurrence's result.
 fn result_from_reader(
@@ -3452,7 +3522,9 @@ fn result_from_reader(
     let mut text = String::new();
     let mut truncated = false;
     let mut seen = HashSet::new();
-    let mut tools: HashMap<String, (String, String, usize)> = HashMap::new();
+    let mut tools = HashMap::<String, RunToolEvidence>::new();
+    let mut source_model = None;
+    let mut conflicting_models = false;
     let mut progress = AutomationRunProgress::default();
     let mut processed_events = 0;
     let mut output_full = false;
@@ -3461,6 +3533,8 @@ fn result_from_reader(
             text,
             truncated,
             progress: None,
+            source_model: None,
+            tool_failures: Vec::new(),
         });
     }
     let mut line = Vec::new();
@@ -3521,6 +3595,19 @@ fn result_from_reader(
         let kind = update
             .get("sessionUpdate")
             .and_then(serde_json::Value::as_str);
+        if kind == Some("user_message_chunk") {
+            let model = meta
+                .and_then(|m| m.get("modelId"))
+                .or_else(|| update.pointer("/content/_meta/modelId"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 512);
+            if let Some(model) = model {
+                conflicting_models |= source_model
+                    .as_deref()
+                    .is_some_and(|previous| previous != model);
+                source_model = Some(model.to_string());
+            }
+        }
         if !matches!(
             kind,
             Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update")
@@ -3560,18 +3647,26 @@ fn result_from_reader(
             {
                 let tool = tools
                     .entry(id.to_string())
-                    .or_insert_with(|| ("执行操作".into(), "in_progress".into(), processed_events));
+                    .or_insert_with(|| RunToolEvidence {
+                        title: "执行操作".into(),
+                        status: "in_progress".into(),
+                        order: processed_events,
+                        detail: None,
+                    });
                 if let Some(title) = update
                     .get("title")
                     .and_then(serde_json::Value::as_str)
                     .filter(|s| !s.trim().is_empty())
                 {
-                    tool.0 = title.chars().take(160).collect();
+                    tool.title = title.chars().take(160).collect();
                 }
                 if let Some(status) = update.get("status").and_then(serde_json::Value::as_str) {
-                    tool.1 = status.to_string();
+                    tool.status = status.to_string();
                 }
-                tool.2 = processed_events;
+                if tool.status == "failed" {
+                    tool.detail = failed_tool_detail(update).or_else(|| tool.detail.take());
+                }
+                tool.order = processed_events;
             }
         }
         match kind {
@@ -3605,21 +3700,54 @@ fn result_from_reader(
     progress.total_tools = tools.len();
     progress.completed_tools = tools
         .values()
-        .filter(|(_, status, _)| status == "completed")
+        .filter(|tool| tool.status == "completed")
         .count();
     progress.failed_tools = tools
         .values()
-        .filter(|(_, status, _)| status == "failed")
+        .filter(|tool| tool.status == "failed")
         .count();
     progress.active_tool = tools
         .values()
-        .filter(|(_, status, _)| status != "completed" && status != "failed")
-        .max_by_key(|(_, _, order)| order)
-        .map(|(title, _, _)| title.clone());
+        .filter(|tool| !matches!(tool.status.as_str(), "completed" | "failed"))
+        .max_by_key(|tool| tool.order)
+        .map(|tool| tool.title.clone());
+    let mut completed_orders = HashMap::<&str, usize>::new();
+    for tool in tools.values().filter(|tool| tool.status == "completed") {
+        let order = completed_orders.entry(&tool.title).or_default();
+        *order = (*order).max(tool.order);
+    }
+    let mut failures: Vec<_> = tools
+        .values()
+        .filter(|tool| {
+            tool.status == "failed"
+                && tool.detail.is_some()
+                && !completed_orders
+                    .get(tool.title.as_str())
+                    .is_some_and(|order| *order > tool.order)
+        })
+        .collect();
+    failures.sort_unstable_by_key(|tool| std::cmp::Reverse(tool.order));
+    let tool_failures = failures
+        .into_iter()
+        .take(6)
+        .map(|tool| {
+            format!(
+                "{}：{}",
+                tool.title,
+                tool.detail.as_deref().unwrap_or_default()
+            )
+        })
+        .collect();
     Ok(AutomationRunResult {
         text: text.trim().into(),
         truncated,
         progress: Some(progress),
+        source_model: if conflicting_models {
+            None
+        } else {
+            source_model
+        },
+        tool_failures,
     })
 }
 
@@ -3645,18 +3773,43 @@ fn read_run_result(id: &str) -> Result<AutomationRunResult, String> {
             .find(|item| item.id == id)
             .ok_or("运行记录不存在")?
     };
-    let Some(session_id) = record.session_id else {
+    read_record_result(&record)
+}
+
+fn read_record_result(record: &AutomationRunRecord) -> Result<AutomationRunResult, String> {
+    let Some(session_id) = &record.session_id else {
         return Ok(AutomationRunResult {
             text: String::new(),
             truncated: false,
             progress: None,
+            source_model: None,
+            tool_failures: Vec::new(),
         });
     };
-    let paths = echo_agent_runtime::session::persistence::session_history_paths(
-        &session_id,
+    read_prompt_result(
+        session_id,
         record.cwd.as_deref(),
+        record.prompt_id.as_deref(),
     )
-    .map_err(|e| e.to_string())?;
+}
+
+pub(crate) fn workflow_prompt_model(
+    cwd: &Path,
+    session_id: &str,
+    prompt_id: &str,
+) -> Option<String> {
+    read_prompt_result(session_id, cwd.to_str(), Some(prompt_id))
+        .ok()?
+        .source_model
+}
+
+fn read_prompt_result(
+    session_id: &str,
+    cwd: Option<&str>,
+    prompt_id: Option<&str>,
+) -> Result<AutomationRunResult, String> {
+    let paths = echo_agent_runtime::session::persistence::session_history_paths(session_id, cwd)
+        .map_err(|error| error.to_string())?;
     let directory = paths
         .first()
         .ok_or("本次运行的会话已不存在，任务记录仍保留")?;
@@ -3667,10 +3820,130 @@ fn read_run_result(id: &str) -> Result<AutomationRunResult, String> {
         .metadata()
         .map_err(|e| format!("读取运行结果失败：{e}"))?
         .len();
-    result_from_reader(
-        BufReader::new(file.take(length)),
-        record.prompt_id.as_deref(),
-    )
+    result_from_reader(BufReader::new(file.take(length)), prompt_id)
+}
+
+pub(crate) fn workflow_run_evidence(id: &str) -> Result<workflow_skills::Evidence, String> {
+    let record = {
+        let _guard = record_access().lock().unwrap();
+        read_records()?
+            .records
+            .into_iter()
+            .find(|item| item.id == id)
+            .ok_or("运行记录不存在")?
+    };
+    if !matches!(record.status.as_str(), "success" | "failed") || record.completion_pending {
+        return Err("请等待本次任务完成后再保存流程".into());
+    }
+    let result = read_record_result(&record)?;
+    let run_workflow = record
+        .execution_config
+        .as_ref()
+        .and_then(|config| config.workflow_skill.clone());
+    let request = record
+        .execution_config
+        .as_ref()
+        .map(|config| config.prompt.clone())
+        .ok_or("这条历史运行没有保存当次任务要求")?;
+    Ok(workflow_skills::Evidence {
+        source: workflow_skills::WorkflowSource {
+            session_id: record.session_id.ok_or("本次运行没有会话")?,
+            prompt_id: record.prompt_id.ok_or("本次运行没有可追溯的任务标识")?,
+            cwd: None,
+            run_id: Some(record.id),
+            automation_id: Some(record.automation_id),
+        },
+        cwd: record.cwd.map(PathBuf::from).ok_or("本次运行没有工作区")?,
+        model_id: result.source_model.or(record.model_id),
+        request,
+        result: if record.status == "failed" {
+            format!(
+                "运行失败：{}\n{}",
+                record.error.unwrap_or_default(),
+                result.text
+            )
+        } else {
+            result.text
+        },
+        run_workflow,
+        tool_failures: result.tool_failures,
+    })
+}
+
+#[tauri::command]
+pub fn automations_set_workflow_skill(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    expected: Option<WorkflowBinding>,
+    workflow_id: Option<String>,
+    version: Option<u32>,
+) -> Result<Automation, String> {
+    crate::policy::require_feature("automations")?;
+    let before = {
+        let _guard = store_access().lock().unwrap();
+        read_store()?
+            .automations
+            .into_iter()
+            .find(|task| task.id == id)
+            .ok_or("定时任务不存在")?
+    };
+    if before.workflow_skill != expected {
+        return Err("定时任务正在使用的版本已变更，请刷新后重试".into());
+    }
+    let binding = match (workflow_id, version) {
+        (Some(workflow_id), Some(number)) => {
+            let cwd = match before.cwds.first() {
+                Some(cwd) => PathBuf::from(cwd),
+                None => match state.cwd.lock().unwrap().clone() {
+                    Some(cwd) => cwd,
+                    None => crate::paths::default_workspace_dir()?,
+                },
+            };
+            let cwd = app
+                .state::<crate::shell_fs::FilesystemAccess>()
+                .require_workspace(&cwd.to_string_lossy())?;
+            let model = crate::commands::resolve_automation_model_id(
+                Some(&app),
+                &state,
+                before.model_id.as_deref(),
+            )?;
+            Some(workflow_skills::binding_for(
+                &cwd,
+                &workflow_id,
+                number,
+                &model,
+            )?)
+        }
+        (None, None) => None,
+        _ => return Err("请同时选择流程和版本".into()),
+    };
+    let updated = {
+        let _guard = store_access().lock().unwrap();
+        let mut store = read_store()?;
+        let task = store
+            .automations
+            .iter_mut()
+            .find(|task| task.id == id)
+            .ok_or("定时任务不存在")?;
+        if task.workflow_skill != expected
+            || task.cwds != before.cwds
+            || task.project_id != before.project_id
+            || task.model_id != before.model_id
+        {
+            return Err("任务配置已变更，请刷新后重试".into());
+        }
+        if task.workflow_skill != binding {
+            task.workflow_skill = binding;
+            task.context_generation = task.context_generation.saturating_add(1);
+            task.dedicated_session_id = None;
+        }
+        let updated = task.clone();
+        write_store(&store)?;
+        updated
+    };
+    let _ = app.emit("automation://changed", ());
+    Ok(updated)
 }
 
 #[tauri::command]
@@ -4011,6 +4284,14 @@ async fn execute_automation_run(
                 &prompt,
             )
             .await?;
+            if let Some((binding, _, verified_model)) = &context.workflow {
+                if &model != verified_model {
+                    return Err(format!(
+                        "流程「{}」版本 {} 使用 {} 验收，本次任务选择了 {}。请在任务详情绑定与执行模型匹配的已验收版本。",
+                        binding.title, binding.version, verified_model, model
+                    ));
+                }
+            }
             Ok((model, prompt))
         }.await,
         Err(error) => Err(error.clone()),
@@ -4482,6 +4763,10 @@ async fn run_automation_once(
         prompt,
         automation.recover_after_interruption,
         recovering,
+        automation
+            .workflow_skill
+            .as_ref()
+            .map(|binding| binding.workflow_id.as_str()),
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -4493,6 +4778,7 @@ struct AutomationExecutionContext {
     project_prompt: Option<String>,
     expert_prompt: Option<String>,
     skills: Vec<(String, String, String)>,
+    workflow: Option<(WorkflowBinding, String, String)>,
     connectors: Vec<String>,
 }
 
@@ -4611,6 +4897,10 @@ async fn resolve_execution_context(
         expert_prompt: resolve_selected_expert_prompt(automation, cwd)?,
         ..Default::default()
     };
+    if let Some(binding) = &automation.workflow_skill {
+        let (instructions, verified_model) = workflow_skills::pinned_instructions(cwd, binding)?;
+        context.workflow = Some((binding.clone(), instructions, verified_model));
+    }
 
     if !automation.skills.is_empty() {
         let catalog =
@@ -4632,6 +4922,11 @@ async fn resolve_execution_context(
                 .as_deref()
                 .ok_or_else(|| format!("所选技能缺少本地指令路径：{selected}"))?;
             let mut skill_path = PathBuf::from(configured_path);
+            if skill_path
+                .starts_with(crate::paths::echo_agent_home_dir().join(workflow_skills::DIRECTORY))
+            {
+                return Err("请在定时任务详情选择要使用的流程版本".into());
+            }
             if skill_path.is_dir() {
                 skill_path = skill_path.join("SKILL.md");
             }
@@ -4686,6 +4981,12 @@ fn automation_prompt(automation: &Automation, resolved: &AutomationExecutionCont
     for (name, path, body) in &resolved.skills {
         context.push(format!(
             "<automation-skill name=\"{name}\" path=\"{path}\">\n{body}\n</automation-skill>\n这是用户明确选择的技能，必须遵循其中的执行流程。"
+        ));
+    }
+    if let Some((binding, body, _)) = &resolved.workflow {
+        context.push(format!(
+            "[用户为本次任务选择的流程，固定版本 {}]\n{body}\n[固定流程结束]\n执行本任务时应使用以上固定版本的流程。",
+            binding.version,
         ));
     }
     if !resolved.connectors.is_empty() {
@@ -7096,6 +7397,85 @@ mod tests {
         }
     }
 
+    #[test]
+    fn workflow_evidence_keeps_prompt_model_and_unresolved_tool_error() {
+        let rows = [
+            serde_json::json!({"params":{"_meta":{"promptId":"older","modelId":"old-provider"},
+                "update":{"sessionUpdate":"user_message_chunk"}}}),
+            serde_json::json!({"params":{"_meta":{"promptId":"current","modelId":"source-provider"},
+                "update":{"sessionUpdate":"user_message_chunk"}}}),
+            serde_json::json!({"params":{"_meta":{"promptId":"current"},
+                "update":{"sessionUpdate":"tool_call","toolCallId":"first","title":"读取数据",
+                   "status":"failed","rawOutput":{"error":{"message":"字段缺失"}}}}}),
+            serde_json::json!({"params":{"_meta":{"promptId":"current"},
+                "update":{"sessionUpdate":"tool_call","toolCallId":"second","title":"读取数据","status":"completed"}}}),
+            serde_json::json!({"params":{"_meta":{"promptId":"current"},
+                "update":{"sessionUpdate":"tool_call_update","toolCallId":"third","title":"写入报告",
+                   "status":"failed","content":[{"type":"content","content":{"type":"text","text":"格式不兼容"}}]}}}),
+        ];
+        let updates = rows
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        let result = result_from_updates(updates.as_bytes(), Some("current"));
+        assert_eq!(result.source_model.as_deref(), Some("source-provider"));
+        assert_eq!(result.tool_failures, ["写入报告：格式不兼容"]);
+    }
+
+    #[test]
+    fn workflow_binding_survives_stale_edits_and_is_captured_by_run() {
+        let binding = WorkflowBinding {
+            workflow_id: "procedure".into(),
+            version: 2,
+            title: "已验证流程".into(),
+            revision_digest: None,
+        };
+        let mut task = test_automation();
+        task.id = "scheduled".into();
+        task.cwds = vec!["/workspace".into()];
+        task.workflow_skill = Some(binding.clone());
+        let mut store = AutomationStore {
+            automations: vec![task.clone()],
+        };
+        let mut stale = task.clone();
+        stale.workflow_skill = None;
+        stale.name = "任务改名".into();
+        let saved = save_automation_in_store(&mut store, stale, false).unwrap();
+        assert_eq!(saved.workflow_skill, Some(binding.clone()));
+
+        let mut records = RunRecordStore::default();
+        append_run_started(
+            &mut records,
+            &saved,
+            "",
+            Path::new("/workspace"),
+            None,
+            Some("model"),
+        );
+        assert_eq!(
+            records.records[0]
+                .execution_config
+                .as_ref()
+                .unwrap()
+                .workflow_skill,
+            Some(binding.clone())
+        );
+        let context = AutomationExecutionContext {
+            workflow: Some((binding, "固定版本的可执行步骤".into(), "model".into())),
+            ..Default::default()
+        };
+        assert!(automation_prompt(&saved, &context).contains("固定版本的可执行步骤"));
+
+        let mut moved = saved;
+        moved.cwds = vec!["/other".into()];
+        let moved = save_automation_in_store(&mut store, moved, false).unwrap();
+        assert!(moved.workflow_skill.is_none());
+    }
+
     fn test_automation() -> Automation {
         Automation {
             project_id: None,
@@ -7109,6 +7489,7 @@ mod tests {
             cross_provider_fallback: false,
             recover_after_interruption: false,
             skills: vec![],
+            workflow_skill: None,
             expert_id: None,
             expert_name: None,
             expert_path: None,
@@ -7159,6 +7540,7 @@ mod tests {
             external_claimed: false,
             external_result: None,
             restored_orphan: false,
+            restored: false,
             publication_approved: None,
             cleanup_only: false,
         };

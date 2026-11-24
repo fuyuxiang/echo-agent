@@ -1,32 +1,29 @@
-<p align="center"><img src="src-tauri/icons/128x128.png" width="72" height="72" alt="EchoAgent icon" /></p>
+<p align="center"><img src="app-icon.png" width="88" height="88" alt="EchoAgent icon" /></p>
 
 <h1 align="center">EchoAgent</h1>
 
-<p align="center">A local-first desktop agent workspace for files, documents, and project work. Track progress, handle approvals, and inspect what the agent delivers.</p>
+<p align="center"><strong>Let AI finish work in a real workspace, with every step visible and under your control.</strong><br />A source-available, local-first desktop agent workspace for conversations, tool use, coding, and reviewable delivery.</p>
 
-<p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/releases">Download Desktop</a> · <a href="#quick-start">Quick start</a> · <a href="docs/README.md">Documentation</a> · <a href="README.md">简体中文</a></p>
+<p align="center"><a href="README.md">简体中文</a> · <a href="#quick-start">Quick start</a> · <a href="#capabilities">Capabilities</a> · <a href="#architecture-and-data-flow">Architecture</a> · <a href="#contributing">Contribute</a> · <a href="https://github.com/fuyuxiang/echo-agent-desktop/issues">Issues</a></p>
 
 <p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fuyuxiang/echo-agent-desktop/ci.yml?branch=main&amp;label=CI" alt="CI status" /></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-2ea44f" alt="PolyForm Noncommercial 1.0.0 license" /></a> <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows-2563eb" alt="Desktop platforms: macOS and Windows" /> <img src="https://img.shields.io/badge/Tauri-2-24c8db" alt="Tauri 2" /></p>
 
-EchoAgent binds each conversation to a real working directory. The project workspace brings tasks, references, and outputs together. Review work awaiting acceptance, then use its outputs as references for new tasks.
+<p align="center"><img src="docs/images/echoagent-home.png" width="100%" alt="EchoAgent home screen with a task composer, model picker, workspace picker, and permission mode" /></p>
 
-[![EchoAgent project overview with a task awaiting acceptance, work in progress, recent outputs, and project context](docs/images/echoagent-project-workspace.png)](docs/images/echoagent-project-workspace.png)
-
-*The project overview with sample data. The Chinese UI shows a competitive analysis awaiting acceptance, a roadmap in progress, and a report available for reuse.*
+EchoAgent binds each conversation to a real working directory. Choose a model and permission mode, describe a goal, then inspect plans, tool calls, file changes, and results in one desktop app. Most application state stays on your computer; model inference and optional external services still require network access.
 
 ## Capabilities
 
 | Area | Current implementation |
 | --- | --- |
-| **Project workspace** | Organize tasks, references, outputs, and decisions. New tasks inherit project instructions and confirmed decisions, and can use existing outputs as references. |
 | **Expert groups** | Reuse local experts and saved group templates; address members with @mentions, discuss with read-only tools, delegate work, collect results, review approvals, and retain decisions and deliverables. |
 | **Agent tasks** | Streaming conversations, plans and tasks, tool calls, approvals, session history, rewind and fork, and subagent status. |
 | **Browser and desktop control** | Browser Use supports the built-in browser, isolated task profiles, and the browser extension. Built-in browser sign-ins on public sites are shared within the same EchoAgent account. Pause the agent to take over the same tab. Computer Use supports macOS AX and Windows UIA native controls, with screenshots and coordinates as a fallback. Availability depends on the device. See the platform guide for verification status. |
 | **Models and extensions** | Personal model connections and organization models; MCP, Skills, Plugins, connectors, and reusable experts. |
 | **Knowledge and documents** | Local knowledge index, project context, memory, common-file reading, and local generation of Word, PDF, Excel, and PowerPoint files. |
-| **Ongoing work** | Scheduled automations, notifications, meeting recordings and minutes, plus optional WeChat remote sessions and organization services. |
+| **Ongoing work** | Projects and work items, scheduled automations, notifications, meeting recordings and minutes, plus optional WeChat remote sessions and organization services. |
 
-[Experts and team projects](docs/team-projects.md) · [Browser Use / Computer Use](docs/automation-platform-support.md) · [Native desktop controls and validation](docs/desktop-control/README.md) · [Office documents](docs/office-documents.md) · [Live information](docs/live-information.md) · [WeChat remote sessions](docs/weixin-remote.md) · [Skill capability declarations](docs/skill-capability-manifest.md)
+Read more: [Browser Use / Computer Use](docs/automation-platform-support.md) · [Native desktop controls and validation](docs/desktop-control/README.md) · [Office documents](docs/office-documents.md) · [Live information](docs/live-information.md) · [WeChat remote sessions](docs/weixin-remote.md) · [Skill capability declarations](docs/skill-capability-manifest.md)
 
 The [documentation index](docs/README.md) links to all current guides. Shared interaction and visual rules are maintained in [product experience](docs/product-experience.md) and [theme design](docs/theme-design.md) (Chinese).
 
@@ -66,13 +63,17 @@ The first launch prepares the Office worker, bundled Node.js, retrieval and spee
 
 ### Start your first task
 
-Add and test a personal model connection under **Settings → Models**, or select a model provided by your organization. Custom connections support OpenAI, Anthropic, and compatible APIs. Tool use and other model features depend on the service. Personal model configuration is stored locally in `~/.echo-agent/config.toml`.
-
 1. Select a working directory, model, and permission mode on the home screen.
 2. Describe your goal and send it. For file tasks, select the directory you intend to authorize.
 3. Follow the plan and tool activity, handle approval requests when they appear, and inspect diffs and verification results for file changes.
 
+Before using the app, add and test a personal connection and model under **Settings → Models**. Custom connections support OpenAI, Anthropic, and compatible APIs. Tool use and other model features depend on the service. Personal model configuration is stored locally in `~/.echo-agent/config.toml`.
+
 Built-in chat models are no longer provided. Upgrades remove their catalog and saved selections while preserving conversations, files, personal connections, and organization models. Scheduled tasks bound to a retired model are paused and marked as needing a model selection. Edit the task to choose an available model or explicitly follow the default, save, then enable it again; upgrades never silently switch these tasks to another service. Knowledge and memory retrieval services are unchanged.
+
+<p align="center"><img src="docs/images/echoagent-task-flow.png" width="100%" alt="Typical task flow: choose a workspace, select a model and mode, send a goal, plan and use tools, review permissions, inspect changes, verify and deliver; inspection may lead to another iteration" /></p>
+
+<p align="center"><sub>This shows a typical file-editing task. Skip approval or change-review stages when they do not apply.</sub></p>
 
 ### Control your desktop through chat
 
@@ -111,6 +112,14 @@ flowchart LR
 Manage the memory switch and records under **Settings → Memory**. Completed tasks can extract reusable preferences, work context, project facts, and recent follow-ups; pending extraction is retained for retry. Global preferences work across projects, while project facts stay scoped to their workspace. You can add, correct, forget, inspect sources, import text or JSON with a preview, and copy an export. Manually saved records are protected from automatic rewriting.
 
 Corrections and forgetting exclude superseded facts and associated sources from subsequent use. Inactive records remain available for inspection, and original chats remain in history. Turning memory off stops its use and automatic extraction in subsequent requests while keeping existing records manageable.
+
+### Reusable workflows
+
+Choose **Save as reusable workflow** on a chat or scheduled result. Default tasks share a workflow library while keeping their task files separate. Tasks with a selected workspace use that workspace’s library. Open **Skills → Reusable workflows** to inspect versions, sources, and test results.
+
+Verification compares model outputs against independent test cases. It runs without tools or connectors. You can enable a verified version as a workspace skill or pin it to a scheduled task. Scheduled runs check the actual model against the verified model and use the pinned instructions when the workspace publishes a newer revision.
+
+Automatic drafting is optional per workspace. It sends relevant task text, results, and feedback to the source task’s model for analysis. Drafts with existing checks can be verified automatically. Publishing and binding require user action.
 
 ### Expert groups
 

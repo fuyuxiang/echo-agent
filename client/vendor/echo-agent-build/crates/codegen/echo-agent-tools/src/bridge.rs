@@ -383,6 +383,13 @@ impl ToolBridge {
         }
     }
 
+    pub async fn suppress_skill_for_turn(&self, name: Option<String>) -> bool {
+        let mut resources = self.registry.resources.lock().await;
+        resources
+            .get_mut::<crate::types::skill_discovery_tracker::SkillManager>()
+            .is_some_and(|manager| manager.suppress_skill(name))
+    }
+
     /// Apply any pending skill updates.
     ///
     /// If the tracker has a pending change (discovery, baseline update, /clear),

@@ -64,6 +64,8 @@ import { AutomationApprovalCard } from "./AutomationControls";
 import { useSessionAutomation } from "@/lib/use-session-automation";
 import { automationCapabilities, type AutomationMode, type BrowserPanelCapabilities } from "@/lib/automation-client";
 import { useAppDialog } from "./AppDialog";
+import { WorkflowCaptureAction } from "./workflow-skills/WorkflowSkills";
+import { useFeedbackStore } from "@/stores/feedback-store";
 import type {
   MessageRetryKind,
   MessageRetrySendRequest,
@@ -359,6 +361,10 @@ export function ChatView({
   const [automationModeChanging, setAutomationModeChanging] = useState(false);
   const terminalMessage = [...messages].reverse().find(message => message.role === "assistant"
     && (!control?.promptId || message.promptId === control.promptId));
+  const feedbackKey = sessionId && terminalMessage ? `${sessionId}:${terminalMessage.id}` : undefined;
+  const workflowFeedback = useFeedbackStore((state) => feedbackKey ? state.entries[feedbackKey] : undefined);
+  const feedbackSubmittedAt = useFeedbackStore((state) => state.lastSubmission?.key === feedbackKey
+    ? state.lastSubmission?.ts : undefined);
   const stoppedCategory = terminalMessage?.cancellationCategory;
   // Runtime coding-mode notifications can be "default" while the native
   // browser/computer session remains active. Its own status owns tool mode.
@@ -1078,6 +1084,19 @@ export function ChatView({
   const continuationNeedsScope = automationMode === "computer_use" && automation.status && !automation.status.task?.scope;
   const feedbackTarget = terminalMessage?.id;
   const blockingNotice = terminalMessage && getExecutionNotice(terminalMessage, streaming, inlineRuntimeError);
+  const workflowCapture = useMemo(() => {
+    if (!terminalMessage?.promptId || !terminalMessage.complete || !sessionId || streaming
+      || (blockingNotice && !workflowFeedback?.note) || resolveExecutionTurn(terminalMessage).origin !== "user"
+      || inheritedIds.has(terminalMessage.id)) return undefined;
+    const index = messages.indexOf(terminalMessage);
+    const source = messages.slice(0, index).reverse().find((message) => message.role === "user");
+    if (!source || inheritedIds.has(source.id) || (source.promptId && source.promptId !== terminalMessage.promptId)) return undefined;
+    const request = source.parts.flatMap((part) => part.kind === "text" ? [stripAttachmentTransportContext(part.text).text] : []).join("\n").trim();
+    const result = terminalMessage.parts.flatMap((part) => part.kind === "text" && part.phase !== "commentary" ? [part.text] : []).join("\n").trim();
+    const usedTools = terminalMessage.parts.some((part) => part.kind === "tool_call" && part.toolCall.status === "completed");
+    if (!request || (!usedTools && !result && !workflowFeedback?.note)) return undefined;
+    return { capture: { kind: "chat" as const, sessionId, promptId: terminalMessage.promptId, request, result }, usedTools };
+  }, [terminalMessage, sessionId, streaming, blockingNotice, inheritedIds, messages, workflowFeedback?.note]);
   const desktopBlocker = automation.status?.task?.phase === "waiting_user" && !automation.status.task.authorized
     ? automation.status.task.outcome : null;
   const taskFeedback = desktopBlocker ? <div className="yield-banner session-turn-feedback" role="status"><span>{desktopBlocker}</span></div> : controlPhase && !inlineRuntimeError && !error && (!blockingNotice || blockingNotice.kind === "stopped") ? (
@@ -1196,6 +1215,15 @@ export function ChatView({
                           : undefined
                       }
                     />
+                    {m === terminalMessage && cwd && workflowCapture && (
+                      <WorkflowCaptureAction key={workflowCapture.capture.promptId} cwd={cwd}
+                        capture={workflowCapture.capture} modelId={modelId} onToast={onToast}
+                        correction={workflowFeedback?.note}
+                        accepted={workflowFeedback && feedbackSubmittedAt === workflowFeedback.ts
+                          && Date.now() - workflowFeedback.ts < 120_000
+                          && ((workflowFeedback.rating === "up" && workflowCapture.usedTools && !blockingNotice)
+                            || workflowFeedback.note?.trim()) ? workflowFeedback.ts : undefined} />
+                    )}
                     <ContinuationLinks sessions={continuationLinks.get(m.id) ?? []}
                       onOpen={onOpenContinuationSession} />
                   </div>

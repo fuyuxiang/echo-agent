@@ -61,6 +61,8 @@ function save(map: FeedbackMap) {
 interface FeedbackState {
   /** 复合 key → 反馈条目。 */
   entries: FeedbackMap;
+  /** Ephemeral receipt of an explicit submission. Reading saved feedback never starts a new request. */
+  lastSubmission?: { key: string; ts: number };
   /** 设置反馈(toggle:再点同向 rating 会取消)。 */
   setRating: (sessionId: string, messageId: string, rating: FeedbackRating) => void;
   /** 设置完整评分(rating + stars + note)。 */
@@ -100,17 +102,18 @@ export const useFeedbackStore = create<FeedbackState>((set, get) => ({
   setDetailed: (sessionId, messageId, data) =>
     set((s) => {
       const k = keyOf(sessionId, messageId);
+      const ts = Date.now();
       const next: FeedbackMap = {
         ...s.entries,
         [k]: {
           rating: data.rating,
           stars: clampStars(data.stars),
           note: data.note?.trim() || undefined,
-          ts: Date.now(),
+          ts,
         },
       };
       save(next);
-      return { entries: next };
+      return { entries: next, lastSubmission: { key: k, ts } };
     }),
   clearRating: (sessionId, messageId) =>
     set((s) => {
@@ -126,7 +129,7 @@ export const useFeedbackStore = create<FeedbackState>((set, get) => ({
   },
   __replace: (map) => {
     save(map);
-    set({ entries: map });
+    set({ entries: map, lastSubmission: undefined });
   },
 }));
 

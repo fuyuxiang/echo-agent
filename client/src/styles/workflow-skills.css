@@ -1,0 +1,260 @@
+.workflow-capture,
+.workflow-task-binding,
+.workflow-actions,
+.workflow-report__summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.workflow-capture,
+.workflow-task-binding {
+  margin-block: 8px 12px;
+}
+
+.workflow-capture > span,
+.workflow-task-binding > span,
+.workflow-state {
+  font-size: 13px;
+  color: var(--echo-text-secondary);
+}
+
+.workflow-capture .capability-button,
+.workflow-task-binding .capability-button {
+  min-height: 32px;
+  gap: 6px;
+}
+
+.workflow-overlay {
+  z-index: 1600;
+}
+
+.workflow-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(860px, calc(100dvh - 32px));
+  display: flex;
+  flex-direction: column;
+}
+
+.workflow-dialog .sk-import-head {
+  flex: none;
+  align-items: center;
+}
+
+.workflow-dialog .sk-import-head h2 {
+  font-size: 18px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-dialog__body {
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: grid;
+  gap: 13px;
+  padding: 16px 20px 20px;
+  min-height: 0;
+}
+
+.workflow-dialog__footer {
+  flex: none;
+  border-top: 1px solid var(--echo-border-default);
+  padding: 12px 20px;
+}
+
+.workflow-dialog__body p,
+.workflow-cases h3,
+.workflow-report h3,
+.workflow-list p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-location {
+  color: var(--echo-text-secondary);
+  font-size: 13px;
+}
+
+.workflow-location span {
+  color: var(--echo-text-primary);
+}
+
+.workflow-dialog__body label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.workflow-dialog__body input,
+.workflow-dialog__body select,
+.workflow-dialog__body textarea {
+  width: 100%;
+}
+
+.workflow-dialog__body textarea {
+  resize: vertical;
+  min-height: 54px;
+}
+
+.workflow-dialog__body small,
+.workflow-dialog__body details p,
+.workflow-setting small,
+.workflow-empty,
+.workflow-list small,
+.workflow-detail__meta p,
+.workflow-report p {
+  color: var(--echo-text-secondary);
+}
+
+.workflow-dialog__body details {
+  min-width: 0;
+}
+
+.workflow-dialog__body summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.workflow-dialog__body pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 250px;
+  overflow: auto;
+  margin: 6px 0;
+  padding: 10px;
+  background: var(--echo-surface-canvas);
+  border: 1px solid var(--echo-border-default);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.workflow-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-block: 8px;
+}
+
+.workflow-compare strong,
+.workflow-report__summary {
+  font-size: 13px;
+}
+
+.workflow-cases,
+.workflow-report,
+.workflow-detail__meta {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  justify-items: start;
+}
+
+.workflow-cases fieldset {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: 8px;
+}
+
+.workflow-cases fieldset button {
+  justify-self: start;
+}
+
+.workflow-report {
+  padding: 12px;
+  border: 1px solid var(--echo-border-default);
+  border-radius: 10px;
+}
+
+.workflow-report details {
+  width: 100%;
+}
+
+.workflow-state {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.workflow-error {
+  color: var(--echo-status-error);
+}
+
+.workflow-collection {
+  display: grid;
+  gap: 16px;
+  padding-block: 8px;
+}
+
+.workflow-workspace {
+  display: grid;
+  gap: 5px;
+  max-width: 550px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.workflow-workspace select {
+  min-width: 0;
+  width: 100%;
+}
+
+.workflow-setting {
+  display: flex;
+  width: fit-content;
+  gap: 9px;
+  align-items: flex-start;
+}
+
+.workflow-setting small {
+  display: block;
+  margin-top: 3px;
+}
+
+.workflow-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-block-start: 1px solid var(--echo-border-default);
+}
+
+.workflow-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-block: 12px;
+  border-block-end: 1px solid var(--echo-border-default);
+}
+
+.workflow-list li > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+
+.workflow-list button {
+  flex: none;
+}
+
+@media (max-width: 560px) {
+  .workflow-compare {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-dialog__body {
+    padding-inline: 14px;
+  }
+
+  .workflow-dialog__footer {
+    padding-inline: 14px;
+  }
+}

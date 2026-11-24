@@ -3300,6 +3300,7 @@ function Shell({ uiRestoreDeferred }: { uiRestoreDeferred: boolean }) {
     : null;
 
   const placeholderProps = {
+    defaultWorkspaceCwd: init?.cwd,
     onOpenAutomationSettings: (section: "general" | "notifications") => section === "notifications"
       ? openSettings("notify-channels") : openSettings("general", "background"),
     onOpenRetrievalSettings: () => openSettings("memory", "local-retrieval"),

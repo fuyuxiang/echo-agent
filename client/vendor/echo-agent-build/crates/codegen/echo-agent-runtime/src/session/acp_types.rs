@@ -636,6 +636,9 @@ pub struct InheritedTurnAuthority {
 pub struct StartupHints {
     #[serde(skip)]
     pub inherited_turn_authority: Option<InheritedTurnAuthority>,
+    /// Hide the mutable skill when the parent turn supplies a pinned revision.
+    #[serde(skip)]
+    pub inherited_workflow_skill: Option<String>,
     #[serde(default)]
     pub non_interactive: bool,
     #[serde(default)]

@@ -1000,6 +1000,12 @@ pub(crate) async fn run_shell_child(
             "Subagent inherited MCP servers from parent pool"
         );
     }
+    if let Some(skill) = &ctx.inherited_workflow_skill {
+        ctx.parent_skills_config.disabled.push(skill.clone());
+        if let Some(parent_skills) = ctx.parent_skills.as_mut() {
+            parent_skills.retain(|entry| &entry.name != skill);
+        }
+    }
     let inherit_skills = definition.inherit_skills;
     let definition_background = definition.background.unwrap_or(false);
     if inherit_skills && ctx.parent_skills.is_none() {
@@ -1014,6 +1020,14 @@ pub(crate) async fn run_shell_child(
             .await,
         );
     }
+    let child_skills_config = if inherit_skills {
+        ctx.parent_skills_config.clone()
+    } else {
+        echo_agent_core::prompt::skills::SkillsConfig {
+            disabled: ctx.inherited_workflow_skill.iter().cloned().collect(),
+            ..Default::default()
+        }
+    };
     let skills_inherited_count = if inherit_skills {
         ctx.parent_skills
             .as_ref()
@@ -1095,6 +1109,7 @@ pub(crate) async fn run_shell_child(
         initial_child_tokens,
         crate::session::StartupHints {
             inherited_turn_authority: ctx.parent_turn_authority.clone(),
+            inherited_workflow_skill: ctx.inherited_workflow_skill.clone(),
             inherited_prefix_len: Some(inherited_prefix_len),
             is_subagent: true,
             non_interactive: ctx.parent_non_interactive,
@@ -1127,11 +1142,7 @@ pub(crate) async fn run_shell_child(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         definition,
         subagent_session_default_agent_profile,
-        if inherit_skills {
-            ctx.parent_skills_config.clone()
-        } else {
-            echo_agent_core::prompt::skills::SkillsConfig::default()
-        },
+        child_skills_config,
         if inherit_skills {
             ctx.parent_skills.take()
         } else {

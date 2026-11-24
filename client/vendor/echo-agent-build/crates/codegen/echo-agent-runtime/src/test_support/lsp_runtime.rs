@@ -20,6 +20,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
     SubagentSpawnContext {
         parent_turn_authority: None,
         parent_host_project_context: None,
+        inherited_workflow_skill: None,
         lsp: None,
         process_scope: None,
         parent_max_turns: None,

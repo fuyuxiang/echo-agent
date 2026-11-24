@@ -14,11 +14,14 @@ import { useAppDialog } from "../../AppDialog";
 import { SkillCapabilityStatus } from "./SkillCapabilityStatus";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import { CapabilityEmptyState, CapabilityError, CapabilityPage } from "../shared/CapabilityPage";
+import { WorkflowCollection } from "../../workflow-skills/WorkflowSkills";
+import { listenWorkflowLibrary } from "@/lib/workflow-skills";
 
 interface Props {
   cwd?: string;
   pills: React.ReactNode;
   onToast?: (m: string) => void;
+  onOpenSource?: (sessionId: string, cwd?: string) => void;
 }
 
 function organizationScopeLabel(scope: SkillInfo["orgScopeKind"]): string {
@@ -48,11 +51,13 @@ function RuntimeSkillRow({
   onToggle,
   onRemove,
   onUpload,
+  onManageWorkflow,
 }: {
   skill: SkillInfo;
   onToggle: (skill: SkillInfo, enabled: boolean) => void;
   onRemove?: (skill: SkillInfo) => void;
   onUpload?: (skill: SkillInfo) => void;
+  onManageWorkflow?: () => void;
 }) {
   const name = skill.displayName || skill.name;
   const organizationManaged = skill.orgManaged || skill.scope === "server";
@@ -69,7 +74,7 @@ function RuntimeSkillRow({
           <div className="sk-card-name resource-row__title">{name}</div>
           <ResourceDescription text={skill.description || "（无描述）"} label={`技能「${name}」的说明`} className="sk-card-desc" />
           <div className="sk-inst-meta resource-row__meta">
-            <span>{skillSourceLabel(skill)}</span>
+            <span>{onManageWorkflow ? "工作区可复用流程" : skillSourceLabel(skill)}</span>
             {organizationManaged && <span>组织托管</span>}
             {mandatory && <span className="sk-inst-meta--mandatory">组织强制</span>}
             {skill.version && <span>v{skill.version}</span>}
@@ -79,6 +84,7 @@ function RuntimeSkillRow({
         </div>
       </div>
       <div className="resource-row__actions">
+      {onManageWorkflow ? <button className="capability-button" type="button" onClick={onManageWorkflow}>管理流程</button> : <>
       <label className={`sk-toggle${mandatory ? " sk-toggle--locked" : ""}`}
         title={mandatory ? "组织强制 Skill 不能卸载" : organizationManaged
           ? skill.enabled ? "已安装" : "未安装"
@@ -97,6 +103,7 @@ function RuntimeSkillRow({
         ...(onUpload && skill.path && !organizationManaged ? [{ label: `上传${name}到组织`, text: "上传到组织", onSelect: () => onUpload(skill) }] : []),
         ...(onRemove && removablePath && !organizationManaged ? [{ label: `移除技能 ${name}`, text: "移除技能", danger: true, onSelect: () => onRemove(skill) }] : []),
       ]} />
+      </>}
       </div>
     </ResourceRow>
   );
@@ -109,13 +116,14 @@ function RuntimeSkillRow({
  * 内置和插件技能。组织 Skill 也安装在该全局目录下，因此这里不再维护
  * 另一套“来源目录”或市场目录选择状态。
  */
-export function SkillsTab({ pills, onToast, cwd }: Props) {
+export function SkillsTab({ pills, onToast, onOpenSource, cwd }: Props) {
   const [search, setSearch] = useState("");
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [uploadSkill, setUploadSkill] = useState<SkillInfo | null>(null);
+  const [showWorkflows, setShowWorkflows] = useState(false);
   const reloadGeneration = useRef(0);
   const currentCwd = useRef(cwd);
   currentCwd.current = cwd;
@@ -142,6 +150,15 @@ export function SkillsTab({ pills, onToast, cwd }: Props) {
   useEffect(() => {
     void reloadSkills(true);
     return () => { reloadGeneration.current += 1; };
+  }, [reloadSkills]);
+  useEffect(() => {
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void listenWorkflowLibrary(() => { void reloadSkills(true); }).then((stop) => {
+      if (active) dispose = stop;
+      else stop();
+    }).catch(() => {});
+    return () => { active = false; dispose?.(); };
   }, [reloadSkills]);
   useEffect(() => useOrgSessionStore.subscribe((next, previous) => {
     if (next.boundaryRevision === previous.boundaryRevision) return;
@@ -238,9 +255,13 @@ export function SkillsTab({ pills, onToast, cwd }: Props) {
   return (
     <div className="capability-tab">
       {pills && <header className="um-topbar"><div className="um-topbar-left">{pills}</div></header>}
-      <CapabilityPage title="已安装技能" className="capability-page--skills"
-        search={{ value: search, onChange: setSearch, label: "搜索已安装技能", placeholder: "搜索技能…" }}
+      <CapabilityPage title={showWorkflows ? "可复用流程" : "已安装技能"} className="capability-page--skills"
+        search={showWorkflows ? undefined : { value: search, onChange: setSearch, label: "搜索已安装技能", placeholder: "搜索技能…" }}
         actions={<>
+          {cwd && <button type="button" className="capability-button" onClick={() => setShowWorkflows(!showWorkflows)}>
+            {showWorkflows ? "返回已安装技能" : "可复用流程"}
+          </button>}
+          {!showWorkflows && <>
           <button type="button" className="capability-button" onClick={() => void refreshAndReload()}
             disabled={loading} title="重新扫描全局和当前工作区技能">
             <RefreshCwIcon size="sm" /><span>刷新</span>
@@ -248,9 +269,11 @@ export function SkillsTab({ pills, onToast, cwd }: Props) {
           <button type="button" className="capability-button capability-button--primary" onClick={() => setImportOpen(true)}>
             <AddCircleIcon size="sm" /><span>添加技能</span>
           </button>
+          </>}
         </>}
-        summary={loading && skills.length === 0 ? "正在读取技能…" : error && skills.length === 0 ? "技能列表未加载" : undefined}>
+        summary={showWorkflows ? undefined : loading && skills.length === 0 ? "正在读取技能…" : error && skills.length === 0 ? "技能列表未加载" : undefined}>
 
+        {showWorkflows && cwd ? <WorkflowCollection key={cwd} cwd={cwd} onToast={onToast} onOpenSource={onOpenSource} /> : <>
         {error && (
           <CapabilityError onRetry={() => void refreshAndReload()} retrying={loading}>
             技能列表加载失败：{error}{skills.length > 0 ? "。下方保留上次加载的结果。" : ""}
@@ -268,10 +291,13 @@ export function SkillsTab({ pills, onToast, cwd }: Props) {
           <ResourceList collectionKey="skills" summary={`${visible.length} 个技能 · ${visible.filter(skill => skill.enabled).length} 个已启用`} className="sk-inst-list" aria-label="已安装技能">
             {visible.map((skill) => (
               <RuntimeSkillRow key={skill.name + (skill.path ?? "")} skill={skill}
-                onToggle={handleToggle} onRemove={handleRemove} onUpload={setUploadSkill} />
+                onToggle={handleToggle} onRemove={handleRemove} onUpload={setUploadSkill}
+                onManageWorkflow={cwd && skill.name.startsWith("echo-workflow-")
+                  && skill.path?.split(/[\\/]/).includes("workflow-library") ? () => setShowWorkflows(true) : undefined} />
             ))}
           </ResourceList>
         )}
+        </>}
       </CapabilityPage>
 
       {importOpen && (

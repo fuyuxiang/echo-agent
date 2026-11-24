@@ -216,6 +216,9 @@ pub fn collect_skill_config_dirs(
                 try_add(cwd.join(name));
             }
         }
+        for directory in workflow_skill_dirs(global_dir, cwd) {
+            try_add(directory);
+        }
     }
 
     // Priority 2.5: Optional workspace user dir.
@@ -252,6 +255,47 @@ pub fn collect_skill_config_dirs(
     }
 
     dirs
+}
+
+/// The desktop gives every default task an isolated CWD. Its reusable skills
+/// live in the shared default workspace, without sharing any task files.
+static DEFAULT_WORKFLOW_WORKSPACE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_default_workflow_workspace(path: &Path) {
+    let _ = DEFAULT_WORKFLOW_WORKSPACE.set(dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
+}
+
+pub fn default_workflow_workspace() -> Option<&'static Path> {
+    DEFAULT_WORKFLOW_WORKSPACE.get().map(PathBuf::as_path)
+}
+
+pub fn workflow_library_workspace(cwd: &Path) -> PathBuf {
+    let cwd = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    if let Some(root) = DEFAULT_WORKFLOW_WORKSPACE.get()
+        && cwd.parent() == Some(root.join("Tasks").as_path())
+        && cwd.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+            name.len() == 36 && name.bytes().enumerate().all(|(index, byte)| match index {
+                8 | 13 | 18 | 23 => byte == b'-',
+                _ => byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'),
+            })
+        })
+    {
+        return root.clone();
+    }
+    cwd
+}
+
+pub fn workflow_skill_dir(home: &Path, cwd: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let cwd = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let key = format!("{:x}", Sha256::digest(cwd.to_string_lossy().as_bytes()));
+    home.join("workflow-library").join(key)
+}
+
+fn workflow_skill_dirs(home: &Path, cwd: &Path) -> Vec<PathBuf> {
+    let exact = workflow_skill_dir(home, cwd);
+    let shared = workflow_skill_dir(home, &workflow_library_workspace(cwd));
+    if exact == shared { vec![exact] } else { vec![exact, shared] }
 }
 
 /// Determine the skill scope for a config directory based on its location
@@ -327,8 +371,17 @@ async fn list_skills_with_options(
     let mut skill_files: Vec<(PathBuf, SkillScope)> = Vec::new();
     let mut seen_canonical_paths = HashSet::new();
 
+    let workflow_dirs = cwd
+        .as_deref()
+        .map(|cwd| workflow_skill_dirs(global_dir, cwd))
+        .unwrap_or_default();
     for config_dir in &config_dirs {
-        let scope = scope_for_config_dir(config_dir, cwd.as_deref(), git_root.as_deref());
+        let is_workflow_dir = workflow_dirs.contains(config_dir);
+        let scope = if is_workflow_dir {
+            SkillScope::Local
+        } else {
+            scope_for_config_dir(config_dir, cwd.as_deref(), git_root.as_deref())
+        };
 
         // Skills before commands: skills win name collisions.
         collect_discovered_paths(
@@ -337,6 +390,9 @@ async fn list_skills_with_options(
             &mut seen_canonical_paths,
             &mut skill_files,
         );
+        if is_workflow_dir {
+            continue;
+        }
         collect_discovered_paths(
             find_command_paths(config_dir),
             scope,

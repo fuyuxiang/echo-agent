@@ -609,6 +609,35 @@ impl SessionActor {
         } else {
             AutomationTurnMode::Ordinary
         };
+        if self.client_identifier.as_deref() == Some("echo-agent-desktop")
+            && !self.startup_hints.is_subagent
+        {
+            let workflow = prompt_blocks.iter().find_map(|block| {
+                let acp::ContentBlock::Text(text) = block else {
+                    return None;
+                };
+                let id = text.meta.as_ref()?.get("desktopPinnedWorkflow")?.as_str()?;
+                let uuid = uuid::Uuid::parse_str(id).ok()?;
+                (id == uuid.to_string()).then(|| format!("echo-workflow-{id}"))
+            });
+            if (workflow.is_some() || !input_origin.is_synthetic())
+                && let Ok(mut current) = self.tool_context.pinned_workflow_skill.write()
+            {
+                *current = workflow;
+            }
+        }
+        let pinned_skill = self
+            .tool_context
+            .pinned_workflow_skill
+            .read()
+            .ok()
+            .and_then(|current| current.clone());
+        let bridge = self.tool_bridge_handle();
+        if bridge.suppress_skill_for_turn(pinned_skill).await
+            && let Some(effects) = bridge.apply_pending_skill_update().await
+        {
+            self.apply_skill_update_effects(effects).await;
+        }
         self.tool_bridge_handle()
             .update_resource(echo_agent_tools::types::resources::DesktopMcpNoReplay(
                 cfg!(feature = "desktop") || self.client_identifier.as_deref() == Some("echo-agent-desktop"),

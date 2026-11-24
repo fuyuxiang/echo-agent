@@ -982,6 +982,7 @@ pub async fn prompt_for_automation(
     text: &str,
     checkpoint: bool,
     recovering: bool,
+    pinned_workflow_id: Option<&str>,
 ) -> Result<crate::bridge::CompleteEvent> {
     let stopped_before_send = || {
         crate::bridge::parse_complete_event(&serde_json::json!({
@@ -1003,6 +1004,14 @@ pub async fn prompt_for_automation(
                 serde_json::json!(if recovering { "finish" } else { "run" }),
             );
         }
+    }
+    if let (Some(id), Some(acp::ContentBlock::Text(block))) =
+        (pinned_workflow_id, blocks.first_mut())
+    {
+        block
+            .meta
+            .get_or_insert_with(Default::default)
+            .insert("desktopPinnedWorkflow".into(), serde_json::json!(id));
     }
     let meta = serde_json::Map::from_iter([("promptId".into(), serde_json::json!(prompt_id))]);
     let mut req = acp::PromptRequest::new(session_id.to_string(), blocks).meta(Some(meta));
@@ -1480,6 +1489,7 @@ mod tests {
             "Synthetic task",
             false,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -1510,6 +1520,7 @@ mod tests {
             "Synthetic task",
             false,
             false,
+            None,
         );
         let refuse = async {
             let echo_agent_acp::AcpAgentMessage::Prompt(request) = agent.rx.recv().await.unwrap()
@@ -2160,6 +2171,7 @@ mod tests {
                     &prompt,
                     true,
                     false,
+                    None,
                 ),
             )
             .await;
@@ -2192,7 +2204,7 @@ mod tests {
             let completion = tokio::time::timeout(Duration::from_secs(80), prompt_for_automation(
                 &handle.tx, &admission, session_id, &prompt_id,
                 "The original turn was interrupted. From the previous command result, return the exact marker that it wrote. Do not use tools.",
-                false, true,
+                false, true, None,
             )).await.unwrap().unwrap();
             assert_eq!(
                 crate::bridge::completion_disposition(&completion),
